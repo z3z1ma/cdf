@@ -1,7 +1,7 @@
 Status: done
 Created: 2026-07-09
 Updated: 2026-07-09
-Parent: .10x/tickets/2026-07-08-p2-ws-b-schema-reconciliation-arrow-vocabulary.md
+Parent: .10x/tickets/done/2026-07-08-p2-ws-b-schema-reconciliation-arrow-vocabulary.md
 Depends-On: .10x/tickets/done/2026-07-09-p2-ws-b2-schema-reconciliation-core.md, .10x/tickets/done/2026-07-09-p2-ws-b5-validation-program-coercion-evidence.md, .10x/decisions/source-decode-type-drift-quarantine.md, .10x/specs/data-onramp-schema-intelligence.md
 
 # P2 WS-B6 JSON-family observed-first reconciliation

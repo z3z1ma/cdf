@@ -1,7 +1,7 @@
 Status: recorded
 Created: 2026-07-09
 Updated: 2026-07-09
-Relates-To: .10x/tickets/done/2026-07-08-p2-ws-f1-append-default-merge-key-error.md, .10x/tickets/2026-07-08-p2-ws-f-keys-dispositions.md
+Relates-To: .10x/tickets/done/2026-07-08-p2-ws-f1-append-default-merge-key-error.md, .10x/tickets/done/2026-07-08-p2-ws-f-keys-dispositions.md
 
 # P2 WS-F1 append default and merge-key error evidence
 
@@ -41,13 +41,13 @@ Commands run from the repository root:
   - Result: passed.
 - `gitleaks dir --no-banner --redact=100 --log-level warn crates/cdf-project`
   - Result: passed.
-- `gitleaks dir --no-banner --redact=100 --log-level warn .10x/tickets/2026-07-08-p2-ws-f1-append-default-merge-key-error.md`
+- `gitleaks dir --no-banner --redact=100 --log-level warn .10x/tickets/done/2026-07-08-p2-ws-f1-append-default-merge-key-error.md`
   - Result: passed before ticket move.
-- `gitleaks dir --no-banner --redact=100 --log-level warn .10x/tickets/2026-07-08-p2-ws-f-keys-dispositions.md`
+- `gitleaks dir --no-banner --redact=100 --log-level warn .10x/tickets/done/2026-07-08-p2-ws-f-keys-dispositions.md`
   - Result: passed.
 - Banned phrase and legacy-name scan over F1 code and record files.
   - Result: no matches after record cleanup.
-- Source scan: `rg -n "write_disposition = \"append\"|write_disposition: append|primary_key = \\[|primary_key: \\[|fake key|composite key|requires.*key|key.*required" crates/cdf-declarative crates/cdf-project/src/scaffold.rs docs .10x/tickets/2026-07-08-p2-ws-f1-append-default-merge-key-error.md .10x/tickets/2026-07-08-p2-ws-f-keys-dispositions.md -g '*.rs' -g '*.toml' -g '*.yaml' -g '*.yml' -g '*.md'`
+- Source scan: `rg -n "write_disposition = \"append\"|write_disposition: append|primary_key = \\[|primary_key: \\[|fake key|composite key|requires.*key|key.*required" crates/cdf-declarative crates/cdf-project/src/scaffold.rs docs .10x/tickets/done/2026-07-08-p2-ws-f1-append-default-merge-key-error.md .10x/tickets/done/2026-07-08-p2-ws-f-keys-dispositions.md -g '*.rs' -g '*.toml' -g '*.yaml' -g '*.yml' -g '*.md'`
   - Result: generated scaffold has append without `primary_key`; remaining append/key occurrences are tests or ticket text, not shipped append scaffolds/docs.
 
 ## What This Supports

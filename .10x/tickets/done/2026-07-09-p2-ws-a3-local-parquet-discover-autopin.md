@@ -1,7 +1,7 @@
 Status: done
 Created: 2026-07-09
 Updated: 2026-07-09
-Parent: .10x/tickets/2026-07-08-p2-ws-a-discovery-compiler-stage.md
+Parent: .10x/tickets/done/2026-07-08-p2-ws-a-discovery-compiler-stage.md
 Depends-On: .10x/decisions/data-onramp-schema-discovery-reconciliation.md, .10x/specs/data-onramp-schema-intelligence.md, .10x/specs/types-contracts-normalization.md, .10x/tickets/done/2026-07-09-p2-ws-a2-local-parquet-discovery-probe.md, .10x/tickets/done/2026-07-08-p2-ws-c1-declarative-schema-normalization.md, .10x/tickets/done/2026-07-09-p2-ws-b3-parquet-declared-schema-reconciliation.md
 
 # P2 WS-A3 local Parquet discover CLI and auto-pin

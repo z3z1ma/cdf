@@ -1,7 +1,7 @@
 Status: done
 Created: 2026-07-09
 Updated: 2026-07-09
-Parent: .10x/tickets/2026-07-08-p2-ws-c-source-identity-normalization.md
+Parent: .10x/tickets/done/2026-07-08-p2-ws-c-source-identity-normalization.md
 Depends-On: .10x/decisions/data-onramp-source-identity-preview-disposition.md, .10x/specs/types-contracts-normalization.md, .10x/tickets/done/2026-07-08-p2-ws-c1-declarative-schema-normalization.md
 
 # P2 WS-C2 destination identifier policy adapter

@@ -1,7 +1,7 @@
 Status: done
 Created: 2026-07-09
 Updated: 2026-07-09
-Parent: .10x/tickets/2026-07-08-p2-ws-d-file-source-globs-manifest-compression.md
+Parent: .10x/tickets/done/2026-07-08-p2-ws-d-file-source-globs-manifest-compression.md
 Depends-On: .10x/decisions/data-onramp-file-source-transport-manifest.md, .10x/specs/data-onramp-file-sources-transports.md, .10x/tickets/done/2026-07-09-p2-ws-e2-http-file-runtime-and-discovery.md, .10x/tickets/done/2026-07-09-p2-ws-a9-local-arrow-ipc-discover-run.md
 
 # P2 WS-D5 binary file format auto-detection

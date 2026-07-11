@@ -1,7 +1,7 @@
 Status: done
 Created: 2026-07-09
 Updated: 2026-07-09
-Parent: .10x/tickets/2026-07-08-p2-ws-i-conformance-parity-friction-suite.md
+Parent: .10x/tickets/done/2026-07-08-p2-ws-i-conformance-parity-friction-suite.md
 Depends-On: .10x/tickets/done/2026-07-09-p2-ws-a7-schema-pin-show-diff-cli.md, .10x/tickets/done/2026-07-09-p2-ws-d3-file-manifest-incremental-noop.md, .10x/tickets/done/2026-07-09-p2-ws-d4-gzip-zstd-file-decode-foundation.md, .10x/tickets/done/2026-07-09-p2-ws-e2-http-file-runtime-and-discovery.md, .10x/tickets/done/2026-07-09-p2-ws-g1-source-diagnostics-and-deep-validate-foundation.md, .10x/tickets/done/2026-07-09-p2-ws-h2-cdf-add-single-file-parquet.md, .10x/specs/data-onramp-conformance.md
 
 # P2 WS-I3 conformance matrix and friction-registry reconciliation

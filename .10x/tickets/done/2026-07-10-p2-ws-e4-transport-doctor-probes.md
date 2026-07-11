@@ -1,7 +1,7 @@
 Status: done
 Created: 2026-07-10
 Updated: 2026-07-10
-Parent: .10x/tickets/2026-07-08-p2-ws-e-remote-transports.md
+Parent: .10x/tickets/done/2026-07-08-p2-ws-e-remote-transports.md
 Depends-On: .10x/tickets/done/2026-07-10-p2-ws-e3-cloud-object-stores-and-http-templates.md
 
 # P2 WS-E4 — Transport doctor probes

@@ -1,7 +1,7 @@
 Status: done
 Created: 2026-07-10
 Updated: 2026-07-10
-Parent: .10x/tickets/2026-07-08-p2-ws-e-remote-transports.md
+Parent: .10x/tickets/done/2026-07-08-p2-ws-e-remote-transports.md
 Depends-On: .10x/tickets/done/2026-07-10-p2-ws-e3-cloud-object-stores-and-http-templates.md, .10x/specs/data-onramp-file-transport.md, .10x/specs/data-onramp-conformance.md
 
 # P2 WS-E6 HTTP date globs and S1/S2 conformance

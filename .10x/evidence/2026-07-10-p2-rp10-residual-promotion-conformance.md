@@ -43,4 +43,4 @@ This supports every RP10 acceptance criterion and closes the residual capture/pr
 
 ## Limits
 
-S1-S4/S6/S8 final program status remains governed by `.10x/tickets/2026-07-08-p2-ws-i-conformance-parity-friction-suite.md`; RP10 adds its exact tests to the matrix but does not promote those scenario rows.
+S1-S4/S6/S8 final program status remains governed by `.10x/tickets/done/2026-07-08-p2-ws-i-conformance-parity-friction-suite.md`; RP10 adds its exact tests to the matrix but does not promote those scenario rows.

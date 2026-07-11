@@ -1,7 +1,7 @@
 Status: recorded
 Created: 2026-07-09
 Updated: 2026-07-09
-Relates-To: .10x/tickets/done/2026-07-09-p2-ws-b3-parquet-declared-schema-reconciliation.md, .10x/tickets/2026-07-08-p2-ws-b-schema-reconciliation-arrow-vocabulary.md, .10x/specs/data-onramp-schema-intelligence.md, .10x/specs/types-contracts-normalization.md
+Relates-To: .10x/tickets/done/2026-07-09-p2-ws-b3-parquet-declared-schema-reconciliation.md, .10x/tickets/done/2026-07-08-p2-ws-b-schema-reconciliation-arrow-vocabulary.md, .10x/specs/data-onramp-schema-intelligence.md, .10x/specs/types-contracts-normalization.md
 
 # P2 WS-B3 Parquet declared-schema reconciliation evidence
 

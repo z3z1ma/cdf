@@ -1,7 +1,7 @@
 Status: done
 Created: 2026-07-09
 Updated: 2026-07-09
-Parent: .10x/tickets/2026-07-08-p2-ws-i-conformance-parity-friction-suite.md
+Parent: .10x/tickets/done/2026-07-08-p2-ws-i-conformance-parity-friction-suite.md
 Depends-On: .10x/tickets/done/2026-07-09-p2-ws-i4-s5-s7-standalone-conformance.md
 
 # P2 WS-I5 remove S5 recorded HTTP request-capture race

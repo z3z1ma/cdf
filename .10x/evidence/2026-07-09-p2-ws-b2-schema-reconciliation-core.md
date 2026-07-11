@@ -39,7 +39,7 @@ All required scoped verification passed. `jscpd` exited 0 and reported one clone
   - Inspected clone: `crates/cdf-contract/src/reconciliation.rs` lines 30-66 and existing `crates/cdf-contract/src/tests.rs` lines 463-499. This is not a shared implementation pattern and was not refactored.
 - `rust-code-analysis-cli -m -O json -p crates/cdf-contract/src/reconciliation.rs > target/quality/reports/rust-code-analysis-p2-b2/reconciliation.json`
   - Result: completed.
-- `git diff --check -- crates/cdf-contract/src/lib.rs crates/cdf-contract/src/tests.rs crates/cdf-kernel/src/metadata.rs crates/cdf-kernel/src/tests.rs .10x/tickets/2026-07-09-p2-ws-b2-schema-reconciliation-core.md`
+- `git diff --check -- crates/cdf-contract/src/lib.rs crates/cdf-contract/src/tests.rs crates/cdf-kernel/src/metadata.rs crates/cdf-kernel/src/tests.rs .10x/tickets/done/2026-07-09-p2-ws-b2-schema-reconciliation-core.md`
   - Result: passed.
 - `git diff --no-index --check /dev/null crates/cdf-contract/src/reconciliation.rs`
   - Result: no whitespace errors. The wrapper normalized the expected diff exit code for the untracked new file.

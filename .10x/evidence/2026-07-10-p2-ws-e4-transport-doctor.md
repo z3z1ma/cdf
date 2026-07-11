@@ -1,7 +1,7 @@
 Status: recorded
 Created: 2026-07-10
 Updated: 2026-07-10
-Relates-To: .10x/tickets/done/2026-07-10-p2-ws-e4-transport-doctor-probes.md, .10x/tickets/2026-07-08-p2-ws-e-remote-transports.md
+Relates-To: .10x/tickets/done/2026-07-10-p2-ws-e4-transport-doctor-probes.md, .10x/tickets/done/2026-07-08-p2-ws-e-remote-transports.md
 
 # P2 WS-E4 transport doctor evidence
 

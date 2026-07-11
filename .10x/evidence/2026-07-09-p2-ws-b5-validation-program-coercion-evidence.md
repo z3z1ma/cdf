@@ -34,7 +34,7 @@ Focused tests prove `Int32 -> Int64` evidence is classified as `widened`, names 
   - Result: passed.
 - `cargo fmt --all -- --check`
   - Result: passed.
-- `git diff --check -- crates/cdf-contract/src/compiler.rs crates/cdf-contract/src/program.rs crates/cdf-contract/src/reconciliation.rs crates/cdf-contract/src/tests.rs crates/cdf-engine/src/execution.rs crates/cdf-engine/src/tests.rs .10x/tickets/2026-07-09-p2-ws-b5-validation-program-coercion-evidence.md`
+- `git diff --check -- crates/cdf-contract/src/compiler.rs crates/cdf-contract/src/program.rs crates/cdf-contract/src/reconciliation.rs crates/cdf-contract/src/tests.rs crates/cdf-engine/src/execution.rs crates/cdf-engine/src/tests.rs .10x/tickets/done/2026-07-09-p2-ws-b5-validation-program-coercion-evidence.md`
   - Result: passed.
 - `jscpd --format rust --min-lines 8 --min-tokens 80 --reporters console,json --output target/codex-b5/quality/jscpd-p2-b5 --ignore "**/target/**,**/.git/**,**/reports/**" crates/cdf-contract/src/compiler.rs crates/cdf-contract/src/program.rs crates/cdf-contract/src/reconciliation.rs crates/cdf-contract/src/tests.rs crates/cdf-engine/src/execution.rs crates/cdf-engine/src/tests.rs`
   - Result: exited 0.

@@ -1,14 +1,14 @@
 Status: recorded
 Created: 2026-07-08
 Updated: 2026-07-08
-Target: .10x/tickets/2026-07-08-p2-data-onramp-program.md
+Target: .10x/tickets/done/2026-07-08-p2-data-onramp-program.md
 Verdict: pass
 
 # P2 data onramp program activation review
 
 ## Target
 
-Record-only activation of `.10x/tickets/2026-07-08-p2-data-onramp-program.md`, its nine workstream tickets, focused P2 decisions/specs, preview-decision supersession, the full-system parent link, and coverage-matrix updates.
+Record-only activation of `.10x/tickets/done/2026-07-08-p2-data-onramp-program.md`, its nine workstream tickets, focused P2 decisions/specs, preview-decision supersession, the full-system parent link, and coverage-matrix updates.
 
 ## Findings
 

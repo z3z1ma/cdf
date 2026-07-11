@@ -57,15 +57,6 @@ struct PreviewFingerprint {
     partition_count: usize,
 }
 
-const WS_I: &str = ".10x/tickets/2026-07-08-p2-ws-i-conformance-parity-friction-suite.md";
-const WS_A: &str = ".10x/tickets/2026-07-08-p2-ws-a-discovery-compiler-stage.md";
-const WS_B: &str = ".10x/tickets/2026-07-08-p2-ws-b-schema-reconciliation-arrow-vocabulary.md";
-const WS_C: &str = ".10x/tickets/2026-07-08-p2-ws-c-source-identity-normalization.md";
-const WS_D: &str = ".10x/tickets/2026-07-08-p2-ws-d-file-source-globs-manifest-compression.md";
-const WS_E: &str = ".10x/tickets/2026-07-08-p2-ws-e-remote-transports.md";
-const WS_G: &str = ".10x/tickets/2026-07-08-p2-ws-g-source-diagnostics-deep-validate.md";
-const WS_H: &str = ".10x/tickets/2026-07-08-p2-ws-h-scaffolding-id-model-two-minute-path.md";
-
 const P2_SCENARIOS: &[P2Scenario] = &[
     P2Scenario {
         id: "S1",
@@ -180,7 +171,7 @@ const P2_FRICTIONS: &[P2FrictionRow] = &[
             "crates/cdf-project/src/tests.rs::http_parquet_schema_discovery_uses_bounded_ranges_without_artifacts",
             "crates/cdf-project/src/tests.rs::http_parquet_auto_pin_plan_preview_and_run_use_file_runtime",
         ],
-        open_tickets: &[WS_D, WS_E, WS_H, WS_I],
+        open_tickets: &[],
     },
     P2FrictionRow {
         id: 2,
@@ -191,7 +182,7 @@ const P2_FRICTIONS: &[P2FrictionRow] = &[
             "crates/cdf-cli/src/tests.rs::schema_pin_show_and_diff_local_parquet_snapshot_with_lockfile_reference",
             "crates/cdf-cli/src/tests.rs::add_local_parquet_pins_schema_and_writes_resource_config",
         ],
-        open_tickets: &[WS_A, WS_H, WS_I],
+        open_tickets: &[],
     },
     P2FrictionRow {
         id: 3,
@@ -199,7 +190,7 @@ const P2_FRICTIONS: &[P2FrictionRow] = &[
             "crates/cdf-declarative/src/tests.rs::declarative_arrow_type_strings_compile_from_toml",
             "crates/cdf-declarative/src/tests.rs::declarative_arrow_type_strings_compile_from_yaml",
         ],
-        open_tickets: &[WS_B, WS_I],
+        open_tickets: &[],
     },
     P2FrictionRow {
         id: 4,
@@ -208,7 +199,7 @@ const P2_FRICTIONS: &[P2FrictionRow] = &[
             "crates/cdf-formats/src/tests.rs::declared_parquet_int32_declared_int64_materializes_lossless_widening",
             "crates/cdf-formats/src/tests.rs::declared_parquet_float32_declared_float64_materializes_lossless_widening",
         ],
-        open_tickets: &[WS_B, WS_I],
+        open_tickets: &[],
     },
     P2FrictionRow {
         id: 5,
@@ -218,7 +209,7 @@ const P2_FRICTIONS: &[P2FrictionRow] = &[
             "crates/cdf-formats/src/tests.rs::declared_parquet_lossy_narrowing_fails_before_batches_are_emitted",
             "crates/cdf-formats/src/tests.rs::undeclared_parquet_read_preserves_physical_schema_after_declared_path_added",
         ],
-        open_tickets: &[WS_B, WS_I],
+        open_tickets: &[],
     },
     P2FrictionRow {
         id: 6,
@@ -230,7 +221,7 @@ const P2_FRICTIONS: &[P2FrictionRow] = &[
             "crates/cdf-project/src/runtime_tests.rs::postgres_destination_policy_truncates_package_and_committed_column_identically",
             "crates/cdf-project/src/runtime_tests.rs::stale_long_name_column_program_cannot_spoof_destination_policy_before_writes",
         ],
-        open_tickets: &[WS_C, WS_I],
+        open_tickets: &[],
     },
     P2FrictionRow {
         id: 7,
@@ -239,7 +230,7 @@ const P2_FRICTIONS: &[P2FrictionRow] = &[
             "crates/cdf-cli/src/tests.rs::duckdb_destination_policy_normalizes_plan_preview_package_and_commit",
             "crates/cdf-project/src/runtime_tests.rs::postgres_destination_policy_truncates_package_and_committed_column_identically",
         ],
-        open_tickets: &[WS_C, WS_I],
+        open_tickets: &[],
     },
     P2FrictionRow {
         id: 8,
@@ -248,7 +239,7 @@ const P2_FRICTIONS: &[P2FrictionRow] = &[
             "crates/cdf-project/src/runtime_tests.rs::general_project_run_commits_multi_file_resource_manifest_checkpoint",
             "crates/cdf-project/src/runtime_tests.rs::file_manifest_append_run_skips_unchanged_files_and_loads_only_changes",
         ],
-        open_tickets: &[WS_D, WS_E, WS_I],
+        open_tickets: &[],
     },
     P2FrictionRow {
         id: 9,
@@ -259,7 +250,7 @@ const P2_FRICTIONS: &[P2FrictionRow] = &[
             "crates/cdf-cli/src/tests.rs::run_multi_file_parquet_evolves_from_immutable_pinned_baseline_with_exact_observations",
             "crates/cdf-cli/src/tests.rs::sampled_discovery_renders_every_cli_path_and_routes_unseen_drift_to_package_quarantine",
         ],
-        open_tickets: &[WS_E, WS_I],
+        open_tickets: &[],
     },
     P2FrictionRow {
         id: 10,
@@ -268,14 +259,14 @@ const P2_FRICTIONS: &[P2FrictionRow] = &[
             "crates/cdf-project/src/tests.rs::declarative_resource_mapping_pattern_must_match_compiled_id",
             "crates/cdf-cli/src/tests.rs::resource_mapping_pattern_mismatch_reports_validate_and_plan_commands",
         ],
-        open_tickets: &[WS_H],
+        open_tickets: &[],
     },
     P2FrictionRow {
         id: 11,
         closed_tests: &[
             "crates/cdf-cli/src/tests.rs::resource_not_compiled_error_names_compiled_ids_origins_and_fix",
         ],
-        open_tickets: &[WS_G, WS_I],
+        open_tickets: &[],
     },
     P2FrictionRow {
         id: 12,
@@ -283,21 +274,21 @@ const P2_FRICTIONS: &[P2FrictionRow] = &[
             "crates/cdf-cli/src/scan_command.rs::tests::plan_error_wording_uses_plan_command_name",
             "crates/cdf-cli/src/tests.rs::resource_mapping_pattern_mismatch_reports_validate_and_plan_commands",
         ],
-        open_tickets: &[WS_G, WS_I],
+        open_tickets: &[],
     },
     P2FrictionRow {
         id: 13,
         closed_tests: &[
             "crates/cdf-cli/src/tests.rs::resource_not_compiled_error_names_compiled_ids_origins_and_fix",
         ],
-        open_tickets: &[WS_G, WS_I],
+        open_tickets: &[],
     },
     P2FrictionRow {
         id: 14,
         closed_tests: &[
             "crates/cdf-cli/src/tests.rs::validate_deep_reports_source_front_end_checks_without_writes",
         ],
-        open_tickets: &[WS_G, WS_I],
+        open_tickets: &[],
     },
     P2FrictionRow {
         id: 15,
@@ -307,7 +298,7 @@ const P2_FRICTIONS: &[P2FrictionRow] = &[
             "crates/cdf-project/src/tests.rs::http_parquet_schema_discovery_uses_bounded_ranges_without_artifacts",
             "crates/cdf-project/src/tests.rs::http_parquet_auto_pin_plan_preview_and_run_use_file_runtime",
         ],
-        open_tickets: &[WS_D, WS_E, WS_I],
+        open_tickets: &[],
     },
     P2FrictionRow {
         id: 16,
@@ -316,7 +307,7 @@ const P2_FRICTIONS: &[P2FrictionRow] = &[
             "crates/cdf-declarative/src/tests.rs::file_runtime_auto_compression_decodes_gzip_and_zstd_ndjson",
             "crates/cdf-declarative/src/tests.rs::file_runtime_explicit_compression_mismatch_names_file_and_signals",
         ],
-        open_tickets: &[WS_D, WS_E, WS_I],
+        open_tickets: &[],
     },
     P2FrictionRow {
         id: 17,
@@ -341,7 +332,7 @@ const P2_FRICTIONS: &[P2FrictionRow] = &[
             "crates/cdf-project/src/tests.rs::http_parquet_auto_pin_plan_preview_and_run_use_file_runtime",
             "crates/cdf-cli/src/tests.rs::p2_s1_add_http_parquet_pins_and_runs_with_zero_typed_fields",
         ],
-        open_tickets: &[WS_D, WS_E, WS_H, WS_I],
+        open_tickets: &[],
     },
 ];
 
@@ -693,9 +684,11 @@ fn p2_registry_named_tests_resolve_to_test_functions() {
 }
 
 #[test]
-fn p2_active_owner_validation_reads_status_and_rejects_invalid_owners() {
-    let status = ticket_owner_status(WS_I).expect("WS-I must remain a nonterminal owner");
-    assert!(matches!(status.as_str(), "open" | "active" | "blocked"));
+fn p2_closed_registry_has_no_open_owners_and_rejects_terminal_ones_as_active() {
+    assert!(
+        P2_FRICTIONS.iter().all(|row| row.open_tickets.is_empty()),
+        "closed P2 friction rows must not retain open owners"
+    );
 
     let missing = ticket_owner_status(".10x/tickets/2099-01-01-missing.md").unwrap_err();
     assert!(missing.contains("cannot be read"), "{missing}");

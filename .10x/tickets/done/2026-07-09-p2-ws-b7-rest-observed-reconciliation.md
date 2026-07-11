@@ -1,7 +1,7 @@
 Status: done
 Created: 2026-07-09
 Updated: 2026-07-09
-Parent: .10x/tickets/2026-07-08-p2-ws-b-schema-reconciliation-arrow-vocabulary.md
+Parent: .10x/tickets/done/2026-07-08-p2-ws-b-schema-reconciliation-arrow-vocabulary.md
 Depends-On: .10x/tickets/done/2026-07-09-p2-ws-b6-json-family-observed-reconciliation.md, .10x/specs/data-onramp-schema-intelligence.md, .10x/specs/data-onramp-source-experience-cli.md, .10x/knowledge/schema-coercion-evidence-provenance.md
 
 # P2 WS-B7 REST observed-first reconciliation

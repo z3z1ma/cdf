@@ -1,7 +1,7 @@
 Status: done
 Created: 2026-07-10
 Updated: 2026-07-10
-Parent: .10x/tickets/2026-07-08-p2-ws-a-discovery-compiler-stage.md
+Parent: .10x/tickets/done/2026-07-08-p2-ws-a-discovery-compiler-stage.md
 Depends-On: .10x/specs/data-onramp-schema-intelligence.md
 
 # P2 WS-A11 Hints schema mode

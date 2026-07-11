@@ -1,7 +1,7 @@
 Status: recorded
 Created: 2026-07-09
 Updated: 2026-07-09
-Relates-To: .10x/tickets/done/2026-07-09-p2-ws-c2-destination-identifier-policy-adapter.md, .10x/tickets/2026-07-08-p2-ws-c-source-identity-normalization.md, .10x/decisions/data-onramp-source-identity-preview-disposition.md, .10x/specs/types-contracts-normalization.md
+Relates-To: .10x/tickets/done/2026-07-09-p2-ws-c2-destination-identifier-policy-adapter.md, .10x/tickets/done/2026-07-08-p2-ws-c-source-identity-normalization.md, .10x/decisions/data-onramp-source-identity-preview-disposition.md, .10x/specs/types-contracts-normalization.md
 
 # P2 WS-C2 destination identifier policy adapter evidence
 

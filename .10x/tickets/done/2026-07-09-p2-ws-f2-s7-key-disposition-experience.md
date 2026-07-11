@@ -1,7 +1,7 @@
 Status: done
 Created: 2026-07-09
 Updated: 2026-07-09
-Parent: .10x/tickets/2026-07-08-p2-ws-f-keys-dispositions.md
+Parent: .10x/tickets/done/2026-07-08-p2-ws-f-keys-dispositions.md
 Depends-On: .10x/tickets/done/2026-07-08-p2-ws-f1-append-default-merge-key-error.md, .10x/specs/data-onramp-source-experience-cli.md, .10x/specs/data-onramp-conformance.md, .10x/decisions/data-onramp-source-identity-preview-disposition.md
 
 # P2 WS-F2 S7 key and disposition experience

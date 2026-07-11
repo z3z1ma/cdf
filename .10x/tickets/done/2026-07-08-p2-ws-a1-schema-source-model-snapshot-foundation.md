@@ -1,7 +1,7 @@
 Status: done
 Created: 2026-07-08
 Updated: 2026-07-09
-Parent: .10x/tickets/2026-07-08-p2-ws-a-discovery-compiler-stage.md
+Parent: .10x/tickets/done/2026-07-08-p2-ws-a-discovery-compiler-stage.md
 Depends-On: .10x/decisions/data-onramp-schema-discovery-reconciliation.md, .10x/specs/data-onramp-schema-intelligence.md
 
 # P2 WS-A1 schema source model and snapshot foundation

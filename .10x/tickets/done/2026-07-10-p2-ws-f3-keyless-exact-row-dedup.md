@@ -1,7 +1,7 @@
 Status: done
 Created: 2026-07-10
 Updated: 2026-07-10
-Parent: .10x/tickets/2026-07-08-p2-ws-f-keys-dispositions.md
+Parent: .10x/tickets/done/2026-07-08-p2-ws-f-keys-dispositions.md
 Depends-On: .10x/decisions/keyless-exact-row-deduplication.md
 
 # P2 WS-F3 keyless exact-row dedup

@@ -1,7 +1,7 @@
 Status: recorded
 Created: 2026-07-10
 Updated: 2026-07-10
-Relates-To: .10x/tickets/done/2026-07-10-p2-ws-e6-http-date-glob-and-s1-s2-conformance.md, .10x/tickets/2026-07-08-p2-ws-i-conformance-parity-friction-suite.md
+Relates-To: .10x/tickets/done/2026-07-10-p2-ws-e6-http-date-glob-and-s1-s2-conformance.md, .10x/tickets/done/2026-07-08-p2-ws-i-conformance-parity-friction-suite.md
 
 # P2 E6 HTTP date glob and S1/S2 evidence
 

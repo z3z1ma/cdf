@@ -41,3 +41,5 @@ The candidate, probe, manifest, and verdict model MUST be transport- and executo
 ## Explicit exclusions
 
 Zip archive member semantics, unbounded file tailing, and distributed scheduling are out of scope for P2 unless later tickets explicitly ratify them.
+
+Logical file partitions MUST remain stable under executor work packing. An executor MAY schedule multiple logical partitions together, but MUST preserve their individual partition ids, schema-observation bindings, source positions, retry outcomes, and deterministic segment assignment. Zip implementation remains gated by `.10x/decisions/logical-file-partitions-executor-packing-and-zip-trigger.md`.

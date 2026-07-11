@@ -1,7 +1,7 @@
-Status: open
+Status: done
 Created: 2026-07-08
 Updated: 2026-07-10
-Parent: .10x/tickets/2026-07-08-p2-data-onramp-program.md
+Parent: .10x/tickets/done/2026-07-08-p2-data-onramp-program.md
 Depends-On: .10x/specs/data-onramp-source-experience-cli.md, .10x/specs/cli-error-experience-catalog.md
 
 # P2 WS-G source diagnostics and deep validation
@@ -37,7 +37,8 @@ This ticket does not redesign the whole P1 renderer or non-source error catalog.
 - 2026-07-09: G2 preflight marked the child blocked before implementation because bounded JSON probe limits, row-local warning semantics, and the missing Tier-0 type-policy override syntax require ratification. Parquet-only work was not split out because its required "both fixes" remediation depends on the same missing allowance surface.
 - 2026-07-10: G2 closed with evidence `.10x/evidence/2026-07-10-p2-g2-deep-type-diagnostics.md` and review `.10x/reviews/2026-07-10-p2-g2-deep-type-diagnostics-review.md`. Deep validation now uses the production file transport and shared reconciler, emits exact physical/constraint diagnostics and stable codes, honors runtime-effective Tier-0 allowances, preserves governed row mismatch warnings, and treats malformed input as an error. Remaining WS-G scope is final cloud/compression/source-archetype catalog coverage after the corresponding P2 source surfaces settle.
 - 2026-07-10: G3 closed with `.10x/evidence/2026-07-10-p2-g3-s6-drift-rendering.md` and `.10x/reviews/2026-07-10-p2-g3-s6-drift-rendering-review.md`. Successful governed runs now render exact typed terminal quarantine verdicts from plan authority without CLI artifact reinterpretation, promoting S6 to covered. Final WS-G closure now depends only on the aggregate friction/catalog audit.
+- 2026-07-10: Workstream closed after the aggregate friction registry reached eighteen tested historical rows and zero open owners. Deep validation uses production source front ends and command-correct typed remediation; S6 renders exact drift authority.
 
 ## Blockers
 
-Final catalog closure depends on the remaining WS-D/E/H source surfaces and conformance scenarios.
+None.

@@ -1,7 +1,7 @@
 Status: done
 Created: 2026-07-08
 Updated: 2026-07-09
-Parent: .10x/tickets/2026-07-08-p2-ws-e-remote-transports.md
+Parent: .10x/tickets/done/2026-07-08-p2-ws-e-remote-transports.md
 Depends-On: .10x/decisions/data-onramp-file-source-transport-manifest.md, .10x/specs/data-onramp-file-sources-transports.md
 
 # P2 WS-E1 file transport facade for local and HTTP

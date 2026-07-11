@@ -1,7 +1,7 @@
 Status: done
 Created: 2026-07-09
 Updated: 2026-07-09
-Parent: .10x/tickets/2026-07-08-p2-ws-i-conformance-parity-friction-suite.md
+Parent: .10x/tickets/done/2026-07-08-p2-ws-i-conformance-parity-friction-suite.md
 Depends-On: .10x/specs/data-onramp-conformance.md, .10x/specs/data-onramp-schema-intelligence.md, .10x/specs/data-onramp-source-experience-cli.md, .10x/tickets/done/2026-07-09-p2-ws-a6-rest-sample-discovery-autopin.md, .10x/tickets/done/2026-07-09-p2-ws-b7-rest-observed-reconciliation.md, .10x/tickets/done/2026-07-09-p2-ws-f2-s7-key-disposition-experience.md
 
 # P2 WS-I4 standalone S5 and S7 conformance

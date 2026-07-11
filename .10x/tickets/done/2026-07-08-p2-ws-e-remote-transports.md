@@ -1,7 +1,7 @@
-Status: open
+Status: done
 Created: 2026-07-08
 Updated: 2026-07-10
-Parent: .10x/tickets/2026-07-08-p2-data-onramp-program.md
+Parent: .10x/tickets/done/2026-07-08-p2-data-onramp-program.md
 Depends-On: .10x/decisions/data-onramp-file-source-transport-manifest.md, .10x/specs/data-onramp-file-sources-transports.md
 
 # P2 WS-E remote transports
@@ -40,6 +40,7 @@ Arbitrary web directory scraping is out of scope. HTTP glob support is limited t
 - 2026-07-10: Closed WS-E4 at `.10x/tickets/done/2026-07-10-p2-ws-e4-transport-doctor-probes.md`. Doctor now preflights configured remote resources through production partition resolution and reports isolated redacted checks. Remaining parent implementation scope is WS-E5 remote row-format/compression streaming; live-provider evidence remains WS-I.
 - 2026-07-10: Closed WS-E6 at `.10x/tickets/done/2026-07-10-p2-ws-e6-http-date-glob-and-s1-s2-conformance.md`. Canonical year-month HTTP wildcards now enumerate deterministically, typed 404 candidates are skipped without hiding auth/transient failures, and S1/S2 are covered by production-path deterministic conformance. Public TLC footer discovery succeeded; its GET endpoint independently returned 403 during the live session. Remaining implementation is E5's channel-runtime handoff and final S3/cloud parity.
 - 2026-07-10: S3 and S8 cloud parity are now covered: the in-memory object-store fixture recursively resolves compressed NDJSON, performs bounded discovery and pinning, previews through the shared engine, executes 10,000 rows, and preserves remote FileManifest identity. E5 remains open only for the P3 channel-runtime elimination of whole-input/materialized-batch residency.
+- 2026-07-10: Workstream closed for P2. Local/HTTP/S3/GCS/Azure share the transport facade, credentials/egress/doctor behavior is typed, ranged discovery and recursive listing compose with manifests and compression, and S1-S3/S8 are conformance-owned. E5's remaining channel-level residency optimization was transferred to the existing P3 performance-triage owners rather than creating a second decoder/runtime seam.
 
 ## Blockers
 

@@ -1,4 +1,4 @@
-Status: open
+Status: done
 Created: 2026-07-08
 Updated: 2026-07-10
 Parent: .10x/tickets/2026-07-05-implement-cdf-system.md
@@ -57,15 +57,15 @@ This parent is a plan and orchestration record. Workstream tickets own the major
 
 ## Workstreams
 
-- `.10x/tickets/2026-07-08-p2-ws-a-discovery-compiler-stage.md`
-- `.10x/tickets/2026-07-08-p2-ws-b-schema-reconciliation-arrow-vocabulary.md`
-- `.10x/tickets/2026-07-08-p2-ws-c-source-identity-normalization.md`
-- `.10x/tickets/2026-07-08-p2-ws-d-file-source-globs-manifest-compression.md`
-- `.10x/tickets/2026-07-08-p2-ws-e-remote-transports.md`
-- `.10x/tickets/2026-07-08-p2-ws-f-keys-dispositions.md`
-- `.10x/tickets/2026-07-08-p2-ws-g-source-diagnostics-deep-validate.md`
-- `.10x/tickets/2026-07-08-p2-ws-h-scaffolding-id-model-two-minute-path.md`
-- `.10x/tickets/2026-07-08-p2-ws-i-conformance-parity-friction-suite.md`
+- `.10x/tickets/done/2026-07-08-p2-ws-a-discovery-compiler-stage.md`
+- `.10x/tickets/done/2026-07-08-p2-ws-b-schema-reconciliation-arrow-vocabulary.md`
+- `.10x/tickets/done/2026-07-08-p2-ws-c-source-identity-normalization.md`
+- `.10x/tickets/done/2026-07-08-p2-ws-d-file-source-globs-manifest-compression.md`
+- `.10x/tickets/done/2026-07-08-p2-ws-e-remote-transports.md`
+- `.10x/tickets/done/2026-07-08-p2-ws-f-keys-dispositions.md`
+- `.10x/tickets/done/2026-07-08-p2-ws-g-source-diagnostics-deep-validate.md`
+- `.10x/tickets/done/2026-07-08-p2-ws-h-scaffolding-id-model-two-minute-path.md`
+- `.10x/tickets/done/2026-07-08-p2-ws-i-conformance-parity-friction-suite.md`
 - `.10x/tickets/done/2026-07-10-p2-residual-schema-promotion-program.md`
 
 ## Sequencing
@@ -113,7 +113,7 @@ P2 does not implement a GUI, a scheduler, distributed execution, resident stream
 - 2026-07-09: P2 implementation child closed: `.10x/tickets/done/2026-07-09-p2-ws-h1-resource-id-validation-inspection.md`. This makes compiled resource ids, source/resource names, source files, and project mapping status visible through `cdf inspect resources`, and fails zero-match resource mapping patterns before validate/plan proceed.
 - 2026-07-09: P2 implementation child closed: `.10x/tickets/done/2026-07-08-p2-ws-e1-file-transport-facade-local-http.md`. This establishes the local/HTTP(S) file transport facade, file identity metadata, bounded HTTP ranged-read seam, explicit HTTP listing rejection, egress/auth hooks, and redacted debug output for URL-bearing transport surfaces while leaving cloud transports, production HTTP wiring, credential resolution, doctor probes, HTTP template enumeration, compression, and full run integration open.
 - 2026-07-09: P2 implementation child closed: `.10x/tickets/done/2026-07-09-p2-ws-a2-local-parquet-discovery-probe.md`. This establishes the first concrete Parquet footer/schema discovery API and project schema snapshot handoff while leaving remote ranged discovery, schema CLI, auto-pin, lockfile writes, run/plan integration, and conformance S1/S2 closure open.
-- 2026-07-09: P2 implementation child opened: `.10x/tickets/2026-07-09-p2-ws-b3-parquet-declared-schema-reconciliation.md`. This is the first WS-B per-format integration slice and targets the current Parquet declared-schema bypass.
+- 2026-07-09: P2 implementation child opened: `.10x/tickets/done/2026-07-09-p2-ws-b3-parquet-declared-schema-reconciliation.md`. This is the first WS-B per-format integration slice and targets the current Parquet declared-schema bypass.
 - 2026-07-09: P2 implementation child closed: `.10x/tickets/done/2026-07-09-p2-ws-b3-parquet-declared-schema-reconciliation.md`. This makes local declared-schema Parquet reads use the shared reconciler, materializes supported Arrow width widenings, preserves physical provenance, and routes declarative Parquet resources through the declared-schema reader while leaving remote discovery, policy threading, validation-program serialization, and S1/S2/S8 conformance open.
 - 2026-07-09: P2 implementation child opened: `.10x/tickets/done/2026-07-09-p2-ws-a3-local-parquet-discover-autopin.md`. This targets the next S1-critical gap: an operator-visible `cdf schema discover` doorway for local Parquet and using the local Parquet footer probe to auto-pin single-file discover resources before plan/run.
 - 2026-07-09: P2 implementation child closed: `.10x/tickets/done/2026-07-09-p2-ws-a3-local-parquet-discover-autopin.md`. Local single-file Parquet discover resources now have a no-write `cdf schema discover <resource>` command and plan/run auto-pin into deterministic normalized snapshots. Broader discovery surfaces remain open per WS-A sequencing.
@@ -145,7 +145,9 @@ P2 does not implement a GUI, a scheduler, distributed execution, resident stream
 - 2026-07-10: Closed A10e/RP2 with evidence `.10x/evidence/2026-07-10-p2-a10e-rp2-runtime-outcomes.md`, pass review `.10x/reviews/2026-07-10-p2-a10e-rp2-runtime-outcomes-review.md`, and decision `.10x/decisions/compiled-output-schema-and-runtime-provenance.md`. Multi-file terminal drift, exact processed positions, all-quarantine/no-data commits, and row/path residual capture now remain inside the ordinary plan/package/receipt/checkpoint pipeline. Generic execution is source/destination-neutral, physical/contract/output authorities are distinct, and current conformance plans come from the real planner. Parent-observed workspace verification passed 883/883.
 - 2026-07-10: Closed A10d with evidence `.10x/evidence/2026-07-10-p2-a10d-effective-schema-runtime.md` and review `.10x/reviews/2026-07-10-p2-a10d-effective-schema-runtime-review.md`. Existing pins remain immutable while compatible multi-file observations derive typed effective schema and exact per-observation coercion authority through a source-neutral kernel/engine seam. The closure review repaired file/path and concrete-format leaks before accepting the tranche. A10e file quarantine and RP2 residual routing now proceed in parallel; sampled discovery remains gated on both.
 - 2026-07-10: Closed A10g/RP6/RP7 with evidence `.10x/evidence/2026-07-10-p2-a10g-rp6-rp7-integration.md` and pass review `.10x/reviews/2026-07-10-p2-a10g-rp6-rp7-integration-review.md`. Explicit deterministic sampled multi-file discovery is truthful and total at runtime. Postgres and DuckDB now persist exact package/segment/ordinal provenance and implement atomic addressed corrections through one capability-driven kernel protocol, exact residual value authority, canonical receipts, readback, replay, and checkpoint-compatible evidence. Parent-observed workspace verification passed 913/913 with strict workspace Clippy.
+- 2026-07-10: Final closure landed Hints, typed deep diagnostics, canonical HTTP month enumeration, cloud compression parity, typed S6 rendering, Postgres/REST add, keyless exact-row dedup, and the TLC quickstart. The executable registry records S1-S8 covered and all eighteen frictions as historical with zero open owners. Workstreams A-I are terminal; E5's remaining residency optimization was transferred to the existing P3 performance owners rather than duplicating the decoder/runtime seam. Aggregate evidence: `.10x/evidence/2026-07-10-p2-data-onramp-program-closure.md`. Review: `.10x/reviews/2026-07-10-p2-data-onramp-program-closure-review.md`.
+- 2026-07-10: A live public TLC session initialized and pinned the 19-column January schema through ranged discovery. The subsequent data read received HTTP 403; an independent full `curl` received the same 403 response while bounded access had succeeded earlier. This is recorded as live-provider availability evidence, not hidden or reclassified as a CDF success. Deterministic production-path S1/S2 fixtures remain the replayable demo asset.
 
 ## Blockers
 
-None for parent activation. Workstream implementation tickets may carry technical dependencies or focused decisions such as large-N coalescing thresholds.
+None.

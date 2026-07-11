@@ -1,7 +1,7 @@
 Status: done
 Created: 2026-07-08
 Updated: 2026-07-09
-Parent: .10x/tickets/2026-07-08-p2-ws-f-keys-dispositions.md
+Parent: .10x/tickets/done/2026-07-08-p2-ws-f-keys-dispositions.md
 Depends-On: .10x/decisions/data-onramp-source-identity-preview-disposition.md, .10x/specs/data-onramp-source-experience-cli.md
 
 # P2 WS-F1 append default and merge-key error

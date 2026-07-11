@@ -1,7 +1,7 @@
-Status: open
+Status: done
 Created: 2026-07-08
 Updated: 2026-07-09
-Parent: .10x/tickets/2026-07-08-p2-data-onramp-program.md
+Parent: .10x/tickets/done/2026-07-08-p2-data-onramp-program.md
 Depends-On: .10x/decisions/data-onramp-schema-discovery-reconciliation.md, .10x/specs/data-onramp-schema-intelligence.md
 
 # P2 WS-A discovery as a compiler stage
@@ -44,7 +44,7 @@ This ticket does not implement file manifest incrementality, remote transport cr
 - 2026-07-09: Split executable child `.10x/tickets/done/2026-07-09-p2-ws-a5-generic-discover-autopin-postgres-run.md` after user feedback that A4 was not enough. A5 owns the next practical discovery gap: generic first-use auto-pin for Postgres table resources in plan/preview/run, including pinned discovered schema acceptance and source-name-aware SQL execution.
 - 2026-07-09: Child A5 closed as `.10x/tickets/done/2026-07-09-p2-ws-a5-generic-discover-autopin-postgres-run.md`. Evidence is `.10x/evidence/2026-07-09-p2-ws-a5-generic-discover-autopin-postgres-run.md`; review is `.10x/reviews/2026-07-09-p2-ws-a5-generic-discover-autopin-postgres-run-review.md`. This makes declarative Postgres table discovery usable through `cdf plan`, `cdf preview`, and `cdf run`; it does not close REST, Python, WASM, Avro-like formats, remote/multi-file discovery, `schema pin/show/diff`, or conformance S4/S5.
 - 2026-07-09: Child A6 closed as `.10x/tickets/done/2026-07-09-p2-ws-a6-rest-sample-discovery-autopin.md`. Evidence is `.10x/evidence/2026-07-09-p2-ws-a6-rest-sample-discovery-autopin.md`; review is `.10x/reviews/2026-07-09-p2-ws-a6-rest-sample-discovery-autopin-review.md`. This makes declarative REST discover-mode resources usable through `cdf schema discover`, `cdf plan`, `cdf preview`, and `cdf run` with one-page sample auto-pin; pagination-wide sampling, REST cursor inference, Python/WASM/future file probes, `schema pin/show/diff`, and conformance S5 closure remain later children.
-- 2026-07-09: Split executable child `.10x/tickets/2026-07-09-p2-ws-a7-schema-pin-show-diff-cli.md` for the remaining schema command surface required by WS-A.
+- 2026-07-09: Split executable child `.10x/tickets/done/2026-07-09-p2-ws-a7-schema-pin-show-diff-cli.md` for the remaining schema command surface required by WS-A.
 - 2026-07-09: Child A7 closed as `.10x/tickets/done/2026-07-09-p2-ws-a7-schema-pin-show-diff-cli.md`. Evidence is `.10x/evidence/2026-07-09-p2-ws-a7-d3-i2-batch.md`; review is `.10x/reviews/2026-07-09-p2-ws-a7-d3-i2-batch-review.md`. This completes `cdf schema pin/show/diff` for the current generic discovery archetypes while leaving remote/multi-file discovery, `Hints`, Python/WASM/future file probes, pagination-wide REST sampling, and final S1/S4/S5 conformance open.
 - 2026-07-09: A10 is now a blocked generic multi-file discovery owner at `.10x/tickets/done/2026-07-09-p2-ws-a10-multi-file-schema-discovery-pin.md`. The user explicitly rejected single-file Parquet as an architectural endpoint, and source audit found the same gap for Arrow IPC. A10 must aggregate deterministic per-format probes, pin discovery-manifest identity, and emit per-file variance verdicts; exact large-N and aggregation semantics await the recorded ratification checkpoint.
 - 2026-07-09: Split executable child, now terminal at `.10x/tickets/done/2026-07-09-p2-ws-a8-autopin-lockfile-no-pin.md`, for first-use lockfile durability and no-write plan/explain discovery inspection. Hints remains blocked on its declarative syntax/constraint checkpoint and is not bundled into A8.
@@ -53,6 +53,7 @@ This ticket does not implement file manifest incrementality, remote transport cr
 - 2026-07-09: A10 semantics are ratified by `.10x/decisions/multi-file-discovery-aggregation-and-budget.md`; the parent is open with executable A10a/A10b foundation lanes and dependent A10c-f integration/conformance children.
 - 2026-07-10: A10d closed with immutable-baseline/effective-schema runtime authority and per-observation package evidence. `.10x/decisions/effective-schema-runtime-authority.md` keeps the kernel/engine seam source-neutral and plan-level; incompatible observation quarantine remains A10e, explicit sampling remains A10g, and final multi-file conformance remains A10f.
 - 2026-07-10: A11 closed as `.10x/tickets/done/2026-07-10-p2-ws-a11-hints-schema-mode.md`. Tier-0 now exposes explicit `declared`, `hints`, and `discover` modes; Hints shares bounded discovery, multi-file identity, reconciliation, pinning, and execution rather than creating a format-specific path.
+- 2026-07-10: Workstream closed. File, SQL, and REST archetypes have bounded discovery; declared/hints/discover compile end to end; exhaustive and explicit sampled multi-file discovery preserve immutable baseline and runtime verdict authority; schema CLI and first-use pinning are conformance-owned. Aggregate evidence/review are recorded at the P2 parent.
 
 ## Blockers
 

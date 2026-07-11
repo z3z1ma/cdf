@@ -1,7 +1,7 @@
-Status: open
+Status: cancelled
 Created: 2026-07-10
 Updated: 2026-07-10
-Parent: .10x/tickets/2026-07-08-p2-ws-e-remote-transports.md
+Parent: .10x/tickets/done/2026-07-08-p2-ws-e-remote-transports.md
 Depends-On: .10x/tickets/done/2026-07-10-p2-ws-e3-cloud-object-stores-and-http-templates.md
 
 # P2 WS-E5 — Remote row-format streaming and bounded spool
@@ -36,3 +36,4 @@ None.
 - 2026-07-10: Added bounded row-format discovery shared across local and remote CSV/JSON/NDJSON: 4,096 records and at most 8 MiB of source bytes, with gzip/zstd decoded incrementally during discovery and complete manifest evidence.
 - 2026-07-10: Replaced nested `futures_executor` use around `object_store` with a dedicated transport-owned Tokio I/O runtime, proving object-store reads from within the existing async resource-open path.
 - 2026-07-10: S3-compatible `.ndjson.gz` fixture now discovers, pins, executes 10,000 records, and preserves its remote position. Remaining acceptance work is eliminating the downstream `FormatRead` whole-input/materialized-batch behavior; that must land through P3's channel runtime rather than a second decoder API.
+- 2026-07-10: Cancelled as a P2 implementation owner after the transport/spool/discovery/runtime semantics passed. The remaining whole-input/materialized-batch residency is explicitly absorbed by `.10x/tickets/2026-07-07-streaming-package-to-destination-commit-triage.md`, `.10x/tickets/2026-07-07-rest-json-to-arrow-performance-triage.md`, and the forthcoming P3 channel-runtime/memory-ledger work. Implementing it here would create the duplicate decoder API this ticket prohibits.

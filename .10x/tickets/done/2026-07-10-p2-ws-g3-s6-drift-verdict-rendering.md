@@ -1,7 +1,7 @@
 Status: done
 Created: 2026-07-10
 Updated: 2026-07-10
-Parent: .10x/tickets/2026-07-08-p2-ws-g-source-diagnostics-deep-validate.md
+Parent: .10x/tickets/done/2026-07-08-p2-ws-g-source-diagnostics-deep-validate.md
 Depends-On: .10x/specs/data-onramp-conformance.md, .10x/tickets/done/2026-07-09-p2-ws-a10e-incompatible-observation-quarantine.md
 
 # P2 WS-G3 S6 drift verdict rendering

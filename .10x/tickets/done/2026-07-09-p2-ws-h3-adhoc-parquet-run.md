@@ -1,7 +1,7 @@
 Status: done
 Created: 2026-07-09
 Updated: 2026-07-09
-Parent: .10x/tickets/2026-07-08-p2-ws-h-scaffolding-id-model-two-minute-path.md
+Parent: .10x/tickets/done/2026-07-08-p2-ws-h-scaffolding-id-model-two-minute-path.md
 Depends-On: .10x/decisions/data-onramp-source-identity-preview-disposition.md, .10x/specs/data-onramp-source-experience-cli.md, .10x/tickets/done/2026-07-09-p2-ws-h2-cdf-add-single-file-parquet.md, .10x/tickets/done/2026-07-09-p2-ws-e2-http-file-runtime-and-discovery.md, .10x/tickets/done/2026-07-09-p2-ws-a8-autopin-lockfile-no-pin.md
 
 # P2 WS-H3 evidence-preserving ad-hoc Parquet run

@@ -1,7 +1,7 @@
 Status: recorded
 Created: 2026-07-09
 Updated: 2026-07-09
-Relates-To: .10x/tickets/done/2026-07-09-p2-ws-d2-file-manifest-run-aggregation.md, .10x/tickets/2026-07-08-p2-ws-d-file-source-globs-manifest-compression.md
+Relates-To: .10x/tickets/done/2026-07-09-p2-ws-d2-file-manifest-run-aggregation.md, .10x/tickets/done/2026-07-08-p2-ws-d-file-source-globs-manifest-compression.md
 
 # P2 WS-D2 file manifest run aggregation evidence
 
@@ -35,7 +35,7 @@ Broad verification:
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets --locked -- -D warnings
 cargo test --workspace --locked --no-fail-fast
-git diff --check -- crates/cdf-engine/src/execution.rs crates/cdf-project/src/runtime/artifacts.rs crates/cdf-project/src/runtime_tests.rs .10x/tickets/done/2026-07-09-p2-ws-d2-file-manifest-run-aggregation.md .10x/tickets/2026-07-08-p2-ws-d-file-source-globs-manifest-compression.md
+git diff --check -- crates/cdf-engine/src/execution.rs crates/cdf-project/src/runtime/artifacts.rs crates/cdf-project/src/runtime_tests.rs .10x/tickets/done/2026-07-09-p2-ws-d2-file-manifest-run-aggregation.md .10x/tickets/done/2026-07-08-p2-ws-d-file-source-globs-manifest-compression.md
 rg -n "\\bunsafe\\b|extern \\\"|impl (Send|Sync)|unsafe impl" crates/cdf-engine/src/execution.rs crates/cdf-project/src/runtime/artifacts.rs crates/cdf-project/src/runtime_tests.rs
 ```
 

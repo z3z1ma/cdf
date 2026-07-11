@@ -1,8 +1,8 @@
-Status: open
+Status: done
 Created: 2026-07-08
 Updated: 2026-07-10
-Parent: .10x/tickets/2026-07-08-p2-data-onramp-program.md
-Depends-On: .10x/decisions/data-onramp-source-identity-preview-disposition.md, .10x/specs/data-onramp-source-experience-cli.md, .10x/tickets/2026-07-08-p2-ws-a-discovery-compiler-stage.md, .10x/tickets/2026-07-08-p2-ws-b-schema-reconciliation-arrow-vocabulary.md, .10x/tickets/2026-07-08-p2-ws-d-file-source-globs-manifest-compression.md
+Parent: .10x/tickets/done/2026-07-08-p2-data-onramp-program.md
+Depends-On: .10x/decisions/data-onramp-source-identity-preview-disposition.md, .10x/specs/data-onramp-source-experience-cli.md, .10x/tickets/done/2026-07-08-p2-ws-a-discovery-compiler-stage.md, .10x/tickets/done/2026-07-08-p2-ws-b-schema-reconciliation-arrow-vocabulary.md, .10x/tickets/done/2026-07-08-p2-ws-d-file-source-globs-manifest-compression.md
 
 # P2 WS-H scaffolding, id model, and two-minute path
 
@@ -31,7 +31,7 @@ This ticket does not implement the lower-level discovery, file, or schema reconc
 ## Progress and notes
 
 - 2026-07-08: Opened as P2 workstream owner from the directive.
-- 2026-07-09: Split `.10x/tickets/2026-07-09-p2-ws-h1-resource-id-validation-inspection.md` for canonical compiled-id validation and inspection before `cdf add` and ad-hoc mode.
+- 2026-07-09: Split `.10x/tickets/done/2026-07-09-p2-ws-h1-resource-id-validation-inspection.md` for canonical compiled-id validation and inspection before `cdf add` and ad-hoc mode.
 - 2026-07-09: Closed `.10x/tickets/done/2026-07-09-p2-ws-h1-resource-id-validation-inspection.md`; resource ids and mapping patterns are now legible through validation errors and `cdf inspect resources`.
 - 2026-07-09: Split executable child `.10x/tickets/done/2026-07-09-p2-ws-h2-cdf-add-single-file-parquet.md` for the first `cdf add` surface.
 - 2026-07-09: E2 closed in `.10x/tickets/done/2026-07-09-p2-ws-e2-http-file-runtime-and-discovery.md`, unblocking H2 for local and deterministic HTTPS single-file Parquet.
@@ -41,7 +41,8 @@ This ticket does not implement the lower-level discovery, file, or schema reconc
 - 2026-07-10: H4 closed with `.10x/evidence/2026-07-10-p2-h4-postgres-add-s4.md` and `.10x/reviews/2026-07-10-p2-h4-postgres-add-s4-review.md`. Postgres direct-DSN add now preserves the secret boundary, pins catalog discovery, presents cursor candidates without guessing semantics, and supports plan/preview/run after explicit cursor selection. S4 is covered. Remaining WS-H scope is REST add and quickstart/docs closure.
 - 2026-07-10: H5 closed as `.10x/tickets/done/2026-07-10-p2-ws-h5-rest-add.md`. Public REST add now requires selector/cursor/parameter semantics together, derives a safe endpoint origin/path and allowlist, samples and pins through the generic REST discovery transport, and generates a plan-ready schema-free resource. Remaining WS-H scope is the TLC quickstart and recorded documentation session.
 - 2026-07-10: H6 closed as `.10x/tickets/done/2026-07-10-p2-ws-h6-tlc-quickstart.md`. The canonical quickstart now walks public TLC S1, monthly-manifest S2, typed drift S6, and source-free replay, with exact source-owned regression commands verified in this session.
+- 2026-07-10: Workstream closed with canonical ids/inspection, file/Postgres/REST add, evidence-preserving ad-hoc Parquet, and the TLC quickstart. Aggregate evidence/review are recorded at the P2 parent.
 
 ## Blockers
 
-None for H2's scoped local/deterministic HTTPS single-file Parquet `cdf add` work.
+None.

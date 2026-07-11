@@ -1,7 +1,7 @@
 Status: done
 Created: 2026-07-09
 Updated: 2026-07-09
-Parent: .10x/tickets/2026-07-08-p2-ws-b-schema-reconciliation-arrow-vocabulary.md
+Parent: .10x/tickets/done/2026-07-08-p2-ws-b-schema-reconciliation-arrow-vocabulary.md
 Depends-On: .10x/tickets/done/2026-07-09-p2-ws-b2-schema-reconciliation-core.md, .10x/tickets/done/2026-07-09-p2-ws-b3-parquet-declared-schema-reconciliation.md, .10x/specs/data-onramp-schema-intelligence.md, .10x/decisions/data-onramp-schema-discovery-reconciliation.md
 
 # P2 WS-B5 validation-program coercion evidence

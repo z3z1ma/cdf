@@ -48,7 +48,7 @@ No parent acceptance criterion requires S3/GCS/Azure implementation, HTTP templa
 A10f declares:
 
 ```text
-Depends-On: ... .10x/tickets/2026-07-08-p2-ws-i-conformance-parity-friction-suite.md
+Depends-On: ... .10x/tickets/done/2026-07-08-p2-ws-i-conformance-parity-friction-suite.md
 ```
 
 WS-I remains `Status: open`. Under the record graph, an explicit dependency is not closure-coherent while active unless the dependency is narrowed, superseded, or explicitly documented as non-blocking coordination authority. A10f cannot be moved to `done` with that unresolved edge. Because A10f is the parent plan's final conformance child, A10 cannot close while A10f remains active.

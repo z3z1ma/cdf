@@ -1,7 +1,7 @@
 Status: done
 Created: 2026-07-09
 Updated: 2026-07-09
-Parent: .10x/tickets/2026-07-08-p2-ws-g-source-diagnostics-deep-validate.md
+Parent: .10x/tickets/done/2026-07-08-p2-ws-g-source-diagnostics-deep-validate.md
 Depends-On: .10x/specs/data-onramp-source-experience-cli.md, .10x/specs/cli-error-experience-catalog.md
 
 # P2 WS-G1 source diagnostics and deep validate foundation

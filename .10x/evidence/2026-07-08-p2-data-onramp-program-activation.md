@@ -1,7 +1,7 @@
 Status: recorded
 Created: 2026-07-08
 Updated: 2026-07-08
-Relates-To: .10x/tickets/2026-07-08-p2-data-onramp-program.md, .10x/knowledge/vision-coverage-matrix.md
+Relates-To: .10x/tickets/done/2026-07-08-p2-data-onramp-program.md, .10x/knowledge/vision-coverage-matrix.md
 
 # P2 data onramp program activation evidence
 
@@ -9,17 +9,17 @@ Relates-To: .10x/tickets/2026-07-08-p2-data-onramp-program.md, .10x/knowledge/vi
 
 The P2 data-onramp directive was converted into a durable 10x program graph:
 
-- Parent: `.10x/tickets/2026-07-08-p2-data-onramp-program.md`.
+- Parent: `.10x/tickets/done/2026-07-08-p2-data-onramp-program.md`.
 - Workstream owners:
-  - `.10x/tickets/2026-07-08-p2-ws-a-discovery-compiler-stage.md`
-  - `.10x/tickets/2026-07-08-p2-ws-b-schema-reconciliation-arrow-vocabulary.md`
-  - `.10x/tickets/2026-07-08-p2-ws-c-source-identity-normalization.md`
-  - `.10x/tickets/2026-07-08-p2-ws-d-file-source-globs-manifest-compression.md`
-  - `.10x/tickets/2026-07-08-p2-ws-e-remote-transports.md`
-  - `.10x/tickets/2026-07-08-p2-ws-f-keys-dispositions.md`
-  - `.10x/tickets/2026-07-08-p2-ws-g-source-diagnostics-deep-validate.md`
-  - `.10x/tickets/2026-07-08-p2-ws-h-scaffolding-id-model-two-minute-path.md`
-  - `.10x/tickets/2026-07-08-p2-ws-i-conformance-parity-friction-suite.md`
+  - `.10x/tickets/done/2026-07-08-p2-ws-a-discovery-compiler-stage.md`
+  - `.10x/tickets/done/2026-07-08-p2-ws-b-schema-reconciliation-arrow-vocabulary.md`
+  - `.10x/tickets/done/2026-07-08-p2-ws-c-source-identity-normalization.md`
+  - `.10x/tickets/done/2026-07-08-p2-ws-d-file-source-globs-manifest-compression.md`
+  - `.10x/tickets/done/2026-07-08-p2-ws-e-remote-transports.md`
+  - `.10x/tickets/done/2026-07-08-p2-ws-f-keys-dispositions.md`
+  - `.10x/tickets/done/2026-07-08-p2-ws-g-source-diagnostics-deep-validate.md`
+  - `.10x/tickets/done/2026-07-08-p2-ws-h-scaffolding-id-model-two-minute-path.md`
+  - `.10x/tickets/done/2026-07-08-p2-ws-i-conformance-parity-friction-suite.md`
 - Focused governing decisions:
   - `.10x/decisions/data-onramp-schema-discovery-reconciliation.md`
   - `.10x/decisions/data-onramp-file-source-transport-manifest.md`

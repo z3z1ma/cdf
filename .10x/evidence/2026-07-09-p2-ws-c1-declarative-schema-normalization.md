@@ -1,7 +1,7 @@
 Status: recorded
 Created: 2026-07-09
 Updated: 2026-07-09
-Relates-To: .10x/tickets/done/2026-07-08-p2-ws-c1-declarative-schema-normalization.md, .10x/tickets/2026-07-08-p2-ws-c-source-identity-normalization.md, .10x/specs/data-onramp-source-experience-cli.md, .10x/specs/types-contracts-normalization.md
+Relates-To: .10x/tickets/done/2026-07-08-p2-ws-c1-declarative-schema-normalization.md, .10x/tickets/done/2026-07-08-p2-ws-c-source-identity-normalization.md, .10x/specs/data-onramp-source-experience-cli.md, .10x/specs/types-contracts-normalization.md
 
 # P2 WS-C1 declarative schema normalization evidence
 

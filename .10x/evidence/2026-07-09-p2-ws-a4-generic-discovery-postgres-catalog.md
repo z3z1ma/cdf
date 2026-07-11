@@ -1,7 +1,7 @@
 Status: recorded
 Created: 2026-07-09
 Updated: 2026-07-09
-Relates-To: .10x/tickets/done/2026-07-09-p2-ws-a4-generic-discovery-postgres-catalog.md, .10x/tickets/2026-07-08-p2-ws-a-discovery-compiler-stage.md
+Relates-To: .10x/tickets/done/2026-07-09-p2-ws-a4-generic-discovery-postgres-catalog.md, .10x/tickets/done/2026-07-08-p2-ws-a-discovery-compiler-stage.md
 
 # P2 WS-A4 generic discovery dispatcher and Postgres catalog probe evidence
 

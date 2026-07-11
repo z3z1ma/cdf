@@ -1,7 +1,7 @@
 Status: recorded
 Created: 2026-07-09
 Updated: 2026-07-09
-Relates-To: .10x/tickets/done/2026-07-09-p2-ws-a3-local-parquet-discover-autopin.md, .10x/tickets/2026-07-08-p2-ws-a-discovery-compiler-stage.md, .10x/tickets/2026-07-08-p2-data-onramp-program.md
+Relates-To: .10x/tickets/done/2026-07-09-p2-ws-a3-local-parquet-discover-autopin.md, .10x/tickets/done/2026-07-08-p2-ws-a-discovery-compiler-stage.md, .10x/tickets/done/2026-07-08-p2-data-onramp-program.md
 
 # P2 WS-A3 local Parquet discover CLI and auto-pin evidence
 

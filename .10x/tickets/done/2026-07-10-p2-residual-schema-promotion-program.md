@@ -1,7 +1,7 @@
 Status: done
 Created: 2026-07-10
 Updated: 2026-07-10
-Parent: .10x/tickets/2026-07-08-p2-data-onramp-program.md
+Parent: .10x/tickets/done/2026-07-08-p2-data-onramp-program.md
 Depends-On: .10x/decisions/explicit-sampled-discovery-and-residual-promotion.md, .10x/specs/residual-variant-capture.md, .10x/specs/schema-promotion-corrections.md
 
 # P2 residual schema capture and promotion program
