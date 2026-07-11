@@ -9781,6 +9781,20 @@ fn governed_evolve_quarantines_incompatible_file_with_exact_arrow_field_evidence
         "checkpoint-evolve-incompatible",
     );
     assert_eq!(result.exit_code, 0, "{}", result.stderr);
+    let report = stderr_or_stdout_json(&result.stdout);
+    let rendered = &report["result"]["terminal_schema_quarantines"][0];
+    assert_eq!(rendered["observation_id"], "a.parquet");
+    assert_eq!(rendered["rule_id"], "schema-observation:incompatible");
+    assert_eq!(rendered["fields"][0]["scope"]["path"][0], "VendorID");
+    assert_eq!(
+        rendered["fields"][0]["observed_field"]["data_type"]["kind"],
+        "utf8"
+    );
+    assert_eq!(
+        rendered["fields"][0]["effective_field"]["data_type"]["kind"],
+        "int"
+    );
+    assert!(rendered["remediation"].as_str().unwrap().contains("schema"));
     let package = project.root.join(".cdf/packages/pkg-evolve-incompatible");
     let quarantine: serde_json::Value = serde_json::from_slice(
         &fs::read(package.join("quarantine/schema-observations.json")).unwrap(),
@@ -9801,6 +9815,27 @@ fn governed_evolve_quarantines_incompatible_file_with_exact_arrow_field_evidence
             .identity
             .segments
             .is_empty()
+    );
+
+    let human = run([
+        "cdf",
+        "--project",
+        project.root_str(),
+        "run",
+        "local.events",
+        "--package-id",
+        "pkg-evolve-incompatible-noop",
+        "--checkpoint-id",
+        "checkpoint-evolve-incompatible-noop",
+    ]);
+    assert_eq!(human.exit_code, 0, "{}", human.stderr);
+    assert!(human.stdout.contains("a.parquet"));
+    assert!(human.stdout.contains("VendorID"));
+    assert!(human.stdout.contains("Utf8"));
+    assert!(
+        human.stdout.contains("publish a compat"),
+        "{}",
+        human.stdout
     );
 }
 

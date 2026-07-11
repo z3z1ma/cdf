@@ -1,6 +1,6 @@
 use std::{collections::BTreeMap, path::PathBuf};
 
-use cdf_kernel::TargetName;
+use cdf_kernel::{SchemaObservationScope, TargetName, TerminalSchemaObservationQuarantine};
 use cdf_project::{
     DiscoveryManifestArtifact, DiscoveryParticipation, ProjectDestinationDescription,
     ProjectReceiptSource, ProjectRunReport,
@@ -109,6 +109,7 @@ pub(crate) struct RunCliReport {
     segment_count: usize,
     #[serde(skip_serializing_if = "Option::is_none")]
     file_manifest: Option<RunFileManifestReport>,
+    terminal_schema_quarantines: Vec<TerminalSchemaObservationQuarantine>,
     #[serde(skip_serializing_if = "Option::is_none")]
     adhoc: Option<AdhocRunReport>,
     ledger_events: RunLedgerSummary,
@@ -150,6 +151,7 @@ impl RunCliReport {
                 .file_manifest
                 .as_ref()
                 .map(RunFileManifestReport::from_project),
+            terminal_schema_quarantines: report.terminal_schema_quarantines.clone(),
             adhoc: None,
             ledger_events: RunLedgerSummary::from_snapshot(&report.ledger_snapshot),
             writes: run_write_effects(&report.receipt_source),
@@ -222,6 +224,43 @@ impl RunCliReport {
             document.blank_line().push(panel)
         } else {
             document
+        };
+        let document = if self.terminal_schema_quarantines.is_empty() {
+            document
+        } else {
+            self.terminal_schema_quarantines
+                .iter()
+                .fold(document, |document, quarantine| {
+                    let fields = quarantine
+                        .fields()
+                        .iter()
+                        .map(|field| {
+                            let path = match field.scope() {
+                                SchemaObservationScope::FieldPath { path } => path.join("."),
+                                SchemaObservationScope::WholeSchema => "<schema>".to_owned(),
+                                _ => "<schema-scope>".to_owned(),
+                            };
+                            let observed = field
+                                .observed_field()
+                                .map(|field| format!("{:?}", field.data_type))
+                                .unwrap_or_else(|| "missing".to_owned());
+                            let expected = field
+                                .effective_field()
+                                .map(|field| format!("{:?}", field.data_type))
+                                .unwrap_or_else(|| "missing".to_owned());
+                            format!("{path}: observed {observed}; expected {expected}")
+                        })
+                        .collect::<Vec<_>>()
+                        .join(" | ");
+                    document.blank_line().push(
+                        KeyValuePanel::new("Schema Quarantine")
+                            .row("file/observation", quarantine.observation_id().to_owned())
+                            .row("rule", quarantine.rule_id().to_owned())
+                            .row("policy", format!("{:?}", quarantine.policy()))
+                            .row("fields", fields)
+                            .row("remediation", quarantine.remediation().to_owned()),
+                    )
+                })
         };
         let document = if let Some(adhoc) = &self.adhoc {
             let panel = KeyValuePanel::new("Ad-hoc Resource")
@@ -945,6 +984,7 @@ mod tests {
             row_count: 2,
             segment_count: 1,
             file_manifest: None,
+            terminal_schema_quarantines: Vec::new(),
             adhoc: None,
             ledger_events: RunLedgerSummary::default(),
             writes: WriteEffects::all(),

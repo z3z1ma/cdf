@@ -276,6 +276,11 @@ async fn run_project_inner(execution: ProjectRunExecution<'_>) -> Result<Project
         row_count,
         segment_count,
         file_manifest: manifest_plan.summary,
+        terminal_schema_quarantines: execution
+            .plan
+            .effective_schema_evidence()
+            .map(|evidence| evidence.terminal_quarantines.clone())
+            .unwrap_or_default(),
     })
 }
 
@@ -457,6 +462,11 @@ fn no_changed_files_report(
         row_count: 0,
         segment_count: 0,
         file_manifest: summary,
+        terminal_schema_quarantines: execution
+            .plan
+            .effective_schema_evidence()
+            .map(|evidence| evidence.terminal_quarantines.clone())
+            .unwrap_or_default(),
     })
 }
 

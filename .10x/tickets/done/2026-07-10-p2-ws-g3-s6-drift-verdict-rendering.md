@@ -1,4 +1,4 @@
-Status: active
+Status: done
 Created: 2026-07-10
 Updated: 2026-07-10
 Parent: .10x/tickets/2026-07-08-p2-ws-g-source-diagnostics-deep-validate.md
@@ -33,3 +33,4 @@ None.
 ## Progress and notes
 
 - 2026-07-10: Opened after S1/S2/S3/S8 promotion left S6 pending solely on operator rendering. The design keeps the plan as authority and avoids a CLI package-artifact side channel.
+- 2026-07-10: Project run reports now carry the plan's typed terminal schema quarantines. JSON preserves the complete verdict object and human output renders non-truncated panels naming file/observation, rule, policy, field path, observed/expected canonical Arrow types, and remediation. S6 is promoted to covered. Evidence is `.10x/evidence/2026-07-10-p2-g3-s6-drift-rendering.md`; review is `.10x/reviews/2026-07-10-p2-g3-s6-drift-rendering-review.md`.

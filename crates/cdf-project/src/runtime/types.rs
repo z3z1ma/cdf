@@ -2,6 +2,7 @@ use super::{
     destinations::ResolvedProjectDestination, hooks::ReceiptVerifiedHook, prelude::*,
     resources::ProjectRunSource,
 };
+use cdf_kernel::TerminalSchemaObservationQuarantine;
 
 pub struct PreparedPackageReplayRequest<'a, Store: CheckpointStore + ?Sized> {
     pub package_dir: PathBuf,
@@ -113,6 +114,7 @@ pub struct ProjectRunReport {
     pub row_count: u64,
     pub segment_count: usize,
     pub file_manifest: Option<FileManifestRunSummary>,
+    pub terminal_schema_quarantines: Vec<TerminalSchemaObservationQuarantine>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

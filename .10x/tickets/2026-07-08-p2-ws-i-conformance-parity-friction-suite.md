@@ -51,6 +51,7 @@ This ticket does not require cloud credentials in every push CI run; fixture-bac
 - 2026-07-09: I5 closed as `.10x/tickets/done/2026-07-09-p2-ws-i5-recorded-http-request-capture-race.md` with `.10x/evidence/2026-07-09-p2-d5-i5-integration.md` and `.10x/reviews/2026-07-09-p2-d5-i5-integration-review.md`. The S5 recorded server now captures complete bounded headers, uses bounded response writes, and surfaces worker failures without teardown panics. Final parallel workspace nextest passed 809/809 without weakening S5.
 - 2026-07-10: E6 promoted S1 and S2 to covered with standalone production-path CLI tests. S1 performs add→pin→plan→run with no typed schema; S2 proves dated HTTP enumeration, preview/run partition parity, manifest initial load, unchanged no-op, and newly-present-month-only loading. S3/S4/S6/S8 remain pending.
 - 2026-07-10: Promoted S3 and S8 after extending the recursive object-store gzip fixture through the shared bounded preview path before full execution. S3 now combines remote recursive resolution/discovery/pin/preview/run/FileManifest proof with the existing shared drift-contract conformance. S8 now covers local multi-file, REST, Postgres, dated HTTP, and object-store compressed row formats. Only S4 and S6 remain pending.
+- 2026-07-10: G3 promoted S6 to covered. Typed quarantine verdicts now survive plan→project report→JSON/human rendering with exact file, field path, observed/effective types, rule, policy, and remediation while the run remains successful and evidence-preserving. Only S4 remains pending.
 
 ## Blockers
 

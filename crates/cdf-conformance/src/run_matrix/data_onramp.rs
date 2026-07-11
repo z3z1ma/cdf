@@ -123,8 +123,8 @@ const P2_SCENARIOS: &[P2Scenario] = &[
     P2Scenario {
         id: "S6",
         title: "Drift quarantines with accepted stream unblocked and file/column remediation rendered",
-        status: CoverageStatus::Pending,
-        rationale: "local deterministic fixtures prove incompatible per-file terminal quarantine, accepted-stream continuation, exact processed-manifest advancement, and preview attestation parity; final rendered remediation wording remains pending",
+        status: CoverageStatus::Covered,
+        rationale: "deterministic governed and financial fixtures complete with incompatible files quarantined, preserve accepted-stream and manifest advancement, and now expose typed file/field/type/rule/remediation verdicts in JSON and P1 human run output",
         tests: &[
             "crates/cdf-conformance/src/live_run/drift_quarantine/mod.rs::drift_quarantine_duckdb_conformance_asserts_unsupported_mirror_exclusion",
             "crates/cdf-conformance/src/live_run/drift_quarantine/mod.rs::drift_quarantine_postgres_conformance_asserts_supported_mirror",
@@ -132,7 +132,7 @@ const P2_SCENARIOS: &[P2Scenario] = &[
             "crates/cdf-cli/src/tests.rs::financial_freeze_quarantines_deviating_file_and_commits_mixed_processed_manifest",
             "crates/cdf-cli/src/tests.rs::governed_evolve_quarantines_incompatible_file_with_exact_arrow_field_evidence",
         ],
-        tickets: &[WS_D, WS_G, WS_I],
+        tickets: &[],
     },
     P2Scenario {
         id: "S7",
@@ -403,7 +403,7 @@ fn p2_data_onramp_scenario_matrix_records_s1_through_s8() {
     assert_eq!(scenario("S3").status, CoverageStatus::Covered);
     assert_eq!(scenario("S4").status, CoverageStatus::Pending);
     assert_eq!(scenario("S5").status, CoverageStatus::Covered);
-    assert_eq!(scenario("S6").status, CoverageStatus::Pending);
+    assert_eq!(scenario("S6").status, CoverageStatus::Covered);
     assert_eq!(scenario("S7").status, CoverageStatus::Covered);
     assert_eq!(scenario("S8").status, CoverageStatus::Covered);
 }
@@ -478,9 +478,7 @@ fn p2_s5_s7_registry_names_standalone_conformance_without_other_promotions() {
     assert!(friction(17).closed_tests.contains(&standalone));
     assert!(friction(17).open_tickets.is_empty());
 
-    for pending in ["S4", "S6"] {
-        assert_eq!(scenario(pending).status, CoverageStatus::Pending);
-    }
+    assert_eq!(scenario("S4").status, CoverageStatus::Pending);
 }
 
 #[test]
