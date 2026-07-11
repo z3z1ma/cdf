@@ -170,6 +170,15 @@ pub struct ExecutionServices {
     host: Arc<dyn ExecutionHost>,
 }
 
+impl std::fmt::Debug for ExecutionServices {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("ExecutionServices")
+            .field("capabilities", &self.host.capabilities())
+            .finish_non_exhaustive()
+    }
+}
+
 impl ExecutionServices {
     pub fn new(host: Arc<dyn ExecutionHost>) -> Result<Self> {
         host.capabilities().validate()?;

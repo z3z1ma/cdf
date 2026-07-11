@@ -8,6 +8,7 @@ use crate::{
 pub struct DuckDbDestination {
     database_path: PathBuf,
     sheet: DestinationSheet,
+    execution: Option<cdf_runtime::ExecutionServices>,
     // 10x: kernel begin lacks DuckDB package inputs; remove this handoff once begin carries package replay inputs.
     pending_sessions: Arc<Mutex<BTreeMap<PlanId, DuckDbCommitRequest>>>,
     pub(crate) pending_corrections: Arc<Mutex<BTreeMap<PlanId, DuckDbCorrectionContext>>>,
@@ -213,6 +214,13 @@ pub(crate) enum CellKey {
 
 impl DuckDbDestination {
     pub fn new(database_path: impl AsRef<Path>) -> Result<Self> {
+        Self::new_with_execution(database_path, None)
+    }
+
+    pub(crate) fn new_with_execution(
+        database_path: impl AsRef<Path>,
+        execution: Option<cdf_runtime::ExecutionServices>,
+    ) -> Result<Self> {
         let database_path = database_path.as_ref().to_path_buf();
         if database_path.as_os_str().is_empty() {
             return Err(CdfError::contract("DuckDB database path cannot be empty"));
@@ -221,6 +229,7 @@ impl DuckDbDestination {
         Ok(Self {
             database_path,
             sheet: duckdb_sheet()?,
+            execution,
             pending_sessions: Arc::new(Mutex::new(BTreeMap::new())),
             pending_corrections: Arc::new(Mutex::new(BTreeMap::new())),
         })
@@ -330,6 +339,20 @@ impl DuckDbDestination {
         request: DuckDbCommitRequest,
         package: PackageData,
     ) -> Result<DuckDbCommitOutcome> {
+        let Some(execution) = self.execution.clone() else {
+            return self.commit_package_immediate_inline(request, package);
+        };
+        let destination = self.clone();
+        execution.run_blocking("duckdb.connection", move || {
+            destination.commit_package_immediate_inline(request, package)
+        })
+    }
+
+    fn commit_package_immediate_inline(
+        &self,
+        request: DuckDbCommitRequest,
+        package: PackageData,
+    ) -> Result<DuckDbCommitOutcome> {
         let lock = self.acquire_writer_lock()?;
         let mut conn = self.open_connection()?;
         ensure_mirror_tables(&conn)?;
@@ -431,6 +454,19 @@ impl DuckDbDestination {
     }
 
     fn commit_empty_package(&self, request: DuckDbCommitRequest) -> Result<DuckDbCommitOutcome> {
+        let Some(execution) = self.execution.clone() else {
+            return self.commit_empty_package_inline(request);
+        };
+        let destination = self.clone();
+        execution.run_blocking("duckdb.connection", move || {
+            destination.commit_empty_package_inline(request)
+        })
+    }
+
+    fn commit_empty_package_inline(
+        &self,
+        request: DuckDbCommitRequest,
+    ) -> Result<DuckDbCommitOutcome> {
         if !request.commit.segments.is_empty() {
             return Err(CdfError::internal(
                 "empty DuckDB commit path received data segments",

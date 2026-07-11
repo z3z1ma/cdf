@@ -51,7 +51,10 @@ impl DestinationDriver for DuckDbRuntimeDriver {
         context: &DestinationResolutionContext<'_>,
     ) -> Result<Box<dyn DestinationRuntime>> {
         let path = absolute_under_root(context.project_root()?, local_uri_path(uri, "duckdb")?);
-        Ok(Box::new(DuckDbDestination::new(path)?))
+        Ok(Box::new(DuckDbDestination::new_with_execution(
+            path,
+            context.execution_services().cloned(),
+        )?))
     }
 
     fn health(

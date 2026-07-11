@@ -28,6 +28,7 @@ struct WorkItem {
     cancellation: RunCancellation,
     task: BlockingTask,
     completion: oneshot::Sender<WorkCompletion>,
+    released: Option<mpsc::SyncSender<()>>,
 }
 
 struct PoolState {
@@ -108,9 +109,42 @@ impl FixedTaskPool {
             cancellation,
             task,
             completion: sender,
+            released: None,
         });
         available.notify_all();
         Ok(receiver)
+    }
+
+    fn submit_with_release(
+        &self,
+        slot_cost: u16,
+        cancellation: RunCancellation,
+        task: BlockingTask,
+    ) -> Result<mpsc::Receiver<()>> {
+        if slot_cost == 0 || slot_cost > self.capacity {
+            return Err(CdfError::contract(format!(
+                "task slot cost {slot_cost} exceeds pool capacity {}",
+                self.capacity
+            )));
+        }
+        cancellation.check()?;
+        let (completion, _receiver) = oneshot::channel();
+        let (released, release_receiver) = mpsc::sync_channel(1);
+        let (lock, available) = &*self.state;
+        let mut state = lock.lock().unwrap();
+        if state.shutdown {
+            return Err(CdfError::internal("task pool is shutting down"));
+        }
+        state.queue.push_back(WorkItem {
+            slot_cost,
+            enqueued: Instant::now(),
+            cancellation,
+            task,
+            completion,
+            released: Some(released),
+        });
+        available.notify_all();
+        Ok(release_receiver)
     }
 }
 
@@ -167,6 +201,9 @@ fn worker_loop(state: Arc<(Mutex<PoolState>, Condvar)>, slots: Arc<CpuSlots>) {
         let mut available = slots.available.lock().unwrap();
         *available = available.saturating_add(slot_cost);
         slots.changed.notify_all();
+        if let Some(released) = item.released {
+            let _ = released.send(());
+        }
     }
 }
 
@@ -350,7 +387,7 @@ impl ExecutionHost for StandaloneExecutionHost {
             .map(|(spec, pool)| (spec.clone(), Arc::clone(pool)))
             .ok_or_else(|| CdfError::contract(format!("unknown blocking lane `{lane}`")))?;
         let (sender, receiver) = mpsc::sync_channel(1);
-        let completion = pool.1.submit(
+        let released = pool.1.submit_with_release(
             pool.0.cpu_slot_cost.max(pool.0.native_internal_parallelism),
             RunCancellation::default(),
             Box::new(move || {
@@ -369,16 +406,10 @@ impl ExecutionHost for StandaloneExecutionHost {
         let value = receiver
             .recv()
             .map_err(|_| CdfError::internal("blocking lane stopped before returning its result"))?;
-        let completion = futures_executor::block_on(completion).map_err(|_| {
-            CdfError::internal("blocking lane completion channel closed unexpectedly")
+        released.recv().map_err(|_| {
+            CdfError::internal("blocking lane stopped before releasing its CPU slots")
         })?;
-        match value {
-            Err(error) => Err(error),
-            Ok(value) => {
-                completion.result?;
-                Ok(value)
-            }
-        }
+        value
     }
 }
 
