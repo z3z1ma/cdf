@@ -22,6 +22,8 @@ A compiled source/resource plan MUST include driver id/version/schema hash, cano
 
 Resolution MUST verify registry driver/version compatibility and option/plan hashes before resolving secrets/contacting the source. It receives injected services and returns `dyn QueryableResource`. Concrete source/parser/transport/database types cannot cross into project, CLI, or generic scheduler APIs.
 
+Python, subprocess, and future WASM producers MUST adapt through `.10x/specs/foreign-stream-interop.md` and then this ordinary source/resource contract. Their concrete runtime types and row/protocol representations cannot cross into generic planning or execution.
+
 ## Capabilities and scheduling
 
 Capabilities MUST truthfully declare minimum/maximum poll/decode working sets, max/useful concurrency, rate/quota policy, pause/spill behavior, retryable error classes, idempotent/reopen/resume semantics, attestation strength, retry granularity, ordering, estimates, pushdown fidelity, boundedness, and telemetry version.

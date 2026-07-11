@@ -64,6 +64,7 @@ No Python API change, no WASM implementation, no subprocess protocol change, no 
 ## Progress and notes
 
 - 2026-07-07: Opened from performance discussion. CDF should be able to say clearly where it is Arrow-native fast and where compatibility boundaries impose overhead.
+- 2026-07-11: Source audit completed in `.10x/research/2026-07-11-foreign-interop-boundary-audit.md`. Python and subprocess are eager/materialized despite partial Arrow/bounded primitives; WASM is unimplemented. IX1 and P3 H1–H5 now absorb contract, measurement, Python, subprocess, prospective WASM, and closeout work. This triage remains open until H5 records final evidence and moves it terminal; it owns no implementation.
 
 ## Blockers
 

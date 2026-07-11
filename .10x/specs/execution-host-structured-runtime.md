@@ -20,6 +20,8 @@ Control/I/O tasks MUST run on the async I/O executor and MUST yield rather than 
 
 Blocking/FFI operations MUST use a declared lane. Pinned lanes preserve thread affinity through a session actor; shared lanes use bounded workers. Lane limits and native internal parallelism participate in CPU admission. Unsafe interruption MUST be refused; cancellation becomes stop-admission plus cooperative completion/rollback.
 
+Foreign Python/subprocess/future WASM lane, cancellation, child-budget, and payload ownership semantics MUST follow `.10x/specs/foreign-stream-interop.md`; generic host code MUST dispatch declared capabilities rather than concrete tier names.
+
 ## Structured concurrency
 
 Every child task belongs to one run scope. Cancellation/deadline/error MUST stop new work and deterministically join or abort all children. Memory leases, CPU slots, lane permits, temporary/spill artifacts, and staged destination ingress MUST be released or handed to explicit recovery authority before return.
