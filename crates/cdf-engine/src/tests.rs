@@ -2144,16 +2144,13 @@ fn merge_dedup_keep_last_runs_after_contract_filtering_and_before_normalize() {
     let output = block_on(execute_to_package(&plan, &resource, temp.path())).unwrap();
 
     assert_eq!(output.profile.output_rows, 3);
-    assert_eq!(output.segments.len(), 2);
+    assert_eq!(output.segments.len(), 1);
     let reader = cdf_package::PackageReader::open(temp.path()).unwrap();
-    let first = reader.read_segment(&output.segments[0].segment_id).unwrap();
-    assert_eq!(batch_i32s(&first[0], "id"), vec![2]);
-    assert_eq!(batch_strings(&first, "customer_name"), vec!["two"]);
-    let second = reader.read_segment(&output.segments[1].segment_id).unwrap();
-    assert_eq!(batch_i32s(&second[0], "id"), vec![1, 3]);
+    let segment = reader.read_segment(&output.segments[0].segment_id).unwrap();
+    assert_eq!(batch_i32s(&segment[0], "id"), vec![2, 1, 3]);
     assert_eq!(
-        batch_strings(&second, "customer_name"),
-        vec!["one-last", "three"]
+        batch_strings(&segment, "customer_name"),
+        vec!["two", "one-last", "three"]
     );
 
     let summary = reader.read_dedup_summary_json().unwrap().unwrap();
@@ -2210,14 +2207,14 @@ fn merge_dedup_keep_first_uses_package_order() {
     let output = block_on(execute_to_package(&plan, &resource, temp.path())).unwrap();
 
     assert_eq!(output.profile.output_rows, 3);
-    assert_eq!(output.segments.len(), 2);
+    assert_eq!(output.segments.len(), 1);
     let reader = cdf_package::PackageReader::open(temp.path()).unwrap();
-    let first = reader.read_segment(&output.segments[0].segment_id).unwrap();
-    assert_eq!(batch_i32s(&first[0], "id"), vec![1, 2]);
-    assert_eq!(batch_strings(&first, "name"), vec!["one-first", "two"]);
-    let second = reader.read_segment(&output.segments[1].segment_id).unwrap();
-    assert_eq!(batch_i32s(&second[0], "id"), vec![3]);
-    assert_eq!(batch_strings(&second, "name"), vec!["three"]);
+    let segment = reader.read_segment(&output.segments[0].segment_id).unwrap();
+    assert_eq!(batch_i32s(&segment[0], "id"), vec![1, 2, 3]);
+    assert_eq!(
+        batch_strings(&segment, "name"),
+        vec!["one-first", "two", "three"]
+    );
 
     let summary = reader.read_dedup_summary_json().unwrap().unwrap();
     assert_eq!(summary["keep"], "first");
@@ -2227,6 +2224,46 @@ fn merge_dedup_keep_first_uses_package_order() {
     assert_eq!(summary["dropped_row_count"], 1);
     assert_eq!(summary["dropped_rows"][0]["package_row_ordinal"], 2);
     assert_eq!(summary["dropped_rows"][0]["kept_package_row_ordinal"], 0);
+}
+
+#[test]
+fn package_identity_is_invariant_to_source_batch_rechunking() {
+    let one = MockResource::tier_a(vec![batch_for_partition(
+        "source-page-one",
+        "part-0",
+        vec![1, 2, 3, 4],
+        vec!["one", "two", "three", "four"],
+        vec![true; 4],
+    )]);
+    let many = MockResource::tier_a(vec![
+        batch_for_partition("source-page-a", "part-0", vec![1], vec!["one"], vec![true]),
+        batch_for_partition(
+            "source-page-b",
+            "part-0",
+            vec![2, 3],
+            vec!["two", "three"],
+            vec![true; 2],
+        ),
+        batch_for_partition("source-page-c", "part-0", vec![4], vec!["four"], vec![true]),
+    ]);
+    let input = plan_input(Vec::new(), None, None, PlanBoundedness::Bounded);
+    let one_plan = Planner::new().plan_tier_a(&one, input.clone()).unwrap();
+    let many_plan = Planner::new().plan_tier_a(&many, input).unwrap();
+    assert_eq!(one_plan, many_plan);
+    let one_dir = TempDir::new().unwrap();
+    let many_dir = TempDir::new().unwrap();
+    let one_output = block_on(execute_to_package(&one_plan, &one, one_dir.path())).unwrap();
+    let many_output = block_on(execute_to_package(&many_plan, &many, many_dir.path())).unwrap();
+    assert_eq!(one_output.segments, many_output.segments);
+    assert_eq!(one_output.lineage, many_output.lineage);
+    assert_eq!(
+        one_output.manifest.identity.files,
+        many_output.manifest.identity.files
+    );
+    assert_eq!(
+        one_output.manifest.package_hash,
+        many_output.manifest.package_hash
+    );
 }
 
 #[test]

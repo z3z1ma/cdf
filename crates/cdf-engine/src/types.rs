@@ -3,7 +3,7 @@ use std::{collections::BTreeMap, sync::Arc};
 use arrow_schema::Schema;
 use cdf_contract::{CanonicalArrowField, SchemaCoercionPlan, ValidationProgram};
 use cdf_kernel::{
-    BatchId, CdfError, DeliveryGuarantee, DiscoveryExecutorBudgetEvidence, EffectiveSchemaEvidence,
+    CdfError, DeliveryGuarantee, DiscoveryExecutorBudgetEvidence, EffectiveSchemaEvidence,
     EstimateSupport, ProcessedObservationPosition, PushdownFidelity, ResourceId, Result,
     RunPhaseMetric, ScanPlan, ScanPredicate, ScanRequest, SchemaHash, SegmentId, SourcePosition,
     TerminalSchemaObservationQuarantine, WriteDisposition,
@@ -381,7 +381,8 @@ pub struct ExecutionProfile {
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LineageSummary {
-    pub input_batches: Vec<BatchId>,
+    pub input_partitions: Vec<cdf_kernel::PartitionId>,
+    pub input_rows: u64,
     pub output_segments: Vec<SegmentId>,
 }
 

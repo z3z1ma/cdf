@@ -23,10 +23,9 @@ use cdf_kernel::{
     PLAN_SCHEMA_OBSERVATION_BINDING_KEY, PLAN_SCHEMA_OBSERVATION_ID_KEY, PartitionAttestation,
     PreContractObservedValue, PreContractQuarantineFact, PreContractResidualCandidate,
     ProcessedObservationOutcome, ProcessedObservationPosition, ResourceStream, Result, RunId,
-    RunPhase, RunPhaseMetric, RunPhaseStatus, SOURCE_NAME_METADATA_KEY, ScopeKey, SegmentId,
-    SourcePosition, StratifiedHashBoundedIdentity, StratifiedHashCandidate,
-    StratifiedHashIdentityStrength, TerminalSchemaObservationQuarantine, WriteDisposition,
-    semantic, source_name,
+    RunPhase, RunPhaseMetric, RunPhaseStatus, SOURCE_NAME_METADATA_KEY, ScopeKey, SourcePosition,
+    StratifiedHashBoundedIdentity, StratifiedHashCandidate, StratifiedHashIdentityStrength,
+    TerminalSchemaObservationQuarantine, WriteDisposition, semantic, source_name,
 };
 use cdf_package::{PackageBuilder, PackageStatus, QuarantineObservedValue, QuarantineRecord};
 use futures_util::StreamExt;
@@ -727,7 +726,14 @@ struct ExecutedBatch {
 }
 
 struct PendingDedupBatch {
+    partition_ordinal: u32,
     accepted: RecordBatch,
+    variant_values: Vec<Option<String>>,
+    output_position: Option<SourcePosition>,
+}
+
+struct PreparedOutputBatch {
+    output: RecordBatch,
     variant_values: Vec<Option<String>>,
     output_position: Option<SourcePosition>,
 }
@@ -916,8 +922,11 @@ where
             && validation_program.has_keyed_dedup_rule());
     let mut pending_dedup_batches = Vec::new();
     let mut phase_measurements = PhaseMeasurements::new(phase_telemetry_enabled);
+    let segmentation_policy = plan.segmentation_policy()?.clone();
 
-    for partition in plan.scan.partitions.clone() {
+    for (partition_ordinal, partition) in plan.scan.partitions.clone().into_iter().enumerate() {
+        let partition_ordinal = u32::try_from(partition_ordinal)
+            .map_err(|_| CdfError::data("partition ordinal exceeds u32"))?;
         if remaining_limit == Some(0) {
             break;
         }
@@ -978,6 +987,8 @@ where
             .unwrap_or_else(Span::none);
 
         let partition_for_open = partition.clone();
+        let mut segment_assembler =
+            crate::CanonicalSegmentAssembler::new(segmentation_policy.clone(), partition_ordinal)?;
         let (fully_processed, observed_positions) = async {
             let decode_started = phase_measurements.start();
             let mut stream = resource.open(partition_for_open).await?;
@@ -1011,7 +1022,10 @@ where
                     decoded_input_bytes,
                 );
                 let validation_started = phase_measurements.start();
-                lineage.input_batches.push(batch.header.batch_id.clone());
+                if lineage.input_partitions.last() != Some(&batch.header.partition_id) {
+                    lineage.input_partitions.push(batch.header.partition_id.clone());
+                }
+                lineage.input_rows = lineage.input_rows.saturating_add(batch.header.row_count);
                 if !batch.header.pre_contract_quarantine.is_empty() {
                     let quarantine_records =
                         quarantine_records_from_pre_contract(&batch.header.pre_contract_quarantine);
@@ -1158,6 +1172,7 @@ where
                         validation_output_bytes,
                     );
                     pending_dedup_batches.push(PendingDedupBatch {
+                        partition_ordinal,
                         accepted: output,
                         variant_values,
                         output_position: batch_source_position,
@@ -1174,9 +1189,12 @@ where
                     &mut builder,
                     &validation_program,
                     effective_schema_evidence.is_some(),
-                    output,
-                    variant_values,
-                    batch_source_position,
+                    PreparedOutputBatch {
+                        output,
+                        variant_values,
+                        output_position: batch_source_position,
+                    },
+                    &mut segment_assembler,
                     &mut OutputWriteState {
                         profile: &mut profile,
                         lineage: &mut lineage,
@@ -1188,6 +1206,19 @@ where
                     },
                 )?;
             }
+            persist_canonical_segments(
+                &mut builder,
+                segment_assembler.finish()?,
+                &mut OutputWriteState {
+                    profile: &mut profile,
+                    lineage: &mut lineage,
+                    segments: &mut segments,
+                    segment_positions: &mut segment_positions,
+                    output_schema: &mut output_schema,
+                    expected_schema: runtime_output_schema.as_ref(),
+                    phase_measurements: &mut phase_measurements,
+                },
+            )?;
             Ok::<_, CdfError>((fully_processed, observed_positions))
         }
         .instrument(partition_span)
@@ -1232,6 +1263,7 @@ where
             &validation_program,
             effective_schema_evidence.is_some(),
             pending_dedup_batches,
+            &segmentation_policy,
             &mut OutputWriteState {
                 profile: &mut profile,
                 lineage: &mut lineage,
@@ -1375,6 +1407,7 @@ fn apply_dedup_and_write_pending_batches(
     program: &ValidationProgram,
     canonicalize_observed_schema: bool,
     pending: Vec<PendingDedupBatch>,
+    segmentation_policy: &crate::CanonicalSegmentationPolicy,
     state: &mut OutputWriteState<'_>,
 ) -> Result<()> {
     let validation_started = state.phase_measurements.start();
@@ -1397,6 +1430,7 @@ fn apply_dedup_and_write_pending_batches(
         validation_input_bytes,
     );
 
+    let mut assembler = None::<(u32, crate::CanonicalSegmentAssembler)>;
     for (pending, retained_rows) in pending.into_iter().zip(dedup.retained_rows) {
         let output =
             filter_record_batch(&pending.accepted, &retained_rows).map_err(CdfError::from)?;
@@ -1404,15 +1438,33 @@ fn apply_dedup_and_write_pending_batches(
         if output.num_rows() == 0 {
             continue;
         }
+        if assembler.as_ref().map(|(ordinal, _)| *ordinal) != Some(pending.partition_ordinal) {
+            if let Some((_, mut previous)) = assembler.take() {
+                persist_canonical_segments(builder, previous.finish()?, state)?;
+            }
+            assembler = Some((
+                pending.partition_ordinal,
+                crate::CanonicalSegmentAssembler::new(
+                    segmentation_policy.clone(),
+                    pending.partition_ordinal,
+                )?,
+            ));
+        }
         write_output_batch(
             builder,
             program,
             canonicalize_observed_schema,
-            output,
-            variant_values,
-            pending.output_position,
+            PreparedOutputBatch {
+                output,
+                variant_values,
+                output_position: pending.output_position,
+            },
+            &mut assembler.as_mut().expect("assembler initialized").1,
             state,
         )?;
+    }
+    if let Some((_, mut assembler)) = assembler {
+        persist_canonical_segments(builder, assembler.finish()?, state)?;
     }
     Ok(())
 }
@@ -1558,11 +1610,15 @@ fn write_output_batch(
     builder: &mut PackageBuilder,
     program: &ValidationProgram,
     canonicalize_observed_schema: bool,
-    output: RecordBatch,
-    variant_values: Vec<Option<String>>,
-    output_position: Option<SourcePosition>,
+    prepared: PreparedOutputBatch,
+    assembler: &mut crate::CanonicalSegmentAssembler,
     state: &mut OutputWriteState<'_>,
 ) -> Result<()> {
+    let PreparedOutputBatch {
+        output,
+        variant_values,
+        output_position,
+    } = prepared;
     let normalization_started = state.phase_measurements.start();
     let normalization_input_bytes = output.get_array_memory_size() as u64;
     let output = append_residual_variant(output, program, variant_values)?;
@@ -1589,39 +1645,61 @@ fn write_output_batch(
         )));
     }
     *state.output_schema = Some(actual_schema);
-    state.profile.output_rows += output.num_rows() as u64;
-    state.profile.output_bytes += output.get_array_memory_size() as u64;
-    state.profile.output_batches += 1;
+    let canonical_segments = assembler.push(output, output_position)?;
+    persist_canonical_segments(builder, canonical_segments, state)
+}
 
-    let segment_id = SegmentId::new(format!("seg-{:06}", state.segments.len() + 1))?;
-    let write = if state.phase_measurements.enabled {
-        builder.write_segment_with_metrics(segment_id.clone(), &[output])?
-    } else {
-        cdf_package::SegmentWriteMetrics {
-            segment: builder.write_segment(segment_id.clone(), &[output])?,
-            encode_duration_ns: 0,
-            persist_hash_duration_ns: 0,
-        }
-    };
-    state.phase_measurements.add(
-        RunPhase::SegmentEncode,
-        write.encode_duration_ns,
-        normalization_output_bytes,
-        write.segment.byte_count,
-    );
-    state.phase_measurements.add(
-        RunPhase::PersistHash,
-        write.persist_hash_duration_ns,
-        write.segment.byte_count,
-        write.segment.byte_count,
-    );
-    let segment = write.segment;
-    state.lineage.output_segments.push(segment_id);
-    state.segment_positions.push(EngineSegmentPosition {
-        segment_id: segment.segment_id.clone(),
-        output_position,
-    });
-    state.segments.push(segment);
+fn persist_canonical_segments(
+    builder: &mut PackageBuilder,
+    canonical_segments: Vec<crate::CanonicalSegment>,
+    state: &mut OutputWriteState<'_>,
+) -> Result<()> {
+    for canonical in canonical_segments {
+        let schema = canonical
+            .batches
+            .first()
+            .ok_or_else(|| CdfError::internal("canonical segment has no batches"))?
+            .schema();
+        let output = arrow_select::concat::concat_batches(&schema, &canonical.batches)
+            .map_err(CdfError::from)?;
+        let normalization_output_bytes = u64::try_from(output.get_array_memory_size())
+            .map_err(|_| CdfError::data("canonical output bytes exceed u64"))?;
+        let segment_id = canonical.segment_id;
+        let write = if state.phase_measurements.enabled {
+            builder.write_segment_with_metrics(segment_id.clone(), &[output])?
+        } else {
+            cdf_package::SegmentWriteMetrics {
+                segment: builder.write_segment(segment_id.clone(), &[output])?,
+                encode_duration_ns: 0,
+                persist_hash_duration_ns: 0,
+            }
+        };
+        state.phase_measurements.add(
+            RunPhase::SegmentEncode,
+            write.encode_duration_ns,
+            normalization_output_bytes,
+            write.segment.byte_count,
+        );
+        state.phase_measurements.add(
+            RunPhase::PersistHash,
+            write.persist_hash_duration_ns,
+            write.segment.byte_count,
+            write.segment.byte_count,
+        );
+        let segment = write.segment;
+        state.profile.output_rows = state.profile.output_rows.saturating_add(segment.row_count);
+        state.profile.output_bytes = state
+            .profile
+            .output_bytes
+            .saturating_add(segment.byte_count);
+        state.profile.output_batches = state.profile.output_batches.saturating_add(1);
+        state.lineage.output_segments.push(segment_id);
+        state.segment_positions.push(EngineSegmentPosition {
+            segment_id: segment.segment_id.clone(),
+            output_position: canonical.output_position,
+        });
+        state.segments.push(segment);
+    }
     Ok(())
 }
 
