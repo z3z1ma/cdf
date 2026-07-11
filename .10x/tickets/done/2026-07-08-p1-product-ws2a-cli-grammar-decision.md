@@ -1,7 +1,7 @@
 Status: done
 Created: 2026-07-08
 Updated: 2026-07-08
-Parent: .10x/tickets/2026-07-08-p1-product-ws2-command-grammar-redesign.md
+Parent: .10x/tickets/done/2026-07-08-p1-product-ws2-command-grammar-redesign.md
 Depends-On: .10x/specs/project-cli-observability-security.md
 
 # P1 product WS2A: Ratify CLI grammar decision

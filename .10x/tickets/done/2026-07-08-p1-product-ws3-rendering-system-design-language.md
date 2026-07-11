@@ -1,6 +1,6 @@
-Status: open
+Status: done
 Created: 2026-07-08
-Updated: 2026-07-08
+Updated: 2026-07-10
 Parent: .10x/tickets/2026-07-08-p1-product-experience-program.md
 Depends-On: .10x/specs/project-cli-observability-security.md
 
@@ -43,7 +43,8 @@ No live progress implementation except renderer primitives; WS5 owns event consu
 - 2026-07-08: Active renderer/design-language decision recorded in `.10x/decisions/cli-design-language-and-renderer.md`; implementation children split as WS3B renderer foundation, WS3C plan/run/replay rendering, WS3D recovery/state/backfill rendering, and WS3E remaining rendering migration gate.
 - 2026-07-08: WS3B renderer foundation closed at `.10x/tickets/done/2026-07-08-p1-product-ws3b-renderer-foundation.md`. WS3C plan/run/replay rendering closed at `.10x/tickets/done/2026-07-08-p1-product-ws3c-plan-run-rendering.md`; plan/explain next commands preserve explicit `--to` destinations without user-minted package/checkpoint identifiers.
 - 2026-07-08: WS3D recovery/state/backfill rendering closed at `.10x/tickets/done/2026-07-08-p1-product-ws3d-recovery-state-backfill-rendering.md`. WS3E remaining rendering migration gate closed at `.10x/tickets/done/2026-07-08-p1-product-ws3e-remaining-rendering-migration-gate.md`; parent closure still needs aggregate evidence/review before moving this workstream to done.
+- 2026-07-10: Aggregate acceptance mapped and reviewed in `.10x/evidence/2026-07-10-p1-ws2-ws4-aggregate-closure.md` and `.10x/reviews/2026-07-10-p1-ws2-ws4-aggregate-closure-review.md`.
 
 ## Blockers
 
-None for remaining child execution. Parent closure still needs aggregate evidence/review and coverage-matrix reconciliation.
+None. Complete.

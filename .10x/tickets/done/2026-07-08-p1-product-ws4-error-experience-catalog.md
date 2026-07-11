@@ -1,8 +1,8 @@
-Status: active
+Status: done
 Created: 2026-07-08
-Updated: 2026-07-08
+Updated: 2026-07-10
 Parent: .10x/tickets/2026-07-08-p1-product-experience-program.md
-Depends-On: .10x/specs/cli-error-experience-catalog.md, .10x/tickets/2026-07-08-p1-product-ws3-rendering-system-design-language.md
+Depends-On: .10x/specs/cli-error-experience-catalog.md, .10x/tickets/done/2026-07-08-p1-product-ws3-rendering-system-design-language.md
 
 # P1 product WS4: Error experience and catalog
 
@@ -50,7 +50,8 @@ No exit-code changes. No breaking JSON field removals or renames. No broad CLI g
 - 2026-07-08: WS4A envelope foundation completed; evidence recorded in `.10x/evidence/2026-07-08-p1-product-ws4a-error-envelope-foundation.md` and review recorded in `.10x/reviews/2026-07-08-p1-product-ws4a-error-envelope-foundation-review.md`.
 - 2026-07-08: WS4B construction-site migration completed; evidence recorded in `.10x/evidence/2026-07-08-p1-product-ws4b-error-construction-site-migration.md` and review recorded in `.10x/reviews/2026-07-08-p1-product-ws4b-error-construction-site-migration-review.md`.
 - 2026-07-08: WS4C error suggestions completed; evidence recorded in `.10x/evidence/2026-07-08-p1-product-ws4c-error-suggestions.md` and review recorded in `.10x/reviews/2026-07-08-p1-product-ws4c-error-suggestions-review.md`.
+- 2026-07-10: WS4D generated reference and freshness work completed. Aggregate acceptance mapped and reviewed in `.10x/evidence/2026-07-10-p1-ws2-ws4-aggregate-closure.md` and `.10x/reviews/2026-07-10-p1-ws2-ws4-aggregate-closure-review.md`.
 
 ## Blockers
 
-Final human presentation and generated docs depend on WS3 renderer and WS6 generated-reference lanes.
+None. Complete.

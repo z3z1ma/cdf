@@ -23,7 +23,7 @@ Required records and source were read before edits:
 - `VISION.md`
 - `QUALITY.md`
 - `.10x/tickets/done/2026-07-08-p1-product-ws4a-error-envelope-foundation.md`
-- `.10x/tickets/2026-07-08-p1-product-ws4-error-experience-catalog.md`
+- `.10x/tickets/done/2026-07-08-p1-product-ws4-error-experience-catalog.md`
 - `.10x/specs/cli-error-experience-catalog.md`
 - `.10x/specs/project-cli-observability-security.md`
 - `.10x/decisions/cli-command-grammar-and-parser.md`

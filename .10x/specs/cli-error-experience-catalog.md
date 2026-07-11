@@ -8,7 +8,7 @@ Updated: 2026-07-08
 
 This specification governs CDF CLI error codes, structured remediation, suggestion behavior, redaction, JSON compatibility, and generated error documentation.
 
-It derives from `VISION.md` Chapters 18, 20, 22, and 23; `.10x/specs/project-cli-observability-security.md`; `.10x/decisions/cli-command-grammar-and-parser.md`; `.10x/decisions/cli-design-language-and-renderer.md`; and `.10x/tickets/2026-07-08-p1-product-ws4-error-experience-catalog.md`.
+It derives from `VISION.md` Chapters 18, 20, 22, and 23; `.10x/specs/project-cli-observability-security.md`; `.10x/decisions/cli-command-grammar-and-parser.md`; `.10x/decisions/cli-design-language-and-renderer.md`; and `.10x/tickets/done/2026-07-08-p1-product-ws4-error-experience-catalog.md`.
 
 ## Behavior
 

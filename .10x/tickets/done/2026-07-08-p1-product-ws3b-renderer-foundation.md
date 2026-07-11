@@ -1,7 +1,7 @@
 Status: done
 Created: 2026-07-08
 Updated: 2026-07-08
-Parent: .10x/tickets/2026-07-08-p1-product-ws3-rendering-system-design-language.md
+Parent: .10x/tickets/done/2026-07-08-p1-product-ws3-rendering-system-design-language.md
 Depends-On: .10x/decisions/cli-design-language-and-renderer.md
 
 # P1 product WS3B: Renderer foundation

@@ -1,7 +1,7 @@
 Status: recorded
 Created: 2026-07-08
 Updated: 2026-07-08
-Target: .10x/tickets/2026-07-08-p1-product-ws4-error-experience-catalog.md
+Target: .10x/tickets/done/2026-07-08-p1-product-ws4-error-experience-catalog.md
 Verdict: pass
 
 # P1 WS4 error catalog shaping review

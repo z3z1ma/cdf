@@ -1,6 +1,6 @@
-Status: open
+Status: done
 Created: 2026-07-08
-Updated: 2026-07-08
+Updated: 2026-07-10
 Parent: .10x/tickets/2026-07-08-p1-product-experience-program.md
 Depends-On: .10x/specs/project-cli-observability-security.md
 
@@ -62,7 +62,8 @@ No human-output redesign beyond parser/help styling owned by the ratified parser
 - 2026-07-08: WS2B parser foundation closed at `.10x/tickets/done/2026-07-08-p1-product-ws2b-clap-parser-foundation.md`. `cdf-cli` now uses a clap v4 parser foundation while preserving dispatcher-facing command structs, JSON envelope compatibility, and global `--json`/`--project`/`--env` compatibility.
 - 2026-07-08: WS2C product grammar semantics closed at `.10x/tickets/done/2026-07-08-p1-product-ws2c-product-grammar-semantics.md`. Short `plan`/`explain`, `run`, `state`, `resume`, `replay`, and `backfill` forms now resolve through system-minted or project-derived defaults where ratified.
 - 2026-07-08: WS2D completions/man/help artifacts closed at `.10x/tickets/done/2026-07-08-p1-product-ws2d-completions-manpages-help.md`. `cdf-cli` now has clap-derived bash/zsh/fish/PowerShell completions, man pages, help snapshots, freshness checks, and release packaging hooks for generated CLI artifacts.
+- 2026-07-10: Aggregate acceptance mapped and reviewed in `.10x/evidence/2026-07-10-p1-ws2-ws4-aggregate-closure.md` and `.10x/reviews/2026-07-10-p1-ws2-ws4-aggregate-closure-review.md`.
 
 ## Blockers
 
-None for shaping. Implementation must first ratify the grammar decision.
+None. Complete.

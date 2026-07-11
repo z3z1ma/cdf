@@ -2,7 +2,7 @@ Status: open
 Created: 2026-07-08
 Updated: 2026-07-08
 Parent: .10x/tickets/2026-07-08-p1-product-experience-program.md
-Depends-On: .10x/specs/conformance-governance-roadmap.md, .10x/tickets/2026-07-08-p1-product-ws2-command-grammar-redesign.md, .10x/tickets/2026-07-08-p1-product-ws4-error-experience-catalog.md
+Depends-On: .10x/specs/conformance-governance-roadmap.md, .10x/tickets/done/2026-07-08-p1-product-ws2-command-grammar-redesign.md, .10x/tickets/done/2026-07-08-p1-product-ws4-error-experience-catalog.md
 
 # P1 product WS6: Documentation and onboarding
 

@@ -1,7 +1,7 @@
 Status: recorded
 Created: 2026-07-08
 Updated: 2026-07-08
-Relates-To: .10x/tickets/2026-07-08-p1-product-ws4-error-experience-catalog.md, .10x/specs/cli-error-experience-catalog.md
+Relates-To: .10x/tickets/done/2026-07-08-p1-product-ws4-error-experience-catalog.md, .10x/specs/cli-error-experience-catalog.md
 
 # P1 WS4 error catalog shaping evidence
 
