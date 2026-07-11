@@ -4,6 +4,34 @@ use super::{
 };
 use cdf_kernel::TerminalSchemaObservationQuarantine;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RunTelemetryConfig {
+    pub phase_metrics: bool,
+    pub max_phase_events: u16,
+}
+
+impl RunTelemetryConfig {
+    pub const fn disabled() -> Self {
+        Self {
+            phase_metrics: false,
+            max_phase_events: 0,
+        }
+    }
+
+    pub const fn phase_metrics() -> Self {
+        Self {
+            phase_metrics: true,
+            max_phase_events: 32,
+        }
+    }
+}
+
+impl Default for RunTelemetryConfig {
+    fn default() -> Self {
+        Self::disabled()
+    }
+}
+
 pub struct PreparedPackageReplayRequest<'a, Store: CheckpointStore + ?Sized> {
     pub package_dir: PathBuf,
     pub destination: ResolvedProjectDestination,

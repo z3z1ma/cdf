@@ -15,7 +15,7 @@ This workstream is a plan. Split dataset/report schema, macro/reference runners,
 ## Child tickets
 
 - `.10x/tickets/done/2026-07-10-p3-ws-l1-catalog-report-schema.md`
-- `.10x/tickets/2026-07-10-p3-ws-l2-phase-telemetry.md`
+- `.10x/tickets/done/2026-07-10-p3-ws-l2-phase-telemetry.md`
 - `.10x/tickets/2026-07-10-p3-ws-l3-macro-roofline-runners.md`
 - `.10x/tickets/2026-07-10-p3-ws-l4-ci-envelope-generation.md`
 - `.10x/tickets/2026-07-10-p3-ws-l5-preoptimization-baseline.md`
@@ -42,6 +42,7 @@ No runtime, decoder, destination, hashing, parallelism, or memory optimization. 
 - 2026-07-10: Decomposed into L1 catalog/report authority, L2 shared phase telemetry, L3 macro/reference/profile runners, L4 CI/envelope generation, and L5 baseline execution. L1 and L2 are independent; L3-L5 form the integration sequence.
 - 2026-07-11: Current-state audit recorded at `.10x/research/2026-07-11-performance-lab-current-state-audit.md`. Existing tiny Criterion/trend coverage is retained as a compatibility seed but is not P3 baseline evidence. User reprioritization removed the P1-closure blocker; L1/L2 may execute immediately without optimizing the data plane.
 - 2026-07-11: L1 closed at `.10x/tickets/done/2026-07-10-p3-ws-l1-catalog-report-schema.md` with versioned deterministic catalog/workload/host-capability/report authority, explicit legacy incompatibility, fixed fixture hashes, focused evidence, and pass review. L2 remains independently executable; L3 now has its required schema dependency.
+- 2026-07-11: L2 closed at `.10x/tickets/done/2026-07-10-p3-ws-l2-phase-telemetry.md` with typed bounded phase metrics, genuinely disabled default collection, package-identity invariance, append-only ledger v5 migration, complete runtime success/failure fixtures, and pass architecture review. L3 now owns provider/runners and live collection.
 
 ## Blockers
 

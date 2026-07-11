@@ -141,10 +141,11 @@ pub enum RunEventKind {
     RunResumed,
     ReplayRecorded,
     ValidationDepthTransitionRecorded,
+    PhaseMeasured,
 }
 
 impl RunEventKind {
-    pub const ALL: [Self; 16] = [
+    pub const ALL: [Self; 17] = [
         Self::RunStarted,
         Self::PlanRecorded,
         Self::PackageStarted,
@@ -161,6 +162,7 @@ impl RunEventKind {
         Self::RunResumed,
         Self::ReplayRecorded,
         Self::ValidationDepthTransitionRecorded,
+        Self::PhaseMeasured,
     ];
 
     pub fn as_str(self) -> &'static str {
@@ -181,6 +183,7 @@ impl RunEventKind {
             Self::RunResumed => "run_resumed",
             Self::ReplayRecorded => "replay_recorded",
             Self::ValidationDepthTransitionRecorded => "validation_depth_transition_recorded",
+            Self::PhaseMeasured => "phase_measured",
         }
     }
 
@@ -202,6 +205,7 @@ impl RunEventKind {
             "run_resumed" => Ok(Self::RunResumed),
             "replay_recorded" => Ok(Self::ReplayRecorded),
             "validation_depth_transition_recorded" => Ok(Self::ValidationDepthTransitionRecorded),
+            "phase_measured" => Ok(Self::PhaseMeasured),
             other => Err(CdfError::data(format!("unknown run event kind {other:?}"))),
         }
     }
@@ -247,6 +251,53 @@ pub enum RunEventValue {
     SecretRef(SecretReference),
     List(Vec<RunEventValue>),
     Object(BTreeMap<String, RunEventValue>),
+    PhaseMetric(RunPhaseMetric),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RunPhase {
+    PackageExecution,
+    Decode,
+    ValidationNormalization,
+    SegmentEncode,
+    PersistHash,
+    PackageFinalize,
+    DestinationWriteReceipt,
+    CheckpointGate,
+}
+
+impl RunPhase {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::PackageExecution => "package_execution",
+            Self::Decode => "decode",
+            Self::ValidationNormalization => "validation_normalization",
+            Self::SegmentEncode => "segment_encode",
+            Self::PersistHash => "persist_hash",
+            Self::PackageFinalize => "package_finalize",
+            Self::DestinationWriteReceipt => "destination_write_receipt",
+            Self::CheckpointGate => "checkpoint_gate",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RunPhaseStatus {
+    Completed,
+    Failed,
+    Interrupted,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RunPhaseMetric {
+    pub phase: RunPhase,
+    pub status: RunPhaseStatus,
+    pub duration_ns: u64,
+    pub input_bytes: u64,
+    pub output_bytes: u64,
+    pub operations: u64,
 }
 
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -351,7 +402,8 @@ fn validate_event_value(key: &str, value: &RunEventValue) -> Result<()> {
         RunEventValue::Bool(_)
         | RunEventValue::I64(_)
         | RunEventValue::U64(_)
-        | RunEventValue::SecretRef(_) => Ok(()),
+        | RunEventValue::SecretRef(_)
+        | RunEventValue::PhaseMetric(_) => Ok(()),
     }
 }
 
@@ -363,7 +415,8 @@ fn value_contains_only_secret_refs(value: &RunEventValue) -> bool {
         RunEventValue::Bool(_)
         | RunEventValue::I64(_)
         | RunEventValue::U64(_)
-        | RunEventValue::String(_) => false,
+        | RunEventValue::String(_)
+        | RunEventValue::PhaseMetric(_) => false,
     }
 }
 

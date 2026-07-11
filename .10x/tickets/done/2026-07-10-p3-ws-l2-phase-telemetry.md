@@ -1,4 +1,4 @@
-Status: open
+Status: done
 Created: 2026-07-10
 Updated: 2026-07-11
 Parent: .10x/tickets/2026-07-10-p3-ws-l-performance-lab.md
@@ -29,3 +29,10 @@ No Tokio migration, stage concurrency, memory ledger, or optimization.
 ## Blockers
 
 None. Coordinate changes with the existing event-spine schema rather than creating a benchmark-only channel.
+
+## Progress and notes
+
+- 2026-07-11: Added kernel-owned, typed terminal phase metrics for decode, validation/normalization, segment encode, persist/hash, package finalize, destination write/receipt, checkpoint gate, and aggregate package execution. The engine exposes telemetry through a general execution-options value rather than a benchmark-only or source-specific path.
+- 2026-07-11: Runtime collection is opt-in, capped at 32 terminal events by default, and creates no clocks when disabled. Failed runs close every active runtime phase with `failed` status before `run_failed`; metrics remain outside package identity.
+- 2026-07-11: Added append-only run-ledger schema v5 with migration from every supported prior version; CLI inspection/progress consumers accept and redact the additive value type without changing ordinary event order or snapshots.
+- 2026-07-11: Closure evidence is `.10x/evidence/2026-07-11-p3-l2-phase-telemetry.md`; architecture review is `.10x/reviews/2026-07-11-p3-l2-phase-telemetry-review.md` (pass).

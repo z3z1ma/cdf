@@ -2,7 +2,7 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     path::Path,
     sync::Arc,
-    time::{SystemTime, UNIX_EPOCH},
+    time::{Instant, SystemTime, UNIX_EPOCH},
 };
 
 use arrow_array::{
@@ -23,9 +23,10 @@ use cdf_kernel::{
     PLAN_SCHEMA_OBSERVATION_BINDING_KEY, PLAN_SCHEMA_OBSERVATION_ID_KEY, PartitionAttestation,
     PreContractObservedValue, PreContractQuarantineFact, PreContractResidualCandidate,
     ProcessedObservationOutcome, ProcessedObservationPosition, ResourceStream, Result, RunId,
-    SOURCE_NAME_METADATA_KEY, ScopeKey, SegmentId, SourcePosition, StratifiedHashBoundedIdentity,
-    StratifiedHashCandidate, StratifiedHashIdentityStrength, TerminalSchemaObservationQuarantine,
-    WriteDisposition, semantic, source_name,
+    RunPhase, RunPhaseMetric, RunPhaseStatus, SOURCE_NAME_METADATA_KEY, ScopeKey, SegmentId,
+    SourcePosition, StratifiedHashBoundedIdentity, StratifiedHashCandidate,
+    StratifiedHashIdentityStrength, TerminalSchemaObservationQuarantine, WriteDisposition,
+    semantic, source_name,
 };
 use cdf_package::{PackageBuilder, PackageStatus, QuarantineObservedValue, QuarantineRecord};
 use futures_util::StreamExt;
@@ -35,8 +36,9 @@ use tracing::{Instrument, Span, info_span};
 
 use crate::{
     EffectiveSchemaObservationCoercion, EffectiveSchemaPlanEvidence, EngineExecutionEvidence,
-    EnginePackageDraft, EnginePlan, EnginePreviewLimits, EnginePreviewOutput, EngineRunOutput,
-    EngineRunOutputWithSegmentPositions, EngineSegmentPosition, ExecutionProfile, LineageSummary,
+    EngineExecutionOptions, EnginePackageDraft, EnginePlan, EnginePreviewLimits,
+    EnginePreviewOutput, EngineRunOutput, EngineRunOutputWithSegmentPositions,
+    EngineSegmentPosition, ExecutionProfile, LineageSummary,
     output_schema::canonicalize_effective_output_schema,
     planning::validate_program,
     predicates::apply_residual_filters,
@@ -48,6 +50,57 @@ use crate::{
 
 pub type PackagePreFinalizeHook<'a> =
     dyn Fn(&PackageBuilder, EnginePackageDraft<'_>) -> Result<()> + 'a;
+
+#[derive(Clone, Copy, Debug, Default)]
+struct PhaseAggregate {
+    duration_ns: u64,
+    input_bytes: u64,
+    output_bytes: u64,
+    operations: u64,
+}
+
+struct PhaseMeasurements {
+    enabled: bool,
+    values: BTreeMap<RunPhase, PhaseAggregate>,
+}
+
+impl PhaseMeasurements {
+    fn new(enabled: bool) -> Self {
+        Self {
+            enabled,
+            values: BTreeMap::new(),
+        }
+    }
+
+    fn start(&self) -> Option<Instant> {
+        self.enabled.then(Instant::now)
+    }
+
+    fn add(&mut self, phase: RunPhase, duration_ns: u64, input_bytes: u64, output_bytes: u64) {
+        if !self.enabled {
+            return;
+        }
+        let metric = self.values.entry(phase).or_default();
+        metric.duration_ns = metric.duration_ns.saturating_add(duration_ns);
+        metric.input_bytes = metric.input_bytes.saturating_add(input_bytes);
+        metric.output_bytes = metric.output_bytes.saturating_add(output_bytes);
+        metric.operations = metric.operations.saturating_add(1);
+    }
+
+    fn into_metrics(self) -> Vec<RunPhaseMetric> {
+        self.values
+            .into_iter()
+            .map(|(phase, metric)| RunPhaseMetric {
+                phase,
+                status: RunPhaseStatus::Completed,
+                duration_ns: metric.duration_ns,
+                input_bytes: metric.input_bytes,
+                output_bytes: metric.output_bytes,
+                operations: metric.operations,
+            })
+            .collect()
+    }
+}
 
 pub fn normalize_record_batch(
     batch: RecordBatch,
@@ -686,6 +739,7 @@ struct OutputWriteState<'a> {
     segment_positions: &'a mut Vec<EngineSegmentPosition>,
     output_schema: &'a mut Option<SchemaArtifact>,
     expected_schema: &'a Schema,
+    phase_measurements: &'a mut PhaseMeasurements,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -738,7 +792,7 @@ where
     R: ResourceStream + ?Sized,
 {
     Ok(
-        execute_to_package_inner(None, plan, resource, package_dir, None)
+        execute_to_package_inner(None, plan, resource, package_dir, None, false)
             .await?
             .output,
     )
@@ -754,12 +808,17 @@ where
     R: ResourceStream + ?Sized,
 {
     let trace_context = ExecutionTraceContext::new(run_id, plan);
-    Ok(
-        execute_to_package_inner(Some(&trace_context), plan, resource, package_dir, None)
-            .instrument(package_execution_span(&trace_context))
-            .await?
-            .output,
+    Ok(execute_to_package_inner(
+        Some(&trace_context),
+        plan,
+        resource,
+        package_dir,
+        None,
+        false,
     )
+    .instrument(package_execution_span(&trace_context))
+    .await?
+    .output)
 }
 
 pub async fn execute_to_package_with_segment_positions<R>(
@@ -770,7 +829,7 @@ pub async fn execute_to_package_with_segment_positions<R>(
 where
     R: ResourceStream + ?Sized,
 {
-    execute_to_package_inner(None, plan, resource, package_dir, None).await
+    execute_to_package_inner(None, plan, resource, package_dir, None, false).await
 }
 
 pub async fn execute_to_package_with_segment_positions_and_pre_finalize<R>(
@@ -778,11 +837,20 @@ pub async fn execute_to_package_with_segment_positions_and_pre_finalize<R>(
     resource: &R,
     package_dir: impl AsRef<Path>,
     pre_finalize: &PackagePreFinalizeHook<'_>,
+    options: EngineExecutionOptions,
 ) -> Result<EngineRunOutputWithSegmentPositions>
 where
     R: ResourceStream + ?Sized,
 {
-    execute_to_package_inner(None, plan, resource, package_dir, Some(pre_finalize)).await
+    execute_to_package_inner(
+        None,
+        plan,
+        resource,
+        package_dir,
+        Some(pre_finalize),
+        options.phase_metrics,
+    )
+    .await
 }
 
 async fn execute_to_package_inner<R>(
@@ -791,6 +859,7 @@ async fn execute_to_package_inner<R>(
     resource: &R,
     package_dir: impl AsRef<Path>,
     pre_finalize: Option<&PackagePreFinalizeHook<'_>>,
+    phase_telemetry_enabled: bool,
 ) -> Result<EngineRunOutputWithSegmentPositions>
 where
     R: ResourceStream + ?Sized,
@@ -846,6 +915,7 @@ where
         || (plan.write_disposition == WriteDisposition::Merge
             && validation_program.has_keyed_dedup_rule());
     let mut pending_dedup_batches = Vec::new();
+    let mut phase_measurements = PhaseMeasurements::new(phase_telemetry_enabled);
 
     for partition in plan.scan.partitions.clone() {
         if remaining_limit == Some(0) {
@@ -909,16 +979,38 @@ where
 
         let partition_for_open = partition.clone();
         let (fully_processed, observed_positions) = async {
+            let decode_started = phase_measurements.start();
             let mut stream = resource.open(partition_for_open).await?;
+            phase_measurements.add(
+                RunPhase::Decode,
+                elapsed_ns(decode_started, "resource open")?,
+                0,
+                0,
+            );
             let mut fully_processed = true;
             let mut observed_positions = Vec::new();
-            while let Some(batch) = stream.next().await {
+            loop {
+                let decode_started = phase_measurements.start();
+                let next_batch = stream.next().await;
+                let decode_duration_ns = elapsed_ns(decode_started, "resource decode")?;
+                let Some(batch) = next_batch else {
+                    phase_measurements.add(RunPhase::Decode, decode_duration_ns, 0, 0);
+                    break;
+                };
                 if remaining_limit == Some(0) {
                     fully_processed = false;
                     break;
                 }
 
                 let mut batch = batch?;
+                let decoded_input_bytes = batch.header.byte_count;
+                phase_measurements.add(
+                    RunPhase::Decode,
+                    decode_duration_ns,
+                    decoded_input_bytes,
+                    decoded_input_bytes,
+                );
+                let validation_started = phase_measurements.start();
                 lineage.input_batches.push(batch.header.batch_id.clone());
                 if !batch.header.pre_contract_quarantine.is_empty() {
                     let quarantine_records =
@@ -945,6 +1037,8 @@ where
                         "package execution requires in-memory Arrow record batches at MVP",
                     ));
                 };
+                let validation_input_bytes = u64::try_from(record_batch.get_array_memory_size())
+                    .map_err(|error| CdfError::internal(error.to_string()))?;
                 let batch_coercion = validate_batch_schema_evidence(
                     &batch,
                     record_batch,
@@ -1002,6 +1096,12 @@ where
                     observed_positions.push(position.clone());
                 }
                 if output.num_rows() == 0 {
+                    phase_measurements.add(
+                        RunPhase::ValidationNormalization,
+                        elapsed_ns(validation_started, "validation/normalization")?,
+                        validation_input_bytes,
+                        0,
+                    );
                     continue;
                 }
 
@@ -1039,9 +1139,24 @@ where
                 }
                 let output = accepted;
                 if output.num_rows() == 0 {
+                    phase_measurements.add(
+                        RunPhase::ValidationNormalization,
+                        elapsed_ns(validation_started, "validation/normalization")?,
+                        validation_input_bytes,
+                        0,
+                    );
                     continue;
                 }
+                let validation_output_bytes =
+                    u64::try_from(output.get_array_memory_size())
+                        .map_err(|error| CdfError::internal(error.to_string()))?;
                 if apply_package_dedup {
+                    phase_measurements.add(
+                        RunPhase::ValidationNormalization,
+                        elapsed_ns(validation_started, "validation/normalization")?,
+                        validation_input_bytes,
+                        validation_output_bytes,
+                    );
                     pending_dedup_batches.push(PendingDedupBatch {
                         accepted: output,
                         variant_values,
@@ -1049,6 +1164,12 @@ where
                     });
                     continue;
                 }
+                phase_measurements.add(
+                    RunPhase::ValidationNormalization,
+                    elapsed_ns(validation_started, "validation/normalization")?,
+                    validation_input_bytes,
+                    validation_output_bytes,
+                );
                 write_output_batch(
                     &mut builder,
                     &validation_program,
@@ -1063,6 +1184,7 @@ where
                         segment_positions: &mut segment_positions,
                         output_schema: &mut output_schema,
                         expected_schema: runtime_output_schema.as_ref(),
+                        phase_measurements: &mut phase_measurements,
                     },
                 )?;
             }
@@ -1117,6 +1239,7 @@ where
                 segment_positions: &mut segment_positions,
                 output_schema: &mut output_schema,
                 expected_schema: runtime_output_schema.as_ref(),
+                phase_measurements: &mut phase_measurements,
             },
         )?;
     }
@@ -1220,7 +1343,19 @@ where
             },
         )?;
     }
+    let finalize_started = phase_measurements.start();
     let manifest = builder.finish()?;
+    phase_measurements.add(
+        RunPhase::PackageFinalize,
+        elapsed_ns(finalize_started, "package finalize")?,
+        profile.output_bytes,
+        manifest
+            .identity
+            .files
+            .iter()
+            .map(|file| file.byte_count)
+            .sum(),
+    );
 
     Ok(EngineRunOutputWithSegmentPositions {
         output: EngineRunOutput {
@@ -1230,6 +1365,7 @@ where
             lineage,
         },
         segment_positions,
+        phase_metrics: phase_measurements.into_metrics(),
         execution_evidence,
     })
 }
@@ -1241,6 +1377,11 @@ fn apply_dedup_and_write_pending_batches(
     pending: Vec<PendingDedupBatch>,
     state: &mut OutputWriteState<'_>,
 ) -> Result<()> {
+    let validation_started = state.phase_measurements.start();
+    let validation_input_bytes = pending
+        .iter()
+        .map(|batch| batch.accepted.get_array_memory_size() as u64)
+        .sum();
     let accepted = pending
         .iter()
         .map(|batch| batch.accepted.clone())
@@ -1249,6 +1390,12 @@ fn apply_dedup_and_write_pending_batches(
         return Ok(());
     };
     builder.write_dedup_summary(&dedup.summary)?;
+    state.phase_measurements.add(
+        RunPhase::ValidationNormalization,
+        elapsed_ns(validation_started, "package dedup")?,
+        validation_input_bytes,
+        validation_input_bytes,
+    );
 
     for (pending, retained_rows) in pending.into_iter().zip(dedup.retained_rows) {
         let output =
@@ -1416,6 +1563,8 @@ fn write_output_batch(
     output_position: Option<SourcePosition>,
     state: &mut OutputWriteState<'_>,
 ) -> Result<()> {
+    let normalization_started = state.phase_measurements.start();
+    let normalization_input_bytes = output.get_array_memory_size() as u64;
     let output = append_residual_variant(output, program, variant_values)?;
     let output = normalize_record_batch(output, program)?;
     let output = if canonicalize_observed_schema {
@@ -1424,6 +1573,13 @@ fn write_output_batch(
         output
     };
     let output = conform_to_compiled_output_schema(output, state.expected_schema)?;
+    let normalization_output_bytes = output.get_array_memory_size() as u64;
+    state.phase_measurements.add(
+        RunPhase::ValidationNormalization,
+        elapsed_ns(normalization_started, "output normalization")?,
+        normalization_input_bytes,
+        normalization_output_bytes,
+    );
     let actual_schema = schema_artifact(output.schema().as_ref());
     if let Some(expected_schema) = state.output_schema.as_ref()
         && expected_schema != &actual_schema
@@ -1438,7 +1594,28 @@ fn write_output_batch(
     state.profile.output_batches += 1;
 
     let segment_id = SegmentId::new(format!("seg-{:06}", state.segments.len() + 1))?;
-    let segment = builder.write_segment(segment_id.clone(), &[output])?;
+    let write = if state.phase_measurements.enabled {
+        builder.write_segment_with_metrics(segment_id.clone(), &[output])?
+    } else {
+        cdf_package::SegmentWriteMetrics {
+            segment: builder.write_segment(segment_id.clone(), &[output])?,
+            encode_duration_ns: 0,
+            persist_hash_duration_ns: 0,
+        }
+    };
+    state.phase_measurements.add(
+        RunPhase::SegmentEncode,
+        write.encode_duration_ns,
+        normalization_output_bytes,
+        write.segment.byte_count,
+    );
+    state.phase_measurements.add(
+        RunPhase::PersistHash,
+        write.persist_hash_duration_ns,
+        write.segment.byte_count,
+        write.segment.byte_count,
+    );
+    let segment = write.segment;
     state.lineage.output_segments.push(segment_id);
     state.segment_positions.push(EngineSegmentPosition {
         segment_id: segment.segment_id.clone(),
@@ -2300,4 +2477,12 @@ fn current_observed_at_ms() -> Result<i64> {
     i64::try_from(duration.as_millis()).map_err(|_| {
         CdfError::internal("system time milliseconds do not fit in i64 evaluation context")
     })
+}
+
+fn elapsed_ns(started: Option<Instant>, label: &str) -> Result<u64> {
+    let Some(started) = started else {
+        return Ok(0);
+    };
+    u64::try_from(started.elapsed().as_nanos())
+        .map_err(|error| CdfError::internal(format!("{label} duration overflow: {error}")))
 }

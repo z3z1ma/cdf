@@ -820,7 +820,8 @@ fn value_contains_only_secret_refs(value: &RunEventValue) -> bool {
         RunEventValue::Bool(_)
         | RunEventValue::I64(_)
         | RunEventValue::U64(_)
-        | RunEventValue::String(_) => false,
+        | RunEventValue::String(_)
+        | RunEventValue::PhaseMetric(_) => false,
     }
 }
 

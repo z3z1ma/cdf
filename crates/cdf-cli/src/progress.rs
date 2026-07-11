@@ -466,7 +466,7 @@ fn phase_for_event(kind: RunEventKind) -> ProgressPhase {
             ProgressPhase::Extract
         }
         RunEventKind::ValidationDepthTransitionRecorded => ProgressPhase::Validate,
-        RunEventKind::PackageFinalized => ProgressPhase::Package,
+        RunEventKind::PackageFinalized | RunEventKind::PhaseMeasured => ProgressPhase::Package,
         RunEventKind::DestinationCommitStarted
         | RunEventKind::DestinationSegmentAcknowledged
         | RunEventKind::ReplayRecorded => ProgressPhase::Commit,
@@ -638,6 +638,14 @@ fn display_event_value(key: &str, value: &RunEventValue) -> String {
             .map(|(key, value)| format!("{key}:{}", display_event_value(key, value)))
             .collect::<Vec<_>>()
             .join(","),
+        RunEventValue::PhaseMetric(metric) => format!(
+            "{} {:?} {} ns {}/{} bytes",
+            metric.phase.as_str(),
+            metric.status,
+            metric.duration_ns,
+            metric.input_bytes,
+            metric.output_bytes
+        ),
     }
 }
 
@@ -649,7 +657,8 @@ fn value_contains_only_secret_refs(value: &RunEventValue) -> bool {
         RunEventValue::Bool(_)
         | RunEventValue::I64(_)
         | RunEventValue::U64(_)
-        | RunEventValue::String(_) => false,
+        | RunEventValue::String(_)
+        | RunEventValue::PhaseMetric(_) => false,
     }
 }
 

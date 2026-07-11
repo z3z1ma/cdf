@@ -39,6 +39,13 @@ pub(crate) async fn run_local_file_to_duckdb_checkpoint(
 }
 
 pub async fn run_project(request: ProjectRunRequest<'_>) -> Result<ProjectRunReport> {
+    run_project_with_telemetry(request, RunTelemetryConfig::disabled()).await
+}
+
+pub async fn run_project_with_telemetry(
+    request: ProjectRunRequest<'_>,
+    telemetry: RunTelemetryConfig,
+) -> Result<ProjectRunReport> {
     let mut request = request;
     validate_project_run_request(&mut request)?;
     validate_explicit_package_id(&request.package_id)?;
@@ -79,6 +86,7 @@ pub async fn run_project(request: ProjectRunRequest<'_>) -> Result<ProjectRunRep
             destination.describe().destination_id,
         ),
         event_sink,
+        telemetry,
     );
     let execution = ProjectRunExecution {
         resource,
@@ -198,8 +206,20 @@ async fn run_project_inner(execution: ProjectRunExecution<'_>) -> Result<Project
         resource,
         &execution.package_dir,
         &write_package_pre_finalize_artifacts,
+        EngineExecutionOptions::default()
+            .with_phase_metrics(execution.recorder.phase_telemetry_enabled()),
     )
     .await?;
+
+    for metric in output.phase_metrics.iter().cloned() {
+        execution.recorder.append_phase_metric(metric)?;
+    }
+    execution.recorder.complete_phase(
+        RunPhase::PackageExecution,
+        output.output.profile.output_bytes,
+        output.output.profile.output_bytes,
+        output.output.profile.output_batches,
+    )?;
 
     let reader = PackageReader::open(&execution.package_dir)?;
     let replay_inputs = reader.replay_inputs()?;

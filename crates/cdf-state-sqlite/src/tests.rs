@@ -738,8 +738,8 @@ fn sqlite_state_migration_initializes_missing_database_and_is_idempotent() {
     );
     assert_eq!(first.components[1].component, "run_ledger");
     assert_eq!(first.components[1].before_version, None);
-    assert_eq!(first.components[1].after_version, 4);
-    assert_eq!(first.components[1].target_version, 4);
+    assert_eq!(first.components[1].after_version, 5);
+    assert_eq!(first.components[1].target_version, 5);
     assert_eq!(
         first.components[1].action,
         SqliteStateMigrationAction::Initialized
@@ -786,7 +786,7 @@ fn sqlite_state_migration_upgrades_committed_run_ledger_v1_fixture() {
     );
     assert_eq!(report.components[1].component, "run_ledger");
     assert_eq!(report.components[1].before_version, Some(1));
-    assert_eq!(report.components[1].after_version, 4);
+    assert_eq!(report.components[1].after_version, 5);
     assert_eq!(
         report.components[1].action,
         SqliteStateMigrationAction::Migrated
@@ -837,7 +837,7 @@ fn sqlite_state_migration_upgrades_v3_without_losing_events_and_enables_publicat
         .find(|component| component.component == "run_ledger")
         .unwrap();
     assert_eq!(run_component.before_version, Some(3));
-    assert_eq!(run_component.after_version, 4);
+    assert_eq!(run_component.after_version, 5);
     assert_eq!(run_component.action, SqliteStateMigrationAction::Migrated);
 
     let ledger = SqliteRunLedger::open(&db_path).unwrap();
@@ -1333,7 +1333,7 @@ fn sqlite_run_ledger_open_read_only_rejects_unsupported_schema_version() {
             applied_at_ms INTEGER NOT NULL
         );
         INSERT INTO cdf_sqlite_schema_migrations (component, version, applied_at_ms)
-        VALUES ('run_ledger', 5, 1);
+        VALUES ('run_ledger', 6, 1);
         ",
     )
     .unwrap();
@@ -1353,7 +1353,7 @@ fn sqlite_run_ledger_open_read_only_rejects_unsupported_schema_version() {
         assert!(
             error
                 .message
-                .contains("unsupported run ledger SQLite schema version 5")
+                .contains("unsupported run ledger SQLite schema version 6")
         );
     }
 }
@@ -1424,7 +1424,7 @@ fn sqlite_run_ledger_records_schema_version() {
             |row| row.get(0),
         )
         .unwrap();
-    assert_eq!(version, 4);
+    assert_eq!(version, 5);
 }
 
 #[test]
@@ -1646,7 +1646,7 @@ fn sqlite_run_ledger_rejects_unsupported_schema_version() {
             applied_at_ms INTEGER NOT NULL
         );
         INSERT INTO cdf_sqlite_schema_migrations (component, version, applied_at_ms)
-        VALUES ('run_ledger', 5, 1);
+        VALUES ('run_ledger', 6, 1);
         ",
     )
     .unwrap();
@@ -1659,7 +1659,7 @@ fn sqlite_run_ledger_rejects_unsupported_schema_version() {
     assert!(
         error
             .to_string()
-            .contains("unsupported run ledger SQLite schema version 5")
+            .contains("unsupported run ledger SQLite schema version 6")
     );
 }
 

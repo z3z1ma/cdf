@@ -30,10 +30,10 @@ use cdf_kernel::{
     PartitionId, PartitionPlan, PartitioningCapabilities, PreContractObservedValue,
     PreContractQuarantineFact, PreContractResidualCandidate, PredicateId, PushdownFidelity,
     QueryableResource, ResourceCapabilities, ResourceDescriptor, ResourceId, ResourceStream,
-    Result, RunId, STRATIFIED_HASH_SELECTOR_V1, ScanPlan, ScanPredicate, ScanRequest, SchemaHash,
-    SchemaObservationFieldQuarantine, SchemaObservationPolicy, SchemaSnapshotReference,
-    SchemaSource, ScopeKey, SourcePosition, TerminalSchemaObservationQuarantine, TrustLevel,
-    WriteDisposition, source_name, with_semantic,
+    Result, RunId, RunPhase, RunPhaseStatus, STRATIFIED_HASH_SELECTOR_V1, ScanPlan, ScanPredicate,
+    ScanRequest, SchemaHash, SchemaObservationFieldQuarantine, SchemaObservationPolicy,
+    SchemaSnapshotReference, SchemaSource, ScopeKey, SourcePosition,
+    TerminalSchemaObservationQuarantine, TrustLevel, WriteDisposition, source_name, with_semantic,
 };
 use cdf_package::PackageStatus;
 use datafusion::{
@@ -2470,6 +2470,54 @@ fn traced_execution_preserves_manifest_identity_hash() {
     assert_eq!(traced.manifest.identity, untraced.manifest.identity);
     assert_eq!(traced.manifest.package_hash, untraced.manifest.package_hash);
     assert_eq!(traced.manifest.signature, untraced.manifest.signature);
+}
+
+#[test]
+fn phase_telemetry_is_additive_and_preserves_manifest_identity() {
+    let resource = MockResource::tier_a(sample_batches());
+    let input = plan_input(vec![], None, None, PlanBoundedness::Bounded);
+    let plan = Planner::new().plan_tier_a(&resource, input).unwrap();
+    let plain_temp = TempDir::new().unwrap();
+    let measured_temp = TempDir::new().unwrap();
+    let plain = block_on(execute_to_package(&plan, &resource, plain_temp.path())).unwrap();
+    let pre_finalize =
+        |_builder: &cdf_package::PackageBuilder, _draft: EnginePackageDraft<'_>| Ok(());
+
+    let measured = block_on(execute_to_package_with_segment_positions_and_pre_finalize(
+        &plan,
+        &resource,
+        measured_temp.path(),
+        &pre_finalize,
+        EngineExecutionOptions::default().with_phase_metrics(true),
+    ))
+    .unwrap();
+
+    assert_eq!(measured.output.manifest.identity, plain.manifest.identity);
+    assert_eq!(
+        measured.output.manifest.package_hash,
+        plain.manifest.package_hash
+    );
+    assert_eq!(measured.output.manifest.signature, plain.manifest.signature);
+    assert!(!measured.phase_metrics.is_empty());
+    assert!(measured.phase_metrics.iter().all(|metric| {
+        metric.status == RunPhaseStatus::Completed
+            && metric.duration_ns > 0
+            && metric.operations > 0
+    }));
+    let phases = measured
+        .phase_metrics
+        .iter()
+        .map(|metric| metric.phase)
+        .collect::<std::collections::BTreeSet<_>>();
+    for phase in [
+        RunPhase::Decode,
+        RunPhase::ValidationNormalization,
+        RunPhase::SegmentEncode,
+        RunPhase::PersistHash,
+        RunPhase::PackageFinalize,
+    ] {
+        assert!(phases.contains(&phase), "missing {phase:?}");
+    }
 }
 
 #[test]

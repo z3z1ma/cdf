@@ -1255,3 +1255,26 @@ fn sampled_discovery_coverage_evidence_is_total_and_round_trips() {
     invalid.unprobed_files = 2;
     assert!(invalid.validate().is_err());
 }
+
+#[test]
+fn run_phase_metric_round_trips_without_changing_legacy_event_details() {
+    let legacy_json = r#"{"attributes":{"rows":{"type":"u64","value":7}}}"#;
+    let legacy: RunEventDetails = serde_json::from_str(legacy_json).unwrap();
+    assert_eq!(serde_json::to_string(&legacy).unwrap(), legacy_json);
+
+    let details = RunEventDetails::new([(
+        "metric",
+        RunEventValue::PhaseMetric(RunPhaseMetric {
+            phase: RunPhase::Decode,
+            status: RunPhaseStatus::Completed,
+            duration_ns: 42,
+            input_bytes: 100,
+            output_bytes: 80,
+            operations: 2,
+        }),
+    )]);
+    details.validate().unwrap();
+    let encoded = serde_json::to_vec(&details).unwrap();
+    let decoded: RunEventDetails = serde_json::from_slice(&encoded).unwrap();
+    assert_eq!(decoded, details);
+}

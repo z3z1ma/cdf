@@ -20,7 +20,7 @@ use crate::support::{
 };
 
 pub(crate) const RUN_LEDGER_COMPONENT: &str = "run_ledger";
-pub(crate) const RUN_LEDGER_SCHEMA_VERSION: i64 = 4;
+pub(crate) const RUN_LEDGER_SCHEMA_VERSION: i64 = 5;
 const RUN_EVENT_SELECT: &str = "SELECT run_id, sequence, timestamp_ms, kind, resource_id, scope_json, partition_id, package_id, package_hash, package_path, checkpoint_id, receipt_id, destination_id, plan_id, details_json FROM cdf_run_events";
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -233,7 +233,7 @@ pub(crate) fn initialize_run_schema(conn: &Connection) -> Result<()> {
 
     let existing_version = read_run_schema_version(conn)?;
     match existing_version {
-        Some(RUN_LEDGER_SCHEMA_VERSION) | Some(1) | Some(2) | Some(3) | None => {}
+        Some(RUN_LEDGER_SCHEMA_VERSION) | Some(1) | Some(2) | Some(3) | Some(4) | None => {}
         Some(version) => return Err(unsupported_run_schema_version(version)),
     }
 
@@ -266,7 +266,8 @@ pub(crate) fn initialize_run_schema(conn: &Connection) -> Result<()> {
                 'run_failed',
                 'run_resumed',
                 'replay_recorded',
-                'validation_depth_transition_recorded'
+                'validation_depth_transition_recorded',
+                'phase_measured'
             )),
             resource_id TEXT,
             scope_json TEXT,
@@ -305,6 +306,9 @@ pub(crate) fn initialize_run_schema(conn: &Connection) -> Result<()> {
     }
     if existing_version == Some(1) || existing_version == Some(2) {
         migrate_run_schema_v2_to_v3(conn)?;
+    }
+    if matches!(existing_version, Some(1..=4)) {
+        migrate_run_schema_v4_to_v5(conn)?;
     }
     create_run_event_indexes(conn)?;
     create_promotion_publication_table(conn)?;
@@ -355,7 +359,7 @@ pub(crate) fn initialize_run_schema(conn: &Connection) -> Result<()> {
 fn validate_run_schema_version(conn: &Connection) -> Result<Option<i64>> {
     let existing_version = read_run_schema_version(conn)?;
     match existing_version {
-        Some(RUN_LEDGER_SCHEMA_VERSION) | Some(1) | Some(2) | Some(3) | None => {}
+        Some(RUN_LEDGER_SCHEMA_VERSION) | Some(1) | Some(2) | Some(3) | Some(4) | None => {}
         Some(version) => return Err(unsupported_run_schema_version(version)),
     }
     Ok(existing_version)
@@ -554,6 +558,78 @@ fn migrate_run_schema_v2_to_v3(conn: &Connection) -> Result<()> {
 
         DROP TABLE cdf_run_events;
         ALTER TABLE cdf_run_events_v3 RENAME TO cdf_run_events;
+        ",
+    )
+    .map_err(sqlite_error)?;
+    conn.execute(
+        "UPDATE cdf_sqlite_schema_migrations SET version = ?, applied_at_ms = ? WHERE component = ?",
+        params![RUN_LEDGER_SCHEMA_VERSION, now_ms()?, RUN_LEDGER_COMPONENT],
+    )
+    .map_err(sqlite_error)?;
+    Ok(())
+}
+
+fn migrate_run_schema_v4_to_v5(conn: &Connection) -> Result<()> {
+    conn.execute_batch(
+        "
+        DROP TRIGGER IF EXISTS cdf_run_events_no_update;
+        DROP TRIGGER IF EXISTS cdf_run_events_no_delete;
+        DROP INDEX IF EXISTS cdf_run_events_run_sequence;
+        DROP INDEX IF EXISTS cdf_run_events_checkpoint;
+        DROP INDEX IF EXISTS cdf_run_events_receipt;
+        DROP INDEX IF EXISTS cdf_run_events_package_hash;
+
+        CREATE TABLE cdf_run_events_v5 (
+            event_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            run_id TEXT NOT NULL REFERENCES cdf_runs(run_id) ON DELETE RESTRICT,
+            sequence INTEGER NOT NULL CHECK (sequence > 0),
+            timestamp_ms INTEGER NOT NULL,
+            kind TEXT NOT NULL CHECK (kind IN (
+                'run_started',
+                'plan_recorded',
+                'package_started',
+                'package_segment_recorded',
+                'package_finalized',
+                'destination_commit_started',
+                'destination_segment_acknowledged',
+                'destination_receipt_recorded',
+                'checkpoint_proposed',
+                'checkpoint_committed',
+                'package_status_updated',
+                'run_succeeded',
+                'run_failed',
+                'run_resumed',
+                'replay_recorded',
+                'validation_depth_transition_recorded',
+                'phase_measured'
+            )),
+            resource_id TEXT,
+            scope_json TEXT,
+            partition_id TEXT,
+            package_id TEXT,
+            package_hash TEXT,
+            package_path TEXT,
+            checkpoint_id TEXT,
+            receipt_id TEXT,
+            destination_id TEXT,
+            plan_id TEXT,
+            details_json TEXT NOT NULL,
+            UNIQUE(run_id, sequence)
+        );
+
+        INSERT INTO cdf_run_events_v5 (
+            event_id, run_id, sequence, timestamp_ms, kind, resource_id, scope_json,
+            partition_id, package_id, package_hash, package_path, checkpoint_id,
+            receipt_id, destination_id, plan_id, details_json
+        )
+        SELECT
+            event_id, run_id, sequence, timestamp_ms, kind, resource_id, scope_json,
+            partition_id, package_id, package_hash, package_path, checkpoint_id,
+            receipt_id, destination_id, plan_id, details_json
+        FROM cdf_run_events;
+
+        DROP TABLE cdf_run_events;
+        ALTER TABLE cdf_run_events_v5 RENAME TO cdf_run_events;
         ",
     )
     .map_err(sqlite_error)?;

@@ -14,7 +14,7 @@ mod validation;
 
 pub use destinations::*;
 pub use hooks::{ReceiptVerifiedHook, RuntimeStage, RuntimeStageHook};
-pub use orchestration::run_project;
+pub use orchestration::{run_project, run_project_with_telemetry};
 pub use planning::*;
 pub use promotion::*;
 pub use replay::{
@@ -56,7 +56,8 @@ mod prelude {
     #[cfg(test)]
     pub(super) use cdf_engine::EngineRunOutputWithSegmentPositions;
     pub(super) use cdf_engine::{
-        EnginePackageDraft, EnginePlan, execute_to_package_with_segment_positions_and_pre_finalize,
+        EngineExecutionOptions, EnginePackageDraft, EnginePlan,
+        execute_to_package_with_segment_positions_and_pre_finalize,
     };
     pub(super) use cdf_http::SecretProvider;
     pub(super) use cdf_kernel::{
@@ -67,9 +68,9 @@ mod prelude {
         EffectiveSchemaRuntime, FilePosition, IdempotencyToken, IncrementalShape, PackageHash,
         PartitionPlan, PipelineId, PlanId, QueryableResource, Receipt, ResourceCapabilities,
         ResourceDescriptor, ResourceId, ResourceStream, Result, RunEventAppend, RunEventDetails,
-        RunEventKind, RunEventSink, RunEventValue, RunId, ScanPlan, ScanRequest, SchemaHash,
-        ScopeKey, SegmentAck, SegmentId, SourcePosition, StateDelta, StateSegment, TargetName,
-        WriteDisposition,
+        RunEventKind, RunEventSink, RunEventValue, RunId, RunPhase, RunPhaseMetric, RunPhaseStatus,
+        ScanPlan, ScanRequest, SchemaHash, ScopeKey, SegmentAck, SegmentId, SourcePosition,
+        StateDelta, StateSegment, TargetName, WriteDisposition,
     };
     pub(super) use cdf_package::{
         DestinationCommitPlanPreimage, PackageReader, PackageReplayInputs, PackageStatus,

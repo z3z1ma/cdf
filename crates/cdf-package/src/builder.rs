@@ -3,6 +3,7 @@ use std::{
     fs::OpenOptions,
     io::Write,
     path::{Path, PathBuf},
+    time::Instant,
 };
 
 use arrow_array::RecordBatch;
@@ -30,6 +31,13 @@ pub struct PackageBuilder {
     package_dir: PathBuf,
     package_id: String,
     segments: Vec<SegmentDraft>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SegmentWriteMetrics {
+    pub segment: SegmentEntry,
+    pub encode_duration_ns: u64,
+    pub persist_hash_duration_ns: u64,
 }
 
 #[derive(Clone, Debug)]
@@ -185,6 +193,25 @@ impl PackageBuilder {
         segment_id: SegmentId,
         batches: &[RecordBatch],
     ) -> Result<SegmentEntry> {
+        Ok(self
+            .write_segment_inner(segment_id, batches, false)?
+            .segment)
+    }
+
+    pub fn write_segment_with_metrics(
+        &mut self,
+        segment_id: SegmentId,
+        batches: &[RecordBatch],
+    ) -> Result<SegmentWriteMetrics> {
+        self.write_segment_inner(segment_id, batches, true)
+    }
+
+    fn write_segment_inner(
+        &mut self,
+        segment_id: SegmentId,
+        batches: &[RecordBatch],
+        measure: bool,
+    ) -> Result<SegmentWriteMetrics> {
         if batches.is_empty() {
             return Err(CdfError::data("segment must contain at least one batch"));
         }
@@ -202,8 +229,11 @@ impl PackageBuilder {
 
         let relative_path = segment_relative_path(&segment_id)?;
         let path = package_path(&self.package_dir, &relative_path);
+        let encode_started = measure.then(Instant::now);
         write_arrow_ipc_file(&path, schema.as_ref(), batches)?;
+        let encode_duration_ns = duration_ns(encode_started, "segment encode")?;
 
+        let persist_hash_started = measure.then(Instant::now);
         let file_entry = file_entry_for_path(&self.package_dir, &relative_path)?;
         let segment = SegmentEntry {
             segment_id: segment_id.clone(),
@@ -217,7 +247,11 @@ impl PackageBuilder {
             path: relative_path,
             row_count,
         });
-        Ok(segment)
+        Ok(SegmentWriteMetrics {
+            segment,
+            encode_duration_ns,
+            persist_hash_duration_ns: duration_ns(persist_hash_started, "segment persist/hash")?,
+        })
     }
 
     pub fn finish(&self) -> Result<PackageManifest> {
@@ -252,4 +286,12 @@ impl PackageBuilder {
         write_manifest_atomic(&self.package_dir, &manifest)?;
         Ok(manifest)
     }
+}
+
+fn duration_ns(started: Option<Instant>, label: &str) -> Result<u64> {
+    let Some(started) = started else {
+        return Ok(0);
+    };
+    u64::try_from(started.elapsed().as_nanos())
+        .map_err(|error| CdfError::internal(format!("{label} duration overflow: {error}")))
 }

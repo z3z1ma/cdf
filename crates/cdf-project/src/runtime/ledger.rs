@@ -1,6 +1,15 @@
+use super::types::RunTelemetryConfig;
 use super::{hooks::RuntimeStage, prelude::*};
 use cdf_contract::{AnomalyFact, ValidationDepth, ValidationTransitionTrigger};
-use std::time::Instant;
+use std::{collections::BTreeMap, sync::Mutex, time::Instant};
+
+#[derive(Debug)]
+struct ActivePhase {
+    started_at: Instant,
+    input_bytes: u64,
+    output_bytes: u64,
+    operations: u64,
+}
 
 pub(super) struct ValidationDepthTransitionRecord<'a> {
     pub(super) from_depth: ValidationDepth,
@@ -26,6 +35,9 @@ pub(super) struct ProjectRunRecorder<'a> {
     pub(super) run_id: RunId,
     pub(super) context: ProjectRunRecorderContext,
     started_at: Instant,
+    telemetry: RunTelemetryConfig,
+    active_phases: Mutex<BTreeMap<RunPhase, ActivePhase>>,
+    phase_event_count: Mutex<u16>,
 }
 
 impl<'a> ProjectRunRecorder<'a> {
@@ -34,12 +46,16 @@ impl<'a> ProjectRunRecorder<'a> {
         run_id: RunId,
         context: ProjectRunRecorderContext,
         event_sink: Option<&'a dyn RunEventSink>,
+        telemetry: RunTelemetryConfig,
     ) -> Self {
         Self {
             events: RunEventFanout::new(ledger, event_sink),
             run_id,
             context,
             started_at: Instant::now(),
+            telemetry,
+            active_phases: Mutex::new(BTreeMap::new()),
+            phase_event_count: Mutex::new(0),
         }
     }
 
@@ -74,7 +90,8 @@ impl<'a> ProjectRunRecorder<'a> {
         event.details = RunEventDetails {
             attributes: details_for_phase("package"),
         };
-        self.append(event)
+        self.append(event)?;
+        self.start_phase(RunPhase::PackageExecution)
     }
 
     pub(super) fn append_package_segment_recorded(
@@ -177,7 +194,8 @@ impl<'a> ProjectRunRecorder<'a> {
                 event.details = RunEventDetails {
                     attributes: details,
                 };
-                self.append(event)
+                self.append(event)?;
+                self.start_phase(RunPhase::DestinationWriteReceipt)
             }
             RuntimeStage::DestinationSegmentAcknowledged { ack } => {
                 let mut event = self.base_event(RunEventKind::DestinationSegmentAcknowledged);
@@ -191,7 +209,13 @@ impl<'a> ProjectRunRecorder<'a> {
                 event.details = RunEventDetails {
                     attributes: details,
                 };
-                self.append(event)
+                self.append(event)?;
+                self.add_phase_work(
+                    RunPhase::DestinationWriteReceipt,
+                    ack.byte_count,
+                    ack.byte_count,
+                    1,
+                )
             }
             RuntimeStage::DestinationReceiptRecorded { receipt } => {
                 let mut event = self.base_event(RunEventKind::DestinationReceiptRecorded);
@@ -199,7 +223,9 @@ impl<'a> ProjectRunRecorder<'a> {
                 event.receipt_id = Some(receipt.receipt_id.clone());
                 event.destination_id = Some(receipt.destination.clone());
                 event.details = receipt_details(receipt)?;
-                self.append(event)
+                self.append(event)?;
+                self.complete_phase(RunPhase::DestinationWriteReceipt, 0, 0, 0)?;
+                self.start_phase(RunPhase::CheckpointGate)
             }
             RuntimeStage::CheckpointCommitted { checkpoint } => {
                 let mut event = self.base_event(RunEventKind::CheckpointCommitted);
@@ -210,7 +236,8 @@ impl<'a> ProjectRunRecorder<'a> {
                     .as_ref()
                     .map(|receipt| receipt.receipt_id.clone());
                 event.details = checkpoint_details(checkpoint)?;
-                self.append(event)
+                self.append(event)?;
+                self.complete_phase(RunPhase::CheckpointGate, 0, 0, 1)
             }
             RuntimeStage::PackageStatusUpdated { status } => {
                 let mut event = self.base_event(RunEventKind::PackageStatusUpdated);
@@ -234,9 +261,117 @@ impl<'a> ProjectRunRecorder<'a> {
     }
 
     pub(super) fn append_run_failed(&self, error: &CdfError) -> Result<()> {
+        self.fail_active_phases()?;
         let mut event = self.base_event(RunEventKind::RunFailed);
         event.details = self.run_terminal_details("run", Some(error))?;
         self.append(event)
+    }
+
+    pub(super) fn phase_telemetry_enabled(&self) -> bool {
+        self.telemetry.phase_metrics && self.telemetry.max_phase_events > 0
+    }
+
+    pub(super) fn append_phase_metric(&self, metric: RunPhaseMetric) -> Result<()> {
+        if !self.phase_telemetry_enabled() {
+            return Ok(());
+        }
+        let mut count = self
+            .phase_event_count
+            .lock()
+            .map_err(|_| CdfError::internal("phase event counter lock poisoned"))?;
+        if *count >= self.telemetry.max_phase_events {
+            return Ok(());
+        }
+        *count = count.saturating_add(1);
+        drop(count);
+
+        let mut event = self.base_event(RunEventKind::PhaseMeasured);
+        let mut attributes = details_for_phase(metric.phase.as_str());
+        attributes.insert("metric".to_owned(), RunEventValue::PhaseMetric(metric));
+        event.details = RunEventDetails { attributes };
+        self.append(event)
+    }
+
+    pub(super) fn complete_phase(
+        &self,
+        phase: RunPhase,
+        input_bytes: u64,
+        output_bytes: u64,
+        operations: u64,
+    ) -> Result<()> {
+        if !self.phase_telemetry_enabled() {
+            return Ok(());
+        }
+        let active = self
+            .active_phases
+            .lock()
+            .map_err(|_| CdfError::internal("active phase lock poisoned"))?
+            .remove(&phase);
+        let Some(mut active) = active else {
+            return Ok(());
+        };
+        active.input_bytes = active.input_bytes.saturating_add(input_bytes);
+        active.output_bytes = active.output_bytes.saturating_add(output_bytes);
+        active.operations = active.operations.saturating_add(operations);
+        self.append_phase_metric(phase_metric(phase, RunPhaseStatus::Completed, active)?)
+    }
+
+    fn start_phase(&self, phase: RunPhase) -> Result<()> {
+        if !self.phase_telemetry_enabled() {
+            return Ok(());
+        }
+        self.active_phases
+            .lock()
+            .map_err(|_| CdfError::internal("active phase lock poisoned"))?
+            .insert(
+                phase,
+                ActivePhase {
+                    started_at: Instant::now(),
+                    input_bytes: 0,
+                    output_bytes: 0,
+                    operations: 0,
+                },
+            );
+        Ok(())
+    }
+
+    fn add_phase_work(
+        &self,
+        phase: RunPhase,
+        input_bytes: u64,
+        output_bytes: u64,
+        operations: u64,
+    ) -> Result<()> {
+        if !self.phase_telemetry_enabled() {
+            return Ok(());
+        }
+        if let Some(active) = self
+            .active_phases
+            .lock()
+            .map_err(|_| CdfError::internal("active phase lock poisoned"))?
+            .get_mut(&phase)
+        {
+            active.input_bytes = active.input_bytes.saturating_add(input_bytes);
+            active.output_bytes = active.output_bytes.saturating_add(output_bytes);
+            active.operations = active.operations.saturating_add(operations);
+        }
+        Ok(())
+    }
+
+    fn fail_active_phases(&self) -> Result<()> {
+        if !self.phase_telemetry_enabled() {
+            return Ok(());
+        }
+        let phases = std::mem::take(
+            &mut *self
+                .active_phases
+                .lock()
+                .map_err(|_| CdfError::internal("active phase lock poisoned"))?,
+        );
+        for (phase, active) in phases {
+            self.append_phase_metric(phase_metric(phase, RunPhaseStatus::Failed, active)?)?;
+        }
+        Ok(())
     }
 
     pub(super) fn snapshot(&self) -> Result<RunLedgerSnapshot> {
@@ -296,6 +431,23 @@ impl<'a> ProjectRunRecorder<'a> {
             attributes: details,
         })
     }
+}
+
+fn phase_metric(
+    phase: RunPhase,
+    status: RunPhaseStatus,
+    active: ActivePhase,
+) -> Result<RunPhaseMetric> {
+    Ok(RunPhaseMetric {
+        phase,
+        status,
+        duration_ns: u64::try_from(active.started_at.elapsed().as_nanos()).map_err(|error| {
+            CdfError::internal(format!("phase duration does not fit in u64: {error}"))
+        })?,
+        input_bytes: active.input_bytes,
+        output_bytes: active.output_bytes,
+        operations: active.operations,
+    })
 }
 
 pub(super) struct RunEventFanout<'a> {
@@ -576,6 +728,7 @@ mod tests {
                 pipeline_id: PipelineId::new("pipeline-recorder-secret-guard").unwrap(),
             },
             Some(&sink),
+            RunTelemetryConfig::disabled(),
         );
 
         let mut raw_secret = recorder.base_event(RunEventKind::RunStarted);
@@ -632,6 +785,7 @@ mod tests {
                 pipeline_id: PipelineId::new("pipeline-recorder-missing-ledger-run").unwrap(),
             },
             Some(&sink),
+            RunTelemetryConfig::disabled(),
         );
 
         let error = recorder.append_run_started().unwrap_err();
@@ -639,5 +793,66 @@ mod tests {
         assert!(error.to_string().contains("does not exist"));
         assert!(sink.events().is_empty());
         assert!(ledger.events(&run_id).unwrap().is_empty());
+    }
+
+    #[test]
+    fn phase_telemetry_is_bounded_and_failure_closes_active_phase() {
+        let ledger = SqliteRunLedger::open_in_memory().unwrap();
+        let run = ledger
+            .create_run(Some(RunId::new("run-recorder-phase-failure").unwrap()))
+            .unwrap();
+        let recorder = ProjectRunRecorder::new(
+            &ledger,
+            run.run_id.clone(),
+            ProjectRunRecorderContext {
+                resource_id: ResourceId::new("local.events").unwrap(),
+                scope: ScopeKey::Resource,
+                package_id: "pkg-recorder-phase-failure".to_owned(),
+                package_path: "pkg-recorder-phase-failure".to_owned(),
+                destination_id: DestinationId::new("duckdb").unwrap(),
+                plan_id: PlanId::new("plan-recorder-phase-failure").unwrap(),
+                pipeline_id: PipelineId::new("pipeline-recorder-phase-failure").unwrap(),
+            },
+            None,
+            RunTelemetryConfig {
+                phase_metrics: true,
+                max_phase_events: 1,
+            },
+        );
+
+        recorder.append_package_started().unwrap();
+        recorder
+            .append_run_failed(&CdfError::data("fixture failure"))
+            .unwrap();
+        recorder
+            .append_phase_metric(RunPhaseMetric {
+                phase: RunPhase::Decode,
+                status: RunPhaseStatus::Completed,
+                duration_ns: 1,
+                input_bytes: 1,
+                output_bytes: 1,
+                operations: 1,
+            })
+            .unwrap();
+
+        let events = ledger.events(&run.run_id).unwrap();
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| event.kind == RunEventKind::PhaseMeasured)
+                .count(),
+            1
+        );
+        let metric = events
+            .iter()
+            .find_map(|event| match event.details.attributes.get("metric") {
+                Some(RunEventValue::PhaseMetric(metric)) => Some(metric),
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(metric.phase, RunPhase::PackageExecution);
+        assert_eq!(metric.status, RunPhaseStatus::Failed);
+        assert!(metric.duration_ns > 0);
+        assert_eq!(events.last().unwrap().kind, RunEventKind::RunFailed);
     }
 }

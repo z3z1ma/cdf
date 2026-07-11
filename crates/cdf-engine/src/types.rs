@@ -4,8 +4,8 @@ use arrow_schema::Schema;
 use cdf_contract::{CanonicalArrowField, SchemaCoercionPlan, ValidationProgram};
 use cdf_kernel::{
     BatchId, CdfError, DeliveryGuarantee, DiscoveryExecutorBudgetEvidence, EffectiveSchemaEvidence,
-    EstimateSupport, ProcessedObservationPosition, PushdownFidelity, ResourceId, Result, ScanPlan,
-    ScanPredicate, ScanRequest, SchemaHash, SegmentId, SourcePosition,
+    EstimateSupport, ProcessedObservationPosition, PushdownFidelity, ResourceId, Result,
+    RunPhaseMetric, ScanPlan, ScanPredicate, ScanRequest, SchemaHash, SegmentId, SourcePosition,
     TerminalSchemaObservationQuarantine, WriteDisposition,
 };
 use cdf_package::{PackageManifest, SegmentEntry};
@@ -297,6 +297,7 @@ impl EngineExecutionEvidence {
 pub struct EngineRunOutputWithSegmentPositions {
     pub output: EngineRunOutput,
     pub segment_positions: Vec<EngineSegmentPosition>,
+    pub phase_metrics: Vec<RunPhaseMetric>,
     pub(crate) execution_evidence: EngineExecutionEvidence,
 }
 
@@ -305,12 +306,25 @@ impl EngineRunOutputWithSegmentPositions {
         Self {
             output,
             segment_positions,
+            phase_metrics: Vec::new(),
             execution_evidence: EngineExecutionEvidence::default(),
         }
     }
 
     pub fn execution_evidence(&self) -> &EngineExecutionEvidence {
         &self.execution_evidence
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct EngineExecutionOptions {
+    pub(crate) phase_metrics: bool,
+}
+
+impl EngineExecutionOptions {
+    pub const fn with_phase_metrics(mut self, enabled: bool) -> Self {
+        self.phase_metrics = enabled;
+        self
     }
 }
 

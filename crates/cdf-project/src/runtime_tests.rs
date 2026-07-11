@@ -35,9 +35,10 @@ use cdf_kernel::{
     PipelineId, PlanId, ProcessedObservationOutcome, ProcessedObservationPosition,
     PushdownFidelity, QueryableResource, Receipt, ReceiptId, ReceiptVerification, ReplaySupport,
     ResourceCapabilities, ResourceDescriptor, ResourceId, ResourceStream, Result, RewindReport,
-    RewindRequest, RunEvent, RunEventSink, RunEventSinkResult, RunId, ScanRequest, SchemaHash,
-    SchemaSource, ScopeKey, SegmentAck, SegmentId, SourcePosition, StateDelta, StateSegment,
-    TargetName, TransactionSupport, TrustLevel, VerifyClause, WriteDisposition,
+    RewindRequest, RunEvent, RunEventSink, RunEventSinkResult, RunId, RunPhase, RunPhaseMetric,
+    RunPhaseStatus, ScanRequest, SchemaHash, SchemaSource, ScopeKey, SegmentAck, SegmentId,
+    SourcePosition, StateDelta, StateSegment, TargetName, TransactionSupport, TrustLevel,
+    VerifyClause, WriteDisposition,
 };
 use cdf_package::{
     DESTINATION_COMMIT_PLAN_FILE, DestinationCommitPlanPreimage, MANIFEST_FILE, PackageBuilder,
@@ -64,11 +65,12 @@ use crate::{
     PreparedPackageRecoveryRequest, PreparedPackageReplayRequest, ProjectDestinationDescription,
     ProjectDestinationDriver, ProjectDestinationRegistry, ProjectDestinationRuntime,
     ProjectReceiptSource, ProjectResolutionContext, ProjectRunReport, ProjectRunRequest,
-    ProjectRunSource, ResolvedProjectDestination, RuntimeStage, TracingRunEventSink,
-    backfill_pipeline_id, plan_backfill, recover_package_from_artifacts,
+    ProjectRunSource, ResolvedProjectDestination, RunTelemetryConfig, RuntimeStage,
+    TracingRunEventSink, backfill_pipeline_id, plan_backfill, recover_package_from_artifacts,
     recover_package_with_runtime, recover_prepared_package, replay_package_from_artifacts,
     replay_package_with_runtime, replay_prepared_package, replay_prepared_package_with_stage_hook,
-    run_local_file_to_duckdb_checkpoint, run_project, runtime::state_delta_from_run,
+    run_local_file_to_duckdb_checkpoint, run_project, run_project_with_telemetry,
+    runtime::state_delta_from_run,
 };
 
 const SCHEMA_HASH: &str = "schema-v1";
@@ -2373,6 +2375,61 @@ fn general_project_run_records_ledger_events_in_commit_gate_order() {
             .details
             .attributes
             .contains_key("elapsed_ms")
+    );
+}
+
+#[test]
+fn general_project_run_records_bounded_complete_phase_telemetry() {
+    let temp = tempfile::tempdir().unwrap();
+    let resource = live_file_resource(temp.path());
+    let report = futures_executor::block_on(run_project_with_telemetry(
+        project_run_request(
+            &resource,
+            "pkg-general-phase-telemetry",
+            &temp.path().join(".cdf/packages"),
+            &temp.path().join(".cdf/dev.duckdb"),
+            &temp.path().join(".cdf/state.db"),
+            "run-general-phase-telemetry",
+        ),
+        RunTelemetryConfig::phase_metrics(),
+    ))
+    .unwrap();
+
+    let metrics = report
+        .ledger_snapshot
+        .events
+        .iter()
+        .filter_map(|event| match event.details.attributes.get("metric") {
+            Some(RunEventValue::PhaseMetric(metric)) => Some(metric),
+            _ => None,
+        })
+        .collect::<Vec<&RunPhaseMetric>>();
+    assert!(!metrics.is_empty());
+    assert!(metrics.len() <= usize::from(RunTelemetryConfig::phase_metrics().max_phase_events));
+    assert!(metrics.iter().all(|metric| {
+        metric.status == RunPhaseStatus::Completed
+            && metric.duration_ns > 0
+            && metric.operations > 0
+    }));
+    for phase in [
+        RunPhase::PackageExecution,
+        RunPhase::Decode,
+        RunPhase::ValidationNormalization,
+        RunPhase::SegmentEncode,
+        RunPhase::PersistHash,
+        RunPhase::PackageFinalize,
+        RunPhase::DestinationWriteReceipt,
+        RunPhase::CheckpointGate,
+    ] {
+        assert!(
+            metrics.iter().any(|metric| metric.phase == phase),
+            "missing {phase:?}"
+        );
+    }
+    assert!(
+        metrics
+            .iter()
+            .any(|metric| metric.input_bytes > 0 || metric.output_bytes > 0)
     );
 }
 
