@@ -2,16 +2,16 @@ use std::{collections::BTreeMap, fs, sync::Arc};
 
 use cdf_declarative::{CompiledResource, CompiledResourcePlan};
 use cdf_kernel::{
-    CdfError, LeaseOwnerId, PipelineId, ResourceId, SchemaSnapshotReference, SchemaSource,
-    TargetName,
+    CdfError, LeaseOwnerId, PipelineId, PromotionId, ResourceId, SchemaSnapshotReference,
+    SchemaSource, TargetName,
 };
 use cdf_project::{
     DEFAULT_SCHEMA_PROMOTION_LEASE_DURATION_MS, DiscoveryManifestStore, LOCK_FILE_NAME,
     ResourceSchemaDiscoveryArtifacts, SchemaDiscoveryExecutionOptions,
     SchemaPromotionExecutionRequest, SchemaSnapshotArtifact, SchemaSnapshotDataType,
     SchemaSnapshotField, SchemaSnapshotStore, execute_schema_promotion,
-    load_resumable_schema_promotion, lock_to_toml, parse_lock,
-    pin_schema_snapshot_in_project_lockfile, write_schema_discovery_artifacts,
+    load_resumable_schema_promotion, load_schema_promotion_recovery_status, lock_to_toml,
+    parse_lock, pin_schema_snapshot_in_project_lockfile, write_schema_discovery_artifacts,
 };
 use cdf_state_sqlite::SqlitePromotionSettlementStore;
 use serde::Serialize;
@@ -187,7 +187,15 @@ fn execute_promotion(
         for redaction in redactions.iter().flatten() {
             error = redact_error_value(error, Some(redaction));
         }
-        CliError::from(error)
+        let mut cli_error = CliError::from(error);
+        if let Ok(promotion_id) = PromotionId::new(report.promotion_id.clone())
+            && let Ok(Some(status)) =
+                load_schema_promotion_recovery_status(&context.root, &promotion_id)
+            && let Ok(details) = serde_json::to_value(status)
+        {
+            cli_error = cli_error.with_details(details);
+        }
+        cli_error
     })?;
     CommandOutput::rendered(
         "schema promote",

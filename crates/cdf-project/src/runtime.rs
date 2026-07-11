@@ -51,9 +51,9 @@ mod prelude {
     pub(super) use cdf_dest_duckdb::{DuckDbCommitRequest, DuckDbDestination};
     pub(super) use cdf_dest_parquet::{ParquetCommitRequest, ParquetDestination};
     pub(super) use cdf_dest_postgres::{
-        MergeDedupPolicy, PostgresColumn, PostgresCommitRequest, PostgresDestination,
-        PostgresExistingTable, PostgresIdentifier, PostgresLoadPlanInput, PostgresTarget,
-        postgres_columns_for_schema,
+        MergeDedupPolicy, PostgresColumn, PostgresCommitRequest, PostgresCorrectionCommitRequest,
+        PostgresCorrectionPlanInput, PostgresDestination, PostgresExistingTable,
+        PostgresIdentifier, PostgresLoadPlanInput, PostgresTarget, postgres_columns_for_schema,
     };
     #[cfg(test)]
     pub(super) use cdf_engine::EngineRunOutputWithSegmentPositions;
@@ -64,12 +64,14 @@ mod prelude {
     pub(super) use cdf_kernel::{
         CHECKPOINT_STATE_VERSION, CdfError, Checkpoint, CheckpointId, CheckpointStatus,
         CheckpointStore, CursorOrderingClaim, CursorPosition, CursorValue,
-        DestinationCommitRequest, DestinationId, DestinationProtocol, EffectiveSchemaRuntime,
-        FilePosition, IdempotencyToken, IncrementalShape, PackageHash, PartitionPlan, PipelineId,
-        PlanId, QueryableResource, Receipt, ResourceCapabilities, ResourceDescriptor, ResourceId,
-        ResourceStream, Result, RunEventAppend, RunEventDetails, RunEventKind, RunEventSink,
-        RunEventValue, RunId, ScanPlan, ScanRequest, SchemaHash, ScopeKey, SegmentAck, SegmentId,
-        SourcePosition, StateDelta, StateSegment, TargetName, WriteDisposition,
+        DestinationCommitRequest, DestinationCorrectionCommitPlan,
+        DestinationCorrectionCommitRequest, DestinationId, DestinationProtocol,
+        EffectiveSchemaRuntime, FilePosition, IdempotencyToken, IncrementalShape, PackageHash,
+        PartitionPlan, PipelineId, PlanId, QueryableResource, Receipt, ResourceCapabilities,
+        ResourceDescriptor, ResourceId, ResourceStream, Result, RunEventAppend, RunEventDetails,
+        RunEventKind, RunEventSink, RunEventValue, RunId, ScanPlan, ScanRequest, SchemaHash,
+        ScopeKey, SegmentAck, SegmentId, SourcePosition, StateDelta, StateSegment, TargetName,
+        WriteDisposition,
     };
     pub(super) use cdf_package::{
         DestinationCommitPlanPreimage, PackageReader, PackageReplayInputs, PackageStatus,

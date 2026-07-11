@@ -182,6 +182,56 @@ pub(crate) fn validate_postgres_correction_begin(
 }
 
 impl PostgresDestination {
+    pub fn inspect_correction_target(
+        &self,
+        target: &PostgresTarget,
+    ) -> Result<PostgresExistingTable> {
+        let database_url = self.database_url.as_deref().ok_or_else(|| {
+            CdfError::contract(
+                "PostgresDestination::inspect_correction_target requires PostgresDestination::connect",
+            )
+        })?;
+        let mut client = Client::connect(database_url, NoTls).map_err(|error| {
+            correction_postgres_error("connect for Postgres correction catalog", error)
+        })?;
+        let schema = target.schema.as_ref().map(PostgresIdentifier::as_str);
+        let rows = client
+            .query(
+                "SELECT column_name, data_type, is_nullable FROM information_schema.columns WHERE table_schema = COALESCE($1, current_schema()) AND table_name = $2 ORDER BY ordinal_position",
+                &[&schema, &target.table.as_str()],
+            )
+            .map_err(|error| {
+                correction_postgres_error("read Postgres correction target catalog", error)
+            })?;
+        if rows.is_empty() {
+            return Err(CdfError::destination(format!(
+                "Postgres correction target {} does not exist",
+                target.display_name()
+            )));
+        }
+        let mut columns = BTreeMap::new();
+        for row in rows {
+            let name: String = row.get(0);
+            let identifier = if name.starts_with("_cdf_") {
+                PostgresIdentifier::system(&name)?
+            } else {
+                PostgresIdentifier::user(&name)?
+            };
+            columns.insert(
+                name,
+                PostgresExistingColumn {
+                    name: identifier,
+                    data_type: row.get(1),
+                    nullable: row.get::<_, String>(2) == "YES",
+                },
+            );
+        }
+        Ok(PostgresExistingTable {
+            columns,
+            primary_key: Vec::new(),
+        })
+    }
+
     pub fn plan_addressed_correction(
         &self,
         input: PostgresCorrectionPlanInput,

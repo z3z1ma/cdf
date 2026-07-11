@@ -370,6 +370,15 @@ pub trait ProjectDestinationRuntime {
 
     fn bind_prepared_commit(&mut self, prepared: &mut PreparedDestinationCommit) -> Result<()>;
 
+    fn prepare_correction_commit(
+        &mut self,
+        _package_dir: &Path,
+        request: &DestinationCorrectionCommitRequest,
+    ) -> Result<DestinationCorrectionCommitPlan> {
+        self.ensure_protocol_ready()?;
+        self.protocol().plan_correction(request)
+    }
+
     fn ensure_protocol_ready(&mut self) -> Result<()> {
         Ok(())
     }

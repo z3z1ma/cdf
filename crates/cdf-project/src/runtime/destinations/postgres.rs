@@ -206,6 +206,37 @@ impl ProjectDestinationRuntime for PostgresProjectDestinationRuntime {
         Ok(())
     }
 
+    fn prepare_correction_commit(
+        &mut self,
+        package_dir: &Path,
+        request: &DestinationCorrectionCommitRequest,
+    ) -> Result<DestinationCorrectionCommitPlan> {
+        let replay = self.replay.as_ref().ok_or_else(|| {
+            CdfError::internal("Postgres correction requires destination planning inputs")
+        })?;
+        if replay.target.display_name() != request.target.as_str() {
+            return Err(CdfError::contract(
+                "Postgres correction target does not match the resolved destination target",
+            ));
+        }
+        let existing_table = self.destination.inspect_correction_target(&replay.target)?;
+        let plan = self
+            .destination
+            .plan_addressed_correction(PostgresCorrectionPlanInput {
+                request: request.clone(),
+                existing_table,
+            })?;
+        let kernel = plan.kernel.clone();
+        self.destination =
+            self.destination
+                .clone()
+                .with_correction_request(PostgresCorrectionCommitRequest {
+                    package_dir: package_dir.to_path_buf(),
+                    plan,
+                });
+        Ok(kernel)
+    }
+
     fn secret_redaction(&self) -> Option<&str> {
         self.secret_redaction.as_deref()
     }

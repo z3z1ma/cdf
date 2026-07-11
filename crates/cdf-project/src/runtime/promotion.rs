@@ -41,6 +41,7 @@ use crate::{
 pub const SCHEMA_PROMOTION_EXECUTION_ARTIFACT_VERSION: u16 = 1;
 pub const SCHEMA_PROMOTION_CORRECTION_PACKAGE_VERSION: u16 = 1;
 pub const SCHEMA_PROMOTION_CORRECTION_TARGET_AUTHORITY_VERSION: u16 = 1;
+pub const SCHEMA_PROMOTION_RECOVERY_STATUS_VERSION: u16 = 1;
 pub const DEFAULT_SCHEMA_PROMOTION_LEASE_DURATION_MS: u64 = 300_000;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -88,6 +89,18 @@ pub struct SchemaPromotionExecutionReport {
     pub targets: Vec<SchemaPromotionExecutionTargetReport>,
     pub lock_published: bool,
     pub publication_event_recorded: bool,
+    pub remaining_action: String,
+    pub recovery_command: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SchemaPromotionRecoveryStatus {
+    pub version: u16,
+    pub resource_id: String,
+    pub promotion_id: String,
+    pub phase: SchemaPromotionExecutionPhase,
+    pub targets: Vec<SchemaPromotionExecutionTargetReport>,
     pub remaining_action: String,
     pub recovery_command: String,
 }
@@ -198,12 +211,32 @@ where
         )?));
     let resumed = verify_input_authority(request)? || staged_path.exists();
     let staged = stage_execution_artifacts(request)?;
+    write_recovery_status(
+        request.project_root,
+        &staged,
+        0,
+        SchemaPromotionExecutionPhase::Staged,
+        Vec::new(),
+        "build authenticated correction packages",
+    )?;
     fail_if(
         request.failpoint,
         SchemaPromotionExecutionFailpoint::AfterStagedArtifacts,
     )?;
 
     let packages = build_or_load_correction_packages(request, &staged)?;
+    let packaged_targets = packages
+        .iter()
+        .map(pending_target_report)
+        .collect::<Vec<_>>();
+    write_recovery_status(
+        request.project_root,
+        &staged,
+        100,
+        SchemaPromotionExecutionPhase::Packaged,
+        packaged_targets,
+        "settle remaining destination targets",
+    )?;
     fail_if(
         request.failpoint,
         SchemaPromotionExecutionFailpoint::AfterCorrectionPackages,
@@ -230,6 +263,14 @@ where
         }
         let expected_targets = publication_targets(&verified_targets)?;
         verify_publication_authority(&publication, &staged, &installed_lock, &expected_targets)?;
+        write_recovery_status(
+            request.project_root,
+            &staged,
+            900,
+            SchemaPromotionExecutionPhase::Complete,
+            verified_targets,
+            "none",
+        )?;
         return Ok(report_from_publication(&staged, &publication, true));
     }
 
@@ -258,6 +299,23 @@ where
                 &package.artifact.target,
             )?;
             let receipt = settle_correction_package(destination, &package)?;
+            let mut destination_settled = targets.clone();
+            destination_settled.push(SchemaPromotionExecutionTargetReport {
+                destination: package.artifact.destination_id.to_string(),
+                target: package.artifact.target.to_string(),
+                correction_package_hash: package.package_hash.to_string(),
+                receipt_id: Some(receipt.receipt_id.to_string()),
+                checkpoint_id: None,
+                committed: false,
+            });
+            write_recovery_status(
+                request.project_root,
+                &staged,
+                200 + (target_index as u64 * 2),
+                SchemaPromotionExecutionPhase::DestinationSettled,
+                destination_settled,
+                "commit the settled target checkpoint",
+            )?;
             fail_if(
                 request.failpoint,
                 SchemaPromotionExecutionFailpoint::AfterDestinationReceipt,
@@ -268,14 +326,6 @@ where
                 &package,
                 receipt.clone(),
             )?;
-            fail_if(
-                request.failpoint,
-                SchemaPromotionExecutionFailpoint::AfterTargetCheckpoint,
-            )?;
-            fail_if(
-                request.failpoint,
-                SchemaPromotionExecutionFailpoint::AfterTargetCheckpointIndex(target_index),
-            )?;
             targets.push(SchemaPromotionExecutionTargetReport {
                 destination: package.artifact.destination_id.to_string(),
                 target: package.artifact.target.to_string(),
@@ -284,16 +334,53 @@ where
                 checkpoint_id: Some(checkpoint.delta.checkpoint_id.to_string()),
                 committed: checkpoint.status == CheckpointStatus::Committed,
             });
+            let remaining_action = if targets.len() == staged.dry_plan.targets.len() {
+                "publish the pinned schema lock"
+            } else {
+                "settle the next destination target"
+            };
+            write_recovery_status(
+                request.project_root,
+                &staged,
+                201 + (target_index as u64 * 2),
+                SchemaPromotionExecutionPhase::Checkpointed,
+                targets.clone(),
+                remaining_action,
+            )?;
+            fail_if(
+                request.failpoint,
+                SchemaPromotionExecutionFailpoint::AfterTargetCheckpoint,
+            )?;
+            fail_if(
+                request.failpoint,
+                SchemaPromotionExecutionFailpoint::AfterTargetCheckpointIndex(target_index),
+            )?;
         }
     }
 
     request.settlement_store.assert_current(lease)?;
     let installed_lock = publish_lock(request, lease, &staged)?;
+    write_recovery_status(
+        request.project_root,
+        &staged,
+        800,
+        SchemaPromotionExecutionPhase::LockPublished,
+        targets.clone(),
+        "record the exact promotion publication event",
+    )?;
     fail_if(
         request.failpoint,
         SchemaPromotionExecutionFailpoint::AfterLockPublication,
     )?;
     let publication = publish_event(request, lease, &installed_lock, &targets)?;
+    write_recovery_status(
+        request.project_root,
+        &staged,
+        900,
+        SchemaPromotionExecutionPhase::Complete,
+        targets.clone(),
+        "none",
+    )?;
     fail_if(
         request.failpoint,
         SchemaPromotionExecutionFailpoint::AfterPublicationEvent,
@@ -502,9 +589,10 @@ where
     let validation_program =
         promotion_validation_program(request.project_root, request.resource, staged)?;
     let scope = promotion_scope(request.resource);
-    let mut chain_parent = request
-        .settlement_store
-        .head(&request.pipeline_id, &staged.resource_id, &scope)?;
+    let mut chain_parent =
+        request
+            .settlement_store
+            .head(&request.pipeline_id, &staged.resource_id, &scope)?;
     let correction_directories = staged
         .dry_plan
         .targets
@@ -595,10 +683,8 @@ where
             validate_prepared_correction_package_authority(&prepared, staged, target, &hydrated)?;
             prepared
         };
-        let checkpoint = ensure_promotion_checkpoint(
-            request.settlement_store,
-            &prepared.state_delta,
-        )?;
+        let checkpoint =
+            ensure_promotion_checkpoint(request.settlement_store, &prepared.state_delta)?;
         chain_parent = Some(checkpoint_input_authority(&checkpoint));
         packages.push(prepared);
     }
@@ -619,7 +705,11 @@ fn ensure_promotion_checkpoint<Store: CheckpointStore>(
     expected: &StateDelta,
 ) -> cdf_kernel::Result<Checkpoint> {
     let existing = store
-        .history(&expected.pipeline_id, &expected.resource_id, &expected.scope)?
+        .history(
+            &expected.pipeline_id,
+            &expected.resource_id,
+            &expected.scope,
+        )?
         .into_iter()
         .find(|checkpoint| checkpoint.delta.checkpoint_id == expected.checkpoint_id);
     match existing {
@@ -1412,8 +1502,9 @@ fn settle_correction_package(
     if !reader.receipts()?.is_empty() {
         return verify_stored_correction_receipt(destination, package);
     }
-    let protocol = destination.runtime_mut().protocol();
-    let plan = protocol.plan_correction(&request)?;
+    let runtime = destination.runtime_mut();
+    let plan = runtime.prepare_correction_commit(&package.package_dir, &request)?;
+    let protocol = runtime.protocol();
     let mut session = protocol.begin_correction(request.clone(), plan.clone())?;
     session.apply_migrations()?;
     session.apply_corrections()?;
@@ -1453,8 +1544,9 @@ fn verify_stored_correction_receipt(
         package.state_delta.segments.clone(),
         package.artifact.operations.clone(),
     )?;
-    let protocol = destination.runtime_mut().protocol();
-    let plan = protocol.plan_correction(&request)?;
+    let runtime = destination.runtime_mut();
+    let plan = runtime.prepare_correction_commit(&package.package_dir, &request)?;
+    let protocol = runtime.protocol();
     plan.validate_receipt(&request, &receipt)?;
     let verification = protocol.verify_correction(&receipt)?;
     if !verification.verified {
@@ -1762,6 +1854,75 @@ fn report_from_publication(
     }
 }
 
+fn pending_target_report(
+    package: &PreparedCorrectionPackage,
+) -> SchemaPromotionExecutionTargetReport {
+    SchemaPromotionExecutionTargetReport {
+        destination: package.artifact.destination_id.to_string(),
+        target: package.artifact.target.to_string(),
+        correction_package_hash: package.package_hash.to_string(),
+        receipt_id: None,
+        checkpoint_id: None,
+        committed: false,
+    }
+}
+
+fn write_recovery_status(
+    project_root: &Path,
+    staged: &SchemaPromotionExecutionPlanArtifact,
+    sequence: u64,
+    phase: SchemaPromotionExecutionPhase,
+    targets: Vec<SchemaPromotionExecutionTargetReport>,
+    remaining_action: &str,
+) -> cdf_kernel::Result<()> {
+    let status = SchemaPromotionRecoveryStatus {
+        version: SCHEMA_PROMOTION_RECOVERY_STATUS_VERSION,
+        resource_id: staged.resource_id.to_string(),
+        promotion_id: staged.promotion_id.to_string(),
+        phase,
+        targets,
+        remaining_action: remaining_action.to_owned(),
+        recovery_command: execution_recovery_command(&staged.dry_plan),
+    };
+    write_create_or_verify(
+        &project_root.join(promotion_recovery_status_relative_path(
+            &staged.promotion_id,
+            sequence,
+        )),
+        &canonical_json_bytes(&status)?,
+    )
+}
+
+pub fn load_schema_promotion_recovery_status(
+    project_root: &Path,
+    promotion_id: &PromotionId,
+) -> cdf_kernel::Result<Option<SchemaPromotionRecoveryStatus>> {
+    let directory = project_root.join(promotion_recovery_status_directory(promotion_id));
+    let entries = match fs::read_dir(directory) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(cdf_kernel::CdfError::data(error.to_string())),
+    };
+    let mut paths = entries
+        .map(|entry| entry.map(|entry| entry.path()))
+        .collect::<std::io::Result<Vec<_>>>()
+        .map_err(|error| cdf_kernel::CdfError::data(error.to_string()))?;
+    paths.retain(|path| path.extension().and_then(|value| value.to_str()) == Some("json"));
+    paths.sort();
+    let Some(path) = paths.last() else {
+        return Ok(None);
+    };
+    let status: SchemaPromotionRecoveryStatus = read_json_file(path)?;
+    if status.version != SCHEMA_PROMOTION_RECOVERY_STATUS_VERSION
+        || status.promotion_id != promotion_id.as_str()
+    {
+        return Err(cdf_kernel::CdfError::data(
+            "schema promotion recovery status conflicts with its directory authority",
+        ));
+    }
+    Ok(Some(status))
+}
+
 fn execution_recovery_command(plan: &SchemaPromotionPlanReport) -> String {
     format!("{} --execute", plan.recovery_command)
 }
@@ -1909,6 +2070,21 @@ pub fn promotion_plan_relative_path(promotion_id: &PromotionId) -> String {
         .strip_prefix("sha256:")
         .unwrap_or(promotion_id.as_str());
     format!(".cdf/promotions/{id}/plan.json")
+}
+
+fn promotion_recovery_status_directory(promotion_id: &PromotionId) -> String {
+    let id = promotion_id
+        .as_str()
+        .strip_prefix("sha256:")
+        .unwrap_or(promotion_id.as_str());
+    format!(".cdf/promotions/{id}/status")
+}
+
+fn promotion_recovery_status_relative_path(promotion_id: &PromotionId, sequence: u64) -> String {
+    format!(
+        "{}/{sequence:06}.json",
+        promotion_recovery_status_directory(promotion_id)
+    )
 }
 
 pub fn load_resumable_schema_promotion(

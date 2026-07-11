@@ -20,6 +20,8 @@ pub struct ErrorBody {
     pub not_supported: bool,
     pub code: String,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub details: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub remediation: Option<ErrorRemediation>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub suggestions: Vec<String>,
@@ -52,6 +54,7 @@ pub struct CliError {
     pub exit_code: i32,
     pub not_supported: bool,
     pub code: String,
+    pub details: Option<Box<serde_json::Value>>,
     pub remediation: Option<Box<ErrorRemediation>>,
     pub suggestions: Box<[String]>,
     pub(crate) progress: Option<Box<ProgressSnapshot>>,
@@ -70,6 +73,7 @@ impl CliError {
             exit_code: mapping.exit_code,
             not_supported,
             code: mapping.code.to_owned(),
+            details: None,
             remediation: mapping
                 .remediation
                 .map(ErrorRemediation::from_template)
@@ -137,6 +141,11 @@ impl CliError {
         self
     }
 
+    pub(crate) fn with_details(mut self, details: serde_json::Value) -> Self {
+        self.details = Some(Box::new(details));
+        self
+    }
+
     pub(crate) fn with_progress(mut self, progress: ProgressSnapshot) -> Self {
         self.progress = Some(Box::new(progress));
         self
@@ -149,6 +158,7 @@ impl CliError {
             exit_code: self.exit_code,
             not_supported: self.not_supported,
             code: self.code.clone(),
+            details: self.details.as_deref().cloned(),
             remediation: self.remediation.as_deref().cloned(),
             suggestions: self.suggestions.to_vec(),
         }
@@ -338,6 +348,10 @@ impl InvocationResult {
             let progress = error.progress;
             let exit_code = error.exit_code;
             let message = error.message;
+            let details = error
+                .details
+                .map(|details| format_error_details(&details))
+                .unwrap_or_default();
             let remediation = error
                 .remediation
                 .map(|remediation| format_remediation(*remediation))
@@ -354,7 +368,9 @@ impl InvocationResult {
                     stderr.push('\n');
                 }
             }
-            stderr.push_str(&format!("error: {message}{remediation}{suggestions}\n"));
+            stderr.push_str(&format!(
+                "error: {message}{details}{remediation}{suggestions}\n"
+            ));
             Self {
                 exit_code,
                 stdout: String::new(),
@@ -366,6 +382,23 @@ impl InvocationResult {
     pub fn from_error(json_mode: bool, error: CliError) -> Self {
         Self::from_error_with_config(json_mode, &RenderConfig::detect(false), error)
     }
+}
+
+fn format_error_details(details: &serde_json::Value) -> String {
+    let Some(object) = details.as_object() else {
+        return format!("\ndetails: {details}");
+    };
+    let mut rendered = String::from("\ndetails:");
+    for (key, value) in object {
+        rendered.push_str("\n  ");
+        rendered.push_str(key);
+        rendered.push_str(": ");
+        match value {
+            serde_json::Value::String(value) => rendered.push_str(value),
+            _ => rendered.push_str(&value.to_string()),
+        }
+    }
+    rendered
 }
 
 fn format_remediation(remediation: ErrorRemediation) -> String {

@@ -862,7 +862,10 @@ fn sqlite_state_migration_upgrades_v3_without_losing_events_and_enables_publicat
         published_at_ms: 10,
     };
     assert_eq!(ledger.publish_promotion(event.clone()).unwrap(), event);
-    assert_eq!(ledger.promotion_publication(&promotion_id).unwrap(), Some(event));
+    assert_eq!(
+        ledger.promotion_publication(&promotion_id).unwrap(),
+        Some(event)
+    );
 }
 
 #[test]

@@ -37,8 +37,9 @@ use cdf_package::{
 use cdf_project::{
     DEFAULT_SCHEMA_PROMOTION_LEASE_DURATION_MS, PackageArtifactReplayRequest,
     ResolvedProjectDestination, STRATIFIED_HASH_SELECTOR_V1, SchemaPromotionExecutionFailpoint,
-    SchemaPromotionExecutionRequest, SchemaPromotionPlanReport, execute_schema_promotion,
-    parse_lock, replay_package_from_artifacts,
+    SchemaPromotionExecutionPhase, SchemaPromotionExecutionRequest, SchemaPromotionPlanReport,
+    execute_schema_promotion, load_schema_promotion_recovery_status, parse_lock,
+    replay_package_from_artifacts,
 };
 use cdf_state_sqlite::{
     RunEventAppend, RunEventDetails, RunEventKind, RunEventValue, SecretReference,
@@ -3579,6 +3580,35 @@ fn schema_promote_execute_recovers_every_persisted_crash_boundary() {
             error.message.contains("schema promotion failpoint"),
             "{failpoint:?}: {error}"
         );
+        let expected_phase = match failpoint {
+            SchemaPromotionExecutionFailpoint::AfterStagedArtifacts => {
+                SchemaPromotionExecutionPhase::Staged
+            }
+            SchemaPromotionExecutionFailpoint::AfterCorrectionPackages => {
+                SchemaPromotionExecutionPhase::Packaged
+            }
+            SchemaPromotionExecutionFailpoint::AfterDestinationReceipt => {
+                SchemaPromotionExecutionPhase::DestinationSettled
+            }
+            SchemaPromotionExecutionFailpoint::AfterTargetCheckpoint => {
+                SchemaPromotionExecutionPhase::Checkpointed
+            }
+            SchemaPromotionExecutionFailpoint::AfterLockPublication => {
+                SchemaPromotionExecutionPhase::LockPublished
+            }
+            SchemaPromotionExecutionFailpoint::AfterPublicationEvent => {
+                SchemaPromotionExecutionPhase::Complete
+            }
+            SchemaPromotionExecutionFailpoint::AfterTargetCheckpointIndex(_) => unreachable!(),
+        };
+        let status = load_schema_promotion_recovery_status(
+            &project.root,
+            &cdf_kernel::PromotionId::new(plan.promotion_id.clone()).unwrap(),
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(status.phase, expected_phase, "{failpoint:?}");
+        assert!(status.recovery_command.ends_with("--execute"));
         drop(run_ledger);
         drop(settlement_store);
         drop(context);
@@ -3626,6 +3656,98 @@ fn schema_promote_execute_recovers_every_persisted_crash_boundary() {
             "{failpoint:?}"
         );
     }
+}
+
+#[test]
+fn schema_promote_failure_reports_persisted_recovery_status_without_secret_leak() {
+    let project = TestProject::new();
+    let secret = format!(
+        "postgresql://cdf:promotion-secret@127.0.0.1:{}/cdf",
+        free_port()
+    );
+    fs::write(project.root.join("destination-dsn"), format!("{secret}\n")).unwrap();
+    write_project_destination_with_postgres_policy(
+        &project,
+        "postgres://secret://file/destination-dsn",
+        "fail",
+    );
+    write_parquet_discover_resource(&project, "*.parquet");
+    let source_path = project.root.join("data/events.parquet");
+    write_vendor_parquet(&source_path);
+    let pin = run([
+        "cdf",
+        "--json",
+        "--project",
+        project.root_str(),
+        "schema",
+        "pin",
+        "local.events",
+    ]);
+    assert_eq!(pin.exit_code, 0, "{}", pin.stderr);
+    let old_hash = stderr_or_stdout_json(&pin.stdout)["result"]["schema_hash"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    write_vendor_score_parquet(&source_path);
+    write_schema_promote_package_fixture(&project, &old_hash);
+    let source_package = project.root.join(".cdf/packages/pkg-promote-source");
+    let mut receipts = cdf_package::read_receipts(&source_package).unwrap();
+    receipts[0].destination = DestinationId::new("postgres").unwrap();
+    fs::write(
+        source_package.join(cdf_package::RECEIPTS_FILE),
+        serde_json::to_vec_pretty(&receipts).unwrap(),
+    )
+    .unwrap();
+
+    let json_failure = run([
+        "cdf",
+        "--json",
+        "--project",
+        project.root_str(),
+        "schema",
+        "promote",
+        "local.events",
+        "--execute",
+    ]);
+    assert_ne!(json_failure.exit_code, 0);
+    assert_secret_absent(&json_failure, "promotion-secret");
+    assert_secret_absent(&json_failure, &secret);
+    let error = stderr_or_stdout_json(&json_failure.stderr);
+    assert_eq!(
+        error["error"]["details"]["phase"], "staged",
+        "{}",
+        json_failure.stderr
+    );
+    assert_eq!(
+        error["error"]["details"]["remaining_action"],
+        "build authenticated correction packages"
+    );
+    assert!(
+        error["error"]["details"]["recovery_command"]
+            .as_str()
+            .unwrap()
+            .ends_with("--execute")
+    );
+
+    let human_failure = run([
+        "cdf",
+        "--project",
+        project.root_str(),
+        "schema",
+        "promote",
+        "local.events",
+        "--execute",
+    ]);
+    assert_ne!(human_failure.exit_code, 0);
+    assert_secret_absent(&human_failure, "promotion-secret");
+    assert!(human_failure.stderr.contains("phase: staged"));
+    assert!(human_failure.stderr.contains("recovery_command:"));
+    assert!(
+        project_tree_snapshot(&project.root)
+            .into_iter()
+            .filter(|(path, _)| path != "destination-dsn")
+            .all(|(_, bytes)| !String::from_utf8_lossy(&bytes).contains("promotion-secret"))
+    );
 }
 
 #[test]
@@ -4062,6 +4184,166 @@ fn schema_promote_execute_routes_parquet_through_correction_sidecar() {
             .keys()
             .any(|path| path.starts_with(".cdf/parquet/targets/events/corrections/manifests/"))
     );
+}
+
+#[test]
+fn schema_promote_execute_updates_postgres_through_generic_command_dispatch() {
+    let Some(postgres) = LivePostgres::start() else {
+        return;
+    };
+    let project = TestProject::new();
+    fs::write(
+        project.root.join("destination-dsn"),
+        format!("{}\n", postgres.url),
+    )
+    .unwrap();
+    write_project_destination_with_postgres_policy(
+        &project,
+        "postgres://secret://file/destination-dsn",
+        "fail",
+    );
+    write_parquet_discover_resource(&project, "*.parquet");
+    let source_path = project.root.join("data/events.parquet");
+    write_vendor_parquet(&source_path);
+    let pin = run([
+        "cdf",
+        "--json",
+        "--project",
+        project.root_str(),
+        "schema",
+        "pin",
+        "local.events",
+    ]);
+    assert_eq!(pin.exit_code, 0, "{}", pin.stderr);
+    let old_hash = stderr_or_stdout_json(&pin.stdout)["result"]["schema_hash"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    write_vendor_score_parquet(&source_path);
+    let target = postgres.table("events_promotion");
+    write_schema_promote_package_fixture_for_target_with_commit(
+        &project,
+        "pkg-promote-source",
+        &target,
+        &old_hash,
+        false,
+    );
+    let package_dir = project.root.join(".cdf/packages/pkg-promote-source");
+    let reader = PackageReader::open(&package_dir).unwrap();
+    let package_hash = PackageHash::new(reader.manifest().package_hash.clone()).unwrap();
+    let delta = reader
+        .state_delta_preimage()
+        .unwrap()
+        .into_state_delta(package_hash.clone());
+    let segment = &delta.segments[0];
+    let batches = reader.read_segment(&segment.segment_id).unwrap();
+    let residuals = batches[0]
+        .column(1)
+        .as_any()
+        .downcast_ref::<StringArray>()
+        .unwrap();
+    let mut client = postgres.client();
+    client
+        .batch_execute(&format!(
+            "CREATE TABLE {} (vendor_id INTEGER NOT NULL, _cdf_variant TEXT, _cdf_load TEXT NOT NULL, _cdf_segment TEXT NOT NULL, _cdf_row BIGINT NOT NULL)",
+            target
+        ))
+        .unwrap();
+    for (row, vendor_id) in [1_i32, 2_i32].into_iter().enumerate() {
+        client
+            .execute(
+                &format!(
+                    "INSERT INTO {} (vendor_id, _cdf_variant, _cdf_load, _cdf_segment, _cdf_row) VALUES ($1, $2, $3, $4, $5)",
+                    target
+                ),
+                &[
+                    &vendor_id,
+                    &residuals.value(row),
+                    &package_hash.as_str(),
+                    &segment.segment_id.as_str(),
+                    &(row as i64),
+                ],
+            )
+            .unwrap();
+    }
+    let receipt = Receipt {
+            receipt_id: ReceiptId::new("receipt-postgres-promotion-source").unwrap(),
+            destination: DestinationId::new("postgres").unwrap(),
+            target: TargetName::new(target.clone()).unwrap(),
+            package_hash: package_hash.clone(),
+            segment_acks: vec![SegmentAck {
+                segment_id: segment.segment_id.clone(),
+                row_count: segment.row_count,
+                byte_count: segment.byte_count,
+            }],
+            disposition: WriteDisposition::Append,
+            idempotency_token: IdempotencyToken::new(package_hash.as_str()).unwrap(),
+            transaction: None,
+            counts: CommitCounts {
+                rows_written: 2,
+                rows_inserted: Some(2),
+                rows_updated: Some(0),
+                rows_deleted: Some(0),
+            },
+            schema_hash: SchemaHash::new(&old_hash).unwrap(),
+            migrations: Vec::new(),
+            committed_at_ms: now_ms_for_test(),
+            verify: VerifyClause {
+                kind: "postgres_sql".to_owned(),
+                statement: "SELECT \"receipt_id\", \"xid\", \"rows_written\", \"schema_hash\", \"receipt_json\"::text AS \"receipt_json\" FROM \"_cdf_loads\" WHERE \"destination\" = 'postgres' AND \"target\" = $1 AND \"package_hash\" = $2 AND \"idempotency_token\" = $3 AND \"schema_hash\" = $4".to_owned(),
+                parameters: BTreeMap::from([
+                    ("target".to_owned(), target.clone()),
+                    ("package_hash".to_owned(), package_hash.to_string()),
+                    ("idempotency_token".to_owned(), package_hash.to_string()),
+                    ("schema_hash".to_owned(), old_hash.clone()),
+                    ("destination".to_owned(), "postgres".to_owned()),
+                    ("target_schema".to_owned(), postgres.schema.clone()),
+                ]),
+            },
+        };
+    client
+        .batch_execute(&format!(
+            "CREATE TABLE {}._cdf_loads (receipt_id TEXT PRIMARY KEY, destination TEXT NOT NULL, target TEXT NOT NULL, resource_id TEXT, package_hash TEXT NOT NULL, idempotency_token TEXT NOT NULL, disposition TEXT NOT NULL, schema_hash TEXT NOT NULL, rows_written BIGINT NOT NULL, rows_inserted BIGINT, rows_updated BIGINT, rows_deleted BIGINT, segment_count BIGINT NOT NULL, migrations_json JSONB NOT NULL, receipt_json JSONB NOT NULL, xid TEXT NOT NULL, duplicate BOOLEAN NOT NULL DEFAULT FALSE, committed_at_ms BIGINT NOT NULL, UNIQUE (target, package_hash))",
+            postgres.schema
+        ))
+        .unwrap();
+    let receipt_json = serde_json::to_string(&receipt).unwrap();
+    client
+        .execute(
+            &format!("INSERT INTO {}._cdf_loads (receipt_id, destination, target, resource_id, package_hash, idempotency_token, disposition, schema_hash, rows_written, rows_inserted, rows_updated, rows_deleted, segment_count, migrations_json, receipt_json, xid, duplicate, committed_at_ms) VALUES ($1, 'postgres', $2, 'local.events', $3, $4, 'append', $5, 2, 2, 0, 0, 1, '[]'::jsonb, $6::text::jsonb, 'fixture', false, $7)", postgres.schema),
+            &[&receipt.receipt_id.as_str(), &target, &package_hash.as_str(), &package_hash.as_str(), &old_hash, &receipt_json, &receipt.committed_at_ms],
+        )
+        .unwrap();
+    reader.append_receipt(receipt).unwrap();
+    drop(client);
+
+    let executed = run([
+        "cdf",
+        "--json",
+        "--project",
+        project.root_str(),
+        "schema",
+        "promote",
+        "local.events",
+        "--execute",
+    ]);
+    assert_eq!(executed.exit_code, 0, "{}", executed.stderr);
+    assert_secret_absent(&executed, &postgres.url);
+    let report = stderr_or_stdout_json(&executed.stdout);
+    assert_eq!(report["result"]["targets"][0]["destination"], "postgres");
+    assert_eq!(report["result"]["targets"][0]["committed"], true);
+    let rows = postgres
+        .client()
+        .query(
+            &format!("SELECT vendor_id, score, _cdf_variant FROM {target} ORDER BY _cdf_row"),
+            &[],
+        )
+        .unwrap();
+    assert_eq!(rows.len(), 2);
+    assert_eq!(rows[0].get::<_, i32>(0), 1);
+    assert_eq!(rows[0].get::<_, i64>(1), 10);
+    assert_eq!(rows[0].get::<_, Option<String>>(2), None);
+    assert_eq!(rows[1].get::<_, i64>(1), 20);
 }
 
 #[test]
@@ -13335,6 +13617,22 @@ fn write_schema_promote_package_fixture_for_target(
     target_name: &str,
     schema_hash: &str,
 ) {
+    write_schema_promote_package_fixture_for_target_with_commit(
+        project,
+        package_id,
+        target_name,
+        schema_hash,
+        true,
+    );
+}
+
+fn write_schema_promote_package_fixture_for_target_with_commit(
+    project: &TestProject,
+    package_id: &str,
+    target_name: &str,
+    schema_hash: &str,
+    commit_duckdb: bool,
+) {
     let package_dir = project.root.join(".cdf/packages").join(package_id);
     fs::create_dir_all(project.root.join(".cdf/packages")).unwrap();
     let scores = Int64Array::from_iter_values([10_i64, 20_i64]);
@@ -13423,27 +13721,29 @@ fn write_schema_promote_package_fixture_for_target(
         .finish_with_status(PackageStatus::Checkpointed)
         .unwrap();
     let package_hash = PackageHash::new(manifest.package_hash).unwrap();
-    let destination = DuckDbDestination::new(project.root.join(".cdf/dev.duckdb")).unwrap();
-    destination
-        .commit_package(DuckDbCommitRequest {
-            package_dir: package_dir.clone(),
-            commit: DestinationCommitRequest {
-                package_hash: package_hash.clone(),
-                target: TargetName::new(target_name).unwrap(),
-                disposition: WriteDisposition::Append,
-                segments: vec![StateSegment {
-                    segment_id: segment.segment_id,
-                    scope: ScopeKey::Resource,
-                    output_position: state_delta.output_position.clone(),
-                    row_count: segment.row_count,
-                    byte_count: segment.byte_count,
-                }],
-                idempotency_token: IdempotencyToken::new(package_hash.as_str()).unwrap(),
-            },
-            schema_hash: SchemaHash::new(schema_hash).unwrap(),
-            merge_keys: Vec::new(),
-        })
-        .unwrap();
+    if commit_duckdb {
+        let destination = DuckDbDestination::new(project.root.join(".cdf/dev.duckdb")).unwrap();
+        destination
+            .commit_package(DuckDbCommitRequest {
+                package_dir: package_dir.clone(),
+                commit: DestinationCommitRequest {
+                    package_hash: package_hash.clone(),
+                    target: TargetName::new(target_name).unwrap(),
+                    disposition: WriteDisposition::Append,
+                    segments: vec![StateSegment {
+                        segment_id: segment.segment_id,
+                        scope: ScopeKey::Resource,
+                        output_position: state_delta.output_position.clone(),
+                        row_count: segment.row_count,
+                        byte_count: segment.byte_count,
+                    }],
+                    idempotency_token: IdempotencyToken::new(package_hash.as_str()).unwrap(),
+                },
+                schema_hash: SchemaHash::new(schema_hash).unwrap(),
+                merge_keys: Vec::new(),
+            })
+            .unwrap();
+    }
 }
 
 #[derive(Clone, Copy)]
