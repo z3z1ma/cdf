@@ -2264,6 +2264,10 @@ fn package_identity_is_invariant_to_source_batch_rechunking() {
         one_output.manifest.package_hash,
         many_output.manifest.package_hash
     );
+    assert_eq!(
+        one_output.manifest.package_hash,
+        "sha256:d5c6b049a9986db182491627af42f74c83cfa763f21a9cad28e9d677001a5959"
+    );
 }
 
 #[test]
