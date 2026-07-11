@@ -438,6 +438,7 @@ pub struct EnginePreviewOutput {
     pub byte_count: u64,
     pub output_byte_count: u64,
     pub quarantined_row_count: u64,
+    pub residual_row_count: u64,
     pub terminal_quarantine_count: u64,
     pub fields: Vec<String>,
     pub limits: EnginePreviewLimits,

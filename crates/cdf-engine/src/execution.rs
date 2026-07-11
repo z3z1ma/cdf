@@ -14,9 +14,9 @@ use arrow_select::take::take_record_batch;
 use cdf_contract::{
     ContractEvaluationContext, QuarantineCandidate, RESIDUAL_ENCODING_METADATA_KEY,
     RedactionDecision, ResidualCandidateVerdict, ResidualFieldRef, ResidualFieldWithRedaction,
-    ValidationProgram, VerdictSummary, encode_residual_json_v1, encode_residual_json_v1_redacted,
-    evaluate_package_order_dedup, evaluate_record_batch, reject_untrusted_schema_coercion_metadata,
-    schema_coercion_plan_from_trusted_json,
+    VARIANT_COLUMN_NAME, ValidationProgram, VerdictSummary, encode_residual_json_v1,
+    encode_residual_json_v1_redacted, evaluate_package_order_dedup, evaluate_record_batch,
+    reject_untrusted_schema_coercion_metadata, schema_coercion_plan_from_trusted_json,
 };
 use cdf_kernel::{
     CdfError, PHYSICAL_TYPE_METADATA_KEY, PLAN_PHYSICAL_SCHEMA_HASH_KEY,
@@ -90,6 +90,7 @@ where
     let mut byte_count = 0_u64;
     let mut output_byte_count = 0_u64;
     let mut quarantined_row_count = 0_u64;
+    let mut residual_row_count = 0_u64;
     let mut terminal_quarantines = BTreeSet::new();
     let mut observation_attestations = BTreeMap::<String, PartitionAttestation>::new();
     let mut fields = runtime_output_schema
@@ -304,6 +305,11 @@ where
                     output_byte_count += rendered_bytes;
                     quarantined_row_count +=
                         contract.summary.quarantined_rows + pre_contract_quarantined_rows;
+                    if let Some(variant) = rendered.column_by_name(VARIANT_COLUMN_NAME) {
+                        residual_row_count +=
+                            u64::try_from(variant.len() - variant.null_count())
+                                .map_err(|error| CdfError::internal(error.to_string()))?;
+                    }
                 }
             }
             if admitted == 0 && !complete {
@@ -386,6 +392,7 @@ where
         byte_count,
         output_byte_count,
         quarantined_row_count,
+        residual_row_count,
         terminal_quarantine_count: u64::try_from(terminal_quarantines.len())
             .map_err(|error| CdfError::internal(error.to_string()))?,
         fields,

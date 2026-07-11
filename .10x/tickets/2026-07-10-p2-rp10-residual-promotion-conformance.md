@@ -33,6 +33,7 @@ No public-network dependency, distributed scheduler, source re-extraction backfi
 
 - 2026-07-10: Opened as the mandatory closure gate.
 - 2026-07-10: Added the sampled-discovery-to-promotion end-to-end scenario. It exposed a data-loss bug in runtime effective-schema preparation: compatible fields unseen by the sampled pin were being added to the runtime projection, then dropped by pinned output authority instead of becoming residual candidates. Runtime observation now reconciles every physical schema against the immutable baseline with parse coercion disabled; safe extras remain outside the projection and flow into `_cdf_variant`, lossless physical widths still reconcile, and incompatible physical types remain file-level quarantine. The scenario proves two unseen `/score` values survive the sampled run as residuals, fresh exhaustive discovery produces an executable promotion, DuckDB addressed correction materializes the values, and every residual clears.
+- 2026-07-10: Preview now reports `residual_row_count` from the same post-contract batches used by execution. The sampled scenario proves preview sees the two residual-bearing rows within its deterministic bounds, reports zero row quarantine, and writes nothing; the subsequent run captures the same two values. Repeated fresh promotion plans are JSON-identical and write-free before execution. `cdf-engine` 50/50 and the 23 focused CLI preview tests pass.
 
 ## Blockers
 

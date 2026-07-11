@@ -519,6 +519,7 @@ fn preview_resource_report(
         byte_count: preview.byte_count,
         output_byte_count: preview.output_byte_count,
         quarantined_row_count: preview.quarantined_row_count,
+        residual_row_count: preview.residual_row_count,
         terminal_quarantine_count: preview.terminal_quarantine_count,
         fields: preview.fields,
         limits: preview.limits,
@@ -780,6 +781,7 @@ fn preview_document(report: &PreviewReport) -> RenderDocument {
                 .row("selector", report.selection.selector.clone())
                 .row("truncated", yes_no(report.truncated))
                 .row("rows quarantined", report.quarantined_row_count.to_string())
+                .row("rows with residuals", report.residual_row_count.to_string())
                 .row(
                     "files quarantined",
                     report.terminal_quarantine_count.to_string(),
@@ -989,6 +991,7 @@ struct PreviewReport {
     byte_count: u64,
     output_byte_count: u64,
     quarantined_row_count: u64,
+    residual_row_count: u64,
     terminal_quarantine_count: u64,
     fields: Vec<String>,
     limits: EnginePreviewLimits,

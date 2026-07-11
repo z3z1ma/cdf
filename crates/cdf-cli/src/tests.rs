@@ -3392,6 +3392,20 @@ fn sampled_pin_captures_unseen_field_then_fresh_discovery_promotes_without_sourc
         stderr_or_stdout_json(&pin.stdout)["result"]["discovery"]["coverage"],
         "sampled"
     );
+    let before_preview = project_tree_snapshot(&project.root);
+    let preview = run([
+        "cdf",
+        "--json",
+        "--project",
+        project.root_str(),
+        "preview",
+        "local.events",
+    ]);
+    assert_eq!(preview.exit_code, 0, "{}", preview.stderr);
+    let preview_report = stderr_or_stdout_json(&preview.stdout);
+    assert_eq!(preview_report["result"]["residual_row_count"], 2);
+    assert_eq!(preview_report["result"]["quarantined_row_count"], 0);
+    assert_eq!(project_tree_snapshot(&project.root), before_preview);
     let loaded = run_valid_run_args(
         &project,
         "pkg-sampled-residual-promotion",
@@ -3429,6 +3443,22 @@ fn sampled_pin_captures_unseen_field_then_fresh_discovery_promotes_without_sourc
     let dry_report = stderr_or_stdout_json(&dry.stdout);
     assert_eq!(dry_report["result"]["executable"], true);
     assert_eq!(dry_report["result"]["paths"][0]["path"], "/score");
+    let before_repeated_plan = project_tree_snapshot(&project.root);
+    let repeated = run([
+        "cdf",
+        "--json",
+        "--project",
+        project.root_str(),
+        "schema",
+        "promote",
+        "local.events",
+    ]);
+    assert_eq!(repeated.exit_code, 0, "{}", repeated.stderr);
+    assert_eq!(
+        stderr_or_stdout_json(&repeated.stdout)["result"],
+        dry_report["result"]
+    );
+    assert_eq!(project_tree_snapshot(&project.root), before_repeated_plan);
 
     let promoted = run([
         "cdf",
