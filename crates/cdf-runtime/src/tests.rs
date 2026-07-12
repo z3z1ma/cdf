@@ -3,9 +3,10 @@ use cdf_kernel::{
     BatchStream, BoxFuture, CommitCounts, CommitSession, ConcurrencyLimit, DeliveryGuarantee,
     DestinationId, ErrorKind, IdempotencySupport, IdempotencyToken, IdentifierRules,
     MigrationRecord, PackageHash, PartitionId, PartitionPlan, PlanId, QueryableResource, ReceiptId,
-    ResourceCapabilities, ResourceDescriptor, ResourceId, ResourceStream, ScanPlan, ScanRequest,
-    SchemaHash, SchemaSource, ScopeKey, SegmentAck, SegmentId, TargetName, TransactionMetadata,
-    TransactionSupport, TrustLevel, TypeMapping, VerifyClause,
+    ResourceCapabilities, ResourceDescriptor, ResourceId, ResourceStream, RunEventDetails,
+    RunEventValue, ScanPlan, ScanRequest, SchemaHash, SchemaSource, ScopeKey, SegmentAck,
+    SegmentId, TargetName, TransactionMetadata, TransactionSupport, TrustLevel, TypeMapping,
+    VerifyClause,
 };
 use std::{
     collections::BTreeMap,
@@ -750,6 +751,16 @@ fn bulk_fallback_requires_abort_proof_and_a_new_attempt() {
         Some("forced failure")
     );
     assert!(!coordinator.evidence()[1].aborted_before_fallback);
+    let details = coordinator.evidence()[0].run_event_details();
+    details.validate().unwrap();
+    assert_eq!(
+        details.attributes["bulk_path_id"],
+        RunEventValue::String("mock_arrow".to_owned())
+    );
+    assert_eq!(
+        serde_json::from_slice::<RunEventDetails>(&serde_json::to_vec(&details).unwrap()).unwrap(),
+        details
+    );
 }
 
 struct MockSourceDriver {

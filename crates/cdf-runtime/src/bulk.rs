@@ -1,7 +1,7 @@
 use arrow_schema::Schema;
 use cdf_kernel::{
-    CdfError, CommitBatch, DestinationCommitRequest, Receipt, Result, SegmentAck, SegmentId,
-    StateSegment,
+    CdfError, CommitBatch, DestinationCommitRequest, Receipt, Result, RunEventDetails,
+    RunEventValue, SegmentAck, SegmentId, StateSegment,
 };
 use cdf_package::SegmentEntry;
 use serde::{Deserialize, Serialize};
@@ -179,6 +179,48 @@ pub struct BulkAttemptEvidence {
     pub writers: u16,
     pub fallback_reason: Option<String>,
     pub aborted_before_fallback: bool,
+}
+
+impl BulkAttemptEvidence {
+    pub fn run_event_details(&self) -> RunEventDetails {
+        let mut attributes = std::collections::BTreeMap::from([
+            (
+                "load_attempt_id".to_owned(),
+                RunEventValue::String(self.attempt_id.to_string()),
+            ),
+            (
+                "bulk_path_id".to_owned(),
+                RunEventValue::String(self.path_id.clone()),
+            ),
+            (
+                "bulk_path_version".to_owned(),
+                RunEventValue::U64(u64::from(self.path_version)),
+            ),
+            (
+                "bulk_rows_per_batch".to_owned(),
+                RunEventValue::U64(self.rows_per_batch),
+            ),
+            (
+                "bulk_bytes_per_batch".to_owned(),
+                RunEventValue::U64(self.bytes_per_batch),
+            ),
+            (
+                "bulk_writers".to_owned(),
+                RunEventValue::U64(u64::from(self.writers)),
+            ),
+            (
+                "bulk_aborted_before_fallback".to_owned(),
+                RunEventValue::Bool(self.aborted_before_fallback),
+            ),
+        ]);
+        if let Some(reason) = &self.fallback_reason {
+            attributes.insert(
+                "bulk_fallback_reason".to_owned(),
+                RunEventValue::String(reason.clone()),
+            );
+        }
+        RunEventDetails { attributes }
+    }
 }
 
 pub struct BulkAttemptCoordinator {
