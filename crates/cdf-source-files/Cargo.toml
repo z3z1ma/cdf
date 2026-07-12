@@ -8,10 +8,12 @@ description = "File and object-store source adapter for cdf."
 
 [dependencies]
 arrow-schema = "59.1.0"
+bytes = "1.11.0"
 cdf-contract = { path = "../cdf-contract" }
 cdf-formats = { path = "../cdf-formats" }
 cdf-http = { path = "../cdf-http" }
 cdf-kernel = { path = "../cdf-kernel" }
+cdf-memory = { path = "../cdf-memory" }
 cdf-runtime = { path = "../cdf-runtime" }
 futures-util = "0.3.32"
 hex = "0.4.3"
@@ -25,6 +27,6 @@ tokio = { version = "=1.52.3", features = ["fs", "io-util"] }
 url = "2.5.8"
 
 [dev-dependencies]
-cdf-engine = { path = "../cdf-engine" }
 flate2 = "1.1.9"
 futures-executor = "0.3.32"
+tokio = { version = "=1.52.3", features = ["rt-multi-thread"] }

@@ -8,7 +8,8 @@ use cdf_memory::{
     ReservationRequest, reserve_blocking,
 };
 use cdf_runtime::{
-    ByteSourceCapabilities, ContentIdentity, FormatDriver, PhysicalDecodeRequest, RunCancellation,
+    ByteSourceCapabilities, ContentIdentity, FormatDriver, GenerationStrength,
+    PhysicalDecodeRequest, RunCancellation,
 };
 use futures_util::TryStreamExt;
 use parquet::arrow::ArrowWriter;
@@ -18,7 +19,7 @@ use super::*;
 struct MemoryByteSource {
     identity: ContentIdentity,
     capabilities: ByteSourceCapabilities,
-    bytes: Arc<[u8]>,
+    bytes: Bytes,
     memory: Arc<dyn MemoryCoordinator>,
 }
 
@@ -30,6 +31,7 @@ impl MemoryByteSource {
                 size_bytes: Some(bytes.len() as u64),
                 generation: None,
                 checksum: Some("sha256:test-fixture".to_owned()),
+                strength: GenerationStrength::ContentAddressed,
             },
             capabilities: ByteSourceCapabilities {
                 known_length: true,
@@ -40,12 +42,12 @@ impl MemoryByteSource {
                 minimum_chunk_bytes: 1,
                 maximum_chunk_bytes: 1024 * 1024,
             },
-            bytes: bytes.into(),
+            bytes: Bytes::from(bytes),
             memory,
         })
     }
 
-    fn accounted(&self, bytes: Arc<[u8]>) -> Result<AccountedBytes> {
+    fn accounted(&self, bytes: Bytes) -> Result<AccountedBytes> {
         let request = ReservationRequest::new(
             ConsumerKey::new("parquet-test-source", MemoryClass::Source)?,
             bytes.len() as u64,
@@ -69,7 +71,7 @@ impl ByteSource for MemoryByteSource {
         _request: cdf_runtime::SequentialReadRequest,
     ) -> BoxFuture<'_, Result<cdf_runtime::AccountedByteStream>> {
         Box::pin(async move {
-            let bytes = self.accounted(Arc::clone(&self.bytes))?;
+            let bytes = self.accounted(self.bytes.clone())?;
             Ok(
                 Box::pin(futures_util::stream::once(async move { Ok(bytes) }))
                     as cdf_runtime::AccountedByteStream,
@@ -77,8 +79,13 @@ impl ByteSource for MemoryByteSource {
         })
     }
 
-    fn read_exact_range(&self, extent: ByteExtent) -> BoxFuture<'_, Result<AccountedBytes>> {
+    fn read_exact_range(
+        &self,
+        extent: ByteExtent,
+        cancellation: RunCancellation,
+    ) -> BoxFuture<'_, Result<AccountedBytes>> {
         Box::pin(async move {
+            cancellation.check()?;
             let start = usize::try_from(extent.start)
                 .map_err(|_| CdfError::data("test range start exceeds usize"))?;
             let end = usize::try_from(
@@ -88,11 +95,10 @@ impl ByteSource for MemoryByteSource {
                     .ok_or_else(|| CdfError::data("test range overflow"))?,
             )
             .map_err(|_| CdfError::data("test range end exceeds usize"))?;
-            let bytes = self
-                .bytes
-                .get(start..end)
-                .ok_or_else(|| CdfError::data("test range exceeds fixture"))?;
-            self.accounted(Arc::<[u8]>::from(bytes))
+            if end > self.bytes.len() {
+                return Err(CdfError::data("test range exceeds fixture"));
+            }
+            self.accounted(self.bytes.slice(start..end))
         })
     }
 }

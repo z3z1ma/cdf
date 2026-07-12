@@ -35,3 +35,7 @@ Depends on L5, SX1, FX1, and A4.
 - `.10x/decisions/generation-bound-overlapped-io.md`
 - `.10x/research/2026-07-11-remote-io-overlap-audit.md`
 - `.10x/specs/remote-local-io-overlap.md`
+
+## Progress and notes
+
+- 2026-07-11: Implemented the first native provider, `LocalByteSource`, directly against the neutral FX1 contract. Sequential chunks and independent exact ranges reserve before allocation, transfer `Vec` into lease-owned `Bytes` without copying, execute on the injected I/O runtime, honor cancellation, and pre/post reattest strong Unix path/device/inode/size/mtime/ctime generation. Neutral content identity now records strength; weak providers cannot enter Parquet random-access mode. The leaf test graph also dropped its `cdf-engine`/DataFusion dependency in favor of a focused neutral test host. Production registry composition, remote providers, listings, and synchronous-facade deletion remain open. Evidence: `.10x/evidence/2026-07-11-p3-g1-local-accounted-byte-source.md`.

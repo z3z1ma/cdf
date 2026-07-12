@@ -15,8 +15,8 @@ use cdf_memory::{ConsumerKey, MemoryClass, ReservationRequest, reserve};
 use cdf_runtime::{
     AccountedPhysicalBatch, ByteExtent, ByteSource, DecodePlanningRequest, DecodeUnitPlan,
     FormatDetection, FormatDetectionConfidence, FormatDiscoveryRequest, FormatDriver,
-    FormatDriverDescriptor, FormatId, FormatProbe, MagicSignature, PhysicalDecodeRequest,
-    PhysicalDecodeStream, PhysicalSchemaObservation,
+    FormatDriverDescriptor, FormatId, FormatProbe, GenerationStrength, MagicSignature,
+    PhysicalDecodeRequest, PhysicalDecodeStream, PhysicalSchemaObservation,
 };
 use futures_util::{
     FutureExt, StreamExt, TryStreamExt, future::BoxFuture as FuturesBoxFuture, stream,
@@ -107,9 +107,8 @@ impl FormatDriver for ParquetFormatDriver {
         Box::pin(async move {
             request.cancellation.check()?;
             self.canonical_options(request.options)?;
-            source.identity().validate()?;
-            source.capabilities().validate()?;
-            let reader = ParquetByteSource::new(Arc::clone(&source));
+            validate_parquet_source(source.as_ref())?;
+            let reader = ParquetByteSource::new(Arc::clone(&source), request.cancellation.clone());
             let bytes_read = Arc::clone(&reader.bytes_read);
             let builder = ParquetRecordBatchStreamBuilder::new(reader)
                 .await
@@ -140,14 +139,18 @@ impl FormatDriver for ParquetFormatDriver {
         Box::pin(async move {
             request.cancellation.check()?;
             self.canonical_options(request.options)?;
+            validate_parquet_source(source.as_ref())?;
             if request.target_batch_rows == 0 || request.target_batch_bytes == 0 {
                 return Err(CdfError::contract(
                     "Parquet unit planning requires nonzero row and byte batch targets",
                 ));
             }
-            let builder = ParquetRecordBatchStreamBuilder::new(ParquetByteSource::new(source))
-                .await
-                .map_err(parquet_error)?;
+            let builder = ParquetRecordBatchStreamBuilder::new(ParquetByteSource::new(
+                source,
+                request.cancellation.clone(),
+            ))
+            .await
+            .map_err(parquet_error)?;
             builder
                 .metadata()
                 .row_groups()
@@ -184,6 +187,7 @@ impl FormatDriver for ParquetFormatDriver {
             request.cancellation.check()?;
             self.canonical_options(request.options.clone())?;
             request.unit.validate()?;
+            validate_parquet_source(source.as_ref())?;
             if request.target_batch_rows == 0 || request.target_batch_bytes == 0 {
                 return Err(CdfError::contract(
                     "Parquet decode requires nonzero row and byte batch targets",
@@ -194,13 +198,16 @@ impl FormatDriver for ParquetFormatDriver {
                     "Parquet predicate pushdown is not implemented by this driver version",
                 ));
             }
-            let mut builder = ParquetRecordBatchStreamBuilder::new(ParquetByteSource::new(source))
-                .await
-                .map_err(parquet_error)?
-                .with_batch_size(request.target_batch_rows)
-                .with_row_groups(vec![usize::try_from(request.unit.ordinal).map_err(
-                    |_| CdfError::data("Parquet row-group ordinal exceeds usize"),
-                )?]);
+            let mut builder = ParquetRecordBatchStreamBuilder::new(ParquetByteSource::new(
+                source,
+                request.cancellation.clone(),
+            ))
+            .await
+            .map_err(parquet_error)?
+            .with_batch_size(request.target_batch_rows)
+            .with_row_groups(vec![usize::try_from(request.unit.ordinal).map_err(
+                |_| CdfError::data("Parquet row-group ordinal exceeds usize"),
+            )?]);
             let actual_hash = cdf_contract::canonical_arrow_schema_hash(builder.schema())?;
             if actual_hash != request.observed_schema_hash {
                 return Err(CdfError::data(format!(
@@ -280,13 +287,15 @@ type PinParquetStream = std::pin::Pin<
 #[derive(Clone)]
 struct ParquetByteSource {
     source: Arc<dyn ByteSource>,
+    cancellation: cdf_runtime::RunCancellation,
     bytes_read: Arc<AtomicU64>,
 }
 
 impl ParquetByteSource {
-    fn new(source: Arc<dyn ByteSource>) -> Self {
+    fn new(source: Arc<dyn ByteSource>, cancellation: cdf_runtime::RunCancellation) -> Self {
         Self {
             source,
+            cancellation,
             bytes_read: Arc::new(AtomicU64::new(0)),
         }
     }
@@ -298,7 +307,7 @@ impl ParquetByteSource {
         let extent = ByteExtent::new(range.start, length).map_err(to_parquet_error)?;
         let bytes = self
             .source
-            .read_exact_range(extent)
+            .read_exact_range(extent, self.cancellation.clone())
             .await
             .map_err(to_parquet_error)?;
         self.bytes_read.fetch_add(length, Ordering::Relaxed);
@@ -377,6 +386,20 @@ impl MetadataSuffixFetch for &mut ParquetByteSource {
 
 fn parquet_error(error: ParquetError) -> CdfError {
     CdfError::data(format!("Parquet driver: {error}"))
+}
+
+fn validate_parquet_source(source: &dyn ByteSource) -> Result<()> {
+    source.identity().validate()?;
+    source.capabilities().validate()?;
+    if source.identity().size_bytes.is_none()
+        || !source.capabilities().exact_ranges
+        || source.identity().strength == GenerationStrength::Weak
+    {
+        return Err(CdfError::contract(
+            "Parquet random-access decode requires known length and enforceable strong/content-addressed exact ranges; select a verified sequential spool for weak sources",
+        ));
+    }
+    Ok(())
 }
 
 fn to_parquet_error(error: CdfError) -> ParquetError {

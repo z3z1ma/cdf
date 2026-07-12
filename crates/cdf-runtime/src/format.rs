@@ -74,6 +74,15 @@ pub struct ContentIdentity {
     pub size_bytes: Option<u64>,
     pub generation: Option<String>,
     pub checksum: Option<String>,
+    pub strength: GenerationStrength,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GenerationStrength {
+    Weak,
+    Strong,
+    ContentAddressed,
 }
 
 impl ContentIdentity {
@@ -96,6 +105,11 @@ impl ContentIdentity {
         if self.generation.is_none() && self.checksum.is_none() {
             return Err(CdfError::contract(
                 "byte-source content identity requires generation or checksum authority",
+            ));
+        }
+        if self.strength == GenerationStrength::ContentAddressed && self.checksum.is_none() {
+            return Err(CdfError::contract(
+                "content-addressed byte identity requires a checksum",
             ));
         }
         Ok(())
@@ -158,7 +172,11 @@ pub trait ByteSource: Send + Sync {
         &self,
         request: SequentialReadRequest,
     ) -> BoxFuture<'_, Result<AccountedByteStream>>;
-    fn read_exact_range(&self, extent: ByteExtent) -> BoxFuture<'_, Result<AccountedBytes>>;
+    fn read_exact_range(
+        &self,
+        extent: ByteExtent,
+        cancellation: RunCancellation,
+    ) -> BoxFuture<'_, Result<AccountedBytes>>;
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

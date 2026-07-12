@@ -19,7 +19,7 @@ fn shared_payload_clones_release_exactly_once() {
     let coordinator = DeterministicMemoryCoordinator::new(1024, BTreeMap::new()).unwrap();
     let request = ReservationRequest::new(consumer("decode", MemoryClass::Decode), 128).unwrap();
     let lease = coordinator.try_reserve(&request).unwrap().unwrap();
-    let payload = AccountedBytes::new(Arc::from(vec![7_u8; 64]), lease).unwrap();
+    let payload = AccountedBytes::new(bytes::Bytes::from(vec![7_u8; 64]), lease).unwrap();
     let clone = payload.clone();
     assert_eq!(coordinator.snapshot().current_bytes, 64);
     drop(payload);

@@ -1007,6 +1007,7 @@ dependencies = [
  "arrow-array 59.1.0",
  "arrow-buffer 59.1.0",
  "arrow-data 59.1.0",
+ "bytes",
  "cdf-kernel",
  "futures-executor",
  "serde",
@@ -1118,11 +1119,12 @@ name = "cdf-source-files"
 version = "0.1.0"
 dependencies = [
  "arrow-schema 59.1.0",
+ "bytes",
  "cdf-contract",
- "cdf-engine",
  "cdf-formats",
  "cdf-http",
  "cdf-kernel",
+ "cdf-memory",
  "cdf-runtime",
  "flate2",
  "futures-executor",

@@ -10,6 +10,7 @@ description = "Runtime-neutral memory accounting and admission contracts for cdf
 arrow-array = "59.1.0"
 arrow-buffer = "59.1.0"
 arrow-data = "59.1.0"
+bytes = "1.11.0"
 cdf-kernel = { path = "../cdf-kernel" }
 serde = { version = "1.0.228", features = ["derive"] }
 

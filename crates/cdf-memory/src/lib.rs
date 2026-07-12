@@ -11,6 +11,7 @@ use std::{
 use arrow_array::{Array, RecordBatch};
 use arrow_buffer::Buffer;
 use arrow_data::ArrayData;
+use bytes::Bytes;
 use cdf_kernel::{CdfError, Result};
 use serde::{Deserialize, Serialize};
 
@@ -290,12 +291,12 @@ impl MemoryLease {
 
 #[derive(Clone, Debug)]
 pub struct AccountedBytes {
-    payload: Arc<[u8]>,
+    payload: Bytes,
     lease: MemoryLease,
 }
 
 impl AccountedBytes {
-    pub fn new(payload: Arc<[u8]>, lease: MemoryLease) -> Result<Self> {
+    pub fn new(payload: Bytes, lease: MemoryLease) -> Result<Self> {
         let observed = u64::try_from(payload.len())
             .map_err(|_| CdfError::data("byte payload length exceeds u64"))?;
         if observed == 0 || lease.bytes() < observed {
@@ -309,7 +310,7 @@ impl AccountedBytes {
     }
 
     pub fn payload(&self) -> &[u8] {
-        &self.payload
+        self.payload.as_ref()
     }
 
     pub fn lease(&self) -> &MemoryLease {
