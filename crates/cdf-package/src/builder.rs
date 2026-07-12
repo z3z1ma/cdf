@@ -22,10 +22,10 @@ use crate::{
     ops::update_package_status,
     quarantine::{QuarantineRecord, quarantine_records_to_parquet_bytes},
     storage::{
-        ArtifactDurability, atomic_write, build_manifest, collect_identity_file_entries,
-        create_layout, file_entry_for_path, io_error, nested_artifact_path,
-        normalize_artifact_path, package_path, segment_relative_path, sync_directory,
-        visit_identity_file_paths, write_arrow_ipc_file, write_manifest_atomic,
+        ArtifactDurability, HashingWriter, atomic_write, build_manifest,
+        collect_identity_file_entries, create_layout, file_entry_for_path, io_error,
+        nested_artifact_path, normalize_artifact_path, package_path, segment_relative_path,
+        sync_directory, visit_identity_file_paths, write_arrow_ipc_file, write_manifest_atomic,
     },
 };
 
@@ -35,7 +35,7 @@ pub struct PackageBuilder {
     package_id: String,
     segment_drafts: Mutex<File>,
     artifact_receipts: Mutex<File>,
-    trace: Mutex<std::fs::File>,
+    trace: Mutex<HashingWriter<std::fs::File>>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -90,7 +90,7 @@ impl PackageBuilder {
                 tempfile::tempfile()
                     .map_err(|error| io_error("create package artifact receipt journal", error))?,
             ),
-            trace: Mutex::new(trace),
+            trace: Mutex::new(HashingWriter::new(trace)),
         })
     }
 
@@ -348,18 +348,19 @@ impl PackageBuilder {
     }
 
     pub fn finish_with_status(&self, status: PackageStatus) -> Result<PackageManifest> {
-        {
+        let trace_entry = {
             let mut trace = self
                 .trace
                 .lock()
                 .map_err(|_| CdfError::internal("package trace sink lock is poisoned"))?;
-            trace
-                .flush()
-                .map_err(|error| io_error(format!("flush {TRACE_FILE}"), error))?;
-            trace
-                .sync_all()
-                .map_err(|error| io_error(format!("sync {TRACE_FILE}"), error))?;
-        }
+            trace.sync_all()?;
+            trace.file_entry(TRACE_FILE)
+        };
+        append_journal(
+            &self.artifact_receipts,
+            &trace_entry,
+            "package artifact receipt journal",
+        )?;
         sync_directory(&self.package_dir)?;
         let mut pending_artifacts =
             read_journal::<FileEntry>(&self.artifact_receipts, "package artifact receipt journal")?

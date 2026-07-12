@@ -44,18 +44,37 @@ pub(crate) struct IpcWriteReceipt {
     pub publish_duration_ns: u64,
 }
 
-struct HashingWriter<W> {
+#[derive(Debug)]
+pub(crate) struct HashingWriter<W> {
     inner: W,
     hasher: Sha256,
     byte_count: u64,
 }
 
 impl<W> HashingWriter<W> {
-    fn new(inner: W) -> Self {
+    pub(crate) fn new(inner: W) -> Self {
         Self {
             inner,
             hasher: Sha256::new(),
             byte_count: 0,
+        }
+    }
+}
+
+impl HashingWriter<File> {
+    pub(crate) fn sync_all(&mut self) -> Result<()> {
+        self.flush()
+            .map_err(|error| io_error("flush hashing writer", error))?;
+        self.inner
+            .sync_all()
+            .map_err(|error| io_error("sync hashing writer", error))
+    }
+
+    pub(crate) fn file_entry(&self, path: impl Into<String>) -> FileEntry {
+        FileEntry {
+            path: path.into(),
+            byte_count: self.byte_count,
+            sha256: hex::encode(self.hasher.clone().finalize()),
         }
     }
 }
