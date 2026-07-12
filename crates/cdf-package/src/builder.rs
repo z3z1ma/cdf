@@ -23,9 +23,9 @@ use crate::{
     quarantine::{QuarantineRecord, quarantine_records_to_parquet_bytes},
     storage::{
         ArtifactDurability, HashingWriter, atomic_write, build_manifest,
-        collect_identity_file_entries, create_layout, file_entry_for_path, io_error,
-        nested_artifact_path, normalize_artifact_path, package_path, segment_relative_path,
-        sync_directory, visit_identity_file_paths, write_arrow_ipc_file, write_manifest_atomic,
+        collect_identity_file_entries, create_layout, io_error, nested_artifact_path,
+        normalize_artifact_path, package_path, segment_relative_path, sync_directory,
+        visit_identity_file_paths, write_arrow_ipc_file, write_manifest_atomic,
     },
 };
 
@@ -437,7 +437,11 @@ impl PackageBuilder {
                         entry.byte_count
                     )));
                 }
-                None => files.push(file_entry_for_path(&self.package_dir, &relative_path)?),
+                None => {
+                    return Err(CdfError::data(format!(
+                        "identity artifact {relative_path} has no hash-while-write receipt; write package identity only through PackageBuilder"
+                    )));
+                }
             }
             Ok(())
         })?;

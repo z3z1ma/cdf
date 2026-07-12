@@ -571,6 +571,16 @@ fn dropped_streaming_identity_artifact_publishes_nothing() {
 }
 
 #[test]
+fn finalization_rejects_unregistered_identity_writers() {
+    let temp = tempfile::tempdir().unwrap();
+    let builder = PackageBuilder::create(temp.path(), "unregistered-writer").unwrap();
+    fs::write(temp.path().join("stats/bypass.json"), b"{}").unwrap();
+
+    let error = builder.finish().unwrap_err();
+    assert!(error.message.contains("no hash-while-write receipt"));
+}
+
+#[test]
 fn fixed_fixture_hash_is_deterministic_across_repeated_runs() {
     let first = tempfile::tempdir().unwrap();
     let second = tempfile::tempdir().unwrap();
