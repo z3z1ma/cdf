@@ -35,3 +35,8 @@ Depends on A5a, A3, and E1.
 - `.10x/specs/streaming-operator-graph.md`
 - `.10x/specs/streaming-destination-ingress.md`
 - `.10x/specs/package-io-hashing-durability.md`
+
+## Progress and notes
+
+- 2026-07-11: Added the neutral `VerifiedSegmentStream<T>`/`VerifiedSegment<T>` package boundary. Construction verifies package identity and exact commit-segment coverage before yielding data; each `next` reserves one fixed package-memory window before decode, validates retained bytes and row counts, reconciles the lease to actual Arrow memory, and carries the lease with the segment. The generic authority parameter supports ordinary package replay (`()`) and commit-authoritative state segments through one shape.
+- 2026-07-11: Enforced the one-live-window law structurally. Advancing while a prior item is alive fails immediately with a contract error rather than deadlocking or growing memory; dropping the item releases the lease and permits the next read. Tampered packages emit no item, undersized windows fail closed, and stream failure is terminal. Focused tests and strict package Clippy pass. Destination/project migration, crash injection, static eager-read exclusion, and throughput/RSS evidence remain open.

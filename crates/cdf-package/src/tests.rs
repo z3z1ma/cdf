@@ -18,6 +18,7 @@ use cdf_kernel::{
     SegmentId, SourcePosition, StateDelta, StateSegment, TargetName, VerifyClause,
     WriteDisposition, aggregate_processed_observation_positions,
 };
+use cdf_memory::{DeterministicMemoryCoordinator, MemoryCoordinator};
 
 #[cfg(unix)]
 #[test]
@@ -620,6 +621,92 @@ fn read_commit_segments_preserves_requested_and_package_byte_counts() {
     );
     assert_eq!(commit_segments[0].batches[0].num_rows(), 2);
     assert_eq!(commit_segments[1].batches[0].num_rows(), 1);
+}
+
+#[test]
+fn verified_commit_stream_holds_one_accounted_segment_window() {
+    let temp = tempfile::tempdir().unwrap();
+    let manifest = build_archive_fixture(temp.path());
+    let reader = PackageReader::open(temp.path()).unwrap();
+    let state_segments = state_segments_for_manifest(&manifest);
+    let memory: Arc<dyn MemoryCoordinator> =
+        Arc::new(DeterministicMemoryCoordinator::new(64 * 1024, BTreeMap::new()).unwrap());
+    let mut stream = reader
+        .verified_commit_segment_stream(&state_segments, Arc::clone(&memory), 64 * 1024)
+        .unwrap();
+
+    let first = stream.next().unwrap().unwrap();
+    assert_eq!(first.entry.segment_id, state_segments[0].segment_id);
+    assert_eq!(first.authority, state_segments[0]);
+    assert_eq!(first.batches[0].num_rows(), 2);
+    assert!(first.accounted_bytes() > 0);
+    assert_eq!(memory.snapshot().current_bytes, first.accounted_bytes());
+    drop(first);
+    assert_eq!(memory.snapshot().current_bytes, 0);
+
+    let second = stream.next().unwrap().unwrap();
+    assert_eq!(second.entry.segment_id, state_segments[1].segment_id);
+    assert_eq!(second.authority, state_segments[1]);
+    assert_eq!(second.batches[0].num_rows(), 1);
+    drop(second);
+    assert!(stream.next().is_none());
+    let snapshot = memory.snapshot();
+    assert_eq!(snapshot.current_bytes, 0);
+    assert!(snapshot.peak_bytes <= 64 * 1024);
+}
+
+#[test]
+fn verified_segment_stream_rejects_tamper_and_undersized_windows() {
+    let tampered = tempfile::tempdir().unwrap();
+    let manifest = build_fixture(tampered.path());
+    let path = tampered.path().join(&manifest.identity.segments[0].path);
+    fs::write(&path, b"tampered").unwrap();
+    let reader = PackageReader::open(tampered.path()).unwrap();
+    let memory: Arc<dyn MemoryCoordinator> =
+        Arc::new(DeterministicMemoryCoordinator::new(64 * 1024, BTreeMap::new()).unwrap());
+    let error = reader
+        .verified_segment_stream(Arc::clone(&memory), 64 * 1024)
+        .err()
+        .unwrap();
+    assert!(error.message.contains("tampered identity file"));
+    assert_eq!(memory.snapshot().current_bytes, 0);
+
+    let small = tempfile::tempdir().unwrap();
+    build_fixture(small.path());
+    let reader = PackageReader::open(small.path()).unwrap();
+    let tiny: Arc<dyn MemoryCoordinator> =
+        Arc::new(DeterministicMemoryCoordinator::new(64 * 1024, BTreeMap::new()).unwrap());
+    let mut stream = reader
+        .verified_segment_stream(Arc::clone(&tiny), 1)
+        .unwrap();
+    let error = stream.next().unwrap().unwrap_err();
+    assert!(
+        error
+            .message
+            .contains("above its 1-byte verified stream window")
+    );
+    assert_eq!(tiny.snapshot().current_bytes, 0);
+    assert!(stream.next().is_none());
+}
+
+#[test]
+fn verified_segment_stream_refuses_two_live_windows_without_deadlock() {
+    let temp = tempfile::tempdir().unwrap();
+    let manifest = build_archive_fixture(temp.path());
+    let reader = PackageReader::open(temp.path()).unwrap();
+    let memory: Arc<dyn MemoryCoordinator> =
+        Arc::new(DeterministicMemoryCoordinator::new(64 * 1024, BTreeMap::new()).unwrap());
+    let mut stream = reader
+        .verified_segment_stream(Arc::clone(&memory), 64 * 1024)
+        .unwrap();
+    let first = stream.next().unwrap().unwrap();
+    let error = stream.next().unwrap().unwrap_err();
+    assert!(error.message.contains("previous accounted segment"));
+    assert_eq!(memory.snapshot().current_bytes, first.accounted_bytes());
+    drop(first);
+    assert_eq!(memory.snapshot().current_bytes, 0);
+    assert!(stream.next().is_none());
+    assert_eq!(manifest.identity.segments.len(), 2);
 }
 
 #[test]

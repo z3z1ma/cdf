@@ -2,11 +2,18 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     fs::File,
     path::{Path, PathBuf},
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
 };
 
 use arrow_array::{Array, RecordBatch, UInt64Array};
 use cdf_kernel::{
     CdfError, Checkpoint, CommitSegment, PackageHash, Receipt, Result, SegmentId, StateSegment,
+};
+use cdf_memory::{
+    ConsumerKey, MemoryClass, MemoryCoordinator, MemoryLease, ReservationRequest, reserve_blocking,
 };
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 
@@ -33,6 +40,134 @@ pub struct PackageReader {
     package_dir: PathBuf,
     manifest: PackageManifest,
 }
+
+#[derive(Debug)]
+pub struct VerifiedSegment<T> {
+    pub entry: SegmentEntry,
+    pub authority: T,
+    pub batches: Vec<RecordBatch>,
+    _memory_lease: MemoryLease,
+    window_in_flight: Arc<AtomicBool>,
+}
+
+impl<T> Drop for VerifiedSegment<T> {
+    fn drop(&mut self) {
+        self.window_in_flight.store(false, Ordering::Release);
+    }
+}
+
+impl<T> VerifiedSegment<T> {
+    pub fn accounted_bytes(&self) -> u64 {
+        self._memory_lease.bytes()
+    }
+}
+
+pub struct VerifiedSegmentStream<T> {
+    package_dir: PathBuf,
+    segments: std::vec::IntoIter<(SegmentEntry, T)>,
+    memory: Arc<dyn MemoryCoordinator>,
+    maximum_segment_bytes: u64,
+    window_in_flight: Arc<AtomicBool>,
+    failed: bool,
+}
+
+fn verified_segment_stream<T>(
+    package_dir: &Path,
+    segments: Vec<(SegmentEntry, T)>,
+    memory: Arc<dyn MemoryCoordinator>,
+    maximum_segment_bytes: u64,
+) -> Result<VerifiedSegmentStream<T>> {
+    if maximum_segment_bytes == 0 {
+        return Err(CdfError::contract(
+            "verified segment stream window must be nonzero",
+        ));
+    }
+    if maximum_segment_bytes > memory.snapshot().budget_bytes {
+        return Err(CdfError::data(format!(
+            "verified segment stream window {maximum_segment_bytes} exceeds managed budget {}",
+            memory.snapshot().budget_bytes
+        )));
+    }
+    Ok(VerifiedSegmentStream {
+        package_dir: package_dir.to_path_buf(),
+        segments: segments.into_iter(),
+        memory,
+        maximum_segment_bytes,
+        window_in_flight: Arc::new(AtomicBool::new(false)),
+        failed: false,
+    })
+}
+
+impl<T> Iterator for VerifiedSegmentStream<T> {
+    type Item = Result<VerifiedSegment<T>>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.failed {
+            return None;
+        }
+        let (entry, authority) = self.segments.next()?;
+        if self
+            .window_in_flight
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_err()
+        {
+            self.failed = true;
+            return Some(Err(CdfError::contract(
+                "verified segment stream requires the previous accounted segment to be dropped before advancing",
+            )));
+        }
+        let result = (|| {
+            let request = ReservationRequest::new(
+                ConsumerKey::new("verified-segment-stream", MemoryClass::Package)?,
+                self.maximum_segment_bytes,
+            )?
+            .as_minimum_working_set();
+            let lease = reserve_blocking(Arc::clone(&self.memory), &request)?;
+            let batches = read_segment_file(&self.package_dir, &entry.path)?;
+            let retained_bytes = batches.iter().try_fold(0u64, |total, batch| {
+                total
+                    .checked_add(u64::try_from(batch.get_array_memory_size()).map_err(|_| {
+                        CdfError::data("verified segment retained memory exceeds u64")
+                    })?)
+                    .ok_or_else(|| CdfError::data("verified segment retained memory overflow"))
+            })?;
+            if retained_bytes > self.maximum_segment_bytes {
+                return Err(CdfError::data(format!(
+                    "segment {} retains {retained_bytes} Arrow bytes above its {}-byte verified stream window; raise the stream window or rebuild with a smaller canonical segment maximum",
+                    entry.segment_id, self.maximum_segment_bytes
+                )));
+            }
+            let row_count =
+                batches.iter().try_fold(0u64, |total, batch| {
+                    total
+                        .checked_add(u64::try_from(batch.num_rows()).map_err(|_| {
+                            CdfError::data("verified segment row count exceeds u64")
+                        })?)
+                        .ok_or_else(|| CdfError::data("verified segment row count overflow"))
+                })?;
+            if row_count != entry.row_count {
+                return Err(CdfError::data(format!(
+                    "segment {} manifest row count {} differs from package data {row_count}",
+                    entry.segment_id, entry.row_count
+                )));
+            }
+            lease.reconcile(retained_bytes.max(1))?;
+            Ok(VerifiedSegment {
+                entry,
+                authority,
+                batches,
+                _memory_lease: lease,
+                window_in_flight: Arc::clone(&self.window_in_flight),
+            })
+        })();
+        if result.is_err() {
+            self.window_in_flight.store(false, Ordering::Release);
+            self.failed = true;
+        }
+        Some(result)
+    }
+}
+
 impl PackageReader {
     pub fn open(package_dir: impl AsRef<Path>) -> Result<Self> {
         let package_dir = package_dir.as_ref().to_path_buf();
@@ -147,6 +282,69 @@ impl PackageReader {
                 ))
             })
             .collect()
+    }
+
+    pub fn verified_segment_stream(
+        &self,
+        memory: Arc<dyn MemoryCoordinator>,
+        maximum_segment_bytes: u64,
+    ) -> Result<VerifiedSegmentStream<()>> {
+        self.verify()?;
+        verified_segment_stream(
+            &self.package_dir,
+            self.manifest
+                .identity
+                .segments
+                .iter()
+                .cloned()
+                .map(|entry| (entry, ()))
+                .collect(),
+            memory,
+            maximum_segment_bytes,
+        )
+    }
+
+    pub fn verified_commit_segment_stream(
+        &self,
+        state_segments: &[StateSegment],
+        memory: Arc<dyn MemoryCoordinator>,
+        maximum_segment_bytes: u64,
+    ) -> Result<VerifiedSegmentStream<StateSegment>> {
+        self.verify()?;
+        let mut manifest_by_id = self
+            .manifest
+            .identity
+            .segments
+            .iter()
+            .map(|entry| (entry.segment_id.clone(), entry.clone()))
+            .collect::<BTreeMap<_, _>>();
+        if manifest_by_id.len() != self.manifest.identity.segments.len() {
+            return Err(CdfError::data(
+                "package manifest contains duplicate segment ids",
+            ));
+        }
+        let mut ordered = Vec::with_capacity(state_segments.len());
+        for state in state_segments {
+            let entry = manifest_by_id.remove(&state.segment_id).ok_or_else(|| {
+                CdfError::data(format!(
+                    "destination commit request segment {} is not present in the package manifest",
+                    state.segment_id
+                ))
+            })?;
+            if state.row_count != entry.row_count {
+                return Err(CdfError::data(format!(
+                    "destination commit request segment {} has {} rows but package manifest has {} rows",
+                    state.segment_id, state.row_count, entry.row_count
+                )));
+            }
+            ordered.push((entry, state.clone()));
+        }
+        if let Some(segment_id) = manifest_by_id.keys().next() {
+            return Err(CdfError::data(format!(
+                "package manifest segment {segment_id} is missing from destination commit request"
+            )));
+        }
+        verified_segment_stream(&self.package_dir, ordered, memory, maximum_segment_bytes)
     }
 
     pub fn read_quarantine_records(&self) -> Result<Vec<QuarantineRecord>> {
