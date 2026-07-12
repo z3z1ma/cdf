@@ -4,12 +4,13 @@ use bytes::Bytes;
 use cdf_kernel::{CdfError, Result};
 use cdf_memory::{AccountedBytes, MemoryLease, ReservationRequest, reserve};
 use cdf_runtime::{
-    AccountedByteStream, ByteTransformDescriptor, ByteTransformDriver, ByteTransformId,
-    ByteTransformRequest, MagicSignature, TransformChecksumBehavior,
+    AccountedByteCursor, AccountedByteStream, ByteTransformDescriptor, ByteTransformDriver,
+    ByteTransformId, ByteTransformRequest, MagicSignature, TransformChecksumBehavior,
+    TransformExpansionGuard,
 };
 use crc32fast::Hasher;
 use flate2::{Decompress, FlushDecompress, Status};
-use futures_util::{StreamExt, stream};
+use futures_util::stream;
 
 const GZIP_MAGIC: &[u8; 2] = b"\x1f\x8b";
 const MAXIMUM_HEADER_BYTES: usize = 64 * 1024;
@@ -69,14 +70,15 @@ impl ByteTransformDriver for GzipTransformDriver {
         }
         let output_chunk_bytes = usize::try_from(request.preferred_output_chunk_bytes)
             .map_err(|_| CdfError::contract("gzip output chunk exceeds usize"))?;
+        let expansion = TransformExpansionGuard::new(&request)?;
         let state = GzipState {
-            input: InputCursor::new(input),
+            input: AccountedByteCursor::new(input),
             request,
             output_chunk_bytes,
             decoder: None,
             member_crc: Hasher::new(),
             member_expanded_bytes: 0,
-            total_expanded_bytes: 0,
+            expansion,
             members: 0,
             working_set_lease: None,
         };
@@ -91,13 +93,13 @@ impl ByteTransformDriver for GzipTransformDriver {
 }
 
 struct GzipState {
-    input: InputCursor,
+    input: AccountedByteCursor,
     request: ByteTransformRequest,
     output_chunk_bytes: usize,
     decoder: Option<Decompress>,
     member_crc: Hasher,
     member_expanded_bytes: u64,
-    total_expanded_bytes: u64,
+    expansion: TransformExpansionGuard,
     members: u64,
     working_set_lease: Option<MemoryLease>,
 }
@@ -120,7 +122,8 @@ impl GzipState {
                     if self.members == 0 {
                         return Err(CdfError::data("gzip input is empty"));
                     }
-                    self.enforce_terminal_ratio()?;
+                    self.expansion
+                        .enforce_exact_ratio(self.input.consumed_bytes())?;
                     return Ok(None);
                 }
                 self.decoder = Some(Decompress::new(false));
@@ -167,12 +170,8 @@ impl GzipState {
                     produced,
                     "gzip member expanded-byte count overflowed",
                 )?;
-                self.total_expanded_bytes = checked_add_bytes(
-                    self.total_expanded_bytes,
-                    produced,
-                    "gzip total expanded-byte count overflowed",
-                )?;
-                self.enforce_expansion_limits(false)?;
+                self.expansion
+                    .record(produced, self.input.consumed_bytes(), false)?;
             }
 
             if status == Status::StreamEnd {
@@ -319,102 +318,8 @@ impl GzipState {
                 self.members
             )));
         }
-        self.enforce_expansion_limits(true)
-    }
-
-    fn enforce_expansion_limits(&self, member_complete: bool) -> Result<()> {
-        if self.total_expanded_bytes > self.request.maximum_expanded_bytes {
-            return Err(CdfError::data(format!(
-                "gzip expansion produced {} bytes, exceeding the configured {}-byte ceiling",
-                self.total_expanded_bytes, self.request.maximum_expanded_bytes
-            )));
-        }
-        let compressed = self.input.consumed_bytes;
-        let ratio_ceiling = compressed
-            .checked_mul(u64::from(self.request.maximum_expansion_ratio))
-            .ok_or_else(|| CdfError::data("gzip expansion-ratio calculation overflowed"))?;
-        let streaming_grace = if member_complete {
-            0
-        } else {
-            self.request.preferred_output_chunk_bytes
-        };
-        if self.total_expanded_bytes > ratio_ceiling.saturating_add(streaming_grace) {
-            return Err(CdfError::data(format!(
-                "gzip expansion ratio exceeds the configured {}:1 ceiling after {} compressed bytes",
-                self.request.maximum_expansion_ratio, compressed
-            )));
-        }
-        Ok(())
-    }
-
-    fn enforce_terminal_ratio(&self) -> Result<()> {
-        self.enforce_expansion_limits(true)
-    }
-}
-
-struct InputCursor {
-    stream: AccountedByteStream,
-    current: Option<AccountedBytes>,
-    offset: usize,
-    consumed_bytes: u64,
-}
-
-impl InputCursor {
-    fn new(stream: AccountedByteStream) -> Self {
-        Self {
-            stream,
-            current: None,
-            offset: 0,
-            consumed_bytes: 0,
-        }
-    }
-
-    async fn ensure_current(&mut self) -> Result<bool> {
-        while self
-            .current
-            .as_ref()
-            .is_none_or(|chunk| self.offset == chunk.payload().len())
-        {
-            self.current = None;
-            self.current = self.stream.next().await.transpose()?;
-            self.offset = 0;
-            if self.current.is_none() {
-                return Ok(false);
-            }
-        }
-        Ok(true)
-    }
-
-    fn current_slice(&self) -> &[u8] {
-        self.current
-            .as_ref()
-            .map(|chunk| &chunk.payload()[self.offset..])
-            .unwrap_or_default()
-    }
-
-    fn consume(&mut self, bytes: usize) -> Result<()> {
-        let available = self.current_slice().len();
-        if bytes > available {
-            return Err(CdfError::internal(
-                "gzip decoder consumed beyond its current input chunk",
-            ));
-        }
-        self.offset += bytes;
-        self.consumed_bytes = checked_add_bytes(
-            self.consumed_bytes,
-            bytes,
-            "gzip compressed-byte count overflowed",
-        )?;
-        Ok(())
-    }
-
-    async fn next_byte(&mut self) -> Result<Option<u8>> {
-        if !self.ensure_current().await? {
-            return Ok(None);
-        }
-        let byte = self.current_slice()[0];
-        self.consume(1)?;
-        Ok(Some(byte))
+        self.expansion
+            .enforce_exact_ratio(self.input.consumed_bytes())
     }
 }
 
@@ -435,6 +340,7 @@ mod tests {
     };
     use flate2::{Compression, write::GzEncoder};
     use futures_executor::block_on;
+    use futures_util::StreamExt;
 
     use super::*;
 

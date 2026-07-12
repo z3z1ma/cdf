@@ -10,7 +10,7 @@ use cdf_memory::{
     AccountedBytes, ConsumerKey, MemoryClass, MemoryCoordinator, MemoryLease,
     record_batch_retained_bytes,
 };
-use futures_util::Stream;
+use futures_util::{Stream, StreamExt};
 use serde::{Deserialize, Serialize};
 
 use crate::RunCancellation;
@@ -18,6 +18,78 @@ use crate::RunCancellation;
 pub type AccountedByteStream = Pin<Box<dyn Stream<Item = Result<AccountedBytes>> + Send + 'static>>;
 pub type PhysicalDecodeStream =
     Pin<Box<dyn Stream<Item = Result<AccountedPhysicalBatch>> + Send + 'static>>;
+
+pub struct AccountedByteCursor {
+    stream: AccountedByteStream,
+    current: Option<AccountedBytes>,
+    offset: usize,
+    consumed_bytes: u64,
+}
+
+impl AccountedByteCursor {
+    pub fn new(stream: AccountedByteStream) -> Self {
+        Self {
+            stream,
+            current: None,
+            offset: 0,
+            consumed_bytes: 0,
+        }
+    }
+
+    pub async fn ensure_current(&mut self) -> Result<bool> {
+        while self
+            .current
+            .as_ref()
+            .is_none_or(|chunk| self.offset == chunk.payload().len())
+        {
+            self.current = None;
+            self.current = self.stream.next().await.transpose()?;
+            self.offset = 0;
+            if self.current.is_none() {
+                return Ok(false);
+            }
+        }
+        Ok(true)
+    }
+
+    pub fn current_slice(&self) -> &[u8] {
+        self.current
+            .as_ref()
+            .map(|chunk| &chunk.payload()[self.offset..])
+            .unwrap_or_default()
+    }
+
+    pub fn consume(&mut self, bytes: usize) -> Result<()> {
+        let available = self.current_slice().len();
+        if bytes > available {
+            return Err(CdfError::internal(
+                "accounted byte cursor consumed beyond its current chunk",
+            ));
+        }
+        self.offset += bytes;
+        self.consumed_bytes = self
+            .consumed_bytes
+            .checked_add(
+                u64::try_from(bytes)
+                    .map_err(|_| CdfError::data("byte cursor count exceeds u64"))?,
+            )
+            .ok_or_else(|| CdfError::data("accounted byte cursor count overflowed"))?;
+        Ok(())
+    }
+
+    pub async fn next_byte(&mut self) -> Result<Option<u8>> {
+        if !self.ensure_current().await? {
+            return Ok(None);
+        }
+        let byte = self.current_slice()[0];
+        self.consume(1)?;
+        Ok(Some(byte))
+    }
+
+    pub fn consumed_bytes(&self) -> u64 {
+        self.consumed_bytes
+    }
+}
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(transparent)]
@@ -514,6 +586,86 @@ impl ByteTransformRequest {
                 })?;
         }
         Ok(())
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct TransformExpansionGuard {
+    maximum_expanded_bytes: u64,
+    maximum_expansion_ratio: u32,
+    streaming_grace_bytes: u64,
+    expanded_bytes: u64,
+}
+
+impl TransformExpansionGuard {
+    pub fn new(request: &ByteTransformRequest) -> Result<Self> {
+        if request.maximum_expanded_bytes == 0
+            || request.maximum_expansion_ratio == 0
+            || request.preferred_output_chunk_bytes == 0
+        {
+            return Err(CdfError::contract(
+                "transform expansion guard requires nonzero byte, ratio, and chunk bounds",
+            ));
+        }
+        Ok(Self {
+            maximum_expanded_bytes: request.maximum_expanded_bytes,
+            maximum_expansion_ratio: request.maximum_expansion_ratio,
+            streaming_grace_bytes: request.preferred_output_chunk_bytes,
+            expanded_bytes: 0,
+        })
+    }
+
+    pub fn record(
+        &mut self,
+        produced_bytes: usize,
+        compressed_consumed_bytes: u64,
+        exact_ratio_boundary: bool,
+    ) -> Result<()> {
+        self.expanded_bytes = self
+            .expanded_bytes
+            .checked_add(
+                u64::try_from(produced_bytes)
+                    .map_err(|_| CdfError::data("expanded-byte count exceeds u64"))?,
+            )
+            .ok_or_else(|| CdfError::data("transform expanded-byte count overflowed"))?;
+        if self.expanded_bytes > self.maximum_expanded_bytes {
+            return Err(CdfError::data(format!(
+                "transform expansion produced {} bytes, exceeding the configured {}-byte ceiling",
+                self.expanded_bytes, self.maximum_expanded_bytes
+            )));
+        }
+        let ratio_ceiling = compressed_consumed_bytes
+            .checked_mul(u64::from(self.maximum_expansion_ratio))
+            .ok_or_else(|| CdfError::data("transform expansion-ratio calculation overflowed"))?;
+        let grace = if exact_ratio_boundary {
+            0
+        } else {
+            self.streaming_grace_bytes
+        };
+        if self.expanded_bytes > ratio_ceiling.saturating_add(grace) {
+            return Err(CdfError::data(format!(
+                "transform expansion ratio exceeds the configured {}:1 ceiling after {compressed_consumed_bytes} compressed bytes",
+                self.maximum_expansion_ratio
+            )));
+        }
+        Ok(())
+    }
+
+    pub fn enforce_exact_ratio(&self, compressed_consumed_bytes: u64) -> Result<()> {
+        let ratio_ceiling = compressed_consumed_bytes
+            .checked_mul(u64::from(self.maximum_expansion_ratio))
+            .ok_or_else(|| CdfError::data("transform expansion-ratio calculation overflowed"))?;
+        if self.expanded_bytes > ratio_ceiling {
+            return Err(CdfError::data(format!(
+                "transform expansion ratio exceeds the configured {}:1 ceiling after {compressed_consumed_bytes} compressed bytes",
+                self.maximum_expansion_ratio
+            )));
+        }
+        Ok(())
+    }
+
+    pub fn expanded_bytes(&self) -> u64 {
+        self.expanded_bytes
     }
 }
 
