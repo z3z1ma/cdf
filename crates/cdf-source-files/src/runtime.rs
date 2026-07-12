@@ -576,7 +576,7 @@ enum PreparedFileInput {
     Source(Arc<dyn ByteSource>),
     SpoolSource {
         source: Arc<dyn ByteSource>,
-        size_bytes: u64,
+        size_bytes: Option<u64>,
     },
     Path {
         path: PathBuf,
@@ -822,10 +822,35 @@ fn prepare_file_input(
                 {
                     PreparedFileInput::SpoolSource {
                         source,
-                        size_bytes: resolved.size_bytes,
+                        size_bytes: Some(resolved.size_bytes),
                     }
                 } else {
                     PreparedFileInput::Source(source)
+                },
+            );
+        }
+    }
+    if let Some(transform_id) = &resolved.compression.transform_id {
+        let expected = expected_file_identity(resolved);
+        let upstream: Option<Arc<dyn ByteSource>> = match &resolved.open {
+            ResolvedFileOpen::LocalPath(path) => Some(Arc::new(LocalByteSource::open(
+                path,
+                dependencies.execution().memory(),
+            )?)),
+            ResolvedFileOpen::Transport(resource) => dependencies.with_transport(|transport| {
+                transport.open_byte_source(resource, &expected, dependencies.execution().memory())
+            })?,
+        };
+        if let Some(upstream) = upstream {
+            let transformed = transformed_byte_source(upstream, transform_id, dependencies)?;
+            return Ok(
+                if source_access == cdf_runtime::FormatSourceAccess::Adaptive {
+                    PreparedFileInput::SpoolSource {
+                        source: transformed,
+                        size_bytes: None,
+                    }
+                } else {
+                    PreparedFileInput::Source(transformed)
                 },
             );
         }
@@ -993,24 +1018,28 @@ fn spool_transformed_file(
 
 async fn spool_byte_source_async(
     source: Arc<dyn ByteSource>,
-    size_bytes: u64,
+    size_bytes: Option<u64>,
     dependencies: &FileRuntimeDependencies,
     cancellation: cdf_runtime::RunCancellation,
 ) -> Result<AccountedSpool> {
-    if size_bytes == 0 || size_bytes > dependencies.max_spool_bytes() {
+    if size_bytes == Some(0)
+        || size_bytes.is_some_and(|bytes| bytes > dependencies.max_spool_bytes())
+    {
         return Err(CdfError::data(format!(
-            "remote file requires {size_bytes} spool bytes, exceeding the configured {}-byte disk budget; increase the spool budget or use a streaming format runtime",
+            "remote file requires {} spool bytes, exceeding the configured {}-byte disk budget; increase the spool budget or use a streaming format runtime",
+            size_bytes.unwrap_or_default(),
             dependencies.max_spool_bytes()
         )));
     }
-    let reservation = dependencies
+    let initially_reserved = size_bytes.unwrap_or(1);
+    let mut reservation = dependencies
         .execution()
         .spill()
-        .try_reserve(size_bytes)?
+        .try_reserve(initially_reserved)?
         .ok_or_else(|| {
             let snapshot = dependencies.execution().spill().snapshot();
             CdfError::data(format!(
-                "remote spool requires {size_bytes} bytes but the shared spill budget has {} of {} bytes in use; increase the spill budget or reduce concurrent remote files",
+                "remote spool requires {initially_reserved} bytes but the shared spill budget has {} of {} bytes in use; increase the spill budget or reduce concurrent remote files",
                 snapshot.current_bytes, snapshot.budget_bytes
             ))
         })?;
@@ -1034,28 +1063,42 @@ async fn spool_byte_source_async(
     let mut hasher = Sha256::new();
     while let Some(chunk) = input.try_next().await? {
         cancellation.check()?;
+        let chunk_bytes = u64::try_from(chunk.payload().len())
+            .map_err(|_| CdfError::data("remote spool chunk exceeds u64"))?;
+        let next_transferred = transferred
+            .checked_add(chunk_bytes)
+            .ok_or_else(|| CdfError::data("remote spool byte count overflowed"))?;
+        if next_transferred > dependencies.max_spool_bytes() {
+            return Err(CdfError::data(
+                "remote spool exceeded its configured disk bound",
+            ));
+        }
+        if next_transferred > reservation.bytes()
+            && !reservation.try_grow(next_transferred - reservation.bytes())?
+        {
+            return Err(CdfError::data(
+                "remote spool exhausted the shared spill budget while streaming transformed output",
+            ));
+        }
+        if size_bytes.is_some_and(|expected| next_transferred > expected) {
+            return Err(CdfError::data(
+                "remote spool exceeded its planned generation length",
+            ));
+        }
         output
             .write_all(chunk.payload())
             .await
             .map_err(|error| CdfError::data(format!("write accounted remote spool: {error}")))?;
         hasher.update(chunk.payload());
-        transferred = transferred
-            .checked_add(
-                u64::try_from(chunk.payload().len())
-                    .map_err(|_| CdfError::data("remote spool chunk exceeds u64"))?,
-            )
-            .ok_or_else(|| CdfError::data("remote spool byte count overflowed"))?;
-        if transferred > size_bytes {
-            return Err(CdfError::data(
-                "remote spool exceeded its planned generation length",
-            ));
-        }
+        transferred = next_transferred;
     }
     output
         .flush()
         .await
         .map_err(|error| CdfError::data(format!("flush accounted remote spool: {error}")))?;
-    if transferred != size_bytes {
+    if let Some(size_bytes) = size_bytes
+        && transferred != size_bytes
+    {
         return Err(CdfError::data(format!(
             "remote spool wrote {transferred} bytes for a planned {size_bytes}-byte generation"
         )));
@@ -1074,6 +1117,35 @@ async fn spool_byte_source_async(
         file,
         _reservation: reservation,
     })
+}
+
+fn transformed_byte_source(
+    upstream: Arc<dyn ByteSource>,
+    transform_id: &ByteTransformId,
+    dependencies: &FileRuntimeDependencies,
+) -> Result<Arc<dyn ByteSource>> {
+    const TRANSFORM_CHUNK_BYTES: u64 = 1024 * 1024;
+
+    let transform = dependencies.transforms().resolve(transform_id)?;
+    let descriptor = transform.descriptor().clone();
+    let preferred_input_chunk_bytes = TRANSFORM_CHUNK_BYTES.clamp(
+        upstream.capabilities().minimum_chunk_bytes,
+        upstream.capabilities().maximum_chunk_bytes,
+    );
+    Ok(Arc::new(TransformedByteSource::new(
+        upstream,
+        transform,
+        TransformSourceConfig {
+            preferred_input_chunk_bytes,
+            maximum_expanded_bytes: descriptor.maximum_expanded_bytes,
+            maximum_expansion_ratio: descriptor.maximum_expansion_ratio,
+            memory: dependencies.execution().memory(),
+            consumer: ConsumerKey::new(
+                format!("file-transform-{}", descriptor.transform_id.as_str()),
+                MemoryClass::Transform,
+            )?,
+        },
+    )?))
 }
 
 async fn spool_transformed_file_async(
@@ -2780,10 +2852,18 @@ mod tests {
         ) -> cdf_kernel::BoxFuture<'_, Result<cdf_runtime::PhysicalSchemaObservation>> {
             Box::pin(async move {
                 request.cancellation.check()?;
-                let bytes = source
-                    .read_exact_range(cdf_runtime::ByteExtent::new(0, 4)?, request.cancellation)
+                let preferred_chunk_bytes = (8 * 1024_u64).clamp(
+                    source.capabilities().minimum_chunk_bytes,
+                    source.capabilities().maximum_chunk_bytes,
+                );
+                let input = source
+                    .open_sequential(cdf_runtime::SequentialReadRequest {
+                        preferred_chunk_bytes,
+                        cancellation: request.cancellation,
+                    })
                     .await?;
-                if bytes.payload() != b"MOCK" {
+                let mut cursor = cdf_runtime::AccountedByteCursor::new(input);
+                if cursor.read_exact(4, "external mock magic").await? != b"MOCK" {
                     return Err(CdfError::data("external mock magic mismatch"));
                 }
                 let schema = Self::schema();
@@ -2799,7 +2879,7 @@ mod tests {
 
         fn plan_decode_units(
             &self,
-            source: Arc<dyn cdf_runtime::ByteSource>,
+            _source: Arc<dyn cdf_runtime::ByteSource>,
             request: cdf_runtime::DecodePlanningRequest,
         ) -> cdf_kernel::BoxFuture<'_, Result<Vec<cdf_runtime::DecodeUnitPlan>>> {
             Box::pin(async move {
@@ -2807,10 +2887,7 @@ mod tests {
                 Ok(vec![cdf_runtime::DecodeUnitPlan {
                     unit_id: "mock-file".to_owned(),
                     ordinal: 0,
-                    extent: Some(cdf_runtime::ByteExtent::new(
-                        0,
-                        source.identity().size_bytes.unwrap(),
-                    )?),
+                    extent: None,
                     estimated_working_set_bytes: 64,
                     independently_retryable: true,
                 }])
@@ -2824,13 +2901,18 @@ mod tests {
         ) -> cdf_kernel::BoxFuture<'_, Result<cdf_runtime::PhysicalDecodeStream>> {
             Box::pin(async move {
                 request.cancellation.check()?;
-                let extent = request.unit.extent.ok_or_else(|| {
-                    CdfError::contract("external mock decode requires a byte extent")
-                })?;
-                let bytes = source
-                    .read_exact_range(extent, request.cancellation.clone())
+                let preferred_chunk_bytes = (8 * 1024_u64).clamp(
+                    source.capabilities().minimum_chunk_bytes,
+                    source.capabilities().maximum_chunk_bytes,
+                );
+                let input = source
+                    .open_sequential(cdf_runtime::SequentialReadRequest {
+                        preferred_chunk_bytes,
+                        cancellation: request.cancellation.clone(),
+                    })
                     .await?;
-                if bytes.payload() != b"MOCK\n" {
+                let mut cursor = cdf_runtime::AccountedByteCursor::new(input);
+                if cursor.read_exact(5, "external mock payload").await? != b"MOCK\n" {
                     return Err(CdfError::data("external mock payload mismatch"));
                 }
                 let record_batch = RecordBatch::try_new(
@@ -3385,7 +3467,7 @@ mod tests {
     }
 
     #[test]
-    fn object_store_gzip_ndjson_spools_under_budget_and_preserves_remote_position() {
+    fn object_store_gzip_ndjson_streams_without_spill_and_preserves_remote_position() {
         let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
         encoder.write_all(b"{\"id\":1}\n{\"id\":2}\n").unwrap();
         let encoded = encoder.finish().unwrap();
@@ -3459,18 +3541,29 @@ mod tests {
         );
 
         let constrained = dependencies.with_max_spool_bytes(1).unwrap();
-        let error = match stream_file_match_blocking(
+        let stream = stream_file_match_blocking(
             &resolved[0],
             &plan.format,
             options,
             &constrained,
             PhysicalSchemaAuthority::default(),
-        ) {
-            Ok(_) => panic!("undersized spool budget should reject the stream"),
-            Err(error) => error,
-        };
-        assert!(error.message.contains("disk budget"));
-        assert!(error.message.contains(&encoded.len().to_string()));
+        )
+        .unwrap();
+        let constrained_batches = futures_executor::block_on(stream.collect::<Vec<_>>())
+            .into_iter()
+            .collect::<Result<Vec<_>>>()
+            .unwrap();
+        assert_eq!(
+            constrained_batches
+                .iter()
+                .map(|batch| batch.header.row_count)
+                .sum::<u64>(),
+            2
+        );
+        drop(constrained_batches);
+        let spill = constrained.execution().spill().snapshot();
+        assert_eq!(spill.current_bytes, 0);
+        assert_eq!(spill.peak_bytes, 0);
     }
 
     #[test]
