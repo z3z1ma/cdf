@@ -161,7 +161,7 @@ fn build_package_segments(
     package_id: &str,
     segments: &[(SegmentId, Vec<RecordBatch>)],
 ) -> PackageHash {
-    let mut builder = PackageBuilder::create(package_dir, package_id).unwrap();
+    let builder = PackageBuilder::create(package_dir, package_id).unwrap();
     builder.update_status(PackageStatus::Extracting).unwrap();
     builder
         .write_json_artifact(

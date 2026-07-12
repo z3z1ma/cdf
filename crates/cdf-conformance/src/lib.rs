@@ -2,7 +2,6 @@
 
 pub mod checkpoint_store;
 pub mod destination;
-#[cfg(test)]
 mod destination_catalog;
 pub mod golden_package;
 pub mod live_run;
@@ -15,10 +14,8 @@ pub mod resource;
 pub mod run_matrix;
 pub mod runtime_chaos;
 pub mod scope_lease;
-#[cfg(test)]
 mod source_fixture;
 
-#[cfg(test)]
 pub(crate) fn test_execution_services() -> cdf_runtime::ExecutionServices {
     static SERVICES: std::sync::OnceLock<cdf_runtime::ExecutionServices> =
         std::sync::OnceLock::new();

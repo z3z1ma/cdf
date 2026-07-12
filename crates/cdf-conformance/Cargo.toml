@@ -10,11 +10,17 @@ description = "Conformance harness boundary for cdf."
 arrow-array = "59.1.0"
 arrow-schema = "59.1.0"
 cdf-contract = { path = "../cdf-contract" }
+cdf-declarative = { path = "../cdf-declarative" }
 cdf-dest-duckdb = { path = "../cdf-dest-duckdb" }
+cdf-dest-parquet = { path = "../cdf-dest-parquet" }
+cdf-dest-postgres = { path = "../cdf-dest-postgres" }
 cdf-engine = { path = "../cdf-engine" }
+cdf-http = { path = "../cdf-http" }
 cdf-kernel = { path = "../cdf-kernel" }
 cdf-package = { path = "../cdf-package" }
 cdf-project = { path = "../cdf-project" }
+cdf-runtime = { path = "../cdf-runtime" }
+cdf-source-files = { path = "../cdf-source-files" }
 cdf-state-sqlite = { path = "../cdf-state-sqlite" }
 futures-util = "0.3.32"
 serde = { version = "1.0.228", features = ["derive"] }
@@ -23,14 +29,8 @@ serde_json = "1.0.150"
 [dev-dependencies]
 arrow-cast = "59.1.0"
 cdf-cli = { path = "../cdf-cli" }
-cdf-declarative = { path = "../cdf-declarative" }
-cdf-dest-parquet = { path = "../cdf-dest-parquet" }
-cdf-dest-postgres = { path = "../cdf-dest-postgres" }
 cdf-formats = { path = "../cdf-formats" }
-cdf-http = { path = "../cdf-http" }
 cdf-python = { path = "../cdf-python" }
-cdf-runtime = { path = "../cdf-runtime" }
-cdf-source-files = { path = "../cdf-source-files" }
 cdf-subprocess = { path = "../cdf-subprocess" }
 duckdb = { version = "1.10504.0", features = ["bundled"] }
 futures-executor = "0.3.32"

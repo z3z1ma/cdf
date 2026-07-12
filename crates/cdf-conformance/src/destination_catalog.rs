@@ -83,6 +83,7 @@ fn generic_project_and_cli_runtime_sources_do_not_import_destination_crates() {
     );
 }
 
+#[cfg(test)]
 fn assert_no_concrete_destination_imports(root: &Path, allowed_files: &[&str]) {
     let mut pending = vec![root.to_path_buf()];
     while let Some(path) = pending.pop() {
