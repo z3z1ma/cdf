@@ -14,7 +14,7 @@ Split by destination; no shared generic branch may name a concrete destination.
 
 ## Activated children
 
-- `.10x/tickets/2026-07-11-p3-d1-bulk-path-contract.md`
+- `.10x/tickets/done/2026-07-11-p3-d1-bulk-path-contract.md` — done
 - `.10x/tickets/2026-07-11-p3-d2-duckdb-arrow-bulk.md`
 - `.10x/tickets/2026-07-11-p3-d3-postgres-binary-copy.md`
 - `.10x/tickets/2026-07-11-p3-d4-parquet-streaming-writer.md`
@@ -28,7 +28,7 @@ Split by destination; no shared generic branch may name a concrete destination.
 
 ## Blockers
 
-Blocked until WS-L baseline evidence exists. D1 also depends on the neutral destination runtime, staged ingress, and A5 bounded segment reader; driver implementations follow D1.
+WS-L and D1 are complete. Driver implementations D2-D4 and matrix closeout D5 remain.
 
 ## References
 

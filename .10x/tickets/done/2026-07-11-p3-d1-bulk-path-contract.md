@@ -1,4 +1,4 @@
-Status: open
+Status: done
 Created: 2026-07-11
 Updated: 2026-07-11
 Parent: .10x/tickets/2026-07-10-p3-ws-d-destination-bulk-paths.md
@@ -29,6 +29,13 @@ No DuckDB/Postgres/Parquet optimization.
 ## Blockers
 
 None. L5, DX1, staged ingress, graph-edge ownership, and the verified accounted segment reader are implemented. Depending on the A5 parent would be circular because A5c needs D1/D2 to remove DuckDB materialization.
+
+## Progress and notes
+
+- 2026-07-11: Added versioned neutral descriptors, preparation/rejection, accounted batch iteration, and first-party compatibility declarations in `81281a77`.
+- 2026-07-11: Added proof-gated rollback/full-redrive coordination with distinct attempt identities in `1bfab8ca`.
+- 2026-07-11: Added validated serializable physical-attempt run evidence in `f72db7a0`.
+- 2026-07-11: Acceptance is supported by `.10x/evidence/2026-07-11-p3-d1-bulk-path-contract.md`; adversarial review passed in `.10x/reviews/2026-07-11-p3-d1-bulk-path-contract-review.md`.
 
 ## References
 
