@@ -10,13 +10,61 @@ mod runtime;
 mod transport;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "snake_case")]
-pub enum FileFormatDeclaration {
-    Csv,
-    Json,
-    Ndjson,
-    Parquet,
-    ArrowIpc,
+#[serde(transparent)]
+pub struct FileFormatDeclaration(String);
+
+impl FileFormatDeclaration {
+    pub fn named(value: impl Into<String>) -> cdf_kernel::Result<Self> {
+        let value = value.into();
+        cdf_runtime::FormatId::new(value.clone())?;
+        Ok(Self(value))
+    }
+
+    pub fn csv() -> Self {
+        Self("csv".to_owned())
+    }
+
+    pub fn json() -> Self {
+        Self("json".to_owned())
+    }
+
+    pub fn ndjson() -> Self {
+        Self("ndjson".to_owned())
+    }
+
+    pub fn parquet() -> Self {
+        Self("parquet".to_owned())
+    }
+
+    pub fn arrow_ipc() -> Self {
+        Self("arrow_ipc".to_owned())
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    pub fn validate(&self) -> cdf_kernel::Result<()> {
+        cdf_runtime::FormatId::new(self.0.clone()).map(drop)
+    }
+}
+
+#[cfg(test)]
+mod declaration_tests {
+    use super::FileFormatDeclaration;
+
+    #[test]
+    fn format_declaration_is_a_registry_id_not_a_closed_vocabulary() {
+        let declaration: FileFormatDeclaration =
+            serde_json::from_str(r#""external_columnar""#).expect("format declaration");
+        declaration.validate().expect("valid registry id");
+        assert_eq!(declaration.as_str(), "external_columnar");
+        assert_eq!(
+            serde_json::to_string(&declaration).expect("serialize declaration"),
+            r#""external_columnar""#
+        );
+        assert!(FileFormatDeclaration::named("External Columnar").is_err());
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]

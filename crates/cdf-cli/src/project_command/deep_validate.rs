@@ -271,11 +271,7 @@ fn physical_schema_reconciliation_check(
     if let Err(error) =
         reconcile_schema(observed.as_ref(), resource.schema().as_ref(), &policy.types)
     {
-        let row_local = matches!(
-            plan.format,
-            cdf_declarative::FileFormatDeclaration::Json
-                | cdf_declarative::FileFormatDeclaration::Ndjson
-        );
+        let row_local = matches!(plan.format.as_str(), "json" | "ndjson");
         diagnostics.push(diagnostic(
             if row_local { "warning" } else { "error" },
             if row_local {

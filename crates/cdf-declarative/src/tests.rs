@@ -2286,8 +2286,8 @@ trust = "governed"
 #[test]
 fn binary_format_is_inferred_only_from_record_backed_glob_extensions() {
     for (glob, expected) in [
-        ("2026/**/*.parquet", FileFormatDeclaration::Parquet),
-        ("events.arrow", FileFormatDeclaration::ArrowIpc),
+        ("2026/**/*.parquet", FileFormatDeclaration::parquet()),
+        ("events.arrow", FileFormatDeclaration::arrow_ipc()),
     ] {
         let input = format!(
             r#"

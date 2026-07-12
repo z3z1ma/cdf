@@ -353,18 +353,7 @@ fn prepare_pinned_resource_effective_schema_artifacts_inner(
     secret_provider: &dyn SecretProvider,
     file_dependencies: Option<FileRuntimeDependencies>,
 ) -> Result<PreparedEffectiveSchemaResource> {
-    let should_observe = matches!(
-        resource.plan(),
-        CompiledResourcePlan::Files(plan)
-            if matches!(
-                    plan.format,
-                    FileFormatDeclaration::Parquet
-                        | FileFormatDeclaration::ArrowIpc
-                        | FileFormatDeclaration::Ndjson
-                        | FileFormatDeclaration::Csv
-                        | FileFormatDeclaration::Json
-                )
-    );
+    let should_observe = matches!(resource.plan(), CompiledResourcePlan::Files(_));
     if !should_observe {
         return Ok(PreparedEffectiveSchemaResource {
             resource: resource.clone(),
@@ -413,35 +402,35 @@ fn discover_resource_schema_artifacts_inner(
         CompiledResourcePlan::Files(plan) if !is_remote_file_root(&plan.root) => {
             discover_local_binary_resource_schema(resource, plan, file_dependencies, options)
         }
-        CompiledResourcePlan::Files(plan) => match plan.format {
-            FileFormatDeclaration::ArrowIpc => Err(unsupported_discover_slice(
-                resource.descriptor(),
-                "remote Arrow IPC discovery is excluded; use a local Arrow IPC file resource",
-            )),
-            FileFormatDeclaration::Parquet => {
+        CompiledResourcePlan::Files(plan) => match plan.format.as_str() {
+            "parquet" | "arrow_ipc" => {
                 discover_remote_binary_resource_schema(resource, plan, file_dependencies, options)
             }
-            FileFormatDeclaration::Ndjson => discover_remote_file_resource_schema(
+            "ndjson" => discover_remote_file_resource_schema(
                 resource,
                 plan,
                 file_dependencies,
                 options,
                 LocalBinaryDiscoveryAdapter::Ndjson,
             ),
-            FileFormatDeclaration::Csv => discover_remote_file_resource_schema(
+            "csv" => discover_remote_file_resource_schema(
                 resource,
                 plan,
                 file_dependencies,
                 options,
                 LocalBinaryDiscoveryAdapter::Csv,
             ),
-            FileFormatDeclaration::Json => discover_remote_file_resource_schema(
+            "json" => discover_remote_file_resource_schema(
                 resource,
                 plan,
                 file_dependencies,
                 options,
                 LocalBinaryDiscoveryAdapter::Json,
             ),
+            other => Err(unsupported_discover_slice(
+                resource.descriptor(),
+                format!("format `{other}` has no project discovery adapter"),
+            )),
         },
         CompiledResourcePlan::Sql(plan) => Ok(ResourceSchemaDiscoveryArtifacts {
             discovery: discover_postgres_resource_schema(resource, plan, secret_provider)?,
@@ -608,12 +597,17 @@ enum LocalBinaryDiscoveryAdapter {
 
 impl LocalBinaryDiscoveryAdapter {
     fn for_format(_resource: &CompiledResource, format: &FileFormatDeclaration) -> Result<Self> {
-        Ok(match format {
-            FileFormatDeclaration::Parquet => Self::Parquet,
-            FileFormatDeclaration::ArrowIpc => Self::ArrowIpc,
-            FileFormatDeclaration::Ndjson => Self::Ndjson,
-            FileFormatDeclaration::Csv => Self::Csv,
-            FileFormatDeclaration::Json => Self::Json,
+        Ok(match format.as_str() {
+            "parquet" => Self::Parquet,
+            "arrow_ipc" => Self::ArrowIpc,
+            "ndjson" => Self::Ndjson,
+            "csv" => Self::Csv,
+            "json" => Self::Json,
+            other => {
+                return Err(CdfError::contract(format!(
+                    "format `{other}` has no project discovery adapter"
+                )));
+            }
         })
     }
 
@@ -639,7 +633,7 @@ impl LocalBinaryDiscoveryAdapter {
                 let probe = discover_local_binary_schema_bounded(
                     path,
                     dependencies,
-                    &FileFormatDeclaration::Parquet,
+                    &FileFormatDeclaration::parquet(),
                     &candidate.compression,
                     *selection_bytes_read,
                     budget.max_metadata_bytes_per_file(),
@@ -661,7 +655,7 @@ impl LocalBinaryDiscoveryAdapter {
                 let probe = discover_local_binary_schema_bounded(
                     path,
                     dependencies,
-                    &FileFormatDeclaration::ArrowIpc,
+                    &FileFormatDeclaration::arrow_ipc(),
                     &candidate.compression,
                     *selection_bytes_read,
                     budget.max_metadata_bytes_per_file(),
@@ -685,7 +679,7 @@ impl LocalBinaryDiscoveryAdapter {
                 let probe = discover_transport_binary_schema_spooled(
                     resource.clone(),
                     dependencies,
-                    &FileFormatDeclaration::Parquet,
+                    &FileFormatDeclaration::parquet(),
                     &candidate.compression,
                     budget.max_metadata_bytes_per_file(),
                 )?;
@@ -700,7 +694,7 @@ impl LocalBinaryDiscoveryAdapter {
                 let probe = discover_transport_binary_schema_spooled(
                     resource.clone(),
                     dependencies,
-                    &FileFormatDeclaration::ArrowIpc,
+                    &FileFormatDeclaration::arrow_ipc(),
                     &candidate.compression,
                     budget.max_metadata_bytes_per_file(),
                 )?;
@@ -716,9 +710,9 @@ impl LocalBinaryDiscoveryAdapter {
                     )
                 })?;
                 let format = match adapter {
-                    Self::Ndjson => FileFormatDeclaration::Ndjson,
-                    Self::Csv => FileFormatDeclaration::Csv,
-                    Self::Json => FileFormatDeclaration::Json,
+                    Self::Ndjson => FileFormatDeclaration::ndjson(),
+                    Self::Csv => FileFormatDeclaration::csv(),
+                    Self::Json => FileFormatDeclaration::json(),
                     _ => unreachable!(),
                 };
                 let probe = discover_transport_row_schema_bounded(
@@ -743,9 +737,9 @@ impl LocalBinaryDiscoveryAdapter {
                     )
                 })?;
                 let format = match adapter {
-                    Self::Ndjson => FileFormatDeclaration::Ndjson,
-                    Self::Csv => FileFormatDeclaration::Csv,
-                    Self::Json => FileFormatDeclaration::Json,
+                    Self::Ndjson => FileFormatDeclaration::ndjson(),
+                    Self::Csv => FileFormatDeclaration::csv(),
+                    Self::Json => FileFormatDeclaration::json(),
                     _ => unreachable!(),
                 };
                 let probe = discover_local_row_schema_bounded(

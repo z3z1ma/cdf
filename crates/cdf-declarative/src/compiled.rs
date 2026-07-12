@@ -950,16 +950,14 @@ fn compile_file_plan(
         None => (infer_binary_file_format(resource_id, resource)?, false),
     };
     if resource.sample_files.is_some()
-        && !matches!(
-            &format,
-            FileFormatDeclaration::Parquet | FileFormatDeclaration::ArrowIpc
-        )
+        && !matches!(format.as_str(), "parquet" | "arrow_ipc")
     {
         return Err(CdfError::contract(format!(
             "file resource `{resource_id}` sample_files is only supported for Parquet and Arrow IPC schema discovery; row sampling inside text files is excluded"
         )));
     }
     let compression = resource.compression.clone().unwrap_or_default();
+    format.validate()?;
     compression.validate()?;
     Ok(FileResourcePlan {
         source: source_name.to_owned(),
@@ -993,10 +991,10 @@ fn infer_binary_file_format(
         .rsplit_once('.')
         .map_or(normalized.as_str(), |(inner, _)| inner);
     if normalized.ends_with(".parquet") || inner.ends_with(".parquet") {
-        return Ok(FileFormatDeclaration::Parquet);
+        return Ok(FileFormatDeclaration::parquet());
     }
     if normalized.ends_with(".arrow") || inner.ends_with(".arrow") {
-        return Ok(FileFormatDeclaration::ArrowIpc);
+        return Ok(FileFormatDeclaration::arrow_ipc());
     }
 
     Err(CdfError::contract(format!(

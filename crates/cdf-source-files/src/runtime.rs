@@ -102,7 +102,7 @@ impl FileRuntimeDependencies {
         &self.execution
     }
 
-    fn formats(&self) -> &Arc<FormatRegistry> {
+    pub(crate) fn formats(&self) -> &Arc<FormatRegistry> {
         &self.formats
     }
 
@@ -265,8 +265,8 @@ pub fn discover_local_binary_schema_bounded(
     } else {
         initial_bytes_read
     };
-    let (schema, mut source_identity, inner_probe_bytes) = match format {
-        FileFormatDeclaration::Parquet => {
+    let (schema, mut source_identity, inner_probe_bytes) = match format.as_str() {
+        "parquet" => {
             let probe = cdf_formats::discover_local_parquet_schema_bounded(
                 decode_path,
                 inner_initial_bytes,
@@ -278,7 +278,7 @@ pub fn discover_local_binary_schema_bounded(
                 probe.probe_bytes_read,
             )
         }
-        FileFormatDeclaration::ArrowIpc => {
+        "arrow_ipc" => {
             let probe = cdf_formats::discover_local_arrow_ipc_schema_bounded(
                 decode_path,
                 inner_initial_bytes,
@@ -557,16 +557,16 @@ fn discover_row_schema_from_reader(
     format: &FileFormatDeclaration,
     max_read_records: usize,
 ) -> Result<SchemaRef> {
-    match format {
-        FileFormatDeclaration::Ndjson => {
+    match format.as_str() {
+        "ndjson" => {
             cdf_formats::discover_ndjson_schema_from_reader(reader, Some(max_read_records))
         }
-        FileFormatDeclaration::Csv => cdf_formats::discover_csv_schema_from_reader(
+        "csv" => cdf_formats::discover_csv_schema_from_reader(
             reader,
             &CsvOptions::default(),
             max_read_records,
         ),
-        FileFormatDeclaration::Json => {
+        "json" => {
             cdf_formats::discover_json_schema_from_reader(reader, max_read_records)
         }
         _ => Err(CdfError::contract(
@@ -781,10 +781,10 @@ impl ResourceStream for FileResource {
                     sha256: resolved.sha256,
                 }],
             });
-            let physical_schema_hash = match (&resolved.open, &plan.format) {
+            let physical_schema_hash = match (&resolved.open, plan.format.as_str()) {
                 (
                     ResolvedFileOpen::LocalPath(path),
-                    format @ (FileFormatDeclaration::Parquet | FileFormatDeclaration::ArrowIpc),
+                    format @ ("parquet" | "arrow_ipc"),
                 ) => {
                     let budget = discovery_budget.as_ref().ok_or_else(|| {
                         CdfError::data(
@@ -794,7 +794,7 @@ impl ResourceStream for FileResource {
                     let probe = discover_local_binary_schema_bounded(
                         path,
                         &dependencies,
-                        format,
+                        &FileFormatDeclaration::named(format)?,
                         &transform_name,
                         0,
                         budget.max_metadata_bytes_per_file,
@@ -1371,14 +1371,17 @@ fn spool_transport_file(
 }
 
 fn compile_format(format: &FileFormatDeclaration) -> Result<FileFormat> {
-    match format {
-        FileFormatDeclaration::Csv => Ok(FileFormat::Csv(CsvOptions::default())),
-        FileFormatDeclaration::Json => Ok(FileFormat::Json(JsonOptions::default())),
-        FileFormatDeclaration::Ndjson => Ok(FileFormat::Ndjson(JsonOptions::default())),
-        FileFormatDeclaration::Parquet => Ok(FileFormat::Parquet),
-        FileFormatDeclaration::ArrowIpc => Err(CdfError::contract(
+    match format.as_str() {
+        "csv" => Ok(FileFormat::Csv(CsvOptions::default())),
+        "json" => Ok(FileFormat::Json(JsonOptions::default())),
+        "ndjson" => Ok(FileFormat::Ndjson(JsonOptions::default())),
+        "parquet" => Ok(FileFormat::Parquet),
+        "arrow_ipc" => Err(CdfError::contract(
             "Arrow IPC file execution requires its registered native format driver",
         )),
+        other => Err(CdfError::contract(format!(
+            "file format `{other}` is not registered and has no legacy decoder"
+        ))),
     }
 }
 
@@ -2217,10 +2220,8 @@ fn requires_binary_format_confirmation(
     plan: &FileResourcePlan,
     extension_signal: FormatSignal,
 ) -> bool {
-    matches!(
-        plan.format,
-        FileFormatDeclaration::Parquet | FileFormatDeclaration::ArrowIpc
-    ) || extension_signal != FormatSignal::Unknown
+    matches!(plan.format.as_str(), "parquet" | "arrow_ipc")
+        || extension_signal != FormatSignal::Unknown
 }
 
 fn validate_compressed_format_extension(
@@ -2262,14 +2263,12 @@ fn validate_format_evidence(
     } else {
         "<omitted>"
     };
-    let mut format_requirement = match plan.format {
-        FileFormatDeclaration::Parquet => "expected Parquet file framing with PAR1 header/footer; ",
-        FileFormatDeclaration::ArrowIpc => {
+    let mut format_requirement = match plan.format.as_str() {
+        "parquet" => "expected Parquet file framing with PAR1 header/footer; ",
+        "arrow_ipc" => {
             "expected Arrow IPC file framing with ARROW1 header/footer; "
         }
-        FileFormatDeclaration::Csv
-        | FileFormatDeclaration::Json
-        | FileFormatDeclaration::Ndjson => "",
+        _ => "",
     };
     if magic_signal == FormatSignal::ArrowIpcStream {
         format_requirement = "Arrow IPC stream framing is unsupported; expected Arrow IPC file framing with ARROW1 header/footer; ";
@@ -2285,30 +2284,19 @@ fn validate_format_evidence(
 }
 
 fn format_declaration_signal(format: &FileFormatDeclaration) -> Option<FormatSignal> {
-    match format {
-        FileFormatDeclaration::Parquet => Some(FormatSignal::Parquet),
-        FileFormatDeclaration::ArrowIpc => Some(FormatSignal::ArrowIpc),
-        FileFormatDeclaration::Csv
-        | FileFormatDeclaration::Json
-        | FileFormatDeclaration::Ndjson => None,
+    match format.as_str() {
+        "parquet" => Some(FormatSignal::Parquet),
+        "arrow_ipc" => Some(FormatSignal::ArrowIpc),
+        _ => None,
     }
 }
 
-fn file_format_name(format: &FileFormatDeclaration) -> &'static str {
-    match format {
-        FileFormatDeclaration::Csv => "csv",
-        FileFormatDeclaration::Json => "json",
-        FileFormatDeclaration::Ndjson => "ndjson",
-        FileFormatDeclaration::Parquet => "parquet",
-        FileFormatDeclaration::ArrowIpc => "arrow_ipc",
-    }
+fn file_format_name(format: &FileFormatDeclaration) -> &str {
+    format.as_str()
 }
 
 fn records_format_metadata(plan: &FileResourcePlan) -> bool {
-    matches!(
-        plan.format,
-        FileFormatDeclaration::Parquet | FileFormatDeclaration::ArrowIpc
-    )
+    matches!(plan.format.as_str(), "parquet" | "arrow_ipc")
 }
 
 fn format_extension_signal(path_text: &str, compression: &CompressionEvidence) -> FormatSignal {
@@ -2969,7 +2957,7 @@ mod tests {
             source: "events".to_owned(),
             root: root.path().to_string_lossy().into_owned(),
             glob: "events.parquet.gz".to_owned(),
-            format: FileFormatDeclaration::Parquet,
+            format: FileFormatDeclaration::parquet(),
             format_declared: true,
             compression: FileCompressionDeclaration::auto(),
             auth: None,
@@ -2987,7 +2975,7 @@ mod tests {
         let probe = discover_local_binary_schema_bounded(
             root.path().join("events.parquet.gz"),
             &dependencies,
-            &FileFormatDeclaration::Parquet,
+            &FileFormatDeclaration::parquet(),
             "gzip",
             0,
             64 * 1024 * 1024,
@@ -3057,7 +3045,7 @@ mod tests {
             source: "ipc".to_owned(),
             root: "s3://ipc/prod".to_owned(),
             glob: "events.arrow".to_owned(),
-            format: FileFormatDeclaration::ArrowIpc,
+            format: FileFormatDeclaration::arrow_ipc(),
             format_declared: true,
             compression: FileCompressionDeclaration::none(),
             auth: None,
@@ -3114,7 +3102,7 @@ mod tests {
             source: "events".to_owned(),
             root: "s3://acme-events/prod".to_owned(),
             glob: "2026/**/*.parquet".to_owned(),
-            format: FileFormatDeclaration::Parquet,
+            format: FileFormatDeclaration::parquet(),
             format_declared: true,
             compression: FileCompressionDeclaration::none(),
             auth: None,
@@ -3192,7 +3180,7 @@ mod tests {
             source: "events".to_owned(),
             root: "s3://acme-events/prod".to_owned(),
             glob: "2026/**/*.ndjson.gz".to_owned(),
-            format: FileFormatDeclaration::Ndjson,
+            format: FileFormatDeclaration::ndjson(),
             format_declared: true,
             compression: FileCompressionDeclaration::auto(),
             auth: None,

@@ -110,6 +110,9 @@ impl SourceDriver for FileSourceDriver {
             Arc::clone(context.secret_provider()),
             context.execution().clone(),
         )?;
+        dependencies
+            .formats()
+            .resolve(physical.resource.format.as_str())?;
         Ok(Arc::new(FileResource::new(
             plan.descriptor.clone(),
             Arc::new(plan.schema.clone()),
@@ -160,6 +163,7 @@ struct FilePhysicalPlan {
 
 impl FilePhysicalPlan {
     fn to_runtime_plan(&self) -> Result<FileResourcePlan> {
+        self.resource.format.validate()?;
         self.resource.compression.validate()?;
         Ok(FileResourcePlan {
             source: self.source.source_name.clone(),
