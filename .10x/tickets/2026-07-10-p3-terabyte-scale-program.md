@@ -1,6 +1,6 @@
 Status: open
 Created: 2026-07-10
-Updated: 2026-07-11
+Updated: 2026-07-12
 Parent: .10x/tickets/2026-07-05-implement-cdf-system.md
 Depends-On: .10x/tickets/done/2026-07-08-p2-data-onramp-program.md
 
@@ -49,6 +49,7 @@ This parent is an aggregate plan. Workstream records own sequencing and integrat
 - `.10x/tickets/2026-07-10-p3-ws-g-remote-io-overlap.md`
 - `.10x/tickets/2026-07-10-p3-ws-h-interop-boundaries.md`
 - `.10x/tickets/2026-07-11-p3-ws-v-vectorized-validation.md`
+- `.10x/tickets/2026-07-12-p3-ws-j-datafusion-currency-bridges.md`
 
 ## Sequencing
 
@@ -90,6 +91,7 @@ P3 does not implement a distributed scheduler, remote worker leases, resident st
 - 2026-07-11: The future distribution seam is now executable architecture rather than prose: WX1 defines a canonical operational partition task/result capsule and C5 proves direct-local versus serialize/reconstruct isolated-worker equivalence. P3 still ships no remote scheduler/framework adapter.
 - 2026-07-11: Envelope ownership audit found the ≥1 GB/s/core validation target had no implementation child while the current evaluator is per-rule/per-row scalar. WS-V now owns engine-neutral vector kernels, bitmap verdict algebra, graph integration, scalar differential proof, and the target closeout.
 - 2026-07-11: WS-L completed before any P3 data-plane optimization. The immutable report and honest failing envelope are recorded at `.10x/evidence/2026-07-11-p3-l5-preoptimization-baseline.md`; WS-A now owns the exclusive runtime-spine migration window, while crate-bounded WS-B/WS-D/WS-E work remains eligible only where it does not cross that frozen surface.
+- 2026-07-12: Added WS-J under `.10x/decisions/datafusion-analysis-scheduling-identity-boundary.md` and `.10x/specs/datafusion-currency-bridges.md`. DataFusion is the standard currency for pruning, expressions, catalogs, memory/object-store sessions, plans, and metrics, while deterministic native CDF operators exclusively produce identity-bearing bytes and verdicts. The sequence reuses completed A2 memory authority, open FX1/WX1/G1 seams, and prevents P3 APIs from hardening private substitutes.
 
 ## Blockers
 

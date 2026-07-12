@@ -1,6 +1,6 @@
 Status: open
 Created: 2026-07-11
-Updated: 2026-07-11
+Updated: 2026-07-12
 Parent: .10x/tickets/2026-07-05-implement-cdf-system.md
 Depends-On: .10x/tickets/done/2026-07-11-p0-dx1-neutral-runtime-crate.md, .10x/tickets/done/2026-07-11-p3-a2-unified-memory-ledger.md, .10x/tickets/done/2026-07-11-p3-a4-injected-execution-host.md, .10x/specs/native-format-codec-runtime.md
 
@@ -38,6 +38,8 @@ Depends on neutral runtime, memory, and execution-host contracts. It must land b
 - `.10x/research/2026-07-11-format-extension-streaming-audit.md`
 - `.10x/specs/native-format-codec-runtime.md`
 - `.10x/knowledge/source-destination-extension-invariant.md`
+- `.10x/decisions/datafusion-analysis-scheduling-identity-boundary.md`
+- `.10x/specs/datafusion-currency-bridges.md`
 
 ## Progress and notes
 
@@ -45,6 +47,7 @@ Depends on neutral runtime, memory, and execution-host contracts. It must land b
 - 2026-07-11: Extracted the first parser-local implementation into `cdf-format-parquet`. It uses only the neutral runtime contracts; performs footer discovery, row-group unit planning, projection, bounded-concurrency async range reads, and incremental Arrow decode; and retains source ledger leases through Parquet's owner-backed `Bytes` lifetime. A real Parquet fixture passes detect/discover/plan/decode through a mock external byte source with zero residual memory. Production composition and deletion of the monolithic path remain open. Evidence: `.10x/evidence/2026-07-11-p0-fx1-parquet-driver-extraction.md`.
 - 2026-07-11: `cdf-source-files::LocalByteSource` now supplies the first real neutral provider with accounted zero-copy chunks/ranges, cancellation, and strong Unix generation reattestation. Format drivers can consume local bytes without receiving paths or file handles. Production registry selection remains open. Evidence: `.10x/evidence/2026-07-11-p3-g1-local-accounted-byte-source.md`.
 - 2026-07-11: Moved physical-to-effective Arrow materialization into `cdf-contract` and made engine preview/run execute the typed per-observation plan when a codec emits an unadorned physical batch. Projection, widening, missing nullable fields, and provenance now have one format-neutral implementation; source metadata injection remains rejected. Accounted ownership for cast allocations and production registry routing remain open. Evidence: `.10x/evidence/2026-07-11-p0-fx1-shared-schema-materialization.md`.
+- 2026-07-12: The DataFusion currency boundary preserves native primary codecs and permits a future DataFusion `FileFormat` only as an optional FX1 driver for exotic formats. `.10x/tickets/2026-07-12-p3-j6-datafusion-selective-adoption-audit.md` owns measurement and semantics parity; FX1 must not expose DataFusion types or add a generic runtime branch for it.
 - 2026-07-11: Added one kernel-neutral `PayloadRetention` primitive and moved native physical-batch leases into it when entering the kernel stream. The same primitive replaced the destination-only retention type, so source and commit boundaries share one lifetime mechanism with no `cdf-memory` dependency in the kernel and no compatibility alias. Evidence: `.10x/evidence/2026-07-11-p0-fx1-accounted-batch-retention.md`.
 - 2026-07-11: Production local and remote-spooled Parquet now resolve through the CLI-composed `FormatRegistry` and stream from the injected I/O scope through the generic registered-format path. Dependency-free file runtime constructors and compiler-owned file execution functions were deleted. CLI local/HTTP runs pass. TLC medians regressed from about 1.53/1.62 wall/CPU seconds to 1.63/1.80, so B2 remains explicitly responsible for eliminating local neutral-range overhead; unregistered format fallback also remains before FX1 closure. Evidence: `.10x/evidence/2026-07-11-p0-fx1-production-parquet-registry-stream.md`.
 - 2026-07-11: A second production format, Arrow IPC file framing, now uses the same registry-selected local/remote-spool execution path without a format-specific execution branch. Its parser dependency is isolated in `cdf-format-arrow-ipc`; the former local IPC reader and remote hard rejection were deleted from `cdf-source-files`. This proves the generic driver seam across two binary formats, but FX1 remains open because schema attestation and CSV/JSON/NDJSON still contain closed-enum/fallback dispatch. Evidence: `.10x/evidence/2026-07-11-p3-b3-native-arrow-ipc-file-driver.md`.

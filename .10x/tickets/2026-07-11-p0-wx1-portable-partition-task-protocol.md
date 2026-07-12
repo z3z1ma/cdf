@@ -1,6 +1,6 @@
 Status: open
 Created: 2026-07-11
-Updated: 2026-07-11
+Updated: 2026-07-12
 Parent: .10x/tickets/2026-07-05-implement-cdf-system.md
 Depends-On: .10x/tickets/2026-07-11-p0-sx1-source-extension-boundary.md, .10x/tickets/done/2026-07-11-p0-dx1-neutral-runtime-crate.md, .10x/tickets/2026-07-11-p0-bx1-kernel-stream-extent-artifacts.md, .10x/specs/portable-partition-task-protocol.md
 
@@ -34,3 +34,9 @@ Depends on SX1, DX1, and BX1 artifact ownership.
 - `.10x/decisions/portable-partition-task-capsule.md`
 - `.10x/research/2026-07-11-portable-partition-task-audit.md`
 - `.10x/specs/portable-partition-task-protocol.md`
+- `.10x/decisions/datafusion-analysis-scheduling-identity-boundary.md`
+- `.10x/specs/datafusion-currency-bridges.md`
+
+## Progress and notes
+
+- 2026-07-12: `.10x/tickets/2026-07-12-p3-j5-execution-plan-marshaling-metrics.md` will translate native CDF operators into DataFusion plan/metrics shells only after WX1 establishes canonical task authority. DataFusion/Ballista serialization cannot replace the capsule or gain credential, package-finalization, receipt, or checkpoint authority.

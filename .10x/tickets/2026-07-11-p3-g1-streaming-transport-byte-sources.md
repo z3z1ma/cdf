@@ -1,6 +1,6 @@
 Status: open
 Created: 2026-07-11
-Updated: 2026-07-11
+Updated: 2026-07-12
 Parent: .10x/tickets/2026-07-10-p3-ws-g-remote-io-overlap.md
 Depends-On: .10x/tickets/done/2026-07-10-p3-ws-l5-preoptimization-baseline.md, .10x/tickets/2026-07-11-p0-sx1-source-extension-boundary.md, .10x/tickets/2026-07-11-p0-fx1-native-format-extension-boundary.md, .10x/tickets/done/2026-07-11-p3-a4-injected-execution-host.md, .10x/specs/remote-local-io-overlap.md
 
@@ -35,9 +35,11 @@ Depends on L5, SX1, FX1, and A4.
 - `.10x/decisions/generation-bound-overlapped-io.md`
 - `.10x/research/2026-07-11-remote-io-overlap-audit.md`
 - `.10x/specs/remote-local-io-overlap.md`
+- `.10x/specs/datafusion-currency-bridges.md`
 
 ## Progress and notes
 
 - 2026-07-11: Implemented the first native provider, `LocalByteSource`, directly against the neutral FX1 contract. Sequential chunks and independent exact ranges reserve before allocation, transfer `Vec` into lease-owned `Bytes` without copying, execute on the injected I/O runtime, honor cancellation, and pre/post reattest strong Unix path/device/inode/size/mtime/ctime generation. Neutral content identity now records strength; weak providers cannot enter Parquet random-access mode. The leaf test graph also dropped its `cdf-engine`/DataFusion dependency in favor of a focused neutral test host. Production registry composition, remote providers, listings, and synchronous-facade deletion remain open. Evidence: `.10x/evidence/2026-07-11-p3-g1-local-accounted-byte-source.md`.
 - 2026-07-11: Removed the process-wide file-transport mutex. `FileTransport` and `HttpFileTransport` are now concurrency-safe shared contracts (`Send + Sync` with `&self` operations); Reqwest, object-store, local, and recording implementations conform without engine/source branches. This deletes false serialization but does not yet replace blocking Reqwest with the final async byte-source provider. Evidence: `.10x/evidence/2026-07-11-p3-g2-concurrent-transport-spool.md`.
 - 2026-07-11: Removed the parallel false lock from REST. Neutral `cdf-http::HttpTransport` is now a shared `Send + Sync` contract, `RestRuntimeDependencies` owns `Arc<dyn HttpTransport>` directly, discovery/runtime/CLI/conformance/benchmark consumers use shared references, and only mutable auth-refresh/fixture queues retain narrow interior locks. The permanent concurrency law reaches two simultaneous requests through one dependency; source, HTTP policy, and real project REST execution pass. Native async response streaming remains open. Evidence/review: `.10x/evidence/2026-07-11-p3-g1-concurrent-rest-transport.md`, `.10x/reviews/2026-07-11-p3-g1-concurrent-rest-transport-review.md`.
+- 2026-07-12: J2 will adapt G1's final injected provider registry into DataFusion sessions. G1 remains transport authority: DataFusion may not create a parallel credential/client/generation path, and adding a provider must not require an engine match branch.

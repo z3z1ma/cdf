@@ -1,6 +1,6 @@
 Status: active
 Created: 2026-07-05
-Updated: 2026-07-06
+Updated: 2026-07-12
 Parent: .10x/tickets/2026-07-05-implement-cdf-system.md
 Depends-On: .10x/tickets/done/2026-07-05-cli-surface.md, .10x/tickets/done/2026-07-05-duckdb-destination.md, .10x/tickets/done/2026-07-05-project-format-lockfile-secrets.md
 
@@ -42,6 +42,7 @@ No dashboard or UI.
 - 2026-07-06: Closed `.10x/tickets/done/2026-07-06-engine-execution-tracing-spans.md`; `cdf-engine` now exposes additive `execute_to_package_with_run_id`, emits exact package and partition tracing fields, preserves the existing untraced API and package identity, and has mutation-clean execution tests with full relevant `QUALITY.md` evidence.
 - 2026-07-07: Run-ledger and inspect-run semantics were ratified in `.10x/decisions/run-ledger-commit-session-spine.md` and `.10x/specs/run-orchestration-ledger.md`. Implementation is now blocked on the run ledger store, general orchestrator, and CLI inspect-run child tickets rather than semantic ratification.
 - 2026-07-07: Run-ledger store landed and inspect-run work became dependency-gated by `.10x/tickets/done/2026-07-07-general-run-orchestrator.md` and `.10x/tickets/done/2026-07-07-cli-run-resume-replay-inspect-spine.md`; no unresolved user semantic blocker remained.
+- 2026-07-12: `.10x/tickets/2026-07-12-p3-j4-evidence-catalog-adbc.md` owns the next system-SQL expansion: read-only DataFusion catalog providers and bounded ADBC-compatible access over the existing ledger/package evidence stores. It reuses this parent rather than creating a second observability authority.
 
 ## Blockers
 
