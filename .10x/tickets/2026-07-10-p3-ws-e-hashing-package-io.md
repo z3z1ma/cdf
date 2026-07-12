@@ -13,7 +13,7 @@ Hash segment bytes while writing, remove redundant full data-file rereads, paral
 ## Activated children
 
 - `.10x/tickets/done/2026-07-11-p3-e1-hashing-artifact-sink.md`
-- `.10x/tickets/2026-07-11-p3-e2-streaming-manifest-durability.md`
+- `.10x/tickets/done/2026-07-11-p3-e2-streaming-manifest-durability.md`
 - `.10x/tickets/2026-07-11-p3-e3-streaming-verification-replay-io.md`
 - `.10x/tickets/2026-07-11-p3-e4-package-io-envelope.md`
 
