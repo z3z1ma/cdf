@@ -32,7 +32,7 @@ use cdf_memory::{
     ConsumerKey, MemoryClass, MemoryCoordinator, MemoryLease, ReservationRequest, reserve,
 };
 use cdf_package::{PackageBuilder, PackageStatus, QuarantineObservedValue, QuarantineRecord};
-use futures_util::StreamExt;
+use futures_util::{StreamExt, stream::FuturesOrdered};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tracing::{Instrument, Span, info_span};
@@ -1527,6 +1527,83 @@ where
     .await
 }
 
+type OpenedPartition = (
+    usize,
+    cdf_kernel::PartitionPlan,
+    Option<cdf_kernel::BatchStream>,
+    u64,
+);
+
+fn open_partition<'a, R>(
+    resource: &'a R,
+    ordinal: usize,
+    partition: cdf_kernel::PartitionPlan,
+    terminal_quarantine: bool,
+) -> cdf_kernel::BoxFuture<'a, Result<OpenedPartition>>
+where
+    R: ResourceStream + ?Sized,
+{
+    if terminal_quarantine {
+        return Box::pin(async move { Ok((ordinal, partition, None, 0)) });
+    }
+    let started = Instant::now();
+    let future = resource.open(partition.clone());
+    Box::pin(async move {
+        let stream = future.await?;
+        Ok((
+            ordinal,
+            partition,
+            Some(stream),
+            elapsed_ns(Some(started), "resource open")?,
+        ))
+    })
+}
+
+fn enqueue_next_partition<'a, R, I>(
+    resource: &'a R,
+    partitions: &mut I,
+    frontier: &mut FuturesOrdered<cdf_kernel::BoxFuture<'a, Result<OpenedPartition>>>,
+    effective_schema_evidence: Option<&EffectiveSchemaPlanEvidence>,
+) -> Result<bool>
+where
+    R: ResourceStream + ?Sized,
+    I: Iterator<Item = (usize, cdf_kernel::PartitionPlan)>,
+{
+    let Some((ordinal, partition)) = partitions.next() else {
+        return Ok(false);
+    };
+    let terminal = effective_schema_evidence
+        .map(|evidence| partition_schema_disposition(&partition, evidence))
+        .transpose()?
+        .is_some_and(|disposition| {
+            matches!(disposition, PartitionSchemaDisposition::Quarantined(_))
+        });
+    frontier.push_back(open_partition(resource, ordinal, partition, terminal));
+    Ok(true)
+}
+
+fn partition_open_jobs(plan: &EnginePlan, options: &EngineExecutionOptions) -> usize {
+    let partition_count = plan.scan.partitions.len();
+    if partition_count <= 1 {
+        return partition_count.max(1);
+    }
+    let (Some(_graph), Some(_schedule), Some(scheduler)) = (
+        plan.operator_graph.as_ref(),
+        plan.partition_schedule.as_ref(),
+        options.scheduler.as_ref(),
+    ) else {
+        return 1;
+    };
+    // A canonical limit owns exact input-attempt authority. Opening a later payload can perform
+    // transport I/O, mutate source-owned accounting, or attest an input the limit will discard.
+    // Keep the frontier serial until the planner can assign an explicit speculative byte budget
+    // and the source can prove that opening is side-effect free.
+    if plan.scan.request.limit.is_some() {
+        return 1;
+    }
+    usize::from(scheduler.effective_jobs.jobs.max(1)).min(partition_count)
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn execute_to_package_inner<'a, R>(
     trace_context: Option<&ExecutionTraceContext>,
@@ -1645,18 +1722,42 @@ where
         segmentation_policy.maximum_bytes,
     )?;
 
-    for (partition_ordinal, partition) in plan.scan.partitions.clone().into_iter().enumerate() {
+    let partition_jobs = partition_open_jobs(plan, &options);
+    let mut partition_iter = plan.scan.partitions.clone().into_iter().enumerate();
+    let mut open_frontier: FuturesOrdered<cdf_kernel::BoxFuture<'_, Result<OpenedPartition>>> =
+        FuturesOrdered::new();
+    for _ in 0..partition_jobs {
+        if !enqueue_next_partition(
+            resource,
+            &mut partition_iter,
+            &mut open_frontier,
+            effective_schema_evidence,
+        )? {
+            break;
+        }
+    }
+
+    while let Some(opened) = open_frontier.next().await {
+        if remaining_limit.is_none() {
+            enqueue_next_partition(
+                resource,
+                &mut partition_iter,
+                &mut open_frontier,
+                effective_schema_evidence,
+            )?;
+        }
+        let (partition_ordinal, partition, opened_stream, open_duration_ns) = opened?;
         let partition_ordinal = u32::try_from(partition_ordinal)
             .map_err(|_| CdfError::data("partition ordinal exceeds u32"))?;
         if remaining_limit == Some(0) {
             break;
         }
         let partition_scope = partition.scope.clone();
-        let partition_schema_disposition = effective_schema_evidence
+        let current_schema_disposition = effective_schema_evidence
             .map(|evidence| partition_schema_disposition(&partition, evidence))
             .transpose()?;
         if let Some(PartitionSchemaDisposition::Quarantined(quarantine)) =
-            &partition_schema_disposition
+            &current_schema_disposition
         {
             let attestation = match observation_attestations.get(quarantine.observation_id()) {
                 Some(attestation) => attestation.clone(),
@@ -1690,10 +1791,18 @@ where
                 source_position,
             )?);
             terminal_quarantines.push(quarantine.clone());
+            if remaining_limit.is_some() {
+                enqueue_next_partition(
+                    resource,
+                    &mut partition_iter,
+                    &mut open_frontier,
+                    effective_schema_evidence,
+                )?;
+            }
             continue;
         }
         let partition_schema_evidence =
-            partition_schema_disposition
+            current_schema_disposition
                 .as_ref()
                 .and_then(|item| match item {
                     PartitionSchemaDisposition::Admitted(evidence) => Some(evidence),
@@ -1707,18 +1816,18 @@ where
             .map(|context| partition_execution_span(context, partition.partition_id.as_str()))
             .unwrap_or_else(Span::none);
 
-        let partition_for_open = partition.clone();
         let mut segment_assembler =
             crate::CanonicalSegmentAssembler::new(segmentation_policy.clone(), partition_ordinal)?;
         let (fully_processed, observed_positions) = async {
-            let decode_started = phase_measurements.start();
-            let mut stream = resource.open(partition_for_open).await?;
             phase_measurements.add(
                 RunPhase::Decode,
-                elapsed_ns(decode_started, "resource open")?,
+                open_duration_ns,
                 0,
                 0,
             );
+            let mut stream = opened_stream.ok_or_else(|| {
+                CdfError::internal("admitted partition reached execution without an open stream")
+            })?;
             let mut fully_processed = true;
             let mut observed_positions = Vec::new();
             loop {
@@ -2035,6 +2144,14 @@ where
                 ProcessedObservationOutcome::Admitted,
                 source_position,
             )?);
+        }
+        if remaining_limit.is_some_and(|remaining| remaining > 0) {
+            enqueue_next_partition(
+                resource,
+                &mut partition_iter,
+                &mut open_frontier,
+                effective_schema_evidence,
+            )?;
         }
     }
 

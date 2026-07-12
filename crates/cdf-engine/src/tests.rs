@@ -1015,14 +1015,41 @@ fn operator_graph_compiles_from_capabilities_without_driver_name_dispatch() {
         edge.transfer == cdf_runtime::GraphEdgeTransfer::Durable
             && edge.producer == "segment_persist"
     }));
+    plan = plan.bind_partition_schedule(&source).unwrap();
     plan.operator_graph = Some(graph.clone());
     let temp = TempDir::new().unwrap();
-    block_on(execute_to_package(&plan, &resource, temp.path())).unwrap();
+    let serial = block_on(execute_to_package(&plan, &resource, temp.path())).unwrap();
     let packaged: cdf_runtime::CompiledOperatorGraph = serde_json::from_slice(
         &std::fs::read(temp.path().join("plan/operator-graph.json")).unwrap(),
     )
     .unwrap();
     assert_eq!(packaged, graph);
+
+    let parallel_temp = TempDir::new().unwrap();
+    let (_, services) = StandaloneExecutionHost::default_services(64 * 1024 * 1024).unwrap();
+    let scheduler = cdf_runtime::resolve_runtime_scheduler(
+        plan.scan.partitions.len(),
+        &source.execution_capabilities,
+        &cdf_runtime::DestinationRuntimeCapabilities::default(),
+        &services,
+        Some(4),
+    )
+    .unwrap();
+    let pre_finalize =
+        |_builder: &cdf_package::PackageBuilder, _draft: EnginePackageDraft<'_>| Ok(());
+    let parallel = block_on(execute_to_package_with_segment_positions_and_pre_finalize(
+        &plan,
+        &resource,
+        parallel_temp.path(),
+        &pre_finalize,
+        EngineExecutionOptions::default()
+            .with_execution_services(services.clone())
+            .with_scheduler_resolution(scheduler),
+    ))
+    .unwrap();
+    assert_eq!(parallel.output.manifest.identity, serial.manifest.identity);
+    assert_eq!(parallel.output.lineage, serial.lineage);
+    assert_eq!(services.memory().snapshot().current_bytes, 0);
 
     let destination = cdf_runtime::DestinationRuntimeCapabilities {
         blocking_lanes: vec![

@@ -363,6 +363,7 @@ pub struct EngineExecutionOptions {
     pub(crate) phase_metrics: bool,
     pub(crate) services: Option<cdf_runtime::ExecutionServices>,
     pub(crate) unfused_transform: bool,
+    pub(crate) scheduler: Option<cdf_runtime::RuntimeSchedulerResolution>,
 }
 
 impl EngineExecutionOptions {
@@ -386,6 +387,14 @@ impl EngineExecutionOptions {
 
     pub const fn with_unfused_transform_for_conformance(mut self, enabled: bool) -> Self {
         self.unfused_transform = enabled;
+        self
+    }
+
+    pub fn with_scheduler_resolution(
+        mut self,
+        scheduler: cdf_runtime::RuntimeSchedulerResolution,
+    ) -> Self {
+        self.scheduler = Some(scheduler);
         self
     }
 }

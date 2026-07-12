@@ -43,7 +43,7 @@ pub(crate) async fn run_local_file_to_duckdb_checkpoint(
 }
 
 pub async fn run_project(request: ProjectRunRequest<'_>) -> Result<ProjectRunReport> {
-    run_project_with_context(request, RunTelemetryConfig::disabled(), None).await
+    run_project_with_context(request, RunTelemetryConfig::disabled(), None, None).await
 }
 
 pub async fn run_project_with_services(
@@ -54,6 +54,7 @@ pub async fn run_project_with_services(
         request,
         RunTelemetryConfig::disabled(),
         Some(services.clone()),
+        None,
     )
     .await
 }
@@ -63,20 +64,30 @@ pub async fn run_project_with_services_and_telemetry(
     services: &ExecutionServices,
     telemetry: RunTelemetryConfig,
 ) -> Result<ProjectRunReport> {
-    run_project_with_context(request, telemetry, Some(services.clone())).await
+    run_project_with_context(request, telemetry, Some(services.clone()), None).await
+}
+
+pub async fn run_project_with_scheduler_and_telemetry(
+    request: ProjectRunRequest<'_>,
+    services: &ExecutionServices,
+    scheduler: Option<cdf_runtime::RuntimeSchedulerResolution>,
+    telemetry: RunTelemetryConfig,
+) -> Result<ProjectRunReport> {
+    run_project_with_context(request, telemetry, Some(services.clone()), scheduler).await
 }
 
 pub async fn run_project_with_telemetry(
     request: ProjectRunRequest<'_>,
     telemetry: RunTelemetryConfig,
 ) -> Result<ProjectRunReport> {
-    run_project_with_context(request, telemetry, None).await
+    run_project_with_context(request, telemetry, None, None).await
 }
 
 async fn run_project_with_context(
     request: ProjectRunRequest<'_>,
     telemetry: RunTelemetryConfig,
     services: Option<ExecutionServices>,
+    scheduler: Option<cdf_runtime::RuntimeSchedulerResolution>,
 ) -> Result<ProjectRunReport> {
     let mut request = request;
     validate_project_run_request(&mut request)?;
@@ -134,6 +145,7 @@ async fn run_project_with_context(
         after_receipt_verified,
         schema_hash,
         services,
+        scheduler,
     };
     match run_project_inner(execution).await {
         Ok(report) => Ok(report),
@@ -177,6 +189,7 @@ struct ProjectRunExecution<'a> {
     after_receipt_verified: Option<ReceiptVerifiedHook<'a>>,
     schema_hash: SchemaHash,
     services: Option<ExecutionServices>,
+    scheduler: Option<cdf_runtime::RuntimeSchedulerResolution>,
 }
 
 async fn run_project_inner(execution: ProjectRunExecution<'_>) -> Result<ProjectRunReport> {
@@ -256,6 +269,10 @@ async fn run_project_inner(execution: ProjectRunExecution<'_>) -> Result<Project
     let options = EngineExecutionOptions::default()
         .with_phase_metrics(execution.recorder.phase_telemetry_enabled())
         .with_optional_execution_services(execution.services.clone());
+    let options = match execution.scheduler.clone() {
+        Some(scheduler) => options.with_scheduler_resolution(scheduler),
+        None => options,
+    };
     let output_result = match active_staged.as_mut() {
         Some(staged) => {
             let staged = std::cell::RefCell::new(staged);
