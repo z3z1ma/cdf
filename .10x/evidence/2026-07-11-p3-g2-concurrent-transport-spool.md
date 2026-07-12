@@ -11,6 +11,8 @@ The live file transport dependency no longer has `Arc<Mutex<Box<dyn FileTranspor
 
 Remote HTTP/object-store partition opening now creates an injected I/O scope with a two-batch bounded output edge. Partition validation, generation-bound sequential spool, registered/native or row-format stream creation, and forwarding execute in that scope. Local paths bypass the outer scope and retain the direct registered-format stream. Scope ids are fixed-length hashes of resource/partition identity, avoiding unbounded runtime labels.
 
+The remote scope is created eagerly by `ResourceStream::open`, before its returned future is polled. This matters because C2 fills its frontier by calling `open` for every admitted ordinal, while canonical polling may return an earlier ready future without polling all later futures. Eager scope creation makes admission start work rather than merely allocate dormant futures.
+
 ## Procedure
 
 - `cargo test -p cdf-source-files --locked` — 17 passed.

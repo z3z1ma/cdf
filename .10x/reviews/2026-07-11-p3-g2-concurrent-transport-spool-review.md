@@ -11,6 +11,7 @@ Verdict: pass
 - Critical, resolved: the original `Arc<Mutex<Box<dyn FileTransport>>>` serialized all metadata, ranges, listings, and full downloads across otherwise independent partitions. The mutex and mutable trait surface are deleted; concurrency is an explicit transport contract.
 - Significant, resolved: moving every file open through another channel would tax local NVMe/Parquet paths. The outer injected scope is remote-only; local paths remain direct.
 - Significant, resolved: raw resource/partition strings could exceed the execution-scope label bound. Scope identity is now a fixed 16-hex hash prefix with a static label.
+- Significant, resolved in follow-up: remote scope creation initially occurred inside the returned future. Canonical ordered polling could therefore consume the first ready stream before polling later frontier futures, defeating eager overlap. Scope creation now occurs synchronously at admitted `open` call time; the future only returns the already-running bounded stream.
 - Significant, bounded and owned: blocking Reqwest still occupies an I/O worker during transfer, and a remote native codec currently has two bounded forwarding edges. `.10x/tickets/2026-07-11-p3-g1-streaming-transport-byte-sources.md` owns native async HTTP/cloud byte sources; `.10x/tickets/2026-07-11-p3-g2-range-readahead-spool-controller.md` owns measured controller/channel consolidation.
 
 ## Verdict

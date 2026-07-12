@@ -583,26 +583,26 @@ fn open_file_resource_with_dependencies(
     scope_hasher.update([0]);
     scope_hasher.update(partition.partition_id.as_str().as_bytes());
     let scope_id = format!("file-open-{}", &hex::encode(scope_hasher.finalize())[..16]);
+    let stream = execution.spawn_io_stream(
+        &scope_id,
+        NATIVE_STREAM_ITEMS,
+        move |mut sender, _cancellation| async move {
+            let mut batches = open_file_partition(
+                &descriptor,
+                declared_schema,
+                &plan,
+                &partition,
+                &dependencies,
+                allowances,
+            )?;
+            while let Some(batch) = batches.try_next().await? {
+                sender.send(batch).await?;
+            }
+            Ok(())
+        },
+    );
     Box::pin(async move {
-        let stream = execution.spawn_io_stream(
-            &scope_id,
-            NATIVE_STREAM_ITEMS,
-            move |mut sender, _cancellation| async move {
-                let mut batches = open_file_partition(
-                    &descriptor,
-                    declared_schema,
-                    &plan,
-                    &partition,
-                    &dependencies,
-                    allowances,
-                )?;
-                while let Some(batch) = batches.try_next().await? {
-                    sender.send(batch).await?;
-                }
-                Ok(())
-            },
-        )?;
-        Ok(Box::pin(stream) as BatchStream)
+        Ok(Box::pin(stream?) as BatchStream)
     })
 }
 
