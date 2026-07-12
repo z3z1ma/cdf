@@ -53,6 +53,21 @@ use crate::{
 
 pub type PackagePreFinalizeHook<'a> =
     dyn Fn(&PackageBuilder, EnginePackageDraft<'_>) -> Result<()> + 'a;
+pub type DurableSegmentHook<'a> =
+    dyn FnMut(&cdf_package::SegmentEntry, &RecordBatch) -> Result<()> + 'a;
+
+struct DurableSegmentObserver<'a> {
+    hook: Option<&'a mut DurableSegmentHook<'a>>,
+}
+
+impl DurableSegmentObserver<'_> {
+    fn observe(&mut self, segment: &cdf_package::SegmentEntry, batch: &RecordBatch) -> Result<()> {
+        match self.hook.as_deref_mut() {
+            Some(hook) => hook(segment, batch),
+            None => Ok(()),
+        }
+    }
+}
 
 #[derive(Clone, Copy, Debug, Default)]
 struct PhaseAggregate {
@@ -929,6 +944,7 @@ where
         resource,
         package_dir,
         None,
+        None,
         EngineExecutionOptions::default(),
     )
     .await?
@@ -951,6 +967,7 @@ where
         resource,
         package_dir,
         None,
+        None,
         EngineExecutionOptions::default(),
     )
     .instrument(package_execution_span(&trace_context))
@@ -971,6 +988,7 @@ where
         plan,
         resource,
         package_dir,
+        None,
         None,
         EngineExecutionOptions::default(),
     )
@@ -993,17 +1011,42 @@ where
         resource,
         package_dir,
         Some(pre_finalize),
+        None,
         options,
     )
     .await
 }
 
-async fn execute_to_package_inner<R>(
+pub async fn execute_to_package_with_streaming_hooks<'a, R>(
+    plan: &EnginePlan,
+    resource: &R,
+    package_dir: impl AsRef<Path>,
+    pre_finalize: &PackagePreFinalizeHook<'_>,
+    durable_segment: &'a mut DurableSegmentHook<'a>,
+    options: EngineExecutionOptions,
+) -> Result<EngineRunOutputWithSegmentPositions>
+where
+    R: ResourceStream + ?Sized,
+{
+    execute_to_package_inner(
+        None,
+        plan,
+        resource,
+        package_dir,
+        Some(pre_finalize),
+        Some(durable_segment),
+        options,
+    )
+    .await
+}
+
+async fn execute_to_package_inner<'a, R>(
     trace_context: Option<&ExecutionTraceContext>,
     plan: &EnginePlan,
     resource: &R,
     package_dir: impl AsRef<Path>,
     pre_finalize: Option<&PackagePreFinalizeHook<'_>>,
+    durable_segment: Option<&'a mut DurableSegmentHook<'a>>,
     options: EngineExecutionOptions,
 ) -> Result<EngineRunOutputWithSegmentPositions>
 where
@@ -1101,6 +1144,9 @@ where
         None
     };
     let segmentation_policy = plan.segmentation_policy()?.clone();
+    let mut durable_segment_observer = DurableSegmentObserver {
+        hook: durable_segment,
+    };
 
     for (partition_ordinal, partition) in plan.scan.partitions.clone().into_iter().enumerate() {
         let partition_ordinal = u32::try_from(partition_ordinal)
@@ -1421,6 +1467,7 @@ where
                         phase_measurements: &mut phase_measurements,
                         memory: memory.as_ref(),
                     },
+                    &mut durable_segment_observer,
                 )?;
             }
             persist_canonical_segments(
@@ -1436,6 +1483,7 @@ where
                     phase_measurements: &mut phase_measurements,
                     memory: memory.as_ref(),
                 },
+                &mut durable_segment_observer,
             )?;
             Ok::<_, CdfError>((fully_processed, observed_positions))
         }
@@ -1492,6 +1540,7 @@ where
                 phase_measurements: &mut phase_measurements,
                 memory: memory.as_ref(),
             },
+            &mut durable_segment_observer,
         )?;
     }
 
@@ -1625,6 +1674,7 @@ fn apply_dedup_and_write_pending_batches(
     )>,
     segmentation_policy: &crate::CanonicalSegmentationPolicy,
     state: &mut OutputWriteState<'_>,
+    durable_segment: &mut DurableSegmentObserver<'_>,
 ) -> Result<()> {
     let validation_started = state.phase_measurements.start();
     let pending_input_bytes = pending
@@ -1673,7 +1723,12 @@ fn apply_dedup_and_write_pending_batches(
                 != Some(payload_batch.partition_ordinal)
             {
                 if let Some((_, mut previous)) = assembler.take() {
-                    persist_canonical_segments(builder, previous.finish()?, state)?;
+                    persist_canonical_segments(
+                        builder,
+                        previous.finish()?,
+                        state,
+                        durable_segment,
+                    )?;
                 }
                 assembler = Some((
                     payload_batch.partition_ordinal,
@@ -1692,6 +1747,7 @@ fn apply_dedup_and_write_pending_batches(
                 payload_batch.output_position,
                 &mut assembler.as_mut().expect("assembler initialized").1,
                 state,
+                durable_segment,
             )?;
         }
         if decisions.next()?.is_some() {
@@ -1700,7 +1756,7 @@ fn apply_dedup_and_write_pending_batches(
             ));
         }
         if let Some((_, mut assembler)) = assembler {
-            persist_canonical_segments(builder, assembler.finish()?, state)?;
+            persist_canonical_segments(builder, assembler.finish()?, state, durable_segment)?;
         }
         let shards = provenance.finish(builder)?;
         write_dedup_summary_v2(
@@ -1758,7 +1814,7 @@ fn apply_dedup_and_write_pending_batches(
         }
         if assembler.as_ref().map(|(ordinal, _)| *ordinal) != Some(pending.partition_ordinal) {
             if let Some((_, mut previous)) = assembler.take() {
-                persist_canonical_segments(builder, previous.finish()?, state)?;
+                persist_canonical_segments(builder, previous.finish()?, state, durable_segment)?;
             }
             assembler = Some((
                 pending.partition_ordinal,
@@ -1777,10 +1833,11 @@ fn apply_dedup_and_write_pending_batches(
             pending.output_position,
             &mut assembler.as_mut().expect("assembler initialized").1,
             state,
+            durable_segment,
         )?;
     }
     if let Some((_, mut assembler)) = assembler {
-        persist_canonical_segments(builder, assembler.finish()?, state)?;
+        persist_canonical_segments(builder, assembler.finish()?, state, durable_segment)?;
     }
     Ok(())
 }
@@ -2014,6 +2071,7 @@ fn write_output_batch(
     prepared: PreparedOutputBatch,
     assembler: &mut crate::CanonicalSegmentAssembler,
     state: &mut OutputWriteState<'_>,
+    durable_segment: &mut DurableSegmentObserver<'_>,
 ) -> Result<()> {
     let output_position = prepared.output_position.clone();
     let prepared = prepare_output_batch(
@@ -2024,7 +2082,14 @@ fn write_output_batch(
         state.expected_schema,
         state.phase_measurements,
     )?;
-    write_normalized_output_batch(builder, prepared, output_position, assembler, state)
+    write_normalized_output_batch(
+        builder,
+        prepared,
+        output_position,
+        assembler,
+        state,
+        durable_segment,
+    )
 }
 
 fn prepare_output_batch(
@@ -2082,16 +2147,18 @@ fn write_normalized_output_batch(
     output_position: Option<SourcePosition>,
     assembler: &mut crate::CanonicalSegmentAssembler,
     state: &mut OutputWriteState<'_>,
+    durable_segment: &mut DurableSegmentObserver<'_>,
 ) -> Result<()> {
     let canonical_segments =
         assembler.push_accounted(prepared.output, output_position, prepared.memory_lease)?;
-    persist_canonical_segments(builder, canonical_segments, state)
+    persist_canonical_segments(builder, canonical_segments, state, durable_segment)
 }
 
 fn persist_canonical_segments(
     builder: &mut PackageBuilder,
     canonical_segments: Vec<crate::CanonicalSegment>,
     state: &mut OutputWriteState<'_>,
+    durable_segment: &mut DurableSegmentObserver<'_>,
 ) -> Result<()> {
     for canonical in canonical_segments {
         let _transform_memory_leases = canonical.memory_leases;
@@ -2126,10 +2193,11 @@ fn persist_canonical_segments(
             .map_err(|_| CdfError::data("canonical output bytes exceed u64"))?;
         let segment_id = canonical.segment_id;
         let write = if state.phase_measurements.enabled {
-            builder.write_segment_with_metrics(segment_id.clone(), &[output])?
+            builder.write_segment_with_metrics(segment_id.clone(), std::slice::from_ref(&output))?
         } else {
             cdf_package::SegmentWriteMetrics {
-                segment: builder.write_segment(segment_id.clone(), &[output])?,
+                segment: builder
+                    .write_segment(segment_id.clone(), std::slice::from_ref(&output))?,
                 encode_duration_ns: 0,
                 persist_hash_duration_ns: 0,
             }
@@ -2147,6 +2215,7 @@ fn persist_canonical_segments(
             write.segment.byte_count,
         );
         let segment = write.segment;
+        durable_segment.observe(&segment, &output)?;
         state.profile.output_rows = state.profile.output_rows.saturating_add(segment.row_count);
         state.profile.output_bytes = state
             .profile

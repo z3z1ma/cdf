@@ -849,6 +849,56 @@ fn inexact_and_unsupported_predicates_are_reapplied_during_execution() {
 }
 
 #[test]
+fn durable_segment_hook_runs_after_publish_with_exact_entry_and_batch() {
+    let resource = MockResource::tier_b(sample_batches());
+    let plan = Planner::new()
+        .plan_tier_b(
+            &resource,
+            plan_input(vec![], None, None, PlanBoundedness::Bounded),
+        )
+        .unwrap();
+    let package_dir = TempDir::new().unwrap();
+    let durable_root = package_dir.path().to_path_buf();
+    let observed = Arc::new(Mutex::new(Vec::new()));
+    let hook_observed = Arc::clone(&observed);
+    let mut durable_segment = move |entry: &cdf_package::SegmentEntry, batch: &RecordBatch| {
+        assert!(durable_root.join(&entry.path).is_file());
+        hook_observed.lock().unwrap().push((
+            entry.segment_id.clone(),
+            entry.sha256.clone(),
+            entry.row_count,
+            batch.num_rows() as u64,
+        ));
+        Ok(())
+    };
+    fn pre_finalize(
+        _builder: &cdf_package::PackageBuilder,
+        _draft: EnginePackageDraft<'_>,
+    ) -> Result<()> {
+        Ok(())
+    }
+
+    let output = block_on(execute_to_package_with_streaming_hooks(
+        &plan,
+        &resource,
+        package_dir.path(),
+        &pre_finalize,
+        &mut durable_segment,
+        EngineExecutionOptions::default(),
+    ))
+    .unwrap();
+
+    let observed = observed.lock().unwrap();
+    assert_eq!(observed.len(), output.output.segments.len());
+    for (actual, expected) in observed.iter().zip(&output.output.segments) {
+        assert_eq!(&actual.0, &expected.segment_id);
+        assert_eq!(&actual.1, &expected.sha256);
+        assert_eq!(actual.2, actual.3);
+        assert_eq!(actual.2, expected.row_count);
+    }
+}
+
+#[test]
 fn illegal_unbounded_live_plan_is_rejected() {
     let resource = MockResource::tier_a(sample_batches());
     let input = plan_input(

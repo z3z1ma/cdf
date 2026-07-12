@@ -17,9 +17,10 @@ mod types;
 mod variant_capture;
 
 pub use execution::{
-    PackagePreFinalizeHook, execute_to_package, execute_to_package_with_run_id,
+    DurableSegmentHook, PackagePreFinalizeHook, execute_to_package, execute_to_package_with_run_id,
     execute_to_package_with_segment_positions,
-    execute_to_package_with_segment_positions_and_pre_finalize, normalize_record_batch,
+    execute_to_package_with_segment_positions_and_pre_finalize,
+    execute_to_package_with_streaming_hooks, normalize_record_batch,
     preview_partition_selector_candidate, preview_resource,
 };
 pub use graph_plan::compile_operator_graph;
