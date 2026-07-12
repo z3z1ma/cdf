@@ -979,6 +979,7 @@ struct MockDestination {
     receipts: Arc<Mutex<Vec<Receipt>>>,
     writes: Arc<Mutex<Vec<SegmentId>>>,
     aborts: Arc<AtomicU64>,
+    stage_threads: Arc<Mutex<Vec<std::thread::ThreadId>>>,
 }
 
 impl MockDestination {
@@ -1004,6 +1005,7 @@ impl MockDestination {
             receipts: Arc::new(Mutex::new(Vec::new())),
             writes: Arc::new(Mutex::new(Vec::new())),
             aborts: Arc::new(AtomicU64::new(0)),
+            stage_threads: Arc::new(Mutex::new(Vec::new())),
         }
     }
 
@@ -1013,6 +1015,10 @@ impl MockDestination {
 
     fn abort_count(&self) -> u64 {
         self.aborts.load(Ordering::SeqCst)
+    }
+
+    fn stage_threads(&self) -> Vec<std::thread::ThreadId> {
+        self.stage_threads.lock().unwrap().clone()
     }
 }
 
@@ -1307,6 +1313,7 @@ impl ProjectDestinationRuntime for MockProjectDestinationRuntime {
 struct MockStagedProjectRuntime {
     destination: MockDestination,
     fail_stage_after: Option<usize>,
+    max_in_flight_bytes: u64,
 }
 
 impl ProjectDestinationRuntime for MockStagedProjectRuntime {
@@ -1324,6 +1331,15 @@ impl ProjectDestinationRuntime for MockStagedProjectRuntime {
 
     fn runtime_capabilities(&self) -> cdf_runtime::DestinationRuntimeCapabilities {
         cdf_runtime::DestinationRuntimeCapabilities {
+            blocking_lanes: vec![cdf_runtime::BlockingLaneSpec {
+                lane_id: "mock.staged".to_owned(),
+                maximum_concurrency: 1,
+                cpu_slot_cost: 1,
+                native_internal_parallelism: 1,
+                affinity: cdf_runtime::LaneAffinity::Shared,
+                interruption: cdf_runtime::InterruptionSafety::CooperativeOnly,
+            }],
+            staged_ingress_lane: Some("mock.staged".to_owned()),
             ingress_mode: cdf_runtime::DestinationIngressMode::StagedDurableSegments,
             staged_ingress: Some(cdf_runtime::StagedIngressCapabilities {
                 recovery: cdf_runtime::StagingRecoveryMode::RollbackRedrive,
@@ -1335,7 +1351,7 @@ impl ProjectDestinationRuntime for MockStagedProjectRuntime {
             writer_model: cdf_runtime::DestinationWriterModel::SingleWriter,
             commit_payload_mode: cdf_runtime::DestinationCommitPayloadMode::SegmentStreaming,
             max_in_flight_segments: Some(1),
-            max_in_flight_bytes: Some(64 * 1024 * 1024),
+            max_in_flight_bytes: Some(self.max_in_flight_bytes),
             ..Default::default()
         }
     }
@@ -1383,6 +1399,11 @@ impl cdf_runtime::StagedIngressSession for MockProjectStagedSession {
         &mut self,
         mut segment: cdf_runtime::StagedSegmentRequest,
     ) -> Result<cdf_runtime::StagedSegmentAck> {
+        self.destination
+            .stage_threads
+            .lock()
+            .unwrap()
+            .push(std::thread::current().id());
         if self
             .fail_stage_after
             .is_some_and(|limit| self.accepted.len() >= limit)
@@ -5745,6 +5766,7 @@ fn generic_replay_streams_verified_segments_through_staged_final_binding() {
     let mut runtime = MockStagedProjectRuntime {
         destination: destination.clone(),
         fail_stage_after: None,
+        max_in_flight_bytes: 64 * 1024 * 1024,
     };
     let stages = Arc::new(Mutex::new(Vec::new()));
     let stage_capture = Arc::clone(&stages);
@@ -5800,6 +5822,7 @@ fn ordinary_run_stages_each_segment_at_durable_publish_before_final_binding() {
     let resource = multi_file_resource(temp.path());
     let package_id = "pkg-live-staged-overlap";
     let destination = MockDestination::new();
+    let run_thread = std::thread::current().id();
     let request = ProjectRunRequest {
         resource: ProjectRunSource::local_file(&resource),
         plan: default_live_plan(&resource, package_id),
@@ -5812,6 +5835,7 @@ fn ordinary_run_stages_each_segment_at_durable_publish_before_final_binding() {
             Box::new(MockStagedProjectRuntime {
                 destination: destination.clone(),
                 fail_stage_after: None,
+                max_in_flight_bytes: 64 * 1024 * 1024,
             }),
             TargetName::new("events").unwrap(),
         ),
@@ -5824,6 +5848,13 @@ fn ordinary_run_stages_each_segment_at_durable_publish_before_final_binding() {
 
     assert_eq!(report.segment_count, 2);
     assert_eq!(destination.write_count(), report.segment_count);
+    assert_eq!(destination.stage_threads().len(), report.segment_count);
+    assert!(
+        destination
+            .stage_threads()
+            .iter()
+            .all(|thread| *thread != run_thread)
+    );
     assert!(report.receipt.covers_state_delta(&report.checkpoint.delta));
     assert_eq!(report.package_status, PackageStatus::Checkpointed);
     assert_eq!(
@@ -5854,6 +5885,7 @@ fn staged_publish_failure_aborts_attempt_and_never_proposes_checkpoint() {
             Box::new(MockStagedProjectRuntime {
                 destination: destination.clone(),
                 fail_stage_after: Some(1),
+                max_in_flight_bytes: 64 * 1024 * 1024,
             }),
             TargetName::new("events").unwrap(),
         ),

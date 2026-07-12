@@ -234,22 +234,26 @@ async fn run_project_inner(execution: ProjectRunExecution<'_>) -> Result<Project
         execution.target.clone(),
         manifest_plan.plan.write_disposition.clone(),
         execution.schema_hash.clone(),
+        execution.services.as_ref(),
     )?;
     let options = EngineExecutionOptions::default()
         .with_phase_metrics(execution.recorder.phase_telemetry_enabled())
         .with_optional_execution_services(execution.services.clone());
     let output_result = match active_staged.as_mut() {
         Some(staged) => {
+            let staged = std::cell::RefCell::new(staged);
             let mut durable_segment =
                 |entry: &cdf_package::SegmentEntry, batch: &arrow_array::RecordBatch| {
-                    staged.stage_segment(entry, batch)
+                    staged.borrow_mut().stage_segment(entry, batch)
                 };
+            let mut stream_finalize = || staged.borrow_mut().finish_background();
             execute_to_package_with_streaming_hooks(
                 &manifest_plan.plan,
                 resource,
                 &execution.package_dir,
                 &write_package_pre_finalize_artifacts,
                 &mut durable_segment,
+                &mut stream_finalize,
                 options,
             )
             .await

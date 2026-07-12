@@ -877,6 +877,7 @@ fn durable_segment_hook_runs_after_publish_with_exact_entry_and_batch() {
     ) -> Result<()> {
         Ok(())
     }
+    let mut stream_finalize = || Ok(());
 
     let output = block_on(execute_to_package_with_streaming_hooks(
         &plan,
@@ -884,6 +885,7 @@ fn durable_segment_hook_runs_after_publish_with_exact_entry_and_batch() {
         package_dir.path(),
         &pre_finalize,
         &mut durable_segment,
+        &mut stream_finalize,
         EngineExecutionOptions::default(),
     ))
     .unwrap();

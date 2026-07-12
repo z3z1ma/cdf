@@ -55,6 +55,7 @@ pub type PackagePreFinalizeHook<'a> =
     dyn Fn(&PackageBuilder, EnginePackageDraft<'_>) -> Result<()> + 'a;
 pub type DurableSegmentHook<'a> =
     dyn FnMut(&cdf_package::SegmentEntry, &RecordBatch) -> Result<()> + 'a;
+pub type StreamingFinalizeHook<'a> = dyn FnMut() -> Result<()> + 'a;
 
 struct DurableSegmentObserver<'a> {
     hook: Option<&'a mut DurableSegmentHook<'a>>,
@@ -945,6 +946,7 @@ where
         package_dir,
         None,
         None,
+        None,
         EngineExecutionOptions::default(),
     )
     .await?
@@ -966,6 +968,7 @@ where
         plan,
         resource,
         package_dir,
+        None,
         None,
         None,
         EngineExecutionOptions::default(),
@@ -990,6 +993,7 @@ where
         package_dir,
         None,
         None,
+        None,
         EngineExecutionOptions::default(),
     )
     .await
@@ -1012,6 +1016,7 @@ where
         package_dir,
         Some(pre_finalize),
         None,
+        None,
         options,
     )
     .await
@@ -1023,6 +1028,7 @@ pub async fn execute_to_package_with_streaming_hooks<'a, R>(
     package_dir: impl AsRef<Path>,
     pre_finalize: &PackagePreFinalizeHook<'_>,
     durable_segment: &'a mut DurableSegmentHook<'a>,
+    stream_finalize: &'a mut StreamingFinalizeHook<'a>,
     options: EngineExecutionOptions,
 ) -> Result<EngineRunOutputWithSegmentPositions>
 where
@@ -1035,11 +1041,13 @@ where
         package_dir,
         Some(pre_finalize),
         Some(durable_segment),
+        Some(stream_finalize),
         options,
     )
     .await
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn execute_to_package_inner<'a, R>(
     trace_context: Option<&ExecutionTraceContext>,
     plan: &EnginePlan,
@@ -1047,6 +1055,7 @@ async fn execute_to_package_inner<'a, R>(
     package_dir: impl AsRef<Path>,
     pre_finalize: Option<&PackagePreFinalizeHook<'_>>,
     durable_segment: Option<&'a mut DurableSegmentHook<'a>>,
+    stream_finalize: Option<&'a mut StreamingFinalizeHook<'a>>,
     options: EngineExecutionOptions,
 ) -> Result<EngineRunOutputWithSegmentPositions>
 where
@@ -1623,6 +1632,9 @@ where
         &cdf_package::canonical_json_bytes(&lineage)?,
     )?;
     let execution_evidence = EngineExecutionEvidence::new(processed_observations)?;
+    if let Some(stream_finalize) = stream_finalize {
+        stream_finalize()?;
+    }
     builder.update_status(PackageStatus::Validated)?;
     if let Some(pre_finalize) = pre_finalize {
         pre_finalize(

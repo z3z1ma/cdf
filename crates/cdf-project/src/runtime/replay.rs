@@ -7,7 +7,7 @@ use super::{
     receipts::validate_destination_receipt_before_checkpoint,
     types::*,
 };
-use std::sync::Arc;
+use std::sync::{Arc, Condvar, Mutex, mpsc};
 
 use cdf_memory::{DEFAULT_PROCESS_BUDGET_BYTES, DeterministicMemoryCoordinator, MemoryCoordinator};
 use sha2::{Digest, Sha256};
@@ -21,6 +21,75 @@ pub(crate) struct ActiveStagedIngress {
     schema_hash: SchemaHash,
     session: Option<Box<dyn cdf_runtime::StagedIngressSession>>,
     staged: Vec<cdf_runtime::StagedSegmentIdentity>,
+    next_ordinal: u32,
+    background: Option<BackgroundStaging>,
+}
+
+struct BackgroundStaging {
+    sender: Option<mpsc::SyncSender<BackgroundStagedSegment>>,
+    scope: Option<Box<dyn cdf_runtime::ExecutionTaskScope>>,
+    completed: Arc<Mutex<CompletedBackgroundStaging>>,
+    bytes: Arc<InFlightByteBudget>,
+    _services: ExecutionServices,
+}
+
+struct BackgroundStagedSegment {
+    request: cdf_runtime::StagedSegmentRequest,
+    identity: cdf_runtime::StagedSegmentIdentity,
+    _lease: cdf_memory::MemoryLease,
+    _bytes: InFlightBytePermit,
+}
+
+struct InFlightByteBudget {
+    maximum: u64,
+    current: Mutex<u64>,
+    released: Condvar,
+}
+
+impl InFlightByteBudget {
+    fn acquire(self: &Arc<Self>, bytes: u64) -> Result<InFlightBytePermit> {
+        if bytes > self.maximum {
+            return Err(CdfError::data(format!(
+                "staged segment retains {bytes} bytes above the destination in-flight bound {}; rebuild with smaller canonical segments or raise the destination bound",
+                self.maximum
+            )));
+        }
+        let mut current = self
+            .current
+            .lock()
+            .map_err(|_| CdfError::internal("staged byte budget lock is poisoned"))?;
+        while current.saturating_add(bytes) > self.maximum {
+            current = self
+                .released
+                .wait(current)
+                .map_err(|_| CdfError::internal("staged byte budget lock is poisoned"))?;
+        }
+        *current = current.saturating_add(bytes);
+        Ok(InFlightBytePermit {
+            budget: Arc::clone(self),
+            bytes,
+        })
+    }
+}
+
+struct InFlightBytePermit {
+    budget: Arc<InFlightByteBudget>,
+    bytes: u64,
+}
+
+impl Drop for InFlightBytePermit {
+    fn drop(&mut self) {
+        if let Ok(mut current) = self.budget.current.lock() {
+            *current = current.saturating_sub(self.bytes);
+            self.budget.released.notify_all();
+        }
+    }
+}
+
+#[derive(Default)]
+struct CompletedBackgroundStaging {
+    session: Option<Box<dyn cdf_runtime::StagedIngressSession>>,
+    staged: Vec<cdf_runtime::StagedSegmentIdentity>,
 }
 
 impl ActiveStagedIngress {
@@ -31,6 +100,7 @@ impl ActiveStagedIngress {
         target: TargetName,
         disposition: WriteDisposition,
         schema_hash: SchemaHash,
+        services: Option<&ExecutionServices>,
     ) -> Result<Option<Self>> {
         let capabilities = runtime.runtime_capabilities();
         capabilities.validate()?;
@@ -55,15 +125,98 @@ impl ActiveStagedIngress {
                 schema_hash: schema_hash.clone(),
                 plan_id: staging_plan_id.clone(),
             },
-            scheduling,
+            scheduling: scheduling.clone(),
         })?;
-        Ok(Some(Self {
+        let mut active = Self {
             attempt_id,
             staging_plan_id,
             schema_hash,
             session: Some(session),
             staged: Vec::new(),
-        }))
+            next_ordinal: 0,
+            background: None,
+        };
+        if let Some(lane) = capabilities.staged_ingress_lane.as_deref() {
+            active.start_background(
+                lane,
+                &capabilities,
+                services.cloned(),
+                scheduling.max_in_flight_segments,
+            )?;
+        }
+        Ok(Some(active))
+    }
+
+    fn start_background(
+        &mut self,
+        lane: &str,
+        capabilities: &cdf_runtime::DestinationRuntimeCapabilities,
+        services: Option<ExecutionServices>,
+        maximum_segments: u16,
+    ) -> Result<()> {
+        let services = match services {
+            Some(services) => services,
+            None => {
+                cdf_engine::StandaloneExecutionHost::default_services(
+                    cdf_memory::DEFAULT_PROCESS_BUDGET_BYTES,
+                )?
+                .1
+            }
+        };
+        services.ensure_blocking_lanes(&capabilities.blocking_lanes)?;
+        let mut scope = services.open_scope(self.attempt_id.as_str())?;
+        let capacity = usize::from(maximum_segments);
+        let (sender, receiver) = mpsc::sync_channel::<BackgroundStagedSegment>(capacity);
+        let completed = Arc::new(Mutex::new(CompletedBackgroundStaging::default()));
+        let bytes = Arc::new(InFlightByteBudget {
+            maximum: capabilities
+                .max_in_flight_bytes
+                .expect("validated staged byte bound"),
+            current: Mutex::new(0),
+            released: Condvar::new(),
+        });
+        let completed_worker = Arc::clone(&completed);
+        let attempt_id = self.attempt_id.clone();
+        let mut session = self
+            .session
+            .take()
+            .ok_or_else(|| CdfError::internal("staged session is absent before worker start"))?;
+        scope.spawn_blocking(
+            lane,
+            Box::new(move || {
+                let mut staged = Vec::new();
+                for work in receiver {
+                    let ack = match session.stage_segment(work.request) {
+                        Ok(ack) => ack,
+                        Err(error) => {
+                            let _ = session.abort();
+                            return Err(error);
+                        }
+                    };
+                    if ack.attempt_id != attempt_id || ack.identity != work.identity {
+                        let _ = session.abort();
+                        return Err(CdfError::destination(
+                            "staged ingress acknowledgement did not bind the exact durable segment",
+                        ));
+                    }
+                    staged.push(work.identity);
+                }
+                let mut output = completed_worker.lock().map_err(|_| {
+                    CdfError::internal("background staging completion lock is poisoned")
+                })?;
+                output.session = Some(session);
+                output.staged = staged;
+                Ok(())
+            }),
+        )?;
+        self.background = Some(BackgroundStaging {
+            sender: Some(sender),
+            scope: Some(scope),
+            completed,
+            bytes,
+            _services: services,
+        });
+        Ok(())
     }
 
     pub(crate) fn stage_segment(
@@ -71,8 +224,11 @@ impl ActiveStagedIngress {
         entry: &cdf_package::SegmentEntry,
         batch: &arrow_array::RecordBatch,
     ) -> Result<()> {
-        let ordinal = u32::try_from(self.staged.len())
-            .map_err(|_| CdfError::data("staged package has too many segments"))?;
+        let ordinal = self.next_ordinal;
+        self.next_ordinal = self
+            .next_ordinal
+            .checked_add(1)
+            .ok_or_else(|| CdfError::data("staged package has too many segments"))?;
         let identity = cdf_runtime::StagedSegmentIdentity::from_manifest_entry(
             entry,
             self.schema_hash.clone(),
@@ -85,6 +241,47 @@ impl ActiveStagedIngress {
                 batch: Some(batch.clone()),
             }),
         )?;
+        if let Some(background) = &mut self.background {
+            let retained_bytes = u64::try_from(batch.get_array_memory_size())
+                .map_err(|_| CdfError::data("staged Arrow batch memory exceeds u64"))?
+                .max(1);
+            let maximum_bytes = background._services.memory().snapshot().budget_bytes;
+            if retained_bytes > maximum_bytes {
+                return Err(CdfError::data(format!(
+                    "staged segment retains {retained_bytes} bytes above the managed memory budget {maximum_bytes}; rebuild with smaller canonical segments or raise the budget"
+                )));
+            }
+            let bytes = background.bytes.acquire(retained_bytes)?;
+            let request_memory = cdf_memory::ReservationRequest::new(
+                cdf_memory::ConsumerKey::new(
+                    "staged-ingress-edge",
+                    cdf_memory::MemoryClass::Queue,
+                )?,
+                retained_bytes,
+            )?;
+            let lease = background
+                ._services
+                .memory()
+                .try_reserve(&request_memory)?
+                .ok_or_else(|| {
+                    CdfError::data(format!(
+                        "staged ingress requires {retained_bytes} queue bytes but the managed memory budget is exhausted; reduce jobs or raise the memory budget"
+                    ))
+                })?;
+            lease.reconcile(retained_bytes)?;
+            background
+                .sender
+                .as_ref()
+                .ok_or_else(|| CdfError::internal("staged ingress worker is closed"))?
+                .send(BackgroundStagedSegment {
+                    request,
+                    identity,
+                    _lease: lease,
+                    _bytes: bytes,
+                })
+                .map_err(|_| CdfError::destination("staged ingress worker stopped"))?;
+            return Ok(());
+        }
         let ack = self
             .session
             .as_mut()
@@ -99,7 +296,42 @@ impl ActiveStagedIngress {
         Ok(())
     }
 
+    pub(crate) fn finish_background(&mut self) -> Result<()> {
+        let Some(mut background) = self.background.take() else {
+            return Ok(());
+        };
+        drop(background.sender.take());
+        let report = background._services.run_io(
+            background
+                .scope
+                .take()
+                .expect("background staging scope is consumed exactly once")
+                .join(),
+        )?;
+        if report.failed > 0 || report.cancelled > 0 {
+            return Err(CdfError::destination(
+                "background staged ingress did not complete cleanly",
+            ));
+        }
+        let mut completed = background
+            .completed
+            .lock()
+            .map_err(|_| CdfError::internal("background staging completion lock is poisoned"))?;
+        self.session = completed.session.take();
+        self.staged = std::mem::take(&mut completed.staged);
+        Ok(())
+    }
+
     pub(crate) fn abort(mut self) {
+        if let Some(mut background) = self.background.take() {
+            drop(background.sender.take());
+            if let Some(scope) = background.scope.take() {
+                let _ = background._services.run_io(scope.join());
+            }
+            if let Ok(mut completed) = background.completed.lock() {
+                self.session = completed.session.take();
+            }
+        }
         if let Some(session) = self.session.take() {
             let _ = session.abort();
         }
@@ -610,6 +842,7 @@ fn finalize_active_staged_ingress(
     hooks: &PackageReplayHooks<'_>,
 ) -> Result<Receipt> {
     let result = (|| {
+        active.finish_background()?;
         runtime.ensure_protocol_ready()?;
         let plan = runtime.protocol().plan_commit(&inputs.destination_commit)?;
         notify_destination_replay_stage(
