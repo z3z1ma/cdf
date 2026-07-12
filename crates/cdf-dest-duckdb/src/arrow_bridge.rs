@@ -183,7 +183,7 @@ mod tests {
     fn arrow_appender_tlc_envelope_benchmark() {
         const BATCH_ROWS: usize = 65_536;
         const BATCHES: usize = 16;
-        const SCALAR_ROWS: usize = 65_536;
+        const SCALAR_ROWS: usize = 262_144;
         let batch = tlc_batch(BATCH_ROWS);
         let user_fields = batch
             .schema()
@@ -253,12 +253,14 @@ mod tests {
         let started = Instant::now();
         let materialized = (0..SCALAR_ROWS)
             .map(|row| {
+                let source_row = row % BATCH_ROWS;
                 batch
                     .columns()
                     .iter()
                     .zip(schema.fields())
                     .map(|(array, field)| {
-                        crate::rows::cell_value(array.as_ref(), field.data_type(), row).unwrap()
+                        crate::rows::cell_value(array.as_ref(), field.data_type(), source_row)
+                            .unwrap()
                     })
                     .collect::<Vec<_>>()
             })

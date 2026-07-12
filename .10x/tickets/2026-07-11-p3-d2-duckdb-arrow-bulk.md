@@ -32,3 +32,10 @@ Depends on D1, A4, and the DuckDB triage.
 ## References
 
 - `.10x/specs/destination-bulk-path-runtime.md`
+- `.10x/decisions/duckdb-arrow-c-stream-version-bridge.md`
+
+## Progress and notes
+
+- 2026-07-11: Source inspection rejected the binding's vtab helper because it permanently retains every passed batch. Ratified a narrowly isolated Arrow C Stream ABI bridge for the pinned Arrow 59/58 tuple.
+- 2026-07-11: Implemented bounded native data-chunk append, deleted package/row vectors and scalar ingestion, moved provenance constants into vectorized per-segment SQL, and preserved transactional append/replace/merge, duplicate, correction, abort, receipt, and verification behavior.
+- 2026-07-11: `.10x/evidence/2026-07-11-p3-d2-duckdb-arrow-milestone.md` records 1.946M TLC-shaped rows/s and 4.44x versus the exact removed scalar shape. The ≥1M row is green; D2 remains open for the final ≥5x gap, blocking-lane graph integration, and expanded type matrix.
