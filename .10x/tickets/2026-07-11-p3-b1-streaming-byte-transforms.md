@@ -33,3 +33,7 @@ Depends on L5, FX1, and the memory ledger.
 
 - `.10x/specs/native-enterprise-format-catalog.md`
 - `.10x/specs/native-format-codec-runtime.md`
+
+## Progress and notes
+
+- 2026-07-12: Replaced the unusable transform execution signature with explicit allocation and expansion authority. Every `ByteTransformDriver` now receives `ByteTransformRequest`: transform-class memory coordinator/consumer, preferred output chunk bound, expanded-byte and ratio ceilings no greater than its descriptor, optional planned input size, and cancellation. Invalid ownership, zero/oversized chunks, weakened ceilings, zero input identity, and ratio overflow fail before decode. No legacy signature or shim remains. This unblocks correct reserve-before-allocate gzip/zstd drivers; B1 remains open for implementations, integration, fuzzing, and envelope evidence. Evidence/review: `.10x/evidence/2026-07-12-p3-b1-transform-allocation-authority.md`, `.10x/reviews/2026-07-12-p3-b1-transform-allocation-authority-review.md`.

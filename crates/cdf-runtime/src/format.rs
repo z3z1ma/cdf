@@ -6,7 +6,10 @@ use cdf_kernel::{
     Batch, BoxFuture, CdfError, PartitionId, PayloadRetention, PushdownFidelity, ResourceId,
     Result, ScanPredicate, SchemaHash, SourcePosition,
 };
-use cdf_memory::{AccountedBytes, MemoryCoordinator, MemoryLease, record_batch_retained_bytes};
+use cdf_memory::{
+    AccountedBytes, ConsumerKey, MemoryClass, MemoryCoordinator, MemoryLease,
+    record_batch_retained_bytes,
+};
 use futures_util::Stream;
 use serde::{Deserialize, Serialize};
 
@@ -472,8 +475,46 @@ pub trait ByteTransformDriver: Send + Sync {
     fn transform(
         &self,
         input: AccountedByteStream,
-        cancellation: RunCancellation,
+        request: ByteTransformRequest,
     ) -> Result<AccountedByteStream>;
+}
+
+#[derive(Clone)]
+pub struct ByteTransformRequest {
+    pub preferred_output_chunk_bytes: u64,
+    pub maximum_expanded_bytes: u64,
+    pub maximum_expansion_ratio: u32,
+    pub input_size_bytes: Option<u64>,
+    pub memory: Arc<dyn MemoryCoordinator>,
+    pub consumer: ConsumerKey,
+    pub cancellation: RunCancellation,
+}
+
+impl ByteTransformRequest {
+    pub fn validate_for(&self, descriptor: &ByteTransformDescriptor) -> Result<()> {
+        descriptor.validate()?;
+        if self.preferred_output_chunk_bytes == 0
+            || self.preferred_output_chunk_bytes > descriptor.maximum_working_set_bytes
+            || self.maximum_expanded_bytes == 0
+            || self.maximum_expanded_bytes > descriptor.maximum_expanded_bytes
+            || self.maximum_expansion_ratio == 0
+            || self.maximum_expansion_ratio > descriptor.maximum_expansion_ratio
+            || self.input_size_bytes == Some(0)
+            || self.consumer.class != MemoryClass::Transform
+        {
+            return Err(CdfError::contract(
+                "byte-transform request requires a transform-class consumer, a nonzero output chunk within working-set authority, optional positive input length, and expansion ceilings no greater than the driver descriptor",
+            ));
+        }
+        if let Some(input_bytes) = self.input_size_bytes {
+            input_bytes
+                .checked_mul(u64::from(self.maximum_expansion_ratio))
+                .ok_or_else(|| {
+                    CdfError::contract("byte-transform expansion authority overflowed")
+                })?;
+        }
+        Ok(())
+    }
 }
 
 #[derive(Clone, Default)]
@@ -719,6 +760,48 @@ mod tests {
             .validate()
             .is_err()
         );
+    }
+
+    #[test]
+    fn byte_transform_request_binds_output_allocation_and_expansion_authority() {
+        let descriptor = ByteTransformDescriptor {
+            transform_id: ByteTransformId::new("gzip").unwrap(),
+            semantic_version: "1.0.0".to_owned(),
+            extensions: vec!["gz".to_owned()],
+            magic: vec![MagicSignature {
+                offset: 0,
+                bytes: vec![0x1f, 0x8b],
+                strong: true,
+            }],
+            preserves_random_access: false,
+            splittable: false,
+            supports_concatenated_members: true,
+            maximum_working_set_bytes: 1024 * 1024,
+            maximum_expanded_bytes: 1024 * 1024 * 1024,
+            maximum_expansion_ratio: 100,
+            checksum: TransformChecksumBehavior::Required,
+        };
+        let memory: Arc<dyn MemoryCoordinator> = Arc::new(
+            DeterministicMemoryCoordinator::new(8 * 1024 * 1024, BTreeMap::new()).unwrap(),
+        );
+        let request = ByteTransformRequest {
+            preferred_output_chunk_bytes: 256 * 1024,
+            maximum_expanded_bytes: 512 * 1024 * 1024,
+            maximum_expansion_ratio: 50,
+            input_size_bytes: Some(1024),
+            memory,
+            consumer: ConsumerKey::new("gzip-part-0", MemoryClass::Transform).unwrap(),
+            cancellation: RunCancellation::default(),
+        };
+        request.validate_for(&descriptor).unwrap();
+
+        let mut unaccounted = request.clone();
+        unaccounted.consumer = ConsumerKey::new("gzip-part-0", MemoryClass::Decode).unwrap();
+        assert!(unaccounted.validate_for(&descriptor).is_err());
+
+        let mut oversized = request;
+        oversized.preferred_output_chunk_bytes = descriptor.maximum_working_set_bytes + 1;
+        assert!(oversized.validate_for(&descriptor).is_err());
     }
 
     #[test]
