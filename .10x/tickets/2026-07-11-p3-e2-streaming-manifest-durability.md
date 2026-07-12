@@ -33,3 +33,10 @@ None. E1, the memory ledger, and the A5 graph-edge ownership contracts are compl
 ## References
 
 - `.10x/specs/package-io-hashing-durability.md`
+
+## Progress and notes
+
+- 2026-07-11: Replaced per-event trace open/write/fsync/directory-sync with one ordered mutex-owned sink and a single flush/file-sync/directory barrier at package finalization. Existing package and trace goldens remain unchanged.
+- 2026-07-11: Replaced the builder's cardinality-proportional in-memory segment draft vector and artifact receipt map with append-only temporary journals. Runtime draft metadata no longer grows in the builder; finalization reconstructs only the v1 artifact shape required by the existing public return contract.
+- 2026-07-11: Replaced manifest identity DOM materialization and whole-manifest byte buffering with canonical streaming encoders into SHA-256 and the atomic manifest sink. The v1 fixed fixture hash and archive-bearing manifest tests remain byte-identical. Specialized file/segment entry encoders avoid one `serde_json::Value` tree per entry.
+- 2026-07-11: Release evidence for a one-million-file identity: 225,134,083 ns serialization (4,441,797 entries/s), 175,800,320-byte process maximum RSS including the million owned path/hash strings, zero page faults, and zero swaps. Remaining closure work is filesystem reconciliation without finish-time path vectors, archive metadata streaming, crash injection at finalization boundaries, and the many-small-segment syscall benchmark.

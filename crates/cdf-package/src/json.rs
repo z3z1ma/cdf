@@ -179,3 +179,39 @@ fn write_canonical_string(value: &str, output: &mut Vec<u8>) -> Result<()> {
 pub(crate) fn json_error(error: serde_json::Error) -> CdfError {
     CdfError::data(error.to_string())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::{MANIFEST_VERSION, ManifestIdentity};
+    use std::time::Instant;
+
+    #[test]
+    #[ignore = "performance evidence; run explicitly in release mode"]
+    fn million_entry_manifest_identity_streams_without_a_dom() {
+        const ENTRIES: usize = 1_000_000;
+        let files = (0..ENTRIES)
+            .map(|index| FileEntry {
+                path: format!("data/segment-{index:07}.arrow"),
+                byte_count: 65_536,
+                sha256: format!("{index:064x}"),
+            })
+            .collect();
+        let identity = ManifestIdentity {
+            manifest_version: MANIFEST_VERSION,
+            package_id: "million-entry".to_owned(),
+            layout: vec!["data/".to_owned()],
+            files,
+            segments: Vec::new(),
+        };
+        let started = Instant::now();
+        let hash = manifest_identity_hash(&identity).unwrap();
+        let elapsed = started.elapsed();
+        assert!(hash.starts_with("sha256:"));
+        eprintln!(
+            "manifest_entries={ENTRIES} elapsed_ns={} entries_per_second={:.0}",
+            elapsed.as_nanos(),
+            ENTRIES as f64 / elapsed.as_secs_f64()
+        );
+    }
+}
