@@ -413,15 +413,6 @@ pub fn validate_replay_target(target: &PostgresTarget, package_target: &TargetNa
 }
 
 fn columns_from_package(reader: &PackageReader) -> Result<Vec<PostgresColumn>> {
-    let segments = reader.read_all_segments()?;
-    let schema = segments
-        .iter()
-        .flat_map(|(_, batches)| batches.iter())
-        .next()
-        .map(|batch| batch.schema());
-    let schema = match schema {
-        Some(schema) => schema,
-        None => reader.runtime_arrow_schema()?,
-    };
+    let schema = reader.runtime_arrow_schema()?;
     postgres_columns_for_schema(schema.as_ref())
 }
