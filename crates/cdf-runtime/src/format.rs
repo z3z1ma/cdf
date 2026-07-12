@@ -485,6 +485,7 @@ pub struct ByteTransformDescriptor {
     pub preserves_random_access: bool,
     pub splittable: bool,
     pub supports_concatenated_members: bool,
+    pub maximum_output_chunk_bytes: u64,
     pub maximum_working_set_bytes: u64,
     pub maximum_expanded_bytes: u64,
     pub maximum_expansion_ratio: u32,
@@ -503,6 +504,8 @@ impl ByteTransformDescriptor {
     pub fn validate(&self) -> Result<()> {
         if self.semantic_version.trim().is_empty()
             || self.maximum_working_set_bytes == 0
+            || self.maximum_output_chunk_bytes == 0
+            || self.maximum_output_chunk_bytes > self.maximum_working_set_bytes
             || self.maximum_expanded_bytes == 0
             || self.maximum_expansion_ratio == 0
             || (self.preserves_random_access && !self.splittable)
@@ -567,6 +570,7 @@ impl ByteTransformRequest {
         descriptor.validate()?;
         if self.preferred_output_chunk_bytes == 0
             || self.preferred_output_chunk_bytes > descriptor.maximum_working_set_bytes
+            || self.preferred_output_chunk_bytes > descriptor.maximum_output_chunk_bytes
             || self.maximum_expanded_bytes == 0
             || self.maximum_expanded_bytes > descriptor.maximum_expanded_bytes
             || self.maximum_expansion_ratio == 0
@@ -928,6 +932,7 @@ mod tests {
             preserves_random_access: false,
             splittable: false,
             supports_concatenated_members: true,
+            maximum_output_chunk_bytes: 1024 * 1024,
             maximum_working_set_bytes: 1024 * 1024,
             maximum_expanded_bytes: 1024 * 1024 * 1024,
             maximum_expansion_ratio: 100,

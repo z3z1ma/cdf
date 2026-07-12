@@ -39,6 +39,7 @@ impl ZstdTransformDriver {
                 preserves_random_access: false,
                 splittable: false,
                 supports_concatenated_members: true,
+                maximum_output_chunk_bytes: 32 * MIB,
                 maximum_working_set_bytes: DEFAULT_MAXIMUM_WORKING_SET_BYTES,
                 maximum_expanded_bytes: DEFAULT_MAXIMUM_EXPANDED_BYTES,
                 maximum_expansion_ratio: DEFAULT_MAXIMUM_EXPANSION_RATIO,

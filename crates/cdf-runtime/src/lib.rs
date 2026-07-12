@@ -13,6 +13,7 @@ mod source;
 mod source_registry;
 mod spill;
 mod staging;
+mod transformed_byte_source;
 mod utilities;
 
 pub use bulk::*;
@@ -28,6 +29,7 @@ pub use source::*;
 pub use source_registry::*;
 pub use spill::*;
 pub use staging::*;
+pub use transformed_byte_source::*;
 pub use utilities::*;
 
 pub type ReceiptVerifiedHook<'a> = &'a dyn Fn(&cdf_kernel::Receipt) -> cdf_kernel::Result<()>;
