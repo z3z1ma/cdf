@@ -20,7 +20,7 @@ This is a parent planning ticket. It is not executable implementation scope and 
 - `.10x/tickets/2026-07-07-native-parquet-streaming-write-triage.md`
 - `.10x/tickets/done/2026-07-07-datafusion-delegation-pushdown-triage.md`
 - `.10x/tickets/2026-07-07-rest-json-to-arrow-performance-triage.md`
-- `.10x/tickets/2026-07-07-batch-sizing-segment-coalescing-triage.md`
+- `.10x/tickets/done/2026-07-07-batch-sizing-segment-coalescing-triage.md`
 - `.10x/tickets/2026-07-07-interop-boundary-overhead-triage.md`
 
 ## Triage principles

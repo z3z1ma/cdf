@@ -2,7 +2,7 @@ Status: open
 Created: 2026-07-10
 Updated: 2026-07-11
 Parent: .10x/tickets/2026-07-10-p3-terabyte-scale-program.md
-Depends-On: .10x/tickets/done/2026-07-10-p3-ws-l-performance-lab.md, .10x/tickets/done/2026-07-11-p0-dx1-neutral-runtime-crate.md, .10x/specs/architecture-layering-runtime.md, .10x/tickets/2026-07-07-streaming-package-to-destination-commit-triage.md, .10x/tickets/2026-07-07-batch-sizing-segment-coalescing-triage.md
+Depends-On: .10x/tickets/done/2026-07-10-p3-ws-l-performance-lab.md, .10x/tickets/done/2026-07-11-p0-dx1-neutral-runtime-crate.md, .10x/specs/architecture-layering-runtime.md, .10x/tickets/2026-07-07-streaming-package-to-destination-commit-triage.md, .10x/tickets/done/2026-07-07-batch-sizing-segment-coalescing-triage.md
 
 # P3 WS-A: streaming runtime pipeline
 
@@ -16,7 +16,7 @@ This workstream is a plan and requires bounded executable children for runtime o
 
 - `.10x/tickets/done/2026-07-11-p3-a1-staged-ingress-final-binding.md` — complete
 - `.10x/tickets/done/2026-07-11-p3-a2-unified-memory-ledger.md` — complete
-- `.10x/tickets/2026-07-11-p3-a3-canonical-segmentation-adaptive-batching.md`
+- `.10x/tickets/done/2026-07-11-p3-a3-canonical-segmentation-adaptive-batching.md`
 - `.10x/tickets/done/2026-07-11-p3-a4-injected-execution-host.md`
 - `.10x/tickets/2026-07-11-p3-a5-streaming-operator-graph.md`
 - `.10x/tickets/2026-07-11-p3-a6-spillable-package-dedup.md` (child of A5)
@@ -46,3 +46,4 @@ Blocked until WS-L baseline evidence exists. This lane has an exclusive freeze o
 
 - 2026-07-11: A1 completed the destination-neutral staged-ingress/final-binding contract without provisional package identity or destination-specific runtime branches.
 - 2026-07-11: A2 completed the neutral memory ledger, shared finite DataFusion coordinator, weighted discovery execution, working-set conformance, and versioned headroom policy.
+- 2026-07-11: A3 completed plan-versioned row/byte canonical segmentation across the full Arrow vocabulary, adaptive nonidentity microbatches, typed position joins, source-rechunking invariance, and the fixed package golden.

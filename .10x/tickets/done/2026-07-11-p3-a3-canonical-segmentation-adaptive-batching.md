@@ -1,4 +1,4 @@
-Status: open
+Status: done
 Created: 2026-07-11
 Updated: 2026-07-11
 Parent: .10x/tickets/2026-07-10-p3-ws-a-streaming-runtime-pipeline.md
@@ -43,10 +43,18 @@ None. L5 baseline evidence and A2 accounted payloads are complete.
 - 2026-07-11: Corrected the canonical assembler after inspection proved the serialized byte target was not live. Flat primitive/UTF-8 segments now split on cumulative plan bytes as well as rows, normalize nullable bitmap allocation for rechunking invariance, reject over-maximum rows, and preserve cursor authority across size-triggered flushes. Evidence: `.10x/evidence/2026-07-11-p3-a3-canonical-byte-boundary-correction.md`. A3 remains active for the nested/dictionary/union/run/view type matrix and full package conformance.
 - 2026-07-11: Extended logical byte accounting through list, large-list, fixed-size-list, struct, and map child ranges; a list slice now counts only its referenced values and is additive across rechunking. Dictionary, union, run-end, and view families remain before A3 closure.
 - 2026-07-11: Added byte accounting for list views, binary/UTF-8 views, sparse/dense unions, and every signed/unsigned Arrow dictionary key width. Dictionary value-size caching keeps repeated values O(rows + dictionary cardinality). Dictionary rechunking conformance is green; explicit view/union construction fixtures and package-level matrix remain.
+- 2026-07-11: Closed after explicit UTF-8 view, list-view, dense-union, dictionary, nested-list, nullable, cursor-boundary, and source-rechunking conformance; 80 full engine tests and strict clippy pass with the fixed package golden unchanged. Review: `.10x/reviews/2026-07-11-p3-a3-canonical-segmentation-implementation-review.md`.
+- 2026-07-11: Release fixed-cost benchmark measured 576,863,166 ns for 64 legacy 1,024-row segment publications versus 42,889,583 ns for one canonical 64k segment: 13.45x faster on the named local host.
+
+## Retrospective
+
+- Serializing a performance/safety policy is not evidence that runtime consumes it; every identity-bearing knob needs a behavior test that changes only that knob's binding input.
+- Position aggregation must occur only after admission into the same canonical segment. Joining authority before a possible size flush silently over-advances checkpoints.
+- Arrow backing-buffer capacity is neither a stable segmentation metric nor a logical byte bound. Nested arrays require referenced child slices, dictionaries require logical value lookup, and views require out-of-line payload size.
 
 ## References
 
 - `.10x/decisions/adaptive-microbatch-canonical-segmentation.md`
 - `.10x/research/2026-07-11-batch-segment-determinism-audit.md`
 - `.10x/specs/package-lifecycle-determinism.md`
-- `.10x/tickets/2026-07-07-batch-sizing-segment-coalescing-triage.md`
+- `.10x/tickets/done/2026-07-07-batch-sizing-segment-coalescing-triage.md`

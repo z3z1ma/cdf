@@ -562,6 +562,9 @@ fn largest_prefix_within_bytes(
     if maximum_rows == 0 || maximum_bytes == 0 {
         return Ok(0);
     }
+    if logical_batch_bytes(&batch.slice(0, maximum_rows))? <= maximum_bytes {
+        return Ok(maximum_rows);
+    }
     let mut low = 0_usize;
     let mut high = maximum_rows;
     while low < high {
@@ -715,8 +718,10 @@ fn join_cursors(left: &CursorPosition, right: &CursorPosition) -> Result<Option<
 mod tests {
     use super::*;
     use arrow_array::{
-        Array, Int64Array, StringArray,
-        builder::{Int64Builder, ListBuilder, StringDictionaryBuilder},
+        Array, Int64Array, StringArray, StringViewArray,
+        builder::{
+            Int64Builder, ListBuilder, ListViewBuilder, StringDictionaryBuilder, UnionBuilder,
+        },
     };
     use cdf_kernel::{CursorPosition, FileManifest};
 
@@ -1035,5 +1040,136 @@ mod tests {
             logical_batch_bytes(&one).unwrap(),
             logical_batch_bytes(&left).unwrap() + logical_batch_bytes(&right).unwrap()
         );
+    }
+
+    #[test]
+    fn string_view_byte_estimate_includes_out_of_line_values_and_slices() {
+        let batch = |values: &[&str]| {
+            RecordBatch::try_from_iter([(
+                "value",
+                std::sync::Arc::new(StringViewArray::from(values.to_vec()))
+                    as arrow_array::ArrayRef,
+            )])
+            .unwrap()
+        };
+        let values = [
+            "a value longer than twelve bytes",
+            "short",
+            "another out of line string value",
+            "tail",
+        ];
+        let one = batch(&values);
+        let left = batch(&values[..2]);
+        let right = batch(&values[2..]);
+        assert_eq!(
+            logical_batch_bytes(&one).unwrap(),
+            logical_batch_bytes(&left).unwrap() + logical_batch_bytes(&right).unwrap()
+        );
+        assert!(
+            logical_batch_bytes(&one.slice(0, 1)).unwrap() < logical_batch_bytes(&one).unwrap()
+        );
+    }
+
+    #[test]
+    fn dense_union_byte_estimate_is_rechunking_additive() {
+        use arrow_array::types::Float64Type;
+
+        let batch = |values: &[(i64, f64)]| {
+            let mut union = UnionBuilder::new_dense();
+            for (integer, float) in values {
+                union.append::<Int64Type>("integer", *integer).unwrap();
+                union.append::<Float64Type>("float", *float).unwrap();
+            }
+            RecordBatch::try_from_iter([(
+                "value",
+                std::sync::Arc::new(union.build().unwrap()) as arrow_array::ArrayRef,
+            )])
+            .unwrap()
+        };
+        let values = [(1, 1.5), (2, 2.5), (3, 3.5), (4, 4.5)];
+        let one = batch(&values);
+        let left = batch(&values[..2]);
+        let right = batch(&values[2..]);
+        assert_eq!(
+            logical_batch_bytes(&one).unwrap(),
+            logical_batch_bytes(&left).unwrap() + logical_batch_bytes(&right).unwrap()
+        );
+    }
+
+    #[test]
+    fn list_view_byte_estimate_counts_logical_values_not_backing_capacity() {
+        let batch = |rows: &[&[i64]]| {
+            let mut values = ListViewBuilder::new(Int64Builder::new());
+            for row in rows {
+                values.append_value(row.iter().copied().map(Some));
+            }
+            RecordBatch::try_from_iter([(
+                "values",
+                std::sync::Arc::new(values.finish()) as arrow_array::ArrayRef,
+            )])
+            .unwrap()
+        };
+        let rows: &[&[i64]] = &[&[1, 2], &[3], &[4, 5, 6], &[7]];
+        let one = batch(rows);
+        let left = batch(&rows[..2]);
+        let right = batch(&rows[2..]);
+        assert_eq!(
+            logical_batch_bytes(&one).unwrap(),
+            logical_batch_bytes(&left).unwrap() + logical_batch_bytes(&right).unwrap()
+        );
+        assert!(
+            logical_batch_bytes(&one.slice(0, 1)).unwrap() < logical_batch_bytes(&one).unwrap()
+        );
+    }
+
+    #[test]
+    #[ignore = "release-mode A3 fixed-cost benchmark"]
+    fn canonical_coalescing_package_benchmark() {
+        let chunks = (0..64)
+            .map(|chunk| {
+                let start = chunk * 1024;
+                batch(&(start..start + 1024).map(i64::from).collect::<Vec<_>>())
+            })
+            .collect::<Vec<_>>();
+        let root = tempfile::tempdir().unwrap();
+
+        let legacy_started = std::time::Instant::now();
+        let mut legacy =
+            cdf_package::PackageBuilder::create(root.path().join("legacy"), "legacy").unwrap();
+        for (ordinal, chunk) in chunks.iter().enumerate() {
+            legacy
+                .write_segment(
+                    SegmentId::new(format!("legacy-{ordinal:08}")).unwrap(),
+                    std::slice::from_ref(chunk),
+                )
+                .unwrap();
+        }
+        legacy.finish().unwrap();
+        let legacy_ns = legacy_started.elapsed().as_nanos();
+
+        let canonical_started = std::time::Instant::now();
+        let mut assembler =
+            CanonicalSegmentAssembler::new(CanonicalSegmentationPolicy::p3_v1(), 0).unwrap();
+        let mut segments = Vec::new();
+        for chunk in &chunks {
+            segments.extend(assembler.push(chunk.clone(), None).unwrap());
+        }
+        segments.extend(assembler.finish().unwrap());
+        assert_eq!(segments.len(), 1);
+        let mut canonical =
+            cdf_package::PackageBuilder::create(root.path().join("canonical"), "canonical")
+                .unwrap();
+        for segment in segments {
+            canonical
+                .write_segment(segment.segment_id, &segment.batches)
+                .unwrap();
+        }
+        canonical.finish().unwrap();
+        let canonical_ns = canonical_started.elapsed().as_nanos();
+        let speedup = legacy_ns as f64 / canonical_ns as f64;
+        eprintln!(
+            "legacy_1024_row_segments_ns={legacy_ns} canonical_64k_segment_ns={canonical_ns} speedup={speedup:.2}"
+        );
+        assert!(canonical_ns < legacy_ns);
     }
 }
