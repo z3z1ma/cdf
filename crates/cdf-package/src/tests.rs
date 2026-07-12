@@ -2113,3 +2113,53 @@ fn rewrite_manifest_and_fidelity(package_dir: &Path, manifest: &PackageManifest)
     )
     .unwrap();
 }
+
+#[test]
+fn production_commit_paths_cannot_collect_package_segments() {
+    let crates_dir = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("cdf-package has a crates parent");
+    let mut files = vec![
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("src")
+            .join("archive.rs"),
+    ];
+    for relative in [
+        "cdf-project/src/runtime",
+        "cdf-dest-duckdb/src",
+        "cdf-dest-postgres/src",
+        "cdf-dest-parquet/src",
+    ] {
+        collect_production_rust_files(&crates_dir.join(relative), &mut files);
+    }
+    for path in files {
+        let source = fs::read_to_string(&path).unwrap();
+        for forbidden in [
+            "read_all_segments(",
+            "read_commit_segments(",
+            "Vec<CommitSegment>",
+        ] {
+            assert!(
+                !source.contains(forbidden),
+                "production package materialization token {forbidden:?} found in {}",
+                path.display()
+            );
+        }
+    }
+}
+
+fn collect_production_rust_files(directory: &Path, output: &mut Vec<std::path::PathBuf>) {
+    for entry in fs::read_dir(directory).unwrap() {
+        let path = entry.unwrap().path();
+        if path.is_dir() {
+            collect_production_rust_files(&path, output);
+        } else if path.extension().and_then(|extension| extension.to_str()) == Some("rs")
+            && !matches!(
+                path.file_name().and_then(|name| name.to_str()),
+                Some("tests.rs" | "live_tests.rs")
+            )
+        {
+            output.push(path);
+        }
+    }
+}

@@ -1,4 +1,4 @@
-Status: open
+Status: done
 Created: 2026-07-11
 Updated: 2026-07-11
 Parent: .10x/tickets/2026-07-11-p3-a5-streaming-operator-graph.md
@@ -45,3 +45,4 @@ Depends on A5a, A3, and E1.
 - 2026-07-11: Parquet planning now reads only verified manifest/schema authority. Session and direct APIs transcode and durably put each segment before accepting the next; finalization retains only ordered object metadata. The refactor deleted 281 lines of eager package code and all 27 destination tests pass.
 - 2026-07-11: Remaining closure work is explicit: DuckDB's declared materialized merge path, package archive compatibility API, static production eager-read gate, and full crash/RSS/throughput evidence. These are not hidden behind a nominal streaming interface.
 - 2026-07-11: DuckDB now declares and consumes `SegmentStreaming`, writes each Arrow batch through a bounded native appender, and uses transactional disk-backed staging for merge. Package-wide `Vec<RowValues>` and destination `read_all_segments`/`Vec<CommitSegment>` paths are deleted. Remaining A5c work is the archive compatibility boundary, static gate, and graph-level crash/RSS/throughput evidence.
+- 2026-07-11: Converted the package archive and generic compatibility replay branch to sequential segment reads, narrowed Postgres' helper to one segment, and added a permanent production source-materialization gate. Closure evidence is `.10x/evidence/2026-07-11-p3-a5c-durable-stream-closeout.md`; adversarial review passed in `.10x/reviews/2026-07-11-p3-a5c-durable-stream-review.md`.

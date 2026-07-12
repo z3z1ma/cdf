@@ -87,7 +87,8 @@ pub fn archive_package_to_parquet(package_dir: impl AsRef<Path>) -> Result<Packa
     let reader = PackageReader::open(package_dir)?;
 
     let mut segments = Vec::new();
-    for (entry, batches) in reader.read_all_segments()? {
+    for entry in &reader.manifest().identity.segments {
+        let batches = reader.read_segment(&entry.segment_id)?;
         if batches.is_empty() {
             return Err(CdfError::data(format!(
                 "package segment {} contains no batches",
@@ -109,7 +110,7 @@ pub fn archive_package_to_parquet(package_dir: impl AsRef<Path>) -> Result<Packa
         }
 
         let parquet_bytes = transcode_record_batches_to_parquet_bytes(&batches)?;
-        segments.push(archive_segment_report(&entry, parquet_bytes, row_count));
+        segments.push(archive_segment_report(entry, parquet_bytes, row_count));
     }
 
     Ok(PackageArchiveReport {

@@ -322,7 +322,7 @@ impl CommitSession for PostgresCommitSession {
         validate_commit_segment(&segment, expected, &self.plan)?;
 
         if self.duplicate_receipt.is_none() {
-            let package = package_data_from_commit_segments(vec![segment], &self.plan)?;
+            let package = package_data_from_commit_segment(segment, &self.plan)?;
             let loaded_at_ms = now_ms()?;
             let client = self
                 .client

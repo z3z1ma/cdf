@@ -458,8 +458,24 @@ fn write_package_segments_to_session(
         }
         cdf_runtime::DestinationCommitPayloadMode::MaterializedPackage => {
             reader.verify()?;
-            for segment in reader.read_commit_segments(&commit.segments)? {
-                acknowledge(segment)?;
+            for state in &commit.segments {
+                let entry = reader
+                    .manifest()
+                    .identity
+                    .segments
+                    .iter()
+                    .find(|entry| entry.segment_id == state.segment_id)
+                    .ok_or_else(|| {
+                        CdfError::data(format!(
+                            "destination commit segment {} is absent from the package manifest",
+                            state.segment_id
+                        ))
+                    })?;
+                acknowledge(cdf_kernel::CommitSegment::new(
+                    state.clone(),
+                    entry.byte_count,
+                    reader.read_segment(&state.segment_id)?,
+                ))?;
             }
         }
     }

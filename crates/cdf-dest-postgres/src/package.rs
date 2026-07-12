@@ -152,26 +152,23 @@ pub(crate) fn expected_segments_for_session(
     Ok(PostgresSessionSegments { expected, order })
 }
 
-pub(crate) fn package_data_from_commit_segments(
-    segments: Vec<CommitSegment>,
+pub(crate) fn package_data_from_commit_segment(
+    segment: CommitSegment,
     plan: &PostgresLoadPlan,
 ) -> Result<PostgresPackageData> {
-    let segments = segments
-        .into_iter()
-        .map(|segment| {
-            (
-                SegmentEntry {
-                    segment_id: segment.state.segment_id,
-                    path: String::new(),
-                    row_count: segment.state.row_count,
-                    byte_count: segment.package_byte_count,
-                    sha256: String::new(),
-                },
-                segment.batches,
-            )
-        })
-        .collect::<Vec<_>>();
-    package_data_from_segments(segments, plan)
+    package_data_from_segments(
+        vec![(
+            SegmentEntry {
+                segment_id: segment.state.segment_id,
+                path: String::new(),
+                row_count: segment.state.row_count,
+                byte_count: segment.package_byte_count,
+                sha256: String::new(),
+            },
+            segment.batches,
+        )],
+        plan,
+    )
 }
 
 fn package_data_from_segments(
