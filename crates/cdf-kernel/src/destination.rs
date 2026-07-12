@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::{any::Any, collections::BTreeMap, sync::Arc};
 
 use arrow_array::RecordBatch;
 use serde::{Deserialize, Serialize};
@@ -15,11 +15,68 @@ use crate::{
     resource::{CapabilitySupport, WriteDisposition},
 };
 
+#[derive(Clone)]
+pub struct CommitSegmentRetention {
+    owner: Arc<dyn Any + Send + Sync>,
+    bytes: u64,
+}
+
+impl std::fmt::Debug for CommitSegmentRetention {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("CommitSegmentRetention")
+            .field("bytes", &self.bytes)
+            .finish_non_exhaustive()
+    }
+}
+
+impl CommitSegmentRetention {
+    pub fn new(owner: Arc<dyn Any + Send + Sync>, bytes: u64) -> Result<Self> {
+        if bytes == 0 {
+            return Err(crate::CdfError::contract(
+                "commit segment retention must account for nonzero bytes",
+            ));
+        }
+        Ok(Self { owner, bytes })
+    }
+
+    pub fn bytes(&self) -> u64 {
+        self.bytes
+    }
+
+    pub fn strong_count(&self) -> usize {
+        Arc::strong_count(&self.owner)
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct CommitSegment {
     pub state: StateSegment,
     pub package_byte_count: u64,
     pub batches: Vec<RecordBatch>,
+    retention: Option<CommitSegmentRetention>,
+}
+
+impl CommitSegment {
+    pub fn new(state: StateSegment, package_byte_count: u64, batches: Vec<RecordBatch>) -> Self {
+        Self {
+            state,
+            package_byte_count,
+            batches,
+            retention: None,
+        }
+    }
+
+    pub fn with_retention(mut self, retention: CommitSegmentRetention) -> Self {
+        self.retention = Some(retention);
+        self
+    }
+
+    pub fn retained_bytes(&self) -> u64 {
+        self.retention
+            .as_ref()
+            .map_or(0, CommitSegmentRetention::bytes)
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

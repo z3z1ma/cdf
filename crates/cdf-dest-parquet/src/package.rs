@@ -31,6 +31,7 @@ pub(crate) fn package_data_from_commit_segments(
                 state,
                 package_byte_count,
                 batches,
+                ..
             } = segment;
             (
                 SegmentEntry {

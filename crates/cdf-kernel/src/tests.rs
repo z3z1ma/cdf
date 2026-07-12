@@ -332,11 +332,7 @@ fn sample_commit_segment(state: StateSegment) -> CommitSegment {
     let values = (0..state.row_count as i64).collect::<Vec<_>>();
     let column: ArrayRef = Arc::new(Int64Array::from(values));
     let batch = RecordBatch::try_new(schema, vec![column]).unwrap();
-    CommitSegment {
-        state,
-        package_byte_count: 96,
-        batches: vec![batch],
-    }
+    CommitSegment::new(state, 96, vec![batch])
 }
 
 #[test]

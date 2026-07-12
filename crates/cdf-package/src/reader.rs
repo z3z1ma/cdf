@@ -10,7 +10,8 @@ use std::{
 
 use arrow_array::{Array, RecordBatch, UInt64Array};
 use cdf_kernel::{
-    CdfError, Checkpoint, CommitSegment, PackageHash, Receipt, Result, SegmentId, StateSegment,
+    CdfError, Checkpoint, CommitSegment, CommitSegmentRetention, PackageHash, Receipt, Result,
+    SegmentId, StateSegment,
 };
 use cdf_memory::{
     ConsumerKey, MemoryClass, MemoryCoordinator, MemoryLease, ReservationRequest, reserve_blocking,
@@ -46,19 +47,36 @@ pub struct VerifiedSegment<T> {
     pub entry: SegmentEntry,
     pub authority: T,
     pub batches: Vec<RecordBatch>,
-    _memory_lease: MemoryLease,
-    window_in_flight: Arc<AtomicBool>,
+    window: Arc<VerifiedSegmentWindow>,
 }
 
-impl<T> Drop for VerifiedSegment<T> {
+#[derive(Debug)]
+struct VerifiedSegmentWindow {
+    memory_lease: MemoryLease,
+    in_flight: Arc<AtomicBool>,
+}
+
+impl Drop for VerifiedSegmentWindow {
     fn drop(&mut self) {
-        self.window_in_flight.store(false, Ordering::Release);
+        self.in_flight.store(false, Ordering::Release);
     }
 }
 
 impl<T> VerifiedSegment<T> {
     pub fn accounted_bytes(&self) -> u64 {
-        self._memory_lease.bytes()
+        self.window.memory_lease.bytes()
+    }
+
+    pub fn into_commit_segment(self) -> Result<CommitSegment>
+    where
+        T: Into<StateSegment>,
+    {
+        let retained_bytes = self.accounted_bytes();
+        let retention = CommitSegmentRetention::new(self.window, retained_bytes)?;
+        Ok(
+            CommitSegment::new(self.authority.into(), self.entry.byte_count, self.batches)
+                .with_retention(retention),
+        )
     }
 }
 
@@ -152,12 +170,15 @@ impl<T> Iterator for VerifiedSegmentStream<T> {
                 )));
             }
             lease.reconcile(retained_bytes.max(1))?;
+            let window = Arc::new(VerifiedSegmentWindow {
+                memory_lease: lease,
+                in_flight: Arc::clone(&self.window_in_flight),
+            });
             Ok(VerifiedSegment {
                 entry,
                 authority,
                 batches,
-                _memory_lease: lease,
-                window_in_flight: Arc::clone(&self.window_in_flight),
+                window,
             })
         })();
         if result.is_err() {
@@ -489,11 +510,11 @@ impl PackageReader {
                     state.segment_id, state.row_count, manifest_segment.row_count
                 )));
             }
-            commit_segments.push(CommitSegment {
-                state: state.clone(),
-                package_byte_count: manifest_segment.byte_count,
+            commit_segments.push(CommitSegment::new(
+                state.clone(),
+                manifest_segment.byte_count,
                 batches,
-            });
+            ));
         }
 
         for segment_id in manifest_by_id.keys() {

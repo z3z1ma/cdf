@@ -62,11 +62,11 @@ pub(crate) fn read_commit_segments_for_plan(
                 segment_id.as_str()
             ))
         })?;
-        segments.push(CommitSegment {
-            state: expected.state.clone(),
-            package_byte_count: expected.package_byte_count,
+        segments.push(CommitSegment::new(
+            expected.state.clone(),
+            expected.package_byte_count,
             batches,
-        });
+        ));
     }
 
     Ok(segments)
