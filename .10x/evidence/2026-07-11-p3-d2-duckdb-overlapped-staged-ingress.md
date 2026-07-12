@@ -13,6 +13,8 @@ The release CLI loaded the local January 2024 NYC TLC Yellow Taxi Parquet fixtur
 
 The fixture was `/private/tmp/yellow_tripdata_2024-01.parquet` on an Apple M5 Pro. A fresh local CDF project used one local Parquet resource, append disposition, DuckDB destination, release `cdf`, and `/usr/bin/time -p`. Package trace and receipt artifacts were verified after the run. Focused verification passed 28 active `cdf-runtime` tests, 24 active `cdf-dest-duckdb` tests, and the staged live/replay/merge/duplicate/failure cases in `cdf-project`.
 
+The staging-pressure control then compared fresh projects with identical input under one-segment/64 MiB and two-segment/128 MiB declared bounds. Three old-bound runs measured 2.71s, 1.83s, and 2.15s (median 2.15s). Three new-bound runs measured 2.51s, 1.73s, and 1.89s (median 1.89s), a 12.1% median wall reduction. CPU time and committed outputs remained equivalent. The retained bound permits one segment in the writer plus one queued segment while remaining under the shared memory ledger.
+
 ## What this supports
 
 The old finalized-package path reread and decompressed every IPC segment after package completion. The new path sends each hash-complete durable in-memory Arrow segment through the destination-neutral staged-ingress session on the declared `duckdb.connection` lane. DuckDB owns only its native transaction, vectorized persistence, and compact physical provenance mapping. Generic orchestration owns attempt authority, byte admission, exact final binding, receipt recording, and the checkpoint gate without destination-name dispatch.

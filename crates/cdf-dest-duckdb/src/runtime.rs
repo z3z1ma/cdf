@@ -166,8 +166,8 @@ impl DestinationRuntime for DuckDbDestination {
             }),
             writer_model: DestinationWriterModel::SingleWriter,
             commit_payload_mode: cdf_runtime::DestinationCommitPayloadMode::SegmentStreaming,
-            max_in_flight_segments: Some(1),
-            max_in_flight_bytes: Some(64 * 1024 * 1024),
+            max_in_flight_segments: Some(2),
+            max_in_flight_bytes: Some(128 * 1024 * 1024),
             bulk_paths: vec![cdf_runtime::BulkPathDescriptor {
                 path_id: "arrow_record_batch_appender".to_owned(),
                 version: 1,
