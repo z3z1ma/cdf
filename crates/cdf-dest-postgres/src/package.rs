@@ -31,47 +31,6 @@ pub(crate) struct PostgresExpectedSegment {
     pub(crate) package_byte_count: u64,
 }
 
-pub(crate) fn read_commit_segments_for_plan(
-    package_dir: &Path,
-    plan: &PostgresLoadPlan,
-) -> Result<Vec<CommitSegment>> {
-    let session_segments = expected_segments_for_session(package_dir, plan, None)?;
-    let reader = PackageReader::open(package_dir)?;
-    reader.verify()?;
-    let mut payloads = BTreeMap::new();
-    for (entry, batches) in reader.read_all_segments()? {
-        if payloads.insert(entry.segment_id.clone(), batches).is_some() {
-            return Err(CdfError::data(format!(
-                "package manifest contains duplicate segment {}",
-                entry.segment_id
-            )));
-        }
-    }
-
-    let mut segments = Vec::with_capacity(session_segments.order.len());
-    for segment_id in &session_segments.order {
-        let expected = session_segments.expected.get(segment_id).ok_or_else(|| {
-            CdfError::internal(format!(
-                "Postgres expected segment {} is missing from session map",
-                segment_id.as_str()
-            ))
-        })?;
-        let batches = payloads.remove(segment_id).ok_or_else(|| {
-            CdfError::data(format!(
-                "package segment {} is missing its payload",
-                segment_id.as_str()
-            ))
-        })?;
-        segments.push(CommitSegment::new(
-            expected.state.clone(),
-            expected.package_byte_count,
-            batches,
-        ));
-    }
-
-    Ok(segments)
-}
-
 pub(crate) fn expected_segments_for_session(
     package_dir: &Path,
     plan: &PostgresLoadPlan,

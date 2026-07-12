@@ -4,7 +4,9 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
+use cdf_package::PackageReader;
 use postgres::{Client, NoTls, Row};
+use std::sync::Arc;
 
 use crate::{dml::*, package::*, rows::validate_schema_matches_plan, validate::*, *};
 
@@ -46,6 +48,13 @@ impl PostgresDestination {
             &request.plan,
             commit_request.as_ref(),
         )?;
+        let memory = match &self.execution {
+            Some(execution) => execution.memory(),
+            None => Arc::new(cdf_memory::DeterministicMemoryCoordinator::new(
+                cdf_memory::DEFAULT_PROCESS_BUDGET_BYTES,
+                Default::default(),
+            )?) as Arc<dyn cdf_memory::MemoryCoordinator>,
+        };
         Ok(PostgresCommitSession {
             database_url: database_url.to_owned(),
             package_dir: request.package_dir,
@@ -55,7 +64,9 @@ impl PostgresDestination {
             duplicate_receipt: None,
             receipt: None,
             expected_segments: session_segments.expected,
+            expected_order: session_segments.order,
             accepted_segments: BTreeSet::new(),
+            memory,
         })
     }
 
@@ -91,7 +102,9 @@ pub(crate) struct PostgresCommitSession {
     duplicate_receipt: Option<Receipt>,
     receipt: Option<Receipt>,
     expected_segments: BTreeMap<SegmentId, PostgresExpectedSegment>,
+    expected_order: Vec<SegmentId>,
     accepted_segments: BTreeSet<SegmentId>,
+    memory: Arc<dyn cdf_memory::MemoryCoordinator>,
 }
 
 pub(crate) struct ManagedPostgresCommitSession {
@@ -137,10 +150,31 @@ enum PostgresCommitSessionPhase {
 
 impl PostgresCommitSession {
     fn run_to_outcome(mut self) -> Result<PostgresCommitOutcome> {
-        let segments = read_commit_segments_for_plan(&self.package_dir, &self.plan)?;
         self.apply_migrations()?;
-        for segment in segments {
-            self.write_segment(segment)?;
+        let states = self
+            .expected_order
+            .iter()
+            .map(|segment_id| {
+                self.expected_segments
+                    .get(segment_id)
+                    .map(|expected| expected.state.clone())
+                    .ok_or_else(|| {
+                        CdfError::internal(format!(
+                            "Postgres expected segment {} is missing from session map",
+                            segment_id
+                        ))
+                    })
+            })
+            .collect::<Result<Vec<_>>>()?;
+        let reader = PackageReader::open(&self.package_dir)?;
+        let maximum_segment_bytes = self.memory.snapshot().budget_bytes.min(64 * 1024 * 1024);
+        let stream = reader.verified_commit_segment_stream(
+            &states,
+            Arc::clone(&self.memory),
+            maximum_segment_bytes,
+        )?;
+        for segment in stream {
+            self.write_segment(segment?.into_commit_segment()?)?;
         }
         self.finalize_outcome()
     }
