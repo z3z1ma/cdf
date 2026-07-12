@@ -2,6 +2,7 @@ use super::*;
 use crate::internal::*;
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap, VecDeque},
+    path::Path,
     sync::{
         Arc, Mutex,
         atomic::{AtomicUsize, Ordering},
@@ -1734,7 +1735,31 @@ fn http_parquet_auto_pin_plan_preview_and_run_use_file_runtime() {
     assert_eq!(manifest.files[0].size_bytes, parquet.len() as u64);
     assert_eq!(manifest.files[0].etag.as_deref(), Some("\"fixture-etag\""));
     assert_eq!(manifest.files[0].sha256, None);
-    assert_only_bounded_http_file_gets(&transport.requests());
+    let requests = transport.requests();
+    let sequential_gets = requests
+        .iter()
+        .filter(|request| {
+            request.method == HttpMethod::Get && !request.headers.contains_key("range")
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        sequential_gets.len(),
+        2,
+        "preview and run must each use one sequential HTTP GET: {requests:?}"
+    );
+    assert!(sequential_gets.iter().all(|request| {
+        request.headers.get("if-match").map(String::as_str) == Some("\"fixture-etag\"")
+    }));
+    let ranged_gets = requests
+        .iter()
+        .filter(|request| {
+            request.method == HttpMethod::Get && request.headers.contains_key("range")
+        })
+        .collect::<Vec<_>>();
+    assert!(
+        !ranged_gets.is_empty(),
+        "discovery must retain bounded Parquet range reads"
+    );
 }
 
 #[test]
@@ -2929,6 +2954,28 @@ impl HttpFileTransport for RecordingHttpFileTransport {
             }
             _ => Ok(HttpFileResponse::new(405)),
         }
+    }
+
+    fn download(
+        &mut self,
+        request: HttpFileRequest,
+        destination: &Path,
+    ) -> Result<(HttpFileResponse, u64)> {
+        let mut state = self.state.lock().unwrap();
+        state.requests.push(request.clone());
+        if request.method != HttpMethod::Get {
+            return Ok((HttpFileResponse::new(405), 0));
+        }
+        std::fs::write(destination, &state.body)
+            .map_err(|error| CdfError::data(format!("write test HTTP download: {error}")))?;
+        let len = state.body.len() as u64;
+        Ok((
+            HttpFileResponse::new(200)
+                .with_header("Content-Length", len.to_string())
+                .with_header("ETag", state.etag.clone())
+                .with_header("Last-Modified", "Wed, 08 Jul 2026 12:00:00 GMT"),
+            len,
+        ))
     }
 }
 

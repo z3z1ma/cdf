@@ -27,7 +27,6 @@ use parquet::file::reader::ChunkReader;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
-use crate::parquet_discovery::RangeChunkReader;
 use crate::schema::schema_hash;
 use crate::{
     CsvOptions, FileCompression, FileFormat, FileSource, FormatRead, JsonOptions, ReadOptions,
@@ -341,51 +340,6 @@ pub fn read_ndjson_bytes_with_declared_schema_and_type_policy(
         type_policy,
         ScopeKey::Resource,
         None,
-    )
-}
-
-pub fn read_parquet_range_source(
-    reader: RangeChunkReader,
-    options: &ReadOptions,
-    scope: ScopeKey,
-    position: Option<SourcePosition>,
-) -> Result<FormatRead> {
-    read_parquet_chunk_reader_with_scope(reader, options, scope, position)
-}
-
-pub fn read_parquet_range_source_with_declared_schema(
-    reader: RangeChunkReader,
-    options: &ReadOptions,
-    declared_schema: SchemaRef,
-    scope: ScopeKey,
-    position: Option<SourcePosition>,
-) -> Result<FormatRead> {
-    let type_policy = strict_source_type_policy();
-    read_parquet_chunk_reader_with_declared_schema_and_scope(
-        reader,
-        options,
-        declared_schema,
-        &type_policy,
-        scope,
-        position,
-    )
-}
-
-pub fn read_parquet_range_source_with_declared_schema_and_type_policy(
-    reader: RangeChunkReader,
-    options: &ReadOptions,
-    declared_schema: SchemaRef,
-    type_policy: &TypePolicy,
-    scope: ScopeKey,
-    position: Option<SourcePosition>,
-) -> Result<FormatRead> {
-    read_parquet_chunk_reader_with_declared_schema_and_scope(
-        reader,
-        options,
-        declared_schema,
-        type_policy,
-        scope,
-        position,
     )
 }
 

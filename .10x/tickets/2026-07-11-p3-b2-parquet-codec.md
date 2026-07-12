@@ -33,3 +33,7 @@ Depends on L5, FX1, segmentation, and the execution host.
 
 - `.10x/specs/native-enterprise-format-catalog.md`
 - `.10x/specs/native-format-codec-runtime.md`
+
+## Progress and notes
+
+- 2026-07-11: Corrected the urgent full-scan policy: execution no longer routes through the unconditional serialized `RangeChunkReader`; discovery retains bounded footer ranges, while full/unknown coverage uses one generation-bound sequential spool. Removed the superseded range-execution exports and raised native read batches from 1,024 to 65,536 rows. The public January TLC file loaded 2,964,624 rows successfully in 43.85 seconds in an unoptimized debug end-to-end run. Streaming decoded publication, row-group units, projection/predicate pushdown, and release roofline remain open. Evidence: `.10x/evidence/2026-07-11-http-parquet-sequential-spool-and-positioned-slicing.md`.

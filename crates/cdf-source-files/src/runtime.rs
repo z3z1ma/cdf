@@ -2,7 +2,7 @@ use std::{
     collections::BTreeMap,
     fmt,
     fs::{self, File},
-    io::{Read, Seek, SeekFrom, Write},
+    io::{Read, Seek, SeekFrom},
     path::{Component, Path, PathBuf},
     sync::{
         Arc, Mutex,
@@ -17,7 +17,6 @@ use cdf_formats::{
     CsvOptions, FileCompression, FileFormat, FileSource, JsonOptions, RangeChunkReader,
     ReadOptions, read_arrow_ipc_file_path, read_arrow_ipc_file_path_with_declared_schema,
     read_file_source, read_file_source_with_declared_schema_and_type_policy,
-    read_parquet_range_source, read_parquet_range_source_with_declared_schema_and_type_policy,
 };
 use cdf_http::SecretProvider;
 use cdf_kernel::{
@@ -43,7 +42,6 @@ pub struct FileRuntimeDependencies {
 }
 
 const DEFAULT_MAX_REMOTE_SPOOL_BYTES: u64 = 64 * 1024 * 1024 * 1024;
-const REMOTE_SPOOL_CHUNK_BYTES: u64 = 8 * 1024 * 1024;
 
 impl FileRuntimeDependencies {
     pub fn new(transport: impl FileTransport + Send + 'static) -> Self {
@@ -734,33 +732,25 @@ fn read_transport_file(
             sha256: resolved.sha256.clone(),
         }],
     }));
-    if declaration == &FileFormatDeclaration::Parquet {
-        let range_reader =
-            transport_range_reader(dependencies.transport(), resource, resolved.size_bytes);
-        return if uses_declared_file_schema(&FileFormat::Parquet, &declared_schema) {
-            read_parquet_range_source_with_declared_schema_and_type_policy(
-                range_reader,
-                &options,
-                declared_schema,
-                type_policy,
-                scope,
-                position,
-            )
-        } else {
-            read_parquet_range_source(range_reader, &options, scope, position)
-        };
-    }
     if declaration == &FileFormatDeclaration::ArrowIpc {
         return Err(CdfError::contract(
             "remote Arrow IPC file framing is not supported",
         ));
     }
-    // 10x: this bounded compatibility spool preserves the transport/evidence boundary until
-    // P3's channel-based format runtime consumes the sequential reader directly.
+    let expected = FileIdentityMetadata {
+        location: resolved.path_text.clone(),
+        size_bytes: Some(resolved.size_bytes),
+        checksum: resolved.sha256.as_ref().map(|sha256| crate::FileChecksum {
+            algorithm: "sha256".to_owned(),
+            value: sha256.clone(),
+        }),
+        etag: resolved.etag.clone(),
+        modified: resolved.modified_ms.clone(),
+    };
     let spool = spool_transport_file(
         &dependencies.transport(),
         &resource,
-        resolved.size_bytes,
+        &expected,
         dependencies.max_spool_bytes(),
     )?;
     let mut read = read_file_path(
@@ -781,33 +771,23 @@ fn read_transport_file(
 fn spool_transport_file(
     transport: &Arc<Mutex<Box<dyn FileTransport + Send>>>,
     resource: &FileTransportResource,
-    size_bytes: u64,
+    expected: &FileIdentityMetadata,
     max_spool_bytes: u64,
 ) -> Result<tempfile::NamedTempFile> {
+    let size_bytes = expected
+        .size_bytes
+        .ok_or_else(|| CdfError::data("remote file spool requires a planned content length"))?;
     if size_bytes > max_spool_bytes {
         return Err(CdfError::data(format!(
             "remote file requires {size_bytes} spool bytes, exceeding the configured {max_spool_bytes}-byte disk budget; increase the spool budget or use a streaming format runtime"
         )));
     }
-    let mut spool = tempfile::NamedTempFile::new()
+    let spool = tempfile::NamedTempFile::new()
         .map_err(|error| CdfError::data(format!("create remote file spool: {error}")))?;
-    let mut start = 0_u64;
-    while start < size_bytes {
-        let length = (size_bytes - start).min(REMOTE_SPOOL_CHUNK_BYTES);
-        let bytes = {
-            let mut transport = transport.lock().map_err(|_| {
-                CdfError::internal("file runtime transport dependency mutex was poisoned")
-            })?;
-            transport.read_range(resource, ByteRange::new(start, length)?)?
-        };
-        spool
-            .write_all(&bytes)
-            .map_err(|error| CdfError::data(format!("write remote file spool: {error}")))?;
-        start += length;
-    }
-    spool
-        .flush()
-        .map_err(|error| CdfError::data(format!("flush remote file spool: {error}")))?;
+    transport
+        .lock()
+        .map_err(|_| CdfError::internal("file runtime transport dependency mutex was poisoned"))?
+        .download_to_path(resource, expected, spool.path())?;
     Ok(spool)
 }
 
@@ -2247,7 +2227,7 @@ fn glob_path_matches(pattern: &[String], candidate: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
+    use std::{io::Write, sync::Arc};
 
     use arrow_schema::{DataType, Field, Schema};
     use flate2::{Compression, write::GzEncoder};

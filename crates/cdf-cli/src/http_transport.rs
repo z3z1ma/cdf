@@ -1,6 +1,7 @@
 use cdf_declarative::{HttpFileRequest, HttpFileResponse, HttpFileTransport};
 use cdf_http::{HeaderMap, HttpMethod, HttpRequest, HttpResponse, HttpTransport};
 use cdf_kernel::{CdfError, Result};
+use std::{fs::File, io::Write, path::Path};
 
 pub(crate) struct ReqwestHttpTransport {
     client: reqwest::blocking::Client,
@@ -39,6 +40,59 @@ impl HttpFileTransport for ReqwestHttpTransport {
             response = response.with_header(name, value);
         }
         Ok(response)
+    }
+
+    fn download(
+        &mut self,
+        request: HttpFileRequest,
+        destination: &Path,
+    ) -> Result<(HttpFileResponse, u64)> {
+        let method = reqwest_method(&request.method)?;
+        let mut builder = self.client.request(method, &request.url);
+        for (name, value) in &request.headers {
+            builder = builder.header(name.as_str(), value.as_str());
+        }
+        let mut response = builder.send().map_err(|error| {
+            CdfError::transient(format!("send file transport HTTP request: {error}"))
+        })?;
+        let status = response.status().as_u16();
+        let headers = response
+            .headers()
+            .iter()
+            .filter_map(|(name, value)| {
+                value
+                    .to_str()
+                    .ok()
+                    .map(|value| (name.as_str().to_owned(), value.to_owned()))
+            })
+            .collect::<Vec<_>>();
+        if !(200..=399).contains(&status) {
+            let mut metadata = HttpFileResponse::new(status);
+            for (name, value) in headers {
+                metadata = metadata.with_header(name, value);
+            }
+            return Ok((metadata, 0));
+        }
+        let mut file = File::create(destination).map_err(|error| {
+            CdfError::data(format!(
+                "create HTTP file spool {}: {error}",
+                destination.display()
+            ))
+        })?;
+        let bytes_written = std::io::copy(&mut response, &mut file).map_err(|error| {
+            CdfError::transient(format!("stream HTTP response into spool: {error}"))
+        })?;
+        file.flush().map_err(|error| {
+            CdfError::data(format!(
+                "flush HTTP file spool {}: {error}",
+                destination.display()
+            ))
+        })?;
+        let mut metadata = HttpFileResponse::new(status);
+        for (name, value) in headers {
+            metadata = metadata.with_header(name, value);
+        }
+        Ok((metadata, bytes_written))
     }
 }
 

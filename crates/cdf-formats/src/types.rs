@@ -6,7 +6,7 @@ use cdf_kernel::{
 };
 use serde::{Deserialize, Serialize};
 
-pub const DEFAULT_BATCH_SIZE: usize = 1024;
+pub const DEFAULT_BATCH_SIZE: usize = 64 * 1024;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ReadOptions {

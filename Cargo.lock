@@ -820,7 +820,6 @@ dependencies = [
  "arrow-schema 59.1.0",
  "cdf-conformance",
  "cdf-contract",
- "cdf-engine",
  "cdf-formats",
  "cdf-http",
  "cdf-kernel",
@@ -1115,6 +1114,7 @@ dependencies = [
  "serde_json",
  "sha2 0.10.9",
  "tempfile",
+ "tokio",
  "url",
 ]
 

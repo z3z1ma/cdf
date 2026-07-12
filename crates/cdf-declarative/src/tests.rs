@@ -3486,6 +3486,17 @@ impl FileTransport for RecordingRangeFileTransport {
         Ok(self.bytes[start..end].to_vec())
     }
 
+    fn download_to_path(
+        &mut self,
+        resource: &FileTransportResource,
+        _expected: &FileIdentityMetadata,
+        destination: &Path,
+    ) -> cdf_kernel::Result<FileIdentityMetadata> {
+        std::fs::write(destination, self.bytes.as_slice())
+            .map_err(|error| CdfError::data(format!("write test download: {error}")))?;
+        self.metadata(resource)
+    }
+
     fn list(
         &mut self,
         _resource: &FileTransportResource,

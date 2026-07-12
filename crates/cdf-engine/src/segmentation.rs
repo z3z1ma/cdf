@@ -158,6 +158,10 @@ impl CanonicalSegmentAssembler {
     ) -> Result<Vec<CanonicalSegment>> {
         let mut emitted = Vec::new();
         let mut joined_position = None;
+        let slice_position = position
+            .as_ref()
+            .filter(|position| position.is_batch_slice_invariant())
+            .cloned();
         if self.rows > 0 {
             match (&self.output_position, &position) {
                 (Some(left), Some(right)) => match join_positions(left, right)? {
@@ -184,17 +188,22 @@ impl CanonicalSegmentAssembler {
             } else if let Some(joined) = joined_position {
                 self.output_position = Some(joined);
             }
-            if batch_rows > u64::from(self.policy.maximum_rows)
-                || batch_bytes > self.policy.maximum_bytes
-            {
+            let oversized = batch_rows > u64::from(self.policy.maximum_rows)
+                || batch_bytes > self.policy.maximum_bytes;
+            if oversized && slice_position.is_none() {
                 return Err(CdfError::data(
                     "oversized positioned batch requires exact slice-position authority",
                 ));
             }
-            self.push_chunk(batch, batch_bytes, lease.as_ref())?;
-            return Ok(emitted);
+            if !oversized {
+                self.push_chunk(batch, batch_bytes, lease.as_ref())?;
+                return Ok(emitted);
+            }
         }
         while batch.num_rows() > 0 {
+            if self.rows == 0 {
+                self.output_position = slice_position.clone();
+            }
             let remaining_rows = u64::from(self.policy.target_rows).saturating_sub(self.rows);
             let row_take = usize::try_from(remaining_rows)
                 .unwrap_or(usize::MAX)
@@ -912,6 +921,33 @@ mod tests {
             )
             .unwrap_err();
         assert!(error.message.contains("slice-position authority"));
+    }
+
+    #[test]
+    fn oversized_file_batch_splits_with_terminal_manifest_on_every_segment() {
+        let position = SourcePosition::FileManifest(FileManifest {
+            version: 1,
+            files: vec![FilePosition {
+                path: "part.parquet".to_owned(),
+                size_bytes: 42,
+                etag: Some("etag".to_owned()),
+                sha256: None,
+            }],
+        });
+        let mut assembler = CanonicalSegmentAssembler::new(test_policy(), 0).unwrap();
+        let mut segments = assembler
+            .push(batch(&[1, 2, 3, 4, 5]), Some(position.clone()))
+            .unwrap();
+        segments.extend(assembler.finish().unwrap());
+
+        assert_eq!(segments.len(), 2);
+        assert_eq!(segments[0].row_count, 4);
+        assert_eq!(segments[1].row_count, 1);
+        assert!(
+            segments
+                .iter()
+                .all(|segment| segment.output_position.as_ref() == Some(&position))
+        );
     }
 
     fn byte_test_policy() -> CanonicalSegmentationPolicy {

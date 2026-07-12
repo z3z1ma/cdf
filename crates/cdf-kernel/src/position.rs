@@ -24,6 +24,12 @@ impl SourcePosition {
             Self::ForeignState(position) => position.version,
         }
     }
+
+    /// Whether this position describes an indivisible source unit rather than a row boundary.
+    /// Such positions remain exact when one decoded batch is sliced into canonical segments.
+    pub fn is_batch_slice_invariant(&self) -> bool {
+        matches!(self, Self::FileManifest(_))
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

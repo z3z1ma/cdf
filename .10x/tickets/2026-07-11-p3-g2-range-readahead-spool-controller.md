@@ -32,3 +32,7 @@ Depends on G1, C1, and memory ledger.
 ## References
 
 - `.10x/specs/remote-local-io-overlap.md`
+
+## Progress and notes
+
+- 2026-07-11: Removed the serialized 8 MiB range-loop spool. `FileTransport` now exposes one sequential transfer into the bounded spool; HTTP streams one GET with `If-Match` where available and weak identities reattest, while object stores stream through the injected I/O host. Full/unknown remote Parquet execution uses this path. Controller feedback, preallocation, cache, and high-BDP range work remain open. Evidence: `.10x/evidence/2026-07-11-http-parquet-sequential-spool-and-positioned-slicing.md`.
