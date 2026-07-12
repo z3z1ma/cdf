@@ -1,6 +1,6 @@
 Status: active
 Created: 2026-07-10
-Updated: 2026-07-10
+Updated: 2026-07-11
 
 # Schema promotion and destination corrections
 
@@ -30,9 +30,9 @@ The logical address of a CDF-loaded row is:
 (original_package_hash, original_segment_id, original_row_ordinal)
 ```
 
-Relational destinations persist this as the reserved tuple `_cdf_load`, `_cdf_segment`, `_cdf_row`. `_cdf_load` is the original package/idempotency token, `_cdf_segment` is the canonical package segment id, and `_cdf_row` is the zero-based row ordinal within that segment. This operational identity is not a semantic merge key and MUST NOT make append require a user key.
+Destinations MUST expose this exact logical tuple through inspection, correction, and readback. Physical persistence MUST follow `.10x/decisions/compact-lossless-destination-row-provenance.md`: relational payload rows use compact framework keys plus a bijective framework-owned dimension back to the full package hash and canonical segment id; columnar/file targets use equivalent dictionary or manifest-bound sidecar authority. The row ordinal remains zero-based within the segment. Physical keys are never public identity, semantic merge keys, or truncated substitutes for the package hash. Append MUST NOT require a user key.
 
-Corrections MUST reference the original address even when delivered in a later correction package. Destinations MUST enforce or verify uniqueness of the tuple before declaring in-place correction support. Replaying the same original package or correction package MUST preserve the address and remain idempotent.
+Corrections MUST reference the original logical address even when delivered in a later correction package. Destinations MUST enforce or verify uniqueness of the logical tuple and its physical-key mapping before declaring in-place correction support. Replaying the same original package or correction package MUST preserve the address and remain idempotent. `cdf inspect` and correction diagnostics MUST render the logical tuple consistently across destinations; physical keys appear only in explicit physical/explain output.
 
 ## Destination capabilities and strategies
 

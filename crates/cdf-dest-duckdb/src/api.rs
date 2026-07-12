@@ -72,8 +72,8 @@ struct DuckDbArrowWriter {
     _lock: WriterLock,
     target: TargetRef,
     write_target: TargetRef,
-    ingress_target: TargetRef,
-    segment_ranges_target: Option<TargetRef>,
+    first_row_key: u64,
+    next_row_key: u64,
     persisted_fields: Vec<FieldPlan>,
     user_field_count: usize,
     rows_received: u64,
@@ -426,7 +426,7 @@ impl DuckDbDestination {
             let tx = conn
                 .transaction()
                 .map_err(|error| duckdb_error("begin empty package transaction", error))?;
-            insert_mirrors(&tx, &request, &[], &receipt)?;
+            insert_mirrors(&tx, &request, &[], &receipt, None)?;
             tx.commit()
                 .map_err(|error| duckdb_error("commit empty package transaction", error))?;
         }
@@ -631,6 +631,17 @@ impl DuckDbCommitSession<'_> {
         let duckdb_version = duckdb_version(&conn).unwrap_or_else(|_| "unknown".to_owned());
         conn.execute_batch("BEGIN TRANSACTION")
             .map_err(|error| duckdb_error("begin Arrow commit transaction", error))?;
+        let total_rows = self
+            .expected_segments
+            .values()
+            .try_fold(0_u64, |total, segment| {
+                total
+                    .checked_add(segment.state.row_count)
+                    .ok_or_else(|| CdfError::data("DuckDB package row count overflowed u64"))
+            })?;
+        let first_row_key = allocate_row_keys(&conn, total_rows)?.ok_or_else(|| {
+            CdfError::internal("DuckDB non-empty package did not allocate row keys")
+        })?;
         apply_table_plan(&conn, &table_plan, self.request.commit.disposition.clone())?;
         let write_target = if self.request.commit.disposition == WriteDisposition::Merge {
             let staging = TargetRef {
@@ -653,50 +664,13 @@ impl DuckDbCommitSession<'_> {
         } else {
             table_plan.target.clone()
         };
-        let ingress_target = TargetRef {
-            schema: MAIN_SCHEMA.to_owned(),
-            table: staging_table_name(),
-        };
-        let mut ingress_fields = user_fields.clone();
-        ingress_fields.push(FieldPlan {
-            name: CDF_ROW_COLUMN.to_owned(),
-            sql_type: "UBIGINT".to_owned(),
-            nullable: false,
-        });
-        if self.request.commit.disposition == WriteDisposition::Merge {
-            ingress_fields.push(FieldPlan {
-                name: CDF_STAGE_ORDER_COLUMN.to_owned(),
-                sql_type: "UBIGINT".to_owned(),
-                nullable: false,
-            });
-        }
-        conn.execute_batch(&format!(
-            "CREATE TEMP TABLE {} ({})",
-            ingress_target.sql_name(),
-            create_columns_sql(&ingress_fields)
-        ))
-        .map_err(|error| duckdb_error("create DuckDB Arrow ingress table", error))?;
-        let segment_ranges_target = if self.request.commit.disposition == WriteDisposition::Merge {
-            None
-        } else {
-            let ranges = TargetRef {
-                schema: MAIN_SCHEMA.to_owned(),
-                table: staging_table_name(),
-            };
-            conn.execute_batch(&format!(
-                "CREATE TEMP TABLE {} (segment_id VARCHAR NOT NULL, start_row UBIGINT NOT NULL, end_row UBIGINT NOT NULL)",
-                ranges.sql_name()
-            ))
-            .map_err(|error| duckdb_error("create DuckDB segment-range table", error))?;
-            Some(ranges)
-        };
         self.writer = Some(DuckDbArrowWriter {
             conn,
             _lock: lock,
             target: table_plan.target,
             write_target,
-            ingress_target,
-            segment_ranges_target,
+            first_row_key,
+            next_row_key: first_row_key,
             persisted_fields,
             user_field_count: user_fields.len(),
             rows_received: 0,
@@ -734,22 +708,6 @@ impl DuckDbCommitSession<'_> {
         let writer = self.writer.take().ok_or_else(|| {
             CdfError::internal("DuckDB Arrow commit session has no active writer")
         })?;
-        if matches!(
-            self.request.commit.disposition,
-            WriteDisposition::Append | WriteDisposition::Replace
-        ) {
-            transfer_package_ingress(
-                &writer.conn,
-                &writer.ingress_target,
-                writer.segment_ranges_target.as_ref().ok_or_else(|| {
-                    CdfError::internal("DuckDB append writer has no segment-range table")
-                })?,
-                &writer.write_target,
-                &writer.persisted_fields,
-                writer.user_field_count,
-                &self.request.commit.package_hash,
-            )?;
-        }
         let counts = match self.request.commit.disposition {
             WriteDisposition::Append | WriteDisposition::Replace => CommitCounts {
                 rows_written: writer.rows_received,
@@ -796,7 +754,13 @@ impl DuckDbCommitSession<'_> {
                 lock_path: &self.destination.lock_path(),
             },
         )?;
-        insert_mirrors(&writer.conn, &self.request, &segment_acks, &receipt)?;
+        insert_mirrors(
+            &writer.conn,
+            &self.request,
+            &segment_acks,
+            &receipt,
+            Some(writer.first_row_key),
+        )?;
         writer
             .conn
             .execute_batch("COMMIT")
@@ -867,8 +831,7 @@ impl CommitSession for DuckDbCommitSession<'_> {
                 .writer
                 .as_mut()
                 .ok_or_else(|| CdfError::internal("DuckDB Arrow writer is not initialized"))?;
-            let mut segment_row_start = 0_u64;
-            let package_row_start = writer.rows_received;
+            let merge = self.request.commit.disposition == WriteDisposition::Merge;
             for commit_batch in segment.into_batches()? {
                 if commit_batch.batch.schema().as_ref() != schema.as_ref() {
                     return Err(CdfError::data(format!(
@@ -878,58 +841,20 @@ impl CommitSession for DuckDbCommitSession<'_> {
                 }
                 let batch_rows = u64::try_from(commit_batch.batch.num_rows())
                     .map_err(|_| CdfError::data("DuckDB batch row count exceeds u64"))?;
-                let merge = self.request.commit.disposition == WriteDisposition::Merge;
-                let row_start = if merge {
-                    segment_row_start
-                } else {
-                    writer.rows_received
-                };
-                let batch = ingress_batch(
+                let batch = persistence_batch(
                     commit_batch.batch,
-                    row_start,
+                    writer.next_row_key,
                     merge.then_some(writer.rows_received),
                 )?;
-                append_arrow_batch_to_table(&writer.conn, &writer.ingress_target, batch)?;
-                segment_row_start = segment_row_start
+                append_arrow_batch_to_table(&writer.conn, &writer.write_target, batch)?;
+                writer.next_row_key = writer
+                    .next_row_key
                     .checked_add(batch_rows)
-                    .ok_or_else(|| CdfError::data("DuckDB segment row count overflowed"))?;
+                    .ok_or_else(|| CdfError::data("DuckDB row key overflowed"))?;
                 writer.rows_received = writer
                     .rows_received
                     .checked_add(batch_rows)
                     .ok_or_else(|| CdfError::data("DuckDB package row count overflowed"))?;
-            }
-            if self.request.commit.disposition == WriteDisposition::Merge {
-                transfer_ingress_segment(
-                    &writer.conn,
-                    IngressSegmentTransfer {
-                        ingress: &writer.ingress_target,
-                        target: &writer.write_target,
-                        persisted_fields: &writer.persisted_fields,
-                        user_field_count: writer.user_field_count,
-                        package_hash: &self.request.commit.package_hash,
-                        segment_id: &segment_id,
-                        include_stage_order: true,
-                    },
-                )?;
-            } else {
-                writer
-                    .conn
-                    .execute(
-                        &format!(
-                            "INSERT INTO {} VALUES (?, ?, ?)",
-                            writer
-                                .segment_ranges_target
-                                .as_ref()
-                                .ok_or_else(|| CdfError::internal(
-                                    "DuckDB append writer has no segment-range table"
-                                ))?
-                                .sql_name()
-                        ),
-                        params![segment_id.as_str(), package_row_start, writer.rows_received],
-                    )
-                    .map_err(|error| {
-                        duckdb_error("record DuckDB segment provenance range", error)
-                    })?;
             }
         }
         self.accepted_segments.insert(segment_id);

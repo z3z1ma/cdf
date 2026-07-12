@@ -15,6 +15,37 @@ struct PreparedCorrectionRow {
     residual: Option<String>,
 }
 
+fn resolve_row_key(
+    conn: &Connection,
+    target: &TargetRef,
+    address: &RowProvenanceAddress,
+) -> Result<Option<u64>> {
+    let range: Option<(u64, u64)> = conn.query_row(
+        "SELECT row_key_start, row_key_end FROM _cdf_segments WHERE target = ? AND package_hash = ? AND segment_id = ?",
+        params![
+            target.table.as_str(),
+            address.original_package_hash.as_str(),
+            address.original_segment_id.as_str(),
+        ],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    )
+    .optional()
+    .map_err(|error| duckdb_error("resolve DuckDB logical row provenance", error))?;
+    range
+        .map(|(start, end)| {
+            let row_key = start
+                .checked_add(address.original_row_ordinal)
+                .ok_or_else(|| CdfError::data("DuckDB logical row address overflowed"))?;
+            if row_key >= end {
+                return Err(CdfError::destination(
+                    "DuckDB logical row ordinal is outside its segment range",
+                ));
+            }
+            Ok(row_key)
+        })
+        .transpose()
+}
+
 pub(crate) fn plan_correction_request(
     destination: &DuckDbDestination,
     request: &DestinationCorrectionCommitRequest,
@@ -150,21 +181,18 @@ pub(crate) fn read_addressed_residual(
         }
     }
 
+    let Some(row_key) = resolve_row_key(&conn, &target, original_row)? else {
+        return Ok(None);
+    };
     let residual: Option<Option<String>> = conn
         .query_row(
             &format!(
-                "SELECT {} FROM {} WHERE {} = ? AND {} = ? AND {} = ?",
+                "SELECT {} FROM {} WHERE {} = ?",
                 quote_ident(cdf_contract::VARIANT_COLUMN_NAME),
                 target.sql_name(),
-                quote_ident(CDF_LOAD_COLUMN),
-                quote_ident(CDF_SEGMENT_COLUMN),
-                quote_ident(CDF_ROW_COLUMN)
+                quote_ident(CDF_ROW_KEY_COLUMN),
             ),
-            params![
-                original_row.original_package_hash.as_str(),
-                original_row.original_segment_id.as_str(),
-                original_row.original_row_ordinal
-            ],
+            params![row_key],
             |row| row.get(0),
         )
         .optional()
@@ -354,21 +382,23 @@ fn prepare_correction_rows(
 
     let mut prepared = Vec::with_capacity(by_address.len());
     for (address, operations) in by_address {
+        let row_key = resolve_row_key(conn, target, &address)?.ok_or_else(|| {
+            CdfError::destination(format!(
+                "DuckDB correction address ({}, {}, {}) has no compact provenance mapping",
+                address.original_package_hash,
+                address.original_segment_id,
+                address.original_row_ordinal
+            ))
+        })?;
         let residual: Option<Option<String>> = conn
             .query_row(
                 &format!(
-                    "SELECT {} FROM {} WHERE {} = ? AND {} = ? AND {} = ?",
+                    "SELECT {} FROM {} WHERE {} = ?",
                     quote_ident(cdf_contract::VARIANT_COLUMN_NAME),
                     target.sql_name(),
-                    quote_ident(CDF_LOAD_COLUMN),
-                    quote_ident(CDF_SEGMENT_COLUMN),
-                    quote_ident(CDF_ROW_COLUMN)
+                    quote_ident(CDF_ROW_KEY_COLUMN),
                 ),
-                params![
-                    address.original_package_hash.as_str(),
-                    address.original_segment_id.as_str(),
-                    address.original_row_ordinal
-                ],
+                params![row_key],
                 |row| row.get(0),
             )
             .optional()
@@ -458,7 +488,7 @@ fn commit_corrections(
             committed_at_ms,
             &duckdb_version,
         )?;
-        insert_mirrors(&tx, &mirror_request, &receipt.segment_acks, &receipt)?;
+        insert_mirrors(&tx, &mirror_request, &receipt.segment_acks, &receipt, None)?;
         tx.commit()
             .map_err(|error| duckdb_error("commit DuckDB correction transaction", error))?;
         receipt
@@ -472,6 +502,8 @@ fn update_correction_row(
     target: &TargetRef,
     row: &PreparedCorrectionRow,
 ) -> Result<()> {
+    let row_key = resolve_row_key(conn, target, &row.address)?
+        .ok_or_else(|| CdfError::destination("DuckDB correction provenance mapping disappeared"))?;
     let mut assignments = row
         .assignments
         .iter()
@@ -491,20 +523,14 @@ fn update_correction_row(
             .as_ref()
             .map_or(Value::Null, |value| Value::Text(value.clone())),
     );
-    values.extend([
-        Value::Text(row.address.original_package_hash.to_string()),
-        Value::Text(row.address.original_segment_id.to_string()),
-        Value::UBigInt(row.address.original_row_ordinal),
-    ]);
+    values.extend([Value::UBigInt(row_key)]);
     let updated = conn
         .execute(
             &format!(
-                "UPDATE {} SET {} WHERE {} = ? AND {} = ? AND {} = ?",
+                "UPDATE {} SET {} WHERE {} = ?",
                 target.sql_name(),
                 assignments.join(", "),
-                quote_ident(CDF_LOAD_COLUMN),
-                quote_ident(CDF_SEGMENT_COLUMN),
-                quote_ident(CDF_ROW_COLUMN)
+                quote_ident(CDF_ROW_KEY_COLUMN),
             ),
             params_from_iter(values),
         )

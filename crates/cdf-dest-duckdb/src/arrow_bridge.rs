@@ -271,58 +271,25 @@ mod tests {
             .map(|field| crate::package::field_plan(field).unwrap())
             .collect::<Vec<_>>();
         let persisted_fields = crate::package::persistence_fields(&user_fields);
-        let package_hash =
-            cdf_kernel::PackageHash::new(format!("sha256:{}", "a".repeat(64))).unwrap();
-        let segment_id = cdf_kernel::SegmentId::new("segment-000001").unwrap();
-
         let vector_conn = Connection::open_in_memory().unwrap();
         vector_conn
             .execute_batch(&format!(
-                "CREATE TABLE target ({}); CREATE TEMP TABLE ingress ({}, {} UBIGINT NOT NULL); CREATE TEMP TABLE ranges (segment_id VARCHAR NOT NULL, start_row UBIGINT NOT NULL, end_row UBIGINT NOT NULL)",
+                "CREATE TABLE target ({})",
                 crate::table::create_target_columns_sql(&persisted_fields),
-                crate::table::create_columns_sql(&user_fields),
-                crate::sql::quote_ident(CDF_ROW_COLUMN),
             ))
             .unwrap();
         let target = crate::api::TargetRef {
             schema: MAIN_SCHEMA.to_owned(),
             table: "target".to_owned(),
         };
-        let ingress = crate::api::TargetRef {
-            schema: MAIN_SCHEMA.to_owned(),
-            table: "ingress".to_owned(),
-        };
         vector_conn.execute_batch("BEGIN TRANSACTION").unwrap();
         let started = Instant::now();
         for ordinal in 0..BATCHES {
+            let row_key_start = u64::try_from(ordinal * BATCH_ROWS).unwrap() + 1;
             let persisted =
-                crate::package::ingress_batch(batch.clone(), (ordinal * BATCH_ROWS) as u64, None)
-                    .unwrap();
-            crate::commit::append_arrow_batch_to_table(&vector_conn, &ingress, persisted).unwrap();
-            vector_conn
-                .execute(
-                    "INSERT INTO ranges VALUES (?, ?, ?)",
-                    duckdb::params![
-                        format!("segment-{ordinal:06}"),
-                        (ordinal * BATCH_ROWS) as u64,
-                        ((ordinal + 1) * BATCH_ROWS) as u64
-                    ],
-                )
-                .unwrap();
+                crate::package::persistence_batch(batch.clone(), row_key_start, None).unwrap();
+            crate::commit::append_arrow_batch_to_table(&vector_conn, &target, persisted).unwrap();
         }
-        crate::commit::transfer_package_ingress(
-            &vector_conn,
-            &ingress,
-            &crate::api::TargetRef {
-                schema: MAIN_SCHEMA.to_owned(),
-                table: "ranges".to_owned(),
-            },
-            &target,
-            &persisted_fields,
-            user_fields.len(),
-            &package_hash,
-        )
-        .unwrap();
         vector_conn.execute_batch("COMMIT").unwrap();
         let vector_elapsed = started.elapsed();
         let vector_rows = (BATCH_ROWS * BATCHES) as f64;
@@ -381,20 +348,10 @@ mod tests {
             .enumerate()
             .map(|(row, values)| {
                 let mut values = values.clone();
-                values.extend([
-                    crate::api::CellValue {
-                        value: Value::Text(package_hash.to_string()),
-                        key: crate::api::CellKey::Text(package_hash.to_string()),
-                    },
-                    crate::api::CellValue {
-                        value: Value::Text(segment_id.to_string()),
-                        key: crate::api::CellKey::Text(segment_id.to_string()),
-                    },
-                    crate::api::CellValue {
-                        value: Value::UBigInt(row as u64),
-                        key: crate::api::CellKey::U64(row as u64),
-                    },
-                ]);
+                values.push(crate::api::CellValue {
+                    value: Value::UBigInt(u64::try_from(row).unwrap() + 1),
+                    key: crate::api::CellKey::U64(u64::try_from(row).unwrap() + 1),
+                });
                 values
             })
             .collect::<Vec<_>>();

@@ -43,9 +43,7 @@ use serde::{Deserialize, Serialize};
 const DESTINATION_ID: &str = "duckdb";
 const MAIN_SCHEMA: &str = "main";
 const LOCK_SUFFIX: &str = "cdf.lock";
-pub const CDF_LOAD_COLUMN: &str = "_cdf_load";
-pub const CDF_SEGMENT_COLUMN: &str = "_cdf_segment";
-pub const CDF_ROW_COLUMN: &str = "_cdf_row";
+pub const CDF_ROW_KEY_COLUMN: &str = "_cdf_row_key";
 const CDF_STAGE_ORDER_COLUMN: &str = "_cdf_stage_order";
 
 static STAGING_COUNTER: AtomicU64 = AtomicU64::new(0);

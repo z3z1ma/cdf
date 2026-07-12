@@ -22,6 +22,8 @@ Bulk writers MUST consume the bounded durable-segment reader from `.10x/specs/st
 
 Per-segment acknowledgement MUST cover exact segment id, input rows/bytes, and accepted state. Final receipt counts/checksums/target transaction evidence MUST be derived from actual writer outcomes, not request values. Partial batch/segment acceptance is either fully resumable with exact identity or treated as failed attempt requiring rollback/redrive.
 
+Row provenance MUST use the compact, lossless destination-neutral model in `.10x/decisions/compact-lossless-destination-row-provenance.md`. Bulk writers receive logical package/segment/row authority, may persist compact keys only with a bijective transaction-bound mapping, and MUST measure provenance overhead against the same native path without provenance. Repeating long package or segment identifiers per payload row is not an acceptable first-party default when it breaks the overhead envelope.
+
 ## Fallback and atomicity
 
 Preflight fallback records why a faster path is ineligible. Runtime fallback after writer start requires idempotent abort/rollback, zero committed target visibility, a new load attempt, and full segment redrive. The run ledger records both attempts. A driver that cannot prove rollback MUST fail rather than switch.

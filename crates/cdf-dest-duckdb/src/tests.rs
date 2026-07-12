@@ -1,4 +1,8 @@
 use super::*;
+use crate::{
+    sql::parse_target,
+    table::{existing_columns, require_targetable_provenance},
+};
 use std::sync::Arc;
 
 use arrow_array::{ArrayRef, Int64Array, StringArray};
@@ -403,7 +407,7 @@ fn segment_session_flow_returns_wrapper_receipt_shape_and_verifies() {
     assert!(protocol.verify(&receipt).unwrap().verified);
     let conn = Connection::open(session_dest.database_path()).unwrap();
     let provenance: Vec<(i64, String, u64)> = conn
-        .prepare("SELECT id, _cdf_segment, _cdf_row FROM orders ORDER BY id")
+        .prepare("SELECT o.id, p.segment_id, o._cdf_row_key - p.row_key_start FROM orders o JOIN _cdf_segments p ON o._cdf_row_key >= p.row_key_start AND o._cdf_row_key < p.row_key_end ORDER BY o.id")
         .unwrap()
         .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
         .unwrap()
@@ -557,7 +561,7 @@ fn append_commit_is_idempotent_and_verifiable_after_reopen() {
     assert_eq!(load_rows, 1);
     assert_eq!(state_rows, 1);
     let provenance: Vec<(i64, String, String, u64)> = conn
-        .prepare("SELECT id, _cdf_load, _cdf_segment, _cdf_row FROM orders ORDER BY _cdf_row")
+        .prepare("SELECT o.id, p.package_hash, p.segment_id, o._cdf_row_key - p.row_key_start FROM orders o JOIN _cdf_segments p ON o._cdf_row_key >= p.row_key_start AND o._cdf_row_key < p.row_key_end ORDER BY o._cdf_row_key")
         .unwrap()
         .query_map([], |row| {
             Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
@@ -574,11 +578,20 @@ fn append_commit_is_idempotent_and_verifiable_after_reopen() {
         ]
     );
     let duplicate_address = conn.execute(
-        "INSERT INTO orders (id, name, _cdf_load, _cdf_segment, _cdf_row) \
-         SELECT 99, 'duplicate', _cdf_load, _cdf_segment, _cdf_row FROM orders WHERE id = 1",
+        "INSERT INTO orders (id, name, _cdf_row_key) \
+         SELECT 99, 'duplicate', _cdf_row_key FROM orders WHERE id = 1",
         [],
     );
-    assert!(duplicate_address.is_err());
+    assert_eq!(duplicate_address.unwrap(), 1);
+    let target = parse_target(&TargetName::new("orders").unwrap()).unwrap();
+    let existing = existing_columns(&conn, &target).unwrap();
+    let duplicate_error = require_targetable_provenance(&conn, &target, &existing).unwrap_err();
+    assert!(
+        duplicate_error
+            .to_string()
+            .contains("duplicate compact row-provenance"),
+        "{duplicate_error}"
+    );
 }
 
 #[test]
@@ -696,7 +709,7 @@ fn replace_rebuilds_target_atomically() {
     assert_eq!(rows, vec![(9, "new".to_owned())]);
     let provenance: (String, String, u64) = conn
         .query_row(
-            "SELECT _cdf_load, _cdf_segment, _cdf_row FROM orders",
+            "SELECT p.package_hash, p.segment_id, o._cdf_row_key - p.row_key_start FROM orders o JOIN _cdf_segments p ON o._cdf_row_key >= p.row_key_start AND o._cdf_row_key < p.row_key_end",
             [],
             |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
         )
@@ -766,7 +779,7 @@ fn merge_deduplicates_exact_replayed_rows_and_updates_keys() {
         ]
     );
     let provenance: Vec<(i64, String, u64)> = conn
-        .prepare("SELECT id, _cdf_load, _cdf_row FROM orders ORDER BY id")
+        .prepare("SELECT o.id, p.package_hash, o._cdf_row_key - p.row_key_start FROM orders o JOIN _cdf_segments p ON o._cdf_row_key >= p.row_key_start AND o._cdf_row_key < p.row_key_end ORDER BY o.id")
         .unwrap()
         .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
         .unwrap()
@@ -783,7 +796,7 @@ fn merge_deduplicates_exact_replayed_rows_and_updates_keys() {
 }
 
 #[test]
-fn legacy_or_partial_provenance_targets_fail_without_synthesizing_addresses() {
+fn preexisting_targets_without_current_provenance_fail_without_mutation() {
     let temp = tempfile::tempdir().unwrap();
     let package = temp.path().join("pkg-legacy");
     let package_hash = build_package(
@@ -810,8 +823,10 @@ fn legacy_or_partial_provenance_targets_fail_without_synthesizing_addresses() {
         ))
         .unwrap_err();
     let message = error.to_string();
-    assert!(message.contains("legacy target"), "{message}");
-    assert!(message.contains("no CDF row provenance"), "{message}");
+    assert!(
+        message.contains("current compact _cdf_row_key"),
+        "{message}"
+    );
     assert!(message.contains("use replace"), "{message}");
 
     let conn = Connection::open(db_path).unwrap();
@@ -826,7 +841,7 @@ fn legacy_or_partial_provenance_targets_fail_without_synthesizing_addresses() {
 }
 
 #[test]
-fn legacy_provenance_requires_exact_non_null_types_and_unique_address() {
+fn compact_provenance_requires_exact_non_null_types_and_unique_address() {
     let temp = tempfile::tempdir().unwrap();
     let package = temp.path().join("pkg-legacy-provenance-shape");
     let package_hash = build_package(
@@ -841,10 +856,7 @@ fn legacy_provenance_requires_exact_non_null_types_and_unique_address() {
         "CREATE TABLE orders (
             id BIGINT NOT NULL,
             name VARCHAR,
-            _cdf_load VARCHAR,
-            _cdf_segment VARCHAR,
-            _cdf_row UBIGINT,
-            UNIQUE (_cdf_load, _cdf_segment, _cdf_row)
+            _cdf_row_key UBIGINT
         )",
     )
     .unwrap();
@@ -866,10 +878,7 @@ fn legacy_provenance_requires_exact_non_null_types_and_unique_address() {
         "CREATE TABLE orders (
             id BIGINT NOT NULL,
             name VARCHAR,
-            _cdf_load VARCHAR NOT NULL,
-            _cdf_segment VARCHAR NOT NULL,
-            _cdf_row BIGINT NOT NULL,
-            UNIQUE (_cdf_load, _cdf_segment, _cdf_row)
+            _cdf_row_key BIGINT NOT NULL
         )",
     )
     .unwrap();
@@ -884,7 +893,10 @@ fn legacy_provenance_requires_exact_non_null_types_and_unique_address() {
         ))
         .unwrap_err();
     let message = error.to_string();
-    assert!(message.contains("_cdf_row has type BIGINT"), "{message}");
+    assert!(
+        message.contains("_cdf_row_key has type BIGINT"),
+        "{message}"
+    );
     assert!(message.contains("expected UBIGINT"), "{message}");
 }
 
@@ -893,13 +905,13 @@ fn user_columns_cannot_impersonate_reserved_provenance() {
     let temp = tempfile::tempdir().unwrap();
     let package = temp.path().join("pkg-reserved");
     let schema = Arc::new(Schema::new(vec![Field::new(
-        CDF_LOAD_COLUMN,
-        DataType::Utf8,
+        CDF_ROW_KEY_COLUMN,
+        DataType::UInt64,
         false,
     )]));
     let batch = RecordBatch::try_new(
         schema,
-        vec![Arc::new(StringArray::from(vec!["spoof"])) as ArrayRef],
+        vec![Arc::new(UInt64Array::from(vec![1])) as ArrayRef],
     )
     .unwrap();
     let package_hash = build_package(&package, "pkg-reserved", &[batch]);
@@ -938,7 +950,7 @@ fn addressed_correction_adds_nullable_column_preserves_residuals_and_replays_as_
     let conn = Connection::open(&db_path).unwrap();
     let readback: (String, String, String, u64) = conn
         .query_row(
-            "SELECT _cdf_variant, _cdf_load, _cdf_segment, _cdf_row FROM orders WHERE id = 1",
+            "SELECT o._cdf_variant, p.package_hash, p.segment_id, o._cdf_row_key - p.row_key_start FROM orders o JOIN _cdf_segments p ON o._cdf_row_key >= p.row_key_start AND o._cdf_row_key < p.row_key_end WHERE o.id = 1",
             [],
             |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
         )
@@ -994,7 +1006,7 @@ fn addressed_correction_adds_nullable_column_preserves_residuals_and_replays_as_
     let conn = Connection::open(&db_path).unwrap();
     let rows: Vec<(i64, i64, Option<String>, String, String, u64)> = conn
         .prepare(
-            "SELECT id, age, _cdf_variant, _cdf_load, _cdf_segment, _cdf_row FROM orders ORDER BY id",
+            "SELECT o.id, o.age, o._cdf_variant, p.package_hash, p.segment_id, o._cdf_row_key - p.row_key_start FROM orders o JOIN _cdf_segments p ON o._cdf_row_key >= p.row_key_start AND o._cdf_row_key < p.row_key_end ORDER BY o.id",
         )
         .unwrap()
         .query_map([], |row| {
@@ -1230,7 +1242,7 @@ fn correction_missing_address_fails_dry_plan_without_migration_or_receipt() {
 
     let error = dest.plan_correction(&correction).unwrap_err();
     assert!(
-        error.to_string().contains("missing or has no residual"),
+        error.to_string().contains("outside its segment range"),
         "{error}"
     );
     let conn = Connection::open(db_path).unwrap();

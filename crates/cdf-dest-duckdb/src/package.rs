@@ -3,45 +3,33 @@ use crate::{api::*, sql::*};
 
 pub(crate) fn persistence_fields(user_fields: &[FieldPlan]) -> Vec<FieldPlan> {
     let mut fields = user_fields.to_vec();
-    fields.extend([
-        FieldPlan {
-            name: CDF_LOAD_COLUMN.to_owned(),
-            sql_type: "VARCHAR".to_owned(),
-            nullable: false,
-        },
-        FieldPlan {
-            name: CDF_SEGMENT_COLUMN.to_owned(),
-            sql_type: "VARCHAR".to_owned(),
-            nullable: false,
-        },
-        FieldPlan {
-            name: CDF_ROW_COLUMN.to_owned(),
-            sql_type: "UBIGINT".to_owned(),
-            nullable: false,
-        },
-    ]);
+    fields.push(FieldPlan {
+        name: CDF_ROW_KEY_COLUMN.to_owned(),
+        sql_type: "UBIGINT".to_owned(),
+        nullable: false,
+    });
     fields
 }
 
-pub(crate) fn ingress_batch(
+pub(crate) fn persistence_batch(
     batch: RecordBatch,
-    segment_row_start: u64,
+    row_key_start: u64,
     stage_row_start: Option<u64>,
 ) -> Result<RecordBatch> {
     let row_count = u64::try_from(batch.num_rows())
         .map_err(|_| CdfError::data("DuckDB Arrow batch row count exceeds u64"))?;
-    let segment_row_end = segment_row_start
+    let row_key_end = row_key_start
         .checked_add(row_count)
-        .ok_or_else(|| CdfError::data("DuckDB segment row ordinal overflowed"))?;
+        .ok_or_else(|| CdfError::data("DuckDB row provenance key overflowed"))?;
     let mut fields = batch.schema().fields().to_vec();
     fields.push(Arc::new(Field::new(
-        CDF_ROW_COLUMN,
+        CDF_ROW_KEY_COLUMN,
         DataType::UInt64,
         false,
     )));
     let mut columns = batch.columns().to_vec();
     columns.push(Arc::new(UInt64Array::from_iter_values(
-        segment_row_start..segment_row_end,
+        row_key_start..row_key_end,
     )));
     if let Some(stage_row_start) = stage_row_start {
         let stage_row_end = stage_row_start

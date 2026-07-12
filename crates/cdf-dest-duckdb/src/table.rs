@@ -172,13 +172,7 @@ pub(crate) fn create_columns_sql(fields: &[FieldPlan]) -> String {
 }
 
 pub(crate) fn create_target_columns_sql(fields: &[FieldPlan]) -> String {
-    format!(
-        "{}, UNIQUE ({}, {}, {})",
-        create_columns_sql(fields),
-        quote_ident(CDF_LOAD_COLUMN),
-        quote_ident(CDF_SEGMENT_COLUMN),
-        quote_ident(CDF_ROW_COLUMN)
-    )
+    create_columns_sql(fields)
 }
 
 pub(crate) fn require_targetable_provenance(
@@ -186,54 +180,43 @@ pub(crate) fn require_targetable_provenance(
     target: &TargetRef,
     existing: &BTreeMap<String, ExistingColumn>,
 ) -> Result<()> {
-    let present = [CDF_LOAD_COLUMN, CDF_SEGMENT_COLUMN, CDF_ROW_COLUMN]
-        .into_iter()
-        .filter(|column| existing.contains_key(*column))
-        .collect::<Vec<_>>();
-    if present.len() != 3 {
-        let state = if present.is_empty() {
-            "no CDF row provenance columns are present".to_owned()
-        } else {
-            format!("only {} are present", present.join(", "))
-        };
+    if !existing.contains_key(CDF_ROW_KEY_COLUMN) {
         return Err(CdfError::contract(format!(
-            "DuckDB target {} is a legacy target without complete CDF row provenance ({state}); use replace to rebuild it from verified packages, or migrate all three reserved columns with exact original package/segment/ordinal values before append or merge",
-            target.sql_name()
+            "DuckDB target {} does not have the current compact {} provenance column; use replace to rebuild it from verified packages",
+            target.sql_name(),
+            CDF_ROW_KEY_COLUMN,
         )));
     }
-    for (name, expected_type) in [
-        (CDF_LOAD_COLUMN, "VARCHAR"),
-        (CDF_SEGMENT_COLUMN, "VARCHAR"),
-        (CDF_ROW_COLUMN, "UBIGINT"),
-    ] {
-        let column = &existing[name];
-        if !same_type(&column.data_type, expected_type) {
-            return Err(CdfError::contract(format!(
-                "DuckDB target {} provenance column {name} has type {}; expected {expected_type}",
-                target.sql_name(),
-                column.data_type
-            )));
-        }
-        if column.nullable {
-            return Err(CdfError::contract(format!(
-                "DuckDB target {} provenance column {name} is nullable; all provenance columns must be NOT NULL before addressed correction is safe",
-                target.sql_name()
-            )));
-        }
+    let column = &existing[CDF_ROW_KEY_COLUMN];
+    if !same_type(&column.data_type, "UBIGINT") {
+        return Err(CdfError::contract(format!(
+            "DuckDB target {} provenance column {} has type {}; expected UBIGINT",
+            target.sql_name(),
+            CDF_ROW_KEY_COLUMN,
+            column.data_type
+        )));
     }
-    let unique: bool = conn
+    if column.nullable {
+        return Err(CdfError::contract(format!(
+            "DuckDB target {} provenance column {} is nullable; row keys must be NOT NULL before addressed correction is safe",
+            target.sql_name(),
+            CDF_ROW_KEY_COLUMN,
+        )));
+    }
+    let has_duplicate: bool = conn
         .query_row(
-            "SELECT count(*) > 0 FROM duckdb_constraints() \
-             WHERE schema_name = ? AND table_name = ? \
-             AND constraint_type IN ('UNIQUE', 'PRIMARY KEY') \
-             AND array_to_string(constraint_column_names, ',') = '_cdf_load,_cdf_segment,_cdf_row'",
-            params![target.schema.as_str(), target.table.as_str()],
+            &format!(
+                "SELECT EXISTS (SELECT 1 FROM {} GROUP BY {} HAVING count(*) > 1)",
+                target.sql_name(),
+                quote_ident(CDF_ROW_KEY_COLUMN),
+            ),
+            [],
             |row| row.get(0),
         )
-        .map_err(|error| duckdb_error("inspect DuckDB provenance uniqueness", error))?;
-    if !unique {
+        .map_err(|error| duckdb_error("verify DuckDB provenance uniqueness", error))?;
+    if has_duplicate {
         return Err(CdfError::contract(format!(
-            "DuckDB target {} has provenance columns but no UNIQUE (_cdf_load, _cdf_segment, _cdf_row) constraint; verify and deduplicate exact provenance addresses, then add the unique constraint, or use replace to rebuild from verified packages",
+            "DuckDB target {} contains duplicate compact row-provenance addresses; use replace to rebuild it from verified packages",
             target.sql_name()
         )));
     }
