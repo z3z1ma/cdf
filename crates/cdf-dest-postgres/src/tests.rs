@@ -151,14 +151,8 @@ fn sheet_declares_postgres_capabilities_and_full_mapping_fidelity() {
         .into_iter()
         .find(|statement| statement.name == "create_target")
         .unwrap();
-    for provenance_column in [CDF_LOAD_COLUMN, CDF_SEGMENT_COLUMN, CDF_ROW_COLUMN] {
-        assert!(create_target.sql.contains(provenance_column));
-    }
-    assert!(
-        create_target
-            .sql
-            .contains("UNIQUE (\"_cdf_load\", \"_cdf_segment\", \"_cdf_row\")")
-    );
+    assert!(create_target.sql.contains(CDF_ROW_KEY_COLUMN));
+    assert!(create_target.sql.contains("UNIQUE (\"_cdf_row_key\")"));
     let decimal = sheet
         .type_mappings
         .iter()
@@ -217,9 +211,7 @@ fn correction_existing_table(nullable_provenance: bool) -> PostgresExistingTable
         ("id", "BIGINT", false),
         ("name", "TEXT", true),
         ("_cdf_variant", "TEXT", true),
-        (CDF_LOAD_COLUMN, "TEXT", nullable_provenance),
-        (CDF_SEGMENT_COLUMN, "TEXT", false),
-        (CDF_ROW_COLUMN, "BIGINT", false),
+        (CDF_ROW_KEY_COLUMN, "BIGINT", nullable_provenance),
         (CDF_LOADED_AT_COLUMN, "BIGINT", false),
     ] {
         columns.insert(
@@ -312,7 +304,7 @@ fn correction_plan_is_dry_runnable_nullable_and_keyless() {
             .any(|statement| { statement.sql.contains("CREATE UNIQUE INDEX IF NOT EXISTS") })
     );
     assert!(plan.create_stage.dry_run_safe);
-    assert!(plan.update_sql[0].sql.contains("_cdf_load"));
+    assert!(plan.update_sql[0].sql.contains("_cdf_row_key"));
     assert!(plan.update_sql[0].sql.contains("_cdf_variant"));
     assert!(
         plan.transactional_statements()
@@ -330,7 +322,7 @@ fn correction_plan_rejects_nullable_provenance_address() {
             existing_table: correction_existing_table(true),
         })
         .unwrap_err();
-    assert!(error.to_string().contains("_cdf_load to be NOT NULL"));
+    assert!(error.to_string().contains("_cdf_row_key to be NOT NULL"));
 }
 
 #[test]
@@ -470,7 +462,7 @@ fn append_replace_and_merge_plans_include_transactional_sql() {
         .sql
         .as_str();
     assert!(merge_sql.contains("ROW_NUMBER() OVER"));
-    assert!(merge_sql.contains("ORDER BY \"_cdf_segment\" DESC, \"_cdf_row\" DESC"));
+    assert!(merge_sql.contains("ORDER BY \"_cdf_row_key\" DESC"));
     assert!(merge_sql.contains("ON CONFLICT (\"id\") DO UPDATE SET"));
     assert_eq!(
         merge.kernel.delivery_guarantee,
@@ -528,7 +520,7 @@ fn merge_dedup_policy_is_explicit_and_can_fail_on_duplicates() {
         .unwrap()
         .sql
         .as_str();
-    assert!(first_sql.contains("ORDER BY \"_cdf_segment\" ASC, \"_cdf_row\" ASC"));
+    assert!(first_sql.contains("ORDER BY \"_cdf_row_key\" ASC"));
 
     let fail = destination
         .plan_load(input(WriteDisposition::Merge, MergeDedupPolicy::Fail))
@@ -623,10 +615,8 @@ fn existing_table_migrations_add_only_safe_missing_columns() {
     assert!(plan.target_ddl.iter().any(
         |statement| statement.sql == "ALTER TABLE \"raw\".\"orders\" ADD COLUMN \"name\" TEXT"
     ));
-    assert!(
-        plan.target_ddl.iter().any(|statement| statement.sql
-            == "ALTER TABLE \"raw\".\"orders\" ADD COLUMN \"_cdf_load\" TEXT")
-    );
+    assert!(plan.target_ddl.iter().any(|statement| statement.sql
+        == "ALTER TABLE \"raw\".\"orders\" ADD COLUMN \"_cdf_row_key\" BIGINT"));
 
     let mut unsafe_add = input(WriteDisposition::Append, MergeDedupPolicy::Last);
     unsafe_add.existing_table = Some(PostgresExistingTable::new(Vec::new(), vec![]).unwrap());

@@ -108,7 +108,7 @@ pub(crate) struct BinaryCopyEncoder<W: Write> {
 
 impl<W: Write> BinaryCopyEncoder<W> {
     pub(crate) fn new(writer: W, user_fields: usize) -> Result<Self> {
-        let field_count = i16::try_from(user_fields.saturating_add(4))
+        let field_count = i16::try_from(user_fields.saturating_add(2))
             .map_err(|_| CdfError::contract("Postgres binary COPY field count exceeds i16"))?;
         let mut writer = BufWriter::with_capacity(BINARY_COPY_BUFFER_BYTES, writer);
         writer
@@ -127,9 +127,7 @@ impl<W: Write> BinaryCopyEncoder<W> {
     pub(crate) fn write_batch(
         &mut self,
         batch: &RecordBatch,
-        segment_id: &str,
-        row_start: u64,
-        load: &str,
+        row_key_start: i64,
         loaded_at_ms: i64,
     ) -> Result<()> {
         let columns = batch
@@ -145,17 +143,13 @@ impl<W: Write> BinaryCopyEncoder<W> {
             for column in &columns {
                 self.write_arrow_field(column, row)?;
             }
-            self.write_bytes(Some(load.as_bytes()))?;
-            self.write_bytes(Some(segment_id.as_bytes()))?;
-            let row_index = row_start
+            let row_key = row_key_start
                 .checked_add(
-                    u64::try_from(row)
-                        .map_err(|_| CdfError::data("Postgres batch row ordinal exceeds u64"))?,
+                    i64::try_from(row)
+                        .map_err(|_| CdfError::data("Postgres batch row offset exceeds BIGINT"))?,
                 )
-                .ok_or_else(|| CdfError::data("Postgres segment row ordinal overflowed"))?;
-            let row_index = i64::try_from(row_index)
-                .map_err(|_| CdfError::data("Postgres row ordinal exceeds BIGINT"))?;
-            self.write_bytes(Some(&row_index.to_be_bytes()))?;
+                .ok_or_else(|| CdfError::data("Postgres row key overflowed BIGINT"))?;
+            self.write_bytes(Some(&row_key.to_be_bytes()))?;
             self.write_bytes(Some(&loaded_at_ms.to_be_bytes()))?;
             self.rows = self
                 .rows
@@ -397,9 +391,7 @@ mod tests {
         .unwrap();
         let started = Instant::now();
         let mut binary = BinaryCopyEncoder::new(Vec::new(), 3).unwrap();
-        binary
-            .write_batch(&batch, "seg-000001", 0, "sha256:package", 1_700_000_000_000)
-            .unwrap();
+        binary.write_batch(&batch, 1, 1_700_000_000_000).unwrap();
         let (binary_bytes, rows) = binary.finish().unwrap();
         let binary_elapsed = started.elapsed();
         assert_eq!(rows, ROWS as u64);

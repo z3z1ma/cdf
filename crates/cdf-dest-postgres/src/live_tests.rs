@@ -68,8 +68,7 @@ fn live_binary_copy_is_at_least_twice_csv() {
         format!(
             "CREATE UNLOGGED TABLE {name} (
                {user_ddl},
-               _cdf_load TEXT NOT NULL, _cdf_segment TEXT NOT NULL,
-               _cdf_row BIGINT NOT NULL, _cdf_loaded_at_ms BIGINT NOT NULL
+               _cdf_row_key BIGINT NOT NULL, _cdf_loaded_at_ms BIGINT NOT NULL
              )"
         )
     };
@@ -112,9 +111,7 @@ fn live_binary_copy_is_at_least_twice_csv() {
         .unwrap();
     let mut encoder =
         crate::binary_copy::BinaryCopyEncoder::new(writer, batch.num_columns()).unwrap();
-    encoder
-        .write_batch(&batch, "seg-000001", 0, "sha256:package", 1_700_000_000_000)
-        .unwrap();
+    encoder.write_batch(&batch, 1, 1_700_000_000_000).unwrap();
     let (writer, encoded) = encoder.finish().unwrap();
     let copied = writer.finish().unwrap();
     let binary_elapsed = started.elapsed();
@@ -157,14 +154,11 @@ fn live_binary_copy_is_at_least_twice_csv() {
                 })
             })
             .collect::<Vec<_>>();
-        let segment_id = "seg-000001".to_owned();
         let mut fields = values
             .iter()
             .map(|value| csv_field(value.as_deref()))
             .collect::<Vec<_>>();
-        fields.push(csv_field(Some("sha256:package")));
-        fields.push(csv_field(Some(&segment_id)));
-        fields.push(csv_field(Some(&row.to_string())));
+        fields.push(csv_field(Some(&(row + 1).to_string())));
         fields.push(csv_field(Some(&1_700_000_000_000_i64.to_string())));
         let mut line = fields.join(",");
         line.push('\n');
@@ -393,9 +387,7 @@ fn correction_existing_table_live() -> PostgresExistingTable {
     for (name, data_type, nullable) in [
         ("id", "BIGINT", false),
         ("_cdf_variant", "TEXT", true),
-        (CDF_LOAD_COLUMN, "TEXT", false),
-        (CDF_SEGMENT_COLUMN, "TEXT", false),
-        (CDF_ROW_COLUMN, "BIGINT", false),
+        (CDF_ROW_KEY_COLUMN, "BIGINT", false),
         (CDF_LOADED_AT_COLUMN, "BIGINT", false),
     ] {
         columns.insert(
@@ -1169,10 +1161,11 @@ fn live_append_duplicate_receipt_verification_and_state_mirror() {
     let rows = client
         .query(
             &format!(
-                "SELECT \"id\", \"name\", \"_cdf_load\", \"_cdf_segment\", \"_cdf_row\", \"_cdf_loaded_at_ms\" FROM {} ORDER BY \"id\"",
-                target.sql()
+                "SELECT \"target\".\"id\", \"target\".\"name\", \"segment\".\"package_hash\", \"segment\".\"segment_id\", \"target\".\"_cdf_row_key\" - \"segment\".\"row_key_start\", \"target\".\"_cdf_loaded_at_ms\" FROM {} AS \"target\" JOIN {} AS \"segment\" ON \"target\".\"_cdf_row_key\" >= \"segment\".\"row_key_start\" AND \"target\".\"_cdf_row_key\" < \"segment\".\"row_key_end\" WHERE \"segment\".\"target\" = $1 ORDER BY \"target\".\"id\"",
+                target.sql(),
+                quote_identifier_unchecked(CDF_SEGMENTS_TABLE)
             ),
-            &[],
+            &[&target.display_name()],
         )
         .unwrap();
     assert_eq!(rows.len(), 3);
@@ -1349,10 +1342,11 @@ fn live_replace_is_atomic_and_reports_deleted_rows() {
     let rows = client
         .query(
             &format!(
-                "SELECT \"id\", \"name\", \"_cdf_load\" FROM {} ORDER BY \"id\"",
-                env.target("orders_replace").sql()
+                "SELECT \"target\".\"id\", \"target\".\"name\", \"segment\".\"package_hash\" FROM {} AS \"target\" JOIN {} AS \"segment\" ON \"target\".\"_cdf_row_key\" >= \"segment\".\"row_key_start\" AND \"target\".\"_cdf_row_key\" < \"segment\".\"row_key_end\" WHERE \"segment\".\"target\" = $1 ORDER BY \"target\".\"id\"",
+                env.target("orders_replace").sql(),
+                quote_identifier_unchecked(CDF_SEGMENTS_TABLE)
             ),
-            &[],
+            &[&env.target("orders_replace").display_name()],
         )
         .unwrap();
     assert_eq!(rows.len(), 1);
@@ -1414,10 +1408,11 @@ fn live_merge_deduplicates_last_row_and_updates_existing_keys() {
     let rows = client
         .query(
             &format!(
-                "SELECT \"id\", \"name\", \"_cdf_segment\" FROM {} ORDER BY \"id\"",
-                env.target("orders_merge").sql()
+                "SELECT \"target\".\"id\", \"target\".\"name\", \"segment\".\"segment_id\" FROM {} AS \"target\" JOIN {} AS \"segment\" ON \"target\".\"_cdf_row_key\" >= \"segment\".\"row_key_start\" AND \"target\".\"_cdf_row_key\" < \"segment\".\"row_key_end\" WHERE \"segment\".\"target\" = $1 ORDER BY \"target\".\"id\"",
+                env.target("orders_merge").sql(),
+                quote_identifier_unchecked(CDF_SEGMENTS_TABLE)
             ),
-            &[],
+            &[&env.target("orders_merge").display_name()],
         )
         .unwrap();
     let actual = rows
@@ -1877,20 +1872,29 @@ fn live_correction_missing_duplicate_and_post_update_failures_roll_back() {
     .unwrap();
     let duplicate_hash = PackageHash::new("sha256:duplicate-original").unwrap();
     let mut client = env.client();
+    for statement in crate::ddl::system_table_ddl() {
+        client.batch_execute(&statement.sql).unwrap();
+    }
     client
         .batch_execute(&format!(
-            "CREATE TABLE {} (\"id\" BIGINT NOT NULL, \"_cdf_variant\" TEXT, \"_cdf_load\" TEXT NOT NULL, \"_cdf_segment\" TEXT NOT NULL, \"_cdf_row\" BIGINT NOT NULL, \"_cdf_loaded_at_ms\" BIGINT NOT NULL)",
+            "CREATE TABLE {} (\"id\" BIGINT NOT NULL, \"_cdf_variant\" TEXT, \"_cdf_row_key\" BIGINT NOT NULL, \"_cdf_loaded_at_ms\" BIGINT NOT NULL)",
             duplicate_target.sql()
         ))
+        .unwrap();
+    client
+        .execute(
+            &format!("INSERT INTO {} (\"row_key_start\", \"row_key_end\", \"target\", \"package_hash\", \"segment_id\") VALUES (1000000000000, 1000000000001, $1, $2, 'seg-000001')", quote_identifier_unchecked(CDF_SEGMENTS_TABLE)),
+            &[&duplicate_target.display_name(), &duplicate_hash.as_str()],
+        )
         .unwrap();
     for id in [1_i64, 2_i64] {
         client
             .execute(
                 &format!(
-                    "INSERT INTO {} (\"id\", \"_cdf_variant\", \"_cdf_load\", \"_cdf_segment\", \"_cdf_row\", \"_cdf_loaded_at_ms\") VALUES ($1, $2, $3, 'seg-000001', 0, 1)",
+                    "INSERT INTO {} (\"id\", \"_cdf_variant\", \"_cdf_row_key\", \"_cdf_loaded_at_ms\") VALUES ($1, $2, 1000000000000, 1)",
                     duplicate_target.sql()
                 ),
-                &[&id, &duplicate_residual, &duplicate_hash.as_str()],
+                &[&id, &duplicate_residual],
             )
             .unwrap();
     }

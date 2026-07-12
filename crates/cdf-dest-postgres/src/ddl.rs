@@ -34,6 +34,21 @@ pub(crate) fn system_table_ddl() -> Vec<PostgresStatement> {
                 quote_identifier_unchecked(CDF_QUARANTINE_TABLE)
             ),
         ),
+        PostgresStatement::execute(
+            "create_cdf_row_key_allocator",
+            format!(
+                "CREATE TABLE IF NOT EXISTS {} (\n  \"singleton\" BOOLEAN PRIMARY KEY CHECK (\"singleton\"),\n  \"next_key\" BIGINT NOT NULL CHECK (\"next_key\" > 0)\n);\nINSERT INTO {} (\"singleton\", \"next_key\") VALUES (TRUE, 1) ON CONFLICT (\"singleton\") DO NOTHING",
+                quote_identifier_unchecked(CDF_ROW_KEY_ALLOCATOR_TABLE),
+                quote_identifier_unchecked(CDF_ROW_KEY_ALLOCATOR_TABLE)
+            ),
+        ),
+        PostgresStatement::execute(
+            "create_cdf_segments",
+            format!(
+                "CREATE TABLE IF NOT EXISTS {} (\n  \"row_key_start\" BIGINT PRIMARY KEY,\n  \"row_key_end\" BIGINT NOT NULL,\n  \"target\" TEXT NOT NULL,\n  \"package_hash\" TEXT NOT NULL,\n  \"segment_id\" TEXT NOT NULL,\n  CHECK (\"row_key_start\" < \"row_key_end\"),\n  UNIQUE (\"target\", \"package_hash\", \"segment_id\")\n)",
+                quote_identifier_unchecked(CDF_SEGMENTS_TABLE)
+            ),
+        ),
     ]
 }
 
@@ -128,10 +143,8 @@ pub(crate) fn create_target_table_sql(
         ));
     }
     definitions.push(format!(
-        "UNIQUE ({}, {}, {})",
-        quote_identifier_unchecked(CDF_LOAD_COLUMN),
-        quote_identifier_unchecked(CDF_SEGMENT_COLUMN),
-        quote_identifier_unchecked(CDF_ROW_COLUMN)
+        "UNIQUE ({})",
+        quote_identifier_unchecked(CDF_ROW_KEY_COLUMN)
     ));
 
     format!(
@@ -149,12 +162,10 @@ pub(crate) fn provenance_unique_index_statement(
     Ok(PostgresStatement::execute(
         "ensure_unique_cdf_provenance",
         format!(
-            "CREATE UNIQUE INDEX IF NOT EXISTS {} ON {} ({}, {}, {})",
+            "CREATE UNIQUE INDEX IF NOT EXISTS {} ON {} ({})",
             name.quoted(),
             target.sql(),
-            quote_identifier_unchecked(CDF_LOAD_COLUMN),
-            quote_identifier_unchecked(CDF_SEGMENT_COLUMN),
-            quote_identifier_unchecked(CDF_ROW_COLUMN)
+            quote_identifier_unchecked(CDF_ROW_KEY_COLUMN)
         ),
     ))
 }
@@ -162,17 +173,7 @@ pub(crate) fn provenance_unique_index_statement(
 pub(crate) fn system_target_columns() -> Vec<PostgresColumn> {
     vec![
         PostgresColumn {
-            name: PostgresIdentifier::system(CDF_LOAD_COLUMN).expect("static identifier"),
-            data_type: "TEXT".to_owned(),
-            nullable: false,
-        },
-        PostgresColumn {
-            name: PostgresIdentifier::system(CDF_SEGMENT_COLUMN).expect("static identifier"),
-            data_type: "TEXT".to_owned(),
-            nullable: false,
-        },
-        PostgresColumn {
-            name: PostgresIdentifier::system(CDF_ROW_COLUMN).expect("static identifier"),
+            name: PostgresIdentifier::system(CDF_ROW_KEY_COLUMN).expect("static identifier"),
             data_type: "BIGINT".to_owned(),
             nullable: false,
         },

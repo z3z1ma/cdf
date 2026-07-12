@@ -107,8 +107,8 @@ pub(crate) fn merge_sql(
             "WITH \"_cdf_ranked\" AS (\n  SELECT {}, ROW_NUMBER() OVER (PARTITION BY {} ORDER BY {}, {}) AS \"_cdf_rank\"\n  FROM {}\n), \"_cdf_dedup\" AS (\n  SELECT * FROM \"_cdf_ranked\" WHERE \"_cdf_rank\" = 1\n)\n",
             stage_select_list(&input.columns),
             conflict_columns,
-            order_expression(CDF_SEGMENT_COLUMN, &input.dedup),
-            order_expression(CDF_ROW_COLUMN, &input.dedup),
+            order_expression(CDF_ROW_KEY_COLUMN, &input.dedup),
+            order_expression(CDF_LOADED_AT_COLUMN, &input.dedup),
             stage_table.quoted()
         ),
         MergeDedupPolicy::Fail => String::new(),
@@ -181,18 +181,8 @@ pub(crate) fn merge_assignments(
         .collect::<Vec<_>>();
     assignments.push(format!(
         "{} = EXCLUDED.{}",
-        quote_identifier_unchecked(CDF_LOAD_COLUMN),
-        quote_identifier_unchecked(CDF_LOAD_COLUMN)
-    ));
-    assignments.push(format!(
-        "{} = EXCLUDED.{}",
-        quote_identifier_unchecked(CDF_SEGMENT_COLUMN),
-        quote_identifier_unchecked(CDF_SEGMENT_COLUMN)
-    ));
-    assignments.push(format!(
-        "{} = EXCLUDED.{}",
-        quote_identifier_unchecked(CDF_ROW_COLUMN),
-        quote_identifier_unchecked(CDF_ROW_COLUMN)
+        quote_identifier_unchecked(CDF_ROW_KEY_COLUMN),
+        quote_identifier_unchecked(CDF_ROW_KEY_COLUMN)
     ));
     assignments.push(format!(
         "{} = EXCLUDED.{}",
@@ -207,13 +197,8 @@ pub(crate) fn quoted_column_names(columns: &[PostgresColumn]) -> Vec<String> {
 }
 
 pub(crate) fn quoted_system_target_column_names() -> Vec<String> {
-    [
-        CDF_LOAD_COLUMN,
-        CDF_SEGMENT_COLUMN,
-        CDF_ROW_COLUMN,
-        CDF_LOADED_AT_COLUMN,
-    ]
-    .into_iter()
-    .map(quote_identifier_unchecked)
-    .collect()
+    [CDF_ROW_KEY_COLUMN, CDF_LOADED_AT_COLUMN]
+        .into_iter()
+        .map(quote_identifier_unchecked)
+        .collect()
 }

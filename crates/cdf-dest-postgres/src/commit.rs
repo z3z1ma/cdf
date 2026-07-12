@@ -329,7 +329,15 @@ impl CommitSession for PostgresCommitSession {
                 .client
                 .as_mut()
                 .ok_or_else(|| CdfError::internal("Postgres commit session has no transaction"))?;
-            copy_stage_rows(client, &self.plan, segment, loaded_at_ms)?;
+            let row_key_start = allocate_row_key_range(client, expected.state.row_count)?;
+            copy_stage_rows(client, &self.plan, segment, row_key_start, loaded_at_ms)?;
+            insert_segment_range(
+                client,
+                &self.plan,
+                &expected.state.segment_id,
+                row_key_start,
+                expected.state.row_count,
+            )?;
         }
 
         let ack = SegmentAck {
@@ -596,6 +604,7 @@ fn copy_stage_rows(
     client: &mut Client,
     plan: &PostgresLoadPlan,
     segment: CommitSegment,
+    row_key_start: i64,
     loaded_at_ms: i64,
 ) -> Result<u64> {
     let mut columns = quoted_column_names(&plan.columns);
@@ -608,20 +617,16 @@ fn copy_stage_rows(
     let writer = client
         .copy_in(&copy_sql)
         .map_err(|error| postgres_error("open Postgres COPY into stage", error))?;
-    // Row provenance is the immutable original package identity. The package
-    // token may differ from an operator-supplied idempotency token.
-    let load = verify_parameter(plan, "package_hash")?;
     let mut encoder = BinaryCopyEncoder::new(writer, plan.columns.len())?;
-    let segment_id = segment.state.segment_id.as_str().to_owned();
-    let mut row_start = 0_u64;
+    let mut next_row_key = row_key_start;
     for batch in segment.into_batches()? {
-        encoder.write_batch(&batch.batch, &segment_id, row_start, &load, loaded_at_ms)?;
-        row_start = row_start
+        encoder.write_batch(&batch.batch, next_row_key, loaded_at_ms)?;
+        next_row_key = next_row_key
             .checked_add(
-                u64::try_from(batch.batch.num_rows())
-                    .map_err(|_| CdfError::data("Postgres batch row count exceeds u64"))?,
+                i64::try_from(batch.batch.num_rows())
+                    .map_err(|_| CdfError::data("Postgres batch row count exceeds BIGINT"))?,
             )
-            .ok_or_else(|| CdfError::data("Postgres segment row count overflowed"))?;
+            .ok_or_else(|| CdfError::data("Postgres row key overflowed BIGINT"))?;
     }
     let (writer, encoded_rows) = encoder.finish()?;
     let copied = writer
@@ -633,6 +638,55 @@ fn copy_stage_rows(
         )));
     }
     Ok(copied)
+}
+
+fn allocate_row_key_range(client: &mut Client, row_count: u64) -> Result<i64> {
+    let row_count = i64::try_from(row_count)
+        .map_err(|_| CdfError::data("Postgres segment row count exceeds BIGINT"))?;
+    if row_count <= 0 {
+        return Err(CdfError::data(
+            "Postgres cannot allocate a row-key range for an empty segment",
+        ));
+    }
+    let sql = format!(
+        "UPDATE {} SET \"next_key\" = \"next_key\" + $1 WHERE \"singleton\" RETURNING \"next_key\" - $1",
+        quote_identifier_unchecked(CDF_ROW_KEY_ALLOCATOR_TABLE)
+    );
+    client
+        .query_one(&sql, &[&row_count])
+        .map(|row| row.get(0))
+        .map_err(|error| postgres_error("allocate Postgres row-key range", error))
+}
+
+fn insert_segment_range(
+    client: &mut Client,
+    plan: &PostgresLoadPlan,
+    segment_id: &SegmentId,
+    row_key_start: i64,
+    row_count: u64,
+) -> Result<()> {
+    let row_count = i64::try_from(row_count)
+        .map_err(|_| CdfError::data("Postgres segment row count exceeds BIGINT"))?;
+    let row_key_end = row_key_start
+        .checked_add(row_count)
+        .ok_or_else(|| CdfError::data("Postgres segment row-key range overflowed BIGINT"))?;
+    let sql = format!(
+        "INSERT INTO {} (\"row_key_start\", \"row_key_end\", \"target\", \"package_hash\", \"segment_id\") VALUES ($1, $2, $3, $4, $5)",
+        quote_identifier_unchecked(CDF_SEGMENTS_TABLE)
+    );
+    client
+        .execute(
+            &sql,
+            &[
+                &row_key_start,
+                &row_key_end,
+                &plan.kernel.target.as_str(),
+                &verify_parameter(plan, "package_hash")?,
+                &segment_id.as_str(),
+            ],
+        )
+        .map(|_| ())
+        .map_err(|error| postgres_error("record Postgres segment row-key range", error))
 }
 
 fn execute_count(client: &mut Client, statement: &PostgresStatement) -> Result<u64> {
@@ -697,8 +751,8 @@ fn merge_dedup_cte(plan: &PostgresLoadPlan) -> String {
         "WITH \"_cdf_ranked\" AS (\n  SELECT {}, ROW_NUMBER() OVER (PARTITION BY {} ORDER BY {}, {}) AS \"_cdf_rank\"\n  FROM {}\n), \"_cdf_dedup\" AS (\n  SELECT * FROM \"_cdf_ranked\" WHERE \"_cdf_rank\" = 1\n)\n",
         stage_select_list(&plan.columns),
         conflict_columns,
-        order_expression(CDF_SEGMENT_COLUMN, &plan.dedup),
-        order_expression(CDF_ROW_COLUMN, &plan.dedup),
+        order_expression(CDF_ROW_KEY_COLUMN, &plan.dedup),
+        order_expression(CDF_LOADED_AT_COLUMN, &plan.dedup),
         plan.stage_table.quoted()
     )
 }

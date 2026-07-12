@@ -186,7 +186,7 @@ fn synthetic_state_segment(ack: SegmentAck) -> StateSegment {
         scope: ScopeKey::Resource,
         output_position: SourcePosition::Cursor(CursorPosition {
             version: 1,
-            field: "_cdf_segment".to_owned(),
+            field: "segment_id".to_owned(),
             value: CursorValue::String(position_value),
         }),
         row_count: ack.row_count,

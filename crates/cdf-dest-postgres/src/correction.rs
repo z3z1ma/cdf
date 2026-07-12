@@ -292,17 +292,19 @@ impl PostgresDestination {
         let row_ordinal = i64::try_from(original_row.original_row_ordinal)
             .map_err(|_| CdfError::contract("correction row ordinal exceeds Postgres BIGINT"))?;
         let sql = format!(
-            "SELECT {} FROM {} WHERE {} = $1 AND {} = $2 AND {} = $3",
+            "SELECT \"target\".{} FROM {} AS \"target\" JOIN {} AS \"segment\" ON \"target\".{} >= \"segment\".\"row_key_start\" AND \"target\".{} < \"segment\".\"row_key_end\" WHERE \"segment\".\"target\" = $1 AND \"segment\".\"package_hash\" = $2 AND \"segment\".\"segment_id\" = $3 AND \"target\".{} = \"segment\".\"row_key_start\" + $4",
             quote_identifier_unchecked("_cdf_variant"),
             target.sql(),
-            quote_identifier_unchecked(CDF_LOAD_COLUMN),
-            quote_identifier_unchecked(CDF_SEGMENT_COLUMN),
-            quote_identifier_unchecked(CDF_ROW_COLUMN)
+            target_system_table(&target, CDF_SEGMENTS_TABLE),
+            quote_identifier_unchecked(CDF_ROW_KEY_COLUMN),
+            quote_identifier_unchecked(CDF_ROW_KEY_COLUMN),
+            quote_identifier_unchecked(CDF_ROW_KEY_COLUMN)
         );
         let rows = client
             .query(
                 &sql,
                 &[
+                    &target.display_name(),
                     &original_row.original_package_hash.as_str(),
                     &original_row.original_segment_id.as_str(),
                     &row_ordinal,
@@ -506,9 +508,7 @@ impl CorrectionCommitSession for PostgresCorrectionSession {
 
 #[derive(Clone, Debug)]
 struct PreparedCorrectionRow {
-    load: String,
-    segment: String,
-    row: i64,
+    row_key: i64,
     promoted_path: String,
     promoted_value: Option<String>,
     residual_after: Option<String>,
@@ -536,12 +536,7 @@ fn correction_field_plans(
 }
 
 fn validate_existing_provenance(existing: &PostgresExistingTable) -> Result<()> {
-    let required = [
-        (CDF_LOAD_COLUMN, "TEXT"),
-        (CDF_SEGMENT_COLUMN, "TEXT"),
-        (CDF_ROW_COLUMN, "BIGINT"),
-        ("_cdf_variant", "TEXT"),
-    ];
+    let required = [(CDF_ROW_KEY_COLUMN, "BIGINT"), ("_cdf_variant", "TEXT")];
     for (name, data_type) in required {
         let column = existing.columns.get(name).ok_or_else(|| {
             CdfError::destination(format!(
@@ -554,7 +549,7 @@ fn validate_existing_provenance(existing: &PostgresExistingTable) -> Result<()> 
                 column.data_type
             )));
         }
-        if name != "_cdf_variant" && column.nullable {
+        if name == CDF_ROW_KEY_COLUMN && column.nullable {
             return Err(CdfError::destination(format!(
                 "Postgres in-place correction requires {name} to be NOT NULL; reload or migrate CDF provenance before enabling addressed correction"
             )));
@@ -605,14 +600,10 @@ fn correction_stage_statement(stage: &PostgresIdentifier) -> PostgresStatement {
     PostgresStatement::execute(
         "create_correction_stage",
         format!(
-            "CREATE TEMP TABLE {} (\n  {} TEXT NOT NULL,\n  {} TEXT NOT NULL,\n  {} BIGINT NOT NULL,\n  \"promoted_path\" TEXT NOT NULL,\n  \"promoted_value\" TEXT,\n  \"residual_after\" TEXT,\n  PRIMARY KEY ({}, {}, {}, \"promoted_path\")\n) ON COMMIT DROP",
+            "CREATE TEMP TABLE {} (\n  {} BIGINT NOT NULL,\n  \"promoted_path\" TEXT NOT NULL,\n  \"promoted_value\" TEXT,\n  \"residual_after\" TEXT,\n  PRIMARY KEY ({}, \"promoted_path\")\n) ON COMMIT DROP",
             stage.quoted(),
-            quote_identifier_unchecked(CDF_LOAD_COLUMN),
-            quote_identifier_unchecked(CDF_SEGMENT_COLUMN),
-            quote_identifier_unchecked(CDF_ROW_COLUMN),
-            quote_identifier_unchecked(CDF_LOAD_COLUMN),
-            quote_identifier_unchecked(CDF_SEGMENT_COLUMN),
-            quote_identifier_unchecked(CDF_ROW_COLUMN)
+            quote_identifier_unchecked(CDF_ROW_KEY_COLUMN),
+            quote_identifier_unchecked(CDF_ROW_KEY_COLUMN)
         ),
     )
 }
@@ -625,18 +616,14 @@ fn correction_update_statement(
     PostgresStatement::execute(
         format!("update_promoted_column_{}", field.column.name),
         format!(
-            "UPDATE {} AS \"target\" SET {} = \"stage\".\"promoted_value\"::{}, {} = \"stage\".\"residual_after\" FROM {} AS \"stage\" WHERE \"stage\".\"promoted_path\" = $1 AND \"target\".{} = \"stage\".{} AND \"target\".{} = \"stage\".{} AND \"target\".{} = \"stage\".{}",
+            "UPDATE {} AS \"target\" SET {} = \"stage\".\"promoted_value\"::{}, {} = \"stage\".\"residual_after\" FROM {} AS \"stage\" WHERE \"stage\".\"promoted_path\" = $1 AND \"target\".{} = \"stage\".{}",
             target.sql(),
             field.column.name.quoted(),
             field.column.data_type,
             quote_identifier_unchecked("_cdf_variant"),
             stage.quoted(),
-            quote_identifier_unchecked(CDF_LOAD_COLUMN),
-            quote_identifier_unchecked(CDF_LOAD_COLUMN),
-            quote_identifier_unchecked(CDF_SEGMENT_COLUMN),
-            quote_identifier_unchecked(CDF_SEGMENT_COLUMN),
-            quote_identifier_unchecked(CDF_ROW_COLUMN),
-            quote_identifier_unchecked(CDF_ROW_COLUMN)
+            quote_identifier_unchecked(CDF_ROW_KEY_COLUMN),
+            quote_identifier_unchecked(CDF_ROW_KEY_COLUMN)
         ),
     )
 }
@@ -684,6 +671,13 @@ fn validate_correction_package(
     Ok(())
 }
 
+fn target_system_table(target: &PostgresTarget, table: &str) -> String {
+    match &target.schema {
+        Some(schema) => format!("{}.{}", schema.quoted(), quote_identifier_unchecked(table)),
+        None => quote_identifier_unchecked(table),
+    }
+}
+
 fn prepare_correction_rows(
     client: &mut Client,
     request: &DestinationCorrectionCommitRequest,
@@ -698,12 +692,14 @@ fn prepare_correction_rows(
     }
 
     let address_sql = format!(
-        "SELECT {} FROM {} WHERE {} = $1 AND {} = $2 AND {} = $3 FOR UPDATE",
+        "SELECT \"target\".{}, \"target\".{} FROM {} AS \"target\" JOIN {} AS \"segment\" ON \"target\".{} >= \"segment\".\"row_key_start\" AND \"target\".{} < \"segment\".\"row_key_end\" WHERE \"segment\".\"target\" = $1 AND \"segment\".\"package_hash\" = $2 AND \"segment\".\"segment_id\" = $3 AND \"target\".{} = \"segment\".\"row_key_start\" + $4 FOR UPDATE OF \"target\"",
+        quote_identifier_unchecked(CDF_ROW_KEY_COLUMN),
         quote_identifier_unchecked("_cdf_variant"),
         plan.target.sql(),
-        quote_identifier_unchecked(CDF_LOAD_COLUMN),
-        quote_identifier_unchecked(CDF_SEGMENT_COLUMN),
-        quote_identifier_unchecked(CDF_ROW_COLUMN)
+        target_system_table(&plan.target, CDF_SEGMENTS_TABLE),
+        quote_identifier_unchecked(CDF_ROW_KEY_COLUMN),
+        quote_identifier_unchecked(CDF_ROW_KEY_COLUMN),
+        quote_identifier_unchecked(CDF_ROW_KEY_COLUMN)
     );
     let mut prepared = Vec::with_capacity(request.corrections.len());
     for (address, mut operations) in operations_by_address {
@@ -713,6 +709,7 @@ fn prepare_correction_rows(
             .query(
                 &address_sql,
                 &[
+                    &plan.target.display_name(),
                     &address.original_package_hash.as_str(),
                     &address.original_segment_id.as_str(),
                     &row_ordinal,
@@ -730,7 +727,8 @@ fn prepare_correction_rows(
                 rows.len()
             )));
         }
-        let residual: Option<String> = rows[0].get(0);
+        let row_key: i64 = rows[0].get(0);
+        let residual: Option<String> = rows[0].get(1);
         let mut residual = residual.ok_or_else(|| {
             CdfError::destination(format!(
                 "Postgres correction address ({}, {}, {}) has no _cdf_variant residual",
@@ -764,9 +762,7 @@ fn prepare_correction_rows(
             let value = cdf_contract::decode_destination_correction_value(operation)?;
             let promoted_value = correction_cell_text(value.as_ref(), value.data_type(), 0)?;
             prepared.push(PreparedCorrectionRow {
-                load: address.original_package_hash.as_str().to_owned(),
-                segment: address.original_segment_id.as_str().to_owned(),
-                row: row_ordinal,
+                row_key,
                 promoted_path: operation.correction.request.promoted_path.clone(),
                 promoted_value,
                 residual_after: residual_after.clone(),
@@ -782,20 +778,16 @@ fn insert_correction_stage_rows(
     rows: &[PreparedCorrectionRow],
 ) -> Result<()> {
     let sql = format!(
-        "INSERT INTO {} ({}, {}, {}, \"promoted_path\", \"promoted_value\", \"residual_after\") VALUES ($1, $2, $3, $4, $5, $6)",
+        "INSERT INTO {} ({}, \"promoted_path\", \"promoted_value\", \"residual_after\") VALUES ($1, $2, $3, $4)",
         plan.stage_table.quoted(),
-        quote_identifier_unchecked(CDF_LOAD_COLUMN),
-        quote_identifier_unchecked(CDF_SEGMENT_COLUMN),
-        quote_identifier_unchecked(CDF_ROW_COLUMN)
+        quote_identifier_unchecked(CDF_ROW_KEY_COLUMN)
     );
     for row in rows {
         client
             .execute(
                 &sql,
                 &[
-                    &row.load,
-                    &row.segment,
-                    &row.row,
+                    &row.row_key,
                     &row.promoted_path,
                     &row.promoted_value,
                     &row.residual_after,
