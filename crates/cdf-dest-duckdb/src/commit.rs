@@ -31,6 +31,60 @@ pub(crate) fn append_arrow_batch_to_table(
         .map_err(|error| duckdb_error(format!("flush appender for {}", target.sql_name()), error))
 }
 
+pub(crate) struct IngressSegmentTransfer<'a> {
+    pub ingress: &'a TargetRef,
+    pub target: &'a TargetRef,
+    pub persisted_fields: &'a [FieldPlan],
+    pub user_field_count: usize,
+    pub package_hash: &'a cdf_kernel::PackageHash,
+    pub segment_id: &'a cdf_kernel::SegmentId,
+    pub include_stage_order: bool,
+}
+
+pub(crate) fn transfer_ingress_segment(
+    conn: &Connection,
+    transfer: IngressSegmentTransfer<'_>,
+) -> Result<()> {
+    if transfer.user_field_count + 3 != transfer.persisted_fields.len() {
+        return Err(CdfError::internal(
+            "DuckDB persistence schema does not contain three provenance fields",
+        ));
+    }
+    let user_columns = transfer.persisted_fields[..transfer.user_field_count]
+        .iter()
+        .map(|field| quote_ident(&field.name))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let mut target_columns = transfer
+        .persisted_fields
+        .iter()
+        .map(|field| quote_ident(&field.name))
+        .collect::<Vec<_>>();
+    let mut selected = if user_columns.is_empty() {
+        Vec::new()
+    } else {
+        vec![user_columns]
+    };
+    selected.extend(["?".to_owned(), "?".to_owned(), quote_ident(CDF_ROW_COLUMN)]);
+    if transfer.include_stage_order {
+        target_columns.push(quote_ident(CDF_STAGE_ORDER_COLUMN));
+        selected.push(quote_ident(CDF_STAGE_ORDER_COLUMN));
+    }
+    conn.execute(
+        &format!(
+            "INSERT INTO {} ({}) SELECT {} FROM {}",
+            transfer.target.sql_name(),
+            target_columns.join(", "),
+            selected.join(", "),
+            transfer.ingress.sql_name(),
+        ),
+        params![transfer.package_hash.as_str(), transfer.segment_id.as_str()],
+    )
+    .map_err(|error| duckdb_error("transfer DuckDB Arrow ingress segment", error))?;
+    conn.execute_batch(&format!("DELETE FROM {}", transfer.ingress.sql_name()))
+        .map_err(|error| duckdb_error("clear DuckDB Arrow ingress segment", error))
+}
+
 pub(crate) fn apply_table_plan(
     conn: &Connection,
     plan: &TablePlan,

@@ -47,10 +47,14 @@ pub(crate) fn into_duckdb_batch(batch: RecordBatch) -> Result<DuckRecordBatch> {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
+    use std::{sync::Arc, time::Instant};
 
-    use arrow_array::{Int32Array, RecordBatch, StringArray};
-    use arrow_schema::{DataType, Field, Schema};
+    use arrow_array::{
+        Array, Float64Array, Int32Array, Int64Array, RecordBatch, StringArray,
+        TimestampMicrosecondArray,
+    };
+    use arrow_schema::{DataType, Field, Schema, TimeUnit};
+    use duckdb::{appender_params_from_iter, types::Value};
     use proptest::prelude::*;
 
     use super::*;
@@ -99,5 +103,207 @@ mod tests {
             prop_assert_eq!(imported.num_rows(), imported.column(0).len());
             prop_assert_eq!(imported.column(0).null_count(), expected_nulls);
         }
+    }
+
+    fn tlc_batch(rows: usize) -> RecordBatch {
+        let mut fields = vec![
+            Field::new("vendor_id", DataType::Int32, false),
+            Field::new(
+                "tpep_pickup_datetime",
+                DataType::Timestamp(TimeUnit::Microsecond, None),
+                false,
+            ),
+            Field::new(
+                "tpep_dropoff_datetime",
+                DataType::Timestamp(TimeUnit::Microsecond, None),
+                false,
+            ),
+            Field::new("passenger_count", DataType::Int64, false),
+            Field::new("trip_distance", DataType::Float64, false),
+            Field::new("ratecode_id", DataType::Int64, false),
+            Field::new("store_and_fwd_flag", DataType::Utf8, false),
+            Field::new("pu_location_id", DataType::Int32, false),
+            Field::new("do_location_id", DataType::Int32, false),
+            Field::new("payment_type", DataType::Int64, false),
+        ];
+        fields.extend(
+            [
+                "fare_amount",
+                "extra",
+                "mta_tax",
+                "tip_amount",
+                "tolls_amount",
+                "improvement_surcharge",
+                "total_amount",
+                "congestion_surcharge",
+                "airport_fee",
+            ]
+            .map(|name| Field::new(name, DataType::Float64, false)),
+        );
+        let int32 = || {
+            Arc::new(Int32Array::from_iter_values(
+                (0..rows).map(|row| (row % 265) as i32),
+            )) as Arc<dyn Array>
+        };
+        let int64 = || {
+            Arc::new(Int64Array::from_iter_values(
+                (0..rows).map(|row| (row % 8) as i64),
+            )) as Arc<dyn Array>
+        };
+        let float64 = || {
+            Arc::new(Float64Array::from_iter_values(
+                (0..rows).map(|row| (row % 10_000) as f64 / 100.0),
+            )) as Arc<dyn Array>
+        };
+        let timestamp = || {
+            Arc::new(TimestampMicrosecondArray::from_iter_values(
+                (0..rows).map(|row| 1_704_067_200_000_000_i64 + row as i64),
+            )) as Arc<dyn Array>
+        };
+        let mut columns = vec![
+            int32(),
+            timestamp(),
+            timestamp(),
+            int64(),
+            float64(),
+            int64(),
+            Arc::new(StringArray::from_iter_values(std::iter::repeat_n(
+                "N", rows,
+            ))) as Arc<dyn Array>,
+            int32(),
+            int32(),
+            int64(),
+        ];
+        columns.extend((0..9).map(|_| float64()));
+        RecordBatch::try_new(Arc::new(Schema::new(fields)), columns).unwrap()
+    }
+
+    #[test]
+    #[ignore = "performance lab benchmark; run explicitly in release mode"]
+    fn arrow_appender_tlc_envelope_benchmark() {
+        const BATCH_ROWS: usize = 65_536;
+        const BATCHES: usize = 16;
+        const SCALAR_ROWS: usize = 65_536;
+        let batch = tlc_batch(BATCH_ROWS);
+        let user_fields = batch
+            .schema()
+            .fields()
+            .iter()
+            .map(|field| crate::package::field_plan(field).unwrap())
+            .collect::<Vec<_>>();
+        let persisted_fields = crate::package::persistence_fields(&user_fields);
+        let package_hash =
+            cdf_kernel::PackageHash::new(format!("sha256:{}", "a".repeat(64))).unwrap();
+        let segment_id = cdf_kernel::SegmentId::new("segment-000001").unwrap();
+
+        let vector_conn = Connection::open_in_memory().unwrap();
+        vector_conn
+            .execute_batch(&format!(
+                "CREATE TABLE target ({}); CREATE TEMP TABLE ingress ({}, {} UBIGINT NOT NULL)",
+                crate::table::create_target_columns_sql(&persisted_fields),
+                crate::table::create_columns_sql(&user_fields),
+                crate::sql::quote_ident(CDF_ROW_COLUMN),
+            ))
+            .unwrap();
+        let target = crate::api::TargetRef {
+            schema: MAIN_SCHEMA.to_owned(),
+            table: "target".to_owned(),
+        };
+        let ingress = crate::api::TargetRef {
+            schema: MAIN_SCHEMA.to_owned(),
+            table: "ingress".to_owned(),
+        };
+        let started = Instant::now();
+        for ordinal in 0..BATCHES {
+            let persisted =
+                crate::package::ingress_batch(batch.clone(), (ordinal * BATCH_ROWS) as u64, None)
+                    .unwrap();
+            crate::commit::append_arrow_batch_to_table(&vector_conn, &ingress, persisted).unwrap();
+        }
+        crate::commit::transfer_ingress_segment(
+            &vector_conn,
+            crate::commit::IngressSegmentTransfer {
+                ingress: &ingress,
+                target: &target,
+                persisted_fields: &persisted_fields,
+                user_field_count: user_fields.len(),
+                package_hash: &package_hash,
+                segment_id: &segment_id,
+                include_stage_order: false,
+            },
+        )
+        .unwrap();
+        let vector_elapsed = started.elapsed();
+        let vector_rows = (BATCH_ROWS * BATCHES) as f64;
+        let vector_rows_per_second = vector_rows / vector_elapsed.as_secs_f64();
+
+        let scalar_conn = Connection::open_in_memory().unwrap();
+        scalar_conn
+            .execute_batch(&format!(
+                "CREATE TABLE target ({})",
+                crate::table::create_target_columns_sql(&persisted_fields)
+            ))
+            .unwrap();
+        let names = persisted_fields
+            .iter()
+            .map(|field| field.name.as_str())
+            .collect::<Vec<_>>();
+        let mut appender = scalar_conn.appender_with_columns("target", &names).unwrap();
+        let schema = batch.schema();
+        let started = Instant::now();
+        let materialized = (0..SCALAR_ROWS)
+            .map(|row| {
+                batch
+                    .columns()
+                    .iter()
+                    .zip(schema.fields())
+                    .map(|(array, field)| {
+                        crate::rows::cell_value(array.as_ref(), field.data_type(), row).unwrap()
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .collect::<Vec<_>>();
+        let persisted = materialized
+            .into_iter()
+            .enumerate()
+            .map(|(row, values)| {
+                let mut values = values.clone();
+                values.extend([
+                    crate::api::CellValue {
+                        value: Value::Text(package_hash.to_string()),
+                        key: crate::api::CellKey::Text(package_hash.to_string()),
+                    },
+                    crate::api::CellValue {
+                        value: Value::Text(segment_id.to_string()),
+                        key: crate::api::CellKey::Text(segment_id.to_string()),
+                    },
+                    crate::api::CellValue {
+                        value: Value::UBigInt(row as u64),
+                        key: crate::api::CellKey::U64(row as u64),
+                    },
+                ]);
+                values
+            })
+            .collect::<Vec<_>>();
+        for row in persisted {
+            let values = row
+                .iter()
+                .map(|cell| cell.value.clone())
+                .collect::<Vec<_>>();
+            appender
+                .append_row(appender_params_from_iter(values))
+                .unwrap();
+        }
+        appender.flush().unwrap();
+        let scalar_elapsed = started.elapsed();
+        let scalar_rows_per_second = SCALAR_ROWS as f64 / scalar_elapsed.as_secs_f64();
+        let speedup = vector_rows_per_second / scalar_rows_per_second;
+        eprintln!(
+            "duckdb_tlc_arrow rows_per_second={vector_rows_per_second:.0} scalar_rows_per_second={scalar_rows_per_second:.0} speedup={speedup:.2}x"
+        );
+        assert!(
+            vector_rows_per_second >= 1_000_000.0,
+            "Arrow appender produced only {vector_rows_per_second:.0} rows/s"
+        );
     }
 }

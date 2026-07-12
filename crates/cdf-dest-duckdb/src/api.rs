@@ -72,6 +72,7 @@ struct DuckDbArrowWriter {
     _lock: WriterLock,
     target: TargetRef,
     write_target: TargetRef,
+    ingress_target: TargetRef,
     persisted_fields: Vec<FieldPlan>,
     user_field_count: usize,
     rows_received: u64,
@@ -651,11 +652,35 @@ impl DuckDbCommitSession<'_> {
         } else {
             table_plan.target.clone()
         };
+        let ingress_target = TargetRef {
+            schema: MAIN_SCHEMA.to_owned(),
+            table: staging_table_name(),
+        };
+        let mut ingress_fields = user_fields.clone();
+        ingress_fields.push(FieldPlan {
+            name: CDF_ROW_COLUMN.to_owned(),
+            sql_type: "UBIGINT".to_owned(),
+            nullable: false,
+        });
+        if self.request.commit.disposition == WriteDisposition::Merge {
+            ingress_fields.push(FieldPlan {
+                name: CDF_STAGE_ORDER_COLUMN.to_owned(),
+                sql_type: "UBIGINT".to_owned(),
+                nullable: false,
+            });
+        }
+        conn.execute_batch(&format!(
+            "CREATE TEMP TABLE {} ({})",
+            ingress_target.sql_name(),
+            create_columns_sql(&ingress_fields)
+        ))
+        .map_err(|error| duckdb_error("create DuckDB Arrow ingress table", error))?;
         self.writer = Some(DuckDbArrowWriter {
             conn,
             _lock: lock,
             target: table_plan.target,
             write_target,
+            ingress_target,
             persisted_fields,
             user_field_count: user_fields.len(),
             rows_received: 0,
@@ -822,14 +847,8 @@ impl CommitSession for DuckDbCommitSession<'_> {
                     .map_err(|_| CdfError::data("DuckDB batch row count exceeds u64"))?;
                 let stage_start = (self.request.commit.disposition == WriteDisposition::Merge)
                     .then_some(writer.rows_received);
-                let batch = persistence_batch(
-                    commit_batch.batch,
-                    &self.request.commit.package_hash,
-                    &segment_id,
-                    segment_row_start,
-                    stage_start,
-                )?;
-                append_arrow_batch_to_table(&writer.conn, &writer.write_target, batch)?;
+                let batch = ingress_batch(commit_batch.batch, segment_row_start, stage_start)?;
+                append_arrow_batch_to_table(&writer.conn, &writer.ingress_target, batch)?;
                 segment_row_start = segment_row_start
                     .checked_add(batch_rows)
                     .ok_or_else(|| CdfError::data("DuckDB segment row count overflowed"))?;
@@ -838,6 +857,18 @@ impl CommitSession for DuckDbCommitSession<'_> {
                     .checked_add(batch_rows)
                     .ok_or_else(|| CdfError::data("DuckDB package row count overflowed"))?;
             }
+            transfer_ingress_segment(
+                &writer.conn,
+                IngressSegmentTransfer {
+                    ingress: &writer.ingress_target,
+                    target: &writer.write_target,
+                    persisted_fields: &writer.persisted_fields,
+                    user_field_count: writer.user_field_count,
+                    package_hash: &self.request.commit.package_hash,
+                    segment_id: &segment_id,
+                    include_stage_order: self.request.commit.disposition == WriteDisposition::Merge,
+                },
+            )?;
         }
         self.accepted_segments.insert(segment_id);
         self.next_expected += 1;

@@ -19,5 +19,5 @@ serde_json = "1.0.150"
 
 [dev-dependencies]
 cdf-conformance = { path = "../cdf-conformance" }
-proptest = "1.9.0"
+proptest = "1.11.0"
 tempfile = "3.27.0"

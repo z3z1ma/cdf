@@ -23,10 +23,8 @@ pub(crate) fn persistence_fields(user_fields: &[FieldPlan]) -> Vec<FieldPlan> {
     fields
 }
 
-pub(crate) fn persistence_batch(
+pub(crate) fn ingress_batch(
     batch: RecordBatch,
-    package_hash: &cdf_kernel::PackageHash,
-    segment_id: &cdf_kernel::SegmentId,
     segment_row_start: u64,
     stage_row_start: Option<u64>,
 ) -> Result<RecordBatch> {
@@ -36,25 +34,15 @@ pub(crate) fn persistence_batch(
         .checked_add(row_count)
         .ok_or_else(|| CdfError::data("DuckDB segment row ordinal overflowed"))?;
     let mut fields = batch.schema().fields().to_vec();
-    fields.extend([
-        Arc::new(Field::new(CDF_LOAD_COLUMN, DataType::Utf8, false)),
-        Arc::new(Field::new(CDF_SEGMENT_COLUMN, DataType::Utf8, false)),
-        Arc::new(Field::new(CDF_ROW_COLUMN, DataType::UInt64, false)),
-    ]);
+    fields.push(Arc::new(Field::new(
+        CDF_ROW_COLUMN,
+        DataType::UInt64,
+        false,
+    )));
     let mut columns = batch.columns().to_vec();
-    columns.extend([
-        Arc::new(StringArray::from_iter_values(std::iter::repeat_n(
-            package_hash.as_str(),
-            batch.num_rows(),
-        ))) as Arc<dyn Array>,
-        Arc::new(StringArray::from_iter_values(std::iter::repeat_n(
-            segment_id.as_str(),
-            batch.num_rows(),
-        ))),
-        Arc::new(UInt64Array::from_iter_values(
-            segment_row_start..segment_row_end,
-        )),
-    ]);
+    columns.push(Arc::new(UInt64Array::from_iter_values(
+        segment_row_start..segment_row_end,
+    )));
     if let Some(stage_row_start) = stage_row_start {
         let stage_row_end = stage_row_start
             .checked_add(row_count)
