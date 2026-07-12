@@ -6,7 +6,6 @@ use arrow_array::{
     TimestampMillisecondArray, TimestampNanosecondArray, TimestampSecondArray, UInt8Array,
     UInt16Array, UInt32Array, UInt64Array,
 };
-use arrow_row::{RowConverter, SortField};
 use arrow_schema::{DataType, TimeUnit};
 use cdf_kernel::{CdfError, Result, SourcePosition, source_name};
 use regex::Regex;
@@ -153,22 +152,8 @@ pub fn encode_package_dedup_keys(
     rule: &PackageDedupRuleSpec,
     batch: &RecordBatch,
 ) -> Result<Vec<Vec<u8>>> {
-    let arrays = crate::dedup_key::canonicalize_map_order(dedup_arrays(
-        program,
-        batch,
-        &rule.rule_id,
-        &rule.keys,
-    )?)?;
-    let converter = RowConverter::new(
-        arrays
-            .iter()
-            .map(|array| SortField::new(array.data_type().clone()))
-            .collect(),
-    )?;
-    let rows = converter.convert_columns(&arrays)?;
-    Ok((0..batch.num_rows())
-        .map(|row| rows.row(row).as_ref().to_vec())
-        .collect())
+    let arrays = dedup_arrays(program, batch, &rule.rule_id, &rule.keys)?;
+    crate::dedup_key::encode_typed_rows(arrays, batch.num_rows())
 }
 
 pub fn evaluate_record_batch(

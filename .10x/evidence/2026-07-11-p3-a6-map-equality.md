@@ -21,6 +21,7 @@ Canonicalization traverses list, large-list, fixed-size-list, list-view, large-l
 6. Ran `cargo clippy -p cdf-contract --all-targets -- -D warnings`: passed.
 7. Added dense-union and dictionary slice normalization: only selected union children and referenced dictionary values are recursively canonicalized. Fixtures prove invalid map data in unselected children/values cannot reject a selected row.
 8. Ran the full `cdf-contract` suite: 76 passed, zero failed.
+9. Refactored the production entry point through one `encode_typed_rows` authority and froze a scalar matrix against byte-for-byte pinned Arrow RowConverter output: booleans; every signed/unsigned integer width; float16/32/64; date, time, timestamp with timezone, duration; decimal128; UTF-8/binary small/large/view; and fixed-size binary. Identical rows match and the differing row does not.
 
 ## What this supports or challenges
 
@@ -28,4 +29,4 @@ This closes the known top-level/nested map order gap in the typed dedup key path
 
 ## Limits
 
-The generated complete-Arrow golden matrix and the 100 GB RSS stress remain before A6 closure. Sparse unions are normalized row-wise; their inactive child slots are expected Arrow null slots and remain covered by the full type matrix rather than this focused map fixture.
+The 100 GB RSS stress remains before A6 closure. Sparse unions are normalized row-wise; their inactive child slots are expected Arrow null slots and remain covered by the nested type path rather than this focused map fixture.

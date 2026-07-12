@@ -27,6 +27,21 @@ pub(crate) fn canonicalize_map_order(arrays: Vec<ArrayRef>) -> Result<Vec<ArrayR
         .collect()
 }
 
+pub(crate) fn encode_typed_rows(arrays: Vec<ArrayRef>, row_count: usize) -> Result<Vec<Vec<u8>>> {
+    let arrays = canonicalize_map_order(arrays)?;
+    let converter = RowConverter::new(
+        arrays
+            .iter()
+            .map(|array| SortField::new(array.data_type().clone()))
+            .collect(),
+    )
+    .map_err(CdfError::from)?;
+    let rows = converter.convert_columns(&arrays).map_err(CdfError::from)?;
+    Ok((0..row_count)
+        .map(|row| rows.row(row).as_ref().to_vec())
+        .collect())
+}
+
 fn contains_map(data_type: &DataType) -> bool {
     match data_type {
         DataType::Map(_, _) => true,
@@ -433,7 +448,13 @@ fn canonicalize_map(array: ArrayRef) -> Result<ArrayRef> {
 
 #[cfg(test)]
 mod tests {
-    use arrow_array::{Int8Array, Int32Array, StringArray};
+    use arrow_array::{
+        BinaryArray, BinaryViewArray, BooleanArray, Date32Array, Decimal128Array,
+        DurationMicrosecondArray, FixedSizeBinaryArray, Float16Array, Float32Array, Float64Array,
+        Int8Array, Int16Array, Int32Array, Int64Array, LargeBinaryArray, LargeStringArray,
+        StringArray, StringViewArray, Time64NanosecondArray, TimestampMicrosecondArray, UInt8Array,
+        UInt16Array, UInt32Array, UInt64Array,
+    };
     use arrow_schema::{Field, UnionFields};
 
     use super::*;
@@ -551,5 +572,65 @@ mod tests {
         .unwrap();
         let canonical = canonicalize_map_order(vec![Arc::new(union) as ArrayRef]).unwrap();
         assert_eq!(canonical[0].len(), 1);
+    }
+
+    #[test]
+    fn scalar_vocabulary_matches_pinned_arrow_row_bytes() {
+        let fixed = FixedSizeBinaryArray::try_from_iter(
+            [b"aa".as_slice(), b"aa".as_slice(), b"bb".as_slice()].into_iter(),
+        )
+        .unwrap();
+        let decimal = Decimal128Array::from(vec![11_i128, 11, 12])
+            .with_precision_and_scale(18, 2)
+            .unwrap();
+        let arrays = vec![
+            Arc::new(BooleanArray::from(vec![true, true, false])) as ArrayRef,
+            Arc::new(Int8Array::from(vec![1, 1, 2])),
+            Arc::new(Int16Array::from(vec![1, 1, 2])),
+            Arc::new(Int32Array::from(vec![1, 1, 2])),
+            Arc::new(Int64Array::from(vec![1, 1, 2])),
+            Arc::new(UInt8Array::from(vec![1, 1, 2])),
+            Arc::new(UInt16Array::from(vec![1, 1, 2])),
+            Arc::new(UInt32Array::from(vec![1, 1, 2])),
+            Arc::new(UInt64Array::from(vec![1, 1, 2])),
+            Arc::new(Float16Array::from(vec![
+                half::f16::from_f32(1.5),
+                half::f16::from_f32(1.5),
+                half::f16::from_f32(2.5),
+            ])),
+            Arc::new(Float32Array::from(vec![1.5, 1.5, 2.5])),
+            Arc::new(Float64Array::from(vec![1.5, 1.5, 2.5])),
+            Arc::new(Date32Array::from(vec![1, 1, 2])),
+            Arc::new(Time64NanosecondArray::from(vec![1, 1, 2])),
+            Arc::new(DurationMicrosecondArray::from(vec![1, 1, 2])),
+            Arc::new(TimestampMicrosecondArray::from(vec![1, 1, 2]).with_timezone("UTC")),
+            Arc::new(decimal),
+            Arc::new(StringArray::from(vec!["a", "a", "b"])),
+            Arc::new(LargeStringArray::from(vec!["a", "a", "b"])),
+            Arc::new(StringViewArray::from(vec!["a", "a", "b"])),
+            Arc::new(BinaryArray::from_vec(vec![b"a", b"a", b"b"])),
+            Arc::new(LargeBinaryArray::from_vec(vec![b"a", b"a", b"b"])),
+            Arc::new(BinaryViewArray::from_iter_values([
+                b"a".as_slice(),
+                b"a".as_slice(),
+                b"b".as_slice(),
+            ])),
+            Arc::new(fixed),
+        ];
+        let reference = RowConverter::new(
+            arrays
+                .iter()
+                .map(|array| SortField::new(array.data_type().clone()))
+                .collect(),
+        )
+        .unwrap()
+        .convert_columns(&arrays)
+        .unwrap();
+        let encoded = encode_typed_rows(arrays, 3).unwrap();
+        assert_eq!(encoded[0], reference.row(0).as_ref());
+        assert_eq!(encoded[1], reference.row(1).as_ref());
+        assert_eq!(encoded[2], reference.row(2).as_ref());
+        assert_eq!(encoded[0], encoded[1]);
+        assert_ne!(encoded[1], encoded[2]);
     }
 }
