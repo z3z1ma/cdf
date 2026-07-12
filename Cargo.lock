@@ -1275,6 +1275,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "cdf-transform-lz4"
+version = "0.1.0"
+dependencies = [
+ "bytes",
+ "cdf-kernel",
+ "cdf-memory",
+ "cdf-runtime",
+ "futures-executor",
+ "futures-util",
+ "lz4_flex",
+ "twox-hash",
+]
+
+[[package]]
 name = "cdf-transform-snappy"
 version = "0.1.0"
 dependencies = [

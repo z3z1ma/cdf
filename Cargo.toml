@@ -12,6 +12,7 @@ members = [
     "crates/cdf-format-parquet",
     "crates/cdf-format-arrow-ipc",
     "crates/cdf-transform-gzip",
+    "crates/cdf-transform-lz4",
     "crates/cdf-transform-zstd",
     "crates/cdf-transform-snappy",
     "crates/cdf-postgres",
