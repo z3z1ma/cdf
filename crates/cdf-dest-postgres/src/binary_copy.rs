@@ -1,4 +1,4 @@
-use std::io::Write;
+use std::io::{BufWriter, Write};
 
 use arrow_array::{
     Array, BinaryArray, BooleanArray, Date32Array, Decimal128Array, Decimal256Array, Float32Array,
@@ -11,20 +11,106 @@ use arrow_schema::{DataType, TimeUnit};
 use crate::{commit::io_error, *};
 
 const HEADER: &[u8] = b"PGCOPY\n\xFF\r\n\0";
+pub(crate) const BINARY_COPY_BUFFER_BYTES: usize = 1024 * 1024;
 const POSTGRES_EPOCH_DAYS: i32 = 10_957;
 const POSTGRES_EPOCH_MICROS: i64 = 946_684_800_000_000;
 
-pub(crate) struct BinaryCopyEncoder<W> {
-    writer: W,
+enum BinaryColumn<'a> {
+    Boolean(&'a BooleanArray),
+    Int8(&'a Int8Array),
+    Int16(&'a Int16Array),
+    Int32(&'a Int32Array),
+    Int64(&'a Int64Array),
+    UInt8(&'a UInt8Array),
+    UInt16(&'a UInt16Array),
+    UInt32(&'a UInt32Array),
+    UInt64(&'a UInt64Array),
+    Decimal128(&'a Decimal128Array),
+    Decimal256(&'a Decimal256Array),
+    Float32(&'a Float32Array),
+    Float64(&'a Float64Array),
+    Utf8(&'a StringArray),
+    LargeUtf8(&'a LargeStringArray),
+    Binary(&'a BinaryArray),
+    LargeBinary(&'a LargeBinaryArray),
+    Date32(&'a Date32Array),
+    Time64Microsecond(&'a Time64MicrosecondArray),
+    TimestampMicrosecond(&'a TimestampMicrosecondArray),
+}
+
+impl<'a> BinaryColumn<'a> {
+    fn new(array: &'a dyn Array, data_type: &DataType) -> Result<Self> {
+        Ok(match data_type {
+            DataType::Boolean => Self::Boolean(typed(array, data_type)?),
+            DataType::Int8 => Self::Int8(typed(array, data_type)?),
+            DataType::Int16 => Self::Int16(typed(array, data_type)?),
+            DataType::Int32 => Self::Int32(typed(array, data_type)?),
+            DataType::Int64 => Self::Int64(typed(array, data_type)?),
+            DataType::UInt8 => Self::UInt8(typed(array, data_type)?),
+            DataType::UInt16 => Self::UInt16(typed(array, data_type)?),
+            DataType::UInt32 => Self::UInt32(typed(array, data_type)?),
+            DataType::UInt64 => Self::UInt64(typed(array, data_type)?),
+            DataType::Decimal128(_, _) => Self::Decimal128(typed(array, data_type)?),
+            DataType::Decimal256(_, _) => Self::Decimal256(typed(array, data_type)?),
+            DataType::Float32 => Self::Float32(typed(array, data_type)?),
+            DataType::Float64 => Self::Float64(typed(array, data_type)?),
+            DataType::Utf8 => Self::Utf8(typed(array, data_type)?),
+            DataType::LargeUtf8 => Self::LargeUtf8(typed(array, data_type)?),
+            DataType::Binary => Self::Binary(typed(array, data_type)?),
+            DataType::LargeBinary => Self::LargeBinary(typed(array, data_type)?),
+            DataType::Date32 => Self::Date32(typed(array, data_type)?),
+            DataType::Time64(TimeUnit::Microsecond) => {
+                Self::Time64Microsecond(typed(array, data_type)?)
+            }
+            DataType::Timestamp(TimeUnit::Microsecond, _) => {
+                Self::TimestampMicrosecond(typed(array, data_type)?)
+            }
+            other => {
+                return Err(CdfError::contract(format!(
+                    "Postgres binary COPY does not support Arrow type {other:?}"
+                )));
+            }
+        })
+    }
+
+    fn is_null(&self, row: usize) -> bool {
+        match self {
+            Self::Boolean(array) => array.is_null(row),
+            Self::Int8(array) => array.is_null(row),
+            Self::Int16(array) => array.is_null(row),
+            Self::Int32(array) => array.is_null(row),
+            Self::Int64(array) => array.is_null(row),
+            Self::UInt8(array) => array.is_null(row),
+            Self::UInt16(array) => array.is_null(row),
+            Self::UInt32(array) => array.is_null(row),
+            Self::UInt64(array) => array.is_null(row),
+            Self::Decimal128(array) => array.is_null(row),
+            Self::Decimal256(array) => array.is_null(row),
+            Self::Float32(array) => array.is_null(row),
+            Self::Float64(array) => array.is_null(row),
+            Self::Utf8(array) => array.is_null(row),
+            Self::LargeUtf8(array) => array.is_null(row),
+            Self::Binary(array) => array.is_null(row),
+            Self::LargeBinary(array) => array.is_null(row),
+            Self::Date32(array) => array.is_null(row),
+            Self::Time64Microsecond(array) => array.is_null(row),
+            Self::TimestampMicrosecond(array) => array.is_null(row),
+        }
+    }
+}
+
+pub(crate) struct BinaryCopyEncoder<W: Write> {
+    writer: BufWriter<W>,
     field_count: i16,
     scratch: Vec<u8>,
     rows: u64,
 }
 
 impl<W: Write> BinaryCopyEncoder<W> {
-    pub(crate) fn new(mut writer: W, user_fields: usize) -> Result<Self> {
+    pub(crate) fn new(writer: W, user_fields: usize) -> Result<Self> {
         let field_count = i16::try_from(user_fields.saturating_add(4))
             .map_err(|_| CdfError::contract("Postgres binary COPY field count exceeds i16"))?;
+        let mut writer = BufWriter::with_capacity(BINARY_COPY_BUFFER_BYTES, writer);
         writer
             .write_all(HEADER)
             .and_then(|_| writer.write_all(&0_i32.to_be_bytes()))
@@ -46,12 +132,18 @@ impl<W: Write> BinaryCopyEncoder<W> {
         load: &str,
         loaded_at_ms: i64,
     ) -> Result<()> {
+        let columns = batch
+            .columns()
+            .iter()
+            .zip(batch.schema().fields())
+            .map(|(array, field)| BinaryColumn::new(array.as_ref(), field.data_type()))
+            .collect::<Result<Vec<_>>>()?;
         for row in 0..batch.num_rows() {
             self.writer
                 .write_all(&self.field_count.to_be_bytes())
                 .map_err(|error| io_error("write Postgres binary COPY row header", error))?;
-            for (array, field) in batch.columns().iter().zip(batch.schema().fields()) {
-                self.write_arrow_field(array.as_ref(), field.data_type(), row)?;
+            for column in &columns {
+                self.write_arrow_field(column, row)?;
             }
             self.write_bytes(Some(load.as_bytes()))?;
             self.write_bytes(Some(segment_id.as_bytes()))?;
@@ -77,117 +169,84 @@ impl<W: Write> BinaryCopyEncoder<W> {
         self.writer
             .write_all(&(-1_i16).to_be_bytes())
             .map_err(|error| io_error("write Postgres binary COPY trailer", error))?;
-        Ok((self.writer, self.rows))
+        let writer = self.writer.into_inner().map_err(|error| {
+            io_error(
+                "flush Postgres binary COPY aggregate buffer",
+                error.into_error(),
+            )
+        })?;
+        Ok((writer, self.rows))
     }
 
-    fn write_arrow_field(
-        &mut self,
-        array: &dyn Array,
-        data_type: &DataType,
-        row: usize,
-    ) -> Result<()> {
-        if array.is_null(row) {
+    fn write_arrow_field(&mut self, column: &BinaryColumn<'_>, row: usize) -> Result<()> {
+        if column.is_null(row) {
             return self.write_bytes(None);
         }
         self.scratch.clear();
-        match data_type {
-            DataType::Boolean => self.scratch.push(u8::from(
-                typed::<BooleanArray>(array, data_type)?.value(row),
-            )),
-            DataType::Int8 => self.scratch.extend_from_slice(
-                &i16::from(typed::<Int8Array>(array, data_type)?.value(row)).to_be_bytes(),
-            ),
-            DataType::Int16 => self.scratch.extend_from_slice(
-                &typed::<Int16Array>(array, data_type)?
-                    .value(row)
-                    .to_be_bytes(),
-            ),
-            DataType::Int32 => self.scratch.extend_from_slice(
-                &typed::<Int32Array>(array, data_type)?
-                    .value(row)
-                    .to_be_bytes(),
-            ),
-            DataType::Int64 => self.scratch.extend_from_slice(
-                &typed::<Int64Array>(array, data_type)?
-                    .value(row)
-                    .to_be_bytes(),
-            ),
-            DataType::UInt8 => self.scratch.extend_from_slice(
-                &i16::from(typed::<UInt8Array>(array, data_type)?.value(row)).to_be_bytes(),
-            ),
-            DataType::UInt16 => self.scratch.extend_from_slice(
-                &i32::from(typed::<UInt16Array>(array, data_type)?.value(row)).to_be_bytes(),
-            ),
-            DataType::UInt32 => self.scratch.extend_from_slice(
-                &i64::from(typed::<UInt32Array>(array, data_type)?.value(row)).to_be_bytes(),
-            ),
-            DataType::UInt64 => encode_numeric_text(
-                &typed::<UInt64Array>(array, data_type)?
-                    .value(row)
-                    .to_string(),
-                &mut self.scratch,
-            )?,
-            DataType::Decimal128(_, _) => encode_numeric_text(
-                &typed::<Decimal128Array>(array, data_type)?.value_as_string(row),
-                &mut self.scratch,
-            )?,
-            DataType::Decimal256(_, _) => encode_numeric_text(
-                &typed::<Decimal256Array>(array, data_type)?.value_as_string(row),
-                &mut self.scratch,
-            )?,
-            DataType::Float32 => self.scratch.extend_from_slice(
-                &typed::<Float32Array>(array, data_type)?
-                    .value(row)
-                    .to_bits()
-                    .to_be_bytes(),
-            ),
-            DataType::Float64 => self.scratch.extend_from_slice(
-                &typed::<Float64Array>(array, data_type)?
-                    .value(row)
-                    .to_bits()
-                    .to_be_bytes(),
-            ),
-            DataType::Utf8 => self.scratch.extend_from_slice(
-                typed::<StringArray>(array, data_type)?
-                    .value(row)
-                    .as_bytes(),
-            ),
-            DataType::LargeUtf8 => self.scratch.extend_from_slice(
-                typed::<LargeStringArray>(array, data_type)?
-                    .value(row)
-                    .as_bytes(),
-            ),
-            DataType::Binary => self
+        match column {
+            BinaryColumn::Boolean(array) => self.scratch.push(u8::from(array.value(row))),
+            BinaryColumn::Int8(array) => self
                 .scratch
-                .extend_from_slice(typed::<BinaryArray>(array, data_type)?.value(row)),
-            DataType::LargeBinary => self
+                .extend_from_slice(&i16::from(array.value(row)).to_be_bytes()),
+            BinaryColumn::Int16(array) => self
                 .scratch
-                .extend_from_slice(typed::<LargeBinaryArray>(array, data_type)?.value(row)),
-            DataType::Date32 => {
-                let days = typed::<Date32Array>(array, data_type)?
+                .extend_from_slice(&array.value(row).to_be_bytes()),
+            BinaryColumn::Int32(array) => self
+                .scratch
+                .extend_from_slice(&array.value(row).to_be_bytes()),
+            BinaryColumn::Int64(array) => self
+                .scratch
+                .extend_from_slice(&array.value(row).to_be_bytes()),
+            BinaryColumn::UInt8(array) => self
+                .scratch
+                .extend_from_slice(&i16::from(array.value(row)).to_be_bytes()),
+            BinaryColumn::UInt16(array) => self
+                .scratch
+                .extend_from_slice(&i32::from(array.value(row)).to_be_bytes()),
+            BinaryColumn::UInt32(array) => self
+                .scratch
+                .extend_from_slice(&i64::from(array.value(row)).to_be_bytes()),
+            BinaryColumn::UInt64(array) => {
+                encode_numeric_text(&array.value(row).to_string(), &mut self.scratch)?;
+            }
+            BinaryColumn::Decimal128(array) => {
+                encode_numeric_text(&array.value_as_string(row), &mut self.scratch)?;
+            }
+            BinaryColumn::Decimal256(array) => {
+                encode_numeric_text(&array.value_as_string(row), &mut self.scratch)?;
+            }
+            BinaryColumn::Float32(array) => self
+                .scratch
+                .extend_from_slice(&array.value(row).to_bits().to_be_bytes()),
+            BinaryColumn::Float64(array) => self
+                .scratch
+                .extend_from_slice(&array.value(row).to_bits().to_be_bytes()),
+            BinaryColumn::Utf8(array) => {
+                self.scratch.extend_from_slice(array.value(row).as_bytes())
+            }
+            BinaryColumn::LargeUtf8(array) => {
+                self.scratch.extend_from_slice(array.value(row).as_bytes());
+            }
+            BinaryColumn::Binary(array) => self.scratch.extend_from_slice(array.value(row)),
+            BinaryColumn::LargeBinary(array) => self.scratch.extend_from_slice(array.value(row)),
+            BinaryColumn::Date32(array) => {
+                let days = array
                     .value(row)
                     .checked_sub(POSTGRES_EPOCH_DAYS)
                     .ok_or_else(|| CdfError::data("Postgres DATE epoch conversion overflowed"))?;
                 self.scratch.extend_from_slice(&days.to_be_bytes());
             }
-            DataType::Time64(TimeUnit::Microsecond) => self.scratch.extend_from_slice(
-                &typed::<Time64MicrosecondArray>(array, data_type)?
-                    .value(row)
-                    .to_be_bytes(),
-            ),
-            DataType::Timestamp(TimeUnit::Microsecond, _) => {
-                let micros = typed::<TimestampMicrosecondArray>(array, data_type)?
+            BinaryColumn::Time64Microsecond(array) => self
+                .scratch
+                .extend_from_slice(&array.value(row).to_be_bytes()),
+            BinaryColumn::TimestampMicrosecond(array) => {
+                let micros = array
                     .value(row)
                     .checked_sub(POSTGRES_EPOCH_MICROS)
                     .ok_or_else(|| {
                         CdfError::data("Postgres timestamp epoch conversion overflowed")
                     })?;
                 self.scratch.extend_from_slice(&micros.to_be_bytes());
-            }
-            other => {
-                return Err(CdfError::contract(format!(
-                    "Postgres binary COPY does not support Arrow type {other:?}"
-                )));
             }
         }
         let bytes = std::mem::take(&mut self.scratch);

@@ -13,6 +13,8 @@ The original equal-work release comparison immediately before deletion measured 
 
 Thirty non-ignored crate tests passed, including live PostgreSQL append, replace, merge, deduplication, rollback after COPY, duplicate receipt verification, exact Decimal128 NUMERIC round trip, correction, catalog discovery, and source execution. Strict Clippy passed for all crate targets.
 
+A subsequent server-inclusive local PostgreSQL benchmark exposed 4 KiB `CopyInWriter` framing and per-cell Arrow downcasts. A bounded 1 MiB aggregate buffer, tied to the declared path minimum, raised the narrow-schema binary path from 3,170,238 to roughly 3.6M rows/s. Compiled typed column views remove repeated downcasts. The final TLC-shaped equal-work workload (17 user fields plus four provenance fields, 524,288 rows, unlogged tables, synchronous commit disabled equally) measured 1,662,005 binary rows/s versus 570,051 rows/s for the exact removed scalar CSV allocation/escaping shape: 2.92x. The narrow three-user-field shape remained PostgreSQL/wire-size bound near 2x because provenance dominates each row; it is retained as an observed limit rather than generalized away.
+
 ## Procedure
 
 From the repository root:
@@ -21,12 +23,13 @@ From the repository root:
 cargo test -p cdf-dest-postgres --all-targets
 cargo clippy -p cdf-dest-postgres --all-targets -- -D warnings
 cargo test --release -p cdf-dest-postgres binary_copy_encoder_is_at_least_twice_csv -- --ignored --nocapture
+cargo test --release -p cdf-dest-postgres live_binary_copy_is_at_least_twice_csv -- --ignored --nocapture
 ```
 
 ## What this supports or challenges
 
-This supports correctness of the implemented wire path for the exercised type/transaction matrix, constant-memory Arrow-batch input, removal of text ingestion, and at least 2x encode throughput versus an isolated scalar CSV control.
+This supports correctness of the implemented wire path for the exercised type/transaction matrix, constant-memory Arrow-batch input, removal of text ingestion, at least 2x encode throughput, and at least 2x server-inclusive local COPY throughput on a TLC-shaped schema versus the removed scalar CSV implementation.
 
 ## Limits
 
-The release comparison isolates encoding rather than a server-inclusive local COPY wall clock. It does not yet measure a remote network-bound profile, allocation counts, Decimal256 against a live PostgreSQL server, or the generic runtime's declared `postgres.sync` final-binding lane. Those remain D3/D1 integration acceptance work.
+The local server is loopback and does not establish a remote network-bound profile. Decimal256 is covered through the shared NUMERIC encoder logic but not yet against a live PostgreSQL server. Allocation counts and the generic runtime's declared `postgres.sync` final-binding lane remain D3/D1 integration acceptance work.

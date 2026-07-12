@@ -21,7 +21,8 @@ use cdf_runtime::{
 use crate::{
     MergeDedupPolicy, PostgresColumn, PostgresCommitRequest, PostgresCorrectionCommitRequest,
     PostgresCorrectionPlanInput, PostgresDestination, PostgresExistingTable, PostgresIdentifier,
-    PostgresLoadPlanInput, PostgresTarget, postgres_columns_for_schema,
+    PostgresLoadPlanInput, PostgresTarget, binary_copy::BINARY_COPY_BUFFER_BYTES,
+    postgres_columns_for_schema,
 };
 
 pub struct PostgresRuntimeDriver;
@@ -331,7 +332,7 @@ fn postgres_runtime_capabilities() -> DestinationRuntimeCapabilities {
                 maximum: 1024 * 1024,
             },
             bytes: cdf_runtime::BulkSizeRange {
-                minimum: 1024 * 1024,
+                minimum: BINARY_COPY_BUFFER_BYTES as u64,
                 preferred: 16 * 1024 * 1024,
                 maximum: 64 * 1024 * 1024,
             },

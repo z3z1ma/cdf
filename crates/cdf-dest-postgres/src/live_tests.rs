@@ -1,6 +1,7 @@
 use std::{
     collections::BTreeMap,
     env,
+    io::Write,
     net::TcpListener,
     path::{Path, PathBuf},
     process::Command,
@@ -8,6 +9,7 @@ use std::{
         Arc, Mutex,
         atomic::{AtomicU64, Ordering},
     },
+    time::Instant,
 };
 
 use arrow_array::{
@@ -37,6 +39,147 @@ use tempfile::TempDir;
 
 use super::*;
 use crate::{ddl::target_migrations, identifiers::quote_identifier_unchecked};
+
+#[test]
+#[ignore = "release-mode local PostgreSQL binary-vs-CSV COPY benchmark"]
+fn live_binary_copy_is_at_least_twice_csv() {
+    fn csv_field(value: Option<&str>) -> String {
+        let Some(value) = value else {
+            return "\\N".to_owned();
+        };
+        if value == "\\N" || value.contains([',', '"', '\n', '\r']) {
+            format!("\"{}\"", value.replace('"', "\"\""))
+        } else {
+            value.to_owned()
+        }
+    }
+
+    const ROWS: usize = 524_288;
+    let Some(postgres) = LivePostgres::start() else {
+        return;
+    };
+    let mut client = postgres.client();
+    let user_ddl = std::iter::once("name TEXT".to_owned())
+        .chain((0..8).map(|index| format!("integer_{index} BIGINT NOT NULL")))
+        .chain((0..8).map(|index| format!("float_{index} DOUBLE PRECISION NOT NULL")))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let table_ddl = |name: &str| {
+        format!(
+            "CREATE UNLOGGED TABLE {name} (
+               {user_ddl},
+               _cdf_load TEXT NOT NULL, _cdf_segment TEXT NOT NULL,
+               _cdf_row BIGINT NOT NULL, _cdf_loaded_at_ms BIGINT NOT NULL
+             )"
+        )
+    };
+    client
+        .batch_execute(&format!(
+            "SET synchronous_commit = off; {}; {};",
+            table_ddl("binary_copy_bench"),
+            table_ddl("csv_copy_bench")
+        ))
+        .unwrap();
+    let mut fields = vec![Field::new("name", DataType::Utf8, true)];
+    let mut arrays: Vec<ArrayRef> = vec![Arc::new(StringArray::from_iter(
+        (0..ROWS).map(|row| (row % 11 != 0).then_some("yellow-taxi")),
+    ))];
+    for index in 0..8 {
+        fields.push(Field::new(
+            format!("integer_{index}"),
+            DataType::Int64,
+            false,
+        ));
+        arrays.push(Arc::new(Int64Array::from_iter_values(
+            (0..ROWS).map(|row| row as i64 + i64::from(index)),
+        )));
+    }
+    for index in 0..8 {
+        fields.push(Field::new(
+            format!("float_{index}"),
+            DataType::Float64,
+            false,
+        ));
+        arrays.push(Arc::new(Float64Array::from_iter_values(
+            (0..ROWS).map(|row| row as f64 / 100.0 + f64::from(index)),
+        )));
+    }
+    let batch = RecordBatch::try_new(Arc::new(Schema::new(fields)), arrays).unwrap();
+
+    let started = Instant::now();
+    let writer = client
+        .copy_in("COPY binary_copy_bench FROM STDIN WITH (FORMAT binary)")
+        .unwrap();
+    let mut encoder =
+        crate::binary_copy::BinaryCopyEncoder::new(writer, batch.num_columns()).unwrap();
+    encoder
+        .write_batch(&batch, "seg-000001", 0, "sha256:package", 1_700_000_000_000)
+        .unwrap();
+    let (writer, encoded) = encoder.finish().unwrap();
+    let copied = writer.finish().unwrap();
+    let binary_elapsed = started.elapsed();
+    assert_eq!(encoded, ROWS as u64);
+    assert_eq!(copied, encoded);
+
+    let started = Instant::now();
+    let mut writer = client
+        .copy_in("COPY csv_copy_bench FROM STDIN WITH (FORMAT csv, NULL '\\N')")
+        .unwrap();
+    for row in 0..ROWS {
+        let values = batch
+            .columns()
+            .iter()
+            .zip(batch.schema().fields())
+            .map(|(array, field)| {
+                if array.is_null(row) {
+                    return None;
+                }
+                Some(match field.data_type() {
+                    DataType::Int64 => array
+                        .as_any()
+                        .downcast_ref::<Int64Array>()
+                        .unwrap()
+                        .value(row)
+                        .to_string(),
+                    DataType::Utf8 => array
+                        .as_any()
+                        .downcast_ref::<StringArray>()
+                        .unwrap()
+                        .value(row)
+                        .to_owned(),
+                    DataType::Float64 => array
+                        .as_any()
+                        .downcast_ref::<Float64Array>()
+                        .unwrap()
+                        .value(row)
+                        .to_string(),
+                    other => panic!("unexpected scalar CSV control type {other:?}"),
+                })
+            })
+            .collect::<Vec<_>>();
+        let segment_id = "seg-000001".to_owned();
+        let mut fields = values
+            .iter()
+            .map(|value| csv_field(value.as_deref()))
+            .collect::<Vec<_>>();
+        fields.push(csv_field(Some("sha256:package")));
+        fields.push(csv_field(Some(&segment_id)));
+        fields.push(csv_field(Some(&row.to_string())));
+        fields.push(csv_field(Some(&1_700_000_000_000_i64.to_string())));
+        let mut line = fields.join(",");
+        line.push('\n');
+        writer.write_all(line.as_bytes()).unwrap();
+    }
+    assert_eq!(writer.finish().unwrap(), ROWS as u64);
+    let csv_elapsed = started.elapsed();
+    let speedup = csv_elapsed.as_secs_f64() / binary_elapsed.as_secs_f64();
+    eprintln!(
+        "postgres_local_copy binary_rows_per_second={:.0} csv_rows_per_second={:.0} speedup={speedup:.2}x",
+        ROWS as f64 / binary_elapsed.as_secs_f64(),
+        ROWS as f64 / csv_elapsed.as_secs_f64(),
+    );
+    assert!(speedup >= 2.0, "local COPY speedup was {speedup:.2}x");
+}
 
 static SCHEMA_COUNTER: AtomicU64 = AtomicU64::new(0);
 static LOCAL_POSTGRES_START: Mutex<()> = Mutex::new(());
