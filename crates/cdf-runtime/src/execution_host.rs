@@ -1,10 +1,12 @@
 use std::{
     any::Any,
     future::Future,
+    pin::Pin,
     sync::{
-        Arc,
+        Arc, Mutex,
         atomic::{AtomicBool, Ordering},
     },
+    task::{Context, Poll, Waker},
 };
 
 use cdf_kernel::{BoxFuture, CdfError, Result};
@@ -17,16 +19,28 @@ pub type IoValueTask = BoxFuture<'static, Result<IoValue>>;
 pub type BlockingTask = Box<dyn FnOnce() -> Result<()> + Send + 'static>;
 pub type BlockingValueTask = Box<dyn FnOnce() -> Result<IoValue> + Send + 'static>;
 
+#[derive(Debug, Default)]
+struct CancellationState {
+    cancelled: AtomicBool,
+    waiters: Mutex<Vec<Waker>>,
+}
+
 #[derive(Clone, Debug, Default)]
-pub struct RunCancellation(Arc<AtomicBool>);
+pub struct RunCancellation(Arc<CancellationState>);
 
 impl RunCancellation {
     pub fn cancel(&self) {
-        self.0.store(true, Ordering::Release);
+        if self.0.cancelled.swap(true, Ordering::AcqRel) {
+            return;
+        }
+        let waiters = std::mem::take(&mut *self.0.waiters.lock().unwrap());
+        for waiter in waiters {
+            waiter.wake();
+        }
     }
 
     pub fn is_cancelled(&self) -> bool {
-        self.0.load(Ordering::Acquire)
+        self.0.cancelled.load(Ordering::Acquire)
     }
 
     pub fn check(&self) -> Result<()> {
@@ -35,6 +49,33 @@ impl RunCancellation {
         } else {
             Ok(())
         }
+    }
+
+    pub fn cancelled(&self) -> CancellationFuture {
+        CancellationFuture(self.clone())
+    }
+}
+
+pub struct CancellationFuture(RunCancellation);
+
+impl Future for CancellationFuture {
+    type Output = ();
+
+    fn poll(self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<Self::Output> {
+        if self.0.is_cancelled() {
+            return Poll::Ready(());
+        }
+        let mut waiters = self.0.0.waiters.lock().unwrap();
+        if self.0.is_cancelled() {
+            return Poll::Ready(());
+        }
+        if !waiters
+            .iter()
+            .any(|waiter| waiter.will_wake(context.waker()))
+        {
+            waiters.push(context.waker().clone());
+        }
+        Poll::Pending
     }
 }
 

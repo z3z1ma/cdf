@@ -18,6 +18,7 @@ The mock external source test uses the id `external_mock`, but no graph node con
 - `cargo test -p cdf-cli plan_json_exposes_pushdown_ddl_guarantee_and_state_advancement -- --nocapture` — passed.
 - `cargo test -p cdf-cli run_local_file_to_duckdb_commits_package_rows_mirrors_and_checkpoint -- --nocapture` — passed.
 - `cargo clippy -p cdf-runtime -p cdf-engine -p cdf-cli --all-targets -- -D warnings` — passed.
+- After wakeable cancellation landed, `cargo test -p cdf-runtime --lib` — 24 passed, including a full-channel slow-consumer cancellation test; `cargo clippy -p cdf-runtime --all-targets -- -D warnings` — passed.
 
 The broad `cargo test -p cdf-runtime -p cdf-engine -p cdf-cli --lib` run completed runtime and engine successfully but reported five unrelated existing CLI failures: SQL-query compatibility wording, progress-router source inspection, two unknown-destination exit-code expectations, and a promotion test lacking injected destination services. No failure referenced the graph artifact or accounted edge. These are limits, not A5a closure evidence.
 

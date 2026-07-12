@@ -6,7 +6,7 @@ use cdf_memory::{
     ReservationRequest, reserve,
 };
 use futures_channel::mpsc;
-use futures_util::{SinkExt, StreamExt};
+use futures_util::{SinkExt, StreamExt, future::Either};
 use serde::{Deserialize, Serialize};
 
 use crate::{RunCancellation, artifact_hash};
@@ -566,22 +566,40 @@ impl GraphEdgeSender {
             self.config.maximum_outcomes_per_item,
             self.config.maximum_outcome_bytes_per_item,
         )?;
-        self.sender.send(envelope).await.map_err(|_| {
-            CdfError::internal(format!(
-                "graph edge `{}` closed before accepting an accounted envelope",
-                self.config.edge_id
-            ))
-        })?;
-        self.cancellation.check()
+        let send = self.sender.send(envelope);
+        let cancelled = self.cancellation.cancelled();
+        futures_util::pin_mut!(send, cancelled);
+        match futures_util::future::select(send, cancelled).await {
+            Either::Left((result, _)) => {
+                result.map_err(|_| {
+                    CdfError::internal(format!(
+                        "graph edge `{}` closed before accepting an accounted envelope",
+                        self.config.edge_id
+                    ))
+                })?;
+                self.cancellation.check()
+            }
+            Either::Right(((), _)) => self.cancellation.check(),
+        }
     }
 }
 
 impl GraphEdgeReceiver {
     pub async fn receive(&mut self) -> Result<Option<GraphDataEnvelope>> {
         self.cancellation.check()?;
-        let item = self.receiver.next().await;
-        self.cancellation.check()?;
-        Ok(item)
+        let receive = self.receiver.next();
+        let cancelled = self.cancellation.cancelled();
+        futures_util::pin_mut!(receive, cancelled);
+        match futures_util::future::select(receive, cancelled).await {
+            Either::Left((item, _)) => {
+                self.cancellation.check()?;
+                Ok(item)
+            }
+            Either::Right(((), _)) => {
+                self.cancellation.check()?;
+                unreachable!("cancelled future completes only after cancellation")
+            }
+        }
     }
 }
 
@@ -808,6 +826,73 @@ mod tests {
         let error = futures_executor::block_on(sender.send(envelope)).unwrap_err();
         assert!(error.message.contains("cancelled"));
         drop(sender);
+        assert_eq!(coordinator.snapshot().current_bytes, 0);
+    }
+
+    #[test]
+    fn cancellation_wakes_a_sender_blocked_by_a_slow_consumer() {
+        let schema = Arc::new(Schema::new(vec![Field::new("v", DataType::Int64, false)]));
+        let first_batch = RecordBatch::try_new(
+            Arc::clone(&schema),
+            vec![Arc::new(Int64Array::from(vec![1]))],
+        )
+        .unwrap();
+        let second_batch =
+            RecordBatch::try_new(schema, vec![Arc::new(Int64Array::from(vec![2]))]).unwrap();
+        let bytes = u64::try_from(first_batch.get_array_memory_size()).unwrap();
+        let coordinator: Arc<dyn MemoryCoordinator> =
+            Arc::new(DeterministicMemoryCoordinator::new(bytes * 2, BTreeMap::new()).unwrap());
+        let first = futures_executor::block_on(account_graph_batch(
+            Arc::clone(&coordinator),
+            "slow_edge",
+            first_batch,
+        ))
+        .unwrap();
+        let second = futures_executor::block_on(account_graph_batch(
+            Arc::clone(&coordinator),
+            "slow_edge",
+            second_batch,
+        ))
+        .unwrap();
+        let cancellation = RunCancellation::default();
+        let (mut sender, receiver) = graph_edge(
+            GraphEdgeRuntimeConfig {
+                edge_id: "slow".to_owned(),
+                maximum_items: 1,
+                maximum_outcomes_per_item: 1,
+                maximum_outcome_bytes_per_item: 1,
+            },
+            cancellation.clone(),
+        )
+        .unwrap();
+        let envelope = |sequence, payload| GraphDataEnvelope {
+            partition_ordinal: 0,
+            partition_id: PartitionId::new("p0").unwrap(),
+            local_sequence: sequence,
+            source_position: SourcePosition::PageToken(cdf_kernel::PageToken {
+                version: 1,
+                token: format!("p0:{sequence}"),
+            }),
+            schema_hash: SchemaHash::new(
+                "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            )
+            .unwrap(),
+            coercion_authority: None,
+            outcomes: AccountedGraphOutcomes::none(),
+            payload,
+        };
+        futures_executor::block_on(sender.send(envelope(0, first))).unwrap();
+        {
+            let blocked = sender.send(envelope(1, second));
+            futures_util::pin_mut!(blocked);
+            assert!(blocked.as_mut().now_or_never().is_none());
+            cancellation.cancel();
+            let error = blocked.as_mut().now_or_never().unwrap().unwrap_err();
+            assert!(error.message.contains("cancelled"));
+        }
+        assert_eq!(coordinator.snapshot().current_bytes, bytes * 2);
+        drop(sender);
+        drop(receiver);
         assert_eq!(coordinator.snapshot().current_bytes, 0);
     }
 }
