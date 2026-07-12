@@ -14,7 +14,7 @@ use cdf_kernel::{CdfError, Result, SegmentId};
 use sha2::{Digest, Sha256};
 
 use crate::{
-    json::{canonical_json_bytes, manifest_identity_hash},
+    json::{manifest_identity_hash, write_package_manifest_canonical},
     model::{
         FileEntry, LifecycleState, MANIFEST_FILE, MANIFEST_VERSION, ManifestIdentity,
         PackageManifest, PackageStatus, RECEIPTS_FILE, REQUIRED_DIRECTORIES, SegmentEntry,
@@ -243,8 +243,9 @@ fn package_layout() -> Vec<String> {
 
 pub(crate) fn write_manifest_atomic(package_dir: &Path, manifest: &PackageManifest) -> Result<()> {
     let path = package_dir.join(MANIFEST_FILE);
-    let bytes = canonical_json_bytes(manifest)?;
-    atomic_write(&path, &bytes).map(|_| ())
+    let mut sink = AtomicArtifactSink::create(&path, ArtifactDurability::PhaseMetadata)?;
+    write_package_manifest_canonical(manifest, sink.writer_mut()?)?;
+    sink.finish().map(|_| ())
 }
 
 pub(crate) fn collect_identity_file_entries(package_dir: &Path) -> Result<Vec<FileEntry>> {
