@@ -2832,6 +2832,266 @@ mod tests {
 
     use super::*;
 
+    #[derive(Debug)]
+    struct ExternalMockFormat {
+        descriptor: cdf_runtime::FormatDriverDescriptor,
+    }
+
+    impl ExternalMockFormat {
+        fn new() -> Self {
+            Self {
+                descriptor: cdf_runtime::FormatDriverDescriptor {
+                    format_id: cdf_runtime::FormatId::new("external_mock").unwrap(),
+                    semantic_version: "1.0.0".to_owned(),
+                    aliases: Vec::new(),
+                    extensions: vec!["mock".to_owned()],
+                    mime_types: Vec::new(),
+                    magic: Vec::new(),
+                    option_schema: serde_json::json!({
+                        "type": "object",
+                        "additionalProperties": false
+                    }),
+                    projection_pushdown: cdf_kernel::PushdownFidelity::Unsupported,
+                    predicate_pushdown: cdf_kernel::PushdownFidelity::Unsupported,
+                    decode_unit_policy: "whole_mock_file".to_owned(),
+                    minimum_working_set_bytes: 64,
+                    maximum_working_set_bytes: 1024 * 1024,
+                },
+            }
+        }
+
+        fn schema() -> Arc<Schema> {
+            Arc::new(Schema::new(vec![Field::new("value", DataType::Int64, false)]))
+        }
+    }
+
+    impl cdf_runtime::FormatDriver for ExternalMockFormat {
+        fn descriptor(&self) -> &cdf_runtime::FormatDriverDescriptor {
+            &self.descriptor
+        }
+
+        fn canonical_options(&self, options: serde_json::Value) -> Result<serde_json::Value> {
+            if options.as_object().is_some_and(serde_json::Map::is_empty) {
+                Ok(options)
+            } else {
+                Err(CdfError::contract("external mock options must be empty"))
+            }
+        }
+
+        fn detect(
+            &self,
+            probe: &cdf_runtime::FormatProbe,
+        ) -> Result<cdf_runtime::FormatDetection> {
+            Ok(cdf_runtime::FormatDetection {
+                confidence: if probe.prefix.starts_with(b"MOCK") {
+                    cdf_runtime::FormatDetectionConfidence::Strong
+                } else {
+                    cdf_runtime::FormatDetectionConfidence::None
+                },
+                reason: "external mock framing".to_owned(),
+            })
+        }
+
+        fn discover(
+            &self,
+            source: Arc<dyn cdf_runtime::ByteSource>,
+            request: cdf_runtime::FormatDiscoveryRequest,
+        ) -> cdf_kernel::BoxFuture<'_, Result<cdf_runtime::PhysicalSchemaObservation>> {
+            Box::pin(async move {
+                request.cancellation.check()?;
+                let bytes = source
+                    .read_exact_range(
+                        cdf_runtime::ByteExtent::new(0, 4)?,
+                        request.cancellation,
+                    )
+                    .await?;
+                if bytes.payload() != b"MOCK" {
+                    return Err(CdfError::data("external mock magic mismatch"));
+                }
+                let schema = Self::schema();
+                Ok(cdf_runtime::PhysicalSchemaObservation {
+                    identity: source.identity().clone(),
+                    observed_schema: cdf_contract::ObservedSchema::from_arrow(schema.as_ref()),
+                    arrow_schema: schema,
+                    sampled_bytes: 4,
+                    sampled_records: 0,
+                })
+            })
+        }
+
+        fn plan_decode_units(
+            &self,
+            source: Arc<dyn cdf_runtime::ByteSource>,
+            request: cdf_runtime::DecodePlanningRequest,
+        ) -> cdf_kernel::BoxFuture<'_, Result<Vec<cdf_runtime::DecodeUnitPlan>>> {
+            Box::pin(async move {
+                request.cancellation.check()?;
+                Ok(vec![cdf_runtime::DecodeUnitPlan {
+                    unit_id: "mock-file".to_owned(),
+                    ordinal: 0,
+                    extent: Some(cdf_runtime::ByteExtent::new(
+                        0,
+                        source.identity().size_bytes.unwrap(),
+                    )?),
+                    estimated_working_set_bytes: 64,
+                    independently_retryable: true,
+                }])
+            })
+        }
+
+        fn decode(
+            &self,
+            source: Arc<dyn cdf_runtime::ByteSource>,
+            request: cdf_runtime::PhysicalDecodeRequest,
+        ) -> cdf_kernel::BoxFuture<'_, Result<cdf_runtime::PhysicalDecodeStream>> {
+            Box::pin(async move {
+                request.cancellation.check()?;
+                let extent = request.unit.extent.ok_or_else(|| {
+                    CdfError::contract("external mock decode requires a byte extent")
+                })?;
+                let bytes = source
+                    .read_exact_range(extent, request.cancellation.clone())
+                    .await?;
+                if bytes.payload() != b"MOCK\n" {
+                    return Err(CdfError::data("external mock payload mismatch"));
+                }
+                let record_batch = RecordBatch::try_new(
+                    Self::schema(),
+                    vec![Arc::new(Int64Array::from(vec![42]))],
+                )
+                .map_err(|error| CdfError::data(format!("external mock batch: {error}")))?;
+                let lease = cdf_memory::reserve(
+                    Arc::clone(&request.memory),
+                    cdf_memory::ReservationRequest::new(
+                        cdf_memory::ConsumerKey::new(
+                            "external-mock-decode",
+                            cdf_memory::MemoryClass::Decode,
+                        )?,
+                        1024,
+                    )?,
+                )
+                .await?;
+                let mut batch = cdf_kernel::Batch::from_record_batch(
+                    cdf_kernel::BatchId::new("external-mock-batch")?,
+                    request.resource_id,
+                    request.partition_id,
+                    cdf_contract::canonical_arrow_schema_hash(request.physical_schema.as_ref())?,
+                    record_batch,
+                )?;
+                batch.header.source_position = request.source_position;
+                let physical = cdf_runtime::AccountedPhysicalBatch::new(batch, lease)?;
+                Ok(Box::pin(futures_util::stream::once(async move { Ok(physical) }))
+                    as cdf_runtime::PhysicalDecodeStream)
+            })
+        }
+    }
+
+    #[derive(Debug)]
+    struct ExternalPassthroughTransform(cdf_runtime::ByteTransformDescriptor);
+
+    impl ExternalPassthroughTransform {
+        fn new() -> Self {
+            Self(cdf_runtime::ByteTransformDescriptor {
+                transform_id: cdf_runtime::ByteTransformId::new("external_passthrough").unwrap(),
+                semantic_version: "1.0.0".to_owned(),
+                extensions: vec!["mt".to_owned()],
+                magic: Vec::new(),
+                preserves_random_access: false,
+                splittable: false,
+                supports_concatenated_members: false,
+                maximum_output_chunk_bytes: 1024 * 1024,
+                maximum_working_set_bytes: 1024 * 1024,
+                maximum_expanded_bytes: 1024 * 1024,
+                maximum_expansion_ratio: 1,
+                checksum: cdf_runtime::TransformChecksumBehavior::None,
+            })
+        }
+    }
+
+    impl cdf_runtime::ByteTransformDriver for ExternalPassthroughTransform {
+        fn descriptor(&self) -> &cdf_runtime::ByteTransformDescriptor {
+            &self.0
+        }
+
+        fn transform(
+            &self,
+            input: cdf_runtime::AccountedByteStream,
+            request: cdf_runtime::ByteTransformRequest,
+        ) -> Result<cdf_runtime::AccountedByteStream> {
+            request.validate_for(&self.0)?;
+            Ok(input)
+        }
+    }
+
+    #[test]
+    fn external_format_and_transform_compose_without_runtime_dispatch_edits() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("events.mock.mt");
+        std::fs::write(&path, b"MOCK\n").unwrap();
+        let mut formats = cdf_runtime::FormatRegistry::default();
+        formats.register(Arc::new(ExternalMockFormat::new())).unwrap();
+        let mut transforms = cdf_runtime::ByteTransformRegistry::default();
+        transforms
+            .register(Arc::new(ExternalPassthroughTransform::new()))
+            .unwrap();
+        let dependencies = FileRuntimeDependencies::new(
+            FileTransportFacade::new(),
+            crate::test_execution_services(),
+            Arc::new(formats),
+            Arc::new(transforms),
+        );
+        let plan = FileResourcePlan {
+            source: "external".to_owned(),
+            root: root.path().to_string_lossy().into_owned(),
+            glob: "events.mock.mt".to_owned(),
+            format: FileFormatDeclaration::named("external_mock").unwrap(),
+            format_declared: true,
+            compression: FileCompressionDeclaration::auto(),
+            auth: None,
+            credentials: None,
+            allowlist: cdf_http::EgressAllowlist::allow_any(),
+        };
+        let resource_id = ResourceId::new("external.events").unwrap();
+        let resolved = dependencies
+            .with_transport(|transport| {
+                resolve_file_matches(&resource_id, &plan, transport, dependencies.transforms())
+            })
+            .unwrap();
+        assert_eq!(resolved[0].compression.mode_name(), "external_passthrough");
+        let probe = discover_local_binary_schema_bounded(
+            &path,
+            &dependencies,
+            &plan.format,
+            "external_passthrough",
+            0,
+            1024,
+        )
+        .unwrap();
+        assert_eq!(probe.schema.as_ref(), ExternalMockFormat::schema().as_ref());
+        let stream = stream_file_match_blocking(
+            &resolved[0],
+            &plan.format,
+            ReadOptions::new(resource_id, PartitionId::new("external-file").unwrap()),
+            probe.schema,
+            &dependencies,
+            &ContractPolicy::default().types,
+            PhysicalSchemaAuthority::default(),
+        )
+        .unwrap();
+        let batches = futures_executor::block_on(stream.collect::<Vec<_>>())
+            .into_iter()
+            .collect::<Result<Vec<_>>>()
+            .unwrap();
+        assert_eq!(batches.len(), 1);
+        assert_eq!(batches[0].record_batch().unwrap().num_rows(), 1);
+        assert!(matches!(
+            batches[0].header.source_position,
+            Some(SourcePosition::FileManifest(_))
+        ));
+        drop(batches);
+        assert_eq!(dependencies.execution().memory().snapshot().current_bytes, 0);
+    }
+
     #[test]
     fn shared_transport_dependency_does_not_serialize_independent_io() {
         let dependencies = Arc::new(FileRuntimeDependencies::new(
