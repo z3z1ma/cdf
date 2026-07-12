@@ -14,7 +14,9 @@ use zstd::stream::raw::{DParameter, Decoder, Operation};
 const ZSTD_MAGIC: &[u8; 4] = b"\x28\xb5\x2f\xfd";
 const MIB: u64 = 1024 * 1024;
 const MAXIMUM_WINDOW_LOG: u32 = 26;
-const INTERNAL_WORKING_SET_BYTES: u64 = 68 * MIB;
+const MAXIMUM_WINDOW_BYTES: u64 = 1 << MAXIMUM_WINDOW_LOG;
+const DECODER_CONTEXT_BYTES: u64 = 4 * MIB;
+const MAXIMUM_INTERNAL_WORKING_SET_BYTES: u64 = MAXIMUM_WINDOW_BYTES + DECODER_CONTEXT_BYTES;
 const DEFAULT_MAXIMUM_WORKING_SET_BYTES: u64 = 100 * MIB;
 const DEFAULT_MAXIMUM_EXPANDED_BYTES: u64 = 4 * 1024 * 1024 * 1024 * 1024;
 const DEFAULT_MAXIMUM_EXPANSION_RATIO: u32 = 1_000;
@@ -62,7 +64,7 @@ impl ByteTransformDriver for ZstdTransformDriver {
         request.validate_for(&self.descriptor)?;
         if request
             .preferred_output_chunk_bytes
-            .checked_add(INTERNAL_WORKING_SET_BYTES)
+            .checked_add(MAXIMUM_INTERNAL_WORKING_SET_BYTES)
             .is_none_or(|bytes| bytes > self.descriptor.maximum_working_set_bytes)
         {
             return Err(CdfError::contract(
@@ -79,8 +81,10 @@ impl ByteTransformDriver for ZstdTransformDriver {
             decoder: None,
             expansion,
             frames: 0,
-            frame_finished: false,
-            working_set_lease: None,
+            frame_active: false,
+            frame_working_set_lease: None,
+            pending_header: Vec::new(),
+            pending_header_offset: 0,
         };
         Ok(Box::pin(stream::try_unfold(
             state,
@@ -99,31 +103,23 @@ struct ZstdState {
     decoder: Option<Decoder<'static>>,
     expansion: TransformExpansionGuard,
     frames: u64,
-    frame_finished: bool,
-    working_set_lease: Option<MemoryLease>,
+    frame_active: bool,
+    frame_working_set_lease: Option<MemoryLease>,
+    pending_header: Vec<u8>,
+    pending_header_offset: usize,
 }
 
 impl ZstdState {
     async fn next_output(&mut self) -> Result<Option<AccountedBytes>> {
         loop {
             self.request.cancellation.check()?;
-            self.ensure_decoder().await?;
-
-            if self.frame_finished {
-                if !self.input.ensure_current().await? {
-                    self.expansion
-                        .enforce_exact_ratio(self.input.consumed_bytes())?;
-                    return Ok(None);
+            if !self.frame_active && !self.begin_frame().await? {
+                if self.frames == 0 {
+                    return Err(CdfError::data("zstd input is empty"));
                 }
-                self.decoder_mut()?.reinit().map_err(zstd_error)?;
-                self.frame_finished = false;
-            } else if !self.input.ensure_current().await? {
-                let message = if self.input.consumed_bytes() == 0 {
-                    "zstd input is empty"
-                } else {
-                    "zstd input ended before the current frame completed"
-                };
-                return Err(CdfError::data(message));
+                self.expansion
+                    .enforce_exact_ratio(self.input.consumed_bytes())?;
+                return Ok(None);
             }
 
             let reservation = ReservationRequest::new(
@@ -133,7 +129,17 @@ impl ZstdState {
             )?;
             let lease = reserve(Arc::clone(&self.request.memory), reservation).await?;
             let mut output = vec![0_u8; self.output_chunk_bytes];
-            let input = self.input.current_slice();
+            let header_input = self.pending_header_offset < self.pending_header.len();
+            if !header_input && !self.input.ensure_current().await? {
+                return Err(CdfError::data(
+                    "zstd input ended before the current frame completed",
+                ));
+            }
+            let input = if header_input {
+                &self.pending_header[self.pending_header_offset..]
+            } else {
+                self.input.current_slice()
+            };
             let decoder = self
                 .decoder
                 .as_mut()
@@ -141,7 +147,14 @@ impl ZstdState {
             let status = decoder
                 .run_on_buffers(input, &mut output)
                 .map_err(zstd_error)?;
-            self.input.consume(status.bytes_read)?;
+            if header_input {
+                self.pending_header_offset = self
+                    .pending_header_offset
+                    .checked_add(status.bytes_read)
+                    .ok_or_else(|| CdfError::data("zstd header offset overflowed"))?;
+            } else {
+                self.input.consume(status.bytes_read)?;
+            }
             output.truncate(status.bytes_written);
 
             let frame_complete = status.remaining == 0;
@@ -156,7 +169,10 @@ impl ZstdState {
                     .enforce_exact_ratio(self.input.consumed_bytes())?;
             }
             if frame_complete {
-                self.frame_finished = true;
+                self.frame_active = false;
+                self.frame_working_set_lease = None;
+                self.pending_header.clear();
+                self.pending_header_offset = 0;
                 self.frames = self
                     .frames
                     .checked_add(1)
@@ -173,28 +189,143 @@ impl ZstdState {
         }
     }
 
-    async fn ensure_decoder(&mut self) -> Result<()> {
-        if self.working_set_lease.is_none() {
-            let reservation =
-                ReservationRequest::new(self.request.consumer.clone(), INTERNAL_WORKING_SET_BYTES)?
-                    .as_minimum_working_set();
-            self.working_set_lease =
-                Some(reserve(Arc::clone(&self.request.memory), reservation).await?);
+    async fn begin_frame(&mut self) -> Result<bool> {
+        let Some(header) = read_frame_header(&mut self.input, self.frames).await? else {
+            return Ok(false);
+        };
+        let working_set_bytes = header
+            .window_bytes
+            .checked_add(DECODER_CONTEXT_BYTES)
+            .ok_or_else(|| CdfError::data("zstd working-set calculation overflowed"))?;
+        if working_set_bytes > MAXIMUM_INTERNAL_WORKING_SET_BYTES {
+            return Err(CdfError::data(format!(
+                "zstd frame {} declares a {}-byte window, exceeding the configured {}-byte window ceiling",
+                self.frames, header.window_bytes, MAXIMUM_WINDOW_BYTES
+            )));
         }
-        if self.decoder.is_none() {
+        let reservation =
+            ReservationRequest::new(self.request.consumer.clone(), working_set_bytes)?
+                .as_minimum_working_set();
+        self.frame_working_set_lease =
+            Some(reserve(Arc::clone(&self.request.memory), reservation).await?);
+        if let Some(decoder) = self.decoder.as_mut() {
+            decoder.reinit().map_err(zstd_error)?;
+        } else {
             let mut decoder = Decoder::new().map_err(zstd_error)?;
             decoder
                 .set_parameter(DParameter::WindowLogMax(MAXIMUM_WINDOW_LOG))
                 .map_err(zstd_error)?;
             self.decoder = Some(decoder);
         }
-        Ok(())
+        self.pending_header = header.bytes;
+        self.pending_header_offset = 0;
+        self.frame_active = true;
+        Ok(true)
+    }
+}
+
+struct ZstdFrameHeader {
+    bytes: Vec<u8>,
+    window_bytes: u64,
+}
+
+async fn read_frame_header(
+    input: &mut AccountedByteCursor,
+    frame: u64,
+) -> Result<Option<ZstdFrameHeader>> {
+    let Some(first) = input.next_byte().await? else {
+        return Ok(None);
+    };
+    let mut bytes = vec![first];
+    for _ in 1..4 {
+        bytes.push(required_frame_byte(input, frame).await?);
+    }
+    let magic = u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
+    if (0x184d_2a50..=0x184d_2a5f).contains(&magic) {
+        for _ in 0..4 {
+            bytes.push(required_frame_byte(input, frame).await?);
+        }
+        return Ok(Some(ZstdFrameHeader {
+            bytes,
+            window_bytes: 0,
+        }));
+    }
+    if magic != 0xfd2f_b528 {
+        return Err(CdfError::data(format!(
+            "zstd frame {frame} has invalid magic"
+        )));
     }
 
-    fn decoder_mut(&mut self) -> Result<&mut Decoder<'static>> {
-        self.decoder
-            .as_mut()
-            .ok_or_else(|| CdfError::internal("zstd decoder was not initialized"))
+    let descriptor = required_frame_byte(input, frame).await?;
+    bytes.push(descriptor);
+    if descriptor & 0x18 != 0 {
+        return Err(CdfError::data(format!(
+            "zstd frame {frame} sets reserved or unused descriptor bits"
+        )));
+    }
+    let content_size_flag = descriptor >> 6;
+    let single_segment = descriptor & 0x20 != 0;
+    let dictionary_id_bytes = [0_usize, 1, 2, 4][usize::from(descriptor & 0x03)];
+    let window_bytes = if single_segment {
+        None
+    } else {
+        let window_descriptor = required_frame_byte(input, frame).await?;
+        bytes.push(window_descriptor);
+        let exponent = u32::from(window_descriptor >> 3);
+        let mantissa = u64::from(window_descriptor & 0x07);
+        let base = 1_u64
+            .checked_shl(10 + exponent)
+            .ok_or_else(|| CdfError::data("zstd frame window calculation overflowed"))?;
+        Some(
+            base.checked_add((base / 8).checked_mul(mantissa).ok_or_else(|| {
+                CdfError::data("zstd frame window mantissa calculation overflowed")
+            })?)
+            .ok_or_else(|| CdfError::data("zstd frame window calculation overflowed"))?,
+        )
+    };
+    for _ in 0..dictionary_id_bytes {
+        bytes.push(required_frame_byte(input, frame).await?);
+    }
+    let content_size_bytes = if single_segment && content_size_flag == 0 {
+        1
+    } else {
+        [0_usize, 2, 4, 8][usize::from(content_size_flag)]
+    };
+    let content_size_start = bytes.len();
+    for _ in 0..content_size_bytes {
+        bytes.push(required_frame_byte(input, frame).await?);
+    }
+    let window_bytes = match window_bytes {
+        Some(window_bytes) => window_bytes,
+        None => parse_frame_content_size(&bytes[content_size_start..], content_size_flag)?,
+    };
+    if window_bytes > MAXIMUM_WINDOW_BYTES {
+        return Err(CdfError::data(format!(
+            "zstd frame {frame} declares a {window_bytes}-byte window, exceeding the configured {MAXIMUM_WINDOW_BYTES}-byte window ceiling"
+        )));
+    }
+    Ok(Some(ZstdFrameHeader {
+        bytes,
+        window_bytes,
+    }))
+}
+
+async fn required_frame_byte(input: &mut AccountedByteCursor, frame: u64) -> Result<u8> {
+    input
+        .next_byte()
+        .await?
+        .ok_or_else(|| CdfError::data(format!("zstd frame {frame} ended inside its header")))
+}
+
+fn parse_frame_content_size(bytes: &[u8], flag: u8) -> Result<u64> {
+    match bytes {
+        [value] => Ok(u64::from(*value)),
+        [low, high] if flag == 1 => Ok(u64::from(u16::from_le_bytes([*low, *high])) + 256),
+        [a, b, c, d] => Ok(u64::from(u32::from_le_bytes([*a, *b, *c, *d]))),
+        [a, b, c, d, e, f, g, h] => Ok(u64::from_le_bytes([*a, *b, *c, *d, *e, *f, *g, *h])),
+        _ => Err(CdfError::data(
+            "zstd single-segment frame has an invalid content-size field",
+        )),
     }
 }
 
@@ -286,14 +417,18 @@ mod tests {
     fn streams_concatenated_frames_across_single_byte_input_chunks() {
         let first = b"first zstd frame\n".repeat(41);
         let second = b"second zstd frame\n".repeat(43);
-        let mut compressed = encode_frame(&first);
+        let mut compressed = vec![0x50, 0x2a, 0x4d, 0x18, 3, 0, 0, 0, 1, 2, 3];
+        compressed.extend_from_slice(&encode_frame(&first));
         compressed.extend_from_slice(&encode_frame(&second));
         let (decoded, snapshot) = decode(compressed, 1, 31, 1024 * 1024, 100, Default::default());
         let mut expected = first;
         expected.extend_from_slice(&second);
         assert_eq!(decoded.unwrap(), expected);
         assert_eq!(snapshot.current_bytes, 0);
-        assert!(snapshot.peak_bytes <= INTERNAL_WORKING_SET_BYTES + 32);
+        assert!(
+            snapshot.peak_bytes <= DECODER_CONTEXT_BYTES + MIB + 32,
+            "unexpected peak: {snapshot:?}"
+        );
     }
 
     #[test]
@@ -331,6 +466,22 @@ mod tests {
                 .unwrap_err()
                 .to_string()
                 .contains("cancelled")
+        );
+
+        let oversized_window_header = vec![0x28, 0xb5, 0x2f, 0xfd, 0, 17 << 3];
+        let (window_result, _) = decode(
+            oversized_window_header,
+            6,
+            64,
+            8192,
+            1000,
+            Default::default(),
+        );
+        assert!(
+            window_result
+                .unwrap_err()
+                .to_string()
+                .contains("window ceiling")
         );
     }
 }
