@@ -31,10 +31,7 @@ use cdf_kernel::{
 use cdf_memory::{
     ConsumerKey, MemoryClass, MemoryCoordinator, MemoryLease, ReservationRequest, reserve,
 };
-use cdf_package::{
-    PackageBuilder, PackageStatus, QuarantineArtifactWriter, QuarantineObservedValue,
-    QuarantineRecord,
-};
+use cdf_package::{PackageBuilder, PackageStatus, QuarantineObservedValue, QuarantineRecord};
 use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -768,7 +765,6 @@ struct ContractExecOutput {
 struct QuarantinePartAccumulator<'a> {
     builder: &'a PackageBuilder,
     part_count: &'a mut usize,
-    writer: Option<QuarantineArtifactWriter>,
     records: Vec<QuarantineRecord>,
     memory_lease: Option<MemoryLease>,
     retained_bytes: u64,
@@ -785,7 +781,6 @@ impl<'a> QuarantinePartAccumulator<'a> {
         Self {
             builder,
             part_count,
-            writer: None,
             records: Vec::new(),
             memory_lease,
             retained_bytes: 0,
@@ -825,18 +820,14 @@ impl<'a> QuarantinePartAccumulator<'a> {
         if self.records.is_empty() {
             return Ok(());
         }
-        if self.writer.is_none() {
-            *self.part_count = self
-                .part_count
-                .checked_add(1)
-                .ok_or_else(|| CdfError::data("quarantine part count overflowed"))?;
-            let file_name = format!("part-{:06}.parquet", self.part_count);
-            self.writer = Some(self.builder.begin_quarantine_records(file_name)?);
-        }
-        self.writer
-            .as_mut()
-            .expect("quarantine writer was initialized")
-            .write_records(&self.records)?;
+        *self.part_count = self
+            .part_count
+            .checked_add(1)
+            .ok_or_else(|| CdfError::data("quarantine part count overflowed"))?;
+        let file_name = format!("part-{:06}.parquet", self.part_count);
+        let mut writer = self.builder.begin_quarantine_records(file_name)?;
+        writer.write_records(&self.records)?;
+        writer.finish()?;
         self.records = Vec::new();
         self.retained_bytes = 0;
         if let Some(lease) = &self.memory_lease {
@@ -846,11 +837,7 @@ impl<'a> QuarantinePartAccumulator<'a> {
     }
 
     fn finish(mut self) -> Result<()> {
-        self.flush()?;
-        if let Some(writer) = self.writer {
-            writer.finish()?;
-        }
-        Ok(())
+        self.flush()
     }
 }
 
@@ -3756,6 +3743,88 @@ mod transform_kernel_tests {
                 .next()
                 .is_none()
         );
+    }
+
+    #[test]
+    fn dense_quarantine_evidence_stays_bounded_without_losing_rows() {
+        const BUDGET: u64 = 512 * 1024;
+        const ROWS: usize = 25_000;
+        let memory =
+            Arc::new(DeterministicMemoryCoordinator::new(BUDGET, BTreeMap::new()).unwrap());
+        let managed: Arc<dyn MemoryCoordinator> = memory.clone();
+        let lease = reserve_quarantine_evidence(Some(&managed)).unwrap();
+        let temp = tempfile::tempdir().unwrap();
+        let builder = PackageBuilder::create(temp.path(), "dense-quarantine-budget").unwrap();
+        let mut part_count = 0;
+        let mut sink = QuarantinePartAccumulator::new(&builder, &mut part_count, lease);
+        for row in 0..ROWS {
+            sink.push(QuarantineRecord {
+                source_row_ordinal: u64::try_from(row).unwrap(),
+                rule_id: "dense-domain".to_owned(),
+                error_code: "domain_violation".to_owned(),
+                source_position: None,
+                observed_value_redacted: QuarantineObservedValue::Preserved {
+                    value: format!("{row:08}-{}", "x".repeat(512)),
+                },
+            })
+            .unwrap();
+        }
+        sink.finish().unwrap();
+        assert!(part_count > 1);
+        let snapshot = memory.snapshot();
+        assert!(snapshot.peak_bytes <= BUDGET);
+        assert_eq!(snapshot.current_bytes, 0);
+
+        let mut paths = std::fs::read_dir(temp.path().join("quarantine"))
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .collect::<Vec<_>>();
+        paths.sort();
+        let mut records = Vec::new();
+        for path in paths {
+            records.extend(cdf_package::quarantine_records_from_parquet_file(path).unwrap());
+        }
+        assert_eq!(records.len(), ROWS);
+        assert_eq!(records.first().unwrap().source_row_ordinal, 0);
+        assert_eq!(
+            records.last().unwrap().source_row_ordinal,
+            u64::try_from(ROWS - 1).unwrap()
+        );
+    }
+
+    #[test]
+    #[ignore = "V2 quarantine RSS calibration; run outside fast checks"]
+    fn dense_quarantine_evidence_rss_probe() {
+        const BUDGET: u64 = 512 * 1024;
+        let rows = std::env::var("CDF_QUARANTINE_RSS_ROWS")
+            .ok()
+            .and_then(|value| value.parse::<usize>().ok())
+            .unwrap_or(25_000);
+        let memory =
+            Arc::new(DeterministicMemoryCoordinator::new(BUDGET, BTreeMap::new()).unwrap());
+        let managed: Arc<dyn MemoryCoordinator> = memory.clone();
+        let lease = reserve_quarantine_evidence(Some(&managed)).unwrap();
+        let temp = tempfile::tempdir().unwrap();
+        let builder = PackageBuilder::create(temp.path(), "dense-quarantine-rss").unwrap();
+        let mut part_count = 0;
+        let mut sink = QuarantinePartAccumulator::new(&builder, &mut part_count, lease);
+        for row in 0..rows {
+            sink.push(QuarantineRecord {
+                source_row_ordinal: u64::try_from(row).unwrap(),
+                rule_id: "dense-domain".to_owned(),
+                error_code: "domain_violation".to_owned(),
+                source_position: None,
+                observed_value_redacted: QuarantineObservedValue::Preserved {
+                    value: format!("{row:08}-{}", "x".repeat(512)),
+                },
+            })
+            .unwrap();
+        }
+        sink.finish().unwrap();
+        assert!(part_count > 1);
+        let snapshot = memory.snapshot();
+        assert!(snapshot.peak_bytes <= BUDGET);
+        assert_eq!(snapshot.current_bytes, 0);
     }
 
     #[test]

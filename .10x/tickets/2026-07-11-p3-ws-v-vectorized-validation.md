@@ -13,7 +13,7 @@ Replace scalar hot-path contract evaluation with engine-neutral Arrow vector ker
 ## Activated children
 
 - `.10x/tickets/done/2026-07-11-p3-v1-vector-kernel-plan.md`
-- `.10x/tickets/2026-07-11-p3-v2-validation-graph-integration.md`
+- `.10x/tickets/done/2026-07-11-p3-v2-validation-graph-integration.md`
 - `.10x/tickets/2026-07-11-p3-v3-validation-envelope-closeout.md`
 
 ## Acceptance criteria

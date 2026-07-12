@@ -1,7 +1,7 @@
 Status: recorded
 Created: 2026-07-11
 Updated: 2026-07-11
-Relates-To: .10x/tickets/2026-07-11-p3-v2-validation-graph-integration.md, .10x/tickets/done/2026-07-10-p3-ws-l-performance-lab.md
+Relates-To: .10x/tickets/done/2026-07-11-p3-v2-validation-graph-integration.md, .10x/tickets/done/2026-07-10-p3-ws-l-performance-lab.md
 
 # V2 smoke macro profile after vector integration
 

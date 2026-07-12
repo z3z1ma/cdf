@@ -1,7 +1,7 @@
 Status: recorded
 Created: 2026-07-11
 Updated: 2026-07-11
-Relates-To: .10x/tickets/2026-07-11-p3-v2-validation-graph-integration.md, .10x/tickets/2026-07-11-p3-ws-v-vectorized-validation.md
+Relates-To: .10x/tickets/done/2026-07-11-p3-v2-validation-graph-integration.md, .10x/tickets/2026-07-11-p3-ws-v-vectorized-validation.md
 
 # V2 production vector-validation milestone
 

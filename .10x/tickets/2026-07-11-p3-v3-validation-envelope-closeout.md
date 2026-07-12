@@ -2,7 +2,7 @@ Status: open
 Created: 2026-07-11
 Updated: 2026-07-11
 Parent: .10x/tickets/2026-07-11-p3-ws-v-vectorized-validation.md
-Depends-On: .10x/tickets/2026-07-11-p3-v2-validation-graph-integration.md, .10x/tickets/2026-07-11-p3-c4-jobs-invariance-scaling-matrix.md
+Depends-On: .10x/tickets/done/2026-07-11-p3-v2-validation-graph-integration.md, .10x/tickets/2026-07-11-p3-c4-jobs-invariance-scaling-matrix.md
 
 # P3 V3: validation envelope and conformance closeout
 
