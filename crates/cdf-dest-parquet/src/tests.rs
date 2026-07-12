@@ -954,6 +954,13 @@ fn filesystem_append_materializes_parquet_and_verifies_receipt() {
         .get_required(dest.execution(), &outcome.object_manifest.objects[0].key)
         .unwrap();
     assert_eq!(parquet_rows(&bytes), 3);
+    assert_eq!(
+        std::fs::read_dir(root.join(".cdf-staging"))
+            .unwrap()
+            .count(),
+        0,
+        "successful local install must leave no staged file"
+    );
 
     let receipts = PackageReader::open(&package_dir)
         .unwrap()

@@ -15,13 +15,14 @@ pub(crate) struct EncodedParquetObject {
     pub(crate) file: NamedTempFile,
     pub(crate) byte_count: u64,
     pub(crate) sha256: String,
-    _spill: SpillReservation,
+    pub(crate) _spill: SpillReservation,
 }
 
 pub(crate) fn write_parquet_segment(
     segment: CommitSegment,
     writer_memory: Arc<dyn MemoryCoordinator>,
     spill: Arc<dyn SpillBudgetCoordinator>,
+    file: NamedTempFile,
 ) -> Result<(StateSegment, u64, EncodedParquetObject)> {
     let retained_bytes = segment.retained_bytes().max(1);
     let writer_bytes = retained_bytes
@@ -54,8 +55,6 @@ pub(crate) fn write_parquet_segment(
         .ok_or_else(|| CdfError::data("Parquet destination segment contains no Arrow batches"))?;
     let schema = first.batch.schema();
     cdf_package::validate_parquet_schema(schema.as_ref())?;
-    let file = NamedTempFile::new()
-        .map_err(|error| CdfError::destination(format!("create Parquet staging file: {error}")))?;
     let mut output = SpillHashWriter::new(file, reservation);
     let properties = WriterProperties::builder()
         .set_created_by("cdf native arrow-rs parquet writer".to_owned())

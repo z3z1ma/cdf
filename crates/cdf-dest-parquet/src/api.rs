@@ -472,9 +472,10 @@ fn write_commit_segment_object(
     let execution = destination.execution.clone();
     let memory = execution.memory();
     let spill = execution.spill();
+    let staging_file = destination.store.staging_file()?;
     let (state, package_byte_count, encoded) = execution
         .run_blocking("parquet.encode", move || {
-            write_parquet_segment(segment, memory, spill)
+            write_parquet_segment(segment, memory, spill, staging_file)
         })?;
     let key = segment_object_key(
         destination.object_key_encoder(),
@@ -482,12 +483,10 @@ fn write_commit_segment_object(
         &request.commit.idempotency_token,
         &state.segment_id,
     );
-    let put = destination.store.put_file(
-        &destination.execution,
-        &key,
-        encoded.file.path(),
-        encoded.byte_count,
-    )?;
+    let parquet_sha256 = encoded.sha256.clone();
+    let put = destination
+        .store
+        .put_encoded_file(&destination.execution, &key, encoded)?;
     Ok(ParquetObjectEntry {
         segment_id: state.segment_id.as_str().to_owned(),
         key,
@@ -495,7 +494,7 @@ fn write_commit_segment_object(
         byte_count: state.byte_count,
         package_byte_count,
         parquet_byte_count: put.byte_count,
-        sha256: encoded.sha256,
+        sha256: parquet_sha256,
         etag: put.e_tag,
         schema_hash: request.schema_hash.as_str().to_owned(),
     })

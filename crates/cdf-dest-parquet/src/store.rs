@@ -1,3 +1,5 @@
+use std::io::Read;
+
 use crate::*;
 
 const MULTIPART_CHUNK_BYTES: usize = 8 * 1024 * 1024;
@@ -18,6 +20,7 @@ pub(crate) enum CreateObjectOutcome {
 pub(crate) struct StoreClient {
     store: Arc<dyn ObjectStore>,
     root_prefix: String,
+    local_root: Option<PathBuf>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -54,7 +57,11 @@ impl StoreClient {
         let store = LocalFileSystem::new_with_prefix(root).map_err(|error| {
             CdfError::destination(format!("open object store filesystem: {error}"))
         })?;
-        Self::new_object_store(Arc::new(store), "")
+        Ok(Self {
+            store: Arc::new(store),
+            root_prefix: String::new(),
+            local_root: Some(root.to_path_buf()),
+        })
     }
 
     pub(crate) fn new_object_store(
@@ -62,7 +69,31 @@ impl StoreClient {
         root_prefix: impl Into<String>,
     ) -> Result<Self> {
         let root_prefix = normalize_prefix(root_prefix.into())?;
-        Ok(Self { store, root_prefix })
+        Ok(Self {
+            store,
+            root_prefix,
+            local_root: None,
+        })
+    }
+
+    pub(crate) fn staging_file(&self) -> Result<tempfile::NamedTempFile> {
+        match &self.local_root {
+            Some(root) => {
+                let staging = root.join(".cdf-staging");
+                fs::create_dir_all(&staging).map_err(|error| {
+                    CdfError::destination(format!("create {}: {error}", staging.display()))
+                })?;
+                tempfile::NamedTempFile::new_in(&staging).map_err(|error| {
+                    CdfError::destination(format!(
+                        "create Parquet staging file under {}: {error}",
+                        staging.display()
+                    ))
+                })
+            }
+            None => tempfile::NamedTempFile::new().map_err(|error| {
+                CdfError::destination(format!("create Parquet staging file: {error}"))
+            }),
+        }
     }
 
     pub(crate) fn put(
@@ -87,16 +118,19 @@ impl StoreClient {
         })
     }
 
-    pub(crate) fn put_file(
+    pub(crate) fn put_encoded_file(
         &self,
         execution: &cdf_runtime::ExecutionServices,
         key: &str,
-        path: &Path,
-        byte_count: u64,
+        encoded: crate::package::EncodedParquetObject,
     ) -> Result<StoredObject> {
+        if let Some(root) = &self.local_root {
+            return self.install_local_file(execution, root, key, encoded);
+        }
+        let byte_count = encoded.byte_count;
         let object_path = self.path(key)?;
         let store = Arc::clone(&self.store);
-        let file_path = path.to_path_buf();
+        let file_path = encoded.file.path().to_path_buf();
         let operation = format!("multipart put {key}");
         let reserved_bytes = byte_count
             .min((MULTIPART_CHUNK_BYTES * (MULTIPART_CONCURRENCY + 1)) as u64)
@@ -113,6 +147,7 @@ impl StoreClient {
         let put: PutResult = execution.run_io(async move {
             use tokio::io::AsyncReadExt;
 
+            let _encoded = encoded;
             let _lease = cdf_memory::reserve(memory, request).await?;
             let mut file = tokio::fs::File::open(&file_path).await.map_err(|error| {
                 CdfError::destination(format!("open {}: {error}", file_path.display()))
@@ -153,6 +188,60 @@ impl StoreClient {
         Ok(StoredObject {
             byte_count,
             e_tag: put.e_tag,
+        })
+    }
+
+    fn install_local_file(
+        &self,
+        execution: &cdf_runtime::ExecutionServices,
+        root: &Path,
+        key: &str,
+        encoded: crate::package::EncodedParquetObject,
+    ) -> Result<StoredObject> {
+        let object_path = self.path(key)?;
+        let destination = root.join(object_path.as_ref());
+        let parent = destination.parent().ok_or_else(|| {
+            CdfError::destination(format!(
+                "Parquet object {} has no parent directory",
+                destination.display()
+            ))
+        })?;
+        fs::create_dir_all(parent).map_err(|error| {
+            CdfError::destination(format!("create {}: {error}", parent.display()))
+        })?;
+        let byte_count = encoded.byte_count;
+        let expected_hash = encoded.sha256.clone();
+        match encoded.file.persist_noclobber(&destination) {
+            Ok(file) => file.sync_all().map_err(|error| {
+                CdfError::destination(format!("sync {}: {error}", destination.display()))
+            })?,
+            Err(error) if error.error.kind() == std::io::ErrorKind::AlreadyExists => {
+                let actual_hash = sha256_file(&destination)?;
+                if actual_hash != expected_hash {
+                    return Err(CdfError::destination(format!(
+                        "immutable Parquet object {} already exists with hash {} instead of {}",
+                        destination.display(),
+                        actual_hash,
+                        expected_hash
+                    )));
+                }
+            }
+            Err(error) => {
+                return Err(CdfError::destination(format!(
+                    "atomically install {}: {}",
+                    destination.display(),
+                    error.error
+                )));
+            }
+        }
+        fs::File::open(parent)
+            .and_then(|directory| directory.sync_all())
+            .map_err(|error| {
+                CdfError::destination(format!("sync {}: {error}", parent.display()))
+            })?;
+        Ok(StoredObject {
+            byte_count,
+            e_tag: self.etag(execution, key)?,
         })
     }
 
@@ -408,6 +497,23 @@ fn encode_component_v1(value: &str) -> String {
 
 fn store_error(action: impl Into<String>, error: object_store::Error) -> CdfError {
     CdfError::destination(format!("{}: {error}", action.into()))
+}
+
+fn sha256_file(path: &Path) -> Result<String> {
+    let mut file = fs::File::open(path)
+        .map_err(|error| CdfError::destination(format!("open {}: {error}", path.display())))?;
+    let mut hash = Sha256::new();
+    let mut buffer = [0_u8; 1024 * 1024];
+    loop {
+        let read = file
+            .read(&mut buffer)
+            .map_err(|error| CdfError::destination(format!("read {}: {error}", path.display())))?;
+        if read == 0 {
+            break;
+        }
+        hash.update(&buffer[..read]);
+    }
+    Ok(hex::encode(hash.finalize()))
 }
 
 pub(crate) fn now_ms() -> Result<i64> {
