@@ -64,8 +64,12 @@ pub(crate) fn plan_or_explain(
     let resolved =
         resolve_scan_destination(&context, &target, args.destination_uri.as_deref(), command)?;
     let identifier_policy = resolved.destination.column_identifier_policy()?;
-    let plan =
-        build_engine_plan_for_resource(&prepared.resource, &args, identifier_policy.as_ref())?;
+    let plan = build_engine_plan_for_resource(
+        &prepared.resource,
+        &args,
+        identifier_policy.as_ref(),
+        &resolved.destination.runtime_capabilities(),
+    )?;
     let report = scan_report(
         &context,
         &prepared.resource,
@@ -100,8 +104,12 @@ pub(crate) fn preview(
         "preview",
     )?;
     let identifier_policy = resolved.destination.column_identifier_policy()?;
-    let plan =
-        build_engine_plan_for_resource(&prepared.resource, &args, identifier_policy.as_ref())?;
+    let plan = build_engine_plan_for_resource(
+        &prepared.resource,
+        &args,
+        identifier_policy.as_ref(),
+        &resolved.destination.runtime_capabilities(),
+    )?;
     match preview_resource_report(&prepared.resource, &plan, prepared.schema_snapshot, host) {
         Ok(report) => CommandOutput::rendered("preview", preview_document(&report), report),
         Err(error) if lower_runtime_missing(&error) => Err(CliError::not_supported_with(
@@ -286,6 +294,7 @@ pub(crate) fn build_engine_plan_for_resource(
     source: &crate::project_run_resource::CliProjectRunSource,
     args: &ScanArgs,
     identifier_policy: Option<&IdentifierPolicy>,
+    destination_capabilities: &cdf_runtime::DestinationRuntimeCapabilities,
 ) -> Result<EnginePlan, CliError> {
     let resource = source.as_queryable();
     let observed_schema = ObservedSchema::from_arrow(resource.schema().as_ref());
@@ -314,6 +323,7 @@ pub(crate) fn build_engine_plan_for_resource(
     match source.source_plan() {
         Some(source_plan) => plan
             .bind_partition_schedule(source_plan)
+            .and_then(|plan| plan.bind_operator_graph(source_plan, destination_capabilities))
             .map_err(CliError::from),
         None => Ok(plan),
     }
@@ -434,6 +444,7 @@ fn scan_report(
                     .to_owned(),
         },
         explain: plan.explain.clone(),
+        operator_graph: plan.operator_graph.clone(),
         scheduler,
         package_id: plan.package_id.clone(),
         schema_snapshot,
@@ -959,6 +970,8 @@ struct ScanPlanReport {
     delivery_guarantee_detail: DeliveryGuaranteeReport,
     state_advancement: StateAdvancementReport,
     explain: cdf_engine::ExplainData,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    operator_graph: Option<cdf_runtime::CompiledOperatorGraph>,
     #[serde(skip_serializing_if = "Option::is_none")]
     scheduler: Option<cdf_runtime::RuntimeSchedulerResolution>,
     package_id: String,

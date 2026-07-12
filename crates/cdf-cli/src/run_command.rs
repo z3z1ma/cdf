@@ -99,6 +99,7 @@ pub(crate) fn run(
             no_pin: false,
         },
         identifier_policy.as_ref(),
+        &resolved.destination.runtime_capabilities(),
     )?;
     let destination = resolved.destination;
     let destination_report =

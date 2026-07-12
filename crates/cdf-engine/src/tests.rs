@@ -901,6 +901,96 @@ fn explain_and_operator_chain_carry_contract_package_details() {
 }
 
 #[test]
+fn operator_graph_compiles_from_capabilities_without_driver_name_dispatch() {
+    let resource = MockResource::tier_b(sample_batches());
+    let mut plan = Planner::new()
+        .plan_tier_b(
+            &resource,
+            plan_input(Vec::new(), None, None, PlanBoundedness::Bounded),
+        )
+        .unwrap();
+    let source =
+        cdf_runtime::CompiledSourcePlan::new(
+            cdf_runtime::SourceDriverDescriptor {
+                driver_id: cdf_runtime::SourceDriverId::new("external_mock").unwrap(),
+                driver_version: "mock-v1".to_owned(),
+                option_schema_hash:
+                    "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                        .to_owned(),
+                kinds: vec!["external_mock".to_owned()],
+                schemes: vec!["mock".to_owned()],
+            },
+            resource.capabilities().clone(),
+            cdf_runtime::SourceExecutionCapabilities {
+                minimum_poll_bytes: 1024,
+                maximum_poll_bytes: 1024 * 1024,
+                minimum_decode_bytes: 1024,
+                maximum_decode_bytes: 8 * 1024 * 1024,
+                maximum_concurrency: 8,
+                useful_concurrency: 4,
+                executor_class: cdf_runtime::SourceExecutorClass::Io,
+                blocking_lane: None,
+                pausable: true,
+                spillable: false,
+                idempotent_reads: true,
+                reopenable: true,
+                resumable: true,
+                speculative_safe: true,
+                retry_granularity: cdf_runtime::SourceRetryGranularity::Partition,
+                retryable_errors: vec![cdf_kernel::ErrorKind::Transient],
+                attestation: cdf_runtime::SourceAttestationStrength::ImmutableContent,
+                rate_limit_per_second: None,
+                quota_authority: None,
+                canonical_order: true,
+                bounded: true,
+                telemetry_version: "mock-v1".to_owned(),
+            },
+            cdf_runtime::CompiledSourcePlanInput {
+                descriptor: resource.descriptor().clone(),
+                schema: resource.schema().as_ref().clone(),
+                type_policy_allowances: cdf_kernel::TypePolicyAllowances::default(),
+                effective_schema_runtime: None,
+                redacted_options: serde_json::json!({"endpoint": "redacted"}),
+                physical_plan: serde_json::json!({"partitioning": "mock"}),
+            },
+        )
+        .unwrap();
+
+    let graph = compile_operator_graph(
+        &plan,
+        &source,
+        &cdf_runtime::DestinationRuntimeCapabilities::default(),
+    )
+    .unwrap();
+
+    graph.validate().unwrap();
+    assert_eq!(graph.nodes[0].implementation_version, "mock-v1");
+    assert!(
+        graph
+            .nodes
+            .iter()
+            .all(|node| node.node_id != "external_mock")
+    );
+    assert!(graph.edges.iter().any(|edge| {
+        edge.transfer == cdf_runtime::GraphEdgeTransfer::Fused
+            && edge.producer == "reconcile"
+            && edge.consumer == "transform"
+    }));
+    assert!(graph.edges.iter().any(|edge| {
+        edge.transfer == cdf_runtime::GraphEdgeTransfer::Durable
+            && edge.producer == "segment_persist"
+    }));
+    plan.operator_graph = Some(graph.clone());
+    let temp = TempDir::new().unwrap();
+    block_on(execute_to_package(&plan, &resource, temp.path())).unwrap();
+    let packaged: cdf_runtime::CompiledOperatorGraph = serde_json::from_slice(
+        &std::fs::read(temp.path().join("plan/operator-graph.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(packaged, graph);
+}
+
+#[test]
 fn validation_program_source_name_can_cover_and_rename_batch_field() {
     let resource = MockResource::tier_a(sample_batches());
     let mut input = plan_input(

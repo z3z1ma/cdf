@@ -982,6 +982,10 @@ where
     builder.update_status(PackageStatus::Extracting)?;
     builder.write_json_artifact("plan/scan.json", &plan.scan)?;
     builder.write_json_artifact("plan/explain.json", &plan.explain)?;
+    if let Some(graph) = &plan.operator_graph {
+        graph.validate()?;
+        builder.write_json_artifact("plan/operator-graph.json", graph)?;
+    }
     builder.write_json_artifact("plan/validation-program.json", &validation_program)?;
     if let Some(evidence) = effective_schema_evidence {
         builder.write_json_artifact("schema/effective-schema-evidence.json", evidence)?;

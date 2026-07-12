@@ -42,6 +42,14 @@ pub enum GraphOrdering {
     Canonical,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GraphEdgeTransfer {
+    Fused,
+    Accounted,
+    Durable,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GraphNodeDescriptor {
     pub node_id: String,
@@ -112,7 +120,7 @@ pub struct GraphEdgeDescriptor {
     pub producer: String,
     pub consumer: String,
     pub ordering: GraphOrdering,
-    pub durable_handoff: bool,
+    pub transfer: GraphEdgeTransfer,
 }
 
 impl GraphEdgeDescriptor {
@@ -148,12 +156,14 @@ struct GraphIdentity<'a> {
 impl CompiledOperatorGraph {
     pub fn new(
         graph_version: impl Into<String>,
-        nodes: Vec<GraphNodeDescriptor>,
-        edges: Vec<GraphEdgeDescriptor>,
+        mut nodes: Vec<GraphNodeDescriptor>,
+        mut edges: Vec<GraphEdgeDescriptor>,
     ) -> Result<Self> {
         let graph_version = graph_version.into();
         validate_token("operator graph version", &graph_version)?;
         validate_graph(&nodes, &edges)?;
+        nodes = canonical_node_order(&nodes, &edges)?;
+        edges.sort_by(|left, right| left.edge_id.cmp(&right.edge_id));
         let semantic_hash = artifact_hash(&GraphIdentity {
             graph_version: &graph_version,
             nodes: &nodes,
@@ -170,6 +180,20 @@ impl CompiledOperatorGraph {
     pub fn validate(&self) -> Result<()> {
         validate_token("operator graph version", &self.graph_version)?;
         validate_graph(&self.nodes, &self.edges)?;
+        if canonical_node_order(&self.nodes, &self.edges)? != self.nodes {
+            return Err(CdfError::contract(
+                "compiled operator graph nodes are not in canonical topological order",
+            ));
+        }
+        if self
+            .edges
+            .windows(2)
+            .any(|pair| pair[0].edge_id >= pair[1].edge_id)
+        {
+            return Err(CdfError::contract(
+                "compiled operator graph edges are not in canonical id order",
+            ));
+        }
         let expected = artifact_hash(&GraphIdentity {
             graph_version: &self.graph_version,
             nodes: &self.nodes,
@@ -220,11 +244,36 @@ fn validate_graph(nodes: &[GraphNodeDescriptor], edges: &[GraphEdgeDescriptor]) 
             .iter()
             .find(|node| node.node_id == edge.producer)
             .expect("producer membership checked");
-        if edge.durable_handoff != producer.durable_output {
+        let consumer = nodes
+            .iter()
+            .find(|node| node.node_id == edge.consumer)
+            .expect("consumer membership checked");
+        if (edge.transfer == GraphEdgeTransfer::Durable) != producer.durable_output {
             return Err(CdfError::contract(format!(
-                "graph edge `{}` durable handoff disagrees with producer `{}`",
+                "graph edge `{}` durable transfer disagrees with producer `{}`",
                 edge.edge_id, producer.node_id
             )));
+        }
+        match edge.transfer {
+            GraphEdgeTransfer::Fused
+                if producer.fusion_group.is_none()
+                    || producer.fusion_group != consumer.fusion_group =>
+            {
+                return Err(CdfError::contract(format!(
+                    "fused graph edge `{}` requires the same declared fusion group on both nodes",
+                    edge.edge_id
+                )));
+            }
+            GraphEdgeTransfer::Accounted | GraphEdgeTransfer::Durable
+                if producer.fusion_group.is_some()
+                    && producer.fusion_group == consumer.fusion_group =>
+            {
+                return Err(CdfError::contract(format!(
+                    "graph edge `{}` cannot transfer ownership inside fusion group {:?}",
+                    edge.edge_id, producer.fusion_group
+                )));
+            }
+            _ => {}
         }
     }
     ensure_acyclic(nodes, edges)
@@ -266,6 +315,58 @@ fn ensure_acyclic(nodes: &[GraphNodeDescriptor], edges: &[GraphEdgeDescriptor]) 
         ));
     }
     Ok(())
+}
+
+fn canonical_node_order(
+    nodes: &[GraphNodeDescriptor],
+    edges: &[GraphEdgeDescriptor],
+) -> Result<Vec<GraphNodeDescriptor>> {
+    let by_id = nodes
+        .iter()
+        .map(|node| (node.node_id.as_str(), node))
+        .collect::<std::collections::BTreeMap<_, _>>();
+    let mut incoming = nodes
+        .iter()
+        .map(|node| {
+            (
+                node.node_id.as_str(),
+                edges
+                    .iter()
+                    .filter(|edge| edge.consumer == node.node_id)
+                    .count(),
+            )
+        })
+        .collect::<std::collections::BTreeMap<_, _>>();
+    let mut ready = incoming
+        .iter()
+        .filter_map(|(id, count)| (*count == 0).then_some(*id))
+        .collect::<BTreeSet<_>>();
+    let mut ordered = Vec::with_capacity(nodes.len());
+    while let Some(node_id) = ready.pop_first() {
+        if incoming.remove(node_id).is_none() {
+            continue;
+        }
+        ordered.push(
+            (*by_id
+                .get(node_id)
+                .ok_or_else(|| CdfError::internal("canonical graph node disappeared"))?)
+            .clone(),
+        );
+        for edge in edges.iter().filter(|edge| edge.producer == node_id) {
+            if let Some(count) = incoming.get_mut(edge.consumer.as_str()) {
+                *count -= 1;
+                if *count == 0 {
+                    ready.insert(edge.consumer.as_str());
+                }
+            }
+        }
+    }
+    if ordered.len() != nodes.len() {
+        return Err(CdfError::contract(
+            "compiled operator graph must be acyclic",
+        ));
+    }
+    Ok(ordered)
 }
 
 #[derive(Clone, Debug)]
@@ -580,7 +681,7 @@ mod tests {
                 producer: "mock_source".to_owned(),
                 consumer: "mock_destination".to_owned(),
                 ordering: GraphOrdering::Canonical,
-                durable_handoff: false,
+                transfer: GraphEdgeTransfer::Accounted,
             }],
         )
         .unwrap();
@@ -603,11 +704,11 @@ mod tests {
                 producer: "a".to_owned(),
                 consumer: "b".to_owned(),
                 ordering: GraphOrdering::Canonical,
-                durable_handoff: false,
+                transfer: GraphEdgeTransfer::Accounted,
             }],
         )
         .unwrap_err();
-        assert!(error.message.contains("durable handoff disagrees"));
+        assert!(error.message.contains("durable transfer disagrees"));
 
         let error = CompiledOperatorGraph::new(
             "graph-v1",
@@ -621,14 +722,14 @@ mod tests {
                     producer: "a".to_owned(),
                     consumer: "b".to_owned(),
                     ordering: GraphOrdering::Canonical,
-                    durable_handoff: false,
+                    transfer: GraphEdgeTransfer::Accounted,
                 },
                 GraphEdgeDescriptor {
                     edge_id: "b_to_a".to_owned(),
                     producer: "b".to_owned(),
                     consumer: "a".to_owned(),
                     ordering: GraphOrdering::Canonical,
-                    durable_handoff: false,
+                    transfer: GraphEdgeTransfer::Accounted,
                 },
             ],
         )

@@ -2,6 +2,7 @@
 
 mod dedup_spill;
 mod execution;
+mod graph_plan;
 mod memory;
 mod output_schema;
 mod planning;
@@ -20,6 +21,7 @@ pub use execution::{
     execute_to_package_with_segment_positions_and_pre_finalize, normalize_record_batch,
     preview_partition_selector_candidate, preview_resource,
 };
+pub use graph_plan::compile_operator_graph;
 pub use memory::DataFusionMemoryCoordinator;
 pub use planning::{
     CDF_NATIVE_RESOURCE_ADAPTER_KIND, Planner, datafusion_filter_pushdown, negotiate_scan_plan,

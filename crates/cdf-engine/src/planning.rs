@@ -153,6 +153,7 @@ impl Planner {
         Ok(EnginePlan {
             scan,
             partition_schedule: None,
+            operator_graph: None,
             effective_schema_evidence: None,
             final_projection,
             residual_predicates,

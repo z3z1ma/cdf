@@ -38,6 +38,8 @@ pub struct EnginePlan {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub partition_schedule: Option<cdf_runtime::CanonicalPartitionSchedule>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub operator_graph: Option<cdf_runtime::CompiledOperatorGraph>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub effective_schema_evidence: Option<EffectiveSchemaPlanEvidence>,
     pub final_projection: Option<Vec<String>>,
     pub residual_predicates: Vec<ScanPredicate>,
@@ -62,6 +64,16 @@ impl EnginePlan {
         let schedule = cdf_runtime::CanonicalPartitionSchedule::compile(source, &self.scan)?;
         self.explain.partition_schedule = Some(schedule.clone());
         self.partition_schedule = Some(schedule);
+        Ok(self)
+    }
+
+    pub fn bind_operator_graph(
+        mut self,
+        source: &cdf_runtime::CompiledSourcePlan,
+        destination: &cdf_runtime::DestinationRuntimeCapabilities,
+    ) -> Result<Self> {
+        let graph = crate::compile_operator_graph(&self, source, destination)?;
+        self.operator_graph = Some(graph);
         Ok(self)
     }
     pub fn effective_schema_evidence(&self) -> Option<&EffectiveSchemaPlanEvidence> {
