@@ -1,7 +1,7 @@
 Status: recorded
 Created: 2026-07-11
 Updated: 2026-07-11
-Target: .10x/tickets/2026-07-11-p3-d2-duckdb-arrow-bulk.md
+Target: .10x/tickets/done/2026-07-11-p3-d2-duckdb-arrow-bulk.md
 Verdict: pass
 
 # DuckDB overlapped staged-ingress review

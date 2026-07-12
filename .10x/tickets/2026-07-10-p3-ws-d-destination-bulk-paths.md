@@ -15,7 +15,7 @@ Split by destination; no shared generic branch may name a concrete destination.
 ## Activated children
 
 - `.10x/tickets/done/2026-07-11-p3-d1-bulk-path-contract.md` — done
-- `.10x/tickets/2026-07-11-p3-d2-duckdb-arrow-bulk.md`
+- `.10x/tickets/done/2026-07-11-p3-d2-duckdb-arrow-bulk.md`
 - `.10x/tickets/2026-07-11-p3-d3-postgres-binary-copy.md`
 - `.10x/tickets/2026-07-11-p3-d4-parquet-streaming-writer.md`
 - `.10x/tickets/2026-07-11-p3-d5-bulk-path-matrix.md`
