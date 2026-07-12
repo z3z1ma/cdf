@@ -574,10 +574,51 @@ struct PhysicalSchemaAuthority {
 
 enum PreparedFileInput {
     Source(Arc<dyn ByteSource>),
+    SpoolSource {
+        source: Arc<dyn ByteSource>,
+        size_bytes: u64,
+    },
     Path {
         path: PathBuf,
         spool: Option<Arc<tempfile::NamedTempFile>>,
     },
+}
+
+struct AccountedSpool {
+    file: tempfile::NamedTempFile,
+    _reservation: cdf_runtime::SpillReservation,
+}
+
+impl AccountedSpool {
+    fn path(&self) -> &Path {
+        self.file.path()
+    }
+}
+
+#[derive(Clone, Default)]
+struct FileKeepalive {
+    legacy: Option<Arc<tempfile::NamedTempFile>>,
+    accounted: Option<Arc<AccountedSpool>>,
+}
+
+impl FileKeepalive {
+    fn legacy(file: Arc<tempfile::NamedTempFile>) -> Self {
+        Self {
+            legacy: Some(file),
+            accounted: None,
+        }
+    }
+
+    fn accounted(file: Arc<AccountedSpool>) -> Self {
+        Self {
+            legacy: None,
+            accounted: Some(file),
+        }
+    }
+
+    fn hold(&self) {
+        let _ = (&self.legacy, &self.accounted);
+    }
 }
 
 struct PreparedFilePartition {
@@ -700,7 +741,8 @@ fn open_file_resource_with_dependencies(
         NATIVE_STREAM_ITEMS,
         move |mut sender, _cancellation| async move {
             let mut batches =
-                stream_prepared_file_match(prepared, &plan.format, &dependencies).await?;
+                stream_prepared_file_match(prepared, &plan.format, &dependencies, _cancellation)
+                    .await?;
             while let Some(batch) = batches.try_next().await? {
                 sender.send(batch).await?;
             }
@@ -762,10 +804,7 @@ fn prepare_file_input(
     source_access: cdf_runtime::FormatSourceAccess,
     dependencies: &FileRuntimeDependencies,
 ) -> Result<PreparedFileInput> {
-    let direct_remote = source_access != cdf_runtime::FormatSourceAccess::Adaptive;
-    if resolved.compression.transform_id.is_none()
-        && (matches!(resolved.open, ResolvedFileOpen::LocalPath(_)) || direct_remote)
-    {
+    if resolved.compression.transform_id.is_none() {
         let expected = expected_file_identity(resolved);
         let source: Option<Arc<dyn ByteSource>> = match &resolved.open {
             ResolvedFileOpen::LocalPath(path) => Some(Arc::new(LocalByteSource::open(
@@ -777,7 +816,18 @@ fn prepare_file_input(
             })?,
         };
         if let Some(source) = source {
-            return Ok(PreparedFileInput::Source(source));
+            return Ok(
+                if matches!(resolved.open, ResolvedFileOpen::Transport(_))
+                    && source_access == cdf_runtime::FormatSourceAccess::Adaptive
+                {
+                    PreparedFileInput::SpoolSource {
+                        source,
+                        size_bytes: resolved.size_bytes,
+                    }
+                } else {
+                    PreparedFileInput::Source(source)
+                },
+            );
         }
     }
     match &resolved.open {
@@ -819,6 +869,7 @@ async fn stream_prepared_file_match(
     prepared: PreparedFilePartition,
     declaration: &FileFormatDeclaration,
     dependencies: &FileRuntimeDependencies,
+    cancellation: cdf_runtime::RunCancellation,
 ) -> Result<BatchStream> {
     let PreparedFilePartition {
         resolved,
@@ -836,37 +887,47 @@ async fn stream_prepared_file_match(
             sha256: resolved.sha256.clone(),
         }],
     }));
-    let (source, keepalive): (Arc<dyn ByteSource>, Option<Arc<tempfile::NamedTempFile>>) =
-        match prepared {
-            PreparedFileInput::Source(source) => (source, None),
-            PreparedFileInput::Path {
-                path: source_path,
-                mut spool,
-            } => {
-                let source_path = if let Some(transform_id) = &resolved.compression.transform_id {
-                    let transformed = Arc::new(
-                        spool_transformed_file_async(
-                            source_path,
-                            dependencies.transforms().resolve(transform_id)?,
-                            dependencies,
-                        )
-                        .await?,
-                    );
-                    let path = transformed.path().to_path_buf();
-                    spool = Some(transformed);
-                    path
-                } else {
-                    source_path
-                };
-                (
-                    Arc::new(LocalByteSource::open(
+    let (source, keepalive): (Arc<dyn ByteSource>, Option<FileKeepalive>) = match prepared {
+        PreparedFileInput::Source(source) => (source, None),
+        PreparedFileInput::SpoolSource { source, size_bytes } => {
+            let spool = Arc::new(
+                spool_byte_source_async(source, size_bytes, dependencies, cancellation.clone())
+                    .await?,
+            );
+            let local = Arc::new(LocalByteSource::open(
+                spool.path(),
+                dependencies.execution().memory(),
+            )?);
+            (local, Some(FileKeepalive::accounted(spool)))
+        }
+        PreparedFileInput::Path {
+            path: source_path,
+            mut spool,
+        } => {
+            let source_path = if let Some(transform_id) = &resolved.compression.transform_id {
+                let transformed = Arc::new(
+                    spool_transformed_file_async(
                         source_path,
-                        dependencies.execution().memory(),
-                    )?),
-                    spool,
-                )
-            }
-        };
+                        dependencies.transforms().resolve(transform_id)?,
+                        dependencies,
+                    )
+                    .await?,
+                );
+                let path = transformed.path().to_path_buf();
+                spool = Some(transformed);
+                path
+            } else {
+                source_path
+            };
+            (
+                Arc::new(LocalByteSource::open(
+                    source_path,
+                    dependencies.execution().memory(),
+                )?),
+                spool.map(FileKeepalive::legacy),
+            )
+        }
+    };
 
     stream_registered_format(
         source,
@@ -907,7 +968,13 @@ fn stream_file_match_blocking(
     let dependencies = dependencies.clone();
     let execution = dependencies.execution().clone();
     execution.run_io(async move {
-        stream_prepared_file_match(prepared, &declaration, &dependencies).await
+        stream_prepared_file_match(
+            prepared,
+            &declaration,
+            &dependencies,
+            cdf_runtime::RunCancellation::default(),
+        )
+        .await
     })
 }
 
@@ -921,6 +988,91 @@ fn spool_transformed_file(
     let source_path = source_path.to_path_buf();
     execution.run_io(async move {
         spool_transformed_file_async(source_path, transform, &dependencies).await
+    })
+}
+
+async fn spool_byte_source_async(
+    source: Arc<dyn ByteSource>,
+    size_bytes: u64,
+    dependencies: &FileRuntimeDependencies,
+    cancellation: cdf_runtime::RunCancellation,
+) -> Result<AccountedSpool> {
+    if size_bytes == 0 || size_bytes > dependencies.max_spool_bytes() {
+        return Err(CdfError::data(format!(
+            "remote file requires {size_bytes} spool bytes, exceeding the configured {}-byte disk budget; increase the spool budget or use a streaming format runtime",
+            dependencies.max_spool_bytes()
+        )));
+    }
+    let reservation = dependencies
+        .execution()
+        .spill()
+        .try_reserve(size_bytes)?
+        .ok_or_else(|| {
+            let snapshot = dependencies.execution().spill().snapshot();
+            CdfError::data(format!(
+                "remote spool requires {size_bytes} bytes but the shared spill budget has {} of {} bytes in use; increase the spill budget or reduce concurrent remote files",
+                snapshot.current_bytes, snapshot.budget_bytes
+            ))
+        })?;
+    let file = tempfile::NamedTempFile::new()
+        .map_err(|error| CdfError::data(format!("create accounted remote spool: {error}")))?;
+    let mut output = tokio::fs::File::create(file.path())
+        .await
+        .map_err(|error| CdfError::data(format!("open accounted remote spool: {error}")))?;
+    let capabilities = source.capabilities();
+    let chunk_bytes = (4 * 1024 * 1024_u64).clamp(
+        capabilities.minimum_chunk_bytes,
+        capabilities.maximum_chunk_bytes,
+    );
+    let mut input = source
+        .open_sequential(SequentialReadRequest {
+            preferred_chunk_bytes: chunk_bytes,
+            cancellation: cancellation.clone(),
+        })
+        .await?;
+    let mut transferred = 0_u64;
+    let mut hasher = Sha256::new();
+    while let Some(chunk) = input.try_next().await? {
+        cancellation.check()?;
+        output
+            .write_all(chunk.payload())
+            .await
+            .map_err(|error| CdfError::data(format!("write accounted remote spool: {error}")))?;
+        hasher.update(chunk.payload());
+        transferred = transferred
+            .checked_add(
+                u64::try_from(chunk.payload().len())
+                    .map_err(|_| CdfError::data("remote spool chunk exceeds u64"))?,
+            )
+            .ok_or_else(|| CdfError::data("remote spool byte count overflowed"))?;
+        if transferred > size_bytes {
+            return Err(CdfError::data(
+                "remote spool exceeded its planned generation length",
+            ));
+        }
+    }
+    output
+        .flush()
+        .await
+        .map_err(|error| CdfError::data(format!("flush accounted remote spool: {error}")))?;
+    if transferred != size_bytes {
+        return Err(CdfError::data(format!(
+            "remote spool wrote {transferred} bytes for a planned {size_bytes}-byte generation"
+        )));
+    }
+    if let Some(expected) = &source.identity().checksum {
+        let observed = hex::encode(hasher.finalize());
+        let expected = expected.strip_prefix("sha256:").unwrap_or(expected);
+        if observed != expected {
+            return Err(CdfError::data(
+                "remote spool checksum does not match planned content identity",
+            ));
+        }
+    }
+    cancellation.check()?;
+    Ok(AccountedSpool {
+        file,
+        _reservation: reservation,
     })
 }
 
@@ -979,7 +1131,7 @@ async fn spool_transformed_file_async(
 
 fn stream_registered_format(
     source: Arc<dyn ByteSource>,
-    keepalive: Option<Arc<tempfile::NamedTempFile>>,
+    keepalive: Option<FileKeepalive>,
     driver: Arc<dyn FormatDriver>,
     options: ReadOptions,
     source_position: Option<SourcePosition>,
@@ -997,6 +1149,9 @@ fn stream_registered_format(
         NATIVE_STREAM_ITEMS,
         move |mut sender, cancellation| async move {
             let _keepalive = keepalive;
+            if let Some(keepalive) = &_keepalive {
+                keepalive.hold();
+            }
             let options_json = driver.canonical_options(serde_json::json!({}))?;
             let physical_schema = match physical_schema_authority.schema {
                 Some(schema) => {
@@ -3125,7 +3280,7 @@ mod tests {
                 &dependencies,
             )
             .unwrap(),
-            PreparedFileInput::Path { spool: Some(_), .. }
+            PreparedFileInput::SpoolSource { .. }
         ));
         let stream = stream_file_match_blocking(
             &resolved[0],
@@ -3152,6 +3307,9 @@ mod tests {
             dependencies.execution().memory().snapshot().current_bytes,
             0
         );
+        let spill = dependencies.execution().spill().snapshot();
+        assert!(spill.peak_bytes >= bytes.len() as u64);
+        assert_eq!(spill.current_bytes, 0);
     }
 
     #[test]
