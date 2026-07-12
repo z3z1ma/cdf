@@ -1251,6 +1251,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "cdf-transform-zstd"
+version = "0.1.0"
+dependencies = [
+ "bytes",
+ "cdf-kernel",
+ "cdf-memory",
+ "cdf-runtime",
+ "futures-executor",
+ "futures-util",
+ "zstd",
+]
+
+[[package]]
 name = "cdf-wasm"
 version = "0.1.0"
 
