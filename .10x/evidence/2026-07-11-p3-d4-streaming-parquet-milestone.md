@@ -1,7 +1,7 @@
 Status: recorded
 Created: 2026-07-11
 Updated: 2026-07-11
-Relates-To: .10x/tickets/2026-07-11-p3-d4-parquet-streaming-writer.md
+Relates-To: .10x/tickets/done/2026-07-11-p3-d4-parquet-streaming-writer.md
 
 # Streaming Parquet destination milestone
 

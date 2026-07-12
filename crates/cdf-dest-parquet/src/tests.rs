@@ -259,7 +259,7 @@ fn build_package(
     package_id: &str,
     segments: Vec<(&str, Vec<RecordBatch>)>,
 ) -> BuiltPackage {
-    let mut builder = PackageBuilder::create(package_dir, package_id).unwrap();
+    let builder = PackageBuilder::create(package_dir, package_id).unwrap();
     builder.update_status(PackageStatus::Extracting).unwrap();
     builder
         .write_json_artifact(
@@ -453,12 +453,16 @@ fn commit_with_session(
     let mut session = DestinationProtocol::begin(dest, commit.commit.clone(), plan.kernel.clone())
         .expect("begin Parquet commit session");
     session.apply_migrations().unwrap();
-    let segments = PackageReader::open(&commit.package_dir)
+    let reader = PackageReader::open(&commit.package_dir).unwrap();
+    let memory = dest.execution().memory();
+    let maximum_segment_bytes = memory.snapshot().budget_bytes.min(64 * 1024 * 1024);
+    for segment in reader
+        .verified_commit_segment_stream(&commit.commit.segments, memory, maximum_segment_bytes)
         .unwrap()
-        .read_commit_segments(&commit.commit.segments)
-        .unwrap();
-    for segment in segments {
-        let ack = session.write_segment(segment).unwrap();
+    {
+        let ack = session
+            .write_segment(segment.unwrap().into_commit_segment().unwrap())
+            .unwrap();
         assert!(commit.commit.segments.iter().any(|state| {
             ack.segment_id == state.segment_id
                 && ack.row_count == state.row_count
