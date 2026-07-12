@@ -36,6 +36,6 @@ cdf-dest-postgres = { path = "../cdf-dest-postgres" }
 cdf-format-arrow-ipc = { path = "../cdf-format-arrow-ipc" }
 cdf-format-parquet = { path = "../cdf-format-parquet" }
 flate2 = "1.1.9"
-object_store = "0.13.2"
+object_store = { git = "https://github.com/apache/arrow-rs-object-store.git", rev = "c7316d29face118e7409eead0cda098f38589428" }
 postgres = "0.19"
 tempfile = "3.27.0"

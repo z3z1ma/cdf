@@ -1089,6 +1089,32 @@ mod tests {
     }
 
     #[test]
+    fn object_store_provider_urls_build_through_the_shared_parser() {
+        for (location, options, expected_path) in [
+            (
+                "s3://cdf-conformance/data/file.parquet",
+                Vec::new(),
+                "data/file.parquet",
+            ),
+            (
+                "gs://cdf-conformance/data/file.parquet",
+                Vec::new(),
+                "data/file.parquet",
+            ),
+            (
+                "az://cdf-conformance/data/file.parquet",
+                vec![("azure_storage_account_name", "cdf-conformance")],
+                "data/file.parquet",
+            ),
+        ] {
+            let url = Url::parse(location).unwrap();
+            let (_, path) = object_store::parse_url_opts(&url, options)
+                .unwrap_or_else(|error| panic!("build provider for {location}: {error}"));
+            assert_eq!(path.as_ref(), expected_path);
+        }
+    }
+
+    #[test]
     fn object_store_credentials_and_egress_fail_before_network_without_leaks() {
         let credential = SecretUri::new("secret://file/cloud-options").unwrap();
         let resource = FileTransportResource::object_store_url("s3://private-bucket/data.parquet")

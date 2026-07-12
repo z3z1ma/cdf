@@ -1,7 +1,7 @@
 Status: recorded
 Created: 2026-07-12
 Updated: 2026-07-12
-Relates-To: .10x/tickets/2026-07-11-p3-b1-streaming-byte-transforms.md, .10x/tickets/2026-07-11-p0-fx1-native-format-extension-boundary.md, .10x/tickets/2026-07-12-p0-object-store-quick-xml-advisory.md
+Relates-To: .10x/tickets/2026-07-11-p3-b1-streaming-byte-transforms.md, .10x/tickets/2026-07-11-p0-fx1-native-format-extension-boundary.md, .10x/tickets/done/2026-07-12-p0-object-store-quick-xml-advisory.md
 
 # Native Snappy framed transform
 
@@ -33,7 +33,7 @@ The first measured implementation used an async byte-at-a-time payload loop and 
 - `cargo clippy -p cdf-runtime -p cdf-transform-snappy --all-targets --locked -- -D warnings`
   - Result: passed.
 - `cargo deny --locked check`
-  - Bans, licenses, and sources passed. Advisories failed on pre-existing `quick-xml 0.39.4` through `object_store 0.13.2` (RUSTSEC-2026-0195); `.10x/tickets/2026-07-12-p0-object-store-quick-xml-advisory.md` owns remediation.
+  - Bans, licenses, and sources passed. Advisories failed on then-present `quick-xml 0.39.4` through `object_store 0.13.2` (RUSTSEC-2026-0195); `.10x/tickets/done/2026-07-12-p0-object-store-quick-xml-advisory.md` records its subsequent remediation.
 - `cargo vet --locked --no-minimize-exemptions`
   - Full source/build/unsafe review for new `crc32c 0.6.8` was recorded as `safe-to-deploy`; it no longer appears in the unvetted set. Fourteen pre-existing dependencies remain unvetted outside this slice.
 
