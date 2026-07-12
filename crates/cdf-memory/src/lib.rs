@@ -317,6 +317,12 @@ impl AccountedBytes {
     }
 }
 
+impl AsRef<[u8]> for AccountedBytes {
+    fn as_ref(&self) -> &[u8] {
+        self.payload()
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct AccountedBatch {
     batch: RecordBatch,

@@ -2,8 +2,11 @@ use std::{collections::BTreeMap, fmt, pin::Pin, sync::Arc};
 
 use arrow_schema::SchemaRef;
 use cdf_contract::ObservedSchema;
-use cdf_kernel::{Batch, BoxFuture, CdfError, PushdownFidelity, Result, ScanPredicate};
-use cdf_memory::{AccountedBytes, MemoryLease, record_batch_retained_bytes};
+use cdf_kernel::{
+    Batch, BoxFuture, CdfError, PartitionId, PushdownFidelity, ResourceId, Result, ScanPredicate,
+    SchemaHash, SourcePosition,
+};
+use cdf_memory::{AccountedBytes, MemoryCoordinator, MemoryLease, record_batch_retained_bytes};
 use futures_util::Stream;
 use serde::{Deserialize, Serialize};
 
@@ -305,14 +308,20 @@ pub struct DecodePlanningRequest {
     pub cancellation: RunCancellation,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct PhysicalDecodeRequest {
     pub options: serde_json::Value,
     pub unit: DecodeUnitPlan,
+    pub resource_id: ResourceId,
+    pub partition_id: PartitionId,
+    pub batch_id_prefix: String,
+    pub observed_schema_hash: SchemaHash,
+    pub source_position: Option<SourcePosition>,
     pub projection: Option<Vec<String>>,
     pub predicates: Vec<ScanPredicate>,
     pub target_batch_rows: usize,
     pub target_batch_bytes: u64,
+    pub memory: Arc<dyn MemoryCoordinator>,
     pub cancellation: RunCancellation,
 }
 

@@ -36,5 +36,9 @@ Depends on L5, FX1, segmentation, and the execution host.
 
 ## Progress and notes
 
+- 2026-07-11: FX1 extracted the native codec into `cdf-format-parquet` behind the neutral `FormatDriver`/`ByteSource` boundary. The driver already provides footer discovery, row-group unit plans, exact projection, capability-bounded parallel ranges, incremental Arrow output, full physical-schema drift checks, and owner-backed zero-copy source accounting. B2 still owns production migration measurement, predicate/page-index pushdown, adaptive byte-target control, jobs scaling, malformed/fuzz coverage, and deletion of the superseded monolithic Parquet reader. Evidence: `.10x/evidence/2026-07-11-p0-fx1-parquet-driver-extraction.md`.
+
+## Progress and notes
+
 - 2026-07-11: Corrected the urgent full-scan policy: execution no longer routes through the unconditional serialized `RangeChunkReader`; discovery retains bounded footer ranges, while full/unknown coverage uses one generation-bound sequential spool. Removed the superseded range-execution exports and raised native read batches from 1,024 to 65,536 rows. The public January TLC file loaded 2,964,624 rows successfully in 43.85 seconds in an unoptimized debug end-to-end run. Streaming decoded publication, row-group units, projection/predicate pushdown, and release roofline remain open. Evidence: `.10x/evidence/2026-07-11-http-parquet-sequential-spool-and-positioned-slicing.md`.
 - 2026-07-11: Replaced collected Parquet execution with an incremental `BatchStream` behind the generic format-stream boundary. Release profiling measured 113.9 ms Arrow decode and 0.2 ms reconciliation/envelope work for all 2,964,624 TLC rows, approximately 0.87x the median raw arrow-rs reference. Source execution no longer branches on Parquet. Row-group units, pushdown, parallel decode, and the final envelope remain open. Evidence: `.10x/evidence/2026-07-11-p3-parquet-stream-byte-first-segments.md`.

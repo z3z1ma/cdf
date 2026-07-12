@@ -936,6 +936,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "cdf-format-parquet"
+version = "0.1.0"
+dependencies = [
+ "arrow-array 59.1.0",
+ "arrow-schema 59.1.0",
+ "bytes",
+ "cdf-contract",
+ "cdf-kernel",
+ "cdf-memory",
+ "cdf-runtime",
+ "futures-executor",
+ "futures-util",
+ "parquet",
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
 name = "cdf-formats"
 version = "0.1.0"
 dependencies = [
@@ -3268,6 +3286,7 @@ dependencies = [
  "bytes",
  "chrono",
  "flate2",
+ "futures",
  "half",
  "hashbrown 0.17.1",
  "lz4_flex",
@@ -3277,6 +3296,7 @@ dependencies = [
  "paste",
  "seq-macro",
  "snap",
+ "tokio",
  "twox-hash",
  "zstd",
 ]
