@@ -33,3 +33,7 @@ Depends on D2-D4.
 
 - `.10x/decisions/schema-planned-destination-bulk-paths.md`
 - `.10x/specs/destination-bulk-path-runtime.md`
+
+## Progress and notes
+
+- 2026-07-11: Every first-party runtime descriptor now publishes a stable measured evidence version (`p3-d2/d3/d4-2026-07-11-v1`) at both selected-path and path-descriptor levels. A single catalog-driven conformance law inspects every enrolled driver and rejects missing paths, missing measurement authority, or correction/provenance capability drift without destination-name branching. Current DuckDB, PostgreSQL, and Parquet suites plus strict all-target Clippy pass. D5 remains open for the fourth-driver full law, generated unavailable/ineligible cells, registry-rendered docs/doctor assertions, and consolidated host envelope.

@@ -341,10 +341,10 @@ fn postgres_runtime_capabilities() -> DestinationRuntimeCapabilities {
             native_internal_parallelism: 1,
             external_staging: true,
             fallback: cdf_runtime::BulkFallbackMode::RollbackFullRedrive,
-            measured_evidence_version: None,
+            measured_evidence_version: Some("p3-d3-2026-07-11-v1".to_owned()),
         }],
         bulk_path: Some("copy_binary".to_owned()),
-        bulk_evidence_version: None,
+        bulk_evidence_version: Some("p3-d3-2026-07-11-v1".to_owned()),
         replay_requires_explicit_target: true,
         replay_target_hint: Some("schema.table".to_owned()),
         replay_policy_values: [("merge_dedup".to_owned(), vec!["fail".to_owned()])]

@@ -22,17 +22,25 @@ static POLICY: ConformanceDestinationPolicy = ConformanceDestinationPolicy;
 
 struct DestinationCatalogEntry {
     install: fn(&mut DestinationRegistry) -> Result<()>,
+    #[cfg(test)]
+    inspection_uri: fn(&Path) -> String,
 }
 
 const DESTINATIONS: &[DestinationCatalogEntry] = &[
     DestinationCatalogEntry {
         install: |registry| registry.register(DuckDbRuntimeDriver),
+        #[cfg(test)]
+        inspection_uri: |root| local_uri("duckdb", &root.join("conformance.duckdb")),
     },
     DestinationCatalogEntry {
         install: |registry| registry.register(ParquetRuntimeDriver),
+        #[cfg(test)]
+        inspection_uri: |root| local_uri("parquet", &root.join("conformance-lake")),
     },
     DestinationCatalogEntry {
         install: |registry| registry.register(PostgresRuntimeDriver),
+        #[cfg(test)]
+        inspection_uri: |_| "postgres://localhost/conformance".to_owned(),
     },
 ];
 
@@ -68,6 +76,45 @@ fn catalog_is_the_single_first_party_destination_enrollment_point() {
         registry().unwrap().registered_schemes(),
         ["duckdb", "parquet", "postgres"]
     );
+}
+
+#[test]
+fn every_catalog_destination_publishes_measured_bulk_and_provenance_capabilities() {
+    let temp = tempfile::tempdir().unwrap();
+    let registry = registry().unwrap();
+    let context = DestinationResolutionContext::for_project_inspection(temp.path());
+    for entry in DESTINATIONS {
+        let inspection = registry
+            .inspect(&(entry.inspection_uri)(temp.path()), &context)
+            .unwrap();
+        assert!(!inspection.runtime.bulk_paths.is_empty());
+        assert!(inspection.runtime.bulk_evidence_version.is_some());
+        assert!(
+            inspection
+                .runtime
+                .bulk_paths
+                .iter()
+                .all(|path| path.measured_evidence_version.is_some())
+        );
+        assert_eq!(
+            inspection
+                .sheet_artifact
+                .protocol_capabilities
+                .corrections
+                .row_provenance
+                .persistence,
+            cdf_kernel::CapabilitySupport::Supported
+        );
+        assert_eq!(
+            inspection
+                .sheet_artifact
+                .protocol_capabilities
+                .corrections
+                .row_provenance
+                .targetability,
+            cdf_kernel::CapabilitySupport::Supported
+        );
+    }
 }
 
 #[test]

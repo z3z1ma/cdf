@@ -1,7 +1,7 @@
 Status: recorded
 Created: 2026-07-11
 Updated: 2026-07-11
-Relates-To: .10x/tickets/2026-07-11-p3-d6-compact-provenance-conformance.md, .10x/decisions/compact-lossless-destination-row-provenance.md, .10x/specs/schema-promotion-corrections.md
+Relates-To: .10x/tickets/done/2026-07-11-p3-d6-compact-provenance-conformance.md, .10x/decisions/compact-lossless-destination-row-provenance.md, .10x/specs/schema-promotion-corrections.md
 
 # Postgres compact row-range provenance
 
