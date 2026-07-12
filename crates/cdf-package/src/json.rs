@@ -4,7 +4,7 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::io::Write;
 
-use crate::model::{ManifestIdentity, PackageManifest};
+use crate::model::{FileEntry, ManifestIdentity, PackageManifest, SegmentEntry};
 
 pub fn canonical_json_bytes<T: Serialize + ?Sized>(value: &T) -> Result<Vec<u8>> {
     let value = serde_json::to_value(value).map_err(json_error)?;
@@ -48,7 +48,12 @@ fn write_manifest_identity_canonical<W: Write>(
     writer: &mut W,
 ) -> Result<()> {
     write_bytes(writer, b"{\"files\":[")?;
-    write_values(writer, &identity.files)?;
+    for (index, entry) in identity.files.iter().enumerate() {
+        if index > 0 {
+            write_bytes(writer, b",")?;
+        }
+        write_file_entry(writer, entry)?;
+    }
     write_bytes(writer, b"],\"layout\":[")?;
     write_values(writer, &identity.layout)?;
     write_bytes(writer, b"],\"manifest_version\":")?;
@@ -56,8 +61,37 @@ fn write_manifest_identity_canonical<W: Write>(
     write_bytes(writer, b",\"package_id\":")?;
     write_value(writer, &identity.package_id)?;
     write_bytes(writer, b",\"segments\":[")?;
-    write_values(writer, &identity.segments)?;
+    for (index, entry) in identity.segments.iter().enumerate() {
+        if index > 0 {
+            write_bytes(writer, b",")?;
+        }
+        write_segment_entry(writer, entry)?;
+    }
     write_bytes(writer, b"]}")
+}
+
+fn write_file_entry<W: Write>(writer: &mut W, entry: &FileEntry) -> Result<()> {
+    write_bytes(writer, b"{\"byte_count\":")?;
+    write_value(writer, &entry.byte_count)?;
+    write_bytes(writer, b",\"path\":")?;
+    write_value(writer, &entry.path)?;
+    write_bytes(writer, b",\"sha256\":")?;
+    write_value(writer, &entry.sha256)?;
+    write_bytes(writer, b"}")
+}
+
+fn write_segment_entry<W: Write>(writer: &mut W, entry: &SegmentEntry) -> Result<()> {
+    write_bytes(writer, b"{\"byte_count\":")?;
+    write_value(writer, &entry.byte_count)?;
+    write_bytes(writer, b",\"path\":")?;
+    write_value(writer, &entry.path)?;
+    write_bytes(writer, b",\"row_count\":")?;
+    write_value(writer, &entry.row_count)?;
+    write_bytes(writer, b",\"segment_id\":")?;
+    write_value(writer, entry.segment_id.as_str())?;
+    write_bytes(writer, b",\"sha256\":")?;
+    write_value(writer, &entry.sha256)?;
+    write_bytes(writer, b"}")
 }
 
 fn write_values<W: Write, T: Serialize>(writer: &mut W, values: &[T]) -> Result<()> {
