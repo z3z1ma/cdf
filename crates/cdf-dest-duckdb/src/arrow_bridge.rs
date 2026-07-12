@@ -143,7 +143,10 @@ mod tests {
             )),
             false,
         );
-        assert_eq!(crate::package::duckdb_type(&map_type).unwrap(), "MAP(VARCHAR, BIGINT)");
+        assert_eq!(
+            crate::package::duckdb_type(&map_type).unwrap(),
+            "MAP(VARCHAR, BIGINT)"
+        );
 
         let conn = Connection::open_in_memory().unwrap();
         conn.execute_batch(&format!(

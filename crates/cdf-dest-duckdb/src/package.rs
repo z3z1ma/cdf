@@ -182,9 +182,9 @@ pub(crate) fn duckdb_type(data_type: &DataType) -> Result<String> {
                     "Arrow map entries must be a struct<key,value> for DuckDB",
                 ));
             };
-            if fields.len() != 2 || fields[0].name() != "key" || fields[1].name() != "value" {
+            if fields.len() != 2 {
                 return Err(CdfError::contract(
-                    "Arrow map entries must contain key and value fields for DuckDB",
+                    "Arrow map entries must contain exactly key and value fields for DuckDB",
                 ));
             }
             return Ok(format!(
