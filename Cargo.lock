@@ -1237,6 +1237,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "cdf-transform-gzip"
+version = "0.1.0"
+dependencies = [
+ "bytes",
+ "cdf-kernel",
+ "cdf-memory",
+ "cdf-runtime",
+ "crc32fast",
+ "flate2",
+ "futures-executor",
+ "futures-util",
+]
+
+[[package]]
 name = "cdf-wasm"
 version = "0.1.0"
 

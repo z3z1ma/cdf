@@ -1,6 +1,6 @@
 Status: open
 Created: 2026-07-11
-Updated: 2026-07-11
+Updated: 2026-07-12
 Parent: .10x/tickets/2026-07-10-p3-ws-b-format-decode-engines.md
 Depends-On: .10x/tickets/done/2026-07-10-p3-ws-l5-preoptimization-baseline.md, .10x/tickets/2026-07-11-p0-fx1-native-format-extension-boundary.md, .10x/tickets/done/2026-07-11-p3-a2-unified-memory-ledger.md
 
@@ -37,3 +37,4 @@ Depends on L5, FX1, and the memory ledger.
 ## Progress and notes
 
 - 2026-07-12: Replaced the unusable transform execution signature with explicit allocation and expansion authority. Every `ByteTransformDriver` now receives `ByteTransformRequest`: transform-class memory coordinator/consumer, preferred output chunk bound, expanded-byte and ratio ceilings no greater than its descriptor, optional planned input size, and cancellation. Invalid ownership, zero/oversized chunks, weakened ceilings, zero input identity, and ratio overflow fail before decode. No legacy signature or shim remains. This unblocks correct reserve-before-allocate gzip/zstd drivers; B1 remains open for implementations, integration, fuzzing, and envelope evidence. Evidence/review: `.10x/evidence/2026-07-12-p3-b1-transform-allocation-authority.md`, `.10x/reviews/2026-07-12-p3-b1-transform-allocation-authority-review.md`.
+- 2026-07-12: Added dependency-isolated `cdf-transform-gzip`, the first production `ByteTransformDriver`. It parses gzip framing incrementally across arbitrary input chunk boundaries, handles concatenated members, verifies header/payload/size checksums, enforces cancellation plus expanded-byte and ratio ceilings, and reserves both its native/header working set and every output chunk before allocation. The one-byte-input conformance test proves bounded overlap and full lease release. No full-object compatibility decoder exists in the new crate. B1 remains open for product-registry composition with the checksum publication barrier, removal of the old `cdf-formats` gzip paths, the remaining transforms, fuzzing, and envelope measurements. Evidence/review: `.10x/evidence/2026-07-12-p3-b1-native-gzip-driver.md`, `.10x/reviews/2026-07-12-p3-b1-native-gzip-driver-review.md`.
