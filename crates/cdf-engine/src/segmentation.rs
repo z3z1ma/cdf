@@ -1,6 +1,8 @@
 use std::collections::BTreeMap;
 
-use arrow_array::{Array, RecordBatch};
+use arrow_array::{
+    Array, FixedSizeListArray, LargeListArray, ListArray, MapArray, RecordBatch, StructArray,
+};
 use cdf_kernel::{
     CdfError, CompositePosition, CursorPosition, CursorValue, FileManifest, FilePosition, Result,
     SegmentId, SourcePosition,
@@ -268,23 +270,121 @@ fn logical_batch_bytes(batch: &RecordBatch) -> Result<u64> {
         .iter()
         .zip(batch.columns())
         .try_fold(0_u64, |total, (field, column)| {
-            let data = column.to_data();
-            let mut bytes = data.get_slice_memory_size().map_err(CdfError::from)?;
-            if data.nulls().is_some() {
-                bytes = bytes.saturating_sub(data.len().div_ceil(8));
-            }
-            if field.is_nullable() {
-                bytes = bytes
-                    .checked_add(data.len())
-                    .ok_or_else(|| CdfError::data("canonical nullable bytes overflow"))?;
-            }
+            let bytes = logical_array_bytes(field, column.as_ref())?;
             total
-                .checked_add(
-                    u64::try_from(bytes)
-                        .map_err(|_| CdfError::data("canonical logical array bytes exceed u64"))?,
-                )
+                .checked_add(bytes)
                 .ok_or_else(|| CdfError::data("canonical logical batch bytes overflow"))
         })
+}
+
+fn logical_array_bytes(field: &arrow_schema::Field, array: &dyn Array) -> Result<u64> {
+    let validity = if field.is_nullable() {
+        u64::try_from(array.len())
+            .map_err(|_| CdfError::data("canonical nullable bytes exceed u64"))?
+    } else {
+        0
+    };
+    let nested = match field.data_type() {
+        arrow_schema::DataType::List(item) => {
+            let array = array
+                .as_any()
+                .downcast_ref::<ListArray>()
+                .ok_or_else(|| CdfError::internal("list array/type mismatch"))?;
+            let offsets = array.value_offsets();
+            let start =
+                usize::try_from(offsets[0]).map_err(|_| CdfError::data("negative list offset"))?;
+            let end = usize::try_from(offsets[array.len()])
+                .map_err(|_| CdfError::data("negative list offset"))?;
+            let values = array.values().slice(start, end.saturating_sub(start));
+            Some((
+                u64::try_from(array.len().saturating_mul(4))
+                    .map_err(|_| CdfError::data("list offsets exceed u64"))?,
+                logical_array_bytes(item, values.as_ref())?,
+            ))
+        }
+        arrow_schema::DataType::LargeList(item) => {
+            let array = array
+                .as_any()
+                .downcast_ref::<LargeListArray>()
+                .ok_or_else(|| CdfError::internal("large-list array/type mismatch"))?;
+            let offsets = array.value_offsets();
+            let start = usize::try_from(offsets[0])
+                .map_err(|_| CdfError::data("negative large-list offset"))?;
+            let end = usize::try_from(offsets[array.len()])
+                .map_err(|_| CdfError::data("negative large-list offset"))?;
+            let values = array.values().slice(start, end.saturating_sub(start));
+            Some((
+                u64::try_from(array.len().saturating_mul(8))
+                    .map_err(|_| CdfError::data("large-list offsets exceed u64"))?,
+                logical_array_bytes(item, values.as_ref())?,
+            ))
+        }
+        arrow_schema::DataType::FixedSizeList(item, size) => {
+            let array = array
+                .as_any()
+                .downcast_ref::<FixedSizeListArray>()
+                .ok_or_else(|| CdfError::internal("fixed-size-list array/type mismatch"))?;
+            let start = usize::try_from(array.value_offset(0))
+                .map_err(|_| CdfError::data("negative fixed-size-list offset"))?;
+            let value_count = usize::try_from(*size)
+                .map_err(|_| CdfError::data("negative fixed-size-list size"))?
+                .checked_mul(array.len())
+                .ok_or_else(|| CdfError::data("fixed-size-list value count overflow"))?;
+            let values = array.values().slice(start, value_count);
+            Some((0, logical_array_bytes(item, values.as_ref())?))
+        }
+        arrow_schema::DataType::Struct(fields) => {
+            let array = array
+                .as_any()
+                .downcast_ref::<StructArray>()
+                .ok_or_else(|| CdfError::internal("struct array/type mismatch"))?;
+            let children =
+                fields
+                    .iter()
+                    .zip(array.columns())
+                    .try_fold(0_u64, |total, (child, values)| {
+                        total
+                            .checked_add(logical_array_bytes(child, values.as_ref())?)
+                            .ok_or_else(|| CdfError::data("struct logical bytes overflow"))
+                    })?;
+            Some((0, children))
+        }
+        arrow_schema::DataType::Map(entries, _) => {
+            let array = array
+                .as_any()
+                .downcast_ref::<MapArray>()
+                .ok_or_else(|| CdfError::internal("map array/type mismatch"))?;
+            let offsets = array.value_offsets();
+            let start =
+                usize::try_from(offsets[0]).map_err(|_| CdfError::data("negative map offset"))?;
+            let end = usize::try_from(offsets[array.len()])
+                .map_err(|_| CdfError::data("negative map offset"))?;
+            let values = array.entries().slice(start, end.saturating_sub(start));
+            Some((
+                u64::try_from(array.len().saturating_mul(4))
+                    .map_err(|_| CdfError::data("map offsets exceed u64"))?,
+                logical_array_bytes(entries, &values)?,
+            ))
+        }
+        _ => None,
+    };
+    if let Some((offset_bytes, child_bytes)) = nested {
+        return validity
+            .checked_add(offset_bytes)
+            .and_then(|bytes| bytes.checked_add(child_bytes))
+            .ok_or_else(|| CdfError::data("nested canonical logical bytes overflow"));
+    }
+    let data = array.to_data();
+    let mut bytes = data.get_slice_memory_size().map_err(CdfError::from)?;
+    if data.nulls().is_some() {
+        bytes = bytes.saturating_sub(data.len().div_ceil(8));
+    }
+    validity
+        .checked_add(
+            u64::try_from(bytes)
+                .map_err(|_| CdfError::data("canonical logical array bytes exceed u64"))?,
+        )
+        .ok_or_else(|| CdfError::data("canonical logical array bytes overflow"))
 }
 
 fn largest_prefix_within_bytes(
@@ -447,7 +547,10 @@ fn join_cursors(left: &CursorPosition, right: &CursorPosition) -> Result<Option<
 #[cfg(test)]
 mod tests {
     use super::*;
-    use arrow_array::{Array, Int64Array, StringArray};
+    use arrow_array::{
+        Array, Int64Array, StringArray,
+        builder::{Int64Builder, ListBuilder},
+    };
     use cdf_kernel::{CursorPosition, FileManifest};
 
     #[test]
@@ -713,6 +816,34 @@ mod tests {
         assert_eq!(
             logical_batch_bytes(&one).unwrap(),
             logical_batch_bytes(&left).unwrap() + logical_batch_bytes(&right).unwrap()
+        );
+    }
+
+    #[test]
+    fn list_byte_estimate_counts_only_the_logical_slice() {
+        let batch = |rows: &[&[i64]]| {
+            let mut values = ListBuilder::new(Int64Builder::new());
+            for row in rows {
+                values.values().append_slice(row);
+                values.append(true);
+            }
+            RecordBatch::try_from_iter([(
+                "values",
+                std::sync::Arc::new(values.finish()) as arrow_array::ArrayRef,
+            )])
+            .unwrap()
+        };
+        let rows: &[&[i64]] = &[&[1, 2], &[3, 4], &[5, 6], &[7, 8]];
+        let one = batch(rows);
+        let left = batch(&rows[..2]);
+        let right = batch(&rows[2..]);
+        assert_eq!(
+            logical_batch_bytes(&one).unwrap(),
+            logical_batch_bytes(&left).unwrap() + logical_batch_bytes(&right).unwrap()
+        );
+        assert_eq!(
+            logical_batch_bytes(&one.slice(0, 1)).unwrap() * 4,
+            logical_batch_bytes(&one).unwrap()
         );
     }
 }
