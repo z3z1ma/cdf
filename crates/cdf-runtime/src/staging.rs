@@ -180,6 +180,7 @@ pub struct StagingSnapshot {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct VerifiedFinalBinding {
     pub(crate) attempt_id: LoadAttemptId,
+    pub(crate) staging_plan_id: PlanId,
     pub(crate) commit: DestinationCommitRequest,
     pub(crate) schema_hash: SchemaHash,
     pub(crate) plan: CommitPlan,
@@ -189,6 +190,10 @@ pub struct VerifiedFinalBinding {
 impl VerifiedFinalBinding {
     pub fn attempt_id(&self) -> &LoadAttemptId {
         &self.attempt_id
+    }
+
+    pub fn staging_plan_id(&self) -> &PlanId {
+        &self.staging_plan_id
     }
 
     pub fn commit(&self) -> &DestinationCommitRequest {
@@ -209,6 +214,30 @@ impl VerifiedFinalBinding {
 
     pub fn from_verified_package(
         attempt_id: LoadAttemptId,
+        reader: &PackageReader,
+        verification: &VerificationReport,
+        target: TargetName,
+        disposition: WriteDisposition,
+        schema_hash: SchemaHash,
+        plan: CommitPlan,
+    ) -> Result<Self> {
+        let staging_plan_id = plan.plan_id.clone();
+        Self::from_verified_package_with_staging_authority(
+            attempt_id,
+            staging_plan_id,
+            reader,
+            verification,
+            target,
+            disposition,
+            schema_hash,
+            plan,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn from_verified_package_with_staging_authority(
+        attempt_id: LoadAttemptId,
+        staging_plan_id: PlanId,
         reader: &PackageReader,
         verification: &VerificationReport,
         target: TargetName,
@@ -270,6 +299,7 @@ impl VerifiedFinalBinding {
         }
         Ok(Self {
             attempt_id,
+            staging_plan_id,
             commit,
             schema_hash,
             plan,

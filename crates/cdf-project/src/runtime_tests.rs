@@ -978,6 +978,7 @@ struct MockDestination {
     sheet: DestinationSheet,
     receipts: Arc<Mutex<Vec<Receipt>>>,
     writes: Arc<Mutex<Vec<SegmentId>>>,
+    aborts: Arc<AtomicU64>,
 }
 
 impl MockDestination {
@@ -990,8 +991,8 @@ impl MockDestination {
                 idempotency: IdempotencySupport::PackageToken,
                 type_mappings: Vec::new(),
                 identifier_rules: IdentifierRules {
-                    normalizer: "mock".to_owned(),
-                    max_length: None,
+                    normalizer: "namecase-v1".to_owned(),
+                    max_length: Some(63),
                     allowed_pattern: None,
                 },
                 migration_support: CapabilitySupport::Supported,
@@ -1002,11 +1003,16 @@ impl MockDestination {
             },
             receipts: Arc::new(Mutex::new(Vec::new())),
             writes: Arc::new(Mutex::new(Vec::new())),
+            aborts: Arc::new(AtomicU64::new(0)),
         }
     }
 
     fn write_count(&self) -> usize {
         self.writes.lock().unwrap().len()
+    }
+
+    fn abort_count(&self) -> u64 {
+        self.aborts.load(Ordering::SeqCst)
     }
 }
 
@@ -1300,6 +1306,7 @@ impl ProjectDestinationRuntime for MockProjectDestinationRuntime {
 
 struct MockStagedProjectRuntime {
     destination: MockDestination,
+    fail_stage_after: Option<usize>,
 }
 
 impl ProjectDestinationRuntime for MockStagedProjectRuntime {
@@ -1341,6 +1348,7 @@ impl ProjectDestinationRuntime for MockStagedProjectRuntime {
             destination: self.destination.clone(),
             request,
             accepted: Vec::new(),
+            fail_stage_after: self.fail_stage_after,
         }))
     }
 
@@ -1367,6 +1375,7 @@ struct MockProjectStagedSession {
     destination: MockDestination,
     request: cdf_runtime::StagedIngressRequest,
     accepted: Vec<cdf_runtime::StagedSegmentIdentity>,
+    fail_stage_after: Option<usize>,
 }
 
 impl cdf_runtime::StagedIngressSession for MockProjectStagedSession {
@@ -1374,6 +1383,12 @@ impl cdf_runtime::StagedIngressSession for MockProjectStagedSession {
         &mut self,
         mut segment: cdf_runtime::StagedSegmentRequest,
     ) -> Result<cdf_runtime::StagedSegmentAck> {
+        if self
+            .fail_stage_after
+            .is_some_and(|limit| self.accepted.len() >= limit)
+        {
+            return Err(CdfError::destination("injected staged write failure"));
+        }
         while segment.reader_mut().next_batch()?.is_some() {}
         if segment.identity.ordinal != u32::try_from(self.accepted.len()).unwrap() {
             return Err(CdfError::destination(
@@ -1403,6 +1418,11 @@ impl cdf_runtime::StagedIngressSession for MockProjectStagedSession {
     }
 
     fn bind_final(self: Box<Self>, binding: cdf_runtime::VerifiedFinalBinding) -> Result<Receipt> {
+        if binding.staging_plan_id() != &self.request.binding.plan_id {
+            return Err(CdfError::destination(
+                "mock staged final binding changed plan authority",
+            ));
+        }
         binding.validate_staged_identities(&self.accepted)?;
         let rows_written = self.accepted.iter().map(|item| item.row_count).sum();
         let receipt = Receipt {
@@ -1449,6 +1469,7 @@ impl cdf_runtime::StagedIngressSession for MockProjectStagedSession {
     }
 
     fn abort(self: Box<Self>) -> Result<()> {
+        self.destination.aborts.fetch_add(1, Ordering::SeqCst);
         Ok(())
     }
 }
@@ -5723,6 +5744,7 @@ fn generic_replay_streams_verified_segments_through_staged_final_binding() {
     let destination = MockDestination::new();
     let mut runtime = MockStagedProjectRuntime {
         destination: destination.clone(),
+        fail_stage_after: None,
     };
     let stages = Arc::new(Mutex::new(Vec::new()));
     let stage_capture = Arc::clone(&stages);
@@ -5769,6 +5791,96 @@ fn generic_replay_streams_verified_segments_through_staged_final_binding() {
             "checkpoint_committed",
             "package_status_updated",
         ]
+    );
+}
+
+#[test]
+fn ordinary_run_stages_each_segment_at_durable_publish_before_final_binding() {
+    let temp = tempfile::tempdir().unwrap();
+    let resource = multi_file_resource(temp.path());
+    let package_id = "pkg-live-staged-overlap";
+    let destination = MockDestination::new();
+    let request = ProjectRunRequest {
+        resource: ProjectRunSource::local_file(&resource),
+        plan: default_live_plan(&resource, package_id),
+        package_root: temp.path().join(".cdf/packages"),
+        state_store_path: temp.path().join(".cdf/state.db"),
+        pipeline_id: PipelineId::new("pipeline-live-staged").unwrap(),
+        package_id: package_id.to_owned(),
+        checkpoint_id: CheckpointId::new("checkpoint-live-staged").unwrap(),
+        destination: ResolvedProjectDestination::new(
+            Box::new(MockStagedProjectRuntime {
+                destination: destination.clone(),
+                fail_stage_after: None,
+            }),
+            TargetName::new("events").unwrap(),
+        ),
+        run_id: Some(RunId::new("run-live-staged").unwrap()),
+        event_sink: None,
+        after_receipt_verified: None,
+    };
+
+    let report = futures_executor::block_on(run_project(request)).unwrap();
+
+    assert_eq!(report.segment_count, 2);
+    assert_eq!(destination.write_count(), report.segment_count);
+    assert!(report.receipt.covers_state_delta(&report.checkpoint.delta));
+    assert_eq!(report.package_status, PackageStatus::Checkpointed);
+    assert_eq!(
+        report.receipt_source,
+        ProjectReceiptSource::DestinationCommitReceiptOnly {
+            package_receipt_recorded: false
+        }
+    );
+}
+
+#[test]
+fn staged_publish_failure_aborts_attempt_and_never_proposes_checkpoint() {
+    let temp = tempfile::tempdir().unwrap();
+    let resource = multi_file_resource(temp.path());
+    let package_id = "pkg-live-staged-failure";
+    let package_root = temp.path().join(".cdf/packages");
+    let state_path = temp.path().join(".cdf/state.db");
+    let destination = MockDestination::new();
+    let request = ProjectRunRequest {
+        resource: ProjectRunSource::local_file(&resource),
+        plan: default_live_plan(&resource, package_id),
+        package_root: package_root.clone(),
+        state_store_path: state_path.clone(),
+        pipeline_id: PipelineId::new("pipeline-live-staged-failure").unwrap(),
+        package_id: package_id.to_owned(),
+        checkpoint_id: CheckpointId::new("checkpoint-live-staged-failure").unwrap(),
+        destination: ResolvedProjectDestination::new(
+            Box::new(MockStagedProjectRuntime {
+                destination: destination.clone(),
+                fail_stage_after: Some(1),
+            }),
+            TargetName::new("events").unwrap(),
+        ),
+        run_id: Some(RunId::new("run-live-staged-failure").unwrap()),
+        event_sink: None,
+        after_receipt_verified: None,
+    };
+
+    let error = futures_executor::block_on(run_project(request)).unwrap_err();
+
+    assert!(error.to_string().contains("injected staged write failure"));
+    assert_eq!(destination.write_count(), 1);
+    assert_eq!(destination.abort_count(), 1);
+    assert_eq!(
+        package_status(&package_root.join(package_id)),
+        PackageStatus::Extracting
+    );
+    let store = SqliteCheckpointStore::open(&state_path).unwrap();
+    assert!(
+        store
+            .head(
+                &PipelineId::new("pipeline-live-staged-failure").unwrap(),
+                &resource.descriptor().resource_id,
+                &resource.descriptor().state_scope,
+            )
+            .unwrap()
+            .is_none()
     );
 }
 

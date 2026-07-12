@@ -33,6 +33,7 @@ Depends on A5b, A5c, E2, and A6.
 ## Progress and notes
 
 - 2026-07-11: All declared dependencies are closed. Production replay now selects finalized-only versus staged durable-segment ingress exclusively from `DestinationRuntimeCapabilities`. The staged path streams the verified, ledger-accounted package window; validates exact segment hash/schema/ordinal acknowledgements; aborts an owned staging session on every pre-binding failure; and issues a receipt only through exact verified final-package binding. A mock destination composes through the runtime trait without prepare/bind branches or first-party identity checks. This is the finalized-package integration milestone; moving the same durable handoff to segment-persist completion for useful pre-finalization overlap remains open.
+- 2026-07-11: Ordinary run now begins staged ingress under scan-plan authority and synchronously hands each canonical segment to the generic destination session immediately after encode/hash/fsync/rename/directory-sync, using the already-resident Arrow batch rather than rereading the package. Final package verification binds the actual destination commit plan and exact staged identity list before receipt/checkpoint authority. Finalized-only destinations retain their existing path. Conformance covers a two-file live run and a second-segment staging failure: the latter aborts the attempt, leaves the draft at `extracting`, and never proposes a checkpoint.
 
 ## References
 

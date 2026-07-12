@@ -266,7 +266,7 @@ impl StagedIngressSession for MockStagedSession {
         if binding.commit().target != self.request.binding.target
             || binding.commit().disposition != self.request.binding.disposition
             || binding.schema_hash() != &self.request.binding.schema_hash
-            || binding.plan().plan_id != self.request.binding.plan_id
+            || binding.staging_plan_id() != &self.request.binding.plan_id
         {
             return Err(CdfError::destination(
                 "final binding does not match the staged attempt authority",
@@ -1045,6 +1045,7 @@ fn final_binding_requires_exact_ordered_staged_identities() {
     let target = TargetName::new("events").unwrap();
     let binding = VerifiedFinalBinding {
         attempt_id: LoadAttemptId::new("attempt_02").unwrap(),
+        staging_plan_id: PlanId::new("plan-staged").unwrap(),
         commit: DestinationCommitRequest {
             package_hash: package_hash.clone(),
             target: target.clone(),
@@ -1294,6 +1295,7 @@ fn test_final_binding(
     let target = TargetName::new("events").unwrap();
     VerifiedFinalBinding {
         attempt_id,
+        staging_plan_id: PlanId::new("plan-staged").unwrap(),
         commit: DestinationCommitRequest {
             package_hash: package_hash.clone(),
             target: target.clone(),

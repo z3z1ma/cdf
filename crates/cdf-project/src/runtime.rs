@@ -50,6 +50,7 @@ mod prelude {
     pub(super) use cdf_engine::{
         EngineExecutionOptions, EnginePackageDraft, EnginePlan,
         execute_to_package_with_segment_positions_and_pre_finalize,
+        execute_to_package_with_streaming_hooks,
     };
     pub(super) use cdf_kernel::{
         CHECKPOINT_STATE_VERSION, CdfError, Checkpoint, CheckpointId, CheckpointStatus,

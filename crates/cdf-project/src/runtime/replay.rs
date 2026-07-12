@@ -15,6 +15,112 @@ use sha2::{Digest, Sha256};
 type DestinationReplayStageHook<'a> = RuntimeStageHook<'a>;
 pub(crate) type PackageReplayStageHook<'a> = &'a dyn Fn(PackageReplayStage<'_>) -> Result<()>;
 
+pub(crate) struct ActiveStagedIngress {
+    attempt_id: cdf_runtime::LoadAttemptId,
+    staging_plan_id: PlanId,
+    schema_hash: SchemaHash,
+    session: Option<Box<dyn cdf_runtime::StagedIngressSession>>,
+    staged: Vec<cdf_runtime::StagedSegmentIdentity>,
+}
+
+impl ActiveStagedIngress {
+    pub(crate) fn begin(
+        runtime: &mut dyn ProjectDestinationRuntime,
+        checkpoint_id: &CheckpointId,
+        staging_plan_id: PlanId,
+        target: TargetName,
+        disposition: WriteDisposition,
+        schema_hash: SchemaHash,
+    ) -> Result<Option<Self>> {
+        let capabilities = runtime.runtime_capabilities();
+        capabilities.validate()?;
+        if capabilities.ingress_mode == cdf_runtime::DestinationIngressMode::FinalizedPackageOnly {
+            return Ok(None);
+        }
+        let attempt_id = staging_attempt_id(checkpoint_id, &runtime.describe().destination_id)?;
+        let scheduling = cdf_runtime::StagingSchedulingContext::new(
+            capabilities
+                .max_in_flight_segments
+                .expect("validated staged segment bound"),
+            capabilities
+                .max_in_flight_bytes
+                .expect("validated staged byte bound"),
+        )?;
+        let session = runtime.begin_staged_ingress(cdf_runtime::StagedIngressRequest {
+            attempt_id: attempt_id.clone(),
+            binding: cdf_runtime::StagingAttemptBinding {
+                destination_id: runtime.describe().destination_id,
+                target,
+                disposition,
+                schema_hash: schema_hash.clone(),
+                plan_id: staging_plan_id.clone(),
+            },
+            scheduling,
+        })?;
+        Ok(Some(Self {
+            attempt_id,
+            staging_plan_id,
+            schema_hash,
+            session: Some(session),
+            staged: Vec::new(),
+        }))
+    }
+
+    pub(crate) fn stage_segment(
+        &mut self,
+        entry: &cdf_package::SegmentEntry,
+        batch: &arrow_array::RecordBatch,
+    ) -> Result<()> {
+        let ordinal = u32::try_from(self.staged.len())
+            .map_err(|_| CdfError::data("staged package has too many segments"))?;
+        let identity = cdf_runtime::StagedSegmentIdentity::from_manifest_entry(
+            entry,
+            self.schema_hash.clone(),
+            ordinal,
+        )?;
+        let request = cdf_runtime::StagedSegmentRequest::new(
+            identity.clone(),
+            Box::new(LiveStagedSegmentReader {
+                identity: identity.clone(),
+                batch: Some(batch.clone()),
+            }),
+        )?;
+        let ack = self
+            .session
+            .as_mut()
+            .ok_or_else(|| CdfError::internal("staged session is no longer active"))?
+            .stage_segment(request)?;
+        if ack.attempt_id != self.attempt_id || ack.identity != identity {
+            return Err(CdfError::destination(
+                "staged ingress acknowledgement did not bind the exact durable segment",
+            ));
+        }
+        self.staged.push(identity);
+        Ok(())
+    }
+
+    pub(crate) fn abort(mut self) {
+        if let Some(session) = self.session.take() {
+            let _ = session.abort();
+        }
+    }
+}
+
+struct LiveStagedSegmentReader {
+    identity: cdf_runtime::StagedSegmentIdentity,
+    batch: Option<arrow_array::RecordBatch>,
+}
+
+impl cdf_runtime::DurableSegmentReader for LiveStagedSegmentReader {
+    fn identity(&self) -> &cdf_runtime::StagedSegmentIdentity {
+        &self.identity
+    }
+
+    fn next_batch(&mut self) -> Result<Option<arrow_array::RecordBatch>> {
+        Ok(self.batch.take())
+    }
+}
+
 #[derive(Clone, Copy, Debug)]
 pub(crate) enum PackageReplayStage<'a> {
     PackageReplayVerified,
@@ -213,6 +319,31 @@ fn validate_resolved_destination_target(
 }
 
 pub(crate) fn replay_package_with_runtime<Store>(
+    reader: PackageReader,
+    package_dir: PathBuf,
+    runtime: &mut dyn ProjectDestinationRuntime,
+    checkpoint_store: &Store,
+    inputs: PackageReplayInputs,
+    memory: Arc<dyn MemoryCoordinator>,
+    hooks: PackageReplayHooks<'_>,
+) -> Result<PackageReplayReport>
+where
+    Store: CheckpointStore + ?Sized,
+{
+    replay_package_with_runtime_and_staged(
+        reader,
+        package_dir,
+        runtime,
+        checkpoint_store,
+        inputs,
+        memory,
+        hooks,
+        None,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn replay_package_with_runtime_and_staged<Store>(
     mut reader: PackageReader,
     package_dir: PathBuf,
     runtime: &mut dyn ProjectDestinationRuntime,
@@ -220,6 +351,7 @@ pub(crate) fn replay_package_with_runtime<Store>(
     inputs: PackageReplayInputs,
     memory: Arc<dyn MemoryCoordinator>,
     hooks: PackageReplayHooks<'_>,
+    active_staged: Option<ActiveStagedIngress>,
 ) -> Result<PackageReplayReport>
 where
     Store: CheckpointStore + ?Sized,
@@ -248,14 +380,19 @@ where
 
     let (receipt, receipt_source) = match capabilities.ingress_mode {
         cdf_runtime::DestinationIngressMode::StagedDurableSegments => {
-            let receipt = match commit_package_through_staged_ingress(
-                runtime,
-                &reader,
-                &inputs,
-                &capabilities,
-                memory,
-                &hooks,
-            ) {
+            let receipt = match match active_staged {
+                Some(active) => {
+                    finalize_active_staged_ingress(runtime, &reader, &inputs, active, &hooks)
+                }
+                None => commit_package_through_staged_ingress(
+                    runtime,
+                    &reader,
+                    &inputs,
+                    &capabilities,
+                    memory,
+                    &hooks,
+                ),
+            } {
                 Ok(receipt) => receipt,
                 Err(error) => {
                     let _ = checkpoint_store.abandon(&checkpoint_id);
@@ -416,7 +553,7 @@ fn commit_package_through_staged_ingress(
                 .as_mut()
                 .expect("staged session remains owned until final binding")
                 .stage_segment(request)?;
-            if ack.attempt_id != attempt_id || ack.identity != identity || !ack.external_durable {
+            if ack.attempt_id != attempt_id || ack.identity != identity {
                 return Err(CdfError::destination(
                     "staged ingress acknowledgement did not bind the exact durable segment",
                 ));
@@ -465,7 +602,72 @@ fn commit_package_through_staged_ingress(
     result
 }
 
-fn staging_attempt_id(
+fn finalize_active_staged_ingress(
+    runtime: &mut dyn ProjectDestinationRuntime,
+    reader: &PackageReader,
+    inputs: &PackageReplayInputs,
+    mut active: ActiveStagedIngress,
+    hooks: &PackageReplayHooks<'_>,
+) -> Result<Receipt> {
+    let result = (|| {
+        runtime.ensure_protocol_ready()?;
+        let plan = runtime.protocol().plan_commit(&inputs.destination_commit)?;
+        notify_destination_replay_stage(
+            hooks,
+            PackageReplayStage::DestinationCommitStarted {
+                plan_id: &plan.plan_id,
+                segment_count: active.staged.len(),
+            },
+        )?;
+        let snapshot = active
+            .session
+            .as_ref()
+            .ok_or_else(|| CdfError::internal("staged session is no longer active"))?
+            .snapshot()?;
+        if snapshot.attempt_id != active.attempt_id || snapshot.accepted_segments != active.staged {
+            return Err(CdfError::destination(
+                "staged ingress snapshot does not exactly match acknowledged segments",
+            ));
+        }
+        for identity in &active.staged {
+            let ack = SegmentAck {
+                segment_id: identity.segment_id.clone(),
+                row_count: identity.row_count,
+                byte_count: identity.byte_count,
+            };
+            notify_destination_replay_stage(
+                hooks,
+                PackageReplayStage::DestinationSegmentAcknowledged { ack: &ack },
+            )?;
+        }
+        let verification = reader.verify()?;
+        let binding =
+            cdf_runtime::VerifiedFinalBinding::from_verified_package_with_staging_authority(
+                active.attempt_id.clone(),
+                active.staging_plan_id.clone(),
+                reader,
+                &verification,
+                inputs.destination_commit.target.clone(),
+                inputs.destination_commit.disposition.clone(),
+                inputs.schema_hash.clone(),
+                plan,
+            )?;
+        binding.validate_staged_identities(&active.staged)?;
+        active
+            .session
+            .take()
+            .expect("staged session is consumed exactly once")
+            .bind_final(binding)
+    })();
+    if result.is_err()
+        && let Some(session) = active.session
+    {
+        let _ = session.abort();
+    }
+    result
+}
+
+pub(crate) fn staging_attempt_id(
     checkpoint_id: &CheckpointId,
     destination_id: &DestinationId,
 ) -> Result<cdf_runtime::LoadAttemptId> {

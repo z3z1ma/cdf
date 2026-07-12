@@ -7,7 +7,10 @@ use super::{
     hooks::{ReceiptVerifiedHook, RuntimeStage},
     ledger::{ProjectRunRecorder, ProjectRunRecorderContext, ValidationDepthTransitionRecord},
     prelude::*,
-    replay::{PackageReplayHooks, PackageReplayStage, replay_package_with_runtime},
+    replay::{
+        ActiveStagedIngress, PackageReplayHooks, PackageReplayStage,
+        replay_package_with_runtime_and_staged,
+    },
     resources::ProjectRunSource,
     types::*,
     validation::{
@@ -224,16 +227,53 @@ async fn run_project_inner(execution: ProjectRunExecution<'_>) -> Result<Project
             )?;
             write_quarantine_mirror_outcome_artifact(builder, &quarantine_mirror)
         };
-    let output = execute_to_package_with_segment_positions_and_pre_finalize(
-        &manifest_plan.plan,
-        resource,
-        &execution.package_dir,
-        &write_package_pre_finalize_artifacts,
-        EngineExecutionOptions::default()
-            .with_phase_metrics(execution.recorder.phase_telemetry_enabled())
-            .with_optional_execution_services(execution.services.clone()),
-    )
-    .await?;
+    let mut active_staged = ActiveStagedIngress::begin(
+        execution.destination.runtime_mut(),
+        execution.checkpoint_id,
+        manifest_plan.plan.scan.plan_id.clone(),
+        execution.target.clone(),
+        manifest_plan.plan.write_disposition.clone(),
+        execution.schema_hash.clone(),
+    )?;
+    let options = EngineExecutionOptions::default()
+        .with_phase_metrics(execution.recorder.phase_telemetry_enabled())
+        .with_optional_execution_services(execution.services.clone());
+    let output_result = match active_staged.as_mut() {
+        Some(staged) => {
+            let mut durable_segment =
+                |entry: &cdf_package::SegmentEntry, batch: &arrow_array::RecordBatch| {
+                    staged.stage_segment(entry, batch)
+                };
+            execute_to_package_with_streaming_hooks(
+                &manifest_plan.plan,
+                resource,
+                &execution.package_dir,
+                &write_package_pre_finalize_artifacts,
+                &mut durable_segment,
+                options,
+            )
+            .await
+        }
+        None => {
+            execute_to_package_with_segment_positions_and_pre_finalize(
+                &manifest_plan.plan,
+                resource,
+                &execution.package_dir,
+                &write_package_pre_finalize_artifacts,
+                options,
+            )
+            .await
+        }
+    };
+    let output = match output_result {
+        Ok(output) => output,
+        Err(error) => {
+            if let Some(staged) = active_staged.take() {
+                staged.abort();
+            }
+            return Err(error);
+        }
+    };
 
     for metric in output.phase_metrics.iter().cloned() {
         execution.recorder.append_phase_metric(metric)?;
@@ -300,7 +340,7 @@ async fn run_project_inner(execution: ProjectRunExecution<'_>) -> Result<Project
             Default::default(),
         )?) as Arc<dyn cdf_memory::MemoryCoordinator>,
     };
-    let replay_report = replay_package_with_runtime(
+    let replay_report = replay_package_with_runtime_and_staged(
         reader,
         execution.package_dir.clone(),
         execution.destination.runtime_mut(),
@@ -311,6 +351,7 @@ async fn run_project_inner(execution: ProjectRunExecution<'_>) -> Result<Project
             after_receipt_verified: execution.after_receipt_verified,
             stage: Some(&stage_hook),
         },
+        active_staged,
     )?;
     execution.recorder.append_run_succeeded()?;
     let ledger_snapshot = execution.recorder.snapshot()?;
