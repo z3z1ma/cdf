@@ -173,6 +173,12 @@ pub(crate) fn test_format_registry() -> std::sync::Arc<cdf_runtime::FormatRegist
                     cdf_format_json::NdjsonFormatDriver::new().expect("NDJSON test format driver"),
                 ))
                 .expect("NDJSON test format registration");
+            registry
+                .register(std::sync::Arc::new(
+                    cdf_format_json::JsonDocumentFormatDriver::new()
+                        .expect("JSON test format driver"),
+                ))
+                .expect("JSON test format registration");
             std::sync::Arc::new(registry)
         })
         .clone()

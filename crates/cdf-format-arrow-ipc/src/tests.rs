@@ -161,6 +161,7 @@ fn arrow_ipc_file_driver_discovers_projects_and_streams_blocks() {
             options: serde_json::json!({}),
             maximum_bytes: 9,
             maximum_records: 0,
+            memory: Arc::clone(&memory),
             cancellation: RunCancellation::default(),
         },
     ))
@@ -174,6 +175,7 @@ fn arrow_ipc_file_driver_discovers_projects_and_streams_blocks() {
             options: serde_json::json!({}),
             maximum_bytes: 1024 * 1024,
             maximum_records: 0,
+            memory: Arc::clone(&memory),
             cancellation: RunCancellation::default(),
         },
     ))

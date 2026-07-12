@@ -84,6 +84,11 @@ fn test_format_registry() -> Arc<cdf_runtime::FormatRegistry> {
             cdf_format_json::NdjsonFormatDriver::new().unwrap(),
         ))
         .unwrap();
+    registry
+        .register(Arc::new(
+            cdf_format_json::JsonDocumentFormatDriver::new().unwrap(),
+        ))
+        .unwrap();
     Arc::new(registry)
 }
 
@@ -1967,7 +1972,7 @@ fn local_csv_discovery_uses_the_registered_driver_manifest_path() {
 }
 
 #[test]
-fn local_json_document_discovery_is_byte_bounded_and_manifest_backed() {
+fn local_json_document_discovery_uses_the_registered_driver_manifest_path() {
     let temp = tempfile::tempdir().unwrap();
     write_discover_project(temp.path(), "json", "*.json");
     fs::write(
@@ -1996,7 +2001,7 @@ fn local_json_document_discovery_is_byte_bounded_and_manifest_backed() {
     );
     assert_eq!(
         artifacts.discovery.snapshot.artifact.metadata["probe"],
-        "bounded-json-sample"
+        "registered-format-discovery"
     );
     assert_eq!(artifacts.discovery_manifest.unwrap().candidates.len(), 1);
 }

@@ -446,11 +446,12 @@ pub enum FormatDetectionConfidence {
     Strong,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct FormatDiscoveryRequest {
     pub options: serde_json::Value,
     pub maximum_bytes: u64,
     pub maximum_records: u64,
+    pub memory: Arc<dyn MemoryCoordinator>,
     pub cancellation: RunCancellation,
 }
 

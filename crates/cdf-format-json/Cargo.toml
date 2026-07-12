@@ -8,6 +8,7 @@ description = "Streaming JSON format drivers for cdf."
 
 [dependencies]
 arrow-json = "59.1.0"
+bytes = "1.11.0"
 cdf-contract = { path = "../cdf-contract" }
 cdf-kernel = { path = "../cdf-kernel" }
 cdf-memory = { path = "../cdf-memory" }

@@ -80,5 +80,8 @@ pub(crate) fn builtin_format_registry() -> Result<std::sync::Arc<FormatRegistry>
     registry.register(std::sync::Arc::new(
         cdf_format_json::NdjsonFormatDriver::new()?,
     ))?;
+    registry.register(std::sync::Arc::new(
+        cdf_format_json::JsonDocumentFormatDriver::new()?,
+    ))?;
     Ok(std::sync::Arc::new(registry))
 }

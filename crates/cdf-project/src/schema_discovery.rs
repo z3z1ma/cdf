@@ -25,10 +25,9 @@ use cdf_contract::{
 use cdf_declarative::{
     CompiledResource, CompiledResourcePlan, FileFormatDeclaration, FileRuntimeDependencies,
     FileTransportLocation, FileTransportResource, POSTGRES_CATALOG_DISCOVERY_PROBE,
-    discover_local_binary_schema_bounded, discover_local_row_schema_bounded,
-    discover_postgres_table_catalog_schema, discover_rest_sample_schema,
-    discover_transport_binary_schema_spooled, discover_transport_parquet_schema_bounded,
-    discover_transport_row_schema_bounded, local_file_discovery_candidates,
+    discover_local_binary_schema_bounded, discover_postgres_table_catalog_schema,
+    discover_rest_sample_schema, discover_transport_binary_schema_spooled,
+    discover_transport_parquet_schema_bounded, local_file_discovery_candidates,
     physical_arrow_schema_hash, postgres_table_target_for_sql_plan,
 };
 use cdf_http::{HttpTransport, SecretProvider};
@@ -44,9 +43,6 @@ use cdf_memory::{
     BudgetTag, ConsumerKey, DeterministicMemoryCoordinator, MemoryClass, MemoryCoordinator,
     ReservationRequest,
 };
-
-const NDJSON_DISCOVERY_MAX_RECORDS: usize = 4_096;
-const NDJSON_DISCOVERY_MAX_SOURCE_BYTES: u64 = 8 * 1024 * 1024;
 
 #[derive(Clone, Debug)]
 pub struct PreparedDiscoveredResource {
@@ -403,16 +399,9 @@ fn discover_resource_schema_artifacts_inner(
             discover_local_binary_resource_schema(resource, plan, file_dependencies, options)
         }
         CompiledResourcePlan::Files(plan) => match plan.format.as_str() {
-            "parquet" | "arrow_ipc" | "ndjson" | "csv" => {
+            "parquet" | "arrow_ipc" | "ndjson" | "csv" | "json" => {
                 discover_remote_binary_resource_schema(resource, plan, file_dependencies, options)
             }
-            "json" => discover_remote_file_resource_schema(
-                resource,
-                plan,
-                file_dependencies,
-                options,
-                LocalBinaryDiscoveryAdapter::Json,
-            ),
             other => Err(unsupported_discover_slice(
                 resource.descriptor(),
                 format!("format `{other}` has no project discovery adapter"),
@@ -575,15 +564,11 @@ impl BinaryDiscoveryCandidate {
 #[derive(Clone, Debug)]
 enum LocalBinaryDiscoveryAdapter {
     Registered(FileFormatDeclaration),
-    Json,
 }
 
 impl LocalBinaryDiscoveryAdapter {
     fn for_format(_resource: &CompiledResource, format: &FileFormatDeclaration) -> Result<Self> {
-        Ok(match format.as_str() {
-            "json" => Self::Json,
-            _ => Self::Registered(format.clone()),
-        })
+        Ok(Self::Registered(format.clone()))
     }
 
     fn probe(
@@ -638,50 +623,6 @@ impl LocalBinaryDiscoveryAdapter {
                 )?;
                 Ok((probe.schema, probe.source_identity, probe.probe_bytes_read))
             }
-            (adapter @ Self::Json, BinaryDiscoveryCandidateSource::Transport(resource)) => {
-                let dependencies = file_dependencies.ok_or_else(|| {
-                    CdfError::contract(
-                        "remote NDJSON discovery requires file transport dependencies",
-                    )
-                })?;
-                let format = match adapter {
-                    Self::Json => FileFormatDeclaration::json(),
-                    _ => unreachable!(),
-                };
-                let probe = discover_transport_row_schema_bounded(
-                    resource.clone(),
-                    dependencies,
-                    &format,
-                    &candidate.compression,
-                    NDJSON_DISCOVERY_MAX_RECORDS,
-                    budget
-                        .max_metadata_bytes_per_file()
-                        .min(NDJSON_DISCOVERY_MAX_SOURCE_BYTES),
-                )?;
-                Ok((probe.schema, probe.source_identity, probe.probe_bytes_read))
-            }
-            (adapter @ Self::Json, BinaryDiscoveryCandidateSource::Local { path, .. }) => {
-                let dependencies = file_dependencies.ok_or_else(|| {
-                    CdfError::contract(
-                        "local row discovery requires file transform registry dependencies",
-                    )
-                })?;
-                let format = match adapter {
-                    Self::Json => FileFormatDeclaration::json(),
-                    _ => unreachable!(),
-                };
-                let probe = discover_local_row_schema_bounded(
-                    path,
-                    dependencies,
-                    &format,
-                    &candidate.compression,
-                    NDJSON_DISCOVERY_MAX_RECORDS,
-                    budget
-                        .max_metadata_bytes_per_file()
-                        .min(NDJSON_DISCOVERY_MAX_SOURCE_BYTES),
-                )?;
-                Ok((probe.schema, probe.source_identity, probe.probe_bytes_read))
-            }
         }
     }
 
@@ -696,7 +637,6 @@ impl LocalBinaryDiscoveryAdapter {
                 SCHEMA_DISCOVERY_FORMAT_ARROW_IPC,
             ),
             Self::Registered(format) => ("registered-format-discovery", format.as_str()),
-            Self::Json => ("bounded-json-sample", "json"),
         };
         BTreeMap::from([
             ("probe".to_owned(), probe.to_owned()),

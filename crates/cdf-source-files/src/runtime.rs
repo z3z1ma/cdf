@@ -2,7 +2,7 @@ use std::{
     collections::BTreeMap,
     fmt,
     fs::{self, File},
-    io::{Read, Seek, SeekFrom, Write},
+    io::{Read, Seek, SeekFrom},
     path::{Component, Path, PathBuf},
     sync::{
         Arc,
@@ -12,11 +12,7 @@ use std::{
 };
 
 use arrow_schema::SchemaRef;
-use cdf_contract::{ContractPolicy, TypePolicy};
-use cdf_formats::{
-    FileFormat, JsonOptions, RangeChunkReader, ReadOptions,
-    stream_file_source_path_with_declared_schema_and_type_policy,
-};
+use cdf_formats::{RangeChunkReader, ReadOptions};
 use cdf_kernel::{
     BatchStream, BoxFuture, CdfError, DeliveryGuarantee, EffectiveSchemaRuntime,
     PLAN_PHYSICAL_SCHEMA_HASH_KEY, PLAN_SCHEMA_OBSERVATION_BINDING_KEY,
@@ -30,7 +26,9 @@ use cdf_runtime::{
     FormatDiscoveryRequest, FormatDriver, FormatRegistry, PhysicalDecodeRequest,
     SequentialReadRequest, TransformSourceConfig, TransformedByteSource,
 };
-use futures_util::{StreamExt, TryStreamExt};
+#[cfg(test)]
+use futures_util::StreamExt;
+use futures_util::TryStreamExt;
 use sha2::{Digest, Sha256};
 use tokio::io::AsyncWriteExt;
 
@@ -155,64 +153,6 @@ impl FileRuntimeDependencies {
         });
         (reader, bytes_read)
     }
-
-    pub fn bounded_sequential_reader(
-        &self,
-        resource: FileTransportResource,
-        size_bytes: u64,
-        max_bytes: u64,
-    ) -> (Box<dyn Read + Send>, Arc<AtomicU64>) {
-        let bytes_read = Arc::new(AtomicU64::new(0));
-        let reader = TransportSequentialReader {
-            transport: self.transport(),
-            resource,
-            size_bytes,
-            max_bytes,
-            offset: 0,
-            bytes_read: Arc::clone(&bytes_read),
-        };
-        (Box::new(reader), bytes_read)
-    }
-}
-
-struct TransportSequentialReader {
-    transport: Arc<dyn FileTransport>,
-    resource: FileTransportResource,
-    size_bytes: u64,
-    max_bytes: u64,
-    offset: u64,
-    bytes_read: Arc<AtomicU64>,
-}
-
-impl Read for TransportSequentialReader {
-    fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
-        if buffer.is_empty() || self.offset == self.size_bytes {
-            return Ok(0);
-        }
-        let remaining_file = self.size_bytes - self.offset;
-        let remaining_budget = self.max_bytes.saturating_sub(self.offset);
-        if remaining_budget == 0 {
-            return Err(std::io::Error::other(format!(
-                "remote sequential read exceeded its {}-byte budget",
-                self.max_bytes
-            )));
-        }
-        let length = remaining_file
-            .min(remaining_budget)
-            .min(buffer.len() as u64);
-        let bytes = self
-            .transport
-            .read_range(
-                &self.resource,
-                ByteRange::new(self.offset, length).map_err(std::io::Error::other)?,
-            )
-            .map_err(std::io::Error::other)?;
-        buffer[..bytes.len()].copy_from_slice(&bytes);
-        self.offset += bytes.len() as u64;
-        self.bytes_read
-            .fetch_add(bytes.len() as u64, Ordering::Relaxed);
-        Ok(bytes.len())
-    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -222,13 +162,6 @@ pub struct LocalFileDiscoveryCandidate {
     pub size_bytes: u64,
     pub compression: String,
     pub selection_bytes_read: u64,
-}
-
-#[derive(Clone, Debug)]
-pub struct BoundedRowSchemaProbe {
-    pub schema: SchemaRef,
-    pub source_identity: BTreeMap<String, String>,
-    pub probe_bytes_read: u64,
 }
 
 #[derive(Clone, Debug)]
@@ -266,6 +199,7 @@ pub fn discover_local_binary_schema_bounded(
         dependencies.execution().memory(),
     )?);
     let options = driver.canonical_options(serde_json::json!({}))?;
+    let discovery_memory = dependencies.execution().memory();
     let observation = dependencies.execution().run_io({
         let driver = Arc::clone(&driver);
         let source = Arc::clone(&source);
@@ -277,6 +211,7 @@ pub fn discover_local_binary_schema_bounded(
                         options,
                         maximum_bytes: max_metadata_bytes,
                         maximum_records: 1_000,
+                        memory: discovery_memory,
                         cancellation: cdf_runtime::RunCancellation::default(),
                     },
                 )
@@ -358,235 +293,6 @@ pub fn discover_transport_binary_schema_spooled(
         probe.probe_bytes_read = size_bytes.saturating_add(probe.probe_bytes_read);
     }
     Ok(probe)
-}
-
-pub fn discover_local_row_schema_bounded(
-    path: impl AsRef<Path>,
-    dependencies: &FileRuntimeDependencies,
-    format: &FileFormatDeclaration,
-    transform_name: &str,
-    max_read_records: usize,
-    max_source_bytes: u64,
-) -> Result<BoundedRowSchemaProbe> {
-    let path = path.as_ref();
-    let transformed =
-        prepare_transformed_discovery_spool(path, transform_name, dependencies, max_source_bytes)?;
-    let decode_path = transformed.as_ref().map_or(path, |spool| spool.path());
-    let (schema, probe_bytes_read) =
-        discover_row_schema_from_path(decode_path, format, max_read_records, max_source_bytes)?;
-    Ok(BoundedRowSchemaProbe {
-        schema,
-        source_identity: BTreeMap::from([
-            ("path".to_owned(), path.to_string_lossy().into_owned()),
-            ("sample_records".to_owned(), max_read_records.to_string()),
-        ]),
-        probe_bytes_read,
-    })
-}
-
-pub fn discover_transport_row_schema_bounded(
-    resource: FileTransportResource,
-    dependencies: &FileRuntimeDependencies,
-    format: &FileFormatDeclaration,
-    transform_name: &str,
-    max_read_records: usize,
-    max_source_bytes: u64,
-) -> Result<BoundedRowSchemaProbe> {
-    let metadata = dependencies.with_transport(|transport| transport.metadata(&resource))?;
-    let size_bytes = metadata.size_bytes.ok_or_else(|| {
-        CdfError::data(format!(
-            "remote row discovery for `{}` did not receive byte-size metadata",
-            diagnostic_location(&metadata.location)
-        ))
-    })?;
-    let (schema, sampled_bytes) = if transform_name == "none" {
-        let (reader, bytes_read) = dependencies.bounded_sequential_reader(
-            resource,
-            size_bytes,
-            max_source_bytes.min(size_bytes),
-        );
-        (
-            discover_row_schema_from_reader(reader, format, max_read_records)?,
-            bytes_read.load(Ordering::Relaxed),
-        )
-    } else {
-        let prefix_bytes = max_source_bytes.min(size_bytes);
-        let mut compressed_prefix = tempfile::NamedTempFile::new().map_err(|error| {
-            CdfError::data(format!("create compressed discovery sample: {error}"))
-        })?;
-        let bytes = dependencies.with_transport(|transport| {
-            transport.read_range(&resource, ByteRange::new(0, prefix_bytes)?)
-        })?;
-        compressed_prefix.write_all(&bytes).map_err(|error| {
-            CdfError::data(format!("write compressed discovery sample: {error}"))
-        })?;
-        let transformed = prepare_transformed_discovery_spool(
-            compressed_prefix.path(),
-            transform_name,
-            dependencies,
-            max_source_bytes,
-        )?
-        .ok_or_else(|| CdfError::internal("named transform did not produce a discovery spool"))?;
-        let (schema, transformed_bytes) = discover_row_schema_from_path(
-            transformed.path(),
-            format,
-            max_read_records,
-            max_source_bytes,
-        )?;
-        (schema, prefix_bytes.saturating_add(transformed_bytes))
-    };
-    let mut source_identity = BTreeMap::new();
-    source_identity.insert("url".to_owned(), metadata.location.clone());
-    if let Some(etag) = &metadata.etag {
-        source_identity.insert("etag".to_owned(), etag.clone());
-    }
-    if let Some(sha256) = metadata.sha256() {
-        source_identity.insert("sha256".to_owned(), sha256.to_owned());
-    }
-    source_identity.insert("sample_records".to_owned(), max_read_records.to_string());
-    Ok(BoundedRowSchemaProbe {
-        schema,
-        source_identity,
-        probe_bytes_read: sampled_bytes,
-    })
-}
-
-fn prepare_transformed_discovery_spool(
-    path: &Path,
-    transform_name: &str,
-    dependencies: &FileRuntimeDependencies,
-    max_output_bytes: u64,
-) -> Result<Option<tempfile::NamedTempFile>> {
-    if transform_name == "none" {
-        return Ok(None);
-    }
-    let transform = dependencies.transforms().resolve_name(transform_name)?;
-    spool_transformed_sample(path, transform, dependencies, max_output_bytes).map(Some)
-}
-
-fn spool_transformed_sample(
-    source_path: &Path,
-    transform: Arc<dyn cdf_runtime::ByteTransformDriver>,
-    dependencies: &FileRuntimeDependencies,
-    maximum_output_bytes: u64,
-) -> Result<tempfile::NamedTempFile> {
-    const TRANSFORM_CHUNK_BYTES: u64 = 1024 * 1024;
-
-    let spool = tempfile::NamedTempFile::new()
-        .map_err(|error| CdfError::data(format!("create transformed discovery spool: {error}")))?;
-    let destination = spool.path().to_path_buf();
-    let memory = dependencies.execution().memory();
-    let source = Arc::new(LocalByteSource::open(source_path, Arc::clone(&memory))?);
-    let descriptor = transform.descriptor().clone();
-    let output_chunk_bytes = TRANSFORM_CHUNK_BYTES
-        .min(descriptor.maximum_output_chunk_bytes)
-        .min(maximum_output_bytes.max(4));
-    let transformed = TransformedByteSource::new(
-        source,
-        transform,
-        TransformSourceConfig {
-            preferred_input_chunk_bytes: TRANSFORM_CHUNK_BYTES,
-            maximum_expanded_bytes: descriptor.maximum_expanded_bytes,
-            maximum_expansion_ratio: descriptor.maximum_expansion_ratio,
-            memory,
-            consumer: ConsumerKey::new(
-                format!("discovery-transform-{}", descriptor.transform_id.as_str()),
-                MemoryClass::Transform,
-            )?,
-        },
-    )?;
-    dependencies.execution().run_io(async move {
-        let mut input = transformed
-            .open_sequential(SequentialReadRequest {
-                preferred_chunk_bytes: output_chunk_bytes,
-                cancellation: cdf_runtime::RunCancellation::default(),
-            })
-            .await?;
-        let mut output = tokio::fs::File::create(&destination)
-            .await
-            .map_err(|error| {
-                CdfError::data(format!("create transformed discovery spool: {error}"))
-            })?;
-        let mut written = 0_u64;
-        while written < maximum_output_bytes {
-            let Some(chunk) = input.try_next().await? else {
-                break;
-            };
-            let remaining = maximum_output_bytes - written;
-            let length = usize::try_from(remaining.min(chunk.payload().len() as u64))
-                .map_err(|_| CdfError::data("discovery sample length exceeds usize"))?;
-            output
-                .write_all(&chunk.payload()[..length])
-                .await
-                .map_err(|error| {
-                    CdfError::data(format!("write transformed discovery spool: {error}"))
-                })?;
-            written += length as u64;
-        }
-        output.flush().await.map_err(|error| {
-            CdfError::data(format!("flush transformed discovery spool: {error}"))
-        })?;
-        Ok(())
-    })?;
-    Ok(spool)
-}
-
-fn discover_row_schema_from_path(
-    path: &Path,
-    format: &FileFormatDeclaration,
-    max_read_records: usize,
-    max_source_bytes: u64,
-) -> Result<(SchemaRef, u64)> {
-    if max_read_records == 0 || max_source_bytes == 0 {
-        return Err(CdfError::contract(
-            "row-format discovery requires positive record and source-byte bounds",
-        ));
-    }
-    let file = File::open(path).map_err(|error| {
-        CdfError::data(format!("open {} for discovery: {error}", path.display()))
-    })?;
-    let bytes_read = Arc::new(AtomicU64::new(0));
-    let reader = CountingLimitedReader {
-        inner: file,
-        remaining: max_source_bytes,
-        bytes_read: Arc::clone(&bytes_read),
-    };
-    let schema = discover_row_schema_from_reader(Box::new(reader), format, max_read_records)?;
-    Ok((schema, bytes_read.load(Ordering::Relaxed)))
-}
-
-fn discover_row_schema_from_reader(
-    reader: Box<dyn Read + Send>,
-    format: &FileFormatDeclaration,
-    max_read_records: usize,
-) -> Result<SchemaRef> {
-    match format.as_str() {
-        "json" => cdf_formats::discover_json_schema_from_reader(reader, max_read_records),
-        _ => Err(CdfError::contract(
-            "bounded row discovery supports CSV, JSON, and NDJSON",
-        )),
-    }
-}
-
-struct CountingLimitedReader<R> {
-    inner: R,
-    remaining: u64,
-    bytes_read: Arc<AtomicU64>,
-}
-
-impl<R: Read> Read for CountingLimitedReader<R> {
-    fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
-        if self.remaining == 0 {
-            return Err(std::io::Error::other(
-                "row-format discovery exceeded its source-byte budget",
-            ));
-        }
-        let limit = buffer.len().min(self.remaining as usize);
-        let read = self.inner.read(&mut buffer[..limit])?;
-        self.remaining -= read as u64;
-        self.bytes_read.fetch_add(read as u64, Ordering::Relaxed);
-        Ok(read)
-    }
 }
 
 impl LocalFileDiscoveryCandidate {
@@ -868,7 +574,6 @@ struct PreparedFilePartition {
     resolved: ResolvedFileMatch,
     input: PreparedFileInput,
     options: ReadOptions,
-    type_policy: TypePolicy,
     physical_schema_authority: PhysicalSchemaAuthority,
 }
 
@@ -954,7 +659,7 @@ pub(crate) fn file_partitions_for_plan_with_transport(
 
 fn open_file_resource_with_dependencies(
     descriptor: &ResourceDescriptor,
-    declared_schema: SchemaRef,
+    _declared_schema: SchemaRef,
     plan: &FileResourcePlan,
     partition: PartitionPlan,
     dependencies: FileRuntimeDependencies,
@@ -962,7 +667,6 @@ fn open_file_resource_with_dependencies(
     effective_schema_runtime: Option<Arc<EffectiveSchemaRuntime>>,
 ) -> BoxFuture<'static, Result<BatchStream>> {
     let descriptor = descriptor.clone();
-    let declared_schema = declared_schema.clone();
     let plan = plan.clone();
     let prepared = match prepare_file_partition(
         &descriptor,
@@ -986,8 +690,7 @@ fn open_file_resource_with_dependencies(
         NATIVE_STREAM_ITEMS,
         move |mut sender, _cancellation| async move {
             let mut batches =
-                stream_prepared_file_match(prepared, &plan.format, declared_schema, &dependencies)
-                    .await?;
+                stream_prepared_file_match(prepared, &plan.format, &dependencies).await?;
             while let Some(batch) = batches.try_next().await? {
                 sender.send(batch).await?;
             }
@@ -1002,7 +705,7 @@ fn prepare_file_partition(
     plan: &FileResourcePlan,
     partition: &PartitionPlan,
     dependencies: &FileRuntimeDependencies,
-    allowances: cdf_kernel::TypePolicyAllowances,
+    _allowances: cdf_kernel::TypePolicyAllowances,
     effective_schema_runtime: Option<&EffectiveSchemaRuntime>,
 ) -> Result<PreparedFilePartition> {
     let resolved = dependencies.with_transport(|transport| {
@@ -1027,15 +730,11 @@ fn prepare_file_partition(
         descriptor.resource_id.clone(),
         partition.partition_id.clone(),
     );
-    let mut type_policy = ContractPolicy::default().types;
-    type_policy.coerce_types = allowances.coerce_types;
-    type_policy.allow_lossy_mapping = allowances.allow_lossy_mapping;
     let input = prepare_file_input(&resolved, dependencies)?;
     Ok(PreparedFilePartition {
         resolved,
         input,
         options,
-        type_policy,
         physical_schema_authority: PhysicalSchemaAuthority {
             hash: planned_physical_schema_hash,
             schema: planned_physical_schema,
@@ -1080,14 +779,12 @@ fn prepare_file_input(
 async fn stream_prepared_file_match(
     prepared: PreparedFilePartition,
     declaration: &FileFormatDeclaration,
-    declared_schema: SchemaRef,
     dependencies: &FileRuntimeDependencies,
 ) -> Result<BatchStream> {
     let PreparedFilePartition {
         resolved,
         input: prepared,
         options,
-        type_policy,
         physical_schema_authority,
     } = prepared;
     let position = Some(SourcePosition::FileManifest(cdf_kernel::FileManifest {
@@ -1119,30 +816,17 @@ async fn stream_prepared_file_match(
         source_path
     };
 
-    if let Some(driver) = dependencies.formats().get(file_format_name(declaration)) {
-        return stream_registered_format(
-            source_path,
-            spool,
-            driver,
-            options,
-            position,
-            physical_schema_authority,
-            dependencies,
-        );
-    }
-
-    let stream = stream_file_source_path_with_declared_schema_and_type_policy(
-        &source_path,
-        compile_format(declaration)?,
+    stream_registered_format(
+        source_path,
+        spool,
+        dependencies
+            .formats()
+            .resolve(file_format_name(declaration))?,
         options,
-        declared_schema,
-        &type_policy,
         position,
-    )?;
-    Ok(Box::pin(stream.map(move |batch| {
-        let _keep_spool_alive = &spool;
-        batch
-    })) as BatchStream)
+        physical_schema_authority,
+        dependencies,
+    )
 }
 
 #[cfg(test)]
@@ -1150,23 +834,20 @@ fn stream_file_match_blocking(
     resolved: &ResolvedFileMatch,
     declaration: &FileFormatDeclaration,
     options: ReadOptions,
-    declared_schema: SchemaRef,
     dependencies: &FileRuntimeDependencies,
-    type_policy: &TypePolicy,
     physical_schema_authority: PhysicalSchemaAuthority,
 ) -> Result<BatchStream> {
     let prepared = PreparedFilePartition {
         resolved: resolved.clone(),
         input: prepare_file_input(resolved, dependencies)?,
         options,
-        type_policy: type_policy.clone(),
         physical_schema_authority,
     };
     let declaration = declaration.clone();
     let dependencies = dependencies.clone();
     let execution = dependencies.execution().clone();
     execution.run_io(async move {
-        stream_prepared_file_match(prepared, &declaration, declared_schema, &dependencies).await
+        stream_prepared_file_match(prepared, &declaration, &dependencies).await
     })
 }
 
@@ -1279,6 +960,7 @@ fn stream_registered_format(
                                 options: options_json.clone(),
                                 maximum_bytes: 16 * 1024 * 1024,
                                 maximum_records: 1_000,
+                                memory: Arc::clone(&memory),
                                 cancellation: cancellation.clone(),
                             },
                         )
@@ -1358,25 +1040,6 @@ fn spool_transport_file(
         .map_err(|error| CdfError::data(format!("create remote file spool: {error}")))?;
     transport.download_to_path(resource, expected, spool.path())?;
     Ok(spool)
-}
-
-fn compile_format(format: &FileFormatDeclaration) -> Result<FileFormat> {
-    match format.as_str() {
-        "csv" => Err(CdfError::contract(
-            "CSV execution requires its registered native format driver",
-        )),
-        "json" => Ok(FileFormat::Json(JsonOptions::default())),
-        "ndjson" => Err(CdfError::contract(
-            "NDJSON execution requires its registered native format driver",
-        )),
-        "parquet" => Ok(FileFormat::Parquet),
-        "arrow_ipc" => Err(CdfError::contract(
-            "Arrow IPC file execution requires its registered native format driver",
-        )),
-        other => Err(CdfError::contract(format!(
-            "file format `{other}` is not registered and has no legacy decoder"
-        ))),
-    }
 }
 
 fn validate_partition(
@@ -3063,9 +2726,7 @@ mod tests {
             &resolved[0],
             &plan.format,
             ReadOptions::new(resource_id, PartitionId::new("external-file").unwrap()),
-            probe.schema,
             &dependencies,
-            &ContractPolicy::default().types,
             PhysicalSchemaAuthority::default(),
         )
         .unwrap();
@@ -3244,9 +2905,7 @@ mod tests {
             &resolved[0],
             &plan.format,
             ReadOptions::new(resource_id, PartitionId::new("file-events").unwrap()),
-            schema,
             &dependencies,
-            &ContractPolicy::default().types,
             PhysicalSchemaAuthority::default(),
         )
         .unwrap();
@@ -3324,9 +2983,7 @@ mod tests {
             &resolved[0],
             &plan.format,
             ReadOptions::new(resource_id, PartitionId::new("file-ipc").unwrap()),
-            schema,
             &dependencies,
-            &ContractPolicy::default().types,
             PhysicalSchemaAuthority::default(),
         )
         .unwrap();
@@ -3454,16 +3111,12 @@ mod tests {
         .unwrap();
         assert_eq!(resolved.len(), 1);
         assert_eq!(resolved[0].compression.mode_name(), "gzip");
-        let declared = Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, false)]));
         let options = ReadOptions::new(resource_id, PartitionId::new("file-events").unwrap());
-        let type_policy = ContractPolicy::default().types;
         let stream = stream_file_match_blocking(
             &resolved[0],
             &plan.format,
             options.clone(),
-            declared.clone(),
             &dependencies,
-            &type_policy,
             PhysicalSchemaAuthority::default(),
         )
         .unwrap();
@@ -3493,9 +3146,7 @@ mod tests {
             &resolved[0],
             &plan.format,
             options,
-            declared,
             &constrained,
-            &type_policy,
             PhysicalSchemaAuthority::default(),
         ) {
             Ok(_) => panic!("undersized spool budget should reject the stream"),
@@ -3548,9 +3199,80 @@ mod tests {
             &resolved[0],
             &plan.format,
             ReadOptions::new(resource_id, PartitionId::new("csv-file").unwrap()),
-            probe.schema,
             &dependencies,
-            &ContractPolicy::default().types,
+            PhysicalSchemaAuthority::default(),
+        )
+        .unwrap();
+        let batches = futures_executor::block_on(stream.collect::<Vec<_>>())
+            .into_iter()
+            .collect::<Result<Vec<_>>>()
+            .unwrap();
+        assert_eq!(
+            batches
+                .iter()
+                .map(|batch| batch.header.row_count)
+                .sum::<u64>(),
+            2
+        );
+        assert!(matches!(
+            batches[0].header.source_position,
+            Some(SourcePosition::FileManifest(_))
+        ));
+        drop(batches);
+        assert_eq!(
+            dependencies.execution().memory().snapshot().current_bytes,
+            0
+        );
+    }
+
+    #[test]
+    fn local_json_document_discovers_and_streams_through_registered_driver() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("events.json");
+        std::fs::write(
+            &path,
+            br#"[{"id":1,"name":"alpha },["},{"id":2,"name":"beta"}]"#,
+        )
+        .unwrap();
+        let dependencies = FileRuntimeDependencies::new(
+            FileTransportFacade::new(),
+            crate::test_execution_services(),
+            crate::test_format_registry(),
+            crate::test_transform_registry(),
+        );
+        let plan = FileResourcePlan {
+            source: "events".to_owned(),
+            root: root.path().to_string_lossy().into_owned(),
+            glob: "events.json".to_owned(),
+            format: FileFormatDeclaration::json(),
+            format_declared: true,
+            compression: FileCompressionDeclaration::none(),
+            auth: None,
+            credentials: None,
+            allowlist: cdf_http::EgressAllowlist::allow_any(),
+        };
+        let resource_id = ResourceId::new("events.json").unwrap();
+        let resolved = dependencies
+            .with_transport(|transport| {
+                resolve_file_matches(&resource_id, &plan, transport, dependencies.transforms())
+            })
+            .unwrap();
+        let probe = discover_local_binary_schema_bounded(
+            &path,
+            &dependencies,
+            &plan.format,
+            "none",
+            0,
+            1024 * 1024,
+        )
+        .unwrap();
+        assert_eq!(probe.schema.field(0).data_type(), &DataType::Int64);
+        assert_eq!(probe.schema.field(1).data_type(), &DataType::Utf8);
+        let stream = stream_file_match_blocking(
+            &resolved[0],
+            &plan.format,
+            ReadOptions::new(resource_id, PartitionId::new("json-file").unwrap()),
+            &dependencies,
             PhysicalSchemaAuthority::default(),
         )
         .unwrap();
