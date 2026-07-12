@@ -120,6 +120,41 @@ pub trait DestinationRuntime {
         DestinationRuntimeCapabilities::default()
     }
 
+    fn prepare_bulk_paths(
+        &mut self,
+        _input: &BulkPathPreparationInput<'_>,
+    ) -> Result<BulkPathPreparation> {
+        let eligible = self
+            .runtime_capabilities()
+            .bulk_paths
+            .into_iter()
+            .map(|descriptor| PreparedBulkPath {
+                rows_per_batch: descriptor.rows.preferred,
+                bytes_per_batch: descriptor.bytes.preferred,
+                writers: 1,
+                descriptor,
+            })
+            .collect::<Vec<_>>();
+        let preparation = BulkPathPreparation {
+            eligible,
+            rejected: Vec::new(),
+        };
+        preparation.validate()?;
+        Ok(preparation)
+    }
+
+    fn begin_bulk_writer(
+        &mut self,
+        _commit: DestinationCommitRequest,
+        prepared: PreparedBulkPath,
+    ) -> Result<Box<dyn BulkWriterAttempt>> {
+        Err(CdfError::destination(format!(
+            "destination {} declares bulk path {} but has no bounded bulk writer adapter",
+            self.describe().destination_id,
+            prepared.descriptor.path_id
+        )))
+    }
+
     fn begin_staged_ingress(
         &mut self,
         _request: StagedIngressRequest,

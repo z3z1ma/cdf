@@ -137,6 +137,7 @@ impl DestinationRuntime for MockStagedRuntime {
             commit_payload_mode: DestinationCommitPayloadMode::SegmentStreaming,
             max_in_flight_segments: Some(2),
             max_in_flight_bytes: Some(1024),
+            bulk_paths: Vec::new(),
             bulk_path: Some("mock_staged".to_owned()),
             bulk_evidence_version: None,
             replay_requires_explicit_target: false,
@@ -406,6 +407,7 @@ impl DestinationDriver for MockDriver {
                 commit_payload_mode: DestinationCommitPayloadMode::SegmentStreaming,
                 max_in_flight_segments: Some(4),
                 max_in_flight_bytes: Some(64 * 1024 * 1024),
+                bulk_paths: Vec::new(),
                 bulk_path: Some("mock_arrow".to_owned()),
                 bulk_evidence_version: Some("v1".to_owned()),
                 replay_requires_explicit_target: false,
@@ -569,6 +571,7 @@ fn runtime_capabilities_are_serializable_plan_evidence() {
         commit_payload_mode: DestinationCommitPayloadMode::SegmentStreaming,
         max_in_flight_segments: Some(8),
         max_in_flight_bytes: Some(128 * 1024 * 1024),
+        bulk_paths: Vec::new(),
         bulk_path: Some("arrow".to_owned()),
         bulk_evidence_version: Some("2026-07".to_owned()),
         replay_requires_explicit_target: true,
@@ -582,6 +585,57 @@ fn runtime_capabilities_are_serializable_plan_evidence() {
         serde_json::from_str::<DestinationRuntimeCapabilities>(&json).unwrap(),
         capabilities
     );
+}
+
+#[test]
+fn bulk_descriptors_compose_two_paths_without_runtime_dispatch_changes() {
+    let descriptor = |path_id: &str, fallback| BulkPathDescriptor {
+        path_id: path_id.to_owned(),
+        version: 1,
+        ingress_mode: DestinationIngressMode::StagedDurableSegments,
+        writer_model: DestinationWriterModel::ConcurrentSegments,
+        ordering: BulkOrdering::SegmentIndependent,
+        rows: BulkSizeRange {
+            minimum: 8_192,
+            preferred: 65_536,
+            maximum: 1_048_576,
+        },
+        bytes: BulkSizeRange {
+            minimum: 1_048_576,
+            preferred: 16_777_216,
+            maximum: 67_108_864,
+        },
+        max_useful_writers: 4,
+        blocking_lane: None,
+        native_internal_parallelism: 1,
+        external_staging: true,
+        fallback,
+        measured_evidence_version: Some("mock-v1".to_owned()),
+    };
+    let capabilities = DestinationRuntimeCapabilities {
+        ingress_mode: DestinationIngressMode::StagedDurableSegments,
+        staged_ingress: Some(StagedIngressCapabilities {
+            recovery: StagingRecoveryMode::RollbackRedrive,
+            visibility: StagingVisibility::IsolatedUntilFinalBinding,
+            abort_idempotent: true,
+            lifecycle_cleanup: true,
+            final_binding_requires_exclusive_writer: false,
+        }),
+        commit_payload_mode: DestinationCommitPayloadMode::SegmentStreaming,
+        writer_model: DestinationWriterModel::ConcurrentSegments,
+        max_in_flight_segments: Some(4),
+        max_in_flight_bytes: Some(64 * 1024 * 1024),
+        bulk_paths: vec![
+            descriptor("mock_arrow", BulkFallbackMode::RollbackFullRedrive),
+            descriptor("mock_scalar", BulkFallbackMode::PreflightOnly),
+        ],
+        ..Default::default()
+    };
+    capabilities.validate().unwrap();
+    let json = serde_json::to_value(&capabilities).unwrap();
+    assert_eq!(json["bulk_paths"][0]["path_id"], "mock_arrow");
+    assert_eq!(json["bulk_paths"][1]["fallback"], "preflight_only");
+    assert_eq!(json["bulk_paths"][0]["max_useful_writers"], 4);
 }
 
 struct MockSourceDriver {
@@ -1058,6 +1112,7 @@ fn staged_capability_requires_cleanup_abort_and_byte_bounds() {
         commit_payload_mode: DestinationCommitPayloadMode::SegmentStreaming,
         max_in_flight_segments: Some(2),
         max_in_flight_bytes: Some(1024),
+        bulk_paths: Vec::new(),
         bulk_path: None,
         bulk_evidence_version: None,
         replay_requires_explicit_target: false,

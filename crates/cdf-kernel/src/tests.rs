@@ -327,6 +327,20 @@ fn commit_session_api_writes_segments_and_finalizes_to_durable_receipt() {
     session.abort().unwrap();
 }
 
+#[test]
+fn commit_segment_yields_ordered_batches_without_losing_authority() {
+    let (delta, _) = sample_state_delta_and_receipt();
+    let state = delta.segments[0].clone();
+    let segment = sample_commit_segment(state.clone());
+    let batches = segment.into_batches().unwrap().collect::<Vec<_>>();
+    assert_eq!(batches.len(), 1);
+    assert_eq!(batches[0].state, state);
+    assert_eq!(batches[0].package_byte_count, 96);
+    assert_eq!(batches[0].batch_ordinal, 0);
+    assert_eq!(batches[0].batch_count, 1);
+    assert_eq!(batches[0].batch.num_rows(), 3);
+}
+
 fn sample_commit_segment(state: StateSegment) -> CommitSegment {
     let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, false)]));
     let values = (0..state.row_count as i64).collect::<Vec<_>>();

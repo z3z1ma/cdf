@@ -1,5 +1,6 @@
 #![doc = "Engine-neutral runtime contracts and extension registries for cdf."]
 
+mod bulk;
 mod capabilities;
 mod context;
 mod destination;
@@ -13,6 +14,7 @@ mod spill;
 mod staging;
 mod utilities;
 
+pub use bulk::*;
 pub use capabilities::*;
 pub use context::*;
 pub use destination::*;
@@ -48,6 +50,7 @@ mod prelude {
     pub(crate) use cdf_package::{PackageReader, PackageReplayInputs};
     pub(crate) use serde::{Deserialize, Serialize};
 
+    pub(crate) use crate::bulk::*;
     pub(crate) use crate::capabilities::*;
     pub(crate) use crate::context::*;
     pub(crate) use crate::destination::*;

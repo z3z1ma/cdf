@@ -57,6 +57,25 @@ pub struct CommitSegment {
     retention: Option<CommitSegmentRetention>,
 }
 
+#[derive(Clone, Debug)]
+pub struct CommitBatch {
+    pub state: StateSegment,
+    pub package_byte_count: u64,
+    pub batch_ordinal: u32,
+    pub batch_count: u32,
+    pub batch: RecordBatch,
+    retention: Option<CommitSegmentRetention>,
+}
+
+pub struct CommitBatchIterator {
+    state: StateSegment,
+    package_byte_count: u64,
+    batches: std::vec::IntoIter<RecordBatch>,
+    batch_count: u32,
+    next_ordinal: u32,
+    retention: Option<CommitSegmentRetention>,
+}
+
 impl CommitSegment {
     pub fn new(state: StateSegment, package_byte_count: u64, batches: Vec<RecordBatch>) -> Self {
         Self {
@@ -76,6 +95,50 @@ impl CommitSegment {
         self.retention
             .as_ref()
             .map_or(0, CommitSegmentRetention::bytes)
+    }
+
+    pub fn into_batches(self) -> Result<CommitBatchIterator> {
+        let batch_count = u32::try_from(self.batches.len())
+            .map_err(|_| crate::CdfError::data("commit segment batch count exceeds u32"))?;
+        if batch_count == 0 {
+            return Err(crate::CdfError::data(
+                "commit segment must contain at least one batch",
+            ));
+        }
+        Ok(CommitBatchIterator {
+            state: self.state,
+            package_byte_count: self.package_byte_count,
+            batches: self.batches.into_iter(),
+            batch_count,
+            next_ordinal: 0,
+            retention: self.retention,
+        })
+    }
+}
+
+impl CommitBatch {
+    pub fn retained_bytes(&self) -> u64 {
+        self.retention
+            .as_ref()
+            .map_or(0, CommitSegmentRetention::bytes)
+    }
+}
+
+impl Iterator for CommitBatchIterator {
+    type Item = CommitBatch;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let batch = self.batches.next()?;
+        let batch_ordinal = self.next_ordinal;
+        self.next_ordinal += 1;
+        Some(CommitBatch {
+            state: self.state.clone(),
+            package_byte_count: self.package_byte_count,
+            batch_ordinal,
+            batch_count: self.batch_count,
+            batch,
+            retention: self.retention.clone(),
+        })
     }
 }
 

@@ -61,6 +61,8 @@ pub struct DestinationRuntimeCapabilities {
     pub commit_payload_mode: DestinationCommitPayloadMode,
     pub max_in_flight_segments: Option<u16>,
     pub max_in_flight_bytes: Option<u64>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub bulk_paths: Vec<crate::BulkPathDescriptor>,
     pub bulk_path: Option<String>,
     pub bulk_evidence_version: Option<String>,
     pub replay_requires_explicit_target: bool,
@@ -80,6 +82,7 @@ impl Default for DestinationRuntimeCapabilities {
             commit_payload_mode: DestinationCommitPayloadMode::MaterializedPackage,
             max_in_flight_segments: Some(1),
             max_in_flight_bytes: None,
+            bulk_paths: Vec::new(),
             bulk_path: None,
             bulk_evidence_version: None,
             replay_requires_explicit_target: false,
@@ -145,6 +148,23 @@ impl DestinationRuntimeCapabilities {
             return Err(CdfError::contract(
                 "segment-streaming destination commits require nonzero segment and byte bounds",
             ));
+        }
+        let mut bulk_ids = BTreeMap::new();
+        for path in &self.bulk_paths {
+            path.validate()?;
+            if bulk_ids.insert(path.path_id.as_str(), ()).is_some() {
+                return Err(CdfError::contract(
+                    "destination bulk path ids must be unique",
+                ));
+            }
+            if let Some(lane) = path.blocking_lane.as_deref()
+                && !lane_ids.contains_key(lane)
+            {
+                return Err(CdfError::contract(format!(
+                    "bulk path {} references undeclared blocking lane `{lane}`",
+                    path.path_id
+                )));
+            }
         }
         Ok(())
     }

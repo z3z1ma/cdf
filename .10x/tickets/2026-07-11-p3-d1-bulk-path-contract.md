@@ -2,7 +2,7 @@ Status: open
 Created: 2026-07-11
 Updated: 2026-07-11
 Parent: .10x/tickets/2026-07-10-p3-ws-d-destination-bulk-paths.md
-Depends-On: .10x/tickets/done/2026-07-10-p3-ws-l5-preoptimization-baseline.md, .10x/tickets/done/2026-07-11-p0-dx1-neutral-runtime-crate.md, .10x/tickets/done/2026-07-11-p3-a1-staged-ingress-final-binding.md, .10x/tickets/2026-07-11-p3-a5-streaming-operator-graph.md, .10x/specs/destination-bulk-path-runtime.md
+Depends-On: .10x/tickets/done/2026-07-10-p3-ws-l5-preoptimization-baseline.md, .10x/tickets/done/2026-07-11-p0-dx1-neutral-runtime-crate.md, .10x/tickets/done/2026-07-11-p3-a1-staged-ingress-final-binding.md, .10x/tickets/done/2026-07-11-p3-a5a-graph-edge-contracts.md, .10x/specs/destination-bulk-path-runtime.md
 
 # P3 D1: neutral bulk-path descriptors and bounded writer contract
 
@@ -28,7 +28,7 @@ No DuckDB/Postgres/Parquet optimization.
 
 ## Blockers
 
-Depends on L5, DX1, staged ingress, and A5 bounded segment readers.
+None. L5, DX1, staged ingress, graph-edge ownership, and the verified accounted segment reader are implemented. Depending on the A5 parent would be circular because A5c needs D1/D2 to remove DuckDB materialization.
 
 ## References
 
