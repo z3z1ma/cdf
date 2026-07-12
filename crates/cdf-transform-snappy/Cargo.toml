@@ -1,0 +1,19 @@
+[package]
+name = "cdf-transform-snappy"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+description = "Native streaming Snappy framed byte transform for cdf."
+
+[dependencies]
+bytes = "1.11.0"
+cdf-kernel = { path = "../cdf-kernel" }
+cdf-memory = { path = "../cdf-memory" }
+cdf-runtime = { path = "../cdf-runtime" }
+crc32c = "0.6.8"
+futures-util = "0.3.32"
+snap = "1.1.1"
+
+[dev-dependencies]
+futures-executor = "0.3.32"

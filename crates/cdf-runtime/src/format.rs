@@ -86,6 +86,37 @@ impl AccountedByteCursor {
         Ok(Some(byte))
     }
 
+    pub async fn read_exact(&mut self, length: usize, label: &str) -> Result<Vec<u8>> {
+        let mut bytes = Vec::with_capacity(length);
+        while bytes.len() < length {
+            if !self.ensure_current().await? {
+                return Err(CdfError::data(format!(
+                    "{label} ended before its declared length"
+                )));
+            }
+            let remaining = length - bytes.len();
+            let available = self.current_slice();
+            let copied = remaining.min(available.len());
+            bytes.extend_from_slice(&available[..copied]);
+            self.consume(copied)?;
+        }
+        Ok(bytes)
+    }
+
+    pub async fn skip_exact(&mut self, mut length: usize, label: &str) -> Result<()> {
+        while length > 0 {
+            if !self.ensure_current().await? {
+                return Err(CdfError::data(format!(
+                    "{label} ended before its declared length"
+                )));
+            }
+            let skipped = length.min(self.current_slice().len());
+            self.consume(skipped)?;
+            length -= skipped;
+        }
+        Ok(())
+    }
+
     pub fn consumed_bytes(&self) -> u64 {
         self.consumed_bytes
     }

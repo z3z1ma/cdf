@@ -1252,6 +1252,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "cdf-transform-snappy"
+version = "0.1.0"
+dependencies = [
+ "bytes",
+ "cdf-kernel",
+ "cdf-memory",
+ "cdf-runtime",
+ "crc32c",
+ "futures-executor",
+ "futures-util",
+ "snap",
+]
+
+[[package]]
 name = "cdf-transform-zstd"
 version = "0.1.0"
 dependencies = [
@@ -1461,6 +1475,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8b2a41393f66f16b0823bb79094d54ac5fbd34ab292ddafb9a0456ac9f87d201"
 dependencies = [
  "libc",
+]
+
+[[package]]
+name = "crc32c"
+version = "0.6.8"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3a47af21622d091a8f0fb295b88bc886ac74efcc613efc19f5d0b21de5c89e47"
+dependencies = [
+ "rustc_version",
 ]
 
 [[package]]

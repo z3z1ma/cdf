@@ -1,6 +1,12 @@
 
 # cargo-vet audits file
 
+[[audits.crc32c]]
+who = "CDF maintainers <maintainers@cdf.invalid>"
+criteria = "safe-to-deploy"
+version = "0.6.8"
+notes = "Reviewed all source and build code. Runtime capability is limited to CRC32C over caller-owned byte slices and optional Read/Write wrappers. Hardware paths are gated by runtime feature detection and target_feature; aligned u64 views are constructed only after bounded split/alignment checks, preserve slice lifetime, and do not write through shared input. Parallel hardware loops derive three nonempty equal blocks from fixed LONG/SHORT chunk constants. The build script writes generated lookup tables only beneath Cargo OUT_DIR. No network, ambient filesystem, process, environment-secret, or FFI capability. Selected to remove Snappy frame checksum copies while retaining software fallback."
+
 [[audits.sha2-asm]]
 who = "CDF maintainers <maintainers@cdf.invalid>"
 criteria = "safe-to-deploy"
