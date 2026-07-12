@@ -55,9 +55,7 @@ impl PostgresDestination {
             duplicate_receipt: None,
             receipt: None,
             expected_segments: session_segments.expected,
-            expected_order: session_segments.order,
             accepted_segments: BTreeSet::new(),
-            staged_segments: Vec::new(),
         })
     }
 
@@ -93,9 +91,7 @@ pub(crate) struct PostgresCommitSession {
     duplicate_receipt: Option<Receipt>,
     receipt: Option<Receipt>,
     expected_segments: BTreeMap<SegmentId, PostgresExpectedSegment>,
-    expected_order: Vec<SegmentId>,
     accepted_segments: BTreeSet<SegmentId>,
-    staged_segments: Vec<CommitSegment>,
 }
 
 pub(crate) struct ManagedPostgresCommitSession {
@@ -202,8 +198,6 @@ impl PostgresCommitSession {
             return Ok(());
         }
 
-        let package =
-            package_data_from_commit_segments(self.ordered_staged_segments()?, &self.plan)?;
         let mut client = self
             .client
             .take()
@@ -214,7 +208,7 @@ impl PostgresCommitSession {
             CommitCounts::default()
         } else {
             execute_statements(&mut client, &self.plan.target_ddl)?;
-            apply_write_plan(&mut client, &self.plan, &package, committed_at_ms)?
+            apply_write_plan_after_stage(&mut client, &self.plan)?
         };
         let receipt = build_receipt(
             &self.plan,
@@ -237,24 +231,6 @@ impl PostgresCommitSession {
         self.phase = PostgresCommitSessionPhase::Written;
         Ok(())
     }
-
-    fn ordered_staged_segments(&self) -> Result<Vec<CommitSegment>> {
-        let mut staged_by_id = BTreeMap::new();
-        for segment in &self.staged_segments {
-            staged_by_id.insert(segment.state.segment_id.clone(), segment);
-        }
-        let mut ordered = Vec::with_capacity(self.expected_order.len());
-        for segment_id in &self.expected_order {
-            let segment = staged_by_id.get(segment_id).ok_or_else(|| {
-                CdfError::internal(format!(
-                    "accepted Postgres segment {} is missing from staged payloads",
-                    segment_id.as_str()
-                ))
-            })?;
-            ordered.push((*segment).clone());
-        }
-        Ok(ordered)
-    }
 }
 
 impl CommitSession for PostgresCommitSession {
@@ -272,6 +248,10 @@ impl CommitSession for PostgresCommitSession {
         set_target_schema_search_path(&mut client, &self.plan.target)?;
         execute_statements(&mut client, &self.plan.system_ddl)?;
         self.duplicate_receipt = find_duplicate_receipt(&mut client, &self.plan)?;
+        if self.duplicate_receipt.is_none() && !self.expected_segments.is_empty() {
+            execute_statements(&mut client, &self.plan.target_ddl)?;
+            create_stage_table(&mut client, &self.plan)?;
+        }
         self.client = Some(client);
         self.phase = PostgresCommitSessionPhase::MigrationsApplied;
         if self.expected_segments.is_empty() {
@@ -307,13 +287,22 @@ impl CommitSession for PostgresCommitSession {
         }
         validate_commit_segment(&segment, expected, &self.plan)?;
 
+        if self.duplicate_receipt.is_none() {
+            let package = package_data_from_commit_segments(vec![segment], &self.plan)?;
+            let loaded_at_ms = now_ms()?;
+            let client = self
+                .client
+                .as_mut()
+                .ok_or_else(|| CdfError::internal("Postgres commit session has no transaction"))?;
+            copy_stage_rows(client, &self.plan, &package, loaded_at_ms)?;
+        }
+
         let ack = SegmentAck {
             segment_id: expected.state.segment_id.clone(),
             row_count: expected.state.row_count,
             byte_count: expected.state.byte_count,
         };
         self.accepted_segments.insert(segment_id);
-        self.staged_segments.push(segment);
         if self.accepted_segments.len() == self.expected_segments.len() {
             self.write_accepted_segments()?;
         }
@@ -500,11 +489,20 @@ fn query_xid(client: &mut Client, plan: &PostgresLoadPlan) -> Result<String> {
         .map_err(|error| postgres_error("query Postgres xid", error))
 }
 
-fn apply_write_plan(
+fn create_stage_table(client: &mut Client, plan: &PostgresLoadPlan) -> Result<()> {
+    let statement = plan
+        .write_sql
+        .iter()
+        .find(|statement| statement.name == "create_stage")
+        .ok_or_else(|| CdfError::internal("Postgres write plan omits create_stage"))?;
+    client
+        .batch_execute(&statement.sql)
+        .map_err(|error| postgres_error("create Postgres stage table", error))
+}
+
+fn apply_write_plan_after_stage(
     client: &mut Client,
     plan: &PostgresLoadPlan,
-    package: &PostgresPackageData,
-    loaded_at_ms: i64,
 ) -> Result<CommitCounts> {
     let mut rows_deleted = Some(0_u64);
     let mut rows_inserted = None;
@@ -513,12 +511,7 @@ fn apply_write_plan(
 
     for statement in &plan.write_sql {
         match statement.name.as_str() {
-            "create_stage" => {
-                client
-                    .batch_execute(&statement.sql)
-                    .map_err(|error| postgres_error("create Postgres stage table", error))?;
-                copy_stage_rows(client, plan, package, loaded_at_ms)?;
-            }
+            "create_stage" => {}
             "truncate_target_for_replace" => {
                 rows_deleted = Some(count_target_rows(client, &plan.target)?);
                 client
