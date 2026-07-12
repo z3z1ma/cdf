@@ -18,52 +18,60 @@ use cdf_formats::{
     read_arrow_ipc_file_path, read_arrow_ipc_file_path_with_declared_schema,
     stream_file_source_path_with_declared_schema_and_type_policy,
 };
-use cdf_http::SecretProvider;
 use cdf_kernel::{
     BatchStream, BoxFuture, CdfError, DeliveryGuarantee, EffectiveSchemaRuntime,
-    PLAN_SCHEMA_OBSERVATION_BINDING_KEY, PLAN_SCHEMA_OBSERVATION_ID_KEY, PartitionId,
-    PartitionPlan, PlanId, QueryableResource, ResourceCapabilities, ResourceDescriptor, ResourceId,
-    ResourceStream, Result, ScanPlan, ScanRequest, ScopeKey, SourcePosition, TypePolicyAllowances,
-    WriteDisposition,
+    PLAN_PHYSICAL_SCHEMA_HASH_KEY, PLAN_SCHEMA_OBSERVATION_BINDING_KEY,
+    PLAN_SCHEMA_OBSERVATION_ID_KEY, PartitionId, PartitionPlan, PlanId, QueryableResource,
+    ResourceCapabilities, ResourceDescriptor, ResourceId, ResourceStream, Result, ScanPlan,
+    ScanRequest, SchemaHash, ScopeKey, SourcePosition, TypePolicyAllowances, WriteDisposition,
 };
-use futures_util::{StreamExt, stream};
+use cdf_runtime::{
+    DecodePlanningRequest, ExecutionServices, FormatDiscoveryRequest, FormatDriver, FormatRegistry,
+    PhysicalDecodeRequest,
+};
+use futures_util::{StreamExt, TryStreamExt, stream};
 use sha2::{Digest, Sha256};
 
 use crate::{
     ByteRange, FileCompressionDeclaration, FileFormatDeclaration, FileIdentityMetadata,
     FileResourcePlan, FileTransport, FileTransportFacade, FileTransportLocation,
-    FileTransportResource,
+    FileTransportResource, LocalByteSource,
 };
+
+const NATIVE_TARGET_BATCH_ROWS: usize = 64 * 1024;
+const NATIVE_TARGET_BATCH_BYTES: u64 = 16 * 1024 * 1024;
+const NATIVE_STREAM_ITEMS: usize = 2;
 
 #[derive(Clone)]
 pub struct FileRuntimeDependencies {
     transport: Arc<Mutex<Box<dyn FileTransport + Send>>>,
+    execution: ExecutionServices,
+    formats: Arc<FormatRegistry>,
     max_spool_bytes: u64,
 }
 
 const DEFAULT_MAX_REMOTE_SPOOL_BYTES: u64 = 64 * 1024 * 1024 * 1024;
 
 impl FileRuntimeDependencies {
-    pub fn new(transport: impl FileTransport + Send + 'static) -> Self {
-        Self::from_boxed_transport(Box::new(transport))
+    pub fn new(
+        transport: impl FileTransport + Send + 'static,
+        execution: ExecutionServices,
+        formats: Arc<FormatRegistry>,
+    ) -> Self {
+        Self::from_boxed_transport(Box::new(transport), execution, formats)
     }
 
-    pub fn from_boxed_transport(transport: Box<dyn FileTransport + Send>) -> Self {
+    pub fn from_boxed_transport(
+        transport: Box<dyn FileTransport + Send>,
+        execution: ExecutionServices,
+        formats: Arc<FormatRegistry>,
+    ) -> Self {
         Self {
             transport: Arc::new(Mutex::new(transport)),
+            execution,
+            formats,
             max_spool_bytes: DEFAULT_MAX_REMOTE_SPOOL_BYTES,
         }
-    }
-
-    pub fn local() -> Self {
-        Self::new(FileTransportFacade::new())
-    }
-
-    pub fn with_secret_provider(
-        self,
-        _provider: impl SecretProvider + Send + Sync + 'static,
-    ) -> Self {
-        self
     }
 
     pub fn with_max_spool_bytes(mut self, max_spool_bytes: u64) -> Result<Self> {
@@ -82,6 +90,14 @@ impl FileRuntimeDependencies {
 
     fn transport(&self) -> Arc<Mutex<Box<dyn FileTransport + Send>>> {
         Arc::clone(&self.transport)
+    }
+
+    fn execution(&self) -> &ExecutionServices {
+        &self.execution
+    }
+
+    fn formats(&self) -> &Arc<FormatRegistry> {
+        &self.formats
     }
 
     pub fn with_transport<R>(
@@ -248,12 +264,6 @@ pub fn local_file_discovery_candidates(
         .into_iter()
         .map(|path| local_file_discovery_candidate(resource_id, &root, path, plan))
         .collect()
-}
-
-impl Default for FileRuntimeDependencies {
-    fn default() -> Self {
-        Self::local()
-    }
 }
 
 impl fmt::Debug for FileRuntimeDependencies {
@@ -556,40 +566,6 @@ pub(crate) fn file_partitions_for_plan_with_transport(
         .collect()
 }
 
-pub fn open_file_resource(
-    descriptor: &ResourceDescriptor,
-    declared_schema: SchemaRef,
-    plan: &FileResourcePlan,
-    partition: PartitionPlan,
-    allowances: cdf_kernel::TypePolicyAllowances,
-) -> BoxFuture<'static, Result<BatchStream>> {
-    open_file_resource_with_dependencies(
-        descriptor,
-        declared_schema,
-        plan,
-        partition,
-        FileRuntimeDependencies::local(),
-        allowances,
-    )
-}
-
-pub fn open_file_resource_preview(
-    descriptor: &ResourceDescriptor,
-    declared_schema: SchemaRef,
-    plan: &FileResourcePlan,
-    partition: PartitionPlan,
-    allowances: cdf_kernel::TypePolicyAllowances,
-) -> BoxFuture<'static, Result<BatchStream>> {
-    open_file_resource_with_dependencies(
-        descriptor,
-        declared_schema,
-        plan,
-        partition,
-        FileRuntimeDependencies::local(),
-        allowances,
-    )
-}
-
 fn open_file_resource_with_dependencies(
     descriptor: &ResourceDescriptor,
     declared_schema: SchemaRef,
@@ -605,6 +581,11 @@ fn open_file_resource_with_dependencies(
         let resolved = dependencies.with_transport(|transport| {
             validate_partition(&descriptor, &plan, &partition, transport)
         })?;
+        let planned_physical_schema_hash = partition
+            .metadata
+            .get(PLAN_PHYSICAL_SCHEMA_HASH_KEY)
+            .map(|value| SchemaHash::new(value.clone()))
+            .transpose()?;
         let options = ReadOptions::new(descriptor.resource_id.clone(), partition.partition_id);
         let mut type_policy = ContractPolicy::default().types;
         type_policy.coerce_types = allowances.coerce_types;
@@ -616,6 +597,7 @@ fn open_file_resource_with_dependencies(
             declared_schema,
             &dependencies,
             &type_policy,
+            planned_physical_schema_hash,
         )
     })
 }
@@ -627,6 +609,7 @@ fn stream_file_match(
     declared_schema: SchemaRef,
     dependencies: &FileRuntimeDependencies,
     type_policy: &TypePolicy,
+    planned_physical_schema_hash: Option<SchemaHash>,
 ) -> Result<BatchStream> {
     let position = Some(SourcePosition::FileManifest(cdf_kernel::FileManifest {
         version: 1,
@@ -637,7 +620,19 @@ fn stream_file_match(
             sha256: resolved.sha256.clone(),
         }],
     }));
+    let native_driver = (resolved.compression.mode == FileCompression::None)
+        .then(|| dependencies.formats().get(file_format_name(declaration)))
+        .flatten();
     match &resolved.open {
+        ResolvedFileOpen::LocalPath(path) if native_driver.is_some() => stream_registered_format(
+            path.clone(),
+            None,
+            native_driver.expect("registered driver guard was checked"),
+            options,
+            position,
+            planned_physical_schema_hash,
+            dependencies,
+        ),
         ResolvedFileOpen::LocalPath(path) => match declaration {
             FileFormatDeclaration::ArrowIpc
                 if resolved.compression.mode != FileCompression::None =>
@@ -691,21 +686,116 @@ fn stream_file_match(
                 &expected,
                 dependencies.max_spool_bytes(),
             )?);
-            let stream = stream_file_source_path_with_declared_schema_and_type_policy(
-                spool.path(),
-                compile_format(declaration)?,
-                resolved.compression.mode,
-                options,
-                declared_schema,
-                type_policy,
-                position,
-            )?;
-            Ok(Box::pin(stream.map(move |batch| {
-                let _keep_spool_alive = &spool;
-                batch
-            })) as BatchStream)
+            if let Some(driver) = native_driver {
+                stream_registered_format(
+                    spool.path().to_path_buf(),
+                    Some(spool),
+                    driver,
+                    options,
+                    position,
+                    planned_physical_schema_hash,
+                    dependencies,
+                )
+            } else {
+                let stream = stream_file_source_path_with_declared_schema_and_type_policy(
+                    spool.path(),
+                    compile_format(declaration)?,
+                    resolved.compression.mode,
+                    options,
+                    declared_schema,
+                    type_policy,
+                    position,
+                )?;
+                Ok(Box::pin(stream.map(move |batch| {
+                    let _keep_spool_alive = &spool;
+                    batch
+                })) as BatchStream)
+            }
         }
     }
+}
+
+fn stream_registered_format(
+    path: PathBuf,
+    spool: Option<Arc<tempfile::NamedTempFile>>,
+    driver: Arc<dyn FormatDriver>,
+    options: ReadOptions,
+    source_position: Option<SourcePosition>,
+    planned_physical_schema_hash: Option<SchemaHash>,
+    dependencies: &FileRuntimeDependencies,
+) -> Result<BatchStream> {
+    let memory = dependencies.execution().memory();
+    let scope_id = format!(
+        "format-{}-{}",
+        driver.descriptor().format_id,
+        options.batch_id_prefix
+    );
+    let stream = dependencies.execution().spawn_io_stream(
+        &scope_id,
+        NATIVE_STREAM_ITEMS,
+        move |mut sender, cancellation| async move {
+            let _spool = spool;
+            let source = Arc::new(LocalByteSource::open(path, Arc::clone(&memory))?);
+            let options_json = driver.canonical_options(serde_json::json!({}))?;
+            let observed_schema_hash = match planned_physical_schema_hash {
+                Some(hash) => hash,
+                None => {
+                    let observation = driver
+                        .discover(
+                            source.clone(),
+                            FormatDiscoveryRequest {
+                                options: options_json.clone(),
+                                maximum_bytes: 16 * 1024 * 1024,
+                                maximum_records: 0,
+                                cancellation: cancellation.clone(),
+                            },
+                        )
+                        .await?;
+                    cdf_contract::canonical_arrow_schema_hash(observation.arrow_schema.as_ref())?
+                }
+            };
+            let units = driver
+                .plan_decode_units(
+                    source.clone(),
+                    DecodePlanningRequest {
+                        options: options_json.clone(),
+                        projection: None,
+                        predicates: Vec::new(),
+                        target_batch_rows: NATIVE_TARGET_BATCH_ROWS,
+                        target_batch_bytes: NATIVE_TARGET_BATCH_BYTES,
+                        cancellation: cancellation.clone(),
+                    },
+                )
+                .await?;
+            for unit in units {
+                let mut decoded = driver
+                    .decode(
+                        source.clone(),
+                        PhysicalDecodeRequest {
+                            options: options_json.clone(),
+                            unit,
+                            resource_id: options.resource_id.clone(),
+                            partition_id: options.partition_id.clone(),
+                            batch_id_prefix: options.batch_id_prefix.clone(),
+                            observed_schema_hash: observed_schema_hash.clone(),
+                            source_position: source_position.clone(),
+                            projection: None,
+                            predicates: Vec::new(),
+                            target_batch_rows: NATIVE_TARGET_BATCH_ROWS,
+                            target_batch_bytes: NATIVE_TARGET_BATCH_BYTES,
+                            memory: Arc::clone(&memory),
+                            cancellation: cancellation.clone(),
+                        },
+                    )
+                    .await?;
+                while let Some(batch) = decoded.try_next().await? {
+                    sender.send(batch.into_batch()?).await?;
+                }
+            }
+            Ok(())
+        },
+    )?;
+    Ok(Box::pin(stream))
 }
 
 fn spool_transport_file(
@@ -2169,11 +2259,77 @@ fn glob_path_matches(pattern: &[String], candidate: &str) -> bool {
 mod tests {
     use std::{io::Write, sync::Arc};
 
+    use arrow_array::{ArrayRef, Int64Array, RecordBatch, StringArray};
     use arrow_schema::{DataType, Field, Schema};
     use flate2::{Compression, write::GzEncoder};
     use object_store::{ObjectStoreExt, PutPayload, memory::InMemory, path::Path as ObjectPath};
 
     use super::*;
+
+    #[test]
+    fn local_parquet_uses_registered_native_driver_as_bounded_stream() {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int64, false),
+            Field::new("name", DataType::Utf8, false),
+        ]));
+        let record_batch = RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(Int64Array::from_iter_values(0..150_000)) as ArrayRef,
+                Arc::new(StringArray::from_iter_values(
+                    (0..150_000).map(|value| format!("name-{value}")),
+                )) as ArrayRef,
+            ],
+        )
+        .unwrap();
+        let bytes =
+            cdf_package::transcode_record_batches_to_parquet_bytes(&[record_batch]).unwrap();
+        let temp = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(temp.path(), bytes).unwrap();
+        let dependencies = FileRuntimeDependencies::new(
+            FileTransportFacade::new(),
+            crate::test_execution_services(),
+            crate::test_format_registry(),
+        );
+        let driver = dependencies.formats().resolve("parquet").unwrap();
+        let stream = stream_registered_format(
+            temp.path().to_path_buf(),
+            None,
+            driver,
+            ReadOptions::new(
+                ResourceId::new("events").unwrap(),
+                PartitionId::new("file-0").unwrap(),
+            ),
+            None,
+            None,
+            &dependencies,
+        )
+        .unwrap();
+
+        let batches = futures_executor::block_on(stream.collect::<Vec<_>>())
+            .into_iter()
+            .collect::<Result<Vec<_>>>()
+            .unwrap();
+        assert_eq!(batches.len(), 3);
+        assert_eq!(
+            batches
+                .iter()
+                .map(|batch| batch.header.row_count)
+                .sum::<u64>(),
+            150_000
+        );
+        assert!(
+            batches
+                .iter()
+                .all(|batch| batch.header.row_count <= NATIVE_TARGET_BATCH_ROWS as u64)
+        );
+        assert!(dependencies.execution().memory().snapshot().current_bytes > 0);
+        drop(batches);
+        assert_eq!(
+            dependencies.execution().memory().snapshot().current_bytes,
+            0
+        );
+    }
 
     #[test]
     fn object_store_recursive_glob_resolves_stable_multi_file_partitions() {
@@ -2255,9 +2411,13 @@ mod tests {
         let facade = FileTransportFacade::new()
             .with_object_store("s3://acme-events", store)
             .with_execution_services(crate::test_execution_services());
-        let dependencies = FileRuntimeDependencies::new(facade)
-            .with_max_spool_bytes(encoded.len() as u64)
-            .unwrap();
+        let dependencies = FileRuntimeDependencies::new(
+            facade,
+            crate::test_execution_services(),
+            crate::test_format_registry(),
+        )
+        .with_max_spool_bytes(encoded.len() as u64)
+        .unwrap();
         let transport = dependencies.transport();
         let plan = FileResourcePlan {
             source: "events".to_owned(),
@@ -2287,6 +2447,7 @@ mod tests {
             declared.clone(),
             &dependencies,
             &type_policy,
+            None,
         )
         .unwrap();
         let batches = futures_executor::block_on(stream.collect::<Vec<_>>())
@@ -2318,6 +2479,7 @@ mod tests {
             declared,
             &constrained,
             &type_policy,
+            None,
         ) {
             Ok(_) => panic!("undersized spool budget should reject the stream"),
             Err(error) => error,

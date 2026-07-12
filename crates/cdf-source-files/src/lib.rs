@@ -61,6 +61,24 @@ pub(crate) fn test_execution_services() -> cdf_runtime::ExecutionServices {
 }
 
 #[cfg(test)]
+pub(crate) fn test_format_registry() -> std::sync::Arc<cdf_runtime::FormatRegistry> {
+    static REGISTRY: std::sync::OnceLock<std::sync::Arc<cdf_runtime::FormatRegistry>> =
+        std::sync::OnceLock::new();
+    REGISTRY
+        .get_or_init(|| {
+            let mut registry = cdf_runtime::FormatRegistry::default();
+            registry
+                .register(std::sync::Arc::new(
+                    cdf_format_parquet::ParquetFormatDriver::new()
+                        .expect("Parquet test format driver"),
+                ))
+                .expect("Parquet test format registration");
+            std::sync::Arc::new(registry)
+        })
+        .clone()
+}
+
+#[cfg(test)]
 struct TestIoHost {
     runtime: tokio::runtime::Runtime,
     memory: std::sync::Arc<dyn cdf_memory::MemoryCoordinator>,
@@ -111,9 +129,11 @@ impl cdf_runtime::ExecutionHost for TestIoHost {
         &self,
         _run_id: &str,
     ) -> cdf_kernel::Result<Box<dyn cdf_runtime::ExecutionTaskScope>> {
-        Err(cdf_kernel::CdfError::internal(
-            "file source test I/O host does not execute task scopes",
-        ))
+        Ok(Box::new(TestIoScope {
+            handle: self.runtime.handle().clone(),
+            cancellation: cdf_runtime::RunCancellation::default(),
+            tasks: Vec::new(),
+        }))
     }
 
     fn run_io_blocking(
@@ -136,5 +156,81 @@ impl cdf_runtime::ExecutionHost for TestIoHost {
         task: cdf_runtime::BlockingValueTask,
     ) -> cdf_kernel::Result<cdf_runtime::IoValue> {
         task()
+    }
+}
+
+#[cfg(test)]
+struct TestIoScope {
+    handle: tokio::runtime::Handle,
+    cancellation: cdf_runtime::RunCancellation,
+    tasks: Vec<tokio::task::JoinHandle<cdf_kernel::Result<()>>>,
+}
+
+#[cfg(test)]
+impl Drop for TestIoScope {
+    fn drop(&mut self) {
+        self.cancellation.cancel();
+        for task in &self.tasks {
+            task.abort();
+        }
+    }
+}
+
+#[cfg(test)]
+impl cdf_runtime::ExecutionTaskScope for TestIoScope {
+    fn cancellation(&self) -> cdf_runtime::RunCancellation {
+        self.cancellation.clone()
+    }
+
+    fn spawn_io(&mut self, task: cdf_runtime::IoTask) -> cdf_kernel::Result<()> {
+        self.tasks.push(self.handle.spawn(task));
+        Ok(())
+    }
+
+    fn spawn_cpu(
+        &mut self,
+        _spec: cdf_runtime::CpuTaskSpec,
+        _task: cdf_runtime::BlockingTask,
+    ) -> cdf_kernel::Result<()> {
+        Err(cdf_kernel::CdfError::internal(
+            "file source test scope does not execute CPU tasks",
+        ))
+    }
+
+    fn spawn_blocking(
+        &mut self,
+        _lane: &str,
+        _task: cdf_runtime::BlockingTask,
+    ) -> cdf_kernel::Result<()> {
+        Err(cdf_kernel::CdfError::internal(
+            "file source test scope does not execute blocking tasks",
+        ))
+    }
+
+    fn cancel(&self) {
+        self.cancellation.cancel();
+    }
+
+    fn join(
+        mut self: Box<Self>,
+    ) -> cdf_kernel::BoxFuture<'static, cdf_kernel::Result<cdf_runtime::TaskScopeReport>> {
+        Box::pin(async move {
+            let mut report = cdf_runtime::TaskScopeReport {
+                submitted_io: self.tasks.len() as u64,
+                ..cdf_runtime::TaskScopeReport::default()
+            };
+            for task in self.tasks.drain(..) {
+                match task.await {
+                    Ok(Ok(())) => report.completed += 1,
+                    Ok(Err(error)) => return Err(error),
+                    Err(error) => {
+                        return Err(cdf_kernel::CdfError::internal(format!(
+                            "file source test I/O task failed: {error}"
+                        )));
+                    }
+                }
+            }
+            Ok(report)
+        })
     }
 }

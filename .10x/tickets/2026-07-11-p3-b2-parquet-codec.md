@@ -36,6 +36,8 @@ Depends on L5, FX1, segmentation, and the execution host.
 
 ## Progress and notes
 
+- 2026-07-11: The extracted driver is now the production CLI Parquet path for local files and verified remote spools. It emits accounted 64k physical batches through the injected structured-I/O stream and shared reconciliation. Full TLC correctness passed, but a three-run comparison recorded median wall/CPU of 1.63/1.80 seconds versus the recent 1.53/1.62 control. B2 remains open to remove local range allocation/copy/open/attestation overhead without exposing filesystem handles to the codec. Evidence: `.10x/evidence/2026-07-11-p0-fx1-production-parquet-registry-stream.md`.
+
 - 2026-07-11: FX1 extracted the native codec into `cdf-format-parquet` behind the neutral `FormatDriver`/`ByteSource` boundary. The driver already provides footer discovery, row-group unit plans, exact projection, capability-bounded parallel ranges, incremental Arrow output, full physical-schema drift checks, and owner-backed zero-copy source accounting. B2 still owns production migration measurement, predicate/page-index pushdown, adaptive byte-target control, jobs scaling, malformed/fuzz coverage, and deletion of the superseded monolithic Parquet reader. Evidence: `.10x/evidence/2026-07-11-p0-fx1-parquet-driver-extraction.md`.
 
 ## Progress and notes

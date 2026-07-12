@@ -535,6 +535,15 @@ impl FormatRegistry {
         })
     }
 
+    pub fn get(&self, id_or_alias: &str) -> Option<Arc<dyn FormatDriver>> {
+        let id = self
+            .aliases
+            .get(id_or_alias)
+            .cloned()
+            .or_else(|| FormatId::new(id_or_alias).ok())?;
+        self.by_id.get(&id).cloned()
+    }
+
     pub fn descriptors(&self) -> Vec<FormatDriverDescriptor> {
         self.by_id
             .values()

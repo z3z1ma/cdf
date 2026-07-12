@@ -62,6 +62,20 @@ fn test_execution_services() -> cdf_runtime::ExecutionServices {
         .1
 }
 
+fn test_format_registry() -> Arc<cdf_runtime::FormatRegistry> {
+    let mut registry = cdf_runtime::FormatRegistry::default();
+    registry
+        .register(Arc::new(
+            cdf_format_parquet::ParquetFormatDriver::new().unwrap(),
+        ))
+        .unwrap();
+    Arc::new(registry)
+}
+
+fn file_dependencies(transport: FileTransportFacade) -> FileRuntimeDependencies {
+    FileRuntimeDependencies::new(transport, test_execution_services(), test_format_registry())
+}
+
 const BOOK_PROJECT: &str = r#"
 [project]
 name = "acme_data"
@@ -1412,7 +1426,7 @@ fn object_store_multi_file_parquet_discovery_pins_one_reconciled_snapshot() {
         futures_executor::block_on(store.put(&ObjectPath::from(path), PutPayload::from(bytes)))
             .unwrap();
     }
-    let dependencies = FileRuntimeDependencies::new(
+    let dependencies = file_dependencies(
         FileTransportFacade::new()
             .with_object_store("s3://tlc", store)
             .with_execution_services(test_execution_services()),
@@ -1482,7 +1496,7 @@ fn object_store_gzip_ndjson_discovers_pins_and_executes_through_one_transport() 
         PutPayload::from(encoded.clone()),
     ))
     .unwrap();
-    let dependencies = FileRuntimeDependencies::new(
+    let dependencies = file_dependencies(
         FileTransportFacade::new()
             .with_object_store("s3://acme-events", store)
             .with_execution_services(test_execution_services()),
@@ -1791,7 +1805,7 @@ egress_allowlist = ["data.example.test"]
     );
     let auth_resource = compile_single_project_resource(auth_temp.path());
     let auth_transport = RecordingHttpFileTransport::new(parquet);
-    let auth_dependencies = FileRuntimeDependencies::new(
+    let auth_dependencies = file_dependencies(
         FileTransportFacade::new()
             .with_http_transport(auth_transport.clone())
             .with_secret_provider(StaticSecretProvider::new([(
@@ -3130,7 +3144,7 @@ trust = "governed"
 }
 
 fn http_file_dependencies(transport: RecordingHttpFileTransport) -> FileRuntimeDependencies {
-    FileRuntimeDependencies::new(FileTransportFacade::new().with_http_transport(transport))
+    file_dependencies(FileTransportFacade::new().with_http_transport(transport))
 }
 
 fn live_plan_for_stream(resource: &dyn QueryableResource, package_id: &str) -> EnginePlan {

@@ -29,6 +29,21 @@ use cdf_kernel::{
 use futures_util::StreamExt;
 use tempfile::TempDir;
 
+fn test_file_dependencies(
+    transport: impl cdf_source_files::FileTransport + Send + 'static,
+) -> FileRuntimeDependencies {
+    let execution = cdf_engine::StandaloneExecutionHost::default_services(64 * 1024 * 1024)
+        .unwrap()
+        .1;
+    let mut formats = cdf_runtime::FormatRegistry::default();
+    formats
+        .register(Arc::new(
+            cdf_format_parquet::ParquetFormatDriver::new().unwrap(),
+        ))
+        .unwrap();
+    FileRuntimeDependencies::new(transport, execution, Arc::new(formats))
+}
+
 const BOOK_REST_EXAMPLE: &str = r#"
 [source.github]
 kind = "rest"
@@ -643,7 +658,7 @@ fn rest_cursor_pushdown_accepts_only_safe_literal_tokens() {
 }
 
 #[test]
-fn rest_default_open_remains_unsupported_without_runtime_dependencies() {
+fn compiled_declarations_require_typed_source_resolution_before_execution() {
     let resource = compile_document(&parse_toml(REST_RUNTIME_EXAMPLE).unwrap())
         .unwrap()
         .remove(0);
@@ -651,7 +666,11 @@ fn rest_default_open_remains_unsupported_without_runtime_dependencies() {
     let partition = resource.plan_partitions(&request).unwrap().remove(0);
 
     let error = expect_open_error(futures_executor::block_on(resource.open(partition)));
-    assert!(error.to_string().contains("outside the MVP compiler crate"));
+    assert!(
+        error
+            .to_string()
+            .contains("resolve their typed source driver")
+    );
 }
 
 #[test]
@@ -2224,17 +2243,20 @@ format = "ndjson"
 write_disposition = "append"
 trust = "governed"
 "#;
-    let resource = compile_document_with_project_root(&parse_toml(input).unwrap(), root.path())
+    let compiled = compile_document_with_project_root(&parse_toml(input).unwrap(), root.path())
         .unwrap()
         .remove(0);
     let request = ScanRequest {
-        resource_id: resource.descriptor().resource_id.clone(),
+        resource_id: compiled.descriptor().resource_id.clone(),
         projection: None,
         filters: Vec::new(),
         limit: None,
         order_by: Vec::new(),
         scope: ScopeKey::Resource,
     };
+    let resource = compiled
+        .to_file_resource(test_file_dependencies(FileTransportFacade::new()))
+        .unwrap();
     let mut partition = resource.plan_partitions(&request).unwrap().remove(0);
     partition
         .metadata
@@ -2424,7 +2446,7 @@ trust = "governed"
         .unwrap()
         .remove(0);
     let resource = compiled
-        .to_file_resource(FileRuntimeDependencies::new(transport.clone()))
+        .to_file_resource(test_file_dependencies(transport.clone()))
         .unwrap();
 
     let partitions = resource
@@ -2508,7 +2530,7 @@ fn file_glob_partition_checksum_changes_when_file_content_changes() {
 fn file_partition_attestation_rejects_identity_change_after_planning() {
     let (root, compiled) = compile_local_glob_runtime_resource([("events.ndjson", "{\"id\":1}\n")]);
     let resource = compiled
-        .to_file_resource(FileRuntimeDependencies::local())
+        .to_file_resource(test_file_dependencies(FileTransportFacade::new()))
         .unwrap();
     let partition = resource
         .plan_partitions(&scan_request_for(&compiled))
@@ -2526,13 +2548,15 @@ fn file_partition_attestation_rejects_identity_change_after_planning() {
 
 #[test]
 fn file_glob_run_and_preview_open_the_requested_partition() {
-    let (_root, resource) = compile_local_glob_runtime_resource([
+    let (_root, compiled) = compile_local_glob_runtime_resource([
         ("b.ndjson", "{\"id\":2}\n"),
         ("a.ndjson", "{\"id\":1}\n"),
     ]);
-    let partitions = resource
-        .plan_partitions(&scan_request_for(&resource))
+    let request = scan_request_for(&compiled);
+    let resource = compiled
+        .to_file_resource(test_file_dependencies(FileTransportFacade::new()))
         .unwrap();
+    let partitions = resource.plan_partitions(&request).unwrap();
 
     let preview_batches = drain_batches(
         futures_executor::block_on(resource.open_preview(partitions[0].clone())).unwrap(),
@@ -2579,11 +2603,13 @@ fn file_runtime_auto_compression_decodes_gzip_and_zstd_ndjson() {
         ),
     )
     .unwrap();
-    let resource = compile_local_file_runtime_resource(&root, "*.ndjson.*", None);
-
-    let partitions = resource
-        .plan_partitions(&scan_request_for(&resource))
+    let compiled = compile_local_file_runtime_resource(&root, "*.ndjson.*", None);
+    let request = scan_request_for(&compiled);
+    let resource = compiled
+        .to_file_resource(test_file_dependencies(FileTransportFacade::new()))
         .unwrap();
+
+    let partitions = resource.plan_partitions(&request).unwrap();
 
     assert_eq!(
         partition_file_names(&partitions),
@@ -2636,12 +2662,13 @@ fn file_runtime_explicit_compression_overrides_extension_inference() {
         ),
     )
     .unwrap();
-    let resource = compile_local_file_runtime_resource(&root, "*.zst", Some("gzip"));
+    let compiled = compile_local_file_runtime_resource(&root, "*.zst", Some("gzip"));
+    let request = scan_request_for(&compiled);
+    let resource = compiled
+        .to_file_resource(test_file_dependencies(FileTransportFacade::new()))
+        .unwrap();
 
-    let partition = resource
-        .plan_partitions(&scan_request_for(&resource))
-        .unwrap()
-        .remove(0);
+    let partition = resource.plan_partitions(&request).unwrap().remove(0);
 
     assert_eq!(
         partition.metadata.get("compression").map(String::as_str),
@@ -2706,12 +2733,13 @@ fn file_glob_zero_matches_still_reports_actionable_data_error() {
 
 #[test]
 fn file_runtime_rejects_partition_path_not_produced_by_glob_before_read() {
-    let (_root, resource) =
+    let (_root, compiled) =
         compile_local_glob_runtime_resource([("events.ndjson", "{\"id\":1}\n")]);
-    let mut partition = resource
-        .plan_partitions(&scan_request_for(&resource))
-        .unwrap()
-        .remove(0);
+    let request = scan_request_for(&compiled);
+    let resource = compiled
+        .to_file_resource(test_file_dependencies(FileTransportFacade::new()))
+        .unwrap();
+    let mut partition = resource.plan_partitions(&request).unwrap().remove(0);
     let unplanned_path = "other.ndjson".to_owned();
     partition
         .metadata
@@ -2734,14 +2762,15 @@ fn file_runtime_rejects_partition_path_not_produced_by_glob_before_read() {
 
 #[test]
 fn file_runtime_rejects_legacy_partition_id_for_multi_file_glob() {
-    let (_root, resource) = compile_local_glob_runtime_resource([
+    let (_root, compiled) = compile_local_glob_runtime_resource([
         ("a.ndjson", "{\"id\":1}\n"),
         ("b.ndjson", "{\"id\":2}\n"),
     ]);
-    let mut partition = resource
-        .plan_partitions(&scan_request_for(&resource))
-        .unwrap()
-        .remove(0);
+    let request = scan_request_for(&compiled);
+    let resource = compiled
+        .to_file_resource(test_file_dependencies(FileTransportFacade::new()))
+        .unwrap();
+    let mut partition = resource.plan_partitions(&request).unwrap().remove(0);
     partition.partition_id = PartitionId::new("files").unwrap();
 
     let error = match futures_executor::block_on(resource.open(partition)) {
@@ -2980,25 +3009,6 @@ fn sql_negotiate_does_not_smuggle_unstructured_predicates() {
 }
 
 #[test]
-fn sql_default_open_remains_unsupported_without_runtime_dependencies() {
-    let resource = compile_document(&parse_toml(SQL_RUNTIME_EXAMPLE).unwrap())
-        .unwrap()
-        .remove(0);
-    let request = ScanRequest {
-        resource_id: resource.descriptor().resource_id.clone(),
-        projection: None,
-        filters: Vec::new(),
-        limit: None,
-        order_by: Vec::new(),
-        scope: ScopeKey::Resource,
-    };
-    let partition = resource.plan_partitions(&request).unwrap().remove(0);
-
-    let error = expect_open_error(futures_executor::block_on(resource.open(partition)));
-    assert!(error.to_string().contains("outside the MVP compiler crate"));
-}
-
-#[test]
 fn sql_runtime_requires_explicit_secret_provider() {
     let resource = compile_document(&parse_toml(SQL_RUNTIME_EXAMPLE).unwrap())
         .unwrap()
@@ -3086,7 +3096,7 @@ fn sql_runtime_fails_closed_for_query_and_non_postgres_dialect() {
     let non_postgres =
         SQL_RUNTIME_EXAMPLE.replace(r#"dialect = "postgres""#, r#"dialect = "sqlite""#);
     let error = compile_document(&parse_toml(&non_postgres).unwrap()).unwrap_err();
-    assert!(error.to_string().contains("dialect `postgres`"));
+    assert!(error.to_string().contains("`postgres`"), "{error}");
 }
 
 #[test]
@@ -3531,10 +3541,11 @@ fn write_test_arrow(path: &Path, id: i64) {
 }
 
 fn assert_preview_run_first_id(resource: &CompiledResource, expected: i64) {
-    let partition = resource
-        .plan_partitions(&scan_request_for(resource))
-        .unwrap()
-        .remove(0);
+    let request = scan_request_for(resource);
+    let resource = resource
+        .to_file_resource(test_file_dependencies(FileTransportFacade::new()))
+        .unwrap();
+    let partition = resource.plan_partitions(&request).unwrap().remove(0);
     let preview = drain_batches(
         futures_executor::block_on(resource.open_preview(partition.clone())).unwrap(),
     );

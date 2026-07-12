@@ -14527,8 +14527,7 @@ fn write_large_vendor_arrow_ipc(project: &TestProject, filename: &str) {
 fn write_arrow_ipc_source(project: &TestProject, filename: &str, batch: RecordBatch) {
     let temp = TempDir::new("cdf-cli-arrow-ipc-discover-source");
     let package_dir = temp.path().join("pkg-arrow-ipc-discover-source");
-    let mut builder =
-        PackageBuilder::create(&package_dir, "pkg-arrow-ipc-discover-source").unwrap();
+    let builder = PackageBuilder::create(&package_dir, "pkg-arrow-ipc-discover-source").unwrap();
     builder
         .write_segment(SegmentId::new("seg-000001").unwrap(), &[batch])
         .unwrap();
@@ -14647,7 +14646,7 @@ fn write_schema_promote_package_fixture_for_target_with_commit(
         ],
     )
     .unwrap();
-    let mut builder = PackageBuilder::create(&package_dir, package_id).unwrap();
+    let builder = PackageBuilder::create(&package_dir, package_id).unwrap();
     let segment = builder
         .write_segment(SegmentId::new("seg-000001").unwrap(), &[batch])
         .unwrap();
@@ -14757,7 +14756,7 @@ fn rebuild_correction_package_semantically(
     }
     fs::remove_dir_all(package_dir).unwrap();
     let package_id = package_dir.file_name().unwrap().to_str().unwrap();
-    let mut builder = PackageBuilder::create(package_dir, package_id).unwrap();
+    let builder = PackageBuilder::create(package_dir, package_id).unwrap();
     builder
         .write_json_artifact("plan/promotion-correction.json", &artifact)
         .unwrap();
@@ -14931,7 +14930,7 @@ fn write_parquet_preview_fixture(project: &TestProject) {
 fn write_arrow_ipc_preview_fixture(project: &TestProject) {
     let temp = TempDir::new("cdf-cli-preview-arrow-ipc-source");
     let package_dir = temp.path().join("pkg-preview-arrow-ipc-source");
-    let mut builder = PackageBuilder::create(&package_dir, "pkg-preview-arrow-ipc-source").unwrap();
+    let builder = PackageBuilder::create(&package_dir, "pkg-preview-arrow-ipc-source").unwrap();
     let batch = preview_fixture_batch();
     builder
         .write_segment(SegmentId::new("seg-000001").unwrap(), &[batch])
@@ -15654,7 +15653,7 @@ fn create_system_sql_fixture(project: &TestProject) -> SystemSqlFixture {
     let package_root = project.root.join(".cdf/packages");
     fs::create_dir_all(&package_root).unwrap();
     let package_dir = package_root.join("pkg-sql-1");
-    let mut builder = PackageBuilder::create(&package_dir, "pkg-sql-1").unwrap();
+    let builder = PackageBuilder::create(&package_dir, "pkg-sql-1").unwrap();
     builder
         .write_segment(SegmentId::new("seg-000001").unwrap(), &[sample_sql_batch()])
         .unwrap();
@@ -15682,7 +15681,7 @@ fn create_duckdb_doctor_fixture(project: &TestProject, mode: DoctorDriftFixtureM
     let package_root = project.root.join(".cdf/packages");
     fs::create_dir_all(&package_root).unwrap();
     let package_dir = package_root.join("pkg-doctor-1");
-    let mut builder = PackageBuilder::create(&package_dir, "pkg-doctor-1").unwrap();
+    let builder = PackageBuilder::create(&package_dir, "pkg-doctor-1").unwrap();
     builder
         .write_segment(SegmentId::new("seg-000001").unwrap(), &[sample_sql_batch()])
         .unwrap();
@@ -15914,7 +15913,7 @@ fn test_cli(project: &TestProject) -> crate::args::Cli {
 
 fn build_archive_cli_package(root: &Path, package_id: &str) -> PathBuf {
     let package_dir = root.join(package_id);
-    let mut builder = PackageBuilder::create(&package_dir, package_id).unwrap();
+    let builder = PackageBuilder::create(&package_dir, package_id).unwrap();
     let schema = Arc::new(Schema::new(vec![
         Field::new("id", DataType::Int64, false),
         Field::new("name", DataType::Utf8, true),
@@ -15936,7 +15935,7 @@ fn build_archive_cli_package(root: &Path, package_id: &str) -> PathBuf {
 
 fn build_gc_residual_package(root: &Path, package_id: &str, resource_id: &str) -> (PathBuf, u64) {
     let package_dir = root.join(package_id);
-    let mut builder = PackageBuilder::create(&package_dir, package_id).unwrap();
+    let builder = PackageBuilder::create(&package_dir, package_id).unwrap();
     let mut variant = with_semantic(
         Field::new(VARIANT_COLUMN_NAME, DataType::Utf8, true),
         VARIANT_SEMANTIC_TAG,

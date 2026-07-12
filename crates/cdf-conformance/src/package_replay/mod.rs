@@ -172,7 +172,7 @@ impl PreparedPackageReplayCase {
 pub fn build_prepared_package_fixture(
     spec: PreparedPackageFixtureSpec,
 ) -> Result<PreparedPackageFixture> {
-    let mut builder = PackageBuilder::create(&spec.package_dir, spec.package_id.clone())?;
+    let builder = PackageBuilder::create(&spec.package_dir, spec.package_id.clone())?;
     builder.update_status(PackageStatus::Extracting)?;
     builder.write_json_artifact(
         "schema/output.arrow.json",

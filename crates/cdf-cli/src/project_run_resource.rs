@@ -195,5 +195,12 @@ pub(crate) fn file_runtime_dependencies(
     if let Some(execution) = execution {
         facade = facade.with_execution_services(execution.clone());
     }
-    Ok(FileRuntimeDependencies::new(facade))
+    let execution = execution.ok_or_else(|| {
+        cdf_kernel::CdfError::internal("file runtime dependencies require execution services")
+    })?;
+    Ok(FileRuntimeDependencies::new(
+        facade,
+        execution.clone(),
+        crate::source_registry::builtin_format_registry()?,
+    ))
 }

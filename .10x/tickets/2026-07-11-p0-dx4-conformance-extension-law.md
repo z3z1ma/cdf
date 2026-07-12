@@ -20,3 +20,7 @@ Replace repeated concrete conformance enums/factories with one data-driven adapt
 ## Blockers
 
 Depends on DX3.
+
+## Progress and notes
+
+- 2026-07-11: Strict all-target inspection confirms the concrete destination conformance factories are stale after destination constructors moved behind runtime adapters: `cdf-conformance` still calls removed `ResolvedProjectDestination::{duckdb,postgres,parquet_filesystem}` constructors, and one run-matrix path calls removed `RestResource::compiled`. This directly validates DX4's catalog migration scope; production/source checks remain independent.

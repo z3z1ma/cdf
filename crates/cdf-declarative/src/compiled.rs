@@ -29,7 +29,6 @@ use cdf_runtime::{CompiledSourcePlan, SourceCompileRequest, SourceRegistry};
 use cdf_source_files::{
     FileCompressionDeclaration, FileFormatDeclaration, FileIdentityMetadata, FileResourcePlan,
     FileRuntimeDependencies, FileSourceDriver, FileTransportResource, file_partitions_for_plan,
-    open_file_resource, open_file_resource_preview,
 };
 use cdf_source_postgres::PostgresSourceDriver;
 use cdf_source_rest::{RestResourcePlan, RestSourceDriver, cursor_pushdown_value};
@@ -109,20 +108,12 @@ impl CompiledResource {
     }
 
     pub fn open_preview(&self, partition: PartitionPlan) -> BoxFuture<'_, Result<BatchStream>> {
-        match &self.plan {
-            CompiledResourcePlan::Files(plan) => open_file_resource_preview(
-                &self.descriptor,
-                Arc::clone(&self.schema),
-                plan,
-                partition,
-                self.type_policy_allowances,
-            ),
-            CompiledResourcePlan::Rest(_) | CompiledResourcePlan::Sql(_) => Box::pin(async {
-                Err(CdfError::internal(
-                    "declarative resource preview execution is outside the MVP compiler crate",
-                ))
-            }),
-        }
+        let _ = partition;
+        Box::pin(async {
+            Err(CdfError::internal(
+                "compiled declarations are not executable; resolve their typed source driver",
+            ))
+        })
     }
 
     pub fn with_schema_source_and_schema(
@@ -494,20 +485,12 @@ impl ResourceStream for CompiledResource {
     }
 
     fn open(&self, partition: PartitionPlan) -> BoxFuture<'_, Result<BatchStream>> {
-        match &self.plan {
-            CompiledResourcePlan::Files(plan) => open_file_resource(
-                &self.descriptor,
-                Arc::clone(&self.schema),
-                plan,
-                partition,
-                self.type_policy_allowances,
-            ),
-            CompiledResourcePlan::Rest(_) | CompiledResourcePlan::Sql(_) => Box::pin(async {
-                Err(CdfError::internal(
-                    "declarative resource execution is outside the MVP compiler crate",
-                ))
-            }),
-        }
+        let _ = partition;
+        Box::pin(async {
+            Err(CdfError::internal(
+                "compiled declarations are not executable; resolve their typed source driver",
+            ))
+        })
     }
 
     fn effective_schema_runtime(&self) -> Option<&EffectiveSchemaRuntime> {

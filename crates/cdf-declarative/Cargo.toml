@@ -33,6 +33,8 @@ url = "2.5.8"
 [dev-dependencies]
 arrow-ipc = "59.1.0"
 cdf-conformance = { path = "../cdf-conformance" }
+cdf-engine = { path = "../cdf-engine" }
+cdf-format-parquet = { path = "../cdf-format-parquet" }
 cdf-package = { path = "../cdf-package" }
 flate2 = "1.1.9"
 futures-executor = "0.3.32"

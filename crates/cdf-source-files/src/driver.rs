@@ -15,13 +15,10 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     FileCompressionDeclaration, FileFormatDeclaration, FileResource, FileResourcePlan,
-    FileRuntimeDependencies, FileTransport,
+    FileRuntimeDependencies,
 };
 
-type TransportFactory = dyn Fn(
-        Arc<dyn SecretProvider + Send + Sync>,
-        ExecutionServices,
-    ) -> Result<Box<dyn FileTransport + Send>>
+type RuntimeFactory = dyn Fn(Arc<dyn SecretProvider + Send + Sync>, ExecutionServices) -> Result<FileRuntimeDependencies>
     + Send
     + Sync
     + 'static;
@@ -29,7 +26,7 @@ type TransportFactory = dyn Fn(
 #[derive(Clone)]
 pub struct FileSourceDriver {
     descriptor: SourceDriverDescriptor,
-    transport_factory: Arc<TransportFactory>,
+    runtime_factory: Arc<RuntimeFactory>,
 }
 
 impl std::fmt::Debug for FileSourceDriver {
@@ -42,12 +39,12 @@ impl std::fmt::Debug for FileSourceDriver {
 }
 
 impl FileSourceDriver {
-    pub fn new<F>(transport_factory: F) -> Result<Self>
+    pub fn new<F>(runtime_factory: F) -> Result<Self>
     where
         F: Fn(
                 Arc<dyn SecretProvider + Send + Sync>,
                 ExecutionServices,
-            ) -> Result<Box<dyn FileTransport + Send>>
+            ) -> Result<FileRuntimeDependencies>
             + Send
             + Sync
             + 'static,
@@ -71,7 +68,7 @@ impl FileSourceDriver {
                     "https".to_owned(),
                 ],
             },
-            transport_factory: Arc::new(transport_factory),
+            runtime_factory: Arc::new(runtime_factory),
         })
     }
 }
@@ -109,7 +106,7 @@ impl SourceDriver for FileSourceDriver {
     ) -> Result<Arc<dyn QueryableResource>> {
         let physical: FilePhysicalPlan = serde_json::from_value(plan.physical_plan.clone())
             .map_err(|error| CdfError::contract(format!("invalid file source plan: {error}")))?;
-        let transport = (self.transport_factory)(
+        let dependencies = (self.runtime_factory)(
             Arc::clone(context.secret_provider()),
             context.execution().clone(),
         )?;
@@ -120,7 +117,7 @@ impl SourceDriver for FileSourceDriver {
             physical.to_runtime_plan()?,
             plan.type_policy_allowances,
             plan.effective_schema_runtime.clone(),
-            FileRuntimeDependencies::from_boxed_transport(transport),
+            dependencies,
         )?))
     }
 }
