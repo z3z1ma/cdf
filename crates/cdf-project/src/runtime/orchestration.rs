@@ -16,6 +16,7 @@ use super::{
     },
 };
 use cdf_contract::{AnomalyFact, ValidationDepth, ValidationProgram, ValidationTransitionTrigger};
+use std::sync::Arc;
 
 #[cfg(test)]
 pub(crate) async fn run_local_file_to_duckdb_checkpoint(
@@ -292,12 +293,20 @@ async fn run_project_inner(execution: ProjectRunExecution<'_>) -> Result<Project
 
     let stage_hook =
         |stage: PackageReplayStage<'_>| notify_run_replay_stage(execution.recorder, stage);
+    let replay_memory = match &execution.services {
+        Some(services) => services.memory(),
+        None => Arc::new(cdf_memory::DeterministicMemoryCoordinator::new(
+            cdf_memory::DEFAULT_PROCESS_BUDGET_BYTES,
+            Default::default(),
+        )?) as Arc<dyn cdf_memory::MemoryCoordinator>,
+    };
     let replay_report = replay_package_with_runtime(
         reader,
         execution.package_dir.clone(),
         execution.destination.runtime_mut(),
         execution.checkpoint_store,
         replay_inputs,
+        replay_memory,
         PackageReplayHooks {
             after_receipt_verified: execution.after_receipt_verified,
             stage: Some(&stage_hook),

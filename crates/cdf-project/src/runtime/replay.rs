@@ -7,6 +7,9 @@ use super::{
     receipts::validate_destination_receipt_before_checkpoint,
     types::*,
 };
+use std::sync::Arc;
+
+use cdf_memory::{DEFAULT_PROCESS_BUDGET_BYTES, DeterministicMemoryCoordinator, MemoryCoordinator};
 
 type DestinationReplayStageHook<'a> = RuntimeStageHook<'a>;
 pub(crate) type PackageReplayStageHook<'a> = &'a dyn Fn(PackageReplayStage<'_>) -> Result<()>;
@@ -160,12 +163,14 @@ where
     Store: CheckpointStore + ?Sized,
 {
     validate_resolved_destination_target(&destination, &inputs)?;
+    let memory = default_replay_memory()?;
     replay_package_with_runtime(
         reader,
         package_dir,
         destination.runtime_mut(),
         checkpoint_store,
         inputs,
+        memory,
         hooks,
     )
 }
@@ -212,6 +217,7 @@ pub(crate) fn replay_package_with_runtime<Store>(
     runtime: &mut dyn ProjectDestinationRuntime,
     checkpoint_store: &Store,
     inputs: PackageReplayInputs,
+    memory: Arc<dyn MemoryCoordinator>,
     hooks: PackageReplayHooks<'_>,
 ) -> Result<PackageReplayReport>
 where
@@ -267,8 +273,9 @@ where
         return Err(error);
     }
 
-    let receipt = match commit_prepared_package_through_session(runtime, &reader, &prepared, &hooks)
-    {
+    let receipt = match commit_prepared_package_through_session(
+        runtime, &reader, &prepared, memory, &hooks,
+    ) {
         Ok(receipt) => receipt,
         Err(error) => {
             let _ = checkpoint_store.abandon(&checkpoint_id);
@@ -326,8 +333,10 @@ fn commit_prepared_package_through_session(
     runtime: &dyn ProjectDestinationRuntime,
     reader: &PackageReader,
     prepared: &super::destinations::PreparedDestinationCommit,
+    memory: Arc<dyn MemoryCoordinator>,
     hooks: &PackageReplayHooks<'_>,
 ) -> Result<Receipt> {
+    let capabilities = runtime.runtime_capabilities();
     let mut session = runtime
         .protocol()
         .begin(prepared.commit.clone(), prepared.plan.clone())?;
@@ -335,9 +344,14 @@ fn commit_prepared_package_through_session(
         let _ = session.abort();
         return Err(error);
     }
-    if let Err(error) =
-        write_package_segments_to_session(session.as_mut(), reader, &prepared.commit, hooks)
-    {
+    if let Err(error) = write_package_segments_to_session(
+        session.as_mut(),
+        reader,
+        &prepared.commit,
+        &capabilities,
+        memory,
+        hooks,
+    ) {
         let _ = session.abort();
         return Err(error);
     }
@@ -415,17 +429,48 @@ fn write_package_segments_to_session(
     session: &mut dyn cdf_kernel::CommitSession,
     reader: &PackageReader,
     commit: &DestinationCommitRequest,
+    capabilities: &cdf_runtime::DestinationRuntimeCapabilities,
+    memory: Arc<dyn MemoryCoordinator>,
     hooks: &PackageReplayHooks<'_>,
 ) -> Result<()> {
-    reader.verify()?;
-    for segment in reader.read_commit_segments(&commit.segments)? {
+    let mut acknowledge = |segment| {
         let ack = session.write_segment(segment)?;
         notify_destination_replay_stage(
             hooks,
             PackageReplayStage::DestinationSegmentAcknowledged { ack: &ack },
-        )?;
+        )
+    };
+    match capabilities.commit_payload_mode {
+        cdf_runtime::DestinationCommitPayloadMode::SegmentStreaming => {
+            let budget = memory.snapshot().budget_bytes;
+            let maximum_segment_bytes = capabilities
+                .max_in_flight_bytes
+                .unwrap_or(64 * 1024 * 1024)
+                .min(budget);
+            let stream = reader.verified_commit_segment_stream(
+                &commit.segments,
+                memory,
+                maximum_segment_bytes,
+            )?;
+            for segment in stream {
+                acknowledge(segment?.into_commit_segment()?)?;
+            }
+        }
+        cdf_runtime::DestinationCommitPayloadMode::MaterializedPackage => {
+            reader.verify()?;
+            for segment in reader.read_commit_segments(&commit.segments)? {
+                acknowledge(segment)?;
+            }
+        }
     }
     Ok(())
+}
+
+fn default_replay_memory() -> Result<Arc<dyn MemoryCoordinator>> {
+    Ok(Arc::new(DeterministicMemoryCoordinator::new(
+        DEFAULT_PROCESS_BUDGET_BYTES,
+        Default::default(),
+    )?))
 }
 
 fn validate_package_replay_inputs(

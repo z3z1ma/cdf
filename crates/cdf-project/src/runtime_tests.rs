@@ -1253,6 +1253,15 @@ impl ProjectDestinationRuntime for MockProjectDestinationRuntime {
         )
     }
 
+    fn runtime_capabilities(&self) -> cdf_runtime::DestinationRuntimeCapabilities {
+        cdf_runtime::DestinationRuntimeCapabilities {
+            commit_payload_mode: cdf_runtime::DestinationCommitPayloadMode::SegmentStreaming,
+            max_in_flight_segments: Some(1),
+            max_in_flight_bytes: Some(64 * 1024 * 1024),
+            ..Default::default()
+        }
+    }
+
     fn validate_run_preflight(
         &mut self,
         _resource: &dyn ResourceStream,
@@ -5468,6 +5477,7 @@ fn generic_package_replay_and_recovery_drive_mock_runtime_without_destination_br
         replay_runtime.as_mut(),
         &store,
         inputs.clone(),
+        test_execution_services().memory(),
         PackageReplayHooks {
             stage: Some(&stage_hook),
             ..Default::default()
@@ -5583,6 +5593,7 @@ fn generic_stage_hook_stops_mock_replay_before_destination_write() {
         runtime.as_mut(),
         &store,
         inputs.clone(),
+        test_execution_services().memory(),
         PackageReplayHooks {
             stage: Some(&stage_hook),
             ..Default::default()

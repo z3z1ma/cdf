@@ -39,6 +39,14 @@ pub enum DestinationWriterModel {
     ConcurrentSegments,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DestinationCommitPayloadMode {
+    SegmentStreaming,
+    #[default]
+    MaterializedPackage,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DestinationRuntimeCapabilities {
     pub blocking_lanes: Vec<BlockingLaneSpec>,
@@ -49,6 +57,8 @@ pub struct DestinationRuntimeCapabilities {
     pub ingress_mode: DestinationIngressMode,
     pub staged_ingress: Option<StagedIngressCapabilities>,
     pub writer_model: DestinationWriterModel,
+    #[serde(default)]
+    pub commit_payload_mode: DestinationCommitPayloadMode,
     pub max_in_flight_segments: Option<u16>,
     pub max_in_flight_bytes: Option<u64>,
     pub bulk_path: Option<String>,
@@ -67,6 +77,7 @@ impl Default for DestinationRuntimeCapabilities {
             ingress_mode: DestinationIngressMode::FinalizedPackageOnly,
             staged_ingress: None,
             writer_model: DestinationWriterModel::SingleWriter,
+            commit_payload_mode: DestinationCommitPayloadMode::MaterializedPackage,
             max_in_flight_segments: Some(1),
             max_in_flight_bytes: None,
             bulk_path: None,
@@ -124,6 +135,16 @@ impl DestinationRuntimeCapabilities {
                     "destination ingress mode and staged ingress declaration disagree",
                 ));
             }
+        }
+        if self.commit_payload_mode == DestinationCommitPayloadMode::SegmentStreaming
+            && (self.max_in_flight_segments.is_none()
+                || self.max_in_flight_segments == Some(0)
+                || self.max_in_flight_bytes.is_none()
+                || self.max_in_flight_bytes == Some(0))
+        {
+            return Err(CdfError::contract(
+                "segment-streaming destination commits require nonzero segment and byte bounds",
+            ));
         }
         Ok(())
     }

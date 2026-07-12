@@ -159,6 +159,7 @@ impl DestinationRuntime for DuckDbDestination {
             ingress_mode: DestinationIngressMode::FinalizedPackageOnly,
             staged_ingress: None,
             writer_model: DestinationWriterModel::SingleWriter,
+            commit_payload_mode: cdf_runtime::DestinationCommitPayloadMode::MaterializedPackage,
             max_in_flight_segments: Some(1),
             max_in_flight_bytes: None,
             bulk_path: Some("arrow_ipc_package_rows".to_owned()),
