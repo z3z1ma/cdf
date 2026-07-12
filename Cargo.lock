@@ -1125,6 +1125,7 @@ dependencies = [
  "cdf-package",
  "cdf-runtime",
  "cdf-state-sqlite",
+ "cdf-transform-gzip",
  "flate2",
  "futures-executor",
  "hex",

@@ -231,6 +231,132 @@ pub struct BoundedRowSchemaProbe {
     pub probe_bytes_read: u64,
 }
 
+#[derive(Clone, Debug)]
+pub struct BoundedBinarySchemaProbe {
+    pub schema: SchemaRef,
+    pub source_identity: BTreeMap<String, String>,
+    pub probe_bytes_read: u64,
+}
+
+pub fn discover_local_binary_schema_bounded(
+    path: impl AsRef<Path>,
+    dependencies: &FileRuntimeDependencies,
+    format: &FileFormatDeclaration,
+    transform_name: &str,
+    initial_bytes_read: u64,
+    max_metadata_bytes: u64,
+) -> Result<BoundedBinarySchemaProbe> {
+    let path = path.as_ref();
+    let source_size = fs::metadata(path)
+        .map_err(|error| CdfError::data(format!("stat {} for discovery: {error}", path.display())))?
+        .len();
+    let transformed = if transform_name == "none" {
+        None
+    } else {
+        Some(spool_transformed_file(
+            path,
+            dependencies.transforms().resolve_name(transform_name)?,
+            dependencies,
+        )?)
+    };
+    let decode_path = transformed.as_ref().map_or(path, |spool| spool.path());
+    let inner_initial_bytes = if transformed.is_some() {
+        0
+    } else {
+        initial_bytes_read
+    };
+    let (schema, mut source_identity, inner_probe_bytes) = match format {
+        FileFormatDeclaration::Parquet => {
+            let probe = cdf_formats::discover_local_parquet_schema_bounded(
+                decode_path,
+                inner_initial_bytes,
+                max_metadata_bytes,
+            )?;
+            (
+                probe.schema,
+                probe.source_identity.cache_evidence(),
+                probe.probe_bytes_read,
+            )
+        }
+        FileFormatDeclaration::ArrowIpc => {
+            let probe = cdf_formats::discover_local_arrow_ipc_schema_bounded(
+                decode_path,
+                inner_initial_bytes,
+                max_metadata_bytes,
+            )?;
+            (
+                probe.schema,
+                probe.source_identity.cache_evidence(),
+                probe.probe_bytes_read,
+            )
+        }
+        _ => {
+            return Err(CdfError::contract(
+                "bounded binary discovery supports Parquet and Arrow IPC",
+            ));
+        }
+    };
+    source_identity.insert("path".to_owned(), path.to_string_lossy().into_owned());
+    source_identity.insert("compression".to_owned(), transform_name.to_owned());
+    source_identity.insert("source_size_bytes".to_owned(), source_size.to_string());
+    Ok(BoundedBinarySchemaProbe {
+        schema,
+        source_identity,
+        probe_bytes_read: if transformed.is_some() {
+            source_size.saturating_add(inner_probe_bytes)
+        } else {
+            inner_probe_bytes
+        },
+    })
+}
+
+pub fn discover_transport_binary_schema_spooled(
+    resource: FileTransportResource,
+    dependencies: &FileRuntimeDependencies,
+    format: &FileFormatDeclaration,
+    transform_name: &str,
+    max_metadata_bytes: u64,
+) -> Result<BoundedBinarySchemaProbe> {
+    let metadata = dependencies.with_transport(|transport| transport.metadata(&resource))?;
+    let size_bytes = metadata.size_bytes.ok_or_else(|| {
+        CdfError::data(format!(
+            "remote binary discovery for `{}` did not receive byte-size metadata",
+            diagnostic_location(&metadata.location)
+        ))
+    })?;
+    let downloaded = spool_transport_file(
+        &dependencies.transport(),
+        &resource,
+        &metadata,
+        dependencies.max_spool_bytes(),
+    )?;
+    let mut probe = discover_local_binary_schema_bounded(
+        downloaded.path(),
+        dependencies,
+        format,
+        transform_name,
+        0,
+        max_metadata_bytes,
+    )?;
+    probe
+        .source_identity
+        .insert("url".to_owned(), metadata.location.clone());
+    if let Some(etag) = &metadata.etag {
+        probe
+            .source_identity
+            .insert("etag".to_owned(), etag.clone());
+    }
+    if let Some(sha256) = metadata.sha256() {
+        probe
+            .source_identity
+            .insert("sha256".to_owned(), sha256.to_owned());
+    }
+    if transform_name == "none" {
+        probe.probe_bytes_read = size_bytes.saturating_add(probe.probe_bytes_read);
+    }
+    Ok(probe)
+}
+
 pub fn discover_local_row_schema_bounded(
     path: impl AsRef<Path>,
     dependencies: &FileRuntimeDependencies,
@@ -645,6 +771,7 @@ impl ResourceStream for FileResource {
                     dependencies.transforms(),
                 )
             })?;
+            let transform_name = resolved.compression.mode_name().to_owned();
             let processed_position = SourcePosition::FileManifest(cdf_kernel::FileManifest {
                 version: 1,
                 files: vec![cdf_kernel::FilePosition {
@@ -655,27 +782,20 @@ impl ResourceStream for FileResource {
                 }],
             });
             let physical_schema_hash = match (&resolved.open, &plan.format) {
-                (ResolvedFileOpen::LocalPath(path), FileFormatDeclaration::Parquet) => {
+                (
+                    ResolvedFileOpen::LocalPath(path),
+                    format @ (FileFormatDeclaration::Parquet | FileFormatDeclaration::ArrowIpc),
+                ) => {
                     let budget = discovery_budget.as_ref().ok_or_else(|| {
                         CdfError::data(
                             "schema-observation attestation requires the plan-recorded discovery executor budget",
                         )
                     })?;
-                    let probe = cdf_formats::discover_local_parquet_schema_bounded(
+                    let probe = discover_local_binary_schema_bounded(
                         path,
-                        0,
-                        budget.max_metadata_bytes_per_file,
-                    )?;
-                    Some(cdf_formats::schema_hash(probe.schema.as_ref())?)
-                }
-                (ResolvedFileOpen::LocalPath(path), FileFormatDeclaration::ArrowIpc) => {
-                    let budget = discovery_budget.as_ref().ok_or_else(|| {
-                        CdfError::data(
-                            "schema-observation attestation requires the plan-recorded discovery executor budget",
-                        )
-                    })?;
-                    let probe = cdf_formats::discover_local_arrow_ipc_schema_bounded(
-                        path,
+                        &dependencies,
+                        format,
+                        &transform_name,
                         0,
                         budget.max_metadata_bytes_per_file,
                     )?;
@@ -747,6 +867,19 @@ enum ResolvedFileOpen {
 struct PhysicalSchemaAuthority {
     hash: Option<SchemaHash>,
     schema: Option<SchemaRef>,
+}
+
+struct PreparedFileInput {
+    path: PathBuf,
+    spool: Option<Arc<tempfile::NamedTempFile>>,
+}
+
+struct PreparedFilePartition {
+    resolved: ResolvedFileMatch,
+    input: PreparedFileInput,
+    options: ReadOptions,
+    type_policy: TypePolicy,
+    physical_schema_authority: PhysicalSchemaAuthority,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -841,19 +974,17 @@ fn open_file_resource_with_dependencies(
     let descriptor = descriptor.clone();
     let declared_schema = declared_schema.clone();
     let plan = plan.clone();
-    if !is_http_root(&plan.root) && !is_object_store_root(&plan.root) {
-        return Box::pin(async move {
-            open_file_partition(
-                &descriptor,
-                declared_schema,
-                &plan,
-                &partition,
-                &dependencies,
-                allowances,
-                effective_schema_runtime.as_deref(),
-            )
-        });
-    }
+    let prepared = match prepare_file_partition(
+        &descriptor,
+        &plan,
+        &partition,
+        &dependencies,
+        allowances,
+        effective_schema_runtime.as_deref(),
+    ) {
+        Ok(prepared) => prepared,
+        Err(error) => return Box::pin(async move { Err(error) }),
+    };
     let execution = dependencies.execution().clone();
     let mut scope_hasher = Sha256::new();
     scope_hasher.update(descriptor.resource_id.as_str().as_bytes());
@@ -864,15 +995,9 @@ fn open_file_resource_with_dependencies(
         &scope_id,
         NATIVE_STREAM_ITEMS,
         move |mut sender, _cancellation| async move {
-            let mut batches = open_file_partition(
-                &descriptor,
-                declared_schema,
-                &plan,
-                &partition,
-                &dependencies,
-                allowances,
-                effective_schema_runtime.as_deref(),
-            )?;
+            let mut batches =
+                stream_prepared_file_match(prepared, &plan.format, declared_schema, &dependencies)
+                    .await?;
             while let Some(batch) = batches.try_next().await? {
                 sender.send(batch).await?;
             }
@@ -882,15 +1007,14 @@ fn open_file_resource_with_dependencies(
     Box::pin(async move { Ok(Box::pin(stream?) as BatchStream) })
 }
 
-fn open_file_partition(
+fn prepare_file_partition(
     descriptor: &ResourceDescriptor,
-    declared_schema: SchemaRef,
     plan: &FileResourcePlan,
     partition: &PartitionPlan,
     dependencies: &FileRuntimeDependencies,
     allowances: cdf_kernel::TypePolicyAllowances,
     effective_schema_runtime: Option<&EffectiveSchemaRuntime>,
-) -> Result<BatchStream> {
+) -> Result<PreparedFilePartition> {
     let resolved = dependencies.with_transport(|transport| {
         validate_partition(
             descriptor,
@@ -916,40 +1040,28 @@ fn open_file_partition(
     let mut type_policy = ContractPolicy::default().types;
     type_policy.coerce_types = allowances.coerce_types;
     type_policy.allow_lossy_mapping = allowances.allow_lossy_mapping;
-    stream_file_match(
-        &resolved,
-        &plan.format,
+    let input = prepare_file_input(&resolved, dependencies)?;
+    Ok(PreparedFilePartition {
+        resolved,
+        input,
         options,
-        declared_schema,
-        dependencies,
-        &type_policy,
-        PhysicalSchemaAuthority {
+        type_policy,
+        physical_schema_authority: PhysicalSchemaAuthority {
             hash: planned_physical_schema_hash,
             schema: planned_physical_schema,
         },
-    )
+    })
 }
 
-fn stream_file_match(
+fn prepare_file_input(
     resolved: &ResolvedFileMatch,
-    declaration: &FileFormatDeclaration,
-    options: ReadOptions,
-    declared_schema: SchemaRef,
     dependencies: &FileRuntimeDependencies,
-    type_policy: &TypePolicy,
-    physical_schema_authority: PhysicalSchemaAuthority,
-) -> Result<BatchStream> {
-    let position = Some(SourcePosition::FileManifest(cdf_kernel::FileManifest {
-        version: 1,
-        files: vec![cdf_kernel::FilePosition {
-            path: resolved.path_text.clone(),
-            size_bytes: resolved.size_bytes,
-            etag: resolved.etag.clone(),
-            sha256: resolved.sha256.clone(),
-        }],
-    }));
-    let (source_path, mut spool) = match &resolved.open {
-        ResolvedFileOpen::LocalPath(path) => (path.clone(), None),
+) -> Result<PreparedFileInput> {
+    match &resolved.open {
+        ResolvedFileOpen::LocalPath(path) => Ok(PreparedFileInput {
+            path: path.clone(),
+            spool: None,
+        }),
         ResolvedFileOpen::Transport(resource) => {
             let expected = FileIdentityMetadata {
                 location: resolved.path_text.clone(),
@@ -967,15 +1079,49 @@ fn stream_file_match(
                 &expected,
                 dependencies.max_spool_bytes(),
             )?);
-            (spool.path().to_path_buf(), Some(spool))
+            Ok(PreparedFileInput {
+                path: spool.path().to_path_buf(),
+                spool: Some(spool),
+            })
         }
-    };
+    }
+}
+
+async fn stream_prepared_file_match(
+    prepared: PreparedFilePartition,
+    declaration: &FileFormatDeclaration,
+    declared_schema: SchemaRef,
+    dependencies: &FileRuntimeDependencies,
+) -> Result<BatchStream> {
+    let PreparedFilePartition {
+        resolved,
+        input: prepared,
+        options,
+        type_policy,
+        physical_schema_authority,
+    } = prepared;
+    let position = Some(SourcePosition::FileManifest(cdf_kernel::FileManifest {
+        version: 1,
+        files: vec![cdf_kernel::FilePosition {
+            path: resolved.path_text.clone(),
+            size_bytes: resolved.size_bytes,
+            etag: resolved.etag.clone(),
+            sha256: resolved.sha256.clone(),
+        }],
+    }));
+    let PreparedFileInput {
+        path: source_path,
+        mut spool,
+    } = prepared;
     let source_path = if let Some(transform_id) = &resolved.compression.transform_id {
-        let transformed = Arc::new(spool_transformed_file(
-            &source_path,
-            dependencies.transforms().resolve(transform_id)?,
-            dependencies,
-        )?);
+        let transformed = Arc::new(
+            spool_transformed_file_async(
+                source_path.clone(),
+                dependencies.transforms().resolve(transform_id)?,
+                dependencies,
+            )
+            .await?,
+        );
         let path = transformed.path().to_path_buf();
         spool = Some(transformed);
         path
@@ -1000,7 +1146,7 @@ fn stream_file_match(
         compile_format(declaration)?,
         options,
         declared_schema,
-        type_policy,
+        &type_policy,
         position,
     )?;
     Ok(Box::pin(stream.map(move |batch| {
@@ -1009,8 +1155,46 @@ fn stream_file_match(
     })) as BatchStream)
 }
 
+#[cfg(test)]
+fn stream_file_match_blocking(
+    resolved: &ResolvedFileMatch,
+    declaration: &FileFormatDeclaration,
+    options: ReadOptions,
+    declared_schema: SchemaRef,
+    dependencies: &FileRuntimeDependencies,
+    type_policy: &TypePolicy,
+    physical_schema_authority: PhysicalSchemaAuthority,
+) -> Result<BatchStream> {
+    let prepared = PreparedFilePartition {
+        resolved: resolved.clone(),
+        input: prepare_file_input(resolved, dependencies)?,
+        options,
+        type_policy: type_policy.clone(),
+        physical_schema_authority,
+    };
+    let declaration = declaration.clone();
+    let dependencies = dependencies.clone();
+    let execution = dependencies.execution().clone();
+    execution.run_io(async move {
+        stream_prepared_file_match(prepared, &declaration, declared_schema, &dependencies).await
+    })
+}
+
 fn spool_transformed_file(
     source_path: &Path,
+    transform: Arc<dyn cdf_runtime::ByteTransformDriver>,
+    dependencies: &FileRuntimeDependencies,
+) -> Result<tempfile::NamedTempFile> {
+    let execution = dependencies.execution().clone();
+    let dependencies = dependencies.clone();
+    let source_path = source_path.to_path_buf();
+    execution.run_io(async move {
+        spool_transformed_file_async(source_path, transform, &dependencies).await
+    })
+}
+
+async fn spool_transformed_file_async(
+    source_path: PathBuf,
     transform: Arc<dyn cdf_runtime::ByteTransformDriver>,
     dependencies: &FileRuntimeDependencies,
 ) -> Result<tempfile::NamedTempFile> {
@@ -1020,7 +1204,7 @@ fn spool_transformed_file(
         .map_err(|error| CdfError::data(format!("create transformed file spool: {error}")))?;
     let destination = spool.path().to_path_buf();
     let memory = dependencies.execution().memory();
-    let source = Arc::new(LocalByteSource::open(source_path, Arc::clone(&memory))?);
+    let source = Arc::new(LocalByteSource::open(&source_path, Arc::clone(&memory))?);
     let descriptor = transform.descriptor().clone();
     let output_chunk_bytes = TRANSFORM_CHUNK_BYTES.min(descriptor.maximum_output_chunk_bytes);
     let transformed = TransformedByteSource::new(
@@ -1039,29 +1223,26 @@ fn spool_transformed_file(
             )?,
         },
     )?;
-    dependencies.execution().run_io(async move {
-        let cancellation = cdf_runtime::RunCancellation::default();
-        let mut input = transformed
-            .open_sequential(SequentialReadRequest {
-                preferred_chunk_bytes: output_chunk_bytes,
-                cancellation,
-            })
-            .await?;
-        let mut output = tokio::fs::File::create(&destination)
-            .await
-            .map_err(|error| CdfError::data(format!("create transformed spool: {error}")))?;
-        while let Some(chunk) = input.try_next().await? {
-            output
-                .write_all(chunk.payload())
-                .await
-                .map_err(|error| CdfError::data(format!("write transformed spool: {error}")))?;
-        }
+    let cancellation = cdf_runtime::RunCancellation::default();
+    let mut input = transformed
+        .open_sequential(SequentialReadRequest {
+            preferred_chunk_bytes: output_chunk_bytes,
+            cancellation,
+        })
+        .await?;
+    let mut output = tokio::fs::File::create(&destination)
+        .await
+        .map_err(|error| CdfError::data(format!("create transformed spool: {error}")))?;
+    while let Some(chunk) = input.try_next().await? {
         output
-            .flush()
+            .write_all(chunk.payload())
             .await
-            .map_err(|error| CdfError::data(format!("flush transformed spool: {error}")))?;
-        Ok(())
-    })?;
+            .map_err(|error| CdfError::data(format!("write transformed spool: {error}")))?;
+    }
+    output
+        .flush()
+        .await
+        .map_err(|error| CdfError::data(format!("flush transformed spool: {error}")))?;
     Ok(spool)
 }
 
@@ -2803,7 +2984,18 @@ mod tests {
             .unwrap();
         assert_eq!(resolved[0].compression.mode_name(), "gzip");
         assert_eq!(resolved[0].format.extension_signal, FormatSignal::Parquet);
-        let stream = stream_file_match(
+        let probe = discover_local_binary_schema_bounded(
+            root.path().join("events.parquet.gz"),
+            &dependencies,
+            &FileFormatDeclaration::Parquet,
+            "gzip",
+            0,
+            64 * 1024 * 1024,
+        )
+        .unwrap();
+        assert_eq!(probe.schema.as_ref(), schema.as_ref());
+        assert_eq!(probe.source_identity.get("compression").unwrap(), "gzip");
+        let stream = stream_file_match_blocking(
             &resolved[0],
             &plan.format,
             ReadOptions::new(resource_id, PartitionId::new("file-events").unwrap()),
@@ -2883,7 +3075,7 @@ mod tests {
                 )
             })
             .unwrap();
-        let stream = stream_file_match(
+        let stream = stream_file_match_blocking(
             &resolved[0],
             &plan.format,
             ReadOptions::new(resource_id, PartitionId::new("file-ipc").unwrap()),
@@ -3020,7 +3212,7 @@ mod tests {
         let declared = Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, false)]));
         let options = ReadOptions::new(resource_id, PartitionId::new("file-events").unwrap());
         let type_policy = ContractPolicy::default().types;
-        let stream = stream_file_match(
+        let stream = stream_file_match_blocking(
             &resolved[0],
             &plan.format,
             options.clone(),
@@ -3052,7 +3244,7 @@ mod tests {
         );
 
         let constrained = dependencies.with_max_spool_bytes(1).unwrap();
-        let error = match stream_file_match(
+        let error = match stream_file_match_blocking(
             &resolved[0],
             &plan.format,
             options,

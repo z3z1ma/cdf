@@ -78,12 +78,36 @@ fn test_format_registry() -> Arc<cdf_runtime::FormatRegistry> {
 }
 
 fn file_dependencies(transport: FileTransportFacade) -> FileRuntimeDependencies {
+    let mut transforms = cdf_runtime::ByteTransformRegistry::default();
+    transforms
+        .register(Arc::new(
+            cdf_transform_gzip::GzipTransformDriver::new().unwrap(),
+        ))
+        .unwrap();
     FileRuntimeDependencies::new(
         transport,
         test_execution_services(),
         test_format_registry(),
-        Arc::new(cdf_runtime::ByteTransformRegistry::default()),
+        Arc::new(transforms),
     )
+}
+
+fn discover_resource_schema_artifacts(
+    resource: &cdf_declarative::CompiledResource,
+    secret_provider: &dyn SecretProvider,
+    options: SchemaDiscoveryExecutionOptions,
+) -> Result<ResourceSchemaDiscoveryArtifacts> {
+    match resource.plan() {
+        cdf_declarative::CompiledResourcePlan::Files(_) => {
+            super::discover_resource_schema_with_file_dependencies_artifacts(
+                resource,
+                secret_provider,
+                file_dependencies(FileTransportFacade::new()),
+                options,
+            )
+        }
+        _ => super::discover_resource_schema_artifacts(resource, secret_provider, options),
+    }
 }
 
 const BOOK_PROJECT: &str = r#"
@@ -2466,6 +2490,53 @@ fn exhaustive_local_parquet_discovery_aggregates_widening_missing_metadata_and_s
         changed.discovery_manifest.as_ref().unwrap().manifest_hash,
         first_manifest.manifest_hash
     );
+}
+
+#[test]
+fn exhaustive_gzip_parquet_discovery_joins_every_transformed_candidate() {
+    let temp = tempfile::tempdir().unwrap();
+    write_discover_project(temp.path(), "parquet", "*.parquet.gz");
+    for (name, field, values) in [
+        (
+            "a",
+            Field::new("VendorID", DataType::Int32, false),
+            Arc::new(Int32Array::from(vec![1_i32, 2_i32])) as ArrayRef,
+        ),
+        (
+            "b",
+            Field::new("VendorID", DataType::Int64, false),
+            Arc::new(Int64Array::from(vec![3_i64, 4_i64])) as ArrayRef,
+        ),
+    ] {
+        let raw = temp.path().join(format!("data/{name}.parquet"));
+        write_parquet_fixture(&raw, vec![field], vec![values]);
+        let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
+        std::io::Write::write_all(&mut encoder, &fs::read(&raw).unwrap()).unwrap();
+        fs::write(
+            temp.path().join(format!("data/{name}.parquet.gz")),
+            encoder.finish().unwrap(),
+        )
+        .unwrap();
+        fs::remove_file(raw).unwrap();
+    }
+    let resource = compile_single_project_resource(temp.path());
+    let artifacts = discover_resource_schema_artifacts(
+        &resource,
+        &EnvSecretProvider::from_map(std::iter::empty::<(&str, &str)>()),
+        SchemaDiscoveryExecutionOptions::default(),
+    )
+    .unwrap();
+
+    assert_eq!(
+        artifacts.discovery.normalized_schema.field(0).data_type(),
+        &DataType::Int64
+    );
+    let manifest = artifacts.discovery_manifest.unwrap();
+    assert_eq!(manifest.candidates.len(), 2);
+    assert!(manifest.candidates.iter().all(|candidate| {
+        candidate.participation == DiscoveryParticipation::Probed
+            && candidate.canonical_location.ends_with(".parquet.gz")
+    }));
 }
 
 #[test]

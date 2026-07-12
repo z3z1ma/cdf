@@ -25,9 +25,9 @@ use cdf_contract::{
 use cdf_declarative::{
     CompiledResource, CompiledResourcePlan, FileFormatDeclaration, FileRuntimeDependencies,
     FileTransportLocation, FileTransportResource, POSTGRES_CATALOG_DISCOVERY_PROBE,
-    discover_local_arrow_ipc_schema_bounded, discover_local_parquet_schema_bounded,
-    discover_local_row_schema_bounded, discover_postgres_table_catalog_schema,
-    discover_rest_sample_schema, discover_transport_parquet_schema_bounded,
+    discover_local_binary_schema_bounded, discover_local_row_schema_bounded,
+    discover_postgres_table_catalog_schema, discover_rest_sample_schema,
+    discover_transport_binary_schema_spooled, discover_transport_parquet_schema_bounded,
     discover_transport_row_schema_bounded, local_file_discovery_candidates,
     physical_arrow_schema_hash, postgres_table_target_for_sql_plan,
 };
@@ -631,8 +631,16 @@ impl LocalBinaryDiscoveryAdapter {
                     selection_bytes_read,
                 },
             ) => {
-                let probe = discover_local_parquet_schema_bounded(
+                let dependencies = file_dependencies.ok_or_else(|| {
+                    CdfError::contract(
+                        "local Parquet discovery requires file transform registry dependencies",
+                    )
+                })?;
+                let probe = discover_local_binary_schema_bounded(
                     path,
+                    dependencies,
+                    &FileFormatDeclaration::Parquet,
+                    &candidate.compression,
                     *selection_bytes_read,
                     budget.max_metadata_bytes_per_file(),
                 )?;
@@ -645,8 +653,16 @@ impl LocalBinaryDiscoveryAdapter {
                     selection_bytes_read,
                 },
             ) => {
-                let probe = discover_local_arrow_ipc_schema_bounded(
+                let dependencies = file_dependencies.ok_or_else(|| {
+                    CdfError::contract(
+                        "local Arrow IPC discovery requires file transform registry dependencies",
+                    )
+                })?;
+                let probe = discover_local_binary_schema_bounded(
                     path,
+                    dependencies,
+                    &FileFormatDeclaration::ArrowIpc,
+                    &candidate.compression,
                     *selection_bytes_read,
                     budget.max_metadata_bytes_per_file(),
                 )?;
@@ -658,16 +674,38 @@ impl LocalBinaryDiscoveryAdapter {
                         "remote Parquet discovery requires file transport dependencies",
                     )
                 })?;
-                let probe = discover_transport_parquet_schema_bounded(
+                if candidate.compression == "none" {
+                    let probe = discover_transport_parquet_schema_bounded(
+                        resource.clone(),
+                        dependencies,
+                        budget.max_metadata_bytes_per_file(),
+                    )?;
+                    return Ok((probe.schema, probe.source_identity, probe.probe_bytes_read));
+                }
+                let probe = discover_transport_binary_schema_spooled(
                     resource.clone(),
                     dependencies,
+                    &FileFormatDeclaration::Parquet,
+                    &candidate.compression,
                     budget.max_metadata_bytes_per_file(),
                 )?;
                 Ok((probe.schema, probe.source_identity, probe.probe_bytes_read))
             }
-            (Self::ArrowIpc, BinaryDiscoveryCandidateSource::Transport(_)) => Err(
-                CdfError::contract("remote Arrow IPC discovery is not implemented"),
-            ),
+            (Self::ArrowIpc, BinaryDiscoveryCandidateSource::Transport(resource)) => {
+                let dependencies = file_dependencies.ok_or_else(|| {
+                    CdfError::contract(
+                        "remote Arrow IPC discovery requires file transport dependencies",
+                    )
+                })?;
+                let probe = discover_transport_binary_schema_spooled(
+                    resource.clone(),
+                    dependencies,
+                    &FileFormatDeclaration::ArrowIpc,
+                    &candidate.compression,
+                    budget.max_metadata_bytes_per_file(),
+                )?;
+                Ok((probe.schema, probe.source_identity, probe.probe_bytes_read))
+            }
             (
                 adapter @ (Self::Ndjson | Self::Csv | Self::Json),
                 BinaryDiscoveryCandidateSource::Transport(resource),
@@ -838,7 +876,6 @@ fn discover_binary_resource_schema(
         options.memory_coordinator.clone(),
         |index| {
             probe_binary_candidate(
-                resource,
                 adapter,
                 scheduled_candidates[index],
                 &options.budget,
@@ -1198,27 +1235,11 @@ fn contract_policy_for_resource(resource: &CompiledResource) -> ContractPolicy {
 }
 
 fn probe_binary_candidate(
-    resource: &CompiledResource,
     adapter: LocalBinaryDiscoveryAdapter,
     candidate: &BinaryDiscoveryCandidate,
     budget: &DiscoveryExecutorBudget,
     file_dependencies: Option<&FileRuntimeDependencies>,
 ) -> Result<LocalBinaryProbe> {
-    if candidate.compression != "none"
-        && !matches!(
-            adapter,
-            LocalBinaryDiscoveryAdapter::Ndjson
-                | LocalBinaryDiscoveryAdapter::Csv
-                | LocalBinaryDiscoveryAdapter::Json
-        )
-    {
-        return Err(unsupported_discover_slice(
-            resource.descriptor(),
-            format!(
-                "compressed {adapter:?} discovery is excluded; use an uncompressed binary file",
-            ),
-        ));
-    }
     let (schema, source_identity, probe_bytes) =
         adapter.probe(candidate, budget, file_dependencies)?;
     let modified_at_ms = source_identity
