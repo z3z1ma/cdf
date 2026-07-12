@@ -284,6 +284,11 @@ pub fn discover_transport_binary_schema_spooled(
             .source_identity
             .insert("etag".to_owned(), etag.clone());
     }
+    if let Some(version) = &metadata.version {
+        probe
+            .source_identity
+            .insert("version".to_owned(), version.clone());
+    }
     if let Some(sha256) = metadata.sha256() {
         probe
             .source_identity
@@ -477,6 +482,7 @@ impl ResourceStream for FileResource {
                     path: resolved.path_text,
                     size_bytes: resolved.size_bytes,
                     etag: resolved.etag,
+                    object_version: resolved.version,
                     sha256: resolved.sha256,
                 }],
             });
@@ -547,6 +553,7 @@ pub(crate) struct ResolvedFileMatch {
     size_bytes: u64,
     sha256: Option<String>,
     etag: Option<String>,
+    version: Option<String>,
     modified_ms: Option<String>,
     bytes_loaded: Option<u64>,
     compression: CompressionEvidence,
@@ -565,9 +572,12 @@ struct PhysicalSchemaAuthority {
     schema: Option<SchemaRef>,
 }
 
-struct PreparedFileInput {
-    path: PathBuf,
-    spool: Option<Arc<tempfile::NamedTempFile>>,
+enum PreparedFileInput {
+    Source(Arc<dyn ByteSource>),
+    Path {
+        path: PathBuf,
+        spool: Option<Arc<tempfile::NamedTempFile>>,
+    },
 }
 
 struct PreparedFilePartition {
@@ -746,33 +756,53 @@ fn prepare_file_input(
     resolved: &ResolvedFileMatch,
     dependencies: &FileRuntimeDependencies,
 ) -> Result<PreparedFileInput> {
+    if resolved.compression.transform_id.is_none() {
+        let expected = expected_file_identity(resolved);
+        let source: Option<Arc<dyn ByteSource>> = match &resolved.open {
+            ResolvedFileOpen::LocalPath(path) => Some(Arc::new(LocalByteSource::open(
+                path,
+                dependencies.execution().memory(),
+            )?)),
+            ResolvedFileOpen::Transport(resource) => dependencies.with_transport(|transport| {
+                transport.open_byte_source(resource, &expected, dependencies.execution().memory())
+            })?,
+        };
+        if let Some(source) = source {
+            return Ok(PreparedFileInput::Source(source));
+        }
+    }
     match &resolved.open {
-        ResolvedFileOpen::LocalPath(path) => Ok(PreparedFileInput {
+        ResolvedFileOpen::LocalPath(path) => Ok(PreparedFileInput::Path {
             path: path.clone(),
             spool: None,
         }),
         ResolvedFileOpen::Transport(resource) => {
-            let expected = FileIdentityMetadata {
-                location: resolved.path_text.clone(),
-                size_bytes: Some(resolved.size_bytes),
-                checksum: resolved.sha256.as_ref().map(|sha256| crate::FileChecksum {
-                    algorithm: "sha256".to_owned(),
-                    value: sha256.clone(),
-                }),
-                etag: resolved.etag.clone(),
-                modified: resolved.modified_ms.clone(),
-            };
+            let expected = expected_file_identity(resolved);
             let spool = Arc::new(spool_transport_file(
                 &dependencies.transport(),
                 resource,
                 &expected,
                 dependencies.max_spool_bytes(),
             )?);
-            Ok(PreparedFileInput {
+            Ok(PreparedFileInput::Path {
                 path: spool.path().to_path_buf(),
                 spool: Some(spool),
             })
         }
+    }
+}
+
+fn expected_file_identity(resolved: &ResolvedFileMatch) -> FileIdentityMetadata {
+    FileIdentityMetadata {
+        location: resolved.path_text.clone(),
+        size_bytes: Some(resolved.size_bytes),
+        checksum: resolved.sha256.as_ref().map(|sha256| crate::FileChecksum {
+            algorithm: "sha256".to_owned(),
+            value: sha256.clone(),
+        }),
+        etag: resolved.etag.clone(),
+        version: resolved.version.clone(),
+        modified: resolved.modified_ms.clone(),
     }
 }
 
@@ -793,32 +823,45 @@ async fn stream_prepared_file_match(
             path: resolved.path_text.clone(),
             size_bytes: resolved.size_bytes,
             etag: resolved.etag.clone(),
+            object_version: resolved.version.clone(),
             sha256: resolved.sha256.clone(),
         }],
     }));
-    let PreparedFileInput {
-        path: source_path,
-        mut spool,
-    } = prepared;
-    let source_path = if let Some(transform_id) = &resolved.compression.transform_id {
-        let transformed = Arc::new(
-            spool_transformed_file_async(
-                source_path.clone(),
-                dependencies.transforms().resolve(transform_id)?,
-                dependencies,
-            )
-            .await?,
-        );
-        let path = transformed.path().to_path_buf();
-        spool = Some(transformed);
-        path
-    } else {
-        source_path
-    };
+    let (source, keepalive): (Arc<dyn ByteSource>, Option<Arc<tempfile::NamedTempFile>>) =
+        match prepared {
+            PreparedFileInput::Source(source) => (source, None),
+            PreparedFileInput::Path {
+                path: source_path,
+                mut spool,
+            } => {
+                let source_path = if let Some(transform_id) = &resolved.compression.transform_id {
+                    let transformed = Arc::new(
+                        spool_transformed_file_async(
+                            source_path,
+                            dependencies.transforms().resolve(transform_id)?,
+                            dependencies,
+                        )
+                        .await?,
+                    );
+                    let path = transformed.path().to_path_buf();
+                    spool = Some(transformed);
+                    path
+                } else {
+                    source_path
+                };
+                (
+                    Arc::new(LocalByteSource::open(
+                        source_path,
+                        dependencies.execution().memory(),
+                    )?),
+                    spool,
+                )
+            }
+        };
 
     stream_registered_format(
-        source_path,
-        spool,
+        source,
+        keepalive,
         dependencies
             .formats()
             .resolve(file_format_name(declaration))?,
@@ -918,8 +961,8 @@ async fn spool_transformed_file_async(
 }
 
 fn stream_registered_format(
-    path: PathBuf,
-    spool: Option<Arc<tempfile::NamedTempFile>>,
+    source: Arc<dyn ByteSource>,
+    keepalive: Option<Arc<tempfile::NamedTempFile>>,
     driver: Arc<dyn FormatDriver>,
     options: ReadOptions,
     source_position: Option<SourcePosition>,
@@ -936,8 +979,7 @@ fn stream_registered_format(
         &scope_id,
         NATIVE_STREAM_ITEMS,
         move |mut sender, cancellation| async move {
-            let _spool = spool;
-            let source = Arc::new(LocalByteSource::open(path, Arc::clone(&memory))?);
+            let _keepalive = keepalive;
             let options_json = driver.canonical_options(serde_json::json!({}))?;
             let physical_schema = match physical_schema_authority.schema {
                 Some(schema) => {
@@ -1106,24 +1148,31 @@ fn validate_partition(
             "declarative file partition `{path}` changed size after planning"
         )));
     }
-    match (&resolved.sha256, &resolved.etag) {
-        (Some(sha256), _) => {
+    match (&resolved.sha256, &resolved.etag, &resolved.version) {
+        (Some(sha256), _, _) => {
             if partition.metadata.get("sha256").map(String::as_str) != Some(sha256.as_str()) {
                 return Err(CdfError::data(format!(
                     "declarative file partition `{path}` changed checksum after planning"
                 )));
             }
         }
-        (None, Some(etag)) => {
+        (None, Some(etag), _) => {
             if partition.metadata.get("etag").map(String::as_str) != Some(etag.as_str()) {
                 return Err(CdfError::data(format!(
                     "declarative file partition `{path}` changed ETag after planning"
                 )));
             }
         }
-        (None, None) => {
+        (None, None, Some(version)) => {
+            if partition.metadata.get("version").map(String::as_str) != Some(version.as_str()) {
+                return Err(CdfError::data(format!(
+                    "declarative file partition `{path}` changed object version after planning"
+                )));
+            }
+        }
+        (None, None, None) => {
             return Err(CdfError::contract(format!(
-                "declarative file partition `{path}` requires checksum or ETag metadata"
+                "declarative file partition `{path}` requires checksum, ETag, or object version metadata"
             )));
         }
     }
@@ -1247,6 +1296,9 @@ fn partition_for_file_match(
     if let Some(etag) = &file.etag {
         metadata.insert("etag".to_owned(), etag.clone());
     }
+    if let Some(version) = &file.version {
+        metadata.insert("version".to_owned(), version.clone());
+    }
     if let Some(modified_ms) = &file.modified_ms {
         metadata.insert("modified_ms".to_owned(), modified_ms.clone());
     }
@@ -1313,6 +1365,7 @@ fn file_schema_observation_binding(file: &ResolvedFileMatch) -> String {
         file.path_text.as_str(),
         size.as_str(),
         file.etag.as_deref().unwrap_or_default(),
+        file.version.as_deref().unwrap_or_default(),
         file.sha256.as_deref().unwrap_or_default(),
         file.modified_ms.as_deref().unwrap_or_default(),
     ] {
@@ -1702,6 +1755,7 @@ fn resolved_file_match(
         size_bytes: metadata.len(),
         sha256: Some(sha256),
         etag: None,
+        version: None,
         modified_ms,
         bytes_loaded: Some(metadata.len()),
         compression,
@@ -1765,9 +1819,9 @@ fn resolved_transport_file_match(
         ))
     })?;
     let sha256 = metadata.sha256().map(str::to_owned);
-    if sha256.is_none() && metadata.etag.is_none() {
+    if sha256.is_none() && metadata.etag.is_none() && metadata.version.is_none() {
         return Err(CdfError::data(format!(
-            "HTTP(S) file metadata for `{}` must include an ETag or checksum for FileManifest identity",
+            "remote file metadata for `{}` must include an ETag, object version, or checksum for FileManifest identity",
             metadata.location
         )));
     }
@@ -1777,6 +1831,7 @@ fn resolved_transport_file_match(
         size_bytes,
         sha256,
         etag: metadata.etag,
+        version: metadata.version,
         modified_ms: metadata
             .modified
             .as_deref()
@@ -2813,7 +2868,9 @@ mod tests {
         );
         let driver = dependencies.formats().resolve("parquet").unwrap();
         let stream = stream_registered_format(
-            temp.path().to_path_buf(),
+            Arc::new(
+                LocalByteSource::open(temp.path(), dependencies.execution().memory()).unwrap(),
+            ),
             None,
             driver,
             ReadOptions::new(
@@ -2928,7 +2985,7 @@ mod tests {
     }
 
     #[test]
-    fn remote_arrow_ipc_file_spools_and_streams_through_registered_driver() {
+    fn remote_arrow_ipc_file_streams_directly_through_registered_driver() {
         let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, false)]));
         let batch = RecordBatch::try_new(
             Arc::clone(&schema),
@@ -2955,7 +3012,7 @@ mod tests {
             crate::test_format_registry(),
             crate::test_transform_registry(),
         )
-        .with_max_spool_bytes(bytes.len() as u64)
+        .with_max_spool_bytes(1)
         .unwrap();
         let plan = FileResourcePlan {
             source: "ipc".to_owned(),
@@ -2993,6 +3050,81 @@ mod tests {
             .unwrap();
         assert_eq!(batches.len(), 1);
         assert_eq!(batches[0].header.row_count, 3);
+    }
+
+    #[test]
+    fn remote_parquet_ranges_directly_through_object_store_byte_source() {
+        let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, false)]));
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![Arc::new(Int64Array::from_iter_values(0..100_000))],
+        )
+        .unwrap();
+        let bytes = cdf_package::transcode_record_batches_to_parquet_bytes(&[batch]).unwrap();
+        let store = Arc::new(InMemory::new());
+        futures_executor::block_on(store.put(
+            &ObjectPath::from("prod/events.parquet"),
+            PutPayload::from(bytes),
+        ))
+        .unwrap();
+        let facade = FileTransportFacade::new()
+            .with_object_store("s3://parquet", store)
+            .with_execution_services(crate::test_execution_services());
+        let dependencies = FileRuntimeDependencies::new(
+            facade,
+            crate::test_execution_services(),
+            crate::test_format_registry(),
+            crate::test_transform_registry(),
+        )
+        .with_max_spool_bytes(1)
+        .unwrap();
+        let plan = FileResourcePlan {
+            source: "parquet".to_owned(),
+            root: "s3://parquet/prod".to_owned(),
+            glob: "events.parquet".to_owned(),
+            format: FileFormatDeclaration::parquet(),
+            format_declared: true,
+            compression: FileCompressionDeclaration::none(),
+            auth: None,
+            credentials: None,
+            allowlist: cdf_http::EgressAllowlist::allow_any(),
+        };
+        let resource_id = ResourceId::new("parquet.events").unwrap();
+        let resolved = dependencies
+            .with_transport(|transport| {
+                resolve_object_store_matches(
+                    &resource_id,
+                    &plan,
+                    transport,
+                    dependencies.transforms(),
+                )
+            })
+            .unwrap();
+        let stream = stream_file_match_blocking(
+            &resolved[0],
+            &plan.format,
+            ReadOptions::new(resource_id, PartitionId::new("file-parquet").unwrap()),
+            &dependencies,
+            PhysicalSchemaAuthority::default(),
+        )
+        .unwrap();
+        let batches = futures_executor::block_on(stream.collect::<Vec<_>>())
+            .into_iter()
+            .collect::<Result<Vec<_>>>()
+            .unwrap();
+
+        assert_eq!(
+            batches
+                .iter()
+                .map(|batch| batch.header.row_count)
+                .sum::<u64>(),
+            100_000
+        );
+        drop(batches);
+        assert_eq!(
+            dependencies.execution().memory().snapshot().current_bytes,
+            0
+        );
     }
 
     #[test]

@@ -1291,6 +1291,7 @@ fn zero_segment_replay_requires_exact_typed_processed_observation_evidence() {
             path: "month-07.parquet".to_owned(),
             size_bytes: 41,
             etag: Some("etag-07".to_owned()),
+            object_version: None,
             sha256: Some("sha256-07".to_owned()),
         }],
     });
@@ -1385,6 +1386,7 @@ fn processed_observation_aggregation_respects_append_and_replace_dispositions() 
             path: "old.parquet".to_owned(),
             size_bytes: 10,
             etag: Some("old".to_owned()),
+            object_version: None,
             sha256: None,
         }],
     });
@@ -1394,6 +1396,7 @@ fn processed_observation_aggregation_respects_append_and_replace_dispositions() 
             path: "new.parquet".to_owned(),
             size_bytes: 20,
             etag: Some("new".to_owned()),
+            object_version: None,
             sha256: None,
         }],
     });

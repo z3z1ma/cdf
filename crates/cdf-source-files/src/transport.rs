@@ -13,6 +13,8 @@ use cdf_http::{
     SecretUri,
 };
 use cdf_kernel::{CdfError, ErrorKind, FilePosition, Result};
+use cdf_memory::MemoryCoordinator;
+use cdf_runtime::ByteSource;
 use futures_util::TryStreamExt;
 use object_store::{ObjectStore, ObjectStoreExt, path::Path as ObjectPath};
 use serde::{Deserialize, Serialize};
@@ -142,6 +144,7 @@ pub struct FileIdentityMetadata {
     pub size_bytes: Option<u64>,
     pub checksum: Option<FileChecksum>,
     pub etag: Option<String>,
+    pub version: Option<String>,
     pub modified: Option<String>,
 }
 
@@ -157,6 +160,7 @@ impl FileIdentityMetadata {
             path: self.location.clone(),
             size_bytes,
             etag: self.etag.clone(),
+            object_version: self.version.clone(),
             sha256: self.sha256().map(str::to_owned),
         })
     }
@@ -177,6 +181,7 @@ impl fmt::Debug for FileIdentityMetadata {
             .field("size_bytes", &self.size_bytes)
             .field("checksum", &self.checksum)
             .field("etag", &self.etag)
+            .field("version", &self.version)
             .field("modified", &self.modified)
             .finish()
     }
@@ -234,6 +239,14 @@ pub trait FileTransport: Send + Sync {
         destination: &Path,
     ) -> Result<FileIdentityMetadata>;
     fn list(&self, resource: &FileTransportResource) -> Result<Vec<FileIdentityMetadata>>;
+    fn open_byte_source(
+        &self,
+        _resource: &FileTransportResource,
+        _expected: &FileIdentityMetadata,
+        _memory: Arc<dyn MemoryCoordinator>,
+    ) -> Result<Option<Arc<dyn ByteSource>>> {
+        Ok(None)
+    }
 }
 
 pub trait HttpFileTransport: Send + Sync {
@@ -440,6 +453,32 @@ impl FileTransport for FileTransportFacade {
                 "HTTP(S) file transport does not support arbitrary directory listing; use an explicit URL or a ratified template/range enumerator",
             )),
             FileTransportLocation::ObjectStoreUrl { url } => self.list_object_store(resource, url),
+        }
+    }
+
+    fn open_byte_source(
+        &self,
+        resource: &FileTransportResource,
+        expected: &FileIdentityMetadata,
+        memory: Arc<dyn MemoryCoordinator>,
+    ) -> Result<Option<Arc<dyn ByteSource>>> {
+        match &resource.location {
+            FileTransportLocation::LocalPath { path } => {
+                Ok(Some(Arc::new(crate::LocalByteSource::open(path, memory)?)))
+            }
+            FileTransportLocation::FileUrl { url } => Ok(Some(Arc::new(
+                crate::LocalByteSource::open(file_url_path(url)?, memory)?,
+            ))),
+            FileTransportLocation::ObjectStoreUrl { url } => {
+                let (store, path, _) = self.resolve_object_store(resource, url)?;
+                Ok(Some(Arc::new(crate::ObjectStoreByteSource::new(
+                    store,
+                    path,
+                    expected.clone(),
+                    memory,
+                )?)))
+            }
+            FileTransportLocation::HttpUrl { .. } => Ok(None),
         }
     }
 }
@@ -772,6 +811,7 @@ fn local_metadata(path: &Path) -> Result<FileIdentityMetadata> {
             value: file_sha256(&canonical)?,
         }),
         etag: None,
+        version: None,
         modified: metadata
             .modified()
             .ok()
@@ -780,12 +820,16 @@ fn local_metadata(path: &Path) -> Result<FileIdentityMetadata> {
     })
 }
 
-fn object_identity(location: String, metadata: object_store::ObjectMeta) -> FileIdentityMetadata {
+pub(crate) fn object_identity(
+    location: String,
+    metadata: object_store::ObjectMeta,
+) -> FileIdentityMetadata {
     FileIdentityMetadata {
         location,
         size_bytes: Some(metadata.size),
         checksum: None,
-        etag: metadata.e_tag.or(metadata.version),
+        etag: metadata.e_tag,
+        version: metadata.version,
         modified: Some(format!(
             "unix_ms:{}",
             metadata.last_modified.timestamp_millis()
@@ -832,7 +876,7 @@ fn copy_local_file(source: &Path, destination: &Path) -> Result<()> {
     Ok(())
 }
 
-fn verify_download_identity(
+pub(crate) fn verify_download_identity(
     expected: &FileIdentityMetadata,
     observed: &FileIdentityMetadata,
     bytes_written: u64,
@@ -850,6 +894,11 @@ fn verify_download_identity(
     {
         return Err(CdfError::data(
             "file generation changed during sequential transfer (ETag mismatch)",
+        ));
+    }
+    if expected.version != observed.version {
+        return Err(CdfError::data(
+            "file generation changed during sequential transfer (version mismatch)",
         ));
     }
     if expected.etag.is_none()
@@ -986,6 +1035,7 @@ fn http_identity(url: &str, response: &HttpFileResponse) -> Result<FileIdentityM
         size_bytes: optional_u64_header(&response.headers, "content-length")?,
         checksum: None,
         etag: header_value(&response.headers, "etag").map(str::to_owned),
+        version: None,
         modified: header_value(&response.headers, "last-modified").map(str::to_owned),
     })
 }
@@ -1192,6 +1242,7 @@ mod tests {
                 path: "https://data.example.org/events.parquet".to_owned(),
                 size_bytes: 12345,
                 etag: Some("\"etag-1\"".to_owned()),
+                object_version: None,
                 sha256: None,
             }
         );
@@ -1345,6 +1396,7 @@ mod tests {
             size_bytes: Some(4),
             checksum: None,
             etag: None,
+            version: None,
             modified: None,
         };
 

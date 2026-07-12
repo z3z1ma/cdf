@@ -523,15 +523,17 @@ fn file_positions_from_partitions(
             })?;
         let sha256 = partition.metadata.get("sha256").cloned();
         let etag = partition.metadata.get("etag").cloned();
-        if sha256.is_none() && etag.is_none() {
+        let object_version = partition.metadata.get("version").cloned();
+        if sha256.is_none() && etag.is_none() && object_version.is_none() {
             return Err(CdfError::contract(format!(
-                "file partition `{path}` manifest comparison requires checksum or ETag metadata"
+                "file partition `{path}` manifest comparison requires checksum, ETag, or object version metadata"
             )));
         }
         files.push(FilePosition {
             path,
             size_bytes,
             etag,
+            object_version,
             sha256,
         });
     }

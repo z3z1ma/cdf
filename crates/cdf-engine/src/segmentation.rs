@@ -881,6 +881,7 @@ mod tests {
             path: path.to_owned(),
             size_bytes: 1,
             etag: Some(path.to_owned()),
+            object_version: None,
             sha256: None,
         };
         let left = SourcePosition::FileManifest(FileManifest {
@@ -1013,6 +1014,7 @@ mod tests {
                 path: "part.parquet".to_owned(),
                 size_bytes: 42,
                 etag: Some("etag".to_owned()),
+                object_version: None,
                 sha256: None,
             }],
         });

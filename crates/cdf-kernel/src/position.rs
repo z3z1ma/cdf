@@ -71,6 +71,7 @@ pub struct FilePosition {
     pub path: String,
     pub size_bytes: u64,
     pub etag: Option<String>,
+    pub object_version: Option<String>,
     pub sha256: Option<String>,
 }
 

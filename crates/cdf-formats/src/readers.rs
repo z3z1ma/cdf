@@ -1309,6 +1309,7 @@ fn file_source_position(path: &Path) -> Result<SourcePosition> {
             path: path_string(path)?,
             size_bytes: metadata.len(),
             etag: None,
+            object_version: None,
             sha256: Some(file_sha256(path)?),
         }],
     }))

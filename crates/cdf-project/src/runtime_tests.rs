@@ -768,6 +768,7 @@ fn build_zero_segment_processed_package(package_dir: &Path, package_id: &str) ->
             path: "month-07.parquet".to_owned(),
             size_bytes: 41,
             etag: Some("etag-07".to_owned()),
+            object_version: None,
             sha256: Some("sha256-07".to_owned()),
         }],
     });
@@ -2106,6 +2107,7 @@ fn file_position_with_identity(
             path: path.to_owned(),
             size_bytes,
             etag: None,
+            object_version: None,
             sha256,
         }],
     })

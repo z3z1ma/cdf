@@ -3490,6 +3490,7 @@ impl FileTransport for RecordingRangeFileTransport {
             size_bytes: Some(self.bytes.len() as u64),
             checksum: None,
             etag: Some("fixture-etag".to_owned()),
+            version: None,
             modified: None,
         })
     }

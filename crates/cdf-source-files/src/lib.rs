@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 
 mod driver;
 mod local_byte_source;
+mod object_store_byte_source;
 mod runtime;
 mod transport;
 
@@ -133,6 +134,7 @@ pub struct FileResourcePlan {
 
 pub use driver::FileSourceDriver;
 pub use local_byte_source::LocalByteSource;
+pub use object_store_byte_source::ObjectStoreByteSource;
 pub use runtime::*;
 pub use transport::*;
 

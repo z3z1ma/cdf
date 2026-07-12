@@ -14657,6 +14657,7 @@ fn write_schema_promote_package_fixture_for_target_with_commit(
             path: "events.parquet".to_owned(),
             size_bytes: 1,
             etag: None,
+            object_version: None,
             sha256: Some("sha256:source".to_owned()),
         }],
     });
