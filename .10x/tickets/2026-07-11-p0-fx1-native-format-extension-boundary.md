@@ -38,3 +38,7 @@ Depends on neutral runtime, memory, and execution-host contracts. It must land b
 - `.10x/research/2026-07-11-format-extension-streaming-audit.md`
 - `.10x/specs/native-format-codec-runtime.md`
 - `.10x/knowledge/source-destination-extension-invariant.md`
+
+## Progress and notes
+
+- 2026-07-11: Landed the neutral runtime foundation: immutable `ByteSource` identity/capabilities with accounted sequential and exact-range reads; `FormatDriver` discovery/unit-planning/physical-decode contracts; streaming `ByteTransformDriver`; accounted physical Arrow outcomes; and deterministic format/transform registries with pre-mutation id/alias/extension/strong-magic collision checks. Descriptors pin semantic version, options, detection, pushdown fidelity, unit policy, memory, random-access, checksum, member, and expansion claims. No concrete transport, executor, parser, project, CLI, source, or destination type crosses the boundary. Production first-party/declarative migration remains open; the old dispatch is not being retained as a final compatibility surface. Evidence: `.10x/evidence/2026-07-11-p0-fx1-neutral-format-contracts.md`.
