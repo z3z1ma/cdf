@@ -10,7 +10,7 @@ pub struct DuckDbDestination {
     sheet: DestinationSheet,
     execution: Option<cdf_runtime::ExecutionServices>,
     // 10x: kernel begin lacks DuckDB package inputs; remove this handoff once begin carries package replay inputs.
-    pending_sessions: Arc<Mutex<BTreeMap<PlanId, DuckDbCommitRequest>>>,
+    pending_sessions: Arc<Mutex<BTreeMap<PlanId, DuckDbSessionContext>>>,
     pub(crate) pending_corrections: Arc<Mutex<BTreeMap<PlanId, DuckDbCorrectionContext>>>,
 }
 
@@ -26,7 +26,7 @@ pub struct DuckDbCapabilities {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum BulkPath {
-    ArrowIpcPackageRows,
+    ArrowRecordBatchAppender,
     ParquetScan,
 }
 
@@ -48,11 +48,34 @@ pub struct DuckDbCommitRequest {
 struct DuckDbCommitSession<'a> {
     destination: &'a DuckDbDestination,
     request: DuckDbCommitRequest,
+    schema: Option<SchemaRef>,
+    plan: DuckDbCommitPlan,
     migrations_applied: bool,
     expected_segments: BTreeMap<cdf_kernel::SegmentId, ExpectedSegment>,
     expected_order: Vec<cdf_kernel::SegmentId>,
     accepted_segments: BTreeSet<cdf_kernel::SegmentId>,
-    staged_segments: Vec<CommitSegment>,
+    next_expected: usize,
+    duplicate_receipt: Option<Receipt>,
+    writer: Option<DuckDbArrowWriter>,
+}
+
+#[derive(Clone, Debug)]
+struct DuckDbSessionContext {
+    request: DuckDbCommitRequest,
+    schema: Option<SchemaRef>,
+    plan: DuckDbCommitPlan,
+}
+
+#[derive(Debug)]
+struct DuckDbArrowWriter {
+    conn: Connection,
+    _lock: WriterLock,
+    target: TargetRef,
+    write_target: TargetRef,
+    persisted_fields: Vec<FieldPlan>,
+    user_field_count: usize,
+    rows_received: u64,
+    duckdb_version: String,
 }
 
 #[derive(Debug)]
@@ -132,19 +155,6 @@ pub struct DuckDbMirrorStateRow {
     pub byte_count: u64,
 }
 
-#[derive(Clone, Debug)]
-pub(crate) struct PackageData {
-    pub(crate) fields: Vec<FieldPlan>,
-    pub(crate) segments: Vec<LoadedSegment>,
-    pub(crate) rows: Vec<RowValues>,
-}
-
-#[derive(Clone, Debug)]
-pub(crate) struct LoadedSegment {
-    pub(crate) entry: SegmentEntry,
-    pub(crate) row_count: u64,
-}
-
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct FieldPlan {
     pub(crate) name: String,
@@ -195,8 +205,6 @@ pub(crate) struct CellValue {
     pub(crate) key: CellKey,
 }
 
-pub(crate) type RowValues = Vec<CellValue>;
-
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) enum CellKey {
     Null,
@@ -242,7 +250,7 @@ impl DuckDbDestination {
     pub fn capabilities(&self) -> DuckDbCapabilities {
         DuckDbCapabilities {
             sheet: self.sheet.clone(),
-            bulk_paths: vec![BulkPath::ArrowIpcPackageRows],
+            bulk_paths: vec![BulkPath::ArrowRecordBatchAppender],
             single_writer_lock: self.lock_path().display().to_string(),
             parquet_replay: CapabilitySupport::Unsupported,
             timezone_support: TimezoneSupport {
@@ -253,14 +261,27 @@ impl DuckDbDestination {
     }
 
     pub fn plan_package_commit(&self, request: &DuckDbCommitRequest) -> Result<DuckDbCommitPlan> {
-        let package = load_package_data(&request.package_dir)?;
-        let plan = if self.database_path.exists() {
-            let conn = self.open_connection()?;
-            self.plan_loaded_package(Some(&conn), request, &package)
+        let reader = PackageReader::open(&request.package_dir)?;
+        let schema = if request
+            .package_dir
+            .join(cdf_package::RUNTIME_ARROW_SCHEMA_FILE)
+            .exists()
+        {
+            reader.runtime_arrow_schema()?
         } else {
-            self.plan_loaded_package(None, request, &package)
-        }?;
-        self.remember_session_context(&plan.kernel.plan_id, request)?;
+            let first =
+                reader.manifest().identity.segments.first().ok_or_else(|| {
+                    CdfError::data("DuckDB package has no segment schema authority")
+                })?;
+            reader
+                .read_segment(&first.segment_id)?
+                .into_iter()
+                .next()
+                .map(|batch| batch.schema())
+                .ok_or_else(|| CdfError::data("DuckDB package first segment has no Arrow batch"))?
+        };
+        let plan = self.plan_schema_commit(&request.commit, schema.as_ref())?;
+        self.remember_session_context(request, Some(schema), &plan)?;
         Ok(plan)
     }
 
@@ -278,7 +299,7 @@ impl DuckDbDestination {
             ddl: Vec::new(),
             effect: DuckDbCommitEffect::NoData,
         };
-        self.remember_session_context(&plan.kernel.plan_id, request)?;
+        self.remember_session_context(request, None, &plan)?;
         Ok(plan)
     }
 
@@ -316,7 +337,7 @@ impl DuckDbDestination {
             kernel,
             ddl: table_plan.ddl,
             effect: DuckDbCommitEffect::Data {
-                bulk_path: BulkPath::ArrowIpcPackageRows,
+                bulk_path: BulkPath::ArrowRecordBatchAppender,
                 target_exists: table_plan.target_exists,
             },
         })
@@ -325,132 +346,27 @@ impl DuckDbDestination {
     pub fn commit_package(&self, request: DuckDbCommitRequest) -> Result<DuckDbCommitOutcome> {
         let reader = PackageReader::open(&request.package_dir)?;
         reader.verify()?;
-        let commit_segments = reader.read_commit_segments(&request.commit.segments)?;
-        let mut session = DuckDbCommitSession::new(self, request)?;
+        let plan = self.plan_package_commit(&request)?;
+        let context = self.take_session_context(&plan.kernel.plan_id, &request.commit)?;
+        let mut session = DuckDbCommitSession::new(self, context)?;
         session.apply_migrations()?;
-        for segment in commit_segments {
-            session.write_segment(segment)?;
+        for state in &request.commit.segments {
+            let entry = reader
+                .manifest()
+                .identity
+                .segments
+                .iter()
+                .find(|entry| entry.segment_id == state.segment_id)
+                .ok_or_else(|| {
+                    CdfError::data(format!(
+                        "DuckDB commit segment {} is absent from the package manifest",
+                        state.segment_id
+                    ))
+                })?;
+            let batches = reader.read_segment(&state.segment_id)?;
+            session.write_segment(CommitSegment::new(state.clone(), entry.byte_count, batches))?;
         }
         session.finalize_outcome()
-    }
-
-    fn commit_package_immediate(
-        &self,
-        request: DuckDbCommitRequest,
-        package: PackageData,
-    ) -> Result<DuckDbCommitOutcome> {
-        let Some(execution) = self.execution.clone() else {
-            return self.commit_package_immediate_inline(request, package);
-        };
-        let destination = self.clone();
-        execution.run_blocking("duckdb.connection", move || {
-            destination.commit_package_immediate_inline(request, package)
-        })
-    }
-
-    fn commit_package_immediate_inline(
-        &self,
-        request: DuckDbCommitRequest,
-        package: PackageData,
-    ) -> Result<DuckDbCommitOutcome> {
-        let lock = self.acquire_writer_lock()?;
-        let mut conn = self.open_connection()?;
-        ensure_mirror_tables(&conn)?;
-
-        if let Some(receipt) = find_duplicate_receipt(&conn, &request.commit)? {
-            let recorded = record_package_receipt_once(&request.package_dir, &receipt)?;
-            let plan = self.plan_loaded_package(Some(&conn), &request, &package)?;
-            drop(lock);
-            return Ok(DuckDbCommitOutcome {
-                receipt,
-                duplicate: true,
-                plan,
-                package_receipt_recorded: recorded,
-            });
-        }
-
-        validate_requested_segments(&request.commit.segments, &package)?;
-        let plan = self.plan_loaded_package(Some(&conn), &request, &package)?;
-        let segment_acks = segment_acks(&request.commit.segments, &package);
-        let persisted_fields = persistence_fields(&package.fields);
-        let persisted_rows = persistence_rows(&package, &request.commit.package_hash)?;
-        let duckdb_version = duckdb_version(&conn).unwrap_or_else(|_| "unknown".to_owned());
-        let committed_at_ms = now_ms()?;
-        let table_plan = plan_table_from_commit_plan(&plan)?;
-
-        let counts = {
-            let tx = conn
-                .transaction()
-                .map_err(|error| duckdb_error("begin transaction", error))?;
-            apply_table_plan(&tx, &table_plan, request.commit.disposition.clone())?;
-            let counts = match request.commit.disposition {
-                WriteDisposition::Append => {
-                    append_rows(&tx, &table_plan.target, &persisted_fields, &persisted_rows)?
-                }
-                WriteDisposition::Replace => {
-                    append_rows(&tx, &table_plan.target, &persisted_fields, &persisted_rows)?
-                }
-                WriteDisposition::Merge => {
-                    let key_indexes = merge_key_indexes(&persisted_fields, &request.merge_keys)?;
-                    let deduped = dedup_merge_rows_with_width(
-                        &persisted_rows,
-                        &key_indexes,
-                        package.fields.len(),
-                    )?;
-                    merge_rows(
-                        &tx,
-                        &table_plan.target,
-                        &persisted_fields,
-                        &request.merge_keys,
-                        &deduped,
-                    )?
-                }
-                WriteDisposition::CdcApply => {
-                    return Err(CdfError::contract(
-                        "DuckDB destination does not support cdc_apply in the MVP sheet",
-                    ));
-                }
-            };
-
-            let receipt = build_receipt(
-                &request,
-                &segment_acks,
-                counts.clone(),
-                &ReceiptBuildContext {
-                    migrations: &plan.kernel.migrations,
-                    committed_at_ms,
-                    duckdb_version: &duckdb_version,
-                    database_path: &self.database_path,
-                    lock_path: &self.lock_path(),
-                },
-            )?;
-            insert_mirrors(&tx, &request, &segment_acks, &receipt)?;
-            tx.commit()
-                .map_err(|error| duckdb_error("commit transaction", error))?;
-            counts
-        };
-
-        let receipt = build_receipt(
-            &request,
-            &segment_acks,
-            counts,
-            &ReceiptBuildContext {
-                migrations: &plan.kernel.migrations,
-                committed_at_ms,
-                duckdb_version: &duckdb_version,
-                database_path: &self.database_path,
-                lock_path: &self.lock_path(),
-            },
-        )?;
-        let recorded = record_package_receipt_once(&request.package_dir, &receipt)?;
-        drop(lock);
-
-        Ok(DuckDbCommitOutcome {
-            receipt,
-            duplicate: false,
-            plan,
-            package_receipt_recorded: recorded,
-        })
     }
 
     fn commit_empty_package(&self, request: DuckDbCommitRequest) -> Result<DuckDbCommitOutcome> {
@@ -621,48 +537,24 @@ impl DuckDbDestination {
             .with_file_name(format!("{file_name}.{LOCK_SUFFIX}"))
     }
 
-    fn plan_loaded_package(
-        &self,
-        conn: Option<&Connection>,
-        request: &DuckDbCommitRequest,
-        package: &PackageData,
-    ) -> Result<DuckDbCommitPlan> {
-        let target = parse_target(&request.commit.target)?;
-        let fields = persistence_fields(&package.fields);
-        let table_plan = match conn {
-            Some(conn) => plan_table(conn, target, &fields, request.commit.disposition.clone())?,
-            None => plan_absent_table(target, &fields, request.commit.disposition.clone())?,
-        };
-        let mut kernel = self.plan_commit(&request.commit)?;
-        kernel.migrations = table_plan
-            .ddl
-            .iter()
-            .enumerate()
-            .map(|(index, ddl)| MigrationRecord {
-                migration_id: format!("duckdb-ddl-{:03}", index + 1),
-                description: ddl.clone(),
-            })
-            .collect();
-        Ok(DuckDbCommitPlan {
-            kernel,
-            ddl: table_plan.ddl,
-            effect: DuckDbCommitEffect::Data {
-                bulk_path: BulkPath::ArrowIpcPackageRows,
-                target_exists: table_plan.target_exists,
-            },
-        })
-    }
-
     fn remember_session_context(
         &self,
-        plan_id: &PlanId,
         request: &DuckDbCommitRequest,
+        schema: Option<SchemaRef>,
+        plan: &DuckDbCommitPlan,
     ) -> Result<()> {
         let mut pending = self
             .pending_sessions
             .lock()
             .map_err(|_| CdfError::internal("DuckDB commit-session context cache is poisoned"))?;
-        pending.insert(plan_id.clone(), request.clone());
+        pending.insert(
+            plan.kernel.plan_id.clone(),
+            DuckDbSessionContext {
+                request: request.clone(),
+                schema,
+                plan: plan.clone(),
+            },
+        );
         Ok(())
     }
 
@@ -670,7 +562,7 @@ impl DuckDbDestination {
         &self,
         plan_id: &PlanId,
         request: &DestinationCommitRequest,
-    ) -> Result<DuckDbCommitRequest> {
+    ) -> Result<DuckDbSessionContext> {
         let mut pending = self
             .pending_sessions
             .lock()
@@ -680,7 +572,7 @@ impl DuckDbDestination {
                 "DuckDB DestinationProtocol::begin requires a prior plan_package_commit for the same package plan",
             ));
         };
-        if duckdb_request.commit != *request {
+        if duckdb_request.request.commit != *request {
             return Err(CdfError::contract(
                 "DuckDB DestinationProtocol::begin request does not match the planned package commit",
             ));
@@ -693,21 +585,86 @@ impl DuckDbDestination {
 impl DuckDbCommitSession<'_> {
     fn new(
         destination: &DuckDbDestination,
-        request: DuckDbCommitRequest,
+        context: DuckDbSessionContext,
     ) -> Result<DuckDbCommitSession<'_>> {
-        let (expected_segments, expected_order) = expected_segments_for_request(&request)?;
+        let (expected_segments, expected_order) = expected_segments_for_request(&context.request)?;
         Ok(DuckDbCommitSession {
             destination,
-            request,
+            request: context.request,
+            schema: context.schema,
+            plan: context.plan,
             migrations_applied: false,
             expected_segments,
             expected_order,
             accepted_segments: BTreeSet::new(),
-            staged_segments: Vec::new(),
+            next_expected: 0,
+            duplicate_receipt: None,
+            writer: None,
         })
     }
 
-    fn finalize_outcome(self) -> Result<DuckDbCommitOutcome> {
+    fn start_writer(&mut self) -> Result<()> {
+        if self.expected_segments.is_empty() {
+            return Ok(());
+        }
+        let lock = self.destination.acquire_writer_lock()?;
+        let conn = self.destination.open_connection()?;
+        ensure_mirror_tables(&conn)?;
+        if let Some(receipt) = find_duplicate_receipt(&conn, &self.request.commit)? {
+            self.duplicate_receipt = Some(receipt);
+            return Ok(());
+        }
+        let schema = self.schema.as_ref().ok_or_else(|| {
+            CdfError::internal("DuckDB data commit session is missing its runtime Arrow schema")
+        })?;
+        validate_user_schema_fields(schema)?;
+        let user_fields = schema
+            .fields()
+            .iter()
+            .map(|field| field_plan(field.as_ref()))
+            .collect::<Result<Vec<_>>>()?;
+        validate_field_names(&user_fields)?;
+        let persisted_fields = persistence_fields(&user_fields);
+        let table_plan = plan_table_from_commit_plan(&self.plan)?;
+        let duckdb_version = duckdb_version(&conn).unwrap_or_else(|_| "unknown".to_owned());
+        conn.execute_batch("BEGIN TRANSACTION")
+            .map_err(|error| duckdb_error("begin Arrow commit transaction", error))?;
+        apply_table_plan(&conn, &table_plan, self.request.commit.disposition.clone())?;
+        let write_target = if self.request.commit.disposition == WriteDisposition::Merge {
+            let staging = TargetRef {
+                schema: MAIN_SCHEMA.to_owned(),
+                table: staging_table_name(),
+            };
+            let mut staging_fields = persisted_fields.clone();
+            staging_fields.push(FieldPlan {
+                name: CDF_STAGE_ORDER_COLUMN.to_owned(),
+                sql_type: "UBIGINT".to_owned(),
+                nullable: false,
+            });
+            conn.execute_batch(&format!(
+                "CREATE TEMP TABLE {} ({})",
+                quote_ident(&staging.table),
+                create_columns_sql(&staging_fields)
+            ))
+            .map_err(|error| duckdb_error("create DuckDB Arrow merge staging table", error))?;
+            staging
+        } else {
+            table_plan.target.clone()
+        };
+        self.writer = Some(DuckDbArrowWriter {
+            conn,
+            _lock: lock,
+            target: table_plan.target,
+            write_target,
+            persisted_fields,
+            user_field_count: user_fields.len(),
+            rows_received: 0,
+            duckdb_version,
+        });
+        Ok(())
+    }
+
+    fn finalize_outcome(mut self) -> Result<DuckDbCommitOutcome> {
         if !self.migrations_applied {
             return Err(CdfError::destination(
                 "DuckDB migrations must be applied before finalize",
@@ -721,32 +678,90 @@ impl DuckDbCommitSession<'_> {
             )));
         }
 
-        let mut staged_by_id = BTreeMap::new();
-        for segment in self.staged_segments {
-            staged_by_id.insert(segment.state.segment_id.clone(), segment);
-        }
-        let mut ordered_segments = Vec::with_capacity(self.expected_order.len());
-        for segment_id in &self.expected_order {
-            let segment = staged_by_id.remove(segment_id).ok_or_else(|| {
-                CdfError::internal(format!(
-                    "accepted DuckDB segment {} is missing from staged payloads",
-                    segment_id.as_str()
-                ))
-            })?;
-            ordered_segments.push(segment);
-        }
-
-        if ordered_segments.is_empty() {
+        if self.expected_order.is_empty() {
             return self.destination.commit_empty_package(self.request);
         }
-        let package = package_data_from_commit_segments(ordered_segments)?;
-        self.destination
-            .commit_package_immediate(self.request, package)
+        if let Some(receipt) = self.duplicate_receipt {
+            let recorded = record_package_receipt_once(&self.request.package_dir, &receipt)?;
+            return Ok(DuckDbCommitOutcome {
+                receipt,
+                duplicate: true,
+                plan: self.plan,
+                package_receipt_recorded: recorded,
+            });
+        }
+        let writer = self.writer.take().ok_or_else(|| {
+            CdfError::internal("DuckDB Arrow commit session has no active writer")
+        })?;
+        let counts = match self.request.commit.disposition {
+            WriteDisposition::Append | WriteDisposition::Replace => CommitCounts {
+                rows_written: writer.rows_received,
+                rows_inserted: Some(writer.rows_received),
+                rows_updated: Some(0),
+                rows_deleted: Some(0),
+            },
+            WriteDisposition::Merge => finalize_arrow_merge(
+                &writer.conn,
+                &writer.target,
+                &writer.write_target,
+                &writer.persisted_fields,
+                writer.user_field_count,
+                &self.request.merge_keys,
+            )?,
+            WriteDisposition::CdcApply => {
+                return Err(CdfError::contract(
+                    "DuckDB destination does not support cdc_apply in the MVP sheet",
+                ));
+            }
+        };
+        let segment_acks = self
+            .expected_order
+            .iter()
+            .map(|segment_id| {
+                let expected = &self.expected_segments[segment_id];
+                SegmentAck {
+                    segment_id: segment_id.clone(),
+                    row_count: expected.state.row_count,
+                    byte_count: expected.state.byte_count,
+                }
+            })
+            .collect::<Vec<_>>();
+        let committed_at_ms = now_ms()?;
+        let receipt = build_receipt(
+            &self.request,
+            &segment_acks,
+            counts,
+            &ReceiptBuildContext {
+                migrations: &self.plan.kernel.migrations,
+                committed_at_ms,
+                duckdb_version: &writer.duckdb_version,
+                database_path: &self.destination.database_path,
+                lock_path: &self.destination.lock_path(),
+            },
+        )?;
+        insert_mirrors(&writer.conn, &self.request, &segment_acks, &receipt)?;
+        writer
+            .conn
+            .execute_batch("COMMIT")
+            .map_err(|error| duckdb_error("commit Arrow transaction", error))?;
+        let recorded = record_package_receipt_once(&self.request.package_dir, &receipt)?;
+        Ok(DuckDbCommitOutcome {
+            receipt,
+            duplicate: false,
+            plan: self.plan,
+            package_receipt_recorded: recorded,
+        })
     }
 }
 
 impl CommitSession for DuckDbCommitSession<'_> {
     fn apply_migrations(&mut self) -> Result<()> {
+        if self.migrations_applied {
+            return Err(CdfError::destination(
+                "DuckDB migrations were already applied for this commit session",
+            ));
+        }
+        self.start_writer()?;
         self.migrations_applied = true;
         Ok(())
     }
@@ -770,6 +785,16 @@ impl CommitSession for DuckDbCommitSession<'_> {
                 segment_id.as_str()
             )));
         }
+        let ordered = self.expected_order.get(self.next_expected).ok_or_else(|| {
+            CdfError::data("DuckDB commit session received more segments than planned")
+        })?;
+        if ordered != &segment_id {
+            return Err(CdfError::data(format!(
+                "DuckDB Arrow writer requires manifest-order segments: expected {}, received {}",
+                ordered.as_str(),
+                segment_id.as_str()
+            )));
+        }
         validate_commit_segment(&segment, expected)?;
 
         let ack = SegmentAck {
@@ -777,8 +802,45 @@ impl CommitSession for DuckDbCommitSession<'_> {
             row_count: expected.state.row_count,
             byte_count: expected.state.byte_count,
         };
+        if self.duplicate_receipt.is_none() {
+            let schema = self.schema.as_ref().ok_or_else(|| {
+                CdfError::internal("DuckDB Arrow writer is missing its planned schema")
+            })?;
+            let writer = self
+                .writer
+                .as_mut()
+                .ok_or_else(|| CdfError::internal("DuckDB Arrow writer is not initialized"))?;
+            let mut segment_row_start = 0_u64;
+            for commit_batch in segment.into_batches()? {
+                if commit_batch.batch.schema().as_ref() != schema.as_ref() {
+                    return Err(CdfError::data(format!(
+                        "DuckDB segment {} schema differs from the planned runtime schema",
+                        segment_id.as_str()
+                    )));
+                }
+                let batch_rows = u64::try_from(commit_batch.batch.num_rows())
+                    .map_err(|_| CdfError::data("DuckDB batch row count exceeds u64"))?;
+                let stage_start = (self.request.commit.disposition == WriteDisposition::Merge)
+                    .then_some(writer.rows_received);
+                let batch = persistence_batch(
+                    commit_batch.batch,
+                    &self.request.commit.package_hash,
+                    &segment_id,
+                    segment_row_start,
+                    stage_start,
+                )?;
+                append_arrow_batch_to_table(&writer.conn, &writer.write_target, batch)?;
+                segment_row_start = segment_row_start
+                    .checked_add(batch_rows)
+                    .ok_or_else(|| CdfError::data("DuckDB segment row count overflowed"))?;
+                writer.rows_received = writer
+                    .rows_received
+                    .checked_add(batch_rows)
+                    .ok_or_else(|| CdfError::data("DuckDB package row count overflowed"))?;
+            }
+        }
         self.accepted_segments.insert(segment_id);
-        self.staged_segments.push(segment);
+        self.next_expected += 1;
         Ok(ack)
     }
 
@@ -786,7 +848,13 @@ impl CommitSession for DuckDbCommitSession<'_> {
         Ok(self.finalize_outcome()?.receipt)
     }
 
-    fn abort(self: Box<Self>) -> Result<()> {
+    fn abort(mut self: Box<Self>) -> Result<()> {
+        if let Some(writer) = self.writer.take() {
+            writer
+                .conn
+                .execute_batch("ROLLBACK")
+                .map_err(|error| duckdb_error("rollback DuckDB Arrow transaction", error))?;
+        }
         Ok(())
     }
 }
@@ -838,8 +906,13 @@ impl DestinationProtocol for DuckDbDestination {
         plan: CommitPlan,
     ) -> Result<Box<dyn CommitSession + '_>> {
         validate_session_plan(&request, &plan)?;
-        let request = self.take_session_context(&plan.plan_id, &request)?;
-        Ok(Box::new(DuckDbCommitSession::new(self, request)?))
+        let context = self.take_session_context(&plan.plan_id, &request)?;
+        if context.plan.kernel != plan {
+            return Err(CdfError::contract(
+                "DuckDB session plan differs from its prepared package plan",
+            ));
+        }
+        Ok(Box::new(DuckDbCommitSession::new(self, context)?))
     }
 
     fn verify(&self, receipt: &Receipt) -> Result<ReceiptVerification> {

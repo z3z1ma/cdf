@@ -315,7 +315,7 @@ fn sheet_declares_duckdb_destination_contract() {
     assert!(
         dest.capabilities()
             .bulk_paths
-            .contains(&BulkPath::ArrowIpcPackageRows)
+            .contains(&BulkPath::ArrowRecordBatchAppender)
     );
 }
 

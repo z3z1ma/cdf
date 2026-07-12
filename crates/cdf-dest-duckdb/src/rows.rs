@@ -1,19 +1,6 @@
 use crate::api::*;
 use crate::*;
 
-pub(crate) fn batch_rows(batch: &RecordBatch) -> Result<Vec<RowValues>> {
-    (0..batch.num_rows())
-        .map(|row| {
-            batch
-                .columns()
-                .iter()
-                .zip(batch.schema().fields().iter())
-                .map(|(array, field)| cell_value(array.as_ref(), field.data_type(), row))
-                .collect()
-        })
-        .collect()
-}
-
 pub(crate) fn cell_value(array: &dyn Array, data_type: &DataType, row: usize) -> Result<CellValue> {
     if array.is_null(row) {
         return Ok(CellValue {

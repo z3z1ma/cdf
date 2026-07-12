@@ -33,10 +33,9 @@ use cdf_kernel::{
     TransactionMetadata, TransactionSupport, TypeMapping, TypeMappingFidelity, VerifyClause,
     WriteDisposition,
 };
-use cdf_package::{PackageReader, SegmentEntry};
+use cdf_package::PackageReader;
 use duckdb::{
-    AccessMode, Config, Connection, OptionalExt, appender_params_from_iter, params,
-    params_from_iter,
+    AccessMode, Config, Connection, OptionalExt, params, params_from_iter,
     types::{TimeUnit as DuckTimeUnit, Value},
 };
 use serde::{Deserialize, Serialize};
@@ -47,10 +46,12 @@ const LOCK_SUFFIX: &str = "cdf.lock";
 pub const CDF_LOAD_COLUMN: &str = "_cdf_load";
 pub const CDF_SEGMENT_COLUMN: &str = "_cdf_segment";
 pub const CDF_ROW_COLUMN: &str = "_cdf_row";
+const CDF_STAGE_ORDER_COLUMN: &str = "_cdf_stage_order";
 
 static STAGING_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 mod api;
+mod arrow_bridge;
 mod commit;
 mod corrections;
 mod mirrors;

@@ -63,65 +63,6 @@ pub(crate) fn build_receipt(
     })
 }
 
-pub(crate) fn segment_acks(requested: &[StateSegment], package: &PackageData) -> Vec<SegmentAck> {
-    let requested_by_id = requested
-        .iter()
-        .map(|segment| (segment.segment_id.as_str(), segment))
-        .collect::<BTreeMap<_, _>>();
-    package
-        .segments
-        .iter()
-        .map(
-            |segment| match requested_by_id.get(segment.entry.segment_id.as_str()) {
-                Some(requested) => SegmentAck {
-                    segment_id: requested.segment_id.clone(),
-                    row_count: requested.row_count,
-                    byte_count: requested.byte_count,
-                },
-                None => SegmentAck {
-                    segment_id: segment.entry.segment_id.clone(),
-                    row_count: segment.row_count,
-                    byte_count: segment.entry.byte_count,
-                },
-            },
-        )
-        .collect()
-}
-
-pub(crate) fn validate_requested_segments(
-    requested: &[StateSegment],
-    package: &PackageData,
-) -> Result<()> {
-    if requested.is_empty() {
-        return Ok(());
-    }
-    let package_segments = package
-        .segments
-        .iter()
-        .map(|segment| (segment.entry.segment_id.as_str(), segment.row_count))
-        .collect::<BTreeMap<_, _>>();
-    for segment in requested {
-        match package_segments.get(segment.segment_id.as_str()) {
-            Some(row_count) if *row_count == segment.row_count => {}
-            Some(row_count) => {
-                return Err(CdfError::data(format!(
-                    "requested segment {} has {} rows but package has {}",
-                    segment.segment_id.as_str(),
-                    segment.row_count,
-                    row_count
-                )));
-            }
-            None => {
-                return Err(CdfError::data(format!(
-                    "requested segment {} is not present in package",
-                    segment.segment_id.as_str()
-                )));
-            }
-        }
-    }
-    Ok(())
-}
-
 pub(crate) fn record_package_receipt_once(package_dir: &Path, receipt: &Receipt) -> Result<bool> {
     let reader = PackageReader::open(package_dir)?;
     let receipts = reader.receipts()?;

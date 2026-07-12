@@ -1,83 +1,5 @@
 use crate::*;
-use crate::{api::*, rows::*, sql::*};
-
-pub(crate) fn load_package_data(package_dir: &Path) -> Result<PackageData> {
-    let reader = PackageReader::open(package_dir)?;
-    reader.verify()?;
-    let segments = reader.read_all_segments()?;
-    package_data_from_segments(segments, false)
-}
-
-pub(crate) fn package_data_from_commit_segments(
-    segments: Vec<CommitSegment>,
-) -> Result<PackageData> {
-    let segments = segments
-        .into_iter()
-        .map(|segment| {
-            (
-                SegmentEntry {
-                    segment_id: segment.state.segment_id,
-                    path: String::new(),
-                    row_count: segment.state.row_count,
-                    byte_count: segment.package_byte_count,
-                    sha256: String::new(),
-                },
-                segment.batches,
-            )
-        })
-        .collect::<Vec<_>>();
-    package_data_from_segments(segments, true)
-}
-
-fn package_data_from_segments(
-    segments: Vec<(SegmentEntry, Vec<RecordBatch>)>,
-    validate_entry_rows: bool,
-) -> Result<PackageData> {
-    if segments.is_empty() {
-        return Err(CdfError::data(
-            "DuckDB destination requires at least one package segment",
-        ));
-    }
-
-    let schema = first_schema(&segments)?;
-    validate_user_schema_fields(schema.as_ref())?;
-    let fields = schema
-        .fields()
-        .iter()
-        .map(|field| field_plan(field.as_ref()))
-        .collect::<Result<Vec<_>>>()?;
-    validate_field_names(&fields)?;
-
-    let mut loaded_segments = Vec::new();
-    let mut rows = Vec::new();
-    for (entry, batches) in segments {
-        let mut row_count = 0_u64;
-        for batch in batches {
-            if batch.schema().as_ref() != schema.as_ref() {
-                return Err(CdfError::data(
-                    "DuckDB destination requires all package segments to share one schema",
-                ));
-            }
-            row_count += batch.num_rows() as u64;
-            rows.extend(batch_rows(&batch)?);
-        }
-        if validate_entry_rows && row_count != entry.row_count {
-            return Err(CdfError::data(format!(
-                "DuckDB commit segment {} has {} payload rows but segment metadata has {}",
-                entry.segment_id.as_str(),
-                row_count,
-                entry.row_count
-            )));
-        }
-        loaded_segments.push(LoadedSegment { entry, row_count });
-    }
-
-    Ok(PackageData {
-        fields,
-        segments: loaded_segments,
-        rows,
-    })
-}
+use crate::{api::*, sql::*};
 
 pub(crate) fn persistence_fields(user_fields: &[FieldPlan]) -> Vec<FieldPlan> {
     let mut fields = user_fields.to_vec();
@@ -101,58 +23,53 @@ pub(crate) fn persistence_fields(user_fields: &[FieldPlan]) -> Vec<FieldPlan> {
     fields
 }
 
-pub(crate) fn persistence_rows(
-    package: &PackageData,
+pub(crate) fn persistence_batch(
+    batch: RecordBatch,
     package_hash: &cdf_kernel::PackageHash,
-) -> Result<Vec<RowValues>> {
-    let expected_rows = package
-        .segments
-        .iter()
-        .try_fold(0_u64, |total, segment| total.checked_add(segment.row_count))
-        .ok_or_else(|| CdfError::data("DuckDB package row count overflowed"))?;
-    if expected_rows != package.rows.len() as u64 {
-        return Err(CdfError::data(format!(
-            "DuckDB package segment rows total {expected_rows} but decoded payload has {} rows",
-            package.rows.len()
+    segment_id: &cdf_kernel::SegmentId,
+    segment_row_start: u64,
+    stage_row_start: Option<u64>,
+) -> Result<RecordBatch> {
+    let row_count = u64::try_from(batch.num_rows())
+        .map_err(|_| CdfError::data("DuckDB Arrow batch row count exceeds u64"))?;
+    let segment_row_end = segment_row_start
+        .checked_add(row_count)
+        .ok_or_else(|| CdfError::data("DuckDB segment row ordinal overflowed"))?;
+    let mut fields = batch.schema().fields().to_vec();
+    fields.extend([
+        Arc::new(Field::new(CDF_LOAD_COLUMN, DataType::Utf8, false)),
+        Arc::new(Field::new(CDF_SEGMENT_COLUMN, DataType::Utf8, false)),
+        Arc::new(Field::new(CDF_ROW_COLUMN, DataType::UInt64, false)),
+    ]);
+    let mut columns = batch.columns().to_vec();
+    columns.extend([
+        Arc::new(StringArray::from_iter_values(std::iter::repeat_n(
+            package_hash.as_str(),
+            batch.num_rows(),
+        ))) as Arc<dyn Array>,
+        Arc::new(StringArray::from_iter_values(std::iter::repeat_n(
+            segment_id.as_str(),
+            batch.num_rows(),
+        ))),
+        Arc::new(UInt64Array::from_iter_values(
+            segment_row_start..segment_row_end,
+        )),
+    ]);
+    if let Some(stage_row_start) = stage_row_start {
+        let stage_row_end = stage_row_start
+            .checked_add(row_count)
+            .ok_or_else(|| CdfError::data("DuckDB stage row ordinal overflowed"))?;
+        fields.push(Arc::new(Field::new(
+            CDF_STAGE_ORDER_COLUMN,
+            DataType::UInt64,
+            false,
+        )));
+        columns.push(Arc::new(UInt64Array::from_iter_values(
+            stage_row_start..stage_row_end,
         )));
     }
-
-    let mut rows = Vec::with_capacity(package.rows.len());
-    let mut offset = 0_usize;
-    for segment in &package.segments {
-        for ordinal in 0..segment.row_count {
-            let mut row = package.rows[offset].clone();
-            row.push(text_cell(package_hash.as_str()));
-            row.push(text_cell(segment.entry.segment_id.as_str()));
-            row.push(u64_cell(ordinal));
-            rows.push(row);
-            offset += 1;
-        }
-    }
-    Ok(rows)
-}
-
-fn text_cell(value: &str) -> CellValue {
-    CellValue {
-        value: Value::Text(value.to_owned()),
-        key: CellKey::Text(value.to_owned()),
-    }
-}
-
-fn u64_cell(value: u64) -> CellValue {
-    CellValue {
-        value: Value::UBigInt(value),
-        key: CellKey::U64(value),
-    }
-}
-
-pub(crate) fn first_schema(segments: &[(SegmentEntry, Vec<RecordBatch>)]) -> Result<SchemaRef> {
-    segments
-        .iter()
-        .flat_map(|(_, batches)| batches.iter())
-        .next()
-        .map(RecordBatch::schema)
-        .ok_or_else(|| CdfError::data("DuckDB destination found no record batches in package"))
+    RecordBatch::try_new(Arc::new(Schema::new(fields)), columns)
+        .map_err(|error| CdfError::data(format!("build DuckDB persistence batch: {error}")))
 }
 
 pub(crate) fn validate_field_names(fields: &[FieldPlan]) -> Result<()> {

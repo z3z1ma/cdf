@@ -1,5 +1,35 @@
 use crate::*;
-use crate::{api::*, sql::*, table::*};
+use crate::{api::*, arrow_bridge::into_duckdb_batch, sql::*};
+
+pub(crate) fn append_arrow_batch_to_table(
+    conn: &Connection,
+    target: &TargetRef,
+    batch: RecordBatch,
+) -> Result<()> {
+    let schema = batch.schema();
+    let column_names = schema
+        .fields()
+        .iter()
+        .map(|field| field.name().as_str())
+        .collect::<Vec<_>>();
+    let mut appender = if target.schema == MAIN_SCHEMA {
+        conn.appender_with_columns(&target.table, &column_names)
+    } else {
+        conn.appender_with_columns_to_db(&target.table, &target.schema, &column_names)
+    }
+    .map_err(|error| duckdb_error(format!("open appender for {}", target.sql_name()), error))?;
+    appender
+        .append_record_batch(into_duckdb_batch(batch)?)
+        .map_err(|error| {
+            duckdb_error(
+                format!("append Arrow batch into {}", target.sql_name()),
+                error,
+            )
+        })?;
+    appender
+        .flush()
+        .map_err(|error| duckdb_error(format!("flush appender for {}", target.sql_name()), error))
+}
 
 pub(crate) fn apply_table_plan(
     conn: &Connection,
@@ -18,109 +48,139 @@ pub(crate) fn apply_table_plan(
     Ok(())
 }
 
-pub(crate) fn append_rows(
+pub(crate) fn finalize_arrow_merge(
     conn: &Connection,
     target: &TargetRef,
+    staging: &TargetRef,
     fields: &[FieldPlan],
-    rows: &[RowValues],
-) -> Result<CommitCounts> {
-    append_rows_to_table(conn, target, fields, rows)?;
-    Ok(CommitCounts {
-        rows_written: rows.len() as u64,
-        rows_inserted: Some(rows.len() as u64),
-        rows_updated: Some(0),
-        rows_deleted: Some(0),
-    })
-}
-
-pub(crate) fn append_rows_to_table(
-    conn: &Connection,
-    target: &TargetRef,
-    fields: &[FieldPlan],
-    rows: &[RowValues],
-) -> Result<()> {
-    let column_names = fields
-        .iter()
-        .map(|field| field.name.as_str())
-        .collect::<Vec<_>>();
-    let mut appender = if target.schema == MAIN_SCHEMA {
-        conn.appender_with_columns(&target.table, &column_names)
-    } else {
-        conn.appender_with_columns_to_db(&target.table, &target.schema, &column_names)
-    }
-    .map_err(|error| duckdb_error(format!("open appender for {}", target.sql_name()), error))?;
-
-    for row in rows {
-        let values = row
-            .iter()
-            .map(|cell| cell.value.clone())
-            .collect::<Vec<_>>();
-        appender
-            .append_row(appender_params_from_iter(values))
-            .map_err(|error| {
-                duckdb_error(format!("append row into {}", target.sql_name()), error)
-            })?;
-    }
-    appender
-        .flush()
-        .map_err(|error| duckdb_error(format!("flush appender for {}", target.sql_name()), error))
-}
-
-pub(crate) fn merge_rows(
-    conn: &Connection,
-    target: &TargetRef,
-    fields: &[FieldPlan],
+    user_field_count: usize,
     merge_keys: &[String],
-    rows: &[RowValues],
 ) -> Result<CommitCounts> {
-    let staging = TargetRef {
+    merge_key_indexes(fields, merge_keys)?;
+    if user_field_count > fields.len() {
+        return Err(CdfError::internal(
+            "DuckDB merge user-field count exceeds persistence schema",
+        ));
+    }
+    let null_keys = merge_keys
+        .iter()
+        .map(|key| format!("{} IS NULL", quote_ident(key)))
+        .collect::<Vec<_>>()
+        .join(" OR ");
+    let has_null: bool = conn
+        .query_row(
+            &format!(
+                "SELECT EXISTS (SELECT 1 FROM {} WHERE {})",
+                staging.sql_name(),
+                null_keys
+            ),
+            [],
+            |row| row.get(0),
+        )
+        .map_err(|error| duckdb_error("validate DuckDB Arrow merge null keys", error))?;
+    if has_null {
+        return Err(CdfError::data("DuckDB merge key values cannot be NULL"));
+    }
+
+    let same_key = merge_keys
+        .iter()
+        .map(|key| {
+            format!(
+                "left_stage.{} IS NOT DISTINCT FROM right_stage.{}",
+                quote_ident(key),
+                quote_ident(key)
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(" AND ");
+    let different_user_value = fields[..user_field_count]
+        .iter()
+        .map(|field| {
+            format!(
+                "left_stage.{} IS DISTINCT FROM right_stage.{}",
+                quote_ident(&field.name),
+                quote_ident(&field.name)
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(" OR ");
+    let different_user_value = if different_user_value.is_empty() {
+        "FALSE".to_owned()
+    } else {
+        different_user_value
+    };
+    let conflicting: bool = conn
+        .query_row(
+            &format!(
+                "SELECT EXISTS (SELECT 1 FROM {stage} AS left_stage JOIN {stage} AS right_stage ON {same_key} AND left_stage.{order} < right_stage.{order} WHERE {different_user_value})",
+                stage = staging.sql_name(),
+                order = quote_ident(CDF_STAGE_ORDER_COLUMN),
+            ),
+            [],
+            |row| row.get(0),
+        )
+        .map_err(|error| duckdb_error("validate DuckDB Arrow merge duplicate keys", error))?;
+    if conflicting {
+        return Err(CdfError::data(
+            "DuckDB merge package contains conflicting duplicate merge keys; no winner policy is ratified",
+        ));
+    }
+
+    let dedup = TargetRef {
         schema: MAIN_SCHEMA.to_owned(),
         table: staging_table_name(),
     };
+    let column_list = fields
+        .iter()
+        .map(|field| quote_ident(&field.name))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let key_list = merge_keys
+        .iter()
+        .map(|key| quote_ident(key))
+        .collect::<Vec<_>>()
+        .join(", ");
     conn.execute_batch(&format!(
-        "CREATE TEMP TABLE {} ({})",
-        quote_ident(&staging.table),
-        create_columns_sql(fields)
+        "CREATE TEMP TABLE {dedup} AS SELECT {columns} FROM (SELECT {columns}, row_number() OVER (PARTITION BY {keys} ORDER BY {order}) AS _cdf_rank FROM {stage}) WHERE _cdf_rank = 1",
+        dedup = dedup.sql_name(),
+        columns = column_list,
+        keys = key_list,
+        order = quote_ident(CDF_STAGE_ORDER_COLUMN),
+        stage = staging.sql_name(),
     ))
-    .map_err(|error| duckdb_error("create DuckDB merge staging table", error))?;
-    append_rows_to_table(conn, &staging, fields, rows)?;
+    .map_err(|error| duckdb_error("deduplicate DuckDB Arrow merge staging", error))?;
 
+    let written: u64 = conn
+        .query_row(
+            &format!("SELECT count(*) FROM {}", dedup.sql_name()),
+            [],
+            |row| row.get(0),
+        )
+        .map_err(|error| duckdb_error("count DuckDB Arrow merge rows", error))?;
     let predicate = merge_predicate(merge_keys)?;
     let updated: u64 = conn
         .query_row(
             &format!(
                 "SELECT count(*) FROM {} AS target WHERE EXISTS (SELECT 1 FROM {} AS stage WHERE {})",
                 target.sql_name(),
-                quote_ident(&staging.table),
+                dedup.sql_name(),
                 predicate
             ),
             [],
             |row| row.get(0),
         )
-        .map_err(|error| duckdb_error("count DuckDB merge updates", error))?;
+        .map_err(|error| duckdb_error("count DuckDB Arrow merge updates", error))?;
     conn.execute_batch(&format!(
-        "DELETE FROM {} AS target USING {} AS stage WHERE {}",
+        "DELETE FROM {} AS target USING {} AS stage WHERE {}; INSERT INTO {} ({}) SELECT {} FROM {}",
         target.sql_name(),
-        quote_ident(&staging.table),
-        predicate
-    ))
-    .map_err(|error| duckdb_error("delete DuckDB merge matches", error))?;
-
-    let column_list = fields
-        .iter()
-        .map(|field| quote_ident(&field.name))
-        .collect::<Vec<_>>()
-        .join(", ");
-    conn.execute_batch(&format!(
-        "INSERT INTO {} ({}) SELECT {} FROM {}",
+        dedup.sql_name(),
+        predicate,
         target.sql_name(),
         column_list,
         column_list,
-        quote_ident(&staging.table)
+        dedup.sql_name(),
     ))
-    .map_err(|error| duckdb_error("insert DuckDB merge rows", error))?;
-
-    let written = rows.len() as u64;
+    .map_err(|error| duckdb_error("apply DuckDB Arrow merge", error))?;
     Ok(CommitCounts {
         rows_written: written,
         rows_inserted: Some(written.saturating_sub(updated)),
@@ -173,51 +233,4 @@ pub(crate) fn merge_key_indexes(fields: &[FieldPlan], merge_keys: &[String]) -> 
                 })
         })
         .collect()
-}
-
-pub(crate) fn dedup_merge_rows_with_width(
-    rows: &[RowValues],
-    key_indexes: &[usize],
-    equality_width: usize,
-) -> Result<Vec<RowValues>> {
-    let mut key_to_index = BTreeMap::<Vec<CellKey>, usize>::new();
-    let mut deduped = Vec::<RowValues>::new();
-
-    for row in rows {
-        let key = key_indexes
-            .iter()
-            .map(|index| row[*index].key.clone())
-            .collect::<Vec<_>>();
-        if key.iter().any(|cell| matches!(cell, CellKey::Null)) {
-            return Err(CdfError::data("DuckDB merge key values cannot be NULL"));
-        }
-
-        match key_to_index.get(&key) {
-            Some(existing_index)
-                if same_row_prefix(&deduped[*existing_index], row, equality_width)? => {}
-            Some(_) => {
-                return Err(CdfError::data(
-                    "DuckDB merge package contains conflicting duplicate merge keys; no winner policy is ratified",
-                ));
-            }
-            None => {
-                key_to_index.insert(key, deduped.len());
-                deduped.push(row.clone());
-            }
-        }
-    }
-
-    Ok(deduped)
-}
-
-fn same_row_prefix(left: &RowValues, right: &RowValues, width: usize) -> Result<bool> {
-    if left.len() < width || right.len() < width {
-        return Err(CdfError::internal(
-            "DuckDB merge equality width exceeds persisted row width",
-        ));
-    }
-    Ok(left[..width]
-        .iter()
-        .map(|cell| &cell.key)
-        .eq(right[..width].iter().map(|cell| &cell.key)))
 }
