@@ -1,6 +1,7 @@
 use std::collections::BTreeSet;
 
 use arrow_array::RecordBatch;
+use arrow_schema::Schema;
 use cdf_kernel::{
     CdfError, CommitPlan, DestinationCommitRequest, DestinationId, IdempotencyToken, PackageHash,
     PlanId, Receipt, Result, SchemaHash, SegmentId, TargetName, WriteDisposition,
@@ -95,6 +96,8 @@ pub struct StagedIngressRequest {
     pub attempt_id: LoadAttemptId,
     pub binding: StagingAttemptBinding,
     pub scheduling: StagingSchedulingContext,
+    pub output_schema: Schema,
+    pub merge_keys: Vec<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

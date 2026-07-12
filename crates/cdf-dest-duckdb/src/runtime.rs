@@ -154,10 +154,16 @@ impl DestinationRuntime for DuckDbDestination {
                 affinity: cdf_runtime::LaneAffinity::Pinned,
                 interruption: cdf_runtime::InterruptionSafety::CooperativeOnly,
             }],
-            staged_ingress_lane: None,
+            staged_ingress_lane: Some("duckdb.connection".to_owned()),
             final_binding_lane: Some("duckdb.connection".to_owned()),
-            ingress_mode: DestinationIngressMode::FinalizedPackageOnly,
-            staged_ingress: None,
+            ingress_mode: DestinationIngressMode::StagedDurableSegments,
+            staged_ingress: Some(cdf_runtime::StagedIngressCapabilities {
+                recovery: cdf_runtime::StagingRecoveryMode::RollbackRedrive,
+                visibility: cdf_runtime::StagingVisibility::IsolatedUntilFinalBinding,
+                abort_idempotent: true,
+                lifecycle_cleanup: true,
+                final_binding_requires_exclusive_writer: true,
+            }),
             writer_model: DestinationWriterModel::SingleWriter,
             commit_payload_mode: cdf_runtime::DestinationCommitPayloadMode::SegmentStreaming,
             max_in_flight_segments: Some(1),
@@ -230,6 +236,13 @@ impl DestinationRuntime for DuckDbDestination {
             plan.kernel,
             DestinationReceiptReportingPolicy::DestinationCommit { duplicate },
         ))
+    }
+
+    fn begin_staged_ingress(
+        &mut self,
+        request: cdf_runtime::StagedIngressRequest,
+    ) -> Result<Box<dyn cdf_runtime::StagedIngressSession>> {
+        self.begin_staged_ingress_session(request)
     }
 
     fn bind_prepared_commit(&mut self, prepared: &mut PreparedDestinationCommit) -> Result<()> {

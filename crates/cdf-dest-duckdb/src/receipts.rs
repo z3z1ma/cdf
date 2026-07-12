@@ -2,7 +2,8 @@ use crate::api::*;
 use crate::*;
 
 pub(crate) fn build_receipt(
-    request: &DuckDbCommitRequest,
+    commit: &DestinationCommitRequest,
+    schema_hash: &SchemaHash,
     segment_acks: &[SegmentAck],
     counts: CommitCounts,
     context: &ReceiptBuildContext<'_>,
@@ -22,37 +23,34 @@ pub(crate) fn build_receipt(
     );
 
     let mut parameters = BTreeMap::new();
-    parameters.insert(
-        "target".to_owned(),
-        request.commit.target.as_str().to_owned(),
-    );
+    parameters.insert("target".to_owned(), commit.target.as_str().to_owned());
     parameters.insert(
         "idempotency_token".to_owned(),
-        request.commit.idempotency_token.as_str().to_owned(),
+        commit.idempotency_token.as_str().to_owned(),
     );
     parameters.insert(
         "package_hash".to_owned(),
-        request.commit.package_hash.as_str().to_owned(),
+        commit.package_hash.as_str().to_owned(),
     );
 
     Ok(Receipt {
         receipt_id: ReceiptId::new(format!(
             "duckdb:{}:{}",
-            request.commit.target.as_str(),
-            request.commit.idempotency_token.as_str()
+            commit.target.as_str(),
+            commit.idempotency_token.as_str()
         ))?,
         destination: DestinationId::new(DESTINATION_ID)?,
-        target: request.commit.target.clone(),
-        package_hash: request.commit.package_hash.clone(),
+        target: commit.target.clone(),
+        package_hash: commit.package_hash.clone(),
         segment_acks: segment_acks.to_vec(),
-        disposition: request.commit.disposition.clone(),
-        idempotency_token: request.commit.idempotency_token.clone(),
+        disposition: commit.disposition.clone(),
+        idempotency_token: commit.idempotency_token.clone(),
         transaction: Some(TransactionMetadata {
             system: "duckdb".to_owned(),
             values: transaction_values,
         }),
         counts,
-        schema_hash: request.schema_hash.clone(),
+        schema_hash: schema_hash.clone(),
         migrations: context.migrations.to_vec(),
         committed_at_ms: context.committed_at_ms,
         verify: VerifyClause {

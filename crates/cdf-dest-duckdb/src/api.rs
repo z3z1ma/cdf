@@ -72,12 +72,21 @@ struct DuckDbArrowWriter {
     _lock: WriterLock,
     target: TargetRef,
     write_target: TargetRef,
-    first_row_key: u64,
-    next_row_key: u64,
+    first_row_key: Option<u64>,
+    next_row_key: Option<u64>,
     persisted_fields: Vec<FieldPlan>,
     user_field_count: usize,
     rows_received: u64,
     duckdb_version: String,
+}
+
+#[derive(Debug)]
+struct DuckDbStagedIngressSession {
+    destination: DuckDbDestination,
+    request: cdf_runtime::StagedIngressRequest,
+    writer: Option<DuckDbArrowWriter>,
+    migrations: Vec<MigrationRecord>,
+    accepted: Vec<cdf_runtime::StagedSegmentIdentity>,
 }
 
 #[derive(Debug)]
@@ -345,6 +354,103 @@ impl DuckDbDestination {
         })
     }
 
+    fn start_staged_writer(
+        &self,
+        request: &cdf_runtime::StagedIngressRequest,
+    ) -> Result<(DuckDbArrowWriter, Vec<MigrationRecord>)> {
+        validate_user_schema_fields(&request.output_schema)?;
+        let user_fields = request
+            .output_schema
+            .fields()
+            .iter()
+            .map(|field| field_plan(field.as_ref()))
+            .collect::<Result<Vec<_>>>()?;
+        validate_field_names(&user_fields)?;
+        let persisted_fields = persistence_fields(&user_fields);
+        let target = parse_target(&request.binding.target)?;
+        let lock = self.acquire_writer_lock()?;
+        let conn = self.open_connection()?;
+        ensure_mirror_tables(&conn)?;
+        conn.execute_batch("BEGIN TRANSACTION")
+            .map_err(|error| duckdb_error("begin staged Arrow transaction", error))?;
+        let table_plan = plan_table(
+            &conn,
+            target,
+            &persisted_fields,
+            request.binding.disposition.clone(),
+        )?;
+        let migrations = table_plan
+            .ddl
+            .iter()
+            .enumerate()
+            .map(|(index, ddl)| MigrationRecord {
+                migration_id: format!("duckdb-ddl-{:03}", index + 1),
+                description: ddl.clone(),
+            })
+            .collect::<Vec<_>>();
+        apply_table_plan(&conn, &table_plan, request.binding.disposition.clone())?;
+        let write_target = if request.binding.disposition == WriteDisposition::Merge {
+            let staging = TargetRef {
+                schema: MAIN_SCHEMA.to_owned(),
+                table: staging_table_name(),
+            };
+            let mut staging_fields = persisted_fields.clone();
+            staging_fields.push(FieldPlan {
+                name: CDF_STAGE_ORDER_COLUMN.to_owned(),
+                sql_type: "UBIGINT".to_owned(),
+                nullable: false,
+            });
+            conn.execute_batch(&format!(
+                "CREATE TEMP TABLE {} ({})",
+                quote_ident(&staging.table),
+                create_columns_sql(&staging_fields)
+            ))
+            .map_err(|error| duckdb_error("create staged DuckDB merge table", error))?;
+            staging
+        } else {
+            table_plan.target.clone()
+        };
+        let duckdb_version = duckdb_version(&conn).unwrap_or_else(|_| "unknown".to_owned());
+        Ok((
+            DuckDbArrowWriter {
+                conn,
+                _lock: lock,
+                target: table_plan.target,
+                write_target,
+                first_row_key: None,
+                next_row_key: None,
+                persisted_fields,
+                user_field_count: user_fields.len(),
+                rows_received: 0,
+                duckdb_version,
+            },
+            migrations,
+        ))
+    }
+
+    pub(crate) fn begin_staged_ingress_session(
+        &self,
+        request: cdf_runtime::StagedIngressRequest,
+    ) -> Result<Box<dyn cdf_runtime::StagedIngressSession>> {
+        if request.binding.destination_id.as_str() != DESTINATION_ID {
+            return Err(CdfError::contract(
+                "DuckDB staged ingress destination authority mismatch",
+            ));
+        }
+        if request.binding.disposition == WriteDisposition::CdcApply {
+            return Err(CdfError::contract(
+                "DuckDB destination does not support cdc_apply",
+            ));
+        }
+        Ok(Box::new(DuckDbStagedIngressSession {
+            destination: self.clone(),
+            request,
+            writer: None,
+            migrations: Vec::new(),
+            accepted: Vec::new(),
+        }))
+    }
+
     pub fn commit_package(&self, request: DuckDbCommitRequest) -> Result<DuckDbCommitOutcome> {
         let reader = PackageReader::open(&request.package_dir)?;
         reader.verify()?;
@@ -411,7 +517,8 @@ impl DuckDbDestination {
         let duckdb_version = duckdb_version(&conn).unwrap_or_else(|_| "unknown".to_owned());
         let committed_at_ms = now_ms()?;
         let receipt = build_receipt(
-            &request,
+            &request.commit,
+            &request.schema_hash,
             &[],
             CommitCounts::default(),
             &ReceiptBuildContext {
@@ -426,7 +533,7 @@ impl DuckDbDestination {
             let tx = conn
                 .transaction()
                 .map_err(|error| duckdb_error("begin empty package transaction", error))?;
-            insert_mirrors(&tx, &request, &[], &receipt, None)?;
+            insert_mirrors(&tx, &request.commit, &[], &receipt, None)?;
             tx.commit()
                 .map_err(|error| duckdb_error("commit empty package transaction", error))?;
         }
@@ -669,8 +776,8 @@ impl DuckDbCommitSession<'_> {
             _lock: lock,
             target: table_plan.target,
             write_target,
-            first_row_key,
-            next_row_key: first_row_key,
+            first_row_key: Some(first_row_key),
+            next_row_key: Some(first_row_key),
             persisted_fields,
             user_field_count: user_fields.len(),
             rows_received: 0,
@@ -743,7 +850,8 @@ impl DuckDbCommitSession<'_> {
             .collect::<Vec<_>>();
         let committed_at_ms = now_ms()?;
         let receipt = build_receipt(
-            &self.request,
+            &self.request.commit,
+            &self.request.schema_hash,
             &segment_acks,
             counts,
             &ReceiptBuildContext {
@@ -756,10 +864,10 @@ impl DuckDbCommitSession<'_> {
         )?;
         insert_mirrors(
             &writer.conn,
-            &self.request,
+            &self.request.commit,
             &segment_acks,
             &receipt,
-            Some(writer.first_row_key),
+            writer.first_row_key,
         )?;
         writer
             .conn
@@ -772,6 +880,233 @@ impl DuckDbCommitSession<'_> {
             plan: self.plan,
             package_receipt_recorded: recorded,
         })
+    }
+}
+
+impl DuckDbStagedIngressSession {
+    fn validate_final_binding(&self, binding: &cdf_runtime::VerifiedFinalBinding) -> Result<()> {
+        if binding.attempt_id() != &self.request.attempt_id
+            || binding.staging_plan_id() != &self.request.binding.plan_id
+            || binding.commit().target != self.request.binding.target
+            || binding.commit().disposition != self.request.binding.disposition
+            || binding.schema_hash() != &self.request.binding.schema_hash
+        {
+            return Err(CdfError::destination(
+                "DuckDB staged ingress final binding differs from its attempt authority",
+            ));
+        }
+        binding.validate_staged_identities(&self.accepted)
+    }
+
+    fn bind_empty(self, binding: cdf_runtime::VerifiedFinalBinding) -> Result<Receipt> {
+        if !binding.ordered_segments().is_empty() {
+            return Err(CdfError::internal(
+                "DuckDB staged empty binding received data segments",
+            ));
+        }
+        let lock = self.destination.acquire_writer_lock()?;
+        let conn = self.destination.open_connection()?;
+        ensure_mirror_tables(&conn)?;
+        if let Some(receipt) = find_duplicate_receipt(&conn, binding.commit())? {
+            return Ok(receipt);
+        }
+        let duckdb_version = duckdb_version(&conn).unwrap_or_else(|_| "unknown".to_owned());
+        let committed_at_ms = now_ms()?;
+        let receipt = build_receipt(
+            binding.commit(),
+            binding.schema_hash(),
+            &[],
+            CommitCounts::default(),
+            &ReceiptBuildContext {
+                migrations: &[],
+                committed_at_ms,
+                duckdb_version: &duckdb_version,
+                database_path: &self.destination.database_path,
+                lock_path: &self.destination.lock_path(),
+            },
+        )?;
+        conn.execute_batch("BEGIN TRANSACTION")
+            .map_err(|error| duckdb_error("begin empty staged transaction", error))?;
+        insert_mirrors(&conn, binding.commit(), &[], &receipt, None)?;
+        conn.execute_batch("COMMIT")
+            .map_err(|error| duckdb_error("commit empty staged transaction", error))?;
+        drop(lock);
+        Ok(receipt)
+    }
+}
+
+impl cdf_runtime::StagedIngressSession for DuckDbStagedIngressSession {
+    fn stage_segment(
+        &mut self,
+        mut segment: cdf_runtime::StagedSegmentRequest,
+    ) -> Result<cdf_runtime::StagedSegmentAck> {
+        let identity = segment.identity.clone();
+        if identity.schema_hash != self.request.binding.schema_hash {
+            return Err(CdfError::data(
+                "DuckDB staged segment schema hash differs from its attempt",
+            ));
+        }
+        let expected_ordinal = u32::try_from(self.accepted.len())
+            .map_err(|_| CdfError::data("DuckDB staged segment count exceeds u32"))?;
+        if identity.ordinal != expected_ordinal
+            || self
+                .accepted
+                .iter()
+                .any(|accepted| accepted.segment_id == identity.segment_id)
+        {
+            return Err(CdfError::data(
+                "DuckDB staged segments must be unique and arrive in canonical order",
+            ));
+        }
+        if self.writer.is_none() {
+            let (writer, migrations) = self.destination.start_staged_writer(&self.request)?;
+            self.writer = Some(writer);
+            self.migrations = migrations;
+        }
+        let writer = self
+            .writer
+            .as_mut()
+            .ok_or_else(|| CdfError::internal("DuckDB staged writer is not initialized"))?;
+        let segment_start =
+            allocate_row_keys(&writer.conn, identity.row_count)?.ok_or_else(|| {
+                CdfError::data("DuckDB staged data segment must contain at least one row")
+            })?;
+        if let Some(next) = writer.next_row_key
+            && next != segment_start
+        {
+            return Err(CdfError::internal(
+                "DuckDB staged row-key allocation is not contiguous",
+            ));
+        }
+        writer.first_row_key.get_or_insert(segment_start);
+        let mut next_row_key = segment_start;
+        let segment_rows_before = writer.rows_received;
+        while let Some(batch) = segment.reader_mut().next_batch()? {
+            if batch.schema().as_ref() != &self.request.output_schema {
+                return Err(CdfError::data(format!(
+                    "DuckDB staged segment {} schema differs from the planned output schema",
+                    identity.segment_id
+                )));
+            }
+            let batch_rows = u64::try_from(batch.num_rows())
+                .map_err(|_| CdfError::data("DuckDB staged batch rows exceed u64"))?;
+            let merge = self.request.binding.disposition == WriteDisposition::Merge;
+            let persisted =
+                persistence_batch(batch, next_row_key, merge.then_some(writer.rows_received))?;
+            append_arrow_batch_to_table(&writer.conn, &writer.write_target, persisted)?;
+            next_row_key = next_row_key
+                .checked_add(batch_rows)
+                .ok_or_else(|| CdfError::data("DuckDB staged row key overflowed"))?;
+            writer.rows_received = writer
+                .rows_received
+                .checked_add(batch_rows)
+                .ok_or_else(|| CdfError::data("DuckDB staged row count overflowed"))?;
+        }
+        if writer.rows_received.saturating_sub(segment_rows_before) != identity.row_count {
+            return Err(CdfError::data(format!(
+                "DuckDB staged segment {} row count differs from durable identity",
+                identity.segment_id
+            )));
+        }
+        writer.next_row_key = Some(next_row_key);
+        self.accepted.push(identity.clone());
+        Ok(cdf_runtime::StagedSegmentAck {
+            attempt_id: self.request.attempt_id.clone(),
+            identity,
+            external_durable: false,
+        })
+    }
+
+    fn snapshot(&self) -> Result<cdf_runtime::StagingSnapshot> {
+        Ok(cdf_runtime::StagingSnapshot {
+            attempt_id: self.request.attempt_id.clone(),
+            binding: self.request.binding.clone(),
+            recovery: cdf_runtime::StagingRecoveryMode::RollbackRedrive,
+            accepted_segments: self.accepted.clone(),
+        })
+    }
+
+    fn bind_final(
+        mut self: Box<Self>,
+        binding: cdf_runtime::VerifiedFinalBinding,
+    ) -> Result<Receipt> {
+        self.validate_final_binding(&binding)?;
+        let Some(writer) = self.writer.take() else {
+            return (*self).bind_empty(binding);
+        };
+        if let Some(receipt) = find_duplicate_receipt(&writer.conn, binding.commit())? {
+            writer
+                .conn
+                .execute_batch("ROLLBACK")
+                .map_err(|error| duckdb_error("rollback duplicate staged transaction", error))?;
+            return Ok(receipt);
+        }
+        let counts = match binding.commit().disposition {
+            WriteDisposition::Append | WriteDisposition::Replace => CommitCounts {
+                rows_written: writer.rows_received,
+                rows_inserted: Some(writer.rows_received),
+                rows_updated: Some(0),
+                rows_deleted: Some(0),
+            },
+            WriteDisposition::Merge => finalize_arrow_merge(
+                &writer.conn,
+                &writer.target,
+                &writer.write_target,
+                &writer.persisted_fields,
+                writer.user_field_count,
+                &self.request.merge_keys,
+            )?,
+            WriteDisposition::CdcApply => {
+                return Err(CdfError::contract(
+                    "DuckDB destination does not support cdc_apply",
+                ));
+            }
+        };
+        let segment_acks = self
+            .accepted
+            .iter()
+            .map(|identity| SegmentAck {
+                segment_id: identity.segment_id.clone(),
+                row_count: identity.row_count,
+                byte_count: identity.byte_count,
+            })
+            .collect::<Vec<_>>();
+        let committed_at_ms = now_ms()?;
+        let receipt = build_receipt(
+            binding.commit(),
+            binding.schema_hash(),
+            &segment_acks,
+            counts,
+            &ReceiptBuildContext {
+                migrations: &self.migrations,
+                committed_at_ms,
+                duckdb_version: &writer.duckdb_version,
+                database_path: &self.destination.database_path,
+                lock_path: &self.destination.lock_path(),
+            },
+        )?;
+        insert_mirrors(
+            &writer.conn,
+            binding.commit(),
+            &segment_acks,
+            &receipt,
+            writer.first_row_key,
+        )?;
+        writer
+            .conn
+            .execute_batch("COMMIT")
+            .map_err(|error| duckdb_error("commit staged Arrow transaction", error))?;
+        Ok(receipt)
+    }
+
+    fn abort(mut self: Box<Self>) -> Result<()> {
+        if let Some(writer) = self.writer.take() {
+            writer
+                .conn
+                .execute_batch("ROLLBACK")
+                .map_err(|error| duckdb_error("rollback staged Arrow transaction", error))?;
+        }
+        Ok(())
     }
 }
 
@@ -843,14 +1178,19 @@ impl CommitSession for DuckDbCommitSession<'_> {
                     .map_err(|_| CdfError::data("DuckDB batch row count exceeds u64"))?;
                 let batch = persistence_batch(
                     commit_batch.batch,
-                    writer.next_row_key,
+                    writer.next_row_key.ok_or_else(|| {
+                        CdfError::internal("DuckDB Arrow writer has no next row key")
+                    })?,
                     merge.then_some(writer.rows_received),
                 )?;
                 append_arrow_batch_to_table(&writer.conn, &writer.write_target, batch)?;
-                writer.next_row_key = writer
-                    .next_row_key
-                    .checked_add(batch_rows)
-                    .ok_or_else(|| CdfError::data("DuckDB row key overflowed"))?;
+                writer.next_row_key = Some(
+                    writer
+                        .next_row_key
+                        .expect("DuckDB initialized writer has a row key")
+                        .checked_add(batch_rows)
+                        .ok_or_else(|| CdfError::data("DuckDB row key overflowed"))?,
+                );
                 writer.rows_received = writer
                     .rows_received
                     .checked_add(batch_rows)
@@ -893,9 +1233,14 @@ impl DestinationProtocol for DuckDbDestination {
             .supported_dispositions
             .contains(&request.disposition)
         {
+            let disposition = match request.disposition {
+                WriteDisposition::Append => "append",
+                WriteDisposition::Merge => "merge",
+                WriteDisposition::Replace => "replace",
+                WriteDisposition::CdcApply => "cdc_apply",
+            };
             return Err(CdfError::contract(format!(
-                "DuckDB destination does not support {:?}",
-                request.disposition
+                "DuckDB destination does not support {disposition}"
             )));
         }
 

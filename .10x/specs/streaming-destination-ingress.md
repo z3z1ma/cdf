@@ -12,13 +12,15 @@ This specification governs pre-finalization destination staging, final package b
 
 Only a durable package segment whose bytes and SHA-256 are complete MAY enter staged ingress. The runtime MUST preserve deterministic manifest order independently of arrival/scheduling order.
 
-A staged-ingress request MUST carry a `LoadAttemptId`, destination/target identity, planned disposition/schema/plan authority, and bounded scheduling context. It MUST NOT claim a package hash or package-token idempotency guarantee.
+A staged-ingress request MUST carry a `LoadAttemptId`, destination/target identity, planned disposition/schema/plan authority, the complete compiled output Arrow schema, disposition inputs such as merge keys, and bounded scheduling context. It MUST NOT claim a package hash or package-token idempotency guarantee. Driver-specific schema preparation remains inside the destination adapter; the generic runtime MUST NOT branch on destination identity or physical provenance encoding.
 
 A staged-segment request MUST carry segment id, SHA-256, row/byte counts, schema hash, ordinal, and a bounded Arrow batch stream or segment reader. The destination MUST acknowledge the exact identity accepted into its declared staging scope or fail; partial acknowledgement is forbidden. The capability MUST declare `resumable` or `rollback_redrive` recovery and MUST NOT imply persistence across process loss for ephemeral transactions.
 
 Before final binding, staged data MUST be invisible to target reads that represent committed destination state. No package receipt, `_cdf_loads` committed row, final object manifest/pointer, checkpoint, or delivery guarantee may be emitted.
 
 Final binding MUST occur only after local package finalization and verification. It MUST provide the verified package hash/token and complete ordered segment identities. Any missing, duplicate, extra, reordered-without-declared-order-independence, or mismatched staged identity MUST fail before target publication.
+
+Staged writes and final binding MUST execute through the blocking lanes declared by destination capabilities. The generic host owns scheduling and admission; adapters own native connection and transaction behavior.
 
 Successful final binding MUST produce the existing receipt shape over the final package hash and committed segment acknowledgements. Runtime verification and checkpoint commit then follow the existing gate.
 

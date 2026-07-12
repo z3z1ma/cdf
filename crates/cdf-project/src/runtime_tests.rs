@@ -735,6 +735,9 @@ fn build_package(package_dir: &Path, package_id: &str, status: PackageStatus) ->
     let mut builder = PackageBuilder::create(package_dir, package_id).unwrap();
     builder.update_status(PackageStatus::Extracting).unwrap();
     builder
+        .write_runtime_arrow_schema(sample_batch(vec![], vec![]).schema().as_ref())
+        .unwrap();
+    builder
         .write_json_artifact(
             "schema/output.arrow.json",
             &BTreeMap::from([("schema_hash", SCHEMA_HASH)]),
@@ -756,6 +759,9 @@ fn build_package(package_dir: &Path, package_id: &str, status: PackageStatus) ->
 fn build_zero_segment_processed_package(package_dir: &Path, package_id: &str) -> PackageManifest {
     let builder = PackageBuilder::create(package_dir, package_id).unwrap();
     builder.update_status(PackageStatus::Extracting).unwrap();
+    builder
+        .write_runtime_arrow_schema(sample_batch(vec![], vec![]).schema().as_ref())
+        .unwrap();
     let output_position = SourcePosition::FileManifest(FileManifest {
         version: CHECKPOINT_STATE_VERSION,
         files: vec![FilePosition {
@@ -3587,8 +3593,7 @@ fn merge_dedup_live_run_records_deduped_package_replay_identity_and_duplicate_re
     assert_eq!(report.receipt.counts.rows_written, 2);
     assert_eq!(
         report.receipt_source,
-        ProjectReceiptSource::DestinationCommit {
-            duplicate: false,
+        ProjectReceiptSource::DestinationCommitReceiptOnly {
             package_receipt_recorded: true
         }
     );
@@ -3670,9 +3675,8 @@ fn merge_dedup_live_run_records_deduped_package_replay_identity_and_duplicate_re
     );
     assert!(matches!(
         replay.receipt_source,
-        ProjectReceiptSource::DestinationCommit {
-            duplicate: false,
-            ..
+        ProjectReceiptSource::DestinationCommitReceiptOnly {
+            package_receipt_recorded: false
         }
     ));
     let replay_snapshot = replay_destination.read_mirror_snapshot_read_only().unwrap();
@@ -3699,8 +3703,7 @@ fn merge_dedup_live_run_records_deduped_package_replay_identity_and_duplicate_re
     assert_eq!(duplicate.receipt, replay.receipt);
     assert_eq!(
         duplicate.receipt_source,
-        ProjectReceiptSource::DestinationCommit {
-            duplicate: true,
+        ProjectReceiptSource::DestinationCommitReceiptOnly {
             package_receipt_recorded: false
         }
     );
@@ -5798,7 +5801,7 @@ fn generic_replay_streams_verified_segments_through_staged_final_binding() {
     assert_eq!(
         report.receipt_source,
         ProjectReceiptSource::DestinationCommitReceiptOnly {
-            package_receipt_recorded: false
+            package_receipt_recorded: true
         }
     );
     assert_eq!(
@@ -5860,7 +5863,7 @@ fn ordinary_run_stages_each_segment_at_durable_publish_before_final_binding() {
     assert_eq!(
         report.receipt_source,
         ProjectReceiptSource::DestinationCommitReceiptOnly {
-            package_receipt_recorded: false
+            package_receipt_recorded: true
         }
     );
 }
@@ -6022,8 +6025,7 @@ fn replay_commits_duckdb_receipt_then_checkpoint_and_marks_package_checkpointed(
     assert_eq!(package_receipts(&package_dir), vec![report.receipt.clone()]);
     assert_eq!(
         report.receipt_source,
-        ProjectReceiptSource::DestinationCommit {
-            duplicate: false,
+        ProjectReceiptSource::DestinationCommitReceiptOnly {
             package_receipt_recorded: true
         }
     );
@@ -6213,8 +6215,7 @@ fn duplicate_destination_replay_returns_duplicate_receipt_and_commits_new_store_
     assert_eq!(report.receipt.receipt_id, first_receipt.receipt_id);
     assert_eq!(
         report.receipt_source,
-        ProjectReceiptSource::DestinationCommit {
-            duplicate: true,
+        ProjectReceiptSource::DestinationCommitReceiptOnly {
             package_receipt_recorded: false
         }
     );

@@ -23,6 +23,18 @@ pub(crate) struct ActiveStagedIngress {
     staged: Vec<cdf_runtime::StagedSegmentIdentity>,
     next_ordinal: u32,
     background: Option<BackgroundStaging>,
+    execution: Option<ExecutionServices>,
+    final_binding_lane: Option<String>,
+}
+
+pub(crate) struct StagedIngressPlan {
+    pub(crate) checkpoint_id: CheckpointId,
+    pub(crate) staging_plan_id: PlanId,
+    pub(crate) target: TargetName,
+    pub(crate) disposition: WriteDisposition,
+    pub(crate) schema_hash: SchemaHash,
+    pub(crate) output_schema: Schema,
+    pub(crate) merge_keys: Vec<String>,
 }
 
 struct BackgroundStaging {
@@ -30,7 +42,7 @@ struct BackgroundStaging {
     scope: Option<Box<dyn cdf_runtime::ExecutionTaskScope>>,
     completed: Arc<Mutex<CompletedBackgroundStaging>>,
     bytes: Arc<InFlightByteBudget>,
-    _services: ExecutionServices,
+    services: ExecutionServices,
 }
 
 struct BackgroundStagedSegment {
@@ -95,11 +107,7 @@ struct CompletedBackgroundStaging {
 impl ActiveStagedIngress {
     pub(crate) fn begin(
         runtime: &mut dyn ProjectDestinationRuntime,
-        checkpoint_id: &CheckpointId,
-        staging_plan_id: PlanId,
-        target: TargetName,
-        disposition: WriteDisposition,
-        schema_hash: SchemaHash,
+        plan: StagedIngressPlan,
         services: Option<&ExecutionServices>,
     ) -> Result<Option<Self>> {
         let capabilities = runtime.runtime_capabilities();
@@ -107,7 +115,8 @@ impl ActiveStagedIngress {
         if capabilities.ingress_mode == cdf_runtime::DestinationIngressMode::FinalizedPackageOnly {
             return Ok(None);
         }
-        let attempt_id = staging_attempt_id(checkpoint_id, &runtime.describe().destination_id)?;
+        let attempt_id =
+            staging_attempt_id(&plan.checkpoint_id, &runtime.describe().destination_id)?;
         let scheduling = cdf_runtime::StagingSchedulingContext::new(
             capabilities
                 .max_in_flight_segments
@@ -120,29 +129,45 @@ impl ActiveStagedIngress {
             attempt_id: attempt_id.clone(),
             binding: cdf_runtime::StagingAttemptBinding {
                 destination_id: runtime.describe().destination_id,
-                target,
-                disposition,
-                schema_hash: schema_hash.clone(),
-                plan_id: staging_plan_id.clone(),
+                target: plan.target,
+                disposition: plan.disposition,
+                schema_hash: plan.schema_hash.clone(),
+                plan_id: plan.staging_plan_id.clone(),
             },
             scheduling: scheduling.clone(),
+            output_schema: plan.output_schema,
+            merge_keys: plan.merge_keys,
         })?;
+        let execution = if capabilities.staged_ingress_lane.is_some()
+            || capabilities.final_binding_lane.is_some()
+        {
+            let execution = match services {
+                Some(services) => services.clone(),
+                None => {
+                    cdf_engine::StandaloneExecutionHost::default_services(
+                        cdf_memory::DEFAULT_PROCESS_BUDGET_BYTES,
+                    )?
+                    .1
+                }
+            };
+            execution.ensure_blocking_lanes(&capabilities.blocking_lanes)?;
+            Some(execution)
+        } else {
+            None
+        };
         let mut active = Self {
             attempt_id,
-            staging_plan_id,
-            schema_hash,
+            staging_plan_id: plan.staging_plan_id,
+            schema_hash: plan.schema_hash,
             session: Some(session),
             staged: Vec::new(),
             next_ordinal: 0,
             background: None,
+            execution,
+            final_binding_lane: capabilities.final_binding_lane.clone(),
         };
         if let Some(lane) = capabilities.staged_ingress_lane.as_deref() {
-            active.start_background(
-                lane,
-                &capabilities,
-                services.cloned(),
-                scheduling.max_in_flight_segments,
-            )?;
+            active.start_background(lane, &capabilities, scheduling.max_in_flight_segments)?;
         }
         Ok(Some(active))
     }
@@ -151,19 +176,12 @@ impl ActiveStagedIngress {
         &mut self,
         lane: &str,
         capabilities: &cdf_runtime::DestinationRuntimeCapabilities,
-        services: Option<ExecutionServices>,
         maximum_segments: u16,
     ) -> Result<()> {
-        let services = match services {
-            Some(services) => services,
-            None => {
-                cdf_engine::StandaloneExecutionHost::default_services(
-                    cdf_memory::DEFAULT_PROCESS_BUDGET_BYTES,
-                )?
-                .1
-            }
-        };
-        services.ensure_blocking_lanes(&capabilities.blocking_lanes)?;
+        let services = self
+            .execution
+            .clone()
+            .ok_or_else(|| CdfError::internal("staged blocking lane has no execution services"))?;
         let mut scope = services.open_scope(self.attempt_id.as_str())?;
         let capacity = usize::from(maximum_segments);
         let (sender, receiver) = mpsc::sync_channel::<BackgroundStagedSegment>(capacity);
@@ -214,7 +232,7 @@ impl ActiveStagedIngress {
             scope: Some(scope),
             completed,
             bytes,
-            _services: services,
+            services,
         });
         Ok(())
     }
@@ -242,10 +260,8 @@ impl ActiveStagedIngress {
             }),
         )?;
         if let Some(background) = &mut self.background {
-            let retained_bytes = u64::try_from(batch.get_array_memory_size())
-                .map_err(|_| CdfError::data("staged Arrow batch memory exceeds u64"))?
-                .max(1);
-            let maximum_bytes = background._services.memory().snapshot().budget_bytes;
+            let retained_bytes = cdf_memory::record_batch_retained_bytes(batch)?.max(1);
+            let maximum_bytes = background.services.memory().snapshot().budget_bytes;
             if retained_bytes > maximum_bytes {
                 return Err(CdfError::data(format!(
                     "staged segment retains {retained_bytes} bytes above the managed memory budget {maximum_bytes}; rebuild with smaller canonical segments or raise the budget"
@@ -260,7 +276,7 @@ impl ActiveStagedIngress {
                 retained_bytes,
             )?;
             let lease = background
-                ._services
+                .services
                 .memory()
                 .try_reserve(&request_memory)?
                 .ok_or_else(|| {
@@ -301,7 +317,7 @@ impl ActiveStagedIngress {
             return Ok(());
         };
         drop(background.sender.take());
-        let report = background._services.run_io(
+        let report = background.services.run_io(
             background
                 .scope
                 .take()
@@ -322,18 +338,43 @@ impl ActiveStagedIngress {
         Ok(())
     }
 
+    fn bind_final(&mut self, binding: cdf_runtime::VerifiedFinalBinding) -> Result<Receipt> {
+        let session = self
+            .session
+            .take()
+            .ok_or_else(|| CdfError::internal("staged session is no longer active"))?;
+        match &self.final_binding_lane {
+            Some(lane) => {
+                let execution = self.execution.as_ref().ok_or_else(|| {
+                    CdfError::internal("staged final-binding lane has no execution services")
+                })?;
+                let lane = lane.clone();
+                execution.run_blocking(&lane, move || session.bind_final(binding))
+            }
+            None => session.bind_final(binding),
+        }
+    }
+
     pub(crate) fn abort(mut self) {
         if let Some(mut background) = self.background.take() {
             drop(background.sender.take());
             if let Some(scope) = background.scope.take() {
-                let _ = background._services.run_io(scope.join());
+                let _ = background.services.run_io(scope.join());
             }
             if let Ok(mut completed) = background.completed.lock() {
                 self.session = completed.session.take();
             }
         }
         if let Some(session) = self.session.take() {
-            let _ = session.abort();
+            match (&self.execution, &self.final_binding_lane) {
+                (Some(execution), Some(lane)) => {
+                    let lane = lane.clone();
+                    let _ = execution.run_blocking(&lane, move || session.abort());
+                }
+                _ => {
+                    let _ = session.abort();
+                }
+            }
         }
     }
 }
@@ -631,10 +672,20 @@ where
                     return Err(error);
                 }
             };
+            let package_receipt_recorded = if reader
+                .receipts()?
+                .iter()
+                .any(|existing| existing.receipt_id == receipt.receipt_id)
+            {
+                false
+            } else {
+                reader.append_receipt(receipt.clone())?;
+                true
+            };
             (
                 receipt,
                 ProjectReceiptSource::DestinationCommitReceiptOnly {
-                    package_receipt_recorded: false,
+                    package_receipt_recorded,
                 },
             )
         }
@@ -748,6 +799,8 @@ fn commit_package_through_staged_ingress(
                 .max_in_flight_bytes
                 .ok_or_else(|| CdfError::contract("staged ingress omitted its byte bound"))?,
         )?,
+        output_schema: reader.runtime_arrow_schema()?.as_ref().clone(),
+        merge_keys: inputs.merge_keys.clone(),
     };
     let mut session = Some(runtime.begin_staged_ingress(request)?);
     let result = (|| {
@@ -886,16 +939,10 @@ fn finalize_active_staged_ingress(
                 plan,
             )?;
         binding.validate_staged_identities(&active.staged)?;
-        active
-            .session
-            .take()
-            .expect("staged session is consumed exactly once")
-            .bind_final(binding)
+        active.bind_final(binding)
     })();
-    if result.is_err()
-        && let Some(session) = active.session
-    {
-        let _ = session.abort();
+    if result.is_err() {
+        active.abort();
     }
     result
 }

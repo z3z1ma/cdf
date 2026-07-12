@@ -92,7 +92,7 @@ pub(crate) fn find_duplicate_receipt(
 
 pub(crate) fn insert_mirrors(
     conn: &Connection,
-    request: &DuckDbCommitRequest,
+    commit: &DestinationCommitRequest,
     segment_acks: &[SegmentAck],
     receipt: &Receipt,
     first_row_key: Option<u64>,
@@ -120,8 +120,7 @@ pub(crate) fn insert_mirrors(
     )
     .map_err(|error| duckdb_error("insert DuckDB _cdf_loads row", error))?;
 
-    let state_by_segment = request
-        .commit
+    let state_by_segment = commit
         .segments
         .iter()
         .map(|segment| (segment.segment_id.as_str(), segment))

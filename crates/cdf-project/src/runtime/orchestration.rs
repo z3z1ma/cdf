@@ -8,7 +8,7 @@ use super::{
     ledger::{ProjectRunRecorder, ProjectRunRecorderContext, ValidationDepthTransitionRecord},
     prelude::*,
     replay::{
-        ActiveStagedIngress, PackageReplayHooks, PackageReplayStage,
+        ActiveStagedIngress, PackageReplayHooks, PackageReplayStage, StagedIngressPlan,
         replay_package_with_runtime_and_staged,
     },
     resources::ProjectRunSource,
@@ -242,11 +242,15 @@ async fn run_project_inner(execution: ProjectRunExecution<'_>) -> Result<Project
         };
     let mut active_staged = ActiveStagedIngress::begin(
         execution.destination.runtime_mut(),
-        execution.checkpoint_id,
-        manifest_plan.plan.scan.plan_id.clone(),
-        execution.target.clone(),
-        manifest_plan.plan.write_disposition.clone(),
-        execution.schema_hash.clone(),
+        StagedIngressPlan {
+            checkpoint_id: execution.checkpoint_id.clone(),
+            staging_plan_id: manifest_plan.plan.scan.plan_id.clone(),
+            target: execution.target.clone(),
+            disposition: manifest_plan.plan.write_disposition.clone(),
+            schema_hash: execution.schema_hash.clone(),
+            output_schema: manifest_plan.plan.output_arrow_schema()?.as_ref().clone(),
+            merge_keys: descriptor.merge_key.clone(),
+        },
         execution.services.as_ref(),
     )?;
     let options = EngineExecutionOptions::default()

@@ -1019,6 +1019,8 @@ fn staged_ingress_types_cannot_claim_package_commit_authority() {
             plan_id: PlanId::new("plan-staging").unwrap(),
         },
         scheduling: StagingSchedulingContext::new(2, 1024).unwrap(),
+        output_schema: arrow_schema::Schema::empty(),
+        merge_keys: Vec::new(),
     };
     let value = serde_json::to_value(&request).unwrap();
     assert_eq!(value["attempt_id"], "attempt_01");
@@ -1283,6 +1285,8 @@ fn staged_request(attempt_id: LoadAttemptId, schema_hash: SchemaHash) -> StagedI
             plan_id: PlanId::new("plan-staged").unwrap(),
         },
         scheduling: StagingSchedulingContext::new(2, 1024).unwrap(),
+        output_schema: arrow_schema::Schema::empty(),
+        merge_keys: Vec::new(),
     }
 }
 

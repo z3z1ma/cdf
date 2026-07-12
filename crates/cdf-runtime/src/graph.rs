@@ -715,8 +715,7 @@ pub async fn account_graph_batch(
     consumer_name: impl Into<String>,
     batch: arrow_array::RecordBatch,
 ) -> Result<AccountedGraphPayload> {
-    let bytes = u64::try_from(batch.get_array_memory_size())
-        .map_err(|_| CdfError::data("Arrow graph payload size exceeds u64"))?;
+    let bytes = cdf_memory::record_batch_retained_bytes(&batch)?;
     let request =
         ReservationRequest::new(ConsumerKey::new(consumer_name, MemoryClass::Queue)?, bytes)?;
     let lease = reserve(memory, request).await?;
@@ -899,7 +898,7 @@ mod tests {
             vec![Arc::new(Int64Array::from(vec![1, 2, 3, 4]))],
         )
         .unwrap();
-        let bytes = u64::try_from(batch.get_array_memory_size()).unwrap();
+        let bytes = cdf_memory::record_batch_retained_bytes(&batch).unwrap();
         let coordinator: Arc<dyn MemoryCoordinator> =
             Arc::new(DeterministicMemoryCoordinator::new(bytes, BTreeMap::new()).unwrap());
         let first = futures_executor::block_on(account_graph_batch(
@@ -946,7 +945,7 @@ mod tests {
             vec![Arc::new(Int64Array::from(vec![1]))],
         )
         .unwrap();
-        let bytes = u64::try_from(batch.get_array_memory_size()).unwrap();
+        let bytes = cdf_memory::record_batch_retained_bytes(&batch).unwrap();
         let coordinator: Arc<dyn MemoryCoordinator> =
             Arc::new(DeterministicMemoryCoordinator::new(bytes, BTreeMap::new()).unwrap());
         let payload = futures_executor::block_on(account_graph_batch(
@@ -995,7 +994,7 @@ mod tests {
         .unwrap();
         let second_batch =
             RecordBatch::try_new(schema, vec![Arc::new(Int64Array::from(vec![2]))]).unwrap();
-        let bytes = u64::try_from(first_batch.get_array_memory_size()).unwrap();
+        let bytes = cdf_memory::record_batch_retained_bytes(&first_batch).unwrap();
         let coordinator: Arc<dyn MemoryCoordinator> =
             Arc::new(DeterministicMemoryCoordinator::new(bytes * 2, BTreeMap::new()).unwrap());
         let first = futures_executor::block_on(account_graph_batch(
@@ -1060,7 +1059,7 @@ mod tests {
             vec![Arc::new(Int64Array::from(vec![1, 2, 3, 4]))],
         )
         .unwrap();
-        let bytes = u64::try_from(batch.get_array_memory_size()).unwrap();
+        let bytes = cdf_memory::record_batch_retained_bytes(&batch).unwrap();
         let coordinator: Arc<dyn MemoryCoordinator> =
             Arc::new(DeterministicMemoryCoordinator::new(bytes, BTreeMap::new()).unwrap());
         let payload = futures_executor::block_on(account_graph_batch(
