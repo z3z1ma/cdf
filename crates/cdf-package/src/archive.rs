@@ -7,6 +7,7 @@ use std::{
 };
 
 use cdf_kernel::{CdfError, Result};
+use cdf_memory::{DEFAULT_PROCESS_BUDGET_BYTES, DeterministicMemoryCoordinator, MemoryCoordinator};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
@@ -153,29 +154,33 @@ pub fn persist_package_parquet_archive(
         }
     }
 
-    let report = archive_package_to_parquet(package_dir)?;
-    let metadata = parquet_metadata_from_report(&report)?;
-    let fidelity = fidelity_report(&report.package_hash, &metadata);
     let temp_dir = create_archive_temp_dir(package_dir)?;
-    let write_result =
-        write_archive_temp_tree(&temp_dir, &report, &metadata, &fidelity).and_then(|()| {
-            install_archive_tree(package_dir, &temp_dir)?;
-            let mut updated_manifest = manifest.clone();
-            updated_manifest.archives = Some(ManifestArchives {
-                parquet: Some(metadata.clone()),
-            });
-            write_manifest_atomic(package_dir, &updated_manifest)?;
-            verify_package(package_dir)?;
-            Ok(())
+    let reader = PackageReader::open(package_dir)?;
+    let write_result = write_streamed_archive_temp_tree(&reader, &temp_dir).and_then(|metadata| {
+        let fidelity = fidelity_report(&manifest.package_hash, &metadata);
+        let fidelity_path = temp_dir.join("fidelity.json");
+        write_new_file(&fidelity_path, &canonical_json_bytes(&fidelity)?)?;
+        sync_directory(&temp_dir)?;
+        install_archive_tree(package_dir, &temp_dir)?;
+        let mut updated_manifest = manifest.clone();
+        updated_manifest.archives = Some(ManifestArchives {
+            parquet: Some(metadata.clone()),
         });
+        write_manifest_atomic(package_dir, &updated_manifest)?;
+        verify_package(package_dir)?;
+        Ok(metadata)
+    });
 
-    if let Err(error) = write_result {
-        let _ = fs::remove_dir_all(&temp_dir);
-        return Err(error);
-    }
+    let metadata = match write_result {
+        Ok(metadata) => metadata,
+        Err(error) => {
+            let _ = fs::remove_dir_all(&temp_dir);
+            return Err(error);
+        }
+    };
 
     Ok(persisted_archive_report(
-        report.package_hash,
+        manifest.package_hash,
         if replacing {
             PackageArchiveWriteStatus::Replaced
         } else {
@@ -183,6 +188,52 @@ pub fn persist_package_parquet_archive(
         },
         metadata,
     ))
+}
+
+fn write_streamed_archive_temp_tree(
+    reader: &PackageReader,
+    temp_dir: &Path,
+) -> Result<ParquetArchiveMetadata> {
+    let data_dir = temp_dir.join("data");
+    fs::create_dir_all(&data_dir)
+        .map_err(|error| io_error(format!("create {}", data_dir.display()), error))?;
+    let memory: std::sync::Arc<dyn MemoryCoordinator> = std::sync::Arc::new(
+        DeterministicMemoryCoordinator::new(DEFAULT_PROCESS_BUDGET_BYTES, Default::default())?,
+    );
+    let stream = reader.verified_canonical_segment_stream(memory, 64 * 1024 * 1024)?;
+    let mut segments = Vec::with_capacity(reader.manifest().identity.segments.len());
+    for segment in stream {
+        let segment = segment?;
+        let parquet_bytes = transcode_record_batches_to_parquet_bytes(&segment.batches)?;
+        let archive_path = archive_segment_path(segment.entry.segment_id.as_str())?;
+        let file_name = Path::new(&archive_path).file_name().ok_or_else(|| {
+            CdfError::internal(format!("archive path {archive_path} has no file name"))
+        })?;
+        let path = data_dir.join(file_name);
+        write_new_file(&path, &parquet_bytes)?;
+        segments.push(ArchiveSegmentMetadata {
+            segment_id: segment.entry.segment_id.as_str().to_owned(),
+            source_path: segment.entry.path,
+            source_byte_count: segment.entry.byte_count,
+            source_sha256: segment.entry.sha256,
+            source_row_count: segment.entry.row_count,
+            archive_path,
+            archive_byte_count: parquet_bytes.len() as u64,
+            archive_sha256: sha256_hex(&parquet_bytes),
+            archive_row_count: segment
+                .batches
+                .iter()
+                .map(|batch| batch.num_rows() as u64)
+                .sum(),
+        });
+    }
+    sync_directory(&data_dir)?;
+    Ok(ParquetArchiveMetadata {
+        format_version: PARQUET_ARCHIVE_FORMAT_VERSION,
+        fidelity_report_path: FIDELITY_REPORT_PATH.to_owned(),
+        fidelity_statement: ARCHIVE_FIDELITY_STATEMENT.to_owned(),
+        segments,
+    })
 }
 
 pub(crate) fn verify_parquet_archive_metadata(
@@ -287,29 +338,6 @@ fn sha256_hex(bytes: &[u8]) -> String {
     hex::encode(Sha256::digest(bytes))
 }
 
-fn parquet_metadata_from_report(report: &PackageArchiveReport) -> Result<ParquetArchiveMetadata> {
-    let mut segments = Vec::with_capacity(report.segments.len());
-    for segment in &report.segments {
-        segments.push(ArchiveSegmentMetadata {
-            segment_id: segment.segment_id.clone(),
-            source_path: segment.source_path.clone(),
-            source_byte_count: segment.source_byte_count,
-            source_sha256: segment.source_sha256.clone(),
-            source_row_count: segment.source_row_count,
-            archive_path: archive_segment_path(&segment.segment_id)?,
-            archive_byte_count: segment.parquet_byte_count,
-            archive_sha256: segment.parquet_sha256.clone(),
-            archive_row_count: segment.parquet_row_count,
-        });
-    }
-    Ok(ParquetArchiveMetadata {
-        format_version: PARQUET_ARCHIVE_FORMAT_VERSION,
-        fidelity_report_path: FIDELITY_REPORT_PATH.to_owned(),
-        fidelity_statement: report.fidelity_statement.clone(),
-        segments,
-    })
-}
-
 fn persisted_archive_report(
     package_hash: String,
     status: PackageArchiveWriteStatus,
@@ -336,45 +364,6 @@ fn fidelity_report(
         fidelity_statement: metadata.fidelity_statement.clone(),
         segments: metadata.segments.clone(),
     }
-}
-
-fn write_archive_temp_tree(
-    temp_dir: &Path,
-    report: &PackageArchiveReport,
-    metadata: &ParquetArchiveMetadata,
-    fidelity: &PackageArchiveFidelityReport,
-) -> Result<()> {
-    let data_dir = temp_dir.join("data");
-    fs::create_dir_all(&data_dir)
-        .map_err(|error| io_error(format!("create {}", data_dir.display()), error))?;
-
-    for (segment, metadata) in report.segments.iter().zip(metadata.segments.iter()) {
-        let file_name = Path::new(&metadata.archive_path)
-            .file_name()
-            .ok_or_else(|| {
-                CdfError::internal(format!(
-                    "archive path {} has no file name",
-                    metadata.archive_path
-                ))
-            })?;
-        let path = data_dir.join(file_name);
-        write_new_file(&path, &segment.parquet_bytes)?;
-        let actual = file_entry(&path)?;
-        if actual.byte_count != metadata.archive_byte_count
-            || actual.sha256 != metadata.archive_sha256
-        {
-            return Err(CdfError::internal(format!(
-                "temporary archive sidecar {} did not match generated metadata",
-                path.display()
-            )));
-        }
-    }
-    sync_directory(&data_dir)?;
-
-    let fidelity_path = temp_dir.join("fidelity.json");
-    let fidelity_bytes = canonical_json_bytes(fidelity)?;
-    write_new_file(&fidelity_path, &fidelity_bytes)?;
-    sync_directory(temp_dir)
 }
 
 fn write_new_file(path: &Path, bytes: &[u8]) -> Result<()> {

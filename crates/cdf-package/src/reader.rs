@@ -325,6 +325,26 @@ impl PackageReader {
         )
     }
 
+    pub fn verified_canonical_segment_stream(
+        &self,
+        memory: Arc<dyn MemoryCoordinator>,
+        maximum_segment_bytes: u64,
+    ) -> Result<VerifiedSegmentStream<()>> {
+        crate::verify_package_identity(&self.package_dir)?;
+        verified_segment_stream(
+            &self.package_dir,
+            self.manifest
+                .identity
+                .segments
+                .iter()
+                .cloned()
+                .map(|entry| (entry, ()))
+                .collect(),
+            memory,
+            maximum_segment_bytes,
+        )
+    }
+
     pub fn verified_commit_segment_stream(
         &self,
         state_segments: &[StateSegment],
