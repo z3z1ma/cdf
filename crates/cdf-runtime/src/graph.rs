@@ -391,38 +391,54 @@ pub struct GraphOutcome {
     pub encoded_bytes: u64,
 }
 
-#[derive(Clone, Debug, Default)]
-pub struct AccountedGraphOutcomes {
-    outcomes: Vec<GraphOutcome>,
+#[derive(Clone, Debug)]
+pub struct AccountedGraphOutcomes<O> {
+    outcomes: Vec<O>,
+    encoded_bytes: u64,
     lease: Option<MemoryLease>,
 }
 
-impl AccountedGraphOutcomes {
+impl<O> Default for AccountedGraphOutcomes<O> {
+    fn default() -> Self {
+        Self {
+            outcomes: Vec::new(),
+            encoded_bytes: 0,
+            lease: None,
+        }
+    }
+}
+
+impl<O> AccountedGraphOutcomes<O> {
     pub fn none() -> Self {
         Self::default()
     }
 
-    pub fn new(outcomes: Vec<GraphOutcome>, lease: MemoryLease) -> Result<Self> {
+    pub fn new(outcomes: Vec<O>, encoded_bytes: u64, lease: MemoryLease) -> Result<Self> {
         if outcomes.is_empty() {
             return Err(CdfError::contract(
                 "an accounted outcome set cannot be empty; use AccountedGraphOutcomes::none",
             ));
         }
-        let observed = outcome_bytes(&outcomes)?;
-        if lease.bytes() < observed {
+        if encoded_bytes == 0 {
+            return Err(CdfError::contract(
+                "nonempty graph outcomes require a nonzero encoded byte count",
+            ));
+        }
+        if lease.bytes() < encoded_bytes {
             return Err(CdfError::data(format!(
-                "graph outcomes require {observed} accounted bytes but lease holds {}",
+                "graph outcomes require {encoded_bytes} accounted bytes but lease holds {}",
                 lease.bytes()
             )));
         }
-        lease.reconcile(observed)?;
+        lease.reconcile(encoded_bytes)?;
         Ok(Self {
             outcomes,
+            encoded_bytes,
             lease: Some(lease),
         })
     }
 
-    pub fn outcomes(&self) -> &[GraphOutcome] {
+    pub fn outcomes(&self) -> &[O] {
         &self.outcomes
     }
 
@@ -437,8 +453,10 @@ impl AccountedGraphOutcomes {
                 "graph outcome metadata and its memory lease must have the same lifetime",
             )),
             (outcomes, Some(lease)) => {
-                let observed = outcome_bytes(outcomes)?;
-                if observed != lease.bytes() {
+                if outcomes.is_empty()
+                    || self.encoded_bytes == 0
+                    || self.encoded_bytes != lease.bytes()
+                {
                     return Err(CdfError::internal(
                         "graph outcome memory lease no longer matches encoded outcome bytes",
                     ));
@@ -466,19 +484,25 @@ impl GraphOutcome {
     }
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct GraphSchemaAuthority {
+    pub observed_schema_hash: SchemaHash,
+    pub effective_schema_hash: SchemaHash,
+    pub coercion_plan_hash: Option<SchemaHash>,
+}
+
 #[derive(Clone, Debug)]
-pub struct GraphDataEnvelope {
+pub struct GraphDataEnvelope<O> {
     pub partition_ordinal: u64,
     pub partition_id: PartitionId,
     pub local_sequence: u64,
-    pub source_position: SourcePosition,
-    pub schema_hash: SchemaHash,
-    pub coercion_authority: Option<String>,
-    pub outcomes: AccountedGraphOutcomes,
+    pub source_position: Option<SourcePosition>,
+    pub schema_authority: GraphSchemaAuthority,
+    pub outcomes: AccountedGraphOutcomes<O>,
     pub payload: AccountedGraphPayload,
 }
 
-impl GraphDataEnvelope {
+impl<O> GraphDataEnvelope<O> {
     pub fn validate(&self, maximum_outcomes: usize, maximum_outcome_bytes: u64) -> Result<()> {
         self.outcomes.validate()?;
         if self.outcomes.outcomes().len() > maximum_outcomes {
@@ -492,9 +516,6 @@ impl GraphDataEnvelope {
             return Err(CdfError::data(format!(
                 "graph envelope carries {outcome_bytes} outcome bytes above edge bound {maximum_outcome_bytes}"
             )));
-        }
-        if let Some(authority) = &self.coercion_authority {
-            validate_token("graph coercion authority", authority)?;
         }
         Ok(())
     }
@@ -529,21 +550,21 @@ impl GraphEdgeRuntimeConfig {
     }
 }
 
-pub struct GraphEdgeSender {
-    sender: mpsc::Sender<GraphDataEnvelope>,
+pub struct GraphEdgeSender<O> {
+    sender: mpsc::Sender<GraphDataEnvelope<O>>,
     config: Arc<GraphEdgeRuntimeConfig>,
     cancellation: RunCancellation,
 }
 
-pub struct GraphEdgeReceiver {
-    receiver: mpsc::Receiver<GraphDataEnvelope>,
+pub struct GraphEdgeReceiver<O> {
+    receiver: mpsc::Receiver<GraphDataEnvelope<O>>,
     cancellation: RunCancellation,
 }
 
-pub fn graph_edge(
+pub fn graph_edge<O>(
     config: GraphEdgeRuntimeConfig,
     cancellation: RunCancellation,
-) -> Result<(GraphEdgeSender, GraphEdgeReceiver)> {
+) -> Result<(GraphEdgeSender<O>, GraphEdgeReceiver<O>)> {
     config.validate()?;
     let (sender, receiver) = mpsc::channel(config.maximum_items);
     Ok((
@@ -559,8 +580,8 @@ pub fn graph_edge(
     ))
 }
 
-impl GraphEdgeSender {
-    pub async fn send(&mut self, envelope: GraphDataEnvelope) -> Result<()> {
+impl<O> GraphEdgeSender<O> {
+    pub async fn send(&mut self, envelope: GraphDataEnvelope<O>) -> Result<()> {
         self.cancellation.check()?;
         envelope.validate(
             self.config.maximum_outcomes_per_item,
@@ -584,8 +605,8 @@ impl GraphEdgeSender {
     }
 }
 
-impl GraphEdgeReceiver {
-    pub async fn receive(&mut self) -> Result<Option<GraphDataEnvelope>> {
+impl<O> GraphEdgeReceiver<O> {
+    pub async fn receive(&mut self) -> Result<Option<GraphDataEnvelope<O>>> {
         self.cancellation.check()?;
         let receive = self.receiver.next();
         let cancelled = self.cancellation.cancelled();
@@ -618,29 +639,26 @@ pub async fn account_graph_batch(
     )?))
 }
 
-pub async fn account_graph_outcomes(
+pub async fn account_graph_outcomes<O>(
     memory: Arc<dyn MemoryCoordinator>,
     consumer_name: impl Into<String>,
-    outcomes: Vec<GraphOutcome>,
-) -> Result<AccountedGraphOutcomes> {
+    outcomes: Vec<O>,
+    encoded_bytes: u64,
+) -> Result<AccountedGraphOutcomes<O>> {
     if outcomes.is_empty() {
+        if encoded_bytes != 0 {
+            return Err(CdfError::contract(
+                "empty graph outcomes cannot declare encoded bytes",
+            ));
+        }
         return Ok(AccountedGraphOutcomes::none());
     }
-    let bytes = outcome_bytes(&outcomes)?;
     let request = ReservationRequest::new(
         ConsumerKey::new(consumer_name, MemoryClass::Control)?,
-        bytes,
+        encoded_bytes,
     )?;
     let lease = reserve(memory, request).await?;
-    AccountedGraphOutcomes::new(outcomes, lease)
-}
-
-fn outcome_bytes(outcomes: &[GraphOutcome]) -> Result<u64> {
-    outcomes.iter().try_fold(0u64, |total, outcome| {
-        total
-            .checked_add(outcome.encoded_bytes)
-            .ok_or_else(|| CdfError::data("graph outcome byte accounting overflowed"))
-    })
+    AccountedGraphOutcomes::new(outcomes, encoded_bytes, lease)
 }
 
 fn validate_token(label: &str, value: &str) -> Result<()> {
@@ -669,6 +687,18 @@ mod tests {
 
     use super::*;
 
+    fn schema_authority() -> GraphSchemaAuthority {
+        let hash = SchemaHash::new(
+            "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        )
+        .unwrap();
+        GraphSchemaAuthority {
+            observed_schema_hash: hash.clone(),
+            effective_schema_hash: hash,
+            coercion_plan_hash: None,
+        }
+    }
+
     fn node(id: &str, kind: GraphNodeKind, durable_output: bool) -> GraphNodeDescriptor {
         GraphNodeDescriptor {
             node_id: id.to_owned(),
@@ -692,21 +722,42 @@ mod tests {
             "graph-v1",
             vec![
                 node("mock_source", GraphNodeKind::Source, false),
+                GraphNodeDescriptor {
+                    implementation_version: "external-operator-v7".to_owned(),
+                    maximum_concurrency: 4,
+                    ..node("external_transform", GraphNodeKind::Transform, false)
+                },
                 node("mock_destination", GraphNodeKind::DestinationBind, false),
             ],
-            vec![GraphEdgeDescriptor {
-                edge_id: "source_to_destination".to_owned(),
-                producer: "mock_source".to_owned(),
-                consumer: "mock_destination".to_owned(),
-                ordering: GraphOrdering::Canonical,
-                transfer: GraphEdgeTransfer::Accounted,
-            }],
+            vec![
+                GraphEdgeDescriptor {
+                    edge_id: "source_to_transform".to_owned(),
+                    producer: "mock_source".to_owned(),
+                    consumer: "external_transform".to_owned(),
+                    ordering: GraphOrdering::Canonical,
+                    transfer: GraphEdgeTransfer::Accounted,
+                },
+                GraphEdgeDescriptor {
+                    edge_id: "transform_to_destination".to_owned(),
+                    producer: "external_transform".to_owned(),
+                    consumer: "mock_destination".to_owned(),
+                    ordering: GraphOrdering::Canonical,
+                    transfer: GraphEdgeTransfer::Accounted,
+                },
+            ],
         )
         .unwrap();
         graph.validate().unwrap();
         let encoded = serde_json::to_value(&graph).unwrap();
         assert!(encoded.get("runtime_capacity").is_none());
         assert!(graph.semantic_hash.starts_with("sha256:"));
+        let shuffled = CompiledOperatorGraph::new(
+            "graph-v1",
+            graph.nodes.iter().cloned().rev().collect(),
+            graph.edges.iter().cloned().rev().collect(),
+        )
+        .unwrap();
+        assert_eq!(shuffled, graph);
     }
 
     #[test]
@@ -780,6 +831,29 @@ mod tests {
     }
 
     #[test]
+    fn external_typed_outcomes_share_the_neutral_accounting_contract() {
+        #[derive(Clone, Debug, PartialEq, Eq)]
+        struct ExternalOutcome {
+            code: u16,
+        }
+
+        let coordinator: Arc<dyn MemoryCoordinator> =
+            Arc::new(DeterministicMemoryCoordinator::new(64, BTreeMap::new()).unwrap());
+        let outcomes = futures_executor::block_on(account_graph_outcomes(
+            Arc::clone(&coordinator),
+            "external_outcomes",
+            vec![ExternalOutcome { code: 7 }],
+            32,
+        ))
+        .unwrap();
+        assert_eq!(outcomes.outcomes(), &[ExternalOutcome { code: 7 }]);
+        assert_eq!(outcomes.accounted_bytes(), 32);
+        assert_eq!(coordinator.snapshot().current_bytes, 32);
+        drop(outcomes);
+        assert_eq!(coordinator.snapshot().current_bytes, 0);
+    }
+
+    #[test]
     fn cancellation_rejects_envelopes_without_leaking_the_lease() {
         let batch = RecordBatch::try_new(
             Arc::new(Schema::new(vec![Field::new("v", DataType::Int64, false)])),
@@ -811,16 +885,12 @@ mod tests {
             partition_ordinal: 0,
             partition_id: PartitionId::new("p0").unwrap(),
             local_sequence: 0,
-            source_position: SourcePosition::PageToken(cdf_kernel::PageToken {
+            source_position: Some(SourcePosition::PageToken(cdf_kernel::PageToken {
                 version: 1,
                 token: "p0:0".to_owned(),
-            }),
-            schema_hash: SchemaHash::new(
-                "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-            )
-            .unwrap(),
-            coercion_authority: None,
-            outcomes: AccountedGraphOutcomes::none(),
+            })),
+            schema_authority: schema_authority(),
+            outcomes: AccountedGraphOutcomes::<()>::none(),
             payload,
         };
         let error = futures_executor::block_on(sender.send(envelope)).unwrap_err();
@@ -869,16 +939,12 @@ mod tests {
             partition_ordinal: 0,
             partition_id: PartitionId::new("p0").unwrap(),
             local_sequence: sequence,
-            source_position: SourcePosition::PageToken(cdf_kernel::PageToken {
+            source_position: Some(SourcePosition::PageToken(cdf_kernel::PageToken {
                 version: 1,
                 token: format!("p0:{sequence}"),
-            }),
-            schema_hash: SchemaHash::new(
-                "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-            )
-            .unwrap(),
-            coercion_authority: None,
-            outcomes: AccountedGraphOutcomes::none(),
+            })),
+            schema_authority: schema_authority(),
+            outcomes: AccountedGraphOutcomes::<()>::none(),
             payload,
         };
         futures_executor::block_on(sender.send(envelope(0, first))).unwrap();
@@ -894,5 +960,91 @@ mod tests {
         drop(sender);
         drop(receiver);
         assert_eq!(coordinator.snapshot().current_bytes, 0);
+    }
+
+    #[test]
+    #[ignore = "performance lab benchmark; run explicitly in release mode"]
+    fn accounted_edge_overhead_benchmark() {
+        let item_count = std::env::var("CDF_A5_EDGE_BENCH_ITEMS")
+            .ok()
+            .and_then(|value| value.parse::<u64>().ok())
+            .unwrap_or(200_000);
+        let batch = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![Field::new("v", DataType::Int64, false)])),
+            vec![Arc::new(Int64Array::from(vec![1, 2, 3, 4]))],
+        )
+        .unwrap();
+        let bytes = u64::try_from(batch.get_array_memory_size()).unwrap();
+        let coordinator: Arc<dyn MemoryCoordinator> =
+            Arc::new(DeterministicMemoryCoordinator::new(bytes, BTreeMap::new()).unwrap());
+        let payload = futures_executor::block_on(account_graph_batch(
+            Arc::clone(&coordinator),
+            "edge_benchmark",
+            batch,
+        ))
+        .unwrap();
+        let template = GraphDataEnvelope {
+            partition_ordinal: 0,
+            partition_id: PartitionId::new("p0").unwrap(),
+            local_sequence: 0,
+            source_position: Some(SourcePosition::PageToken(cdf_kernel::PageToken {
+                version: 1,
+                token: "p0:0".to_owned(),
+            })),
+            schema_authority: schema_authority(),
+            outcomes: AccountedGraphOutcomes::<()>::none(),
+            payload,
+        };
+
+        let direct_started = std::time::Instant::now();
+        for _ in 0..item_count {
+            drop(std::hint::black_box(template.clone()));
+        }
+        let direct = direct_started.elapsed();
+
+        let cancellation = RunCancellation::default();
+        let (mut sender, mut receiver) = graph_edge(
+            GraphEdgeRuntimeConfig {
+                edge_id: "benchmark".to_owned(),
+                maximum_items: 64,
+                maximum_outcomes_per_item: 1,
+                maximum_outcome_bytes_per_item: 1,
+            },
+            cancellation,
+        )
+        .unwrap();
+        let edge_started = std::time::Instant::now();
+        let received = futures_executor::block_on(async {
+            let producer = async {
+                for sequence in 0..item_count {
+                    let mut envelope = template.clone();
+                    envelope.local_sequence = sequence;
+                    sender.send(envelope).await?;
+                }
+                Ok::<_, CdfError>(())
+            };
+            let consumer = async {
+                let mut received = 0u64;
+                while received < item_count {
+                    receiver
+                        .receive()
+                        .await?
+                        .ok_or_else(|| CdfError::internal("benchmark graph edge closed early"))?;
+                    received += 1;
+                }
+                Ok::<_, CdfError>(received)
+            };
+            let ((), received) = futures_util::try_join!(producer, consumer)?;
+            Ok::<_, CdfError>(received)
+        })
+        .unwrap();
+        let edge = edge_started.elapsed();
+        assert_eq!(received, item_count);
+        let direct_ns = direct.as_nanos() as f64 / item_count as f64;
+        let edge_ns = edge.as_nanos() as f64 / item_count as f64;
+        eprintln!(
+            "accounted-edge items={item_count} direct_ns_per_item={direct_ns:.2} edge_ns_per_item={edge_ns:.2} incremental_ns_per_item={:.2}",
+            edge_ns - direct_ns
+        );
     }
 }

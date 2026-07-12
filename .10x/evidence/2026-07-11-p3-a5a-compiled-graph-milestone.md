@@ -1,7 +1,7 @@
 Status: recorded
 Created: 2026-07-11
 Updated: 2026-07-11
-Relates-To: .10x/tickets/2026-07-11-p3-a5a-graph-edge-contracts.md
+Relates-To: .10x/tickets/done/2026-07-11-p3-a5a-graph-edge-contracts.md
 
 # P3 A5a compiled graph and accounted-edge milestone
 
@@ -11,6 +11,8 @@ Relates-To: .10x/tickets/2026-07-11-p3-a5a-graph-edge-contracts.md
 
 The mock external source test uses the id `external_mock`, but no graph node contains that id. Its capability version and working-set/concurrency declarations determine the source node. The resulting graph contains the fused reconcile/transform edge and durable segment handoff, validates after serialization, and round-trips byte-for-byte through the package artifact.
 
+The neutral edge is generic over operator-owned typed outcome payloads. It separately accounts Arrow/byte data and outcome/control memory, carries optional typed source-position authority, and carries observed/effective/coercion schema hashes. Destination capability sheets select operation-specific blocking lanes; declaration order has no routing meaning.
+
 ## Procedure
 
 - `cargo test -p cdf-runtime --lib` — 23 passed.
@@ -19,6 +21,8 @@ The mock external source test uses the id `external_mock`, but no graph node con
 - `cargo test -p cdf-cli run_local_file_to_duckdb_commits_package_rows_mirrors_and_checkpoint -- --nocapture` — passed.
 - `cargo clippy -p cdf-runtime -p cdf-engine -p cdf-cli --all-targets -- -D warnings` — passed.
 - After wakeable cancellation landed, `cargo test -p cdf-runtime --lib` — 24 passed, including a full-channel slow-consumer cancellation test; `cargo clippy -p cdf-runtime --all-targets -- -D warnings` — passed.
+- Final neutral-runtime run: 26 passed, one explicitly ignored performance benchmark. Final engine run: 82 passed, three explicitly ignored performance/stress tests. DuckDB: 21 passed; Parquet: 27 passed; Postgres: 30 passed. Strict Clippy passed across runtime, engine, all three destinations, and their dependent composition/conformance crates.
+- Direct release test-binary benchmark: `CDF_A5_EDGE_BENCH_ITEMS=1000000 <cdf_runtime-test> accounted_edge_overhead_benchmark --ignored --nocapture` under `/usr/bin/time -l`. Direct accounted-envelope clone: 92.75 ns/item. Bounded accounted edge: 190.05 ns/item. Incremental edge: 97.30 ns/item. Wall time: 0.29 s. Maximum RSS: 7,012,352 bytes. Page faults: 0. Swaps: 0.
 
 The broad `cargo test -p cdf-runtime -p cdf-engine -p cdf-cli --lib` run completed runtime and engine successfully but reported five unrelated existing CLI failures: SQL-query compatibility wording, progress-router source inspection, two unknown-destination exit-code expectations, and a promotion test lacking injected destination services. No failure referenced the graph artifact or accounted edge. These are limits, not A5a closure evidence.
 
@@ -31,4 +35,4 @@ The broad `cargo test -p cdf-runtime -p cdf-engine -p cdf-cli --lib` run complet
 
 ## Limits
 
-The existing execution loop does not yet run operators through these edges. Structured first-failure task integration, architecture source scans, slow-consumer/panic conformance, and an edge-overhead benchmark remain required before A5a can close.
+The existing business execution loop does not yet run its transform/package stages through these edges; that production migration is owned by A5b/A5c/A5e. This evidence establishes the graph/edge/host contract, not end-to-end streaming overlap.

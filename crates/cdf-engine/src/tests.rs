@@ -988,6 +988,36 @@ fn operator_graph_compiles_from_capabilities_without_driver_name_dispatch() {
     )
     .unwrap();
     assert_eq!(packaged, graph);
+
+    let destination = cdf_runtime::DestinationRuntimeCapabilities {
+        blocking_lanes: vec![
+            cdf_runtime::BlockingLaneSpec {
+                lane_id: "mock.maintenance".to_owned(),
+                maximum_concurrency: 1,
+                cpu_slot_cost: 1,
+                native_internal_parallelism: 1,
+                affinity: cdf_runtime::LaneAffinity::Shared,
+                interruption: cdf_runtime::InterruptionSafety::CooperativeOnly,
+            },
+            cdf_runtime::BlockingLaneSpec {
+                lane_id: "mock.commit".to_owned(),
+                maximum_concurrency: 1,
+                cpu_slot_cost: 1,
+                native_internal_parallelism: 1,
+                affinity: cdf_runtime::LaneAffinity::Pinned,
+                interruption: cdf_runtime::InterruptionSafety::CooperativeOnly,
+            },
+        ],
+        final_binding_lane: Some("mock.commit".to_owned()),
+        ..cdf_runtime::DestinationRuntimeCapabilities::default()
+    };
+    let graph = compile_operator_graph(&plan, &source, &destination).unwrap();
+    let binding = graph
+        .nodes
+        .iter()
+        .find(|node| node.node_id == "destination_bind")
+        .unwrap();
+    assert_eq!(binding.blocking_lane.as_deref(), Some("mock.commit"));
 }
 
 #[test]

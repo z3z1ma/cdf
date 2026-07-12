@@ -42,6 +42,10 @@ pub enum DestinationWriterModel {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DestinationRuntimeCapabilities {
     pub blocking_lanes: Vec<BlockingLaneSpec>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub staged_ingress_lane: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub final_binding_lane: Option<String>,
     pub ingress_mode: DestinationIngressMode,
     pub staged_ingress: Option<StagedIngressCapabilities>,
     pub writer_model: DestinationWriterModel,
@@ -58,6 +62,8 @@ impl Default for DestinationRuntimeCapabilities {
     fn default() -> Self {
         Self {
             blocking_lanes: Vec::new(),
+            staged_ingress_lane: None,
+            final_binding_lane: None,
             ingress_mode: DestinationIngressMode::FinalizedPackageOnly,
             staged_ingress: None,
             writer_model: DestinationWriterModel::SingleWriter,
@@ -77,10 +83,22 @@ impl DestinationRuntimeCapabilities {
         let mut lane_ids = BTreeMap::new();
         for lane in &self.blocking_lanes {
             lane.validate()?;
-            if lane_ids.insert(&lane.lane_id, ()).is_some() {
+            if lane_ids.insert(lane.lane_id.as_str(), ()).is_some() {
                 return Err(CdfError::contract(
                     "destination blocking lane ids must be unique",
                 ));
+            }
+        }
+        for (operation, lane_id) in [
+            ("staged ingress", self.staged_ingress_lane.as_deref()),
+            ("final binding", self.final_binding_lane.as_deref()),
+        ] {
+            if let Some(lane_id) = lane_id
+                && !lane_ids.contains_key(lane_id)
+            {
+                return Err(CdfError::contract(format!(
+                    "destination {operation} references undeclared blocking lane `{lane_id}`"
+                )));
             }
         }
         match (&self.ingress_mode, &self.staged_ingress) {

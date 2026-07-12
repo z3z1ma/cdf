@@ -239,6 +239,8 @@ fn prepare_parquet_commit(
 fn parquet_runtime_capabilities() -> DestinationRuntimeCapabilities {
     DestinationRuntimeCapabilities {
         blocking_lanes: Vec::new(),
+        staged_ingress_lane: None,
+        final_binding_lane: None,
         ingress_mode: DestinationIngressMode::FinalizedPackageOnly,
         staged_ingress: None,
         writer_model: DestinationWriterModel::SingleWriter,

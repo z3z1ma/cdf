@@ -311,6 +311,8 @@ fn postgres_runtime_capabilities() -> DestinationRuntimeCapabilities {
             affinity: cdf_runtime::LaneAffinity::Shared,
             interruption: cdf_runtime::InterruptionSafety::CooperativeOnly,
         }],
+        staged_ingress_lane: None,
+        final_binding_lane: Some("postgres.sync".to_owned()),
         ingress_mode: DestinationIngressMode::FinalizedPackageOnly,
         staged_ingress: None,
         writer_model: DestinationWriterModel::SingleWriter,

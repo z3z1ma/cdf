@@ -154,6 +154,8 @@ impl DestinationRuntime for DuckDbDestination {
                 affinity: cdf_runtime::LaneAffinity::Pinned,
                 interruption: cdf_runtime::InterruptionSafety::CooperativeOnly,
             }],
+            staged_ingress_lane: None,
+            final_binding_lane: Some("duckdb.connection".to_owned()),
             ingress_mode: DestinationIngressMode::FinalizedPackageOnly,
             staged_ingress: None,
             writer_model: DestinationWriterModel::SingleWriter,

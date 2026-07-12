@@ -123,6 +123,8 @@ impl DestinationRuntime for MockStagedRuntime {
     fn runtime_capabilities(&self) -> DestinationRuntimeCapabilities {
         DestinationRuntimeCapabilities {
             blocking_lanes: Vec::new(),
+            staged_ingress_lane: None,
+            final_binding_lane: None,
             ingress_mode: DestinationIngressMode::StagedDurableSegments,
             staged_ingress: Some(StagedIngressCapabilities {
                 recovery: StagingRecoveryMode::Resumable,
@@ -389,6 +391,8 @@ impl DestinationDriver for MockDriver {
             sheet_artifact,
             runtime: DestinationRuntimeCapabilities {
                 blocking_lanes: Vec::new(),
+                staged_ingress_lane: None,
+                final_binding_lane: None,
                 ingress_mode: DestinationIngressMode::StagedDurableSegments,
                 staged_ingress: Some(StagedIngressCapabilities {
                     recovery: StagingRecoveryMode::Resumable,
@@ -549,6 +553,8 @@ fn registry_rejects_empty_malformed_and_duplicate_schemes() {
 fn runtime_capabilities_are_serializable_plan_evidence() {
     let capabilities = DestinationRuntimeCapabilities {
         blocking_lanes: Vec::new(),
+        staged_ingress_lane: None,
+        final_binding_lane: None,
         ingress_mode: DestinationIngressMode::StagedDurableSegments,
         staged_ingress: Some(StagedIngressCapabilities {
             recovery: StagingRecoveryMode::RollbackRedrive,
@@ -1035,6 +1041,8 @@ fn staged_abort_is_repeatable_and_finalized_only_runtime_fails_closed() {
 fn staged_capability_requires_cleanup_abort_and_byte_bounds() {
     let mut capabilities = DestinationRuntimeCapabilities {
         blocking_lanes: Vec::new(),
+        staged_ingress_lane: None,
+        final_binding_lane: None,
         ingress_mode: DestinationIngressMode::StagedDurableSegments,
         staged_ingress: Some(StagedIngressCapabilities {
             recovery: StagingRecoveryMode::Resumable,
@@ -1137,6 +1145,49 @@ fn manifest_has_no_upward_or_concrete_dependencies() {
             "cdf-runtime manifest contains forbidden dependency `{forbidden}`"
         );
     }
+}
+
+#[test]
+fn production_graph_edges_cannot_carry_naked_data_payloads() {
+    fn visit(directory: &Path, violations: &mut Vec<String>) {
+        for entry in std::fs::read_dir(directory).unwrap() {
+            let entry = entry.unwrap();
+            let path = entry.path();
+            if path.is_dir() {
+                visit(&path, violations);
+                continue;
+            }
+            if path.extension().and_then(|value| value.to_str()) != Some("rs") {
+                continue;
+            }
+            let source = std::fs::read_to_string(&path).unwrap();
+            let production = source.split("#[cfg(test)]").next().unwrap_or(&source);
+            for forbidden in [
+                "mpsc::Sender<RecordBatch",
+                "mpsc::Receiver<RecordBatch",
+                "Sender<Vec<u8",
+                "Receiver<Vec<u8",
+                "channel::<RecordBatch",
+                "channel::<Vec<u8",
+            ] {
+                if production.contains(forbidden) {
+                    violations.push(format!("{} contains {forbidden}", path.display()));
+                }
+            }
+        }
+    }
+
+    let workspace = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(Path::parent)
+        .unwrap();
+    let mut violations = Vec::new();
+    visit(&workspace.join("crates"), &mut violations);
+    assert!(
+        violations.is_empty(),
+        "production graph edges must carry accounted envelopes, never naked Arrow/byte payloads:\n{}",
+        violations.join("\n")
+    );
 }
 
 #[test]

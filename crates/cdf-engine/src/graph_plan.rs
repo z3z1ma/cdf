@@ -301,8 +301,13 @@ fn destination_node(
     destination: &DestinationRuntimeCapabilities,
     policy: &CanonicalSegmentationPolicy,
 ) -> Result<GraphNodeDescriptor> {
-    let (executor, lane) = match destination.blocking_lanes.first() {
-        Some(lane) => (GraphExecutorClass::BlockingLane, Some(lane.lane_id.clone())),
+    let declared_lane = if id == "staged_ingress" {
+        destination.staged_ingress_lane.as_deref()
+    } else {
+        destination.final_binding_lane.as_deref()
+    };
+    let (executor, lane) = match declared_lane {
+        Some(lane) => (GraphExecutorClass::BlockingLane, Some(lane.to_owned())),
         None => (GraphExecutorClass::Io, None),
     };
     let maximum_bytes = destination

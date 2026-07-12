@@ -17,7 +17,7 @@ use cdf_runtime::{
     ExecutionHostCapabilities, ExecutionTaskScope, IoTask, IoValue, IoValueTask, RunCancellation,
     TaskScopeReport,
 };
-use futures_util::FutureExt;
+use futures_util::{FutureExt, StreamExt, future::Either, stream::FuturesUnordered};
 use tokio::{runtime::Runtime, sync::oneshot, task::JoinHandle as TokioJoinHandle};
 
 struct WorkCompletion {
@@ -542,33 +542,55 @@ impl ExecutionTaskScope for StandaloneTaskScope {
 
     fn join(mut self: Box<Self>) -> cdf_kernel::BoxFuture<'static, Result<TaskScopeReport>> {
         Box::pin(async move {
+            enum ScopedCompletion {
+                Io(std::result::Result<Result<()>, tokio::task::JoinError>),
+                Worker(std::result::Result<WorkCompletion, oneshot::error::RecvError>),
+            }
+
             let mut first_error = None;
+            let mut pending = FuturesUnordered::new();
             for task in self.io.drain(..) {
-                if self.cancellation.is_cancelled() {
-                    task.abort();
-                }
-                match task.await {
-                    Ok(Ok(())) => self.report.completed += 1,
-                    Ok(Err(error)) => {
-                        self.cancellation.cancel();
-                        self.report.failed += 1;
-                        first_error.get_or_insert(error);
+                let cancellation = self.cancellation.clone();
+                pending.push(
+                    async move {
+                        let task = task;
+                        let cancelled = cancellation.cancelled();
+                        futures_util::pin_mut!(task, cancelled);
+                        match futures_util::future::select(task, cancelled).await {
+                            Either::Left((result, _)) => ScopedCompletion::Io(result),
+                            Either::Right(((), task)) => {
+                                task.abort();
+                                ScopedCompletion::Io(task.await)
+                            }
+                        }
                     }
-                    Err(error) if error.is_cancelled() => self.report.cancelled += 1,
-                    Err(_) => {
-                        self.cancellation.cancel();
-                        self.report.failed += 1;
-                        first_error.get_or_insert_with(|| CdfError::internal("I/O task panicked"));
-                    }
-                }
+                    .boxed(),
+                );
             }
             for completion in self
                 .cpu_tasks
                 .drain(..)
                 .chain(self.blocking_tasks.drain(..))
             {
-                match completion.await {
-                    Ok(completion) => {
+                pending.push(async move { ScopedCompletion::Worker(completion.await) }.boxed());
+            }
+            while let Some(completion) = pending.next().await {
+                match completion {
+                    ScopedCompletion::Io(Ok(Ok(()))) => self.report.completed += 1,
+                    ScopedCompletion::Io(Ok(Err(error))) => {
+                        self.cancellation.cancel();
+                        self.report.failed += 1;
+                        first_error.get_or_insert(error);
+                    }
+                    ScopedCompletion::Io(Err(error)) if error.is_cancelled() => {
+                        self.report.cancelled += 1;
+                    }
+                    ScopedCompletion::Io(Err(_)) => {
+                        self.cancellation.cancel();
+                        self.report.failed += 1;
+                        first_error.get_or_insert_with(|| CdfError::internal("I/O task panicked"));
+                    }
+                    ScopedCompletion::Worker(Ok(completion)) => {
                         self.report.queue_wait_ns = self
                             .report
                             .queue_wait_ns
@@ -582,7 +604,8 @@ impl ExecutionTaskScope for StandaloneTaskScope {
                             }
                         }
                     }
-                    Err(_) => {
+                    ScopedCompletion::Worker(Err(_)) => {
+                        self.cancellation.cancel();
                         self.report.failed += 1;
                         first_error.get_or_insert_with(|| {
                             CdfError::internal("execution worker completion channel closed")
@@ -711,6 +734,36 @@ mod tests {
         assert_eq!(memory.snapshot().current_bytes, 0);
         drop(embedding);
         drop(host);
+    }
+
+    #[test]
+    fn first_failure_aborts_blocked_siblings_and_join_releases_their_memory() {
+        let host = host();
+        let memory = host.memory();
+        let request = ReservationRequest::new(
+            cdf_memory::ConsumerKey::new("blocked-sibling", MemoryClass::Queue).unwrap(),
+            64,
+        )
+        .unwrap();
+        let lease = memory.try_reserve(&request).unwrap().unwrap();
+        let mut scope = host.open_scope("first-failure").unwrap();
+        scope
+            .spawn_io(Box::pin(async move {
+                let _lease = lease;
+                std::future::pending::<()>().await;
+                Ok(())
+            }))
+            .unwrap();
+        scope
+            .spawn_io(Box::pin(async {
+                Err(CdfError::data("intentional graph stage failure"))
+            }))
+            .unwrap();
+
+        let error = host.runtime.block_on(scope.join()).unwrap_err();
+
+        assert!(error.message.contains("intentional graph stage failure"));
+        assert_eq!(memory.snapshot().current_bytes, 0);
     }
 
     #[test]
