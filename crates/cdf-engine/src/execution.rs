@@ -298,12 +298,13 @@ where
                         truncated = true;
                         break;
                     }
-                    validate_batch_schema_evidence(
+                    let reconciled = materialize_batch_schema_evidence(
                         &batch,
                         &record_batch,
                         candidate.expected.as_ref(),
                         resource.schema().as_ref(),
                     )?;
+                    let record_batch = reconciled.record_batch;
                     let pre_contract_quarantined_rows =
                         pre_contract_quarantine_summary(&batch.header.pre_contract_quarantine)
                             .quarantined_rows;
@@ -653,12 +654,27 @@ where
     Ok(true)
 }
 
-fn validate_batch_schema_evidence(
+struct MaterializedBatchSchema {
+    record_batch: RecordBatch,
+    coercion_plan: Option<cdf_contract::SchemaCoercionPlan>,
+}
+
+fn materialize_batch_schema_evidence(
     batch: &cdf_kernel::Batch,
     record_batch: &RecordBatch,
     expected: Option<&EffectiveSchemaObservationCoercion>,
     effective_schema: &Schema,
-) -> Result<Option<cdf_contract::SchemaCoercionPlan>> {
+) -> Result<MaterializedBatchSchema> {
+    if let Some(expected) = expected
+        && batch.header.observed_schema_hash != expected.physical_schema_hash
+    {
+        return Err(CdfError::data(format!(
+            "schema observation {:?} produced physical schema hash {} but verified discovery evidence requires {}",
+            expected.observation_id,
+            batch.header.observed_schema_hash,
+            expected.physical_schema_hash
+        )));
+    }
     let batch_coercion = match batch.header.schema_coercion_plan.as_deref() {
         Some(serialized) => Some(schema_coercion_plan_from_trusted_json(
             record_batch.schema().as_ref(),
@@ -671,14 +687,6 @@ fn validate_batch_schema_evidence(
     };
     match (expected, &batch_coercion) {
         (Some(expected), Some(batch_coercion)) => {
-            if batch.header.observed_schema_hash != expected.physical_schema_hash {
-                return Err(CdfError::data(format!(
-                    "schema observation {:?} produced physical schema hash {} but verified discovery evidence requires {}",
-                    expected.observation_id,
-                    batch.header.observed_schema_hash,
-                    expected.physical_schema_hash
-                )));
-            }
             validate_effective_batch_schema(record_batch.schema().as_ref(), effective_schema)?;
             if batch_coercion != &expected.coercion_plan {
                 return Err(CdfError::data(format!(
@@ -686,15 +694,28 @@ fn validate_batch_schema_evidence(
                     expected.observation_id
                 )));
             }
+            Ok(MaterializedBatchSchema {
+                record_batch: record_batch.clone(),
+                coercion_plan: Some(batch_coercion.clone()),
+            })
         }
-        (Some(_), None) => {
-            return Err(CdfError::data(
-                "effective-schema execution requires trusted per-observation coercion evidence on every observed batch",
-            ));
+        (Some(expected), None) => {
+            let materialized = cdf_contract::materialize_schema_coercion(
+                record_batch,
+                effective_schema,
+                &expected.coercion_plan,
+            )?;
+            validate_effective_batch_schema(materialized.schema().as_ref(), effective_schema)?;
+            Ok(MaterializedBatchSchema {
+                record_batch: materialized,
+                coercion_plan: Some(expected.coercion_plan.clone()),
+            })
         }
-        (None, _) => {}
+        (None, _) => Ok(MaterializedBatchSchema {
+            record_batch: record_batch.clone(),
+            coercion_plan: batch_coercion,
+        }),
     }
-    Ok(batch_coercion)
 }
 
 fn compact_record_batch_prefix(batch: &RecordBatch, rows: usize) -> Result<RecordBatch> {
@@ -1615,12 +1636,14 @@ where
                 };
                 let validation_input_bytes = u64::try_from(record_batch.get_array_memory_size())
                     .map_err(|error| CdfError::internal(error.to_string()))?;
-                let batch_coercion = validate_batch_schema_evidence(
+                let reconciled = materialize_batch_schema_evidence(
                     &batch,
                     record_batch,
                     partition_schema_evidence,
                     resource.schema().as_ref(),
                 )?;
+                let record_batch = reconciled.record_batch;
+                let batch_coercion = reconciled.coercion_plan;
                 if let Some(batch_coercion) = batch_coercion {
                     if let Some(expected) = &partition_schema_evidence {
                         let artifact = PerObservationSchemaCoercionArtifact {
@@ -1659,7 +1682,7 @@ where
                     batch: output,
                     source_rows,
                 } = execute_batch(
-                    record_batch,
+                    &record_batch,
                     plan,
                     &mut remaining_limit,
                     !residual_candidates.is_empty(),

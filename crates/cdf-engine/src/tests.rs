@@ -468,19 +468,11 @@ fn effective_schema_reuses_observation_across_partitions_and_attests_only_attemp
     let physical_schema = sample_schema();
     let physical_hash =
         cdf_contract::canonical_arrow_schema_hash(physical_schema.as_ref()).unwrap();
-    let reconciliation = reconcile_schema(
-        physical_schema.as_ref(),
-        effective_schema.as_ref(),
-        &ContractPolicy::default().types,
-    )
-    .unwrap();
-    let serialized = serde_json::to_string(&reconciliation.plan).unwrap();
-    let reconciled_schema = Arc::new(reconciliation.schema);
     let mut batches = vec![
         batch_for_partition_with_schema(
             "batch-limit-0",
             "part-0",
-            reconciled_schema.clone(),
+            physical_schema.clone(),
             vec![1, 2, 3],
             vec!["one", "two", "three"],
             vec![true, true, true],
@@ -488,7 +480,7 @@ fn effective_schema_reuses_observation_across_partitions_and_attests_only_attemp
         batch_for_partition_with_schema(
             "batch-limit-1",
             "part-1",
-            reconciled_schema,
+            physical_schema.clone(),
             vec![4, 5, 6],
             vec!["four", "five", "six"],
             vec![true, true, true],
@@ -496,7 +488,6 @@ fn effective_schema_reuses_observation_across_partitions_and_attests_only_attemp
     ];
     for batch in &mut batches {
         batch.header.observed_schema_hash = physical_hash.clone();
-        batch.header.schema_coercion_plan = Some(serialized.clone());
         batch.header.source_position = Some(terminal_file_position());
     }
     let descriptor = descriptor();

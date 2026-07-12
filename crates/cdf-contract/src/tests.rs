@@ -1178,3 +1178,43 @@ fn decision_for<'a>(plan: &'a SchemaCoercionPlan, source_name: &str) -> &'a Fiel
         .find(|field| field.source_name == source_name)
         .unwrap()
 }
+
+#[test]
+fn shared_coercion_materializer_widens_projects_and_materializes_missing_nulls() {
+    let observed_schema = Arc::new(Schema::new(vec![
+        Field::new("source_id", DataType::Int32, false),
+        Field::new("ignored", DataType::Utf8, true),
+    ]));
+    let observed = RecordBatch::try_new(
+        Arc::clone(&observed_schema),
+        vec![
+            Arc::new(Int32Array::from(vec![1, 2])) as ArrayRef,
+            Arc::new(StringArray::from(vec!["a", "b"])) as ArrayRef,
+        ],
+    )
+    .unwrap();
+    let constraint = Schema::new(vec![
+        Field::new("source_id", DataType::Int64, false),
+        Field::new("optional", DataType::Utf8, true),
+    ]);
+    let reconciliation = reconcile_schema(
+        &observed_schema,
+        &constraint,
+        &TypePolicy::strict_fidelity(),
+    )
+    .unwrap();
+    let materialized =
+        materialize_schema_coercion(&observed, &constraint, &reconciliation.plan).unwrap();
+    assert_eq!(materialized.schema().as_ref(), &reconciliation.schema);
+    assert_eq!(materialized.num_columns(), 2);
+    assert_eq!(
+        materialized
+            .column(0)
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .unwrap()
+            .values(),
+        &[1, 2]
+    );
+    assert_eq!(materialized.column(1).null_count(), 2);
+}

@@ -9,6 +9,7 @@ description = "Schema contract compilation boundary for cdf."
 [dependencies]
 arrow-array = "59.1.0"
 arrow-buffer = "59.1.0"
+arrow-cast = "59.1.0"
 arrow-schema = "59.1.0"
 arrow-row = "59.1.0"
 arrow-select = "59.1.0"

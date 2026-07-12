@@ -1,5 +1,10 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    sync::Arc,
+};
 
+use arrow_array::{ArrayRef, RecordBatch, new_null_array};
+use arrow_cast::{can_cast_types, cast};
 use arrow_schema::{DataType, Field, Schema};
 use cdf_kernel::{
     CdfError, Result, physical_type, source_name, with_physical_type, with_source_name,
@@ -139,6 +144,128 @@ pub fn reject_untrusted_schema_coercion_metadata(schema: &Schema) -> Result<()> 
         ));
     }
     Ok(())
+}
+
+pub fn materialize_schema_coercion(
+    observed: &RecordBatch,
+    constraint: &Schema,
+    plan: &SchemaCoercionPlan,
+) -> Result<RecordBatch> {
+    reject_untrusted_schema_coercion_metadata(observed.schema().as_ref())?;
+    let observed_schema = observed.schema();
+    let observed_by_source = observed_schema
+        .fields()
+        .iter()
+        .enumerate()
+        .map(|(index, field)| (field_source_name(field.as_ref()), index))
+        .collect::<BTreeMap<_, _>>();
+    if observed_by_source.len() != observed_schema.fields().len() {
+        return Err(CdfError::data(
+            "physical batch contains duplicate source field identities",
+        ));
+    }
+    let output_decisions = plan
+        .fields
+        .iter()
+        .filter(|decision| decision.output_name.is_some())
+        .collect::<Vec<_>>();
+    if output_decisions.len() != constraint.fields().len() {
+        return Err(invalid_coercion_evidence(format!(
+            "plan materializes {} fields but effective schema requires {}",
+            output_decisions.len(),
+            constraint.fields().len()
+        )));
+    }
+    let mut fields = Vec::with_capacity(constraint.fields().len());
+    let mut columns = Vec::with_capacity(constraint.fields().len());
+    for (constraint_field, decision) in constraint.fields().iter().zip(output_decisions) {
+        if decision.output_name.as_deref() != Some(constraint_field.name()) {
+            return Err(invalid_coercion_evidence(format!(
+                "plan output field {:?} does not match effective field {:?}",
+                decision.output_name,
+                constraint_field.name()
+            )));
+        }
+        let mut output_field = constraint_field.as_ref().clone();
+        if source_name(&output_field).is_none() {
+            output_field = with_source_name(output_field, decision.source_name.clone());
+        }
+        let column = match decision.decision {
+            FieldCoercionDecision::Missing => {
+                if !output_field.is_nullable() {
+                    return Err(invalid_coercion_evidence(format!(
+                        "missing field {:?} is not nullable",
+                        decision.source_name
+                    )));
+                }
+                new_null_array(output_field.data_type(), observed.num_rows())
+            }
+            FieldCoercionDecision::Preserved
+            | FieldCoercionDecision::Widened
+            | FieldCoercionDecision::CoercedByPolicy
+            | FieldCoercionDecision::LossyAllowed => {
+                let index = observed_by_source
+                    .get(&decision.source_name)
+                    .copied()
+                    .ok_or_else(|| {
+                        invalid_coercion_evidence(format!(
+                            "physical batch omitted source field {:?}",
+                            decision.source_name
+                        ))
+                    })?;
+                let observed_field = observed_schema.field(index);
+                let observed_type = observed_field.data_type().to_string();
+                if decision.observed_name.as_deref() != Some(observed_field.name())
+                    || decision.observed_type.as_deref() != Some(observed_type.as_str())
+                {
+                    return Err(invalid_coercion_evidence(format!(
+                        "physical field {:?} does not match its planned name/type evidence",
+                        decision.source_name
+                    )));
+                }
+                if observed_field.name() != output_field.name()
+                    || observed_field.data_type() != output_field.data_type()
+                    || observed_field.is_nullable() != output_field.is_nullable()
+                {
+                    output_field =
+                        with_physical_type(output_field, observed_field.data_type().to_string());
+                }
+                materialize_column(observed.column(index), &output_field, &decision.source_name)?
+            }
+            FieldCoercionDecision::LossyRejected
+            | FieldCoercionDecision::Unsupported
+            | FieldCoercionDecision::Extra => {
+                return Err(invalid_coercion_evidence(format!(
+                    "output field {:?} uses non-materializable decision {:?}",
+                    decision.source_name, decision.decision
+                )));
+            }
+        };
+        fields.push(output_field);
+        columns.push(column);
+    }
+    let serialized = serde_json::to_string(plan).map_err(|error| {
+        CdfError::internal(format!("serialize schema coercion evidence: {error}"))
+    })?;
+    let mut metadata = constraint.metadata().clone();
+    metadata.insert(SCHEMA_COERCION_PLAN_METADATA_KEY.to_owned(), serialized);
+    let schema = Arc::new(Schema::new_with_metadata(fields, metadata));
+    validate_schema_coercion_plan(schema.as_ref(), plan)?;
+    RecordBatch::try_new(schema, columns).map_err(CdfError::from)
+}
+
+fn materialize_column(observed: &ArrayRef, output_field: &Field, source: &str) -> Result<ArrayRef> {
+    if observed.data_type() == output_field.data_type() {
+        return Ok(Arc::clone(observed));
+    }
+    if !can_cast_types(observed.data_type(), output_field.data_type()) {
+        return Err(CdfError::contract(format!(
+            "schema coercion selected unsupported materialized cast for field {source:?}: observed {}; effective {}",
+            observed.data_type(),
+            output_field.data_type()
+        )));
+    }
+    cast(observed.as_ref(), output_field.data_type()).map_err(CdfError::from)
 }
 
 fn parse_schema_coercion_plan(serialized: &str) -> Result<SchemaCoercionPlan> {
