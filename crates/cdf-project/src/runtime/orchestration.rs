@@ -209,6 +209,11 @@ async fn run_project_inner(execution: ProjectRunExecution<'_>) -> Result<Project
 
     execution.recorder.append_package_started()?;
 
+    let destination_capabilities = execution.destination.runtime_capabilities();
+    if let Some(graph) = &manifest_plan.plan.operator_graph {
+        graph.validate_destination_join(&destination_capabilities)?;
+    }
+
     let write_package_pre_finalize_artifacts =
         |builder: &cdf_package::PackageBuilder, draft: EnginePackageDraft<'_>| {
             write_run_state_commit_artifacts(

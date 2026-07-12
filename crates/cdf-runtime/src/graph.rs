@@ -9,7 +9,10 @@ use futures_channel::mpsc;
 use futures_util::{SinkExt, StreamExt, future::Either};
 use serde::{Deserialize, Serialize};
 
-use crate::{RunCancellation, artifact_hash};
+use crate::{
+    DestinationIngressMode, DestinationRuntimeCapabilities, DestinationWriterModel,
+    RunCancellation, artifact_hash,
+};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -203,6 +206,89 @@ impl CompiledOperatorGraph {
             return Err(CdfError::contract(
                 "compiled operator graph semantic hash does not match its nodes and edges",
             ));
+        }
+        Ok(())
+    }
+
+    pub fn validate_destination_join(
+        &self,
+        destination: &DestinationRuntimeCapabilities,
+    ) -> Result<()> {
+        self.validate()?;
+        destination.validate()?;
+        let staged = self
+            .nodes
+            .iter()
+            .filter(|node| node.kind == GraphNodeKind::StagedIngress)
+            .collect::<Vec<_>>();
+        let binds = self
+            .nodes
+            .iter()
+            .filter(|node| node.kind == GraphNodeKind::DestinationBind)
+            .collect::<Vec<_>>();
+        if binds.len() != 1 {
+            return Err(CdfError::contract(
+                "compiled operator graph requires exactly one destination binding node",
+            ));
+        }
+        match destination.ingress_mode {
+            DestinationIngressMode::FinalizedPackageOnly if !staged.is_empty() => {
+                return Err(CdfError::contract(
+                    "compiled graph stages segments but the resolved destination is finalized-only; rebuild the plan for the selected destination",
+                ));
+            }
+            DestinationIngressMode::StagedDurableSegments if staged.len() != 1 => {
+                return Err(CdfError::contract(
+                    "compiled graph omits its single staged-ingress node; rebuild the plan for the selected destination",
+                ));
+            }
+            _ => {}
+        }
+        for (label, node, declared_lane) in [
+            (
+                "staged ingress",
+                staged.first().copied(),
+                destination.staged_ingress_lane.as_deref(),
+            ),
+            (
+                "final binding",
+                binds.first().copied(),
+                destination.final_binding_lane.as_deref(),
+            ),
+        ] {
+            let Some(node) = node else {
+                continue;
+            };
+            match (declared_lane, node.executor, node.blocking_lane.as_deref()) {
+                (Some(expected), GraphExecutorClass::BlockingLane, Some(actual))
+                    if expected == actual => {}
+                (None, GraphExecutorClass::Io, None) => {}
+                _ => {
+                    return Err(CdfError::contract(format!(
+                        "compiled graph {label} executor/lane no longer matches the resolved destination; rebuild the plan"
+                    )));
+                }
+            }
+            if let Some(maximum_bytes) = destination.max_in_flight_bytes
+                && node.maximum_working_set_bytes != maximum_bytes
+            {
+                return Err(CdfError::contract(format!(
+                    "compiled graph {label} byte bound {} differs from resolved destination bound {maximum_bytes}; rebuild the plan",
+                    node.maximum_working_set_bytes
+                )));
+            }
+            let expected_concurrency = match destination.writer_model {
+                DestinationWriterModel::SingleWriter => 1,
+                DestinationWriterModel::ConcurrentSegments => {
+                    destination.max_in_flight_segments.unwrap_or(u16::MAX)
+                }
+            };
+            if node.maximum_concurrency != expected_concurrency {
+                return Err(CdfError::contract(format!(
+                    "compiled graph {label} concurrency {} differs from resolved destination concurrency {expected_concurrency}; rebuild the plan",
+                    node.maximum_concurrency
+                )));
+            }
         }
         Ok(())
     }

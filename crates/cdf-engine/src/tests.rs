@@ -1016,6 +1016,22 @@ fn operator_graph_compiles_from_capabilities_without_driver_name_dispatch() {
     .unwrap();
 
     graph.validate().unwrap();
+    graph
+        .validate_destination_join(&cdf_runtime::DestinationRuntimeCapabilities::default())
+        .unwrap();
+    let stale_staged = cdf_runtime::DestinationRuntimeCapabilities {
+        ingress_mode: cdf_runtime::DestinationIngressMode::StagedDurableSegments,
+        staged_ingress: Some(cdf_runtime::StagedIngressCapabilities {
+            recovery: cdf_runtime::StagingRecoveryMode::RollbackRedrive,
+            visibility: cdf_runtime::StagingVisibility::IsolatedUntilFinalBinding,
+            abort_idempotent: true,
+            lifecycle_cleanup: true,
+            final_binding_requires_exclusive_writer: false,
+        }),
+        max_in_flight_bytes: Some(64 * 1024 * 1024),
+        ..Default::default()
+    };
+    assert!(graph.validate_destination_join(&stale_staged).is_err());
     assert_eq!(graph.nodes[0].implementation_version, "mock-v1");
     assert!(
         graph
@@ -1064,6 +1080,7 @@ fn operator_graph_compiles_from_capabilities_without_driver_name_dispatch() {
         ..cdf_runtime::DestinationRuntimeCapabilities::default()
     };
     let graph = compile_operator_graph(&plan, &source, &destination).unwrap();
+    graph.validate_destination_join(&destination).unwrap();
     let binding = graph
         .nodes
         .iter()
