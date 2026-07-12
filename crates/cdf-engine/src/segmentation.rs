@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 
-use arrow_array::RecordBatch;
+use arrow_array::{Array, RecordBatch};
 use cdf_kernel::{
     CdfError, CompositePosition, CursorPosition, CursorValue, FileManifest, FilePosition, Result,
     SegmentId, SourcePosition,
@@ -91,6 +91,7 @@ pub struct CanonicalSegment {
     pub batches: Vec<RecordBatch>,
     pub output_position: Option<SourcePosition>,
     pub row_count: u64,
+    pub logical_bytes: u64,
     pub retained_bytes: u64,
 }
 
@@ -101,6 +102,7 @@ pub struct CanonicalSegmentAssembler {
     batches: Vec<RecordBatch>,
     output_position: Option<SourcePosition>,
     rows: u64,
+    logical_bytes: u64,
     retained_bytes: u64,
 }
 
@@ -114,6 +116,7 @@ impl CanonicalSegmentAssembler {
             batches: Vec::new(),
             output_position: None,
             rows: 0,
+            logical_bytes: 0,
             retained_bytes: 0,
         })
     }
@@ -124,10 +127,11 @@ impl CanonicalSegmentAssembler {
         position: Option<SourcePosition>,
     ) -> Result<Vec<CanonicalSegment>> {
         let mut emitted = Vec::new();
+        let mut joined_position = None;
         if self.rows > 0 {
             match (&self.output_position, &position) {
                 (Some(left), Some(right)) => match join_positions(left, right)? {
-                    PositionJoin::Joined(joined) => self.output_position = Some(joined),
+                    PositionJoin::Joined(joined) => joined_position = Some(joined),
                     PositionJoin::Boundary => emitted.push(self.flush()?.unwrap()),
                 },
                 (None, None) => {}
@@ -137,19 +141,53 @@ impl CanonicalSegmentAssembler {
         if self.rows == 0 {
             self.output_position = position.clone();
         }
+        if position.is_some() && batch.num_rows() > 0 {
+            let batch_rows = u64::try_from(batch.num_rows())
+                .map_err(|_| CdfError::data("canonical segment rows exceed u64"))?;
+            let batch_bytes = logical_batch_bytes(&batch)?;
+            if self.rows > 0
+                && (self.rows.saturating_add(batch_rows) > u64::from(self.policy.target_rows)
+                    || self.logical_bytes.saturating_add(batch_bytes) > self.policy.target_bytes)
+            {
+                emitted.push(self.flush()?.unwrap());
+                self.output_position = position.clone();
+            } else if let Some(joined) = joined_position {
+                self.output_position = Some(joined);
+            }
+            if batch_rows > u64::from(self.policy.maximum_rows)
+                || batch_bytes > self.policy.maximum_bytes
+            {
+                return Err(CdfError::data(
+                    "oversized positioned batch requires exact slice-position authority",
+                ));
+            }
+            self.push_chunk(batch, batch_bytes)?;
+            return Ok(emitted);
+        }
         while batch.num_rows() > 0 {
             let remaining_rows = u64::from(self.policy.target_rows).saturating_sub(self.rows);
-            let take = usize::try_from(remaining_rows)
+            let row_take = usize::try_from(remaining_rows)
                 .unwrap_or(usize::MAX)
                 .min(batch.num_rows());
-            if take < batch.num_rows() && position.is_some() {
+            let remaining_bytes = self.policy.target_bytes.saturating_sub(self.logical_bytes);
+            let take = largest_prefix_within_bytes(&batch, row_take, remaining_bytes)?;
+            if take == 0 {
                 if self.rows > 0 {
                     emitted.push(self.flush()?.unwrap());
                     continue;
                 }
-                return Err(CdfError::data(
-                    "oversized positioned batch requires exact slice-position authority",
-                ));
+                let one_row = batch.slice(0, 1);
+                let one_row_bytes = logical_batch_bytes(&one_row)?;
+                if one_row_bytes > self.policy.maximum_bytes {
+                    return Err(CdfError::data(format!(
+                        "one canonical row requires {one_row_bytes} logical bytes above the {}-byte policy maximum",
+                        self.policy.maximum_bytes
+                    )));
+                }
+                self.push_chunk(one_row, one_row_bytes)?;
+                batch = batch.slice(1, batch.num_rows() - 1);
+                emitted.push(self.flush()?.unwrap());
+                continue;
             }
             let chunk = if take == batch.num_rows() {
                 let schema = batch.schema();
@@ -159,19 +197,11 @@ impl CanonicalSegmentAssembler {
                 batch = batch.slice(take, batch.num_rows() - take);
                 chunk
             };
-            let chunk_bytes = u64::try_from(chunk.get_array_memory_size())
-                .map_err(|_| CdfError::data("canonical segment memory exceeds u64"))?;
-            if chunk_bytes > self.policy.maximum_bytes {
-                return Err(CdfError::data(format!(
-                    "one canonical segment chunk retains {chunk_bytes} bytes above the {}-byte policy maximum",
-                    self.policy.maximum_bytes
-                )));
-            }
-            self.rows += u64::try_from(chunk.num_rows())
-                .map_err(|_| CdfError::data("canonical segment rows exceed u64"))?;
-            self.retained_bytes = self.retained_bytes.saturating_add(chunk_bytes);
-            self.batches.push(chunk);
-            if self.rows >= u64::from(self.policy.target_rows) {
+            let chunk_bytes = logical_batch_bytes(&chunk)?;
+            self.push_chunk(chunk, chunk_bytes)?;
+            if self.rows >= u64::from(self.policy.target_rows)
+                || self.logical_bytes >= self.policy.target_bytes
+            {
                 emitted.push(self.flush()?.unwrap());
             }
         }
@@ -200,9 +230,82 @@ impl CanonicalSegmentAssembler {
             batches: std::mem::take(&mut self.batches),
             output_position: self.output_position.take(),
             row_count: std::mem::take(&mut self.rows),
+            logical_bytes: std::mem::take(&mut self.logical_bytes),
             retained_bytes: std::mem::take(&mut self.retained_bytes),
         }))
     }
+
+    fn push_chunk(&mut self, chunk: RecordBatch, logical_bytes: u64) -> Result<()> {
+        let rows = u64::try_from(chunk.num_rows())
+            .map_err(|_| CdfError::data("canonical segment rows exceed u64"))?;
+        let retained_bytes = u64::try_from(chunk.get_array_memory_size())
+            .map_err(|_| CdfError::data("canonical segment memory exceeds u64"))?;
+        self.rows = self
+            .rows
+            .checked_add(rows)
+            .ok_or_else(|| CdfError::data("canonical segment rows overflow"))?;
+        self.logical_bytes = self
+            .logical_bytes
+            .checked_add(logical_bytes)
+            .ok_or_else(|| CdfError::data("canonical segment logical bytes overflow"))?;
+        if self.rows > u64::from(self.policy.maximum_rows)
+            || self.logical_bytes > self.policy.maximum_bytes
+        {
+            return Err(CdfError::data(
+                "canonical segment exceeds the plan row/byte maximum",
+            ));
+        }
+        self.retained_bytes = self.retained_bytes.saturating_add(retained_bytes);
+        self.batches.push(chunk);
+        Ok(())
+    }
+}
+
+fn logical_batch_bytes(batch: &RecordBatch) -> Result<u64> {
+    batch
+        .schema()
+        .fields()
+        .iter()
+        .zip(batch.columns())
+        .try_fold(0_u64, |total, (field, column)| {
+            let data = column.to_data();
+            let mut bytes = data.get_slice_memory_size().map_err(CdfError::from)?;
+            if data.nulls().is_some() {
+                bytes = bytes.saturating_sub(data.len().div_ceil(8));
+            }
+            if field.is_nullable() {
+                bytes = bytes
+                    .checked_add(data.len())
+                    .ok_or_else(|| CdfError::data("canonical nullable bytes overflow"))?;
+            }
+            total
+                .checked_add(
+                    u64::try_from(bytes)
+                        .map_err(|_| CdfError::data("canonical logical array bytes exceed u64"))?,
+                )
+                .ok_or_else(|| CdfError::data("canonical logical batch bytes overflow"))
+        })
+}
+
+fn largest_prefix_within_bytes(
+    batch: &RecordBatch,
+    maximum_rows: usize,
+    maximum_bytes: u64,
+) -> Result<usize> {
+    if maximum_rows == 0 || maximum_bytes == 0 {
+        return Ok(0);
+    }
+    let mut low = 0_usize;
+    let mut high = maximum_rows;
+    while low < high {
+        let middle = low + (high - low).div_ceil(2);
+        if logical_batch_bytes(&batch.slice(0, middle))? <= maximum_bytes {
+            low = middle;
+        } else {
+            high = middle - 1;
+        }
+    }
+    Ok(low)
 }
 
 impl AdaptiveMicrobatchController {
@@ -344,7 +447,7 @@ fn join_cursors(left: &CursorPosition, right: &CursorPosition) -> Result<Option<
 #[cfg(test)]
 mod tests {
     use super::*;
-    use arrow_array::{Array, Int64Array};
+    use arrow_array::{Array, Int64Array, StringArray};
     use cdf_kernel::{CursorPosition, FileManifest};
 
     #[test]
@@ -503,5 +606,113 @@ mod tests {
             )
             .unwrap_err();
         assert!(error.message.contains("slice-position authority"));
+    }
+
+    fn byte_test_policy() -> CanonicalSegmentationPolicy {
+        CanonicalSegmentationPolicy {
+            target_rows: 64,
+            target_bytes: 32,
+            maximum_rows: 64,
+            maximum_bytes: 48,
+            microbatch_minimum_rows: 1,
+            microbatch_maximum_rows: 64,
+            microbatch_minimum_bytes: 1,
+            microbatch_maximum_bytes: 48,
+            ..CanonicalSegmentationPolicy::p3_v1()
+        }
+    }
+
+    fn string_batch(values: &[&str]) -> RecordBatch {
+        let schema =
+            std::sync::Arc::new(arrow_schema::Schema::new(vec![arrow_schema::Field::new(
+                "value",
+                arrow_schema::DataType::Utf8,
+                false,
+            )]));
+        RecordBatch::try_new(
+            schema,
+            vec![std::sync::Arc::new(StringArray::from(values.to_vec()))],
+        )
+        .unwrap()
+    }
+
+    fn assemble_strings(chunks: &[&[&str]]) -> Vec<CanonicalSegment> {
+        let mut assembler = CanonicalSegmentAssembler::new(byte_test_policy(), 4).unwrap();
+        let mut output = Vec::new();
+        for chunk in chunks {
+            output.extend(assembler.push(string_batch(chunk), None).unwrap());
+        }
+        output.extend(assembler.finish().unwrap());
+        output
+    }
+
+    #[test]
+    fn assembler_enforces_byte_target_independent_of_string_rechunking() {
+        let values = ["aaaa", "bbbb", "cccc", "dddd", "eeee", "ffff"];
+        let one = assemble_strings(&[&values]);
+        let many = assemble_strings(&[&values[..1], &values[1..3], &values[3..5], &values[5..]]);
+        let shape = |segments: &[CanonicalSegment]| {
+            segments
+                .iter()
+                .map(|segment| {
+                    (
+                        segment.segment_id.as_str().to_owned(),
+                        segment.row_count,
+                        segment.logical_bytes,
+                    )
+                })
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(shape(&one), shape(&many));
+        assert_eq!(
+            shape(&one),
+            [
+                ("p00000004-s00000000".to_owned(), 4, 32),
+                ("p00000004-s00000001".to_owned(), 2, 16)
+            ]
+        );
+    }
+
+    #[test]
+    fn target_flush_does_not_attach_next_position_to_previous_segment() {
+        let cursor = |value| {
+            Some(SourcePosition::Cursor(CursorPosition {
+                version: 1,
+                field: "id".to_owned(),
+                value: CursorValue::U64(value),
+            }))
+        };
+        let mut assembler = CanonicalSegmentAssembler::new(test_policy(), 0).unwrap();
+        assert!(
+            assembler
+                .push(batch(&[1, 2, 3]), cursor(3))
+                .unwrap()
+                .is_empty()
+        );
+        let emitted = assembler.push(batch(&[4, 5]), cursor(5)).unwrap();
+        assert_eq!(emitted.len(), 1);
+        assert_eq!(emitted[0].output_position, cursor(3));
+        assert_eq!(assembler.finish().unwrap()[0].output_position, cursor(5));
+    }
+
+    #[test]
+    fn nullable_byte_estimate_is_rechunking_additive() {
+        let batch = |values: Vec<Option<&str>>| {
+            let schema =
+                std::sync::Arc::new(arrow_schema::Schema::new(vec![arrow_schema::Field::new(
+                    "value",
+                    arrow_schema::DataType::Utf8,
+                    true,
+                )]));
+            RecordBatch::try_new(schema, vec![std::sync::Arc::new(StringArray::from(values))])
+                .unwrap()
+        };
+        let one = batch(vec![Some("aaaa"), None, Some("cccc"), None]);
+        let left = batch(vec![Some("aaaa"), None]);
+        let right = batch(vec![Some("cccc"), None]);
+        assert_eq!(
+            logical_batch_bytes(&one).unwrap(),
+            logical_batch_bytes(&left).unwrap() + logical_batch_bytes(&right).unwrap()
+        );
     }
 }
