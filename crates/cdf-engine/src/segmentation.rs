@@ -1305,7 +1305,7 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
 
         let legacy_started = std::time::Instant::now();
-        let mut legacy =
+        let legacy =
             cdf_package::PackageBuilder::create(root.path().join("legacy"), "legacy").unwrap();
         for (ordinal, chunk) in chunks.iter().enumerate() {
             legacy
@@ -1327,7 +1327,7 @@ mod tests {
         }
         segments.extend(assembler.finish().unwrap());
         assert_eq!(segments.len(), 1);
-        let mut canonical =
+        let canonical =
             cdf_package::PackageBuilder::create(root.path().join("canonical"), "canonical")
                 .unwrap();
         for segment in segments {

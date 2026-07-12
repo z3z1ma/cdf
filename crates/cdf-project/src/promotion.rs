@@ -3571,7 +3571,7 @@ mod tests {
         add_receipt: bool,
     ) -> PathBuf {
         let package_dir = root.join(package_id);
-        let mut builder = cdf_package::PackageBuilder::create(&package_dir, package_id).unwrap();
+        let builder = cdf_package::PackageBuilder::create(&package_dir, package_id).unwrap();
         let field = if canonical_field {
             let field = cdf_kernel::with_semantic(
                 Field::new(cdf_contract::VARIANT_COLUMN_NAME, DataType::Utf8, true),

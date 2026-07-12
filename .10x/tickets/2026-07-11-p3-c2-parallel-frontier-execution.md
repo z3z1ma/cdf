@@ -33,3 +33,7 @@ Depends on C1, A5, and A3.
 ## References
 
 - `.10x/specs/deterministic-parallel-scheduler.md`
+
+## Progress and notes
+
+- 2026-07-11: Landed the first production canonical frontier below partition scheduling: segment IPC encode/hash/durable publication executes concurrently through the injected host, while registration and downstream release remain submission-ordinal ordered. Inline/parallel package identities, source rechunking, staged final binding, failure cancellation/join, and zero residual memory are covered. This does not close C2 partition/unit concurrency, retry, global-limit, or file-completion criteria. Evidence: `.10x/evidence/2026-07-11-p3-a5e-parallel-segment-frontier.md`.

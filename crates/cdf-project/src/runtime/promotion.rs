@@ -1142,7 +1142,7 @@ fn build_correction_package(
     scope: ScopeKey,
     package_index: &BTreeMap<String, PathBuf>,
 ) -> cdf_kernel::Result<PreparedCorrectionPackage> {
-    let mut builder = PackageBuilder::create(package_dir, package_id)?;
+    let builder = PackageBuilder::create(package_dir, package_id)?;
     builder.write_json_artifact("plan/promotion-correction.json", &artifact)?;
     builder.write_json_artifact("plan/validation-program.json", &artifact.validation_program)?;
     let operation_json = artifact

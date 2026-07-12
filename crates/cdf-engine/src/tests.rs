@@ -2909,6 +2909,110 @@ fn phase_telemetry_is_additive_and_preserves_manifest_identity() {
 }
 
 #[test]
+fn parallel_segment_encoding_is_identical_to_inline_canonical_registration() {
+    let resource = MockResource::tier_a(sample_batches());
+    let mut plan = Planner::new()
+        .plan_tier_a(
+            &resource,
+            plan_input(vec![], None, None, PlanBoundedness::Bounded),
+        )
+        .unwrap();
+    for operator in &mut plan.operator_chain {
+        if let OperatorNode::PackageSink { segmentation, .. } = operator {
+            segmentation.target_rows = 2;
+            segmentation.maximum_rows = 2;
+            segmentation.microbatch_minimum_rows = 1;
+            segmentation.microbatch_maximum_rows = 2;
+        }
+    }
+    let inline_dir = TempDir::new().unwrap();
+    let parallel_dir = TempDir::new().unwrap();
+    let inline = block_on(execute_to_package(&plan, &resource, inline_dir.path())).unwrap();
+    let (_, services) = StandaloneExecutionHost::default_services(64 * 1024 * 1024).unwrap();
+    let pre_finalize =
+        |_builder: &cdf_package::PackageBuilder, _draft: EnginePackageDraft<'_>| Ok(());
+    let parallel = block_on(execute_to_package_with_segment_positions_and_pre_finalize(
+        &plan,
+        &resource,
+        parallel_dir.path(),
+        &pre_finalize,
+        EngineExecutionOptions::default().with_execution_services(services.clone()),
+    ))
+    .unwrap();
+
+    assert_eq!(parallel.output.manifest.identity, inline.manifest.identity);
+    assert_eq!(parallel.output.segments, inline.segments);
+    assert_eq!(parallel.output.lineage, inline.lineage);
+    assert_eq!(
+        parallel.segment_positions,
+        inline
+            .segments
+            .iter()
+            .map(|segment| {
+                EngineSegmentPosition {
+                    segment_id: segment.segment_id.clone(),
+                    output_position: None,
+                }
+            })
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(services.memory().snapshot().current_bytes, 0);
+}
+
+#[test]
+fn parallel_segment_frontier_failure_joins_workers_and_prevents_finalization() {
+    let resource = MockResource::tier_a(sample_batches());
+    let mut plan = Planner::new()
+        .plan_tier_a(
+            &resource,
+            plan_input(vec![], None, None, PlanBoundedness::Bounded),
+        )
+        .unwrap();
+    for operator in &mut plan.operator_chain {
+        if let OperatorNode::PackageSink { segmentation, .. } = operator {
+            segmentation.target_rows = 2;
+            segmentation.maximum_rows = 2;
+            segmentation.microbatch_minimum_rows = 1;
+            segmentation.microbatch_maximum_rows = 2;
+        }
+    }
+    let package_dir = TempDir::new().unwrap();
+    let (_, services) = StandaloneExecutionHost::default_services(64 * 1024 * 1024).unwrap();
+    let pre_finalize =
+        |_builder: &cdf_package::PackageBuilder, _draft: EnginePackageDraft<'_>| Ok(());
+    let mut durable_segment =
+        |_entry: &cdf_package::SegmentEntry, _batches: &[RecordBatch]| -> Result<()> {
+            Err(cdf_kernel::CdfError::internal(
+                "stop at canonical segment frontier",
+            ))
+        };
+    let mut stream_finalize =
+        || -> Result<()> { panic!("failed segment frontier must not reach stream finalization") };
+
+    let error = block_on(execute_to_package_with_streaming_hooks(
+        &plan,
+        &resource,
+        package_dir.path(),
+        &pre_finalize,
+        &mut durable_segment,
+        &mut stream_finalize,
+        EngineExecutionOptions::default().with_execution_services(services.clone()),
+    ))
+    .unwrap_err();
+
+    assert!(error.message.contains("canonical segment frontier"));
+    assert_eq!(
+        cdf_package::PackageReader::open(package_dir.path())
+            .unwrap()
+            .manifest()
+            .lifecycle
+            .status,
+        PackageStatus::Extracting
+    );
+    assert_eq!(services.memory().snapshot().current_bytes, 0);
+}
+
+#[test]
 fn datafusion_table_provider_pushdown_classification_delegates_to_resource() {
     let resource = Arc::new(DataFusionMockResource::new());
     let provider = QueryableResourceTableProvider::new(resource.clone(), ScopeKey::Resource);

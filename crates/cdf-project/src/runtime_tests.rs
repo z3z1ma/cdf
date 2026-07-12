@@ -732,7 +732,7 @@ fn package_id_name_rows(reader: &PackageReader) -> Vec<(i64, Option<String>)> {
 }
 
 fn build_package(package_dir: &Path, package_id: &str, status: PackageStatus) -> PackageManifest {
-    let mut builder = PackageBuilder::create(package_dir, package_id).unwrap();
+    let builder = PackageBuilder::create(package_dir, package_id).unwrap();
     builder.update_status(PackageStatus::Extracting).unwrap();
     builder
         .write_runtime_arrow_schema(sample_batch(vec![], vec![]).schema().as_ref())

@@ -1,7 +1,7 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
     path::Path,
-    sync::Arc,
+    sync::{Arc, mpsc},
     time::{Instant, SystemTime, UNIX_EPOCH},
 };
 
@@ -822,6 +822,325 @@ struct OutputWriteState<'a> {
     memory: Option<&'a Arc<dyn MemoryCoordinator>>,
 }
 
+struct SegmentOutputSink<'a, 'b> {
+    builder: &'a PackageBuilder,
+    queue: &'a mut SegmentEncodeQueue,
+    durable: &'a mut DurableSegmentObserver<'b>,
+}
+
+struct SegmentEncodeWork {
+    ordinal: u64,
+    segment_id: cdf_kernel::SegmentId,
+    output_position: Option<SourcePosition>,
+    batches: Vec<RecordBatch>,
+    normalization_output_bytes: u64,
+    _transform_memory_leases: Vec<MemoryLease>,
+    _scratch_memory_lease: Option<MemoryLease>,
+}
+
+struct SegmentEncodeCompletion {
+    work: SegmentEncodeWork,
+    encoded: Result<cdf_package::EncodedPackageSegment>,
+}
+
+enum SegmentEncodeMode {
+    Inline,
+    Parallel {
+        services: cdf_runtime::ExecutionServices,
+        scope: Option<Box<dyn cdf_runtime::ExecutionTaskScope>>,
+        sender: mpsc::Sender<SegmentEncodeCompletion>,
+        receiver: mpsc::Receiver<SegmentEncodeCompletion>,
+        maximum_in_flight: usize,
+        in_flight: usize,
+    },
+}
+
+struct SegmentEncodeQueue {
+    encoder: cdf_package::PackageSegmentEncoder,
+    measure: bool,
+    next_submission: u64,
+    next_registration: u64,
+    pending: BTreeMap<u64, SegmentEncodeCompletion>,
+    mode: SegmentEncodeMode,
+}
+
+impl SegmentEncodeQueue {
+    fn new(
+        builder: &PackageBuilder,
+        services: Option<&cdf_runtime::ExecutionServices>,
+        measure: bool,
+        scope_id: &str,
+        maximum_segment_bytes: u64,
+    ) -> Result<Self> {
+        let mode = match services {
+            Some(services) if services.capabilities().logical_cpu_slots > 1 => {
+                let cpu_parallelism =
+                    u64::from(services.capabilities().logical_cpu_slots.saturating_sub(1));
+                let conservative_segment_working_set = maximum_segment_bytes
+                    .max(1)
+                    .checked_mul(3)
+                    .ok_or_else(|| CdfError::data("segment encode working set overflow"))?;
+                let memory_parallelism = services
+                    .memory()
+                    .snapshot()
+                    .budget_bytes
+                    .checked_div(conservative_segment_working_set)
+                    .unwrap_or(0)
+                    .max(1);
+                let maximum_in_flight =
+                    usize::try_from(cpu_parallelism.min(memory_parallelism).min(4))
+                        .map_err(|_| CdfError::data("segment encode parallelism exceeds usize"))?;
+                let (sender, receiver) = mpsc::channel();
+                SegmentEncodeMode::Parallel {
+                    services: services.clone(),
+                    scope: Some(services.open_scope(scope_id)?),
+                    sender,
+                    receiver,
+                    maximum_in_flight,
+                    in_flight: 0,
+                }
+            }
+            _ => SegmentEncodeMode::Inline,
+        };
+        Ok(Self {
+            encoder: builder.segment_encoder(),
+            measure,
+            next_submission: 0,
+            next_registration: 0,
+            pending: BTreeMap::new(),
+            mode,
+        })
+    }
+
+    fn submit(
+        &mut self,
+        mut work: SegmentEncodeWork,
+        builder: &PackageBuilder,
+        state: &mut OutputWriteState<'_>,
+        durable_segment: &mut DurableSegmentObserver<'_>,
+    ) -> Result<()> {
+        work.ordinal = self.next_submission;
+        self.next_submission = self
+            .next_submission
+            .checked_add(1)
+            .ok_or_else(|| CdfError::data("segment encode ordinal overflow"))?;
+        loop {
+            let full = match &self.mode {
+                SegmentEncodeMode::Parallel {
+                    maximum_in_flight,
+                    in_flight,
+                    ..
+                } => *in_flight >= *maximum_in_flight,
+                SegmentEncodeMode::Inline => false,
+            };
+            if !full {
+                break;
+            }
+            self.receive_one(true)?;
+            self.register_ready(builder, state, durable_segment)?;
+        }
+        match &mut self.mode {
+            SegmentEncodeMode::Inline => {
+                let encoded =
+                    self.encoder
+                        .encode(work.segment_id.clone(), &work.batches, self.measure);
+                self.pending
+                    .insert(work.ordinal, SegmentEncodeCompletion { work, encoded });
+            }
+            SegmentEncodeMode::Parallel {
+                scope,
+                sender,
+                in_flight,
+                ..
+            } => {
+                let encoder = self.encoder.clone();
+                let measure = self.measure;
+                let sender = sender.clone();
+                scope
+                    .as_mut()
+                    .ok_or_else(|| CdfError::internal("segment encode scope is absent"))?
+                    .spawn_cpu(
+                        cdf_runtime::CpuTaskSpec {
+                            task_kind: "package.segment_encode".to_owned(),
+                            cpu_slot_cost: 1,
+                            native_internal_parallelism: 1,
+                        },
+                        Box::new(move || {
+                            let encoded =
+                                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                                    encoder.encode(work.segment_id.clone(), &work.batches, measure)
+                                }))
+                                .unwrap_or_else(|_| {
+                                    Err(CdfError::internal("segment encode worker panicked"))
+                                });
+                            sender
+                                .send(SegmentEncodeCompletion { work, encoded })
+                                .map_err(|_| CdfError::internal("segment encode frontier stopped"))
+                        }),
+                    )?;
+                *in_flight = in_flight.saturating_add(1);
+            }
+        }
+        self.receive_one(false)?;
+        self.register_ready(builder, state, durable_segment)
+    }
+
+    fn receive_one(&mut self, block: bool) -> Result<()> {
+        let SegmentEncodeMode::Parallel {
+            receiver,
+            in_flight,
+            ..
+        } = &mut self.mode
+        else {
+            return Ok(());
+        };
+        let completion = if block {
+            Some(
+                receiver
+                    .recv()
+                    .map_err(|_| CdfError::internal("segment encode workers stopped"))?,
+            )
+        } else {
+            match receiver.try_recv() {
+                Ok(completion) => Some(completion),
+                Err(mpsc::TryRecvError::Empty) => None,
+                Err(mpsc::TryRecvError::Disconnected) if *in_flight == 0 => None,
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    return Err(CdfError::internal("segment encode workers stopped"));
+                }
+            }
+        };
+        if let Some(completion) = completion {
+            *in_flight = in_flight.saturating_sub(1);
+            if self
+                .pending
+                .insert(completion.work.ordinal, completion)
+                .is_some()
+            {
+                return Err(CdfError::internal(
+                    "segment encode completion ordinal repeated",
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    fn register_ready(
+        &mut self,
+        builder: &PackageBuilder,
+        state: &mut OutputWriteState<'_>,
+        durable_segment: &mut DurableSegmentObserver<'_>,
+    ) -> Result<()> {
+        while let Some(completion) = self.pending.remove(&self.next_registration) {
+            let write = completion.encoded?;
+            let write = builder.register_encoded_segment(write)?;
+            state.phase_measurements.add(
+                RunPhase::SegmentEncode,
+                write.encode_duration_ns,
+                completion.work.normalization_output_bytes,
+                write.segment.byte_count,
+            );
+            state.phase_measurements.add(
+                RunPhase::PersistHash,
+                write.persist_hash_duration_ns,
+                write.segment.byte_count,
+                write.segment.byte_count,
+            );
+            let segment = write.segment;
+            durable_segment.observe(&segment, &completion.work.batches)?;
+            state.profile.output_rows = state.profile.output_rows.saturating_add(segment.row_count);
+            state.profile.output_bytes = state
+                .profile
+                .output_bytes
+                .saturating_add(segment.byte_count);
+            state.profile.output_batches = state.profile.output_batches.saturating_add(1);
+            state
+                .lineage
+                .output_segments
+                .push(completion.work.segment_id);
+            state.segment_positions.push(EngineSegmentPosition {
+                segment_id: segment.segment_id.clone(),
+                output_position: completion.work.output_position,
+            });
+            state.segments.push(segment);
+            self.next_registration = self
+                .next_registration
+                .checked_add(1)
+                .ok_or_else(|| CdfError::data("segment registration ordinal overflow"))?;
+        }
+        Ok(())
+    }
+
+    fn finish(
+        &mut self,
+        builder: &PackageBuilder,
+        state: &mut OutputWriteState<'_>,
+        durable_segment: &mut DurableSegmentObserver<'_>,
+    ) -> Result<()> {
+        let mut first_error = None;
+        loop {
+            let in_flight = match &self.mode {
+                SegmentEncodeMode::Inline => 0,
+                SegmentEncodeMode::Parallel { in_flight, .. } => *in_flight,
+            };
+            if in_flight == 0 {
+                break;
+            }
+            if let Err(error) = self
+                .receive_one(true)
+                .and_then(|()| self.register_ready(builder, state, durable_segment))
+            {
+                first_error = Some(error);
+                if let SegmentEncodeMode::Parallel { scope, .. } = &self.mode
+                    && let Some(scope) = scope
+                {
+                    scope.cancel();
+                }
+                break;
+            }
+        }
+        if let SegmentEncodeMode::Parallel {
+            services, scope, ..
+        } = &mut self.mode
+        {
+            let report = services.run_io(
+                scope
+                    .take()
+                    .ok_or_else(|| CdfError::internal("segment encode scope already joined"))?
+                    .join(),
+            )?;
+            if first_error.is_none() && (report.failed > 0 || report.cancelled > 0) {
+                first_error = Some(CdfError::internal(
+                    "segment encode scope did not complete cleanly",
+                ));
+            }
+        }
+        if let Some(error) = first_error {
+            return Err(error);
+        }
+        self.register_ready(builder, state, durable_segment)?;
+        if self.next_registration != self.next_submission || !self.pending.is_empty() {
+            return Err(CdfError::internal(
+                "segment encode frontier ended before every canonical segment registered",
+            ));
+        }
+        Ok(())
+    }
+}
+
+impl Drop for SegmentEncodeQueue {
+    fn drop(&mut self) {
+        if let SegmentEncodeMode::Parallel {
+            services, scope, ..
+        } = &mut self.mode
+            && let Some(scope) = scope.take()
+        {
+            scope.cancel();
+            let _ = services.run_io(scope.join());
+        }
+    }
+}
+
 const DEDUP_PROVENANCE_SHARD_ROWS: usize = 64 * 1024;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -1160,6 +1479,13 @@ where
     let mut durable_segment_observer = DurableSegmentObserver {
         hook: durable_segment,
     };
+    let mut segment_queue = SegmentEncodeQueue::new(
+        &builder,
+        options.services.as_ref(),
+        phase_measurements.enabled,
+        &plan.package_id,
+        segmentation_policy.maximum_bytes,
+    )?;
 
     for (partition_ordinal, partition) in plan.scan.partitions.clone().into_iter().enumerate() {
         let partition_ordinal = u32::try_from(partition_ordinal)
@@ -1460,7 +1786,6 @@ where
                     validation_output_bytes,
                 );
                 write_output_batch(
-                    &mut builder,
                     &validation_program,
                     effective_schema_evidence.is_some(),
                     PreparedOutputBatch {
@@ -1480,11 +1805,14 @@ where
                         phase_measurements: &mut phase_measurements,
                         memory: memory.as_ref(),
                     },
-                    &mut durable_segment_observer,
+                    &mut SegmentOutputSink {
+                        builder: &builder,
+                        queue: &mut segment_queue,
+                        durable: &mut durable_segment_observer,
+                    },
                 )?;
             }
             persist_canonical_segments(
-                &mut builder,
                 segment_assembler.finish()?,
                 &mut OutputWriteState {
                     profile: &mut profile,
@@ -1496,7 +1824,11 @@ where
                     phase_measurements: &mut phase_measurements,
                     memory: memory.as_ref(),
                 },
-                &mut durable_segment_observer,
+                &mut SegmentOutputSink {
+                    builder: &builder,
+                    queue: &mut segment_queue,
+                    durable: &mut durable_segment_observer,
+                },
             )?;
             Ok::<_, CdfError>((fully_processed, observed_positions))
         }
@@ -1538,7 +1870,7 @@ where
 
     if apply_package_dedup {
         apply_dedup_and_write_pending_batches(
-            &mut builder,
+            &builder,
             &validation_program,
             pending_dedup_batches,
             external_dedup,
@@ -1553,9 +1885,28 @@ where
                 phase_measurements: &mut phase_measurements,
                 memory: memory.as_ref(),
             },
-            &mut durable_segment_observer,
+            &mut SegmentOutputSink {
+                builder: &builder,
+                queue: &mut segment_queue,
+                durable: &mut durable_segment_observer,
+            },
         )?;
     }
+
+    segment_queue.finish(
+        &builder,
+        &mut OutputWriteState {
+            profile: &mut profile,
+            lineage: &mut lineage,
+            segments: &mut segments,
+            segment_positions: &mut segment_positions,
+            output_schema: &mut output_schema,
+            expected_schema: runtime_output_schema.as_ref(),
+            phase_measurements: &mut phase_measurements,
+            memory: memory.as_ref(),
+        },
+        &mut durable_segment_observer,
+    )?;
 
     if effective_schema_evidence.is_none() && validation_program.schema_coercion.is_none() {
         validation_program.schema_coercion = schema_coercion;
@@ -1681,7 +2032,7 @@ where
 }
 
 fn apply_dedup_and_write_pending_batches(
-    builder: &mut PackageBuilder,
+    builder: &PackageBuilder,
     program: &ValidationProgram,
     pending: Vec<PendingDedupBatch>,
     external: Option<(
@@ -1691,7 +2042,7 @@ fn apply_dedup_and_write_pending_batches(
     )>,
     segmentation_policy: &crate::CanonicalSegmentationPolicy,
     state: &mut OutputWriteState<'_>,
-    durable_segment: &mut DurableSegmentObserver<'_>,
+    sink: &mut SegmentOutputSink<'_, '_>,
 ) -> Result<()> {
     let validation_started = state.phase_measurements.start();
     let pending_input_bytes = pending
@@ -1740,12 +2091,7 @@ fn apply_dedup_and_write_pending_batches(
                 != Some(payload_batch.partition_ordinal)
             {
                 if let Some((_, mut previous)) = assembler.take() {
-                    persist_canonical_segments(
-                        builder,
-                        previous.finish()?,
-                        state,
-                        durable_segment,
-                    )?;
+                    persist_canonical_segments(previous.finish()?, state, sink)?;
                 }
                 assembler = Some((
                     payload_batch.partition_ordinal,
@@ -1756,7 +2102,6 @@ fn apply_dedup_and_write_pending_batches(
                 ));
             }
             write_normalized_output_batch(
-                builder,
                 PreparedKernelOutput {
                     output,
                     memory_lease: None,
@@ -1764,7 +2109,7 @@ fn apply_dedup_and_write_pending_batches(
                 payload_batch.output_position,
                 &mut assembler.as_mut().expect("assembler initialized").1,
                 state,
-                durable_segment,
+                sink,
             )?;
         }
         if decisions.next()?.is_some() {
@@ -1773,7 +2118,7 @@ fn apply_dedup_and_write_pending_batches(
             ));
         }
         if let Some((_, mut assembler)) = assembler {
-            persist_canonical_segments(builder, assembler.finish()?, state, durable_segment)?;
+            persist_canonical_segments(assembler.finish()?, state, sink)?;
         }
         let shards = provenance.finish(builder)?;
         write_dedup_summary_v2(
@@ -1831,7 +2176,7 @@ fn apply_dedup_and_write_pending_batches(
         }
         if assembler.as_ref().map(|(ordinal, _)| *ordinal) != Some(pending.partition_ordinal) {
             if let Some((_, mut previous)) = assembler.take() {
-                persist_canonical_segments(builder, previous.finish()?, state, durable_segment)?;
+                persist_canonical_segments(previous.finish()?, state, sink)?;
             }
             assembler = Some((
                 pending.partition_ordinal,
@@ -1842,7 +2187,6 @@ fn apply_dedup_and_write_pending_batches(
             ));
         }
         write_normalized_output_batch(
-            builder,
             PreparedKernelOutput {
                 output,
                 memory_lease: None,
@@ -1850,11 +2194,11 @@ fn apply_dedup_and_write_pending_batches(
             pending.output_position,
             &mut assembler.as_mut().expect("assembler initialized").1,
             state,
-            durable_segment,
+            sink,
         )?;
     }
     if let Some((_, mut assembler)) = assembler {
-        persist_canonical_segments(builder, assembler.finish()?, state, durable_segment)?;
+        persist_canonical_segments(assembler.finish()?, state, sink)?;
     }
     Ok(())
 }
@@ -2082,13 +2426,12 @@ fn write_contract_evolution_stream(
 }
 
 fn write_output_batch(
-    builder: &mut PackageBuilder,
     program: &ValidationProgram,
     canonicalize_observed_schema: bool,
     prepared: PreparedOutputBatch,
     assembler: &mut crate::CanonicalSegmentAssembler,
     state: &mut OutputWriteState<'_>,
-    durable_segment: &mut DurableSegmentObserver<'_>,
+    sink: &mut SegmentOutputSink<'_, '_>,
 ) -> Result<()> {
     let output_position = prepared.output_position.clone();
     let prepared = prepare_output_batch(
@@ -2099,14 +2442,7 @@ fn write_output_batch(
         state.expected_schema,
         state.phase_measurements,
     )?;
-    write_normalized_output_batch(
-        builder,
-        prepared,
-        output_position,
-        assembler,
-        state,
-        durable_segment,
-    )
+    write_normalized_output_batch(prepared, output_position, assembler, state, sink)
 }
 
 fn prepare_output_batch(
@@ -2159,23 +2495,21 @@ fn prepare_output_batch(
 }
 
 fn write_normalized_output_batch(
-    builder: &mut PackageBuilder,
     prepared: PreparedKernelOutput,
     output_position: Option<SourcePosition>,
     assembler: &mut crate::CanonicalSegmentAssembler,
     state: &mut OutputWriteState<'_>,
-    durable_segment: &mut DurableSegmentObserver<'_>,
+    sink: &mut SegmentOutputSink<'_, '_>,
 ) -> Result<()> {
     let canonical_segments =
         assembler.push_accounted(prepared.output, output_position, prepared.memory_lease)?;
-    persist_canonical_segments(builder, canonical_segments, state, durable_segment)
+    persist_canonical_segments(canonical_segments, state, sink)
 }
 
 fn persist_canonical_segments(
-    builder: &mut PackageBuilder,
     canonical_segments: Vec<crate::CanonicalSegment>,
     state: &mut OutputWriteState<'_>,
-    durable_segment: &mut DurableSegmentObserver<'_>,
+    sink: &mut SegmentOutputSink<'_, '_>,
 ) -> Result<()> {
     for canonical in canonical_segments {
         let crate::CanonicalSegment {
@@ -2220,41 +2554,20 @@ fn persist_canonical_segments(
                 )
                 .ok_or_else(|| CdfError::data("canonical output bytes overflow"))
         })?;
-        let write = if state.phase_measurements.enabled {
-            builder.write_segment_with_metrics(segment_id.clone(), &output)?
-        } else {
-            cdf_package::SegmentWriteMetrics {
-                segment: builder.write_segment(segment_id.clone(), &output)?,
-                encode_duration_ns: 0,
-                persist_hash_duration_ns: 0,
-            }
-        };
-        state.phase_measurements.add(
-            RunPhase::SegmentEncode,
-            write.encode_duration_ns,
-            normalization_output_bytes,
-            write.segment.byte_count,
-        );
-        state.phase_measurements.add(
-            RunPhase::PersistHash,
-            write.persist_hash_duration_ns,
-            write.segment.byte_count,
-            write.segment.byte_count,
-        );
-        let segment = write.segment;
-        durable_segment.observe(&segment, &output)?;
-        state.profile.output_rows = state.profile.output_rows.saturating_add(segment.row_count);
-        state.profile.output_bytes = state
-            .profile
-            .output_bytes
-            .saturating_add(segment.byte_count);
-        state.profile.output_batches = state.profile.output_batches.saturating_add(1);
-        state.lineage.output_segments.push(segment_id);
-        state.segment_positions.push(EngineSegmentPosition {
-            segment_id: segment.segment_id.clone(),
-            output_position,
-        });
-        state.segments.push(segment);
+        sink.queue.submit(
+            SegmentEncodeWork {
+                ordinal: 0,
+                segment_id,
+                output_position,
+                batches: output,
+                normalization_output_bytes,
+                _transform_memory_leases,
+                _scratch_memory_lease: _memory_lease,
+            },
+            sink.builder,
+            state,
+            sink.durable,
+        )?;
     }
     Ok(())
 }
