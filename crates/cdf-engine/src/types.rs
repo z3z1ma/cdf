@@ -367,6 +367,7 @@ impl EngineRunOutputWithSegmentPositions {
 pub struct EngineExecutionOptions {
     pub(crate) phase_metrics: bool,
     pub(crate) services: Option<cdf_runtime::ExecutionServices>,
+    pub(crate) unfused_transform: bool,
 }
 
 impl EngineExecutionOptions {
@@ -385,6 +386,11 @@ impl EngineExecutionOptions {
         services: Option<cdf_runtime::ExecutionServices>,
     ) -> Self {
         self.services = services;
+        self
+    }
+
+    pub const fn with_unfused_transform_for_conformance(mut self, enabled: bool) -> Self {
+        self.unfused_transform = enabled;
         self
     }
 }

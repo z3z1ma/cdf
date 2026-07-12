@@ -35,3 +35,8 @@ Depends on A5a envelopes and A6's package-global barrier.
 - `.10x/specs/streaming-operator-graph.md`
 - `.10x/specs/vectorized-contract-validation.md`
 - `.10x/specs/spillable-package-dedup.md`
+
+## Progress and notes
+
+- 2026-07-11: Added an explicit nonidentity fused/unfused execution control and permanent package-level conformance. The control uses the same semantic graph/plan authority; both modes produced identical engine output, package hash/signature, canonical segments, quarantine Parquet bytes, verdict/evidence artifacts, lineage, and positions for a domain-quarantine plus residual-capture schema.
+- 2026-07-11: Implemented the first fused hot-path specialization for batches without pre-contract residual candidates. It retains the vector contract evaluator and Arrow bitmap filtering but eliminates the unfused row-sized residual acceptance vector, variant vector, source-to-output map, grouping map, rule-summary map, and redundant residual filter construction. Release measurement on 64k-row mixed int/string/bool batches over 200 iterations improved from 1.426 GiB/s to 3.912 GiB/s (2.743x). Full engine tests passed (82, with three prior explicit stress/performance tests ignored) and strict Clippy passed. Memory ownership, high-cardinality evidence sinks, residual-present fusion, and cancellation publication remain open.

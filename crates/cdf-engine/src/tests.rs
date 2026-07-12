@@ -1399,6 +1399,59 @@ fn contract_exec_filters_quarantined_rows_before_normalize() {
 }
 
 #[test]
+fn fused_and_unfused_transform_modes_produce_identical_packages() {
+    let resource = MockResource::tier_a(sample_batches());
+    let mut input = plan_input(vec![], None, None, PlanBoundedness::Bounded);
+    let mut policy = ContractPolicy::for_trust(TrustLevel::Governed);
+    policy.schema.mode = SchemaEvolutionMode::Evolve;
+    policy.rows.rules = vec![RowRule::Domain {
+        column: "name".to_owned(),
+        allowed: vec!["two".to_owned(), "three".to_owned()],
+    }];
+    input.validation_program = compile_validation_program(
+        &policy,
+        &ObservedSchema::from_arrow(sample_schema().as_ref()),
+    )
+    .unwrap();
+    let plan = Planner::new().plan_tier_a(&resource, input).unwrap();
+    let fused_dir = TempDir::new().unwrap();
+    let unfused_dir = TempDir::new().unwrap();
+    let pre_finalize =
+        |_: &cdf_package::PackageBuilder, _: EnginePackageDraft<'_>| -> Result<()> { Ok(()) };
+
+    let fused = block_on(execute_to_package_with_segment_positions_and_pre_finalize(
+        &plan,
+        &resource,
+        fused_dir.path(),
+        &pre_finalize,
+        EngineExecutionOptions::default(),
+    ))
+    .unwrap();
+    let unfused = block_on(execute_to_package_with_segment_positions_and_pre_finalize(
+        &plan,
+        &resource,
+        unfused_dir.path(),
+        &pre_finalize,
+        EngineExecutionOptions::default().with_unfused_transform_for_conformance(true),
+    ))
+    .unwrap();
+
+    assert_eq!(fused, unfused);
+    assert_eq!(
+        std::fs::read(fused_dir.path().join("quarantine/part-000001.parquet")).unwrap(),
+        std::fs::read(unfused_dir.path().join("quarantine/part-000001.parquet")).unwrap()
+    );
+    cdf_package::PackageReader::open(fused_dir.path())
+        .unwrap()
+        .verify()
+        .unwrap();
+    cdf_package::PackageReader::open(unfused_dir.path())
+        .unwrap()
+        .verify()
+        .unwrap();
+}
+
+#[test]
 fn contract_exec_writes_redacted_quarantine_artifact_and_keeps_accepted_rows() {
     let raw_pii = "pii-fixture-sensitive";
     let schema = Arc::new(Schema::new(vec![

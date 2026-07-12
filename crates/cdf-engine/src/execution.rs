@@ -315,6 +315,7 @@ where
                                 .as_ref()
                                 .map(|evidence| evidence.observation_id.as_str()),
                         },
+                        TransformKernelMode::Fused,
                     )?;
                     let normalized = append_residual_variant(
                         contract.accepted,
@@ -1266,6 +1267,11 @@ where
                         observation_id: partition_schema_evidence
                             .map(|evidence| evidence.observation_id.as_str()),
                     },
+                    if options.unfused_transform {
+                        TransformKernelMode::Unfused
+                    } else {
+                        TransformKernelMode::Fused
+                    },
                 )?;
                 residual_decisions.extend(batch_residual_decisions);
                 merge_verdict_summary(&mut verdict_summary, summary);
@@ -2194,12 +2200,22 @@ fn apply_projection(batch: &RecordBatch, projection: Option<&[String]>) -> Resul
     batch.project(&indices).map_err(CdfError::from)
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TransformKernelMode {
+    Fused,
+    Unfused,
+}
+
 fn apply_contract_exec(
     batch: RecordBatch,
     program: &ValidationProgram,
     residual_candidates: Vec<PreContractResidualCandidate>,
     context: &ResidualBatchContext<'_>,
+    mode: TransformKernelMode,
 ) -> Result<ContractExecOutput> {
+    if mode == TransformKernelMode::Fused && residual_candidates.is_empty() {
+        return apply_contract_exec_without_residual_candidates(batch, program, context);
+    }
     let residual = apply_residual_verdicts(batch, program, residual_candidates, context)?;
     let evaluation = evaluate_record_batch(program, context.evaluation, &residual.typed_batch)?;
     let summary = evaluation.summary;
@@ -2226,6 +2242,39 @@ fn apply_contract_exec(
         quarantine_records,
         summary: combined,
         residual_decisions: residual.residual_decisions,
+    })
+}
+
+fn apply_contract_exec_without_residual_candidates(
+    batch: RecordBatch,
+    program: &ValidationProgram,
+    context: &ResidualBatchContext<'_>,
+) -> Result<ContractExecOutput> {
+    let batch = restore_contract_nullability(batch, program)?;
+    let evaluation = evaluate_record_batch(program, context.evaluation, &batch)?;
+    let summary = evaluation.summary;
+    let quarantine_records = quarantine_records_from_candidates(evaluation.quarantine_candidates)?;
+    let accepted = if summary.accepted_rows == summary.input_rows {
+        batch
+    } else {
+        filter_record_batch(&batch, &evaluation.accepted_rows).map_err(CdfError::from)?
+    };
+    let variant_values = if program
+        .residual
+        .as_ref()
+        .and_then(|residual| residual.capture.as_ref())
+        .is_some()
+    {
+        vec![None; accepted.num_rows()]
+    } else {
+        Vec::new()
+    };
+    Ok(ContractExecOutput {
+        accepted,
+        variant_values,
+        quarantine_records,
+        summary,
+        residual_decisions: Vec::new(),
     })
 }
 
@@ -2883,4 +2932,88 @@ fn elapsed_ns(started: Option<Instant>, label: &str) -> Result<u64> {
     };
     u64::try_from(started.elapsed().as_nanos())
         .map_err(|error| CdfError::internal(format!("{label} duration overflow: {error}")))
+}
+
+#[cfg(test)]
+mod transform_kernel_tests {
+    use std::{hint::black_box, sync::Arc, time::Instant};
+
+    use arrow_array::{BooleanArray, Int64Array, RecordBatch, StringArray};
+    use arrow_schema::{DataType, Field, Schema};
+    use cdf_contract::{
+        ContractEvaluationContext, ContractPolicy, ObservedSchema, SchemaEvolutionMode,
+        compile_validation_program,
+    };
+    use cdf_kernel::{BatchId, TrustLevel};
+
+    use super::{ResidualBatchContext, TransformKernelMode, apply_contract_exec};
+
+    #[test]
+    #[ignore = "release-mode A5b fused/unfused kernel benchmark"]
+    fn fused_transform_hot_path_benchmark() {
+        let rows = 64 * 1024;
+        let iterations = std::env::var("CDF_A5_FUSION_BENCH_ITERATIONS")
+            .ok()
+            .and_then(|value| value.parse::<u64>().ok())
+            .unwrap_or(200);
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int64, false),
+            Field::new("name", DataType::Utf8, false),
+            Field::new("active", DataType::Boolean, false),
+        ]));
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(Int64Array::from_iter_values(0..rows as i64)),
+                Arc::new(StringArray::from_iter_values(
+                    (0..rows).map(|_| "yellow-taxi"),
+                )),
+                Arc::new(BooleanArray::from(vec![true; rows])),
+            ],
+        )
+        .unwrap();
+        let mut policy = ContractPolicy::for_trust(TrustLevel::Governed);
+        policy.schema.mode = SchemaEvolutionMode::Evolve;
+        let program =
+            compile_validation_program(&policy, &ObservedSchema::from_arrow(schema.as_ref()))
+                .unwrap();
+        let evaluation = ContractEvaluationContext::observed_at(0);
+        let batch_id = BatchId::new("fusion-benchmark").unwrap();
+        let context = ResidualBatchContext {
+            evaluation: &evaluation,
+            source_rows: None,
+            cdc_operation_field: None,
+            batch_id: &batch_id,
+            observation_id: None,
+        };
+
+        let measure = |mode| {
+            let started = Instant::now();
+            for _ in 0..iterations {
+                let output = apply_contract_exec(
+                    black_box(batch.clone()),
+                    black_box(&program),
+                    Vec::new(),
+                    black_box(&context),
+                    mode,
+                )
+                .unwrap();
+                black_box(output);
+            }
+            started.elapsed()
+        };
+        let unfused = measure(TransformKernelMode::Unfused);
+        let fused = measure(TransformKernelMode::Fused);
+        let bytes = batch.get_array_memory_size() as f64 * iterations as f64;
+        let unfused_gib_s = bytes / unfused.as_secs_f64() / 1024_f64.powi(3);
+        let fused_gib_s = bytes / fused.as_secs_f64() / 1024_f64.powi(3);
+        eprintln!(
+            "fused-transform rows={rows} iterations={iterations} unfused_gib_s={unfused_gib_s:.3} fused_gib_s={fused_gib_s:.3} speedup={:.3}",
+            fused_gib_s / unfused_gib_s
+        );
+        assert!(
+            fused <= unfused,
+            "fused hot path regressed: fused={fused:?}, unfused={unfused:?}"
+        );
+    }
 }
