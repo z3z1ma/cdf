@@ -1261,6 +1261,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "cdf-transform-brotli"
+version = "0.1.0"
+dependencies = [
+ "brotli",
+ "bytes",
+ "cdf-kernel",
+ "cdf-memory",
+ "cdf-runtime",
+ "futures-executor",
+ "futures-util",
+]
+
+[[package]]
 name = "cdf-transform-gzip"
 version = "0.1.0"
 dependencies = [
