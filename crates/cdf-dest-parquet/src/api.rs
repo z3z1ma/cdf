@@ -5,7 +5,7 @@ use crate::{
         ParquetObjectEntry, ParquetObjectManifest, ParquetReplacePointerReceipt, ReplacePointer,
         canonical_json_bytes, sha256_hex,
     },
-    package::{PackageData, load_package_data, validate_requested_segments, write_parquet_segment},
+    package::write_parquet_segment,
     receipts::{build_receipt, record_package_receipt_once, verify_receipt},
     sheet::{parquet_protocol_capabilities, parquet_sheet},
     store::{
@@ -148,134 +148,21 @@ impl ParquetDestination {
     }
 
     pub fn commit_package(&self, request: ParquetCommitRequest) -> Result<ParquetCommitOutcome> {
-        let package = load_package_data(&request.package_dir)?;
-        validate_requested_segments(&request.commit.segments, &package)?;
-        let plan = self.plan_loaded_package(&request, &package)?;
-        self.commit_loaded_package(request, package, plan)
-    }
-
-    fn commit_loaded_package(
-        &self,
-        request: ParquetCommitRequest,
-        package: PackageData,
-        plan: ParquetCommitPlan,
-    ) -> Result<ParquetCommitOutcome> {
-        if let Some(existing) = self.existing_verified_manifest(&request, &plan)? {
-            let receipt = build_receipt(
-                &request,
-                &plan,
-                &existing.manifest,
-                existing.manifest_etag.clone(),
-                existing.replace_pointer.clone(),
-            )?;
-            let recorded = record_package_receipt_once(&request.package_dir, &receipt)?;
-            let mut plan = plan;
-            plan.duplicate = true;
-            return Ok(ParquetCommitOutcome {
-                receipt,
-                duplicate: true,
-                plan,
-                object_manifest: existing.manifest,
-                package_receipt_recorded: recorded,
-            });
+        let plan = self.plan_package_commit(&request)?;
+        let context = self.take_session_context(&request.commit, &plan.kernel)?;
+        let mut session = ParquetCommitSession::new(self, context)?;
+        session.apply_migrations()?;
+        let reader = PackageReader::open(&request.package_dir)?;
+        let memory = self.execution.memory();
+        let maximum_segment_bytes = memory.snapshot().budget_bytes.min(64 * 1024 * 1024);
+        for segment in reader.verified_commit_segment_stream(
+            &request.commit.segments,
+            memory,
+            maximum_segment_bytes,
+        )? {
+            session.write_segment(segment?.into_commit_segment()?)?;
         }
-
-        let committed_at_ms = now_ms()?;
-        let requested_segments = request
-            .commit
-            .segments
-            .iter()
-            .map(|segment| (segment.segment_id.as_str(), segment))
-            .collect::<BTreeMap<_, _>>();
-        let mut object_entries = Vec::with_capacity(package.segments.len());
-        for segment in &package.segments {
-            let bytes = write_parquet_segment(segment)?;
-            let sha256 = sha256_hex(&bytes);
-            let (row_count, byte_count) = requested_segments
-                .get(segment.entry.segment_id.as_str())
-                .map(|segment| (segment.row_count, segment.byte_count))
-                .unwrap_or((segment.row_count, segment.entry.byte_count));
-            let key = segment_object_key(
-                self.object_key_encoder(),
-                &request.commit.target,
-                &request.commit.idempotency_token,
-                &segment.entry.segment_id,
-            );
-            let put = self.store.put(&self.execution, &key, bytes)?;
-            object_entries.push(ParquetObjectEntry {
-                segment_id: segment.entry.segment_id.as_str().to_owned(),
-                key,
-                row_count,
-                byte_count,
-                package_byte_count: segment.entry.byte_count,
-                parquet_byte_count: put.byte_count,
-                sha256,
-                etag: put.e_tag,
-                schema_hash: request.schema_hash.as_str().to_owned(),
-            });
-        }
-
-        let object_manifest = ParquetObjectManifest {
-            manifest_version: MANIFEST_VERSION,
-            destination: DESTINATION_ID.to_owned(),
-            target: request.commit.target.as_str().to_owned(),
-            package_hash: request.commit.package_hash.as_str().to_owned(),
-            idempotency_token: request.commit.idempotency_token.as_str().to_owned(),
-            disposition: request.commit.disposition.clone(),
-            schema_hash: request.schema_hash.as_str().to_owned(),
-            committed_at_ms,
-            total_rows: package.rows,
-            objects: object_entries,
-        };
-        let manifest_bytes = canonical_json_bytes(&object_manifest)?;
-        let manifest_sha256 = sha256_hex(&manifest_bytes);
-        let manifest_put = self
-            .store
-            .put(&self.execution, &plan.manifest_key, manifest_bytes)?;
-        let mut replace_pointer = None;
-
-        if let Some(pointer_key) = &plan.replace_pointer_key {
-            let pointer = ReplacePointer {
-                pointer_version: REPLACE_POINTER_VERSION,
-                target: request.commit.target.as_str().to_owned(),
-                package_hash: request.commit.package_hash.as_str().to_owned(),
-                idempotency_token: request.commit.idempotency_token.as_str().to_owned(),
-                schema_hash: request.schema_hash.as_str().to_owned(),
-                manifest_key: plan.manifest_key.clone(),
-                manifest_sha256: manifest_sha256.clone(),
-                updated_at_ms: committed_at_ms,
-            };
-            let pointer_bytes = canonical_json_bytes(&pointer)?;
-            let pointer_sha256 = sha256_hex(&pointer_bytes);
-            let pointer_put = self
-                .store
-                .put(&self.execution, pointer_key, pointer_bytes)?;
-            replace_pointer = Some(ParquetReplacePointerReceipt {
-                key: pointer_key.clone(),
-                sha256: pointer_sha256,
-                etag: pointer_put.e_tag,
-            });
-        }
-
-        let object_manifest = self
-            .load_manifest(&plan.manifest_key)?
-            .ok_or_else(|| CdfError::destination("Parquet object manifest was not written"))?;
-        let receipt = build_receipt(
-            &request,
-            &plan,
-            &object_manifest,
-            manifest_put.e_tag,
-            replace_pointer,
-        )?;
-        let recorded = record_package_receipt_once(&request.package_dir, &receipt)?;
-
-        Ok(ParquetCommitOutcome {
-            receipt,
-            duplicate: false,
-            plan,
-            object_manifest,
-            package_receipt_recorded: recorded,
-        })
+        session.finalize_outcome()
     }
 
     pub fn verify_receipt(&self, receipt: &Receipt) -> Result<ReceiptVerification> {
@@ -303,19 +190,6 @@ impl ParquetDestination {
 
     pub(crate) fn object_key_encoder(&self) -> ObjectKeyEncoder {
         self.object_key_encoder
-    }
-
-    fn plan_loaded_package(
-        &self,
-        request: &ParquetCommitRequest,
-        package: &PackageData,
-    ) -> Result<ParquetCommitPlan> {
-        let segment_ids = package
-            .segments
-            .iter()
-            .map(|segment| segment.entry.segment_id.clone())
-            .collect::<Vec<_>>();
-        self.plan_package_shape(request, &segment_ids, package.rows, package.bytes)
     }
 
     fn plan_package_shape(
@@ -599,18 +473,7 @@ fn write_commit_segment_object(
         batches,
         ..
     } = segment;
-    let loaded = crate::package::LoadedSegment {
-        entry: SegmentEntry {
-            segment_id: state.segment_id.clone(),
-            path: String::new(),
-            row_count: state.row_count,
-            byte_count: package_byte_count,
-            sha256: String::new(),
-        },
-        row_count: state.row_count,
-        batches,
-    };
-    let bytes = write_parquet_segment(&loaded)?;
+    let bytes = write_parquet_segment(&batches)?;
     let sha256 = sha256_hex(&bytes);
     let key = segment_object_key(
         destination.object_key_encoder(),
