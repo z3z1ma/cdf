@@ -185,7 +185,7 @@ impl MatrixSource {
         match self {
             Self::File(resource) => resource,
             Self::Python(resource) => resource,
-            Self::Rest { resource, .. } => resource.compiled(),
+            Self::Rest { resource, .. } => resource,
             Self::Sql(resource) => resource.compiled(),
         }
     }

@@ -2,6 +2,8 @@
 
 pub mod checkpoint_store;
 pub mod destination;
+#[cfg(test)]
+mod destination_catalog;
 pub mod golden_package;
 pub mod live_run;
 #[cfg(test)]

@@ -3,10 +3,9 @@ mod fixture;
 
 use std::path::Path;
 
-use cdf_dest_postgres::{MergeDedupPolicy, PostgresTarget};
+use cdf_dest_postgres::PostgresTarget;
 use cdf_kernel::{DestinationProtocol, TargetName};
 use cdf_package::PackageReader;
-use cdf_project::ResolvedProjectDestination;
 use serde::Serialize;
 
 use self::{
@@ -42,7 +41,12 @@ pub(crate) fn run_duckdb_demo(root: &Path) -> DuckDbDriftQuarantineDemoEvidence 
         &spec,
         CLEAN_SOURCE,
         "mvp-clean",
-        ResolvedProjectDestination::duckdb(&spec.destination_path, spec.target.clone()).unwrap(),
+        crate::destination_catalog::resolve(
+            &crate::destination_catalog::local_uri("duckdb", &spec.destination_path),
+            &spec.project_root,
+            spec.target.clone(),
+        )
+        .unwrap(),
     )
     .unwrap();
     assert_clean_run_promoted(&clean);
@@ -51,7 +55,12 @@ pub(crate) fn run_duckdb_demo(root: &Path) -> DuckDbDriftQuarantineDemoEvidence 
         &spec,
         DRIFT_SOURCE,
         "mvp-drift",
-        ResolvedProjectDestination::duckdb(&spec.destination_path, spec.target.clone()).unwrap(),
+        crate::destination_catalog::resolve(
+            &crate::destination_catalog::local_uri("duckdb", &spec.destination_path),
+            &spec.project_root,
+            spec.target.clone(),
+        )
+        .unwrap(),
     )
     .unwrap();
 
@@ -91,7 +100,12 @@ fn drift_quarantine_duckdb_conformance_asserts_unsupported_mirror_exclusion() {
         &spec,
         CLEAN_SOURCE,
         "clean",
-        ResolvedProjectDestination::duckdb(&spec.destination_path, spec.target.clone()).unwrap(),
+        crate::destination_catalog::resolve(
+            &crate::destination_catalog::local_uri("duckdb", &spec.destination_path),
+            &spec.project_root,
+            spec.target.clone(),
+        )
+        .unwrap(),
     )
     .unwrap();
     assert_clean_run_promoted(&clean);
@@ -100,7 +114,12 @@ fn drift_quarantine_duckdb_conformance_asserts_unsupported_mirror_exclusion() {
         &spec,
         DRIFT_SOURCE,
         "drift",
-        ResolvedProjectDestination::duckdb(&spec.destination_path, spec.target.clone()).unwrap(),
+        crate::destination_catalog::resolve(
+            &crate::destination_catalog::local_uri("duckdb", &spec.destination_path),
+            &spec.project_root,
+            spec.target.clone(),
+        )
+        .unwrap(),
     )
     .unwrap();
 
@@ -124,11 +143,10 @@ fn drift_quarantine_postgres_conformance_asserts_supported_mirror() {
         &spec.with_target(target_name.clone()),
         CLEAN_SOURCE,
         "clean",
-        ResolvedProjectDestination::postgres(
-            postgres.url().to_owned(),
-            target.clone(),
-            MergeDedupPolicy::Last,
-            None,
+        crate::destination_catalog::resolve(
+            postgres.url(),
+            &spec.project_root,
+            target_name.clone(),
         )
         .unwrap(),
     )
@@ -136,16 +154,11 @@ fn drift_quarantine_postgres_conformance_asserts_supported_mirror() {
     assert_clean_run_promoted(&clean);
 
     let drift = run_scenario(
-        &spec.with_target(target_name),
+        &spec.with_target(target_name.clone()),
         DRIFT_SOURCE,
         "drift",
-        ResolvedProjectDestination::postgres(
-            postgres.url().to_owned(),
-            target,
-            MergeDedupPolicy::Last,
-            None,
-        )
-        .unwrap(),
+        crate::destination_catalog::resolve(postgres.url(), &spec.project_root, target_name)
+            .unwrap(),
     )
     .unwrap();
 

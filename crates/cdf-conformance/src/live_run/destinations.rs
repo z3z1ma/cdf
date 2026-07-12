@@ -2,7 +2,7 @@ use std::{collections::BTreeMap, path::PathBuf};
 
 use cdf_dest_duckdb::DuckDbDestination;
 use cdf_dest_parquet::ParquetDestination;
-use cdf_dest_postgres::{MergeDedupPolicy, PostgresDestination, PostgresTarget};
+use cdf_dest_postgres::PostgresDestination;
 use cdf_kernel::{CdfError, DestinationProtocol, Receipt, Result};
 use cdf_project::ResolvedProjectDestination;
 use postgres::{Client, NoTls};
@@ -20,7 +20,6 @@ pub(super) enum LiveRunDestinationHandle {
     },
     Postgres {
         database_url: String,
-        target: PostgresTarget,
         schema: String,
         table: String,
     },
@@ -44,7 +43,6 @@ impl LiveRunDestinationHandle {
         reset_postgres_schema(&database_url, &schema)?;
         Ok(Self::Postgres {
             database_url,
-            target: PostgresTarget::new(Some(&schema), table)?,
             schema,
             table: table.to_owned(),
         })
@@ -55,21 +53,20 @@ impl LiveRunDestinationHandle {
         spec: &LiveLocalFileFixtureSpec,
     ) -> Result<ResolvedProjectDestination> {
         match self {
-            Self::DuckDb { database_path } => {
-                ResolvedProjectDestination::duckdb(database_path, spec.target.clone())
-            }
-            Self::Parquet { root } => {
-                ResolvedProjectDestination::parquet_filesystem(root, spec.target.clone())
-            }
-            Self::Postgres {
+            Self::DuckDb { database_path } => crate::destination_catalog::resolve(
+                &crate::destination_catalog::local_uri("duckdb", database_path),
+                &spec.project_root,
+                spec.target.clone(),
+            ),
+            Self::Parquet { root } => crate::destination_catalog::resolve(
+                &crate::destination_catalog::local_uri("parquet", root),
+                &spec.project_root,
+                spec.target.clone(),
+            ),
+            Self::Postgres { database_url, .. } => crate::destination_catalog::resolve(
                 database_url,
-                target,
-                ..
-            } => ResolvedProjectDestination::postgres(
-                database_url.clone(),
-                target.clone(),
-                MergeDedupPolicy::Last,
-                None,
+                &spec.project_root,
+                spec.target.clone(),
             ),
         }
     }

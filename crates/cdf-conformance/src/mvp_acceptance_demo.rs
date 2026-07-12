@@ -116,8 +116,9 @@ fn mvp_acceptance_demo_fixture_proves_rest_duckdb_recovery_replay_and_drift() {
     let contract_human = invoke_human(project.root(), ["contract", "test", RESOURCE_ID]);
 
     let (resource, transport) = github_issues_resource().unwrap();
-    let destination = ResolvedProjectDestination::duckdb(
-        project.destination_path(),
+    let destination = crate::destination_catalog::resolve(
+        &crate::destination_catalog::local_uri("duckdb", &project.destination_path()),
+        project.root(),
         TargetName::new(TARGET).unwrap(),
     )
     .unwrap();
@@ -330,8 +331,9 @@ fn mvp_acceptance_demo_fixture_proves_rest_duckdb_recovery_replay_and_drift() {
         .unwrap();
     let duplicate = replay_package_from_artifacts(PackageArtifactReplayRequest {
         package_dir: package_dir.clone(),
-        destination: ResolvedProjectDestination::duckdb(
-            replay_project.destination_path(),
+        destination: crate::destination_catalog::resolve(
+            &crate::destination_catalog::local_uri("duckdb", &replay_project.destination_path()),
+            replay_project.root(),
             TargetName::new(TARGET).unwrap(),
         )
         .unwrap(),

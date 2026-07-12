@@ -73,7 +73,7 @@ pub(super) const DRIFT_SOURCE: &str = "\
 
 #[derive(Clone, Debug)]
 pub(super) struct ScenarioSpec {
-    project_root: PathBuf,
+    pub(super) project_root: PathBuf,
     package_root: PathBuf,
     pub(super) destination_path: PathBuf,
     pub(super) state_store_path: PathBuf,

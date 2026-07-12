@@ -5,7 +5,7 @@ use std::{
 
 use cdf_dest_duckdb::{DuckDbDestination, DuckDbMirrorSnapshot};
 use cdf_dest_parquet::ParquetDestination;
-use cdf_dest_postgres::{MergeDedupPolicy, PostgresDestination, PostgresTarget};
+use cdf_dest_postgres::{PostgresDestination, PostgresTarget};
 use cdf_kernel::{CdfError, DestinationProtocol, Receipt, Result, TargetName};
 use cdf_project::ResolvedProjectDestination;
 use postgres::{Client, NoTls};
@@ -108,19 +108,24 @@ impl MatrixDestinationHandle {
             Self::DuckDb {
                 database_path,
                 target,
-            } => ResolvedProjectDestination::duckdb(database_path, target.clone()),
-            Self::Parquet { root, target } => {
-                ResolvedProjectDestination::parquet_filesystem(root, target.clone())
-            }
+            } => crate::destination_catalog::resolve(
+                &crate::destination_catalog::local_uri("duckdb", database_path),
+                database_path.parent().unwrap_or(Path::new(".")),
+                target.clone(),
+            ),
+            Self::Parquet { root, target } => crate::destination_catalog::resolve(
+                &crate::destination_catalog::local_uri("parquet", root),
+                root.parent().unwrap_or(Path::new(".")),
+                target.clone(),
+            ),
             Self::Postgres {
                 database_url,
-                target,
+                target_name,
                 ..
-            } => ResolvedProjectDestination::postgres(
-                database_url.clone(),
-                target.clone(),
-                MergeDedupPolicy::Last,
-                None,
+            } => crate::destination_catalog::resolve(
+                database_url,
+                Path::new("."),
+                target_name.clone(),
             ),
         }
     }
