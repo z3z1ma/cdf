@@ -597,7 +597,7 @@ fn build_package_fixture(
         .map(|batch| batch.schema())
         .ok_or_else(|| bench_error("package fixture requires at least one batch"))?;
     let schema_hash = schema_hash(schema.as_ref())?;
-    let mut builder = PackageBuilder::create(&package_dir, package_id)?;
+    let builder = PackageBuilder::create(&package_dir, package_id)?;
     builder.update_status(cdf_package::PackageStatus::Extracting)?;
     builder.write_json_artifact(
         "plan/benchmark-fixture.json",
@@ -611,6 +611,7 @@ fn build_package_fixture(
         "schema/observed.json",
         &serde_json::json!({ "schema_hash": schema_hash.as_str() }),
     )?;
+    builder.write_runtime_arrow_schema(schema.as_ref())?;
     let segment = builder.write_segment(SegmentId::new("seg-000001")?, &batches)?;
     let scope = ScopeKey::Resource;
     let output_position = SourcePosition::Cursor(CursorPosition {

@@ -76,5 +76,5 @@ Implemented cells:
 
 Unavailable/deferred cells remain explicit report rows:
 
-- FileResource Arrow IPC file input is excluded because the public file runtime rejects declarative `arrow_ipc`; the harness uses the public Arrow IPC stream reader instead.
+- Arrow IPC file and stream framing are benchmarked separately; file framing uses the registered native driver while subprocess framing retains the stream reader.
 - Polars remains an externally isolated optional reference so it does not enter CDF's Cargo graph; missing executables produce an unavailable cell.
