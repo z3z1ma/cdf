@@ -36,3 +36,8 @@ None.
 - `.10x/specs/execution-host-structured-runtime.md`
 - `.10x/specs/runtime-memory-backpressure.md`
 - `.10x/specs/streaming-operator-graph.md`
+
+## Progress and notes
+
+- 2026-07-11: Added the engine-neutral semantic graph artifact and validation boundary in `cdf-runtime`: versioned node/executor/ordering/fusion/durability declarations, deterministic semantic hashing, duplicate/reference/cycle validation, and strict blocking-lane and working-set invariants. Runtime queue capacity remains deliberately outside graph identity.
+- 2026-07-11: Added the first accounted ownership-transfer edge. Arrow/byte payloads can cross it only through `cdf-memory` leases; bounded outcome metadata has its own control-memory lease rather than an asserted size. Global byte pressure blocks producers independently of item capacity, shared leases release on drop/cancellation, and cancellation closes admission before enqueue. Focused runtime tests and strict Clippy pass. Graph compilation from the planned resource transition, structured first-failure scope integration, static architecture gates, and edge overhead evidence remain open.

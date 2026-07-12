@@ -1078,6 +1078,8 @@ dependencies = [
  "cdf-kernel",
  "cdf-memory",
  "cdf-package",
+ "futures-channel",
+ "futures-executor",
  "futures-util",
  "hex",
  "serde",
