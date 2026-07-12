@@ -95,7 +95,7 @@ impl<W: Write> Write for HashingWriter<W> {
     }
 }
 
-struct AtomicArtifactSink {
+pub(crate) struct AtomicArtifactSink {
     final_path: PathBuf,
     temp_path: PathBuf,
     parent: PathBuf,
@@ -115,7 +115,7 @@ enum PublishBoundary {
 }
 
 impl AtomicArtifactSink {
-    fn create(path: &Path, durability: ArtifactDurability) -> Result<Self> {
+    pub(crate) fn create(path: &Path, durability: ArtifactDurability) -> Result<Self> {
         let parent = path.parent().ok_or_else(|| {
             CdfError::internal(format!("path {} has no parent directory", path.display()))
         })?;
@@ -148,13 +148,13 @@ impl AtomicArtifactSink {
         Ok(())
     }
 
-    fn writer_mut(&mut self) -> Result<&mut HashingWriter<File>> {
+    pub(crate) fn writer_mut(&mut self) -> Result<&mut HashingWriter<File>> {
         self.writer
             .as_mut()
             .ok_or_else(|| CdfError::internal("artifact sink is already finished"))
     }
 
-    fn finish(mut self) -> Result<WrittenArtifact> {
+    pub(crate) fn finish(mut self) -> Result<WrittenArtifact> {
         let mut writer = self
             .writer
             .take()

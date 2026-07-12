@@ -526,6 +526,51 @@ fn dedup_summary_round_trips_as_json_identity_evidence() {
 }
 
 #[test]
+fn streaming_identity_artifact_is_atomic_hashed_and_manifest_owned() {
+    let temp = tempfile::tempdir().unwrap();
+    let builder = PackageBuilder::create(temp.path(), "streaming-artifact").unwrap();
+    let mut artifact = builder
+        .begin_streaming_identity_artifact("stats/large-array.json")
+        .unwrap();
+    artifact.write_all(b"[").unwrap();
+    for (index, value) in ["alpha", "beta", "gamma"].iter().enumerate() {
+        if index > 0 {
+            artifact.write_all(b",").unwrap();
+        }
+        artifact.write_json(value).unwrap();
+    }
+    artifact.write_all(b"]").unwrap();
+    let receipt = artifact.finish().unwrap();
+    assert_eq!(receipt.path, "stats/large-array.json");
+
+    let manifest = builder.finish().unwrap();
+    let bytes = fs::read(temp.path().join(&receipt.path)).unwrap();
+    assert_eq!(bytes, br#"["alpha","beta","gamma"]"#);
+    assert_eq!(receipt.byte_count, bytes.len() as u64);
+    assert_eq!(
+        manifest
+            .identity
+            .files
+            .iter()
+            .find(|entry| entry.path == receipt.path),
+        Some(&receipt)
+    );
+}
+
+#[test]
+fn dropped_streaming_identity_artifact_publishes_nothing() {
+    let temp = tempfile::tempdir().unwrap();
+    let builder = PackageBuilder::create(temp.path(), "dropped-streaming-artifact").unwrap();
+    {
+        let mut artifact = builder
+            .begin_streaming_identity_artifact("stats/incomplete.json")
+            .unwrap();
+        artifact.write_all(b"[").unwrap();
+    }
+    assert!(!temp.path().join("stats/incomplete.json").exists());
+}
+
+#[test]
 fn fixed_fixture_hash_is_deterministic_across_repeated_runs() {
     let first = tempfile::tempdir().unwrap();
     let second = tempfile::tempdir().unwrap();

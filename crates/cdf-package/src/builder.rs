@@ -34,7 +34,7 @@ pub struct PackageBuilder {
     package_dir: PathBuf,
     package_id: String,
     segment_drafts: Mutex<File>,
-    artifact_receipts: Mutex<File>,
+    artifact_receipts: Arc<Mutex<File>>,
     trace: Mutex<HashingWriter<std::fs::File>>,
 }
 
@@ -43,6 +43,46 @@ pub struct SegmentWriteMetrics {
     pub segment: SegmentEntry,
     pub encode_duration_ns: u64,
     pub persist_hash_duration_ns: u64,
+}
+
+pub struct StreamingIdentityArtifact {
+    relative_path: String,
+    sink: Option<crate::storage::AtomicArtifactSink>,
+    artifact_receipts: Arc<Mutex<File>>,
+}
+
+impl StreamingIdentityArtifact {
+    pub fn write_all(&mut self, bytes: &[u8]) -> Result<()> {
+        self.sink
+            .as_mut()
+            .ok_or_else(|| CdfError::internal("streaming identity artifact is already finished"))?
+            .writer_mut()?
+            .write_all(bytes)
+            .map_err(|error| io_error(format!("write {}", self.relative_path), error))
+    }
+
+    pub fn write_json<T: Serialize>(&mut self, value: &T) -> Result<()> {
+        self.write_all(&canonical_json_bytes(value)?)
+    }
+
+    pub fn finish(mut self) -> Result<FileEntry> {
+        let receipt = self
+            .sink
+            .take()
+            .ok_or_else(|| CdfError::internal("streaming identity artifact is already finished"))?
+            .finish()?;
+        let entry = FileEntry {
+            path: self.relative_path,
+            byte_count: receipt.byte_count,
+            sha256: receipt.sha256,
+        };
+        append_journal(
+            &self.artifact_receipts,
+            &entry,
+            "package artifact receipt journal",
+        )?;
+        Ok(entry)
+    }
 }
 
 #[derive(Clone, Debug, Serialize, serde::Deserialize)]
@@ -86,10 +126,10 @@ impl PackageBuilder {
                 tempfile::tempfile()
                     .map_err(|error| io_error("create package segment draft journal", error))?,
             ),
-            artifact_receipts: Mutex::new(
+            artifact_receipts: Arc::new(Mutex::new(
                 tempfile::tempfile()
                     .map_err(|error| io_error("create package artifact receipt journal", error))?,
-            ),
+            )),
             trace: Mutex::new(HashingWriter::new(trace)),
         })
     }
@@ -163,6 +203,22 @@ impl PackageBuilder {
             "package artifact receipt journal",
         )?;
         Ok(entry)
+    }
+
+    pub fn begin_streaming_identity_artifact(
+        &self,
+        relative_path: impl AsRef<Path>,
+    ) -> Result<StreamingIdentityArtifact> {
+        let relative_path = normalize_artifact_path(relative_path.as_ref())?;
+        let path = package_path(&self.package_dir, &relative_path);
+        Ok(StreamingIdentityArtifact {
+            relative_path,
+            sink: Some(crate::storage::AtomicArtifactSink::create(
+                &path,
+                ArtifactDurability::PhaseMetadata,
+            )?),
+            artifact_receipts: Arc::clone(&self.artifact_receipts),
+        })
     }
 
     pub fn write_stats_artifact(
