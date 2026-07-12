@@ -1,7 +1,7 @@
 use std::{
     collections::BTreeMap,
-    fs::OpenOptions,
-    io::Write,
+    fs::{File, OpenOptions},
+    io::{BufRead, BufReader, Seek, SeekFrom, Write},
     path::{Path, PathBuf},
 };
 
@@ -10,7 +10,7 @@ use std::sync::{Arc, Mutex};
 use arrow_array::{ArrayRef, RecordBatch, UInt64Array};
 use arrow_schema::{DataType, Field, Schema};
 use cdf_kernel::{CdfError, Checkpoint, Result, SegmentId};
-use serde::Serialize;
+use serde::{Serialize, de::DeserializeOwned};
 
 use crate::{
     artifacts::{
@@ -33,8 +33,8 @@ use crate::{
 pub struct PackageBuilder {
     package_dir: PathBuf,
     package_id: String,
-    segments: Vec<SegmentDraft>,
-    written_artifacts: Mutex<BTreeMap<String, FileEntry>>,
+    segment_drafts: Mutex<File>,
+    artifact_receipts: Mutex<File>,
     trace: Mutex<std::fs::File>,
 }
 
@@ -45,7 +45,7 @@ pub struct SegmentWriteMetrics {
     pub persist_hash_duration_ns: u64,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, serde::Deserialize)]
 struct SegmentDraft {
     segment_id: SegmentId,
     path: String,
@@ -82,8 +82,14 @@ impl PackageBuilder {
         Ok(Self {
             package_dir,
             package_id,
-            segments: Vec::new(),
-            written_artifacts: Mutex::new(BTreeMap::new()),
+            segment_drafts: Mutex::new(
+                tempfile::tempfile()
+                    .map_err(|error| io_error("create package segment draft journal", error))?,
+            ),
+            artifact_receipts: Mutex::new(
+                tempfile::tempfile()
+                    .map_err(|error| io_error("create package artifact receipt journal", error))?,
+            ),
             trace: Mutex::new(trace),
         })
     }
@@ -140,10 +146,6 @@ impl PackageBuilder {
     ) -> Result<FileEntry> {
         let relative_path = normalize_artifact_path(relative_path.as_ref())?;
         let path = package_path(&self.package_dir, &relative_path);
-        let mut written_artifacts = self
-            .written_artifacts
-            .lock()
-            .map_err(|_| CdfError::internal("package artifact receipt index lock is poisoned"))?;
         let receipt = atomic_write(&path, bytes)?;
         if receipt.path != path || receipt.durability != ArtifactDurability::PhaseMetadata {
             return Err(CdfError::internal(format!(
@@ -155,7 +157,11 @@ impl PackageBuilder {
             byte_count: receipt.byte_count,
             sha256: receipt.sha256,
         };
-        written_artifacts.insert(entry.path.clone(), entry.clone());
+        append_journal(
+            &self.artifact_receipts,
+            &entry,
+            "package artifact receipt journal",
+        )?;
         Ok(entry)
     }
 
@@ -281,11 +287,7 @@ impl PackageBuilder {
         }
 
         let relative_path = segment_relative_path(&segment_id)?;
-        if self
-            .segments
-            .iter()
-            .any(|draft| draft.segment_id == segment_id || draft.path == relative_path)
-        {
+        if package_path(&self.package_dir, &relative_path).exists() {
             return Err(CdfError::data(format!(
                 "package segment is already registered: {}",
                 segment_id.as_str()
@@ -305,10 +307,11 @@ impl PackageBuilder {
             byte_count: receipt.artifact.byte_count,
             sha256: receipt.artifact.sha256.clone(),
         };
-        self.written_artifacts
-            .lock()
-            .map_err(|_| CdfError::internal("package artifact receipt index lock is poisoned"))?
-            .insert(relative_path.clone(), file_entry);
+        append_journal(
+            &self.artifact_receipts,
+            &file_entry,
+            "package artifact receipt journal",
+        )?;
         let segment = SegmentEntry {
             segment_id: segment_id.clone(),
             path: relative_path.clone(),
@@ -316,11 +319,15 @@ impl PackageBuilder {
             byte_count: receipt.artifact.byte_count,
             sha256: receipt.artifact.sha256,
         };
-        self.segments.push(SegmentDraft {
-            segment_id,
-            path: relative_path,
-            row_count,
-        });
+        append_journal(
+            &self.segment_drafts,
+            &SegmentDraft {
+                segment_id,
+                path: relative_path,
+                row_count,
+            },
+            "package segment draft journal",
+        )?;
         Ok(SegmentWriteMetrics {
             segment,
             encode_duration_ns: if measure {
@@ -354,10 +361,11 @@ impl PackageBuilder {
                 .map_err(|error| io_error(format!("sync {TRACE_FILE}"), error))?;
         }
         sync_directory(&self.package_dir)?;
-        let written_artifacts = self
-            .written_artifacts
-            .lock()
-            .map_err(|_| CdfError::internal("package artifact receipt index lock is poisoned"))?;
+        let written_artifacts =
+            read_journal::<FileEntry>(&self.artifact_receipts, "package artifact receipt journal")?
+                .into_iter()
+                .map(|entry| (entry.path.clone(), entry))
+                .collect::<BTreeMap<_, _>>();
         let mut files = Vec::new();
         for relative_path in collect_identity_file_paths(&self.package_dir)? {
             let path = package_path(&self.package_dir, &relative_path);
@@ -379,9 +387,11 @@ impl PackageBuilder {
             .iter()
             .map(|entry| (entry.path.as_str(), entry))
             .collect();
-        let mut segments = Vec::with_capacity(self.segments.len());
+        let segment_drafts =
+            read_journal::<SegmentDraft>(&self.segment_drafts, "package segment draft journal")?;
+        let mut segments = Vec::with_capacity(segment_drafts.len());
 
-        for draft in &self.segments {
+        for draft in &segment_drafts {
             let entry = entries_by_path.get(draft.path.as_str()).ok_or_else(|| {
                 CdfError::data(format!(
                     "segment file {} missing before package finalization",
@@ -401,4 +411,31 @@ impl PackageBuilder {
         write_manifest_atomic(&self.package_dir, &manifest)?;
         Ok(manifest)
     }
+}
+
+fn append_journal<T: Serialize>(journal: &Mutex<File>, value: &T, label: &str) -> Result<()> {
+    let mut bytes = canonical_json_bytes(value)?;
+    bytes.push(b'\n');
+    journal
+        .lock()
+        .map_err(|_| CdfError::internal(format!("{label} lock is poisoned")))?
+        .write_all(&bytes)
+        .map_err(|error| io_error(format!("write {label}"), error))
+}
+
+fn read_journal<T: DeserializeOwned>(journal: &Mutex<File>, label: &str) -> Result<Vec<T>> {
+    let mut file = journal
+        .lock()
+        .map_err(|_| CdfError::internal(format!("{label} lock is poisoned")))?;
+    file.flush()
+        .map_err(|error| io_error(format!("flush {label}"), error))?;
+    file.seek(SeekFrom::Start(0))
+        .map_err(|error| io_error(format!("rewind {label}"), error))?;
+    BufReader::new(&mut *file)
+        .lines()
+        .map(|line| {
+            let line = line.map_err(|error| io_error(format!("read {label}"), error))?;
+            serde_json::from_str(&line).map_err(crate::json::json_error)
+        })
+        .collect()
 }
