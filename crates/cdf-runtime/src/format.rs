@@ -836,6 +836,52 @@ impl ByteTransformRegistry {
             ))
         })
     }
+
+    pub fn resolve_name(&self, id: &str) -> Result<Arc<dyn ByteTransformDriver>> {
+        self.resolve(&ByteTransformId::new(id)?)
+    }
+
+    pub fn get(&self, id: &ByteTransformId) -> Option<Arc<dyn ByteTransformDriver>> {
+        self.by_id.get(id).cloned()
+    }
+
+    pub fn by_extension(&self, extension: &str) -> Option<Arc<dyn ByteTransformDriver>> {
+        let id = self.extensions.get(extension)?;
+        self.by_id.get(id).cloned()
+    }
+
+    pub fn detect_strong_magic(
+        &self,
+        prefix: &[u8],
+    ) -> Result<Option<Arc<dyn ByteTransformDriver>>> {
+        let mut matched: Option<&ByteTransformId> = None;
+        for ((offset, signature), id) in &self.strong_magic {
+            let start = usize::try_from(*offset)
+                .map_err(|_| CdfError::contract("byte-transform magic offset exceeds usize"))?;
+            let Some(end) = start.checked_add(signature.len()) else {
+                return Err(CdfError::contract(
+                    "byte-transform magic extent exceeds usize",
+                ));
+            };
+            if prefix.get(start..end) != Some(signature.as_slice()) {
+                continue;
+            }
+            if matched.is_some_and(|existing| existing != id) {
+                return Err(CdfError::contract(
+                    "byte-transform magic is ambiguous across registered drivers",
+                ));
+            }
+            matched = Some(id);
+        }
+        Ok(matched.and_then(|id| self.by_id.get(id).cloned()))
+    }
+
+    pub fn descriptors(&self) -> Vec<ByteTransformDescriptor> {
+        self.by_id
+            .values()
+            .map(|driver| driver.descriptor().clone())
+            .collect()
+    }
 }
 
 #[cfg(test)]
@@ -850,6 +896,22 @@ mod tests {
     };
 
     struct DescriptorOnlyDriver(FormatDriverDescriptor);
+
+    struct DescriptorOnlyTransform(ByteTransformDescriptor);
+
+    impl ByteTransformDriver for DescriptorOnlyTransform {
+        fn descriptor(&self) -> &ByteTransformDescriptor {
+            &self.0
+        }
+
+        fn transform(
+            &self,
+            _input: AccountedByteStream,
+            _request: ByteTransformRequest,
+        ) -> Result<AccountedByteStream> {
+            Err(CdfError::internal("unused test method"))
+        }
+    }
 
     impl FormatDriver for DescriptorOnlyDriver {
         fn descriptor(&self) -> &FormatDriverDescriptor {
@@ -930,6 +992,53 @@ mod tests {
         assert!(registry.register(driver("mock", &[], b"OTHER")).is_err());
         assert!(registry.register(driver("other", &[], b"MOCK")).is_err());
         assert_eq!(registry.descriptors().len(), 1);
+    }
+
+    #[test]
+    fn byte_transform_registry_resolves_names_extensions_and_magic() {
+        let descriptor = ByteTransformDescriptor {
+            transform_id: ByteTransformId::new("mock_transform").unwrap(),
+            semantic_version: "1.0.0".to_owned(),
+            extensions: vec!["mockz".to_owned()],
+            magic: vec![MagicSignature {
+                offset: 1,
+                bytes: b"MOCK".to_vec(),
+                strong: true,
+            }],
+            preserves_random_access: false,
+            splittable: false,
+            supports_concatenated_members: false,
+            maximum_output_chunk_bytes: 1024,
+            maximum_working_set_bytes: 1024,
+            maximum_expanded_bytes: 1024 * 1024,
+            maximum_expansion_ratio: 10,
+            checksum: TransformChecksumBehavior::Required,
+        };
+        let mut registry = ByteTransformRegistry::default();
+        registry
+            .register(Arc::new(DescriptorOnlyTransform(descriptor.clone())))
+            .unwrap();
+
+        assert_eq!(
+            registry
+                .resolve_name("mock_transform")
+                .unwrap()
+                .descriptor(),
+            &descriptor
+        );
+        assert_eq!(
+            registry.by_extension("mockz").unwrap().descriptor(),
+            &descriptor
+        );
+        assert!(registry.by_extension("unknown").is_none());
+        assert!(
+            registry
+                .detect_strong_magic(b"xMOCKpayload")
+                .unwrap()
+                .is_some()
+        );
+        assert!(registry.detect_strong_magic(b"xMOC").unwrap().is_none());
+        assert_eq!(registry.descriptors(), vec![descriptor]);
     }
 
     #[test]

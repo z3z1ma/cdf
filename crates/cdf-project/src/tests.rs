@@ -78,7 +78,12 @@ fn test_format_registry() -> Arc<cdf_runtime::FormatRegistry> {
 }
 
 fn file_dependencies(transport: FileTransportFacade) -> FileRuntimeDependencies {
-    FileRuntimeDependencies::new(transport, test_execution_services(), test_format_registry())
+    FileRuntimeDependencies::new(
+        transport,
+        test_execution_services(),
+        test_format_registry(),
+        Arc::new(cdf_runtime::ByteTransformRegistry::default()),
+    )
 }
 
 const BOOK_PROJECT: &str = r#"

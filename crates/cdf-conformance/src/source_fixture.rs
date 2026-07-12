@@ -3,7 +3,7 @@ use std::{path::Path, sync::Arc};
 use cdf_declarative::CompiledResource;
 use cdf_http::{SecretProvider, SecretUri, SecretValue};
 use cdf_kernel::{CdfError, QueryableResource, Result};
-use cdf_runtime::{FormatRegistry, SourceRegistry, SourceResolutionContext};
+use cdf_runtime::{ByteTransformRegistry, FormatRegistry, SourceRegistry, SourceResolutionContext};
 use cdf_source_files::{FileRuntimeDependencies, FileSourceDriver, FileTransportFacade};
 
 struct NoSecrets;
@@ -29,6 +29,7 @@ pub(crate) fn resolve_local_file(
                 .with_execution_services(execution.clone()),
             execution,
             Arc::new(FormatRegistry::default()),
+            Arc::new(ByteTransformRegistry::default()),
         ))
     })?)?;
     let plan = resource.source_plan().ok_or_else(|| {

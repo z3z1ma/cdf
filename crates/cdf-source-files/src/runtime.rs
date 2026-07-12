@@ -25,8 +25,8 @@ use cdf_kernel::{
     ScanRequest, SchemaHash, ScopeKey, SourcePosition, TypePolicyAllowances, WriteDisposition,
 };
 use cdf_runtime::{
-    DecodePlanningRequest, ExecutionServices, FormatDiscoveryRequest, FormatDriver, FormatRegistry,
-    PhysicalDecodeRequest,
+    ByteTransformRegistry, DecodePlanningRequest, ExecutionServices, FormatDiscoveryRequest,
+    FormatDriver, FormatRegistry, PhysicalDecodeRequest,
 };
 use futures_util::{StreamExt, TryStreamExt};
 use sha2::{Digest, Sha256};
@@ -46,6 +46,7 @@ pub struct FileRuntimeDependencies {
     transport: Arc<dyn FileTransport>,
     execution: ExecutionServices,
     formats: Arc<FormatRegistry>,
+    transforms: Arc<ByteTransformRegistry>,
     max_spool_bytes: u64,
 }
 
@@ -56,19 +57,22 @@ impl FileRuntimeDependencies {
         transport: impl FileTransport + 'static,
         execution: ExecutionServices,
         formats: Arc<FormatRegistry>,
+        transforms: Arc<ByteTransformRegistry>,
     ) -> Self {
-        Self::from_boxed_transport(Box::new(transport), execution, formats)
+        Self::from_boxed_transport(Box::new(transport), execution, formats, transforms)
     }
 
     pub fn from_boxed_transport(
         transport: Box<dyn FileTransport>,
         execution: ExecutionServices,
         formats: Arc<FormatRegistry>,
+        transforms: Arc<ByteTransformRegistry>,
     ) -> Self {
         Self {
             transport: Arc::from(transport),
             execution,
             formats,
+            transforms,
             max_spool_bytes: DEFAULT_MAX_REMOTE_SPOOL_BYTES,
         }
     }
@@ -97,6 +101,10 @@ impl FileRuntimeDependencies {
 
     fn formats(&self) -> &Arc<FormatRegistry> {
         &self.formats
+    }
+
+    pub fn transforms(&self) -> &Arc<ByteTransformRegistry> {
+        &self.transforms
     }
 
     pub fn with_transport<R>(&self, f: impl FnOnce(&dyn FileTransport) -> Result<R>) -> Result<R> {
@@ -2312,6 +2320,7 @@ mod tests {
             FileTransportFacade::new(),
             crate::test_execution_services(),
             crate::test_format_registry(),
+            Arc::new(ByteTransformRegistry::default()),
         ));
         let start = Arc::new(Barrier::new(3));
         let active = Arc::new(AtomicUsize::new(0));
@@ -2367,6 +2376,7 @@ mod tests {
             FileTransportFacade::new(),
             crate::test_execution_services(),
             crate::test_format_registry(),
+            Arc::new(ByteTransformRegistry::default()),
         );
         let driver = dependencies.formats().resolve("parquet").unwrap();
         let stream = stream_registered_format(
@@ -2434,6 +2444,7 @@ mod tests {
             facade,
             crate::test_execution_services(),
             crate::test_format_registry(),
+            Arc::new(ByteTransformRegistry::default()),
         )
         .with_max_spool_bytes(bytes.len() as u64)
         .unwrap();
@@ -2556,6 +2567,7 @@ mod tests {
             facade,
             crate::test_execution_services(),
             crate::test_format_registry(),
+            Arc::new(ByteTransformRegistry::default()),
         )
         .with_max_spool_bytes(encoded.len() as u64)
         .unwrap();

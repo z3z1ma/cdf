@@ -202,5 +202,6 @@ pub(crate) fn file_runtime_dependencies(
         facade,
         execution.clone(),
         crate::source_registry::builtin_format_registry()?,
+        crate::source_registry::builtin_transform_registry()?,
     ))
 }

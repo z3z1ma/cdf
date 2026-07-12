@@ -46,7 +46,12 @@ fn test_file_dependencies(
             cdf_format_parquet::ParquetFormatDriver::new().unwrap(),
         ))
         .unwrap();
-    FileRuntimeDependencies::new(transport, execution, Arc::new(formats))
+    FileRuntimeDependencies::new(
+        transport,
+        execution,
+        Arc::new(formats),
+        Arc::new(cdf_runtime::ByteTransformRegistry::default()),
+    )
 }
 
 const BOOK_REST_EXAMPLE: &str = r#"

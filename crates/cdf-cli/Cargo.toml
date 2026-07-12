@@ -37,6 +37,14 @@ cdf-runtime = { path = "../cdf-runtime" }
 cdf-source-postgres = { path = "../cdf-source-postgres" }
 cdf-source-files = { path = "../cdf-source-files" }
 cdf-source-rest = { path = "../cdf-source-rest" }
+cdf-transform-brotli = { path = "../cdf-transform-brotli" }
+cdf-transform-bzip2 = { path = "../cdf-transform-bzip2" }
+cdf-transform-character = { path = "../cdf-transform-character" }
+cdf-transform-gzip = { path = "../cdf-transform-gzip" }
+cdf-transform-lz4 = { path = "../cdf-transform-lz4" }
+cdf-transform-snappy = { path = "../cdf-transform-snappy" }
+cdf-transform-xz = { path = "../cdf-transform-xz" }
+cdf-transform-zstd = { path = "../cdf-transform-zstd" }
 cdf-python = { path = "../cdf-python" }
 cdf-state-sqlite = { path = "../cdf-state-sqlite" }
 futures-executor = "0.3.32"
