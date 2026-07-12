@@ -35,6 +35,7 @@ pub struct PackageBuilder {
     package_id: String,
     segments: Vec<SegmentDraft>,
     written_artifacts: Mutex<BTreeMap<String, FileEntry>>,
+    trace: Mutex<std::fs::File>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -72,12 +73,18 @@ impl PackageBuilder {
             PackageStatus::Planned,
         )?;
         write_manifest_atomic(&package_dir, &manifest)?;
+        let trace_path = package_dir.join(TRACE_FILE);
+        let trace = OpenOptions::new()
+            .append(true)
+            .open(&trace_path)
+            .map_err(|error| io_error(format!("open {}", trace_path.display()), error))?;
 
         Ok(Self {
             package_dir,
             package_id,
             segments: Vec::new(),
             written_artifacts: Mutex::new(BTreeMap::new()),
+            trace: Mutex::new(trace),
         })
     }
 
@@ -226,17 +233,12 @@ impl PackageBuilder {
     pub fn append_trace_event<T: Serialize>(&self, event: &T) -> Result<()> {
         let mut bytes = canonical_json_bytes(event)?;
         bytes.push(b'\n');
-        let path = self.package_dir.join(TRACE_FILE);
-        let mut file = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&path)
-            .map_err(|error| io_error(format!("open {}", path.display()), error))?;
+        let mut file = self
+            .trace
+            .lock()
+            .map_err(|_| CdfError::internal("package trace sink lock is poisoned"))?;
         file.write_all(&bytes)
-            .map_err(|error| io_error(format!("write {}", path.display()), error))?;
-        file.sync_all()
-            .map_err(|error| io_error(format!("sync {}", path.display()), error))?;
-        sync_directory(&self.package_dir)
+            .map_err(|error| io_error(format!("write {TRACE_FILE}"), error))
     }
 
     pub fn write_segment(
@@ -339,6 +341,19 @@ impl PackageBuilder {
     }
 
     pub fn finish_with_status(&self, status: PackageStatus) -> Result<PackageManifest> {
+        {
+            let mut trace = self
+                .trace
+                .lock()
+                .map_err(|_| CdfError::internal("package trace sink lock is poisoned"))?;
+            trace
+                .flush()
+                .map_err(|error| io_error(format!("flush {TRACE_FILE}"), error))?;
+            trace
+                .sync_all()
+                .map_err(|error| io_error(format!("sync {TRACE_FILE}"), error))?;
+        }
+        sync_directory(&self.package_dir)?;
         let written_artifacts = self
             .written_artifacts
             .lock()
