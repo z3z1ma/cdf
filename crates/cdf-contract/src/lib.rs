@@ -3,6 +3,7 @@
 mod aggregation;
 mod compiler;
 mod correction;
+mod dedup_key;
 mod evaluator;
 mod fingerprint;
 mod lattice;

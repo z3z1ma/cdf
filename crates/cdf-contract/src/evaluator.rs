@@ -153,7 +153,12 @@ pub fn encode_package_dedup_keys(
     rule: &PackageDedupRuleSpec,
     batch: &RecordBatch,
 ) -> Result<Vec<Vec<u8>>> {
-    let arrays = dedup_arrays(program, batch, &rule.rule_id, &rule.keys)?;
+    let arrays = crate::dedup_key::canonicalize_map_order(dedup_arrays(
+        program,
+        batch,
+        &rule.rule_id,
+        &rule.keys,
+    )?)?;
     let converter = RowConverter::new(
         arrays
             .iter()
