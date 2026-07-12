@@ -8,7 +8,13 @@ use cdf_package::PackageReader;
 use postgres::{Client, NoTls, Row};
 use std::sync::Arc;
 
-use crate::{dml::*, package::*, rows::validate_schema_matches_plan, validate::*, *};
+use crate::{
+    dml::*,
+    package::*,
+    rows::{PostgresStageRow, batch_row_values, validate_schema_matches_plan},
+    validate::*,
+    *,
+};
 
 impl PostgresDestination {
     pub fn connect(database_url: impl Into<String>) -> Result<Self> {
@@ -610,10 +616,24 @@ fn copy_stage_rows(
     // Row provenance is the immutable original package identity. The package
     // token may differ from an operator-supplied idempotency token.
     let load = verify_parameter(plan, "package_hash")?;
-    for row in &package.rows {
-        writer
-            .write_all(row.csv_line(&load, loaded_at_ms).as_bytes())
-            .map_err(|error| io_error("write Postgres COPY row", error))?;
+    for staged in &package.batches {
+        for row in 0..staged.batch.num_rows() {
+            let row_index = staged
+                .row_start
+                .checked_add(
+                    u64::try_from(row)
+                        .map_err(|_| CdfError::data("Postgres batch row ordinal exceeds u64"))?,
+                )
+                .ok_or_else(|| CdfError::data("Postgres segment row ordinal overflowed"))?;
+            let row = PostgresStageRow {
+                values: batch_row_values(&staged.batch, row)?,
+                segment_id: staged.segment_id.clone(),
+                row_index,
+            };
+            writer
+                .write_all(row.csv_line(&load, loaded_at_ms).as_bytes())
+                .map_err(|error| io_error("write Postgres COPY row", error))?;
+        }
     }
     writer
         .finish()

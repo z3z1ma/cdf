@@ -7,10 +7,17 @@ use cdf_package::{PackageReader, SegmentEntry};
 
 use crate::{rows::*, validate::plan_segment_acks, *};
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub(crate) struct PostgresPackageData {
     pub(crate) segments: Vec<PostgresLoadedSegment>,
-    pub(crate) rows: Vec<PostgresStageRow>,
+    pub(crate) batches: Vec<PostgresStageBatch>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct PostgresStageBatch {
+    pub(crate) batch: RecordBatch,
+    pub(crate) segment_id: String,
+    pub(crate) row_start: u64,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -178,7 +185,7 @@ fn package_data_from_segments(
     if segments.is_empty() {
         return Ok(PostgresPackageData {
             segments: Vec::new(),
-            rows: Vec::new(),
+            batches: Vec::new(),
         });
     }
 
@@ -186,7 +193,7 @@ fn package_data_from_segments(
     validate_schema_matches_plan(schema.as_ref(), &plan.columns)?;
 
     let mut loaded_segments = Vec::with_capacity(segments.len());
-    let mut rows = Vec::new();
+    let mut staged_batches = Vec::new();
     for (entry, batches) in segments {
         let mut row_count = 0_u64;
         for batch in batches {
@@ -195,14 +202,16 @@ fn package_data_from_segments(
                     "Postgres destination requires all package segments to share one schema",
                 ));
             }
-            for row in 0..batch.num_rows() {
-                rows.push(PostgresStageRow {
-                    values: batch_row_values(&batch, row)?,
-                    segment_id: entry.segment_id.as_str().to_owned(),
-                    row_index: row_count,
-                });
-                row_count += 1;
-            }
+            let batch_rows = u64::try_from(batch.num_rows())
+                .map_err(|_| CdfError::data("Postgres Arrow batch row count exceeds u64"))?;
+            staged_batches.push(PostgresStageBatch {
+                batch,
+                segment_id: entry.segment_id.as_str().to_owned(),
+                row_start: row_count,
+            });
+            row_count = row_count
+                .checked_add(batch_rows)
+                .ok_or_else(|| CdfError::data("Postgres segment row count overflowed"))?;
         }
         if row_count != entry.row_count {
             return Err(CdfError::data(format!(
@@ -217,7 +226,7 @@ fn package_data_from_segments(
 
     Ok(PostgresPackageData {
         segments: loaded_segments,
-        rows,
+        batches: staged_batches,
     })
 }
 

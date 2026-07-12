@@ -29,6 +29,10 @@ No destination-generic PostgreSQL type assumptions.
 
 Depends on D1 and staged-ingress contract.
 
+## Progress and notes
+
+- 2026-07-11: Removed the CSV compatibility path's package/segment scalar-row materialization. `PostgresPackageData` now retains bounded Arrow batches for the current verified segment; CSV fields are encoded directly into COPY one row at a time. All 30 unit/live transaction, merge, correction, rollback, receipt, and source tests remain green. This establishes the constant-memory encoder boundary that binary COPY will replace without changing commit semantics.
+
 ## References
 
 - `.10x/specs/destination-bulk-path-runtime.md`
