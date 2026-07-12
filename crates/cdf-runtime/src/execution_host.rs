@@ -11,6 +11,8 @@ use std::{
 
 use cdf_kernel::{BoxFuture, CdfError, Result};
 use cdf_memory::MemoryCoordinator;
+use futures_channel::mpsc;
+use futures_util::{SinkExt, Stream};
 use serde::{Deserialize, Serialize};
 
 pub type IoTask = BoxFuture<'static, Result<()>>;
@@ -18,6 +20,80 @@ pub type IoValue = Box<dyn Any + Send + 'static>;
 pub type IoValueTask = BoxFuture<'static, Result<IoValue>>;
 pub type BlockingTask = Box<dyn FnOnce() -> Result<()> + Send + 'static>;
 pub type BlockingValueTask = Box<dyn FnOnce() -> Result<IoValue> + Send + 'static>;
+
+pub struct IoStreamSender<T> {
+    sender: mpsc::Sender<T>,
+    cancellation: RunCancellation,
+}
+
+impl<T> IoStreamSender<T> {
+    pub async fn send(&mut self, item: T) -> Result<()> {
+        self.cancellation.check()?;
+        self.sender
+            .send(item)
+            .await
+            .map_err(|_| CdfError::internal("I/O stream receiver closed"))?;
+        self.cancellation.check()
+    }
+}
+
+pub struct ScopedIoStream<T> {
+    receiver: mpsc::Receiver<T>,
+    scope: Option<Box<dyn ExecutionTaskScope>>,
+    join: Option<BoxFuture<'static, Result<TaskScopeReport>>>,
+    cancellation: RunCancellation,
+    terminal: bool,
+}
+
+impl<T> Unpin for ScopedIoStream<T> {}
+
+impl<T> Stream for ScopedIoStream<T> {
+    type Item = Result<T>;
+
+    fn poll_next(self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        let stream = self.get_mut();
+        if stream.terminal {
+            return Poll::Ready(None);
+        }
+        match Pin::new(&mut stream.receiver).poll_next(context) {
+            Poll::Ready(Some(item)) => return Poll::Ready(Some(Ok(item))),
+            Poll::Pending => return Poll::Pending,
+            Poll::Ready(None) => {}
+        }
+        if stream.join.is_none() {
+            let scope = stream
+                .scope
+                .take()
+                .expect("I/O stream scope exists until its receiver closes");
+            stream.join = Some(scope.join());
+        }
+        match stream
+            .join
+            .as_mut()
+            .expect("I/O stream join future was initialized")
+            .as_mut()
+            .poll(context)
+        {
+            Poll::Pending => Poll::Pending,
+            Poll::Ready(Ok(_)) => {
+                stream.terminal = true;
+                Poll::Ready(None)
+            }
+            Poll::Ready(Err(error)) => {
+                stream.terminal = true;
+                Poll::Ready(Some(Err(error)))
+            }
+        }
+    }
+}
+
+impl<T> Drop for ScopedIoStream<T> {
+    fn drop(&mut self) {
+        if !self.terminal {
+            self.cancellation.cancel();
+        }
+    }
+}
 
 #[derive(Debug, Default)]
 struct CancellationState {
@@ -250,6 +326,42 @@ impl ExecutionServices {
             ));
         }
         self.host.open_scope(run_id)
+    }
+
+    pub fn spawn_io_stream<T, F, Fut>(
+        &self,
+        run_id: &str,
+        maximum_items: usize,
+        producer: F,
+    ) -> Result<ScopedIoStream<T>>
+    where
+        T: Send + 'static,
+        F: FnOnce(IoStreamSender<T>, RunCancellation) -> Fut + Send + 'static,
+        Fut: Future<Output = Result<()>> + Send + 'static,
+    {
+        if maximum_items == 0 {
+            return Err(CdfError::contract(
+                "I/O stream requires a nonzero item bound",
+            ));
+        }
+        let mut scope = self.open_scope(run_id)?;
+        let cancellation = scope.cancellation();
+        let (sender, receiver) = mpsc::channel(maximum_items);
+        let stream_sender = IoStreamSender {
+            sender,
+            cancellation: cancellation.clone(),
+        };
+        let task_cancellation = cancellation.clone();
+        scope.spawn_io(Box::pin(async move {
+            producer(stream_sender, task_cancellation).await
+        }))?;
+        Ok(ScopedIoStream {
+            receiver,
+            scope: Some(scope),
+            join: None,
+            cancellation,
+            terminal: false,
+        })
     }
 
     pub fn run_io<T, F>(&self, future: F) -> Result<T>

@@ -630,7 +630,8 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     use cdf_memory::{DeterministicMemoryCoordinator, MemoryClass, ReservationRequest};
-    use cdf_runtime::{ExecutionHost, InterruptionSafety, LaneAffinity};
+    use cdf_runtime::{ExecutionHost, ExecutionServices, InterruptionSafety, LaneAffinity};
+    use futures_util::TryStreamExt;
 
     use super::*;
 
@@ -699,6 +700,30 @@ mod tests {
         assert_eq!(report.completed, 4);
         assert_eq!(report.peak_cpu_slots, 2);
         assert_eq!(peak.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn scoped_io_stream_bridges_tokio_without_materializing_and_joins_errors() {
+        let services = ExecutionServices::new(Arc::new(host())).unwrap();
+        let stream = services
+            .spawn_io_stream("native-format", 1, |mut sender, cancellation| async move {
+                cancellation.check()?;
+                sender.send(1_u64).await?;
+                sender.send(2_u64).await?;
+                Ok(())
+            })
+            .unwrap();
+        let values = futures_executor::block_on(stream.try_collect::<Vec<_>>()).unwrap();
+        assert_eq!(values, vec![1, 2]);
+
+        let stream = services
+            .spawn_io_stream("native-format-error", 1, |mut sender, _| async move {
+                sender.send(3_u64).await?;
+                Err(CdfError::data("native format failed"))
+            })
+            .unwrap();
+        let error = futures_executor::block_on(stream.try_collect::<Vec<_>>()).unwrap_err();
+        assert!(error.message.contains("native format failed"));
     }
 
     #[test]
