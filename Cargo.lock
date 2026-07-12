@@ -1338,6 +1338,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "cdf-transform-xz"
+version = "0.1.0"
+dependencies = [
+ "bytes",
+ "cdf-kernel",
+ "cdf-memory",
+ "cdf-runtime",
+ "futures-executor",
+ "futures-util",
+ "liblzma",
+]
+
+[[package]]
 name = "cdf-transform-zstd"
 version = "0.1.0"
 dependencies = [
@@ -3183,6 +3196,26 @@ dependencies = [
  "tar",
  "vcpkg",
  "zip",
+]
+
+[[package]]
+name = "liblzma"
+version = "0.4.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "45aec2360b3933207e27908049d8e4df4e476b58180afb1e56b2a4fb72efe4ba"
+dependencies = [
+ "liblzma-sys",
+]
+
+[[package]]
+name = "liblzma-sys"
+version = "0.4.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a046c7f353ba30f810545151e04f63545833803f5b86ee3ddf1517247fe560a5"
+dependencies = [
+ "cc",
+ "libc",
+ "pkg-config",
 ]
 
 [[package]]

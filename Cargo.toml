@@ -16,6 +16,7 @@ members = [
     "crates/cdf-transform-brotli",
     "crates/cdf-transform-lz4",
     "crates/cdf-transform-zstd",
+    "crates/cdf-transform-xz",
     "crates/cdf-transform-snappy",
     "crates/cdf-postgres",
     "crates/cdf-source-postgres",
