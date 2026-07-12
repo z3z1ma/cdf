@@ -18,7 +18,7 @@ pub use builder::*;
 pub use json::*;
 pub use model::*;
 pub use ops::*;
-pub use parquet::transcode_record_batches_to_parquet_bytes;
+pub use parquet::{transcode_record_batches_to_parquet_bytes, validate_parquet_schema};
 pub use quarantine::*;
 pub use reader::*;
 pub use runtime_schema::*;

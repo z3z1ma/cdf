@@ -236,9 +236,16 @@ fn prepare_parquet_commit(
     ))
 }
 
-fn parquet_runtime_capabilities() -> DestinationRuntimeCapabilities {
+pub(crate) fn parquet_runtime_capabilities() -> DestinationRuntimeCapabilities {
     DestinationRuntimeCapabilities {
-        blocking_lanes: Vec::new(),
+        blocking_lanes: vec![cdf_runtime::BlockingLaneSpec {
+            lane_id: "parquet.encode".to_owned(),
+            maximum_concurrency: 2,
+            cpu_slot_cost: 1,
+            native_internal_parallelism: 1,
+            affinity: cdf_runtime::LaneAffinity::Shared,
+            interruption: cdf_runtime::InterruptionSafety::CooperativeOnly,
+        }],
         staged_ingress_lane: None,
         final_binding_lane: None,
         ingress_mode: DestinationIngressMode::FinalizedPackageOnly,
@@ -270,7 +277,7 @@ fn parquet_runtime_capabilities() -> DestinationRuntimeCapabilities {
             fallback: cdf_runtime::BulkFallbackMode::PreflightOnly,
             measured_evidence_version: None,
         }],
-        bulk_path: Some("arrow_ipc_package_rows_to_parquet".to_owned()),
+        bulk_path: Some("arrow_ipc_to_parquet".to_owned()),
         bulk_evidence_version: None,
         replay_requires_explicit_target: false,
         replay_target_hint: None,

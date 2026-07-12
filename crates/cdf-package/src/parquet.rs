@@ -20,7 +20,7 @@ pub fn transcode_record_batches_to_parquet_bytes(batches: &[RecordBatch]) -> Res
             ));
         }
     }
-    validate_fields(schema.fields())?;
+    validate_parquet_schema(schema.as_ref())?;
 
     let properties = WriterProperties::builder()
         .set_created_by("cdf native arrow-rs parquet writer".to_owned())
@@ -41,9 +41,9 @@ pub fn transcode_record_batches_to_parquet_bytes(batches: &[RecordBatch]) -> Res
     Ok(bytes)
 }
 
-fn validate_fields(fields: &[Arc<Field>]) -> Result<()> {
-    validate_field_names(fields)?;
-    for field in fields {
+pub fn validate_parquet_schema(schema: &arrow_schema::Schema) -> Result<()> {
+    validate_field_names(schema.fields())?;
+    for field in schema.fields() {
         validate_parquet_type(field.data_type())?;
     }
     Ok(())

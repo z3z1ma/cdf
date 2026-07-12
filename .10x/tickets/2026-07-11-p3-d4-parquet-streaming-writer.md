@@ -32,3 +32,7 @@ Depends on D1, staged ingress, and streaming writer triage.
 ## References
 
 - `.10x/specs/destination-bulk-path-runtime.md`
+
+## Progress and notes
+
+- 2026-07-11: Replaced per-segment Parquet `Vec<u8>` materialization with a canonical 64k-row-group writer on the declared `parquet.encode` blocking lane. Encoding writes and hashes directly into a spill-accounted durable temp file while retaining the verified input segment and a destination writer memory lease. After encode, multipart upload uses 8 MiB chunks, up to four concurrent parts, asynchronous ledger admission/backpressure, atomic multipart completion, and abort on read/part failure. The path descriptor now reports the same live `arrow_ipc_to_parquet` id everywhere. Shared schema validation remains owned by `cdf-package` and is reused by both transcode and streaming encode. All 27 destination tests pass, including filesystem/object-store, duplicate, replace, correction, tamper, schema, and abort behavior. Evidence: `.10x/evidence/2026-07-11-p3-d4-streaming-parquet-milestone.md`.

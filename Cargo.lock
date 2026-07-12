@@ -869,10 +869,12 @@ version = "0.1.0"
 dependencies = [
  "arrow-array 59.1.0",
  "arrow-schema 59.1.0",
+ "bytes",
  "cdf-conformance",
  "cdf-contract",
  "cdf-engine",
  "cdf-kernel",
+ "cdf-memory",
  "cdf-package",
  "cdf-runtime",
  "hex",
@@ -882,6 +884,7 @@ dependencies = [
  "serde_json",
  "sha2 0.10.9",
  "tempfile",
+ "tokio",
 ]
 
 [[package]]

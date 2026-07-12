@@ -1,5 +1,8 @@
 use crate::*;
 
+const MULTIPART_CHUNK_BYTES: usize = 8 * 1024 * 1024;
+const MULTIPART_CONCURRENCY: usize = 4;
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct StoredObject {
     pub(crate) byte_count: u64,
@@ -75,6 +78,75 @@ impl StoreClient {
         let put: PutResult = execution.run_io(async move {
             store
                 .put(&path, PutPayload::from(bytes))
+                .await
+                .map_err(|error| store_error(operation, error))
+        })?;
+        Ok(StoredObject {
+            byte_count,
+            e_tag: put.e_tag,
+        })
+    }
+
+    pub(crate) fn put_file(
+        &self,
+        execution: &cdf_runtime::ExecutionServices,
+        key: &str,
+        path: &Path,
+        byte_count: u64,
+    ) -> Result<StoredObject> {
+        let object_path = self.path(key)?;
+        let store = Arc::clone(&self.store);
+        let file_path = path.to_path_buf();
+        let operation = format!("multipart put {key}");
+        let reserved_bytes = byte_count
+            .min((MULTIPART_CHUNK_BYTES * (MULTIPART_CONCURRENCY + 1)) as u64)
+            .max(1);
+        let request = cdf_memory::ReservationRequest::new(
+            cdf_memory::ConsumerKey::new(
+                "parquet-multipart-upload",
+                cdf_memory::MemoryClass::Destination,
+            )?,
+            reserved_bytes,
+        )?
+        .as_minimum_working_set();
+        let memory = execution.memory();
+        let put: PutResult = execution.run_io(async move {
+            use tokio::io::AsyncReadExt;
+
+            let _lease = cdf_memory::reserve(memory, request).await?;
+            let mut file = tokio::fs::File::open(&file_path).await.map_err(|error| {
+                CdfError::destination(format!("open {}: {error}", file_path.display()))
+            })?;
+            let upload = store
+                .put_multipart(&object_path)
+                .await
+                .map_err(|error| store_error(&operation, error))?;
+            let mut writer =
+                object_store::WriteMultipart::new_with_chunk_size(upload, MULTIPART_CHUNK_BYTES);
+            loop {
+                if let Err(error) = writer.wait_for_capacity(MULTIPART_CONCURRENCY).await {
+                    let _ = writer.abort().await;
+                    return Err(store_error(&operation, error));
+                }
+                let mut chunk = vec![0; MULTIPART_CHUNK_BYTES];
+                let read = match file.read(&mut chunk).await {
+                    Ok(read) => read,
+                    Err(error) => {
+                        let _ = writer.abort().await;
+                        return Err(CdfError::destination(format!(
+                            "read {}: {error}",
+                            file_path.display()
+                        )));
+                    }
+                };
+                if read == 0 {
+                    break;
+                }
+                chunk.truncate(read);
+                writer.put(bytes::Bytes::from(chunk));
+            }
+            writer
+                .finish()
                 .await
                 .map_err(|error| store_error(operation, error))
         })?;

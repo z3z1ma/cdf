@@ -7,6 +7,7 @@ use crate::{
     },
     package::write_parquet_segment,
     receipts::{build_receipt, record_package_receipt_once, verify_receipt},
+    runtime::parquet_runtime_capabilities,
     sheet::{parquet_protocol_capabilities, parquet_sheet},
     store::{
         ObjectKeyEncoder, StoreClient, now_ms, package_manifest_key, replace_pointer_key,
@@ -94,6 +95,7 @@ impl ParquetDestination {
     }
 
     fn from_store(store: StoreClient, execution: cdf_runtime::ExecutionServices) -> Result<Self> {
+        execution.ensure_blocking_lanes(&parquet_runtime_capabilities().blocking_lanes)?;
         let artifact = Self::destination_sheet_artifact()?;
         let sheet = artifact.sheet;
         let protocol_capabilities = artifact.protocol_capabilities;
@@ -467,21 +469,25 @@ fn write_commit_segment_object(
     request: &ParquetCommitRequest,
     segment: CommitSegment,
 ) -> Result<ParquetObjectEntry> {
-    let CommitSegment {
-        state,
-        package_byte_count,
-        batches,
-        ..
-    } = segment;
-    let bytes = write_parquet_segment(&batches)?;
-    let sha256 = sha256_hex(&bytes);
+    let execution = destination.execution.clone();
+    let memory = execution.memory();
+    let spill = execution.spill();
+    let (state, package_byte_count, encoded) = execution
+        .run_blocking("parquet.encode", move || {
+            write_parquet_segment(segment, memory, spill)
+        })?;
     let key = segment_object_key(
         destination.object_key_encoder(),
         &request.commit.target,
         &request.commit.idempotency_token,
         &state.segment_id,
     );
-    let put = destination.store.put(&destination.execution, &key, bytes)?;
+    let put = destination.store.put_file(
+        &destination.execution,
+        &key,
+        encoded.file.path(),
+        encoded.byte_count,
+    )?;
     Ok(ParquetObjectEntry {
         segment_id: state.segment_id.as_str().to_owned(),
         key,
@@ -489,7 +495,7 @@ fn write_commit_segment_object(
         byte_count: state.byte_count,
         package_byte_count,
         parquet_byte_count: put.byte_count,
-        sha256,
+        sha256: encoded.sha256,
         etag: put.e_tag,
         schema_hash: request.schema_hash.as_str().to_owned(),
     })

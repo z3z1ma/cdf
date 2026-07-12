@@ -8,6 +8,7 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
+#[cfg(test)]
 use arrow_array::RecordBatch;
 use arrow_schema::SchemaRef;
 use cdf_kernel::{
