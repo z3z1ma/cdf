@@ -638,6 +638,120 @@ fn bulk_descriptors_compose_two_paths_without_runtime_dispatch_changes() {
     assert_eq!(json["bulk_paths"][0]["max_useful_writers"], 4);
 }
 
+#[test]
+fn bulk_fallback_requires_abort_proof_and_a_new_attempt() {
+    let descriptor = |path_id: &str, fallback, external_staging| BulkPathDescriptor {
+        path_id: path_id.to_owned(),
+        version: 1,
+        ingress_mode: DestinationIngressMode::StagedDurableSegments,
+        writer_model: DestinationWriterModel::SingleWriter,
+        ordering: BulkOrdering::ManifestOrder,
+        rows: BulkSizeRange {
+            minimum: 8_192,
+            preferred: 65_536,
+            maximum: 65_536,
+        },
+        bytes: BulkSizeRange {
+            minimum: 1_048_576,
+            preferred: 16_777_216,
+            maximum: 67_108_864,
+        },
+        max_useful_writers: 1,
+        blocking_lane: None,
+        native_internal_parallelism: 1,
+        external_staging,
+        fallback,
+        measured_evidence_version: Some("mock-v1".to_owned()),
+    };
+    let prepared = |descriptor| PreparedBulkPath {
+        descriptor,
+        rows_per_batch: 65_536,
+        bytes_per_batch: 16_777_216,
+        writers: 1,
+    };
+    let mut coordinator = BulkAttemptCoordinator::new(BulkPathPreparation {
+        eligible: vec![
+            prepared(descriptor(
+                "mock_arrow",
+                BulkFallbackMode::RollbackFullRedrive,
+                true,
+            )),
+            prepared(descriptor(
+                "mock_scalar",
+                BulkFallbackMode::PreflightOnly,
+                false,
+            )),
+        ],
+        rejected: Vec::new(),
+    })
+    .unwrap();
+    let first_attempt = LoadAttemptId::new("attempt-1").unwrap();
+    let next_attempt = LoadAttemptId::new("attempt-2").unwrap();
+    assert_eq!(
+        coordinator
+            .start(first_attempt.clone())
+            .unwrap()
+            .descriptor
+            .path_id,
+        "mock_arrow"
+    );
+
+    let error = coordinator
+        .fallback(
+            BulkAbortProof {
+                attempt_id: first_attempt.clone(),
+                path_id: "mock_arrow".to_owned(),
+                zero_target_visibility: true,
+                external_staging_cleaned: false,
+            },
+            "forced failure",
+            next_attempt.clone(),
+        )
+        .unwrap_err();
+    assert!(error.to_string().contains("cleaned external staging"));
+
+    let error = coordinator
+        .fallback(
+            BulkAbortProof {
+                attempt_id: first_attempt.clone(),
+                path_id: "mock_arrow".to_owned(),
+                zero_target_visibility: true,
+                external_staging_cleaned: true,
+            },
+            "forced failure",
+            first_attempt.clone(),
+        )
+        .unwrap_err();
+    assert!(error.to_string().contains("new load attempt id"));
+
+    // A rejected proof cannot consume either the active attempt or its fallback.
+    assert_eq!(
+        coordinator
+            .fallback(
+                BulkAbortProof {
+                    attempt_id: first_attempt,
+                    path_id: "mock_arrow".to_owned(),
+                    zero_target_visibility: true,
+                    external_staging_cleaned: true,
+                },
+                "forced failure",
+                next_attempt,
+            )
+            .unwrap()
+            .descriptor
+            .path_id,
+        "mock_scalar"
+    );
+    coordinator.complete().unwrap();
+    assert_eq!(coordinator.evidence().len(), 2);
+    assert!(coordinator.evidence()[0].aborted_before_fallback);
+    assert_eq!(
+        coordinator.evidence()[0].fallback_reason.as_deref(),
+        Some("forced failure")
+    );
+    assert!(!coordinator.evidence()[1].aborted_before_fallback);
+}
+
 struct MockSourceDriver {
     descriptor: SourceDriverDescriptor,
 }
