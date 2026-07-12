@@ -770,25 +770,54 @@ struct QuarantinePartAccumulator<'a> {
     part_count: &'a mut usize,
     writer: Option<QuarantineArtifactWriter>,
     records: Vec<QuarantineRecord>,
+    memory_lease: Option<MemoryLease>,
+    retained_bytes: u64,
 }
 
 impl<'a> QuarantinePartAccumulator<'a> {
     const ROWS: usize = 8 * 1024;
 
-    fn new(builder: &'a PackageBuilder, part_count: &'a mut usize) -> Self {
+    fn new(
+        builder: &'a PackageBuilder,
+        part_count: &'a mut usize,
+        memory_lease: Option<MemoryLease>,
+    ) -> Self {
         Self {
             builder,
             part_count,
             writer: None,
-            records: Vec::with_capacity(Self::ROWS),
+            records: Vec::new(),
+            memory_lease,
+            retained_bytes: 0,
         }
     }
 
     fn push(&mut self, record: QuarantineRecord) -> Result<()> {
-        self.records.push(record);
+        let record_bytes = quarantine_record_working_set_bytes(&record)?;
         if self.records.len() == Self::ROWS {
             self.flush()?;
         }
+        if let Some(lease) = self.memory_lease.clone() {
+            let projected = self
+                .retained_bytes
+                .checked_add(record_bytes)
+                .and_then(|bytes| bytes.checked_mul(3))
+                .ok_or_else(|| CdfError::data("quarantine evidence working set overflowed"))?;
+            if let Err(error) = lease.reconcile(projected.max(1)) {
+                if self.records.is_empty() {
+                    return Err(error);
+                }
+                self.flush()?;
+                lease.reconcile(record_bytes.checked_mul(3).ok_or_else(|| {
+                    CdfError::data("quarantine evidence working set overflowed")
+                })?)?;
+            }
+        }
+        self.retained_bytes = self
+            .retained_bytes
+            .checked_add(record_bytes)
+            .ok_or_else(|| CdfError::data("quarantine evidence byte count overflowed"))?;
+        self.records.push(record);
         Ok(())
     }
 
@@ -808,7 +837,11 @@ impl<'a> QuarantinePartAccumulator<'a> {
             .as_mut()
             .expect("quarantine writer was initialized")
             .write_records(&self.records)?;
-        self.records.clear();
+        self.records = Vec::new();
+        self.retained_bytes = 0;
+        if let Some(lease) = &self.memory_lease {
+            lease.reconcile(1)?;
+        }
         Ok(())
     }
 
@@ -819,6 +852,61 @@ impl<'a> QuarantinePartAccumulator<'a> {
         }
         Ok(())
     }
+}
+
+fn quarantine_record_working_set_bytes(record: &QuarantineRecord) -> Result<u64> {
+    let source_position_bytes = record
+        .source_position
+        .as_ref()
+        .map(serde_json::to_vec)
+        .transpose()
+        .map_err(|error| CdfError::internal(error.to_string()))?
+        .map_or(0_usize, |bytes| bytes.len());
+    let observed_bytes = match &record.observed_value_redacted {
+        QuarantineObservedValue::Null | QuarantineObservedValue::Omitted => 0,
+        QuarantineObservedValue::Preserved { value }
+        | QuarantineObservedValue::Masked { value } => value.len(),
+        QuarantineObservedValue::Hashed { algorithm, value } => {
+            algorithm.len().saturating_add(value.len())
+        }
+    };
+    let bytes = std::mem::size_of::<QuarantineRecord>()
+        .saturating_add(record.rule_id.len())
+        .saturating_add(record.error_code.len())
+        .saturating_add(source_position_bytes.saturating_mul(2))
+        .saturating_add(observed_bytes)
+        .saturating_add(256);
+    u64::try_from(bytes).map_err(|_| CdfError::data("quarantine evidence bytes exceed u64"))
+}
+
+fn reserve_quarantine_evidence(
+    memory: Option<&Arc<dyn MemoryCoordinator>>,
+) -> Result<Option<MemoryLease>> {
+    let Some(memory) = memory else {
+        return Ok(None);
+    };
+    let request = ReservationRequest::new(
+        ConsumerKey::new("quarantine-evidence", MemoryClass::Transform)?,
+        1,
+    )?;
+    memory.try_reserve(&request)?.map(Some).ok_or_else(|| {
+        CdfError::data(
+            "quarantine evidence could not reserve one byte of managed headroom; reduce jobs or raise the memory budget",
+        )
+    })
+}
+
+fn program_may_quarantine(program: &ValidationProgram) -> bool {
+    matches!(
+        program.disposition_for(cdf_contract::RuleOutcome::Violation, "quarantine-admission"),
+        cdf_contract::RuleDisposition::Quarantine { .. }
+    ) && program.row_rules.iter().any(|rule| {
+        !matches!(
+            rule.predicate,
+            cdf_contract::RowRulePredicate::Dedup { .. }
+                | cdf_contract::RowRulePredicate::ExactRowDedup { .. }
+        )
+    })
 }
 
 enum ResidualDecisionAccumulator {
@@ -1677,8 +1765,13 @@ where
                         &mut verdict_summary,
                         pre_contract_quarantine_summary(&batch.header.pre_contract_quarantine),
                     );
+                    let quarantine_lease = reserve_quarantine_evidence(memory.as_ref())?;
                     let mut quarantine_sink =
-                        QuarantinePartAccumulator::new(&builder, &mut quarantine_part_count);
+                        QuarantinePartAccumulator::new(
+                            &builder,
+                            &mut quarantine_part_count,
+                            quarantine_lease,
+                        );
                     for fact in &batch.header.pre_contract_quarantine {
                         quarantine_sink.push(quarantine_record_from_pre_contract(fact))?;
                     }
@@ -1774,8 +1867,18 @@ where
                     &residual_candidates,
                 )
                 .await?;
-                let mut quarantine_sink =
-                    QuarantinePartAccumulator::new(&builder, &mut quarantine_part_count);
+                let quarantine_lease = if residual_candidates.is_empty()
+                    && !program_may_quarantine(&validation_program)
+                {
+                    None
+                } else {
+                    reserve_quarantine_evidence(memory.as_ref())?
+                };
+                let mut quarantine_sink = QuarantinePartAccumulator::new(
+                    &builder,
+                    &mut quarantine_part_count,
+                    quarantine_lease,
+                );
                 let ContractExecOutput {
                     accepted,
                     variant_values,
@@ -3600,7 +3703,7 @@ fn elapsed_ns(started: Option<Instant>, label: &str) -> Result<u64> {
 
 #[cfg(test)]
 mod transform_kernel_tests {
-    use std::{hint::black_box, sync::Arc, time::Instant};
+    use std::{collections::BTreeMap, hint::black_box, sync::Arc, time::Instant};
 
     use arrow_array::{BooleanArray, Int64Array, RecordBatch, StringArray};
     use arrow_schema::{DataType, Field, Schema};
@@ -3609,14 +3712,50 @@ mod transform_kernel_tests {
         VectorValidationEvaluator, compile_validation_program,
     };
     use cdf_kernel::{BatchId, TrustLevel};
-    use cdf_package::QuarantineRecord;
+    use cdf_memory::{DeterministicMemoryCoordinator, MemoryCoordinator};
+    use cdf_package::{PackageBuilder, QuarantineObservedValue, QuarantineRecord};
 
-    use super::{ResidualBatchContext, TransformKernelMode, apply_contract_exec};
+    use super::{
+        QuarantinePartAccumulator, ResidualBatchContext, TransformKernelMode, apply_contract_exec,
+        reserve_quarantine_evidence,
+    };
 
     #[test]
     fn production_execution_cannot_call_the_scalar_contract_oracle() {
         let scalar_oracle = ["evaluate", "record", "batch"].join("_") + "(";
         assert!(!include_str!("execution.rs").contains(&scalar_oracle));
+    }
+
+    #[test]
+    fn quarantine_evidence_fails_cleanly_before_exceeding_managed_budget() {
+        let memory = Arc::new(DeterministicMemoryCoordinator::new(1_024, BTreeMap::new()).unwrap());
+        let managed: Arc<dyn MemoryCoordinator> = memory.clone();
+        let lease = reserve_quarantine_evidence(Some(&managed)).unwrap();
+        let temp = tempfile::tempdir().unwrap();
+        let builder = PackageBuilder::create(temp.path(), "quarantine-budget").unwrap();
+        let mut part_count = 0;
+        let mut sink = QuarantinePartAccumulator::new(&builder, &mut part_count, lease);
+        let error = sink
+            .push(QuarantineRecord {
+                source_row_ordinal: 0,
+                rule_id: "oversized".to_owned(),
+                error_code: "domain_violation".to_owned(),
+                source_position: None,
+                observed_value_redacted: QuarantineObservedValue::Preserved {
+                    value: "x".repeat(4_096),
+                },
+            })
+            .unwrap_err();
+        assert!(error.message.contains("exceeds available managed capacity"));
+        drop(sink);
+        assert_eq!(part_count, 0);
+        assert_eq!(memory.snapshot().current_bytes, 0);
+        assert!(
+            std::fs::read_dir(temp.path().join("quarantine"))
+                .unwrap()
+                .next()
+                .is_none()
+        );
     }
 
     #[test]

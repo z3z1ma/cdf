@@ -20,4 +20,4 @@ Pass for this milestone. V2 remains open for explicit shared-ledger ownership an
 
 ## Residual risk
 
-Parquet's native row-group buffers are bounded by chunk size but are not yet represented by a dedicated ledger lease. The next V2/F1 slice must reserve before candidate/Arrow/Parquet allocation and test the too-small-budget failure path.
+The dedicated ledger lease and too-small-budget failure path are now implemented. Residual risk is calibration rather than ownership: the flat-schema 3x simultaneous-buffer multiplier is conservative and needs RSS/profile confirmation in V2/V3. Any quarantine schema or writer-policy change must rerun that calibration.

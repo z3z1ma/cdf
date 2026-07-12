@@ -22,6 +22,8 @@ Vector validation now separates masks from candidate emission and calls an engin
 
 This removes both unbounded-by-rule-count candidate retention and complete encoded-artifact buffering. Artifact visibility, hash, fsync/rename, receipt journal, package verification, quarantine ordering/redaction, residual decisions, and fused/unfused identity remain governed by existing shared authorities. Adding a new validation rule does not change package writing code.
 
+The follow-up ledger slice assigns the buffer to consumer `quarantine-evidence`. Reservation grows before retention, accounts record/source-position/observed strings plus simultaneous Arrow/Parquet construction at a conservative 3x, and shrinks only after the Parquet writer flushes its row group and the record Vec capacity is dropped. A deterministic 1 KiB budget rejects a 4 KiB preserved value with no artifact, zero part count, and zero residual ledger bytes.
+
 ## Limits
 
-The record accumulator has a hard row bound, but V2/F1 still must hold an explicit shared-ledger reservation covering record strings, Arrow builder arrays, and Parquet row-group buffers and prove clean behavior under a deliberately tight budget. Archive transcode paths still use a separate byte API and remain D4/package-archive scope; this change does not claim their removal.
+Macro TLC/package profiling and final golden/RSS closeout remain V2. Archive transcode paths still use a separate byte API and remain D4/package-archive scope; this change does not claim their removal. The 3x quarantine encoding estimate is specific to the flat quarantine schema and must be remeasured if that schema or Parquet writer policy changes.

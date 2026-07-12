@@ -122,6 +122,11 @@ impl QuarantineArtifactWriter {
         let batch = quarantine_record_batch(records)?;
         self.writer.write(&batch).map_err(|error| {
             CdfError::data(format!("write streaming quarantine Parquet batch: {error}"))
+        })?;
+        self.writer.flush().map_err(|error| {
+            CdfError::data(format!(
+                "flush streaming quarantine Parquet row group: {error}"
+            ))
         })
     }
 
