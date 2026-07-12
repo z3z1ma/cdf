@@ -209,10 +209,12 @@ impl FormatDriver for ParquetFormatDriver {
                 |_| CdfError::data("Parquet row-group ordinal exceeds usize"),
             )?]);
             let actual_hash = cdf_contract::canonical_arrow_schema_hash(builder.schema())?;
-            if actual_hash != request.observed_schema_hash {
+            let expected_hash =
+                cdf_contract::canonical_arrow_schema_hash(request.physical_schema.as_ref())?;
+            if actual_hash != expected_hash {
                 return Err(CdfError::data(format!(
                     "Parquet physical schema changed before decode: planned {}, observed {actual_hash}",
-                    request.observed_schema_hash
+                    expected_hash
                 )));
             }
             if let Some(projection) = &request.projection {
@@ -264,7 +266,9 @@ impl FormatDriver for ParquetFormatDriver {
                     batch_id,
                     state.request.resource_id.clone(),
                     state.request.partition_id.clone(),
-                    state.request.observed_schema_hash.clone(),
+                    cdf_contract::canonical_arrow_schema_hash(
+                        state.request.physical_schema.as_ref(),
+                    )?,
                     record_batch,
                 )?;
                 batch.header.source_position = state.request.source_position.clone();

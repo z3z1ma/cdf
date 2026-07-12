@@ -4,7 +4,7 @@ use arrow_schema::SchemaRef;
 use cdf_contract::ObservedSchema;
 use cdf_kernel::{
     Batch, BoxFuture, CdfError, PartitionId, PayloadRetention, PushdownFidelity, ResourceId,
-    Result, ScanPredicate, SchemaHash, SourcePosition,
+    Result, ScanPredicate, SourcePosition,
 };
 use cdf_memory::{
     AccountedBytes, ConsumerKey, MemoryClass, MemoryCoordinator, MemoryLease,
@@ -408,7 +408,7 @@ pub struct PhysicalDecodeRequest {
     pub resource_id: ResourceId,
     pub partition_id: PartitionId,
     pub batch_id_prefix: String,
-    pub observed_schema_hash: SchemaHash,
+    pub physical_schema: SchemaRef,
     pub source_position: Option<SourcePosition>,
     pub projection: Option<Vec<String>>,
     pub predicates: Vec<ScanPredicate>,

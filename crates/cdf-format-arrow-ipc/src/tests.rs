@@ -202,8 +202,7 @@ fn arrow_ipc_file_driver_discovers_projects_and_streams_blocks() {
             resource_id: ResourceId::new("fixture.arrow").unwrap(),
             partition_id: PartitionId::new("file-000001").unwrap(),
             batch_id_prefix: "fixture".to_owned(),
-            observed_schema_hash:
-                cdf_contract::canonical_arrow_schema_hash(schema.as_ref()).unwrap(),
+            physical_schema: schema,
             source_position: None,
             projection: Some(vec!["id".to_owned()]),
             predicates: Vec::new(),
@@ -290,8 +289,7 @@ fn arrow_ipc_driver_reference_rate() {
             resource_id: ResourceId::new("bench.arrow").unwrap(),
             partition_id: PartitionId::new("file-000001").unwrap(),
             batch_id_prefix: "bench".to_owned(),
-            observed_schema_hash:
-                cdf_contract::canonical_arrow_schema_hash(schema.as_ref()).unwrap(),
+            physical_schema: schema,
             source_position: None,
             projection: None,
             predicates: Vec::new(),

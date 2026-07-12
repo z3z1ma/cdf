@@ -270,7 +270,7 @@ pub struct FileResource {
     capabilities: ResourceCapabilities,
     plan: FileResourcePlan,
     type_policy_allowances: TypePolicyAllowances,
-    effective_schema_runtime: Option<EffectiveSchemaRuntime>,
+    effective_schema_runtime: Option<Arc<EffectiveSchemaRuntime>>,
     dependencies: FileRuntimeDependencies,
 }
 
@@ -290,7 +290,7 @@ impl FileResource {
             capabilities,
             plan,
             type_policy_allowances,
-            effective_schema_runtime,
+            effective_schema_runtime: effective_schema_runtime.map(Arc::new),
             dependencies,
         })
     }
@@ -311,6 +311,7 @@ impl FileResource {
             partition,
             dependencies,
             self.type_policy_allowances,
+            self.effective_schema_runtime.clone(),
         )
     }
 }
@@ -355,6 +356,7 @@ impl ResourceStream for FileResource {
             partition,
             self.dependencies.clone(),
             self.type_policy_allowances,
+            self.effective_schema_runtime.clone(),
         )
     }
 
@@ -420,7 +422,7 @@ impl ResourceStream for FileResource {
     }
 
     fn effective_schema_runtime(&self) -> Option<&EffectiveSchemaRuntime> {
-        self.effective_schema_runtime.as_ref()
+        self.effective_schema_runtime.as_deref()
     }
 }
 
@@ -470,6 +472,12 @@ pub(crate) struct ResolvedFileMatch {
 enum ResolvedFileOpen {
     LocalPath(PathBuf),
     Transport(FileTransportResource),
+}
+
+#[derive(Clone, Default)]
+struct PhysicalSchemaAuthority {
+    hash: Option<SchemaHash>,
+    schema: Option<SchemaRef>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -561,6 +569,7 @@ fn open_file_resource_with_dependencies(
     partition: PartitionPlan,
     dependencies: FileRuntimeDependencies,
     allowances: cdf_kernel::TypePolicyAllowances,
+    effective_schema_runtime: Option<Arc<EffectiveSchemaRuntime>>,
 ) -> BoxFuture<'static, Result<BatchStream>> {
     let descriptor = descriptor.clone();
     let declared_schema = declared_schema.clone();
@@ -574,6 +583,7 @@ fn open_file_resource_with_dependencies(
                 &partition,
                 &dependencies,
                 allowances,
+                effective_schema_runtime.as_deref(),
             )
         });
     }
@@ -594,6 +604,7 @@ fn open_file_resource_with_dependencies(
                 &partition,
                 &dependencies,
                 allowances,
+                effective_schema_runtime.as_deref(),
             )?;
             while let Some(batch) = batches.try_next().await? {
                 sender.send(batch).await?;
@@ -611,6 +622,7 @@ fn open_file_partition(
     partition: &PartitionPlan,
     dependencies: &FileRuntimeDependencies,
     allowances: cdf_kernel::TypePolicyAllowances,
+    effective_schema_runtime: Option<&EffectiveSchemaRuntime>,
 ) -> Result<BatchStream> {
     let resolved = dependencies
         .with_transport(|transport| validate_partition(descriptor, plan, partition, transport))?;
@@ -619,6 +631,10 @@ fn open_file_partition(
         .get(PLAN_PHYSICAL_SCHEMA_HASH_KEY)
         .map(|value| SchemaHash::new(value.clone()))
         .transpose()?;
+    let planned_physical_schema = planned_physical_schema_hash
+        .as_ref()
+        .and_then(|hash| effective_schema_runtime.and_then(|runtime| runtime.physical_schema(hash)))
+        .cloned();
     let options = ReadOptions::new(
         descriptor.resource_id.clone(),
         partition.partition_id.clone(),
@@ -633,7 +649,10 @@ fn open_file_partition(
         declared_schema,
         dependencies,
         &type_policy,
-        planned_physical_schema_hash,
+        PhysicalSchemaAuthority {
+            hash: planned_physical_schema_hash,
+            schema: planned_physical_schema,
+        },
     )
 }
 
@@ -644,7 +663,7 @@ fn stream_file_match(
     declared_schema: SchemaRef,
     dependencies: &FileRuntimeDependencies,
     type_policy: &TypePolicy,
-    planned_physical_schema_hash: Option<SchemaHash>,
+    physical_schema_authority: PhysicalSchemaAuthority,
 ) -> Result<BatchStream> {
     let position = Some(SourcePosition::FileManifest(cdf_kernel::FileManifest {
         version: 1,
@@ -665,7 +684,7 @@ fn stream_file_match(
             native_driver.expect("registered driver guard was checked"),
             options,
             position,
-            planned_physical_schema_hash,
+            physical_schema_authority,
             dependencies,
         ),
         ResolvedFileOpen::LocalPath(path) => {
@@ -703,7 +722,7 @@ fn stream_file_match(
                     driver,
                     options,
                     position,
-                    planned_physical_schema_hash,
+                    physical_schema_authority,
                     dependencies,
                 )
             } else {
@@ -731,7 +750,7 @@ fn stream_registered_format(
     driver: Arc<dyn FormatDriver>,
     options: ReadOptions,
     source_position: Option<SourcePosition>,
-    planned_physical_schema_hash: Option<SchemaHash>,
+    physical_schema_authority: PhysicalSchemaAuthority,
     dependencies: &FileRuntimeDependencies,
 ) -> Result<BatchStream> {
     let memory = dependencies.execution().memory();
@@ -747,8 +766,19 @@ fn stream_registered_format(
             let _spool = spool;
             let source = Arc::new(LocalByteSource::open(path, Arc::clone(&memory))?);
             let options_json = driver.canonical_options(serde_json::json!({}))?;
-            let observed_schema_hash = match planned_physical_schema_hash {
-                Some(hash) => hash,
+            let physical_schema = match physical_schema_authority.schema {
+                Some(schema) => {
+                    let schema_hash =
+                        cdf_contract::canonical_arrow_schema_hash(schema.as_ref())?;
+                    if let Some(planned_hash) = &physical_schema_authority.hash
+                        && planned_hash != &schema_hash
+                    {
+                        return Err(CdfError::data(format!(
+                            "plan physical schema catalog hash {schema_hash} does not match partition authority {planned_hash}"
+                        )));
+                    }
+                    schema
+                }
                 None => {
                     let observation = driver
                         .discover(
@@ -761,7 +791,17 @@ fn stream_registered_format(
                             },
                         )
                         .await?;
-                    cdf_contract::canonical_arrow_schema_hash(observation.arrow_schema.as_ref())?
+                    let observed_hash = cdf_contract::canonical_arrow_schema_hash(
+                        observation.arrow_schema.as_ref(),
+                    )?;
+                    if let Some(planned_hash) = &physical_schema_authority.hash
+                        && planned_hash != &observed_hash
+                    {
+                        return Err(CdfError::data(format!(
+                            "physical schema changed before decode: planned {planned_hash}, observed {observed_hash}"
+                        )));
+                    }
+                    observation.arrow_schema
                 }
             };
             let units = driver
@@ -787,7 +827,7 @@ fn stream_registered_format(
                             resource_id: options.resource_id.clone(),
                             partition_id: options.partition_id.clone(),
                             batch_id_prefix: options.batch_id_prefix.clone(),
-                            observed_schema_hash: observed_schema_hash.clone(),
+                            physical_schema: Arc::clone(&physical_schema),
                             source_position: source_position.clone(),
                             projection: None,
                             predicates: Vec::new(),
@@ -2338,7 +2378,7 @@ mod tests {
                 PartitionId::new("file-0").unwrap(),
             ),
             None,
-            None,
+            PhysicalSchemaAuthority::default(),
             &dependencies,
         )
         .unwrap();
@@ -2421,7 +2461,7 @@ mod tests {
             schema,
             &dependencies,
             &ContractPolicy::default().types,
-            None,
+            PhysicalSchemaAuthority::default(),
         )
         .unwrap();
         let batches = futures_executor::block_on(stream.collect::<Vec<_>>())
@@ -2546,7 +2586,7 @@ mod tests {
             declared.clone(),
             &dependencies,
             &type_policy,
-            None,
+            PhysicalSchemaAuthority::default(),
         )
         .unwrap();
         let batches = futures_executor::block_on(stream.collect::<Vec<_>>())
@@ -2578,7 +2618,7 @@ mod tests {
             declared,
             &constrained,
             &type_policy,
-            None,
+            PhysicalSchemaAuthority::default(),
         ) {
             Ok(_) => panic!("undersized spool budget should reject the stream"),
             Err(error) => error,

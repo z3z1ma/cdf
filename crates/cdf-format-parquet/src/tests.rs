@@ -161,7 +161,6 @@ fn parquet_driver_discovers_plans_and_decodes_through_neutral_byte_source() {
     .unwrap();
     assert_eq!(units.len(), 1);
 
-    let observed_schema_hash = cdf_contract::canonical_arrow_schema_hash(schema.as_ref()).unwrap();
     let stream = futures_executor::block_on(driver.decode(
         source,
         PhysicalDecodeRequest {
@@ -170,7 +169,7 @@ fn parquet_driver_discovers_plans_and_decodes_through_neutral_byte_source() {
             resource_id: ResourceId::new("fixture.parquet").unwrap(),
             partition_id: PartitionId::new("file-000001").unwrap(),
             batch_id_prefix: "fixture".to_owned(),
-            observed_schema_hash,
+            physical_schema: schema,
             source_position: None,
             projection: None,
             predicates: Vec::new(),

@@ -1,6 +1,6 @@
 Status: open
 Created: 2026-07-11
-Updated: 2026-07-11
+Updated: 2026-07-12
 Parent: .10x/tickets/2026-07-10-p3-ws-b-format-decode-engines.md
 Depends-On: .10x/tickets/2026-07-11-p3-b1-streaming-byte-transforms.md, .10x/tickets/2026-07-11-p0-fx1-native-format-extension-boundary.md, .10x/tickets/done/2026-07-10-p3-ws-l5-preoptimization-baseline.md
 
@@ -33,3 +33,7 @@ Depends on transforms, FX1, and L5.
 
 - `.10x/specs/native-enterprise-format-catalog.md`
 - `.10x/specs/native-format-codec-runtime.md`
+
+## Progress and notes
+
+- 2026-07-12: Landed the prerequisite physical-schema authority needed by row codecs. Decode requests now receive the exact planned Arrow schema from the effective schema catalog rather than only its hash, so CSV/fixed-width execution can decode against pinned discovery without runtime reinference. Parquet/Arrow IPC/file-source tests and strict affected-cone Clippy pass. Evidence: `.10x/evidence/2026-07-12-fx1-physical-decode-schema-authority.md`.

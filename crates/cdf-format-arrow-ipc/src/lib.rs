@@ -164,10 +164,12 @@ impl FormatDriver for ArrowIpcFileFormatDriver {
             }
             let footer = read_footer(source.as_ref(), &request.cancellation, u64::MAX).await?;
             let actual_hash = cdf_contract::canonical_arrow_schema_hash(footer.schema.as_ref())?;
-            if actual_hash != request.observed_schema_hash {
+            let expected_hash =
+                cdf_contract::canonical_arrow_schema_hash(request.physical_schema.as_ref())?;
+            if actual_hash != expected_hash {
                 return Err(CdfError::data(format!(
                     "Arrow IPC physical schema changed before decode: planned {}, observed {actual_hash}",
-                    request.observed_schema_hash
+                    expected_hash
                 )));
             }
             let projection =
@@ -239,7 +241,9 @@ impl FormatDriver for ArrowIpcFileFormatDriver {
                     batch_id,
                     state.request.resource_id.clone(),
                     state.request.partition_id.clone(),
-                    state.request.observed_schema_hash.clone(),
+                    cdf_contract::canonical_arrow_schema_hash(
+                        state.request.physical_schema.as_ref(),
+                    )?,
                     record_batch,
                 )?;
                 batch.header.source_position = state.request.source_position.clone();
