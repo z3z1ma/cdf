@@ -25,6 +25,49 @@ pub struct VectorValidationPlan {
     rules: Vec<VectorRule>,
 }
 
+#[derive(Debug)]
+pub struct VectorValidationEvaluator<'a> {
+    program: &'a ValidationProgram,
+    plan: Option<VectorValidationPlan>,
+}
+
+impl<'a> VectorValidationEvaluator<'a> {
+    pub fn new(program: &'a ValidationProgram) -> Self {
+        Self {
+            program,
+            plan: None,
+        }
+    }
+
+    pub fn evaluate(
+        &mut self,
+        context: &ContractEvaluationContext,
+        batch: &RecordBatch,
+    ) -> Result<ContractBatchEvaluation> {
+        self.plan_for(batch.schema())?.evaluate(context, batch)
+    }
+
+    pub fn evaluate_masks(
+        &mut self,
+        context: &ContractEvaluationContext,
+        batch: &RecordBatch,
+    ) -> Result<VectorMaskEvaluation> {
+        self.plan_for(batch.schema())?
+            .evaluate_masks(context, batch)
+    }
+
+    fn plan_for(&mut self, schema: SchemaRef) -> Result<&VectorValidationPlan> {
+        if self
+            .plan
+            .as_ref()
+            .is_none_or(|plan| plan.schema.as_ref() != schema.as_ref())
+        {
+            self.plan = Some(bind_vector_validation_plan(self.program, schema)?);
+        }
+        Ok(self.plan.as_ref().expect("vector plan was bound"))
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct VectorMaskEvaluation {
     pub accepted_rows: BooleanBuffer,

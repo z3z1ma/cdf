@@ -32,3 +32,7 @@ Blocked on V1, A5, and A2.
 ## References
 
 - `.10x/specs/vectorized-contract-validation.md`
+
+## Progress and notes
+
+- 2026-07-11: Production preview and run contract execution now use a run-lived `VectorValidationEvaluator`; it binds once per observed Arrow schema and automatically rebinds when physical provenance metadata changes. Both fused no-residual and residual-present paths use the same vector evaluator. The scalar function remains only as the `cdf-contract` oracle/property surface, and an engine architecture test forbids calling it from production execution. All 90 non-ignored engine tests passed. The existing 64k fused-transform benchmark improved from the recorded 3.912 GiB/s baseline to 15.658 GiB/s at the same 200 iterations; unfused measured 2.183 GiB/s and fused/unfused outputs remain golden-identical. V2 remains open for exact ledger accounting/spill of high-failure selected evidence and macro package/TLC profiles.

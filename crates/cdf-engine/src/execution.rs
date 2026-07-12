@@ -14,9 +14,9 @@ use arrow_select::take::take_record_batch;
 use cdf_contract::{
     ContractEvaluationContext, QuarantineCandidate, RESIDUAL_ENCODING_METADATA_KEY,
     RedactionDecision, ResidualCandidateVerdict, ResidualFieldRef, ResidualFieldWithRedaction,
-    VARIANT_COLUMN_NAME, ValidationProgram, VerdictSummary, encode_package_dedup_keys,
-    encode_residual_json_v1, encode_residual_json_v1_redacted, evaluate_package_order_dedup,
-    evaluate_record_batch, package_dedup_rule, reject_untrusted_schema_coercion_metadata,
+    VARIANT_COLUMN_NAME, ValidationProgram, VectorValidationEvaluator, VerdictSummary,
+    encode_package_dedup_keys, encode_residual_json_v1, encode_residual_json_v1_redacted,
+    evaluate_package_order_dedup, package_dedup_rule, reject_untrusted_schema_coercion_metadata,
     schema_coercion_plan_from_trusted_json,
 };
 use cdf_kernel::{
@@ -153,6 +153,7 @@ where
     crate::planning::validate_plan_schema_authority(resource, plan)?;
     let runtime_output_schema = plan.output_arrow_schema()?;
     let evaluation_context = ContractEvaluationContext::observed_at(current_observed_at_ms()?);
+    let mut contract_evaluator = VectorValidationEvaluator::new(&plan.validation_program);
     let mut remaining_rows = limits.max_rows;
     let mut remaining_bytes = limits.max_bytes;
     let mut remaining_batches = limits.max_batches;
@@ -327,6 +328,7 @@ where
                     let contract = apply_contract_exec(
                         output,
                         &plan.validation_program,
+                        &mut contract_evaluator,
                         residual_candidates,
                         &ResidualBatchContext {
                             evaluation: &evaluation_context,
@@ -1432,6 +1434,7 @@ where
     }
     let package_evaluation_context =
         ContractEvaluationContext::observed_at(current_observed_at_ms()?);
+    let mut contract_evaluator = VectorValidationEvaluator::new(&validation_program);
     if validation_program.requires_observed_at_ms() {
         builder.write_json_artifact(
             "plan/contract-evaluation-context.json",
@@ -1723,6 +1726,7 @@ where
                 } = apply_contract_exec(
                     output,
                     &validation_program,
+                    &mut contract_evaluator,
                     residual_candidates,
                     &ResidualBatchContext {
                         evaluation: &evaluation_context,
@@ -1931,6 +1935,7 @@ where
         &mut durable_segment_observer,
     )?;
 
+    drop(contract_evaluator);
     if effective_schema_evidence.is_none() && validation_program.schema_coercion.is_none() {
         validation_program.schema_coercion = schema_coercion;
     }
@@ -2820,6 +2825,7 @@ async fn reserve_transform_working_set(
 fn apply_contract_exec(
     batch: RecordBatch,
     program: &ValidationProgram,
+    evaluator: &mut VectorValidationEvaluator<'_>,
     residual_candidates: Vec<PreContractResidualCandidate>,
     context: &ResidualBatchContext<'_>,
     mode: TransformKernelMode,
@@ -2829,12 +2835,13 @@ fn apply_contract_exec(
         return apply_contract_exec_without_residual_candidates(
             batch,
             program,
+            evaluator,
             context,
             memory_lease,
         );
     }
     let residual = apply_residual_verdicts(batch, program, residual_candidates, context)?;
-    let evaluation = evaluate_record_batch(program, context.evaluation, &residual.typed_batch)?;
+    let evaluation = evaluator.evaluate(context.evaluation, &residual.typed_batch)?;
     let summary = evaluation.summary;
     let mut quarantine_records = residual.quarantine_records;
     quarantine_records.extend(quarantine_records_from_candidates(
@@ -2866,11 +2873,12 @@ fn apply_contract_exec(
 fn apply_contract_exec_without_residual_candidates(
     batch: RecordBatch,
     program: &ValidationProgram,
+    evaluator: &mut VectorValidationEvaluator<'_>,
     context: &ResidualBatchContext<'_>,
     memory_lease: Option<MemoryLease>,
 ) -> Result<ContractExecOutput> {
     let batch = restore_contract_nullability(batch, program)?;
-    let evaluation = evaluate_record_batch(program, context.evaluation, &batch)?;
+    let evaluation = evaluator.evaluate(context.evaluation, &batch)?;
     let summary = evaluation.summary;
     let quarantine_records = quarantine_records_from_candidates(evaluation.quarantine_candidates)?;
     let accepted = if summary.accepted_rows == summary.input_rows {
@@ -3562,11 +3570,17 @@ mod transform_kernel_tests {
     use arrow_schema::{DataType, Field, Schema};
     use cdf_contract::{
         ContractEvaluationContext, ContractPolicy, ObservedSchema, SchemaEvolutionMode,
-        compile_validation_program,
+        VectorValidationEvaluator, compile_validation_program,
     };
     use cdf_kernel::{BatchId, TrustLevel};
 
     use super::{ResidualBatchContext, TransformKernelMode, apply_contract_exec};
+
+    #[test]
+    fn production_execution_cannot_call_the_scalar_contract_oracle() {
+        let scalar_oracle = ["evaluate", "record", "batch"].join("_") + "(";
+        assert!(!include_str!("execution.rs").contains(&scalar_oracle));
+    }
 
     #[test]
     #[ignore = "release-mode A5b fused/unfused kernel benchmark"]
@@ -3608,11 +3622,13 @@ mod transform_kernel_tests {
         };
 
         let measure = |mode| {
+            let mut evaluator = VectorValidationEvaluator::new(&program);
             let started = Instant::now();
             for _ in 0..iterations {
                 let output = apply_contract_exec(
                     black_box(batch.clone()),
                     black_box(&program),
+                    &mut evaluator,
                     Vec::new(),
                     black_box(&context),
                     mode,
