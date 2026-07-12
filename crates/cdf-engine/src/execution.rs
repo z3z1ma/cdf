@@ -28,7 +28,9 @@ use cdf_kernel::{
     StratifiedHashBoundedIdentity, StratifiedHashCandidate, StratifiedHashIdentityStrength,
     TerminalSchemaObservationQuarantine, WriteDisposition, semantic, source_name,
 };
-use cdf_memory::{ConsumerKey, MemoryClass, MemoryCoordinator, ReservationRequest};
+use cdf_memory::{
+    ConsumerKey, MemoryClass, MemoryCoordinator, MemoryLease, ReservationRequest, reserve,
+};
 use cdf_package::{PackageBuilder, PackageStatus, QuarantineObservedValue, QuarantineRecord};
 use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
@@ -316,6 +318,7 @@ where
                                 .map(|evidence| evidence.observation_id.as_str()),
                         },
                         TransformKernelMode::Fused,
+                        None,
                     )?;
                     let normalized = append_residual_variant(
                         contract.accepted,
@@ -713,6 +716,7 @@ struct ContractExecOutput {
     quarantine_records: Vec<QuarantineRecord>,
     summary: VerdictSummary,
     residual_decisions: Vec<ResidualDecisionArtifact>,
+    memory_lease: Option<MemoryLease>,
 }
 
 struct ResidualBatchContext<'a> {
@@ -732,12 +736,19 @@ struct PendingDedupBatch {
     partition_ordinal: u32,
     output: RecordBatch,
     output_position: Option<SourcePosition>,
+    _memory_lease: Option<MemoryLease>,
 }
 
 struct PreparedOutputBatch {
     output: RecordBatch,
     variant_values: Vec<Option<String>>,
     output_position: Option<SourcePosition>,
+    memory_lease: Option<MemoryLease>,
+}
+
+struct PreparedKernelOutput {
+    output: RecordBatch,
+    memory_lease: Option<MemoryLease>,
 }
 
 struct OutputWriteState<'a> {
@@ -1249,12 +1260,19 @@ where
                 let evaluation_context = package_evaluation_context
                     .clone()
                     .with_source_position(batch_source_position.clone());
+                let transform_memory_lease = reserve_transform_working_set(
+                    memory.as_ref(),
+                    &output,
+                    &residual_candidates,
+                )
+                .await?;
                 let ContractExecOutput {
                     accepted,
                     variant_values,
                     quarantine_records,
                     summary,
                     residual_decisions: batch_residual_decisions,
+                    memory_lease,
                 } = apply_contract_exec(
                     output,
                     &validation_program,
@@ -1272,6 +1290,7 @@ where
                     } else {
                         TransformKernelMode::Fused
                     },
+                    transform_memory_lease,
                 )?;
                 residual_decisions.extend(batch_residual_decisions);
                 merge_verdict_summary(&mut verdict_summary, summary);
@@ -1297,18 +1316,23 @@ where
                     u64::try_from(output.get_array_memory_size())
                         .map_err(|error| CdfError::internal(error.to_string()))?;
                 if apply_package_dedup {
-                    let output = prepare_output_batch(
+                    let prepared_output = prepare_output_batch(
                         &validation_program,
                         effective_schema_evidence.is_some(),
                         PreparedOutputBatch {
                             output,
                             variant_values,
                             output_position: batch_source_position.clone(),
+                            memory_lease,
                         },
                         &mut output_schema,
                         runtime_output_schema.as_ref(),
                         &mut phase_measurements,
                     )?;
+                    let PreparedKernelOutput {
+                        output,
+                        memory_lease,
+                    } = prepared_output;
                     phase_measurements.add(
                         RunPhase::ValidationNormalization,
                         elapsed_ns(validation_started, "validation/normalization")?,
@@ -1327,6 +1351,7 @@ where
                             partition_ordinal,
                             output,
                             output_position: batch_source_position,
+                            _memory_lease: memory_lease,
                         });
                     }
                     continue;
@@ -1345,6 +1370,7 @@ where
                         output,
                         variant_values,
                         output_position: batch_source_position,
+                        memory_lease,
                     },
                     &mut segment_assembler,
                     &mut OutputWriteState {
@@ -1628,7 +1654,10 @@ fn apply_dedup_and_write_pending_batches(
             }
             write_normalized_output_batch(
                 builder,
-                output,
+                PreparedKernelOutput {
+                    output,
+                    memory_lease: None,
+                },
                 payload_batch.output_position,
                 &mut assembler.as_mut().expect("assembler initialized").1,
                 state,
@@ -1710,7 +1739,10 @@ fn apply_dedup_and_write_pending_batches(
         }
         write_normalized_output_batch(
             builder,
-            output,
+            PreparedKernelOutput {
+                output,
+                memory_lease: None,
+            },
             pending.output_position,
             &mut assembler.as_mut().expect("assembler initialized").1,
             state,
@@ -1891,7 +1923,7 @@ fn write_output_batch(
     state: &mut OutputWriteState<'_>,
 ) -> Result<()> {
     let output_position = prepared.output_position.clone();
-    let output = prepare_output_batch(
+    let prepared = prepare_output_batch(
         program,
         canonicalize_observed_schema,
         prepared,
@@ -1899,7 +1931,7 @@ fn write_output_batch(
         state.expected_schema,
         state.phase_measurements,
     )?;
-    write_normalized_output_batch(builder, output, output_position, assembler, state)
+    write_normalized_output_batch(builder, prepared, output_position, assembler, state)
 }
 
 fn prepare_output_batch(
@@ -1909,11 +1941,12 @@ fn prepare_output_batch(
     output_schema: &mut Option<SchemaArtifact>,
     expected_schema: &Schema,
     phase_measurements: &mut PhaseMeasurements,
-) -> Result<RecordBatch> {
+) -> Result<PreparedKernelOutput> {
     let PreparedOutputBatch {
         output,
         variant_values,
         output_position: _,
+        memory_lease,
     } = prepared;
     let normalization_started = phase_measurements.start();
     let normalization_input_bytes = output.get_array_memory_size() as u64;
@@ -1941,17 +1974,24 @@ fn prepare_output_batch(
         )));
     }
     *output_schema = Some(actual_schema);
-    Ok(output)
+    if let Some(lease) = &memory_lease {
+        lease.reconcile(normalization_output_bytes.max(1))?;
+    }
+    Ok(PreparedKernelOutput {
+        output,
+        memory_lease,
+    })
 }
 
 fn write_normalized_output_batch(
     builder: &mut PackageBuilder,
-    output: RecordBatch,
+    prepared: PreparedKernelOutput,
     output_position: Option<SourcePosition>,
     assembler: &mut crate::CanonicalSegmentAssembler,
     state: &mut OutputWriteState<'_>,
 ) -> Result<()> {
-    let canonical_segments = assembler.push(output, output_position)?;
+    let canonical_segments =
+        assembler.push_accounted(prepared.output, output_position, prepared.memory_lease)?;
     persist_canonical_segments(builder, canonical_segments, state)
 }
 
@@ -1961,6 +2001,7 @@ fn persist_canonical_segments(
     state: &mut OutputWriteState<'_>,
 ) -> Result<()> {
     for canonical in canonical_segments {
+        let _transform_memory_leases = canonical.memory_leases;
         let _memory_lease = match state.memory {
             Some(memory) => {
                 let bytes = canonical
@@ -2206,15 +2247,66 @@ enum TransformKernelMode {
     Unfused,
 }
 
+async fn reserve_transform_working_set(
+    memory: Option<&Arc<dyn MemoryCoordinator>>,
+    batch: &RecordBatch,
+    residual_candidates: &[PreContractResidualCandidate],
+) -> Result<Option<MemoryLease>> {
+    let Some(memory) = memory else {
+        return Ok(None);
+    };
+    let input_bytes = u64::try_from(batch.get_array_memory_size())
+        .map_err(|_| CdfError::data("transform input memory exceeds u64"))?;
+    let residual_bytes = residual_candidates
+        .iter()
+        .try_fold(0u64, |total, candidate| {
+            let value_bytes = u64::try_from(candidate.value().get_array_memory_size())
+                .map_err(|_| CdfError::data("residual candidate memory exceeds u64"))?;
+            let path_bytes = candidate
+                .source_path()
+                .iter()
+                .try_fold(0u64, |total, part| {
+                    total
+                        .checked_add(u64::try_from(part.len()).unwrap_or(u64::MAX))
+                        .ok_or_else(|| CdfError::data("residual path memory overflow"))
+                })?;
+            let candidate_bytes = value_bytes
+                .checked_mul(8)
+                .and_then(|bytes| bytes.checked_add(path_bytes))
+                .and_then(|bytes| bytes.checked_add(256))
+                .ok_or_else(|| CdfError::data("residual transform working set overflow"))?;
+            total
+                .checked_add(candidate_bytes)
+                .ok_or_else(|| CdfError::data("residual transform working set overflow"))
+        })?;
+    let bytes = input_bytes
+        .max(1)
+        .checked_mul(2)
+        .and_then(|bytes| bytes.checked_add(residual_bytes))
+        .ok_or_else(|| CdfError::data("transform working set overflow"))?;
+    let request = ReservationRequest::new(
+        ConsumerKey::new("fused-transform", MemoryClass::Transform)?,
+        bytes,
+    )?
+    .as_minimum_working_set();
+    Ok(Some(reserve(Arc::clone(memory), request).await?))
+}
+
 fn apply_contract_exec(
     batch: RecordBatch,
     program: &ValidationProgram,
     residual_candidates: Vec<PreContractResidualCandidate>,
     context: &ResidualBatchContext<'_>,
     mode: TransformKernelMode,
+    memory_lease: Option<MemoryLease>,
 ) -> Result<ContractExecOutput> {
     if mode == TransformKernelMode::Fused && residual_candidates.is_empty() {
-        return apply_contract_exec_without_residual_candidates(batch, program, context);
+        return apply_contract_exec_without_residual_candidates(
+            batch,
+            program,
+            context,
+            memory_lease,
+        );
     }
     let residual = apply_residual_verdicts(batch, program, residual_candidates, context)?;
     let evaluation = evaluate_record_batch(program, context.evaluation, &residual.typed_batch)?;
@@ -2242,6 +2334,7 @@ fn apply_contract_exec(
         quarantine_records,
         summary: combined,
         residual_decisions: residual.residual_decisions,
+        memory_lease,
     })
 }
 
@@ -2249,6 +2342,7 @@ fn apply_contract_exec_without_residual_candidates(
     batch: RecordBatch,
     program: &ValidationProgram,
     context: &ResidualBatchContext<'_>,
+    memory_lease: Option<MemoryLease>,
 ) -> Result<ContractExecOutput> {
     let batch = restore_contract_nullability(batch, program)?;
     let evaluation = evaluate_record_batch(program, context.evaluation, &batch)?;
@@ -2275,6 +2369,7 @@ fn apply_contract_exec_without_residual_candidates(
         quarantine_records,
         summary,
         residual_decisions: Vec::new(),
+        memory_lease,
     })
 }
 
@@ -2996,6 +3091,7 @@ mod transform_kernel_tests {
                     Vec::new(),
                     black_box(&context),
                     mode,
+                    None,
                 )
                 .unwrap();
                 black_box(output);

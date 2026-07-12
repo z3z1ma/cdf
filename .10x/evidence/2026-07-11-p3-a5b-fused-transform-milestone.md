@@ -17,6 +17,7 @@ The fused path calls the same vector `evaluate_record_batch` program and materia
 - `cargo test -p cdf-engine fused_and_unfused_transform_modes_produce_identical_packages -- --nocapture` — passed. Engine output, package identity/hash/signature, segments, quarantine artifact bytes, lineage, positions, and evidence were equal; both package readers verified.
 - `CDF_A5_FUSION_BENCH_ITERATIONS=200 cargo test --release -p cdf-engine fused_transform_hot_path_benchmark -- --ignored --nocapture` — 64k rows per iteration; unfused 1.426 GiB/s; fused 3.912 GiB/s; 2.743x speedup.
 - `cargo clippy -p cdf-engine --all-targets -- -D warnings` — passed.
+- `cargo test -p cdf-engine fused_transform_reserves_before_allocation_and_releases_after_persist -- --nocapture` — passed. The shared ledger recorded transform usage, the successful path returned current bytes to zero after persistence, and a deliberately undersized 64-byte pool failed with the `Data` class before transform allocation and returned to zero.
 
 ## What this supports
 
@@ -26,4 +27,4 @@ The fused path calls the same vector `evaluate_record_batch` program and materia
 
 ## Limits
 
-This milestone specializes the overwhelmingly common no-residual-candidate case. Batches containing actual residual candidates still execute the unfused semantic reference. Output/scratch reservations before allocation and bounded detailed-evidence persistence remain required for A5b closure.
+This milestone specializes the overwhelmingly common no-residual-candidate case. Batches containing actual residual candidates still execute the unfused semantic reference. Bounded detailed-evidence persistence and accounted dedup-spool replay remain required for A5b closure.

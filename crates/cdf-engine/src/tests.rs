@@ -1452,6 +1452,51 @@ fn fused_and_unfused_transform_modes_produce_identical_packages() {
 }
 
 #[test]
+fn fused_transform_reserves_before_allocation_and_releases_after_persist() {
+    let resource = MockResource::tier_a(sample_batches());
+    let plan = Planner::new()
+        .plan_tier_a(
+            &resource,
+            plan_input(vec![], None, None, PlanBoundedness::Bounded),
+        )
+        .unwrap();
+    let pre_finalize =
+        |_: &cdf_package::PackageBuilder, _: EnginePackageDraft<'_>| -> Result<()> { Ok(()) };
+    let (_, services) =
+        StandaloneExecutionHost::default_services_with_spill(64 * 1024 * 1024, 1024 * 1024)
+            .unwrap();
+    let output_dir = TempDir::new().unwrap();
+    block_on(execute_to_package_with_segment_positions_and_pre_finalize(
+        &plan,
+        &resource,
+        output_dir.path(),
+        &pre_finalize,
+        EngineExecutionOptions::default().with_execution_services(services.clone()),
+    ))
+    .unwrap();
+    let memory = services.memory().snapshot();
+    assert!(memory.consumers.iter().any(|(consumer, usage)| {
+        consumer.class == cdf_memory::MemoryClass::Transform && usage.peak_bytes > 0
+    }));
+    assert_eq!(memory.current_bytes, 0);
+
+    let (_, tiny_services) =
+        StandaloneExecutionHost::default_services_with_spill(64, 1024).unwrap();
+    let failed_dir = TempDir::new().unwrap();
+    let error = block_on(execute_to_package_with_segment_positions_and_pre_finalize(
+        &plan,
+        &resource,
+        failed_dir.path(),
+        &pre_finalize,
+        EngineExecutionOptions::default().with_execution_services(tiny_services.clone()),
+    ))
+    .unwrap_err();
+    assert_eq!(error.kind, cdf_kernel::ErrorKind::Data);
+    assert!(error.message.contains("exceeds managed budget"));
+    assert_eq!(tiny_services.memory().snapshot().current_bytes, 0);
+}
+
+#[test]
 fn contract_exec_writes_redacted_quarantine_artifact_and_keeps_accepted_rows() {
     let raw_pii = "pii-fixture-sensitive";
     let schema = Arc::new(Schema::new(vec![

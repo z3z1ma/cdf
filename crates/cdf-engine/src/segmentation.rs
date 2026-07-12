@@ -13,6 +13,7 @@ use cdf_kernel::{
     CdfError, CompositePosition, CursorPosition, CursorValue, FileManifest, FilePosition, Result,
     SegmentId, SourcePosition,
 };
+use cdf_memory::MemoryLease;
 use cdf_memory::MemorySnapshot;
 use serde::{Deserialize, Serialize};
 
@@ -101,6 +102,7 @@ pub struct CanonicalSegment {
     pub row_count: u64,
     pub logical_bytes: u64,
     pub retained_bytes: u64,
+    pub(crate) memory_leases: Vec<MemoryLease>,
 }
 
 pub struct CanonicalSegmentAssembler {
@@ -108,6 +110,7 @@ pub struct CanonicalSegmentAssembler {
     partition_ordinal: u32,
     next_segment_ordinal: u32,
     batches: Vec<RecordBatch>,
+    memory_leases: Vec<MemoryLease>,
     output_position: Option<SourcePosition>,
     rows: u64,
     logical_bytes: u64,
@@ -122,6 +125,7 @@ impl CanonicalSegmentAssembler {
             partition_ordinal,
             next_segment_ordinal: 0,
             batches: Vec::new(),
+            memory_leases: Vec::new(),
             output_position: None,
             rows: 0,
             logical_bytes: 0,
@@ -131,8 +135,26 @@ impl CanonicalSegmentAssembler {
 
     pub fn push(
         &mut self,
+        batch: RecordBatch,
+        position: Option<SourcePosition>,
+    ) -> Result<Vec<CanonicalSegment>> {
+        self.push_inner(batch, position, None)
+    }
+
+    pub(crate) fn push_accounted(
+        &mut self,
+        batch: RecordBatch,
+        position: Option<SourcePosition>,
+        lease: Option<MemoryLease>,
+    ) -> Result<Vec<CanonicalSegment>> {
+        self.push_inner(batch, position, lease)
+    }
+
+    fn push_inner(
+        &mut self,
         mut batch: RecordBatch,
         position: Option<SourcePosition>,
+        lease: Option<MemoryLease>,
     ) -> Result<Vec<CanonicalSegment>> {
         let mut emitted = Vec::new();
         let mut joined_position = None;
@@ -169,7 +191,7 @@ impl CanonicalSegmentAssembler {
                     "oversized positioned batch requires exact slice-position authority",
                 ));
             }
-            self.push_chunk(batch, batch_bytes)?;
+            self.push_chunk(batch, batch_bytes, lease.as_ref())?;
             return Ok(emitted);
         }
         while batch.num_rows() > 0 {
@@ -192,7 +214,7 @@ impl CanonicalSegmentAssembler {
                         self.policy.maximum_bytes
                     )));
                 }
-                self.push_chunk(one_row, one_row_bytes)?;
+                self.push_chunk(one_row, one_row_bytes, lease.as_ref())?;
                 batch = batch.slice(1, batch.num_rows() - 1);
                 emitted.push(self.flush()?.unwrap());
                 continue;
@@ -206,7 +228,7 @@ impl CanonicalSegmentAssembler {
                 chunk
             };
             let chunk_bytes = logical_batch_bytes(&chunk)?;
-            self.push_chunk(chunk, chunk_bytes)?;
+            self.push_chunk(chunk, chunk_bytes, lease.as_ref())?;
             if self.rows >= u64::from(self.policy.target_rows)
                 || self.logical_bytes >= self.policy.target_bytes
             {
@@ -240,10 +262,16 @@ impl CanonicalSegmentAssembler {
             row_count: std::mem::take(&mut self.rows),
             logical_bytes: std::mem::take(&mut self.logical_bytes),
             retained_bytes: std::mem::take(&mut self.retained_bytes),
+            memory_leases: std::mem::take(&mut self.memory_leases),
         }))
     }
 
-    fn push_chunk(&mut self, chunk: RecordBatch, logical_bytes: u64) -> Result<()> {
+    fn push_chunk(
+        &mut self,
+        chunk: RecordBatch,
+        logical_bytes: u64,
+        lease: Option<&MemoryLease>,
+    ) -> Result<()> {
         let rows = u64::try_from(chunk.num_rows())
             .map_err(|_| CdfError::data("canonical segment rows exceed u64"))?;
         let retained_bytes = u64::try_from(chunk.get_array_memory_size())
@@ -265,6 +293,9 @@ impl CanonicalSegmentAssembler {
         }
         self.retained_bytes = self.retained_bytes.saturating_add(retained_bytes);
         self.batches.push(chunk);
+        if let Some(lease) = lease {
+            self.memory_leases.push(lease.clone());
+        }
         Ok(())
     }
 }
