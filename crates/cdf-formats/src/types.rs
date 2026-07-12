@@ -58,24 +58,6 @@ pub enum FileFormat {
     Parquet,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum FileCompression {
-    None,
-    Gzip,
-    Zstd,
-}
-
-impl FileCompression {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::None => "none",
-            Self::Gzip => "gzip",
-            Self::Zstd => "zstd",
-        }
-    }
-}
-
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CsvOptions {
     pub has_header: bool,
@@ -100,7 +82,6 @@ pub struct JsonOptions {
 pub struct FileSource {
     pub path: PathBuf,
     pub format: FileFormat,
-    pub compression: FileCompression,
     pub options: ReadOptions,
 }
 
@@ -109,14 +90,8 @@ impl FileSource {
         Self {
             path: path.into(),
             format,
-            compression: FileCompression::None,
             options,
         }
-    }
-
-    pub fn with_compression(mut self, compression: FileCompression) -> Self {
-        self.compression = compression;
-        self
     }
 }
 

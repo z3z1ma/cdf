@@ -32,6 +32,7 @@ arrow-ipc = "59.1.0"
 cdf-format-arrow-ipc = { path = "../cdf-format-arrow-ipc" }
 cdf-format-parquet = { path = "../cdf-format-parquet" }
 cdf-package = { path = "../cdf-package" }
+cdf-transform-gzip = { path = "../cdf-transform-gzip" }
 flate2 = "1.1.9"
 futures-executor = "0.3.32"
 tokio = { version = "=1.52.3", features = ["rt-multi-thread"] }

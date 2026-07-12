@@ -403,7 +403,7 @@ fn discover_artifacts_for_cli_resource(
 ) -> Result<ResourceSchemaDiscoveryArtifacts, CliError> {
     let secret_provider = context.secret_provider();
     if matches!(resource.descriptor().schema_source, SchemaSource::Discover)
-        && matches!(resource.plan(), CompiledResourcePlan::Files(plan) if is_remote_file_plan(plan))
+        && matches!(resource.plan(), CompiledResourcePlan::Files(_))
     {
         return Ok(
             cdf_project::discover_resource_schema_with_file_dependencies_artifacts(
@@ -433,12 +433,6 @@ fn discover_artifacts_for_cli_resource(
             options,
         )?)
     }
-}
-
-fn is_remote_file_plan(plan: &cdf_declarative::FileResourcePlan) -> bool {
-    ["http://", "https://", "s3://", "gs://", "az://"]
-        .iter()
-        .any(|scheme| plan.root.starts_with(scheme))
 }
 
 fn update_lockfile(

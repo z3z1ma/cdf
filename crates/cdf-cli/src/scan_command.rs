@@ -131,8 +131,7 @@ pub(crate) fn prepare_discover_resource_for_cli(
     if let SchemaSource::Discovered { snapshot } = &resource.descriptor().schema_source
         && !no_pin
     {
-        let prepared = if matches!(resource.plan(), CompiledResourcePlan::Files(plan) if is_remote_file_plan(plan))
-        {
+        let prepared = if matches!(resource.plan(), CompiledResourcePlan::Files(_)) {
             cdf_project::prepare_pinned_resource_effective_schema_with_file_dependencies_artifacts(
                 &context.root,
                 resource,
@@ -192,8 +191,7 @@ pub(crate) fn prepare_discover_resource_for_cli(
         }
         None => cdf_project::SchemaDiscoveryExecutionOptions::new(),
     };
-    let mut artifacts = if matches!(probe_resource.plan(), CompiledResourcePlan::Files(plan) if is_remote_file_plan(plan))
-    {
+    let mut artifacts = if matches!(probe_resource.plan(), CompiledResourcePlan::Files(_)) {
         cdf_project::discover_resource_schema_with_file_dependencies_artifacts(
             &probe_resource,
             &secret_provider,
@@ -254,8 +252,7 @@ pub(crate) fn prepare_discover_resource_for_cli(
         (snapshot_written, lockfile_written)
     };
     let (prepared_resource, discovery_coverage) = if !no_pin {
-        let prepared = if matches!(prepared_resource.plan(), CompiledResourcePlan::Files(plan) if is_remote_file_plan(plan))
-        {
+        let prepared = if matches!(prepared_resource.plan(), CompiledResourcePlan::Files(_)) {
             cdf_project::prepare_pinned_resource_effective_schema_with_file_dependencies_artifacts(
                 &context.root,
                 &prepared_resource,
@@ -604,14 +601,6 @@ fn lower_runtime_missing(error: &CdfError) -> bool {
     error
         .message
         .contains("execution is outside the MVP compiler crate")
-}
-
-fn is_remote_file_plan(plan: &cdf_declarative::FileResourcePlan) -> bool {
-    plan.root.starts_with("http://")
-        || plan.root.starts_with("https://")
-        || plan.root.starts_with("s3://")
-        || plan.root.starts_with("gs://")
-        || plan.root.starts_with("az://")
 }
 
 fn scan_report_document(

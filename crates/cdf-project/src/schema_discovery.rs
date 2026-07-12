@@ -8,14 +8,14 @@ use std::{
 };
 
 use crate::{
-    DiscoveredParquetSchemaSnapshot, DiscoveryBoundedIdentity, DiscoveryCandidateEvidence,
-    DiscoveryCoverageMode, DiscoveryExecutorBudget, DiscoveryIdentityStrength,
-    DiscoveryManifestArtifact, DiscoveryManifestInput, DiscoveryManifestStore,
-    DiscoveryMetadataScope, DiscoveryMetadataVariance, DiscoveryParticipation,
-    DiscoverySchemaVerdict, DiscoverySchemaVerdictKind, DiscoverySelectorCandidate,
-    SCHEMA_DISCOVERY_FORMAT_ARROW_IPC, SCHEMA_DISCOVERY_FORMAT_PARQUET,
-    SCHEMA_DISCOVERY_PROBE_ARROW_IPC_FILE_SCHEMA, SCHEMA_DISCOVERY_PROBE_PARQUET_FOOTER,
-    SchemaSnapshotArtifact, SchemaSnapshotStore, plan_discovery_selection,
+    DiscoveryBoundedIdentity, DiscoveryCandidateEvidence, DiscoveryCoverageMode,
+    DiscoveryExecutorBudget, DiscoveryIdentityStrength, DiscoveryManifestArtifact,
+    DiscoveryManifestInput, DiscoveryManifestStore, DiscoveryMetadataScope,
+    DiscoveryMetadataVariance, DiscoveryParticipation, DiscoverySchemaVerdict,
+    DiscoverySchemaVerdictKind, DiscoverySelectorCandidate, SCHEMA_DISCOVERY_FORMAT_ARROW_IPC,
+    SCHEMA_DISCOVERY_FORMAT_PARQUET, SCHEMA_DISCOVERY_PROBE_ARROW_IPC_FILE_SCHEMA,
+    SCHEMA_DISCOVERY_PROBE_PARQUET_FOOTER, SchemaSnapshotArtifact, SchemaSnapshotStore,
+    plan_discovery_selection,
 };
 use cdf_contract::{
     AggregateFileSchemaVerdict, AggregateMetadataVariance, AggregateSchemaCandidate,
@@ -23,22 +23,21 @@ use cdf_contract::{
     normalize_arrow_schema, plan_aggregate_arrow_schema_join, reconcile_schema,
 };
 use cdf_declarative::{
-    CompiledResource, CompiledResourcePlan, FileCompression, FileFormatDeclaration,
-    FileRuntimeDependencies, FileTransportLocation, FileTransportResource,
-    POSTGRES_CATALOG_DISCOVERY_PROBE, discover_local_arrow_ipc_schema_bounded,
-    discover_local_parquet_schema_bounded, discover_local_row_schema_bounded,
-    discover_postgres_table_catalog_schema, discover_rest_sample_schema,
-    discover_transport_parquet_schema_bounded, discover_transport_row_schema_bounded,
-    local_file_discovery_candidates, physical_arrow_schema_hash,
-    postgres_table_target_for_sql_plan,
+    CompiledResource, CompiledResourcePlan, FileFormatDeclaration, FileRuntimeDependencies,
+    FileTransportLocation, FileTransportResource, POSTGRES_CATALOG_DISCOVERY_PROBE,
+    discover_local_arrow_ipc_schema_bounded, discover_local_parquet_schema_bounded,
+    discover_local_row_schema_bounded, discover_postgres_table_catalog_schema,
+    discover_rest_sample_schema, discover_transport_parquet_schema_bounded,
+    discover_transport_row_schema_bounded, local_file_discovery_candidates,
+    physical_arrow_schema_hash, postgres_table_target_for_sql_plan,
 };
 use cdf_http::{HttpTransport, SecretProvider};
 use cdf_kernel::{
     CdfError, DISCOVERY_MANIFEST_HASH_METADATA_KEY, DISCOVERY_MANIFEST_PATH_METADATA_KEY,
     DiscoveryCoverageEvidence, DiscoveryExecutorBudgetEvidence, EffectiveSchemaCatalogEntry,
     EffectiveSchemaEvidence, EffectiveSchemaObservationEvidence, EffectiveSchemaRuntime,
-    PartitionId, PartitionPlan, ResourceDescriptor, ResourceStream, Result, ScanRequest,
-    SchemaHash, SchemaObservationFieldQuarantine, SchemaObservationPolicy, SchemaSource, ScopeKey,
+    ResourceDescriptor, ResourceStream, Result, ScanRequest, SchemaHash,
+    SchemaObservationFieldQuarantine, SchemaObservationPolicy, SchemaSource,
     TerminalSchemaObservationQuarantine,
 };
 use cdf_memory::{
@@ -239,13 +238,6 @@ pub struct DiscoveredSchemaSnapshot {
     pub source_identity: BTreeMap<String, String>,
 }
 
-#[derive(Clone, Debug)]
-pub struct LocalParquetSchemaDiscovery {
-    pub normalized_schema: arrow_schema::SchemaRef,
-    pub snapshot: DiscoveredParquetSchemaSnapshot,
-    pub partition: PartitionPlan,
-}
-
 pub fn discover_resource_schema(
     resource: &CompiledResource,
     secret_provider: &dyn SecretProvider,
@@ -419,7 +411,7 @@ fn discover_resource_schema_artifacts_inner(
     ensure_discover_schema_mode(resource)?;
     match resource.plan() {
         CompiledResourcePlan::Files(plan) if !is_remote_file_root(&plan.root) => {
-            discover_local_binary_resource_schema(resource, plan, options)
+            discover_local_binary_resource_schema(resource, plan, file_dependencies, options)
         }
         CompiledResourcePlan::Files(plan) => match plan.format {
             FileFormatDeclaration::ArrowIpc => Err(unsupported_discover_slice(
@@ -685,16 +677,6 @@ impl LocalBinaryDiscoveryAdapter {
                         "remote NDJSON discovery requires file transport dependencies",
                     )
                 })?;
-                let compression = match candidate.compression.as_str() {
-                    "none" => FileCompression::None,
-                    "gzip" => FileCompression::Gzip,
-                    "zstd" => FileCompression::Zstd,
-                    value => {
-                        return Err(CdfError::contract(format!(
-                            "unsupported resolved NDJSON compression `{value}`"
-                        )));
-                    }
-                };
                 let format = match adapter {
                     Self::Ndjson => FileFormatDeclaration::Ndjson,
                     Self::Csv => FileFormatDeclaration::Csv,
@@ -705,7 +687,7 @@ impl LocalBinaryDiscoveryAdapter {
                     resource.clone(),
                     dependencies,
                     &format,
-                    compression,
+                    &candidate.compression,
                     NDJSON_DISCOVERY_MAX_RECORDS,
                     budget
                         .max_metadata_bytes_per_file()
@@ -717,16 +699,11 @@ impl LocalBinaryDiscoveryAdapter {
                 adapter @ (Self::Ndjson | Self::Csv | Self::Json),
                 BinaryDiscoveryCandidateSource::Local { path, .. },
             ) => {
-                let compression = match candidate.compression.as_str() {
-                    "none" => FileCompression::None,
-                    "gzip" => FileCompression::Gzip,
-                    "zstd" => FileCompression::Zstd,
-                    value => {
-                        return Err(CdfError::contract(format!(
-                            "unsupported resolved row compression `{value}`"
-                        )));
-                    }
-                };
+                let dependencies = file_dependencies.ok_or_else(|| {
+                    CdfError::contract(
+                        "local row discovery requires file transform registry dependencies",
+                    )
+                })?;
                 let format = match adapter {
                     Self::Ndjson => FileFormatDeclaration::Ndjson,
                     Self::Csv => FileFormatDeclaration::Csv,
@@ -735,8 +712,9 @@ impl LocalBinaryDiscoveryAdapter {
                 };
                 let probe = discover_local_row_schema_bounded(
                     path,
+                    dependencies,
                     &format,
-                    compression,
+                    &candidate.compression,
                     NDJSON_DISCOVERY_MAX_RECORDS,
                     budget
                         .max_metadata_bytes_per_file()
@@ -776,14 +754,32 @@ impl LocalBinaryDiscoveryAdapter {
 fn discover_local_binary_resource_schema(
     resource: &CompiledResource,
     plan: &cdf_declarative::FileResourcePlan,
+    file_dependencies: Option<FileRuntimeDependencies>,
     options: SchemaDiscoveryExecutionOptions,
 ) -> Result<ResourceSchemaDiscoveryArtifacts> {
+    let dependencies = file_dependencies.ok_or_else(|| {
+        unsupported_discover_slice(
+            resource.descriptor(),
+            "file discovery requires explicit transport, format, and transform registry dependencies",
+        )
+    })?;
     let adapter = LocalBinaryDiscoveryAdapter::for_format(resource, &plan.format)?;
-    let candidates = local_file_discovery_candidates(&resource.descriptor().resource_id, plan)?
-        .into_iter()
-        .map(BinaryDiscoveryCandidate::from_local)
-        .collect::<Vec<_>>();
-    discover_binary_resource_schema(resource, options, adapter, candidates, None, "local")
+    let candidates = local_file_discovery_candidates(
+        &resource.descriptor().resource_id,
+        plan,
+        dependencies.transforms(),
+    )?
+    .into_iter()
+    .map(BinaryDiscoveryCandidate::from_local)
+    .collect::<Vec<_>>();
+    discover_binary_resource_schema(
+        resource,
+        options,
+        adapter,
+        candidates,
+        Some(&dependencies),
+        "local",
+    )
 }
 
 fn discover_binary_resource_schema(
@@ -1567,77 +1563,6 @@ fn aggregate_file_report(verdict: &AggregateFileSchemaVerdict) -> String {
         coerced,
         verdict.fields.len()
     )
-}
-
-#[deprecated(
-    note = "use discover_resource_schema_artifacts; this compatibility helper can represent exactly one local Parquet file"
-)]
-pub fn discover_local_parquet_resource_schema(
-    resource: &CompiledResource,
-) -> Result<LocalParquetSchemaDiscovery> {
-    ensure_discover_schema_mode(resource)?;
-    let plan = match resource.plan() {
-        CompiledResourcePlan::Files(plan)
-            if plan.format == FileFormatDeclaration::Parquet && !is_http_root(&plan.root) =>
-        {
-            plan
-        }
-        _ => {
-            return Err(unsupported_discover_slice(
-                resource.descriptor(),
-                "local Parquet discovery requires a local Parquet file resource",
-            ));
-        }
-    };
-    let candidates = local_file_discovery_candidates(&resource.descriptor().resource_id, plan)?;
-    let first = match candidates.as_slice() {
-        [first] => first,
-        [] => {
-            return Err(CdfError::data(format!(
-                "local Parquet discovery for resource `{}` matched no files under `{}` for glob `{}`",
-                resource.descriptor().resource_id,
-                plan.root,
-                plan.glob
-            )));
-        }
-        _ => {
-            return Err(CdfError::contract(format!(
-                "legacy local Parquet discovery helper cannot represent {} matched candidates for resource `{}` without partial evidence; use `discover_resource_schema_artifacts` for exhaustive resource-level discovery",
-                candidates.len(),
-                resource.descriptor().resource_id
-            )));
-        }
-    };
-    let artifacts = discover_local_binary_resource_schema(resource, plan, Default::default())?;
-    let discovery = artifacts.discovery;
-    let artifact = discovery.snapshot.artifact;
-    let snapshot = DiscoveredParquetSchemaSnapshot {
-        reference: discovery.snapshot.reference,
-        artifact,
-        source_identity: discovery.snapshot.source_identity,
-    };
-    let partition_id = PartitionId::new(format!(
-        "discovery:{}:{}",
-        resource.descriptor().resource_id,
-        first.relative_path
-    ))?;
-    let partition = PartitionPlan {
-        partition_id,
-        scope: ScopeKey::File {
-            path: first.relative_path.clone(),
-        },
-        start_position: None,
-        metadata: BTreeMap::from([
-            ("path".to_owned(), first.relative_path.clone()),
-            ("discovery_only".to_owned(), "true".to_owned()),
-        ]),
-    };
-
-    Ok(LocalParquetSchemaDiscovery {
-        normalized_schema: discovery.normalized_schema,
-        snapshot,
-        partition,
-    })
 }
 
 fn discover_postgres_resource_schema(

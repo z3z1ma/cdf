@@ -8,7 +8,6 @@ mod sql_runtime;
 #[cfg(test)]
 mod tests;
 
-pub use cdf_formats::FileCompression;
 pub use cdf_source_files::*;
 pub use cdf_source_files::{
     FileCompressionDeclaration, FileFormatDeclaration, FileResource, FileResourcePlan,
@@ -20,13 +19,12 @@ pub use cdf_source_postgres::{
 };
 pub use cdf_source_rest::{RestResource, RestResourcePlan, RestRuntimeDependencies};
 pub use compiled::{
-    BoundedLocalParquetSchemaProbe, BoundedTransportJsonSchemaProbe, CompiledResource,
-    CompiledResourcePlan, LocalArrowIpcSchemaProbe, LocalParquetSchemaProbe, SqlResourcePlan,
-    compile_document, compile_document_with_project_root, discover_local_arrow_ipc_schema,
+    BoundedLocalParquetSchemaProbe, CompiledResource, CompiledResourcePlan,
+    LocalArrowIpcSchemaProbe, LocalParquetSchemaProbe, SqlResourcePlan, compile_document,
+    compile_document_with_project_root, discover_local_arrow_ipc_schema,
     discover_local_arrow_ipc_schema_bounded, discover_local_parquet_schema,
-    discover_local_parquet_schema_bounded, discover_local_row_schema_bounded,
-    discover_transport_parquet_schema, discover_transport_parquet_schema_bounded,
-    discover_transport_row_schema_bounded, parse_arrow_field_type, physical_arrow_schema_hash,
+    discover_local_parquet_schema_bounded, discover_transport_parquet_schema,
+    discover_transport_parquet_schema_bounded, parse_arrow_field_type, physical_arrow_schema_hash,
     validate_document,
 };
 pub use declarations::*;

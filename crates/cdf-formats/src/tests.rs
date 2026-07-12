@@ -3,7 +3,7 @@ use super::*;
 use std::{
     collections::{BTreeMap, HashMap},
     fs,
-    io::{Cursor, Read, Seek, SeekFrom, Write},
+    io::{Cursor, Read, Seek, SeekFrom},
     path::Path,
     sync::{
         Arc,
@@ -68,16 +68,6 @@ fn record_batches(read: &FormatRead) -> Vec<RecordBatch> {
 fn write_parquet_file(path: &Path, batches: &[RecordBatch]) {
     let bytes = cdf_package::transcode_record_batches_to_parquet_bytes(batches).unwrap();
     fs::write(path, bytes).unwrap();
-}
-
-fn gzip_bytes(bytes: &[u8]) -> Vec<u8> {
-    let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
-    encoder.write_all(bytes).unwrap();
-    encoder.finish().unwrap()
-}
-
-fn zstd_bytes(bytes: &[u8]) -> Vec<u8> {
-    zstd::stream::encode_all(Cursor::new(bytes), 0).unwrap()
 }
 
 fn file_scan_request(resource: &FileResource) -> ScanRequest {
@@ -908,51 +898,6 @@ fn declared_json_document_and_ndjson_share_observation_reconciliation_front_end(
 }
 
 #[test]
-fn compression_ndjson_file_sources_decode_and_preserve_compressed_identity() {
-    let temp = tempfile::tempdir().unwrap();
-    let ndjson = br#"{"id":1,"name":"ada"}
-{"id":2,"name":"grace"}
-"#;
-
-    for (file_name, compression, bytes) in [
-        (
-            "orders.ndjson.gz",
-            FileCompression::Gzip,
-            gzip_bytes(ndjson),
-        ),
-        (
-            "orders.ndjson.zst",
-            FileCompression::Zstd,
-            zstd_bytes(ndjson),
-        ),
-    ] {
-        let path = temp.path().join(file_name);
-        fs::write(&path, bytes).unwrap();
-        let source = FileSource::new(
-            &path,
-            FileFormat::Ndjson(JsonOptions::default()),
-            options(file_name, "file"),
-        )
-        .with_compression(compression);
-
-        let read = read_file_source(&source).unwrap();
-
-        assert_eq!(read.batches[0].header.row_count, 2);
-        let Some(SourcePosition::FileManifest(manifest)) = &read.batches[0].header.source_position
-        else {
-            panic!("compressed NDJSON should preserve file manifest source position");
-        };
-        assert_eq!(manifest.files.len(), 1);
-        assert!(manifest.files[0].path.ends_with(file_name));
-        assert_eq!(
-            manifest.files[0].size_bytes,
-            fs::metadata(&path).unwrap().len()
-        );
-        assert!(!temp.path().join("orders.ndjson").exists());
-    }
-}
-
-#[test]
 fn parquet_file_source_produces_descriptor_batches_and_file_manifest() {
     let temp = tempfile::tempdir().unwrap();
     let parquet_path = temp.path().join("orders.parquet");
@@ -1491,7 +1436,7 @@ fn parquet_source_output_can_be_packaged_and_replayed_like_native_output() {
     ))
     .unwrap();
     let temp = tempfile::tempdir().unwrap();
-    let mut builder = cdf_package::PackageBuilder::create(temp.path(), "pkg-formats").unwrap();
+    let builder = cdf_package::PackageBuilder::create(temp.path(), "pkg-formats").unwrap();
     builder
         .write_json_artifact(
             "schema/observed.arrow.json",

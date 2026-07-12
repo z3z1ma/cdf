@@ -2351,24 +2351,6 @@ fn exhaustive_discovery_uses_exact_verified_baseline_and_schema_only_effective_h
 }
 
 #[test]
-#[allow(deprecated)]
-fn legacy_local_parquet_helper_refuses_multi_file_partial_evidence() {
-    let temp = tempfile::tempdir().unwrap();
-    write_discover_project(temp.path(), "parquet", "*.parquet");
-    write_vendor_parquet(&temp.path().join("data/a.parquet"));
-    write_vendor_parquet(&temp.path().join("data/b.parquet"));
-    let resource = compile_single_project_resource(temp.path());
-
-    let error = discover_local_parquet_resource_schema(&resource)
-        .unwrap_err()
-        .to_string();
-    assert!(error.contains("cannot represent 2 matched candidates"));
-    assert!(error.contains("without partial evidence"));
-    assert!(error.contains("discover_resource_schema_artifacts"));
-    assert!(!temp.path().join(".cdf/schemas").exists());
-}
-
-#[test]
 fn exhaustive_local_parquet_discovery_aggregates_widening_missing_metadata_and_set_identity() {
     let temp = tempfile::tempdir().unwrap();
     write_discover_project(temp.path(), "parquet", "*.parquet");

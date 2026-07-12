@@ -2,7 +2,7 @@ use std::{
     collections::BTreeMap,
     fmt,
     fs::{self, File},
-    io::{Read, Seek, SeekFrom},
+    io::{Read, Seek, SeekFrom, Write},
     path::{Component, Path, PathBuf},
     sync::{
         Arc,
@@ -14,7 +14,7 @@ use std::{
 use arrow_schema::SchemaRef;
 use cdf_contract::{ContractPolicy, TypePolicy};
 use cdf_formats::{
-    CsvOptions, FileCompression, FileFormat, JsonOptions, RangeChunkReader, ReadOptions,
+    CsvOptions, FileFormat, JsonOptions, RangeChunkReader, ReadOptions,
     stream_file_source_path_with_declared_schema_and_type_policy,
 };
 use cdf_kernel::{
@@ -24,12 +24,15 @@ use cdf_kernel::{
     ResourceCapabilities, ResourceDescriptor, ResourceId, ResourceStream, Result, ScanPlan,
     ScanRequest, SchemaHash, ScopeKey, SourcePosition, TypePolicyAllowances, WriteDisposition,
 };
+use cdf_memory::{ConsumerKey, MemoryClass};
 use cdf_runtime::{
-    ByteTransformRegistry, DecodePlanningRequest, ExecutionServices, FormatDiscoveryRequest,
-    FormatDriver, FormatRegistry, PhysicalDecodeRequest,
+    ByteSource, ByteTransformId, ByteTransformRegistry, DecodePlanningRequest, ExecutionServices,
+    FormatDiscoveryRequest, FormatDriver, FormatRegistry, PhysicalDecodeRequest,
+    SequentialReadRequest, TransformSourceConfig, TransformedByteSource,
 };
 use futures_util::{StreamExt, TryStreamExt};
 use sha2::{Digest, Sha256};
+use tokio::io::AsyncWriteExt;
 
 use crate::{
     ByteRange, FileCompressionDeclaration, FileFormatDeclaration, FileIdentityMetadata,
@@ -221,6 +224,252 @@ pub struct LocalFileDiscoveryCandidate {
     pub selection_bytes_read: u64,
 }
 
+#[derive(Clone, Debug)]
+pub struct BoundedRowSchemaProbe {
+    pub schema: SchemaRef,
+    pub source_identity: BTreeMap<String, String>,
+    pub probe_bytes_read: u64,
+}
+
+pub fn discover_local_row_schema_bounded(
+    path: impl AsRef<Path>,
+    dependencies: &FileRuntimeDependencies,
+    format: &FileFormatDeclaration,
+    transform_name: &str,
+    max_read_records: usize,
+    max_source_bytes: u64,
+) -> Result<BoundedRowSchemaProbe> {
+    let path = path.as_ref();
+    let transformed =
+        prepare_transformed_discovery_spool(path, transform_name, dependencies, max_source_bytes)?;
+    let decode_path = transformed.as_ref().map_or(path, |spool| spool.path());
+    let (schema, probe_bytes_read) =
+        discover_row_schema_from_path(decode_path, format, max_read_records, max_source_bytes)?;
+    Ok(BoundedRowSchemaProbe {
+        schema,
+        source_identity: BTreeMap::from([
+            ("path".to_owned(), path.to_string_lossy().into_owned()),
+            ("sample_records".to_owned(), max_read_records.to_string()),
+        ]),
+        probe_bytes_read,
+    })
+}
+
+pub fn discover_transport_row_schema_bounded(
+    resource: FileTransportResource,
+    dependencies: &FileRuntimeDependencies,
+    format: &FileFormatDeclaration,
+    transform_name: &str,
+    max_read_records: usize,
+    max_source_bytes: u64,
+) -> Result<BoundedRowSchemaProbe> {
+    let metadata = dependencies.with_transport(|transport| transport.metadata(&resource))?;
+    let size_bytes = metadata.size_bytes.ok_or_else(|| {
+        CdfError::data(format!(
+            "remote row discovery for `{}` did not receive byte-size metadata",
+            diagnostic_location(&metadata.location)
+        ))
+    })?;
+    let (schema, sampled_bytes) = if transform_name == "none" {
+        let (reader, bytes_read) = dependencies.bounded_sequential_reader(
+            resource,
+            size_bytes,
+            max_source_bytes.min(size_bytes),
+        );
+        (
+            discover_row_schema_from_reader(reader, format, max_read_records)?,
+            bytes_read.load(Ordering::Relaxed),
+        )
+    } else {
+        let prefix_bytes = max_source_bytes.min(size_bytes);
+        let mut compressed_prefix = tempfile::NamedTempFile::new().map_err(|error| {
+            CdfError::data(format!("create compressed discovery sample: {error}"))
+        })?;
+        let bytes = dependencies.with_transport(|transport| {
+            transport.read_range(&resource, ByteRange::new(0, prefix_bytes)?)
+        })?;
+        compressed_prefix.write_all(&bytes).map_err(|error| {
+            CdfError::data(format!("write compressed discovery sample: {error}"))
+        })?;
+        let transformed = prepare_transformed_discovery_spool(
+            compressed_prefix.path(),
+            transform_name,
+            dependencies,
+            max_source_bytes,
+        )?
+        .ok_or_else(|| CdfError::internal("named transform did not produce a discovery spool"))?;
+        let (schema, transformed_bytes) = discover_row_schema_from_path(
+            transformed.path(),
+            format,
+            max_read_records,
+            max_source_bytes,
+        )?;
+        (schema, prefix_bytes.saturating_add(transformed_bytes))
+    };
+    let mut source_identity = BTreeMap::new();
+    source_identity.insert("url".to_owned(), metadata.location.clone());
+    if let Some(etag) = &metadata.etag {
+        source_identity.insert("etag".to_owned(), etag.clone());
+    }
+    if let Some(sha256) = metadata.sha256() {
+        source_identity.insert("sha256".to_owned(), sha256.to_owned());
+    }
+    source_identity.insert("sample_records".to_owned(), max_read_records.to_string());
+    Ok(BoundedRowSchemaProbe {
+        schema,
+        source_identity,
+        probe_bytes_read: sampled_bytes,
+    })
+}
+
+fn prepare_transformed_discovery_spool(
+    path: &Path,
+    transform_name: &str,
+    dependencies: &FileRuntimeDependencies,
+    max_output_bytes: u64,
+) -> Result<Option<tempfile::NamedTempFile>> {
+    if transform_name == "none" {
+        return Ok(None);
+    }
+    let transform = dependencies.transforms().resolve_name(transform_name)?;
+    spool_transformed_sample(path, transform, dependencies, max_output_bytes).map(Some)
+}
+
+fn spool_transformed_sample(
+    source_path: &Path,
+    transform: Arc<dyn cdf_runtime::ByteTransformDriver>,
+    dependencies: &FileRuntimeDependencies,
+    maximum_output_bytes: u64,
+) -> Result<tempfile::NamedTempFile> {
+    const TRANSFORM_CHUNK_BYTES: u64 = 1024 * 1024;
+
+    let spool = tempfile::NamedTempFile::new()
+        .map_err(|error| CdfError::data(format!("create transformed discovery spool: {error}")))?;
+    let destination = spool.path().to_path_buf();
+    let memory = dependencies.execution().memory();
+    let source = Arc::new(LocalByteSource::open(source_path, Arc::clone(&memory))?);
+    let descriptor = transform.descriptor().clone();
+    let output_chunk_bytes = TRANSFORM_CHUNK_BYTES
+        .min(descriptor.maximum_output_chunk_bytes)
+        .min(maximum_output_bytes.max(4));
+    let transformed = TransformedByteSource::new(
+        source,
+        transform,
+        TransformSourceConfig {
+            preferred_input_chunk_bytes: TRANSFORM_CHUNK_BYTES,
+            maximum_expanded_bytes: descriptor.maximum_expanded_bytes,
+            maximum_expansion_ratio: descriptor.maximum_expansion_ratio,
+            memory,
+            consumer: ConsumerKey::new(
+                format!("discovery-transform-{}", descriptor.transform_id.as_str()),
+                MemoryClass::Transform,
+            )?,
+        },
+    )?;
+    dependencies.execution().run_io(async move {
+        let mut input = transformed
+            .open_sequential(SequentialReadRequest {
+                preferred_chunk_bytes: output_chunk_bytes,
+                cancellation: cdf_runtime::RunCancellation::default(),
+            })
+            .await?;
+        let mut output = tokio::fs::File::create(&destination)
+            .await
+            .map_err(|error| {
+                CdfError::data(format!("create transformed discovery spool: {error}"))
+            })?;
+        let mut written = 0_u64;
+        while written < maximum_output_bytes {
+            let Some(chunk) = input.try_next().await? else {
+                break;
+            };
+            let remaining = maximum_output_bytes - written;
+            let length = usize::try_from(remaining.min(chunk.payload().len() as u64))
+                .map_err(|_| CdfError::data("discovery sample length exceeds usize"))?;
+            output
+                .write_all(&chunk.payload()[..length])
+                .await
+                .map_err(|error| {
+                    CdfError::data(format!("write transformed discovery spool: {error}"))
+                })?;
+            written += length as u64;
+        }
+        output.flush().await.map_err(|error| {
+            CdfError::data(format!("flush transformed discovery spool: {error}"))
+        })?;
+        Ok(())
+    })?;
+    Ok(spool)
+}
+
+fn discover_row_schema_from_path(
+    path: &Path,
+    format: &FileFormatDeclaration,
+    max_read_records: usize,
+    max_source_bytes: u64,
+) -> Result<(SchemaRef, u64)> {
+    if max_read_records == 0 || max_source_bytes == 0 {
+        return Err(CdfError::contract(
+            "row-format discovery requires positive record and source-byte bounds",
+        ));
+    }
+    let file = File::open(path).map_err(|error| {
+        CdfError::data(format!("open {} for discovery: {error}", path.display()))
+    })?;
+    let bytes_read = Arc::new(AtomicU64::new(0));
+    let reader = CountingLimitedReader {
+        inner: file,
+        remaining: max_source_bytes,
+        bytes_read: Arc::clone(&bytes_read),
+    };
+    let schema = discover_row_schema_from_reader(Box::new(reader), format, max_read_records)?;
+    Ok((schema, bytes_read.load(Ordering::Relaxed)))
+}
+
+fn discover_row_schema_from_reader(
+    reader: Box<dyn Read + Send>,
+    format: &FileFormatDeclaration,
+    max_read_records: usize,
+) -> Result<SchemaRef> {
+    match format {
+        FileFormatDeclaration::Ndjson => {
+            cdf_formats::discover_ndjson_schema_from_reader(reader, Some(max_read_records))
+        }
+        FileFormatDeclaration::Csv => cdf_formats::discover_csv_schema_from_reader(
+            reader,
+            &CsvOptions::default(),
+            max_read_records,
+        ),
+        FileFormatDeclaration::Json => {
+            cdf_formats::discover_json_schema_from_reader(reader, max_read_records)
+        }
+        _ => Err(CdfError::contract(
+            "bounded row discovery supports CSV, JSON, and NDJSON",
+        )),
+    }
+}
+
+struct CountingLimitedReader<R> {
+    inner: R,
+    remaining: u64,
+    bytes_read: Arc<AtomicU64>,
+}
+
+impl<R: Read> Read for CountingLimitedReader<R> {
+    fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+        if self.remaining == 0 {
+            return Err(std::io::Error::other(
+                "row-format discovery exceeded its source-byte budget",
+            ));
+        }
+        let limit = buffer.len().min(self.remaining as usize);
+        let read = self.inner.read(&mut buffer[..limit])?;
+        self.remaining -= read as u64;
+        self.bytes_read.fetch_add(read as u64, Ordering::Relaxed);
+        Ok(read)
+    }
+}
+
 impl LocalFileDiscoveryCandidate {
     pub fn modified_at_ms(&self) -> Option<i64> {
         fs::metadata(&self.path)
@@ -236,6 +485,7 @@ impl LocalFileDiscoveryCandidate {
 pub fn local_file_discovery_candidates(
     resource_id: &ResourceId,
     plan: &FileResourcePlan,
+    transforms: &ByteTransformRegistry,
 ) -> Result<Vec<LocalFileDiscoveryCandidate>> {
     if is_http_root(&plan.root) {
         return Err(CdfError::contract(
@@ -258,7 +508,7 @@ pub fn local_file_discovery_candidates(
 
     contained_matches(&root, matches)?
         .into_iter()
-        .map(|path| local_file_discovery_candidate(resource_id, &root, path, plan))
+        .map(|path| local_file_discovery_candidate(resource_id, &root, path, plan, transforms))
         .collect()
 }
 
@@ -349,7 +599,12 @@ impl ResourceStream for FileResource {
             )));
         }
         self.dependencies.with_transport(|transport| {
-            file_partitions_for_plan_with_transport(&self.descriptor, &self.plan, transport)
+            file_partitions_for_plan_with_transport(
+                &self.descriptor,
+                &self.plan,
+                transport,
+                self.dependencies.transforms(),
+            )
         })
     }
 
@@ -382,7 +637,13 @@ impl ResourceStream for FileResource {
             .and_then(|runtime| runtime.discovery_executor_budget.clone());
         Box::pin(async move {
             let resolved = dependencies.with_transport(|transport| {
-                validate_partition(&descriptor, &plan, &partition, transport)
+                validate_partition(
+                    &descriptor,
+                    &plan,
+                    &partition,
+                    transport,
+                    dependencies.transforms(),
+                )
             })?;
             let processed_position = SourcePosition::FileManifest(cdf_kernel::FileManifest {
                 version: 1,
@@ -490,17 +751,13 @@ struct PhysicalSchemaAuthority {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct CompressionEvidence {
-    mode: FileCompression,
+    transform_id: Option<ByteTransformId>,
     extension_signal: CompressionSignal,
     magic_signal: CompressionSignal,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum CompressionSignal {
-    None,
-    Gzip,
-    Zstd,
-}
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+struct CompressionSignal(Option<ByteTransformId>);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum FormatSignal {
@@ -528,37 +785,39 @@ struct FormatEvidence {
 }
 
 impl CompressionSignal {
-    fn as_str(self) -> &'static str {
-        match self {
-            Self::None => "none",
-            Self::Gzip => "gzip",
-            Self::Zstd => "zstd",
-        }
+    fn as_str(&self) -> &str {
+        self.0.as_ref().map_or("none", ByteTransformId::as_str)
     }
 
-    fn compression(self) -> Option<FileCompression> {
-        match self {
-            Self::None => None,
-            Self::Gzip => Some(FileCompression::Gzip),
-            Self::Zstd => Some(FileCompression::Zstd),
-        }
+    fn transform_id(&self) -> Option<&ByteTransformId> {
+        self.0.as_ref()
+    }
+}
+
+impl CompressionEvidence {
+    fn mode_name(&self) -> &str {
+        self.transform_id
+            .as_ref()
+            .map_or("none", ByteTransformId::as_str)
     }
 }
 
 pub fn file_partitions_for_plan(
     descriptor: &ResourceDescriptor,
     plan: &FileResourcePlan,
+    transforms: &ByteTransformRegistry,
 ) -> Result<Vec<PartitionPlan>> {
     let transport = FileTransportFacade::new();
-    file_partitions_for_plan_with_transport(descriptor, plan, &transport)
+    file_partitions_for_plan_with_transport(descriptor, plan, &transport, transforms)
 }
 
 pub(crate) fn file_partitions_for_plan_with_transport(
     descriptor: &ResourceDescriptor,
     plan: &FileResourcePlan,
     transport: &dyn FileTransport,
+    transforms: &ByteTransformRegistry,
 ) -> Result<Vec<PartitionPlan>> {
-    let matches = resolve_file_matches(&descriptor.resource_id, plan, transport)?;
+    let matches = resolve_file_matches(&descriptor.resource_id, plan, transport, transforms)?;
     if matches.is_empty() {
         return Err(no_file_matches_error(&descriptor.resource_id, plan));
     }
@@ -632,8 +891,15 @@ fn open_file_partition(
     allowances: cdf_kernel::TypePolicyAllowances,
     effective_schema_runtime: Option<&EffectiveSchemaRuntime>,
 ) -> Result<BatchStream> {
-    let resolved = dependencies
-        .with_transport(|transport| validate_partition(descriptor, plan, partition, transport))?;
+    let resolved = dependencies.with_transport(|transport| {
+        validate_partition(
+            descriptor,
+            plan,
+            partition,
+            transport,
+            dependencies.transforms(),
+        )
+    })?;
     let planned_physical_schema_hash = partition
         .metadata
         .get(PLAN_PHYSICAL_SCHEMA_HASH_KEY)
@@ -682,30 +948,8 @@ fn stream_file_match(
             sha256: resolved.sha256.clone(),
         }],
     }));
-    let native_driver = (resolved.compression.mode == FileCompression::None)
-        .then(|| dependencies.formats().get(file_format_name(declaration)))
-        .flatten();
-    match &resolved.open {
-        ResolvedFileOpen::LocalPath(path) if native_driver.is_some() => stream_registered_format(
-            path.clone(),
-            None,
-            native_driver.expect("registered driver guard was checked"),
-            options,
-            position,
-            physical_schema_authority,
-            dependencies,
-        ),
-        ResolvedFileOpen::LocalPath(path) => {
-            stream_file_source_path_with_declared_schema_and_type_policy(
-                path,
-                compile_format(declaration)?,
-                resolved.compression.mode,
-                options,
-                declared_schema,
-                type_policy,
-                position,
-            )
-        }
+    let (source_path, mut spool) = match &resolved.open {
+        ResolvedFileOpen::LocalPath(path) => (path.clone(), None),
         ResolvedFileOpen::Transport(resource) => {
             let expected = FileIdentityMetadata {
                 location: resolved.path_text.clone(),
@@ -723,33 +967,102 @@ fn stream_file_match(
                 &expected,
                 dependencies.max_spool_bytes(),
             )?);
-            if let Some(driver) = native_driver {
-                stream_registered_format(
-                    spool.path().to_path_buf(),
-                    Some(spool),
-                    driver,
-                    options,
-                    position,
-                    physical_schema_authority,
-                    dependencies,
-                )
-            } else {
-                let stream = stream_file_source_path_with_declared_schema_and_type_policy(
-                    spool.path(),
-                    compile_format(declaration)?,
-                    resolved.compression.mode,
-                    options,
-                    declared_schema,
-                    type_policy,
-                    position,
-                )?;
-                Ok(Box::pin(stream.map(move |batch| {
-                    let _keep_spool_alive = &spool;
-                    batch
-                })) as BatchStream)
-            }
+            (spool.path().to_path_buf(), Some(spool))
         }
+    };
+    let source_path = if let Some(transform_id) = &resolved.compression.transform_id {
+        let transformed = Arc::new(spool_transformed_file(
+            &source_path,
+            dependencies.transforms().resolve(transform_id)?,
+            dependencies,
+        )?);
+        let path = transformed.path().to_path_buf();
+        spool = Some(transformed);
+        path
+    } else {
+        source_path
+    };
+
+    if let Some(driver) = dependencies.formats().get(file_format_name(declaration)) {
+        return stream_registered_format(
+            source_path,
+            spool,
+            driver,
+            options,
+            position,
+            physical_schema_authority,
+            dependencies,
+        );
     }
+
+    let stream = stream_file_source_path_with_declared_schema_and_type_policy(
+        &source_path,
+        compile_format(declaration)?,
+        options,
+        declared_schema,
+        type_policy,
+        position,
+    )?;
+    Ok(Box::pin(stream.map(move |batch| {
+        let _keep_spool_alive = &spool;
+        batch
+    })) as BatchStream)
+}
+
+fn spool_transformed_file(
+    source_path: &Path,
+    transform: Arc<dyn cdf_runtime::ByteTransformDriver>,
+    dependencies: &FileRuntimeDependencies,
+) -> Result<tempfile::NamedTempFile> {
+    const TRANSFORM_CHUNK_BYTES: u64 = 1024 * 1024;
+
+    let spool = tempfile::NamedTempFile::new()
+        .map_err(|error| CdfError::data(format!("create transformed file spool: {error}")))?;
+    let destination = spool.path().to_path_buf();
+    let memory = dependencies.execution().memory();
+    let source = Arc::new(LocalByteSource::open(source_path, Arc::clone(&memory))?);
+    let descriptor = transform.descriptor().clone();
+    let output_chunk_bytes = TRANSFORM_CHUNK_BYTES.min(descriptor.maximum_output_chunk_bytes);
+    let transformed = TransformedByteSource::new(
+        source,
+        transform,
+        TransformSourceConfig {
+            preferred_input_chunk_bytes: TRANSFORM_CHUNK_BYTES,
+            maximum_expanded_bytes: dependencies
+                .max_spool_bytes()
+                .min(descriptor.maximum_expanded_bytes),
+            maximum_expansion_ratio: descriptor.maximum_expansion_ratio,
+            memory,
+            consumer: ConsumerKey::new(
+                format!("file-transform-{}", descriptor.transform_id.as_str()),
+                MemoryClass::Transform,
+            )?,
+        },
+    )?;
+    dependencies.execution().run_io(async move {
+        let cancellation = cdf_runtime::RunCancellation::default();
+        let mut input = transformed
+            .open_sequential(SequentialReadRequest {
+                preferred_chunk_bytes: output_chunk_bytes,
+                cancellation,
+            })
+            .await?;
+        let mut output = tokio::fs::File::create(&destination)
+            .await
+            .map_err(|error| CdfError::data(format!("create transformed spool: {error}")))?;
+        while let Some(chunk) = input.try_next().await? {
+            output
+                .write_all(chunk.payload())
+                .await
+                .map_err(|error| CdfError::data(format!("write transformed spool: {error}")))?;
+        }
+        output
+            .flush()
+            .await
+            .map_err(|error| CdfError::data(format!("flush transformed spool: {error}")))?;
+        Ok(())
+    })?;
+    Ok(spool)
 }
 
 fn stream_registered_format(
@@ -893,6 +1206,7 @@ fn validate_partition(
     plan: &FileResourcePlan,
     partition: &PartitionPlan,
     transport: &dyn FileTransport,
+    transforms: &ByteTransformRegistry,
 ) -> Result<ResolvedFileMatch> {
     if partition.metadata.get("kind").map(String::as_str) != Some("files") {
         return Err(CdfError::contract(format!(
@@ -926,7 +1240,7 @@ fn validate_partition(
             "declarative file partition scope does not match file path `{path}`",
         )));
     }
-    let matches = resolve_file_matches(&descriptor.resource_id, plan, transport)?;
+    let matches = resolve_file_matches(&descriptor.resource_id, plan, transport, transforms)?;
     let match_count = matches.len();
     let Some(resolved) = matches.into_iter().find(|file| file.path_text == *path) else {
         return Err(CdfError::contract(format!(
@@ -1017,7 +1331,7 @@ fn validate_compression_metadata(
         validate_partition_metadata_value(
             partition,
             "compression",
-            resolved.compression.mode.as_str(),
+            resolved.compression.mode_name(),
             path,
         )?;
         validate_partition_metadata_value(
@@ -1045,7 +1359,7 @@ fn validate_compression_metadata(
         validate_partition_metadata_value(
             partition,
             "compression",
-            resolved.compression.mode.as_str(),
+            resolved.compression.mode_name(),
             path,
         )?;
     }
@@ -1119,7 +1433,7 @@ fn partition_for_file_match(
     if records_compression_metadata(file, &plan.compression) {
         metadata.insert(
             "compression".to_owned(),
-            file.compression.mode.as_str().to_owned(),
+            file.compression.mode_name().to_owned(),
         );
         metadata.insert(
             "compression_declared".to_owned(),
@@ -1171,12 +1485,13 @@ fn resolve_file_matches(
     resource_id: &ResourceId,
     plan: &FileResourcePlan,
     transport: &dyn FileTransport,
+    transforms: &ByteTransformRegistry,
 ) -> Result<Vec<ResolvedFileMatch>> {
     if is_http_root(&plan.root) {
-        return resolve_http_file_match(resource_id, plan, transport);
+        return resolve_http_file_match(resource_id, plan, transport, transforms);
     }
     if is_object_store_root(&plan.root) {
-        return resolve_object_store_matches(resource_id, plan, transport);
+        return resolve_object_store_matches(resource_id, plan, transport, transforms);
     }
 
     let root = PathBuf::from(&plan.root);
@@ -1196,7 +1511,7 @@ fn resolve_file_matches(
     let matches = contained_matches(&root, matches)?;
     matches
         .into_iter()
-        .map(|path| resolved_file_match(resource_id, &root, path, plan))
+        .map(|path| resolved_file_match(resource_id, &root, path, plan, transforms))
         .collect()
 }
 
@@ -1204,6 +1519,7 @@ fn resolve_object_store_matches(
     resource_id: &ResourceId,
     plan: &FileResourcePlan,
     transport: &dyn FileTransport,
+    transforms: &ByteTransformRegistry,
 ) -> Result<Vec<ResolvedFileMatch>> {
     let root_resource = FileTransportResource::object_store_url(plan.root.clone())
         .with_egress_allowlist(plan.allowlist.clone());
@@ -1224,7 +1540,8 @@ fn resolve_object_store_matches(
             Some(credentials) => resource.with_credentials(credentials.clone()),
             None => resource,
         };
-        let compression = resolve_transport_compression(plan, transport, &resource, &metadata)?;
+        let compression =
+            resolve_transport_compression(plan, transport, &resource, &metadata, transforms)?;
         let format = resolve_transport_format(
             resource_id,
             plan,
@@ -1256,6 +1573,7 @@ fn resolve_http_file_match(
     resource_id: &ResourceId,
     plan: &FileResourcePlan,
     transport: &dyn FileTransport,
+    transforms: &ByteTransformRegistry,
 ) -> Result<Vec<ResolvedFileMatch>> {
     let globs = expand_http_glob(resource_id, &plan.glob)?;
     let mut matches = Vec::with_capacity(globs.len());
@@ -1270,7 +1588,8 @@ fn resolve_http_file_match(
         let Some(metadata) = transport.metadata_if_exists(&resource)? else {
             continue;
         };
-        let compression = resolve_transport_compression(plan, transport, &resource, &metadata)?;
+        let compression =
+            resolve_transport_compression(plan, transport, &resource, &metadata, transforms)?;
         let format = resolve_transport_format(
             resource_id,
             plan,
@@ -1503,6 +1822,7 @@ fn resolved_file_match(
     root: &Path,
     path: PathBuf,
     plan: &FileResourcePlan,
+    transforms: &ByteTransformRegistry,
 ) -> Result<ResolvedFileMatch> {
     let metadata = fs::metadata(&path).map_err(|error| {
         CdfError::data(format!("stat matched file {}: {error}", path.display()))
@@ -1532,7 +1852,7 @@ fn resolved_file_match(
         ))
     })?;
     let path_text = path_text.replace(std::path::MAIN_SEPARATOR, "/");
-    let compression = resolve_local_compression(&path_text, &path, &plan.compression)?;
+    let compression = resolve_local_compression(&path_text, &path, &plan.compression, transforms)?;
     let (format, _) = resolve_local_format(resource_id, plan, &path_text, &path, &compression)?;
     let sha256 = file_sha256(&path)?;
     Ok(ResolvedFileMatch {
@@ -1553,6 +1873,7 @@ fn local_file_discovery_candidate(
     root: &Path,
     path: PathBuf,
     plan: &FileResourcePlan,
+    transforms: &ByteTransformRegistry,
 ) -> Result<LocalFileDiscoveryCandidate> {
     let metadata = fs::metadata(&path).map_err(|error| {
         CdfError::data(format!("stat matched file {}: {error}", path.display()))
@@ -1577,14 +1898,15 @@ fn local_file_discovery_candidate(
         ))
     })?;
     let relative_path = relative_path.replace(std::path::MAIN_SEPARATOR, "/");
-    let compression = resolve_local_compression(&relative_path, &path, &plan.compression)?;
+    let compression =
+        resolve_local_compression(&relative_path, &path, &plan.compression, transforms)?;
     let (_, format_bytes_read) =
         resolve_local_format(resource_id, plan, &relative_path, &path, &compression)?;
     Ok(LocalFileDiscoveryCandidate {
         path,
         relative_path,
         size_bytes: metadata.len(),
-        compression: compression.mode.as_str().to_owned(),
+        compression: compression.mode_name().to_owned(),
         selection_bytes_read: metadata.len().min(4) + format_bytes_read,
     })
 }
@@ -1632,7 +1954,7 @@ fn resolve_local_format(
     path: &Path,
     compression: &CompressionEvidence,
 ) -> Result<(FormatEvidence, u64)> {
-    let extension_signal = format_extension_signal(path_text);
+    let extension_signal = format_extension_signal(path_text, compression);
     if !requires_binary_format_confirmation(plan, extension_signal) {
         return Ok((
             FormatEvidence {
@@ -1642,7 +1964,16 @@ fn resolve_local_format(
             0,
         ));
     }
-    reject_compressed_binary_format(resource_id, plan, path_text, compression)?;
+    if compression.transform_id.is_some() {
+        validate_compressed_format_extension(resource_id, plan, path_text, extension_signal)?;
+        return Ok((
+            FormatEvidence {
+                extension_signal,
+                magic_signal: FormatSignal::Unknown,
+            },
+            0,
+        ));
+    }
     let (magic_signal, bytes_read) = local_format_magic_signal(path)?;
     validate_format_evidence(resource_id, plan, path_text, extension_signal, magic_signal)?;
     Ok((
@@ -1662,19 +1993,25 @@ fn resolve_transport_format(
     metadata: &FileIdentityMetadata,
     compression: &CompressionEvidence,
 ) -> Result<FormatEvidence> {
-    let extension_signal = format_extension_signal(&metadata.location);
+    let extension_signal = format_extension_signal(&metadata.location, compression);
     if !requires_binary_format_confirmation(plan, extension_signal) {
         return Ok(FormatEvidence {
             extension_signal,
             magic_signal: FormatSignal::Unknown,
         });
     }
-    reject_compressed_binary_format(
-        resource_id,
-        plan,
-        &diagnostic_location(&metadata.location),
-        compression,
-    )?;
+    if compression.transform_id.is_some() {
+        validate_compressed_format_extension(
+            resource_id,
+            plan,
+            &diagnostic_location(&metadata.location),
+            extension_signal,
+        )?;
+        return Ok(FormatEvidence {
+            extension_signal,
+            magic_signal: FormatSignal::Unknown,
+        });
+    }
     let size_bytes = metadata.size_bytes.ok_or_else(|| {
         CdfError::data(format!(
             "HTTP(S) file metadata for `{}` did not include Content-Length for format confirmation",
@@ -1705,25 +2042,23 @@ fn requires_binary_format_confirmation(
     ) || extension_signal != FormatSignal::Unknown
 }
 
-fn reject_compressed_binary_format(
+fn validate_compressed_format_extension(
     resource_id: &ResourceId,
     plan: &FileResourcePlan,
     path_text: &str,
-    compression: &CompressionEvidence,
+    extension_signal: FormatSignal,
 ) -> Result<()> {
-    if compression.mode == FileCompression::None {
+    let expected = format_declaration_signal(&plan.format);
+    if expected.is_none()
+        || expected == Some(extension_signal)
+        || (plan.format_declared && extension_signal == FormatSignal::Unknown)
+    {
         return Ok(());
     }
-    let exclusion = match plan.format {
-        FileFormatDeclaration::Parquet => "compressed Parquet discovery is excluded",
-        FileFormatDeclaration::ArrowIpc => "compressed Arrow IPC discovery is excluded",
-        FileFormatDeclaration::Csv
-        | FileFormatDeclaration::Json
-        | FileFormatDeclaration::Ndjson => "compressed binary discovery is excluded",
-    };
-    Err(CdfError::contract(format!(
-        "file resource `{resource_id}` cannot confirm binary format `{}` for compressed file `{path_text}`: {exclusion}; compressed Parquet and Arrow IPC are not supported; use an uncompressed `.parquet` or `.arrow` file",
-        file_format_name(&plan.format)
+    Err(CdfError::data(format!(
+        "compressed file format mismatch for resource `{resource_id}`, file `{path_text}`: inner extension signal `{}` does not match declared `{}`",
+        extension_signal.as_str(),
+        file_format_name(&plan.format),
     )))
 }
 
@@ -1795,13 +2130,18 @@ fn records_format_metadata(plan: &FileResourcePlan) -> bool {
     )
 }
 
-fn format_extension_signal(path_text: &str) -> FormatSignal {
+fn format_extension_signal(path_text: &str, compression: &CompressionEvidence) -> FormatSignal {
     let path_without_fragment = path_text.split('#').next().unwrap_or(path_text);
-    let path_without_query = path_without_fragment
+    let mut path_without_query = path_without_fragment
         .split('?')
         .next()
         .unwrap_or(path_without_fragment)
         .to_ascii_lowercase();
+    if compression.transform_id.is_some()
+        && let Some((inner, _)) = path_without_query.rsplit_once('.')
+    {
+        path_without_query.truncate(inner.len());
+    }
     if path_without_query.ends_with(".parquet") {
         FormatSignal::Parquet
     } else if path_without_query.ends_with(".arrow") {
@@ -1898,10 +2238,17 @@ fn resolve_local_compression(
     path_text: &str,
     path: &Path,
     declared: &FileCompressionDeclaration,
+    transforms: &ByteTransformRegistry,
 ) -> Result<CompressionEvidence> {
-    let extension_signal = compression_extension_signal(path_text);
-    let magic_signal = compression_magic_signal(path)?;
-    resolve_compression_signals(path_text, declared, extension_signal, magic_signal)
+    let extension_signal = compression_extension_signal(path_text, transforms);
+    let magic_signal = compression_magic_signal(path, transforms)?;
+    resolve_compression_signals(
+        path_text,
+        declared,
+        extension_signal,
+        magic_signal,
+        transforms,
+    )
 }
 
 fn resolve_transport_compression(
@@ -1909,26 +2256,28 @@ fn resolve_transport_compression(
     transport: &dyn FileTransport,
     resource: &FileTransportResource,
     metadata: &FileIdentityMetadata,
+    transforms: &ByteTransformRegistry,
 ) -> Result<CompressionEvidence> {
-    let extension_signal = compression_extension_signal(&metadata.location);
+    let extension_signal = compression_extension_signal(&metadata.location, transforms);
     let size_bytes = metadata.size_bytes.ok_or_else(|| {
         CdfError::data(format!(
             "remote file metadata for `{}` omitted byte size for compression confirmation",
             diagnostic_location(&metadata.location)
         ))
     })?;
-    let length = size_bytes.min(4);
+    let length = size_bytes.min(transforms.maximum_strong_magic_probe_bytes()?);
     let magic_signal = if length == 0 {
-        CompressionSignal::None
+        CompressionSignal::default()
     } else {
         let magic = transport.read_range(resource, ByteRange::new(0, length)?)?;
-        compression_magic_signal_from_bytes(&magic)
+        compression_magic_signal_from_bytes(&magic, transforms)?
     };
     resolve_compression_signals(
         &diagnostic_location(&metadata.location),
         &plan.compression,
         extension_signal,
         magic_signal,
+        transforms,
     )
 }
 
@@ -1937,120 +2286,128 @@ fn resolve_compression_signals(
     declared: &FileCompressionDeclaration,
     extension_signal: CompressionSignal,
     magic_signal: CompressionSignal,
+    transforms: &ByteTransformRegistry,
 ) -> Result<CompressionEvidence> {
-    let mode = match declared {
-        FileCompressionDeclaration::Auto => {
-            match (extension_signal.compression(), magic_signal.compression()) {
-                (Some(extension), Some(magic)) if extension != magic => {
+    let transform_id = if declared.is_auto() {
+        match (extension_signal.transform_id(), magic_signal.transform_id()) {
+            (Some(extension), Some(magic)) if extension != magic => {
+                return Err(compression_signal_error(
+                    path_text,
+                    declared,
+                    &extension_signal,
+                    &magic_signal,
+                ));
+            }
+            (_, Some(magic)) => Some(magic.clone()),
+            (Some(extension), None) => {
+                let driver = transforms.resolve(extension)?;
+                if driver.descriptor().magic.iter().any(|magic| magic.strong) {
                     return Err(compression_signal_error(
                         path_text,
                         declared,
-                        extension_signal,
-                        magic_signal,
+                        &extension_signal,
+                        &magic_signal,
                     ));
                 }
-                (_, Some(magic)) => magic,
-                (Some(_), None) => {
-                    return Err(compression_signal_error(
-                        path_text,
-                        declared,
-                        extension_signal,
-                        magic_signal,
-                    ));
-                }
-                (None, None) => FileCompression::None,
+                Some(extension.clone())
             }
+            (None, None) => None,
         }
-        FileCompressionDeclaration::None => {
-            if magic_signal.compression().is_some() {
-                return Err(compression_signal_error(
-                    path_text,
-                    declared,
-                    extension_signal,
-                    magic_signal,
-                ));
-            }
-            FileCompression::None
+    } else if declared.is_none() {
+        if extension_signal.transform_id().is_some() || magic_signal.transform_id().is_some() {
+            return Err(compression_signal_error(
+                path_text,
+                declared,
+                &extension_signal,
+                &magic_signal,
+            ));
         }
-        FileCompressionDeclaration::Gzip => {
-            if magic_signal != CompressionSignal::Gzip {
-                return Err(compression_signal_error(
-                    path_text,
-                    declared,
-                    extension_signal,
-                    magic_signal,
-                ));
-            }
-            FileCompression::Gzip
+        None
+    } else {
+        let declared_id = ByteTransformId::new(declared.as_str().to_owned())?;
+        let driver = transforms.resolve(&declared_id)?;
+        if extension_signal
+            .transform_id()
+            .is_some_and(|extension| extension != &declared_id)
+            || magic_signal
+                .transform_id()
+                .is_some_and(|magic| magic != &declared_id)
+            || (magic_signal.transform_id().is_none()
+                && driver.descriptor().magic.iter().any(|magic| magic.strong))
+        {
+            return Err(compression_signal_error(
+                path_text,
+                declared,
+                &extension_signal,
+                &magic_signal,
+            ));
         }
-        FileCompressionDeclaration::Zstd => {
-            if magic_signal != CompressionSignal::Zstd {
-                return Err(compression_signal_error(
-                    path_text,
-                    declared,
-                    extension_signal,
-                    magic_signal,
-                ));
-            }
-            FileCompression::Zstd
-        }
+        Some(declared_id)
     };
 
     Ok(CompressionEvidence {
-        mode,
+        transform_id,
         extension_signal,
         magic_signal,
     })
 }
 
-fn compression_extension_signal(path_text: &str) -> CompressionSignal {
+fn compression_extension_signal(
+    path_text: &str,
+    transforms: &ByteTransformRegistry,
+) -> CompressionSignal {
     let path_without_fragment = path_text.split('#').next().unwrap_or(path_text);
     let lower = path_without_fragment
         .split('?')
         .next()
         .unwrap_or(path_without_fragment)
         .to_ascii_lowercase();
-    if lower.ends_with(".gz") || lower.ends_with(".gzip") {
-        CompressionSignal::Gzip
-    } else if lower.ends_with(".zst") || lower.ends_with(".zstd") {
-        CompressionSignal::Zstd
-    } else {
-        CompressionSignal::None
-    }
+    let extension = lower.rsplit_once('.').map(|(_, extension)| extension);
+    CompressionSignal(extension.and_then(|extension| {
+        transforms
+            .by_extension(extension)
+            .map(|driver| driver.descriptor().transform_id.clone())
+    }))
 }
 
-fn compression_magic_signal(path: &Path) -> Result<CompressionSignal> {
+fn compression_magic_signal(
+    path: &Path,
+    transforms: &ByteTransformRegistry,
+) -> Result<CompressionSignal> {
     let mut file = File::open(path).map_err(|error| {
         CdfError::data(format!(
             "open matched file {} for compression detection: {error}",
             path.display()
         ))
     })?;
-    let mut magic = [0_u8; 4];
+    let probe_bytes = usize::try_from(transforms.maximum_strong_magic_probe_bytes()?)
+        .map_err(|_| CdfError::contract("byte-transform magic probe exceeds usize"))?;
+    let mut magic = vec![0_u8; probe_bytes];
     let bytes_read = file.read(&mut magic).map_err(|error| {
         CdfError::data(format!(
             "read matched file {} for compression detection: {error}",
             path.display()
         ))
     })?;
-    Ok(compression_magic_signal_from_bytes(&magic[..bytes_read]))
+    compression_magic_signal_from_bytes(&magic[..bytes_read], transforms)
 }
 
-fn compression_magic_signal_from_bytes(magic: &[u8]) -> CompressionSignal {
-    if magic.len() >= 2 && magic[..2] == [0x1f, 0x8b] {
-        return CompressionSignal::Gzip;
-    }
-    if magic.len() >= 4 && magic[..4] == [0x28, 0xb5, 0x2f, 0xfd] {
-        return CompressionSignal::Zstd;
-    }
-    CompressionSignal::None
+fn compression_magic_signal_from_bytes(
+    magic: &[u8],
+    transforms: &ByteTransformRegistry,
+) -> Result<CompressionSignal> {
+    Ok(CompressionSignal(
+        transforms
+            .detect_strong_magic(magic)?
+            .map(|driver| driver.descriptor().transform_id.clone()),
+    ))
 }
 
 fn compression_signal_error(
     path_text: &str,
     declared: &FileCompressionDeclaration,
-    extension_signal: CompressionSignal,
-    magic_signal: CompressionSignal,
+    extension_signal: &CompressionSignal,
+    magic_signal: &CompressionSignal,
 ) -> CdfError {
     CdfError::data(format!(
         "file `{path_text}` compression mismatch: declared `{}`, extension signal `{}`, magic bytes signal `{}`",
@@ -2064,21 +2421,10 @@ fn records_compression_metadata(
     file: &ResolvedFileMatch,
     declared: &FileCompressionDeclaration,
 ) -> bool {
-    file.compression.mode != FileCompression::None
-        || !matches!(declared, FileCompressionDeclaration::Auto)
-        || file.compression.extension_signal != CompressionSignal::None
-        || file.compression.magic_signal != CompressionSignal::None
-}
-
-impl FileCompressionDeclaration {
-    fn as_str(&self) -> &'static str {
-        match self {
-            Self::Auto => "auto",
-            Self::None => "none",
-            Self::Gzip => "gzip",
-            Self::Zstd => "zstd",
-        }
-    }
+    file.compression.transform_id.is_some()
+        || !declared.is_auto()
+        || file.compression.extension_signal.transform_id().is_some()
+        || file.compression.magic_signal.transform_id().is_some()
 }
 
 fn transport_range_reader(
@@ -2320,7 +2666,7 @@ mod tests {
             FileTransportFacade::new(),
             crate::test_execution_services(),
             crate::test_format_registry(),
-            Arc::new(ByteTransformRegistry::default()),
+            crate::test_transform_registry(),
         ));
         let start = Arc::new(Barrier::new(3));
         let active = Arc::new(AtomicUsize::new(0));
@@ -2376,7 +2722,7 @@ mod tests {
             FileTransportFacade::new(),
             crate::test_execution_services(),
             crate::test_format_registry(),
-            Arc::new(ByteTransformRegistry::default()),
+            crate::test_transform_registry(),
         );
         let driver = dependencies.formats().resolve("parquet").unwrap();
         let stream = stream_registered_format(
@@ -2419,6 +2765,73 @@ mod tests {
     }
 
     #[test]
+    fn gzip_parquet_composes_transform_spool_with_registered_format_driver() {
+        let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, false)]));
+        let batch = RecordBatch::try_new(
+            Arc::clone(&schema),
+            vec![Arc::new(Int64Array::from_iter_values(0..10_000))],
+        )
+        .unwrap();
+        let parquet = cdf_package::transcode_record_batches_to_parquet_bytes(&[batch]).unwrap();
+        let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
+        encoder.write_all(&parquet).unwrap();
+        let compressed = encoder.finish().unwrap();
+        let root = tempfile::tempdir().unwrap();
+        std::fs::write(root.path().join("events.parquet.gz"), compressed).unwrap();
+        let dependencies = FileRuntimeDependencies::new(
+            FileTransportFacade::new(),
+            crate::test_execution_services(),
+            crate::test_format_registry(),
+            crate::test_transform_registry(),
+        );
+        let plan = FileResourcePlan {
+            source: "events".to_owned(),
+            root: root.path().to_string_lossy().into_owned(),
+            glob: "events.parquet.gz".to_owned(),
+            format: FileFormatDeclaration::Parquet,
+            format_declared: true,
+            compression: FileCompressionDeclaration::auto(),
+            auth: None,
+            credentials: None,
+            allowlist: cdf_http::EgressAllowlist::allow_any(),
+        };
+        let resource_id = ResourceId::new("events.raw").unwrap();
+        let resolved = dependencies
+            .with_transport(|transport| {
+                resolve_file_matches(&resource_id, &plan, transport, dependencies.transforms())
+            })
+            .unwrap();
+        assert_eq!(resolved[0].compression.mode_name(), "gzip");
+        assert_eq!(resolved[0].format.extension_signal, FormatSignal::Parquet);
+        let stream = stream_file_match(
+            &resolved[0],
+            &plan.format,
+            ReadOptions::new(resource_id, PartitionId::new("file-events").unwrap()),
+            schema,
+            &dependencies,
+            &ContractPolicy::default().types,
+            PhysicalSchemaAuthority::default(),
+        )
+        .unwrap();
+        let batches = futures_executor::block_on(stream.collect::<Vec<_>>())
+            .into_iter()
+            .collect::<Result<Vec<_>>>()
+            .unwrap();
+        assert_eq!(
+            batches
+                .iter()
+                .map(|batch| batch.header.row_count)
+                .sum::<u64>(),
+            10_000
+        );
+        drop(batches);
+        assert_eq!(
+            dependencies.execution().memory().snapshot().current_bytes,
+            0
+        );
+    }
+
+    #[test]
     fn remote_arrow_ipc_file_spools_and_streams_through_registered_driver() {
         let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, false)]));
         let batch = RecordBatch::try_new(
@@ -2444,7 +2857,7 @@ mod tests {
             facade,
             crate::test_execution_services(),
             crate::test_format_registry(),
-            Arc::new(ByteTransformRegistry::default()),
+            crate::test_transform_registry(),
         )
         .with_max_spool_bytes(bytes.len() as u64)
         .unwrap();
@@ -2454,7 +2867,7 @@ mod tests {
             glob: "events.arrow".to_owned(),
             format: FileFormatDeclaration::ArrowIpc,
             format_declared: true,
-            compression: FileCompressionDeclaration::None,
+            compression: FileCompressionDeclaration::none(),
             auth: None,
             credentials: None,
             allowlist: cdf_http::EgressAllowlist::allow_any(),
@@ -2462,7 +2875,12 @@ mod tests {
         let resource_id = ResourceId::new("ipc.events").unwrap();
         let resolved = dependencies
             .with_transport(|transport| {
-                resolve_object_store_matches(&resource_id, &plan, transport)
+                resolve_object_store_matches(
+                    &resource_id,
+                    &plan,
+                    transport,
+                    crate::test_transform_registry().as_ref(),
+                )
             })
             .unwrap();
         let stream = stream_file_match(
@@ -2506,14 +2924,20 @@ mod tests {
             glob: "2026/**/*.parquet".to_owned(),
             format: FileFormatDeclaration::Parquet,
             format_declared: true,
-            compression: FileCompressionDeclaration::None,
+            compression: FileCompressionDeclaration::none(),
             auth: None,
             credentials: None,
             allowlist: cdf_http::EgressAllowlist::allow_any(),
         };
         let resource_id = ResourceId::new("events.raw").unwrap();
 
-        let matches = resolve_object_store_matches(&resource_id, &plan, &transport).unwrap();
+        let matches = resolve_object_store_matches(
+            &resource_id,
+            &plan,
+            &transport,
+            crate::test_transform_registry().as_ref(),
+        )
+        .unwrap();
         assert_eq!(matches.len(), 2);
         assert_eq!(
             matches
@@ -2567,7 +2991,7 @@ mod tests {
             facade,
             crate::test_execution_services(),
             crate::test_format_registry(),
-            Arc::new(ByteTransformRegistry::default()),
+            crate::test_transform_registry(),
         )
         .with_max_spool_bytes(encoded.len() as u64)
         .unwrap();
@@ -2578,16 +3002,21 @@ mod tests {
             glob: "2026/**/*.ndjson.gz".to_owned(),
             format: FileFormatDeclaration::Ndjson,
             format_declared: true,
-            compression: FileCompressionDeclaration::Auto,
+            compression: FileCompressionDeclaration::auto(),
             auth: None,
             credentials: None,
             allowlist: cdf_http::EgressAllowlist::allow_any(),
         };
         let resource_id = ResourceId::new("events.raw").unwrap();
-        let resolved =
-            resolve_object_store_matches(&resource_id, &plan, transport.as_ref()).unwrap();
+        let resolved = resolve_object_store_matches(
+            &resource_id,
+            &plan,
+            transport.as_ref(),
+            crate::test_transform_registry().as_ref(),
+        )
+        .unwrap();
         assert_eq!(resolved.len(), 1);
-        assert_eq!(resolved[0].compression.mode, FileCompression::Gzip);
+        assert_eq!(resolved[0].compression.mode_name(), "gzip");
         let declared = Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, false)]));
         let options = ReadOptions::new(resource_id, PartitionId::new("file-events").unwrap());
         let type_policy = ContractPolicy::default().types;

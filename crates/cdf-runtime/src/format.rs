@@ -882,6 +882,19 @@ impl ByteTransformRegistry {
             .map(|driver| driver.descriptor().clone())
             .collect()
     }
+
+    pub fn maximum_strong_magic_probe_bytes(&self) -> Result<u64> {
+        self.strong_magic
+            .keys()
+            .try_fold(0_u64, |maximum, (offset, signature)| {
+                let length = u64::try_from(signature.len())
+                    .map_err(|_| CdfError::contract("byte-transform magic length exceeds u64"))?;
+                let end = offset
+                    .checked_add(length)
+                    .ok_or_else(|| CdfError::contract("byte-transform magic extent exceeds u64"))?;
+                Ok(maximum.max(end))
+            })
+    }
 }
 
 #[cfg(test)]

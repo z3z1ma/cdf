@@ -160,6 +160,7 @@ struct FilePhysicalPlan {
 
 impl FilePhysicalPlan {
     fn to_runtime_plan(&self) -> Result<FileResourcePlan> {
+        self.resource.compression.validate()?;
         Ok(FileResourcePlan {
             source: self.source.source_name.clone(),
             root: self.source.root.clone(),

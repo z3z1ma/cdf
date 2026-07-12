@@ -20,12 +20,54 @@ pub enum FileFormatDeclaration {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "snake_case")]
-pub enum FileCompressionDeclaration {
-    Auto,
-    None,
-    Gzip,
-    Zstd,
+#[serde(transparent)]
+pub struct FileCompressionDeclaration(String);
+
+impl FileCompressionDeclaration {
+    pub fn auto() -> Self {
+        Self("auto".to_owned())
+    }
+
+    pub fn none() -> Self {
+        Self("none".to_owned())
+    }
+
+    pub fn named(value: impl Into<String>) -> cdf_kernel::Result<Self> {
+        let value = value.into();
+        cdf_runtime::ByteTransformId::new(value.clone())?;
+        if matches!(value.as_str(), "auto" | "none") {
+            return Err(cdf_kernel::CdfError::contract(
+                "named byte transform cannot use reserved `auto` or `none`",
+            ));
+        }
+        Ok(Self(value))
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    pub fn is_auto(&self) -> bool {
+        self.0 == "auto"
+    }
+
+    pub fn is_none(&self) -> bool {
+        self.0 == "none"
+    }
+
+    pub fn validate(&self) -> cdf_kernel::Result<()> {
+        if self.is_auto() || self.is_none() {
+            Ok(())
+        } else {
+            cdf_runtime::ByteTransformId::new(self.0.clone()).map(drop)
+        }
+    }
+}
+
+impl Default for FileCompressionDeclaration {
+    fn default() -> Self {
+        Self::auto()
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -73,6 +115,24 @@ pub(crate) fn test_format_registry() -> std::sync::Arc<cdf_runtime::FormatRegist
                         .expect("Parquet test format driver"),
                 ))
                 .expect("Parquet test format registration");
+            std::sync::Arc::new(registry)
+        })
+        .clone()
+}
+
+#[cfg(test)]
+pub(crate) fn test_transform_registry() -> std::sync::Arc<cdf_runtime::ByteTransformRegistry> {
+    static REGISTRY: std::sync::OnceLock<std::sync::Arc<cdf_runtime::ByteTransformRegistry>> =
+        std::sync::OnceLock::new();
+    REGISTRY
+        .get_or_init(|| {
+            let mut registry = cdf_runtime::ByteTransformRegistry::default();
+            registry
+                .register(std::sync::Arc::new(
+                    cdf_transform_gzip::GzipTransformDriver::new()
+                        .expect("gzip test transform driver"),
+                ))
+                .expect("gzip test transform registration");
             std::sync::Arc::new(registry)
         })
         .clone()

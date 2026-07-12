@@ -1034,7 +1034,6 @@ dependencies = [
  "cdf-contract",
  "cdf-kernel",
  "cdf-package",
- "flate2",
  "futures-executor",
  "futures-util",
  "hex",
@@ -1043,7 +1042,6 @@ dependencies = [
  "serde_json",
  "sha2 0.10.9",
  "tempfile",
- "zstd",
 ]
 
 [[package]]
@@ -1200,6 +1198,7 @@ dependencies = [
  "cdf-memory",
  "cdf-package",
  "cdf-runtime",
+ "cdf-transform-gzip",
  "flate2",
  "futures-executor",
  "futures-util",

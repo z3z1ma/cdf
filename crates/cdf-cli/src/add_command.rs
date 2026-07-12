@@ -162,25 +162,14 @@ fn discover_for_add(
     execution: &cdf_runtime::ExecutionServices,
 ) -> Result<ResourceSchemaDiscoveryArtifacts, CliError> {
     match resource.plan() {
-        CompiledResourcePlan::Files(plan)
-            if ["http://", "https://", "s3://", "gs://", "az://"]
-                .iter()
-                .any(|scheme| plan.root.starts_with(scheme)) =>
-        {
-            Ok(
-                cdf_project::discover_resource_schema_with_file_dependencies_artifacts(
-                    resource,
-                    secret_provider,
-                    file_runtime_dependencies(context, Some(execution))?,
-                    Default::default(),
-                )?,
-            )
-        }
-        CompiledResourcePlan::Files(_) => Ok(cdf_project::discover_resource_schema_artifacts(
-            resource,
-            secret_provider,
-            Default::default(),
-        )?),
+        CompiledResourcePlan::Files(_) => Ok(
+            cdf_project::discover_resource_schema_with_file_dependencies_artifacts(
+                resource,
+                secret_provider,
+                file_runtime_dependencies(context, Some(execution))?,
+                Default::default(),
+            )?,
+        ),
         CompiledResourcePlan::Sql(_) => Ok(cdf_project::discover_resource_schema_artifacts(
             resource,
             secret_provider,

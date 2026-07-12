@@ -21,7 +21,6 @@ use cdf_kernel::{
     SchemaSnapshotReference, SchemaSource, ScopeKey, SourcePosition, TrustLevel, WriteDisposition,
     source_name,
 };
-use flate2::read::GzDecoder;
 use futures_util::stream;
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use parquet::file::reader::ChunkReader;
@@ -29,9 +28,7 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 
 use crate::schema::schema_hash;
-use crate::{
-    CsvOptions, FileCompression, FileFormat, FileSource, FormatRead, JsonOptions, ReadOptions,
-};
+use crate::{CsvOptions, FileFormat, FileSource, FormatRead, JsonOptions, ReadOptions};
 
 pub fn read_file_source(source: &FileSource) -> Result<FormatRead> {
     let position = file_source_position(&source.path)?;
@@ -53,7 +50,6 @@ pub fn read_file_source(source: &FileSource) -> Result<FormatRead> {
             read_ndjson_bytes_with_scope(&bytes, &source.options, options, scope, Some(position))
         }
         FileFormat::Parquet => {
-            reject_byte_stream_compression_for_parquet(source)?;
             read_parquet_file_with_scope(&source.path, &source.options, scope, Some(position))
         }
     }
@@ -117,20 +113,12 @@ pub fn read_file_source_with_declared_schema_and_type_policy(
 pub fn stream_file_source_path_with_declared_schema_and_type_policy(
     path: &Path,
     format: FileFormat,
-    compression: FileCompression,
     options: ReadOptions,
     declared_schema: SchemaRef,
     type_policy: &TypePolicy,
     position: Option<SourcePosition>,
 ) -> Result<BatchStream> {
     if format == FileFormat::Parquet {
-        if compression != FileCompression::None {
-            return Err(CdfError::contract(format!(
-                "byte-stream compression `{}` is not supported for Parquet file source {}; Parquet compression must be handled by the Parquet reader",
-                compression.as_str(),
-                path.display()
-            )));
-        }
         return stream_parquet_file_with_declared_schema_and_type_policy(
             path,
             &options,
@@ -140,7 +128,7 @@ pub fn stream_file_source_path_with_declared_schema_and_type_policy(
         );
     }
 
-    let source = FileSource::new(path, format, options).with_compression(compression);
+    let source = FileSource::new(path, format, options);
     let mut read = if !declared_schema.fields().is_empty()
         && matches!(source.format, FileFormat::Json(_) | FileFormat::Ndjson(_))
     {
@@ -159,56 +147,8 @@ pub fn stream_file_source_path_with_declared_schema_and_type_policy(
 }
 
 fn read_file_source_bytes(source: &FileSource) -> Result<Vec<u8>> {
-    match source.compression {
-        FileCompression::None => fs::read(&source.path)
-            .map_err(|error| io_data_error(format!("read {}", source.path.display()), error)),
-        FileCompression::Gzip => read_gzip_file(&source.path),
-        FileCompression::Zstd => read_zstd_file(&source.path),
-    }
-}
-
-fn read_gzip_file(path: &Path) -> Result<Vec<u8>> {
-    let file = open_compressed_file(path, "gzip")?;
-    let decoder = GzDecoder::new(file);
-    read_decoder_to_end(decoder, path, "gzip")
-}
-
-fn read_zstd_file(path: &Path) -> Result<Vec<u8>> {
-    let file = open_compressed_file(path, "zstd")?;
-    let decoder = zstd::stream::read::Decoder::new(file)
-        .map_err(|error| io_data_error(format!("open zstd stream {}", path.display()), error))?;
-    read_decoder_to_end(decoder, path, "zstd")
-}
-
-fn open_compressed_file(path: &Path, compression: &str) -> Result<fs::File> {
-    fs::File::open(path).map_err(|error| {
-        io_data_error(
-            format!("open {compression}-compressed {}", path.display()),
-            error,
-        )
-    })
-}
-
-fn read_decoder_to_end<R: Read>(mut decoder: R, path: &Path, compression: &str) -> Result<Vec<u8>> {
-    let mut bytes = Vec::new();
-    decoder.read_to_end(&mut bytes).map_err(|error| {
-        io_data_error(
-            format!("read {compression}-compressed {}", path.display()),
-            error,
-        )
-    })?;
-    Ok(bytes)
-}
-
-fn reject_byte_stream_compression_for_parquet(source: &FileSource) -> Result<()> {
-    if source.compression == FileCompression::None {
-        return Ok(());
-    }
-    Err(CdfError::contract(format!(
-        "byte-stream compression `{}` is not supported for Parquet file source {}; Parquet compression must be handled by the Parquet reader",
-        source.compression.as_str(),
-        source.path.display()
-    )))
+    fs::read(&source.path)
+        .map_err(|error| io_data_error(format!("read {}", source.path.display()), error))
 }
 
 pub fn read_arrow_ipc_stream<R: Read>(reader: R, options: &ReadOptions) -> Result<FormatRead> {
@@ -399,10 +339,8 @@ pub fn infer_ndjson_observed_schema(
 
 pub fn discover_ndjson_schema_from_reader(
     reader: Box<dyn Read + Send>,
-    compression: FileCompression,
     max_read_records: Option<usize>,
 ) -> Result<SchemaRef> {
-    let reader = decoded_discovery_reader(reader, compression)?;
     let (schema, _) =
         infer_json_schema(BufReader::new(reader), max_read_records).map_err(CdfError::from)?;
     Ok(Arc::new(schema))
@@ -410,11 +348,9 @@ pub fn discover_ndjson_schema_from_reader(
 
 pub fn discover_csv_schema_from_reader(
     reader: Box<dyn Read + Send>,
-    compression: FileCompression,
     csv_options: &CsvOptions,
     max_read_records: usize,
 ) -> Result<SchemaRef> {
-    let reader = decoded_discovery_reader(reader, compression)?;
     let format = ArrowCsvFormat::default()
         .with_header(csv_options.has_header)
         .with_delimiter(csv_options.delimiter);
@@ -426,10 +362,9 @@ pub fn discover_csv_schema_from_reader(
 
 pub fn discover_json_schema_from_reader(
     reader: Box<dyn Read + Send>,
-    compression: FileCompression,
     max_read_records: usize,
 ) -> Result<SchemaRef> {
-    let mut reader = decoded_discovery_reader(reader, compression)?;
+    let mut reader = reader;
     let mut document = Vec::new();
     reader
         .read_to_end(&mut document)
@@ -438,20 +373,6 @@ pub fn discover_json_schema_from_reader(
     let (schema, _) =
         infer_json_schema(Cursor::new(ndjson), Some(max_read_records)).map_err(CdfError::from)?;
     Ok(Arc::new(schema))
-}
-
-fn decoded_discovery_reader(
-    reader: Box<dyn Read + Send>,
-    compression: FileCompression,
-) -> Result<Box<dyn Read + Send>> {
-    match compression {
-        FileCompression::None => Ok(reader),
-        FileCompression::Gzip => Ok(Box::new(GzDecoder::new(reader))),
-        FileCompression::Zstd => Ok(Box::new(
-            zstd::stream::read::Decoder::new(reader)
-                .map_err(|error| io_data_error("open zstd discovery stream", error))?,
-        )),
-    }
 }
 
 fn read_csv_bytes_with_scope(
