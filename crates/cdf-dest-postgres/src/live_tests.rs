@@ -464,7 +464,7 @@ fn build_package(
     package_id: &str,
     segments: Vec<(&str, RecordBatch)>,
 ) -> PackageManifest {
-    let mut builder = PackageBuilder::create(root, package_id).unwrap();
+    let builder = PackageBuilder::create(root, package_id).unwrap();
     for (segment_id, batch) in segments {
         builder
             .write_segment(SegmentId::new(segment_id).unwrap(), &[batch])
@@ -1244,8 +1244,7 @@ fn live_append_populates_quarantine_mirror_when_sheet_supports_it() {
         return;
     };
     let package_dir = tempfile::tempdir().unwrap();
-    let mut builder =
-        PackageBuilder::create(package_dir.path(), "pkg-live-quarantine-mirror").unwrap();
+    let builder = PackageBuilder::create(package_dir.path(), "pkg-live-quarantine-mirror").unwrap();
     builder
         .write_quarantine_records(
             "part-000001.parquet",

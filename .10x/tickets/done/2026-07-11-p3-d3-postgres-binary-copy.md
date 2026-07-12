@@ -1,4 +1,4 @@
-Status: open
+Status: done
 Created: 2026-07-11
 Updated: 2026-07-11
 Parent: .10x/tickets/2026-07-10-p3-ws-d-destination-bulk-paths.md
@@ -36,6 +36,7 @@ Depends on D1 and staged-ingress contract.
 - 2026-07-11: Added a bounded 1 MiB binary COPY aggregate buffer after measurement showed the synchronous PostgreSQL client flushes around 4 KiB, and compiled Arrow columns to typed encoder views once per batch rather than downcasting every cell. A server-inclusive 524,288-row TLC-shaped local benchmark now measures 1,662,005 binary rows/s versus 570,051 rows/s for the exact removed scalar CSV allocation/escaping shape (2.92x). The narrow three-field adversarial shape is server/wire-size bound near 2x because four provenance fields dominate; this limit is recorded in the milestone evidence rather than hidden.
 - 2026-07-11: Replaced the final PostgreSQL segment staging container with `CommitSegment::into_batches()`. The prior public-field move dropped the verified segment's private memory-retention owner before binary encoding; the canonical iterator now holds the lease for the complete segment and each yielded batch. Deleted `PostgresPackageData`, `PostgresStageBatch`, `PostgresLoadedSegment`, schema rediscovery, and their vector assembly. All 30 active unit/live tests and strict Clippy remain green.
 - 2026-07-11: D6 removed two repeated provenance strings from every binary COPY row. The equal-shape server-inclusive control now measures 1,898,152 binary rows/s versus 610,026 CSV rows/s (3.11x), up 14.2% from the prior 1,662,005-row/s binary milestone while preserving exact logical provenance.
+- 2026-07-11: Closed D3 on a fresh current-code control. The pure encoder measured 25,511,661 binary rows/s versus 10,618,599 removed CSV-shape rows/s (2.40x); real TCP-loopback PostgreSQL measured 1,598,429 versus 604,815 rows/s (2.64x). Encoder capacity exceeds server-inclusive throughput by 15.96x, establishing that PostgreSQL/server transport is the limiting stage before adding remote latency. All 30 non-ignored tests covering protocol vectors, live append/replace/merge, rollback, correction, duplicate receipts, Decimal128, source scans, and mirrors pass; strict all-target Clippy passes. Evidence: `.10x/evidence/2026-07-11-p3-d3-postgres-closeout.md`; review: `.10x/reviews/2026-07-11-p3-d3-closeout-review.md`.
 
 ## References
 
