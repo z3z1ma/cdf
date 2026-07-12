@@ -212,11 +212,11 @@ fn discover_for_deep_validate(
 ) -> cdf_kernel::Result<ResourceSchemaDiscovery> {
     let secret_provider = context.secret_provider();
     if matches!(resource.plan(), CompiledResourcePlan::Rest(_)) {
-        let mut transport = ReqwestHttpTransport::new()?;
+        let transport = ReqwestHttpTransport::new()?;
         return cdf_project::discover_resource_schema_with_rest_transport(
             resource,
             &secret_provider,
-            &mut transport,
+            &transport,
         );
     }
     if matches!(resource.plan(), CompiledResourcePlan::Files(_)) {

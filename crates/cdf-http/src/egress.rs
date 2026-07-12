@@ -36,12 +36,12 @@ impl EgressAllowlist {
     }
 }
 
-pub trait HttpTransport {
-    fn send(&mut self, request: HttpRequest) -> Result<HttpResponse>;
+pub trait HttpTransport: Send + Sync {
+    fn send(&self, request: HttpRequest) -> Result<HttpResponse>;
 }
 
 pub fn send_with_policy(
-    transport: &mut dyn HttpTransport,
+    transport: &dyn HttpTransport,
     allowlist: &EgressAllowlist,
     request: HttpRequest,
 ) -> Result<HttpResponse> {

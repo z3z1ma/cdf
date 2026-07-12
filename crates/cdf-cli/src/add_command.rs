@@ -187,12 +187,12 @@ fn discover_for_add(
             Default::default(),
         )?),
         CompiledResourcePlan::Rest(_) => {
-            let mut transport = ReqwestHttpTransport::new()?;
+            let transport = ReqwestHttpTransport::new()?;
             Ok(ResourceSchemaDiscoveryArtifacts::new(
                 cdf_project::discover_resource_schema_with_rest_transport(
                     resource,
                     secret_provider,
-                    &mut transport,
+                    &transport,
                 )?,
                 None,
             ))

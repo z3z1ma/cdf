@@ -17,7 +17,7 @@ impl ReqwestHttpTransport {
 }
 
 impl HttpTransport for ReqwestHttpTransport {
-    fn send(&mut self, request: HttpRequest) -> Result<HttpResponse> {
+    fn send(&self, request: HttpRequest) -> Result<HttpResponse> {
         let raw = self.send_raw(&request.method, &request.url, &request.headers, "REST")?;
         let mut response = HttpResponse::new(raw.status).with_body(raw.body);
         for (name, value) in raw.headers {

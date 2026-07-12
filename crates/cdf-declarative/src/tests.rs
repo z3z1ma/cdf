@@ -321,7 +321,7 @@ fn rest_sample_discovery_infers_scalars_and_uses_runtime_request_path() {
     let resource = compile_document(&parse_toml(&input).unwrap())
         .unwrap()
         .remove(0);
-    let mut transport = RecordingTransport::new([json_response(
+    let transport = RecordingTransport::new([json_response(
         r#"{
             "items": [
                 { "id": 9223372036854775808, "name": "ada", "updated_at": "2026-07-02T00:00:00Z", "active": true, "score": 4.5, "meta": { "tier": "gold" } },
@@ -333,8 +333,7 @@ fn rest_sample_discovery_infers_scalars_and_uses_runtime_request_path() {
     )]);
     let secret_provider = StaticSecretProvider::new([("secret://env/API_TOKEN", "sample-secret")]);
 
-    let discovery =
-        discover_rest_sample_schema(&resource, &mut transport, &secret_provider).unwrap();
+    let discovery = discover_rest_sample_schema(&resource, &transport, &secret_provider).unwrap();
 
     let schema = Arc::clone(&discovery.schema);
     assert_eq!(
@@ -3205,7 +3204,7 @@ impl RecordingTransport {
 }
 
 impl HttpTransport for RecordingTransport {
-    fn send(&mut self, request: HttpRequest) -> cdf_kernel::Result<HttpResponse> {
+    fn send(&self, request: HttpRequest) -> cdf_kernel::Result<HttpResponse> {
         let mut state = self.state.lock().unwrap();
         state.requests.push(request);
         state
@@ -3243,7 +3242,7 @@ impl FlakyTransport {
 }
 
 impl HttpTransport for FlakyTransport {
-    fn send(&mut self, request: HttpRequest) -> cdf_kernel::Result<HttpResponse> {
+    fn send(&self, request: HttpRequest) -> cdf_kernel::Result<HttpResponse> {
         let mut state = self.state.lock().unwrap();
         state.requests.push(request);
         if state.failures_remaining > 0 {

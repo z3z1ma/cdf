@@ -601,9 +601,7 @@ fn open_file_resource_with_dependencies(
             Ok(())
         },
     );
-    Box::pin(async move {
-        Ok(Box::pin(stream?) as BatchStream)
-    })
+    Box::pin(async move { Ok(Box::pin(stream?) as BatchStream) })
 }
 
 fn open_file_partition(

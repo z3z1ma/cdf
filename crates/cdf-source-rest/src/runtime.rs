@@ -30,7 +30,7 @@ pub const CURSOR_QUERY_VALUE_METADATA: &str = "cursor_query_value";
 
 #[derive(Clone)]
 pub struct RestRuntimeDependencies {
-    transport: Arc<Mutex<Box<dyn HttpTransport + Send>>>,
+    transport: Arc<dyn HttpTransport>,
     secret_provider: Option<Arc<dyn SecretProvider + Send + Sync>>,
     auth_refresh: Option<Arc<Mutex<Box<dyn AuthRefreshHook + Send>>>>,
     retry_policy: RetryPolicy,
@@ -38,13 +38,13 @@ pub struct RestRuntimeDependencies {
 }
 
 impl RestRuntimeDependencies {
-    pub fn new(transport: impl HttpTransport + Send + 'static) -> Self {
+    pub fn new(transport: impl HttpTransport + 'static) -> Self {
         Self::from_boxed_transport(Box::new(transport))
     }
 
-    pub fn from_boxed_transport(transport: Box<dyn HttpTransport + Send>) -> Self {
+    pub fn from_boxed_transport(transport: Box<dyn HttpTransport>) -> Self {
         Self {
-            transport: Arc::new(Mutex::new(transport)),
+            transport: Arc::from(transport),
             secret_provider: None,
             auth_refresh: None,
             retry_policy: RetryPolicy::default(),
@@ -439,7 +439,7 @@ pub fn discover_rest_sample_schema(
     descriptor: &ResourceDescriptor,
     plan: &RestResourcePlan,
     partition: &PartitionPlan,
-    transport: &mut dyn HttpTransport,
+    transport: &dyn HttpTransport,
     secret_provider: &dyn SecretProvider,
 ) -> Result<RestSampleSchemaDiscovery> {
     validate_partition(descriptor, plan, partition)?;
@@ -540,7 +540,7 @@ fn execution_schema_hash(descriptor: &ResourceDescriptor) -> Result<SchemaHash> 
 }
 
 struct RestSendContext<'a> {
-    transport: &'a mut dyn HttpTransport,
+    transport: &'a dyn HttpTransport,
     secret_provider: Option<&'a dyn SecretProvider>,
     auth_refresh: Option<&'a Arc<Mutex<Box<dyn AuthRefreshHook + Send>>>>,
 }
@@ -553,12 +553,8 @@ fn send_page(
     retry_budget: &mut RetryBudget,
     limiter: &mut RateLimiter,
 ) -> Result<HttpResponse> {
-    let mut transport = dependencies
-        .transport
-        .lock()
-        .map_err(|_| CdfError::internal("REST HTTP transport mutex was poisoned during send"))?;
     let mut send_context = RestSendContext {
-        transport: &mut **transport,
+        transport: dependencies.transport.as_ref(),
         secret_provider: dependencies
             .secret_provider
             .as_deref()
@@ -595,7 +591,7 @@ fn send_page_with_transport(
         }
 
         let response = send_page_once(
-            &mut *context.transport,
+            context.transport,
             context.secret_provider,
             plan,
             url,
@@ -653,7 +649,7 @@ fn send_page_with_transport(
 }
 
 fn send_page_once(
-    transport: &mut dyn HttpTransport,
+    transport: &dyn HttpTransport,
     secret_provider: Option<&dyn SecretProvider>,
     plan: &RestResourcePlan,
     url: &str,
@@ -1515,7 +1511,61 @@ fn sanitize_id_part(value: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    use std::{
+        sync::{
+            Arc, Barrier,
+            atomic::{AtomicUsize, Ordering},
+        },
+        time::Duration,
+    };
+
     use super::*;
+
+    struct ConcurrentProbeTransport {
+        active: Arc<AtomicUsize>,
+        peak: Arc<AtomicUsize>,
+    }
+
+    impl HttpTransport for ConcurrentProbeTransport {
+        fn send(&self, _request: HttpRequest) -> Result<HttpResponse> {
+            let current = self.active.fetch_add(1, Ordering::SeqCst) + 1;
+            self.peak.fetch_max(current, Ordering::SeqCst);
+            std::thread::sleep(Duration::from_millis(50));
+            self.active.fetch_sub(1, Ordering::SeqCst);
+            Ok(HttpResponse::new(200))
+        }
+    }
+
+    #[test]
+    fn shared_rest_transport_does_not_serialize_independent_requests() {
+        let active = Arc::new(AtomicUsize::new(0));
+        let peak = Arc::new(AtomicUsize::new(0));
+        let dependencies = RestRuntimeDependencies::new(ConcurrentProbeTransport {
+            active: Arc::clone(&active),
+            peak: Arc::clone(&peak),
+        });
+        let start = Arc::new(Barrier::new(3));
+        let workers = (0..2)
+            .map(|index| {
+                let transport = Arc::clone(&dependencies.transport);
+                let start = Arc::clone(&start);
+                std::thread::spawn(move || {
+                    start.wait();
+                    transport
+                        .send(HttpRequest::new(
+                            HttpMethod::Get,
+                            format!("https://api.example.test/{index}"),
+                        ))
+                        .unwrap();
+                })
+            })
+            .collect::<Vec<_>>();
+        start.wait();
+        for worker in workers {
+            worker.join().unwrap();
+        }
+        assert_eq!(peak.load(Ordering::SeqCst), 2);
+    }
 
     #[test]
     fn rfc3339_parser_handles_utc_and_offsets() {

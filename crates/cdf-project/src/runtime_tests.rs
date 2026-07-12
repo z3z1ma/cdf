@@ -2145,7 +2145,7 @@ impl RecordingTransport {
 }
 
 impl HttpTransport for RecordingTransport {
-    fn send(&mut self, request: HttpRequest) -> Result<HttpResponse> {
+    fn send(&self, request: HttpRequest) -> Result<HttpResponse> {
         let mut state = self.state.lock().unwrap();
         state.requests.push(request);
         state

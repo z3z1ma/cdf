@@ -38,7 +38,7 @@ fn build_rest_resource(
 
 pub fn discover_rest_sample_schema(
     resource: &CompiledResource,
-    transport: &mut dyn HttpTransport,
+    transport: &dyn HttpTransport,
     secret_provider: &dyn SecretProvider,
 ) -> Result<RestSampleSchemaDiscovery> {
     let CompiledResourcePlan::Rest(plan) = resource.plan() else {

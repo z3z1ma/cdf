@@ -219,34 +219,36 @@ fn auth_refresh_hooks_and_traces_do_not_format_secrets() {
 
 #[test]
 fn allowlist_denies_before_transport_send() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
     #[derive(Default)]
     struct CountingTransport {
-        sends: usize,
+        sends: AtomicUsize,
     }
 
     impl HttpTransport for CountingTransport {
-        fn send(&mut self, _request: HttpRequest) -> Result<HttpResponse> {
-            self.sends += 1;
+        fn send(&self, _request: HttpRequest) -> Result<HttpResponse> {
+            self.sends.fetch_add(1, Ordering::SeqCst);
             Ok(HttpResponse::new(200))
         }
     }
 
     let allowlist = EgressAllowlist::from_hosts(["api.example.com"]);
-    let mut transport = CountingTransport::default();
+    let transport = CountingTransport::default();
     let denied = send_with_policy(
-        &mut transport,
+        &transport,
         &allowlist,
         HttpRequest::new(HttpMethod::Get, "https://evil.example.net/items"),
     )
     .unwrap_err();
     assert_eq!(denied.kind, ErrorKind::Auth);
-    assert_eq!(transport.sends, 0);
+    assert_eq!(transport.sends.load(Ordering::SeqCst), 0);
 
     send_with_policy(
-        &mut transport,
+        &transport,
         &allowlist,
         HttpRequest::new(HttpMethod::Get, "https://api.example.com/items"),
     )
     .unwrap();
-    assert_eq!(transport.sends, 1);
+    assert_eq!(transport.sends.load(Ordering::SeqCst), 1);
 }

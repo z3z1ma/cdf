@@ -19,7 +19,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{RestResource, RestResourcePlan, RestRuntimeDependencies};
 
-type TransportFactory = dyn Fn() -> Result<Box<dyn HttpTransport + Send>> + Send + Sync + 'static;
+type TransportFactory = dyn Fn() -> Result<Box<dyn HttpTransport>> + Send + Sync + 'static;
 
 #[derive(Clone)]
 pub struct RestSourceDriver {
@@ -39,7 +39,7 @@ impl std::fmt::Debug for RestSourceDriver {
 impl RestSourceDriver {
     pub fn new<F>(transport_factory: F) -> Result<Self>
     where
-        F: Fn() -> Result<Box<dyn HttpTransport + Send>> + Send + Sync + 'static,
+        F: Fn() -> Result<Box<dyn HttpTransport>> + Send + Sync + 'static,
     {
         let option_schema = serde_json::json!({
             "source": ["source_name", "base_url", "auth", "rate_limit", "egress_allowlist"],

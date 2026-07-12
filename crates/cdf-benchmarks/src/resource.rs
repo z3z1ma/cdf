@@ -153,7 +153,7 @@ impl FixtureTransport {
 }
 
 impl HttpTransport for FixtureTransport {
-    fn send(&mut self, _request: HttpRequest) -> CdfResult<HttpResponse> {
+    fn send(&self, _request: HttpRequest) -> CdfResult<HttpResponse> {
         self.state
             .lock()
             .map_err(|_| CdfError::internal("fixture transport mutex poisoned"))?

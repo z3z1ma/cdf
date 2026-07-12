@@ -2597,7 +2597,7 @@ trust = "governed"
     let resolver = InMemoryResourceSourceResolver::new().with_toml("resources/api.toml", rest);
     let mut resources = compile_project_declarative_resources(&config, &resolver).unwrap();
     let resource = resources.remove(0);
-    let mut transport = RecordingTransport::new([json_response(
+    let transport = RecordingTransport::new([json_response(
         r#"{ "items": [
             { "VendorID": 1, "updated_at": 10, "active": true, "score": 4.5 },
             { "VendorID": 2, "updated_at": 20, "active": false, "score": null },
@@ -2608,7 +2608,7 @@ trust = "governed"
         StaticSecretProvider::new([("secret://env/API_TOKEN", "rest-discover-secret")]);
 
     let discovery =
-        discover_resource_schema_with_rest_transport(&resource, &secret_provider, &mut transport)
+        discover_resource_schema_with_rest_transport(&resource, &secret_provider, &transport)
             .unwrap();
 
     assert!(!temp.path().join(".cdf/schemas").exists());
@@ -2706,7 +2706,7 @@ trust = "governed"
     let resolver = InMemoryResourceSourceResolver::new().with_toml("resources/api.toml", rest);
     let mut resources = compile_project_declarative_resources(&config, &resolver).unwrap();
     let resource = resources.remove(0);
-    let mut transport = RecordingTransport::new([json_response(
+    let transport = RecordingTransport::new([json_response(
         r#"{ "items": [
             { "VendorID": 1, "updated_at": 10 },
             { "VendorID": 2, "updated_at": 20 }
@@ -2718,7 +2718,7 @@ trust = "governed"
         temp.path(),
         &resource,
         &secret_provider,
-        &mut transport,
+        &transport,
     )
     .unwrap();
 
@@ -2901,7 +2901,7 @@ impl RecordingTransport {
 }
 
 impl HttpTransport for RecordingTransport {
-    fn send(&mut self, request: HttpRequest) -> Result<HttpResponse> {
+    fn send(&self, request: HttpRequest) -> Result<HttpResponse> {
         let mut state = self.state.lock().unwrap();
         state.requests.push(request);
         state

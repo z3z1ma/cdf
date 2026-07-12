@@ -201,12 +201,12 @@ pub(crate) fn prepare_discover_resource_for_cli(
             options,
         )?
     } else if matches!(probe_resource.plan(), CompiledResourcePlan::Rest(_)) {
-        let mut transport = ReqwestHttpTransport::new()?;
+        let transport = ReqwestHttpTransport::new()?;
         cdf_project::ResourceSchemaDiscoveryArtifacts::new(
             cdf_project::discover_resource_schema_with_rest_transport(
                 &probe_resource,
                 &secret_provider,
-                &mut transport,
+                &transport,
             )?,
             None,
         )

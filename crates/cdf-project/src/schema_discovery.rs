@@ -267,7 +267,7 @@ pub fn discover_resource_schema_artifacts(
 pub fn discover_resource_schema_with_rest_transport(
     resource: &CompiledResource,
     secret_provider: &dyn SecretProvider,
-    rest_transport: &mut dyn HttpTransport,
+    rest_transport: &dyn HttpTransport,
 ) -> Result<ResourceSchemaDiscovery> {
     Ok(discover_resource_schema_artifacts_inner(
         resource,
@@ -412,7 +412,7 @@ fn prepare_pinned_resource_effective_schema_artifacts_inner(
 fn discover_resource_schema_artifacts_inner(
     resource: &CompiledResource,
     secret_provider: &dyn SecretProvider,
-    rest_transport: Option<&mut dyn HttpTransport>,
+    rest_transport: Option<&dyn HttpTransport>,
     file_dependencies: Option<FileRuntimeDependencies>,
     options: SchemaDiscoveryExecutionOptions,
 ) -> Result<ResourceSchemaDiscoveryArtifacts> {
@@ -1689,7 +1689,7 @@ fn discover_postgres_resource_schema(
 fn discover_rest_resource_schema(
     resource: &CompiledResource,
     secret_provider: &dyn SecretProvider,
-    rest_transport: &mut dyn HttpTransport,
+    rest_transport: &dyn HttpTransport,
 ) -> Result<ResourceSchemaDiscovery> {
     let probe = discover_rest_sample_schema(resource, rest_transport, secret_provider)?;
     let metadata = BTreeMap::from([
@@ -1793,7 +1793,7 @@ pub fn prepare_discover_resource_with_rest_transport(
     project_root: impl AsRef<Path>,
     resource: &CompiledResource,
     secret_provider: &dyn SecretProvider,
-    rest_transport: &mut dyn HttpTransport,
+    rest_transport: &dyn HttpTransport,
 ) -> Result<PreparedDiscoveredResource> {
     if !schema_source_needs_pin(&resource.descriptor().schema_source) {
         return Ok(PreparedDiscoveredResource {
