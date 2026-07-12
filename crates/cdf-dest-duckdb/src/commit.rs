@@ -85,6 +85,52 @@ pub(crate) fn transfer_ingress_segment(
         .map_err(|error| duckdb_error("clear DuckDB Arrow ingress segment", error))
 }
 
+pub(crate) fn transfer_package_ingress(
+    conn: &Connection,
+    ingress: &TargetRef,
+    ranges: &TargetRef,
+    target: &TargetRef,
+    persisted_fields: &[FieldPlan],
+    user_field_count: usize,
+    package_hash: &cdf_kernel::PackageHash,
+) -> Result<()> {
+    if user_field_count + 3 != persisted_fields.len() {
+        return Err(CdfError::internal(
+            "DuckDB persistence schema does not contain three provenance fields",
+        ));
+    }
+    let user_columns = persisted_fields[..user_field_count]
+        .iter()
+        .map(|field| format!("ingress.{}", quote_ident(&field.name)))
+        .collect::<Vec<_>>();
+    let target_columns = persisted_fields
+        .iter()
+        .map(|field| quote_ident(&field.name))
+        .collect::<Vec<_>>();
+    let mut selected = user_columns;
+    selected.extend([
+        "?".to_owned(),
+        "ranges.segment_id".to_owned(),
+        format!("ingress.{} - ranges.start_row", quote_ident(CDF_ROW_COLUMN)),
+    ]);
+    conn.execute(
+        &format!(
+            "INSERT INTO {} ({}) SELECT {} FROM {} AS ingress JOIN {} AS ranges ON ingress.{} >= ranges.start_row AND ingress.{} < ranges.end_row ORDER BY ingress.{}",
+            target.sql_name(),
+            target_columns.join(", "),
+            selected.join(", "),
+            ingress.sql_name(),
+            ranges.sql_name(),
+            quote_ident(CDF_ROW_COLUMN),
+            quote_ident(CDF_ROW_COLUMN),
+            quote_ident(CDF_ROW_COLUMN),
+        ),
+        params![package_hash.as_str()],
+    )
+    .map_err(|error| duckdb_error("transfer DuckDB package ingress", error))?;
+    Ok(())
+}
+
 pub(crate) fn apply_table_plan(
     conn: &Connection,
     plan: &TablePlan,

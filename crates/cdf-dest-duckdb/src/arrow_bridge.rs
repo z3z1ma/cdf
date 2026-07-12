@@ -262,7 +262,7 @@ mod tests {
     fn arrow_appender_tlc_envelope_benchmark() {
         const BATCH_ROWS: usize = 65_536;
         const BATCHES: usize = 16;
-        const SCALAR_ROWS: usize = 262_144;
+        const SCALAR_ROWS: usize = BATCH_ROWS * BATCHES;
         let batch = tlc_batch(BATCH_ROWS);
         let user_fields = batch
             .schema()
@@ -278,7 +278,7 @@ mod tests {
         let vector_conn = Connection::open_in_memory().unwrap();
         vector_conn
             .execute_batch(&format!(
-                "CREATE TABLE target ({}); CREATE TEMP TABLE ingress ({}, {} UBIGINT NOT NULL)",
+                "CREATE TABLE target ({}); CREATE TEMP TABLE ingress ({}, {} UBIGINT NOT NULL); CREATE TEMP TABLE ranges (segment_id VARCHAR NOT NULL, start_row UBIGINT NOT NULL, end_row UBIGINT NOT NULL)",
                 crate::table::create_target_columns_sql(&persisted_fields),
                 crate::table::create_columns_sql(&user_fields),
                 crate::sql::quote_ident(CDF_ROW_COLUMN),
@@ -292,29 +292,60 @@ mod tests {
             schema: MAIN_SCHEMA.to_owned(),
             table: "ingress".to_owned(),
         };
+        vector_conn.execute_batch("BEGIN TRANSACTION").unwrap();
         let started = Instant::now();
         for ordinal in 0..BATCHES {
             let persisted =
                 crate::package::ingress_batch(batch.clone(), (ordinal * BATCH_ROWS) as u64, None)
                     .unwrap();
             crate::commit::append_arrow_batch_to_table(&vector_conn, &ingress, persisted).unwrap();
+            vector_conn
+                .execute(
+                    "INSERT INTO ranges VALUES (?, ?, ?)",
+                    duckdb::params![
+                        format!("segment-{ordinal:06}"),
+                        (ordinal * BATCH_ROWS) as u64,
+                        ((ordinal + 1) * BATCH_ROWS) as u64
+                    ],
+                )
+                .unwrap();
         }
-        crate::commit::transfer_ingress_segment(
+        crate::commit::transfer_package_ingress(
             &vector_conn,
-            crate::commit::IngressSegmentTransfer {
-                ingress: &ingress,
-                target: &target,
-                persisted_fields: &persisted_fields,
-                user_field_count: user_fields.len(),
-                package_hash: &package_hash,
-                segment_id: &segment_id,
-                include_stage_order: false,
+            &ingress,
+            &crate::api::TargetRef {
+                schema: MAIN_SCHEMA.to_owned(),
+                table: "ranges".to_owned(),
             },
+            &target,
+            &persisted_fields,
+            user_fields.len(),
+            &package_hash,
         )
         .unwrap();
+        vector_conn.execute_batch("COMMIT").unwrap();
         let vector_elapsed = started.elapsed();
         let vector_rows = (BATCH_ROWS * BATCHES) as f64;
         let vector_rows_per_second = vector_rows / vector_elapsed.as_secs_f64();
+
+        let direct_conn = Connection::open_in_memory().unwrap();
+        direct_conn
+            .execute_batch(&format!(
+                "CREATE TABLE target ({})",
+                crate::table::create_columns_sql(&user_fields)
+            ))
+            .unwrap();
+        direct_conn.execute_batch("BEGIN TRANSACTION").unwrap();
+        let started = Instant::now();
+        for _ in 0..BATCHES {
+            let mut appender = direct_conn.appender("target").unwrap();
+            appender
+                .append_record_batch(into_duckdb_batch(batch.clone()).unwrap())
+                .unwrap();
+            appender.flush().unwrap();
+        }
+        direct_conn.execute_batch("COMMIT").unwrap();
+        let direct_rows_per_second = vector_rows / started.elapsed().as_secs_f64();
 
         let scalar_conn = Connection::open_in_memory().unwrap();
         scalar_conn
@@ -327,6 +358,7 @@ mod tests {
             .iter()
             .map(|field| field.name.as_str())
             .collect::<Vec<_>>();
+        scalar_conn.execute_batch("BEGIN TRANSACTION").unwrap();
         let mut appender = scalar_conn.appender_with_columns("target", &names).unwrap();
         let schema = batch.schema();
         let started = Instant::now();
@@ -376,15 +408,21 @@ mod tests {
                 .unwrap();
         }
         appender.flush().unwrap();
+        drop(appender);
+        scalar_conn.execute_batch("COMMIT").unwrap();
         let scalar_elapsed = started.elapsed();
         let scalar_rows_per_second = SCALAR_ROWS as f64 / scalar_elapsed.as_secs_f64();
         let speedup = vector_rows_per_second / scalar_rows_per_second;
         eprintln!(
-            "duckdb_tlc_arrow rows_per_second={vector_rows_per_second:.0} scalar_rows_per_second={scalar_rows_per_second:.0} speedup={speedup:.2}x"
+            "duckdb_tlc_arrow rows_per_second={vector_rows_per_second:.0} direct_rows_per_second={direct_rows_per_second:.0} scalar_rows_per_second={scalar_rows_per_second:.0} speedup={speedup:.2}x"
         );
         assert!(
             vector_rows_per_second >= 1_000_000.0,
             "Arrow appender produced only {vector_rows_per_second:.0} rows/s"
+        );
+        assert!(
+            speedup >= 5.0,
+            "Arrow appender speedup was only {speedup:.2}x"
         );
     }
 }
