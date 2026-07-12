@@ -8,7 +8,7 @@ use cdf_kernel::{
     RunPhaseMetric, ScanPlan, ScanPredicate, ScanRequest, SchemaHash, SegmentId, SourcePosition,
     TerminalSchemaObservationQuarantine, WriteDisposition,
 };
-use cdf_package::{PackageManifest, SegmentEntry};
+use cdf_package::{PackageManifest, SegmentEntry, VerifiedPackage};
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -273,6 +273,7 @@ pub struct EstimateExplain {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct EngineRunOutput {
     pub manifest: PackageManifest,
+    pub verification: VerifiedPackage,
     pub segments: Vec<SegmentEntry>,
     pub profile: ExecutionProfile,
     pub lineage: LineageSummary,

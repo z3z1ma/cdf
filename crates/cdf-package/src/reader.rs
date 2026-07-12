@@ -52,6 +52,14 @@ pub struct VerifiedPackage {
     package_hash: String,
 }
 
+impl PartialEq for VerifiedPackage {
+    fn eq(&self, other: &Self) -> bool {
+        self.package_hash == other.package_hash
+    }
+}
+
+impl Eq for VerifiedPackage {}
+
 #[derive(Clone, Debug)]
 pub struct VerifiedPackageReader {
     reader: PackageReader,
@@ -77,6 +85,13 @@ impl VerifiedPackageReader {
 }
 
 impl VerifiedPackage {
+    pub(crate) fn from_finalization(package_dir: &Path, manifest: &PackageManifest) -> Self {
+        Self {
+            package_dir: package_dir.to_path_buf(),
+            package_hash: manifest.package_hash.clone(),
+        }
+    }
+
     pub fn package_hash(&self) -> &str {
         &self.package_hash
     }
@@ -255,6 +270,14 @@ impl PackageReader {
 
     pub fn into_verified(self) -> Result<VerifiedPackageReader> {
         let verified = self.verify_for_consumption()?;
+        Ok(VerifiedPackageReader {
+            reader: self,
+            verified,
+        })
+    }
+
+    pub fn with_verification(self, verified: VerifiedPackage) -> Result<VerifiedPackageReader> {
+        self.require_verification(&verified)?;
         Ok(VerifiedPackageReader {
             reader: self,
             verified,

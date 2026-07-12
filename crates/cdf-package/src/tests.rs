@@ -46,6 +46,30 @@ fn finalization_does_not_reopen_registered_artifact_content() {
     );
 }
 
+#[cfg(unix)]
+#[test]
+fn finalization_authority_opens_for_consumption_without_rereading_identity_files() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let directory = tempfile::tempdir().unwrap();
+    let package_dir = directory.path().join("package");
+    let builder = PackageBuilder::create(&package_dir, "pkg-finalization-proof").unwrap();
+    builder
+        .write_identity_artifact("stats/receipt-backed.bin", b"registered")
+        .unwrap();
+    let (manifest, verified) = builder.finish_verified().unwrap();
+    let artifact = package_dir.join("stats/receipt-backed.bin");
+    fs::set_permissions(&artifact, fs::Permissions::from_mode(0o000)).unwrap();
+
+    let package = PackageReader::open(&package_dir)
+        .unwrap()
+        .with_verification(verified)
+        .unwrap();
+    assert_eq!(package.verification().package_hash(), manifest.package_hash);
+
+    fs::set_permissions(&artifact, fs::Permissions::from_mode(0o600)).unwrap();
+}
+
 fn sample_batch() -> RecordBatch {
     sample_batch_values(vec![1, 2, 3], vec![Some("ada"), Some("grace"), None])
 }

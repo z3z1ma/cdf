@@ -1649,7 +1649,7 @@ where
         )?;
     }
     let finalize_started = phase_measurements.start();
-    let manifest = builder.finish()?;
+    let (manifest, verification) = builder.finish_verified()?;
     phase_measurements.add(
         RunPhase::PackageFinalize,
         elapsed_ns(finalize_started, "package finalize")?,
@@ -1665,6 +1665,7 @@ where
     Ok(EngineRunOutputWithSegmentPositions {
         output: EngineRunOutput {
             manifest,
+            verification,
             segments,
             profile,
             lineage,

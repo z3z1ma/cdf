@@ -1812,6 +1812,12 @@ fn engine_output_with_positions(
     positions: Vec<SourcePosition>,
 ) -> EngineRunOutputWithSegmentPositions {
     let mut manifest = build_package(package_dir, package_id, PackageStatus::Packaged);
+    let verification = PackageReader::open(package_dir)
+        .unwrap()
+        .into_verified()
+        .unwrap()
+        .verification()
+        .clone();
     let template = manifest.identity.segments[0].clone();
     let segments = positions
         .iter()
@@ -1835,6 +1841,7 @@ fn engine_output_with_positions(
     EngineRunOutputWithSegmentPositions::new(
         EngineRunOutput {
             manifest,
+            verification,
             segments,
             profile: ExecutionProfile::default(),
             lineage: LineageSummary::default(),

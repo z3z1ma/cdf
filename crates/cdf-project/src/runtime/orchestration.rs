@@ -306,7 +306,8 @@ async fn run_project_inner(execution: ProjectRunExecution<'_>) -> Result<Project
         output.output.profile.output_batches,
     )?;
 
-    let package = PackageReader::open(&execution.package_dir)?.into_verified()?;
+    let package = PackageReader::open(&execution.package_dir)?
+        .with_verification(output.output.verification.clone())?;
     let replay_inputs = package.replay_inputs()?;
     let package_hash = replay_inputs.state_delta.package_hash.clone();
     let profile = &output.output.profile;

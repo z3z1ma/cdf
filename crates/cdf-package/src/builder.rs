@@ -403,6 +403,12 @@ impl PackageBuilder {
         self.finish_with_status(PackageStatus::Packaged)
     }
 
+    pub fn finish_verified(&self) -> Result<(PackageManifest, crate::VerifiedPackage)> {
+        let manifest = self.finish()?;
+        let verified = crate::VerifiedPackage::from_finalization(&self.package_dir, &manifest);
+        Ok((manifest, verified))
+    }
+
     pub fn finish_with_status(&self, status: PackageStatus) -> Result<PackageManifest> {
         let trace_entry = {
             let mut trace = self
