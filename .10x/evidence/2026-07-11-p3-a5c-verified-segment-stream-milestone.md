@@ -26,4 +26,4 @@ The memory consumer key is constant (`package:verified-segment-stream`) rather t
 
 ## Limits
 
-Existing destination and project paths still call eager compatibility APIs. A5c remains open until those production consumers migrate, static gates forbid regression, and end-to-end replay/crash/performance evidence is recorded.
+Project replay, Postgres, and Parquet now use the accounted stream. DuckDB explicitly declares `MaterializedPackage`, and the package archive compatibility API remains eager; A5c remains open until those declared exceptions are converted, static gates forbid regression, and end-to-end crash/performance evidence is recorded.
