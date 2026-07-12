@@ -2,7 +2,7 @@ Status: open
 Created: 2026-07-12
 Updated: 2026-07-12
 Parent: .10x/tickets/2026-07-12-p3-ws-j-datafusion-currency-bridges.md
-Depends-On: .10x/specs/datafusion-currency-bridges.md
+Depends-On: .10x/specs/datafusion-currency-bridges.md, .10x/tickets/2026-07-12-p3-j0-typed-statistics-evidence-spine.md
 
 # P3 J1: evidence statistics pruning
 
@@ -28,5 +28,8 @@ No new statistics artifact schema unless separately ratified; no payload rewrite
 
 ## Blockers
 
-None.
+J0 must provide sound typed, manifest-bound evidence. The 2026-07-12 readiness audit found current lexical `BatchStats` unpopulated and current `profile.json` aggregate-only; adapting either would be unsound or useless.
 
+## Progress and notes
+
+- 2026-07-12: Readiness audit corrected the initial premise that per-column/per-segment typed evidence already existed. J0 now owns the missing neutral evidence spine; J1 remains the DataFusion-only adapter/decision layer. Research: `.10x/research/2026-07-12-datafusion-pruning-evidence-readiness-audit.md`.

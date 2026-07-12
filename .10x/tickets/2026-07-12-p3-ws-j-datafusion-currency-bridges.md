@@ -12,6 +12,7 @@ Marshal CDF's existing statistics, memory/object-store authority, expression sem
 
 ## Activated children and existing owners
 
+- `.10x/tickets/2026-07-12-p3-j0-typed-statistics-evidence-spine.md`
 - `.10x/tickets/2026-07-12-p3-j1-evidence-statistics-pruning.md`
 - `.10x/tickets/2026-07-12-p3-j2-datafusion-object-store-registry.md`
 - `.10x/tickets/done/2026-07-11-p3-a2-unified-memory-ledger.md` — shared `MemoryPool` authority already complete
@@ -24,7 +25,7 @@ Marshal CDF's existing statistics, memory/object-store authority, expression sem
 
 ## Sequencing
 
-J1 is first because it consumes existing evidence without changing hot-path identity. J2 follows the already-complete memory bridge and must land before DataFusion session use expands. J3 owns expression semantics before new declarative operators proliferate. J4 consumes J1 and the existing observability store. J5 follows WX1 and the streaming graph. J6 is an evidence-driven adoption audit and may create narrowly justified implementation owners; it cannot replace native primary paths by itself.
+J0 is first because the readiness audit proved the typed per-column/per-segment evidence required by VISION is not implemented; it establishes the neutral identity-bearing currency. J1 then adapts that evidence without changing it. J2 follows the already-complete memory bridge and must land before DataFusion session use expands. J3 owns expression semantics before new declarative operators proliferate. J4 consumes J1 and the existing observability store. J5 follows WX1 and the streaming graph. J6 is an evidence-driven adoption audit and may create narrowly justified implementation owners; it cannot replace native primary paths by itself.
 
 ## Acceptance criteria
 
@@ -49,3 +50,6 @@ No primary-codec replacement, generic DataFusion package writer, kernel DataFusi
 
 None at parent level. Child dependencies govern execution.
 
+## Progress and notes
+
+- 2026-07-12: Source audit found the original J1 sequence assumed evidence that VISION specifies but current execution does not emit. Added J0 and `.10x/specs/typed-statistics-evidence.md`; lexical `BatchStats`/aggregate `profile.json` must be replaced, not adapted or preserved.
