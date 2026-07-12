@@ -1,4 +1,4 @@
-Status: open
+Status: done
 Created: 2026-07-11
 Updated: 2026-07-11
 Parent: .10x/tickets/2026-07-10-p3-ws-a-streaming-runtime-pipeline.md
@@ -12,7 +12,7 @@ Depends-On: .10x/tickets/done/2026-07-10-p3-ws-l5-preoptimization-baseline.md, .
 - `.10x/tickets/done/2026-07-11-p3-a5b-fused-transform-kernel.md`
 - `.10x/tickets/done/2026-07-11-p3-a5c-durable-segment-stream.md`
 - `.10x/tickets/done/2026-07-11-p3-e2-streaming-manifest-durability.md` (cross-workstream bounded metadata/finalization owner)
-- `.10x/tickets/2026-07-11-p3-a5e-streaming-graph-integration.md`
+- `.10x/tickets/done/2026-07-11-p3-a5e-streaming-graph-integration.md`
 - `.10x/tickets/done/2026-07-11-p3-a6-spillable-package-dedup.md`
 
 ## Scope
@@ -35,6 +35,10 @@ Split implementation into bounded children for graph/edge contracts, fused trans
 ## Evidence expectations
 
 Static architecture tests, mock-driver capability composition, fused/unfused and jobs invariance goldens, byte/RSS stress, high-cardinality metadata stress, slow-stage/backpressure tests, crash/cancellation matrix, replay parity, benchmark profiles, and adversarial performance/architecture review.
+
+## Progress and notes
+
+- 2026-07-11: Closed A5 after all activated children completed. The production graph has typed accounted edges, fused vector transforms, bounded spill-backed dedup/metadata/evidence, hash-complete durable segment streaming, canonical out-of-order encode frontier, staged/finalized destination capability joins, single-pass verification authority, cancellation/join cleanup, and scoped I/O producer streams. Static scans show no package-wide segment materialization in generic production code. Parallel partition/unit scheduling is the separate C2 layer and was not laundered into this closure.
 
 ## Explicit exclusions
 

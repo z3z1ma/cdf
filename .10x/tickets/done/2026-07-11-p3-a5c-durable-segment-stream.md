@@ -1,7 +1,7 @@
 Status: done
 Created: 2026-07-11
 Updated: 2026-07-11
-Parent: .10x/tickets/2026-07-11-p3-a5-streaming-operator-graph.md
+Parent: .10x/tickets/done/2026-07-11-p3-a5-streaming-operator-graph.md
 Depends-On: .10x/tickets/done/2026-07-11-p3-a5a-graph-edge-contracts.md, .10x/tickets/done/2026-07-11-p3-a3-canonical-segmentation-adaptive-batching.md, .10x/tickets/done/2026-07-11-p3-e1-hashing-artifact-sink.md
 
 # P3 A5c: durable segment writer and bounded reader stream

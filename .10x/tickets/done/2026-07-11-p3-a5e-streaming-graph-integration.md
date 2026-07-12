@@ -1,7 +1,7 @@
-Status: open
+Status: done
 Created: 2026-07-11
 Updated: 2026-07-11
-Parent: .10x/tickets/2026-07-11-p3-a5-streaming-operator-graph.md
+Parent: .10x/tickets/done/2026-07-11-p3-a5-streaming-operator-graph.md
 Depends-On: .10x/tickets/done/2026-07-11-p3-a5b-fused-transform-kernel.md, .10x/tickets/done/2026-07-11-p3-a5c-durable-segment-stream.md, .10x/tickets/done/2026-07-11-p3-e2-streaming-manifest-durability.md, .10x/tickets/done/2026-07-11-p3-a6-spillable-package-dedup.md
 
 # P3 A5e: run/replay/destination streaming graph integration
@@ -42,6 +42,7 @@ Depends on A5b, A5c, E2, and A6.
 - 2026-07-11: Split package segment encode/hash/durable publication from canonical manifest registration. Cloneable package-owned encoders can now complete uniquely named segments out of order, while only the engine frontier can register receipt/segment journals in canonical order. The direct write API uses the same two-step implementation; no alternate writer remains. This is the package boundary required for parallel segment encode/persist without scheduling-dependent manifests.
 - 2026-07-11: Segment encode/hash/fsync now runs through structured injected-host CPU tasks with a bounded, memory-derived, four-task host ceiling and canonical ordinal frontier. Decode/transform continues while prior segments encode; completion order cannot affect journals, durable hooks, destination staging, lineage, positions, or manifests. Drop/error cancels and joins the scope. TLC package execution fell from 1.212s to 1.178s; three four-task runs measured 2.39/1.51/1.53 seconds wall (1.53 median). A nine-task experiment measured a worse 1.81-second median and was rejected as contention. Evidence: `.10x/evidence/2026-07-11-p3-a5e-parallel-segment-frontier.md`.
 - 2026-07-11: Added a generic bounded scoped-I/O producer stream. Tokio-native transports/decoders can now feed the engine pull stream incrementally through the injected host; producer failure joins into one terminal stream error and early drop cancels the scope. No source/format/destination knowledge enters the bridge. Evidence: `.10x/evidence/2026-07-11-p3-a5e-scoped-io-stream-bridge.md`.
+- 2026-07-11: Closed A5e after the final static production scan found no package-wide `read_all_segments`, `read_commit_segments`, or `Vec<CommitSegment>` path in engine/project/runtime. Remaining batch vectors are bounded canonical segment/microbatch ownership. The full 93-test engine suite, source/destination registry live golden, staged failure/abort laws, hash-while-write finalization, parallel encode frontier identity, and macro overlap evidence are green. Partition scheduling remains explicitly excluded and owned by C2. Evidence: `.10x/evidence/2026-07-11-p3-a5-streaming-graph-closeout.md`; review: `.10x/reviews/2026-07-11-p3-a5-closeout-review.md`.
 
 ## References
 

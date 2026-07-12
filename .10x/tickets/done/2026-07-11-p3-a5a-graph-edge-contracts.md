@@ -1,7 +1,7 @@
 Status: done
 Created: 2026-07-11
 Updated: 2026-07-11
-Parent: .10x/tickets/2026-07-11-p3-a5-streaming-operator-graph.md
+Parent: .10x/tickets/done/2026-07-11-p3-a5-streaming-operator-graph.md
 Depends-On: .10x/tickets/done/2026-07-11-p3-a2-unified-memory-ledger.md, .10x/tickets/done/2026-07-11-p3-a4-injected-execution-host.md, .10x/specs/streaming-operator-graph.md
 
 # P3 A5a: compiled graph and accounted edge contracts

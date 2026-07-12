@@ -1,7 +1,7 @@
 Status: done
 Created: 2026-07-11
 Updated: 2026-07-11
-Parent: .10x/tickets/2026-07-11-p3-a5-streaming-operator-graph.md
+Parent: .10x/tickets/done/2026-07-11-p3-a5-streaming-operator-graph.md
 Depends-On: .10x/tickets/done/2026-07-11-p3-a5a-graph-edge-contracts.md, .10x/tickets/done/2026-07-11-p3-a6-spillable-package-dedup.md
 
 # P3 A5b: fused transform and bounded evidence kernel

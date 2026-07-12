@@ -2,7 +2,7 @@ Status: open
 Created: 2026-07-11
 Updated: 2026-07-11
 Parent: .10x/tickets/2026-07-10-p3-ws-c-deterministic-parallelism.md
-Depends-On: .10x/tickets/done/2026-07-11-p3-c1-scheduler-admission-contract.md, .10x/tickets/2026-07-11-p3-a5-streaming-operator-graph.md, .10x/tickets/done/2026-07-11-p3-a3-canonical-segmentation-adaptive-batching.md
+Depends-On: .10x/tickets/done/2026-07-11-p3-c1-scheduler-admission-contract.md, .10x/tickets/done/2026-07-11-p3-a5-streaming-operator-graph.md, .10x/tickets/done/2026-07-11-p3-a3-canonical-segmentation-adaptive-batching.md
 
 # P3 C2: parallel partition/unit execution and canonical frontier
 

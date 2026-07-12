@@ -1,7 +1,7 @@
 Status: recorded
 Created: 2026-07-11
 Updated: 2026-07-11
-Target: .10x/tickets/2026-07-11-p3-a5e-streaming-graph-integration.md
+Target: .10x/tickets/done/2026-07-11-p3-a5e-streaming-graph-integration.md
 Verdict: pass
 
 # Parallel segment-frontier review

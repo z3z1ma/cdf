@@ -1,7 +1,7 @@
 Status: recorded
 Created: 2026-07-11
 Updated: 2026-07-11
-Target: .10x/decisions/compiled-fused-streaming-operator-graph.md, .10x/specs/streaming-operator-graph.md, .10x/tickets/2026-07-11-p3-a5-streaming-operator-graph.md
+Target: .10x/decisions/compiled-fused-streaming-operator-graph.md, .10x/specs/streaming-operator-graph.md, .10x/tickets/done/2026-07-11-p3-a5-streaming-operator-graph.md
 Verdict: pass
 
 # Streaming operator graph shaping review

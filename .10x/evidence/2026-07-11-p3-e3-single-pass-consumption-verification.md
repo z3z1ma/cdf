@@ -1,7 +1,7 @@
 Status: recorded
 Created: 2026-07-11
 Updated: 2026-07-11
-Relates-To: .10x/tickets/2026-07-11-p3-e3-streaming-verification-replay-io.md, .10x/tickets/2026-07-11-p3-a5e-streaming-graph-integration.md, .10x/specs/package-io-hashing-durability.md
+Relates-To: .10x/tickets/2026-07-11-p3-e3-streaming-verification-replay-io.md, .10x/tickets/done/2026-07-11-p3-a5e-streaming-graph-integration.md, .10x/specs/package-io-hashing-durability.md
 
 # Single-pass package consumption verification
 
