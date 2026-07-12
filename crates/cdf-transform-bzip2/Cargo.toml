@@ -1,0 +1,18 @@
+[package]
+name = "cdf-transform-bzip2"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+description = "Native streaming bzip2 byte transform for cdf."
+
+[dependencies]
+bzip2 = "0.6.1"
+bytes = "1.11.0"
+cdf-kernel = { path = "../cdf-kernel" }
+cdf-memory = { path = "../cdf-memory" }
+cdf-runtime = { path = "../cdf-runtime" }
+futures-util = "0.3.32"
+
+[dev-dependencies]
+futures-executor = "0.3.32"
