@@ -17,6 +17,8 @@ pub(crate) fn build_receipt(
     transaction_values.insert("store".to_owned(), plan.manifest_key.clone());
     transaction_values.insert("manifest_key".to_owned(), plan.manifest_key.clone());
     transaction_values.insert("manifest_sha256".to_owned(), manifest_sha256.clone());
+    let provenance_key = plan.provenance_manifest_key.clone();
+    transaction_values.insert("provenance_manifest_key".to_owned(), provenance_key.clone());
     transaction_values.insert(
         "object_count".to_owned(),
         manifest.objects.len().to_string(),
@@ -40,6 +42,7 @@ pub(crate) fn build_receipt(
     let mut parameters = BTreeMap::new();
     parameters.insert("manifest_key".to_owned(), plan.manifest_key.clone());
     parameters.insert("manifest_sha256".to_owned(), manifest_sha256);
+    parameters.insert("provenance_manifest_key".to_owned(), provenance_key);
     parameters.insert(
         "package_hash".to_owned(),
         request.commit.package_hash.as_str().to_owned(),
@@ -112,6 +115,19 @@ pub(crate) fn verify_receipt(destination: &ParquetDestination, receipt: &Receipt
     if &actual_manifest_sha != expected_manifest_sha {
         return Err(CdfError::data(format!(
             "manifest {manifest_key} sha256 mismatch: expected {expected_manifest_sha}, got {actual_manifest_sha}"
+        )));
+    }
+    let provenance_key = receipt
+        .verify
+        .parameters
+        .get("provenance_manifest_key")
+        .ok_or_else(|| CdfError::data("receipt is missing provenance_manifest_key"))?;
+    let provenance_bytes = destination
+        .store()
+        .get_required(destination.execution(), provenance_key)?;
+    if provenance_bytes != manifest_bytes {
+        return Err(CdfError::data(format!(
+            "provenance manifest {provenance_key} differs from package manifest {manifest_key}"
         )));
     }
     if let Some(expected_etag) = receipt

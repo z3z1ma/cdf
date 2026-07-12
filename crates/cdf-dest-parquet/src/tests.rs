@@ -235,6 +235,25 @@ fn finalize_correction(
     session.finalize().unwrap()
 }
 
+fn commit_correction_base(
+    destination: &ParquetDestination,
+    package_dir: &Path,
+    package_id: &str,
+) -> BuiltPackage {
+    let built = build_package(
+        package_dir,
+        package_id,
+        vec![(
+            "seg-000001",
+            vec![sample_batch(vec![1, 2], vec![Some("ada"), Some("grace")])],
+        )],
+    );
+    destination
+        .commit_package(request(package_dir, &built, WriteDisposition::Append))
+        .unwrap();
+    built
+}
+
 fn build_package(
     package_dir: &Path,
     package_id: &str,
@@ -583,8 +602,8 @@ fn reusable_destination_conformance_suite_accepts_parquet_sheet_and_plans() {
     assert_destination_correction_conformance(
         &dest,
         &DestinationCorrectionConformanceEvidence {
-            row_provenance_persistence: CapabilitySupport::Unsupported,
-            row_provenance_targetability: CapabilitySupport::Unsupported,
+            row_provenance_persistence: CapabilitySupport::Supported,
+            row_provenance_targetability: CapabilitySupport::Supported,
             residual_readback: CapabilitySupport::Unsupported,
             strategies: parquet_correction_capabilities().strategies,
         },
@@ -616,6 +635,23 @@ fn correction_sidecar_is_content_addressed_verifiable_and_leaves_base_immutable(
         .store()
         .get_required(dest.execution(), &base_object_key)
         .unwrap();
+    let first_row =
+        RowProvenanceAddress::new(built.hash.clone(), SegmentId::new("seg-000001").unwrap(), 0);
+    assert_eq!(
+        dest.resolve_row_provenance(&TargetName::new("orders").unwrap(), &first_row)
+            .unwrap(),
+        Some(ParquetRowLocation {
+            object_key: base_object_key.clone(),
+            row_ordinal: 0,
+        })
+    );
+    let past_segment =
+        RowProvenanceAddress::new(built.hash.clone(), SegmentId::new("seg-000001").unwrap(), 2);
+    assert_eq!(
+        dest.resolve_row_provenance(&TargetName::new("orders").unwrap(), &past_segment)
+            .unwrap(),
+        None
+    );
 
     let correction = correction_request(&built.hash);
     let receipt = finalize_correction(&dest, &correction);
@@ -850,9 +886,11 @@ fn object_key_construction_requires_declared_policy_and_preserves_component_v1_b
 
 #[test]
 fn interrupted_sidecar_publication_reuses_orphan_object_and_publishes_manifest_once() {
+    let temp = tempfile::tempdir().unwrap();
     let store = Arc::new(InMemory::default());
     let dest = test_object_store(store, "").unwrap();
-    let correction = correction_request(&PackageHash::new("sha256:base-package").unwrap());
+    let built = commit_correction_base(&dest, &temp.path().join("base"), "base");
+    let correction = correction_request(&built.hash);
     let context = build_correction_context(dest.object_key_encoder(), &correction).unwrap();
     let object = context.manifest.objects[0].clone();
     dest.store()
@@ -921,8 +959,10 @@ fn interrupted_sidecar_publication_reuses_orphan_object_and_publishes_manifest_o
 
 #[test]
 fn correction_abort_writes_nothing_and_tampering_invalidates_receipt() {
+    let temp = tempfile::tempdir().unwrap();
     let dest = test_object_store(Arc::new(InMemory::default()), "").unwrap();
-    let correction = correction_request(&PackageHash::new("sha256:base-package").unwrap());
+    let built = commit_correction_base(&dest, &temp.path().join("base"), "base");
+    let correction = correction_request(&built.hash);
     let context = build_correction_context(dest.object_key_encoder(), &correction).unwrap();
     let plan = dest.plan_correction(&correction).unwrap();
     let mut session = dest.begin_correction(correction.clone(), plan).unwrap();

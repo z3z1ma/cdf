@@ -10,8 +10,8 @@ use crate::{
     runtime::parquet_runtime_capabilities,
     sheet::{parquet_protocol_capabilities, parquet_sheet},
     store::{
-        ObjectKeyEncoder, StoreClient, now_ms, package_manifest_key, replace_pointer_key,
-        segment_object_key,
+        ObjectKeyEncoder, StoreClient, now_ms, package_manifest_key, provenance_manifest_key,
+        replace_pointer_key, segment_object_key,
     },
 };
 
@@ -38,6 +38,12 @@ pub enum ParquetBulkPath {
     ArrowIpcPackageRowsToParquet,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ParquetRowLocation {
+    pub object_key: String,
+    pub row_ordinal: u64,
+}
+
 #[derive(Clone, Debug)]
 pub struct ParquetCommitRequest {
     pub package_dir: PathBuf,
@@ -49,6 +55,7 @@ pub struct ParquetCommitRequest {
 pub struct ParquetCommitPlan {
     pub kernel: CommitPlan,
     pub manifest_key: String,
+    pub provenance_manifest_key: String,
     pub replace_pointer_key: Option<String>,
     pub object_keys: Vec<String>,
     pub duplicate: bool,
@@ -249,6 +256,11 @@ impl ParquetDestination {
         Ok(ParquetCommitPlan {
             kernel: self.plan_commit(&request.commit)?,
             manifest_key,
+            provenance_manifest_key: provenance_manifest_key(
+                self.object_key_encoder(),
+                &request.commit.target,
+                &request.commit.package_hash,
+            ),
             replace_pointer_key,
             object_keys,
             duplicate,
@@ -265,6 +277,7 @@ impl ParquetDestination {
         let Some(mut loaded) = self.load_manifest_with_etag(&plan.manifest_key)? else {
             return Ok(None);
         };
+        ensure_provenance_manifest(self, request, &loaded.manifest)?;
         let replace_pointer = self.load_replace_pointer_receipt(request, plan, &loaded.manifest)?;
         let receipt = build_receipt(
             request,
@@ -321,6 +334,42 @@ impl ParquetDestination {
     fn load_manifest(&self, key: &str) -> Result<Option<ParquetObjectManifest>> {
         self.load_manifest_with_etag(key)
             .map(|loaded| loaded.map(|loaded| loaded.manifest))
+    }
+
+    pub fn resolve_row_provenance(
+        &self,
+        target: &TargetName,
+        address: &RowProvenanceAddress,
+    ) -> Result<Option<ParquetRowLocation>> {
+        let key = provenance_manifest_key(
+            self.object_key_encoder(),
+            target,
+            &address.original_package_hash,
+        );
+        let Some(manifest) = self.load_manifest(&key)? else {
+            return Ok(None);
+        };
+        if manifest.target != target.as_str()
+            || manifest.package_hash != address.original_package_hash.as_str()
+        {
+            return Err(CdfError::data(format!(
+                "Parquet provenance manifest {key} contradicts its target/package key"
+            )));
+        }
+        let Some(object) = manifest
+            .objects
+            .iter()
+            .find(|object| object.segment_id == address.original_segment_id.as_str())
+        else {
+            return Ok(None);
+        };
+        if address.original_row_ordinal >= object.row_count {
+            return Ok(None);
+        }
+        Ok(Some(ParquetRowLocation {
+            object_key: object.key.clone(),
+            row_ordinal: address.original_row_ordinal,
+        }))
     }
 
     fn load_manifest_with_etag(&self, key: &str) -> Result<Option<LoadedManifest>> {
@@ -544,10 +593,12 @@ fn finalize_parquet_objects(
     };
     let manifest_bytes = canonical_json_bytes(&object_manifest)?;
     let manifest_sha256 = sha256_hex(&manifest_bytes);
-    let manifest_put =
-        destination
-            .store
-            .put(&destination.execution, &plan.manifest_key, manifest_bytes)?;
+    let manifest_put = destination.store.put(
+        &destination.execution,
+        &plan.manifest_key,
+        manifest_bytes.clone(),
+    )?;
+    ensure_provenance_manifest(destination, &request, &object_manifest)?;
     let replace_pointer = if let Some(pointer_key) = &plan.replace_pointer_key {
         let pointer = ReplacePointer {
             pointer_version: REPLACE_POINTER_VERSION,
@@ -590,6 +641,31 @@ fn finalize_parquet_objects(
         object_manifest: persisted_manifest,
         package_receipt_recorded: recorded,
     })
+}
+
+fn ensure_provenance_manifest(
+    destination: &ParquetDestination,
+    request: &ParquetCommitRequest,
+    manifest: &ParquetObjectManifest,
+) -> Result<()> {
+    if manifest.target != request.commit.target.as_str()
+        || manifest.package_hash != request.commit.package_hash.as_str()
+    {
+        return Err(CdfError::data(
+            "Parquet object manifest cannot bind a different target/package provenance key",
+        ));
+    }
+    let key = provenance_manifest_key(
+        destination.object_key_encoder(),
+        &request.commit.target,
+        &request.commit.package_hash,
+    );
+    destination.store.put_create_or_verify(
+        destination.execution(),
+        &key,
+        canonical_json_bytes(manifest)?,
+    )?;
+    Ok(())
 }
 
 impl CommitSession for ParquetCommitSession<'_> {

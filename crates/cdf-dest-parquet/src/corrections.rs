@@ -135,6 +135,22 @@ pub(crate) fn plan_correction_request(
             "Parquet correction execution supports only correction_sidecar; in-place update and versioned rematerialization are not executable",
         ));
     }
+    let mut addresses = BTreeSet::new();
+    for operation in &request.corrections {
+        let address = &operation.correction.request.original_row;
+        if addresses.insert(address.clone())
+            && destination
+                .resolve_row_provenance(&request.target, address)?
+                .is_none()
+        {
+            return Err(CdfError::destination(format!(
+                "Parquet correction address ({}, {}, {}) does not resolve through the base provenance manifest",
+                address.original_package_hash,
+                address.original_segment_id,
+                address.original_row_ordinal
+            )));
+        }
+    }
     let mut context = build_correction_context(destination.object_key_encoder(), request)?;
     if let Some(receipt) = load_correction_receipt(destination, &context.receipt_key)? {
         context.plan.validate_receipt(request, &receipt)?;

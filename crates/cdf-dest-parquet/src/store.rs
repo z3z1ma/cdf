@@ -417,6 +417,18 @@ pub(crate) fn segment_object_key(
     )
 }
 
+pub(crate) fn provenance_manifest_key(
+    encoder: ObjectKeyEncoder,
+    target: &TargetName,
+    package_hash: &PackageHash,
+) -> String {
+    format!(
+        "targets/{}/provenance/{}/manifest.json",
+        encoder.encode(target.as_str()),
+        encoder.encode(package_hash.as_str())
+    )
+}
+
 pub(crate) fn replace_pointer_key(encoder: ObjectKeyEncoder, target: &TargetName) -> String {
     format!("targets/{}/current.json", encoder.encode(target.as_str()))
 }

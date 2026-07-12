@@ -21,8 +21,9 @@ use cdf_kernel::{
     DestinationCorrectionSidecarObjectEvidence, DestinationCorrectionSidecarReceiptEvidence,
     DestinationId, DestinationProtocol, DestinationSheet, IdempotencySupport, IdentifierRules,
     ObjectKeyPolicy, ObjectKeyRules, PackageHash, PlanId, PromotionId, Receipt, ReceiptId, Result,
-    SchemaHash, SegmentAck, SegmentId, StateSegment, TargetName, TransactionMetadata,
-    TransactionSupport, TypeMapping, TypeMappingFidelity, VerifyClause, WriteDisposition,
+    RowProvenanceAddress, RowProvenanceCapabilities, SchemaHash, SegmentAck, SegmentId,
+    StateSegment, TargetName, TransactionMetadata, TransactionSupport, TypeMapping,
+    TypeMappingFidelity, VerifyClause, WriteDisposition,
 };
 use cdf_package::{PackageReader, SegmentEntry};
 use object_store::{

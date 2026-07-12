@@ -58,13 +58,16 @@ pub(crate) fn parquet_sheet() -> Result<DestinationSheet> {
 }
 
 pub(crate) fn parquet_correction_capabilities() -> cdf_kernel::DestinationCorrectionCapabilities {
-    cdf_kernel::DestinationCorrectionCapabilities::default().with_strategy(
-        CorrectionStrategyCapability::new(
+    cdf_kernel::DestinationCorrectionCapabilities::default()
+        .with_row_provenance(RowProvenanceCapabilities::new(
+            CapabilitySupport::Supported,
+            CapabilitySupport::Supported,
+        ))
+        .with_strategy(CorrectionStrategyCapability::new(
             CorrectionStrategy::CorrectionSidecar,
             TransactionSupport::AtomicTarget,
             IdempotencySupport::PackageToken,
-        ),
-    )
+        ))
 }
 
 pub(crate) fn parquet_protocol_capabilities() -> cdf_kernel::DestinationProtocolCapabilities {
