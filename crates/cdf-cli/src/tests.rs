@@ -7814,6 +7814,7 @@ fn run_human_rich_render_uses_checkpoint_gate_panel() {
             target: Some("events".to_owned()),
             package_id: Some("pkg-run-rich".to_owned()),
             checkpoint_id: Some("checkpoint-run-rich".to_owned()),
+            jobs: None,
             loop_mode: false,
         },
         host.as_ref(),

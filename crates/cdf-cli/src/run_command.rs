@@ -111,7 +111,7 @@ pub(crate) fn run(
                 &source.execution_capabilities,
                 &destination.runtime_capabilities(),
                 services,
-                None,
+                explicit.jobs,
             )
         })
         .transpose()?;
@@ -439,6 +439,7 @@ fn resolved_run_args(args: RunArgs) -> Result<ResolvedRunArgs, CliError> {
         )?,
         package_id,
         checkpoint_id: CheckpointId::new(checkpoint_id)?,
+        jobs: args.jobs,
     })
 }
 
@@ -458,6 +459,7 @@ struct ResolvedRunArgs {
     target: TargetName,
     package_id: String,
     checkpoint_id: CheckpointId,
+    jobs: Option<u16>,
 }
 
 pub(crate) fn ensure_parent_directory(path: &std::path::Path) -> Result<(), CliError> {

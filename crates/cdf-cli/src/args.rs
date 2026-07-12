@@ -108,6 +108,7 @@ pub struct RunArgs {
     pub target: Option<String>,
     pub package_id: Option<String>,
     pub checkpoint_id: Option<String>,
+    pub jobs: Option<u16>,
     pub loop_mode: bool,
 }
 
@@ -453,6 +454,9 @@ fn parse_run(matches: &ArgMatches) -> Result<RunArgs, CliError> {
         target: string_value(matches, "target"),
         package_id: string_value(matches, "package_id"),
         checkpoint_id: string_value(matches, "checkpoint_id"),
+        jobs: string_value(matches, "jobs")
+            .map(|value| parse_nonzero_u16("--jobs", &value))
+            .transpose()?,
         loop_mode: matches.get_flag("loop"),
     })
 }
@@ -882,6 +886,7 @@ fn run_command() -> ClapCommand {
         .arg(option("target", "target", "TARGET"))
         .arg(option("package_id", "package-id", "ID"))
         .arg(option("checkpoint_id", "checkpoint-id", "ID"))
+        .arg(option("jobs", "jobs", "N"))
         .arg(flag("loop", "loop"))
 }
 
@@ -1162,6 +1167,20 @@ fn parse_u64(option: &str, value: &str) -> Result<u64, CliError> {
         .map_err(|error| CliError::usage(format!("{option} must be an unsigned integer: {error}")))
 }
 
+fn parse_nonzero_u16(option: &str, value: &str) -> Result<u16, CliError> {
+    let parsed = value.parse::<u16>().map_err(|error| {
+        CliError::usage(format!(
+            "{option} must be an integer from 1 to 65535: {error}"
+        ))
+    })?;
+    if parsed == 0 {
+        return Err(CliError::usage(format!(
+            "{option} must be an integer from 1 to 65535"
+        )));
+    }
+    Ok(parsed)
+}
+
 fn unknown_subcommand_error(
     path: &[&str],
     value: &str,
@@ -1231,4 +1250,25 @@ fn mint_cli_id(prefix: &str) -> String {
         .map(|duration| duration.as_nanos())
         .unwrap_or_default();
     format!("{prefix}-{}-{nanos}", std::process::id())
+}
+
+#[cfg(test)]
+mod run_jobs_tests {
+    use std::ffi::OsString;
+
+    use super::{Cli, Command};
+
+    #[test]
+    fn run_jobs_is_a_nonzero_user_ceiling() {
+        let cli =
+            Cli::parse(["cdf", "run", "local.events", "--jobs", "7"].map(OsString::from)).unwrap();
+        let Command::Run(args) = cli.command else {
+            panic!("expected run command");
+        };
+        assert_eq!(args.jobs, Some(7));
+
+        let error = Cli::parse(["cdf", "run", "local.events", "--jobs", "0"].map(OsString::from))
+            .unwrap_err();
+        assert!(error.message.contains("--jobs must be an integer from 1"));
+    }
 }
