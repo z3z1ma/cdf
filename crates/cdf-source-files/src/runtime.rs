@@ -276,7 +276,7 @@ pub fn discover_local_binary_schema_bounded(
                     FormatDiscoveryRequest {
                         options,
                         maximum_bytes: max_metadata_bytes,
-                        maximum_records: 0,
+                        maximum_records: 1_000,
                         cancellation: cdf_runtime::RunCancellation::default(),
                     },
                 )
@@ -561,17 +561,12 @@ fn discover_row_schema_from_reader(
     max_read_records: usize,
 ) -> Result<SchemaRef> {
     match format.as_str() {
-        "ndjson" => {
-            cdf_formats::discover_ndjson_schema_from_reader(reader, Some(max_read_records))
-        }
         "csv" => cdf_formats::discover_csv_schema_from_reader(
             reader,
             &CsvOptions::default(),
             max_read_records,
         ),
-        "json" => {
-            cdf_formats::discover_json_schema_from_reader(reader, max_read_records)
-        }
+        "json" => cdf_formats::discover_json_schema_from_reader(reader, max_read_records),
         _ => Err(CdfError::contract(
             "bounded row discovery supports CSV, JSON, and NDJSON",
         )),
@@ -785,10 +780,7 @@ impl ResourceStream for FileResource {
                 }],
             });
             let physical_schema_hash = match (&resolved.open, plan.format.as_str()) {
-                (
-                    ResolvedFileOpen::LocalPath(path),
-                    format @ ("parquet" | "arrow_ipc"),
-                ) => {
+                (ResolvedFileOpen::LocalPath(path), format @ ("parquet" | "arrow_ipc")) => {
                     let budget = discovery_budget.as_ref().ok_or_else(|| {
                         CdfError::data(
                             "schema-observation attestation requires the plan-recorded discovery executor budget",
@@ -1291,7 +1283,7 @@ fn stream_registered_format(
                             FormatDiscoveryRequest {
                                 options: options_json.clone(),
                                 maximum_bytes: 16 * 1024 * 1024,
-                                maximum_records: 0,
+                                maximum_records: 1_000,
                                 cancellation: cancellation.clone(),
                             },
                         )
@@ -1377,7 +1369,9 @@ fn compile_format(format: &FileFormatDeclaration) -> Result<FileFormat> {
     match format.as_str() {
         "csv" => Ok(FileFormat::Csv(CsvOptions::default())),
         "json" => Ok(FileFormat::Json(JsonOptions::default())),
-        "ndjson" => Ok(FileFormat::Ndjson(JsonOptions::default())),
+        "ndjson" => Err(CdfError::contract(
+            "NDJSON execution requires its registered native format driver",
+        )),
         "parquet" => Ok(FileFormat::Parquet),
         "arrow_ipc" => Err(CdfError::contract(
             "Arrow IPC file execution requires its registered native format driver",
@@ -2268,9 +2262,7 @@ fn validate_format_evidence(
     };
     let mut format_requirement = match plan.format.as_str() {
         "parquet" => "expected Parquet file framing with PAR1 header/footer; ",
-        "arrow_ipc" => {
-            "expected Arrow IPC file framing with ARROW1 header/footer; "
-        }
+        "arrow_ipc" => "expected Arrow IPC file framing with ARROW1 header/footer; ",
         _ => "",
     };
     if magic_signal == FormatSignal::ArrowIpcStream {
@@ -2861,7 +2853,11 @@ mod tests {
         }
 
         fn schema() -> Arc<Schema> {
-            Arc::new(Schema::new(vec![Field::new("value", DataType::Int64, false)]))
+            Arc::new(Schema::new(vec![Field::new(
+                "value",
+                DataType::Int64,
+                false,
+            )]))
         }
     }
 
@@ -2878,10 +2874,7 @@ mod tests {
             }
         }
 
-        fn detect(
-            &self,
-            probe: &cdf_runtime::FormatProbe,
-        ) -> Result<cdf_runtime::FormatDetection> {
+        fn detect(&self, probe: &cdf_runtime::FormatProbe) -> Result<cdf_runtime::FormatDetection> {
             Ok(cdf_runtime::FormatDetection {
                 confidence: if probe.prefix.starts_with(b"MOCK") {
                     cdf_runtime::FormatDetectionConfidence::Strong
@@ -2900,10 +2893,7 @@ mod tests {
             Box::pin(async move {
                 request.cancellation.check()?;
                 let bytes = source
-                    .read_exact_range(
-                        cdf_runtime::ByteExtent::new(0, 4)?,
-                        request.cancellation,
-                    )
+                    .read_exact_range(cdf_runtime::ByteExtent::new(0, 4)?, request.cancellation)
                     .await?;
                 if bytes.payload() != b"MOCK" {
                     return Err(CdfError::data("external mock magic mismatch"));
@@ -2980,8 +2970,10 @@ mod tests {
                 )?;
                 batch.header.source_position = request.source_position;
                 let physical = cdf_runtime::AccountedPhysicalBatch::new(batch, lease)?;
-                Ok(Box::pin(futures_util::stream::once(async move { Ok(physical) }))
-                    as cdf_runtime::PhysicalDecodeStream)
+                Ok(
+                    Box::pin(futures_util::stream::once(async move { Ok(physical) }))
+                        as cdf_runtime::PhysicalDecodeStream,
+                )
             })
         }
     }
@@ -3029,7 +3021,9 @@ mod tests {
         let path = root.path().join("events.mock.mt");
         std::fs::write(&path, b"MOCK\n").unwrap();
         let mut formats = cdf_runtime::FormatRegistry::default();
-        formats.register(Arc::new(ExternalMockFormat::new())).unwrap();
+        formats
+            .register(Arc::new(ExternalMockFormat::new()))
+            .unwrap();
         let mut transforms = cdf_runtime::ByteTransformRegistry::default();
         transforms
             .register(Arc::new(ExternalPassthroughTransform::new()))
@@ -3089,7 +3083,10 @@ mod tests {
             Some(SourcePosition::FileManifest(_))
         ));
         drop(batches);
-        assert_eq!(dependencies.execution().memory().snapshot().current_bytes, 0);
+        assert_eq!(
+            dependencies.execution().memory().snapshot().current_bytes,
+            0
+        );
     }
 
     #[test]

@@ -949,9 +949,7 @@ fn compile_file_plan(
         Some(format) => (format.clone(), true),
         None => (infer_binary_file_format(resource_id, resource)?, false),
     };
-    if resource.sample_files.is_some()
-        && !matches!(format.as_str(), "parquet" | "arrow_ipc")
-    {
+    if resource.sample_files.is_some() && !matches!(format.as_str(), "parquet" | "arrow_ipc") {
         return Err(CdfError::contract(format!(
             "file resource `{resource_id}` sample_files is only supported for Parquet and Arrow IPC schema discovery; row sampling inside text files is excluded"
         )));

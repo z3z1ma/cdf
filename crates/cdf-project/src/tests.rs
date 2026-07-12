@@ -74,6 +74,11 @@ fn test_format_registry() -> Arc<cdf_runtime::FormatRegistry> {
             cdf_format_parquet::ParquetFormatDriver::new().unwrap(),
         ))
         .unwrap();
+    registry
+        .register(Arc::new(
+            cdf_format_json::NdjsonFormatDriver::new().unwrap(),
+        ))
+        .unwrap();
     Arc::new(registry)
 }
 

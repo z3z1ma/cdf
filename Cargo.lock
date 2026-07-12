@@ -765,6 +765,7 @@ dependencies = [
  "cdf-dest-postgres",
  "cdf-engine",
  "cdf-format-arrow-ipc",
+ "cdf-format-json",
  "cdf-format-parquet",
  "cdf-http",
  "cdf-kernel",
@@ -1002,6 +1003,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "cdf-format-json"
+version = "0.1.0"
+dependencies = [
+ "arrow-array 59.1.0",
+ "arrow-json",
+ "arrow-schema 59.1.0",
+ "bytes",
+ "cdf-contract",
+ "cdf-kernel",
+ "cdf-memory",
+ "cdf-runtime",
+ "futures-executor",
+ "futures-util",
+ "serde_json",
+]
+
+[[package]]
 name = "cdf-format-parquet"
 version = "0.1.0"
 dependencies = [
@@ -1118,6 +1136,7 @@ dependencies = [
  "cdf-dest-postgres",
  "cdf-engine",
  "cdf-format-arrow-ipc",
+ "cdf-format-json",
  "cdf-format-parquet",
  "cdf-http",
  "cdf-kernel",
@@ -1192,6 +1211,7 @@ dependencies = [
  "bytes",
  "cdf-contract",
  "cdf-format-arrow-ipc",
+ "cdf-format-json",
  "cdf-format-parquet",
  "cdf-formats",
  "cdf-http",

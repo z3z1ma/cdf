@@ -163,6 +163,11 @@ pub(crate) fn test_format_registry() -> std::sync::Arc<cdf_runtime::FormatRegist
                         .expect("Parquet test format driver"),
                 ))
                 .expect("Parquet test format registration");
+            registry
+                .register(std::sync::Arc::new(
+                    cdf_format_json::NdjsonFormatDriver::new().expect("NDJSON test format driver"),
+                ))
+                .expect("NDJSON test format registration");
             std::sync::Arc::new(registry)
         })
         .clone()

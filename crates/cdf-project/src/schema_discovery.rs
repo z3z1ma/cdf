@@ -403,16 +403,9 @@ fn discover_resource_schema_artifacts_inner(
             discover_local_binary_resource_schema(resource, plan, file_dependencies, options)
         }
         CompiledResourcePlan::Files(plan) => match plan.format.as_str() {
-            "parquet" | "arrow_ipc" => {
+            "parquet" | "arrow_ipc" | "ndjson" => {
                 discover_remote_binary_resource_schema(resource, plan, file_dependencies, options)
             }
-            "ndjson" => discover_remote_file_resource_schema(
-                resource,
-                plan,
-                file_dependencies,
-                options,
-                LocalBinaryDiscoveryAdapter::Ndjson,
-            ),
             "csv" => discover_remote_file_resource_schema(
                 resource,
                 plan,
@@ -589,7 +582,6 @@ impl BinaryDiscoveryCandidate {
 #[derive(Clone, Debug)]
 enum LocalBinaryDiscoveryAdapter {
     Registered(FileFormatDeclaration),
-    Ndjson,
     Csv,
     Json,
 }
@@ -597,7 +589,6 @@ enum LocalBinaryDiscoveryAdapter {
 impl LocalBinaryDiscoveryAdapter {
     fn for_format(_resource: &CompiledResource, format: &FileFormatDeclaration) -> Result<Self> {
         Ok(match format.as_str() {
-            "ndjson" => Self::Ndjson,
             "csv" => Self::Csv,
             "json" => Self::Json,
             _ => Self::Registered(format.clone()),
@@ -633,10 +624,7 @@ impl LocalBinaryDiscoveryAdapter {
                 )?;
                 Ok((probe.schema, probe.source_identity, probe.probe_bytes_read))
             }
-            (
-                Self::Registered(format),
-                BinaryDiscoveryCandidateSource::Transport(resource),
-            ) => {
+            (Self::Registered(format), BinaryDiscoveryCandidateSource::Transport(resource)) => {
                 let dependencies = file_dependencies.ok_or_else(|| {
                     CdfError::contract(
                         "registered remote format discovery requires file transport dependencies",
@@ -660,7 +648,7 @@ impl LocalBinaryDiscoveryAdapter {
                 Ok((probe.schema, probe.source_identity, probe.probe_bytes_read))
             }
             (
-                adapter @ (Self::Ndjson | Self::Csv | Self::Json),
+                adapter @ (Self::Csv | Self::Json),
                 BinaryDiscoveryCandidateSource::Transport(resource),
             ) => {
                 let dependencies = file_dependencies.ok_or_else(|| {
@@ -669,7 +657,6 @@ impl LocalBinaryDiscoveryAdapter {
                     )
                 })?;
                 let format = match adapter {
-                    Self::Ndjson => FileFormatDeclaration::ndjson(),
                     Self::Csv => FileFormatDeclaration::csv(),
                     Self::Json => FileFormatDeclaration::json(),
                     _ => unreachable!(),
@@ -687,7 +674,7 @@ impl LocalBinaryDiscoveryAdapter {
                 Ok((probe.schema, probe.source_identity, probe.probe_bytes_read))
             }
             (
-                adapter @ (Self::Ndjson | Self::Csv | Self::Json),
+                adapter @ (Self::Csv | Self::Json),
                 BinaryDiscoveryCandidateSource::Local { path, .. },
             ) => {
                 let dependencies = file_dependencies.ok_or_else(|| {
@@ -696,7 +683,6 @@ impl LocalBinaryDiscoveryAdapter {
                     )
                 })?;
                 let format = match adapter {
-                    Self::Ndjson => FileFormatDeclaration::ndjson(),
                     Self::Csv => FileFormatDeclaration::csv(),
                     Self::Json => FileFormatDeclaration::json(),
                     _ => unreachable!(),
@@ -727,7 +713,6 @@ impl LocalBinaryDiscoveryAdapter {
                 SCHEMA_DISCOVERY_FORMAT_ARROW_IPC,
             ),
             Self::Registered(format) => ("registered-format-discovery", format.as_str()),
-            Self::Ndjson => ("bounded-ndjson-sample", "ndjson"),
             Self::Csv => ("bounded-csv-sample", "csv"),
             Self::Json => ("bounded-json-sample", "json"),
         };

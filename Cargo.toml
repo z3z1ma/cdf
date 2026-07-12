@@ -11,6 +11,7 @@ members = [
     "crates/cdf-formats",
     "crates/cdf-format-parquet",
     "crates/cdf-format-arrow-ipc",
+    "crates/cdf-format-json",
     "crates/cdf-transform-gzip",
     "crates/cdf-transform-bzip2",
     "crates/cdf-transform-brotli",
