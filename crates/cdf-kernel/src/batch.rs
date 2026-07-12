@@ -8,6 +8,7 @@ use crate::{
     error::Result,
     ids::{BatchId, PartitionId, ResourceId, SchemaHash},
     position::SourcePosition,
+    retention::PayloadRetention,
 };
 
 #[derive(Clone, Debug)]
@@ -35,7 +36,7 @@ impl Batch {
                 row_count,
                 byte_count,
             ),
-            payload: BatchPayload::RecordBatch(record_batch),
+            payload: BatchPayload::in_memory(record_batch),
         })
     }
 
@@ -48,16 +49,64 @@ impl Batch {
 
     pub fn record_batch(&self) -> Option<&RecordBatch> {
         match &self.payload {
-            BatchPayload::RecordBatch(record_batch) => Some(record_batch),
+            BatchPayload::RecordBatch(payload) => Some(payload.batch()),
             BatchPayload::Reference(_) => None,
+        }
+    }
+
+    pub fn with_retention(mut self, retention: PayloadRetention) -> Result<Self> {
+        match &mut self.payload {
+            BatchPayload::RecordBatch(payload) => payload.set_retention(retention),
+            BatchPayload::Reference(_) => {
+                return Err(crate::CdfError::contract(
+                    "referenced batch payload cannot carry in-memory retention",
+                ));
+            }
+        }
+        Ok(self)
+    }
+
+    pub fn retained_bytes(&self) -> u64 {
+        match &self.payload {
+            BatchPayload::RecordBatch(payload) => payload.retained_bytes(),
+            BatchPayload::Reference(_) => 0,
         }
     }
 }
 
 #[derive(Clone, Debug)]
 pub enum BatchPayload {
-    RecordBatch(RecordBatch),
+    RecordBatch(RecordBatchPayload),
     Reference(PayloadRef),
+}
+
+impl BatchPayload {
+    pub fn in_memory(batch: RecordBatch) -> Self {
+        Self::RecordBatch(RecordBatchPayload {
+            batch,
+            retention: None,
+        })
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct RecordBatchPayload {
+    batch: RecordBatch,
+    retention: Option<PayloadRetention>,
+}
+
+impl RecordBatchPayload {
+    pub fn batch(&self) -> &RecordBatch {
+        &self.batch
+    }
+
+    pub fn retained_bytes(&self) -> u64 {
+        self.retention.as_ref().map_or(0, PayloadRetention::bytes)
+    }
+
+    fn set_retention(&mut self, retention: PayloadRetention) {
+        self.retention = Some(retention);
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

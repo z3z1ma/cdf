@@ -10,8 +10,8 @@ use std::{
 
 use arrow_array::{Array, RecordBatch, UInt64Array};
 use cdf_kernel::{
-    CdfError, Checkpoint, CommitSegment, CommitSegmentRetention, PackageHash, Receipt, Result,
-    SegmentId, StateSegment,
+    CdfError, Checkpoint, CommitSegment, PackageHash, PayloadRetention, Receipt, Result, SegmentId,
+    StateSegment,
 };
 use cdf_memory::{
     ConsumerKey, MemoryClass, MemoryCoordinator, MemoryLease, ReservationRequest,
@@ -127,7 +127,7 @@ impl<T> VerifiedSegment<T> {
         T: Into<StateSegment>,
     {
         let retained_bytes = self.accounted_bytes();
-        let retention = CommitSegmentRetention::new(self.window, retained_bytes)?;
+        let retention = PayloadRetention::new(self.window, retained_bytes)?;
         Ok(
             CommitSegment::new(self.authority.into(), self.entry.byte_count, self.batches)
                 .with_retention(retention),

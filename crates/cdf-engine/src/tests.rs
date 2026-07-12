@@ -3664,7 +3664,7 @@ fn apply_mock_exact_filters(batch: Batch, filters: &[String]) -> Result<Batch> {
     );
     Ok(Batch {
         header,
-        payload: cdf_kernel::BatchPayload::RecordBatch(filtered),
+        payload: cdf_kernel::BatchPayload::in_memory(filtered),
     })
 }
 
@@ -3878,7 +3878,7 @@ fn parquet_reconciled_batch() -> Batch {
             header.schema_coercion_plan = Some(serialized_plan);
             header
         },
-        payload: cdf_kernel::BatchPayload::RecordBatch(record_batch),
+        payload: cdf_kernel::BatchPayload::in_memory(record_batch),
     }
 }
 
@@ -3953,7 +3953,7 @@ fn nested_variant_batch() -> Batch {
             record_batch.num_rows() as u64,
             record_batch.get_array_memory_size() as u64,
         ),
-        payload: cdf_kernel::BatchPayload::RecordBatch(record_batch),
+        payload: cdf_kernel::BatchPayload::in_memory(record_batch),
     }
 }
 
@@ -3994,6 +3994,6 @@ fn batch_for_partition_with_schema(
             record_batch.num_rows() as u64,
             record_batch.get_array_memory_size() as u64,
         ),
-        payload: cdf_kernel::BatchPayload::RecordBatch(record_batch),
+        payload: cdf_kernel::BatchPayload::in_memory(record_batch),
     }
 }

@@ -1,4 +1,4 @@
-use std::{any::Any, collections::BTreeMap, sync::Arc};
+use std::collections::BTreeMap;
 
 use arrow_array::RecordBatch;
 use serde::{Deserialize, Serialize};
@@ -13,48 +13,15 @@ use crate::{
     error::Result,
     ids::{DestinationId, IdempotencyToken, PackageHash, PlanId, ReceiptId, SegmentId, TargetName},
     resource::{CapabilitySupport, WriteDisposition},
+    retention::PayloadRetention,
 };
-
-#[derive(Clone)]
-pub struct CommitSegmentRetention {
-    owner: Arc<dyn Any + Send + Sync>,
-    bytes: u64,
-}
-
-impl std::fmt::Debug for CommitSegmentRetention {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter
-            .debug_struct("CommitSegmentRetention")
-            .field("bytes", &self.bytes)
-            .finish_non_exhaustive()
-    }
-}
-
-impl CommitSegmentRetention {
-    pub fn new(owner: Arc<dyn Any + Send + Sync>, bytes: u64) -> Result<Self> {
-        if bytes == 0 {
-            return Err(crate::CdfError::contract(
-                "commit segment retention must account for nonzero bytes",
-            ));
-        }
-        Ok(Self { owner, bytes })
-    }
-
-    pub fn bytes(&self) -> u64 {
-        self.bytes
-    }
-
-    pub fn strong_count(&self) -> usize {
-        Arc::strong_count(&self.owner)
-    }
-}
 
 #[derive(Clone, Debug)]
 pub struct CommitSegment {
     pub state: StateSegment,
     pub package_byte_count: u64,
     pub batches: Vec<RecordBatch>,
-    retention: Option<CommitSegmentRetention>,
+    retention: Option<PayloadRetention>,
 }
 
 #[derive(Clone, Debug)]
@@ -64,7 +31,7 @@ pub struct CommitBatch {
     pub batch_ordinal: u32,
     pub batch_count: u32,
     pub batch: RecordBatch,
-    retention: Option<CommitSegmentRetention>,
+    retention: Option<PayloadRetention>,
 }
 
 pub struct CommitBatchIterator {
@@ -73,7 +40,7 @@ pub struct CommitBatchIterator {
     batches: std::vec::IntoIter<RecordBatch>,
     batch_count: u32,
     next_ordinal: u32,
-    retention: Option<CommitSegmentRetention>,
+    retention: Option<PayloadRetention>,
 }
 
 impl CommitSegment {
@@ -86,15 +53,13 @@ impl CommitSegment {
         }
     }
 
-    pub fn with_retention(mut self, retention: CommitSegmentRetention) -> Self {
+    pub fn with_retention(mut self, retention: PayloadRetention) -> Self {
         self.retention = Some(retention);
         self
     }
 
     pub fn retained_bytes(&self) -> u64 {
-        self.retention
-            .as_ref()
-            .map_or(0, CommitSegmentRetention::bytes)
+        self.retention.as_ref().map_or(0, PayloadRetention::bytes)
     }
 
     pub fn into_batches(self) -> Result<CommitBatchIterator> {
@@ -118,9 +83,7 @@ impl CommitSegment {
 
 impl CommitBatch {
     pub fn retained_bytes(&self) -> u64 {
-        self.retention
-            .as_ref()
-            .map_or(0, CommitSegmentRetention::bytes)
+        self.retention.as_ref().map_or(0, PayloadRetention::bytes)
     }
 }
 

@@ -3,8 +3,8 @@ use std::{collections::BTreeMap, fmt, pin::Pin, sync::Arc};
 use arrow_schema::SchemaRef;
 use cdf_contract::ObservedSchema;
 use cdf_kernel::{
-    Batch, BoxFuture, CdfError, PartitionId, PushdownFidelity, ResourceId, Result, ScanPredicate,
-    SchemaHash, SourcePosition,
+    Batch, BoxFuture, CdfError, PartitionId, PayloadRetention, PushdownFidelity, ResourceId,
+    Result, ScanPredicate, SchemaHash, SourcePosition,
 };
 use cdf_memory::{AccountedBytes, MemoryCoordinator, MemoryLease, record_batch_retained_bytes};
 use futures_util::Stream;
@@ -373,8 +373,10 @@ impl AccountedPhysicalBatch {
         &self.lease
     }
 
-    pub fn into_parts(self) -> (Batch, MemoryLease) {
-        (self.batch, self.lease)
+    pub fn into_batch(self) -> Result<Batch> {
+        let bytes = self.lease.bytes();
+        self.batch
+            .with_retention(PayloadRetention::new(Arc::new(self.lease), bytes)?)
     }
 }
 
@@ -602,6 +604,13 @@ impl ByteTransformRegistry {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use arrow_array::{Int64Array, RecordBatch};
+    use arrow_schema::{DataType, Field, Schema};
+    use cdf_kernel::{BatchId, PartitionId, ResourceId, SchemaHash};
+    use cdf_memory::{
+        ConsumerKey, DeterministicMemoryCoordinator, MemoryClass, MemoryCoordinator,
+        ReservationRequest,
+    };
 
     struct DescriptorOnlyDriver(FormatDriverDescriptor);
 
@@ -701,5 +710,42 @@ mod tests {
             .validate()
             .is_err()
         );
+    }
+
+    #[test]
+    fn physical_batch_retains_its_memory_lease_after_entering_kernel_stream() {
+        let record_batch = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, false)])),
+            vec![Arc::new(Int64Array::from(vec![1, 2, 3]))],
+        )
+        .unwrap();
+        let retained_bytes = record_batch_retained_bytes(&record_batch).unwrap();
+        let memory =
+            DeterministicMemoryCoordinator::new(retained_bytes * 2, BTreeMap::new()).unwrap();
+        let lease = memory
+            .try_reserve(
+                &ReservationRequest::new(
+                    ConsumerKey::new("format-test", MemoryClass::Decode).unwrap(),
+                    retained_bytes,
+                )
+                .unwrap(),
+            )
+            .unwrap()
+            .unwrap();
+        let batch = Batch::from_record_batch(
+            BatchId::new("batch-0").unwrap(),
+            ResourceId::new("events").unwrap(),
+            PartitionId::new("part-0").unwrap(),
+            SchemaHash::new("schema-v1").unwrap(),
+            record_batch,
+        )
+        .unwrap();
+        let accounted = AccountedPhysicalBatch::new(batch, lease).unwrap();
+        let batch = accounted.into_batch().unwrap();
+
+        assert_eq!(batch.retained_bytes(), retained_bytes);
+        assert_eq!(memory.snapshot().current_bytes, retained_bytes);
+        drop(batch);
+        assert_eq!(memory.snapshot().current_bytes, 0);
     }
 }
