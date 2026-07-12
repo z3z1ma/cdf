@@ -19,6 +19,8 @@ Canonicalization traverses list, large-list, fixed-size-list, list-view, large-l
 4. Sliced away a row containing duplicate keys and verified canonicalization does not inspect its unreferenced entries.
 5. Ran `cargo test -p cdf-contract dedup_key::tests -- --nocapture`: four passed.
 6. Ran `cargo clippy -p cdf-contract --all-targets -- -D warnings`: passed.
+7. Added dense-union and dictionary slice normalization: only selected union children and referenced dictionary values are recursively canonicalized. Fixtures prove invalid map data in unselected children/values cannot reject a selected row.
+8. Ran the full `cdf-contract` suite: 76 passed, zero failed.
 
 ## What this supports or challenges
 
@@ -26,4 +28,4 @@ This closes the known top-level/nested map order gap in the typed dedup key path
 
 ## Limits
 
-Dense-union and dictionary slices can retain unreferenced child/value arrays; dedicated normalization tests are still required to prove invalid unselected map values cannot fail a selected row. The generated complete-Arrow golden matrix and the 100 GB RSS stress remain before A6 closure.
+The generated complete-Arrow golden matrix and the 100 GB RSS stress remain before A6 closure. Sparse unions are normalized row-wise; their inactive child slots are expected Arrow null slots and remain covered by the full type matrix rather than this focused map fixture.

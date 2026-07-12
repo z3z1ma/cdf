@@ -1,13 +1,14 @@
-use std::sync::Arc;
+use std::{collections::BTreeMap, sync::Arc};
 
 use arrow_array::{
     Array, ArrayRef, DictionaryArray, FixedSizeListArray, LargeListArray, LargeListViewArray,
-    ListArray, ListViewArray, MapArray, StructArray, UInt64Array, UnionArray,
+    ListArray, ListViewArray, MapArray, PrimitiveArray, StructArray, UInt64Array, UnionArray,
     types::{
-        Int8Type, Int16Type, Int32Type, Int64Type, UInt8Type, UInt16Type, UInt32Type, UInt64Type,
+        ArrowDictionaryKeyType, Int8Type, Int16Type, Int32Type, Int64Type, UInt8Type, UInt16Type,
+        UInt32Type, UInt64Type,
     },
 };
-use arrow_buffer::{OffsetBuffer, ScalarBuffer};
+use arrow_buffer::{ArrowNativeType, OffsetBuffer, ScalarBuffer};
 use arrow_row::{RowConverter, SortField};
 use arrow_schema::DataType;
 use arrow_select::take::take;
@@ -214,10 +215,7 @@ fn canonicalize_array(array: ArrayRef) -> Result<ArrayRef> {
                         .as_any()
                         .downcast_ref::<DictionaryArray<$key>>()
                         .ok_or_else(|| CdfError::internal("dictionary array/type mismatch"))?;
-                    Ok(Arc::new(DictionaryArray::<$key>::new(
-                        dictionary.keys().clone(),
-                        canonicalize_array(Arc::clone(dictionary.values()))?,
-                    )) as ArrayRef)
+                    canonicalize_dictionary(dictionary)
                 }};
             }
             match key_type.as_ref() {
@@ -234,20 +232,54 @@ fn canonicalize_array(array: ArrayRef) -> Result<ArrayRef> {
                 ))),
             }
         }
-        DataType::Union(fields, _) => {
+        DataType::Union(fields, mode) => {
             let union = array
                 .as_any()
                 .downcast_ref::<UnionArray>()
                 .ok_or_else(|| CdfError::internal("union array/type mismatch"))?;
+            let mut selected = BTreeMap::<i8, Vec<u64>>::new();
+            let mut offsets = (*mode == arrow_schema::UnionMode::Dense)
+                .then(|| Vec::<i32>::with_capacity(union.len()));
+            if let Some(offsets) = offsets.as_mut() {
+                for row in 0..union.len() {
+                    let type_id = union.type_id(row);
+                    let indices = selected.entry(type_id).or_default();
+                    offsets.push(
+                        i32::try_from(indices.len())
+                            .map_err(|_| CdfError::data("dense union offsets exceed i32"))?,
+                    );
+                    indices.push(
+                        u64::try_from(union.value_offset(row))
+                            .map_err(|_| CdfError::data("union value offset exceeds u64"))?,
+                    );
+                }
+            }
             let children = fields
                 .iter()
-                .map(|(type_id, _)| canonicalize_array(Arc::clone(union.child(type_id))))
+                .map(|(type_id, _)| {
+                    let indices = match &offsets {
+                        Some(_) => selected.remove(&type_id).unwrap_or_default(),
+                        None => (0..union.len())
+                            .map(|row| {
+                                u64::try_from(union.value_offset(row))
+                                    .map_err(|_| CdfError::data("union value offset exceeds u64"))
+                            })
+                            .collect::<Result<Vec<_>>>()?,
+                    };
+                    let values = take(
+                        union.child(type_id).as_ref(),
+                        &UInt64Array::from(indices),
+                        None,
+                    )
+                    .map_err(CdfError::from)?;
+                    canonicalize_array(values)
+                })
                 .collect::<Result<Vec<_>>>()?;
             Ok(Arc::new(
                 UnionArray::try_new(
                     fields.clone(),
                     union.type_ids().clone(),
-                    union.offsets().cloned(),
+                    offsets.map(ScalarBuffer::from),
                     children,
                 )
                 .map_err(CdfError::from)?,
@@ -255,6 +287,55 @@ fn canonicalize_array(array: ArrayRef) -> Result<ArrayRef> {
         }
         _ => Ok(array),
     }
+}
+
+fn canonicalize_dictionary<K>(dictionary: &DictionaryArray<K>) -> Result<ArrayRef>
+where
+    K: ArrowDictionaryKeyType,
+    PrimitiveArray<K>: From<Vec<Option<K::Native>>>,
+{
+    let mut old_to_new = vec![None::<usize>; dictionary.values().len()];
+    let mut selected_values = Vec::<u64>::new();
+    let mut keys = Vec::<Option<K::Native>>::with_capacity(dictionary.len());
+    for row in 0..dictionary.len() {
+        if dictionary.is_null(row) {
+            keys.push(None);
+            continue;
+        }
+        let old = dictionary
+            .keys()
+            .value(row)
+            .to_usize()
+            .ok_or_else(|| CdfError::data("dictionary key cannot index values"))?;
+        let slot = old_to_new
+            .get_mut(old)
+            .ok_or_else(|| CdfError::data("dictionary key is outside values"))?;
+        let new = match *slot {
+            Some(new) => new,
+            None => {
+                let new = selected_values.len();
+                selected_values.push(
+                    u64::try_from(old)
+                        .map_err(|_| CdfError::data("dictionary value index exceeds u64"))?,
+                );
+                *slot = Some(new);
+                new
+            }
+        };
+        keys.push(Some(K::Native::from_usize(new).ok_or_else(|| {
+            CdfError::data("canonical dictionary index exceeds key width")
+        })?));
+    }
+    let values = take(
+        dictionary.values().as_ref(),
+        &UInt64Array::from(selected_values),
+        None,
+    )
+    .map_err(CdfError::from)?;
+    Ok(Arc::new(DictionaryArray::<K>::new(
+        PrimitiveArray::<K>::from(keys),
+        canonicalize_array(values)?,
+    )))
 }
 
 fn canonicalize_map(array: ArrayRef) -> Result<ArrayRef> {
@@ -266,14 +347,27 @@ fn canonicalize_map(array: ArrayRef) -> Result<ArrayRef> {
         return Err(CdfError::internal("map array has non-map type"));
     };
     let source_offsets = map.value_offsets();
-    let entry_base = usize::try_from(source_offsets[0])
-        .map_err(|_| CdfError::data("map has a negative entry offset"))?;
-    let entry_end = usize::try_from(source_offsets[map.len()])
-        .map_err(|_| CdfError::data("map has a negative entry offset"))?;
-    let canonical_entries = canonicalize_array(Arc::new(
-        map.entries()
-            .slice(entry_base, entry_end.saturating_sub(entry_base)),
-    ))?;
+    let mut selected_indices = Vec::<u64>::new();
+    let mut selected_offsets = Vec::<usize>::with_capacity(map.len() + 1);
+    selected_offsets.push(0);
+    for row in 0..map.len() {
+        if !map.is_null(row) {
+            let start = usize::try_from(source_offsets[row])
+                .map_err(|_| CdfError::data("map has a negative entry offset"))?;
+            let end = usize::try_from(source_offsets[row + 1])
+                .map_err(|_| CdfError::data("map has a negative entry offset"))?;
+            for index in start..end {
+                selected_indices.push(
+                    u64::try_from(index)
+                        .map_err(|_| CdfError::data("map entry index exceeds u64"))?,
+                );
+            }
+        }
+        selected_offsets.push(selected_indices.len());
+    }
+    let selected =
+        take(map.entries(), &UInt64Array::from(selected_indices), None).map_err(CdfError::from)?;
+    let canonical_entries = canonicalize_array(selected)?;
     let entries = canonical_entries
         .as_any()
         .downcast_ref::<StructArray>()
@@ -289,33 +383,27 @@ fn canonicalize_map(array: ArrayRef) -> Result<ArrayRef> {
     let mut offsets = Vec::<i32>::with_capacity(map.len() + 1);
     offsets.push(0);
     for row in 0..map.len() {
-        let start = usize::try_from(source_offsets[row])
-            .map_err(|_| CdfError::data("map has a negative entry offset"))?
-            .saturating_sub(entry_base);
-        let end = usize::try_from(source_offsets[row + 1])
-            .map_err(|_| CdfError::data("map has a negative entry offset"))?
-            .saturating_sub(entry_base);
+        let start = selected_offsets[row];
+        let end = selected_offsets[row + 1];
         let mut indices = (start..end).collect::<Vec<_>>();
-        if !map.is_null(row) {
-            if indices.iter().any(|index| keys.is_null(*index)) {
-                return Err(CdfError::data(
-                    "map dedup key contains a null map key; quarantine or reject the row before dedup",
-                ));
-            }
-            indices.sort_unstable_by(|left, right| {
-                encoded
-                    .row(*left)
-                    .as_ref()
-                    .cmp(encoded.row(*right).as_ref())
-            });
-            if indices
-                .windows(2)
-                .any(|pair| encoded.row(pair[0]).as_ref() == encoded.row(pair[1]).as_ref())
-            {
-                return Err(CdfError::data(
-                    "map dedup key contains duplicate logical map keys; quarantine or reject the row before dedup",
-                ));
-            }
+        if indices.iter().any(|index| keys.is_null(*index)) {
+            return Err(CdfError::data(
+                "map dedup key contains a null map key; quarantine or reject the row before dedup",
+            ));
+        }
+        indices.sort_unstable_by(|left, right| {
+            encoded
+                .row(*left)
+                .as_ref()
+                .cmp(encoded.row(*right).as_ref())
+        });
+        if indices
+            .windows(2)
+            .any(|pair| encoded.row(pair[0]).as_ref() == encoded.row(pair[1]).as_ref())
+        {
+            return Err(CdfError::data(
+                "map dedup key contains duplicate logical map keys; quarantine or reject the row before dedup",
+            ));
         }
         for index in indices {
             take_indices.push(
@@ -345,8 +433,8 @@ fn canonicalize_map(array: ArrayRef) -> Result<ArrayRef> {
 
 #[cfg(test)]
 mod tests {
-    use arrow_array::{Int32Array, StringArray};
-    use arrow_schema::Field;
+    use arrow_array::{Int8Array, Int32Array, StringArray};
+    use arrow_schema::{Field, UnionFields};
 
     use super::*;
 
@@ -426,6 +514,42 @@ mod tests {
         );
         let sliced = Arc::new(maps.slice(1, 1)) as ArrayRef;
         let canonical = canonicalize_map_order(vec![sliced]).unwrap();
+        assert_eq!(canonical[0].len(), 1);
+    }
+
+    #[test]
+    fn dictionary_does_not_validate_unreferenced_map_values() {
+        let values = MapArray::from_vec_of_maps::<StringArray, Int32Array, _, _>(
+            vec![
+                Some(vec![("duplicate", Some(1)), ("duplicate", Some(2))]),
+                Some(vec![("kept", Some(3))]),
+            ],
+            false,
+        );
+        let dictionary =
+            DictionaryArray::<Int8Type>::new(Int8Array::from(vec![1_i8]), Arc::new(values));
+        let canonical = canonicalize_map_order(vec![Arc::new(dictionary) as ArrayRef]).unwrap();
+        assert_eq!(canonical[0].len(), 1);
+    }
+
+    #[test]
+    fn dense_union_does_not_validate_unselected_map_child() {
+        let invalid_map = map(vec![("duplicate", Some(1)), ("duplicate", Some(2))]);
+        let int_field = Arc::new(Field::new("integer", DataType::Int32, false));
+        let map_field = Arc::new(Field::new(
+            "attributes",
+            invalid_map.data_type().clone(),
+            false,
+        ));
+        let fields = UnionFields::try_new(vec![0, 1], vec![map_field, int_field]).unwrap();
+        let union = UnionArray::try_new(
+            fields,
+            ScalarBuffer::from(vec![1_i8]),
+            Some(ScalarBuffer::from(vec![0_i32])),
+            vec![invalid_map, Arc::new(Int32Array::from(vec![7]))],
+        )
+        .unwrap();
+        let canonical = canonicalize_map_order(vec![Arc::new(union) as ArrayRef]).unwrap();
         assert_eq!(canonical[0].len(), 1);
     }
 }
