@@ -1,4 +1,10 @@
-use std::{collections::BTreeMap, fmt, pin::Pin, sync::Arc};
+use std::{
+    collections::BTreeMap,
+    fmt,
+    io::{BufRead, Read},
+    pin::Pin,
+    sync::Arc,
+};
 
 use arrow_schema::SchemaRef;
 use cdf_contract::ObservedSchema;
@@ -18,6 +24,61 @@ use crate::RunCancellation;
 pub type AccountedByteStream = Pin<Box<dyn Stream<Item = Result<AccountedBytes>> + Send + 'static>>;
 pub type PhysicalDecodeStream =
     Pin<Box<dyn Stream<Item = Result<AccountedPhysicalBatch>> + Send + 'static>>;
+
+pub struct AccountedChunksReader {
+    chunks: Vec<AccountedBytes>,
+    chunk: usize,
+    offset: usize,
+}
+
+impl AccountedChunksReader {
+    pub fn new(chunks: Vec<AccountedBytes>) -> Self {
+        Self {
+            chunks,
+            chunk: 0,
+            offset: 0,
+        }
+    }
+
+    pub fn retained_bytes(&self) -> u64 {
+        self.chunks.iter().map(|chunk| chunk.lease().bytes()).sum()
+    }
+}
+
+impl Read for AccountedChunksReader {
+    fn read(&mut self, output: &mut [u8]) -> std::io::Result<usize> {
+        let input = self.fill_buf()?;
+        let copied = input.len().min(output.len());
+        output[..copied].copy_from_slice(&input[..copied]);
+        self.consume(copied);
+        Ok(copied)
+    }
+}
+
+impl BufRead for AccountedChunksReader {
+    fn fill_buf(&mut self) -> std::io::Result<&[u8]> {
+        while self.chunk < self.chunks.len()
+            && self.offset == self.chunks[self.chunk].payload().len()
+        {
+            self.chunk += 1;
+            self.offset = 0;
+        }
+        Ok(self
+            .chunks
+            .get(self.chunk)
+            .map(|chunk| &chunk.payload()[self.offset..])
+            .unwrap_or_default())
+    }
+
+    fn consume(&mut self, amount: usize) {
+        let available = self
+            .chunks
+            .get(self.chunk)
+            .map(|chunk| chunk.payload().len().saturating_sub(self.offset))
+            .unwrap_or(0);
+        self.offset += amount.min(available);
+    }
+}
 
 pub struct AccountedByteCursor {
     stream: AccountedByteStream,

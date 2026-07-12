@@ -159,6 +159,11 @@ pub(crate) fn test_format_registry() -> std::sync::Arc<cdf_runtime::FormatRegist
                 .expect("Arrow IPC test format registration");
             registry
                 .register(std::sync::Arc::new(
+                    cdf_format_delimited::CsvFormatDriver::new().expect("CSV test format driver"),
+                ))
+                .expect("CSV test format registration");
+            registry
+                .register(std::sync::Arc::new(
                     cdf_format_parquet::ParquetFormatDriver::new()
                         .expect("Parquet test format driver"),
                 ))

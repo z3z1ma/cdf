@@ -1,8 +1,8 @@
-#![doc = "Streaming JSON format drivers for cdf."]
+#![doc = "Streaming delimited text format drivers for cdf."]
 
 use std::sync::Arc;
 
-use arrow_json::reader::{ReaderBuilder, infer_json_schema};
+use arrow_csv::reader::{Decoder, Format, ReaderBuilder};
 use cdf_kernel::{Batch, BatchId, BoxFuture, CdfError, PushdownFidelity, Result};
 use cdf_memory::{ConsumerKey, MemoryClass, MemoryLease, ReservationRequest, reserve};
 use cdf_runtime::{
@@ -16,19 +16,19 @@ use futures_util::{TryStreamExt, stream};
 const DISCOVERY_CHUNK_BYTES: u64 = 1024 * 1024;
 
 #[derive(Debug)]
-pub struct NdjsonFormatDriver {
+pub struct CsvFormatDriver {
     descriptor: FormatDriverDescriptor,
 }
 
-impl NdjsonFormatDriver {
+impl CsvFormatDriver {
     pub fn new() -> Result<Self> {
         Ok(Self {
             descriptor: FormatDriverDescriptor {
-                format_id: FormatId::new("ndjson")?,
+                format_id: FormatId::new("csv")?,
                 semantic_version: "1.0.0".to_owned(),
-                aliases: vec!["jsonl".to_owned()],
-                extensions: vec!["ndjson".to_owned(), "jsonl".to_owned()],
-                mime_types: vec!["application/x-ndjson".to_owned()],
+                aliases: Vec::new(),
+                extensions: vec!["csv".to_owned()],
+                mime_types: vec!["text/csv".to_owned()],
                 magic: Vec::new(),
                 option_schema: serde_json::json!({
                     "type": "object",
@@ -36,7 +36,7 @@ impl NdjsonFormatDriver {
                 }),
                 projection_pushdown: PushdownFidelity::Unsupported,
                 predicate_pushdown: PushdownFidelity::Unsupported,
-                decode_unit_policy: "ndjson_stream_v1".to_owned(),
+                decode_unit_policy: "csv_stream_v1".to_owned(),
                 minimum_working_set_bytes: 1024 * 1024,
                 maximum_working_set_bytes: 64 * 1024 * 1024,
             },
@@ -44,7 +44,7 @@ impl NdjsonFormatDriver {
     }
 }
 
-impl FormatDriver for NdjsonFormatDriver {
+impl FormatDriver for CsvFormatDriver {
     fn descriptor(&self) -> &FormatDriverDescriptor {
         &self.descriptor
     }
@@ -53,20 +53,18 @@ impl FormatDriver for NdjsonFormatDriver {
         if options.as_object().is_some_and(serde_json::Map::is_empty) {
             Ok(options)
         } else {
-            Err(CdfError::contract("NDJSON format options must be empty"))
+            Err(CdfError::contract("CSV format options must be empty"))
         }
     }
 
     fn detect(&self, probe: &FormatProbe) -> Result<FormatDetection> {
-        let prefix = trim_ascii_whitespace(&probe.prefix);
         Ok(FormatDetection {
-            confidence: if prefix.first() == Some(&b'{') {
+            confidence: if probe.prefix.contains(&b',') {
                 FormatDetectionConfidence::Weak
             } else {
                 FormatDetectionConfidence::None
             },
-            reason: "NDJSON has no strong magic; first non-whitespace byte was inspected"
-                .to_owned(),
+            reason: "CSV has no strong magic; a comma was inspected in the prefix".to_owned(),
         })
     }
 
@@ -80,7 +78,7 @@ impl FormatDriver for NdjsonFormatDriver {
             request.cancellation.check()?;
             if request.maximum_bytes == 0 || request.maximum_records == 0 {
                 return Err(CdfError::contract(
-                    "NDJSON discovery requires nonzero byte and record bounds",
+                    "CSV discovery requires nonzero byte and record bounds",
                 ));
             }
             let mut input = source
@@ -95,25 +93,25 @@ impl FormatDriver for NdjsonFormatDriver {
                 let Some(chunk) = input.try_next().await? else {
                     break;
                 };
-                sampled_bytes =
-                    sampled_bytes
-                        .checked_add(u64::try_from(chunk.payload().len()).map_err(|_| {
-                            CdfError::data("NDJSON discovery chunk length exceeds u64")
-                        })?)
-                        .ok_or_else(|| CdfError::data("NDJSON discovery byte count overflowed"))?;
+                let chunk_bytes = u64::try_from(chunk.payload().len())
+                    .map_err(|_| CdfError::data("CSV discovery chunk length exceeds u64"))?;
+                sampled_bytes = sampled_bytes
+                    .checked_add(chunk_bytes)
+                    .ok_or_else(|| CdfError::data("CSV discovery byte count overflowed"))?;
                 if sampled_bytes > request.maximum_bytes {
                     return Err(CdfError::data(format!(
-                        "NDJSON discovery source chunk crossed its {}-byte bound",
+                        "CSV discovery source chunk crossed its {}-byte bound",
                         request.maximum_bytes
                     )));
                 }
                 chunks.push(chunk);
             }
-            let reader = AccountedChunksReader::new(chunks);
             let maximum_records = usize::try_from(request.maximum_records)
-                .map_err(|_| CdfError::contract("NDJSON record bound exceeds usize"))?;
-            let (schema, sampled_records) = infer_json_schema(reader, Some(maximum_records))
-                .map_err(|error| CdfError::data(format!("infer NDJSON schema: {error}")))?;
+                .map_err(|_| CdfError::contract("CSV record bound exceeds usize"))?;
+            let (schema, sampled_records) = Format::default()
+                .with_header(true)
+                .infer_schema(AccountedChunksReader::new(chunks), Some(maximum_records))
+                .map_err(|error| CdfError::data(format!("infer CSV schema: {error}")))?;
             let schema = Arc::new(schema);
             Ok(PhysicalSchemaObservation {
                 identity: source.identity().clone(),
@@ -121,7 +119,7 @@ impl FormatDriver for NdjsonFormatDriver {
                 arrow_schema: schema,
                 sampled_bytes,
                 sampled_records: u64::try_from(sampled_records)
-                    .map_err(|_| CdfError::data("NDJSON sampled record count exceeds u64"))?,
+                    .map_err(|_| CdfError::data("CSV sampled record count exceeds u64"))?,
             })
         })
     }
@@ -136,16 +134,16 @@ impl FormatDriver for NdjsonFormatDriver {
             request.cancellation.check()?;
             if request.target_batch_rows == 0 || request.target_batch_bytes == 0 {
                 return Err(CdfError::contract(
-                    "NDJSON planning requires nonzero row and byte batch targets",
+                    "CSV planning requires nonzero row and byte batch targets",
                 ));
             }
             if request.projection.is_some() || !request.predicates.is_empty() {
                 return Err(CdfError::contract(
-                    "NDJSON projection and predicate pushdown are unsupported",
+                    "CSV projection and predicate pushdown are unsupported",
                 ));
             }
             Ok(vec![DecodeUnitPlan {
-                unit_id: "ndjson-stream".to_owned(),
+                unit_id: "csv-stream".to_owned(),
                 ordinal: 0,
                 extent: source
                     .identity()
@@ -171,7 +169,7 @@ impl FormatDriver for NdjsonFormatDriver {
             request.unit.validate()?;
             if request.projection.is_some() || !request.predicates.is_empty() {
                 return Err(CdfError::contract(
-                    "NDJSON projection and predicate pushdown are unsupported",
+                    "CSV projection and predicate pushdown are unsupported",
                 ));
             }
             let input = source
@@ -183,9 +181,9 @@ impl FormatDriver for NdjsonFormatDriver {
                 })
                 .await?;
             let decoder = ReaderBuilder::new(Arc::clone(&request.physical_schema))
+                .with_header(true)
                 .with_batch_size(request.target_batch_rows)
-                .build_decoder()
-                .map_err(|error| CdfError::data(format!("create NDJSON tape decoder: {error}")))?;
+                .build_decoder();
             let output_lease = reserve_output(&request).await?;
             let state = DecodeState {
                 input,
@@ -195,7 +193,8 @@ impl FormatDriver for NdjsonFormatDriver {
                 request,
                 output_lease: Some(output_lease),
                 sequence: 0,
-                finished: false,
+                input_finished: false,
+                terminal: false,
             };
             Ok(Box::pin(stream::try_unfold(state, decode_next)) as PhysicalDecodeStream)
         })
@@ -206,11 +205,12 @@ struct DecodeState {
     input: AccountedByteStream,
     current: Option<cdf_memory::AccountedBytes>,
     offset: usize,
-    decoder: arrow_json::reader::Decoder,
+    decoder: Decoder,
     request: PhysicalDecodeRequest,
     output_lease: Option<MemoryLease>,
     sequence: u64,
-    finished: bool,
+    input_finished: bool,
+    terminal: bool,
 }
 
 async fn decode_next(
@@ -218,37 +218,41 @@ async fn decode_next(
 ) -> Result<Option<(AccountedPhysicalBatch, DecodeState)>> {
     loop {
         state.request.cancellation.check()?;
-        if state.finished {
+        if state.terminal {
             return Ok(None);
         }
-        if state
-            .current
-            .as_ref()
-            .is_none_or(|chunk| state.offset == chunk.payload().len())
+        if !state.input_finished
+            && state
+                .current
+                .as_ref()
+                .is_none_or(|chunk| state.offset == chunk.payload().len())
         {
             state.current = state.input.try_next().await?;
             state.offset = 0;
-            if state.current.is_none() {
-                state.finished = true;
-            }
+            state.input_finished = state.current.is_none();
         }
-        if let Some(chunk) = &state.current {
-            let available = &chunk.payload()[state.offset..];
-            let consumed = state
+        let consumed = if let Some(chunk) = &state.current {
+            state
                 .decoder
-                .decode(available)
-                .map_err(|error| CdfError::data(format!("decode NDJSON: {error}")))?;
-            state.offset += consumed;
-            if consumed == available.len() {
-                continue;
-            }
+                .decode(&chunk.payload()[state.offset..])
+                .map_err(|error| CdfError::data(format!("decode CSV: {error}")))?
+        } else {
+            state
+                .decoder
+                .decode(&[])
+                .map_err(|error| CdfError::data(format!("finish CSV decode: {error}")))?
+        };
+        state.offset += consumed;
+        if consumed != 0 {
+            continue;
         }
         let Some(record_batch) = state
             .decoder
             .flush()
-            .map_err(|error| CdfError::data(format!("flush NDJSON batch: {error}")))?
+            .map_err(|error| CdfError::data(format!("flush CSV batch: {error}")))?
         else {
-            if state.finished {
+            state.terminal = state.input_finished;
+            if state.terminal {
                 return Ok(None);
             }
             continue;
@@ -256,7 +260,7 @@ async fn decode_next(
         let lease = state
             .output_lease
             .take()
-            .ok_or_else(|| CdfError::internal("NDJSON output lease missing"))?;
+            .ok_or_else(|| CdfError::internal("CSV output lease missing"))?;
         let batch_id = BatchId::new(format!(
             "{}-u{:08}-b{:08}",
             state.request.batch_id_prefix, state.request.unit.ordinal, state.sequence
@@ -264,7 +268,7 @@ async fn decode_next(
         state.sequence = state
             .sequence
             .checked_add(1)
-            .ok_or_else(|| CdfError::data("NDJSON batch sequence overflowed"))?;
+            .ok_or_else(|| CdfError::data("CSV batch sequence overflowed"))?;
         let mut batch = Batch::from_record_batch(
             batch_id,
             state.request.resource_id.clone(),
@@ -274,7 +278,7 @@ async fn decode_next(
         )?;
         batch.header.source_position = state.request.source_position.clone();
         let physical = AccountedPhysicalBatch::new(batch, lease)?;
-        if !state.finished {
+        if !state.terminal {
             state.output_lease = Some(reserve_output(&state.request).await?);
         }
         return Ok(Some((physical, state)));
@@ -285,18 +289,10 @@ async fn reserve_output(request: &PhysicalDecodeRequest) -> Result<MemoryLease> 
     reserve(
         Arc::clone(&request.memory),
         ReservationRequest::new(
-            ConsumerKey::new("ndjson-tape-output", MemoryClass::Decode)?,
+            ConsumerKey::new("csv-output", MemoryClass::Decode)?,
             request.target_batch_bytes.max(1024 * 1024),
         )?
         .as_minimum_working_set(),
     )
     .await
-}
-
-fn trim_ascii_whitespace(bytes: &[u8]) -> &[u8] {
-    let start = bytes
-        .iter()
-        .position(|byte| !byte.is_ascii_whitespace())
-        .unwrap_or(bytes.len());
-    &bytes[start..]
 }

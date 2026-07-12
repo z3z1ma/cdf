@@ -403,16 +403,9 @@ fn discover_resource_schema_artifacts_inner(
             discover_local_binary_resource_schema(resource, plan, file_dependencies, options)
         }
         CompiledResourcePlan::Files(plan) => match plan.format.as_str() {
-            "parquet" | "arrow_ipc" | "ndjson" => {
+            "parquet" | "arrow_ipc" | "ndjson" | "csv" => {
                 discover_remote_binary_resource_schema(resource, plan, file_dependencies, options)
             }
-            "csv" => discover_remote_file_resource_schema(
-                resource,
-                plan,
-                file_dependencies,
-                options,
-                LocalBinaryDiscoveryAdapter::Csv,
-            ),
             "json" => discover_remote_file_resource_schema(
                 resource,
                 plan,
@@ -582,14 +575,12 @@ impl BinaryDiscoveryCandidate {
 #[derive(Clone, Debug)]
 enum LocalBinaryDiscoveryAdapter {
     Registered(FileFormatDeclaration),
-    Csv,
     Json,
 }
 
 impl LocalBinaryDiscoveryAdapter {
     fn for_format(_resource: &CompiledResource, format: &FileFormatDeclaration) -> Result<Self> {
         Ok(match format.as_str() {
-            "csv" => Self::Csv,
             "json" => Self::Json,
             _ => Self::Registered(format.clone()),
         })
@@ -647,17 +638,13 @@ impl LocalBinaryDiscoveryAdapter {
                 )?;
                 Ok((probe.schema, probe.source_identity, probe.probe_bytes_read))
             }
-            (
-                adapter @ (Self::Csv | Self::Json),
-                BinaryDiscoveryCandidateSource::Transport(resource),
-            ) => {
+            (adapter @ Self::Json, BinaryDiscoveryCandidateSource::Transport(resource)) => {
                 let dependencies = file_dependencies.ok_or_else(|| {
                     CdfError::contract(
                         "remote NDJSON discovery requires file transport dependencies",
                     )
                 })?;
                 let format = match adapter {
-                    Self::Csv => FileFormatDeclaration::csv(),
                     Self::Json => FileFormatDeclaration::json(),
                     _ => unreachable!(),
                 };
@@ -673,17 +660,13 @@ impl LocalBinaryDiscoveryAdapter {
                 )?;
                 Ok((probe.schema, probe.source_identity, probe.probe_bytes_read))
             }
-            (
-                adapter @ (Self::Csv | Self::Json),
-                BinaryDiscoveryCandidateSource::Local { path, .. },
-            ) => {
+            (adapter @ Self::Json, BinaryDiscoveryCandidateSource::Local { path, .. }) => {
                 let dependencies = file_dependencies.ok_or_else(|| {
                     CdfError::contract(
                         "local row discovery requires file transform registry dependencies",
                     )
                 })?;
                 let format = match adapter {
-                    Self::Csv => FileFormatDeclaration::csv(),
                     Self::Json => FileFormatDeclaration::json(),
                     _ => unreachable!(),
                 };
@@ -713,7 +696,6 @@ impl LocalBinaryDiscoveryAdapter {
                 SCHEMA_DISCOVERY_FORMAT_ARROW_IPC,
             ),
             Self::Registered(format) => ("registered-format-discovery", format.as_str()),
-            Self::Csv => ("bounded-csv-sample", "csv"),
             Self::Json => ("bounded-json-sample", "json"),
         };
         BTreeMap::from([

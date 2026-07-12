@@ -71,6 +71,11 @@ fn test_format_registry() -> Arc<cdf_runtime::FormatRegistry> {
         .unwrap();
     registry
         .register(Arc::new(
+            cdf_format_delimited::CsvFormatDriver::new().unwrap(),
+        ))
+        .unwrap();
+    registry
+        .register(Arc::new(
             cdf_format_parquet::ParquetFormatDriver::new().unwrap(),
         ))
         .unwrap();
@@ -1927,7 +1932,7 @@ fn local_ndjson_discovery_is_bounded_and_writes_nothing_until_pin() {
 }
 
 #[test]
-fn local_csv_discovery_uses_the_shared_sample_manifest_path() {
+fn local_csv_discovery_uses_the_registered_driver_manifest_path() {
     let temp = tempfile::tempdir().unwrap();
     write_discover_project(temp.path(), "csv", "*.csv");
     fs::write(
@@ -1956,7 +1961,7 @@ fn local_csv_discovery_uses_the_shared_sample_manifest_path() {
     );
     assert_eq!(
         artifacts.discovery.snapshot.artifact.metadata["probe"],
-        "bounded-csv-sample"
+        "registered-format-discovery"
     );
     assert_eq!(artifacts.discovery_manifest.unwrap().candidates.len(), 1);
 }

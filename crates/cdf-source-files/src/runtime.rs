@@ -14,7 +14,7 @@ use std::{
 use arrow_schema::SchemaRef;
 use cdf_contract::{ContractPolicy, TypePolicy};
 use cdf_formats::{
-    CsvOptions, FileFormat, JsonOptions, RangeChunkReader, ReadOptions,
+    FileFormat, JsonOptions, RangeChunkReader, ReadOptions,
     stream_file_source_path_with_declared_schema_and_type_policy,
 };
 use cdf_kernel::{
@@ -561,11 +561,6 @@ fn discover_row_schema_from_reader(
     max_read_records: usize,
 ) -> Result<SchemaRef> {
     match format.as_str() {
-        "csv" => cdf_formats::discover_csv_schema_from_reader(
-            reader,
-            &CsvOptions::default(),
-            max_read_records,
-        ),
         "json" => cdf_formats::discover_json_schema_from_reader(reader, max_read_records),
         _ => Err(CdfError::contract(
             "bounded row discovery supports CSV, JSON, and NDJSON",
@@ -1367,7 +1362,9 @@ fn spool_transport_file(
 
 fn compile_format(format: &FileFormatDeclaration) -> Result<FileFormat> {
     match format.as_str() {
-        "csv" => Ok(FileFormat::Csv(CsvOptions::default())),
+        "csv" => Err(CdfError::contract(
+            "CSV execution requires its registered native format driver",
+        )),
         "json" => Ok(FileFormat::Json(JsonOptions::default())),
         "ndjson" => Err(CdfError::contract(
             "NDJSON execution requires its registered native format driver",
@@ -3506,5 +3503,76 @@ mod tests {
         };
         assert!(error.message.contains("disk budget"));
         assert!(error.message.contains(&encoded.len().to_string()));
+    }
+
+    #[test]
+    fn local_csv_discovers_and_streams_through_registered_driver() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("events.csv");
+        std::fs::write(&path, b"id,name\n1,alpha\n2,beta\n").unwrap();
+        let dependencies = FileRuntimeDependencies::new(
+            FileTransportFacade::new(),
+            crate::test_execution_services(),
+            crate::test_format_registry(),
+            crate::test_transform_registry(),
+        );
+        let plan = FileResourcePlan {
+            source: "events".to_owned(),
+            root: root.path().to_string_lossy().into_owned(),
+            glob: "events.csv".to_owned(),
+            format: FileFormatDeclaration::csv(),
+            format_declared: true,
+            compression: FileCompressionDeclaration::none(),
+            auth: None,
+            credentials: None,
+            allowlist: cdf_http::EgressAllowlist::allow_any(),
+        };
+        let resource_id = ResourceId::new("events.csv").unwrap();
+        let resolved = dependencies
+            .with_transport(|transport| {
+                resolve_file_matches(&resource_id, &plan, transport, dependencies.transforms())
+            })
+            .unwrap();
+        let probe = discover_local_binary_schema_bounded(
+            &path,
+            &dependencies,
+            &plan.format,
+            "none",
+            0,
+            1024 * 1024,
+        )
+        .unwrap();
+        assert_eq!(probe.schema.field(0).data_type(), &DataType::Int64);
+        assert_eq!(probe.schema.field(1).data_type(), &DataType::Utf8);
+        let stream = stream_file_match_blocking(
+            &resolved[0],
+            &plan.format,
+            ReadOptions::new(resource_id, PartitionId::new("csv-file").unwrap()),
+            probe.schema,
+            &dependencies,
+            &ContractPolicy::default().types,
+            PhysicalSchemaAuthority::default(),
+        )
+        .unwrap();
+        let batches = futures_executor::block_on(stream.collect::<Vec<_>>())
+            .into_iter()
+            .collect::<Result<Vec<_>>>()
+            .unwrap();
+        assert_eq!(
+            batches
+                .iter()
+                .map(|batch| batch.header.row_count)
+                .sum::<u64>(),
+            2
+        );
+        assert!(matches!(
+            batches[0].header.source_position,
+            Some(SourcePosition::FileManifest(_))
+        ));
+        drop(batches);
+        assert_eq!(
+            dependencies.execution().memory().snapshot().current_bytes,
+            0
+        );
     }
 }

@@ -1,0 +1,16 @@
+[package]
+name = "cdf-format-delimited"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+description = "Streaming delimited text format drivers for cdf."
+
+[dependencies]
+arrow-csv = "59.1.0"
+cdf-contract = { path = "../cdf-contract" }
+cdf-kernel = { path = "../cdf-kernel" }
+cdf-memory = { path = "../cdf-memory" }
+cdf-runtime = { path = "../cdf-runtime" }
+futures-util = "0.3.32"
+serde_json = "1.0.150"
