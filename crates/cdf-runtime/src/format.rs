@@ -375,9 +375,18 @@ pub struct FormatDriverDescriptor {
     pub option_schema: serde_json::Value,
     pub projection_pushdown: PushdownFidelity,
     pub predicate_pushdown: PushdownFidelity,
+    pub source_access: FormatSourceAccess,
     pub decode_unit_policy: String,
     pub minimum_working_set_bytes: u64,
     pub maximum_working_set_bytes: u64,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FormatSourceAccess {
+    Sequential,
+    Seekable,
+    Adaptive,
 }
 
 impl FormatDriverDescriptor {
@@ -1044,6 +1053,7 @@ mod tests {
             option_schema: serde_json::json!({"type": "object"}),
             projection_pushdown: PushdownFidelity::Unsupported,
             predicate_pushdown: PushdownFidelity::Unsupported,
+            source_access: FormatSourceAccess::Sequential,
             decode_unit_policy: "whole_object".to_owned(),
             minimum_working_set_bytes: 1,
             maximum_working_set_bytes: 1024,

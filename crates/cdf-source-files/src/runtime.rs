@@ -740,7 +740,12 @@ fn prepare_file_partition(
         descriptor.resource_id.clone(),
         partition.partition_id.clone(),
     );
-    let input = prepare_file_input(&resolved, dependencies)?;
+    let source_access = dependencies
+        .formats()
+        .resolve(file_format_name(&plan.format))?
+        .descriptor()
+        .source_access;
+    let input = prepare_file_input(&resolved, source_access, dependencies)?;
     Ok(PreparedFilePartition {
         resolved,
         input,
@@ -754,9 +759,13 @@ fn prepare_file_partition(
 
 fn prepare_file_input(
     resolved: &ResolvedFileMatch,
+    source_access: cdf_runtime::FormatSourceAccess,
     dependencies: &FileRuntimeDependencies,
 ) -> Result<PreparedFileInput> {
-    if resolved.compression.transform_id.is_none() {
+    let direct_remote = source_access != cdf_runtime::FormatSourceAccess::Adaptive;
+    if resolved.compression.transform_id.is_none()
+        && (matches!(resolved.open, ResolvedFileOpen::LocalPath(_)) || direct_remote)
+    {
         let expected = expected_file_identity(resolved);
         let source: Option<Arc<dyn ByteSource>> = match &resolved.open {
             ResolvedFileOpen::LocalPath(path) => Some(Arc::new(LocalByteSource::open(
@@ -882,7 +891,15 @@ fn stream_file_match_blocking(
 ) -> Result<BatchStream> {
     let prepared = PreparedFilePartition {
         resolved: resolved.clone(),
-        input: prepare_file_input(resolved, dependencies)?,
+        input: prepare_file_input(
+            resolved,
+            dependencies
+                .formats()
+                .resolve(file_format_name(declaration))?
+                .descriptor()
+                .source_access,
+            dependencies,
+        )?,
         options,
         physical_schema_authority,
     };
@@ -2560,6 +2577,7 @@ mod tests {
                     }),
                     projection_pushdown: cdf_kernel::PushdownFidelity::Unsupported,
                     predicate_pushdown: cdf_kernel::PushdownFidelity::Unsupported,
+                    source_access: cdf_runtime::FormatSourceAccess::Sequential,
                     decode_unit_policy: "whole_mock_file".to_owned(),
                     minimum_working_set_bytes: 64,
                     maximum_working_set_bytes: 1024 * 1024,
@@ -3053,7 +3071,7 @@ mod tests {
     }
 
     #[test]
-    fn remote_parquet_ranges_directly_through_object_store_byte_source() {
+    fn remote_parquet_full_scan_uses_verified_sequential_spool() {
         let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, false)]));
         let batch = RecordBatch::try_new(
             schema,
@@ -3064,7 +3082,7 @@ mod tests {
         let store = Arc::new(InMemory::new());
         futures_executor::block_on(store.put(
             &ObjectPath::from("prod/events.parquet"),
-            PutPayload::from(bytes),
+            PutPayload::from(bytes.clone()),
         ))
         .unwrap();
         let facade = FileTransportFacade::new()
@@ -3076,7 +3094,7 @@ mod tests {
             crate::test_format_registry(),
             crate::test_transform_registry(),
         )
-        .with_max_spool_bytes(1)
+        .with_max_spool_bytes(bytes.len() as u64)
         .unwrap();
         let plan = FileResourcePlan {
             source: "parquet".to_owned(),
@@ -3100,6 +3118,15 @@ mod tests {
                 )
             })
             .unwrap();
+        assert!(matches!(
+            prepare_file_input(
+                &resolved[0],
+                cdf_runtime::FormatSourceAccess::Adaptive,
+                &dependencies,
+            )
+            .unwrap(),
+            PreparedFileInput::Path { spool: Some(_), .. }
+        ));
         let stream = stream_file_match_blocking(
             &resolved[0],
             &plan.format,

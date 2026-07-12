@@ -390,7 +390,7 @@ impl RestAddTarget {
         cursor: &str,
         cursor_param: &str,
     ) -> Result<Self, CliError> {
-        let parsed = reqwest::Url::parse(url).map_err(|error| {
+        let parsed = url::Url::parse(url).map_err(|error| {
             CliError::usage_with(
                 format!(
                     "cdf add could not parse REST URL `{}`: {error}",
@@ -461,7 +461,7 @@ struct PostgresAddTarget {
 
 impl PostgresAddTarget {
     fn from_dsn(source: &str, dsn: &str) -> Result<Self, CliError> {
-        let mut parsed = reqwest::Url::parse(dsn).map_err(|error| {
+        let mut parsed = url::Url::parse(dsn).map_err(|error| {
             CliError::usage_with(
                 format!("cdf add could not parse Postgres DSN: {error}"),
                 error_catalog::USAGE,
@@ -539,7 +539,7 @@ impl AddTarget {
     }
 
     fn from_http_url(command: &str, location: &str) -> Result<Self, CliError> {
-        let parsed = reqwest::Url::parse(location).map_err(|error| {
+        let parsed = url::Url::parse(location).map_err(|error| {
             CliError::usage_with(
                 format!(
                     "{command} could not parse URL `{}`: {error}",
@@ -1012,19 +1012,19 @@ fn looks_like_http_url(value: &str) -> bool {
     value.starts_with("http://") || value.starts_with("https://")
 }
 
-fn is_loopback_host(url: &reqwest::Url) -> bool {
+fn is_loopback_host(url: &url::Url) -> bool {
     matches!(url.host_str(), Some("localhost" | "127.0.0.1" | "::1"))
 }
 
 fn http_host(value: &str) -> Option<String> {
-    reqwest::Url::parse(value)
+    url::Url::parse(value)
         .ok()
         .filter(|url| matches!(url.scheme(), "http" | "https"))
         .and_then(|url| url.host_str().map(ToOwned::to_owned))
 }
 
 fn redact_url(value: &str) -> String {
-    match reqwest::Url::parse(value) {
+    match url::Url::parse(value) {
         Ok(mut url) => {
             if !url.username().is_empty() || url.password().is_some() {
                 let _ = url.set_username("");

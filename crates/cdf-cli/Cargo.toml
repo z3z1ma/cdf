@@ -47,6 +47,7 @@ cdf-transform-lz4 = { path = "../cdf-transform-lz4" }
 cdf-transform-snappy = { path = "../cdf-transform-snappy" }
 cdf-transform-xz = { path = "../cdf-transform-xz" }
 cdf-transform-zstd = { path = "../cdf-transform-zstd" }
+cdf-transport-http = { path = "../cdf-transport-http" }
 cdf-python = { path = "../cdf-python" }
 cdf-state-sqlite = { path = "../cdf-state-sqlite" }
 futures-executor = "0.3.32"
@@ -57,8 +58,8 @@ clap_mangen = { version = "0.3.0", default-features = false, optional = true }
 rusqlite = { version = "0.40.1", default-features = false }
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.150"
-reqwest = { version = "0.13.4", default-features = false, features = ["blocking", "rustls"] }
 sha2 = "0.10.9"
+url = "2.5.8"
 
 [dev-dependencies]
 arrow-ipc = "59.1.0"

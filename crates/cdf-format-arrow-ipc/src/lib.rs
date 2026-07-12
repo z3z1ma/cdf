@@ -45,6 +45,7 @@ impl ArrowIpcFileFormatDriver {
                 }),
                 projection_pushdown: PushdownFidelity::Exact,
                 predicate_pushdown: PushdownFidelity::Unsupported,
+                source_access: cdf_runtime::FormatSourceAccess::Sequential,
                 decode_unit_policy: "ipc_file_blocks_v1".to_owned(),
                 minimum_working_set_bytes: 64 * 1024,
                 maximum_working_set_bytes: 4 * 1024 * 1024 * 1024,

@@ -787,6 +787,7 @@ dependencies = [
  "cdf-transform-snappy",
  "cdf-transform-xz",
  "cdf-transform-zstd",
+ "cdf-transport-http",
  "clap",
  "clap_complete",
  "clap_mangen",
@@ -794,11 +795,11 @@ dependencies = [
  "futures-executor",
  "futures-util",
  "postgres",
- "reqwest 0.13.4",
  "rusqlite",
  "serde",
  "serde_json",
  "sha2 0.10.9",
+ "url",
 ]
 
 [[package]]
@@ -1417,6 +1418,21 @@ dependencies = [
  "futures-executor",
  "futures-util",
  "zstd",
+]
+
+[[package]]
+name = "cdf-transport-http"
+version = "0.1.0"
+dependencies = [
+ "bytes",
+ "cdf-http",
+ "cdf-kernel",
+ "cdf-memory",
+ "cdf-runtime",
+ "cdf-source-files",
+ "futures-util",
+ "reqwest 0.13.4",
+ "tokio",
 ]
 
 [[package]]

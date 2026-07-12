@@ -256,6 +256,14 @@ pub trait HttpFileTransport: Send + Sync {
         request: HttpFileRequest,
         destination: &Path,
     ) -> Result<(HttpFileResponse, u64)>;
+    fn open_byte_source(
+        &self,
+        _resource: &FileTransportResource,
+        _expected: &FileIdentityMetadata,
+        _memory: Arc<dyn MemoryCoordinator>,
+    ) -> Result<Option<Arc<dyn ByteSource>>> {
+        Ok(None)
+    }
 }
 
 #[derive(Clone, PartialEq, Eq)]
@@ -478,7 +486,9 @@ impl FileTransport for FileTransportFacade {
                     memory,
                 )?)))
             }
-            FileTransportLocation::HttpUrl { .. } => Ok(None),
+            FileTransportLocation::HttpUrl { .. } => self
+                .http_transport()?
+                .open_byte_source(resource, expected, memory),
         }
     }
 }

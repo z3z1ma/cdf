@@ -25,6 +25,7 @@ members = [
     "crates/cdf-source-postgres",
     "crates/cdf-source-rest",
     "crates/cdf-source-files",
+    "crates/cdf-transport-http",
     "crates/cdf-declarative",
     "crates/cdf-python",
     "crates/cdf-wasm",

@@ -26,3 +26,7 @@ Remote provider behavior is now a transport extension point consumed uniformly b
 ## Limits
 
 This is not G1 closure. HTTP still uses the blocking verified-spool adapter; object-store listing still materializes and sorts all results; response retry/telemetry and live S3/GCS/Azure fixtures remain. Compressed remote inputs still stage through source and transformed spools pending B1/G3 capability-driven transform streaming.
+
+## Subsequent architecture correction
+
+The next G1 slice added typed `FormatSourceAccess`. The direct Parquet fixture in this observation proved generation-bound ranges, but production full/unknown adaptive scans now deliberately select the verified sequential spool; only a future plan with demonstrated selective pushdown may select remote ranges. Sequential formats continue to use direct object-store streams.

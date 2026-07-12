@@ -1,6 +1,6 @@
 Status: open
 Created: 2026-07-11
-Updated: 2026-07-11
+Updated: 2026-07-12
 Parent: .10x/tickets/2026-07-10-p3-ws-g-remote-io-overlap.md
 Depends-On: .10x/tickets/2026-07-11-p3-g2-range-readahead-spool-controller.md, .10x/tickets/2026-07-11-p3-b2-parquet-codec.md, .10x/tickets/2026-07-11-p3-b5-json-codecs.md, .10x/tickets/done/2026-07-11-p3-a5-streaming-operator-graph.md
 
@@ -32,3 +32,7 @@ Depends on G2, relevant WS-B codecs, and A5.
 ## References
 
 - `.10x/specs/remote-local-io-overlap.md`
+
+## Progress and notes
+
+- 2026-07-12: Strong-ETag HTTP and generation-bound object-store sequential formats now feed registered codecs directly through accounted streams; a loopback fixture proves one full GET with no range fan-out. Adaptive Parquet full scans deliberately remain verified spool until selective-plan evidence and spool/decode overlap land. Transforms, backpressure-to-network, jobs parity, timelines, and profiles remain open. Evidence/review: `.10x/evidence/2026-07-12-p3-g1-async-http-byte-source.md`, `.10x/reviews/2026-07-12-p3-g1-async-http-byte-source-review.md`.

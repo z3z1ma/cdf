@@ -56,6 +56,7 @@ impl ParquetFormatDriver {
                 }),
                 projection_pushdown: PushdownFidelity::Exact,
                 predicate_pushdown: PushdownFidelity::Unsupported,
+                source_access: cdf_runtime::FormatSourceAccess::Adaptive,
                 decode_unit_policy: "row_group".to_owned(),
                 minimum_working_set_bytes: 1024 * 1024,
                 maximum_working_set_bytes: 256 * 1024 * 1024,

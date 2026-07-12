@@ -1,0 +1,20 @@
+[package]
+name = "cdf-transport-http"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+description = "Pooled HTTP transport provider for cdf."
+
+[dependencies]
+bytes = "1.12.0"
+cdf-http = { path = "../cdf-http" }
+cdf-kernel = { path = "../cdf-kernel" }
+cdf-memory = { path = "../cdf-memory" }
+cdf-runtime = { path = "../cdf-runtime" }
+cdf-source-files = { path = "../cdf-source-files" }
+futures-util = "0.3.32"
+reqwest = { version = "0.13.4", default-features = false, features = ["blocking", "rustls", "stream"] }
+
+[dev-dependencies]
+tokio = { version = "1.50.0", features = ["macros", "rt-multi-thread"] }
