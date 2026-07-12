@@ -12,7 +12,7 @@ Replace scalar hot-path contract evaluation with engine-neutral Arrow vector ker
 
 ## Activated children
 
-- `.10x/tickets/2026-07-11-p3-v1-vector-kernel-plan.md`
+- `.10x/tickets/done/2026-07-11-p3-v1-vector-kernel-plan.md`
 - `.10x/tickets/2026-07-11-p3-v2-validation-graph-integration.md`
 - `.10x/tickets/2026-07-11-p3-v3-validation-envelope-closeout.md`
 
@@ -32,3 +32,7 @@ Blocked on L5 baseline for implementation/optimization.
 - `.10x/decisions/vectorized-bitmap-validation.md`
 - `.10x/research/2026-07-11-validation-kernel-performance-audit.md`
 - `.10x/specs/vectorized-contract-validation.md`
+
+## Progress and notes
+
+- 2026-07-11: V1 closed with an engine-neutral schema-bound bitmap plan, scalar differential oracle coverage, 1.73 GiB/s mixed-kernel throughput, and 8.96x full-evaluation speedup. V2 now owns replacement of the production scalar evaluator and ledger/spill integration for selected evidence.

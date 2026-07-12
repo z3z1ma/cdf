@@ -2,7 +2,7 @@ Status: open
 Created: 2026-07-11
 Updated: 2026-07-11
 Parent: .10x/tickets/2026-07-11-p3-ws-v-vectorized-validation.md
-Depends-On: .10x/tickets/2026-07-11-p3-v1-vector-kernel-plan.md, .10x/tickets/2026-07-11-p3-a5-streaming-operator-graph.md, .10x/tickets/done/2026-07-11-p3-a2-unified-memory-ledger.md
+Depends-On: .10x/tickets/done/2026-07-11-p3-v1-vector-kernel-plan.md, .10x/tickets/2026-07-11-p3-a5-streaming-operator-graph.md, .10x/tickets/done/2026-07-11-p3-a2-unified-memory-ledger.md
 
 # P3 V2: validation masks and selected evidence in the graph
 

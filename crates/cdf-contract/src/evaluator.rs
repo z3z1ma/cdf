@@ -643,10 +643,18 @@ fn redacted_observed_value(
     column: &EvaluatedColumn<'_>,
     row: usize,
 ) -> Result<RedactedObservedValue> {
-    let Some(value) = scalar_string(column.array, row)? else {
+    redacted_observed_array_value(column.array, column.redaction, row)
+}
+
+pub(crate) fn redacted_observed_array_value(
+    array: &dyn Array,
+    redaction: &RedactionDecision,
+    row: usize,
+) -> Result<RedactedObservedValue> {
+    let Some(value) = scalar_string(array, row)? else {
         return Ok(RedactedObservedValue::Null);
     };
-    match column.redaction {
+    match redaction {
         RedactionDecision::Preserve => Ok(RedactedObservedValue::Preserved { value }),
         RedactionDecision::Hash { algorithm } if algorithm == "sha256" => {
             Ok(RedactedObservedValue::Hashed {

@@ -14,6 +14,7 @@ mod reconciliation;
 mod residual;
 mod schema;
 mod transforms;
+mod vector;
 
 pub use aggregation::*;
 pub use compiler::*;
@@ -27,6 +28,7 @@ pub use program::*;
 pub use reconciliation::*;
 pub use residual::*;
 pub use schema::*;
+pub use vector::*;
 
 #[cfg(test)]
 mod tests;
