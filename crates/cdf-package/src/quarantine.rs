@@ -1,4 +1,4 @@
-use std::{fs::File, io::Write, path::Path, sync::Arc};
+use std::{fs::File, path::Path, sync::Arc};
 
 use ::parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use arrow_array::{Array, RecordBatch, StringArray, UInt64Array};
@@ -8,7 +8,6 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     json::canonical_json_bytes,
-    parquet::transcode_record_batches_to_parquet_bytes,
     storage::{normalize_artifact_path, package_path},
 };
 
@@ -29,25 +28,6 @@ pub enum QuarantineObservedValue {
     Hashed { algorithm: String, value: String },
     Omitted,
     Masked { value: String },
-}
-
-pub fn quarantine_records_to_parquet_bytes(records: &[QuarantineRecord]) -> Result<Vec<u8>> {
-    if records.is_empty() {
-        return Err(CdfError::data(
-            "quarantine artifact requires at least one record",
-        ));
-    }
-    transcode_record_batches_to_parquet_bytes(&[quarantine_record_batch(records)?])
-}
-
-pub fn quarantine_records_from_parquet_bytes(bytes: &[u8]) -> Result<Vec<QuarantineRecord>> {
-    let mut temp = tempfile::NamedTempFile::new()
-        .map_err(|error| CdfError::data(format!("create quarantine parquet temp file: {error}")))?;
-    temp.write_all(bytes)
-        .map_err(|error| CdfError::data(format!("write quarantine parquet temp file: {error}")))?;
-    temp.flush()
-        .map_err(|error| CdfError::data(format!("flush quarantine parquet temp file: {error}")))?;
-    quarantine_records_from_parquet_file(temp.path())
 }
 
 pub fn quarantine_records_from_parquet_file(
@@ -76,7 +56,12 @@ pub(crate) fn quarantine_records_from_package_file(
     quarantine_records_from_parquet_file(package_path(package_dir, relative_path))
 }
 
-fn quarantine_record_batch(records: &[QuarantineRecord]) -> Result<RecordBatch> {
+pub(crate) fn quarantine_record_batch(records: &[QuarantineRecord]) -> Result<RecordBatch> {
+    if records.is_empty() {
+        return Err(CdfError::data(
+            "quarantine artifact requires at least one record",
+        ));
+    }
     let source_positions = records
         .iter()
         .map(|record| {
@@ -92,15 +77,7 @@ fn quarantine_record_batch(records: &[QuarantineRecord]) -> Result<RecordBatch> 
         .collect::<Result<Vec<_>>>()?;
     let observed = records.iter().map(observed_columns).collect::<Vec<_>>();
 
-    let schema = Arc::new(Schema::new(vec![
-        Field::new("source_row_ordinal", DataType::UInt64, false),
-        Field::new("rule_id", DataType::Utf8, false),
-        Field::new("error_code", DataType::Utf8, false),
-        Field::new("source_position_json", DataType::Utf8, true),
-        Field::new("observed_value_kind", DataType::Utf8, false),
-        Field::new("observed_value_algorithm", DataType::Utf8, true),
-        Field::new("observed_value", DataType::Utf8, true),
-    ]));
+    let schema = quarantine_schema();
 
     RecordBatch::try_new(
         schema,
@@ -145,6 +122,18 @@ fn quarantine_record_batch(records: &[QuarantineRecord]) -> Result<RecordBatch> 
         ],
     )
     .map_err(CdfError::from)
+}
+
+pub(crate) fn quarantine_schema() -> Arc<Schema> {
+    Arc::new(Schema::new(vec![
+        Field::new("source_row_ordinal", DataType::UInt64, false),
+        Field::new("rule_id", DataType::Utf8, false),
+        Field::new("error_code", DataType::Utf8, false),
+        Field::new("source_position_json", DataType::Utf8, true),
+        Field::new("observed_value_kind", DataType::Utf8, false),
+        Field::new("observed_value_algorithm", DataType::Utf8, true),
+        Field::new("observed_value", DataType::Utf8, true),
+    ]))
 }
 
 fn observed_columns(record: &QuarantineRecord) -> (&'static str, Option<String>, Option<String>) {

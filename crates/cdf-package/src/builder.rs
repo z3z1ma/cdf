@@ -10,6 +10,7 @@ use std::sync::{Arc, Mutex};
 use arrow_array::{ArrayRef, RecordBatch, UInt64Array};
 use arrow_schema::{DataType, Field, Schema};
 use cdf_kernel::{CdfError, Checkpoint, Result, SegmentId};
+use parquet::{arrow::ArrowWriter, file::properties::WriterProperties};
 use serde::{Serialize, de::DeserializeOwned};
 
 use crate::{
@@ -20,7 +21,7 @@ use crate::{
     json::canonical_json_bytes,
     model::{FileEntry, MANIFEST_FILE, PackageManifest, PackageStatus, SegmentEntry, TRACE_FILE},
     ops::update_package_status,
-    quarantine::{QuarantineRecord, quarantine_records_to_parquet_bytes},
+    quarantine::{QuarantineRecord, quarantine_record_batch, quarantine_schema},
     storage::{
         ArtifactDurability, HashingWriter, atomic_write, build_manifest,
         collect_identity_file_entries, create_layout, io_error, nested_artifact_path,
@@ -112,6 +113,28 @@ pub struct StreamingIdentityArtifact {
     artifact_receipts: Arc<Mutex<File>>,
 }
 
+pub struct QuarantineArtifactWriter {
+    writer: ArrowWriter<StreamingIdentityArtifact>,
+}
+
+impl QuarantineArtifactWriter {
+    pub fn write_records(&mut self, records: &[QuarantineRecord]) -> Result<()> {
+        let batch = quarantine_record_batch(records)?;
+        self.writer.write(&batch).map_err(|error| {
+            CdfError::data(format!("write streaming quarantine Parquet batch: {error}"))
+        })
+    }
+
+    pub fn finish(self) -> Result<FileEntry> {
+        let artifact = self.writer.into_inner().map_err(|error| {
+            CdfError::data(format!(
+                "finish streaming quarantine Parquet writer: {error}"
+            ))
+        })?;
+        artifact.finish()
+    }
+}
+
 impl StreamingIdentityArtifact {
     pub fn write_all(&mut self, bytes: &[u8]) -> Result<()> {
         self.sink
@@ -143,6 +166,23 @@ impl StreamingIdentityArtifact {
             "package artifact receipt journal",
         )?;
         Ok(entry)
+    }
+}
+
+impl Write for StreamingIdentityArtifact {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        StreamingIdentityArtifact::write_all(self, bytes)
+            .map(|()| bytes.len())
+            .map_err(|error| std::io::Error::other(error.to_string()))
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.sink
+            .as_mut()
+            .ok_or_else(|| std::io::Error::other("streaming identity artifact is finished"))?
+            .writer_mut()
+            .map_err(|error| std::io::Error::other(error.to_string()))?
+            .flush()
     }
 }
 
@@ -312,8 +352,29 @@ impl PackageBuilder {
         file_name: impl AsRef<Path>,
         records: &[QuarantineRecord],
     ) -> Result<FileEntry> {
-        let bytes = quarantine_records_to_parquet_bytes(records)?;
-        self.write_quarantine_artifact(file_name, &bytes)
+        let mut writer = self.begin_quarantine_records(file_name)?;
+        writer.write_records(records)?;
+        writer.finish()
+    }
+
+    pub fn begin_quarantine_records(
+        &self,
+        file_name: impl AsRef<Path>,
+    ) -> Result<QuarantineArtifactWriter> {
+        let artifact = self.begin_streaming_identity_artifact(nested_artifact_path(
+            "quarantine",
+            file_name.as_ref(),
+        )?)?;
+        let properties = WriterProperties::builder()
+            .set_created_by("cdf native arrow-rs parquet writer".to_owned())
+            .build();
+        let writer = ArrowWriter::try_new(artifact, quarantine_schema(), Some(properties))
+            .map_err(|error| {
+                CdfError::data(format!(
+                    "create streaming quarantine Parquet writer: {error}"
+                ))
+            })?;
+        Ok(QuarantineArtifactWriter { writer })
     }
 
     pub fn write_dedup_summary<T: Serialize>(&self, summary: &T) -> Result<FileEntry> {
@@ -347,8 +408,46 @@ impl PackageBuilder {
             ],
         )
         .map_err(CdfError::from)?;
-        let bytes = crate::transcode_record_batches_to_parquet_bytes(&[batch])?;
-        self.write_identity_artifact(format!("stats/dedup-dropped/{file_name}"), &bytes)
+        self.write_parquet_identity_batches(format!("stats/dedup-dropped/{file_name}"), &[batch])
+    }
+
+    fn write_parquet_identity_batches(
+        &self,
+        relative_path: impl AsRef<Path>,
+        batches: &[RecordBatch],
+    ) -> Result<FileEntry> {
+        let first = batches
+            .first()
+            .ok_or_else(|| CdfError::data("Parquet identity artifact requires a record batch"))?;
+        let schema = first.schema();
+        crate::validate_parquet_schema(schema.as_ref())?;
+        if batches
+            .iter()
+            .any(|batch| batch.schema().as_ref() != schema.as_ref())
+        {
+            return Err(CdfError::data(
+                "Parquet identity artifact requires one Arrow schema",
+            ));
+        }
+        let properties = WriterProperties::builder()
+            .set_created_by("cdf native arrow-rs parquet writer".to_owned())
+            .build();
+        let mut artifact = self.begin_streaming_identity_artifact(relative_path)?;
+        {
+            let mut writer = ArrowWriter::try_new(&mut artifact, schema, Some(properties))
+                .map_err(|error| {
+                    CdfError::data(format!("create streaming Parquet identity writer: {error}"))
+                })?;
+            for batch in batches {
+                writer.write(batch).map_err(|error| {
+                    CdfError::data(format!("write streaming Parquet identity batch: {error}"))
+                })?;
+            }
+            writer.close().map_err(|error| {
+                CdfError::data(format!("finish streaming Parquet identity writer: {error}"))
+            })?;
+        }
+        artifact.finish()
     }
 
     pub fn write_lineage_artifact(

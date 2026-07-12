@@ -455,12 +455,6 @@ fn quarantine_records_round_trip_as_parquet_identity_evidence() {
         },
     ];
 
-    let bytes = quarantine_records_to_parquet_bytes(&records).unwrap();
-    assert_eq!(
-        quarantine_records_from_parquet_bytes(&bytes).unwrap(),
-        records
-    );
-
     let temp = tempfile::tempdir().unwrap();
     let builder = PackageBuilder::create(temp.path(), "pkg-quarantine-0001").unwrap();
     builder
@@ -525,6 +519,35 @@ fn quarantine_records_round_trip_as_parquet_identity_evidence() {
             .contains("package artifact path must be relative and stay inside the package"),
         "{error}"
     );
+}
+
+#[test]
+fn quarantine_writer_streams_multiple_bounded_record_chunks() {
+    let temp = tempfile::tempdir().unwrap();
+    let builder = PackageBuilder::create(temp.path(), "pkg-quarantine-stream").unwrap();
+    let mut writer = builder
+        .begin_quarantine_records("part-000001.parquet")
+        .unwrap();
+    let expected = (0..20_000_u64)
+        .map(|row| QuarantineRecord {
+            source_row_ordinal: row,
+            rule_id: "range-rule".to_owned(),
+            error_code: "range_violation".to_owned(),
+            source_position: None,
+            observed_value_redacted: QuarantineObservedValue::Omitted,
+        })
+        .collect::<Vec<_>>();
+    for chunk in expected.chunks(4_096) {
+        writer.write_records(chunk).unwrap();
+    }
+    writer.finish().unwrap();
+    builder.finish().unwrap();
+
+    let actual = PackageReader::open(temp.path())
+        .unwrap()
+        .read_quarantine_records()
+        .unwrap();
+    assert_eq!(actual, expected);
 }
 
 #[test]

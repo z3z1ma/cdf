@@ -31,7 +31,10 @@ use cdf_kernel::{
 use cdf_memory::{
     ConsumerKey, MemoryClass, MemoryCoordinator, MemoryLease, ReservationRequest, reserve,
 };
-use cdf_package::{PackageBuilder, PackageStatus, QuarantineObservedValue, QuarantineRecord};
+use cdf_package::{
+    PackageBuilder, PackageStatus, QuarantineArtifactWriter, QuarantineObservedValue,
+    QuarantineRecord,
+};
 use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -325,10 +328,11 @@ where
                         &mut no_row_limit,
                         !residual_candidates.is_empty(),
                     )?;
+                    let mut discard_quarantine = |_record: QuarantineRecord| Ok(());
                     let contract = apply_contract_exec(
                         output,
-                        &plan.validation_program,
                         &mut contract_evaluator,
+                        &mut discard_quarantine,
                         residual_candidates,
                         &ResidualBatchContext {
                             evaluation: &evaluation_context,
@@ -756,10 +760,65 @@ struct ExecutionTraceContext {
 struct ContractExecOutput {
     accepted: RecordBatch,
     variant_values: Vec<Option<String>>,
-    quarantine_records: Vec<QuarantineRecord>,
     summary: VerdictSummary,
     residual_decisions: Vec<ResidualDecisionArtifact>,
     memory_lease: Option<MemoryLease>,
+}
+
+struct QuarantinePartAccumulator<'a> {
+    builder: &'a PackageBuilder,
+    part_count: &'a mut usize,
+    writer: Option<QuarantineArtifactWriter>,
+    records: Vec<QuarantineRecord>,
+}
+
+impl<'a> QuarantinePartAccumulator<'a> {
+    const ROWS: usize = 8 * 1024;
+
+    fn new(builder: &'a PackageBuilder, part_count: &'a mut usize) -> Self {
+        Self {
+            builder,
+            part_count,
+            writer: None,
+            records: Vec::with_capacity(Self::ROWS),
+        }
+    }
+
+    fn push(&mut self, record: QuarantineRecord) -> Result<()> {
+        self.records.push(record);
+        if self.records.len() == Self::ROWS {
+            self.flush()?;
+        }
+        Ok(())
+    }
+
+    fn flush(&mut self) -> Result<()> {
+        if self.records.is_empty() {
+            return Ok(());
+        }
+        if self.writer.is_none() {
+            *self.part_count = self
+                .part_count
+                .checked_add(1)
+                .ok_or_else(|| CdfError::data("quarantine part count overflowed"))?;
+            let file_name = format!("part-{:06}.parquet", self.part_count);
+            self.writer = Some(self.builder.begin_quarantine_records(file_name)?);
+        }
+        self.writer
+            .as_mut()
+            .expect("quarantine writer was initialized")
+            .write_records(&self.records)?;
+        self.records.clear();
+        Ok(())
+    }
+
+    fn finish(mut self) -> Result<()> {
+        self.flush()?;
+        if let Some(writer) = self.writer {
+            writer.finish()?;
+        }
+        Ok(())
+    }
 }
 
 enum ResidualDecisionAccumulator {
@@ -1420,7 +1479,7 @@ where
     crate::planning::validate_plan_schema_authority(resource, plan)?;
     let runtime_output_schema = plan.output_arrow_schema()?;
 
-    let mut builder = PackageBuilder::create(package_dir, plan.package_id.clone())?;
+    let builder = PackageBuilder::create(package_dir, plan.package_id.clone())?;
     builder.update_status(PackageStatus::Extracting)?;
     builder.write_json_artifact("plan/scan.json", &plan.scan)?;
     builder.write_json_artifact("plan/explain.json", &plan.explain)?;
@@ -1614,17 +1673,16 @@ where
                 }
                 lineage.input_rows = lineage.input_rows.saturating_add(batch.header.row_count);
                 if !batch.header.pre_contract_quarantine.is_empty() {
-                    let quarantine_records =
-                        quarantine_records_from_pre_contract(&batch.header.pre_contract_quarantine);
                     merge_verdict_summary(
                         &mut verdict_summary,
                         pre_contract_quarantine_summary(&batch.header.pre_contract_quarantine),
                     );
-                    write_quarantine_part(
-                        &mut builder,
-                        &quarantine_records,
-                        &mut quarantine_part_count,
-                    )?;
+                    let mut quarantine_sink =
+                        QuarantinePartAccumulator::new(&builder, &mut quarantine_part_count);
+                    for fact in &batch.header.pre_contract_quarantine {
+                        quarantine_sink.push(quarantine_record_from_pre_contract(fact))?;
+                    }
+                    quarantine_sink.finish()?;
                 }
                 let residual_candidates = batch.header.take_residual_candidates();
                 let cdc_operation_field = batch
@@ -1716,17 +1774,18 @@ where
                     &residual_candidates,
                 )
                 .await?;
+                let mut quarantine_sink =
+                    QuarantinePartAccumulator::new(&builder, &mut quarantine_part_count);
                 let ContractExecOutput {
                     accepted,
                     variant_values,
-                    quarantine_records,
                     summary,
                     residual_decisions: batch_residual_decisions,
                     memory_lease,
                 } = apply_contract_exec(
                     output,
-                    &validation_program,
                     &mut contract_evaluator,
+                    &mut |record| quarantine_sink.push(record),
                     residual_candidates,
                     &ResidualBatchContext {
                         evaluation: &evaluation_context,
@@ -1743,15 +1802,9 @@ where
                     },
                     transform_memory_lease,
                 )?;
+                quarantine_sink.finish()?;
                 residual_decisions.push(batch_residual_decisions)?;
                 merge_verdict_summary(&mut verdict_summary, summary);
-                if !quarantine_records.is_empty() {
-                    write_quarantine_part(
-                        &mut builder,
-                        &quarantine_records,
-                        &mut quarantine_part_count,
-                    )?;
-                }
                 let output = accepted;
                 if output.num_rows() == 0 {
                     phase_measurements.add(
@@ -2346,19 +2399,14 @@ fn pre_contract_quarantine_summary(facts: &[PreContractQuarantineFact]) -> Verdi
     summary
 }
 
-fn quarantine_records_from_pre_contract(
-    facts: &[PreContractQuarantineFact],
-) -> Vec<QuarantineRecord> {
-    facts
-        .iter()
-        .map(|fact| QuarantineRecord {
-            source_row_ordinal: fact.source_row_ordinal,
-            rule_id: fact.rule_id.clone(),
-            error_code: fact.error_code.clone(),
-            source_position: fact.source_position.clone(),
-            observed_value_redacted: pre_contract_observed_value(&fact.observed_value_redacted),
-        })
-        .collect()
+fn quarantine_record_from_pre_contract(fact: &PreContractQuarantineFact) -> QuarantineRecord {
+    QuarantineRecord {
+        source_row_ordinal: fact.source_row_ordinal,
+        rule_id: fact.rule_id.clone(),
+        error_code: fact.error_code.clone(),
+        source_position: fact.source_position.clone(),
+        observed_value_redacted: pre_contract_observed_value(&fact.observed_value_redacted),
+    }
 }
 
 fn pre_contract_observed_value(value: &PreContractObservedValue) -> QuarantineObservedValue {
@@ -2376,17 +2424,6 @@ fn pre_contract_observed_value(value: &PreContractObservedValue) -> QuarantineOb
             value: value.clone(),
         },
     }
-}
-
-fn write_quarantine_part(
-    builder: &mut PackageBuilder,
-    quarantine_records: &[QuarantineRecord],
-    quarantine_part_count: &mut usize,
-) -> Result<()> {
-    *quarantine_part_count += 1;
-    let file_name = format!("part-{quarantine_part_count:06}.parquet");
-    builder.write_quarantine_records(&file_name, quarantine_records)?;
-    Ok(())
 }
 
 fn write_quarantine_summary(
@@ -2824,8 +2861,8 @@ async fn reserve_transform_working_set(
 
 fn apply_contract_exec(
     batch: RecordBatch,
-    program: &ValidationProgram,
     evaluator: &mut VectorValidationEvaluator<'_>,
+    quarantine_sink: &mut dyn FnMut(QuarantineRecord) -> Result<()>,
     residual_candidates: Vec<PreContractResidualCandidate>,
     context: &ResidualBatchContext<'_>,
     mode: TransformKernelMode,
@@ -2834,19 +2871,25 @@ fn apply_contract_exec(
     if mode == TransformKernelMode::Fused && residual_candidates.is_empty() {
         return apply_contract_exec_without_residual_candidates(
             batch,
-            program,
             evaluator,
+            quarantine_sink,
             context,
             memory_lease,
         );
     }
-    let residual = apply_residual_verdicts(batch, program, residual_candidates, context)?;
-    let evaluation = evaluator.evaluate(context.evaluation, &residual.typed_batch)?;
+    let residual = apply_residual_verdicts(
+        batch,
+        evaluator.program(),
+        residual_candidates,
+        context,
+        quarantine_sink,
+    )?;
+    let evaluation = evaluator.evaluate_with_quarantine_sink(
+        context.evaluation,
+        &residual.typed_batch,
+        |candidate| quarantine_sink(quarantine_record_from_candidate(candidate)?),
+    )?;
     let summary = evaluation.summary;
-    let mut quarantine_records = residual.quarantine_records;
-    quarantine_records.extend(quarantine_records_from_candidates(
-        evaluation.quarantine_candidates,
-    )?);
     let accepted = if summary.accepted_rows == summary.input_rows {
         residual.typed_batch
     } else {
@@ -2863,7 +2906,6 @@ fn apply_contract_exec(
     Ok(ContractExecOutput {
         accepted,
         variant_values: variants,
-        quarantine_records,
         summary: combined,
         residual_decisions: residual.residual_decisions,
         memory_lease,
@@ -2872,21 +2914,24 @@ fn apply_contract_exec(
 
 fn apply_contract_exec_without_residual_candidates(
     batch: RecordBatch,
-    program: &ValidationProgram,
     evaluator: &mut VectorValidationEvaluator<'_>,
+    quarantine_sink: &mut dyn FnMut(QuarantineRecord) -> Result<()>,
     context: &ResidualBatchContext<'_>,
     memory_lease: Option<MemoryLease>,
 ) -> Result<ContractExecOutput> {
-    let batch = restore_contract_nullability(batch, program)?;
-    let evaluation = evaluator.evaluate(context.evaluation, &batch)?;
+    let batch = restore_contract_nullability(batch, evaluator.program())?;
+    let evaluation =
+        evaluator.evaluate_with_quarantine_sink(context.evaluation, &batch, |candidate| {
+            quarantine_sink(quarantine_record_from_candidate(candidate)?)
+        })?;
     let summary = evaluation.summary;
-    let quarantine_records = quarantine_records_from_candidates(evaluation.quarantine_candidates)?;
     let accepted = if summary.accepted_rows == summary.input_rows {
         batch
     } else {
         filter_record_batch(&batch, &evaluation.accepted_rows).map_err(CdfError::from)?
     };
-    let variant_values = if program
+    let variant_values = if evaluator
+        .program()
         .residual
         .as_ref()
         .and_then(|residual| residual.capture.as_ref())
@@ -2899,7 +2944,6 @@ fn apply_contract_exec_without_residual_candidates(
     Ok(ContractExecOutput {
         accepted,
         variant_values,
-        quarantine_records,
         summary,
         residual_decisions: Vec::new(),
         memory_lease,
@@ -2909,7 +2953,6 @@ fn apply_contract_exec_without_residual_candidates(
 struct ResidualExecOutput {
     typed_batch: RecordBatch,
     variant_values: Vec<Option<String>>,
-    quarantine_records: Vec<QuarantineRecord>,
     input_rows: u64,
     quarantined_rows: u64,
     violation_count: u64,
@@ -2923,11 +2966,12 @@ fn apply_residual_verdicts(
     program: &ValidationProgram,
     candidates: Vec<PreContractResidualCandidate>,
     context: &ResidualBatchContext<'_>,
+    quarantine_sink: &mut dyn FnMut(QuarantineRecord) -> Result<()>,
 ) -> Result<ResidualExecOutput> {
     let input_rows = batch.num_rows() as u64;
     let mut variants = vec![None; batch.num_rows()];
     let mut accepted = vec![true; batch.num_rows()];
-    let mut quarantine_records = Vec::new();
+    let mut quarantine_candidate_count = 0_u64;
     let mut rule_summaries = BTreeMap::<(String, String), cdf_contract::RuleVerdictSummary>::new();
     let mut residual_decisions = Vec::new();
     let source_to_output = context
@@ -3029,13 +3073,16 @@ fn apply_residual_verdicts(
         if let Some((rule_id, error_code)) = quarantine_reason {
             accepted[row] = false;
             for candidate in &row_candidates {
-                quarantine_records.push(QuarantineRecord {
+                quarantine_sink(QuarantineRecord {
                     source_row_ordinal: candidate.source_row_ordinal(),
                     rule_id: rule_id.clone(),
                     error_code: error_code.clone(),
                     source_position: context.evaluation.source_position.clone(),
                     observed_value_redacted: residual_observed_value(program, candidate),
-                });
+                })?;
+                quarantine_candidate_count = quarantine_candidate_count
+                    .checked_add(1)
+                    .ok_or_else(|| CdfError::data("residual quarantine count overflowed"))?;
                 residual_decisions.push(residual_decision_artifact(
                     program,
                     candidate,
@@ -3083,11 +3130,9 @@ fn apply_residual_verdicts(
         .filter_map(|(accepted, value)| accepted.then_some(value))
         .collect::<Vec<_>>();
     let quarantined_rows = input_rows - typed_batch.num_rows() as u64;
-    let quarantine_candidate_count = quarantine_records.len() as u64;
     Ok(ResidualExecOutput {
         typed_batch,
         variant_values,
-        quarantine_records,
         input_rows,
         quarantined_rows,
         violation_count: quarantine_candidate_count,
@@ -3313,24 +3358,15 @@ fn collect_source_position_control_fields(
     }
 }
 
-fn quarantine_records_from_candidates(
-    candidates: Vec<QuarantineCandidate>,
-) -> Result<Vec<QuarantineRecord>> {
-    candidates
-        .into_iter()
-        .map(|candidate| {
-            Ok(QuarantineRecord {
-                source_row_ordinal: u64::try_from(candidate.source_row_ordinal)
-                    .map_err(|error| CdfError::internal(error.to_string()))?,
-                rule_id: candidate.rule_id,
-                error_code: candidate.error_code,
-                source_position: candidate.source_position,
-                observed_value_redacted: quarantine_observed_value(
-                    candidate.observed_value_redacted,
-                ),
-            })
-        })
-        .collect()
+fn quarantine_record_from_candidate(candidate: QuarantineCandidate) -> Result<QuarantineRecord> {
+    Ok(QuarantineRecord {
+        source_row_ordinal: u64::try_from(candidate.source_row_ordinal)
+            .map_err(|error| CdfError::internal(error.to_string()))?,
+        rule_id: candidate.rule_id,
+        error_code: candidate.error_code,
+        source_position: candidate.source_position,
+        observed_value_redacted: quarantine_observed_value(candidate.observed_value_redacted),
+    })
 }
 
 fn quarantine_observed_value(
@@ -3573,6 +3609,7 @@ mod transform_kernel_tests {
         VectorValidationEvaluator, compile_validation_program,
     };
     use cdf_kernel::{BatchId, TrustLevel};
+    use cdf_package::QuarantineRecord;
 
     use super::{ResidualBatchContext, TransformKernelMode, apply_contract_exec};
 
@@ -3623,12 +3660,13 @@ mod transform_kernel_tests {
 
         let measure = |mode| {
             let mut evaluator = VectorValidationEvaluator::new(&program);
+            let mut discard_quarantine = |_record: QuarantineRecord| Ok(());
             let started = Instant::now();
             for _ in 0..iterations {
                 let output = apply_contract_exec(
                     black_box(batch.clone()),
-                    black_box(&program),
                     &mut evaluator,
+                    &mut discard_quarantine,
                     Vec::new(),
                     black_box(&context),
                     mode,

@@ -39,6 +39,10 @@ impl<'a> VectorValidationEvaluator<'a> {
         }
     }
 
+    pub fn program(&self) -> &'a ValidationProgram {
+        self.program
+    }
+
     pub fn evaluate(
         &mut self,
         context: &ContractEvaluationContext,
@@ -54,6 +58,16 @@ impl<'a> VectorValidationEvaluator<'a> {
     ) -> Result<VectorMaskEvaluation> {
         self.plan_for(batch.schema())?
             .evaluate_masks(context, batch)
+    }
+
+    pub fn evaluate_with_quarantine_sink(
+        &mut self,
+        context: &ContractEvaluationContext,
+        batch: &RecordBatch,
+        sink: impl FnMut(QuarantineCandidate) -> Result<()>,
+    ) -> Result<VectorSelectionEvaluation> {
+        self.plan_for(batch.schema())?
+            .evaluate_with_quarantine_sink(context, batch, sink)
     }
 
     fn plan_for(&mut self, schema: SchemaRef) -> Result<&VectorValidationPlan> {
@@ -73,6 +87,12 @@ pub struct VectorMaskEvaluation {
     pub accepted_rows: BooleanBuffer,
     pub quarantined_rows: BooleanBuffer,
     pub rule_masks: Vec<VectorRuleMask>,
+    pub summary: VerdictSummary,
+}
+
+#[derive(Clone, Debug)]
+pub struct VectorSelectionEvaluation {
+    pub accepted_rows: BooleanArray,
     pub summary: VerdictSummary,
 }
 
@@ -302,16 +322,32 @@ impl VectorValidationPlan {
         context: &ContractEvaluationContext,
         batch: &RecordBatch,
     ) -> Result<ContractBatchEvaluation> {
+        let mut quarantine_candidates = Vec::new();
+        let selection = self.evaluate_with_quarantine_sink(context, batch, |candidate| {
+            quarantine_candidates.push(candidate);
+            Ok(())
+        })?;
+        Ok(ContractBatchEvaluation {
+            accepted_rows: selection.accepted_rows,
+            quarantine_candidates,
+            summary: selection.summary,
+        })
+    }
+
+    pub fn evaluate_with_quarantine_sink(
+        &self,
+        context: &ContractEvaluationContext,
+        batch: &RecordBatch,
+        mut sink: impl FnMut(QuarantineCandidate) -> Result<()>,
+    ) -> Result<VectorSelectionEvaluation> {
         let masks = self.evaluate_masks(context, batch)?;
-        let mut quarantine_candidates =
-            Vec::with_capacity(masks.summary.quarantine_candidate_count as usize);
         for (bound, rule) in self.rules.iter().zip(&masks.rule_masks) {
             if rule.disposition != RowDispositionKind::Quarantine {
                 continue;
             }
             let array = batch.column(bound.column_index).as_ref();
             for row in rule.violations.set_indices() {
-                quarantine_candidates.push(QuarantineCandidate {
+                sink(QuarantineCandidate {
                     source_row_ordinal: row,
                     rule_id: rule.rule_id.clone(),
                     error_code: rule.error_code.clone(),
@@ -321,12 +357,11 @@ impl VectorValidationPlan {
                         &bound.redaction,
                         row,
                     )?,
-                });
+                })?;
             }
         }
-        Ok(ContractBatchEvaluation {
+        Ok(VectorSelectionEvaluation {
             accepted_rows: BooleanArray::new(masks.accepted_rows, None),
-            quarantine_candidates,
             summary: masks.summary,
         })
     }
