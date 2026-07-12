@@ -762,14 +762,6 @@ struct OutputWriteState<'a> {
     memory: Option<&'a Arc<dyn MemoryCoordinator>>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
-struct QuarantineSummaryArtifact {
-    quarantined_rows: u64,
-    quarantine_candidate_count: u64,
-    artifact_count: u64,
-    artifacts: Vec<String>,
-}
-
 const DEDUP_PROVENANCE_SHARD_ROWS: usize = 64 * 1024;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -1016,7 +1008,6 @@ where
     let mut lineage = LineageSummary::default();
     let mut segments = Vec::new();
     let mut segment_positions = Vec::new();
-    let mut quarantine_artifacts = Vec::new();
     let mut quarantine_part_count = 0_usize;
     let mut remaining_limit = plan.scan.request.limit;
     let mut output_schema = Some(schema_artifact(runtime_output_schema.as_ref()));
@@ -1175,7 +1166,6 @@ where
                         &mut builder,
                         &quarantine_records,
                         &mut quarantine_part_count,
-                        &mut quarantine_artifacts,
                     )?;
                 }
                 let residual_candidates = batch.header.take_residual_candidates();
@@ -1299,7 +1289,6 @@ where
                         &mut builder,
                         &quarantine_records,
                         &mut quarantine_part_count,
-                        &mut quarantine_artifacts,
                     )?;
                 }
                 let output = accepted;
@@ -1528,15 +1517,7 @@ where
         )?;
     }
     if verdict_summary.quarantine_candidate_count > 0 {
-        builder.write_stats_artifact(
-            "quarantine-summary.json",
-            &cdf_package::canonical_json_bytes(&QuarantineSummaryArtifact {
-                quarantined_rows: verdict_summary.quarantined_rows,
-                quarantine_candidate_count: verdict_summary.quarantine_candidate_count,
-                artifact_count: quarantine_artifacts.len() as u64,
-                artifacts: quarantine_artifacts,
-            })?,
-        )?;
+        write_quarantine_summary(&builder, &verdict_summary, quarantine_part_count)?;
     }
     builder.write_lineage_artifact(
         "lineage.json",
@@ -1905,12 +1886,37 @@ fn write_quarantine_part(
     builder: &mut PackageBuilder,
     quarantine_records: &[QuarantineRecord],
     quarantine_part_count: &mut usize,
-    quarantine_artifacts: &mut Vec<String>,
 ) -> Result<()> {
     *quarantine_part_count += 1;
     let file_name = format!("part-{quarantine_part_count:06}.parquet");
     builder.write_quarantine_records(&file_name, quarantine_records)?;
-    quarantine_artifacts.push(format!("quarantine/{file_name}"));
+    Ok(())
+}
+
+fn write_quarantine_summary(
+    builder: &PackageBuilder,
+    summary: &VerdictSummary,
+    artifact_count: usize,
+) -> Result<()> {
+    let artifact_count = u64::try_from(artifact_count)
+        .map_err(|_| CdfError::data("quarantine artifact count exceeds u64"))?;
+    let mut artifact =
+        builder.begin_streaming_identity_artifact("stats/quarantine-summary.json")?;
+    artifact.write_all(b"{\"artifact_count\":")?;
+    artifact.write_json(&artifact_count)?;
+    artifact.write_all(b",\"artifacts\":[")?;
+    for part in 1..=artifact_count {
+        if part > 1 {
+            artifact.write_all(b",")?;
+        }
+        artifact.write_json(&format!("quarantine/part-{part:06}.parquet"))?;
+    }
+    artifact.write_all(b"],\"quarantine_candidate_count\":")?;
+    artifact.write_json(&summary.quarantine_candidate_count)?;
+    artifact.write_all(b",\"quarantined_rows\":")?;
+    artifact.write_json(&summary.quarantined_rows)?;
+    artifact.write_all(b"}")?;
+    artifact.finish()?;
     Ok(())
 }
 
