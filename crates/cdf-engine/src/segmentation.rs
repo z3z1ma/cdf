@@ -17,13 +17,9 @@ use cdf_memory::MemoryLease;
 use cdf_memory::MemorySnapshot;
 use serde::{Deserialize, Serialize};
 
-pub const SEGMENTATION_POLICY_VERSION: u16 = 1;
+pub const SEGMENTATION_POLICY_VERSION: u16 = 2;
 pub const POSITION_ALGEBRA_VERSION: u16 = 1;
-pub const SEGMENT_ID_NAMESPACE: &str = "partition-segment-ordinal-v1";
-
-pub(crate) fn default_segmentation_policy() -> CanonicalSegmentationPolicy {
-    CanonicalSegmentationPolicy::p3_v1()
-}
+pub const SEGMENT_ID_NAMESPACE: &str = "partition-segment-ordinal-v2";
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CanonicalSegmentationPolicy {
@@ -41,13 +37,13 @@ pub struct CanonicalSegmentationPolicy {
 }
 
 impl CanonicalSegmentationPolicy {
-    pub fn p3_v1() -> Self {
+    pub fn p3_v2() -> Self {
         Self {
             version: SEGMENTATION_POLICY_VERSION,
-            target_rows: 64 * 1024,
-            target_bytes: 8 * 1024 * 1024,
-            maximum_rows: 64 * 1024,
-            maximum_bytes: 32 * 1024 * 1024,
+            target_rows: 1024 * 1024,
+            target_bytes: 32 * 1024 * 1024,
+            maximum_rows: 4 * 1024 * 1024,
+            maximum_bytes: 64 * 1024 * 1024,
             microbatch_minimum_rows: 8 * 1024,
             microbatch_maximum_rows: 64 * 1024,
             microbatch_minimum_bytes: 1024 * 1024,
@@ -767,17 +763,17 @@ mod tests {
 
     #[test]
     fn ids_depend_only_on_partition_and_segment_ordinals() {
-        let policy = CanonicalSegmentationPolicy::p3_v1();
+        let policy = CanonicalSegmentationPolicy::p3_v2();
         assert_eq!(
             policy.segment_id(2, 7).unwrap().as_str(),
             "p00000002-s00000007"
         );
-        assert_eq!(policy, CanonicalSegmentationPolicy::p3_v1());
+        assert_eq!(policy, CanonicalSegmentationPolicy::p3_v2());
     }
 
     #[test]
     fn adaptive_targets_stay_bounded_and_outside_policy_identity() {
-        let policy = CanonicalSegmentationPolicy::p3_v1();
+        let policy = CanonicalSegmentationPolicy::p3_v2();
         let controller = AdaptiveMicrobatchController::new(policy.clone()).unwrap();
         let roomy = MemorySnapshot {
             budget_bytes: 4 * 1024 * 1024 * 1024,
@@ -790,7 +786,7 @@ mod tests {
         };
         assert_eq!(controller.target_rows(64, &roomy), 64 * 1024);
         assert_eq!(controller.target_rows(1024, &pressured), 8 * 1024);
-        assert_eq!(policy, CanonicalSegmentationPolicy::p3_v1());
+        assert_eq!(policy, CanonicalSegmentationPolicy::p3_v2());
     }
 
     #[test]
@@ -857,7 +853,7 @@ mod tests {
             microbatch_minimum_rows: 1,
             microbatch_maximum_rows: 4,
             microbatch_minimum_bytes: 1,
-            ..CanonicalSegmentationPolicy::p3_v1()
+            ..CanonicalSegmentationPolicy::p3_v2()
         }
     }
 
@@ -960,7 +956,7 @@ mod tests {
             microbatch_maximum_rows: 64,
             microbatch_minimum_bytes: 1,
             microbatch_maximum_bytes: 48,
-            ..CanonicalSegmentationPolicy::p3_v1()
+            ..CanonicalSegmentationPolicy::p3_v2()
         }
     }
 
@@ -1216,7 +1212,7 @@ mod tests {
 
         let canonical_started = std::time::Instant::now();
         let mut assembler =
-            CanonicalSegmentAssembler::new(CanonicalSegmentationPolicy::p3_v1(), 0).unwrap();
+            CanonicalSegmentAssembler::new(CanonicalSegmentationPolicy::p3_v2(), 0).unwrap();
         let mut segments = Vec::new();
         for chunk in &chunks {
             segments.extend(assembler.push(chunk.clone(), None).unwrap());

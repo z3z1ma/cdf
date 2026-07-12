@@ -10,8 +10,8 @@ use cdf_declarative::{
 };
 use cdf_kernel::{CdfError, CheckpointId, PipelineId, RunEventSink, SchemaSource, TargetName};
 use cdf_project::{
-    LOCK_FILE_NAME, ProjectResourceOrigin, ProjectRunRequest, SchemaSnapshotStore,
-    run_project_with_services,
+    LOCK_FILE_NAME, ProjectResourceOrigin, ProjectRunRequest, RunTelemetryConfig,
+    SchemaSnapshotStore, run_project_with_services_and_telemetry,
 };
 use sha2::{Digest, Sha256};
 
@@ -107,7 +107,7 @@ pub(crate) fn run(
     let progress = human_progress_sink(cli.json, cli.no_color);
     let event_sink = progress.as_ref().map(|sink| sink as &dyn RunEventSink);
     let report = match host
-        .block_on_root(run_project_with_services(
+        .block_on_root(run_project_with_services_and_telemetry(
             ProjectRunRequest {
                 resource: prepared.resource.as_project_resource(),
                 plan,
@@ -122,6 +122,7 @@ pub(crate) fn run(
                 after_receipt_verified: None,
             },
             services,
+            RunTelemetryConfig::phase_metrics(),
         ))
         .map_err(|error| redact_error_value(error, resolved.secret_redaction.as_deref()))
     {

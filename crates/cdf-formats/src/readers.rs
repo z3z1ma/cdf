@@ -16,12 +16,13 @@ use cdf_contract::{
     ContractPolicy, ObservedSchema, SchemaCoercionPlan, TypePolicy, reconcile_schema,
 };
 use cdf_kernel::{
-    Batch, BatchId, CdfError, FileManifest, FilePosition, PreContractQuarantineFact,
+    Batch, BatchId, BatchStream, CdfError, FileManifest, FilePosition, PreContractQuarantineFact,
     PreContractResidualCandidate, ResourceDescriptor, ResourceId, Result, SchemaHash,
     SchemaSnapshotReference, SchemaSource, ScopeKey, SourcePosition, TrustLevel, WriteDisposition,
     source_name,
 };
 use flate2::read::GzDecoder;
+use futures_util::stream;
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use parquet::file::reader::ChunkReader;
 use serde_json::Value;
@@ -111,6 +112,50 @@ pub fn read_file_source_with_declared_schema_and_type_policy(
         ),
         FileFormat::Csv(_) => read_file_source(source),
     }
+}
+
+pub fn stream_file_source_path_with_declared_schema_and_type_policy(
+    path: &Path,
+    format: FileFormat,
+    compression: FileCompression,
+    options: ReadOptions,
+    declared_schema: SchemaRef,
+    type_policy: &TypePolicy,
+    position: Option<SourcePosition>,
+) -> Result<BatchStream> {
+    if format == FileFormat::Parquet {
+        if compression != FileCompression::None {
+            return Err(CdfError::contract(format!(
+                "byte-stream compression `{}` is not supported for Parquet file source {}; Parquet compression must be handled by the Parquet reader",
+                compression.as_str(),
+                path.display()
+            )));
+        }
+        return stream_parquet_file_with_declared_schema_and_type_policy(
+            path,
+            &options,
+            declared_schema,
+            type_policy,
+            position,
+        );
+    }
+
+    let source = FileSource::new(path, format, options).with_compression(compression);
+    let mut read = if !declared_schema.fields().is_empty()
+        && matches!(source.format, FileFormat::Json(_) | FileFormat::Ndjson(_))
+    {
+        read_file_source_with_declared_schema_and_type_policy(
+            &source,
+            declared_schema,
+            type_policy,
+        )?
+    } else {
+        read_file_source(&source)?
+    };
+    for batch in &mut read.batches {
+        batch.header.source_position = position.clone();
+    }
+    Ok(Box::pin(stream::iter(read.batches.into_iter().map(Ok))))
 }
 
 fn read_file_source_bytes(source: &FileSource) -> Result<Vec<u8>> {
@@ -608,6 +653,114 @@ fn read_parquet_file_with_declared_schema_and_scope(
         scope,
         position,
     )
+}
+
+pub fn stream_parquet_file_with_declared_schema_and_type_policy(
+    path: &Path,
+    options: &ReadOptions,
+    declared_schema: SchemaRef,
+    type_policy: &TypePolicy,
+    position: Option<SourcePosition>,
+) -> Result<BatchStream> {
+    let file = fs::File::open(path)
+        .map_err(|error| io_data_error(format!("open {}", path.display()), error))?;
+    let builder = ParquetRecordBatchReaderBuilder::try_new(file)
+        .map_err(|error| parquet_data_error("read Parquet file metadata", error))?
+        .with_batch_size(options.batch_size);
+    let physical_schema = builder.schema().clone();
+    let physical_schema_hash = schema_hash(physical_schema.as_ref())?;
+    let declared_schema = if declared_schema.fields().is_empty() {
+        Arc::clone(&physical_schema)
+    } else {
+        declared_schema
+    };
+    let reconciliation = reconcile_schema(
+        physical_schema.as_ref(),
+        declared_schema.as_ref(),
+        type_policy,
+    )?;
+    let reconciliation_plan = serde_json::to_string(&reconciliation.plan)
+        .map_err(|error| CdfError::internal(format!("serialize schema coercion plan: {error}")))?;
+    let reconciled_schema = Arc::new(reconciliation.schema);
+    let reconciled_schema_hash = schema_hash(reconciled_schema.as_ref())?;
+    let projected_sources = reconciled_schema
+        .fields()
+        .iter()
+        .map(|field| field_source_name(field.as_ref()).to_owned())
+        .collect::<std::collections::BTreeSet<_>>();
+    let reader = builder
+        .build()
+        .map_err(|error| parquet_data_error("create Parquet record batch reader", error))?;
+    let options = options.clone();
+    let state = (reader, 0_usize, 0_u64);
+    Ok(Box::pin(stream::try_unfold(
+        state,
+        move |(mut reader, batch_index, source_row_ordinal)| {
+            let physical_schema = Arc::clone(&physical_schema);
+            let reconciled_schema = Arc::clone(&reconciled_schema);
+            let projected_sources = projected_sources.clone();
+            let reconciled_schema_hash = reconciled_schema_hash.clone();
+            let physical_schema_hash = physical_schema_hash.clone();
+            let reconciliation_plan = reconciliation_plan.clone();
+            let position = position.clone();
+            let options = options.clone();
+            async move {
+                let next = reader.next().transpose().map_err(CdfError::from)?;
+                let physical_batch = match next {
+                    Some(batch) => batch,
+                    None if batch_index == 0 => {
+                        RecordBatch::new_empty(Arc::clone(&physical_schema))
+                    }
+                    None => return Ok(None),
+                };
+                let row_count = physical_batch.num_rows() as u64;
+                let mut candidates = Vec::new();
+                for (field_index, field) in physical_schema.fields().iter().enumerate() {
+                    let source = field_source_name(field.as_ref());
+                    if projected_sources.contains(source) {
+                        continue;
+                    }
+                    let values = physical_batch.column(field_index).clone();
+                    for row in 0..physical_batch.num_rows() {
+                        candidates.push(PreContractResidualCandidate::new(
+                            source_row_ordinal + row as u64,
+                            row,
+                            vec![source.to_owned()],
+                            field.as_ref().clone(),
+                            None,
+                            values.clone(),
+                            row,
+                        )?);
+                    }
+                }
+                let reconciled = reconcile_record_batch(
+                    physical_schema.as_ref(),
+                    Arc::clone(&reconciled_schema),
+                    physical_batch,
+                    "Parquet",
+                )?;
+                let mut batch = Batch::from_record_batch(
+                    BatchId::new(format!(
+                        "{}-{:06}",
+                        options.batch_id_prefix,
+                        batch_index + 1
+                    ))?,
+                    options.resource_id.clone(),
+                    options.partition_id.clone(),
+                    reconciled_schema_hash,
+                    reconciled,
+                )?;
+                batch.header.observed_schema_hash = physical_schema_hash;
+                batch.header.source_position = position;
+                batch.header.schema_coercion_plan = Some(reconciliation_plan);
+                batch.header.extend_residual_candidates(candidates);
+                Ok(Some((
+                    batch,
+                    (reader, batch_index + 1, source_row_ordinal + row_count),
+                )))
+            }
+        },
+    )))
 }
 
 fn read_parquet_chunk_reader_with_declared_schema_and_scope<T: ChunkReader + 'static>(

@@ -472,7 +472,7 @@ fn operator_chain(
         OperatorNode::LineageExec,
         OperatorNode::PackageSink {
             package_id: package_id.to_owned(),
-            segmentation: crate::CanonicalSegmentationPolicy::p3_v1(),
+            segmentation: crate::CanonicalSegmentationPolicy::p3_v2(),
         },
     ]
 }

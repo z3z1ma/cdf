@@ -5,7 +5,7 @@ use std::{
     task::{Context, Poll, Waker},
 };
 
-use arrow_array::{Int64Array, RecordBatch};
+use arrow_array::{ArrayRef, Int64Array, RecordBatch};
 use futures_executor::block_on;
 
 use super::*;
@@ -37,7 +37,7 @@ fn accounted_batch_reconciles_reservation_and_error_drops_release() {
     let batch =
         RecordBatch::try_from_iter([("value", Arc::new(Int64Array::from(vec![1, 2, 3, 4])) as _)])
             .unwrap();
-    let observed = batch.get_array_memory_size() as u64;
+    let observed = record_batch_retained_bytes(&batch).unwrap();
     let accounted = AccountedBatch::new(batch, lease).unwrap();
     assert_eq!(accounted.lease().bytes(), observed);
     drop(accounted);
@@ -54,6 +54,21 @@ fn accounted_batch_reconciles_reservation_and_error_drops_release() {
             .unwrap();
     assert!(AccountedBatch::new(batch, small).is_err());
     assert_eq!(coordinator.snapshot().current_bytes, 0);
+}
+
+#[test]
+fn retained_bytes_count_shared_arrow_allocations_once() {
+    let values = Arc::new(Int64Array::from_iter_values(0..1024)) as ArrayRef;
+    let batch = RecordBatch::try_from_iter([
+        ("left", Arc::clone(&values)),
+        ("right", Arc::clone(&values)),
+    ])
+    .unwrap();
+
+    let naive = batch.get_array_memory_size() as u64;
+    let retained = record_batch_retained_bytes(&batch).unwrap();
+    assert!(retained < naive);
+    assert!(retained >= values.get_buffer_memory_size() as u64);
 }
 
 #[test]

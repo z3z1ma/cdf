@@ -8,7 +8,9 @@ use std::{
     task::{Context, Poll, Waker},
 };
 
-use arrow_array::RecordBatch;
+use arrow_array::{Array, RecordBatch};
+use arrow_buffer::Buffer;
+use arrow_data::ArrayData;
 use cdf_kernel::{CdfError, Result};
 use serde::{Deserialize, Serialize};
 
@@ -17,6 +19,60 @@ pub const DEFAULT_SPILL_BUDGET_BYTES: u64 = 8 * 1024 * 1024 * 1024;
 pub const MINIMUM_NATIVE_HEADROOM_BYTES: u64 = 512 * 1024 * 1024;
 pub const NATIVE_HEADROOM_PERCENT: u64 = 15;
 pub const HEADROOM_POLICY_VERSION: &str = "native-headroom-v1";
+
+/// Returns retained Arrow allocation bytes without counting shared backing
+/// allocations once per sliced column.
+pub fn record_batch_retained_bytes(batch: &RecordBatch) -> Result<u64> {
+    fn record_buffer(allocations: &mut BTreeMap<usize, u64>, buffer: &Buffer) -> Result<()> {
+        let allocation = buffer.data_ptr().as_ptr() as usize;
+        let visible_extent = buffer
+            .ptr_offset()
+            .checked_add(buffer.len())
+            .ok_or_else(|| CdfError::data("Arrow buffer extent overflow"))?;
+        let bytes = u64::try_from(buffer.capacity().max(visible_extent))
+            .map_err(|_| CdfError::data("Arrow buffer allocation exceeds u64"))?;
+        allocations
+            .entry(allocation)
+            .and_modify(|observed| *observed = (*observed).max(bytes))
+            .or_insert(bytes);
+        Ok(())
+    }
+
+    fn record_data(allocations: &mut BTreeMap<usize, u64>, data: &ArrayData) -> Result<()> {
+        for buffer in data.buffers() {
+            record_buffer(allocations, buffer)?;
+        }
+        if let Some(nulls) = data.nulls() {
+            record_buffer(allocations, nulls.inner().inner())?;
+        }
+        for child in data.child_data() {
+            record_data(allocations, child)?;
+        }
+        Ok(())
+    }
+
+    let mut allocations = BTreeMap::new();
+    let mut container_bytes = u64::try_from(std::mem::size_of::<RecordBatch>())
+        .map_err(|_| CdfError::data("Arrow record batch container size exceeds u64"))?;
+    for column in batch.columns() {
+        let array_bytes = column.get_array_memory_size();
+        let buffer_bytes = column.get_buffer_memory_size();
+        container_bytes = container_bytes
+            .checked_add(
+                u64::try_from(array_bytes.saturating_sub(buffer_bytes))
+                    .map_err(|_| CdfError::data("Arrow array container memory exceeds u64"))?,
+            )
+            .ok_or_else(|| CdfError::data("Arrow container memory overflow"))?;
+        record_data(&mut allocations, &column.to_data())?;
+    }
+    allocations
+        .values()
+        .try_fold(container_bytes, |total, bytes| {
+            total
+                .checked_add(*bytes)
+                .ok_or_else(|| CdfError::data("Arrow retained memory overflow"))
+        })
+}
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(into = "String", try_from = "String")]
@@ -269,8 +325,7 @@ pub struct AccountedBatch {
 
 impl AccountedBatch {
     pub fn new(batch: RecordBatch, lease: MemoryLease) -> Result<Self> {
-        let observed = u64::try_from(batch.get_array_memory_size())
-            .map_err(|_| CdfError::data("Arrow batch memory size exceeds u64"))?;
+        let observed = record_batch_retained_bytes(&batch)?;
         if observed == 0 || lease.bytes() < observed {
             return Err(CdfError::data(format!(
                 "Arrow batch requires {observed} accounted bytes but lease holds {}",

@@ -1,7 +1,7 @@
 Status: recorded
 Created: 2026-07-11
 Updated: 2026-07-11
-Relates-To: .10x/decisions/adaptive-microbatch-canonical-segmentation.md, .10x/specs/canonical-segmentation-adaptive-batching.md, .10x/tickets/done/2026-07-11-p3-a3-canonical-segmentation-adaptive-batching.md
+Relates-To: .10x/decisions/superseded/adaptive-microbatch-canonical-segmentation.md, .10x/specs/canonical-segmentation-adaptive-batching.md, .10x/tickets/done/2026-07-11-p3-a3-canonical-segmentation-adaptive-batching.md
 
 # Canonical segmentation shaping evidence
 

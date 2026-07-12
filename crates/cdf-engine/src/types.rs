@@ -44,7 +44,6 @@ pub struct EnginePlan {
     pub final_projection: Option<Vec<String>>,
     pub residual_predicates: Vec<ScanPredicate>,
     pub boundedness: PlanBoundedness,
-    #[serde(default = "default_write_disposition")]
     pub write_disposition: WriteDisposition,
     pub validation_program: ValidationProgram,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -203,10 +202,6 @@ pub struct EffectiveSchemaObservationCoercion {
     pub coercion_plan: SchemaCoercionPlan,
 }
 
-fn default_write_disposition() -> WriteDisposition {
-    WriteDisposition::Append
-}
-
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum OperatorNode {
@@ -231,7 +226,6 @@ pub enum OperatorNode {
     LineageExec,
     PackageSink {
         package_id: String,
-        #[serde(default = "crate::segmentation::default_segmentation_policy")]
         segmentation: crate::CanonicalSegmentationPolicy,
     },
 }

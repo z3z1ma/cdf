@@ -439,7 +439,7 @@ fn tier_b_explain_serializes_honest_cdf_native_operator_metadata() {
 }
 
 #[test]
-fn engine_plan_deserialization_defaults_legacy_missing_write_disposition_to_append() {
+fn engine_plan_deserialization_rejects_missing_required_execution_policy() {
     let resource =
         MockResource::tier_a(sample_batches()).with_write_disposition(WriteDisposition::Append);
     let input = plan_input(Vec::new(), None, None, PlanBoundedness::Bounded);
@@ -449,44 +449,17 @@ fn engine_plan_deserialization_defaults_legacy_missing_write_disposition_to_appe
         .as_object_mut()
         .unwrap()
         .remove("write_disposition");
-    plan_json
-        .as_object_mut()
-        .unwrap()
-        .remove("effective_schema_evidence");
-    plan_json
-        .as_object_mut()
-        .unwrap()
-        .remove("schema_authority");
-    plan_json.as_object_mut().unwrap().remove("output_schema");
-    for chain_name in ["operator_chain"] {
-        for operator in plan_json[chain_name].as_array_mut().unwrap() {
-            if operator["kind"] == "package_sink" {
-                operator.as_object_mut().unwrap().remove("segmentation");
-            }
-        }
-    }
-    for operator in plan_json["explain"]["operator_chain"]
-        .as_array_mut()
-        .unwrap()
-    {
+    let error = serde_json::from_value::<EnginePlan>(plan_json).unwrap_err();
+    assert!(error.to_string().contains("write_disposition"));
+
+    let mut plan_json = serde_json::to_value(&plan).unwrap();
+    for operator in plan_json["operator_chain"].as_array_mut().unwrap() {
         if operator["kind"] == "package_sink" {
             operator.as_object_mut().unwrap().remove("segmentation");
         }
     }
-
-    let decoded: EnginePlan = serde_json::from_value(plan_json).unwrap();
-
-    assert_eq!(decoded.write_disposition, WriteDisposition::Append);
-    assert!(decoded.effective_schema_evidence().is_none());
-    assert!(decoded.schema_authority().is_err());
-    assert!(decoded.output_arrow_schema().is_err());
-    assert_eq!(
-        decoded.segmentation_policy().unwrap(),
-        &CanonicalSegmentationPolicy::p3_v1()
-    );
-    let temp = TempDir::new().unwrap();
-    let error = block_on(execute_to_package(&decoded, &resource, temp.path())).unwrap_err();
-    assert!(error.to_string().contains("verified schema authority"));
+    let error = serde_json::from_value::<EnginePlan>(plan_json).unwrap_err();
+    assert!(error.to_string().contains("segmentation"));
 }
 
 #[test]
@@ -947,7 +920,7 @@ fn explain_and_operator_chain_carry_contract_package_details() {
             operator,
             OperatorNode::PackageSink { package_id, segmentation }
                 if package_id == "pkg-engine-test"
-                    && segmentation == &CanonicalSegmentationPolicy::p3_v1()
+                    && segmentation == &CanonicalSegmentationPolicy::p3_v2()
         )
     }));
 }
@@ -2579,7 +2552,7 @@ fn package_identity_is_invariant_to_source_batch_rechunking() {
     );
     assert_eq!(
         one_output.manifest.package_hash,
-        "sha256:d5c6b049a9986db182491627af42f74c83cfa763f21a9cad28e9d677001a5959"
+        "sha256:069fc3fe3e130ef6b44685178e3454c3d0a8c8afab7639463adf4d591bbbd69a"
     );
 }
 

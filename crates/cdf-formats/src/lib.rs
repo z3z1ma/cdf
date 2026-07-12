@@ -25,6 +25,8 @@ pub use readers::{
     read_csv_bytes, read_file_source, read_file_source_with_declared_schema,
     read_file_source_with_declared_schema_and_type_policy, read_json_bytes, read_ndjson_bytes,
     read_ndjson_bytes_with_declared_schema, read_ndjson_bytes_with_declared_schema_and_type_policy,
+    stream_file_source_path_with_declared_schema_and_type_policy,
+    stream_parquet_file_with_declared_schema_and_type_policy,
 };
 pub use resource::FileResource;
 pub use schema::{SCHEMA_HASH_PREFIX, compile_observed_schema, schema_hash};

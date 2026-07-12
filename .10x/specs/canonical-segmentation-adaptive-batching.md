@@ -12,11 +12,13 @@ This specification governs execution microbatch adaptation, canonical output ord
 
 Every executable plan MUST record a segmentation policy version, canonical partition ordinals, segment-id namespace rule, row/byte targets, oversize behavior, and position algebra version. Exact defaults are calibrated by WS-L and remain deterministic for the plan.
 
-Source capabilities MUST declare maximum poll working set and whether a batch can be split with exact row-range source positions. Estimates MAY influence plan targets but MUST NOT silently alter them during execution.
+Source capabilities MUST declare maximum poll working set and whether a batch can be split with exact row-range source positions. Estimates MAY influence a future explicitly versioned policy but MUST NOT silently alter canonical boundaries during execution. The active v2 policy is governed by `.10x/decisions/byte-first-canonical-segmentation-v2.md`.
 
 ## Execution microbatches
 
 Microbatch adaptation MUST remain within plan min/max bounds and the memory ledger. It MAY respond to observed row width, pressure, spill, and downstream throughput. Internal boundaries and timing MUST remain outside package identity and MUST be rate-limited telemetry. Rebatching MUST preserve canonical rows, verdicts, and lineage.
+
+The v2 execution range is 8,192–65,536 rows and 1–32 MiB. Canonical durable segments use an independent 32 MiB logical byte target, a 64 MiB hard byte maximum, and high row-count safety backstops. The assembler MUST NOT reuse a source/decode microbatch row ceiling as its segment ceiling.
 
 ## Canonical assembler
 
@@ -31,6 +33,8 @@ Package-scoped dedup MUST follow `.10x/specs/spillable-package-dedup.md`, resolv
 ## Identity and conformance
 
 Canonical policy and emitted segments participate in package identity. Adaptive microbatch telemetry and wall pressure do not. Package replay consumes canonical segments without recomputing the policy.
+
+Plans missing a canonical policy or carrying an unsupported version MUST fail closed. CDF has no compatibility requirement for pre-v2 plans or artifacts.
 
 Permanent conformance MUST vary source batch/page sizes, jobs, channel pressure, destination speed, memory budget above the legal minimum, and spill timing while asserting identical package hashes/segments/positions. Narrow/wide/nested schemas, tiny files/pages, one oversized source chunk, quarantine, variant capture, limit, and exact-row dedup are required cases.
 

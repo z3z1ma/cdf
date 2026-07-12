@@ -14,9 +14,9 @@ use std::{
 use arrow_schema::SchemaRef;
 use cdf_contract::{ContractPolicy, TypePolicy};
 use cdf_formats::{
-    CsvOptions, FileCompression, FileFormat, FileSource, JsonOptions, RangeChunkReader,
-    ReadOptions, read_arrow_ipc_file_path, read_arrow_ipc_file_path_with_declared_schema,
-    read_file_source, read_file_source_with_declared_schema_and_type_policy,
+    CsvOptions, FileCompression, FileFormat, JsonOptions, RangeChunkReader, ReadOptions,
+    read_arrow_ipc_file_path, read_arrow_ipc_file_path_with_declared_schema,
+    stream_file_source_path_with_declared_schema_and_type_policy,
 };
 use cdf_http::SecretProvider;
 use cdf_kernel::{
@@ -26,7 +26,7 @@ use cdf_kernel::{
     ResourceStream, Result, ScanPlan, ScanRequest, ScopeKey, SourcePosition, TypePolicyAllowances,
     WriteDisposition,
 };
-use futures_util::stream;
+use futures_util::{StreamExt, stream};
 use sha2::{Digest, Sha256};
 
 use crate::{
@@ -609,120 +609,25 @@ fn open_file_resource_with_dependencies(
         let mut type_policy = ContractPolicy::default().types;
         type_policy.coerce_types = allowances.coerce_types;
         type_policy.allow_lossy_mapping = allowances.allow_lossy_mapping;
-        let read = read_file_match(
+        stream_file_match(
             &resolved,
             &plan.format,
             options,
             declared_schema,
             &dependencies,
             &type_policy,
-        )?;
-        Ok(Box::pin(stream::iter(read.batches.into_iter().map(Ok))) as BatchStream)
+        )
     })
 }
 
-fn uses_declared_file_schema(format: &FileFormat, declared_schema: &SchemaRef) -> bool {
-    !declared_schema.fields().is_empty()
-        && matches!(
-            format,
-            FileFormat::Json(_) | FileFormat::Ndjson(_) | FileFormat::Parquet
-        )
-}
-
-fn read_file_match(
+fn stream_file_match(
     resolved: &ResolvedFileMatch,
     declaration: &FileFormatDeclaration,
     options: ReadOptions,
     declared_schema: SchemaRef,
     dependencies: &FileRuntimeDependencies,
     type_policy: &TypePolicy,
-) -> Result<cdf_formats::FormatRead> {
-    match &resolved.open {
-        ResolvedFileOpen::LocalPath(path) => read_file_path(
-            path,
-            resolved.compression.mode,
-            declaration,
-            options,
-            declared_schema,
-            type_policy,
-        ),
-        ResolvedFileOpen::Transport(resource) => read_transport_file(
-            resource.clone(),
-            resolved,
-            declaration,
-            options,
-            declared_schema,
-            dependencies,
-            type_policy,
-        ),
-    }
-}
-
-fn read_file_path(
-    path: &Path,
-    compression: FileCompression,
-    declaration: &FileFormatDeclaration,
-    options: ReadOptions,
-    declared_schema: SchemaRef,
-    type_policy: &TypePolicy,
-) -> Result<cdf_formats::FormatRead> {
-    if compression != FileCompression::None
-        && matches!(declaration, FileFormatDeclaration::ArrowIpc)
-    {
-        return Err(CdfError::contract(format!(
-            "byte-stream compression `{}` is not supported for Arrow IPC file source {}",
-            compression.as_str(),
-            path.display()
-        )));
-    }
-    let read = match declaration {
-        FileFormatDeclaration::ArrowIpc if !declared_schema.fields().is_empty() => {
-            read_arrow_ipc_file_path_with_declared_schema(path, &options, declared_schema)
-        }
-        FileFormatDeclaration::ArrowIpc => read_arrow_ipc_file_path(path, &options),
-        _ => {
-            let format = compile_format(declaration)?;
-            read_non_ipc_file_path(
-                path,
-                format,
-                compression,
-                options,
-                declared_schema,
-                type_policy,
-            )
-        }
-    }?;
-    Ok(read)
-}
-
-fn read_non_ipc_file_path(
-    path: &Path,
-    format: FileFormat,
-    compression: FileCompression,
-    options: ReadOptions,
-    declared_schema: SchemaRef,
-    type_policy: &TypePolicy,
-) -> Result<cdf_formats::FormatRead> {
-    let source = FileSource::new(path, format, options).with_compression(compression);
-    if uses_declared_file_schema(&source.format, &declared_schema) {
-        read_file_source_with_declared_schema_and_type_policy(&source, declared_schema, type_policy)
-    } else {
-        read_file_source(&source)
-    }
-}
-
-fn read_transport_file(
-    resource: FileTransportResource,
-    resolved: &ResolvedFileMatch,
-    declaration: &FileFormatDeclaration,
-    options: ReadOptions,
-    declared_schema: SchemaRef,
-    dependencies: &FileRuntimeDependencies,
-    type_policy: &TypePolicy,
-) -> Result<cdf_formats::FormatRead> {
-    let scope = ScopeKey::File {
-        path: resolved.path_text.clone(),
-    };
+) -> Result<BatchStream> {
     let position = Some(SourcePosition::FileManifest(cdf_kernel::FileManifest {
         version: 1,
         files: vec![cdf_kernel::FilePosition {
@@ -732,40 +637,75 @@ fn read_transport_file(
             sha256: resolved.sha256.clone(),
         }],
     }));
-    if declaration == &FileFormatDeclaration::ArrowIpc {
-        return Err(CdfError::contract(
-            "remote Arrow IPC file framing is not supported",
-        ));
+    match &resolved.open {
+        ResolvedFileOpen::LocalPath(path) => match declaration {
+            FileFormatDeclaration::ArrowIpc
+                if resolved.compression.mode != FileCompression::None =>
+            {
+                Err(CdfError::contract(format!(
+                    "byte-stream compression `{}` is not supported for Arrow IPC file source {}",
+                    resolved.compression.mode.as_str(),
+                    path.display()
+                )))
+            }
+            FileFormatDeclaration::ArrowIpc => {
+                let mut read = if declared_schema.fields().is_empty() {
+                    read_arrow_ipc_file_path(path, &options)?
+                } else {
+                    read_arrow_ipc_file_path_with_declared_schema(path, &options, declared_schema)?
+                };
+                for batch in &mut read.batches {
+                    batch.header.source_position = position.clone();
+                }
+                Ok(Box::pin(stream::iter(read.batches.into_iter().map(Ok))) as BatchStream)
+            }
+            _ => stream_file_source_path_with_declared_schema_and_type_policy(
+                path,
+                compile_format(declaration)?,
+                resolved.compression.mode,
+                options,
+                declared_schema,
+                type_policy,
+                position,
+            ),
+        },
+        ResolvedFileOpen::Transport(resource) => {
+            if declaration == &FileFormatDeclaration::ArrowIpc {
+                return Err(CdfError::contract(
+                    "remote Arrow IPC file framing is not supported",
+                ));
+            }
+            let expected = FileIdentityMetadata {
+                location: resolved.path_text.clone(),
+                size_bytes: Some(resolved.size_bytes),
+                checksum: resolved.sha256.as_ref().map(|sha256| crate::FileChecksum {
+                    algorithm: "sha256".to_owned(),
+                    value: sha256.clone(),
+                }),
+                etag: resolved.etag.clone(),
+                modified: resolved.modified_ms.clone(),
+            };
+            let spool = Arc::new(spool_transport_file(
+                &dependencies.transport(),
+                resource,
+                &expected,
+                dependencies.max_spool_bytes(),
+            )?);
+            let stream = stream_file_source_path_with_declared_schema_and_type_policy(
+                spool.path(),
+                compile_format(declaration)?,
+                resolved.compression.mode,
+                options,
+                declared_schema,
+                type_policy,
+                position,
+            )?;
+            Ok(Box::pin(stream.map(move |batch| {
+                let _keep_spool_alive = &spool;
+                batch
+            })) as BatchStream)
+        }
     }
-    let expected = FileIdentityMetadata {
-        location: resolved.path_text.clone(),
-        size_bytes: Some(resolved.size_bytes),
-        checksum: resolved.sha256.as_ref().map(|sha256| crate::FileChecksum {
-            algorithm: "sha256".to_owned(),
-            value: sha256.clone(),
-        }),
-        etag: resolved.etag.clone(),
-        modified: resolved.modified_ms.clone(),
-    };
-    let spool = spool_transport_file(
-        &dependencies.transport(),
-        &resource,
-        &expected,
-        dependencies.max_spool_bytes(),
-    )?;
-    let mut read = read_file_path(
-        spool.path(),
-        resolved.compression.mode,
-        declaration,
-        options,
-        declared_schema,
-        type_policy,
-    )?;
-    read.descriptor.state_scope = scope;
-    for batch in &mut read.batches {
-        batch.header.source_position = position.clone();
-    }
-    Ok(read)
 }
 
 fn spool_transport_file(
@@ -2236,33 +2176,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn declared_parquet_schema_routes_through_declared_file_reader() {
-        let declared_schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, false)]));
-        let empty_schema = Arc::new(Schema::empty());
-
-        assert!(uses_declared_file_schema(
-            &FileFormat::Parquet,
-            &declared_schema
-        ));
-        assert!(uses_declared_file_schema(
-            &FileFormat::Json(JsonOptions::default()),
-            &declared_schema
-        ));
-        assert!(uses_declared_file_schema(
-            &FileFormat::Ndjson(JsonOptions::default()),
-            &declared_schema
-        ));
-        assert!(!uses_declared_file_schema(
-            &FileFormat::Csv(CsvOptions::default()),
-            &declared_schema
-        ));
-        assert!(!uses_declared_file_schema(
-            &FileFormat::Parquet,
-            &empty_schema
-        ));
-    }
-
-    #[test]
     fn object_store_recursive_glob_resolves_stable_multi_file_partitions() {
         let store = Arc::new(InMemory::new());
         for path in [
@@ -2367,7 +2280,7 @@ mod tests {
         let declared = Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, false)]));
         let options = ReadOptions::new(resource_id, PartitionId::new("file-events").unwrap());
         let type_policy = ContractPolicy::default().types;
-        let read = read_file_match(
+        let stream = stream_file_match(
             &resolved[0],
             &plan.format,
             options.clone(),
@@ -2376,15 +2289,19 @@ mod tests {
             &type_policy,
         )
         .unwrap();
+        let batches = futures_executor::block_on(stream.collect::<Vec<_>>())
+            .into_iter()
+            .collect::<Result<Vec<_>>>()
+            .unwrap();
         assert_eq!(
-            read.batches
+            batches
                 .iter()
                 .map(|batch| batch.header.row_count)
                 .sum::<u64>(),
             2
         );
         let SourcePosition::FileManifest(position) =
-            read.batches[0].header.source_position.as_ref().unwrap()
+            batches[0].header.source_position.as_ref().unwrap()
         else {
             panic!("expected remote file manifest position")
         };
@@ -2394,15 +2311,17 @@ mod tests {
         );
 
         let constrained = dependencies.with_max_spool_bytes(1).unwrap();
-        let error = read_file_match(
+        let error = match stream_file_match(
             &resolved[0],
             &plan.format,
             options,
             declared,
             &constrained,
             &type_policy,
-        )
-        .unwrap_err();
+        ) {
+            Ok(_) => panic!("undersized spool budget should reject the stream"),
+            Err(error) => error,
+        };
         assert!(error.message.contains("disk budget"));
         assert!(error.message.contains(&encoded.len().to_string()));
     }

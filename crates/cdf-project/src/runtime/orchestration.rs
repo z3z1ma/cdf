@@ -58,6 +58,14 @@ pub async fn run_project_with_services(
     .await
 }
 
+pub async fn run_project_with_services_and_telemetry(
+    request: ProjectRunRequest<'_>,
+    services: &ExecutionServices,
+    telemetry: RunTelemetryConfig,
+) -> Result<ProjectRunReport> {
+    run_project_with_context(request, telemetry, Some(services.clone())).await
+}
+
 pub async fn run_project_with_telemetry(
     request: ProjectRunRequest<'_>,
     telemetry: RunTelemetryConfig,

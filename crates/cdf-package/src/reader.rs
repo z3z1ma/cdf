@@ -14,7 +14,8 @@ use cdf_kernel::{
     SegmentId, StateSegment,
 };
 use cdf_memory::{
-    ConsumerKey, MemoryClass, MemoryCoordinator, MemoryLease, ReservationRequest, reserve_blocking,
+    ConsumerKey, MemoryClass, MemoryCoordinator, MemoryLease, ReservationRequest,
+    record_batch_retained_bytes, reserve_blocking,
 };
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 
@@ -144,9 +145,7 @@ impl<T> Iterator for VerifiedSegmentStream<T> {
             let batches = read_segment_file(&self.package_dir, &entry.path)?;
             let retained_bytes = batches.iter().try_fold(0u64, |total, batch| {
                 total
-                    .checked_add(u64::try_from(batch.get_array_memory_size()).map_err(|_| {
-                        CdfError::data("verified segment retained memory exceeds u64")
-                    })?)
+                    .checked_add(record_batch_retained_bytes(batch)?)
                     .ok_or_else(|| CdfError::data("verified segment retained memory overflow"))
             })?;
             if retained_bytes > self.maximum_segment_bytes {

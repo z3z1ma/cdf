@@ -30,6 +30,7 @@ use cdf_kernel::{
     ErrorKind, PartitionId, ResourceId, ResourceStream, ScanRequest, SchemaHash, ScopeKey,
     SegmentId, SourcePosition, physical_type, source_name, with_semantic, with_source_name,
 };
+use futures_util::StreamExt;
 
 fn options(resource: &str, partition: &str) -> ReadOptions {
     ReadOptions::new(
@@ -1100,6 +1101,43 @@ fn declared_parquet_int32_declared_int64_materializes_lossless_widening() {
         .downcast_ref::<Int64Array>()
         .unwrap();
     assert_eq!([ids.value(0), ids.value(1), ids.value(2)], [1, 2, 3]);
+}
+
+#[test]
+fn declared_parquet_stream_yields_reconciled_batches_incrementally() {
+    let temp = tempfile::tempdir().unwrap();
+    let parquet_path = temp.path().join("stream.parquet");
+    let physical_schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)]));
+    let physical_batch = RecordBatch::try_new(
+        physical_schema,
+        vec![Arc::new(Int32Array::from_iter_values(0..10))],
+    )
+    .unwrap();
+    write_parquet_file(&parquet_path, &[physical_batch]);
+    let declared_schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, false)]));
+    let options = options("stream", "file").with_batch_size(3).unwrap();
+
+    let mut stream = stream_parquet_file_with_declared_schema_and_type_policy(
+        &parquet_path,
+        &options,
+        declared_schema,
+        &ContractPolicy::default().types,
+        None,
+    )
+    .unwrap();
+    let first = futures_executor::block_on(stream.next()).unwrap().unwrap();
+    let first = first.record_batch().unwrap();
+    assert_eq!(first.num_rows(), 3);
+    assert_eq!(first.schema().field(0).data_type(), &DataType::Int64);
+    assert_eq!(physical_type(first.schema().field(0)), Some("Int32"));
+    let remaining_rows = futures_executor::block_on(async move {
+        let mut rows = 0;
+        while let Some(batch) = stream.next().await {
+            rows += batch.unwrap().header.row_count;
+        }
+        rows
+    });
+    assert_eq!(remaining_rows, 7);
 }
 
 #[test]
