@@ -1,4 +1,4 @@
-Status: active
+Status: done
 Created: 2026-07-11
 Updated: 2026-07-11
 Parent: .10x/tickets/2026-07-11-p3-a5-streaming-operator-graph.md
@@ -50,6 +50,13 @@ Depends on L5, unified accounting, and canonical order/segmentation. The v2 writ
 - 2026-07-11: Implemented recursive order-independent map equality before Arrow row encoding. Exact typed keys sort map entries, duplicate/null keys fail, nested structs/containers recurse, and sliced maps/lists normalize referenced children so unselected backing data is not validated. Evidence: `.10x/evidence/2026-07-11-p3-a6-map-equality.md`. A6 remains active for dense-union/dictionary slice normalization, complete-Arrow goldens, and 100 GB RSS stress.
 - 2026-07-11: Normalized dense unions to selected child values and dictionaries to referenced/remapped values before recursive map processing; invalid maps in unselected children/dictionary values no longer produce false failures. Full contract suite: 76 passed. Remaining gates are the generated complete-Arrow matrix and 100 GB RSS stress.
 - 2026-07-11: Unified production typed-row encoding and froze the non-map scalar vocabulary byte-for-byte against pinned Arrow RowConverter, while map containers retain CDF's recursive order-independent canonicalization. The remaining A6 gate is the 100 GB constant-memory/RSS stress and closure review.
+- 2026-07-11: Closed after the real 100 GiB payload-spool/external-index/replay stress completed in 26.16 seconds with 37,240,832-byte maximum RSS, 128 MiB managed peak, zero page faults/swaps, and exact decisions for all 12,800 batches. Evidence: `.10x/evidence/2026-07-11-p3-a6-100g-constant-memory.md`. Review: `.10x/reviews/2026-07-11-p3-a6-spillable-dedup-review.md`.
+
+## Retrospective
+
+- Arrow RowConverter intentionally treats map order as significant; dependency capability must be compared against CDF semantics rather than assumed equivalent.
+- Arrow slices retain backing children. Recursive validation must normalize referenced ranges or unselected invalid data creates false failures.
+- A meaningful constant-memory stress must write and reread the payload, force the external winner path, and measure process RSS; key-only or logical-counter simulations do not prove the barrier.
 - 2026-07-11: Removed injected-path payload retention. Normalized final rows stream into a budgeted Arrow IPC spool with sequential partition/source-position metadata, then stream back one batch at a time against the certified ordinal decision stream. The production path no longer appends to `pending_dedup_batches`; simple non-injected execution remains only as the reference evaluator for conformance.
 - 2026-07-11: Activated dedup evidence artifact v2. Dropped provenance streams into deterministic 65,536-row Parquet shards with UInt64 ordinal pairs; the bounded summary records format/version/target and shard identities without inline cardinality. Reader compatibility covers legacy v1 and validates v2 paths, manifest membership, schema, nulls, and ordering. The full 70-test engine suite is green.
 - 2026-07-11: Accounted external sort/key-heap memory in the unified ledger. The index derives its minimum working set and merge fan-in from the largest exact encoded key; wide keys reduce fan-in rather than multiplying memory by 32. Forced production spill proves both memory and disk reservations peak nonzero and return to zero.

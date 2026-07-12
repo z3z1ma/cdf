@@ -978,6 +978,8 @@ mod tests {
     use super::*;
     use std::{collections::HashMap, time::Instant};
 
+    use arrow_array::{ArrayRef, BinaryArray, RecordBatch};
+
     fn decisions(keep: DedupKeepProgram) -> (Vec<DedupDecision>, DedupIndexSummary) {
         let temp = tempfile::tempdir().unwrap();
         let budget: Arc<dyn SpillBudgetCoordinator> =
@@ -1232,6 +1234,86 @@ mod tests {
             }));
         }
         println!("{}", serde_json::to_string_pretty(&reports).unwrap());
+    }
+
+    #[test]
+    #[ignore = "slow A6 constant-memory stress; set CDF_A6_STRESS_GIB=100 for closure"]
+    fn dedup_payload_constant_memory_stress() {
+        const GIB: u64 = 1024 * 1024 * 1024;
+        const CHUNK_BYTES: usize = 8 * 1024 * 1024;
+        let gib = std::env::var("CDF_A6_STRESS_GIB")
+            .ok()
+            .map(|value| value.parse::<u64>().unwrap())
+            .unwrap_or(1);
+        assert!((1..=100).contains(&gib));
+        let logical_bytes = gib * GIB;
+        let rows = logical_bytes.div_ceil(CHUNK_BYTES as u64);
+        let temp = tempfile::tempdir().unwrap();
+        let spill_budget = logical_bytes
+            .checked_mul(2)
+            .and_then(|bytes| bytes.checked_add(GIB))
+            .unwrap();
+        let spill: Arc<dyn SpillBudgetCoordinator> =
+            Arc::new(cdf_runtime::FixedSpillBudget::new(spill_budget).unwrap());
+        let memory_impl = Arc::new(
+            cdf_memory::DeterministicMemoryCoordinator::new(
+                128 * 1024 * 1024,
+                std::collections::BTreeMap::new(),
+            )
+            .unwrap(),
+        );
+        let blocker = memory_impl
+            .try_reserve(
+                &ReservationRequest::new(
+                    ConsumerKey::new("stress-force-external", MemoryClass::Control).unwrap(),
+                    128 * 1024 * 1024,
+                )
+                .unwrap(),
+            )
+            .unwrap()
+            .unwrap();
+        let memory: Arc<dyn MemoryCoordinator> = memory_impl.clone();
+        let mut payload =
+            DedupPayloadSpool::create(temp.path().join("payload"), Arc::clone(&spill)).unwrap();
+        let mut index =
+            ExternalDedupIndex::create(temp.path().join("index"), Arc::clone(&spill), Some(memory))
+                .unwrap();
+        let mut bytes = vec![0x5a; CHUNK_BYTES];
+        let started = Instant::now();
+        for ordinal in 0..rows {
+            bytes[..8].copy_from_slice(&ordinal.to_le_bytes());
+            let array: ArrayRef = Arc::new(BinaryArray::from_vec(vec![bytes.as_slice()]));
+            let batch = RecordBatch::try_from_iter([("payload", array)]).unwrap();
+            payload.push(0, None, &batch).unwrap();
+            index
+                .push_owned_keys(std::iter::once(ordinal.to_le_bytes().to_vec()))
+                .unwrap();
+        }
+        let mut payload = payload.finish().unwrap().unwrap();
+        drop(blocker);
+        let mut decisions = index.finish(DedupKeepProgram::First).unwrap();
+        let mut observed_rows = 0_u64;
+        let mut observed_bytes = 0_u64;
+        while let Some(item) = payload.next().unwrap() {
+            let decision = decisions.next().unwrap().unwrap();
+            assert_eq!(decision.ordinal, observed_rows);
+            assert_eq!(decision.kept_ordinal, observed_rows);
+            observed_rows += item.batch.num_rows() as u64;
+            observed_bytes =
+                observed_bytes.saturating_add(item.batch.get_array_memory_size() as u64);
+        }
+        assert!(decisions.next().unwrap().is_none());
+        assert_eq!(observed_rows, rows);
+        assert!(observed_bytes >= logical_bytes);
+        assert!(memory_impl.snapshot().peak_bytes <= 128 * 1024 * 1024);
+        let spill_peak_bytes = spill.snapshot().peak_bytes;
+        assert!(spill_peak_bytes >= logical_bytes);
+        eprintln!(
+            "logical_gib={gib} rows={rows} observed_bytes={observed_bytes} elapsed_ns={} managed_peak_bytes={} spill_peak_bytes={spill_peak_bytes} index_spill_bytes={}",
+            started.elapsed().as_nanos(),
+            memory_impl.snapshot().peak_bytes,
+            decisions.summary.spill_bytes,
+        );
     }
 
     fn benchmark_keys(rows: usize, value: impl Fn(usize) -> u64) -> Vec<Vec<u8>> {

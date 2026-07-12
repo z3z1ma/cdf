@@ -43,4 +43,4 @@ Depends on the pre-optimization baseline and A1 through A4 contracts/implementat
 - `.10x/specs/runtime-memory-backpressure.md`
 - `.10x/specs/canonical-segmentation-adaptive-batching.md`
 - `.10x/specs/streaming-destination-ingress.md`
-- `.10x/tickets/2026-07-11-p3-a6-spillable-package-dedup.md`
+- `.10x/tickets/done/2026-07-11-p3-a6-spillable-package-dedup.md`
