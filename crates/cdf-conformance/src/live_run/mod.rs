@@ -7,8 +7,8 @@ use std::{
 use cdf_contract::{ContractPolicy, ObservedSchema, compile_validation_program};
 use cdf_engine::{EnginePlanInput, PlanBoundedness, Planner};
 use cdf_kernel::{
-    CdfError, CheckpointId, CheckpointStatus, PipelineId, Receipt, ResourceStream, Result,
-    ScanRequest, SourcePosition, StateDelta, TargetName, WriteDisposition,
+    CdfError, CheckpointId, CheckpointStatus, PipelineId, Receipt, Result, ScanRequest,
+    SourcePosition, StateDelta, TargetName, WriteDisposition,
 };
 use cdf_package::{PackageReader, PackageStatus};
 use cdf_project::{
@@ -244,10 +244,11 @@ pub async fn run_live_local_file_fixture_with_hook(
     spec: LiveLocalFileFixtureSpec,
     after_receipt_verified: Option<cdf_project::ReceiptVerifiedHook<'_>>,
 ) -> Result<ProjectRunReport> {
-    let destination = ResolvedProjectDestination::new(
-        Box::new(DuckDbDestination::new(&spec.destination_path)?),
+    let destination = crate::destination_catalog::resolve(
+        &crate::destination_catalog::local_uri("duckdb", &spec.destination_path),
+        &spec.project_root,
         spec.target.clone(),
-    );
+    )?;
     run_live_local_file_fixture_with_destination(spec, destination, after_receipt_verified).await
 }
 
@@ -286,25 +287,27 @@ pub async fn run_live_local_file_fixture_with_destination(
             resource.descriptor().resource_id
         )));
     }
+    let runtime_resource =
+        crate::source_fixture::resolve_local_file(&resource, &spec.project_root)?;
 
-    let mut policy = ContractPolicy::for_trust(resource.descriptor().trust_level.clone());
+    let mut policy = ContractPolicy::for_trust(runtime_resource.descriptor().trust_level.clone());
     if let Some(identifier_policy) = destination.column_identifier_policy()? {
         policy.normalization.identifier = identifier_policy;
     }
     let validation_program = compile_validation_program(
         &policy,
-        &ObservedSchema::from_arrow(resource.schema().as_ref()),
+        &ObservedSchema::from_arrow(runtime_resource.schema().as_ref()),
     )?;
     let mut plan = Planner::new().plan_tier_b(
-        &resource,
+        runtime_resource.as_ref(),
         EnginePlanInput {
             request: ScanRequest {
-                resource_id: resource.descriptor().resource_id.clone(),
+                resource_id: runtime_resource.descriptor().resource_id.clone(),
                 projection: None,
                 filters: Vec::new(),
                 limit: None,
                 order_by: Vec::new(),
-                scope: resource.descriptor().state_scope.clone(),
+                scope: runtime_resource.descriptor().state_scope.clone(),
             },
             validation_program,
             boundedness: PlanBoundedness::Bounded,
@@ -314,7 +317,7 @@ pub async fn run_live_local_file_fixture_with_destination(
     stabilize_live_fixture_plan(&mut plan);
 
     run_project(ProjectRunRequest {
-        resource: ProjectRunSource::local_file(&resource),
+        resource: ProjectRunSource::new(runtime_resource.as_ref()),
         plan,
         package_root: spec.package_root,
         state_store_path: spec.state_store_path,

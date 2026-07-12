@@ -780,6 +780,7 @@ dependencies = [
  "cdf-project",
  "cdf-python",
  "cdf-runtime",
+ "cdf-source-files",
  "cdf-state-sqlite",
  "cdf-subprocess",
  "duckdb",

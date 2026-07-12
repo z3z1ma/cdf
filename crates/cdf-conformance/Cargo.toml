@@ -30,6 +30,7 @@ cdf-formats = { path = "../cdf-formats" }
 cdf-http = { path = "../cdf-http" }
 cdf-python = { path = "../cdf-python" }
 cdf-runtime = { path = "../cdf-runtime" }
+cdf-source-files = { path = "../cdf-source-files" }
 cdf-subprocess = { path = "../cdf-subprocess" }
 duckdb = { version = "1.10504.0", features = ["bundled"] }
 futures-executor = "0.3.32"
