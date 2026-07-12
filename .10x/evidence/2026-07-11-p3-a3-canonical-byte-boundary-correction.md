@@ -21,8 +21,8 @@ The assembler now uses slice-logical Arrow bytes to select the largest row prefi
 
 ## What this supports or challenges
 
-This supports plan-effective row/byte segmentation for primitive, variable-width, list/large-list/fixed-size-list, struct, and map arrays and fixes position authority at flush boundaries. Nested accounting explicitly slices child value ranges instead of counting an entire shared child buffer for every parent slice.
+This supports plan-effective row/byte segmentation for primitive, variable-width/view, list/large-list/fixed-size-list/list-view, struct, map, union, and dictionary arrays and fixes position authority at flush boundaries. Nested accounting explicitly slices child value ranges instead of counting an entire shared child buffer for every parent slice. Dictionary value sizes are cached by dictionary index so repeated values do not repeat nested size traversal.
 
 ## Limits
 
-A3 remains open. Dictionary, union, run-end, and list/view-array logical-byte rechunking require explicit conformance before the estimator can claim the full Arrow vocabulary. A5 still owns transferring already-accounted envelopes into assembler retention so physical shared-buffer ownership is not reconstructed from per-batch estimates.
+A3 remains open. View/list-view/union construction conformance and the full package/golden matrix remain before closure. A5 still owns transferring already-accounted envelopes into assembler retention so physical shared-buffer ownership is not reconstructed from per-batch estimates.

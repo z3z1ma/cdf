@@ -1,7 +1,13 @@
 use std::collections::BTreeMap;
 
 use arrow_array::{
-    Array, FixedSizeListArray, LargeListArray, ListArray, MapArray, RecordBatch, StructArray,
+    Array, BinaryViewArray, DictionaryArray, FixedSizeListArray, LargeListArray,
+    LargeListViewArray, ListArray, ListViewArray, MapArray, RecordBatch, StringViewArray,
+    StructArray, UnionArray,
+    types::{
+        ArrowDictionaryKeyType, Int8Type, Int16Type, Int32Type, Int64Type, UInt8Type, UInt16Type,
+        UInt32Type, UInt64Type,
+    },
 };
 use cdf_kernel::{
     CdfError, CompositePosition, CursorPosition, CursorValue, FileManifest, FilePosition, Result,
@@ -366,6 +372,132 @@ fn logical_array_bytes(field: &arrow_schema::Field, array: &dyn Array) -> Result
                 logical_array_bytes(entries, &values)?,
             ))
         }
+        arrow_schema::DataType::ListView(item) => {
+            let array = array
+                .as_any()
+                .downcast_ref::<ListViewArray>()
+                .ok_or_else(|| CdfError::internal("list-view array/type mismatch"))?;
+            let children = (0..array.len()).try_fold(0_u64, |total, index| {
+                total
+                    .checked_add(logical_array_bytes(item, array.value(index).as_ref())?)
+                    .ok_or_else(|| CdfError::data("list-view logical bytes overflow"))
+            })?;
+            Some((
+                u64::try_from(array.len().saturating_mul(8))
+                    .map_err(|_| CdfError::data("list-view offsets exceed u64"))?,
+                children,
+            ))
+        }
+        arrow_schema::DataType::LargeListView(item) => {
+            let array = array
+                .as_any()
+                .downcast_ref::<LargeListViewArray>()
+                .ok_or_else(|| CdfError::internal("large-list-view array/type mismatch"))?;
+            let children = (0..array.len()).try_fold(0_u64, |total, index| {
+                total
+                    .checked_add(logical_array_bytes(item, array.value(index).as_ref())?)
+                    .ok_or_else(|| CdfError::data("large-list-view logical bytes overflow"))
+            })?;
+            Some((
+                u64::try_from(array.len().saturating_mul(16))
+                    .map_err(|_| CdfError::data("large-list-view offsets exceed u64"))?,
+                children,
+            ))
+        }
+        arrow_schema::DataType::Utf8View => {
+            let array = array
+                .as_any()
+                .downcast_ref::<StringViewArray>()
+                .ok_or_else(|| CdfError::internal("utf8-view array/type mismatch"))?;
+            let values = array.iter().try_fold(0_u64, |total, value| {
+                total
+                    .checked_add(value.map_or(0, |value| value.len() as u64))
+                    .ok_or_else(|| CdfError::data("utf8-view logical bytes overflow"))
+            })?;
+            Some((
+                u64::try_from(array.len().saturating_mul(16))
+                    .map_err(|_| CdfError::data("utf8-view descriptors exceed u64"))?,
+                values,
+            ))
+        }
+        arrow_schema::DataType::BinaryView => {
+            let array = array
+                .as_any()
+                .downcast_ref::<BinaryViewArray>()
+                .ok_or_else(|| CdfError::internal("binary-view array/type mismatch"))?;
+            let values = array.iter().try_fold(0_u64, |total, value| {
+                total
+                    .checked_add(value.map_or(0, |value| value.len() as u64))
+                    .ok_or_else(|| CdfError::data("binary-view logical bytes overflow"))
+            })?;
+            Some((
+                u64::try_from(array.len().saturating_mul(16))
+                    .map_err(|_| CdfError::data("binary-view descriptors exceed u64"))?,
+                values,
+            ))
+        }
+        arrow_schema::DataType::Union(fields, mode) => {
+            let array = array
+                .as_any()
+                .downcast_ref::<UnionArray>()
+                .ok_or_else(|| CdfError::internal("union array/type mismatch"))?;
+            let children = (0..array.len()).try_fold(0_u64, |total, index| {
+                let type_id = array.type_id(index);
+                let child_field = fields
+                    .iter()
+                    .find_map(|(id, field)| (id == type_id).then_some(field))
+                    .ok_or_else(|| CdfError::data("union type id has no field"))?;
+                total
+                    .checked_add(logical_array_bytes(
+                        child_field,
+                        array.value(index).as_ref(),
+                    )?)
+                    .ok_or_else(|| CdfError::data("union logical bytes overflow"))
+            })?;
+            let width = match mode {
+                arrow_schema::UnionMode::Sparse => 1,
+                arrow_schema::UnionMode::Dense => 5,
+            };
+            Some((
+                u64::try_from(array.len().saturating_mul(width))
+                    .map_err(|_| CdfError::data("union selectors exceed u64"))?,
+                children,
+            ))
+        }
+        arrow_schema::DataType::Dictionary(key_type, value_type) => {
+            let value_field =
+                arrow_schema::Field::new("dictionary-value", value_type.as_ref().clone(), true);
+            macro_rules! dictionary {
+                ($key:ty) => {{
+                    let array = array
+                        .as_any()
+                        .downcast_ref::<DictionaryArray<$key>>()
+                        .ok_or_else(|| CdfError::internal("dictionary array/type mismatch"))?;
+                    Some((
+                        u64::try_from(array.len().saturating_mul(std::mem::size_of::<
+                            <$key as arrow_array::types::ArrowPrimitiveType>::Native,
+                        >()))
+                        .map_err(|_| CdfError::data("dictionary keys exceed u64"))?,
+                        dictionary_value_bytes(array, &value_field)?,
+                    ))
+                }};
+            }
+            match key_type.as_ref() {
+                arrow_schema::DataType::Int8 => dictionary!(Int8Type),
+                arrow_schema::DataType::Int16 => dictionary!(Int16Type),
+                arrow_schema::DataType::Int32 => dictionary!(Int32Type),
+                arrow_schema::DataType::Int64 => dictionary!(Int64Type),
+                arrow_schema::DataType::UInt8 => dictionary!(UInt8Type),
+                arrow_schema::DataType::UInt16 => dictionary!(UInt16Type),
+                arrow_schema::DataType::UInt32 => dictionary!(UInt32Type),
+                arrow_schema::DataType::UInt64 => dictionary!(UInt64Type),
+                other => {
+                    return Err(CdfError::data(format!(
+                        "unsupported Arrow dictionary key type in canonical segmentation: {other}"
+                    )));
+                }
+            }
+        }
         _ => None,
     };
     if let Some((offset_bytes, child_bytes)) = nested {
@@ -385,6 +517,41 @@ fn logical_array_bytes(field: &arrow_schema::Field, array: &dyn Array) -> Result
                 .map_err(|_| CdfError::data("canonical logical array bytes exceed u64"))?,
         )
         .ok_or_else(|| CdfError::data("canonical logical array bytes overflow"))
+}
+
+fn dictionary_value_bytes<K>(
+    array: &DictionaryArray<K>,
+    value_field: &arrow_schema::Field,
+) -> Result<u64>
+where
+    K: ArrowDictionaryKeyType,
+    usize: TryFrom<K::Native>,
+{
+    let mut value_sizes = vec![None; array.values().len()];
+    let mut total = 0_u64;
+    for row in 0..array.len() {
+        if array.is_null(row) {
+            continue;
+        }
+        let index = usize::try_from(array.keys().value(row))
+            .map_err(|_| CdfError::data("dictionary key cannot index values"))?;
+        let value_bytes = match value_sizes.get(index).copied().flatten() {
+            Some(bytes) => bytes,
+            None => {
+                let bytes =
+                    logical_array_bytes(value_field, array.values().slice(index, 1).as_ref())?;
+                let slot = value_sizes
+                    .get_mut(index)
+                    .ok_or_else(|| CdfError::data("dictionary key is outside values"))?;
+                *slot = Some(bytes);
+                bytes
+            }
+        };
+        total = total
+            .checked_add(value_bytes)
+            .ok_or_else(|| CdfError::data("dictionary logical bytes overflow"))?;
+    }
+    Ok(total)
 }
 
 fn largest_prefix_within_bytes(
@@ -549,7 +716,7 @@ mod tests {
     use super::*;
     use arrow_array::{
         Array, Int64Array, StringArray,
-        builder::{Int64Builder, ListBuilder},
+        builder::{Int64Builder, ListBuilder, StringDictionaryBuilder},
     };
     use cdf_kernel::{CursorPosition, FileManifest};
 
@@ -844,6 +1011,29 @@ mod tests {
         assert_eq!(
             logical_batch_bytes(&one.slice(0, 1)).unwrap() * 4,
             logical_batch_bytes(&one).unwrap()
+        );
+    }
+
+    #[test]
+    fn dictionary_byte_estimate_is_independent_of_dictionary_chunking() {
+        let batch = |values: &[&str]| {
+            let mut dictionary = StringDictionaryBuilder::<Int8Type>::new();
+            for value in values {
+                dictionary.append(*value).unwrap();
+            }
+            RecordBatch::try_from_iter([(
+                "value",
+                std::sync::Arc::new(dictionary.finish()) as arrow_array::ArrayRef,
+            )])
+            .unwrap()
+        };
+        let values = ["shared-long-value", "x", "shared-long-value", "y"];
+        let one = batch(&values);
+        let left = batch(&values[..2]);
+        let right = batch(&values[2..]);
+        assert_eq!(
+            logical_batch_bytes(&one).unwrap(),
+            logical_batch_bytes(&left).unwrap() + logical_batch_bytes(&right).unwrap()
         );
     }
 }
