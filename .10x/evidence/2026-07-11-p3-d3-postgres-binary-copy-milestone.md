@@ -13,6 +13,8 @@ The original equal-work release comparison immediately before deletion measured 
 
 Thirty non-ignored crate tests passed, including live PostgreSQL append, replace, merge, deduplication, rollback after COPY, duplicate receipt verification, exact Decimal128 NUMERIC round trip, correction, catalog discovery, and source execution. Strict Clippy passed for all crate targets.
 
+The final segment handoff now consumes `CommitSegment::into_batches()`, retaining the verified package memory lease through every synchronous binary encode. The previous intermediate `PostgresPackageData` graph and its schema/row reconstruction were deleted. The same 30 active tests and strict Clippy passed after this accounting repair.
+
 A subsequent server-inclusive local PostgreSQL benchmark exposed 4 KiB `CopyInWriter` framing and per-cell Arrow downcasts. A bounded 1 MiB aggregate buffer, tied to the declared path minimum, raised the narrow-schema binary path from 3,170,238 to roughly 3.6M rows/s. Compiled typed column views remove repeated downcasts. The final TLC-shaped equal-work workload (17 user fields plus four provenance fields, 524,288 rows, unlogged tables, synchronous commit disabled equally) measured 1,662,005 binary rows/s versus 570,051 rows/s for the exact removed scalar CSV allocation/escaping shape: 2.92x. The narrow three-user-field shape remained PostgreSQL/wire-size bound near 2x because provenance dominates each row; it is retained as an observed limit rather than generalized away.
 
 ## Procedure

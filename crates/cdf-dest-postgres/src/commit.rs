@@ -324,13 +324,12 @@ impl CommitSession for PostgresCommitSession {
         validate_commit_segment(&segment, expected, &self.plan)?;
 
         if self.duplicate_receipt.is_none() {
-            let package = package_data_from_commit_segment(segment, &self.plan)?;
             let loaded_at_ms = now_ms()?;
             let client = self
                 .client
                 .as_mut()
                 .ok_or_else(|| CdfError::internal("Postgres commit session has no transaction"))?;
-            copy_stage_rows(client, &self.plan, &package, loaded_at_ms)?;
+            copy_stage_rows(client, &self.plan, segment, loaded_at_ms)?;
         }
 
         let ack = SegmentAck {
@@ -596,7 +595,7 @@ fn apply_write_plan_after_stage(
 fn copy_stage_rows(
     client: &mut Client,
     plan: &PostgresLoadPlan,
-    package: &PostgresPackageData,
+    segment: CommitSegment,
     loaded_at_ms: i64,
 ) -> Result<u64> {
     let mut columns = quoted_column_names(&plan.columns);
@@ -613,14 +612,16 @@ fn copy_stage_rows(
     // token may differ from an operator-supplied idempotency token.
     let load = verify_parameter(plan, "package_hash")?;
     let mut encoder = BinaryCopyEncoder::new(writer, plan.columns.len())?;
-    for staged in &package.batches {
-        encoder.write_batch(
-            &staged.batch,
-            &staged.segment_id,
-            staged.row_start,
-            &load,
-            loaded_at_ms,
-        )?;
+    let segment_id = segment.state.segment_id.as_str().to_owned();
+    let mut row_start = 0_u64;
+    for batch in segment.into_batches()? {
+        encoder.write_batch(&batch.batch, &segment_id, row_start, &load, loaded_at_ms)?;
+        row_start = row_start
+            .checked_add(
+                u64::try_from(batch.batch.num_rows())
+                    .map_err(|_| CdfError::data("Postgres batch row count exceeds u64"))?,
+            )
+            .ok_or_else(|| CdfError::data("Postgres segment row count overflowed"))?;
     }
     let (writer, encoded_rows) = encoder.finish()?;
     let copied = writer

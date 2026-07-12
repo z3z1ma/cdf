@@ -1,30 +1,9 @@
 use std::{collections::BTreeMap, path::Path};
 
-use arrow_array::RecordBatch;
-use arrow_schema::SchemaRef;
 use cdf_kernel::{CursorPosition, CursorValue, ScopeKey, SourcePosition};
-use cdf_package::{PackageReader, SegmentEntry};
+use cdf_package::PackageReader;
 
-use crate::{rows::*, validate::plan_segment_acks, *};
-
-#[derive(Clone, Debug, PartialEq)]
-pub(crate) struct PostgresPackageData {
-    pub(crate) segments: Vec<PostgresLoadedSegment>,
-    pub(crate) batches: Vec<PostgresStageBatch>,
-}
-
-#[derive(Clone, Debug, PartialEq)]
-pub(crate) struct PostgresStageBatch {
-    pub(crate) batch: RecordBatch,
-    pub(crate) segment_id: String,
-    pub(crate) row_start: u64,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct PostgresLoadedSegment {
-    pub(crate) entry: SegmentEntry,
-    pub(crate) row_count: u64,
-}
+use crate::{validate::plan_segment_acks, *};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct PostgresSessionSegments {
@@ -159,77 +138,6 @@ pub(crate) fn expected_segments_for_session(
     Ok(PostgresSessionSegments { expected, order })
 }
 
-pub(crate) fn package_data_from_commit_segment(
-    segment: CommitSegment,
-    plan: &PostgresLoadPlan,
-) -> Result<PostgresPackageData> {
-    package_data_from_segments(
-        vec![(
-            SegmentEntry {
-                segment_id: segment.state.segment_id,
-                path: String::new(),
-                row_count: segment.state.row_count,
-                byte_count: segment.package_byte_count,
-                sha256: String::new(),
-            },
-            segment.batches,
-        )],
-        plan,
-    )
-}
-
-fn package_data_from_segments(
-    segments: Vec<(SegmentEntry, Vec<RecordBatch>)>,
-    plan: &PostgresLoadPlan,
-) -> Result<PostgresPackageData> {
-    if segments.is_empty() {
-        return Ok(PostgresPackageData {
-            segments: Vec::new(),
-            batches: Vec::new(),
-        });
-    }
-
-    let schema = first_schema(&segments)?;
-    validate_schema_matches_plan(schema.as_ref(), &plan.columns)?;
-
-    let mut loaded_segments = Vec::with_capacity(segments.len());
-    let mut staged_batches = Vec::new();
-    for (entry, batches) in segments {
-        let mut row_count = 0_u64;
-        for batch in batches {
-            if batch.schema().as_ref() != schema.as_ref() {
-                return Err(CdfError::data(
-                    "Postgres destination requires all package segments to share one schema",
-                ));
-            }
-            let batch_rows = u64::try_from(batch.num_rows())
-                .map_err(|_| CdfError::data("Postgres Arrow batch row count exceeds u64"))?;
-            staged_batches.push(PostgresStageBatch {
-                batch,
-                segment_id: entry.segment_id.as_str().to_owned(),
-                row_start: row_count,
-            });
-            row_count = row_count
-                .checked_add(batch_rows)
-                .ok_or_else(|| CdfError::data("Postgres segment row count overflowed"))?;
-        }
-        if row_count != entry.row_count {
-            return Err(CdfError::data(format!(
-                "package segment {} manifest row count {} differs from package data {}",
-                entry.segment_id.as_str(),
-                entry.row_count,
-                row_count
-            )));
-        }
-        loaded_segments.push(PostgresLoadedSegment { entry, row_count });
-    }
-
-    Ok(PostgresPackageData {
-        segments: loaded_segments,
-        batches: staged_batches,
-    })
-}
-
 pub(crate) fn record_package_receipt_once(package_dir: &Path, receipt: &Receipt) -> Result<bool> {
     let reader = PackageReader::open(package_dir)?;
     let receipts = reader.receipts()?;
@@ -284,15 +192,6 @@ fn synthetic_state_segment(ack: SegmentAck) -> StateSegment {
         row_count: ack.row_count,
         byte_count: ack.byte_count,
     }
-}
-
-fn first_schema(segments: &[(SegmentEntry, Vec<RecordBatch>)]) -> Result<SchemaRef> {
-    segments
-        .iter()
-        .flat_map(|(_, batches)| batches.iter())
-        .next()
-        .map(RecordBatch::schema)
-        .ok_or_else(|| CdfError::data("Postgres destination found no record batches in package"))
 }
 
 fn plan_package_hash(plan: &PostgresLoadPlan) -> Result<PackageHash> {
