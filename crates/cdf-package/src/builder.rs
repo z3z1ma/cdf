@@ -23,9 +23,9 @@ use crate::{
     quarantine::{QuarantineRecord, quarantine_records_to_parquet_bytes},
     storage::{
         ArtifactDurability, atomic_write, build_manifest, collect_identity_file_entries,
-        collect_identity_file_paths, create_layout, file_entry_for_path, io_error,
-        nested_artifact_path, normalize_artifact_path, package_path, segment_relative_path,
-        sync_directory, write_arrow_ipc_file, write_manifest_atomic,
+        create_layout, file_entry_for_path, io_error, nested_artifact_path,
+        normalize_artifact_path, package_path, segment_relative_path, sync_directory,
+        visit_identity_file_paths, write_arrow_ipc_file, write_manifest_atomic,
     },
 };
 
@@ -361,19 +361,19 @@ impl PackageBuilder {
                 .map_err(|error| io_error(format!("sync {TRACE_FILE}"), error))?;
         }
         sync_directory(&self.package_dir)?;
-        let written_artifacts =
+        let mut pending_artifacts =
             read_journal::<FileEntry>(&self.artifact_receipts, "package artifact receipt journal")?
                 .into_iter()
                 .map(|entry| (entry.path.clone(), entry))
                 .collect::<BTreeMap<_, _>>();
         let mut files = Vec::new();
-        for relative_path in collect_identity_file_paths(&self.package_dir)? {
+        visit_identity_file_paths(&self.package_dir, |relative_path| {
             let path = package_path(&self.package_dir, &relative_path);
             let byte_count = std::fs::metadata(&path)
                 .map_err(|error| io_error(format!("stat {}", path.display()), error))?
                 .len();
-            match written_artifacts.get(&relative_path) {
-                Some(entry) if entry.byte_count == byte_count => files.push(entry.clone()),
+            match pending_artifacts.remove(&relative_path) {
+                Some(entry) if entry.byte_count == byte_count => files.push(entry),
                 Some(entry) => {
                     return Err(CdfError::data(format!(
                         "identity artifact {relative_path} changed after its writer receipt: expected {} bytes, found {byte_count}",
@@ -382,30 +382,38 @@ impl PackageBuilder {
                 }
                 None => files.push(file_entry_for_path(&self.package_dir, &relative_path)?),
             }
+            Ok(())
+        })?;
+        if let Some((path, _)) = pending_artifacts.first_key_value() {
+            return Err(CdfError::data(format!(
+                "identity artifact {path} is missing before package finalization"
+            )));
         }
-        let entries_by_path: BTreeMap<&str, &FileEntry> = files
-            .iter()
-            .map(|entry| (entry.path.as_str(), entry))
-            .collect();
-        let segment_drafts =
-            read_journal::<SegmentDraft>(&self.segment_drafts, "package segment draft journal")?;
-        let mut segments = Vec::with_capacity(segment_drafts.len());
-
-        for draft in &segment_drafts {
-            let entry = entries_by_path.get(draft.path.as_str()).ok_or_else(|| {
-                CdfError::data(format!(
-                    "segment file {} missing before package finalization",
-                    draft.path
-                ))
-            })?;
-            segments.push(SegmentEntry {
-                segment_id: draft.segment_id.clone(),
-                path: draft.path.clone(),
-                row_count: draft.row_count,
-                byte_count: entry.byte_count,
-                sha256: entry.sha256.clone(),
-            });
-        }
+        files.sort_by(|left, right| left.path.cmp(&right.path));
+        let mut segments = Vec::new();
+        visit_journal::<SegmentDraft>(
+            &self.segment_drafts,
+            "package segment draft journal",
+            |draft| {
+                let index = files
+                    .binary_search_by(|entry| entry.path.as_str().cmp(draft.path.as_str()))
+                    .map_err(|_| {
+                        CdfError::data(format!(
+                            "segment file {} missing before package finalization",
+                            draft.path
+                        ))
+                    })?;
+                let entry = &files[index];
+                segments.push(SegmentEntry {
+                    segment_id: draft.segment_id,
+                    path: draft.path,
+                    row_count: draft.row_count,
+                    byte_count: entry.byte_count,
+                    sha256: entry.sha256.clone(),
+                });
+                Ok(())
+            },
+        )?;
 
         let manifest = build_manifest(self.package_id.clone(), files, segments, status)?;
         write_manifest_atomic(&self.package_dir, &manifest)?;
@@ -424,6 +432,19 @@ fn append_journal<T: Serialize>(journal: &Mutex<File>, value: &T, label: &str) -
 }
 
 fn read_journal<T: DeserializeOwned>(journal: &Mutex<File>, label: &str) -> Result<Vec<T>> {
+    let mut values = Vec::new();
+    visit_journal(journal, label, |value| {
+        values.push(value);
+        Ok(())
+    })?;
+    Ok(values)
+}
+
+fn visit_journal<T: DeserializeOwned>(
+    journal: &Mutex<File>,
+    label: &str,
+    mut visit: impl FnMut(T) -> Result<()>,
+) -> Result<()> {
     let mut file = journal
         .lock()
         .map_err(|_| CdfError::internal(format!("{label} lock is poisoned")))?;
@@ -431,11 +452,9 @@ fn read_journal<T: DeserializeOwned>(journal: &Mutex<File>, label: &str) -> Resu
         .map_err(|error| io_error(format!("flush {label}"), error))?;
     file.seek(SeekFrom::Start(0))
         .map_err(|error| io_error(format!("rewind {label}"), error))?;
-    BufReader::new(&mut *file)
-        .lines()
-        .map(|line| {
-            let line = line.map_err(|error| io_error(format!("read {label}"), error))?;
-            serde_json::from_str(&line).map_err(crate::json::json_error)
-        })
-        .collect()
+    for line in BufReader::new(&mut *file).lines() {
+        let line = line.map_err(|error| io_error(format!("read {label}"), error))?;
+        visit(serde_json::from_str(&line).map_err(crate::json::json_error)?)?;
+    }
+    Ok(())
 }

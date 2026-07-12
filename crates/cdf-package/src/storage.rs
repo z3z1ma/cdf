@@ -257,38 +257,52 @@ pub(crate) fn collect_identity_file_entries(package_dir: &Path) -> Result<Vec<Fi
 
 pub(crate) fn collect_identity_file_paths(package_dir: &Path) -> Result<Vec<String>> {
     let mut relative_paths = Vec::new();
-    for directory in REQUIRED_DIRECTORIES {
-        let directory_path = package_dir.join(directory);
-        if directory_path.exists() {
-            collect_files(package_dir, &directory_path, &mut relative_paths)?;
-        }
-    }
-    let trace_path = package_dir.join(TRACE_FILE);
-    if trace_path.exists() {
-        relative_paths.push(TRACE_FILE.to_owned());
-    }
-
-    relative_paths.retain(|path| is_identity_file(path));
+    visit_identity_file_paths(package_dir, |path| {
+        relative_paths.push(path);
+        Ok(())
+    })?;
     relative_paths.sort();
     Ok(relative_paths)
 }
 
-fn collect_files(package_dir: &Path, directory: &Path, files: &mut Vec<String>) -> Result<()> {
-    let mut entries = fs::read_dir(directory)
-        .map_err(|error| io_error(format!("read directory {}", directory.display()), error))?
-        .collect::<std::result::Result<Vec<_>, _>>()
-        .map_err(|error| io_error(format!("read directory {}", directory.display()), error))?;
-    entries.sort_by_key(|entry| entry.path());
+pub(crate) fn visit_identity_file_paths(
+    package_dir: &Path,
+    mut visit: impl FnMut(String) -> Result<()>,
+) -> Result<()> {
+    for directory in REQUIRED_DIRECTORIES {
+        let directory_path = package_dir.join(directory);
+        if directory_path.exists() {
+            visit_files(package_dir, &directory_path, &mut visit)?;
+        }
+    }
+    let trace_path = package_dir.join(TRACE_FILE);
+    if trace_path.exists() {
+        visit(TRACE_FILE.to_owned())?;
+    }
+    Ok(())
+}
 
-    for entry in entries {
+fn visit_files(
+    package_dir: &Path,
+    directory: &Path,
+    visit: &mut impl FnMut(String) -> Result<()>,
+) -> Result<()> {
+    for entry in fs::read_dir(directory)
+        .map_err(|error| io_error(format!("read directory {}", directory.display()), error))?
+    {
+        let entry = entry
+            .map_err(|error| io_error(format!("read directory {}", directory.display()), error))?;
         let path = entry.path();
         let file_type = entry
             .file_type()
             .map_err(|error| io_error(format!("stat {}", path.display()), error))?;
         if file_type.is_dir() {
-            collect_files(package_dir, &path, files)?;
+            visit_files(package_dir, &path, visit)?;
         } else if file_type.is_file() {
-            files.push(relative_path_string(package_dir, &path)?);
+            let relative = relative_path_string(package_dir, &path)?;
+            if is_identity_file(&relative) {
+                visit(relative)?;
+            }
         }
     }
     Ok(())
