@@ -50,8 +50,8 @@ mod tests {
     use std::{sync::Arc, time::Instant};
 
     use arrow_array::{
-        Array, Float64Array, Int32Array, Int64Array, RecordBatch, StringArray,
-        TimestampMicrosecondArray,
+        Array, Decimal128Array, Float64Array, Int32Array, Int64Array, ListArray, RecordBatch,
+        StringArray, StructArray, TimestampMicrosecondArray, types::Int32Type,
     };
     use arrow_schema::{DataType, Field, Schema, TimeUnit};
     use duckdb::{appender_params_from_iter, types::Value};
@@ -85,6 +85,82 @@ mod tests {
             .query_row("SELECT count(*) FROM target", [], |row| row.get(0))
             .unwrap();
         assert_eq!(count, 3);
+    }
+
+    #[test]
+    fn arrow_appender_preserves_decimal_and_nested_batches() {
+        let list = ListArray::from_iter_primitive::<Int32Type, _, _>(vec![
+            Some(vec![Some(1), Some(2)]),
+            Some(vec![Some(3)]),
+        ]);
+        let struct_fields = vec![
+            Arc::new(Field::new("code", DataType::Int32, false)),
+            Arc::new(Field::new("label", DataType::Utf8, true)),
+        ];
+        let structure = StructArray::new(
+            struct_fields.clone().into(),
+            vec![
+                Arc::new(Int32Array::from(vec![7, 8])),
+                Arc::new(StringArray::from(vec![Some("seven"), None])),
+            ],
+            None,
+        );
+        let decimal = Decimal128Array::from(vec![12345_i128, -6789_i128])
+            .with_precision_and_scale(10, 2)
+            .unwrap();
+        let batch = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![
+                Field::new("amount", DataType::Decimal128(10, 2), false),
+                Field::new("items", list.data_type().clone(), false),
+                Field::new("detail", DataType::Struct(struct_fields.into()), false),
+            ])),
+            vec![Arc::new(decimal), Arc::new(list), Arc::new(structure)],
+        )
+        .unwrap();
+        let fields = batch
+            .schema()
+            .fields()
+            .iter()
+            .map(|field| crate::package::field_plan(field).unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(fields[0].sql_type, "DECIMAL(10,2)");
+        assert_eq!(fields[1].sql_type, "INTEGER[]");
+        assert_eq!(
+            fields[2].sql_type,
+            "STRUCT(\"code\" INTEGER, \"label\" VARCHAR)"
+        );
+        let map_type = DataType::Map(
+            Arc::new(Field::new(
+                "entries",
+                DataType::Struct(
+                    vec![
+                        Arc::new(Field::new("key", DataType::Utf8, false)),
+                        Arc::new(Field::new("value", DataType::Int64, true)),
+                    ]
+                    .into(),
+                ),
+                false,
+            )),
+            false,
+        );
+        assert_eq!(crate::package::duckdb_type(&map_type).unwrap(), "MAP(VARCHAR, BIGINT)");
+
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(&format!(
+            "CREATE TABLE target ({})",
+            crate::table::create_columns_sql(&fields)
+        ))
+        .unwrap();
+        let mut appender = conn.appender("target").unwrap();
+        appender
+            .append_record_batch(into_duckdb_batch(batch).unwrap())
+            .unwrap();
+        appender.flush().unwrap();
+        drop(appender);
+        let count: u64 = conn
+            .query_row("SELECT count(*) FROM target", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(count, 2);
     }
 
     proptest! {

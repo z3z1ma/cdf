@@ -48,11 +48,20 @@ pub(crate) fn duckdb_sheet() -> Result<DestinationSheet> {
                 "TIMESTAMPTZ",
                 TypeMappingFidelity::Unsupported,
             ),
-            mapping("Decimal*", "DECIMAL", TypeMappingFidelity::Unsupported),
             mapping(
-                "Struct/List/Map",
-                "JSON/STRUCT/LIST",
+                "Decimal128(precision<=38, scale>=0)",
+                "DECIMAL",
+                TypeMappingFidelity::Lossless,
+            ),
+            mapping(
+                "Decimal256",
+                "DECIMAL/DOUBLE",
                 TypeMappingFidelity::Unsupported,
+            ),
+            mapping(
+                "Struct/List/LargeList/FixedSizeList/Map",
+                "STRUCT/LIST/ARRAY/MAP",
+                TypeMappingFidelity::Lossless,
             ),
         ],
         identifier_rules: IdentifierRules {

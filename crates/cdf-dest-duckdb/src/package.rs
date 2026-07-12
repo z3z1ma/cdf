@@ -109,6 +109,20 @@ pub(crate) fn duckdb_type(data_type: &DataType) -> Result<String> {
         DataType::Float64 => "DOUBLE",
         DataType::Utf8 | DataType::LargeUtf8 => "VARCHAR",
         DataType::Binary | DataType::LargeBinary => "BLOB",
+        DataType::FixedSizeBinary(_) => "BLOB",
+        DataType::Decimal128(precision, scale) if *scale >= 0 && *precision <= 38 => {
+            return Ok(format!("DECIMAL({precision},{scale})"));
+        }
+        DataType::Decimal128(_, _) => {
+            return Err(CdfError::contract(format!(
+                "DuckDB DECIMAL requires precision <= 38 and nonnegative scale; Arrow type is {data_type:?}"
+            )));
+        }
+        DataType::Decimal256(_, _) => {
+            return Err(CdfError::contract(
+                "DuckDB's pinned Arrow appender maps Decimal256 through DOUBLE and cannot preserve it losslessly",
+            ));
+        }
         DataType::Date32 => "DATE",
         DataType::Time32(TimeUnit::Second | TimeUnit::Millisecond)
         | DataType::Time64(TimeUnit::Microsecond) => "TIME",
@@ -130,6 +144,53 @@ pub(crate) fn duckdb_type(data_type: &DataType) -> Result<String> {
         DataType::Timestamp(TimeUnit::Nanosecond, None) => {
             return Err(CdfError::contract(
                 "DuckDB timestamp nanosecond commits would lose precision",
+            ));
+        }
+        DataType::List(field) | DataType::LargeList(field) => {
+            return Ok(format!("{}[]", duckdb_type(field.data_type())?));
+        }
+        DataType::FixedSizeList(field, size) if *size > 0 => {
+            return Ok(format!("{}[{size}]", duckdb_type(field.data_type())?));
+        }
+        DataType::FixedSizeList(_, _) => {
+            return Err(CdfError::contract(
+                "DuckDB fixed-size Arrow lists require a positive element count",
+            ));
+        }
+        DataType::Struct(fields) if !fields.is_empty() => {
+            let fields = fields
+                .iter()
+                .map(|field| {
+                    validate_ident(field.name())?;
+                    Ok(format!(
+                        "{} {}",
+                        quote_ident(field.name()),
+                        duckdb_type(field.data_type())?
+                    ))
+                })
+                .collect::<Result<Vec<_>>>()?;
+            return Ok(format!("STRUCT({})", fields.join(", ")));
+        }
+        DataType::Struct(_) => {
+            return Err(CdfError::contract(
+                "DuckDB cannot persist an empty Arrow struct",
+            ));
+        }
+        DataType::Map(entries, _) => {
+            let DataType::Struct(fields) = entries.data_type() else {
+                return Err(CdfError::contract(
+                    "Arrow map entries must be a struct<key,value> for DuckDB",
+                ));
+            };
+            if fields.len() != 2 || fields[0].name() != "key" || fields[1].name() != "value" {
+                return Err(CdfError::contract(
+                    "Arrow map entries must contain key and value fields for DuckDB",
+                ));
+            }
+            return Ok(format!(
+                "MAP({}, {})",
+                duckdb_type(fields[0].data_type())?,
+                duckdb_type(fields[1].data_type())?
             ));
         }
         other => {
