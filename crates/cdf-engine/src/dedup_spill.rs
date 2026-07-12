@@ -32,8 +32,8 @@ pub(crate) struct DedupPayload {
 pub(crate) struct DedupPayloadSpool {
     owner: Arc<ScratchOwner>,
     reservation: Arc<Mutex<SpillReservation>>,
-    writer: Option<arrow_ipc::writer::StreamWriter<BudgetedFile>>,
-    metadata: BufWriter<BudgetedFile>,
+    writer: Option<arrow_ipc::writer::StreamWriter<BudgetedSpillFile>>,
+    metadata: BufWriter<BudgetedSpillFile>,
     schema: Option<arrow_schema::SchemaRef>,
     pub input_bytes: u64,
 }
@@ -59,7 +59,7 @@ impl DedupPayloadSpool {
                 ))
             })?,
         ));
-        let metadata = BufWriter::new(BudgetedFile::create(
+        let metadata = BufWriter::new(BudgetedSpillFile::create(
             root.join("payload-metadata.jsonl"),
             Arc::clone(&reservation),
         )?);
@@ -89,7 +89,7 @@ impl DedupPayloadSpool {
             self.schema = Some(batch.schema());
             self.writer = Some(
                 arrow_ipc::writer::StreamWriter::try_new(
-                    BudgetedFile::create(
+                    BudgetedSpillFile::create(
                         self.owner.root.join("payload.arrow"),
                         Arc::clone(&self.reservation),
                     )?,
@@ -213,7 +213,7 @@ pub(crate) struct DedupIndexSummary {
 
 pub(crate) struct ExternalDedupIndex {
     root: PathBuf,
-    keys: Option<BufWriter<BudgetedFile>>,
+    keys: Option<BufWriter<BudgetedSpillFile>>,
     reservation: Arc<Mutex<SpillReservation>>,
     memory: Option<Arc<dyn MemoryCoordinator>>,
     memory_lease: Option<MemoryLease>,
@@ -266,7 +266,7 @@ impl ExternalDedupIndex {
             ))
         })?;
         let reservation = Arc::new(Mutex::new(reservation));
-        let keys = BufWriter::new(BudgetedFile::create(
+        let keys = BufWriter::new(BudgetedSpillFile::create(
             root.join("keys.unsorted"),
             Arc::clone(&reservation),
         )?);
@@ -374,7 +374,7 @@ impl ExternalDedupIndex {
         let (level, count) = self.create_key_runs()?;
         let sorted_keys = if count == 0 {
             let path = self.root.join("keys-empty.sorted");
-            BudgetedFile::create(path.clone(), Arc::clone(&self.reservation))?;
+            BudgetedSpillFile::create(path.clone(), Arc::clone(&self.reservation))?;
             path
         } else {
             self.merge_key_levels(level, count)?
@@ -387,7 +387,7 @@ impl ExternalDedupIndex {
         let (decision_level, decision_count) = self.create_decision_runs(&decisions_unsorted)?;
         let decisions = if decision_count == 0 {
             let path = self.root.join("decisions-empty.sorted");
-            BudgetedFile::create(path.clone(), Arc::clone(&self.reservation))?;
+            BudgetedSpillFile::create(path.clone(), Arc::clone(&self.reservation))?;
             path
         } else {
             self.merge_decision_levels(decision_level, decision_count)?
@@ -500,8 +500,10 @@ impl ExternalDedupIndex {
             }
             records.sort_unstable_by(key_record_cmp);
             let path = self.key_run_path(0, run);
-            let mut writer =
-                BufWriter::new(BudgetedFile::create(path, Arc::clone(&self.reservation))?);
+            let mut writer = BufWriter::new(BudgetedSpillFile::create(
+                path,
+                Arc::clone(&self.reservation),
+            )?);
             for record in records {
                 write_key_record(&mut writer, &record)?;
             }
@@ -541,7 +543,7 @@ impl ExternalDedupIndex {
         keep: DedupKeepProgram,
     ) -> Result<(u64, u64)> {
         let mut reader = KeyReader::open(sorted_keys)?;
-        let mut writer = BufWriter::new(BudgetedFile::create(
+        let mut writer = BufWriter::new(BudgetedSpillFile::create(
             output.to_path_buf(),
             Arc::clone(&self.reservation),
         )?);
@@ -595,7 +597,7 @@ impl ExternalDedupIndex {
         let mut keys = KeyReader::open(sorted_keys)?;
         let mut winners = KeyReader::open(winners)?;
         let mut winner = winners.next()?;
-        let mut writer = BufWriter::new(BudgetedFile::create(
+        let mut writer = BufWriter::new(BudgetedSpillFile::create(
             output.to_path_buf(),
             Arc::clone(&self.reservation),
         )?);
@@ -639,8 +641,10 @@ impl ExternalDedupIndex {
             }
             records.sort_unstable_by_key(|record| record.ordinal);
             let path = self.decision_run_path(0, run);
-            let mut writer =
-                BufWriter::new(BudgetedFile::create(path, Arc::clone(&self.reservation))?);
+            let mut writer = BufWriter::new(BudgetedSpillFile::create(
+                path,
+                Arc::clone(&self.reservation),
+            )?);
             for record in records {
                 write_decision(&mut writer, record)?;
             }
@@ -747,7 +751,7 @@ fn merge_key_runs(
             });
         }
     }
-    let mut writer = BufWriter::new(BudgetedFile::create(output.clone(), reservation)?);
+    let mut writer = BufWriter::new(BudgetedSpillFile::create(output.clone(), reservation)?);
     while let Some(item) = heap.pop() {
         write_key_record(&mut writer, &item.record)?;
         if let Some(record) = readers[item.reader].next()? {
@@ -802,7 +806,7 @@ fn merge_decision_runs(
             });
         }
     }
-    let mut writer = BufWriter::new(BudgetedFile::create(output.clone(), reservation)?);
+    let mut writer = BufWriter::new(BudgetedSpillFile::create(output.clone(), reservation)?);
     while let Some(item) = heap.pop() {
         write_decision(&mut writer, item.record)?;
         if let Some(record) = readers[item.reader].next()? {
@@ -905,23 +909,23 @@ fn read_u64(reader: &mut impl Read) -> Result<u64> {
     read_u64_or_eof(reader)?.ok_or_else(|| CdfError::data("dedup record is truncated"))
 }
 
-pub(crate) struct BudgetedFile {
+pub(crate) struct BudgetedSpillFile {
     file: File,
     reservation: Arc<Mutex<SpillReservation>>,
 }
 
-impl BudgetedFile {
+impl BudgetedSpillFile {
     pub(crate) fn create(path: PathBuf, reservation: Arc<Mutex<SpillReservation>>) -> Result<Self> {
         let file = OpenOptions::new()
             .create_new(true)
             .write(true)
             .open(&path)
-            .map_err(|error| io_error("create dedup spill file", &path, error))?;
+            .map_err(|error| io_error("create spill file", &path, error))?;
         Ok(Self { file, reservation })
     }
 }
 
-impl Write for BudgetedFile {
+impl Write for BudgetedSpillFile {
     fn write(&mut self, buffer: &[u8]) -> std::io::Result<usize> {
         if buffer.is_empty() {
             return Ok(0);
@@ -935,7 +939,7 @@ impl Write for BudgetedFile {
         {
             return Err(std::io::Error::new(
                 ErrorKind::StorageFull,
-                "shared spill budget exhausted before dedup write",
+                "shared spill budget exhausted before write",
             ));
         }
         let result = self.file.write(buffer);

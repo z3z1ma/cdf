@@ -46,8 +46,8 @@ use crate::{
     planning::validate_program,
     predicates::apply_residual_filters,
     variant_capture::{
-        ResidualDecisionArtifact, ResidualRuntimeVerdict, ResidualTypedProjection,
-        contract_evolution_artifact, normalize_batch,
+        ContractEvolutionArtifact, ResidualDecisionArtifact, ResidualRuntimeVerdict,
+        ResidualTypedProjection, contract_evolution_artifact_metadata, normalize_batch,
     },
 };
 
@@ -719,6 +719,46 @@ struct ContractExecOutput {
     memory_lease: Option<MemoryLease>,
 }
 
+enum ResidualDecisionAccumulator {
+    Memory(Vec<ResidualDecisionArtifact>),
+    Spill(crate::residual_spill::ResidualDecisionRuns),
+}
+
+enum ResidualDecisionOutput {
+    Memory(std::vec::IntoIter<ResidualDecisionArtifact>),
+    Spill(crate::residual_spill::ResidualDecisionReader),
+}
+
+impl ResidualDecisionAccumulator {
+    fn push(&mut self, decisions: Vec<ResidualDecisionArtifact>) -> Result<()> {
+        match self {
+            Self::Memory(all) => all.extend(decisions),
+            Self::Spill(runs) => runs.push(decisions)?,
+        }
+        Ok(())
+    }
+
+    fn finish(self) -> Result<Option<ResidualDecisionOutput>> {
+        match self {
+            Self::Memory(mut decisions) => {
+                decisions.sort_by(crate::variant_capture::residual_decision_cmp);
+                Ok((!decisions.is_empty())
+                    .then(|| ResidualDecisionOutput::Memory(decisions.into_iter())))
+            }
+            Self::Spill(runs) => Ok(runs.finish()?.map(ResidualDecisionOutput::Spill)),
+        }
+    }
+}
+
+impl ResidualDecisionOutput {
+    fn next(&mut self) -> Result<Option<ResidualDecisionArtifact>> {
+        match self {
+            Self::Memory(decisions) => Ok(decisions.next()),
+            Self::Spill(decisions) => decisions.next(),
+        }
+    }
+}
+
 struct ResidualBatchContext<'a> {
     evaluation: &'a ContractEvaluationContext,
     source_rows: Option<&'a [usize]>,
@@ -1018,7 +1058,16 @@ where
     let mut processed_observations = Vec::new();
     let mut terminal_quarantines = Vec::new();
     let mut observation_attestations = BTreeMap::<String, PartitionAttestation>::new();
-    let mut residual_decisions = Vec::new();
+    let mut residual_decisions = match (&options.services, validation_program.residual.as_ref()) {
+        (Some(services), Some(_)) => {
+            ResidualDecisionAccumulator::Spill(crate::residual_spill::ResidualDecisionRuns::create(
+                builder.package_dir().join(".residual-decisions-spill"),
+                services.spill(),
+                Some(services.memory()),
+            )?)
+        }
+        _ => ResidualDecisionAccumulator::Memory(Vec::new()),
+    };
     let apply_package_dedup = validation_program.has_exact_row_dedup_rule()
         || (plan.write_disposition == WriteDisposition::Merge
             && validation_program.has_keyed_dedup_rule());
@@ -1282,7 +1331,7 @@ where
                     },
                     transform_memory_lease,
                 )?;
-                residual_decisions.extend(batch_residual_decisions);
+                residual_decisions.push(batch_residual_decisions)?;
                 merge_verdict_summary(&mut verdict_summary, summary);
                 if !quarantine_records.is_empty() {
                     write_quarantine_part(
@@ -1498,13 +1547,14 @@ where
         &output_schema.expect("compiled output schema is always present"),
     )?;
     builder.write_runtime_arrow_schema(runtime_output_schema.as_ref())?;
-    if let Some(evolution) = contract_evolution_artifact(
+    let mut residual_decisions = residual_decisions.finish()?;
+    if let Some(evolution) = contract_evolution_artifact_metadata(
         &validation_program,
         schema_authority.baseline_schema_hash.clone(),
         schema_authority.effective_schema_hash.clone(),
-        residual_decisions,
+        residual_decisions.is_some(),
     ) {
-        builder.write_json_artifact("schema/contract-evolution.json", &evolution)?;
+        write_contract_evolution_stream(&builder, &evolution, residual_decisions.as_mut())?;
     }
     builder.write_stats_artifact(
         "profile.json",
@@ -1915,6 +1965,43 @@ fn write_quarantine_summary(
     artifact.write_json(&summary.quarantine_candidate_count)?;
     artifact.write_all(b",\"quarantined_rows\":")?;
     artifact.write_json(&summary.quarantined_rows)?;
+    artifact.write_all(b"}")?;
+    artifact.finish()?;
+    Ok(())
+}
+
+fn write_contract_evolution_stream(
+    builder: &PackageBuilder,
+    evolution: &ContractEvolutionArtifact,
+    mut decisions: Option<&mut ResidualDecisionOutput>,
+) -> Result<()> {
+    let mut artifact =
+        builder.begin_streaming_identity_artifact("schema/contract-evolution.json")?;
+    artifact.write_all(b"{\"baseline_schema_hash\":")?;
+    artifact.write_json(&evolution.baseline_schema_hash)?;
+    artifact.write_all(b",\"effective_schema_hash\":")?;
+    artifact.write_json(&evolution.effective_schema_hash)?;
+    artifact.write_all(b",\"implicit_promotion_count\":")?;
+    artifact.write_json(&evolution.implicit_promotion_count)?;
+    artifact.write_all(b",\"promotion_events\":")?;
+    artifact.write_json(&evolution.promotion_events)?;
+    artifact.write_all(b",\"residual_capture\":")?;
+    artifact.write_json(&evolution.residual_capture)?;
+    artifact.write_all(b",\"residual_decisions\":[")?;
+    let mut first = true;
+    if let Some(decisions) = decisions.as_mut() {
+        while let Some(decision) = decisions.next()? {
+            if !first {
+                artifact.write_all(b",")?;
+            }
+            artifact.write_json(&decision)?;
+            first = false;
+        }
+    }
+    artifact.write_all(b"],\"variant_capture\":")?;
+    artifact.write_json(&evolution.variant_capture)?;
+    artifact.write_all(b",\"version\":")?;
+    artifact.write_json(&evolution.version)?;
     artifact.write_all(b"}")?;
     artifact.finish()?;
     Ok(())

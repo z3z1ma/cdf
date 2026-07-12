@@ -2142,7 +2142,29 @@ fn residual_multi_partition_decisions_share_verified_effective_schema_and_keep_i
     );
 
     let temp = TempDir::new().unwrap();
-    block_on(execute_to_package(&plan, &resource, temp.path())).unwrap();
+    let plain = block_on(execute_to_package(&plan, &resource, temp.path())).unwrap();
+    let managed_temp = TempDir::new().unwrap();
+    let (_, services) =
+        StandaloneExecutionHost::default_services_with_spill(64 * 1024 * 1024, 64 * 1024 * 1024)
+            .unwrap();
+    let pre_finalize =
+        |_builder: &cdf_package::PackageBuilder, _draft: EnginePackageDraft<'_>| Ok(());
+    let managed = block_on(execute_to_package_with_segment_positions_and_pre_finalize(
+        &plan,
+        &resource,
+        managed_temp.path(),
+        &pre_finalize,
+        EngineExecutionOptions::default().with_execution_services(services.clone()),
+    ))
+    .unwrap();
+    assert_eq!(managed.output.manifest.identity, plain.manifest.identity);
+    assert_eq!(
+        managed.output.manifest.package_hash,
+        plain.manifest.package_hash
+    );
+    assert!(services.spill().snapshot().peak_bytes > 0);
+    assert_eq!(services.spill().snapshot().current_bytes, 0);
+    assert_eq!(services.memory().snapshot().current_bytes, 0);
     let reader = cdf_package::PackageReader::open(temp.path()).unwrap();
     reader.verify().unwrap();
     assert_eq!(reader.runtime_arrow_schema().unwrap(), planned_schema);

@@ -1,3 +1,4 @@
+use std::cmp::Ordering;
 use std::sync::Arc;
 
 use arrow_array::{Array, ArrayRef, RecordBatch, StringArray};
@@ -14,18 +15,17 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct ContractEvolutionArtifact {
-    version: u16,
-    baseline_schema_hash: SchemaHash,
-    effective_schema_hash: SchemaHash,
-    variant_capture: Vec<VariantCaptureArtifact>,
-    residual_capture: Option<ResidualCaptureArtifact>,
-    residual_decisions: Vec<ResidualDecisionArtifact>,
-    promotion_events: Vec<PromotionEventArtifact>,
-    implicit_promotion_count: u64,
+    pub(crate) version: u16,
+    pub(crate) baseline_schema_hash: SchemaHash,
+    pub(crate) effective_schema_hash: SchemaHash,
+    pub(crate) variant_capture: Vec<VariantCaptureArtifact>,
+    pub(crate) residual_capture: Option<ResidualCaptureArtifact>,
+    pub(crate) promotion_events: Vec<PromotionEventArtifact>,
+    pub(crate) implicit_promotion_count: u64,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-struct ResidualCaptureArtifact {
+pub(crate) struct ResidualCaptureArtifact {
     version: u16,
     variant_column: String,
     semantic: String,
@@ -67,14 +67,14 @@ pub(crate) enum ResidualTypedProjection {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-struct VariantCaptureArtifact {
+pub(crate) struct VariantCaptureArtifact {
     source_field: String,
     variant_column: String,
     semantic: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-struct PromotionEventArtifact {
+pub(crate) struct PromotionEventArtifact {
     source_field: String,
     target_field: String,
     event_id: String,
@@ -270,11 +270,11 @@ fn residual_codec_error(error: cdf_contract::ResidualCodecError) -> CdfError {
     CdfError::data(format!("{}: {error}", error.code()))
 }
 
-pub(crate) fn contract_evolution_artifact(
+pub(crate) fn contract_evolution_artifact_metadata(
     program: &ValidationProgram,
     baseline_schema_hash: SchemaHash,
     effective_schema_hash: SchemaHash,
-    mut residual_decisions: Vec<ResidualDecisionArtifact>,
+    has_residual_decisions: bool,
 ) -> Option<ContractEvolutionArtifact> {
     let mut variant_capture = program
         .column_programs
@@ -306,7 +306,7 @@ pub(crate) fn contract_evolution_artifact(
             })
     });
 
-    if residual_capture.is_none() && variant_capture.is_empty() && residual_decisions.is_empty() {
+    if residual_capture.is_none() && variant_capture.is_empty() && !has_residual_decisions {
         return None;
     }
 
@@ -317,22 +317,25 @@ pub(crate) fn contract_evolution_artifact(
             .then_with(|| left.semantic.cmp(&right.semantic))
     });
     variant_capture.dedup();
-    residual_decisions.sort_by(|left, right| {
-        left.observation_id
-            .cmp(&right.observation_id)
-            .then_with(|| left.batch_id.cmp(&right.batch_id))
-            .then_with(|| left.source_row_ordinal.cmp(&right.source_row_ordinal))
-            .then_with(|| left.source_path.cmp(&right.source_path))
-            .then_with(|| left.verdict.cmp(&right.verdict))
-    });
     Some(ContractEvolutionArtifact {
         version: 1,
         baseline_schema_hash,
         effective_schema_hash,
         variant_capture,
         residual_capture,
-        residual_decisions,
         promotion_events: Vec::new(),
         implicit_promotion_count: 0,
     })
+}
+
+pub(crate) fn residual_decision_cmp(
+    left: &ResidualDecisionArtifact,
+    right: &ResidualDecisionArtifact,
+) -> Ordering {
+    left.observation_id
+        .cmp(&right.observation_id)
+        .then_with(|| left.batch_id.cmp(&right.batch_id))
+        .then_with(|| left.source_row_ordinal.cmp(&right.source_row_ordinal))
+        .then_with(|| left.source_path.cmp(&right.source_path))
+        .then_with(|| left.verdict.cmp(&right.verdict))
 }

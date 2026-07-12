@@ -7,6 +7,7 @@ mod memory;
 mod output_schema;
 mod planning;
 mod predicates;
+mod residual_spill;
 mod segmentation;
 mod standalone_host;
 mod table_provider;
