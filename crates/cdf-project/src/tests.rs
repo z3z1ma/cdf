@@ -37,6 +37,24 @@ use cdf_state_sqlite::InMemoryScopeLeaseStore;
 use flate2::{Compression, write::GzEncoder};
 use object_store::{ObjectStoreExt, PutPayload, memory::InMemory, path::Path as ObjectPath};
 
+#[test]
+fn project_normal_build_graph_has_no_concrete_destination_crates() {
+    let manifest: toml::Value = toml::from_str(include_str!("../Cargo.toml")).unwrap();
+    let dependencies = manifest
+        .get("dependencies")
+        .and_then(toml::Value::as_table)
+        .unwrap();
+    let concrete = dependencies
+        .keys()
+        .filter(|name| name.starts_with("cdf-dest-"))
+        .cloned()
+        .collect::<Vec<_>>();
+    assert!(
+        concrete.is_empty(),
+        "cdf-project normal dependencies must remain destination-neutral: {concrete:?}"
+    );
+}
+
 fn test_execution_services() -> cdf_runtime::ExecutionServices {
     cdf_engine::StandaloneExecutionHost::default_services(64 * 1024 * 1024)
         .unwrap()
