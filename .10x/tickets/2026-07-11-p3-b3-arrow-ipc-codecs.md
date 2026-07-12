@@ -33,3 +33,7 @@ Depends on L5 and FX1.
 
 - `.10x/specs/native-enterprise-format-catalog.md`
 - `.10x/specs/native-format-codec-runtime.md`
+
+## Progress and notes
+
+- 2026-07-11: Added the parser-local `cdf-format-arrow-ipc` file driver and registered it at composition roots. File discovery is footer-bounded; execution plans one deterministic file unit, reads dictionary and record-batch blocks by exact extents, preserves schema/custom metadata, supports exact projection, and emits accounted batches whose Arrow buffers retain source leases. Local and remote verified-spool execution now share the driver, and the former remote Arrow IPC hard rejection and file-source-local IPC execution branch were deleted. The release-mode in-memory construction comparison measured 8,196.51 MiB/s for Arrow's high-level `FileReader` and 471,540.98 MiB/s for the owner-backed driver (57.529x); this intentionally biased measurement demonstrates elimination of the high-level reader's block-buffer copy and is not a storage-throughput claim. Stream framing, compression/malformed/fuzz expansion, and storage-backed throughput evidence remain open. Evidence: `.10x/evidence/2026-07-11-p3-b3-native-arrow-ipc-file-driver.md`.

@@ -33,6 +33,7 @@ arrow-ipc = "59.1.0"
 cdf-dest-duckdb = { path = "../cdf-dest-duckdb" }
 cdf-dest-parquet = { path = "../cdf-dest-parquet" }
 cdf-dest-postgres = { path = "../cdf-dest-postgres" }
+cdf-format-arrow-ipc = { path = "../cdf-format-arrow-ipc" }
 cdf-format-parquet = { path = "../cdf-format-parquet" }
 flate2 = "1.1.9"
 object_store = "0.13.2"

@@ -38,6 +38,11 @@ fn test_file_dependencies(
     let mut formats = cdf_runtime::FormatRegistry::default();
     formats
         .register(Arc::new(
+            cdf_format_arrow_ipc::ArrowIpcFileFormatDriver::new().unwrap(),
+        ))
+        .unwrap();
+    formats
+        .register(Arc::new(
             cdf_format_parquet::ParquetFormatDriver::new().unwrap(),
         ))
         .unwrap();

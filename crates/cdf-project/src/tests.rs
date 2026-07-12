@@ -66,6 +66,11 @@ fn test_format_registry() -> Arc<cdf_runtime::FormatRegistry> {
     let mut registry = cdf_runtime::FormatRegistry::default();
     registry
         .register(Arc::new(
+            cdf_format_arrow_ipc::ArrowIpcFileFormatDriver::new().unwrap(),
+        ))
+        .unwrap();
+    registry
+        .register(Arc::new(
             cdf_format_parquet::ParquetFormatDriver::new().unwrap(),
         ))
         .unwrap();

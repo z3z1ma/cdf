@@ -48,16 +48,10 @@ pub use transport::*;
 
 #[cfg(test)]
 pub(crate) fn test_execution_services() -> cdf_runtime::ExecutionServices {
-    static SERVICES: std::sync::OnceLock<cdf_runtime::ExecutionServices> =
-        std::sync::OnceLock::new();
-    SERVICES
-        .get_or_init(|| {
-            cdf_runtime::ExecutionServices::new(std::sync::Arc::new(
-                TestIoHost::new().expect("file source test execution host"),
-            ))
-            .expect("valid file source test execution services")
-        })
-        .clone()
+    cdf_runtime::ExecutionServices::new(std::sync::Arc::new(
+        TestIoHost::new().expect("file source test execution host"),
+    ))
+    .expect("valid file source test execution services")
 }
 
 #[cfg(test)]
@@ -67,6 +61,12 @@ pub(crate) fn test_format_registry() -> std::sync::Arc<cdf_runtime::FormatRegist
     REGISTRY
         .get_or_init(|| {
             let mut registry = cdf_runtime::FormatRegistry::default();
+            registry
+                .register(std::sync::Arc::new(
+                    cdf_format_arrow_ipc::ArrowIpcFileFormatDriver::new()
+                        .expect("Arrow IPC test format driver"),
+                ))
+                .expect("Arrow IPC test format registration");
             registry
                 .register(std::sync::Arc::new(
                     cdf_format_parquet::ParquetFormatDriver::new()

@@ -732,6 +732,7 @@ dependencies = [
  "cdf-dest-parquet",
  "cdf-dest-postgres",
  "cdf-engine",
+ "cdf-format-arrow-ipc",
  "cdf-format-parquet",
  "cdf-http",
  "cdf-kernel",
@@ -823,6 +824,7 @@ dependencies = [
  "cdf-conformance",
  "cdf-contract",
  "cdf-engine",
+ "cdf-format-arrow-ipc",
  "cdf-format-parquet",
  "cdf-formats",
  "cdf-http",
@@ -937,6 +939,25 @@ dependencies = [
  "tempfile",
  "tokio",
  "tracing",
+]
+
+[[package]]
+name = "cdf-format-arrow-ipc"
+version = "0.1.0"
+dependencies = [
+ "arrow-array 59.1.0",
+ "arrow-buffer 59.1.0",
+ "arrow-ipc",
+ "arrow-schema 59.1.0",
+ "bytes",
+ "cdf-contract",
+ "cdf-kernel",
+ "cdf-memory",
+ "cdf-runtime",
+ "flatbuffers",
+ "futures-executor",
+ "futures-util",
+ "serde_json",
 ]
 
 [[package]]
@@ -1057,6 +1078,7 @@ dependencies = [
  "cdf-dest-parquet",
  "cdf-dest-postgres",
  "cdf-engine",
+ "cdf-format-arrow-ipc",
  "cdf-format-parquet",
  "cdf-http",
  "cdf-kernel",
@@ -1124,9 +1146,11 @@ name = "cdf-source-files"
 version = "0.1.0"
 dependencies = [
  "arrow-array 59.1.0",
+ "arrow-ipc",
  "arrow-schema 59.1.0",
  "bytes",
  "cdf-contract",
+ "cdf-format-arrow-ipc",
  "cdf-format-parquet",
  "cdf-formats",
  "cdf-http",

@@ -15,7 +15,6 @@ use arrow_schema::SchemaRef;
 use cdf_contract::{ContractPolicy, TypePolicy};
 use cdf_formats::{
     CsvOptions, FileCompression, FileFormat, JsonOptions, RangeChunkReader, ReadOptions,
-    read_arrow_ipc_file_path, read_arrow_ipc_file_path_with_declared_schema,
     stream_file_source_path_with_declared_schema_and_type_policy,
 };
 use cdf_kernel::{
@@ -29,7 +28,7 @@ use cdf_runtime::{
     DecodePlanningRequest, ExecutionServices, FormatDiscoveryRequest, FormatDriver, FormatRegistry,
     PhysicalDecodeRequest,
 };
-use futures_util::{StreamExt, TryStreamExt, stream};
+use futures_util::{StreamExt, TryStreamExt};
 use sha2::{Digest, Sha256};
 
 use crate::{
@@ -633,28 +632,8 @@ fn stream_file_match(
             planned_physical_schema_hash,
             dependencies,
         ),
-        ResolvedFileOpen::LocalPath(path) => match declaration {
-            FileFormatDeclaration::ArrowIpc
-                if resolved.compression.mode != FileCompression::None =>
-            {
-                Err(CdfError::contract(format!(
-                    "byte-stream compression `{}` is not supported for Arrow IPC file source {}",
-                    resolved.compression.mode.as_str(),
-                    path.display()
-                )))
-            }
-            FileFormatDeclaration::ArrowIpc => {
-                let mut read = if declared_schema.fields().is_empty() {
-                    read_arrow_ipc_file_path(path, &options)?
-                } else {
-                    read_arrow_ipc_file_path_with_declared_schema(path, &options, declared_schema)?
-                };
-                for batch in &mut read.batches {
-                    batch.header.source_position = position.clone();
-                }
-                Ok(Box::pin(stream::iter(read.batches.into_iter().map(Ok))) as BatchStream)
-            }
-            _ => stream_file_source_path_with_declared_schema_and_type_policy(
+        ResolvedFileOpen::LocalPath(path) => {
+            stream_file_source_path_with_declared_schema_and_type_policy(
                 path,
                 compile_format(declaration)?,
                 resolved.compression.mode,
@@ -662,14 +641,9 @@ fn stream_file_match(
                 declared_schema,
                 type_policy,
                 position,
-            ),
-        },
+            )
+        }
         ResolvedFileOpen::Transport(resource) => {
-            if declaration == &FileFormatDeclaration::ArrowIpc {
-                return Err(CdfError::contract(
-                    "remote Arrow IPC file framing is not supported",
-                ));
-            }
             let expected = FileIdentityMetadata {
                 location: resolved.path_text.clone(),
                 size_bytes: Some(resolved.size_bytes),
@@ -827,8 +801,8 @@ fn compile_format(format: &FileFormatDeclaration) -> Result<FileFormat> {
         FileFormatDeclaration::Json => Ok(FileFormat::Json(JsonOptions::default())),
         FileFormatDeclaration::Ndjson => Ok(FileFormat::Ndjson(JsonOptions::default())),
         FileFormatDeclaration::Parquet => Ok(FileFormat::Parquet),
-        FileFormatDeclaration::ArrowIpc => Err(CdfError::internal(
-            "declarative file format `arrow_ipc` is not supported by FileResource",
+        FileFormatDeclaration::ArrowIpc => Err(CdfError::contract(
+            "Arrow IPC file execution requires its registered native format driver",
         )),
     }
 }
@@ -1150,7 +1124,6 @@ fn resolve_object_store_matches(
     plan: &FileResourcePlan,
     transport: &mut dyn FileTransport,
 ) -> Result<Vec<ResolvedFileMatch>> {
-    validate_http_format_support(resource_id, plan)?;
     let root_resource = FileTransportResource::object_store_url(plan.root.clone())
         .with_egress_allowlist(plan.allowlist.clone());
     let root_resource = match &plan.credentials {
@@ -1203,7 +1176,6 @@ fn resolve_http_file_match(
     plan: &FileResourcePlan,
     transport: &mut dyn FileTransport,
 ) -> Result<Vec<ResolvedFileMatch>> {
-    validate_http_format_support(resource_id, plan)?;
     let globs = expand_http_glob(resource_id, &plan.glob)?;
     let mut matches = Vec::with_capacity(globs.len());
     for glob in globs {
@@ -2155,16 +2127,6 @@ fn expand_http_year_month_glob(glob: &str) -> Option<Vec<String>> {
     )
 }
 
-fn validate_http_format_support(resource_id: &ResourceId, plan: &FileResourcePlan) -> Result<()> {
-    if plan.format != FileFormatDeclaration::ArrowIpc {
-        return Ok(());
-    }
-    Err(CdfError::contract(format!(
-        "remote file resource `{resource_id}` does not support Arrow IPC file framing; resolved format `{}` is unsupported",
-        file_format_name(&plan.format)
-    )))
-}
-
 fn join_http_root_and_glob(root: &str, glob: &str) -> String {
     format!(
         "{}/{}",
@@ -2260,6 +2222,7 @@ mod tests {
     use std::{io::Write, sync::Arc};
 
     use arrow_array::{ArrayRef, Int64Array, RecordBatch, StringArray};
+    use arrow_ipc::writer::FileWriter;
     use arrow_schema::{DataType, Field, Schema};
     use flate2::{Compression, write::GzEncoder};
     use object_store::{ObjectStoreExt, PutPayload, memory::InMemory, path::Path as ObjectPath};
@@ -2329,6 +2292,70 @@ mod tests {
             dependencies.execution().memory().snapshot().current_bytes,
             0
         );
+    }
+
+    #[test]
+    fn remote_arrow_ipc_file_spools_and_streams_through_registered_driver() {
+        let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, false)]));
+        let batch = RecordBatch::try_new(
+            Arc::clone(&schema),
+            vec![Arc::new(Int64Array::from(vec![1, 2, 3]))],
+        )
+        .unwrap();
+        let mut bytes = Vec::new();
+        let mut writer = FileWriter::try_new(&mut bytes, schema.as_ref()).unwrap();
+        writer.write(&batch).unwrap();
+        writer.finish().unwrap();
+        drop(writer);
+        let store = Arc::new(InMemory::new());
+        futures_executor::block_on(store.put(
+            &ObjectPath::from("prod/events.arrow"),
+            PutPayload::from(bytes.clone()),
+        ))
+        .unwrap();
+        let facade = FileTransportFacade::new()
+            .with_object_store("s3://ipc", store)
+            .with_execution_services(crate::test_execution_services());
+        let dependencies = FileRuntimeDependencies::new(
+            facade,
+            crate::test_execution_services(),
+            crate::test_format_registry(),
+        )
+        .with_max_spool_bytes(bytes.len() as u64)
+        .unwrap();
+        let plan = FileResourcePlan {
+            source: "ipc".to_owned(),
+            root: "s3://ipc/prod".to_owned(),
+            glob: "events.arrow".to_owned(),
+            format: FileFormatDeclaration::ArrowIpc,
+            format_declared: true,
+            compression: FileCompressionDeclaration::None,
+            auth: None,
+            credentials: None,
+            allowlist: cdf_http::EgressAllowlist::allow_any(),
+        };
+        let resource_id = ResourceId::new("ipc.events").unwrap();
+        let resolved = dependencies
+            .with_transport(|transport| {
+                resolve_object_store_matches(&resource_id, &plan, transport)
+            })
+            .unwrap();
+        let stream = stream_file_match(
+            &resolved[0],
+            &plan.format,
+            ReadOptions::new(resource_id, PartitionId::new("file-ipc").unwrap()),
+            schema,
+            &dependencies,
+            &ContractPolicy::default().types,
+            None,
+        )
+        .unwrap();
+        let batches = futures_executor::block_on(stream.collect::<Vec<_>>())
+            .into_iter()
+            .collect::<Result<Vec<_>>>()
+            .unwrap();
+        assert_eq!(batches.len(), 1);
+        assert_eq!(batches[0].header.row_count, 3);
     }
 
     #[test]

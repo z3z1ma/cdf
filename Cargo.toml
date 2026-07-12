@@ -10,6 +10,7 @@ members = [
     "crates/cdf-http",
     "crates/cdf-formats",
     "crates/cdf-format-parquet",
+    "crates/cdf-format-arrow-ipc",
     "crates/cdf-postgres",
     "crates/cdf-source-postgres",
     "crates/cdf-source-rest",

@@ -28,6 +28,9 @@ pub(crate) fn builtin_source_registry() -> Result<SourceRegistry> {
 pub(crate) fn builtin_format_registry() -> Result<std::sync::Arc<FormatRegistry>> {
     let mut registry = FormatRegistry::default();
     registry.register(std::sync::Arc::new(
+        cdf_format_arrow_ipc::ArrowIpcFileFormatDriver::new()?,
+    ))?;
+    registry.register(std::sync::Arc::new(
         cdf_format_parquet::ParquetFormatDriver::new()?,
     ))?;
     Ok(std::sync::Arc::new(registry))

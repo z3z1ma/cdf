@@ -28,6 +28,8 @@ url = "2.5.8"
 
 [dev-dependencies]
 arrow-array = "59.1.0"
+arrow-ipc = "59.1.0"
+cdf-format-arrow-ipc = { path = "../cdf-format-arrow-ipc" }
 cdf-format-parquet = { path = "../cdf-format-parquet" }
 cdf-package = { path = "../cdf-package" }
 flate2 = "1.1.9"
