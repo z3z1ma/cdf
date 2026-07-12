@@ -70,6 +70,40 @@ fn finalization_authority_opens_for_consumption_without_rereading_identity_files
     fs::set_permissions(&artifact, fs::Permissions::from_mode(0o600)).unwrap();
 }
 
+#[test]
+fn segment_encoding_completion_cannot_override_canonical_registration_order() {
+    let directory = tempfile::tempdir().unwrap();
+    let builder = PackageBuilder::create(directory.path(), "pkg-encode-frontier").unwrap();
+    let encoder = builder.segment_encoder();
+    let second = encoder
+        .encode(
+            SegmentId::new("seg-000002").unwrap(),
+            &[sample_batch()],
+            true,
+        )
+        .unwrap();
+    let first = encoder
+        .encode(
+            SegmentId::new("seg-000001").unwrap(),
+            &[sample_batch()],
+            true,
+        )
+        .unwrap();
+
+    builder.register_encoded_segment(first).unwrap();
+    builder.register_encoded_segment(second).unwrap();
+    let manifest = builder.finish().unwrap();
+    assert_eq!(
+        manifest
+            .identity
+            .segments
+            .iter()
+            .map(|segment| segment.segment_id.as_str())
+            .collect::<Vec<_>>(),
+        ["seg-000001", "seg-000002"]
+    );
+}
+
 fn sample_batch() -> RecordBatch {
     sample_batch_values(vec![1, 2, 3], vec![Some("ada"), Some("grace"), None])
 }
@@ -126,7 +160,7 @@ fn verification_rejects_unknown_contract_evolution_versions() {
 }
 
 fn build_fixture(package_dir: &Path) -> PackageManifest {
-    let mut builder = PackageBuilder::create(package_dir, "pkg-test-0001").unwrap();
+    let builder = PackageBuilder::create(package_dir, "pkg-test-0001").unwrap();
     builder.update_status(PackageStatus::Extracting).unwrap();
     builder
         .write_json_artifact(
@@ -253,7 +287,7 @@ fn state_segments_for_manifest(manifest: &PackageManifest) -> Vec<StateSegment> 
 }
 
 fn build_archive_fixture(package_dir: &Path) -> PackageManifest {
-    let mut builder = PackageBuilder::create(package_dir, "pkg-archive-0001").unwrap();
+    let builder = PackageBuilder::create(package_dir, "pkg-archive-0001").unwrap();
     builder.update_status(PackageStatus::Extracting).unwrap();
     builder
         .write_json_artifact(
@@ -1678,7 +1712,7 @@ fn archive_transcode_refuses_tampered_package_before_report() {
 #[test]
 fn archive_transcode_reports_unsupported_arrow_types() {
     let temp = tempfile::tempdir().unwrap();
-    let mut builder = PackageBuilder::create(temp.path(), "pkg-archive-unsupported").unwrap();
+    let builder = PackageBuilder::create(temp.path(), "pkg-archive-unsupported").unwrap();
     let schema = Arc::new(Schema::new(vec![Field::new(
         "unsupported_time",
         DataType::Time32(TimeUnit::Second),

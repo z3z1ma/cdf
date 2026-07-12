@@ -45,6 +45,67 @@ pub struct SegmentWriteMetrics {
     pub persist_hash_duration_ns: u64,
 }
 
+#[derive(Clone, Debug)]
+pub struct PackageSegmentEncoder {
+    package_dir: PathBuf,
+}
+
+pub struct EncodedPackageSegment {
+    segment_id: SegmentId,
+    relative_path: String,
+    row_count: u64,
+    receipt: crate::storage::IpcWriteReceipt,
+    measure: bool,
+}
+
+impl PackageSegmentEncoder {
+    pub fn encode(
+        &self,
+        segment_id: SegmentId,
+        batches: &[RecordBatch],
+        measure: bool,
+    ) -> Result<EncodedPackageSegment> {
+        if batches.is_empty() {
+            return Err(CdfError::data("segment must contain at least one batch"));
+        }
+        let schema = batches[0].schema();
+        let mut row_count = 0_u64;
+        for batch in batches {
+            if batch.schema().as_ref() != schema.as_ref() {
+                return Err(CdfError::data(
+                    "all record batches in a package segment must share one schema",
+                ));
+            }
+            row_count = row_count
+                .checked_add(batch.num_rows() as u64)
+                .ok_or_else(|| CdfError::data("segment row count overflow"))?;
+        }
+        let relative_path = segment_relative_path(&segment_id)?;
+        let path = package_path(&self.package_dir, &relative_path);
+        if path.exists() {
+            return Err(CdfError::data(format!(
+                "package segment is already encoded: {}",
+                segment_id.as_str()
+            )));
+        }
+        let receipt = write_arrow_ipc_file(&path, schema.as_ref(), batches)?;
+        if receipt.artifact.path != path
+            || receipt.artifact.durability != ArtifactDurability::SegmentPublish
+        {
+            return Err(CdfError::internal(format!(
+                "segment writer returned an invalid receipt for {relative_path}"
+            )));
+        }
+        Ok(EncodedPackageSegment {
+            segment_id,
+            relative_path,
+            row_count,
+            receipt,
+            measure,
+        })
+    }
+}
+
 pub struct StreamingIdentityArtifact {
     relative_path: String,
     sink: Option<crate::storage::AtomicArtifactSink>,
@@ -136,6 +197,12 @@ impl PackageBuilder {
 
     pub fn package_dir(&self) -> &Path {
         &self.package_dir
+    }
+
+    pub fn segment_encoder(&self) -> PackageSegmentEncoder {
+        PackageSegmentEncoder {
+            package_dir: self.package_dir.clone(),
+        }
     }
 
     pub fn update_status(&self, status: PackageStatus) -> Result<PackageManifest> {
@@ -304,7 +371,7 @@ impl PackageBuilder {
     }
 
     pub fn write_segment(
-        &mut self,
+        &self,
         segment_id: SegmentId,
         batches: &[RecordBatch],
     ) -> Result<SegmentEntry> {
@@ -314,7 +381,7 @@ impl PackageBuilder {
     }
 
     pub fn write_segment_with_metrics(
-        &mut self,
+        &self,
         segment_id: SegmentId,
         batches: &[RecordBatch],
     ) -> Result<SegmentWriteMetrics> {
@@ -322,42 +389,28 @@ impl PackageBuilder {
     }
 
     fn write_segment_inner(
-        &mut self,
+        &self,
         segment_id: SegmentId,
         batches: &[RecordBatch],
         measure: bool,
     ) -> Result<SegmentWriteMetrics> {
-        if batches.is_empty() {
-            return Err(CdfError::data("segment must contain at least one batch"));
-        }
+        let encoded = self
+            .segment_encoder()
+            .encode(segment_id, batches, measure)?;
+        self.register_encoded_segment(encoded)
+    }
 
-        let schema = batches[0].schema();
-        let mut row_count = 0_u64;
-        for batch in batches {
-            if batch.schema().as_ref() != schema.as_ref() {
-                return Err(CdfError::data(
-                    "all record batches in a package segment must share one schema",
-                ));
-            }
-            row_count += batch.num_rows() as u64;
-        }
-
-        let relative_path = segment_relative_path(&segment_id)?;
-        if package_path(&self.package_dir, &relative_path).exists() {
-            return Err(CdfError::data(format!(
-                "package segment is already registered: {}",
-                segment_id.as_str()
-            )));
-        }
-        let path = package_path(&self.package_dir, &relative_path);
-        let receipt = write_arrow_ipc_file(&path, schema.as_ref(), batches)?;
-        if receipt.artifact.path != path
-            || receipt.artifact.durability != ArtifactDurability::SegmentPublish
-        {
-            return Err(CdfError::internal(format!(
-                "segment writer returned an invalid receipt for {relative_path}"
-            )));
-        }
+    pub fn register_encoded_segment(
+        &self,
+        encoded: EncodedPackageSegment,
+    ) -> Result<SegmentWriteMetrics> {
+        let EncodedPackageSegment {
+            segment_id,
+            relative_path,
+            row_count,
+            receipt,
+            measure,
+        } = encoded;
         let file_entry = FileEntry {
             path: relative_path.clone(),
             byte_count: receipt.artifact.byte_count,
