@@ -2,13 +2,20 @@ use std::io::{self, Write};
 
 use cdf_memory::MemoryCoordinator;
 use cdf_runtime::{SpillBudgetCoordinator, SpillReservation};
-use parquet::{arrow::ArrowWriter, file::properties::WriterProperties};
+use parquet::{
+    arrow::ArrowWriter,
+    file::properties::{EnabledStatistics, WriterProperties},
+};
 use sha2::{Digest, Sha256};
 use tempfile::NamedTempFile;
 
 use crate::*;
 
-const ROW_GROUP_ROWS: usize = 64 * 1024;
+const WRITE_BATCH_ROWS: usize = 1024 * 1024;
+const DATA_PAGE_ROWS: usize = 64 * 1024;
+const DATA_PAGE_BYTES: usize = 8 * 1024 * 1024;
+const ROW_GROUP_ROWS: usize = 1024 * 1024;
+const ROW_GROUP_BYTES: usize = 32 * 1024 * 1024;
 const SPILL_GROWTH_BYTES: u64 = 8 * 1024 * 1024;
 
 pub(crate) struct EncodedParquetObject {
@@ -58,7 +65,13 @@ pub(crate) fn write_parquet_segment(
     let mut output = SpillHashWriter::new(file, reservation);
     let properties = WriterProperties::builder()
         .set_created_by("cdf native arrow-rs parquet writer".to_owned())
+        .set_write_batch_size(WRITE_BATCH_ROWS)
+        .set_data_page_row_count_limit(DATA_PAGE_ROWS)
+        .set_data_page_size_limit(DATA_PAGE_BYTES)
         .set_max_row_group_row_count(Some(ROW_GROUP_ROWS))
+        .set_max_row_group_bytes(Some(ROW_GROUP_BYTES))
+        .set_dictionary_enabled(false)
+        .set_statistics_enabled(EnabledStatistics::None)
         .build();
     {
         let mut writer = ArrowWriter::try_new(&mut output, schema.clone(), Some(properties))

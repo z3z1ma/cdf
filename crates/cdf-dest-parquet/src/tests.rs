@@ -12,7 +12,7 @@ use crate::{
     store::{ObjectKeyEncoder, package_manifest_key},
 };
 use ::parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
-use arrow_array::{ArrayRef, Int64Array, StringArray};
+use arrow_array::{ArrayRef, Float64Array, Int64Array, StringArray};
 use arrow_schema::{DataType, Field, Schema};
 use cdf_conformance::destination::{
     DestinationConformanceCase, DestinationCorrectionConformanceEvidence,
@@ -29,6 +29,88 @@ use cdf_kernel::{
 };
 use cdf_package::{PackageBuilder, PackageStatus, SegmentEntry};
 use object_store::{memory::InMemory, path::Path as ObjectPath};
+
+#[test]
+#[ignore = "release-mode Parquet destination write-roofline benchmark"]
+fn local_streaming_parquet_reaches_sixty_percent_of_write_roofline() {
+    const ROWS: usize = 8 * 1024 * 1024;
+    const CHUNK: usize = 8 * 1024 * 1024;
+    let root = tempfile::tempdir().unwrap();
+    let batch = RecordBatch::try_new(
+        Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int64, false),
+            Field::new("value", DataType::Float64, false),
+        ])),
+        vec![
+            Arc::new(Int64Array::from_iter_values(
+                (0..ROWS).map(|row| (row as i64).wrapping_mul(6_364_136_223_846_793_005)),
+            )),
+            Arc::new(Float64Array::from_iter_values((0..ROWS).map(|row| {
+                f64::from_bits((row as u64).wrapping_mul(11_400_714_819_323_198_485))
+            }))),
+        ],
+    )
+    .unwrap();
+    let segment = || {
+        CommitSegment::new(
+            StateSegment {
+                segment_id: SegmentId::new("roofline-segment").unwrap(),
+                scope: ScopeKey::Resource,
+                output_position: SourcePosition::Cursor(CursorPosition {
+                    version: 1,
+                    field: "id".to_owned(),
+                    value: CursorValue::U64(ROWS as u64),
+                }),
+                row_count: ROWS as u64,
+                byte_count: (ROWS * 16) as u64,
+            },
+            (ROWS * 16) as u64,
+            vec![batch.clone()],
+        )
+    };
+    let (_, services) = cdf_engine::StandaloneExecutionHost::default_services_with_spill(
+        512 * 1024 * 1024,
+        512 * 1024 * 1024,
+    )
+    .unwrap();
+    let bytes = vec![0_u8; CHUNK];
+    let mut observations = Vec::with_capacity(3);
+    for _ in 0..3 {
+        let started = std::time::Instant::now();
+        let (_, _, encoded) = crate::package::write_parquet_segment(
+            segment(),
+            services.memory(),
+            services.spill(),
+            tempfile::NamedTempFile::new_in(root.path()).unwrap(),
+        )
+        .unwrap();
+        let parquet_elapsed = started.elapsed();
+
+        let mut raw = tempfile::NamedTempFile::new_in(root.path()).unwrap();
+        let started = std::time::Instant::now();
+        let mut remaining = encoded.byte_count;
+        while remaining > 0 {
+            let write = remaining.min(CHUNK as u64) as usize;
+            raw.write_all(&bytes[..write]).unwrap();
+            remaining -= write as u64;
+        }
+        raw.as_file().sync_all().unwrap();
+        let raw_elapsed = started.elapsed();
+        let parquet_rate = encoded.byte_count as f64 / parquet_elapsed.as_secs_f64();
+        let raw_rate = encoded.byte_count as f64 / raw_elapsed.as_secs_f64();
+        observations.push((encoded.byte_count, parquet_rate, raw_rate));
+    }
+    observations.sort_by(|left, right| (left.1 / left.2).total_cmp(&(right.1 / right.2)));
+    let (physical_bytes, parquet_rate, raw_rate) = observations[1];
+    let ratio = parquet_rate / raw_rate;
+    eprintln!(
+        "parquet_local_write physical_bytes={} parquet_mib_s={:.1} raw_mib_s={:.1} ratio={ratio:.3}",
+        physical_bytes,
+        parquet_rate / (1024.0 * 1024.0),
+        raw_rate / (1024.0 * 1024.0),
+    );
+    assert!(ratio >= 0.60, "Parquet write-roofline ratio was {ratio:.3}");
+}
 
 #[derive(Clone, Debug)]
 struct BuiltPackage {
