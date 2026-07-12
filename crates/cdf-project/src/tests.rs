@@ -2947,7 +2947,7 @@ impl RecordingHttpFileTransport {
 }
 
 impl HttpFileTransport for RecordingHttpFileTransport {
-    fn send(&mut self, request: HttpFileRequest) -> Result<HttpFileResponse> {
+    fn send(&self, request: HttpFileRequest) -> Result<HttpFileResponse> {
         let mut state = self.state.lock().unwrap();
         state.requests.push(request.clone());
         match request.method {
@@ -2976,7 +2976,7 @@ impl HttpFileTransport for RecordingHttpFileTransport {
     }
 
     fn download(
-        &mut self,
+        &self,
         request: HttpFileRequest,
         destination: &Path,
     ) -> Result<(HttpFileResponse, u64)> {

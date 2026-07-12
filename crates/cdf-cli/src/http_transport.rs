@@ -28,7 +28,7 @@ impl HttpTransport for ReqwestHttpTransport {
 }
 
 impl HttpFileTransport for ReqwestHttpTransport {
-    fn send(&mut self, request: HttpFileRequest) -> Result<HttpFileResponse> {
+    fn send(&self, request: HttpFileRequest) -> Result<HttpFileResponse> {
         let raw = self.send_raw(
             &request.method,
             &request.url,
@@ -43,7 +43,7 @@ impl HttpFileTransport for ReqwestHttpTransport {
     }
 
     fn download(
-        &mut self,
+        &self,
         request: HttpFileRequest,
         destination: &Path,
     ) -> Result<(HttpFileResponse, u64)> {
@@ -98,7 +98,7 @@ impl HttpFileTransport for ReqwestHttpTransport {
 
 impl ReqwestHttpTransport {
     fn send_raw(
-        &mut self,
+        &self,
         method: &HttpMethod,
         url: &str,
         headers: &HeaderMap,

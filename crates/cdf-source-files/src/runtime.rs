@@ -5,7 +5,7 @@ use std::{
     io::{Read, Seek, SeekFrom},
     path::{Component, Path, PathBuf},
     sync::{
-        Arc, Mutex,
+        Arc,
         atomic::{AtomicU64, Ordering},
     },
     time::UNIX_EPOCH,
@@ -43,7 +43,7 @@ const NATIVE_STREAM_ITEMS: usize = 2;
 
 #[derive(Clone)]
 pub struct FileRuntimeDependencies {
-    transport: Arc<Mutex<Box<dyn FileTransport + Send>>>,
+    transport: Arc<dyn FileTransport>,
     execution: ExecutionServices,
     formats: Arc<FormatRegistry>,
     max_spool_bytes: u64,
@@ -53,7 +53,7 @@ const DEFAULT_MAX_REMOTE_SPOOL_BYTES: u64 = 64 * 1024 * 1024 * 1024;
 
 impl FileRuntimeDependencies {
     pub fn new(
-        transport: impl FileTransport + Send + 'static,
+        transport: impl FileTransport + 'static,
         execution: ExecutionServices,
         formats: Arc<FormatRegistry>,
     ) -> Self {
@@ -61,12 +61,12 @@ impl FileRuntimeDependencies {
     }
 
     pub fn from_boxed_transport(
-        transport: Box<dyn FileTransport + Send>,
+        transport: Box<dyn FileTransport>,
         execution: ExecutionServices,
         formats: Arc<FormatRegistry>,
     ) -> Self {
         Self {
-            transport: Arc::new(Mutex::new(transport)),
+            transport: Arc::from(transport),
             execution,
             formats,
             max_spool_bytes: DEFAULT_MAX_REMOTE_SPOOL_BYTES,
@@ -87,7 +87,7 @@ impl FileRuntimeDependencies {
         self.max_spool_bytes
     }
 
-    fn transport(&self) -> Arc<Mutex<Box<dyn FileTransport + Send>>> {
+    fn transport(&self) -> Arc<dyn FileTransport> {
         Arc::clone(&self.transport)
     }
 
@@ -99,14 +99,8 @@ impl FileRuntimeDependencies {
         &self.formats
     }
 
-    pub fn with_transport<R>(
-        &self,
-        f: impl FnOnce(&mut dyn FileTransport) -> Result<R>,
-    ) -> Result<R> {
-        let mut transport = self.transport.lock().map_err(|_| {
-            CdfError::internal("file runtime transport dependency mutex was poisoned")
-        })?;
-        f(transport.as_mut())
+    pub fn with_transport<R>(&self, f: impl FnOnce(&dyn FileTransport) -> Result<R>) -> Result<R> {
+        f(self.transport.as_ref())
     }
 
     pub fn range_reader(
@@ -140,9 +134,6 @@ impl FileRuntimeDependencies {
                     ))
                 })?;
             let range = ByteRange::new(start, length)?;
-            let mut transport = transport.lock().map_err(|_| {
-                CdfError::internal("file runtime transport dependency mutex was poisoned")
-            })?;
             match transport.read_range(&resource, range) {
                 Ok(bytes) => Ok(bytes),
                 Err(error) => {
@@ -174,7 +165,7 @@ impl FileRuntimeDependencies {
 }
 
 struct TransportSequentialReader {
-    transport: Arc<Mutex<Box<dyn FileTransport + Send>>>,
+    transport: Arc<dyn FileTransport>,
     resource: FileTransportResource,
     size_bytes: u64,
     max_bytes: u64,
@@ -200,8 +191,6 @@ impl Read for TransportSequentialReader {
             .min(buffer.len() as u64);
         let bytes = self
             .transport
-            .lock()
-            .map_err(|_| std::io::Error::other("file transport mutex was poisoned"))?
             .read_range(
                 &self.resource,
                 ByteRange::new(self.offset, length).map_err(std::io::Error::other)?,
@@ -544,14 +533,14 @@ pub fn file_partitions_for_plan(
     descriptor: &ResourceDescriptor,
     plan: &FileResourcePlan,
 ) -> Result<Vec<PartitionPlan>> {
-    let mut transport = FileTransportFacade::new();
-    file_partitions_for_plan_with_transport(descriptor, plan, &mut transport)
+    let transport = FileTransportFacade::new();
+    file_partitions_for_plan_with_transport(descriptor, plan, &transport)
 }
 
 pub(crate) fn file_partitions_for_plan_with_transport(
     descriptor: &ResourceDescriptor,
     plan: &FileResourcePlan,
-    transport: &mut dyn FileTransport,
+    transport: &dyn FileTransport,
 ) -> Result<Vec<PartitionPlan>> {
     let matches = resolve_file_matches(&descriptor.resource_id, plan, transport)?;
     if matches.is_empty() {
@@ -576,29 +565,78 @@ fn open_file_resource_with_dependencies(
     let descriptor = descriptor.clone();
     let declared_schema = declared_schema.clone();
     let plan = plan.clone();
+    if !is_http_root(&plan.root) && !is_object_store_root(&plan.root) {
+        return Box::pin(async move {
+            open_file_partition(
+                &descriptor,
+                declared_schema,
+                &plan,
+                &partition,
+                &dependencies,
+                allowances,
+            )
+        });
+    }
+    let execution = dependencies.execution().clone();
+    let mut scope_hasher = Sha256::new();
+    scope_hasher.update(descriptor.resource_id.as_str().as_bytes());
+    scope_hasher.update([0]);
+    scope_hasher.update(partition.partition_id.as_str().as_bytes());
+    let scope_id = format!("file-open-{}", &hex::encode(scope_hasher.finalize())[..16]);
     Box::pin(async move {
-        let resolved = dependencies.with_transport(|transport| {
-            validate_partition(&descriptor, &plan, &partition, transport)
-        })?;
-        let planned_physical_schema_hash = partition
-            .metadata
-            .get(PLAN_PHYSICAL_SCHEMA_HASH_KEY)
-            .map(|value| SchemaHash::new(value.clone()))
-            .transpose()?;
-        let options = ReadOptions::new(descriptor.resource_id.clone(), partition.partition_id);
-        let mut type_policy = ContractPolicy::default().types;
-        type_policy.coerce_types = allowances.coerce_types;
-        type_policy.allow_lossy_mapping = allowances.allow_lossy_mapping;
-        stream_file_match(
-            &resolved,
-            &plan.format,
-            options,
-            declared_schema,
-            &dependencies,
-            &type_policy,
-            planned_physical_schema_hash,
-        )
+        let stream = execution.spawn_io_stream(
+            &scope_id,
+            NATIVE_STREAM_ITEMS,
+            move |mut sender, _cancellation| async move {
+                let mut batches = open_file_partition(
+                    &descriptor,
+                    declared_schema,
+                    &plan,
+                    &partition,
+                    &dependencies,
+                    allowances,
+                )?;
+                while let Some(batch) = batches.try_next().await? {
+                    sender.send(batch).await?;
+                }
+                Ok(())
+            },
+        )?;
+        Ok(Box::pin(stream) as BatchStream)
     })
+}
+
+fn open_file_partition(
+    descriptor: &ResourceDescriptor,
+    declared_schema: SchemaRef,
+    plan: &FileResourcePlan,
+    partition: &PartitionPlan,
+    dependencies: &FileRuntimeDependencies,
+    allowances: cdf_kernel::TypePolicyAllowances,
+) -> Result<BatchStream> {
+    let resolved = dependencies
+        .with_transport(|transport| validate_partition(descriptor, plan, partition, transport))?;
+    let planned_physical_schema_hash = partition
+        .metadata
+        .get(PLAN_PHYSICAL_SCHEMA_HASH_KEY)
+        .map(|value| SchemaHash::new(value.clone()))
+        .transpose()?;
+    let options = ReadOptions::new(
+        descriptor.resource_id.clone(),
+        partition.partition_id.clone(),
+    );
+    let mut type_policy = ContractPolicy::default().types;
+    type_policy.coerce_types = allowances.coerce_types;
+    type_policy.allow_lossy_mapping = allowances.allow_lossy_mapping;
+    stream_file_match(
+        &resolved,
+        &plan.format,
+        options,
+        declared_schema,
+        dependencies,
+        &type_policy,
+        planned_physical_schema_hash,
+    )
 }
 
 fn stream_file_match(
@@ -773,7 +811,7 @@ fn stream_registered_format(
 }
 
 fn spool_transport_file(
-    transport: &Arc<Mutex<Box<dyn FileTransport + Send>>>,
+    transport: &Arc<dyn FileTransport>,
     resource: &FileTransportResource,
     expected: &FileIdentityMetadata,
     max_spool_bytes: u64,
@@ -788,10 +826,7 @@ fn spool_transport_file(
     }
     let spool = tempfile::NamedTempFile::new()
         .map_err(|error| CdfError::data(format!("create remote file spool: {error}")))?;
-    transport
-        .lock()
-        .map_err(|_| CdfError::internal("file runtime transport dependency mutex was poisoned"))?
-        .download_to_path(resource, expected, spool.path())?;
+    transport.download_to_path(resource, expected, spool.path())?;
     Ok(spool)
 }
 
@@ -811,7 +846,7 @@ fn validate_partition(
     descriptor: &ResourceDescriptor,
     plan: &FileResourcePlan,
     partition: &PartitionPlan,
-    transport: &mut dyn FileTransport,
+    transport: &dyn FileTransport,
 ) -> Result<ResolvedFileMatch> {
     if partition.metadata.get("kind").map(String::as_str) != Some("files") {
         return Err(CdfError::contract(format!(
@@ -1089,7 +1124,7 @@ fn file_schema_observation_binding(file: &ResolvedFileMatch) -> String {
 fn resolve_file_matches(
     resource_id: &ResourceId,
     plan: &FileResourcePlan,
-    transport: &mut dyn FileTransport,
+    transport: &dyn FileTransport,
 ) -> Result<Vec<ResolvedFileMatch>> {
     if is_http_root(&plan.root) {
         return resolve_http_file_match(resource_id, plan, transport);
@@ -1122,7 +1157,7 @@ fn resolve_file_matches(
 fn resolve_object_store_matches(
     resource_id: &ResourceId,
     plan: &FileResourcePlan,
-    transport: &mut dyn FileTransport,
+    transport: &dyn FileTransport,
 ) -> Result<Vec<ResolvedFileMatch>> {
     let root_resource = FileTransportResource::object_store_url(plan.root.clone())
         .with_egress_allowlist(plan.allowlist.clone());
@@ -1174,7 +1209,7 @@ fn object_store_relative_path(root: &str, location: &str) -> Result<String> {
 fn resolve_http_file_match(
     resource_id: &ResourceId,
     plan: &FileResourcePlan,
-    transport: &mut dyn FileTransport,
+    transport: &dyn FileTransport,
 ) -> Result<Vec<ResolvedFileMatch>> {
     let globs = expand_http_glob(resource_id, &plan.glob)?;
     let mut matches = Vec::with_capacity(globs.len());
@@ -1576,7 +1611,7 @@ fn resolve_local_format(
 fn resolve_transport_format(
     resource_id: &ResourceId,
     plan: &FileResourcePlan,
-    transport: &mut dyn FileTransport,
+    transport: &dyn FileTransport,
     resource: &FileTransportResource,
     metadata: &FileIdentityMetadata,
     compression: &CompressionEvidence,
@@ -1775,7 +1810,7 @@ fn local_format_magic_signal(path: &Path) -> Result<(FormatSignal, u64)> {
 }
 
 fn transport_format_magic_signal(
-    transport: &mut dyn FileTransport,
+    transport: &dyn FileTransport,
     resource: &FileTransportResource,
     size_bytes: u64,
 ) -> Result<FormatSignal> {
@@ -1825,7 +1860,7 @@ fn resolve_local_compression(
 
 fn resolve_transport_compression(
     plan: &FileResourcePlan,
-    transport: &mut dyn FileTransport,
+    transport: &dyn FileTransport,
     resource: &FileTransportResource,
     metadata: &FileIdentityMetadata,
 ) -> Result<CompressionEvidence> {
@@ -2001,7 +2036,7 @@ impl FileCompressionDeclaration {
 }
 
 fn transport_range_reader(
-    transport: Arc<Mutex<Box<dyn FileTransport + Send>>>,
+    transport: Arc<dyn FileTransport>,
     resource: FileTransportResource,
     size_bytes: u64,
 ) -> RangeChunkReader {
@@ -2010,9 +2045,6 @@ fn transport_range_reader(
             CdfError::internal(format!("range length conversion failed: {error}"))
         })?;
         let range = ByteRange::new(start, length)?;
-        let mut transport = transport.lock().map_err(|_| {
-            CdfError::internal("file runtime transport dependency mutex was poisoned")
-        })?;
         transport.read_range(&resource, range)
     })
 }
@@ -2219,7 +2251,14 @@ fn glob_path_matches(pattern: &[String], candidate: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use std::{io::Write, sync::Arc};
+    use std::{
+        io::Write,
+        sync::{
+            Arc, Barrier,
+            atomic::{AtomicUsize, Ordering},
+        },
+        time::Duration,
+    };
 
     use arrow_array::{ArrayRef, Int64Array, RecordBatch, StringArray};
     use arrow_ipc::writer::FileWriter;
@@ -2228,6 +2267,43 @@ mod tests {
     use object_store::{ObjectStoreExt, PutPayload, memory::InMemory, path::Path as ObjectPath};
 
     use super::*;
+
+    #[test]
+    fn shared_transport_dependency_does_not_serialize_independent_io() {
+        let dependencies = Arc::new(FileRuntimeDependencies::new(
+            FileTransportFacade::new(),
+            crate::test_execution_services(),
+            crate::test_format_registry(),
+        ));
+        let start = Arc::new(Barrier::new(3));
+        let active = Arc::new(AtomicUsize::new(0));
+        let peak = Arc::new(AtomicUsize::new(0));
+        let workers = (0..2)
+            .map(|_| {
+                let dependencies = Arc::clone(&dependencies);
+                let start = Arc::clone(&start);
+                let active = Arc::clone(&active);
+                let peak = Arc::clone(&peak);
+                std::thread::spawn(move || {
+                    start.wait();
+                    dependencies
+                        .with_transport(|_| {
+                            let current = active.fetch_add(1, Ordering::SeqCst) + 1;
+                            peak.fetch_max(current, Ordering::SeqCst);
+                            std::thread::sleep(Duration::from_millis(50));
+                            active.fetch_sub(1, Ordering::SeqCst);
+                            Ok(())
+                        })
+                        .unwrap();
+                })
+            })
+            .collect::<Vec<_>>();
+        start.wait();
+        for worker in workers {
+            worker.join().unwrap();
+        }
+        assert_eq!(peak.load(Ordering::SeqCst), 2);
+    }
 
     #[test]
     fn local_parquet_uses_registered_native_driver_as_bounded_stream() {
@@ -2372,7 +2448,7 @@ mod tests {
             ))
             .unwrap();
         }
-        let mut transport = FileTransportFacade::new()
+        let transport = FileTransportFacade::new()
             .with_object_store("s3://acme-events", store)
             .with_execution_services(crate::test_execution_services());
         let plan = FileResourcePlan {
@@ -2388,7 +2464,7 @@ mod tests {
         };
         let resource_id = ResourceId::new("events.raw").unwrap();
 
-        let matches = resolve_object_store_matches(&resource_id, &plan, &mut transport).unwrap();
+        let matches = resolve_object_store_matches(&resource_id, &plan, &transport).unwrap();
         assert_eq!(matches.len(), 2);
         assert_eq!(
             matches
@@ -2458,10 +2534,8 @@ mod tests {
             allowlist: cdf_http::EgressAllowlist::allow_any(),
         };
         let resource_id = ResourceId::new("events.raw").unwrap();
-        let resolved = {
-            let mut locked = transport.lock().unwrap();
-            resolve_object_store_matches(&resource_id, &plan, locked.as_mut()).unwrap()
-        };
+        let resolved =
+            resolve_object_store_matches(&resource_id, &plan, transport.as_ref()).unwrap();
         assert_eq!(resolved.len(), 1);
         assert_eq!(resolved[0].compression.mode, FileCompression::Gzip);
         let declared = Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, false)]));

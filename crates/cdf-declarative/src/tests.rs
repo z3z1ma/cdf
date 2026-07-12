@@ -30,7 +30,7 @@ use futures_util::StreamExt;
 use tempfile::TempDir;
 
 fn test_file_dependencies(
-    transport: impl cdf_source_files::FileTransport + Send + 'static,
+    transport: impl cdf_source_files::FileTransport + 'static,
 ) -> FileRuntimeDependencies {
     let execution = cdf_engine::StandaloneExecutionHost::default_services(64 * 1024 * 1024)
         .unwrap()
@@ -3475,7 +3475,7 @@ impl RecordingRangeFileTransport {
 
 impl FileTransport for RecordingRangeFileTransport {
     fn metadata(
-        &mut self,
+        &self,
         resource: &FileTransportResource,
     ) -> cdf_kernel::Result<FileIdentityMetadata> {
         let FileTransportLocation::HttpUrl { url } = &resource.location else {
@@ -3491,7 +3491,7 @@ impl FileTransport for RecordingRangeFileTransport {
     }
 
     fn read_range(
-        &mut self,
+        &self,
         _resource: &FileTransportResource,
         range: ByteRange,
     ) -> cdf_kernel::Result<Vec<u8>> {
@@ -3502,7 +3502,7 @@ impl FileTransport for RecordingRangeFileTransport {
     }
 
     fn download_to_path(
-        &mut self,
+        &self,
         resource: &FileTransportResource,
         _expected: &FileIdentityMetadata,
         destination: &Path,
@@ -3513,7 +3513,7 @@ impl FileTransport for RecordingRangeFileTransport {
     }
 
     fn list(
-        &mut self,
+        &self,
         _resource: &FileTransportResource,
     ) -> cdf_kernel::Result<Vec<FileIdentityMetadata>> {
         Err(CdfError::contract(

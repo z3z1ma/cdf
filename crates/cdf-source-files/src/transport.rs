@@ -218,29 +218,28 @@ impl ByteRange {
     }
 }
 
-pub trait FileTransport {
-    fn metadata(&mut self, resource: &FileTransportResource) -> Result<FileIdentityMetadata>;
+pub trait FileTransport: Send + Sync {
+    fn metadata(&self, resource: &FileTransportResource) -> Result<FileIdentityMetadata>;
     fn metadata_if_exists(
-        &mut self,
+        &self,
         resource: &FileTransportResource,
     ) -> Result<Option<FileIdentityMetadata>> {
         self.metadata(resource).map(Some)
     }
-    fn read_range(&mut self, resource: &FileTransportResource, range: ByteRange)
-    -> Result<Vec<u8>>;
+    fn read_range(&self, resource: &FileTransportResource, range: ByteRange) -> Result<Vec<u8>>;
     fn download_to_path(
-        &mut self,
+        &self,
         resource: &FileTransportResource,
         expected: &FileIdentityMetadata,
         destination: &Path,
     ) -> Result<FileIdentityMetadata>;
-    fn list(&mut self, resource: &FileTransportResource) -> Result<Vec<FileIdentityMetadata>>;
+    fn list(&self, resource: &FileTransportResource) -> Result<Vec<FileIdentityMetadata>>;
 }
 
-pub trait HttpFileTransport {
-    fn send(&mut self, request: HttpFileRequest) -> Result<HttpFileResponse>;
+pub trait HttpFileTransport: Send + Sync {
+    fn send(&self, request: HttpFileRequest) -> Result<HttpFileResponse>;
     fn download(
-        &mut self,
+        &self,
         request: HttpFileRequest,
         destination: &Path,
     ) -> Result<(HttpFileResponse, u64)>;
@@ -315,7 +314,7 @@ impl fmt::Debug for HttpFileResponse {
 
 #[derive(Default)]
 pub struct FileTransportFacade {
-    http: Option<Box<dyn HttpFileTransport + Send>>,
+    http: Option<Box<dyn HttpFileTransport>>,
     secret_provider: Option<Arc<dyn SecretProvider + Send + Sync>>,
     object_stores: BTreeMap<String, Arc<dyn ObjectStore>>,
     execution: Option<cdf_runtime::ExecutionServices>,
@@ -326,10 +325,7 @@ impl FileTransportFacade {
         Self::default()
     }
 
-    pub fn with_http_transport(
-        mut self,
-        transport: impl HttpFileTransport + Send + 'static,
-    ) -> Self {
+    pub fn with_http_transport(mut self, transport: impl HttpFileTransport + 'static) -> Self {
         self.http = Some(Box::new(transport));
         self
     }
@@ -378,7 +374,7 @@ impl fmt::Debug for FileTransportFacade {
 }
 
 impl FileTransport for FileTransportFacade {
-    fn metadata(&mut self, resource: &FileTransportResource) -> Result<FileIdentityMetadata> {
+    fn metadata(&self, resource: &FileTransportResource) -> Result<FileIdentityMetadata> {
         match &resource.location {
             FileTransportLocation::LocalPath { path } => local_metadata(Path::new(path)),
             FileTransportLocation::FileUrl { url } => local_metadata(&file_url_path(url)?),
@@ -390,7 +386,7 @@ impl FileTransport for FileTransportFacade {
     }
 
     fn metadata_if_exists(
-        &mut self,
+        &self,
         resource: &FileTransportResource,
     ) -> Result<Option<FileIdentityMetadata>> {
         match &resource.location {
@@ -399,11 +395,7 @@ impl FileTransport for FileTransportFacade {
         }
     }
 
-    fn read_range(
-        &mut self,
-        resource: &FileTransportResource,
-        range: ByteRange,
-    ) -> Result<Vec<u8>> {
+    fn read_range(&self, resource: &FileTransportResource, range: ByteRange) -> Result<Vec<u8>> {
         range.validate()?;
         match &resource.location {
             FileTransportLocation::LocalPath { path } => read_local_range(Path::new(path), range),
@@ -416,7 +408,7 @@ impl FileTransport for FileTransportFacade {
     }
 
     fn download_to_path(
-        &mut self,
+        &self,
         resource: &FileTransportResource,
         expected: &FileIdentityMetadata,
         destination: &Path,
@@ -440,7 +432,7 @@ impl FileTransport for FileTransportFacade {
         }
     }
 
-    fn list(&mut self, resource: &FileTransportResource) -> Result<Vec<FileIdentityMetadata>> {
+    fn list(&self, resource: &FileTransportResource) -> Result<Vec<FileIdentityMetadata>> {
         match &resource.location {
             FileTransportLocation::LocalPath { path } => list_local(Path::new(path)),
             FileTransportLocation::FileUrl { url } => list_local(&file_url_path(url)?),
@@ -454,7 +446,7 @@ impl FileTransport for FileTransportFacade {
 
 impl FileTransportFacade {
     fn download_http(
-        &mut self,
+        &self,
         resource: &FileTransportResource,
         url: &str,
         expected: &FileIdentityMetadata,
@@ -537,7 +529,7 @@ impl FileTransportFacade {
     }
 
     fn http_metadata_if_exists(
-        &mut self,
+        &self,
         resource: &FileTransportResource,
         url: &str,
     ) -> Result<Option<FileIdentityMetadata>> {
@@ -676,7 +668,7 @@ impl FileTransportFacade {
     }
 
     fn http_metadata(
-        &mut self,
+        &self,
         resource: &FileTransportResource,
         url: &str,
     ) -> Result<FileIdentityMetadata> {
@@ -690,7 +682,7 @@ impl FileTransportFacade {
     }
 
     fn read_http_range(
-        &mut self,
+        &self,
         resource: &FileTransportResource,
         url: &str,
         range: ByteRange,
@@ -727,10 +719,10 @@ impl FileTransportFacade {
         Ok(response.body)
     }
 
-    fn http_transport(&mut self) -> Result<&mut dyn HttpFileTransport> {
+    fn http_transport(&self) -> Result<&dyn HttpFileTransport> {
         self.http
-            .as_deref_mut()
-            .map(|transport| transport as &mut dyn HttpFileTransport)
+            .as_deref()
+            .map(|transport| transport as &dyn HttpFileTransport)
             .ok_or_else(|| {
                 CdfError::contract(
                     "HTTP(S) file resources require an explicit HttpFileTransport dependency",
@@ -1074,7 +1066,7 @@ mod tests {
             PutPayload::from_static(b"PAR1payloadPAR1"),
         ))
         .unwrap();
-        let mut transport = FileTransportFacade::new()
+        let transport = FileTransportFacade::new()
             .with_object_store("s3://acme-events", store)
             .with_execution_services(crate::test_execution_services());
         let root = FileTransportResource::object_store_url("s3://acme-events/prod/");
@@ -1102,7 +1094,7 @@ mod tests {
         let resource = FileTransportResource::object_store_url("s3://private-bucket/data.parquet")
             .with_credentials(credential)
             .with_egress_allowlist(EgressAllowlist::from_hosts(["allowed-bucket"]));
-        let mut transport = FileTransportFacade::new();
+        let transport = FileTransportFacade::new();
         let error = transport.metadata(&resource).unwrap_err();
         assert_eq!(error.kind, ErrorKind::Auth);
         assert!(!error.message.contains("cloud-options"));
@@ -1114,7 +1106,7 @@ mod tests {
         let temp = TempDir::new().unwrap();
         let path = temp.path().join("sample.bin");
         fs::write(&path, b"\x00abcdef\xff").unwrap();
-        let mut transport = FileTransportFacade::new();
+        let transport = FileTransportFacade::new();
 
         let metadata = transport
             .metadata(&FileTransportResource::local_path(&path))
@@ -1157,7 +1149,7 @@ mod tests {
         let recorder = client.clone();
         let resource = FileTransportResource::http_url("https://data.example.org/events.parquet")
             .with_egress_allowlist(EgressAllowlist::from_hosts(["data.example.org"]));
-        let mut transport = FileTransportFacade::new().with_http_transport(client);
+        let transport = FileTransportFacade::new().with_http_transport(client);
 
         let metadata = transport.metadata(&resource).unwrap();
         assert_eq!(metadata.location, "https://data.example.org/events.parquet");
@@ -1202,7 +1194,7 @@ mod tests {
         ]);
         let resource = FileTransportResource::http_url("https://data.example.org/missing.parquet")
             .with_egress_allowlist(EgressAllowlist::from_hosts(["data.example.org"]));
-        let mut transport = FileTransportFacade::new().with_http_transport(client);
+        let transport = FileTransportFacade::new().with_http_transport(client);
 
         assert_eq!(transport.metadata_if_exists(&resource).unwrap(), None);
         let forbidden = transport.metadata_if_exists(&resource).unwrap_err();
@@ -1215,7 +1207,7 @@ mod tests {
             RecordingHttpFileTransport::new([HttpFileResponse::new(200)
                 .with_body(b"this would be a full file download".to_vec())]);
         let resource = FileTransportResource::http_url("https://data.example.org/events.parquet");
-        let mut transport = FileTransportFacade::new().with_http_transport(client);
+        let transport = FileTransportFacade::new().with_http_transport(client);
 
         let zero = transport
             .read_range(
@@ -1240,7 +1232,7 @@ mod tests {
         let client = RecordingHttpFileTransport::new([]);
         let recorder = client.clone();
         let resource = FileTransportResource::http_url("https://data.example.org/");
-        let mut transport = FileTransportFacade::new().with_http_transport(client);
+        let transport = FileTransportFacade::new().with_http_transport(client);
 
         let error = transport.list(&resource).unwrap_err();
         assert_eq!(error.kind, ErrorKind::Contract);
@@ -1259,7 +1251,7 @@ mod tests {
         let blocked_resource =
             FileTransportResource::http_url("https://blocked.example.org/events.parquet")
                 .with_egress_allowlist(EgressAllowlist::from_hosts(["data.example.org"]));
-        let mut blocked_transport = FileTransportFacade::new().with_http_transport(blocked_client);
+        let blocked_transport = FileTransportFacade::new().with_http_transport(blocked_client);
 
         let error = blocked_transport
             .read_range(&blocked_resource, ByteRange::new(0, 1).unwrap())
@@ -1279,7 +1271,7 @@ mod tests {
             auth_resource.secret_references()[0].as_str(),
             "secret://env/FILE_TOKEN"
         );
-        let mut auth_transport = FileTransportFacade::new()
+        let auth_transport = FileTransportFacade::new()
             .with_http_transport(auth_client)
             .with_secret_provider(StaticSecretProvider::new([(
                 "secret://env/FILE_TOKEN",
@@ -1371,7 +1363,7 @@ mod tests {
     }
 
     impl HttpFileTransport for RecordingHttpFileTransport {
-        fn send(&mut self, request: HttpFileRequest) -> Result<HttpFileResponse> {
+        fn send(&self, request: HttpFileRequest) -> Result<HttpFileResponse> {
             let mut state = self.state.lock().unwrap();
             state.requests.push(request);
             state
@@ -1381,7 +1373,7 @@ mod tests {
         }
 
         fn download(
-            &mut self,
+            &self,
             request: HttpFileRequest,
             destination: &Path,
         ) -> Result<(HttpFileResponse, u64)> {
