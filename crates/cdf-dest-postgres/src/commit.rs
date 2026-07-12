@@ -1,6 +1,5 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
-    io::Write,
     time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -9,11 +8,8 @@ use postgres::{Client, NoTls, Row};
 use std::sync::Arc;
 
 use crate::{
-    dml::*,
-    package::*,
-    rows::{PostgresStageRow, batch_row_values, validate_schema_matches_plan},
-    validate::*,
-    *,
+    binary_copy::BinaryCopyEncoder, dml::*, package::*, rows::validate_schema_matches_plan,
+    validate::*, *,
 };
 
 impl PostgresDestination {
@@ -606,38 +602,36 @@ fn copy_stage_rows(
     let mut columns = quoted_column_names(&plan.columns);
     columns.extend(quoted_system_target_column_names());
     let copy_sql = format!(
-        "COPY {} ({}) FROM STDIN WITH (FORMAT csv, NULL '\\N')",
+        "COPY {} ({}) FROM STDIN WITH (FORMAT binary)",
         plan.stage_table.quoted(),
         columns.join(", ")
     );
-    let mut writer = client
+    let writer = client
         .copy_in(&copy_sql)
         .map_err(|error| postgres_error("open Postgres COPY into stage", error))?;
     // Row provenance is the immutable original package identity. The package
     // token may differ from an operator-supplied idempotency token.
     let load = verify_parameter(plan, "package_hash")?;
+    let mut encoder = BinaryCopyEncoder::new(writer, plan.columns.len())?;
     for staged in &package.batches {
-        for row in 0..staged.batch.num_rows() {
-            let row_index = staged
-                .row_start
-                .checked_add(
-                    u64::try_from(row)
-                        .map_err(|_| CdfError::data("Postgres batch row ordinal exceeds u64"))?,
-                )
-                .ok_or_else(|| CdfError::data("Postgres segment row ordinal overflowed"))?;
-            let row = PostgresStageRow {
-                values: batch_row_values(&staged.batch, row)?,
-                segment_id: staged.segment_id.clone(),
-                row_index,
-            };
-            writer
-                .write_all(row.csv_line(&load, loaded_at_ms).as_bytes())
-                .map_err(|error| io_error("write Postgres COPY row", error))?;
-        }
+        encoder.write_batch(
+            &staged.batch,
+            &staged.segment_id,
+            staged.row_start,
+            &load,
+            loaded_at_ms,
+        )?;
     }
-    writer
+    let (writer, encoded_rows) = encoder.finish()?;
+    let copied = writer
         .finish()
-        .map_err(|error| postgres_error("finish Postgres COPY into stage", error))
+        .map_err(|error| postgres_error("finish Postgres COPY into stage", error))?;
+    if copied != encoded_rows {
+        return Err(CdfError::destination(format!(
+            "Postgres binary COPY accepted {copied} rows but encoded {encoded_rows}"
+        )));
+    }
+    Ok(copied)
 }
 
 fn execute_count(client: &mut Client, statement: &PostgresStatement) -> Result<u64> {
@@ -1001,7 +995,7 @@ fn postgres_error(context: impl Into<String>, error: postgres::Error) -> CdfErro
     CdfError::destination(format!("{}: {}", context.into(), error))
 }
 
-fn io_error(context: impl Into<String>, error: std::io::Error) -> CdfError {
+pub(crate) fn io_error(context: impl Into<String>, error: std::io::Error) -> CdfError {
     CdfError::destination(format!("{}: {}", context.into(), error))
 }
 

@@ -8,14 +8,14 @@ Depends-On: .10x/tickets/done/2026-07-11-p3-d1-bulk-path-contract.md, .10x/ticke
 
 ## Scope
 
-Implement vectorized PostgreSQL binary COPY encoding from Arrow into bounded stage/attempt ingestion, retain truthful CSV compatibility, eliminate scalar string row collections, and preserve transactional disposition/receipt semantics.
+Implement PostgreSQL binary COPY encoding directly from Arrow into bounded stage/attempt ingestion, delete scalar/text ingestion, and preserve transactional disposition/receipt semantics.
 
 ## Acceptance criteria
 
 - Exact supported type matrix uses binary COPY with correct endian/epoch/decimal/array/null framing.
 - Local throughput is ≥2x CSV baseline and remote profile is network/server-bound where expected.
 - Stage/transaction lifecycle is bounded, invisible before final binding, rollback-safe, and duplicate-idempotent.
-- CSV fallback is schema-preplanned, redacted, and semantically identical or rejected when it cannot be.
+- Unsupported schemas fail preparation with field-level remediation; no text fallback is advertised or retained.
 
 ## Evidence expectations
 
@@ -32,7 +32,9 @@ Depends on D1 and staged-ingress contract.
 ## Progress and notes
 
 - 2026-07-11: Removed the CSV compatibility path's package/segment scalar-row materialization. `PostgresPackageData` now retains bounded Arrow batches for the current verified segment; CSV fields are encoded directly into COPY one row at a time. All 30 unit/live transaction, merge, correction, rollback, receipt, and source tests remain green. This establishes the constant-memory encoder boundary that binary COPY will replace without changing commit semantics.
+- 2026-07-11: Implemented PostgreSQL binary COPY framing directly over bounded Arrow batches, including exact null framing, integer/float endian encoding, byte/string transfer, PostgreSQL date/time/timestamp epochs, UInt64 and Decimal128/256 NUMERIC base-10000 encoding, and immutable row provenance. The release encoder control measured 36,443,900 binary rows/s versus 2,054,189 scalar CSV rows/s (17.74x). The live PostgreSQL suite passed append, replace, merge, rollback, correction, receipt, and decimal round trips. Under `.10x/decisions/pre-production-current-format-only.md`, removed production CSV COPY, scalar staging rows, their tests, and the unimplemented `extended_insert` capability; PostgreSQL now advertises only `copy_binary`.
 
 ## References
 
 - `.10x/specs/destination-bulk-path-runtime.md`
+- `.10x/decisions/pre-production-current-format-only.md`

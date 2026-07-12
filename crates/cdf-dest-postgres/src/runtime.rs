@@ -320,7 +320,7 @@ fn postgres_runtime_capabilities() -> DestinationRuntimeCapabilities {
         max_in_flight_segments: Some(1),
         max_in_flight_bytes: Some(64 * 1024 * 1024),
         bulk_paths: vec![cdf_runtime::BulkPathDescriptor {
-            path_id: "copy_csv".to_owned(),
+            path_id: "copy_binary".to_owned(),
             version: 1,
             ingress_mode: DestinationIngressMode::FinalizedPackageOnly,
             writer_model: DestinationWriterModel::SingleWriter,
@@ -342,7 +342,7 @@ fn postgres_runtime_capabilities() -> DestinationRuntimeCapabilities {
             fallback: cdf_runtime::BulkFallbackMode::RollbackFullRedrive,
             measured_evidence_version: None,
         }],
-        bulk_path: Some("copy_csv".to_owned()),
+        bulk_path: Some("copy_binary".to_owned()),
         bulk_evidence_version: None,
         replay_requires_explicit_target: true,
         replay_target_hint: Some("schema.table".to_owned()),

@@ -216,11 +216,7 @@ pub fn postgres_destination_sheet() -> PostgresDestinationSheet {
     PostgresDestinationSheet {
         kernel,
         type_mappings,
-        bulk_paths: vec![
-            "copy_binary".to_owned(),
-            "copy_csv".to_owned(),
-            "extended_insert".to_owned(),
-        ],
+        bulk_paths: vec!["copy_binary".to_owned()],
         migration_operations: vec![
             "create_schema_table".to_owned(),
             "add_nullable_column".to_owned(),

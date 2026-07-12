@@ -38,7 +38,7 @@ Receipt/run evidence MUST record driver/path version, settings, attempts/fallbac
 
 DuckDB MUST use an Arrow-native batch path by default. A5/WS-D compare appender-arrow and Arrow vtab/`INSERT SELECT`; scalar append is a field/schema-specific compatibility path only. DuckDB's single writer uses a declared pinned/shared blocking lane and does not retain package rows.
 
-Postgres MUST implement binary `COPY` from Arrow with exact PostgreSQL binary encodings and null framing. CSV/text COPY remains a declared compatibility path only for types/servers where binary is unavailable and must not stringify exact supported types by default. Staging/disposition SQL remains transactional or follows staged-ingress final binding with no target visibility.
+Postgres MUST implement binary `COPY` from Arrow with exact PostgreSQL binary encodings and null framing. There is no CSV/text compatibility path before production: unsupported mappings fail during preparation with field-level remediation. Staging/disposition SQL remains transactional or follows staged-ingress final binding with no target visibility.
 
 Parquet destination MUST stream row groups/data files and hash/upload as batches arrive. Local temp files and object-store multipart/temp objects remain invisible until final binding. Output file/row-group sizing is bounded and deterministic where it affects receipt/object identity; live pressure cannot change package identity. No full-table buffer is permitted.
 
@@ -51,3 +51,5 @@ Every path requires same-harness throughput/copy/allocation/profile evidence. De
 ## Explicit exclusions
 
 This spec does not standardize destination wire protocols, choose parser/database client dependencies, allow semantic fallback, or put host tuning into package identity.
+
+Pre-production compatibility policy is governed by `.10x/decisions/pre-production-current-format-only.md`.

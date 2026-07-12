@@ -1,36 +1,12 @@
 use arrow_array::{
     Array, BinaryArray, BooleanArray, Date32Array, Decimal128Array, Decimal256Array, Float32Array,
     Float64Array, Int8Array, Int16Array, Int32Array, Int64Array, LargeBinaryArray,
-    LargeStringArray, RecordBatch, StringArray, Time64MicrosecondArray, TimestampMicrosecondArray,
-    UInt8Array, UInt16Array, UInt32Array, UInt64Array,
+    LargeStringArray, StringArray, Time64MicrosecondArray, TimestampMicrosecondArray, UInt8Array,
+    UInt16Array, UInt32Array, UInt64Array,
 };
 use arrow_schema::{DataType, Schema, TimeUnit};
 
 use crate::*;
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct PostgresStageRow {
-    pub(crate) values: Vec<Option<String>>,
-    pub(crate) segment_id: String,
-    pub(crate) row_index: u64,
-}
-
-impl PostgresStageRow {
-    pub(crate) fn csv_line(&self, load: &str, loaded_at_ms: i64) -> String {
-        let mut fields = self
-            .values
-            .iter()
-            .map(|value| csv_field(value.as_deref()))
-            .collect::<Vec<_>>();
-        fields.push(csv_field(Some(load)));
-        fields.push(csv_field(Some(&self.segment_id)));
-        fields.push(csv_field(Some(&self.row_index.to_string())));
-        fields.push(csv_field(Some(&loaded_at_ms.to_string())));
-        let mut line = fields.join(",");
-        line.push('\n');
-        line
-    }
-}
 
 pub(crate) fn validate_schema_matches_plan(
     schema: &Schema,
@@ -88,16 +64,7 @@ pub fn postgres_columns_for_schema(schema: &Schema) -> Result<Vec<PostgresColumn
         .collect()
 }
 
-pub(crate) fn batch_row_values(batch: &RecordBatch, row: usize) -> Result<Vec<Option<String>>> {
-    batch
-        .columns()
-        .iter()
-        .zip(batch.schema().fields())
-        .map(|(array, field)| cell_text(array.as_ref(), field.data_type(), row))
-        .collect()
-}
-
-pub(crate) fn cell_text(
+pub(crate) fn correction_cell_text(
     array: &dyn Array,
     data_type: &DataType,
     row: usize,
@@ -205,17 +172,6 @@ pub fn postgres_type_for_arrow(data_type: &DataType) -> Result<String> {
     Ok(value)
 }
 
-fn csv_field(value: Option<&str>) -> String {
-    let Some(value) = value else {
-        return "\\N".to_owned();
-    };
-    if value == "\\N" || value.contains([',', '"', '\n', '\r']) {
-        format!("\"{}\"", value.replace('"', "\"\""))
-    } else {
-        value.to_owned()
-    }
-}
-
 fn bytea_hex(bytes: &[u8]) -> String {
     const HEX: &[u8; 16] = b"0123456789abcdef";
     let mut output = String::with_capacity(2 + bytes.len() * 2);
@@ -269,9 +225,6 @@ fn civil_from_days(days_since_epoch: i64) -> (i64, i64, i64) {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
-
-    use arrow_array::{ArrayRef, Decimal128Array};
     use arrow_schema::Field;
 
     use super::*;
@@ -288,30 +241,5 @@ mod tests {
         ];
 
         validate_schema_matches_plan(&schema, &columns).unwrap();
-    }
-
-    #[test]
-    fn decimal128_rows_preserve_scale_as_numeric_text() {
-        let schema = Arc::new(Schema::new(vec![Field::new(
-            "amount",
-            DataType::Decimal128(12, 2),
-            true,
-        )]));
-        let amount: ArrayRef = Arc::new(
-            Decimal128Array::from(vec![Some(1234_i128), Some(-5_i128), None])
-                .with_precision_and_scale(12, 2)
-                .unwrap(),
-        );
-        let batch = RecordBatch::try_new(schema, vec![amount]).unwrap();
-
-        assert_eq!(
-            batch_row_values(&batch, 0).unwrap(),
-            vec![Some("12.34".to_owned())]
-        );
-        assert_eq!(
-            batch_row_values(&batch, 1).unwrap(),
-            vec![Some("-0.05".to_owned())]
-        );
-        assert_eq!(batch_row_values(&batch, 2).unwrap(), vec![None]);
     }
 }

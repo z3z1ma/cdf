@@ -30,6 +30,7 @@ pub const CDF_LOADED_AT_COLUMN: &str = "_cdf_loaded_at_ms";
 pub const POSTGRES_XID_SQL: &str = "SELECT txid_current()::text AS xid";
 
 mod api;
+mod binary_copy;
 mod commit;
 mod correction;
 mod ddl;

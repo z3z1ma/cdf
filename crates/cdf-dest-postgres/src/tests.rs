@@ -159,14 +159,6 @@ fn sheet_declares_postgres_capabilities_and_full_mapping_fidelity() {
             .sql
             .contains("UNIQUE (\"_cdf_load\", \"_cdf_segment\", \"_cdf_row\")")
     );
-    let staged = crate::rows::PostgresStageRow {
-        values: vec![Some("1".to_owned())],
-        segment_id: "seg-000001".to_owned(),
-        row_index: 0,
-    };
-    let staged_csv = staged.csv_line("sha256:original-package", 1_700_000_000_000);
-    assert!(staged_csv.contains("sha256:original-package,seg-000001,0,"));
-
     let decimal = sheet
         .type_mappings
         .iter()

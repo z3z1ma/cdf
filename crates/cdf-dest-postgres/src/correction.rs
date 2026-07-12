@@ -11,7 +11,7 @@ use crate::{
     identifiers::quote_identifier_unchecked,
     mirrors::{record_load_sql, verify_clause},
     package::record_package_receipt_once,
-    rows::{cell_text, postgres_type_for_arrow},
+    rows::{correction_cell_text, postgres_type_for_arrow},
     validate::{disposition_name, token_suffix},
     *,
 };
@@ -762,7 +762,7 @@ fn prepare_correction_rows(
         let residual_after = (!residual.is_empty()).then_some(residual);
         for operation in operations {
             let value = cdf_contract::decode_destination_correction_value(operation)?;
-            let promoted_value = cell_text(value.as_ref(), value.data_type(), 0)?;
+            let promoted_value = correction_cell_text(value.as_ref(), value.data_type(), 0)?;
             prepared.push(PreparedCorrectionRow {
                 load: address.original_package_hash.as_str().to_owned(),
                 segment: address.original_segment_id.as_str().to_owned(),
