@@ -9,7 +9,7 @@ Depends-On: .10x/tickets/done/2026-07-10-p3-ws-l5-preoptimization-baseline.md, .
 ## Activated execution tickets
 
 - `.10x/tickets/done/2026-07-11-p3-a5a-graph-edge-contracts.md`
-- `.10x/tickets/2026-07-11-p3-a5b-fused-transform-kernel.md`
+- `.10x/tickets/done/2026-07-11-p3-a5b-fused-transform-kernel.md`
 - `.10x/tickets/2026-07-11-p3-a5c-durable-segment-stream.md`
 - `.10x/tickets/2026-07-11-p3-e2-streaming-manifest-durability.md` (cross-workstream bounded metadata/finalization owner)
 - `.10x/tickets/2026-07-11-p3-a5e-streaming-graph-integration.md`

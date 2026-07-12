@@ -1,7 +1,7 @@
 Status: recorded
 Created: 2026-07-11
 Updated: 2026-07-11
-Relates-To: .10x/tickets/2026-07-11-p3-a5b-fused-transform-kernel.md
+Relates-To: .10x/tickets/done/2026-07-11-p3-a5b-fused-transform-kernel.md
 
 # P3 A5b first fused transform milestone
 
@@ -27,4 +27,4 @@ The fused path calls the same vector `evaluate_record_batch` program and materia
 
 ## Limits
 
-This milestone specializes the overwhelmingly common no-residual-candidate case. Batches containing actual residual candidates still execute the unfused semantic reference. Bounded detailed-evidence persistence and accounted dedup-spool replay remain required for A5b closure.
+The optimized scalar-free specialization remains the overwhelmingly common no-residual-candidate case; residual-present batches retain the semantic reference path. Detailed evidence is now package-globally bounded: quarantine indexes stream from deterministic counters, residual decisions use shared-budget external merge ordering, and contract evolution publishes atomically from the sorted reader. A managed residual run matched compatibility package identity and released spill and memory reservations to zero. The final gate passed all 84 non-ignored engine tests and strict all-target Clippy.
