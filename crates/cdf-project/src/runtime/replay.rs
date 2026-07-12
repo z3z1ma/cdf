@@ -10,6 +10,7 @@ use super::{
 use std::sync::Arc;
 
 use cdf_memory::{DEFAULT_PROCESS_BUDGET_BYTES, DeterministicMemoryCoordinator, MemoryCoordinator};
+use sha2::{Digest, Sha256};
 
 type DestinationReplayStageHook<'a> = RuntimeStageHook<'a>;
 pub(crate) type PackageReplayStageHook<'a> = &'a dyn Fn(PackageReplayStage<'_>) -> Result<()>;
@@ -224,6 +225,8 @@ where
     Store: CheckpointStore + ?Sized,
 {
     validate_package_replay_inputs(&reader, &inputs)?;
+    let capabilities = runtime.runtime_capabilities();
+    capabilities.validate()?;
     notify_destination_replay_stage(&hooks, PackageReplayStage::PackageReplayVerified)?;
 
     let checkpoint_id = inputs.state_delta.checkpoint_id.clone();
@@ -243,47 +246,79 @@ where
     }
     notify_destination_replay_stage(&hooks, PackageReplayStage::DestinationWriteReady)?;
 
-    let mut prepared = match runtime.prepare_package_commit(
-        &package_dir,
-        &reader,
-        &inputs,
-        &DestinationPlanningContext::new()
-            .with_after_receipt_verified(hooks.after_receipt_verified),
-    ) {
-        Ok(prepared) => prepared,
-        Err(error) => {
-            let _ = checkpoint_store.abandon(&checkpoint_id);
-            return Err(error);
+    let (receipt, receipt_source) = match capabilities.ingress_mode {
+        cdf_runtime::DestinationIngressMode::StagedDurableSegments => {
+            let receipt = match commit_package_through_staged_ingress(
+                runtime,
+                &reader,
+                &inputs,
+                &capabilities,
+                memory,
+                &hooks,
+            ) {
+                Ok(receipt) => receipt,
+                Err(error) => {
+                    let _ = checkpoint_store.abandon(&checkpoint_id);
+                    return Err(error);
+                }
+            };
+            (
+                receipt,
+                ProjectReceiptSource::DestinationCommitReceiptOnly {
+                    package_receipt_recorded: false,
+                },
+            )
+        }
+        cdf_runtime::DestinationIngressMode::FinalizedPackageOnly => {
+            let mut prepared = match runtime.prepare_package_commit(
+                &package_dir,
+                &reader,
+                &inputs,
+                &DestinationPlanningContext::new()
+                    .with_after_receipt_verified(hooks.after_receipt_verified),
+            ) {
+                Ok(prepared) => prepared,
+                Err(error) => {
+                    let _ = checkpoint_store.abandon(&checkpoint_id);
+                    return Err(error);
+                }
+            };
+            let receipt_policy = prepared.reporting_policy.clone();
+            let receipts_before = reader.receipts()?.len();
+            if let Err(error) = runtime.bind_prepared_commit(&mut prepared) {
+                let _ = checkpoint_store.abandon(&checkpoint_id);
+                return Err(error);
+            }
+            if let Err(error) = notify_destination_replay_stage(
+                &hooks,
+                PackageReplayStage::DestinationCommitStarted {
+                    plan_id: &prepared.plan.plan_id,
+                    segment_count: prepared.commit.segments.len(),
+                },
+            ) {
+                let _ = checkpoint_store.abandon(&checkpoint_id);
+                return Err(error);
+            }
+            let receipt = match commit_prepared_package_through_session(
+                runtime, &reader, &prepared, memory, &hooks,
+            ) {
+                Ok(receipt) => receipt,
+                Err(error) => {
+                    let _ = checkpoint_store.abandon(&checkpoint_id);
+                    return Err(error);
+                }
+            };
+            let package_receipt_recorded = reader.receipts()?.len() > receipts_before;
+            (
+                receipt,
+                super::destinations::project_receipt_source(
+                    receipt_policy,
+                    package_receipt_recorded,
+                ),
+            )
         }
     };
-    let receipt_policy = prepared.reporting_policy.clone();
-    let receipts_before = reader.receipts()?.len();
-    if let Err(error) = runtime.bind_prepared_commit(&mut prepared) {
-        let _ = checkpoint_store.abandon(&checkpoint_id);
-        return Err(error);
-    }
-    if let Err(error) = notify_destination_replay_stage(
-        &hooks,
-        PackageReplayStage::DestinationCommitStarted {
-            plan_id: &prepared.plan.plan_id,
-            segment_count: prepared.commit.segments.len(),
-        },
-    ) {
-        let _ = checkpoint_store.abandon(&checkpoint_id);
-        return Err(error);
-    }
 
-    let receipt = match commit_prepared_package_through_session(
-        runtime, &reader, &prepared, memory, &hooks,
-    ) {
-        Ok(receipt) => receipt,
-        Err(error) => {
-            let _ = checkpoint_store.abandon(&checkpoint_id);
-            return Err(error);
-        }
-    };
-
-    let package_receipt_recorded = reader.receipts()?.len() > receipts_before;
     verify_receipt_and_notify(runtime, &inputs, &receipt, &hooks)?;
 
     let checkpoint = checkpoint_store.commit(&inputs.state_delta.checkpoint_id, receipt.clone())?;
@@ -292,12 +327,150 @@ where
     Ok(PackageReplayReport {
         checkpoint,
         receipt,
-        receipt_source: super::destinations::project_receipt_source(
-            receipt_policy,
-            package_receipt_recorded,
-        ),
+        receipt_source,
         package_status,
     })
+}
+
+struct PackageStagedSegmentReader {
+    identity: cdf_runtime::StagedSegmentIdentity,
+    segment: cdf_package::VerifiedSegment<()>,
+    next_batch: usize,
+}
+
+impl cdf_runtime::DurableSegmentReader for PackageStagedSegmentReader {
+    fn identity(&self) -> &cdf_runtime::StagedSegmentIdentity {
+        &self.identity
+    }
+
+    fn next_batch(&mut self) -> Result<Option<arrow_array::RecordBatch>> {
+        let batch = self.segment.batches.get(self.next_batch).cloned();
+        self.next_batch = self.next_batch.saturating_add(usize::from(batch.is_some()));
+        Ok(batch)
+    }
+}
+
+fn commit_package_through_staged_ingress(
+    runtime: &mut dyn ProjectDestinationRuntime,
+    reader: &PackageReader,
+    inputs: &PackageReplayInputs,
+    capabilities: &cdf_runtime::DestinationRuntimeCapabilities,
+    memory: Arc<dyn MemoryCoordinator>,
+    hooks: &PackageReplayHooks<'_>,
+) -> Result<Receipt> {
+    runtime.ensure_protocol_ready()?;
+    let plan = runtime.protocol().plan_commit(&inputs.destination_commit)?;
+    let destination_id = runtime.describe().destination_id;
+    let attempt_id = staging_attempt_id(&inputs.state_delta.checkpoint_id, &destination_id)?;
+    let request = cdf_runtime::StagedIngressRequest {
+        attempt_id: attempt_id.clone(),
+        binding: cdf_runtime::StagingAttemptBinding {
+            destination_id,
+            target: inputs.destination_commit.target.clone(),
+            disposition: inputs.destination_commit.disposition.clone(),
+            schema_hash: inputs.schema_hash.clone(),
+            plan_id: plan.plan_id.clone(),
+        },
+        scheduling: cdf_runtime::StagingSchedulingContext::new(
+            capabilities
+                .max_in_flight_segments
+                .ok_or_else(|| CdfError::contract("staged ingress omitted its segment bound"))?,
+            capabilities
+                .max_in_flight_bytes
+                .ok_or_else(|| CdfError::contract("staged ingress omitted its byte bound"))?,
+        )?,
+    };
+    let mut session = Some(runtime.begin_staged_ingress(request)?);
+    let result = (|| {
+        notify_destination_replay_stage(
+            hooks,
+            PackageReplayStage::DestinationCommitStarted {
+                plan_id: &plan.plan_id,
+                segment_count: inputs.destination_commit.segments.len(),
+            },
+        )?;
+        let maximum_segment_bytes = capabilities
+            .max_in_flight_bytes
+            .expect("validated staged byte bound")
+            .min(memory.snapshot().budget_bytes);
+        let stream = reader.verified_canonical_segment_stream(memory, maximum_segment_bytes)?;
+        let mut staged = Vec::with_capacity(reader.manifest().identity.segments.len());
+        for (ordinal, segment) in stream.enumerate() {
+            let segment = segment?;
+            let ordinal = u32::try_from(ordinal)
+                .map_err(|_| CdfError::data("staged package has too many segments"))?;
+            let identity = cdf_runtime::StagedSegmentIdentity::from_manifest_entry(
+                &segment.entry,
+                inputs.schema_hash.clone(),
+                ordinal,
+            )?;
+            let request = cdf_runtime::StagedSegmentRequest::new(
+                identity.clone(),
+                Box::new(PackageStagedSegmentReader {
+                    identity: identity.clone(),
+                    segment,
+                    next_batch: 0,
+                }),
+            )?;
+            let ack = session
+                .as_mut()
+                .expect("staged session remains owned until final binding")
+                .stage_segment(request)?;
+            if ack.attempt_id != attempt_id || ack.identity != identity || !ack.external_durable {
+                return Err(CdfError::destination(
+                    "staged ingress acknowledgement did not bind the exact durable segment",
+                ));
+            }
+            let segment_ack = SegmentAck {
+                segment_id: identity.segment_id.clone(),
+                row_count: identity.row_count,
+                byte_count: identity.byte_count,
+            };
+            notify_destination_replay_stage(
+                hooks,
+                PackageReplayStage::DestinationSegmentAcknowledged { ack: &segment_ack },
+            )?;
+            staged.push(identity);
+        }
+        let snapshot = session
+            .as_ref()
+            .expect("staged session remains owned until final binding")
+            .snapshot()?;
+        if snapshot.attempt_id != attempt_id || snapshot.accepted_segments != staged {
+            return Err(CdfError::destination(
+                "staged ingress snapshot does not exactly match acknowledged segments",
+            ));
+        }
+        let verification = reader.verify()?;
+        let binding = cdf_runtime::VerifiedFinalBinding::from_verified_package(
+            attempt_id,
+            reader,
+            &verification,
+            inputs.destination_commit.target.clone(),
+            inputs.destination_commit.disposition.clone(),
+            inputs.schema_hash.clone(),
+            plan,
+        )?;
+        binding.validate_staged_identities(&staged)?;
+        session
+            .take()
+            .expect("staged session is consumed exactly once")
+            .bind_final(binding)
+    })();
+    if result.is_err()
+        && let Some(session) = session
+    {
+        let _ = session.abort();
+    }
+    result
+}
+
+fn staging_attempt_id(
+    checkpoint_id: &CheckpointId,
+    destination_id: &DestinationId,
+) -> Result<cdf_runtime::LoadAttemptId> {
+    let digest = Sha256::digest(format!("{}\0{}", checkpoint_id, destination_id).as_bytes());
+    cdf_runtime::LoadAttemptId::new(format!("attempt_{}", hex::encode(&digest[..16])))
 }
 
 pub(crate) fn recover_package_with_runtime<Store>(

@@ -113,7 +113,11 @@ impl StagedSegmentIdentity {
         schema_hash: SchemaHash,
         ordinal: u32,
     ) -> Result<Self> {
-        if !entry.sha256.starts_with("sha256:") || entry.sha256.len() <= "sha256:".len() {
+        let canonical_package_digest =
+            entry.sha256.len() == 64 && entry.sha256.bytes().all(|byte| byte.is_ascii_hexdigit());
+        let algorithm_qualified =
+            entry.sha256.starts_with("sha256:") && entry.sha256.len() > "sha256:".len();
+        if !canonical_package_digest && !algorithm_qualified {
             return Err(CdfError::data(format!(
                 "segment {} has malformed SHA-256 identity",
                 entry.segment_id

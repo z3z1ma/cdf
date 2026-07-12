@@ -30,6 +30,10 @@ No distributed worker protocol, destination-specific bulk encoder, decoder-speci
 
 Depends on A5b, A5c, E2, and A6.
 
+## Progress and notes
+
+- 2026-07-11: All declared dependencies are closed. Production replay now selects finalized-only versus staged durable-segment ingress exclusively from `DestinationRuntimeCapabilities`. The staged path streams the verified, ledger-accounted package window; validates exact segment hash/schema/ordinal acknowledgements; aborts an owned staging session on every pre-binding failure; and issues a receipt only through exact verified final-package binding. A mock destination composes through the runtime trait without prepare/bind branches or first-party identity checks. This is the finalized-package integration milestone; moving the same durable handoff to segment-persist completion for useful pre-finalization overlap remains open.
+
 ## References
 
 - `.10x/specs/streaming-operator-graph.md`

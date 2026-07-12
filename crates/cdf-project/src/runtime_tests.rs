@@ -1298,6 +1298,161 @@ impl ProjectDestinationRuntime for MockProjectDestinationRuntime {
     }
 }
 
+struct MockStagedProjectRuntime {
+    destination: MockDestination,
+}
+
+impl ProjectDestinationRuntime for MockStagedProjectRuntime {
+    fn protocol(&self) -> &dyn DestinationProtocol {
+        &self.destination
+    }
+
+    fn describe(&self) -> ProjectDestinationDescription {
+        ProjectDestinationDescription::new(
+            self.destination.sheet.destination.clone(),
+            &["mock-staged"],
+            "mock staged",
+        )
+    }
+
+    fn runtime_capabilities(&self) -> cdf_runtime::DestinationRuntimeCapabilities {
+        cdf_runtime::DestinationRuntimeCapabilities {
+            ingress_mode: cdf_runtime::DestinationIngressMode::StagedDurableSegments,
+            staged_ingress: Some(cdf_runtime::StagedIngressCapabilities {
+                recovery: cdf_runtime::StagingRecoveryMode::RollbackRedrive,
+                visibility: cdf_runtime::StagingVisibility::IsolatedUntilFinalBinding,
+                abort_idempotent: true,
+                lifecycle_cleanup: true,
+                final_binding_requires_exclusive_writer: false,
+            }),
+            writer_model: cdf_runtime::DestinationWriterModel::SingleWriter,
+            commit_payload_mode: cdf_runtime::DestinationCommitPayloadMode::SegmentStreaming,
+            max_in_flight_segments: Some(1),
+            max_in_flight_bytes: Some(64 * 1024 * 1024),
+            ..Default::default()
+        }
+    }
+
+    fn begin_staged_ingress(
+        &mut self,
+        request: cdf_runtime::StagedIngressRequest,
+    ) -> Result<Box<dyn cdf_runtime::StagedIngressSession>> {
+        Ok(Box::new(MockProjectStagedSession {
+            destination: self.destination.clone(),
+            request,
+            accepted: Vec::new(),
+        }))
+    }
+
+    fn prepare_package_commit(
+        &mut self,
+        _package_dir: &Path,
+        _reader: &PackageReader,
+        _inputs: &PackageReplayInputs,
+        _context: &crate::DestinationPlanningContext<'_>,
+    ) -> Result<PreparedDestinationCommit> {
+        Err(CdfError::internal(
+            "staged integration must not prepare a finalized-only commit",
+        ))
+    }
+
+    fn bind_prepared_commit(&mut self, _prepared: &mut PreparedDestinationCommit) -> Result<()> {
+        Err(CdfError::internal(
+            "staged integration must bind through its staged session",
+        ))
+    }
+}
+
+struct MockProjectStagedSession {
+    destination: MockDestination,
+    request: cdf_runtime::StagedIngressRequest,
+    accepted: Vec<cdf_runtime::StagedSegmentIdentity>,
+}
+
+impl cdf_runtime::StagedIngressSession for MockProjectStagedSession {
+    fn stage_segment(
+        &mut self,
+        mut segment: cdf_runtime::StagedSegmentRequest,
+    ) -> Result<cdf_runtime::StagedSegmentAck> {
+        while segment.reader_mut().next_batch()?.is_some() {}
+        if segment.identity.ordinal != u32::try_from(self.accepted.len()).unwrap() {
+            return Err(CdfError::destination(
+                "mock staged integration received noncanonical segment order",
+            ));
+        }
+        self.destination
+            .writes
+            .lock()
+            .unwrap()
+            .push(segment.identity.segment_id.clone());
+        self.accepted.push(segment.identity.clone());
+        Ok(cdf_runtime::StagedSegmentAck {
+            attempt_id: self.request.attempt_id.clone(),
+            identity: segment.identity,
+            external_durable: true,
+        })
+    }
+
+    fn snapshot(&self) -> Result<cdf_runtime::StagingSnapshot> {
+        Ok(cdf_runtime::StagingSnapshot {
+            attempt_id: self.request.attempt_id.clone(),
+            binding: self.request.binding.clone(),
+            recovery: cdf_runtime::StagingRecoveryMode::RollbackRedrive,
+            accepted_segments: self.accepted.clone(),
+        })
+    }
+
+    fn bind_final(self: Box<Self>, binding: cdf_runtime::VerifiedFinalBinding) -> Result<Receipt> {
+        binding.validate_staged_identities(&self.accepted)?;
+        let rows_written = self.accepted.iter().map(|item| item.row_count).sum();
+        let receipt = Receipt {
+            receipt_id: ReceiptId::new(format!(
+                "mock-staged-receipt:{}",
+                binding.commit().package_hash
+            ))?,
+            destination: self.destination.sheet.destination.clone(),
+            target: binding.commit().target.clone(),
+            package_hash: binding.commit().package_hash.clone(),
+            segment_acks: self
+                .accepted
+                .iter()
+                .map(|item| SegmentAck {
+                    segment_id: item.segment_id.clone(),
+                    row_count: item.row_count,
+                    byte_count: item.byte_count,
+                })
+                .collect(),
+            disposition: binding.commit().disposition.clone(),
+            idempotency_token: binding.commit().idempotency_token.clone(),
+            transaction: None,
+            counts: CommitCounts {
+                rows_written,
+                rows_inserted: Some(rows_written),
+                rows_updated: Some(0),
+                rows_deleted: Some(0),
+            },
+            schema_hash: binding.schema_hash().clone(),
+            migrations: binding.plan().migrations.clone(),
+            committed_at_ms: 1_700_000_000_000,
+            verify: VerifyClause {
+                kind: "mock".to_owned(),
+                statement: "mock staged durable receipt".to_owned(),
+                parameters: BTreeMap::new(),
+            },
+        };
+        self.destination
+            .receipts
+            .lock()
+            .unwrap()
+            .push(receipt.clone());
+        Ok(receipt)
+    }
+
+    fn abort(self: Box<Self>) -> Result<()> {
+        Ok(())
+    }
+}
+
 fn package_replay_stage_name(stage: PackageReplayStage<'_>) -> &'static str {
     match stage {
         PackageReplayStage::PackageReplayVerified => "package_replay_verified",
@@ -5550,6 +5705,66 @@ fn generic_package_replay_and_recovery_drive_mock_runtime_without_destination_br
     assert_eq!(
         *recovery_stages.lock().unwrap(),
         vec![
+            "destination_receipt_recorded",
+            "checkpoint_committed",
+            "package_status_updated",
+        ]
+    );
+}
+
+#[test]
+fn generic_replay_streams_verified_segments_through_staged_final_binding() {
+    let temp = tempfile::tempdir().unwrap();
+    let package_dir = temp.path().join("pkg-generic-staged");
+    build_package(&package_dir, "pkg-generic-staged", PackageStatus::Packaged);
+    let reader = PackageReader::open(&package_dir).unwrap();
+    let inputs = reader.replay_inputs().unwrap();
+    let store = SqliteCheckpointStore::open_in_memory().unwrap();
+    let destination = MockDestination::new();
+    let mut runtime = MockStagedProjectRuntime {
+        destination: destination.clone(),
+    };
+    let stages = Arc::new(Mutex::new(Vec::new()));
+    let stage_capture = Arc::clone(&stages);
+    let stage_hook = move |stage: PackageReplayStage<'_>| {
+        stage_capture
+            .lock()
+            .unwrap()
+            .push(package_replay_stage_name(stage));
+        Ok(())
+    };
+
+    let report = replay_package_with_runtime(
+        reader,
+        package_dir,
+        &mut runtime,
+        &store,
+        inputs.clone(),
+        test_execution_services().memory(),
+        PackageReplayHooks {
+            stage: Some(&stage_hook),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+
+    assert_eq!(destination.write_count(), inputs.state_delta.segments.len());
+    assert!(report.receipt.covers_state_delta(&inputs.state_delta));
+    assert_eq!(report.package_status, PackageStatus::Checkpointed);
+    assert_eq!(
+        report.receipt_source,
+        ProjectReceiptSource::DestinationCommitReceiptOnly {
+            package_receipt_recorded: false
+        }
+    );
+    assert_eq!(
+        *stages.lock().unwrap(),
+        vec![
+            "package_replay_verified",
+            "checkpoint_proposed",
+            "destination_write_ready",
+            "destination_commit_started",
+            "destination_segment_acknowledged",
             "destination_receipt_recorded",
             "checkpoint_committed",
             "package_status_updated",
