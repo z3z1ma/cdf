@@ -5649,8 +5649,11 @@ fn generic_package_replay_and_recovery_drive_mock_runtime_without_destination_br
     let temp = tempfile::tempdir().unwrap();
     let package_dir = temp.path().join("pkg-generic-mock");
     build_package(&package_dir, "pkg-generic-mock", PackageStatus::Packaged);
-    let reader = PackageReader::open(&package_dir).unwrap();
-    let inputs = reader.replay_inputs().unwrap();
+    let package = PackageReader::open(&package_dir)
+        .unwrap()
+        .into_verified()
+        .unwrap();
+    let inputs = package.replay_inputs().unwrap();
     let store = SqliteCheckpointStore::open_in_memory().unwrap();
     let destination = MockDestination::new();
     let counters = MockDestinationCounters::new();
@@ -5674,7 +5677,7 @@ fn generic_package_replay_and_recovery_drive_mock_runtime_without_destination_br
     };
 
     let report = replay_package_with_runtime(
-        reader,
+        package,
         package_dir.clone(),
         replay_runtime.as_mut(),
         &store,
@@ -5725,8 +5728,12 @@ fn generic_package_replay_and_recovery_drive_mock_runtime_without_destination_br
             .push(package_replay_stage_name(stage));
         Ok(())
     };
+    let recovery_package = PackageReader::open(&package_dir)
+        .unwrap()
+        .into_verified()
+        .unwrap();
     let recovery = recover_package_with_runtime(
-        PackageReader::open(&package_dir).unwrap(),
+        recovery_package,
         recovery_runtime.as_mut(),
         &store,
         inputs.clone(),
@@ -5762,8 +5769,11 @@ fn generic_replay_streams_verified_segments_through_staged_final_binding() {
     let temp = tempfile::tempdir().unwrap();
     let package_dir = temp.path().join("pkg-generic-staged");
     build_package(&package_dir, "pkg-generic-staged", PackageStatus::Packaged);
-    let reader = PackageReader::open(&package_dir).unwrap();
-    let inputs = reader.replay_inputs().unwrap();
+    let package = PackageReader::open(&package_dir)
+        .unwrap()
+        .into_verified()
+        .unwrap();
+    let inputs = package.replay_inputs().unwrap();
     let store = SqliteCheckpointStore::open_in_memory().unwrap();
     let destination = MockDestination::new();
     let mut runtime = MockStagedProjectRuntime {
@@ -5782,7 +5792,7 @@ fn generic_replay_streams_verified_segments_through_staged_final_binding() {
     };
 
     let report = replay_package_with_runtime(
-        reader,
+        package,
         package_dir,
         &mut runtime,
         &store,
@@ -5928,8 +5938,11 @@ fn generic_stage_hook_stops_mock_replay_before_destination_write() {
         "pkg-generic-mock-failpoint",
         PackageStatus::Packaged,
     );
-    let reader = PackageReader::open(&package_dir).unwrap();
-    let inputs = reader.replay_inputs().unwrap();
+    let package = PackageReader::open(&package_dir)
+        .unwrap()
+        .into_verified()
+        .unwrap();
+    let inputs = package.replay_inputs().unwrap();
     let store = SqliteCheckpointStore::open_in_memory().unwrap();
     let destination = MockDestination::new();
     let counters = MockDestinationCounters::new();
@@ -5952,7 +5965,7 @@ fn generic_stage_hook_stops_mock_replay_before_destination_write() {
     };
 
     let error = replay_package_with_runtime(
-        reader,
+        package,
         package_dir.clone(),
         runtime.as_mut(),
         &store,

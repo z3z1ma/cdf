@@ -32,3 +32,7 @@ Depends on E2 and A5 bounded readers.
 ## References
 
 - `.10x/specs/package-io-hashing-durability.md`
+
+## Progress and notes
+
+- 2026-07-11: Introduced a package-owned `VerifiedPackageReader` consumption authority and threaded it through generic replay, recovery, prepared commit, staged ingress, final binding, and destination planning. A commit operation now performs one full verification and reuses that unforgeable-in-API authority instead of calling whole-package verification at replay-input reconstruction, replay validation, final binding, and binding reconstruction. The fresh 104 MiB/2,964,624-row TLC staged run fell from the recent 1.89-second median to 1.64 seconds; three redundant 104 MiB scans were removed. Replay consumer-read hash fusion, bounded/parallel explicit verification, and high-cardinality closure remain open. Evidence: `.10x/evidence/2026-07-11-p3-e3-single-pass-consumption-verification.md`.

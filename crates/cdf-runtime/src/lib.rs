@@ -47,7 +47,7 @@ mod prelude {
         ReceiptVerification, ResourceStream, Result, SchemaHash, StateDelta, TargetName,
         WriteDisposition,
     };
-    pub(crate) use cdf_package::{PackageReader, PackageReplayInputs};
+    pub(crate) use cdf_package::{PackageReader, PackageReplayInputs, VerifiedPackage};
     pub(crate) use serde::{Deserialize, Serialize};
 
     pub(crate) use crate::bulk::*;

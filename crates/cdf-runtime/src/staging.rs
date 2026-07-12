@@ -6,7 +6,7 @@ use cdf_kernel::{
     CdfError, CommitPlan, DestinationCommitRequest, DestinationId, IdempotencyToken, PackageHash,
     PlanId, Receipt, Result, SchemaHash, SegmentId, TargetName, WriteDisposition,
 };
-use cdf_package::{PackageReader, SegmentEntry, VerificationReport};
+use cdf_package::{PackageReader, SegmentEntry, VerifiedPackage};
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -218,7 +218,7 @@ impl VerifiedFinalBinding {
     pub fn from_verified_package(
         attempt_id: LoadAttemptId,
         reader: &PackageReader,
-        verification: &VerificationReport,
+        verification: &VerifiedPackage,
         target: TargetName,
         disposition: WriteDisposition,
         schema_hash: SchemaHash,
@@ -242,15 +242,15 @@ impl VerifiedFinalBinding {
         attempt_id: LoadAttemptId,
         staging_plan_id: PlanId,
         reader: &PackageReader,
-        verification: &VerificationReport,
+        verification: &VerifiedPackage,
         target: TargetName,
         disposition: WriteDisposition,
         schema_hash: SchemaHash,
         plan: CommitPlan,
     ) -> Result<Self> {
         let view = reader.replay_view()?;
-        if verification.package_hash != reader.manifest().package_hash
-            || verification.package_hash != view.package_hash.as_str()
+        if verification.package_hash() != reader.manifest().package_hash
+            || verification.package_hash() != view.package_hash.as_str()
         {
             return Err(CdfError::data(
                 "verified package report does not match the final package manifest hash",
@@ -278,12 +278,15 @@ impl VerifiedFinalBinding {
                 StagedSegmentIdentity::from_manifest_entry(entry, schema_hash.clone(), ordinal)
             })
             .collect::<Result<Vec<_>>>()?;
-        let package_hash = PackageHash::new(verification.package_hash.clone())?;
+        let package_hash = PackageHash::new(verification.package_hash())?;
         let commit = DestinationCommitRequest {
             package_hash: package_hash.clone(),
             target,
             disposition,
-            segments: reader.replay_inputs()?.state_delta.segments,
+            segments: reader
+                .replay_inputs_verified(verification)?
+                .state_delta
+                .segments,
             idempotency_token: IdempotencyToken::new(package_hash.as_str())?,
         };
         let commit_ids = commit

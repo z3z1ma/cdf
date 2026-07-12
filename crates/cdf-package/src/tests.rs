@@ -679,6 +679,25 @@ fn read_commit_segments_preserves_requested_and_package_byte_counts() {
 }
 
 #[test]
+fn consumption_verification_authority_is_bound_to_one_package_directory() {
+    let first = tempfile::tempdir().unwrap();
+    let second = tempfile::tempdir().unwrap();
+    build_fixture(first.path());
+    build_fixture(second.path());
+    let first_reader = PackageReader::open(first.path()).unwrap();
+    let second_reader = PackageReader::open(second.path()).unwrap();
+    let verified = first_reader.verify_for_consumption().unwrap();
+
+    first_reader.replay_inputs_verified(&verified).unwrap();
+    let error = second_reader.replay_inputs_verified(&verified).unwrap_err();
+    assert!(
+        error
+            .message
+            .contains("does not bind this package identity")
+    );
+}
+
+#[test]
 fn verified_commit_stream_holds_one_accounted_segment_window() {
     let temp = tempfile::tempdir().unwrap();
     let manifest = build_archive_fixture(temp.path());

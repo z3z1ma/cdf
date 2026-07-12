@@ -67,7 +67,7 @@ mod prelude {
     };
     pub(super) use cdf_package::{
         DestinationCommitPlanPreimage, PackageReader, PackageReplayInputs, PackageStatus,
-        ReplayView, SegmentEntry, StateDeltaPreimage,
+        ReplayView, SegmentEntry, StateDeltaPreimage, VerifiedPackage, VerifiedPackageReader,
     };
     pub(super) use cdf_runtime::ExecutionServices;
     pub(super) use cdf_state_sqlite::{RunLedgerSnapshot, SqliteCheckpointStore, SqliteRunLedger};

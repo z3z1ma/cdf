@@ -43,6 +43,45 @@ pub struct PackageReader {
     manifest: PackageManifest,
 }
 
+/// Authority that one package identity was fully verified for a bounded
+/// consumption operation. Its fields are private so callers cannot substitute
+/// a hash-only assertion for package verification.
+#[derive(Clone, Debug)]
+pub struct VerifiedPackage {
+    package_dir: PathBuf,
+    package_hash: String,
+}
+
+#[derive(Clone, Debug)]
+pub struct VerifiedPackageReader {
+    reader: PackageReader,
+    verified: VerifiedPackage,
+}
+
+impl VerifiedPackageReader {
+    pub fn reader(&self) -> &PackageReader {
+        &self.reader
+    }
+
+    pub fn reader_mut(&mut self) -> &mut PackageReader {
+        &mut self.reader
+    }
+
+    pub fn verification(&self) -> &VerifiedPackage {
+        &self.verified
+    }
+
+    pub fn replay_inputs(&self) -> Result<PackageReplayInputs> {
+        self.reader.replay_inputs_verified(&self.verified)
+    }
+}
+
+impl VerifiedPackage {
+    pub fn package_hash(&self) -> &str {
+        &self.package_hash
+    }
+}
+
 #[derive(Debug)]
 pub struct VerifiedSegment<T> {
     pub entry: SegmentEntry,
@@ -206,6 +245,33 @@ impl PackageReader {
         verify_package(&self.package_dir)
     }
 
+    pub fn verify_for_consumption(&self) -> Result<VerifiedPackage> {
+        let report = self.verify()?;
+        Ok(VerifiedPackage {
+            package_dir: self.package_dir.clone(),
+            package_hash: report.package_hash,
+        })
+    }
+
+    pub fn into_verified(self) -> Result<VerifiedPackageReader> {
+        let verified = self.verify_for_consumption()?;
+        Ok(VerifiedPackageReader {
+            reader: self,
+            verified,
+        })
+    }
+
+    fn require_verification(&self, verified: &VerifiedPackage) -> Result<()> {
+        if verified.package_dir != self.package_dir
+            || verified.package_hash != self.manifest.package_hash
+        {
+            return Err(CdfError::data(
+                "package verification authority does not bind this package identity",
+            ));
+        }
+        Ok(())
+    }
+
     pub fn update_status(&mut self, status: PackageStatus) -> Result<&PackageManifest> {
         self.manifest = update_package_status(&self.package_dir, status)?;
         Ok(&self.manifest)
@@ -254,7 +320,15 @@ impl PackageReader {
     }
 
     pub fn runtime_arrow_schema(&self) -> Result<arrow_schema::SchemaRef> {
-        self.verify()?;
+        let verified = self.verify_for_consumption()?;
+        self.runtime_arrow_schema_verified(&verified)
+    }
+
+    pub fn runtime_arrow_schema_verified(
+        &self,
+        verified: &VerifiedPackage,
+    ) -> Result<arrow_schema::SchemaRef> {
+        self.require_verification(verified)?;
         let path = self.package_dir.join(crate::RUNTIME_ARROW_SCHEMA_FILE);
         let bytes = std::fs::read(&path)
             .map_err(|error| CdfError::data(format!("read {}: {error}", path.display())))?;
@@ -262,7 +336,15 @@ impl PackageReader {
     }
 
     pub fn replay_inputs(&self) -> Result<PackageReplayInputs> {
-        self.verify()?;
+        let verified = self.verify_for_consumption()?;
+        self.replay_inputs_verified(&verified)
+    }
+
+    pub fn replay_inputs_verified(
+        &self,
+        verified: &VerifiedPackage,
+    ) -> Result<PackageReplayInputs> {
+        self.require_verification(verified)?;
         let replay = self.replay_view()?;
         PackageReplayInputs::from_preimages_with_processed(
             replay.package_hash,
@@ -309,7 +391,17 @@ impl PackageReader {
         memory: Arc<dyn MemoryCoordinator>,
         maximum_segment_bytes: u64,
     ) -> Result<VerifiedSegmentStream<()>> {
-        self.verify()?;
+        let verified = self.verify_for_consumption()?;
+        self.verified_segment_stream_with(&verified, memory, maximum_segment_bytes)
+    }
+
+    pub fn verified_segment_stream_with(
+        &self,
+        verified: &VerifiedPackage,
+        memory: Arc<dyn MemoryCoordinator>,
+        maximum_segment_bytes: u64,
+    ) -> Result<VerifiedSegmentStream<()>> {
+        self.require_verification(verified)?;
         verified_segment_stream(
             &self.package_dir,
             self.manifest
@@ -329,7 +421,17 @@ impl PackageReader {
         memory: Arc<dyn MemoryCoordinator>,
         maximum_segment_bytes: u64,
     ) -> Result<VerifiedSegmentStream<()>> {
-        crate::verify_package_identity(&self.package_dir)?;
+        let verified = self.verify_for_consumption()?;
+        self.verified_canonical_segment_stream_with(&verified, memory, maximum_segment_bytes)
+    }
+
+    pub fn verified_canonical_segment_stream_with(
+        &self,
+        verified: &VerifiedPackage,
+        memory: Arc<dyn MemoryCoordinator>,
+        maximum_segment_bytes: u64,
+    ) -> Result<VerifiedSegmentStream<()>> {
+        self.require_verification(verified)?;
         verified_segment_stream(
             &self.package_dir,
             self.manifest
@@ -350,7 +452,23 @@ impl PackageReader {
         memory: Arc<dyn MemoryCoordinator>,
         maximum_segment_bytes: u64,
     ) -> Result<VerifiedSegmentStream<StateSegment>> {
-        self.verify()?;
+        let verified = self.verify_for_consumption()?;
+        self.verified_commit_segment_stream_with(
+            &verified,
+            state_segments,
+            memory,
+            maximum_segment_bytes,
+        )
+    }
+
+    pub fn verified_commit_segment_stream_with(
+        &self,
+        verified: &VerifiedPackage,
+        state_segments: &[StateSegment],
+        memory: Arc<dyn MemoryCoordinator>,
+        maximum_segment_bytes: u64,
+    ) -> Result<VerifiedSegmentStream<StateSegment>> {
+        self.require_verification(verified)?;
         let mut manifest_by_id = self
             .manifest
             .identity

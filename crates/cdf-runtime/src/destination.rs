@@ -85,12 +85,14 @@ pub struct DestinationOutputSchema {
 #[derive(Clone, Copy)]
 #[non_exhaustive]
 pub struct DestinationPlanningContext<'a> {
+    pub verified_package: &'a VerifiedPackage,
     pub after_receipt_verified: Option<ReceiptVerifiedHook<'a>>,
 }
 
 impl<'a> DestinationPlanningContext<'a> {
-    pub fn new() -> Self {
+    pub fn new(verified_package: &'a VerifiedPackage) -> Self {
         Self {
+            verified_package,
             after_receipt_verified: None,
         }
     }
@@ -98,12 +100,6 @@ impl<'a> DestinationPlanningContext<'a> {
     pub fn with_after_receipt_verified(mut self, hook: Option<ReceiptVerifiedHook<'a>>) -> Self {
         self.after_receipt_verified = hook;
         self
-    }
-}
-
-impl Default for DestinationPlanningContext<'_> {
-    fn default() -> Self {
-        Self::new()
     }
 }
 

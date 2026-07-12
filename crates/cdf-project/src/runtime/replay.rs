@@ -441,12 +441,12 @@ pub fn replay_package_from_artifacts_with_stage_hook<Store>(
 where
     Store: CheckpointStore + ?Sized,
 {
-    let reader = PackageReader::open(&request.package_dir)?;
-    let inputs = reader.replay_inputs()?;
+    let package = PackageReader::open(&request.package_dir)?.into_verified()?;
+    let inputs = package.replay_inputs()?;
     let runtime_stage_hook =
         |stage: PackageReplayStage<'_>| notify_runtime_replay_stage(stage_hook, stage);
     replay_package_with_resolved_destination(
-        reader,
+        package,
         request.package_dir,
         request.destination,
         request.checkpoint_store,
@@ -464,10 +464,10 @@ pub fn recover_package_from_artifacts<Store>(
 where
     Store: CheckpointStore + ?Sized,
 {
-    let reader = PackageReader::open(&request.package_dir)?;
-    let inputs = reader.replay_inputs()?;
+    let package = PackageReader::open(&request.package_dir)?.into_verified()?;
+    let inputs = package.replay_inputs()?;
     recover_package_with_resolved_destination(
-        reader,
+        package,
         request.destination,
         request.checkpoint_store,
         inputs,
@@ -495,11 +495,11 @@ pub fn replay_prepared_package_with_stage_hook<Store>(
 where
     Store: CheckpointStore + ?Sized,
 {
-    let reader = PackageReader::open(&request.package_dir)?;
+    let package = PackageReader::open(&request.package_dir)?.into_verified()?;
     let runtime_stage_hook =
         |stage: PackageReplayStage<'_>| notify_runtime_replay_stage(stage_hook, stage);
     replay_package_with_resolved_destination(
-        reader,
+        package,
         request.package_dir,
         request.destination,
         request.checkpoint_store,
@@ -517,9 +517,9 @@ pub fn recover_prepared_package<Store>(
 where
     Store: CheckpointStore + ?Sized,
 {
-    let reader = PackageReader::open(&request.package_dir)?;
+    let package = PackageReader::open(&request.package_dir)?.into_verified()?;
     recover_package_with_resolved_destination(
-        reader,
+        package,
         request.destination,
         request.checkpoint_store,
         request.inputs,
@@ -532,7 +532,7 @@ where
 }
 
 fn replay_package_with_resolved_destination<Store>(
-    reader: PackageReader,
+    package: VerifiedPackageReader,
     package_dir: PathBuf,
     mut destination: ResolvedProjectDestination,
     checkpoint_store: &Store,
@@ -545,7 +545,7 @@ where
     validate_resolved_destination_target(&destination, &inputs)?;
     let memory = default_replay_memory()?;
     replay_package_with_runtime(
-        reader,
+        package,
         package_dir,
         destination.runtime_mut(),
         checkpoint_store,
@@ -556,7 +556,7 @@ where
 }
 
 fn recover_package_with_resolved_destination<Store>(
-    reader: PackageReader,
+    package: VerifiedPackageReader,
     mut destination: ResolvedProjectDestination,
     checkpoint_store: &Store,
     inputs: PackageReplayInputs,
@@ -568,7 +568,7 @@ where
 {
     validate_resolved_destination_target(&destination, &inputs)?;
     recover_package_with_runtime(
-        reader,
+        package,
         destination.runtime_mut(),
         checkpoint_store,
         inputs,
@@ -592,7 +592,7 @@ fn validate_resolved_destination_target(
 }
 
 pub(crate) fn replay_package_with_runtime<Store>(
-    reader: PackageReader,
+    package: VerifiedPackageReader,
     package_dir: PathBuf,
     runtime: &mut dyn ProjectDestinationRuntime,
     checkpoint_store: &Store,
@@ -604,7 +604,7 @@ where
     Store: CheckpointStore + ?Sized,
 {
     replay_package_with_runtime_and_staged(
-        reader,
+        package,
         package_dir,
         runtime,
         checkpoint_store,
@@ -617,7 +617,7 @@ where
 
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn replay_package_with_runtime_and_staged<Store>(
-    mut reader: PackageReader,
+    mut package: VerifiedPackageReader,
     package_dir: PathBuf,
     runtime: &mut dyn ProjectDestinationRuntime,
     checkpoint_store: &Store,
@@ -629,7 +629,7 @@ pub(crate) fn replay_package_with_runtime_and_staged<Store>(
 where
     Store: CheckpointStore + ?Sized,
 {
-    validate_package_replay_inputs(&reader, &inputs)?;
+    validate_package_replay_inputs(package.reader(), package.verification(), &inputs)?;
     let capabilities = runtime.runtime_capabilities();
     capabilities.validate()?;
     notify_destination_replay_stage(&hooks, PackageReplayStage::PackageReplayVerified)?;
@@ -645,7 +645,7 @@ where
         let _ = checkpoint_store.abandon(&checkpoint_id);
         return Err(error);
     }
-    if let Err(error) = reader.update_status(PackageStatus::Loading) {
+    if let Err(error) = package.reader_mut().update_status(PackageStatus::Loading) {
         let _ = checkpoint_store.abandon(&checkpoint_id);
         return Err(error);
     }
@@ -654,12 +654,18 @@ where
     let (receipt, receipt_source) = match capabilities.ingress_mode {
         cdf_runtime::DestinationIngressMode::StagedDurableSegments => {
             let receipt = match match active_staged {
-                Some(active) => {
-                    finalize_active_staged_ingress(runtime, &reader, &inputs, active, &hooks)
-                }
+                Some(active) => finalize_active_staged_ingress(
+                    runtime,
+                    package.reader(),
+                    package.verification(),
+                    &inputs,
+                    active,
+                    &hooks,
+                ),
                 None => commit_package_through_staged_ingress(
                     runtime,
-                    &reader,
+                    package.reader(),
+                    package.verification(),
                     &inputs,
                     &capabilities,
                     memory,
@@ -672,14 +678,15 @@ where
                     return Err(error);
                 }
             };
-            let package_receipt_recorded = if reader
+            let package_receipt_recorded = if package
+                .reader()
                 .receipts()?
                 .iter()
                 .any(|existing| existing.receipt_id == receipt.receipt_id)
             {
                 false
             } else {
-                reader.append_receipt(receipt.clone())?;
+                package.reader().append_receipt(receipt.clone())?;
                 true
             };
             (
@@ -692,9 +699,9 @@ where
         cdf_runtime::DestinationIngressMode::FinalizedPackageOnly => {
             let mut prepared = match runtime.prepare_package_commit(
                 &package_dir,
-                &reader,
+                package.reader(),
                 &inputs,
-                &DestinationPlanningContext::new()
+                &DestinationPlanningContext::new(package.verification())
                     .with_after_receipt_verified(hooks.after_receipt_verified),
             ) {
                 Ok(prepared) => prepared,
@@ -704,7 +711,7 @@ where
                 }
             };
             let receipt_policy = prepared.reporting_policy.clone();
-            let receipts_before = reader.receipts()?.len();
+            let receipts_before = package.reader().receipts()?.len();
             if let Err(error) = runtime.bind_prepared_commit(&mut prepared) {
                 let _ = checkpoint_store.abandon(&checkpoint_id);
                 return Err(error);
@@ -720,7 +727,12 @@ where
                 return Err(error);
             }
             let receipt = match commit_prepared_package_through_session(
-                runtime, &reader, &prepared, memory, &hooks,
+                runtime,
+                package.reader(),
+                &prepared,
+                memory,
+                &hooks,
+                package.verification(),
             ) {
                 Ok(receipt) => receipt,
                 Err(error) => {
@@ -728,7 +740,7 @@ where
                     return Err(error);
                 }
             };
-            let package_receipt_recorded = reader.receipts()?.len() > receipts_before;
+            let package_receipt_recorded = package.reader().receipts()?.len() > receipts_before;
             (
                 receipt,
                 super::destinations::project_receipt_source(
@@ -742,7 +754,8 @@ where
     verify_receipt_and_notify(runtime, &inputs, &receipt, &hooks)?;
 
     let checkpoint = checkpoint_store.commit(&inputs.state_delta.checkpoint_id, receipt.clone())?;
-    let package_status = mark_package_checkpointed_after_commit(&mut reader, &checkpoint, &hooks)?;
+    let package_status =
+        mark_package_checkpointed_after_commit(package.reader_mut(), &checkpoint, &hooks)?;
 
     Ok(PackageReplayReport {
         checkpoint,
@@ -773,6 +786,7 @@ impl cdf_runtime::DurableSegmentReader for PackageStagedSegmentReader {
 fn commit_package_through_staged_ingress(
     runtime: &mut dyn ProjectDestinationRuntime,
     reader: &PackageReader,
+    verified: &VerifiedPackage,
     inputs: &PackageReplayInputs,
     capabilities: &cdf_runtime::DestinationRuntimeCapabilities,
     memory: Arc<dyn MemoryCoordinator>,
@@ -799,7 +813,10 @@ fn commit_package_through_staged_ingress(
                 .max_in_flight_bytes
                 .ok_or_else(|| CdfError::contract("staged ingress omitted its byte bound"))?,
         )?,
-        output_schema: reader.runtime_arrow_schema()?.as_ref().clone(),
+        output_schema: reader
+            .runtime_arrow_schema_verified(verified)?
+            .as_ref()
+            .clone(),
         merge_keys: inputs.merge_keys.clone(),
     };
     let mut session = Some(runtime.begin_staged_ingress(request)?);
@@ -815,7 +832,11 @@ fn commit_package_through_staged_ingress(
             .max_in_flight_bytes
             .expect("validated staged byte bound")
             .min(memory.snapshot().budget_bytes);
-        let stream = reader.verified_canonical_segment_stream(memory, maximum_segment_bytes)?;
+        let stream = reader.verified_canonical_segment_stream_with(
+            verified,
+            memory,
+            maximum_segment_bytes,
+        )?;
         let mut staged = Vec::with_capacity(reader.manifest().identity.segments.len());
         for (ordinal, segment) in stream.enumerate() {
             let segment = segment?;
@@ -863,11 +884,10 @@ fn commit_package_through_staged_ingress(
                 "staged ingress snapshot does not exactly match acknowledged segments",
             ));
         }
-        let verification = reader.verify()?;
         let binding = cdf_runtime::VerifiedFinalBinding::from_verified_package(
             attempt_id,
             reader,
-            &verification,
+            verified,
             inputs.destination_commit.target.clone(),
             inputs.destination_commit.disposition.clone(),
             inputs.schema_hash.clone(),
@@ -890,6 +910,7 @@ fn commit_package_through_staged_ingress(
 fn finalize_active_staged_ingress(
     runtime: &mut dyn ProjectDestinationRuntime,
     reader: &PackageReader,
+    verified: &VerifiedPackage,
     inputs: &PackageReplayInputs,
     mut active: ActiveStagedIngress,
     hooks: &PackageReplayHooks<'_>,
@@ -926,13 +947,12 @@ fn finalize_active_staged_ingress(
                 PackageReplayStage::DestinationSegmentAcknowledged { ack: &ack },
             )?;
         }
-        let verification = reader.verify()?;
         let binding =
             cdf_runtime::VerifiedFinalBinding::from_verified_package_with_staging_authority(
                 active.attempt_id.clone(),
                 active.staging_plan_id.clone(),
                 reader,
-                &verification,
+                verified,
                 inputs.destination_commit.target.clone(),
                 inputs.destination_commit.disposition.clone(),
                 inputs.schema_hash.clone(),
@@ -956,7 +976,7 @@ pub(crate) fn staging_attempt_id(
 }
 
 pub(crate) fn recover_package_with_runtime<Store>(
-    mut reader: PackageReader,
+    mut package: VerifiedPackageReader,
     runtime: &mut dyn ProjectDestinationRuntime,
     checkpoint_store: &Store,
     inputs: PackageReplayInputs,
@@ -966,7 +986,7 @@ pub(crate) fn recover_package_with_runtime<Store>(
 where
     Store: CheckpointStore + ?Sized,
 {
-    validate_package_replay_inputs(&reader, &inputs)?;
+    validate_package_replay_inputs(package.reader(), package.verification(), &inputs)?;
     verify_receipt_and_notify(runtime, &inputs, &receipt, &hooks)?;
 
     let checkpoint = commit_or_reuse_committed_checkpoint(
@@ -974,7 +994,8 @@ where
         &inputs.state_delta,
         receipt.clone(),
     )?;
-    let package_status = mark_package_checkpointed_after_commit(&mut reader, &checkpoint, &hooks)?;
+    let package_status =
+        mark_package_checkpointed_after_commit(package.reader_mut(), &checkpoint, &hooks)?;
 
     Ok(PackageReplayReport {
         checkpoint,
@@ -990,6 +1011,7 @@ fn commit_prepared_package_through_session(
     prepared: &super::destinations::PreparedDestinationCommit,
     memory: Arc<dyn MemoryCoordinator>,
     hooks: &PackageReplayHooks<'_>,
+    verified: &VerifiedPackage,
 ) -> Result<Receipt> {
     let capabilities = runtime.runtime_capabilities();
     let mut session = runtime
@@ -1006,6 +1028,7 @@ fn commit_prepared_package_through_session(
         &capabilities,
         memory,
         hooks,
+        verified,
     ) {
         let _ = session.abort();
         return Err(error);
@@ -1087,6 +1110,7 @@ fn write_package_segments_to_session(
     capabilities: &cdf_runtime::DestinationRuntimeCapabilities,
     memory: Arc<dyn MemoryCoordinator>,
     hooks: &PackageReplayHooks<'_>,
+    verified: &VerifiedPackage,
 ) -> Result<()> {
     let mut acknowledge = |segment| {
         let ack = session.write_segment(segment)?;
@@ -1102,7 +1126,8 @@ fn write_package_segments_to_session(
                 .max_in_flight_bytes
                 .unwrap_or(64 * 1024 * 1024)
                 .min(budget);
-            let stream = reader.verified_commit_segment_stream(
+            let stream = reader.verified_commit_segment_stream_with(
+                verified,
                 &commit.segments,
                 memory,
                 maximum_segment_bytes,
@@ -1112,7 +1137,7 @@ fn write_package_segments_to_session(
             }
         }
         cdf_runtime::DestinationCommitPayloadMode::MaterializedPackage => {
-            reader.verify()?;
+            reader.replay_inputs_verified(verified)?;
             for state in &commit.segments {
                 let entry = reader
                     .manifest()
@@ -1146,9 +1171,10 @@ fn default_replay_memory() -> Result<Arc<dyn MemoryCoordinator>> {
 
 fn validate_package_replay_inputs(
     reader: &PackageReader,
+    verified: &VerifiedPackage,
     inputs: &PackageReplayInputs,
 ) -> Result<ReplayView> {
-    reader.verify()?;
+    reader.replay_inputs_verified(verified)?;
     let replay = reader.replay_view()?;
     if replay.package_hash != inputs.state_delta.package_hash {
         return Err(CdfError::data(format!(

@@ -306,8 +306,8 @@ async fn run_project_inner(execution: ProjectRunExecution<'_>) -> Result<Project
         output.output.profile.output_batches,
     )?;
 
-    let reader = PackageReader::open(&execution.package_dir)?;
-    let replay_inputs = reader.replay_inputs()?;
+    let package = PackageReader::open(&execution.package_dir)?.into_verified()?;
+    let replay_inputs = package.replay_inputs()?;
     let package_hash = replay_inputs.state_delta.package_hash.clone();
     let profile = &output.output.profile;
     let row_count = profile.output_rows;
@@ -319,7 +319,7 @@ async fn run_project_inner(execution: ProjectRunExecution<'_>) -> Result<Project
             segment_count,
         )?;
     }
-    let quarantine_record_count = u64::try_from(reader.read_quarantine_records()?.len())
+    let quarantine_record_count = u64::try_from(package.reader().read_quarantine_records()?.len())
         .map_err(|error| CdfError::internal(error.to_string()))?;
     execution.recorder.append_package_finalized(
         &package_hash,
@@ -362,7 +362,7 @@ async fn run_project_inner(execution: ProjectRunExecution<'_>) -> Result<Project
         )?) as Arc<dyn cdf_memory::MemoryCoordinator>,
     };
     let replay_report = replay_package_with_runtime_and_staged(
-        reader,
+        package,
         execution.package_dir.clone(),
         execution.destination.runtime_mut(),
         execution.checkpoint_store,
