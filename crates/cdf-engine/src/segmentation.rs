@@ -98,7 +98,19 @@ pub struct CanonicalSegment {
     pub row_count: u64,
     pub logical_bytes: u64,
     pub retained_bytes: u64,
+    pub canonical_batch_rows: u32,
+    pub canonical_batch_bytes: u64,
     pub(crate) memory_leases: Vec<MemoryLease>,
+}
+
+impl CanonicalSegment {
+    pub fn into_canonical_batches(self) -> Result<Vec<RecordBatch>> {
+        canonicalize_batches(
+            self.batches,
+            self.canonical_batch_rows,
+            self.canonical_batch_bytes,
+        )
+    }
 }
 
 pub struct CanonicalSegmentAssembler {
@@ -267,6 +279,8 @@ impl CanonicalSegmentAssembler {
             row_count: std::mem::take(&mut self.rows),
             logical_bytes: std::mem::take(&mut self.logical_bytes),
             retained_bytes: std::mem::take(&mut self.retained_bytes),
+            canonical_batch_rows: self.policy.microbatch_maximum_rows,
+            canonical_batch_bytes: self.policy.microbatch_maximum_bytes,
             memory_leases: std::mem::take(&mut self.memory_leases),
         }))
     }
@@ -303,6 +317,78 @@ impl CanonicalSegmentAssembler {
         }
         Ok(())
     }
+}
+
+pub(crate) fn canonicalize_batches(
+    batches: Vec<RecordBatch>,
+    maximum_rows: u32,
+    maximum_bytes: u64,
+) -> Result<Vec<RecordBatch>> {
+    let mut output = Vec::new();
+    let mut fragments = Vec::new();
+    let mut rows = 0_usize;
+    let mut bytes = 0_u64;
+    let maximum_rows = usize::try_from(maximum_rows)
+        .map_err(|_| CdfError::data("canonical microbatch rows exceed usize"))?;
+
+    for mut batch in batches {
+        while batch.num_rows() > 0 {
+            let row_capacity = maximum_rows.saturating_sub(rows);
+            let byte_capacity = maximum_bytes.saturating_sub(bytes);
+            let maximum_take = row_capacity.min(batch.num_rows());
+            let take = largest_prefix_within_bytes(&batch, maximum_take, byte_capacity)?;
+            if take == 0 {
+                if !fragments.is_empty() {
+                    output.push(finish_canonical_batch(std::mem::take(&mut fragments))?);
+                    rows = 0;
+                    bytes = 0;
+                    continue;
+                }
+                let one = batch.slice(0, 1);
+                let one_bytes = logical_batch_bytes(&one)?;
+                if one_bytes > maximum_bytes {
+                    return Err(CdfError::data(format!(
+                        "one canonical row requires {one_bytes} logical bytes above the {maximum_bytes}-byte microbatch maximum"
+                    )));
+                }
+                fragments.push(one);
+                batch = batch.slice(1, batch.num_rows() - 1);
+                output.push(finish_canonical_batch(std::mem::take(&mut fragments))?);
+                continue;
+            }
+            let chunk = if take == batch.num_rows() {
+                let schema = batch.schema();
+                std::mem::replace(&mut batch, RecordBatch::new_empty(schema))
+            } else {
+                let chunk = batch.slice(0, take);
+                batch = batch.slice(take, batch.num_rows() - take);
+                chunk
+            };
+            rows = rows.saturating_add(take);
+            bytes = bytes.saturating_add(logical_batch_bytes(&chunk)?);
+            fragments.push(chunk);
+            if rows == maximum_rows || bytes == maximum_bytes {
+                output.push(finish_canonical_batch(std::mem::take(&mut fragments))?);
+                rows = 0;
+                bytes = 0;
+            }
+        }
+    }
+    if !fragments.is_empty() {
+        output.push(finish_canonical_batch(fragments)?);
+    }
+    Ok(output)
+}
+
+fn finish_canonical_batch(mut fragments: Vec<RecordBatch>) -> Result<RecordBatch> {
+    if fragments.len() == 1 {
+        return Ok(fragments.pop().expect("one canonical fragment"));
+    }
+    let schema = fragments
+        .first()
+        .ok_or_else(|| CdfError::internal("canonical microbatch has no fragments"))?
+        .schema();
+    arrow_select::concat::concat_batches(&schema, &fragments).map_err(CdfError::from)
 }
 
 fn logical_batch_bytes(batch: &RecordBatch) -> Result<u64> {
@@ -1182,6 +1268,28 @@ mod tests {
         );
         assert!(
             logical_batch_bytes(&one.slice(0, 1)).unwrap() < logical_batch_bytes(&one).unwrap()
+        );
+    }
+
+    #[test]
+    fn canonical_microbatch_reuses_exact_batches_and_coalesces_only_boundary_fragments() {
+        let exact = batch(&[1, 2, 3, 4]);
+        let exact_column = exact.column(0).clone();
+        let output = canonicalize_batches(vec![exact], 4, 1024).unwrap();
+        assert_eq!(output.len(), 1);
+        assert!(std::sync::Arc::ptr_eq(output[0].column(0), &exact_column));
+
+        let fragmented =
+            canonicalize_batches(vec![batch(&[1]), batch(&[2, 3, 4])], 4, 1024).unwrap();
+        assert_eq!(fragmented.len(), 1);
+        assert_eq!(
+            fragmented[0]
+                .column(0)
+                .as_any()
+                .downcast_ref::<Int64Array>()
+                .unwrap()
+                .values(),
+            &[1, 2, 3, 4]
         );
     }
 

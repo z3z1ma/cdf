@@ -834,13 +834,16 @@ fn durable_segment_hook_runs_after_publish_with_exact_entry_and_batch() {
     let durable_root = package_dir.path().to_path_buf();
     let observed = Arc::new(Mutex::new(Vec::new()));
     let hook_observed = Arc::clone(&observed);
-    let mut durable_segment = move |entry: &cdf_package::SegmentEntry, batch: &RecordBatch| {
+    let mut durable_segment = move |entry: &cdf_package::SegmentEntry, batches: &[RecordBatch]| {
         assert!(durable_root.join(&entry.path).is_file());
         hook_observed.lock().unwrap().push((
             entry.segment_id.clone(),
             entry.sha256.clone(),
             entry.row_count,
-            batch.num_rows() as u64,
+            batches
+                .iter()
+                .map(|batch| batch.num_rows() as u64)
+                .sum::<u64>(),
         ));
         Ok(())
     };

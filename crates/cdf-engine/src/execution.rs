@@ -54,7 +54,7 @@ use crate::{
 pub type PackagePreFinalizeHook<'a> =
     dyn Fn(&PackageBuilder, EnginePackageDraft<'_>) -> Result<()> + 'a;
 pub type DurableSegmentHook<'a> =
-    dyn FnMut(&cdf_package::SegmentEntry, &RecordBatch) -> Result<()> + 'a;
+    dyn FnMut(&cdf_package::SegmentEntry, &[RecordBatch]) -> Result<()> + 'a;
 pub type StreamingFinalizeHook<'a> = dyn FnMut() -> Result<()> + 'a;
 
 struct DurableSegmentObserver<'a> {
@@ -62,9 +62,13 @@ struct DurableSegmentObserver<'a> {
 }
 
 impl DurableSegmentObserver<'_> {
-    fn observe(&mut self, segment: &cdf_package::SegmentEntry, batch: &RecordBatch) -> Result<()> {
+    fn observe(
+        &mut self,
+        segment: &cdf_package::SegmentEntry,
+        batches: &[RecordBatch],
+    ) -> Result<()> {
         match self.hook.as_deref_mut() {
-            Some(hook) => hook(segment, batch),
+            Some(hook) => hook(segment, batches),
             None => Ok(()),
         }
     }
@@ -2174,11 +2178,19 @@ fn persist_canonical_segments(
     durable_segment: &mut DurableSegmentObserver<'_>,
 ) -> Result<()> {
     for canonical in canonical_segments {
-        let _transform_memory_leases = canonical.memory_leases;
+        let crate::CanonicalSegment {
+            segment_id,
+            batches,
+            output_position,
+            retained_bytes,
+            canonical_batch_rows,
+            canonical_batch_bytes,
+            memory_leases: _transform_memory_leases,
+            ..
+        } = canonical;
         let _memory_lease = match state.memory {
             Some(memory) => {
-                let bytes = canonical
-                    .retained_bytes
+                let bytes = retained_bytes
                     .max(1)
                     .checked_mul(2)
                     .ok_or_else(|| CdfError::data("canonical concat working set overflow"))?;
@@ -2195,22 +2207,24 @@ fn persist_canonical_segments(
             }
             None => None,
         };
-        let schema = canonical
-            .batches
-            .first()
-            .ok_or_else(|| CdfError::internal("canonical segment has no batches"))?
-            .schema();
-        let output = arrow_select::concat::concat_batches(&schema, &canonical.batches)
-            .map_err(CdfError::from)?;
-        let normalization_output_bytes = u64::try_from(output.get_array_memory_size())
-            .map_err(|_| CdfError::data("canonical output bytes exceed u64"))?;
-        let segment_id = canonical.segment_id;
+        let output = crate::segmentation::canonicalize_batches(
+            batches,
+            canonical_batch_rows,
+            canonical_batch_bytes,
+        )?;
+        let normalization_output_bytes = output.iter().try_fold(0_u64, |total, batch| {
+            total
+                .checked_add(
+                    u64::try_from(batch.get_array_memory_size())
+                        .map_err(|_| CdfError::data("canonical output bytes exceed u64"))?,
+                )
+                .ok_or_else(|| CdfError::data("canonical output bytes overflow"))
+        })?;
         let write = if state.phase_measurements.enabled {
-            builder.write_segment_with_metrics(segment_id.clone(), std::slice::from_ref(&output))?
+            builder.write_segment_with_metrics(segment_id.clone(), &output)?
         } else {
             cdf_package::SegmentWriteMetrics {
-                segment: builder
-                    .write_segment(segment_id.clone(), std::slice::from_ref(&output))?,
+                segment: builder.write_segment(segment_id.clone(), &output)?,
                 encode_duration_ns: 0,
                 persist_hash_duration_ns: 0,
             }
@@ -2238,7 +2252,7 @@ fn persist_canonical_segments(
         state.lineage.output_segments.push(segment_id);
         state.segment_positions.push(EngineSegmentPosition {
             segment_id: segment.segment_id.clone(),
-            output_position: canonical.output_position,
+            output_position,
         });
         state.segments.push(segment);
     }

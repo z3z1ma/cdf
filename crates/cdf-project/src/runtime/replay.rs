@@ -240,7 +240,7 @@ impl ActiveStagedIngress {
     pub(crate) fn stage_segment(
         &mut self,
         entry: &cdf_package::SegmentEntry,
-        batch: &arrow_array::RecordBatch,
+        batches: &[arrow_array::RecordBatch],
     ) -> Result<()> {
         let ordinal = self.next_ordinal;
         self.next_ordinal = self
@@ -256,11 +256,18 @@ impl ActiveStagedIngress {
             identity.clone(),
             Box::new(LiveStagedSegmentReader {
                 identity: identity.clone(),
-                batch: Some(batch.clone()),
+                batches: owned_batch_iter(batches),
             }),
         )?;
         if let Some(background) = &mut self.background {
-            let retained_bytes = cdf_memory::record_batch_retained_bytes(batch)?.max(1);
+            let retained_bytes = batches
+                .iter()
+                .try_fold(0_u64, |total, batch| {
+                    total
+                        .checked_add(cdf_memory::record_batch_retained_bytes(batch)?)
+                        .ok_or_else(|| CdfError::data("staged segment retained bytes overflow"))
+                })?
+                .max(1);
             let maximum_bytes = background.services.memory().snapshot().budget_bytes;
             if retained_bytes > maximum_bytes {
                 return Err(CdfError::data(format!(
@@ -381,7 +388,13 @@ impl ActiveStagedIngress {
 
 struct LiveStagedSegmentReader {
     identity: cdf_runtime::StagedSegmentIdentity,
-    batch: Option<arrow_array::RecordBatch>,
+    batches: std::vec::IntoIter<arrow_array::RecordBatch>,
+}
+
+fn owned_batch_iter(
+    batches: &[arrow_array::RecordBatch],
+) -> std::vec::IntoIter<arrow_array::RecordBatch> {
+    Vec::from(batches).into_iter()
 }
 
 impl cdf_runtime::DurableSegmentReader for LiveStagedSegmentReader {
@@ -390,7 +403,7 @@ impl cdf_runtime::DurableSegmentReader for LiveStagedSegmentReader {
     }
 
     fn next_batch(&mut self) -> Result<Option<arrow_array::RecordBatch>> {
-        Ok(self.batch.take())
+        Ok(self.batches.next())
     }
 }
 
