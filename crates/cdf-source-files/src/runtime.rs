@@ -260,53 +260,56 @@ pub fn discover_local_binary_schema_bounded(
         )?)
     };
     let decode_path = transformed.as_ref().map_or(path, |spool| spool.path());
-    let inner_initial_bytes = if transformed.is_some() {
-        0
-    } else {
-        initial_bytes_read
-    };
-    let (schema, mut source_identity, inner_probe_bytes) = match format.as_str() {
-        "parquet" => {
-            let probe = cdf_formats::discover_local_parquet_schema_bounded(
-                decode_path,
-                inner_initial_bytes,
-                max_metadata_bytes,
-            )?;
-            (
-                probe.schema,
-                probe.source_identity.cache_evidence(),
-                probe.probe_bytes_read,
-            )
+    let driver = dependencies.formats().resolve(format.as_str())?;
+    let source = Arc::new(LocalByteSource::open(
+        decode_path,
+        dependencies.execution().memory(),
+    )?);
+    let options = driver.canonical_options(serde_json::json!({}))?;
+    let observation = dependencies.execution().run_io({
+        let driver = Arc::clone(&driver);
+        let source = Arc::clone(&source);
+        async move {
+            driver
+                .discover(
+                    source,
+                    FormatDiscoveryRequest {
+                        options,
+                        maximum_bytes: max_metadata_bytes,
+                        maximum_records: 0,
+                        cancellation: cdf_runtime::RunCancellation::default(),
+                    },
+                )
+                .await
         }
-        "arrow_ipc" => {
-            let probe = cdf_formats::discover_local_arrow_ipc_schema_bounded(
-                decode_path,
-                inner_initial_bytes,
-                max_metadata_bytes,
-            )?;
-            (
-                probe.schema,
-                probe.source_identity.cache_evidence(),
-                probe.probe_bytes_read,
-            )
-        }
-        _ => {
-            return Err(CdfError::contract(
-                "bounded binary discovery supports Parquet and Arrow IPC",
-            ));
-        }
-    };
+    })?;
+    let schema = observation.arrow_schema;
+    let inner_probe_bytes = observation.sampled_bytes;
+    let mut source_identity = BTreeMap::from([
+        ("stable_id".to_owned(), observation.identity.stable_id),
+        ("format".to_owned(), format.as_str().to_owned()),
+        (
+            "format_driver_version".to_owned(),
+            driver.descriptor().semantic_version.clone(),
+        ),
+    ]);
+    if let Some(generation) = observation.identity.generation {
+        source_identity.insert("generation".to_owned(), generation);
+    }
+    if let Some(checksum) = observation.identity.checksum {
+        source_identity.insert("checksum".to_owned(), checksum);
+    }
     source_identity.insert("path".to_owned(), path.to_string_lossy().into_owned());
     source_identity.insert("compression".to_owned(), transform_name.to_owned());
     source_identity.insert("source_size_bytes".to_owned(), source_size.to_string());
     Ok(BoundedBinarySchemaProbe {
         schema,
         source_identity,
-        probe_bytes_read: if transformed.is_some() {
+        probe_bytes_read: initial_bytes_read.saturating_add(if transformed.is_some() {
             source_size.saturating_add(inner_probe_bytes)
         } else {
             inner_probe_bytes
-        },
+        }),
     })
 }
 

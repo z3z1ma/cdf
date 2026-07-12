@@ -462,7 +462,7 @@ fn discover_remote_binary_resource_schema(
         plan,
         file_dependencies,
         options,
-        LocalBinaryDiscoveryAdapter::Parquet,
+        LocalBinaryDiscoveryAdapter::for_format(resource, &plan.format)?,
     )
 }
 
@@ -586,10 +586,9 @@ impl BinaryDiscoveryCandidate {
     }
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 enum LocalBinaryDiscoveryAdapter {
-    Parquet,
-    ArrowIpc,
+    Registered(FileFormatDeclaration),
     Ndjson,
     Csv,
     Json,
@@ -598,28 +597,22 @@ enum LocalBinaryDiscoveryAdapter {
 impl LocalBinaryDiscoveryAdapter {
     fn for_format(_resource: &CompiledResource, format: &FileFormatDeclaration) -> Result<Self> {
         Ok(match format.as_str() {
-            "parquet" => Self::Parquet,
-            "arrow_ipc" => Self::ArrowIpc,
             "ndjson" => Self::Ndjson,
             "csv" => Self::Csv,
             "json" => Self::Json,
-            other => {
-                return Err(CdfError::contract(format!(
-                    "format `{other}` has no project discovery adapter"
-                )));
-            }
+            _ => Self::Registered(format.clone()),
         })
     }
 
     fn probe(
-        self,
+        &self,
         candidate: &BinaryDiscoveryCandidate,
         budget: &DiscoveryExecutorBudget,
         file_dependencies: Option<&FileRuntimeDependencies>,
     ) -> Result<(arrow_schema::SchemaRef, BTreeMap<String, String>, u64)> {
         match (self, &candidate.source) {
             (
-                Self::Parquet,
+                Self::Registered(format),
                 BinaryDiscoveryCandidateSource::Local {
                     path,
                     selection_bytes_read,
@@ -627,13 +620,13 @@ impl LocalBinaryDiscoveryAdapter {
             ) => {
                 let dependencies = file_dependencies.ok_or_else(|| {
                     CdfError::contract(
-                        "local Parquet discovery requires file transform registry dependencies",
+                        "registered format discovery requires file runtime dependencies",
                     )
                 })?;
                 let probe = discover_local_binary_schema_bounded(
                     path,
                     dependencies,
-                    &FileFormatDeclaration::parquet(),
+                    format,
                     &candidate.compression,
                     *selection_bytes_read,
                     budget.max_metadata_bytes_per_file(),
@@ -641,34 +634,15 @@ impl LocalBinaryDiscoveryAdapter {
                 Ok((probe.schema, probe.source_identity, probe.probe_bytes_read))
             }
             (
-                Self::ArrowIpc,
-                BinaryDiscoveryCandidateSource::Local {
-                    path,
-                    selection_bytes_read,
-                },
+                Self::Registered(format),
+                BinaryDiscoveryCandidateSource::Transport(resource),
             ) => {
                 let dependencies = file_dependencies.ok_or_else(|| {
                     CdfError::contract(
-                        "local Arrow IPC discovery requires file transform registry dependencies",
+                        "registered remote format discovery requires file transport dependencies",
                     )
                 })?;
-                let probe = discover_local_binary_schema_bounded(
-                    path,
-                    dependencies,
-                    &FileFormatDeclaration::arrow_ipc(),
-                    &candidate.compression,
-                    *selection_bytes_read,
-                    budget.max_metadata_bytes_per_file(),
-                )?;
-                Ok((probe.schema, probe.source_identity, probe.probe_bytes_read))
-            }
-            (Self::Parquet, BinaryDiscoveryCandidateSource::Transport(resource)) => {
-                let dependencies = file_dependencies.ok_or_else(|| {
-                    CdfError::contract(
-                        "remote Parquet discovery requires file transport dependencies",
-                    )
-                })?;
-                if candidate.compression == "none" {
+                if format.as_str() == "parquet" && candidate.compression == "none" {
                     let probe = discover_transport_parquet_schema_bounded(
                         resource.clone(),
                         dependencies,
@@ -679,22 +653,7 @@ impl LocalBinaryDiscoveryAdapter {
                 let probe = discover_transport_binary_schema_spooled(
                     resource.clone(),
                     dependencies,
-                    &FileFormatDeclaration::parquet(),
-                    &candidate.compression,
-                    budget.max_metadata_bytes_per_file(),
-                )?;
-                Ok((probe.schema, probe.source_identity, probe.probe_bytes_read))
-            }
-            (Self::ArrowIpc, BinaryDiscoveryCandidateSource::Transport(resource)) => {
-                let dependencies = file_dependencies.ok_or_else(|| {
-                    CdfError::contract(
-                        "remote Arrow IPC discovery requires file transport dependencies",
-                    )
-                })?;
-                let probe = discover_transport_binary_schema_spooled(
-                    resource.clone(),
-                    dependencies,
-                    &FileFormatDeclaration::arrow_ipc(),
+                    format,
                     &candidate.compression,
                     budget.max_metadata_bytes_per_file(),
                 )?;
@@ -757,16 +716,17 @@ impl LocalBinaryDiscoveryAdapter {
         }
     }
 
-    fn snapshot_metadata(self) -> BTreeMap<String, String> {
+    fn snapshot_metadata(&self) -> BTreeMap<String, String> {
         let (probe, format) = match self {
-            Self::Parquet => (
+            Self::Registered(format) if format.as_str() == "parquet" => (
                 SCHEMA_DISCOVERY_PROBE_PARQUET_FOOTER,
                 SCHEMA_DISCOVERY_FORMAT_PARQUET,
             ),
-            Self::ArrowIpc => (
+            Self::Registered(format) if format.as_str() == "arrow_ipc" => (
                 SCHEMA_DISCOVERY_PROBE_ARROW_IPC_FILE_SCHEMA,
                 SCHEMA_DISCOVERY_FORMAT_ARROW_IPC,
             ),
+            Self::Registered(format) => ("registered-format-discovery", format.as_str()),
             Self::Ndjson => ("bounded-ndjson-sample", "ndjson"),
             Self::Csv => ("bounded-csv-sample", "csv"),
             Self::Json => ("bounded-json-sample", "json"),
@@ -870,7 +830,7 @@ fn discover_binary_resource_schema(
         options.memory_coordinator.clone(),
         |index| {
             probe_binary_candidate(
-                adapter,
+                &adapter,
                 scheduled_candidates[index],
                 &options.budget,
                 file_dependencies,
@@ -1229,7 +1189,7 @@ fn contract_policy_for_resource(resource: &CompiledResource) -> ContractPolicy {
 }
 
 fn probe_binary_candidate(
-    adapter: LocalBinaryDiscoveryAdapter,
+    adapter: &LocalBinaryDiscoveryAdapter,
     candidate: &BinaryDiscoveryCandidate,
     budget: &DiscoveryExecutorBudget,
     file_dependencies: Option<&FileRuntimeDependencies>,
