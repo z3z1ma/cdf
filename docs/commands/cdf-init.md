@@ -3,14 +3,21 @@
 Generated from the CLI's clap definitions.
 
 ```text
+Create a new cdf project
+
 Usage: cdf init [OPTIONS] [DIR]...
 
 Arguments:
-  [DIR]...
+  [DIR]...  Directory to initialize
 
 Options:
-      --name <NAME>
-      --no-color
-      --force
-  -h, --help         Print help
+      --name <NAME>      Project name
+  -q, --quiet            Suppress progress and non-primary success narration
+      --force            Replace an existing artifact when safe
+  -v, --verbose...       Show evidence detail; repeat for diagnostics
+      --color <WHEN>     Color policy: auto, always, or never [possible values: auto, always, never]
+      --no-color         Compatibility alias for --color never
+      --progress <WHEN>  Progress policy: auto, always, or never [possible values: auto, always, never]
+      --unicode <WHEN>   Unicode policy: auto, always, or never [possible values: auto, always, never]
+  -h, --help             Print help
 ```

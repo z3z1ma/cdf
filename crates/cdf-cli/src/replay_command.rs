@@ -604,7 +604,7 @@ pub(crate) fn replay_package(
     let run_ledger = SqliteRunLedger::open(&state_store_path)?;
     let run = run_ledger.create_run(None)?;
     let store = package.project.state_store()?;
-    let progress = human_progress_sink(cli.json, cli.no_color);
+    let progress = human_progress_sink(cli.json, &cli.terminal);
     let event_sink = progress.as_ref().map(|sink| sink as &dyn RunEventSink);
     let progress_recorder = ReplayProgressRecorder::new(
         &run_ledger,

@@ -2,63 +2,149 @@
 .el .ds Aq '
 .TH cdf 1  "cdf 0.1.0"
 .SH NAME
-cdf \- Continuous Data Framework CLI
+cdf \- Plan, run, and inspect governed data movement
 .SH SYNOPSIS
-\fBcdf\fR [\fB\-\-no\-color\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fB\-V\fR|\fB\-\-version\fR] [\fIsubcommands\fR]
+\fBcdf\fR [\fB\-q\fR|\fB\-\-quiet\fR] [\fB\-v\fR|\fB\-\-verbose\fR]... [\fB\-\-color\fR] [\fB\-\-no\-color\fR] [\fB\-\-progress\fR] [\fB\-\-unicode\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fB\-V\fR|\fB\-\-version\fR] [\fIsubcommands\fR]
 .SH DESCRIPTION
-Continuous Data Framework CLI
+Plan, run, and inspect governed data movement with durable packages, checkpoints, receipts, and schema evidence.
 .SH OPTIONS
 .TP
-\fB\-\-no\-color\fR
+\fB\-q\fR, \fB\-\-quiet\fR
+Suppress progress and non\-primary success narration
+.TP
+\fB\-v\fR, \fB\-\-verbose\fR
+Show evidence detail; repeat for diagnostics
+.TP
+\fB\-\-color\fR \fI<WHEN>\fR
+Color policy: auto, always, or never
+.br
 
+.br
+\fIPossible values:\fR
+.RS 14
+.IP \(bu 2
+auto
+.IP \(bu 2
+always
+.IP \(bu 2
+never
+.RE
+.TP
+\fB\-\-no\-color\fR
+Compatibility alias for \-\-color never
+.TP
+\fB\-\-progress\fR \fI<WHEN>\fR
+Progress policy: auto, always, or never
+.br
+
+.br
+\fIPossible values:\fR
+.RS 14
+.IP \(bu 2
+auto
+.IP \(bu 2
+always
+.IP \(bu 2
+never
+.RE
+.TP
+\fB\-\-unicode\fR \fI<WHEN>\fR
+Unicode policy: auto, always, or never
+.br
+
+.br
+\fIPossible values:\fR
+.RS 14
+.IP \(bu 2
+auto
+.IP \(bu 2
+always
+.IP \(bu 2
+never
+.RE
 .TP
 \fB\-h\fR, \fB\-\-help\fR
-Print help
+Print help (see a summary with \*(Aq\-h\*(Aq)
 .TP
 \fB\-V\fR, \fB\-\-version\fR
 Print version
 .SH SUBCOMMANDS
 .TP
 cdf\-help(1)
+Show help for a command
 .TP
 cdf\-version(1)
+Print the cdf version
 .TP
 cdf\-init(1)
+Create a new cdf project
 .TP
 cdf\-add(1)
+Add a source resource to the project
 .TP
 cdf\-validate(1)
+Validate project configuration and contracts
 .TP
 cdf\-plan(1)
+Plan a resource run without executing it
 .TP
 cdf\-explain(1)
+Explain resolution, capabilities, and execution choices
 .TP
 cdf\-run(1)
+Execute a governed resource run
 .TP
 cdf\-preview(1)
+Read a bounded preview without committing data
 .TP
 cdf\-sql(1)
+Query cdf system metadata
 .TP
 cdf\-inspect(1)
+Inspect durable project and run evidence
 .TP
 cdf\-diff(1)
+Compare durable schemas
 .TP
 cdf\-schema(1)
+Discover, pin, compare, and promote schemas
 .TP
 cdf\-contract(1)
+Freeze, show, and test contracts
 .TP
 cdf\-state(1)
+Inspect and recover checkpoint state
 .TP
 cdf\-resume(1)
+Resume interrupted work from the run ledger
 .TP
 cdf\-replay(1)
+Replay a verified package
 .TP
 cdf\-backfill(1)
+Plan or execute a bounded cursor backfill
 .TP
 cdf\-package(1)
+List, verify, archive, and collect packages
 .TP
 cdf\-doctor(1)
+Check local runtime and destination health
 .TP
 cdf\-status(1)
+Summarize project freshness and run state
+.SH EXTRA
+Environment:
+  CDF_PROJECT       Project directory or cdf.toml path
+  CDF_ENV           Project environment name
+  CDF_TARGET        Default destination
+  NO_COLOR          Disable color unless \-\-color always is explicit
+  CLICOLOR_FORCE    Request color when output is interactive
+  COLUMNS           Width fallback when terminal size is unavailable
+
+Examples:
+  cdf validate
+  cdf plan local.events \-\-to duckdb://.cdf/dev.duckdb
+  cdf run local.events \-v
+  cdf inspect run RUN_ID
 .SH VERSION
 v0.1.0

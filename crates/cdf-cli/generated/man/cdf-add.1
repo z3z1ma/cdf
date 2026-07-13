@@ -2,25 +2,81 @@
 .el .ds Aq '
 .TH cdf-add 1  "cdf-add "
 .SH NAME
-cdf\-add
+cdf\-add \- Add a source resource to the project
 .SH SYNOPSIS
-\fBcdf add\fR [\fB\-\-dry\-run\fR] [\fB\-\-records\fR] [\fB\-\-cursor\fR] [\fB\-\-cursor\-param\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fIRESOURCE_ID URL_OR_PATH\fR]
+\fBcdf add\fR [\fB\-\-dry\-run\fR] [\fB\-q\fR|\fB\-\-quiet\fR] [\fB\-\-records\fR] [\fB\-v\fR|\fB\-\-verbose\fR]... [\fB\-\-color\fR] [\fB\-\-cursor\fR] [\fB\-\-cursor\-param\fR] [\fB\-\-no\-color\fR] [\fB\-\-progress\fR] [\fB\-\-unicode\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fIRESOURCE_ID URL_OR_PATH\fR]
 .SH DESCRIPTION
+Add a source resource to the project
 .SH OPTIONS
 .TP
 \fB\-\-dry\-run\fR
-
+Show the proposed change without writing it
+.TP
+\fB\-q\fR, \fB\-\-quiet\fR
+Suppress progress and non\-primary success narration
 .TP
 \fB\-\-records\fR \fI<SELECTOR>\fR
+Record selector within the source
+.TP
+\fB\-v\fR, \fB\-\-verbose\fR
+Show evidence detail; repeat for diagnostics
+.TP
+\fB\-\-color\fR \fI<WHEN>\fR
+Color policy: auto, always, or never
+.br
 
+.br
+\fIPossible values:\fR
+.RS 14
+.IP \(bu 2
+auto
+.IP \(bu 2
+always
+.IP \(bu 2
+never
+.RE
 .TP
 \fB\-\-cursor\fR \fI<FIELD>\fR
-
+Cursor field
 .TP
 \fB\-\-cursor\-param\fR \fI<PARAM>\fR
+Request parameter carrying the cursor
+.TP
+\fB\-\-no\-color\fR
+Compatibility alias for \-\-color never
+.TP
+\fB\-\-progress\fR \fI<WHEN>\fR
+Progress policy: auto, always, or never
+.br
 
+.br
+\fIPossible values:\fR
+.RS 14
+.IP \(bu 2
+auto
+.IP \(bu 2
+always
+.IP \(bu 2
+never
+.RE
+.TP
+\fB\-\-unicode\fR \fI<WHEN>\fR
+Unicode policy: auto, always, or never
+.br
+
+.br
+\fIPossible values:\fR
+.RS 14
+.IP \(bu 2
+auto
+.IP \(bu 2
+always
+.IP \(bu 2
+never
+.RE
 .TP
 \fB\-h\fR, \fB\-\-help\fR
 Print help
 .TP
 [\fIRESOURCE_ID URL_OR_PATH\fR]
+Identifiers or paths shown in usage

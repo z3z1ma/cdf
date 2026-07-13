@@ -3,16 +3,23 @@
 Generated from the CLI's clap definitions.
 
 ```text
+Show checkpoint history
+
 Usage: cdf state history [OPTIONS] [RESOURCE]...
 
 Arguments:
-  [RESOURCE]...
+  [RESOURCE]...  Resource identifier
 
 Options:
-      --no-color
-      --pipeline <ID>
-      --resource <RESOURCE>
-      --scope <KEY=VALUE>
-      --scope-json <JSON>
+      --pipeline <ID>        Pipeline identifier compatibility option
+  -q, --quiet                Suppress progress and non-primary success narration
+      --resource <RESOURCE>  Resource identifier (compatibility form)
+  -v, --verbose...           Show evidence detail; repeat for diagnostics
+      --color <WHEN>         Color policy: auto, always, or never [possible values: auto, always, never]
+      --scope <KEY=VALUE>    Checkpoint scope entry as key=value; may be repeated
+      --no-color             Compatibility alias for --color never
+      --scope-json <JSON>    JSON checkpoint scope compatibility form
+      --progress <WHEN>      Progress policy: auto, always, or never [possible values: auto, always, never]
+      --unicode <WHEN>       Unicode policy: auto, always, or never [possible values: auto, always, never]
   -h, --help                 Print help
 ```

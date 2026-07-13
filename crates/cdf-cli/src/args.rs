@@ -6,7 +6,11 @@ use std::{
 
 use clap::{Arg, ArgAction, ArgMatches, Command as ClapCommand, error::ErrorKind};
 
-use crate::{output::CliError, suggestions};
+use crate::{
+    output::CliError,
+    suggestions,
+    terminal::{PolicyMode, TerminalPolicy, Verbosity},
+};
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 const ROOT_COMMANDS: &[&str] = &[
@@ -35,6 +39,7 @@ const PACKAGE_SUBCOMMANDS: &[&str] = &["ls", "gc", "verify", "archive"];
 pub struct Cli {
     pub json: bool,
     pub no_color: bool,
+    pub terminal: TerminalPolicy,
     pub project: Option<PathBuf>,
     pub env: Option<String>,
     pub command: Command,
@@ -251,20 +256,63 @@ impl Cli {
         }
 
         let mut json = false;
-        let mut no_color = false;
+        let mut no_color_alias = false;
+        let mut color = PolicyMode::Auto;
+        let mut color_explicit = false;
+        let mut progress = PolicyMode::Auto;
+        let mut unicode = PolicyMode::Auto;
+        let mut quiet = false;
+        let mut verbose = 0_u8;
         let mut project = None;
         let mut env = None;
         let mut remaining = Vec::new();
         let mut index = 0;
         while index < raw.len() {
             match raw[index].as_str() {
+                "--" => {
+                    remaining.extend(raw[index..].iter().cloned());
+                    break;
+                }
                 "--json" => {
                     json = true;
                     index += 1;
                 }
                 "--no-color" => {
-                    no_color = true;
+                    no_color_alias = true;
                     index += 1;
+                }
+                "-q" | "--quiet" => {
+                    quiet = true;
+                    index += 1;
+                }
+                "-v" | "--verbose" => {
+                    verbose = verbose.saturating_add(1);
+                    index += 1;
+                }
+                compact
+                    if compact.starts_with('-')
+                        && compact.len() > 2
+                        && compact[1..].chars().all(|character| character == 'v') =>
+                {
+                    verbose =
+                        verbose.saturating_add((compact.len() - 1).min(usize::from(u8::MAX)) as u8);
+                    index += 1;
+                }
+                option if option == "--color" || option.starts_with("--color=") => {
+                    let (value, consumed) = policy_value(&raw, index, "--color")?;
+                    color = PolicyMode::parse("--color", value)?;
+                    color_explicit = true;
+                    index += consumed;
+                }
+                option if option == "--progress" || option.starts_with("--progress=") => {
+                    let (value, consumed) = policy_value(&raw, index, "--progress")?;
+                    progress = PolicyMode::parse("--progress", value)?;
+                    index += consumed;
+                }
+                option if option == "--unicode" || option.starts_with("--unicode=") => {
+                    let (value, consumed) = policy_value(&raw, index, "--unicode")?;
+                    unicode = PolicyMode::parse("--unicode", value)?;
+                    index += consumed;
                 }
                 "--project" => {
                     let value = raw.get(index + 1).ok_or_else(|| {
@@ -287,15 +335,57 @@ impl Cli {
             }
         }
 
+        if quiet && verbose > 0 {
+            return Err(CliError::usage(
+                "-q/--quiet cannot be combined with -v/--verbose; choose one",
+            ));
+        }
+        if no_color_alias && color_explicit {
+            return Err(CliError::usage(
+                "--no-color conflicts with --color; use only --color never",
+            ));
+        }
+        if no_color_alias {
+            color = PolicyMode::Never;
+        }
+        let terminal = TerminalPolicy {
+            color,
+            progress,
+            unicode,
+            verbosity: if quiet {
+                Verbosity::Quiet
+            } else if verbose > 0 {
+                Verbosity::Verbose(verbose)
+            } else {
+                Verbosity::Normal
+            },
+        };
         let command = parse_command(&remaining)?;
         Ok(Self {
             json,
-            no_color,
+            no_color: color == PolicyMode::Never,
+            terminal,
             project,
             env,
             command,
         })
     }
+}
+
+fn policy_value<'a>(
+    args: &'a [String],
+    index: usize,
+    flag: &str,
+) -> Result<(&'a str, usize), CliError> {
+    if let Some((_, value)) = args[index].split_once('=') {
+        if value.is_empty() {
+            return Err(CliError::usage(format!("{flag} requires a value")));
+        }
+        return Ok((value, 1));
+    }
+    args.get(index + 1)
+        .map(|value| (value.as_str(), 2))
+        .ok_or_else(|| CliError::usage(format!("{flag} requires a value")))
 }
 
 fn parse_command(args: &[String]) -> Result<Command, CliError> {
@@ -801,8 +891,15 @@ fn parse_package_archive(matches: &ArgMatches) -> Result<PackageArchiveArgs, Cli
 pub(crate) fn cli_command() -> ClapCommand {
     cmd("cdf")
         .version(VERSION)
-        .about("Continuous Data Framework CLI")
-        .arg(flag("no_color", "no-color").global(true))
+        .about("Plan, run, and inspect governed data movement")
+        .long_about("Plan, run, and inspect governed data movement with durable packages, checkpoints, receipts, and schema evidence.")
+        .after_long_help("Environment:\n  CDF_PROJECT       Project directory or cdf.toml path\n  CDF_ENV           Project environment name\n  CDF_TARGET        Default destination\n  NO_COLOR          Disable color unless --color always is explicit\n  CLICOLOR_FORCE    Request color when output is interactive\n  COLUMNS           Width fallback when terminal size is unavailable\n\nExamples:\n  cdf validate\n  cdf plan local.events --to duckdb://.cdf/dev.duckdb\n  cdf run local.events -v\n  cdf inspect run RUN_ID")
+        .arg(flag("quiet", "quiet").short('q').global(true).conflicts_with("verbose").help("Suppress progress and non-primary success narration"))
+        .arg(flag("verbose", "verbose").short('v').global(true).action(ArgAction::Count).conflicts_with("quiet").help("Show evidence detail; repeat for diagnostics"))
+        .arg(policy_option("color", "color", "WHEN", "Color policy: auto, always, or never"))
+        .arg(flag("no_color", "no-color").global(true).conflicts_with("color").help("Compatibility alias for --color never"))
+        .arg(policy_option("progress", "progress", "WHEN", "Progress policy: auto, always, or never"))
+        .arg(policy_option("unicode", "unicode", "WHEN", "Unicode policy: auto, always, or never"))
         .arg_required_else_help(false)
         .disable_help_subcommand(true)
         .subcommand(cmd("help").arg(values_arg("command").value_name("COMMAND")))
@@ -1017,7 +1114,50 @@ fn package_command() -> ClapCommand {
 }
 
 fn cmd(name: &'static str) -> ClapCommand {
-    ClapCommand::new(name).args_override_self(true)
+    let about = match name {
+        "help" => "Show help for a command",
+        "version" => "Print the cdf version",
+        "init" => "Create a new cdf project",
+        "add" => "Add a source resource to the project",
+        "validate" => "Validate project configuration and contracts",
+        "plan" => "Plan a resource run without executing it",
+        "explain" => "Explain resolution, capabilities, and execution choices",
+        "run" => "Execute a governed resource run",
+        "preview" => "Read a bounded preview without committing data",
+        "sql" => "Query cdf system metadata",
+        "inspect" => "Inspect durable project and run evidence",
+        "diff" => "Compare durable schemas",
+        "schema" => "Discover, pin, compare, and promote schemas",
+        "contract" => "Freeze, show, and test contracts",
+        "state" => "Inspect and recover checkpoint state",
+        "resume" => "Resume interrupted work from the run ledger",
+        "replay" => "Replay a verified package",
+        "backfill" => "Plan or execute a bounded cursor backfill",
+        "package" => "List, verify, archive, and collect packages",
+        "doctor" => "Check local runtime and destination health",
+        "status" => "Summarize project freshness and run state",
+        "discover" => "Discover the current physical source schema",
+        "pin" => "Pin a discovered schema into the project contract",
+        "show" => "Show the selected durable record",
+        "promote" => "Plan or execute residual schema promotion",
+        "freeze" => "Freeze a contract snapshot",
+        "test" => "Test data against a contract",
+        "history" => "Show checkpoint history",
+        "rewind" => "Create a marker that rewinds checkpoint state",
+        "migrate" => "Migrate the local state store",
+        "recover" => "Recover state from a committed package receipt",
+        "ls" => "List durable packages",
+        "gc" => "Collect packages allowed by retention policy",
+        "verify" => "Verify package integrity and evidence",
+        "archive" => "Archive a package in a portable format",
+        "project" => "Show resolved project information",
+        "resources" => "List project resources",
+        "resource" => "Show one resolved resource",
+        "lock" => "Show the project lock",
+        "destinations" | "destination" => "List resolved destinations",
+        _ => "Operate on cdf project evidence",
+    };
+    ClapCommand::new(name).about(about).args_override_self(true)
 }
 
 fn option(id: &'static str, long: &'static str, value_name: &'static str) -> Arg {
@@ -1026,6 +1166,19 @@ fn option(id: &'static str, long: &'static str, value_name: &'static str) -> Arg
         .value_name(value_name)
         .num_args(1)
         .action(ArgAction::Set)
+        .help(option_help(long))
+}
+
+fn policy_option(
+    id: &'static str,
+    long: &'static str,
+    value_name: &'static str,
+    help: &'static str,
+) -> Arg {
+    option(id, long, value_name)
+        .global(true)
+        .value_parser(["auto", "always", "never"])
+        .help(help)
 }
 
 fn append_option(id: &'static str, long: &'static str, value_name: &'static str) -> Arg {
@@ -1034,14 +1187,85 @@ fn append_option(id: &'static str, long: &'static str, value_name: &'static str)
         .value_name(value_name)
         .num_args(1)
         .action(ArgAction::Append)
+        .help(option_help(long))
 }
 
 fn flag(id: &'static str, long: &'static str) -> Arg {
-    Arg::new(id).long(long).action(ArgAction::SetTrue)
+    Arg::new(id)
+        .long(long)
+        .action(ArgAction::SetTrue)
+        .help(option_help(long))
 }
 
 fn values_arg(id: &'static str) -> Arg {
-    Arg::new(id).num_args(0..).action(ArgAction::Append)
+    Arg::new(id)
+        .num_args(0..)
+        .action(ArgAction::Append)
+        .help(positional_help(id))
+}
+
+fn option_help(long: &str) -> &'static str {
+    match long {
+        "project" => "Project directory or cdf.toml path",
+        "env" => "Project environment name",
+        "resource" => "Resource identifier (compatibility form)",
+        "to" => "Destination URI or cursor upper bound, as shown in usage",
+        "target" => "Destination target/table compatibility option",
+        "select" => "Comma-separated projected fields",
+        "filter" => "Filter expression; may be repeated",
+        "limit" => "Maximum rows to read",
+        "order-by" => "Ordering field and optional direction",
+        "package-id" => "Explicit package identifier for script compatibility",
+        "checkpoint-id" => "Explicit checkpoint identifier for script compatibility",
+        "pipeline" => "Pipeline identifier compatibility option",
+        "jobs" => "Maximum concurrent jobs",
+        "loop" => "Continue polling for work",
+        "deep" => "Run probes that may contact configured systems",
+        "dry-run" => "Show the proposed change without writing it",
+        "execute" => "Apply the planned operation",
+        "force" => "Replace an existing artifact when safe",
+        "scope" => "Checkpoint scope entry as key=value; may be repeated",
+        "scope-json" => "JSON checkpoint scope compatibility form",
+        "from" => "Inclusive cursor lower bound",
+        "slice-size" => "Rows per backfill slice",
+        "format" => "Archive output format",
+        "no-pin" => "Do not pin newly discovered schema",
+        "type" => "Residual field pointer and Arrow type",
+        "contract" => "Contract name",
+        "trust" => "Trust level to show",
+        "merge-dedup" => "Merge deduplication policy",
+        "name" => "Project name",
+        "package" => "Package directory",
+        "receipt" => "Receipt identifier",
+        "records" => "Record selector within the source",
+        "cursor" => "Cursor field",
+        "cursor-param" => "Request parameter carrying the cursor",
+        "run" => "Run identifier compatibility option",
+        "target-checkpoint" => "Checkpoint to rewind to",
+        "marker-checkpoint" => "Explicit rewind marker identifier for scripts",
+        "color" => "Color policy: auto, always, or never",
+        "progress" => "Progress policy: auto, always, or never",
+        "unicode" => "Unicode policy: auto, always, or never",
+        "no-color" => "Compatibility alias for --color never",
+        "quiet" => "Suppress progress and non-primary success narration",
+        "verbose" => "Show evidence detail; repeat for diagnostics",
+        _ => "Set the value named in this command's usage",
+    }
+}
+
+fn positional_help(id: &str) -> &'static str {
+    match id {
+        "command" => "Command path to explain",
+        "directory" => "Directory to initialize",
+        "query" => "SQL query text",
+        "resource_arg" => "Resource identifier",
+        "run_arg" => "Run identifier; omit to scan interrupted work",
+        "package_dir" | "packages_dir" => "Package directory",
+        "value" => "Contract or trust selector shown in usage",
+        "values" => "Identifiers or paths shown in usage",
+        "extra" => "Additional compatibility arguments",
+        _ => "Operand named in this command's usage",
+    }
 }
 
 pub(crate) fn render_help(path: &[String]) -> Result<String, CliError> {
@@ -1060,7 +1284,7 @@ pub(crate) fn render_help(path: &[String]) -> Result<String, CliError> {
     let mut command = cli_command();
     let mut buffer = Vec::new();
     command
-        .write_help(&mut buffer)
+        .write_long_help(&mut buffer)
         .map_err(|error| CliError::usage(format!("render help: {error}")))?;
     String::from_utf8(buffer).map_err(|_| CliError::usage("help text must be valid UTF-8"))
 }

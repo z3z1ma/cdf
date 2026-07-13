@@ -2,11 +2,66 @@
 .el .ds Aq '
 .TH cdf-diff-schema 1  "cdf-diff-schema "
 .SH NAME
-cdf\-diff\-schema
+cdf\-diff\-schema \- Discover, pin, compare, and promote schemas
 .SH SYNOPSIS
-\fBcdf diff schema\fR [\fB\-h\fR|\fB\-\-help\fR] [\fIextra\fR]
+\fBcdf diff schema\fR [\fB\-q\fR|\fB\-\-quiet\fR] [\fB\-v\fR|\fB\-\-verbose\fR]... [\fB\-\-color\fR] [\fB\-\-no\-color\fR] [\fB\-\-progress\fR] [\fB\-\-unicode\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fIextra\fR]
 .SH DESCRIPTION
+Discover, pin, compare, and promote schemas
 .SH OPTIONS
+.TP
+\fB\-q\fR, \fB\-\-quiet\fR
+Suppress progress and non\-primary success narration
+.TP
+\fB\-v\fR, \fB\-\-verbose\fR
+Show evidence detail; repeat for diagnostics
+.TP
+\fB\-\-color\fR \fI<WHEN>\fR
+Color policy: auto, always, or never
+.br
+
+.br
+\fIPossible values:\fR
+.RS 14
+.IP \(bu 2
+auto
+.IP \(bu 2
+always
+.IP \(bu 2
+never
+.RE
+.TP
+\fB\-\-no\-color\fR
+Compatibility alias for \-\-color never
+.TP
+\fB\-\-progress\fR \fI<WHEN>\fR
+Progress policy: auto, always, or never
+.br
+
+.br
+\fIPossible values:\fR
+.RS 14
+.IP \(bu 2
+auto
+.IP \(bu 2
+always
+.IP \(bu 2
+never
+.RE
+.TP
+\fB\-\-unicode\fR \fI<WHEN>\fR
+Unicode policy: auto, always, or never
+.br
+
+.br
+\fIPossible values:\fR
+.RS 14
+.IP \(bu 2
+auto
+.IP \(bu 2
+always
+.IP \(bu 2
+never
+.RE
 .TP
 \fB\-h\fR, \fB\-\-help\fR
 Print help

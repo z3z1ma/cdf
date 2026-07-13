@@ -1,7 +1,4 @@
-use std::io::IsTerminal;
-
-const DEFAULT_WIDTH: usize = 80;
-const MIN_WIDTH: usize = 20;
+use crate::terminal::{OutputChannel, PolicyMode, TerminalEnvironment, TerminalPolicy};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum DisplayMode {
@@ -13,6 +10,7 @@ pub(crate) enum DisplayMode {
 pub(crate) struct RenderEnv {
     pub no_color: bool,
     pub clicolor_force: bool,
+    pub unicode_supported: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -20,40 +18,43 @@ pub(crate) struct RenderConfig {
     display_mode: DisplayMode,
     width: usize,
     env: RenderEnv,
-    no_color_flag: bool,
+    policy: TerminalPolicy,
 }
 
 impl RenderConfig {
-    pub(crate) fn detect(no_color_flag: bool) -> Self {
-        let display_mode = if std::io::stdout().is_terminal() {
+    pub(crate) fn detect(policy: &TerminalPolicy, channel: OutputChannel) -> Self {
+        Self::from_environment(*policy, channel, TerminalEnvironment::detect())
+    }
+
+    pub(crate) fn from_environment(
+        policy: TerminalPolicy,
+        channel: OutputChannel,
+        terminal: TerminalEnvironment,
+    ) -> Self {
+        let display_mode = if terminal.is_terminal(channel) {
             DisplayMode::Tty
         } else {
             DisplayMode::Headless
         };
-        let width = std::env::var("COLUMNS")
-            .ok()
-            .and_then(|value| value.parse::<usize>().ok())
-            .unwrap_or(DEFAULT_WIDTH);
         let env = RenderEnv {
-            no_color: std::env::var_os("NO_COLOR").is_some(),
-            clicolor_force: std::env::var("CLICOLOR_FORCE")
-                .map(|value| !value.is_empty() && value != "0")
-                .unwrap_or(false),
+            no_color: terminal.no_color,
+            clicolor_force: terminal.clicolor_force,
+            unicode_supported: terminal.unicode_supported,
         };
-        Self::new(display_mode, width, env, no_color_flag)
+        Self::new(display_mode, terminal.width(), env, policy)
     }
 
     pub(crate) fn new(
         display_mode: DisplayMode,
         width: usize,
         env: RenderEnv,
-        no_color_flag: bool,
+        policy: TerminalPolicy,
     ) -> Self {
         Self {
             display_mode,
-            width: width.max(MIN_WIDTH),
+            width: width.max(crate::terminal::MIN_TERMINAL_WIDTH),
             env,
-            no_color_flag,
+            policy,
         }
     }
 
@@ -65,8 +66,9 @@ impl RenderConfig {
             RenderEnv {
                 no_color: false,
                 clicolor_force: false,
+                unicode_supported: false,
             },
-            false,
+            TerminalPolicy::default(),
         )
     }
 
@@ -79,11 +81,17 @@ impl RenderConfig {
     }
 
     pub(crate) fn color_enabled(&self) -> bool {
-        self.display_mode == DisplayMode::Tty && !self.no_color_flag && !self.env.no_color
+        self.display_mode == DisplayMode::Tty
+            && self.policy.color != PolicyMode::Never
+            && (!self.env.no_color || self.policy.color == PolicyMode::Always)
     }
 
     pub(crate) fn rich_glyphs(&self) -> bool {
-        self.display_mode == DisplayMode::Tty
+        match self.policy.unicode {
+            PolicyMode::Always => true,
+            PolicyMode::Never => false,
+            PolicyMode::Auto => self.display_mode == DisplayMode::Tty && self.env.unicode_supported,
+        }
     }
 
     pub(crate) fn env(&self) -> RenderEnv {
@@ -91,6 +99,10 @@ impl RenderConfig {
     }
 
     pub(crate) fn no_color_flag(&self) -> bool {
-        self.no_color_flag
+        self.policy.color == PolicyMode::Never
+    }
+
+    pub(crate) fn policy(&self) -> TerminalPolicy {
+        self.policy
     }
 }

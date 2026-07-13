@@ -19,6 +19,7 @@ mod tests {
             KeyValuePanel, NextCommand, RenderPrimitive, SectionRule, StatusKind, StatusLine, Table,
         },
     };
+    use crate::terminal::{PolicyMode, TerminalPolicy};
 
     fn rich_config() -> RenderConfig {
         RenderConfig::new(
@@ -27,8 +28,9 @@ mod tests {
             RenderEnv {
                 no_color: false,
                 clicolor_force: false,
+                unicode_supported: true,
             },
-            false,
+            TerminalPolicy::default(),
         )
     }
 
@@ -39,8 +41,9 @@ mod tests {
             RenderEnv {
                 no_color: false,
                 clicolor_force: true,
+                unicode_supported: false,
             },
-            false,
+            TerminalPolicy::default(),
         )
     }
 
@@ -108,13 +111,72 @@ mod tests {
             RenderEnv {
                 no_color: false,
                 clicolor_force: true,
+                unicode_supported: true,
             },
-            true,
+            TerminalPolicy {
+                color: PolicyMode::Never,
+                ..TerminalPolicy::default()
+            },
         );
         let rendered = StatusLine::new(StatusKind::Success, "done").render(&config);
 
         assert_eq!(rendered, "✓ done\n");
         assert!(!rendered.contains("\u{1b}["));
+    }
+
+    #[test]
+    fn cx1_color_and_unicode_policy_respect_tty_redirection_and_explicit_override() {
+        use crate::terminal::{OutputChannel, TerminalEnvironment};
+
+        let redirected = TerminalEnvironment {
+            no_color: false,
+            clicolor_force: true,
+            ..TerminalEnvironment::default()
+        };
+        let always_redirected = RenderConfig::from_environment(
+            TerminalPolicy {
+                color: PolicyMode::Always,
+                unicode: PolicyMode::Always,
+                ..TerminalPolicy::default()
+            },
+            OutputChannel::Stdout,
+            redirected,
+        );
+        assert!(!always_redirected.color_enabled());
+        assert!(always_redirected.rich_glyphs());
+
+        let tty_no_color = TerminalEnvironment {
+            stdout_is_terminal: true,
+            no_color: true,
+            ..TerminalEnvironment::default()
+        };
+        let automatic = RenderConfig::from_environment(
+            TerminalPolicy::default(),
+            OutputChannel::Stdout,
+            tty_no_color,
+        );
+        let explicit = RenderConfig::from_environment(
+            TerminalPolicy {
+                color: PolicyMode::Always,
+                ..TerminalPolicy::default()
+            },
+            OutputChannel::Stdout,
+            tty_no_color,
+        );
+        assert!(!automatic.color_enabled());
+        assert!(!automatic.rich_glyphs());
+        assert!(explicit.color_enabled());
+
+        let utf8_tty = RenderConfig::from_environment(
+            TerminalPolicy::default(),
+            OutputChannel::Stdout,
+            TerminalEnvironment {
+                stdout_is_terminal: true,
+                unicode_supported: true,
+                ..TerminalEnvironment::default()
+            },
+        );
+        assert!(utf8_tty.rich_glyphs());
     }
 
     #[test]
@@ -145,16 +207,100 @@ mod tests {
             .render(&config);
 
         assert_eq!(
-            rendered,
-            concat!(
-                "------------------------\n",
-                "+-----------+----------+\n",
-                "| name      | value    |\n",
-                "+-----------+----------+\n",
-                "| long-res… | full va… |\n",
-                "+-----------+----------+\n"
-            )
+            rendered
+                .lines()
+                .filter_map(|line| line.strip_prefix("  "))
+                .collect::<String>(),
+            "long-resource-namefull value is available via json"
         );
+        assert!(
+            rendered
+                .lines()
+                .all(|line| unicode_width::UnicodeWidthStr::width(line) <= 24)
+        );
+        assert!(!rendered.contains('~'));
+    }
+
+    #[test]
+    fn cx1_tables_measure_display_width_and_ascii_mode_uses_ascii_truncation() {
+        let unicode = RenderConfig::new(
+            DisplayMode::Tty,
+            20,
+            RenderEnv::default(),
+            TerminalPolicy::default(),
+        );
+        let ascii = RenderConfig::new(
+            DisplayMode::Tty,
+            20,
+            RenderEnv::default(),
+            TerminalPolicy {
+                unicode: PolicyMode::Never,
+                ..TerminalPolicy::default()
+            },
+        );
+        let table = Table::new(["name", "value"]).row(["東京", "abcdefghijkl"]);
+
+        let unicode_rendered = table.render(&unicode);
+        let ascii_rendered = Table::new(["name", "value"])
+            .row(["tokyo", "abcdefghijkl"])
+            .render(&ascii);
+
+        assert!(
+            unicode_rendered
+                .lines()
+                .all(|line| unicode_width::UnicodeWidthStr::width(line) <= 20)
+        );
+        assert!(ascii_rendered.is_ascii());
+    }
+
+    #[test]
+    fn cx1_forty_column_five_field_table_stacks_without_losing_values() {
+        let config = RenderConfig::headless_for_width(40);
+        let rendered = Table::new(["resource", "phase", "rows", "bytes", "duration"])
+            .row(["local.events", "validated", "12345", "987654", "12 seconds"])
+            .render(&config);
+
+        assert!(rendered.contains("resource:\n  local.events\n"));
+        assert!(rendered.contains("duration:\n  12 seconds\n"));
+        assert!(
+            rendered
+                .lines()
+                .all(|line| unicode_width::UnicodeWidthStr::width(line) <= 40),
+            "narrow output exceeded width:\n{rendered}"
+        );
+        assert!(!rendered.contains('~'));
+    }
+
+    #[test]
+    fn cx1_one_and_two_column_tables_stack_before_any_value_truncates() {
+        let config = RenderConfig::headless_for_width(40);
+        let one_value = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ";
+        let one = Table::new(["value"]).row([one_value]).render(&config);
+        let two = Table::new(["left", "right"])
+            .row(["abcdefghijklmnopqrstuvwxyz", "ABCDEFGHIJKLMNOPQRSTUVWXYZ"])
+            .render(&config);
+
+        assert_eq!(stacked_payload(&one), one_value);
+        assert_eq!(
+            stacked_payload(&two),
+            "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
+        );
+        for rendered in [&one, &two] {
+            assert!(
+                rendered
+                    .lines()
+                    .all(|line| unicode_width::UnicodeWidthStr::width(line) <= 40)
+            );
+            assert!(!rendered.contains('~'));
+            assert!(!rendered.contains('…'));
+        }
+    }
+
+    fn stacked_payload(rendered: &str) -> String {
+        rendered
+            .lines()
+            .filter_map(|line| line.strip_prefix("  "))
+            .collect()
     }
 
     fn representative_document() -> RenderDocument {

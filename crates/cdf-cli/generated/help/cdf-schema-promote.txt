@@ -1,11 +1,18 @@
+Plan or execute residual schema promotion
+
 Usage: cdf schema promote [OPTIONS] [RESOURCE]...
 
 Arguments:
-  [RESOURCE]...
+  [RESOURCE]...  Resource identifier
 
 Options:
-      --no-color
-      --resource <RESOURCE>
+  -q, --quiet                           Suppress progress and non-primary success narration
+      --resource <RESOURCE>             Resource identifier (compatibility form)
       --type <JSON_POINTER=ARROW_TYPE>
-      --execute
+  -v, --verbose...                      Show evidence detail; repeat for diagnostics
+      --color <WHEN>                    Color policy: auto, always, or never [possible values: auto, always, never]
+      --execute                         Apply the planned operation
+      --no-color                        Compatibility alias for --color never
+      --progress <WHEN>                 Progress policy: auto, always, or never [possible values: auto, always, never]
+      --unicode <WHEN>                  Unicode policy: auto, always, or never [possible values: auto, always, never]
   -h, --help                            Print help

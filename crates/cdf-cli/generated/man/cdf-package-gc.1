@@ -2,13 +2,69 @@
 .el .ds Aq '
 .TH cdf-package-gc 1  "cdf-package-gc "
 .SH NAME
-cdf\-package\-gc
+cdf\-package\-gc \- Collect packages allowed by retention policy
 .SH SYNOPSIS
-\fBcdf package gc\fR [\fB\-h\fR|\fB\-\-help\fR] [\fIDIR\fR]
+\fBcdf package gc\fR [\fB\-q\fR|\fB\-\-quiet\fR] [\fB\-v\fR|\fB\-\-verbose\fR]... [\fB\-\-color\fR] [\fB\-\-no\-color\fR] [\fB\-\-progress\fR] [\fB\-\-unicode\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fIDIR\fR]
 .SH DESCRIPTION
+Collect packages allowed by retention policy
 .SH OPTIONS
+.TP
+\fB\-q\fR, \fB\-\-quiet\fR
+Suppress progress and non\-primary success narration
+.TP
+\fB\-v\fR, \fB\-\-verbose\fR
+Show evidence detail; repeat for diagnostics
+.TP
+\fB\-\-color\fR \fI<WHEN>\fR
+Color policy: auto, always, or never
+.br
+
+.br
+\fIPossible values:\fR
+.RS 14
+.IP \(bu 2
+auto
+.IP \(bu 2
+always
+.IP \(bu 2
+never
+.RE
+.TP
+\fB\-\-no\-color\fR
+Compatibility alias for \-\-color never
+.TP
+\fB\-\-progress\fR \fI<WHEN>\fR
+Progress policy: auto, always, or never
+.br
+
+.br
+\fIPossible values:\fR
+.RS 14
+.IP \(bu 2
+auto
+.IP \(bu 2
+always
+.IP \(bu 2
+never
+.RE
+.TP
+\fB\-\-unicode\fR \fI<WHEN>\fR
+Unicode policy: auto, always, or never
+.br
+
+.br
+\fIPossible values:\fR
+.RS 14
+.IP \(bu 2
+auto
+.IP \(bu 2
+always
+.IP \(bu 2
+never
+.RE
 .TP
 \fB\-h\fR, \fB\-\-help\fR
 Print help
 .TP
 [\fIDIR\fR]
+Package directory

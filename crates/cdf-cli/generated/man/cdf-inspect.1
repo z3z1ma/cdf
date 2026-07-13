@@ -2,31 +2,91 @@
 .el .ds Aq '
 .TH cdf-inspect 1  "cdf-inspect "
 .SH NAME
-cdf\-inspect
+cdf\-inspect \- Inspect durable project and run evidence
 .SH SYNOPSIS
-\fBcdf inspect\fR [\fB\-h\fR|\fB\-\-help\fR] [\fIsubcommands\fR]
+\fBcdf inspect\fR [\fB\-q\fR|\fB\-\-quiet\fR] [\fB\-v\fR|\fB\-\-verbose\fR]... [\fB\-\-color\fR] [\fB\-\-no\-color\fR] [\fB\-\-progress\fR] [\fB\-\-unicode\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fIsubcommands\fR]
 .SH DESCRIPTION
+Inspect durable project and run evidence
 .SH OPTIONS
+.TP
+\fB\-q\fR, \fB\-\-quiet\fR
+Suppress progress and non\-primary success narration
+.TP
+\fB\-v\fR, \fB\-\-verbose\fR
+Show evidence detail; repeat for diagnostics
+.TP
+\fB\-\-color\fR \fI<WHEN>\fR
+Color policy: auto, always, or never
+.br
+
+.br
+\fIPossible values:\fR
+.RS 14
+.IP \(bu 2
+auto
+.IP \(bu 2
+always
+.IP \(bu 2
+never
+.RE
+.TP
+\fB\-\-no\-color\fR
+Compatibility alias for \-\-color never
+.TP
+\fB\-\-progress\fR \fI<WHEN>\fR
+Progress policy: auto, always, or never
+.br
+
+.br
+\fIPossible values:\fR
+.RS 14
+.IP \(bu 2
+auto
+.IP \(bu 2
+always
+.IP \(bu 2
+never
+.RE
+.TP
+\fB\-\-unicode\fR \fI<WHEN>\fR
+Unicode policy: auto, always, or never
+.br
+
+.br
+\fIPossible values:\fR
+.RS 14
+.IP \(bu 2
+auto
+.IP \(bu 2
+always
+.IP \(bu 2
+never
+.RE
 .TP
 \fB\-h\fR, \fB\-\-help\fR
 Print help
 .SH SUBCOMMANDS
 .TP
 cdf\-inspect\-project(1)
+Show resolved project information
 .TP
 cdf\-inspect\-resources(1)
+List project resources
 .TP
 cdf\-inspect\-resource(1)
+Show one resolved resource
 .TP
 cdf\-inspect\-lock(1)
+Show the project lock
 .TP
 cdf\-inspect\-destinations(1)
+List resolved destinations
 .TP
 cdf\-inspect\-destination(1)
+List resolved destinations
 .TP
 cdf\-inspect\-package(1)
+List, verify, archive, and collect packages
 .TP
 cdf\-inspect\-run(1)
-.TP
-cdf\-inspect\-help(1)
-Print this message or the help of the given subcommand(s)
+Execute a governed resource run

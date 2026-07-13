@@ -2,40 +2,96 @@
 .el .ds Aq '
 .TH cdf-plan 1  "cdf-plan "
 .SH NAME
-cdf\-plan
+cdf\-plan \- Plan a resource run without executing it
 .SH SYNOPSIS
-\fBcdf plan\fR [\fB\-\-resource\fR] [\fB\-\-select\fR] [\fB\-\-filter\fR] [\fB\-\-limit\fR] [\fB\-\-order\-by\fR] [\fB\-\-package\-id\fR] [\fB\-\-to\fR] [\fB\-\-target\fR] [\fB\-\-no\-pin\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fIRESOURCE\fR]
+\fBcdf plan\fR [\fB\-q\fR|\fB\-\-quiet\fR] [\fB\-\-resource\fR] [\fB\-\-select\fR] [\fB\-v\fR|\fB\-\-verbose\fR]... [\fB\-\-color\fR] [\fB\-\-filter\fR] [\fB\-\-limit\fR] [\fB\-\-no\-color\fR] [\fB\-\-order\-by\fR] [\fB\-\-progress\fR] [\fB\-\-package\-id\fR] [\fB\-\-unicode\fR] [\fB\-\-to\fR] [\fB\-\-target\fR] [\fB\-\-no\-pin\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fIRESOURCE\fR]
 .SH DESCRIPTION
+Plan a resource run without executing it
 .SH OPTIONS
 .TP
+\fB\-q\fR, \fB\-\-quiet\fR
+Suppress progress and non\-primary success narration
+.TP
 \fB\-\-resource\fR \fI<RESOURCE>\fR
-
+Resource identifier (compatibility form)
 .TP
 \fB\-\-select\fR \fI<FIELDS>\fR
+Comma\-separated projected fields
+.TP
+\fB\-v\fR, \fB\-\-verbose\fR
+Show evidence detail; repeat for diagnostics
+.TP
+\fB\-\-color\fR \fI<WHEN>\fR
+Color policy: auto, always, or never
+.br
 
+.br
+\fIPossible values:\fR
+.RS 14
+.IP \(bu 2
+auto
+.IP \(bu 2
+always
+.IP \(bu 2
+never
+.RE
 .TP
 \fB\-\-filter\fR \fI<EXPR>\fR
-
+Filter expression; may be repeated
 .TP
 \fB\-\-limit\fR \fI<N>\fR
-
+Maximum rows to read
+.TP
+\fB\-\-no\-color\fR
+Compatibility alias for \-\-color never
 .TP
 \fB\-\-order\-by\fR \fI<FIELD[:asc|desc]>\fR
+Ordering field and optional direction
+.TP
+\fB\-\-progress\fR \fI<WHEN>\fR
+Progress policy: auto, always, or never
+.br
 
+.br
+\fIPossible values:\fR
+.RS 14
+.IP \(bu 2
+auto
+.IP \(bu 2
+always
+.IP \(bu 2
+never
+.RE
 .TP
 \fB\-\-package\-id\fR \fI<ID>\fR
+Explicit package identifier for script compatibility
+.TP
+\fB\-\-unicode\fR \fI<WHEN>\fR
+Unicode policy: auto, always, or never
+.br
 
+.br
+\fIPossible values:\fR
+.RS 14
+.IP \(bu 2
+auto
+.IP \(bu 2
+always
+.IP \(bu 2
+never
+.RE
 .TP
 \fB\-\-to\fR \fI<DEST>\fR
-
+Destination URI or cursor upper bound, as shown in usage
 .TP
 \fB\-\-target\fR \fI<TARGET>\fR
-
+Destination target/table compatibility option
 .TP
 \fB\-\-no\-pin\fR
-
+Do not pin newly discovered schema
 .TP
 \fB\-h\fR, \fB\-\-help\fR
 Print help
 .TP
 [\fIRESOURCE\fR]
+Resource identifier

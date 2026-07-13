@@ -3,35 +3,75 @@
 Generated from the CLI's clap definitions.
 
 ```text
-Continuous Data Framework CLI
+Plan, run, and inspect governed data movement with durable packages, checkpoints, receipts, and schema evidence.
 
 Usage: cdf [OPTIONS] [COMMAND]
 
 Commands:
-  help
-  version
-  init
-  add
-  validate
-  plan
-  explain
-  run
-  preview
-  sql
-  inspect
-  diff
-  schema
-  contract
-  state
-  resume
-  replay
-  backfill
-  package
-  doctor
-  status
+  help      Show help for a command
+  version   Print the cdf version
+  init      Create a new cdf project
+  add       Add a source resource to the project
+  validate  Validate project configuration and contracts
+  plan      Plan a resource run without executing it
+  explain   Explain resolution, capabilities, and execution choices
+  run       Execute a governed resource run
+  preview   Read a bounded preview without committing data
+  sql       Query cdf system metadata
+  inspect   Inspect durable project and run evidence
+  diff      Compare durable schemas
+  schema    Discover, pin, compare, and promote schemas
+  contract  Freeze, show, and test contracts
+  state     Inspect and recover checkpoint state
+  resume    Resume interrupted work from the run ledger
+  replay    Replay a verified package
+  backfill  Plan or execute a bounded cursor backfill
+  package   List, verify, archive, and collect packages
+  doctor    Check local runtime and destination health
+  status    Summarize project freshness and run state
 
 Options:
+  -q, --quiet
+          Suppress progress and non-primary success narration
+
+  -v, --verbose...
+          Show evidence detail; repeat for diagnostics
+
+      --color <WHEN>
+          Color policy: auto, always, or never
+
+          [possible values: auto, always, never]
+
       --no-color
-  -h, --help      Print help
-  -V, --version   Print version
+          Compatibility alias for --color never
+
+      --progress <WHEN>
+          Progress policy: auto, always, or never
+
+          [possible values: auto, always, never]
+
+      --unicode <WHEN>
+          Unicode policy: auto, always, or never
+
+          [possible values: auto, always, never]
+
+  -h, --help
+          Print help (see a summary with '-h')
+
+  -V, --version
+          Print version
+
+Environment:
+  CDF_PROJECT       Project directory or cdf.toml path
+  CDF_ENV           Project environment name
+  CDF_TARGET        Default destination
+  NO_COLOR          Disable color unless --color always is explicit
+  CLICOLOR_FORCE    Request color when output is interactive
+  COLUMNS           Width fallback when terminal size is unavailable
+
+Examples:
+  cdf validate
+  cdf plan local.events --to duckdb://.cdf/dev.duckdb
+  cdf run local.events -v
+  cdf inspect run RUN_ID
 ```

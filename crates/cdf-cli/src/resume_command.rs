@@ -63,7 +63,7 @@ pub(crate) fn resume(
         &state_path,
         run_id,
         cli.json,
-        cli.no_color,
+        &cli.terminal,
         execution,
     )
 }
@@ -73,7 +73,7 @@ fn resume_run(
     state_path: &std::path::Path,
     run_id: RunId,
     json_mode: bool,
-    no_color: bool,
+    terminal: &crate::terminal::TerminalPolicy,
     execution: &cdf_runtime::ExecutionServices,
 ) -> Result<CommandOutput, CliError> {
     let run_ledger = SqliteRunLedger::open(state_path)?;
@@ -83,7 +83,7 @@ fn resume_run(
             run_id
         ))
     })?;
-    let progress = human_progress_sink(json_mode, no_color);
+    let progress = human_progress_sink(json_mode, terminal);
     let event_sink = progress.as_ref().map(|sink| sink as &dyn RunEventSink);
     if let Some(sink) = event_sink {
         for event in &snapshot.events {

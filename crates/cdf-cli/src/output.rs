@@ -4,6 +4,7 @@ use serde::Serialize;
 use crate::error_catalog;
 use crate::progress::ProgressSnapshot;
 use crate::render::{RenderConfig, RenderDocument};
+use crate::terminal::{OutputChannel, TerminalPolicy};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct InvocationResult {
@@ -190,19 +191,19 @@ pub(crate) enum HumanOutput {
 }
 
 impl HumanOutput {
-    fn render(self, config: &RenderConfig) -> String {
+    fn render_channels(
+        self,
+        stdout_config: &RenderConfig,
+        stderr_config: &RenderConfig,
+    ) -> (String, String) {
         match self {
-            Self::Rendered(document) => document.render(config),
+            Self::Rendered(document) => (document.render(stdout_config), String::new()),
             Self::RenderedWithProgress { progress, document } => {
-                let mut rendered = progress.render_for_config(config);
-                if !rendered.is_empty() {
-                    if !rendered.ends_with('\n') {
-                        rendered.push('\n');
-                    }
-                    rendered.push('\n');
+                let mut stderr = progress.render_for_config(stderr_config);
+                if !stderr.is_empty() && !stderr.ends_with('\n') {
+                    stderr.push('\n');
                 }
-                rendered.push_str(&document.render(config));
-                rendered
+                (document.render(stdout_config), stderr)
             }
         }
     }
@@ -294,34 +295,48 @@ struct ErrorEnvelope {
 }
 
 impl InvocationResult {
+    #[cfg(test)]
     pub(crate) fn from_output(
         json_mode: bool,
         render_config: &RenderConfig,
         output: CommandOutput,
     ) -> Self {
-        let stdout = if json_mode {
+        Self::from_output_with_configs(json_mode, render_config, render_config, output)
+    }
+
+    pub(crate) fn from_output_with_configs(
+        json_mode: bool,
+        stdout_config: &RenderConfig,
+        stderr_config: &RenderConfig,
+        output: CommandOutput,
+    ) -> Self {
+        let (stdout, stderr) = if json_mode {
             let envelope = SuccessEnvelope {
                 ok: true,
                 command: output.command,
                 result: &output.json,
             };
-            format!(
-                "{}\n",
-                serde_json::to_string_pretty(&envelope)
-                    .expect("CLI success envelope must serialize")
+            (
+                format!(
+                    "{}\n",
+                    serde_json::to_string_pretty(&envelope)
+                        .expect("CLI success envelope must serialize")
+                ),
+                String::new(),
             )
         } else {
-            let human = output.human.render(render_config);
-            if human.ends_with('\n') {
+            let (human, progress) = output.human.render_channels(stdout_config, stderr_config);
+            let stdout = if human.ends_with('\n') {
                 human
             } else {
                 format!("{human}\n")
-            }
+            };
+            (stdout, progress)
         };
         Self {
             exit_code: output.exit_code,
             stdout,
-            stderr: String::new(),
+            stderr,
         }
     }
 
@@ -380,7 +395,11 @@ impl InvocationResult {
     }
 
     pub fn from_error(json_mode: bool, error: CliError) -> Self {
-        Self::from_error_with_config(json_mode, &RenderConfig::detect(false), error)
+        Self::from_error_with_config(
+            json_mode,
+            &RenderConfig::detect(&TerminalPolicy::default(), OutputChannel::Stderr),
+            error,
+        )
     }
 }
 

@@ -2,31 +2,87 @@
 .el .ds Aq '
 .TH cdf-backfill 1  "cdf-backfill "
 .SH NAME
-cdf\-backfill
+cdf\-backfill \- Plan or execute a bounded cursor backfill
 .SH SYNOPSIS
-\fBcdf backfill\fR [\fB\-\-resource\fR] [\fB\-\-from\fR] [\fB\-\-to\fR] [\fB\-\-target\fR] [\fB\-\-execute\fR] [\fB\-\-slice\-size\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fIRESOURCE\fR]
+\fBcdf backfill\fR [\fB\-q\fR|\fB\-\-quiet\fR] [\fB\-\-resource\fR] [\fB\-\-from\fR] [\fB\-v\fR|\fB\-\-verbose\fR]... [\fB\-\-color\fR] [\fB\-\-to\fR] [\fB\-\-no\-color\fR] [\fB\-\-target\fR] [\fB\-\-execute\fR] [\fB\-\-progress\fR] [\fB\-\-slice\-size\fR] [\fB\-\-unicode\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fIRESOURCE\fR]
 .SH DESCRIPTION
+Plan or execute a bounded cursor backfill
 .SH OPTIONS
 .TP
+\fB\-q\fR, \fB\-\-quiet\fR
+Suppress progress and non\-primary success narration
+.TP
 \fB\-\-resource\fR \fI<RESOURCE>\fR
-
+Resource identifier (compatibility form)
 .TP
 \fB\-\-from\fR \fI<CURSOR>\fR
+Inclusive cursor lower bound
+.TP
+\fB\-v\fR, \fB\-\-verbose\fR
+Show evidence detail; repeat for diagnostics
+.TP
+\fB\-\-color\fR \fI<WHEN>\fR
+Color policy: auto, always, or never
+.br
 
+.br
+\fIPossible values:\fR
+.RS 14
+.IP \(bu 2
+auto
+.IP \(bu 2
+always
+.IP \(bu 2
+never
+.RE
 .TP
 \fB\-\-to\fR \fI<CURSOR>\fR
-
+Destination URI or cursor upper bound, as shown in usage
+.TP
+\fB\-\-no\-color\fR
+Compatibility alias for \-\-color never
 .TP
 \fB\-\-target\fR \fI<TARGET>\fR
-
+Destination target/table compatibility option
 .TP
 \fB\-\-execute\fR
+Apply the planned operation
+.TP
+\fB\-\-progress\fR \fI<WHEN>\fR
+Progress policy: auto, always, or never
+.br
 
+.br
+\fIPossible values:\fR
+.RS 14
+.IP \(bu 2
+auto
+.IP \(bu 2
+always
+.IP \(bu 2
+never
+.RE
 .TP
 \fB\-\-slice\-size\fR \fI<N>\fR
+Rows per backfill slice
+.TP
+\fB\-\-unicode\fR \fI<WHEN>\fR
+Unicode policy: auto, always, or never
+.br
 
+.br
+\fIPossible values:\fR
+.RS 14
+.IP \(bu 2
+auto
+.IP \(bu 2
+always
+.IP \(bu 2
+never
+.RE
 .TP
 \fB\-h\fR, \fB\-\-help\fR
 Print help
 .TP
 [\fIRESOURCE\fR]
+Resource identifier

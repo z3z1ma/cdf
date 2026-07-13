@@ -17,6 +17,7 @@ use crate::render::{
     primitives::{KeyValuePanel, SectionRule, StatusKind, StatusLine, Table},
     redaction::{is_sensitive_key, redact_uri_userinfo, redacted},
 };
+use crate::terminal::{OutputChannel, TerminalPolicy, Verbosity};
 
 const DEFAULT_PROGRESS_CAPACITY: usize = 128;
 
@@ -415,11 +416,19 @@ impl CliProgressSink {
     }
 }
 
-pub(crate) fn human_progress_sink(json_mode: bool, no_color: bool) -> Option<CliProgressSink> {
-    (!json_mode).then(|| {
+pub(crate) fn human_progress_sink(
+    json_mode: bool,
+    terminal: &TerminalPolicy,
+) -> Option<CliProgressSink> {
+    terminal.progress_enabled(json_mode).then(|| {
+        let verbosity = match terminal.verbosity {
+            Verbosity::Quiet => DisplayVerbosity::Quiet,
+            Verbosity::Normal => DisplayVerbosity::Normal,
+            Verbosity::Verbose(_) => DisplayVerbosity::Verbose,
+        };
         CliProgressSink::new(ProgressConfig::new(
-            RenderConfig::detect(no_color),
-            DisplayVerbosity::Normal,
+            RenderConfig::detect(terminal, OutputChannel::Stderr),
+            verbosity,
         ))
     })
 }
@@ -692,6 +701,16 @@ mod tests {
         CliProgressSink::new(ProgressConfig::new(headless_config(), verbosity))
     }
 
+    #[test]
+    fn cx1_quiet_policy_does_not_create_a_human_progress_sink() {
+        let policy = TerminalPolicy {
+            verbosity: Verbosity::Quiet,
+            ..TerminalPolicy::default()
+        };
+
+        assert!(human_progress_sink(false, &policy).is_none());
+    }
+
     fn bounded_sink(capacity: usize) -> CliProgressSink {
         CliProgressSink::new(
             ProgressConfig::new(headless_config(), DisplayVerbosity::Normal)
@@ -710,8 +729,9 @@ mod tests {
             RenderEnv {
                 no_color: false,
                 clicolor_force: false,
+                unicode_supported: true,
             },
-            false,
+            TerminalPolicy::default(),
         )
     }
 

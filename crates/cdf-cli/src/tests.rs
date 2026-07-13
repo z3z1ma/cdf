@@ -129,6 +129,40 @@ fn help_lists_required_command_surface() {
     ] {
         assert!(result.stdout.contains(command), "missing {command}");
     }
+    for required in [
+        "--progress <WHEN>",
+        "--unicode <WHEN>",
+        "Environment:",
+        "Examples:",
+    ] {
+        assert!(result.stdout.contains(required), "missing {required}");
+    }
+}
+
+#[test]
+fn cx1_short_and_long_help_are_distinct_complete_and_placeholder_free() {
+    let short = run(["cdf", "-h"]);
+    assert_eq!(short.exit_code, 0);
+    assert!(short.stdout.contains("--progress"));
+    assert!(short.stdout.contains("--unicode"));
+    assert!(!short.stdout.contains("Environment:"));
+
+    let long = run(["cdf", "help"]);
+    assert_eq!(long.exit_code, 0);
+    for required in ["--progress", "--unicode", "Environment:", "Examples:"] {
+        assert!(long.stdout.contains(required), "missing {required}");
+    }
+
+    let recover = run(["cdf", "state", "recover", "--help"]);
+    for required in [
+        "Package directory",
+        "Receipt identifier",
+        "Merge deduplication policy",
+    ] {
+        assert!(recover.stdout.contains(required), "missing {required}");
+    }
+    assert!(!recover.stdout.contains("Command option"));
+    assert!(!recover.stdout.contains("Command value"));
 }
 
 #[test]
@@ -217,6 +251,39 @@ fn parser_preserves_json_anywhere_for_help_envelope() {
 fn cli_generated_artifacts_match_committed_snapshots() {
     crate::cli_artifacts::check_cli_artifacts(&crate::cli_artifacts::default_artifact_dir())
         .unwrap();
+}
+
+#[cfg(feature = "cli-artifacts")]
+#[test]
+fn cx1_generated_help_and_man_pages_are_complete_and_share_global_authority() {
+    let generated = crate::cli_artifacts::default_artifact_dir();
+    for child in ["help", "man"] {
+        for entry in fs::read_dir(generated.join(child)).unwrap() {
+            let text = fs::read_to_string(entry.unwrap().path()).unwrap();
+            assert!(!text.contains("Command option"));
+            assert!(!text.contains("Command value"));
+        }
+    }
+
+    let root = fs::read_to_string(generated.join("help/cdf.txt")).unwrap();
+    assert!(root.contains("Environment:"));
+    assert!(root.contains("Examples:"));
+    let run_man = fs::read_to_string(generated.join("man/cdf-run.1")).unwrap();
+    for global in ["\\-\\-color", "\\-\\-progress", "\\-\\-unicode"] {
+        assert!(run_man.contains(global), "run man page missing {global}");
+    }
+    for description in [
+        "Color policy: auto, always, or never",
+        "Progress policy: auto, always, or never",
+        "Unicode policy: auto, always, or never",
+    ] {
+        assert!(
+            run_man.contains(description),
+            "run man page missing {description}"
+        );
+    }
+    let bash = fs::read_to_string(generated.join("completions/cdf.bash")).unwrap();
+    assert!(bash.matches("auto always never").count() >= 3);
 }
 
 #[test]
@@ -514,6 +581,111 @@ fn parser_accepts_no_color_anywhere_without_changing_json_envelope() {
     let json = stderr_or_stdout_json(&result.stdout);
     assert_eq!(json["command"], "version");
     assert_eq!(json["result"]["version"], env!("CARGO_PKG_VERSION"));
+}
+
+#[test]
+fn cx1_parser_resolves_global_terminal_policy_anywhere() {
+    use crate::terminal::{PolicyMode, Verbosity};
+
+    let cli = crate::args::Cli::parse(
+        [
+            "cdf",
+            "run",
+            "local.events",
+            "-vv",
+            "--color=always",
+            "--progress",
+            "never",
+            "--unicode",
+            "always",
+        ]
+        .map(OsString::from),
+    )
+    .unwrap();
+
+    assert_eq!(cli.terminal.color, PolicyMode::Always);
+    assert_eq!(cli.terminal.progress, PolicyMode::Never);
+    assert_eq!(cli.terminal.unicode, PolicyMode::Always);
+    assert_eq!(cli.terminal.verbosity, Verbosity::Verbose(2));
+}
+
+#[test]
+fn cx1_parser_rejects_terminal_policy_conflicts_with_exact_corrections() {
+    let quiet_verbose =
+        crate::args::Cli::parse(["cdf", "run", "local.events", "-q", "-v"].map(OsString::from))
+            .unwrap_err();
+    assert_eq!(
+        quiet_verbose.message,
+        "-q/--quiet cannot be combined with -v/--verbose; choose one"
+    );
+
+    let color = crate::args::Cli::parse(
+        ["cdf", "status", "--no-color", "--color", "always"].map(OsString::from),
+    )
+    .unwrap_err();
+    assert_eq!(
+        color.message,
+        "--no-color conflicts with --color; use only --color never"
+    );
+
+    let invalid =
+        crate::args::Cli::parse(["cdf", "status", "--progress", "sometimes"].map(OsString::from))
+            .unwrap_err();
+    assert_eq!(
+        invalid.message,
+        "--progress must be one of auto, always, or never; try `--progress auto`"
+    );
+}
+
+#[test]
+fn cx1_parser_preserves_policy_looking_sql_tokens_after_option_terminator() {
+    let cli = crate::args::Cli::parse(
+        [
+            "cdf",
+            "sql",
+            "--",
+            "--color",
+            "--progress",
+            "--unicode",
+            "-q",
+            "-vv",
+        ]
+        .map(OsString::from),
+    )
+    .unwrap();
+
+    let crate::args::Command::Sql(sql) = cli.command else {
+        panic!("expected sql command");
+    };
+    assert_eq!(sql.query, "--color --progress --unicode -q -vv");
+    assert_eq!(cli.terminal, crate::terminal::TerminalPolicy::default());
+}
+
+#[test]
+fn cx1_clap_authority_owns_terminal_values_and_conflicts() {
+    use clap::error::ErrorKind;
+
+    let invalid = crate::args::cli_command()
+        .try_get_matches_from(["cdf", "--progress", "sometimes", "status"])
+        .unwrap_err();
+    assert_eq!(invalid.kind(), ErrorKind::InvalidValue);
+    let invalid_text = invalid.to_string();
+    for value in ["auto", "always", "never"] {
+        assert!(
+            invalid_text.contains(value),
+            "missing {value}: {invalid_text}"
+        );
+    }
+
+    for argv in [
+        vec!["cdf", "-q", "-v", "status"],
+        vec!["cdf", "--no-color", "--color", "never", "status"],
+    ] {
+        let conflict = crate::args::cli_command()
+            .try_get_matches_from(argv)
+            .unwrap_err();
+        assert_eq!(conflict.kind(), ErrorKind::ArgumentConflict);
+    }
 }
 
 #[test]
@@ -15898,8 +16070,9 @@ fn rich_render_config() -> crate::render::RenderConfig {
         crate::render::config::RenderEnv {
             no_color: false,
             clicolor_force: false,
+            unicode_supported: true,
         },
-        false,
+        crate::terminal::TerminalPolicy::default(),
     )
 }
 
@@ -15907,6 +16080,7 @@ fn test_cli(project: &TestProject) -> crate::args::Cli {
     crate::args::Cli {
         json: false,
         no_color: false,
+        terminal: crate::terminal::TerminalPolicy::default(),
         project: Some(project.root.clone()),
         env: None,
         command: crate::args::Command::Version,

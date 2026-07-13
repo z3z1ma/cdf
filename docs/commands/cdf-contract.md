@@ -3,14 +3,21 @@
 Generated from the CLI's clap definitions.
 
 ```text
+Freeze, show, and test contracts
+
 Usage: cdf contract [OPTIONS] [COMMAND]
 
 Commands:
-  freeze
-  show
-  test
+  freeze  Freeze a contract snapshot
+  show    Show the selected durable record
+  test    Test data against a contract
 
 Options:
-      --no-color
-  -h, --help      Print help
+  -q, --quiet            Suppress progress and non-primary success narration
+  -v, --verbose...       Show evidence detail; repeat for diagnostics
+      --color <WHEN>     Color policy: auto, always, or never [possible values: auto, always, never]
+      --no-color         Compatibility alias for --color never
+      --progress <WHEN>  Progress policy: auto, always, or never [possible values: auto, always, never]
+      --unicode <WHEN>   Unicode policy: auto, always, or never [possible values: auto, always, never]
+  -h, --help             Print help
 ```

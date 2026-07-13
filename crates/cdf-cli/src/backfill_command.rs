@@ -63,7 +63,7 @@ pub(crate) fn backfill(
     let source = run_resource.as_project_resource();
     source.validate_supported().map_err(CliError::from)?;
     let pipeline_id = backfill_pipeline_id()?;
-    let progress = human_progress_sink(cli.json, cli.no_color);
+    let progress = human_progress_sink(cli.json, &cli.terminal);
     let event_sink = progress.as_ref().map(|sink| sink as &dyn RunEventSink);
     let mut reports = Vec::with_capacity(plan.slices.len());
     for slice in &plan.slices {

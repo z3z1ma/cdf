@@ -2,22 +2,78 @@
 .el .ds Aq '
 .TH cdf-schema-promote 1  "cdf-schema-promote "
 .SH NAME
-cdf\-schema\-promote
+cdf\-schema\-promote \- Plan or execute residual schema promotion
 .SH SYNOPSIS
-\fBcdf schema promote\fR [\fB\-\-resource\fR] [\fB\-\-type\fR] [\fB\-\-execute\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fIRESOURCE\fR]
+\fBcdf schema promote\fR [\fB\-q\fR|\fB\-\-quiet\fR] [\fB\-\-resource\fR] [\fB\-\-type\fR] [\fB\-v\fR|\fB\-\-verbose\fR]... [\fB\-\-color\fR] [\fB\-\-execute\fR] [\fB\-\-no\-color\fR] [\fB\-\-progress\fR] [\fB\-\-unicode\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fIRESOURCE\fR]
 .SH DESCRIPTION
+Plan or execute residual schema promotion
 .SH OPTIONS
 .TP
+\fB\-q\fR, \fB\-\-quiet\fR
+Suppress progress and non\-primary success narration
+.TP
 \fB\-\-resource\fR \fI<RESOURCE>\fR
-
+Resource identifier (compatibility form)
 .TP
 \fB\-\-type\fR \fI<JSON_POINTER=ARROW_TYPE>\fR
 
 .TP
-\fB\-\-execute\fR
+\fB\-v\fR, \fB\-\-verbose\fR
+Show evidence detail; repeat for diagnostics
+.TP
+\fB\-\-color\fR \fI<WHEN>\fR
+Color policy: auto, always, or never
+.br
 
+.br
+\fIPossible values:\fR
+.RS 14
+.IP \(bu 2
+auto
+.IP \(bu 2
+always
+.IP \(bu 2
+never
+.RE
+.TP
+\fB\-\-execute\fR
+Apply the planned operation
+.TP
+\fB\-\-no\-color\fR
+Compatibility alias for \-\-color never
+.TP
+\fB\-\-progress\fR \fI<WHEN>\fR
+Progress policy: auto, always, or never
+.br
+
+.br
+\fIPossible values:\fR
+.RS 14
+.IP \(bu 2
+auto
+.IP \(bu 2
+always
+.IP \(bu 2
+never
+.RE
+.TP
+\fB\-\-unicode\fR \fI<WHEN>\fR
+Unicode policy: auto, always, or never
+.br
+
+.br
+\fIPossible values:\fR
+.RS 14
+.IP \(bu 2
+auto
+.IP \(bu 2
+always
+.IP \(bu 2
+never
+.RE
 .TP
 \fB\-h\fR, \fB\-\-help\fR
 Print help
 .TP
 [\fIRESOURCE\fR]
+Resource identifier

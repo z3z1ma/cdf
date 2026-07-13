@@ -3,13 +3,20 @@
 Generated from the CLI's clap definitions.
 
 ```text
+Pin a discovered schema into the project contract
+
 Usage: cdf schema pin [OPTIONS] [RESOURCE]...
 
 Arguments:
-  [RESOURCE]...
+  [RESOURCE]...  Resource identifier
 
 Options:
-      --no-color
-      --resource <RESOURCE>
+  -q, --quiet                Suppress progress and non-primary success narration
+      --resource <RESOURCE>  Resource identifier (compatibility form)
+  -v, --verbose...           Show evidence detail; repeat for diagnostics
+      --color <WHEN>         Color policy: auto, always, or never [possible values: auto, always, never]
+      --no-color             Compatibility alias for --color never
+      --progress <WHEN>      Progress policy: auto, always, or never [possible values: auto, always, never]
+      --unicode <WHEN>       Unicode policy: auto, always, or never [possible values: auto, always, never]
   -h, --help                 Print help
 ```

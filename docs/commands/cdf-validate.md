@@ -3,10 +3,17 @@
 Generated from the CLI's clap definitions.
 
 ```text
+Validate project configuration and contracts
+
 Usage: cdf validate [OPTIONS]
 
 Options:
-      --deep
-      --no-color
-  -h, --help      Print help
+      --deep             Run probes that may contact configured systems
+  -q, --quiet            Suppress progress and non-primary success narration
+  -v, --verbose...       Show evidence detail; repeat for diagnostics
+      --color <WHEN>     Color policy: auto, always, or never [possible values: auto, always, never]
+      --no-color         Compatibility alias for --color never
+      --progress <WHEN>  Progress policy: auto, always, or never [possible values: auto, always, never]
+      --unicode <WHEN>   Unicode policy: auto, always, or never [possible values: auto, always, never]
+  -h, --help             Print help
 ```

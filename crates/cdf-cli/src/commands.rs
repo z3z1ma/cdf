@@ -7,16 +7,23 @@ use crate::{
     error_catalog,
     output::{CliError, CommandOutput, InvocationResult},
     render::{RenderConfig, RenderDocument},
+    terminal::OutputChannel,
 };
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 pub fn execute(cli: Cli) -> InvocationResult {
     let json_mode = cli.json;
-    let render_config = RenderConfig::detect(cli.no_color);
+    let stdout_config = RenderConfig::detect(&cli.terminal, OutputChannel::Stdout);
+    let stderr_config = RenderConfig::detect(&cli.terminal, OutputChannel::Stderr);
     match dispatch(cli) {
-        Ok(output) => InvocationResult::from_output(json_mode, &render_config, output),
-        Err(error) => InvocationResult::from_error_with_config(json_mode, &render_config, error),
+        Ok(output) => InvocationResult::from_output_with_configs(
+            json_mode,
+            &stdout_config,
+            &stderr_config,
+            output,
+        ),
+        Err(error) => InvocationResult::from_error_with_config(json_mode, &stderr_config, error),
     }
 }
 

@@ -2,31 +2,87 @@
 .el .ds Aq '
 .TH cdf-state-rewind 1  "cdf-state-rewind "
 .SH NAME
-cdf\-state\-rewind
+cdf\-state\-rewind \- Create a marker that rewinds checkpoint state
 .SH SYNOPSIS
-\fBcdf state rewind\fR [\fB\-\-pipeline\fR] [\fB\-\-resource\fR] [\fB\-\-scope\fR] [\fB\-\-scope\-json\fR] [\fB\-\-target\-checkpoint\fR] [\fB\-\-marker\-checkpoint\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fIRESOURCE\fR]
+\fBcdf state rewind\fR [\fB\-\-pipeline\fR] [\fB\-q\fR|\fB\-\-quiet\fR] [\fB\-\-resource\fR] [\fB\-v\fR|\fB\-\-verbose\fR]... [\fB\-\-color\fR] [\fB\-\-scope\fR] [\fB\-\-no\-color\fR] [\fB\-\-scope\-json\fR] [\fB\-\-progress\fR] [\fB\-\-target\-checkpoint\fR] [\fB\-\-marker\-checkpoint\fR] [\fB\-\-unicode\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fIRESOURCE\fR]
 .SH DESCRIPTION
+Create a marker that rewinds checkpoint state
 .SH OPTIONS
 .TP
 \fB\-\-pipeline\fR \fI<ID>\fR
-
+Pipeline identifier compatibility option
+.TP
+\fB\-q\fR, \fB\-\-quiet\fR
+Suppress progress and non\-primary success narration
 .TP
 \fB\-\-resource\fR \fI<RESOURCE>\fR
+Resource identifier (compatibility form)
+.TP
+\fB\-v\fR, \fB\-\-verbose\fR
+Show evidence detail; repeat for diagnostics
+.TP
+\fB\-\-color\fR \fI<WHEN>\fR
+Color policy: auto, always, or never
+.br
 
+.br
+\fIPossible values:\fR
+.RS 14
+.IP \(bu 2
+auto
+.IP \(bu 2
+always
+.IP \(bu 2
+never
+.RE
 .TP
 \fB\-\-scope\fR \fI<KEY=VALUE>\fR
-
+Checkpoint scope entry as key=value; may be repeated
+.TP
+\fB\-\-no\-color\fR
+Compatibility alias for \-\-color never
 .TP
 \fB\-\-scope\-json\fR \fI<JSON>\fR
+JSON checkpoint scope compatibility form
+.TP
+\fB\-\-progress\fR \fI<WHEN>\fR
+Progress policy: auto, always, or never
+.br
 
+.br
+\fIPossible values:\fR
+.RS 14
+.IP \(bu 2
+auto
+.IP \(bu 2
+always
+.IP \(bu 2
+never
+.RE
 .TP
 \fB\-\-target\-checkpoint\fR \fI<CHECKPOINT>\fR
-
+Checkpoint to rewind to
 .TP
 \fB\-\-marker\-checkpoint\fR \fI<CHECKPOINT>\fR
+Explicit rewind marker identifier for scripts
+.TP
+\fB\-\-unicode\fR \fI<WHEN>\fR
+Unicode policy: auto, always, or never
+.br
 
+.br
+\fIPossible values:\fR
+.RS 14
+.IP \(bu 2
+auto
+.IP \(bu 2
+always
+.IP \(bu 2
+never
+.RE
 .TP
 \fB\-h\fR, \fB\-\-help\fR
 Print help
 .TP
 [\fIRESOURCE\fR]
+Resource identifier

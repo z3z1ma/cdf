@@ -202,7 +202,8 @@ fn generate_help_snapshots(out_dir: &Path) -> Result<(), CliError> {
 
 fn generate_man_pages(out_dir: &Path) -> Result<(), CliError> {
     fs::create_dir_all(out_dir).map_err(io_error("create man page directory"))?;
-    let root = args::cli_command();
+    let mut root = args::cli_command();
+    root.build();
     for path in command_paths(&root) {
         let mut command = command_at_path(&root, &path).ok_or_else(|| {
             internal(format!(

@@ -37,6 +37,7 @@ mod status_command;
 mod status_freshness;
 mod suggestions;
 mod system_sql;
+mod terminal;
 
 pub use output::InvocationResult;
 

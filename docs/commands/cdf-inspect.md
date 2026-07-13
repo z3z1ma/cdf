@@ -3,19 +3,26 @@
 Generated from the CLI's clap definitions.
 
 ```text
+Inspect durable project and run evidence
+
 Usage: cdf inspect [OPTIONS] [COMMAND]
 
 Commands:
-  project
-  resources
-  resource
-  lock
-  destinations
-  destination
-  package
-  run
+  project       Show resolved project information
+  resources     List project resources
+  resource      Show one resolved resource
+  lock          Show the project lock
+  destinations  List resolved destinations
+  destination   List resolved destinations
+  package       List, verify, archive, and collect packages
+  run           Execute a governed resource run
 
 Options:
-      --no-color
-  -h, --help      Print help
+  -q, --quiet            Suppress progress and non-primary success narration
+  -v, --verbose...       Show evidence detail; repeat for diagnostics
+      --color <WHEN>     Color policy: auto, always, or never [possible values: auto, always, never]
+      --no-color         Compatibility alias for --color never
+      --progress <WHEN>  Progress policy: auto, always, or never [possible values: auto, always, never]
+      --unicode <WHEN>   Unicode policy: auto, always, or never [possible values: auto, always, never]
+  -h, --help             Print help
 ```

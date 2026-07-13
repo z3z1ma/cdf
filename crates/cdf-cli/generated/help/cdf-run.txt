@@ -1,15 +1,23 @@
+Execute a governed resource run
+
 Usage: cdf run [OPTIONS] [RESOURCE]...
 
 Arguments:
-  [RESOURCE]...
+  [RESOURCE]...  Resource identifier
 
 Options:
-      --no-color
-      --resource <RESOURCE>
-      --pipeline <ID>
-      --to <DEST>
-      --target <TARGET>
-      --package-id <ID>
-      --checkpoint-id <ID>
-      --loop
+  -q, --quiet                Suppress progress and non-primary success narration
+      --resource <RESOURCE>  Resource identifier (compatibility form)
+      --pipeline <ID>        Pipeline identifier compatibility option
+  -v, --verbose...           Show evidence detail; repeat for diagnostics
+      --color <WHEN>         Color policy: auto, always, or never [possible values: auto, always, never]
+      --to <DEST>            Destination URI or cursor upper bound, as shown in usage
+      --no-color             Compatibility alias for --color never
+      --target <TARGET>      Destination target/table compatibility option
+      --package-id <ID>      Explicit package identifier for script compatibility
+      --progress <WHEN>      Progress policy: auto, always, or never [possible values: auto, always, never]
+      --checkpoint-id <ID>   Explicit checkpoint identifier for script compatibility
+      --unicode <WHEN>       Unicode policy: auto, always, or never [possible values: auto, always, never]
+      --jobs <N>             Maximum concurrent jobs
+      --loop                 Continue polling for work
   -h, --help                 Print help

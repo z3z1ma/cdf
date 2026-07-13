@@ -2,6 +2,7 @@ use crate::render::{
     RenderConfig,
     style::{Color, Glyphs, paint, plain_rule_char},
 };
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 const MIN_COLUMN_WIDTH: usize = 8;
 
@@ -182,7 +183,7 @@ impl RenderPrimitive for KeyValuePanel {
         let key_width = self
             .rows
             .iter()
-            .map(|(key, _)| key.len())
+            .map(|(key, _)| display_width(key))
             .max()
             .unwrap_or(0);
         for (key, value) in &self.rows {
@@ -288,6 +289,9 @@ impl RenderPrimitive for Table {
         if self.headers.is_empty() {
             return String::new();
         }
+        if grid_would_truncate(&self.headers, &self.rows, config.width()) {
+            return stacked_records(&self.headers, &self.rows, config.width());
+        }
         let glyphs = Glyphs::for_config(config);
         let widths = table_widths(&self.headers, &self.rows, config.width());
         let mut output = String::new();
@@ -298,7 +302,12 @@ impl RenderPrimitive for Table {
             glyphs.top_right,
             glyphs.horizontal,
         ));
-        output.push_str(&row_line(&self.headers, &widths, glyphs.vertical));
+        output.push_str(&row_line(
+            &self.headers,
+            &widths,
+            glyphs.vertical,
+            config.rich_glyphs(),
+        ));
         output.push_str(&border_line(
             &widths,
             glyphs.tee_right,
@@ -307,7 +316,12 @@ impl RenderPrimitive for Table {
             glyphs.horizontal,
         ));
         for row in &self.rows {
-            output.push_str(&row_line(row, &widths, glyphs.vertical));
+            output.push_str(&row_line(
+                row,
+                &widths,
+                glyphs.vertical,
+                config.rich_glyphs(),
+            ));
         }
         output.push_str(&border_line(
             &widths,
@@ -320,14 +334,76 @@ impl RenderPrimitive for Table {
     }
 }
 
-fn table_widths(headers: &[String], rows: &[Vec<String>], max_width: usize) -> Vec<usize> {
-    let mut widths = headers
+fn grid_would_truncate(headers: &[String], rows: &[Vec<String>], width: usize) -> bool {
+    let mut natural_widths = headers
         .iter()
-        .map(|header| header.len())
+        .map(|header| display_width(header))
         .collect::<Vec<_>>();
     for row in rows {
         for (index, value) in row.iter().enumerate() {
-            widths[index] = widths[index].max(value.len());
+            natural_widths[index] = natural_widths[index].max(display_width(value));
+        }
+    }
+    let framing = natural_widths.len().saturating_mul(3).saturating_add(1);
+    natural_widths.iter().sum::<usize>().saturating_add(framing) > width
+}
+
+fn stacked_records(headers: &[String], rows: &[Vec<String>], width: usize) -> String {
+    let mut output = String::new();
+    for (row_index, row) in rows.iter().enumerate() {
+        if row_index > 0 {
+            output.push('\n');
+        }
+        for (header, value) in headers.iter().zip(row) {
+            let mut label_chunks = display_chunks(header, width.saturating_sub(1).max(1));
+            let last_label = label_chunks.pop().unwrap_or_default();
+            for chunk in label_chunks {
+                output.push_str(&chunk);
+                output.push('\n');
+            }
+            output.push_str(&last_label);
+            output.push_str(":\n");
+            for chunk in display_chunks(value, width.saturating_sub(2).max(1)) {
+                output.push_str("  ");
+                output.push_str(&chunk);
+                output.push('\n');
+            }
+        }
+    }
+    output
+}
+
+fn display_chunks(value: &str, width: usize) -> Vec<String> {
+    if value.is_empty() {
+        return vec![String::new()];
+    }
+    let mut chunks = Vec::new();
+    let mut chunk = String::new();
+    let mut used = 0;
+    for character in value.chars() {
+        let character_width = character.width().unwrap_or(0);
+        if used > 0 && used + character_width > width {
+            chunks.push(chunk);
+            chunk = String::new();
+            used = 0;
+        }
+        chunk.push(character);
+        used += character_width;
+    }
+    if !chunk.is_empty() {
+        chunks.push(chunk);
+    }
+    chunks
+}
+
+fn table_widths(headers: &[String], rows: &[Vec<String>], max_width: usize) -> Vec<usize> {
+    let mut widths = headers
+        .iter()
+        .map(|header| display_width(header))
+        .collect::<Vec<_>>();
+    for row in rows {
+        for (index, value) in row.iter().enumerate() {
+            widths[index] = widths[index].max(display_width(value));
         }
     }
     let overhead = widths.len() * 3 + 1;
@@ -367,12 +443,12 @@ fn border_line(
     line
 }
 
-fn row_line(values: &[String], widths: &[usize], vertical: char) -> String {
+fn row_line(values: &[String], widths: &[usize], vertical: char, unicode: bool) -> String {
     let mut line = String::new();
     line.push(vertical);
     for (value, width) in values.iter().zip(widths) {
         line.push(' ');
-        let value = truncate(value, *width);
+        let value = truncate(value, *width, unicode);
         line.push_str(&pad_right(&value, *width));
         line.push(' ');
         line.push(vertical);
@@ -382,21 +458,37 @@ fn row_line(values: &[String], widths: &[usize], vertical: char) -> String {
 }
 
 fn pad_right(value: &str, width: usize) -> String {
-    let current = value.chars().count();
+    let current = display_width(value);
     if current >= width {
         return value.to_owned();
     }
     format!("{value}{}", " ".repeat(width - current))
 }
 
-fn truncate(value: &str, width: usize) -> String {
-    if value.chars().count() <= width {
+fn truncate(value: &str, width: usize, unicode: bool) -> String {
+    if display_width(value) <= width {
         return value.to_owned();
     }
     if width <= 1 {
-        return "…".to_owned();
+        return if unicode { "…" } else { "~" }.to_owned();
     }
-    let mut output = value.chars().take(width - 1).collect::<String>();
-    output.push('…');
+    let marker = if unicode { '…' } else { '~' };
+    let marker_width = marker.width().unwrap_or(1);
+    let content_width = width.saturating_sub(marker_width);
+    let mut output = String::new();
+    let mut used = 0;
+    for character in value.chars() {
+        let character_width = character.width().unwrap_or(0);
+        if used + character_width > content_width {
+            break;
+        }
+        output.push(character);
+        used += character_width;
+    }
+    output.push(marker);
     output
+}
+
+fn display_width(value: &str) -> usize {
+    UnicodeWidthStr::width(value)
 }

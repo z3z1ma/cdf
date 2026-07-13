@@ -117,7 +117,7 @@ pub(crate) fn run(
         .transpose()?;
     let destination_report =
         RunDestinationReport::from_project(&destination.describe(), destination.target());
-    let progress = human_progress_sink(cli.json, cli.no_color);
+    let progress = human_progress_sink(cli.json, &cli.terminal);
     let event_sink = progress.as_ref().map(|sink| sink as &dyn RunEventSink);
     let report = match host
         .block_on_root(run_project_with_scheduler_and_telemetry(
