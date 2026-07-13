@@ -71,6 +71,16 @@ fn tier_a_resource_runs_engine_projection_filter_limit_into_package() {
     assert_eq!(output.profile.output_rows, 1);
     assert!(output.profile.output_bytes > 0);
     assert_eq!(output.segments.len(), 1);
+    assert_eq!(output.profile.statistics.columns[0].field_path.len(), 1);
+    assert_eq!(
+        output.profile.statistics.columns[0].field_path[0].as_ref(),
+        "name"
+    );
+    assert_eq!(
+        output.profile.statistics.columns[0].minimum,
+        Some(cdf_kernel::TypedScalar::Utf8("two".into()))
+    );
+    assert!(temp.path().join("stats/profile.json").exists());
 
     let reader = cdf_package::PackageReader::open(temp.path()).unwrap();
     let batches = reader.read_segment(&output.segments[0].segment_id).unwrap();
@@ -929,6 +939,14 @@ fn operator_graph_compiles_from_capabilities_without_driver_name_dispatch() {
             plan_input(Vec::new(), None, None, PlanBoundedness::Bounded),
         )
         .unwrap();
+    for operator in &mut plan.operator_chain {
+        if let OperatorNode::PackageSink { segmentation, .. } = operator {
+            segmentation.target_rows = 1;
+            segmentation.maximum_rows = 1;
+            segmentation.microbatch_minimum_rows = 1;
+            segmentation.microbatch_maximum_rows = 1;
+        }
+    }
     let source =
         cdf_runtime::CompiledSourcePlan::new(
             cdf_runtime::SourceDriverDescriptor {
@@ -1027,7 +1045,25 @@ fn operator_graph_compiles_from_capabilities_without_driver_name_dispatch() {
     assert_eq!(packaged, graph);
 
     let parallel_temp = TempDir::new().unwrap();
-    let (_, services) = StandaloneExecutionHost::default_services(64 * 1024 * 1024).unwrap();
+    // The encoder conservatively charges 3x the 64 MiB segment ceiling. A 512 MiB logical
+    // coordinator budget admits two workers, so jobs=4 can complete segments out of order while
+    // the canonical registration frontier remains deterministic.
+    let memory: Arc<dyn cdf_memory::MemoryCoordinator> = Arc::new(
+        cdf_memory::DeterministicMemoryCoordinator::new(512 * 1024 * 1024, BTreeMap::new())
+            .unwrap(),
+    );
+    let host = Arc::new(
+        StandaloneExecutionHost::new(
+            cdf_runtime::ExecutionHostCapabilities {
+                logical_cpu_slots: 4,
+                io_workers: 2,
+                blocking_lanes: Vec::new(),
+            },
+            memory,
+        )
+        .unwrap(),
+    );
+    let services = cdf_runtime::ExecutionServices::new(host).unwrap();
     let scheduler = cdf_runtime::resolve_runtime_scheduler(
         plan.scan.partitions.len(),
         &source.execution_capabilities,
@@ -1048,8 +1084,14 @@ fn operator_graph_compiles_from_capabilities_without_driver_name_dispatch() {
             .with_scheduler_resolution(scheduler),
     ))
     .unwrap();
+    assert!(serial.segments.len() > 1);
+    assert_eq!(parallel.output.segments.len(), serial.segments.len());
     assert_eq!(parallel.output.manifest.identity, serial.manifest.identity);
     assert_eq!(parallel.output.lineage, serial.lineage);
+    assert_eq!(
+        parallel.output.profile.statistics,
+        serial.profile.statistics
+    );
     assert_eq!(services.memory().snapshot().current_bytes, 0);
 
     let destination = cdf_runtime::DestinationRuntimeCapabilities {

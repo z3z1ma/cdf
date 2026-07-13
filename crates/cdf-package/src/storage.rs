@@ -159,6 +159,7 @@ impl AtomicArtifactSink {
             .writer
             .take()
             .ok_or_else(|| CdfError::internal("artifact sink is already finished"))?;
+        let mut renamed = false;
         let publish = (|| {
             writer
                 .flush()
@@ -181,12 +182,23 @@ impl AtomicArtifactSink {
                     error,
                 )
             })?;
+            renamed = true;
             #[cfg(test)]
             self.check_failure(PublishBoundary::DirectorySync)?;
             sync_directory(&self.parent)
         })();
         if let Err(error) = publish {
-            let _ = fs::remove_file(&self.temp_path);
+            let cleanup_path = if renamed {
+                &self.final_path
+            } else {
+                &self.temp_path
+            };
+            if let Err(cleanup_error) = remove_artifact_and_sync(cleanup_path) {
+                return Err(CdfError::internal(format!(
+                    "{error}; failed to clean unpublished artifact {}: {cleanup_error}",
+                    cleanup_path.display()
+                )));
+            }
             return Err(error);
         }
         Ok(WrittenArtifact {
@@ -196,6 +208,20 @@ impl AtomicArtifactSink {
             durability: self.durability,
         })
     }
+}
+
+pub(crate) fn remove_artifact_and_sync(path: &Path) -> Result<()> {
+    match fs::remove_file(path) {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => {
+            return Err(io_error(format!("remove {}", path.display()), error));
+        }
+    }
+    let parent = path.parent().ok_or_else(|| {
+        CdfError::internal(format!("artifact path {} has no parent", path.display()))
+    })?;
+    sync_directory(parent)
 }
 
 impl Drop for AtomicArtifactSink {
@@ -669,11 +695,7 @@ mod tests {
                 .filter(|entry| entry.file_name().to_string_lossy().contains(".tmp."))
                 .count();
             assert_eq!(temp_count, 0, "boundary {boundary:?}");
-            if boundary != PublishBoundary::DirectorySync {
-                assert!(!final_path.exists(), "boundary {boundary:?}");
-            } else {
-                assert_eq!(fs::read(final_path).unwrap(), b"complete");
-            }
+            assert!(!final_path.exists(), "boundary {boundary:?}");
         }
     }
 

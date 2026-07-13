@@ -25,8 +25,8 @@ use crate::{
     storage::{
         ArtifactDurability, HashingWriter, atomic_write, build_manifest,
         collect_identity_file_entries, create_layout, io_error, nested_artifact_path,
-        normalize_artifact_path, package_path, segment_relative_path, sync_directory,
-        visit_identity_file_paths, write_arrow_ipc_file, write_manifest_atomic,
+        normalize_artifact_path, package_path, remove_artifact_and_sync, segment_relative_path,
+        sync_directory, visit_identity_file_paths, write_arrow_ipc_file, write_manifest_atomic,
     },
 };
 
@@ -57,6 +57,25 @@ pub struct EncodedPackageSegment {
     row_count: u64,
     receipt: crate::storage::IpcWriteReceipt,
     measure: bool,
+    unpublished_path: Option<PathBuf>,
+}
+
+impl Drop for EncodedPackageSegment {
+    fn drop(&mut self) {
+        let Some(path) = self.unpublished_path.take() else {
+            return;
+        };
+        let _ = remove_artifact_and_sync(&path);
+    }
+}
+
+impl EncodedPackageSegment {
+    pub fn rollback_unpublished(mut self) -> Result<()> {
+        let Some(path) = self.unpublished_path.take() else {
+            return Ok(());
+        };
+        remove_artifact_and_sync(&path)
+    }
 }
 
 impl PackageSegmentEncoder {
@@ -93,6 +112,11 @@ impl PackageSegmentEncoder {
         if receipt.artifact.path != path
             || receipt.artifact.durability != ArtifactDurability::SegmentPublish
         {
+            remove_artifact_and_sync(&path).map_err(|cleanup_error| {
+                CdfError::internal(format!(
+                    "segment writer returned an invalid receipt for {relative_path}; cleanup failed: {cleanup_error}"
+                ))
+            })?;
             return Err(CdfError::internal(format!(
                 "segment writer returned an invalid receipt for {relative_path}"
             )));
@@ -103,6 +127,7 @@ impl PackageSegmentEncoder {
             row_count,
             receipt,
             measure,
+            unpublished_path: Some(path),
         })
     }
 }
@@ -506,50 +531,54 @@ impl PackageBuilder {
 
     pub fn register_encoded_segment(
         &self,
-        encoded: EncodedPackageSegment,
+        mut encoded: EncodedPackageSegment,
     ) -> Result<SegmentWriteMetrics> {
-        let EncodedPackageSegment {
-            segment_id,
-            relative_path,
-            row_count,
-            receipt,
-            measure,
-        } = encoded;
         let file_entry = FileEntry {
-            path: relative_path.clone(),
-            byte_count: receipt.artifact.byte_count,
-            sha256: receipt.artifact.sha256.clone(),
+            path: encoded.relative_path.clone(),
+            byte_count: encoded.receipt.artifact.byte_count,
+            sha256: encoded.receipt.artifact.sha256.clone(),
         };
-        append_journal(
+        if let Err(error) = append_journal(
             &self.artifact_receipts,
             &file_entry,
             "package artifact receipt journal",
-        )?;
+        ) {
+            return match encoded.rollback_unpublished() {
+                Ok(()) => Err(error),
+                Err(cleanup_error) => Err(CdfError::internal(format!(
+                    "{error}; unpublished segment cleanup also failed: {cleanup_error}"
+                ))),
+            };
+        }
+        // The receipt journal is the durable ownership handoff. From this point onward a later
+        // segment-draft failure must leave the hash-bound artifact for package recovery rather
+        // than deleting a file already named by durable package evidence.
+        encoded.unpublished_path = None;
         let segment = SegmentEntry {
-            segment_id: segment_id.clone(),
-            path: relative_path.clone(),
-            row_count,
-            byte_count: receipt.artifact.byte_count,
-            sha256: receipt.artifact.sha256,
+            segment_id: encoded.segment_id.clone(),
+            path: encoded.relative_path.clone(),
+            row_count: encoded.row_count,
+            byte_count: encoded.receipt.artifact.byte_count,
+            sha256: encoded.receipt.artifact.sha256.clone(),
         };
         append_journal(
             &self.segment_drafts,
             &SegmentDraft {
-                segment_id,
-                path: relative_path,
-                row_count,
+                segment_id: encoded.segment_id.clone(),
+                path: encoded.relative_path.clone(),
+                row_count: encoded.row_count,
             },
             "package segment draft journal",
         )?;
         Ok(SegmentWriteMetrics {
             segment,
-            encode_duration_ns: if measure {
-                receipt.encode_hash_duration_ns
+            encode_duration_ns: if encoded.measure {
+                encoded.receipt.encode_hash_duration_ns
             } else {
                 0
             },
-            persist_hash_duration_ns: if measure {
-                receipt.publish_duration_ns
+            persist_hash_duration_ns: if encoded.measure {
+                encoded.receipt.publish_duration_ns
             } else {
                 0
             },

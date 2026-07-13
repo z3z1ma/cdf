@@ -107,6 +107,24 @@ fn segment_encoding_completion_cannot_override_canonical_registration_order() {
     );
 }
 
+#[test]
+fn unpublished_segment_encoding_is_rolled_back_on_drop() {
+    let directory = tempfile::tempdir().unwrap();
+    let builder = PackageBuilder::create(directory.path(), "pkg-encode-rollback").unwrap();
+    let encoded = builder
+        .segment_encoder()
+        .encode(
+            SegmentId::new("seg-unregistered").unwrap(),
+            &[sample_batch()],
+            false,
+        )
+        .unwrap();
+    let path = directory.path().join("data/seg-unregistered.arrow");
+    assert!(path.exists());
+    drop(encoded);
+    assert!(!path.exists());
+}
+
 fn sample_batch() -> RecordBatch {
     sample_batch_values(vec![1, 2, 3], vec![Some("ada"), Some("grace"), None])
 }

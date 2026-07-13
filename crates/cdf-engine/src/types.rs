@@ -426,6 +426,10 @@ pub struct ExecutionProfile {
     pub output_rows: u64,
     pub output_bytes: u64,
     pub output_batches: u64,
+    // Keep the aggregate JSON artifact stable until typed Parquet replaces it in one reviewed
+    // identity boundary; this in-memory typed evidence is not a second package representation.
+    #[serde(default, skip_serializing)]
+    pub statistics: cdf_kernel::BatchStats,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]

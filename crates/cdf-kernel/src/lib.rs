@@ -17,6 +17,7 @@ mod resource;
 mod retention;
 mod run_event;
 mod scope;
+mod statistics;
 mod stratified_selection;
 
 pub use async_types::*;
@@ -36,6 +37,7 @@ pub use resource::*;
 pub use retention::*;
 pub use run_event::*;
 pub use scope::*;
+pub use statistics::*;
 pub use stratified_selection::*;
 
 #[cfg(test)]

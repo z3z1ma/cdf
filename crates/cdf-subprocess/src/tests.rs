@@ -118,7 +118,7 @@ async fn ndjson_stdout_adapter_captures_stderr_and_packages_output() {
     assert_eq!(output.stderr.lines, vec!["fetch trace"]);
     assert_eq!(output.read.batches[0].header.row_count, 1);
 
-    let mut package =
+    let package =
         cdf_package::PackageBuilder::create(temp.path().join("package"), "pkg-subprocess").unwrap();
     let batches = output
         .read
@@ -571,7 +571,7 @@ fn protocol_batches_write_to_and_replay_from_package() {
     ]);
     let read = read_airbyte_ndjson_bytes(&bytes, &read_options()).unwrap();
 
-    let mut package = cdf_package::PackageBuilder::create(&package_dir, "pkg-protocol").unwrap();
+    let package = cdf_package::PackageBuilder::create(&package_dir, "pkg-protocol").unwrap();
     for (index, stream) in read.streams.iter().enumerate() {
         let batches = stream
             .read

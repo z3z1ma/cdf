@@ -29,7 +29,8 @@ use cdf_kernel::{
     TerminalSchemaObservationQuarantine, WriteDisposition, semantic, source_name,
 };
 use cdf_memory::{
-    ConsumerKey, MemoryClass, MemoryCoordinator, MemoryLease, ReservationRequest, reserve,
+    ConsumerKey, DEFAULT_PROCESS_BUDGET_BYTES, DeterministicMemoryCoordinator, MemoryClass,
+    MemoryCoordinator, MemoryLease, ReservationRequest, reserve,
 };
 use cdf_package::{PackageBuilder, PackageStatus, QuarantineObservedValue, QuarantineRecord};
 use futures_util::{StreamExt, stream::FuturesOrdered};
@@ -977,6 +978,8 @@ struct OutputWriteState<'a> {
     expected_schema: &'a Schema,
     phase_measurements: &'a mut PhaseMeasurements,
     memory: Option<&'a Arc<dyn MemoryCoordinator>>,
+    statistics_memory: &'a Arc<dyn MemoryCoordinator>,
+    statistics_memory_lease: &'a mut Option<MemoryLease>,
 }
 
 struct SegmentOutputSink<'a, 'b> {
@@ -1022,6 +1025,45 @@ struct SegmentEncodeQueue {
 }
 
 impl SegmentEncodeQueue {
+    fn abort_and_cleanup(&mut self) -> Result<()> {
+        let mut join_error = None;
+        let mut cleanup_error = None;
+        if let SegmentEncodeMode::Parallel {
+            services,
+            scope,
+            receiver,
+            in_flight,
+            ..
+        } = &mut self.mode
+        {
+            if let Some(scope) = scope.take() {
+                scope.cancel();
+                if let Err(error) = services.run_io(scope.join()) {
+                    join_error = Some(error);
+                }
+            }
+            while let Ok(completion) = receiver.try_recv() {
+                *in_flight = in_flight.saturating_sub(1);
+                self.pending.insert(completion.work.ordinal, completion);
+            }
+        }
+        for completion in std::mem::take(&mut self.pending).into_values() {
+            if let Ok(encoded) = completion.encoded
+                && let Err(error) = encoded.rollback_unpublished()
+                && cleanup_error.is_none()
+            {
+                cleanup_error = Some(error);
+            }
+        }
+        match (join_error, cleanup_error) {
+            (Some(join), Some(cleanup)) => Err(CdfError::internal(format!(
+                "{join}; unpublished segment cleanup also failed: {cleanup}"
+            ))),
+            (Some(error), None) | (None, Some(error)) => Err(error),
+            (None, None) => Ok(()),
+        }
+    }
+
     fn new(
         builder: &PackageBuilder,
         services: Option<&cdf_runtime::ExecutionServices>,
@@ -1130,9 +1172,16 @@ impl SegmentEncodeQueue {
                                 .unwrap_or_else(|_| {
                                     Err(CdfError::internal("segment encode worker panicked"))
                                 });
-                            sender
-                                .send(SegmentEncodeCompletion { work, encoded })
-                                .map_err(|_| CdfError::internal("segment encode frontier stopped"))
+                            if let Err(send_error) =
+                                sender.send(SegmentEncodeCompletion { work, encoded })
+                            {
+                                let completion = send_error.0;
+                                if let Ok(encoded) = completion.encoded {
+                                    encoded.rollback_unpublished()?;
+                                }
+                                return Err(CdfError::internal("segment encode frontier stopped"));
+                            }
+                            Ok(())
                         }),
                     )?;
                 *in_flight = in_flight.saturating_add(1);
@@ -1287,14 +1336,7 @@ impl SegmentEncodeQueue {
 
 impl Drop for SegmentEncodeQueue {
     fn drop(&mut self) {
-        if let SegmentEncodeMode::Parallel {
-            services, scope, ..
-        } = &mut self.mode
-            && let Some(scope) = scope.take()
-        {
-            scope.cancel();
-            let _ = services.run_io(scope.join());
-        }
+        let _ = self.abort_and_cleanup();
     }
 }
 
@@ -1653,7 +1695,15 @@ where
         )?;
     }
 
+    let statistics_memory: Arc<dyn MemoryCoordinator> = match options.services.as_ref() {
+        Some(services) => services.memory(),
+        None => Arc::new(DeterministicMemoryCoordinator::new(
+            DEFAULT_PROCESS_BUDGET_BYTES,
+            BTreeMap::new(),
+        )?),
+    };
     let mut profile = ExecutionProfile::default();
+    let mut statistics_memory_lease = None;
     let mut verdict_summary = VerdictSummary::default();
     let mut lineage = LineageSummary::default();
     let mut segments = Vec::new();
@@ -1737,6 +1787,7 @@ where
         }
     }
 
+    let segment_result: Result<()> = async {
     while let Some(opened) = open_frontier.next().await {
         if remaining_limit.is_none() {
             enqueue_next_partition(
@@ -2083,6 +2134,8 @@ where
                         expected_schema: runtime_output_schema.as_ref(),
                         phase_measurements: &mut phase_measurements,
                         memory: memory.as_ref(),
+                        statistics_memory: &statistics_memory,
+                        statistics_memory_lease: &mut statistics_memory_lease,
                     },
                     &mut SegmentOutputSink {
                         builder: &builder,
@@ -2102,6 +2155,8 @@ where
                     expected_schema: runtime_output_schema.as_ref(),
                     phase_measurements: &mut phase_measurements,
                     memory: memory.as_ref(),
+                    statistics_memory: &statistics_memory,
+                    statistics_memory_lease: &mut statistics_memory_lease,
                 },
                 &mut SegmentOutputSink {
                     builder: &builder,
@@ -2171,6 +2226,8 @@ where
                 expected_schema: runtime_output_schema.as_ref(),
                 phase_measurements: &mut phase_measurements,
                 memory: memory.as_ref(),
+                statistics_memory: &statistics_memory,
+                statistics_memory_lease: &mut statistics_memory_lease,
             },
             &mut SegmentOutputSink {
                 builder: &builder,
@@ -2191,9 +2248,22 @@ where
             expected_schema: runtime_output_schema.as_ref(),
             phase_measurements: &mut phase_measurements,
             memory: memory.as_ref(),
+            statistics_memory: &statistics_memory,
+            statistics_memory_lease: &mut statistics_memory_lease,
         },
         &mut durable_segment_observer,
     )?;
+    Ok(())
+    }
+    .await;
+    if let Err(error) = segment_result {
+        return match segment_queue.abort_and_cleanup() {
+            Ok(()) => Err(error),
+            Err(cleanup_error) => Err(CdfError::internal(format!(
+                "{error}; segment encode cleanup also failed: {cleanup_error}"
+            ))),
+        };
+    }
 
     drop(contract_evaluator);
     if effective_schema_evidence.is_none() && validation_program.schema_coercion.is_none() {
@@ -2826,6 +2896,38 @@ fn persist_canonical_segments(
                 )
                 .ok_or_else(|| CdfError::data("canonical output bytes overflow"))
         })?;
+        let statistics_reservation_bytes = output.iter().try_fold(0_u64, |total, batch| {
+            total
+                .checked_add(cdf_kernel::BatchStats::computation_reservation_bytes(
+                    batch,
+                )?)
+                .ok_or_else(|| CdfError::data("segment statistics working set overflow"))
+        })?;
+        let request = ReservationRequest::new(
+            ConsumerKey::new("profile-statistics", MemoryClass::Package)?,
+            statistics_reservation_bytes.max(1),
+        )?
+        .as_minimum_working_set();
+        let _statistics_memory_lease = Some(
+            state
+                .statistics_memory
+                .try_reserve(&request)?
+                .ok_or_else(|| {
+                    CdfError::data(format!(
+                        "segment statistics require {} bytes but the shared memory budget is exhausted; reduce jobs or raise the memory budget",
+                        statistics_reservation_bytes.max(1)
+                    ))
+                })?,
+        );
+        let mut statistics = cdf_kernel::BatchStats::default();
+        for batch in &output {
+            statistics.merge_owned(cdf_kernel::BatchStats::compute(batch)?)?;
+        }
+        _statistics_memory_lease
+            .as_ref()
+            .ok_or_else(|| CdfError::internal("segment statistics lease is absent"))?
+            .reconcile(statistics.retained_bytes()?)?;
+        retain_package_statistics(state, statistics, _statistics_memory_lease)?;
         sink.queue.submit(
             SegmentEncodeWork {
                 ordinal: 0,
@@ -2842,6 +2944,40 @@ fn persist_canonical_segments(
         )?;
     }
     Ok(())
+}
+
+fn retain_package_statistics(
+    state: &mut OutputWriteState<'_>,
+    statistics: cdf_kernel::BatchStats,
+    mut segment_lease: Option<MemoryLease>,
+) -> Result<()> {
+    let segment_statistics_bytes = statistics.retained_bytes()?;
+    let current_statistics_bytes = if state.profile.statistics.columns.is_empty() {
+        0
+    } else {
+        state.profile.statistics.retained_bytes()?
+    };
+    let required_statistics_bytes = current_statistics_bytes
+        .checked_add(segment_statistics_bytes)
+        .ok_or_else(|| CdfError::data("package statistics retained bytes overflow"))?
+        .max(1);
+    if let Some(package_lease) = state.statistics_memory_lease.as_ref() {
+        // Reserve cumulative ownership while the segment lease is still alive. This boundary is
+        // deliberately before encode(), whose success publishes the durable IPC segment.
+        package_lease.reconcile(required_statistics_bytes)?;
+    } else {
+        let lease = segment_lease
+            .take()
+            .ok_or_else(|| CdfError::internal("segment statistics lease is absent"))?;
+        lease.reconcile(required_statistics_bytes)?;
+        *state.statistics_memory_lease = Some(lease);
+    }
+    state.profile.statistics.merge_owned(statistics)?;
+    state
+        .statistics_memory_lease
+        .as_ref()
+        .ok_or_else(|| CdfError::internal("package statistics lease is absent"))?
+        .reconcile(state.profile.statistics.retained_bytes()?)
 }
 
 fn conform_to_compiled_output_schema(

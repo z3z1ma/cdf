@@ -1,10 +1,11 @@
-use std::{collections::BTreeMap, fmt};
+use std::fmt;
 
 use arrow_array::{Array, ArrayRef, RecordBatch};
 use arrow_schema::Field;
 use serde::{Deserialize, Serialize};
 
 use crate::{
+    BatchStats,
     error::Result,
     ids::{BatchId, PartitionId, ResourceId, SchemaHash},
     position::SourcePosition,
@@ -323,19 +324,6 @@ pub struct PayloadRef {
     pub uri: String,
     pub byte_count: u64,
     pub sha256: Option<String>,
-}
-
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct BatchStats {
-    pub columns: BTreeMap<String, ColumnStats>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ColumnStats {
-    pub null_count: Option<u64>,
-    pub distinct_count: Option<u64>,
-    pub min_lexical: Option<String>,
-    pub max_lexical: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
