@@ -3222,40 +3222,18 @@ impl HttpFileTransport for RecordingHttpFileTransport {
         }
     }
 
-    fn download(
-        &self,
-        request: HttpFileRequest,
-        destination: &Path,
-    ) -> Result<(HttpFileResponse, u64)> {
-        let mut state = self.state.lock().unwrap();
-        state.requests.push(request.clone());
-        if request.method != HttpMethod::Get {
-            return Ok((HttpFileResponse::new(405), 0));
-        }
-        std::fs::write(destination, state.body.as_slice())
-            .map_err(|error| CdfError::data(format!("write test HTTP download: {error}")))?;
-        let len = state.body.len() as u64;
-        Ok((
-            HttpFileResponse::new(200)
-                .with_header("Content-Length", len.to_string())
-                .with_header("ETag", state.etag.clone())
-                .with_header("Last-Modified", "Wed, 08 Jul 2026 12:00:00 GMT"),
-            len,
-        ))
-    }
-
     fn open_byte_source(
         &self,
         resource: &FileTransportResource,
         expected: &FileIdentityMetadata,
         memory: Arc<dyn MemoryCoordinator>,
-    ) -> Result<Option<Arc<dyn ByteSource>>> {
-        Ok(Some(Arc::new(RecordingHttpByteSource::new(
+    ) -> Result<Arc<dyn ByteSource>> {
+        Ok(Arc::new(RecordingHttpByteSource::new(
             Arc::clone(&self.state),
             resource,
             expected,
             memory,
-        )?)))
+        )?))
     }
 }
 

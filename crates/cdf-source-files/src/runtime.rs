@@ -244,16 +244,9 @@ pub fn discover_transport_binary_schema_bounded(
         ))
     })?;
     let driver = dependencies.formats().resolve(format.as_str())?;
-    let upstream = dependencies
-        .with_transport(|transport| {
-            transport.open_byte_source(&resource, &metadata, dependencies.execution().memory())
-        })?
-        .ok_or_else(|| {
-            CdfError::contract(format!(
-                "file transport for `{}` does not expose the required byte-source runtime",
-                diagnostic_location(&metadata.location)
-            ))
-        })?;
+    let upstream = dependencies.with_transport(|transport| {
+        transport.open_byte_source(&resource, &metadata, dependencies.execution().memory())
+    })?;
     let transform_id = (transform_name != "none")
         .then(|| dependencies.transforms().resolve_name(transform_name))
         .transpose()?
@@ -846,15 +839,9 @@ fn prepare_file_input(
                 path,
                 dependencies.execution().memory(),
             )?),
-            ResolvedFileOpen::Transport(resource) => dependencies
-                .with_transport(|transport| {
-                    transport.open_byte_source(
-                        resource,
-                        &expected,
-                        dependencies.execution().memory(),
-                    )
-                })?
-                .ok_or_else(|| missing_byte_source_runtime(resolved))?,
+            ResolvedFileOpen::Transport(resource) => dependencies.with_transport(|transport| {
+                transport.open_byte_source(resource, &expected, dependencies.execution().memory())
+            })?,
         };
         return Ok(
             if matches!(resolved.open, ResolvedFileOpen::Transport(_))
@@ -876,15 +863,9 @@ fn prepare_file_input(
                 path,
                 dependencies.execution().memory(),
             )?),
-            ResolvedFileOpen::Transport(resource) => dependencies
-                .with_transport(|transport| {
-                    transport.open_byte_source(
-                        resource,
-                        &expected,
-                        dependencies.execution().memory(),
-                    )
-                })?
-                .ok_or_else(|| missing_byte_source_runtime(resolved))?,
+            ResolvedFileOpen::Transport(resource) => dependencies.with_transport(|transport| {
+                transport.open_byte_source(resource, &expected, dependencies.execution().memory())
+            })?,
         };
         let transformed = transformed_byte_source(upstream, transform_id, dependencies)?;
         return Ok(
@@ -900,13 +881,6 @@ fn prepare_file_input(
     }
     Err(CdfError::internal(
         "file preparation reached an unclassified compression state",
-    ))
-}
-
-fn missing_byte_source_runtime(resolved: &ResolvedFileMatch) -> CdfError {
-    CdfError::contract(format!(
-        "file transport for `{}` does not expose the required byte-source runtime",
-        diagnostic_location(&resolved.path_text)
     ))
 }
 

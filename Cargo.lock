@@ -876,6 +876,7 @@ dependencies = [
  "cdf-formats",
  "cdf-http",
  "cdf-kernel",
+ "cdf-memory",
  "cdf-package",
  "cdf-runtime",
  "cdf-source-files",

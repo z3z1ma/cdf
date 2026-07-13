@@ -3510,23 +3510,23 @@ impl FileTransport for RecordingRangeFileTransport {
         Ok(self.bytes[start..end].to_vec())
     }
 
-    fn download_to_path(
-        &self,
-        resource: &FileTransportResource,
-        _expected: &FileIdentityMetadata,
-        destination: &Path,
-    ) -> cdf_kernel::Result<FileIdentityMetadata> {
-        std::fs::write(destination, self.bytes.as_slice())
-            .map_err(|error| CdfError::data(format!("write test download: {error}")))?;
-        self.metadata(resource)
-    }
-
     fn list(
         &self,
         _resource: &FileTransportResource,
     ) -> cdf_kernel::Result<Vec<FileIdentityMetadata>> {
         Err(CdfError::contract(
             "test transport does not support listing",
+        ))
+    }
+
+    fn open_byte_source(
+        &self,
+        _resource: &FileTransportResource,
+        _expected: &FileIdentityMetadata,
+        _memory: Arc<dyn cdf_memory::MemoryCoordinator>,
+    ) -> cdf_kernel::Result<Arc<dyn cdf_runtime::ByteSource>> {
+        Err(CdfError::internal(
+            "bounded-range planning test double cannot be installed as a file runtime",
         ))
     }
 }

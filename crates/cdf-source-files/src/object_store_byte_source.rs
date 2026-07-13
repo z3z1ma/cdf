@@ -12,7 +12,7 @@ use cdf_runtime::{
 use futures_util::{TryStreamExt, stream};
 use object_store::{GetOptions, ObjectStore, ObjectStoreExt, path::Path as ObjectPath};
 
-use crate::{FileIdentityMetadata, transport::verify_download_identity};
+use crate::{FileIdentityMetadata, transport::verify_generation_identity};
 
 const MINIMUM_CHUNK_BYTES: u64 = 8 * 1024;
 const MAXIMUM_CHUNK_BYTES: u64 = 32 * 1024 * 1024;
@@ -135,7 +135,7 @@ impl ByteSource for ObjectStoreByteSource {
                 self.expected.location.clone(),
                 result.meta.clone(),
             );
-            verify_download_identity(
+            verify_generation_identity(
                 &self.expected,
                 &observed,
                 observed.size_bytes.unwrap_or_default(),
@@ -201,7 +201,7 @@ impl ByteSource for ObjectStoreByteSource {
                 self.expected.location.clone(),
                 result.meta.clone(),
             );
-            verify_download_identity(
+            verify_generation_identity(
                 &self.expected,
                 &observed,
                 self.expected.size_bytes.unwrap_or_default(),
@@ -253,7 +253,7 @@ async fn sequential_next(
             .map_err(|error| object_error("stream object body", error))?
         else {
             drop(lease);
-            verify_download_identity(&state.expected, &state.expected, state.transferred_bytes)?;
+            verify_generation_identity(&state.expected, &state.expected, state.transferred_bytes)?;
             if state.expected.etag.is_none() && state.expected.version.is_none() {
                 let metadata = state
                     .store
@@ -262,7 +262,7 @@ async fn sequential_next(
                     .map_err(|error| object_error("reattest weak object generation", error))?;
                 let observed =
                     crate::transport::object_identity(state.expected.location.clone(), metadata);
-                verify_download_identity(&state.expected, &observed, state.transferred_bytes)?;
+                verify_generation_identity(&state.expected, &observed, state.transferred_bytes)?;
             }
             return Ok(None);
         };

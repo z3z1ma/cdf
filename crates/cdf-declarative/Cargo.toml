@@ -36,6 +36,7 @@ cdf-conformance = { path = "../cdf-conformance" }
 cdf-engine = { path = "../cdf-engine" }
 cdf-format-arrow-ipc = { path = "../cdf-format-arrow-ipc" }
 cdf-format-parquet = { path = "../cdf-format-parquet" }
+cdf-memory = { path = "../cdf-memory" }
 cdf-package = { path = "../cdf-package" }
 flate2 = "1.1.9"
 futures-executor = "0.3.32"

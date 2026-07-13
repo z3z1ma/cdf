@@ -1,6 +1,6 @@
 #![doc = "Pooled HTTP transport provider for cdf."]
 
-use std::{fs::File, io::Write, path::Path, pin::Pin, sync::Arc, thread};
+use std::{pin::Pin, sync::Arc, thread};
 
 use bytes::Bytes;
 use cdf_http::{HeaderMap, HttpMethod, HttpRequest, HttpResponse, HttpTransport};
@@ -82,48 +82,12 @@ impl HttpFileTransport for ReqwestHttpTransport {
         Ok(response)
     }
 
-    fn download(
-        &self,
-        request: HttpFileRequest,
-        destination: &Path,
-    ) -> Result<(HttpFileResponse, u64)> {
-        let method = reqwest_method(&request.method)?;
-        let mut builder = self.blocking()?.request(method, &request.url);
-        for (name, value) in &request.headers {
-            builder = builder.header(name.as_str(), value.as_str());
-        }
-        let mut response = builder.send().map_err(|error| {
-            CdfError::transient(format!("send file transport HTTP request: {error}"))
-        })?;
-        let status = response.status().as_u16();
-        let headers = response_headers(response.headers());
-        if !(200..=399).contains(&status) {
-            return Ok((file_response(status, headers), 0));
-        }
-        let mut file = File::create(destination).map_err(|error| {
-            CdfError::data(format!(
-                "create HTTP file spool {}: {error}",
-                destination.display()
-            ))
-        })?;
-        let bytes_written = std::io::copy(&mut response, &mut file).map_err(|error| {
-            CdfError::transient(format!("stream HTTP response into spool: {error}"))
-        })?;
-        file.flush().map_err(|error| {
-            CdfError::data(format!(
-                "flush HTTP file spool {}: {error}",
-                destination.display()
-            ))
-        })?;
-        Ok((file_response(status, headers), bytes_written))
-    }
-
     fn open_byte_source(
         &self,
         resource: &FileTransportResource,
         expected: &FileIdentityMetadata,
         memory: Arc<dyn MemoryCoordinator>,
-    ) -> Result<Option<Arc<dyn ByteSource>>> {
+    ) -> Result<Arc<dyn ByteSource>> {
         if resource.auth.is_some() {
             return Err(CdfError::auth(
                 "HTTP byte-source auth must be resolved by the transport provider before open",
@@ -140,12 +104,12 @@ impl HttpFileTransport for ReqwestHttpTransport {
         resource
             .egress_allowlist
             .check(&HttpRequest::new(HttpMethod::Get, url.clone()))?;
-        Ok(Some(Arc::new(HttpByteSource::new(
+        Ok(Arc::new(HttpByteSource::new(
             self.asynchronous.clone(),
             url,
             expected.clone(),
             memory,
-        )?)))
+        )?))
     }
 }
 
@@ -508,14 +472,6 @@ fn response_headers(headers: &reqwest::header::HeaderMap) -> Vec<(String, String
         .collect()
 }
 
-fn file_response(status: u16, headers: Vec<(String, String)>) -> HttpFileResponse {
-    let mut response = HttpFileResponse::new(status);
-    for (name, value) in headers {
-        response = response.with_header(name, value);
-    }
-    response
-}
-
 fn reqwest_method(method: &HttpMethod) -> Result<reqwest::Method> {
     match method {
         HttpMethod::Get => Ok(reqwest::Method::GET),
@@ -606,7 +562,6 @@ mod tests {
         let transport = ReqwestHttpTransport::new().unwrap();
         let source = transport
             .open_byte_source(&resource, &expected, memory)
-            .unwrap()
             .unwrap();
 
         let chunks = source
@@ -698,7 +653,6 @@ mod tests {
 
         let source = transport
             .open_byte_source(&resource, &expected, memory)
-            .unwrap()
             .unwrap();
         assert!(!source.capabilities().seekable);
         assert!(!source.capabilities().exact_ranges);

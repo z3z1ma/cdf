@@ -242,44 +242,29 @@ pub trait FileTransport: Send + Sync {
             CdfError::data("generation-bound range requires a planned content length")
         })?;
         let before = self.metadata(resource)?;
-        verify_download_identity(expected, &before, size_bytes)?;
+        verify_generation_identity(expected, &before, size_bytes)?;
         let bytes = self.read_range(resource, range)?;
         let after = self.metadata(resource)?;
-        verify_download_identity(expected, &after, size_bytes)?;
+        verify_generation_identity(expected, &after, size_bytes)?;
         Ok(bytes)
     }
-    fn download_to_path(
-        &self,
-        resource: &FileTransportResource,
-        expected: &FileIdentityMetadata,
-        destination: &Path,
-    ) -> Result<FileIdentityMetadata>;
     fn list(&self, resource: &FileTransportResource) -> Result<Vec<FileIdentityMetadata>>;
     fn open_byte_source(
         &self,
-        _resource: &FileTransportResource,
-        _expected: &FileIdentityMetadata,
-        _memory: Arc<dyn MemoryCoordinator>,
-    ) -> Result<Option<Arc<dyn ByteSource>>> {
-        Ok(None)
-    }
+        resource: &FileTransportResource,
+        expected: &FileIdentityMetadata,
+        memory: Arc<dyn MemoryCoordinator>,
+    ) -> Result<Arc<dyn ByteSource>>;
 }
 
 pub trait HttpFileTransport: Send + Sync {
     fn send(&self, request: HttpFileRequest) -> Result<HttpFileResponse>;
-    fn download(
-        &self,
-        request: HttpFileRequest,
-        destination: &Path,
-    ) -> Result<(HttpFileResponse, u64)>;
     fn open_byte_source(
         &self,
-        _resource: &FileTransportResource,
-        _expected: &FileIdentityMetadata,
-        _memory: Arc<dyn MemoryCoordinator>,
-    ) -> Result<Option<Arc<dyn ByteSource>>> {
-        Ok(None)
-    }
+        resource: &FileTransportResource,
+        expected: &FileIdentityMetadata,
+        memory: Arc<dyn MemoryCoordinator>,
+    ) -> Result<Arc<dyn ByteSource>>;
 }
 
 #[derive(Clone, PartialEq, Eq)]
@@ -444,31 +429,6 @@ impl FileTransport for FileTransportFacade {
         }
     }
 
-    fn download_to_path(
-        &self,
-        resource: &FileTransportResource,
-        expected: &FileIdentityMetadata,
-        destination: &Path,
-    ) -> Result<FileIdentityMetadata> {
-        match &resource.location {
-            FileTransportLocation::LocalPath { path } => {
-                copy_local_file(Path::new(path), destination)?;
-                local_metadata(Path::new(path))
-            }
-            FileTransportLocation::FileUrl { url } => {
-                let path = file_url_path(url)?;
-                copy_local_file(&path, destination)?;
-                local_metadata(&path)
-            }
-            FileTransportLocation::HttpUrl { url } => {
-                self.download_http(resource, url, expected, destination)
-            }
-            FileTransportLocation::ObjectStoreUrl { url } => {
-                self.download_object_store(resource, url, expected, destination)
-            }
-        }
-    }
-
     fn list(&self, resource: &FileTransportResource) -> Result<Vec<FileIdentityMetadata>> {
         match &resource.location {
             FileTransportLocation::LocalPath { path } => list_local(Path::new(path)),
@@ -485,22 +445,23 @@ impl FileTransport for FileTransportFacade {
         resource: &FileTransportResource,
         expected: &FileIdentityMetadata,
         memory: Arc<dyn MemoryCoordinator>,
-    ) -> Result<Option<Arc<dyn ByteSource>>> {
+    ) -> Result<Arc<dyn ByteSource>> {
         match &resource.location {
             FileTransportLocation::LocalPath { path } => {
-                Ok(Some(Arc::new(crate::LocalByteSource::open(path, memory)?)))
+                Ok(Arc::new(crate::LocalByteSource::open(path, memory)?))
             }
-            FileTransportLocation::FileUrl { url } => Ok(Some(Arc::new(
-                crate::LocalByteSource::open(file_url_path(url)?, memory)?,
-            ))),
+            FileTransportLocation::FileUrl { url } => Ok(Arc::new(crate::LocalByteSource::open(
+                file_url_path(url)?,
+                memory,
+            )?)),
             FileTransportLocation::ObjectStoreUrl { url } => {
                 let (store, path, _) = self.resolve_object_store(resource, url)?;
-                Ok(Some(Arc::new(crate::ObjectStoreByteSource::new(
+                Ok(Arc::new(crate::ObjectStoreByteSource::new(
                     store,
                     path,
                     expected.clone(),
                     memory,
-                )?)))
+                )?))
             }
             FileTransportLocation::HttpUrl { .. } => self
                 .http_transport()?
@@ -510,89 +471,6 @@ impl FileTransport for FileTransportFacade {
 }
 
 impl FileTransportFacade {
-    fn download_http(
-        &self,
-        resource: &FileTransportResource,
-        url: &str,
-        expected: &FileIdentityMetadata,
-        destination: &Path,
-    ) -> Result<FileIdentityMetadata> {
-        validate_http_file_url(url)?;
-        self.reject_unimplemented_auth(resource)?;
-        let mut request = HttpFileRequest::new(HttpMethod::Get, url.to_owned());
-        if let Some(etag) = &expected.etag {
-            set_header(&mut request.headers, "if-match", etag.clone());
-        }
-        resource.egress_allowlist.check(&policy_request(&request))?;
-        let (response, bytes_written) = self.http_transport()?.download(request, destination)?;
-        ensure_http_success(HttpMethod::Get, &response)?;
-        let observed = http_identity(url, &response)?;
-        verify_download_identity(expected, &observed, bytes_written)?;
-        if expected.etag.is_none() {
-            let reattested = self.http_metadata(resource, url)?;
-            verify_download_identity(expected, &reattested, bytes_written)?;
-            if expected.size_bytes != reattested.size_bytes
-                || expected.modified != reattested.modified
-            {
-                return Err(CdfError::data(
-                    "weakly versioned HTTP object changed during sequential transfer",
-                ));
-            }
-        }
-        Ok(observed)
-    }
-
-    fn download_object_store(
-        &self,
-        resource: &FileTransportResource,
-        url: &str,
-        expected: &FileIdentityMetadata,
-        destination: &Path,
-    ) -> Result<FileIdentityMetadata> {
-        use object_store::GetOptions;
-
-        let (store, path, _) = self.resolve_object_store(resource, url)?;
-        let destination = destination.to_owned();
-        let expected_etag = expected.etag.clone();
-        let (metadata, bytes_written) = self.object_store_io(async move {
-            let result = store
-                .get_opts(
-                    &path,
-                    GetOptions {
-                        if_match: expected_etag,
-                        ..GetOptions::default()
-                    },
-                )
-                .await
-                .map_err(|error| object_store_error("open object download", error))?;
-            let metadata = result.meta.clone();
-            let mut stream = result.into_stream();
-            let mut file = tokio::fs::File::create(destination)
-                .await
-                .map_err(|error| CdfError::data(format!("create object spool: {error}")))?;
-            let mut bytes_written = 0_u64;
-            while let Some(bytes) = stream
-                .try_next()
-                .await
-                .map_err(|error| object_store_error("stream object download", error))?
-            {
-                tokio::io::AsyncWriteExt::write_all(&mut file, &bytes)
-                    .await
-                    .map_err(|error| CdfError::data(format!("write object spool: {error}")))?;
-                bytes_written = bytes_written
-                    .checked_add(bytes.len() as u64)
-                    .ok_or_else(|| CdfError::data("object download byte count overflowed u64"))?;
-            }
-            tokio::io::AsyncWriteExt::flush(&mut file)
-                .await
-                .map_err(|error| CdfError::data(format!("flush object spool: {error}")))?;
-            Ok((metadata, bytes_written))
-        })?;
-        let observed = object_identity(url.to_owned(), metadata);
-        verify_download_identity(expected, &observed, bytes_written)?;
-        Ok(observed)
-    }
-
     fn http_metadata_if_exists(
         &self,
         resource: &FileTransportResource,
@@ -892,24 +770,14 @@ fn read_local_range(path: &Path, range: ByteRange) -> Result<Vec<u8>> {
     Ok(buffer)
 }
 
-fn copy_local_file(source: &Path, destination: &Path) -> Result<()> {
-    fs::copy(source, destination).map_err(|error| {
-        CdfError::data(format!(
-            "copy local file source {} into spool: {error}",
-            source.display()
-        ))
-    })?;
-    Ok(())
-}
-
-pub(crate) fn verify_download_identity(
+pub(crate) fn verify_generation_identity(
     expected: &FileIdentityMetadata,
     observed: &FileIdentityMetadata,
-    bytes_written: u64,
+    observed_size_bytes: u64,
 ) -> Result<()> {
-    if expected.size_bytes != Some(bytes_written) {
+    if expected.size_bytes != Some(observed_size_bytes) {
         return Err(CdfError::data(format!(
-            "sequential file transfer wrote {bytes_written} bytes but the planned generation has {} bytes",
+            "observed file generation has {observed_size_bytes} bytes but the planned generation has {} bytes",
             expected
                 .size_bytes
                 .map_or_else(|| "unknown".to_owned(), |size| size.to_string())
@@ -919,12 +787,12 @@ pub(crate) fn verify_download_identity(
         && observed_etag != expected_etag
     {
         return Err(CdfError::data(
-            "file generation changed during sequential transfer (ETag mismatch)",
+            "file generation changed during the generation-bound operation (ETag mismatch)",
         ));
     }
     if expected.version != observed.version {
         return Err(CdfError::data(
-            "file generation changed during sequential transfer (version mismatch)",
+            "file generation changed during the generation-bound operation (version mismatch)",
         ));
     }
     if expected.etag.is_none()
@@ -933,7 +801,7 @@ pub(crate) fn verify_download_identity(
         && observed_modified != expected_modified
     {
         return Err(CdfError::data(
-            "file generation changed during sequential transfer (modification identity mismatch)",
+            "file generation changed during the generation-bound operation (modification identity mismatch)",
         ));
     }
     Ok(())
@@ -1476,16 +1344,15 @@ mod tests {
                 .ok_or_else(|| CdfError::internal("test HTTP file transport exhausted responses"))
         }
 
-        fn download(
+        fn open_byte_source(
             &self,
-            request: HttpFileRequest,
-            destination: &Path,
-        ) -> Result<(HttpFileResponse, u64)> {
-            let response = self.send(request)?;
-            fs::write(destination, &response.body)
-                .map_err(|error| CdfError::data(format!("write test download: {error}")))?;
-            let bytes_written = response.body.len() as u64;
-            Ok((response, bytes_written))
+            _resource: &FileTransportResource,
+            _expected: &FileIdentityMetadata,
+            _memory: Arc<dyn MemoryCoordinator>,
+        ) -> Result<Arc<dyn ByteSource>> {
+            Err(CdfError::internal(
+                "control-plane HTTP test double cannot be installed as a file runtime",
+            ))
         }
     }
 
