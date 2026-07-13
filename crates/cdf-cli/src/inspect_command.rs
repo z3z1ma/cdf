@@ -1,6 +1,7 @@
 use std::path::{Path, PathBuf};
 
 use cdf_package::PackageReader;
+use cdf_package_contract::PackageManifest;
 use serde::Serialize;
 use serde_json::json;
 
@@ -388,10 +389,7 @@ fn inspect_destinations_document(
     document.blank_line().push(NextCommand::new("cdf plan"))
 }
 
-fn inspect_package_document(
-    path: &Path,
-    manifest: &cdf_package::PackageManifest,
-) -> RenderDocument {
+fn inspect_package_document(path: &Path, manifest: &PackageManifest) -> RenderDocument {
     RenderDocument::new()
         .push(SectionRule::new())
         .push(StatusLine::new(

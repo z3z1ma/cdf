@@ -27,7 +27,7 @@ use cdf_kernel::{
 };
 #[cfg(test)]
 use cdf_package::PackageReader;
-use cdf_package::SegmentEntry;
+use cdf_package_contract::SegmentEntry;
 use object_store::{
     ObjectStore, ObjectStoreExt, PutMode, PutOptions, PutPayload, PutResult,
     local::LocalFileSystem, path::Path as ObjectPath,

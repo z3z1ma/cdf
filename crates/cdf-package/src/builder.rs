@@ -10,18 +10,18 @@ use std::sync::{Arc, Mutex};
 use arrow_array::{ArrayRef, RecordBatch, UInt64Array};
 use arrow_schema::{DataType, Field, Schema};
 use cdf_kernel::{CdfError, Checkpoint, Result, SegmentId};
+use cdf_package_contract::{
+    DEDUP_SUMMARY_FILE, DESTINATION_COMMIT_PLAN_FILE, DestinationCommitPlanPreimage, FileEntry,
+    MANIFEST_FILE, PackageManifest, PackageStatus, QuarantineRecord, STATE_INPUT_CHECKPOINT_FILE,
+    STATE_PROPOSED_DELTA_FILE, SegmentEntry, StateDeltaPreimage, TRACE_FILE,
+};
 use parquet::{arrow::ArrowWriter, file::properties::WriterProperties};
 use serde::{Serialize, de::DeserializeOwned};
 
 use crate::{
-    artifacts::{
-        DEDUP_SUMMARY_FILE, DESTINATION_COMMIT_PLAN_FILE, DestinationCommitPlanPreimage,
-        STATE_INPUT_CHECKPOINT_FILE, STATE_PROPOSED_DELTA_FILE, StateDeltaPreimage,
-    },
     json::canonical_json_bytes,
-    model::{FileEntry, MANIFEST_FILE, PackageManifest, PackageStatus, SegmentEntry, TRACE_FILE},
     ops::update_package_status,
-    quarantine::{QuarantineRecord, quarantine_record_batch, quarantine_schema},
+    quarantine::{quarantine_record_batch, quarantine_schema},
     storage::{
         ArtifactDurability, HashingWriter, atomic_write, build_manifest,
         collect_identity_file_entries, create_layout, io_error, nested_artifact_path,

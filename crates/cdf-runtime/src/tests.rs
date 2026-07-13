@@ -83,8 +83,6 @@ impl DestinationRuntime for MockRuntime {
 impl FinalizedPackageIngress for MockRuntime {
     fn prepare_package_commit(
         &mut self,
-        _package_dir: &Path,
-        _reader: &PackageReader,
         inputs: &PackageReplayInputs,
         context: &DestinationPlanningContext<'_>,
     ) -> Result<PreparedDestinationCommit> {
@@ -1593,6 +1591,9 @@ fn manifest_has_no_upward_or_concrete_dependencies() {
         "cdf-dest-",
         "datafusion",
         "duckdb",
+        "cdf-package =",
+        "parquet =",
+        "arrow-ipc =",
     ] {
         assert!(
             !manifest.contains(forbidden),

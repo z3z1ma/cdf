@@ -27,7 +27,8 @@ use cdf_kernel::{
     PromotionId, ResidualCorrectionOperation, RowProvenanceAddress, ScopeKey, SegmentAck,
     SegmentId, SourcePosition,
 };
-use cdf_package::{PackageBuilder, PackageStatus, SegmentEntry};
+use cdf_package::PackageBuilder;
+use cdf_package_contract::{PackageReplayInputs, PackageStatus, SegmentEntry};
 use cdf_runtime::DestinationRuntime;
 use object_store::{memory::InMemory, path::Path as ObjectPath};
 
@@ -340,7 +341,7 @@ fn state_segment(segment: &SegmentEntry) -> StateSegment {
     }
 }
 
-fn replay_inputs(request: &ParquetCommitRequest) -> cdf_package::PackageReplayInputs {
+fn replay_inputs(request: &ParquetCommitRequest) -> PackageReplayInputs {
     let scope = request
         .commit
         .segments
@@ -356,7 +357,7 @@ fn replay_inputs(request: &ParquetCommitRequest) -> cdf_package::PackageReplayIn
         },
         |segment| segment.output_position.clone(),
     );
-    cdf_package::PackageReplayInputs {
+    PackageReplayInputs {
         input_checkpoint: None,
         state_delta: cdf_kernel::StateDelta {
             checkpoint_id: cdf_kernel::CheckpointId::new("checkpoint-parquet-prepared-test")
@@ -514,16 +515,15 @@ fn commit_through_ingress(
     let duplicate = plan.duplicate;
     let inputs = replay_inputs(&commit);
     let verified = reader.verify_for_consumption()?;
+    let package = Arc::new(reader.clone().with_verification(verified.clone())?);
     let capabilities = dest.runtime_capabilities();
     let bulk_path = cdf_runtime::BulkPathPreparation::from_capabilities(&capabilities)?
         .into_selected(&capabilities)?;
     let mut prepared = match dest.ingress() {
         cdf_runtime::DestinationIngress::FinalizedPackage(ingress) => ingress
             .prepare_package_commit(
-                package_dir,
-                &reader,
                 &inputs,
-                &cdf_runtime::DestinationPlanningContext::new(&verified, &bulk_path),
+                &cdf_runtime::DestinationPlanningContext::new(package, &bulk_path),
             )?,
         cdf_runtime::DestinationIngress::StagedSegments(_) => {
             return Err(CdfError::contract(
@@ -1345,7 +1345,7 @@ fn prepared_ingress_rejects_pending_context_commit_schema_and_plan_drift() {
         .unwrap()
         .into_selected(&capabilities)
         .unwrap();
-    let prepared = |inputs: &cdf_package::PackageReplayInputs, kernel: CommitPlan| {
+    let prepared = |inputs: &PackageReplayInputs, kernel: CommitPlan| {
         cdf_runtime::PreparedDestinationCommit::from_verified_inputs(
             inputs,
             kernel,

@@ -1,6 +1,6 @@
-Status: open
+Status: active
 Created: 2026-07-12
-Updated: 2026-07-12
+Updated: 2026-07-13
 Parent: .10x/tickets/2026-07-12-p0-cargo-product-build-graph.md
 Depends-On: None
 
@@ -45,6 +45,11 @@ Extract the canonical package artifact/replay models and verified-access capabil
 ## Journal
 
 - 2026-07-12 (shaping): Source tracing found runtime imports of `SegmentEntry`, `PackageReader`, `VerifiedPackage`, and `PackageReplayInputs`; the leaf must cover both canonical models and verified-access capabilities to remove the implementation edge rather than merely relocating structs.
+- 2026-07-13: Began execution after rereading every governing reference. Source tracing confirmed finalized ingress accepted a package filesystem path and concrete reader, while Postgres retained the path into finalization. The selected boundary is one `VerifiedPackageAccess` capability over verified identity segments, recorded plan/schema, replay inputs, and quarantine evidence; it deliberately exposes no path, codec, verifier, or destination identity.
+- 2026-07-13: Moved manifest/lifecycle/archive, replay-preimage, processed-observation, and quarantine evidence models into the new leaf as their sole owner. `cdf-package` retains only artifact I/O, verification, hashing, IPC/Parquet, archive, and persistence implementation. Every workspace consumer now imports canonical models directly; no old-owner re-export or conversion mirror exists.
+- 2026-07-13: Replaced finalized-ingress and correction filesystem arguments with `SharedVerifiedPackageAccess`. Package verification remains minted and enforced by `cdf-package::VerifiedPackageReader`; neutral runtime and destinations see only verified facts. Postgres now carries the capability into commit finalization for quarantine evidence and validates correction identity through it instead of reopening a package path. Generic orchestration no longer forwards a package path or concrete reader to a destination.
+- 2026-07-13: Added resolved-graph tests for the leaf and runtime. Both normal and normal+dev runtime graphs exclude `cdf-package`, Parquet, and Arrow IPC; normal also excludes tempfile. Current canonicalized unique counts are 76 normal and 83 normal+dev, down from the recorded 90-node normal baseline but still above the governing <=67 threshold. The remaining excess is not package implementation: `cdf-contract` alone resolves 65 packages and is now the dominant neutral-runtime edge. The threshold remains an open CG3 closure criterion; it must be solved without weakening the test or reintroducing package implementation.
+- 2026-07-13: Verification: workspace all-target check passed; package suite passed 56/56 with 3 performance tests ignored; runtime suite passed 36/36 with 1 performance test ignored; four exact project replay/staging/checkpoint tests passed; both resolved-graph tests passed; touched-owner Clippy passed with `--no-deps -D warnings`. Full dependency Clippy was attempted and stopped on pre-existing `cdf-contract/src/expression.rs` `map_identity`, outside this batch.
 
 ## Blockers
 
@@ -52,7 +57,14 @@ None. Package bytes and lifecycle behavior are preservation constraints governed
 
 ## Evidence
 
-Pending execution.
+- Canonical ownership: a workspace `rg` finds each manifest/file/segment/lifecycle/replay-preimage/quarantine type definition only under `crates/cdf-package-contract/src/`; a second search finds no canonical model imported through `cdf_package::`.
+- Leaf/runtime graph laws: `cargo test -p cdf-package-contract --test build_graph -p cdf-runtime --test build_graph -j 12` passed. The tests resolve Cargo's graph and print the complete offending tree on failure.
+- Package identity and bytes: `CARGO_BUILD_JOBS=12 cargo test -p cdf-package --lib -j 12` passed 56 tests, including fixed fixture hash determinism, replay preimages, exact verification/tamper rejection, archive identity preservation, receipts, runtime schema, status transitions, and verified segment streams; 3 explicit performance tests remained ignored.
+- Runtime lifecycle: `CARGO_BUILD_JOBS=12 cargo test -p cdf-runtime --lib -j 12` passed 36 tests, including exact staged final binding, finalized-only failure closure, capability typing, and source/destination registries; 1 explicit performance test remained ignored.
+- Product replay/checkpoint preservation: the exact project tests `generic_lock_plan_replay_and_recovery_drive_mock_runtime_without_destination_branch`, `generic_replay_streams_verified_segments_through_staged_final_binding`, `artifact_replay_reconstructs_delta_and_commit_request_from_package_files`, and `checkpoint_failure_after_receipt_keeps_receipt_recoverable_and_state_unadvanced` each passed.
+- Integration compilation: `CARGO_BUILD_JOBS=12 cargo check --workspace --all-targets -j 12` passed after all direct-owner migrations.
+- Static quality: `cargo fmt --all`, `git diff --check`, and touched-owner `cargo clippy -p cdf-package-contract -p cdf-package -p cdf-runtime --all-targets --no-deps -j 12 -- -D warnings` passed.
+- Remaining limit: canonicalized `cargo tree` counts are 76 normal and 83 normal+dev for `cdf-runtime`; the <=67 normal threshold and corresponding count assertion are not yet satisfied, so CG3 remains active.
 
 ## Review
 
@@ -77,6 +89,22 @@ No unresolved shaping finding after the ownership and graph-law repairs.
 
 Golden bytes alone do not prove lifecycle equivalence. Closure still needs the named staging/final-binding, replay, receipt/checkpoint, corruption, and crash-matrix observations, plus direct graph evidence for both contract and runtime normal/dev resolutions.
 
+### Execution-batch adversarial review (2026-07-13)
+
+#### Findings
+
+- **Significant / closure — runtime package-count threshold remains red.** The package implementation and every named codec/filesystem edge are gone, but the canonicalized runtime normal graph contains 76 unique packages rather than <=67. Adding a test with a relaxed number would encode behavior contrary to the active spec, so this batch deliberately adds only the exact forbidden-edge laws and leaves the numerical closure gate unclaimed.
+- **No semantic regression found in the moved authority.** Canonical models have one owner; serialization derives and field order are unchanged; package canonical JSON still consumes the same Rust values; the fixed-hash suite passed. The access capability is destination-neutral and package-owned, and both ordinary and correction ingress use it without destination identity branches or filesystem exposure in runtime.
+- **No legacy surface found.** The former `cdf-package` model module is deleted, the package crate does not re-export contract models, all workspace imports moved directly, and obsolete package-path parameters were removed from orchestration and destination traits rather than retained as ignored shims.
+
+#### Verdict
+
+**Concerns / batch is safe to commit, ticket is not closable.** The architecture and behavior slice is supported by the recorded evidence. CG3 must remain active until the <=67 runtime graph law is achieved and pinned.
+
+#### Residual risk
+
+Postgres live integration was compile-checked but not exercised against a live server in this batch. E3's already-recorded post-verification filesystem mutation/TOCTOU limits are unchanged: the new capability delegates to the same package implementation authority and does not claim to repair E3.
+
 ## Retrospective
 
-Pending execution.
+- Partial: removing a concrete dependency exposed a second, independent build-graph concentration rather than making it disappear. Resolved-graph measurement must follow every boundary extraction immediately; direct-manifest checks alone would have falsely declared success. Carrying one verified capability through ordinary and correction ingress also removed more code than adapting only the initially observed replay call, and avoided leaving correction as a structurally identical path leak.

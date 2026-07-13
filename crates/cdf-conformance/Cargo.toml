@@ -19,6 +19,7 @@ cdf-format-json = { path = "../cdf-format-json" }
 cdf-http = { path = "../cdf-http" }
 cdf-kernel = { path = "../cdf-kernel" }
 cdf-package = { path = "../cdf-package" }
+cdf-package-contract = { path = "../cdf-package-contract" }
 cdf-project = { path = "../cdf-project" }
 cdf-runtime = { path = "../cdf-runtime" }
 cdf-source-files = { path = "../cdf-source-files" }

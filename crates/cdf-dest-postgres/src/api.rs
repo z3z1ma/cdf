@@ -1,5 +1,3 @@
-use std::path::PathBuf;
-
 use crate::*;
 use crate::{ddl::*, dml::*, mirrors::*, validate::*};
 
@@ -79,9 +77,8 @@ pub fn plan_postgres_load(
     })
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct PostgresCommitRequest {
-    pub(crate) package_dir: PathBuf,
+    pub(crate) package: cdf_package_contract::SharedVerifiedPackageAccess,
     pub(crate) plan: PostgresLoadPlan,
     pub(crate) segments: crate::package::PostgresSessionSegments,
 }

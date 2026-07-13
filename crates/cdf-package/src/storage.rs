@@ -11,16 +11,13 @@ use arrow_ipc::{
     writer::{FileWriter, IpcWriteOptions},
 };
 use cdf_kernel::{CdfError, Result, SegmentId};
+use cdf_package_contract::{
+    FileEntry, LifecycleState, MANIFEST_FILE, MANIFEST_VERSION, ManifestIdentity, PackageManifest,
+    PackageStatus, RECEIPTS_FILE, REQUIRED_DIRECTORIES, SegmentEntry, SignatureSlot, TRACE_FILE,
+};
 use sha2::{Digest, Sha256};
 
-use crate::{
-    json::{manifest_identity_hash, write_package_manifest_canonical},
-    model::{
-        FileEntry, LifecycleState, MANIFEST_FILE, MANIFEST_VERSION, ManifestIdentity,
-        PackageManifest, PackageStatus, RECEIPTS_FILE, REQUIRED_DIRECTORIES, SegmentEntry,
-        SignatureSlot, TRACE_FILE,
-    },
-};
+use crate::json::{manifest_identity_hash, write_package_manifest_canonical};
 
 static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 

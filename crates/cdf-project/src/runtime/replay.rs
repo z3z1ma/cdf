@@ -258,7 +258,7 @@ impl ActiveStagedIngress {
 
     pub(crate) fn stage_segment(
         &mut self,
-        entry: &cdf_package::SegmentEntry,
+        entry: &SegmentEntry,
         batches: &[arrow_array::RecordBatch],
     ) -> Result<()> {
         let ordinal = self.next_ordinal;
@@ -483,7 +483,6 @@ where
         |stage: PackageReplayStage<'_>| notify_runtime_replay_stage(stage_hook, stage);
     replay_package_with_resolved_destination(
         package,
-        request.package_dir,
         request.destination,
         request.checkpoint_store,
         PackageReplayHooks {
@@ -554,7 +553,6 @@ fn validate_package_compiled_expression_plan(package: &VerifiedPackageReader) ->
 
 fn replay_package_with_resolved_destination<Store>(
     package: VerifiedPackageReader,
-    package_dir: PathBuf,
     mut destination: ResolvedProjectDestination,
     checkpoint_store: &Store,
     hooks: PackageReplayHooks<'_>,
@@ -569,7 +567,6 @@ where
     let memory = default_replay_memory()?;
     replay_package_with_runtime(
         package,
-        package_dir,
         destination.runtime_mut(),
         checkpoint_store,
         memory,
@@ -616,7 +613,6 @@ fn validate_resolved_destination_target(
 
 pub(crate) fn replay_package_with_runtime<Store>(
     package: VerifiedPackageReader,
-    package_dir: PathBuf,
     runtime: &mut dyn ProjectDestinationRuntime,
     checkpoint_store: &Store,
     memory: Arc<dyn MemoryCoordinator>,
@@ -625,21 +621,12 @@ pub(crate) fn replay_package_with_runtime<Store>(
 where
     Store: CheckpointStore + ?Sized,
 {
-    replay_package_with_runtime_and_staged(
-        package,
-        package_dir,
-        runtime,
-        checkpoint_store,
-        memory,
-        hooks,
-        None,
-    )
+    replay_package_with_runtime_and_staged(package, runtime, checkpoint_store, memory, hooks, None)
 }
 
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn replay_package_with_runtime_and_staged<Store>(
     mut package: VerifiedPackageReader,
-    package_dir: PathBuf,
     runtime: &mut dyn ProjectDestinationRuntime,
     checkpoint_store: &Store,
     memory: Arc<dyn MemoryCoordinator>,
@@ -735,11 +722,9 @@ where
             let prepared_result = match runtime.ingress() {
                 cdf_runtime::DestinationIngress::FinalizedPackage(finalized) => finalized
                     .prepare_package_commit(
-                        &package_dir,
-                        package.reader(),
                         &inputs,
                         &DestinationPlanningContext::new(
-                            package.verification(),
+                            Arc::new(package.clone()),
                             &selected_bulk_path,
                         ),
                     ),
@@ -994,9 +979,9 @@ fn commit_package_through_staged_ingress(
                 "staged ingress snapshot does not exactly match acknowledged segments",
             ));
         }
-        let binding = cdf_runtime::VerifiedFinalBinding::from_verified_package(
-            attempt_id, reader, verified, plan,
-        )?;
+        let package = reader.clone().with_verification(verified.clone())?;
+        let binding =
+            cdf_runtime::VerifiedFinalBinding::from_verified_package(attempt_id, &package, plan)?;
         binding.validate_staged_identities(&staged)?;
         session
             .take()
@@ -1052,12 +1037,12 @@ fn finalize_active_staged_ingress(
                 PackageReplayStage::DestinationSegmentAcknowledged { ack: &ack },
             )?;
         }
+        let package = reader.clone().with_verification(verified.clone())?;
         let binding =
             cdf_runtime::VerifiedFinalBinding::from_verified_package_with_execution_authority(
                 active.attempt_id.clone(),
                 active.execution_plan_id.clone(),
-                reader,
-                verified,
+                &package,
                 plan,
             )?;
         binding.validate_staged_identities(&active.staged)?;
@@ -1279,7 +1264,7 @@ fn default_replay_memory() -> Result<Arc<dyn MemoryCoordinator>> {
 fn validate_package_replay_inputs(
     reader: &PackageReader,
     inputs: &PackageReplayInputs,
-) -> Result<cdf_package::ReplayView> {
+) -> Result<cdf_package_contract::ReplayView> {
     let replay = reader.replay_view()?;
     if replay.package_hash != inputs.state_delta.package_hash {
         return Err(CdfError::data(format!(

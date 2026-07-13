@@ -14,7 +14,8 @@ use cdf_kernel::{
     PipelineId, Receipt, ResourceId, ResourceStream, Result, RunId, ScanRequest, ScopeKey,
     SourcePosition, TargetName,
 };
-use cdf_package::{PackageReader, PackageStatus};
+use cdf_package::PackageReader;
+use cdf_package_contract::PackageStatus;
 use cdf_project::{
     PackageArtifactReplayRequest, ProjectReceiptSource, ProjectRunRequest, ProjectRunSource,
     ResolvedProjectDestination, replay_package_from_artifacts, run_project,

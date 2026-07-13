@@ -15,7 +15,7 @@ use cdf_kernel::{
     PipelineId, PlanId, Receipt, ResourceId, Result, ScanPlan, ScanRequest, SchemaHash, ScopeKey,
     SegmentId, SourcePosition, StateDelta, StateSegment, TargetName, WriteDisposition,
 };
-use cdf_package::{
+use cdf_package_contract::{
     DestinationCommitPlanPreimage, PackageManifest, PackageStatus, SegmentEntry, StateDeltaPreimage,
 };
 use cdf_project::{

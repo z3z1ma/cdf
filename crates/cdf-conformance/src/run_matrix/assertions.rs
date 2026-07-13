@@ -8,7 +8,8 @@ use cdf_kernel::{
     CdfError, CheckpointStatus, CheckpointStore, DestinationProtocol, IdempotencySupport,
     PipelineId, QueryableResource, Receipt, ResourceId, Result, ScopeKey,
 };
-use cdf_package::{PackageReader, PackageStatus};
+use cdf_package::PackageReader;
+use cdf_package_contract::PackageStatus;
 use cdf_project::{
     PackageArtifactReplayRequest, ProjectReceiptSource, ProjectRunReport,
     replay_package_from_artifacts,

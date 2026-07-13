@@ -12,9 +12,9 @@ use cdf_kernel::{
     ResourceId, Result, SchemaHash, ScopeKey, SegmentId, SourcePosition, StateSegment, TargetName,
     WriteDisposition,
 };
-use cdf_package::{
-    DestinationCommitPlanPreimage, PackageBuilder, PackageManifest, PackageReader, PackageStatus,
-    SegmentEntry, StateDeltaPreimage,
+use cdf_package::{PackageBuilder, PackageReader};
+use cdf_package_contract::{
+    DestinationCommitPlanPreimage, PackageManifest, PackageStatus, SegmentEntry, StateDeltaPreimage,
 };
 use serde::{Deserialize, Serialize};
 

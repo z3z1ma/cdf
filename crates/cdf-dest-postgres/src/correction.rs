@@ -1,6 +1,5 @@
 use std::{
     collections::BTreeMap,
-    path::{Path, PathBuf},
     time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -61,11 +60,29 @@ impl PostgresCorrectionPlan {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone)]
 pub(crate) struct PostgresCorrectionCommitRequest {
-    pub(crate) package_dir: PathBuf,
+    pub(crate) package: cdf_package_contract::SharedVerifiedPackageAccess,
     pub(crate) plan: PostgresCorrectionPlan,
 }
+
+impl std::fmt::Debug for PostgresCorrectionCommitRequest {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("PostgresCorrectionCommitRequest")
+            .field("package_hash", &self.package.package_hash())
+            .field("plan", &self.plan)
+            .finish()
+    }
+}
+
+impl PartialEq for PostgresCorrectionCommitRequest {
+    fn eq(&self, other: &Self) -> bool {
+        self.package.package_hash() == other.package.package_hash() && self.plan == other.plan
+    }
+}
+
+impl Eq for PostgresCorrectionCommitRequest {}
 
 pub fn plan_postgres_correction(
     input: PostgresCorrectionPlanInput,
@@ -233,7 +250,7 @@ impl PostgresDestination {
         &self,
         request: DestinationCorrectionCommitRequest,
         plan: PostgresCorrectionPlan,
-        package_dir: PathBuf,
+        package: cdf_package_contract::SharedVerifiedPackageAccess,
     ) -> Result<PostgresCorrectionSession> {
         let database_url = self.database_url.as_deref().ok_or_else(|| {
             CdfError::contract(
@@ -241,7 +258,7 @@ impl PostgresDestination {
             )
         })?;
         validate_postgres_correction_begin(&request, &plan.kernel, &plan)?;
-        validate_correction_package(&package_dir, &request)?;
+        validate_correction_package(package.as_ref(), &request)?;
         Ok(PostgresCorrectionSession {
             database_url: database_url.to_owned(),
             request,
@@ -593,16 +610,14 @@ fn correction_update_statement(
 }
 
 fn validate_correction_package(
-    package_dir: &Path,
+    package: &dyn cdf_package_contract::VerifiedPackageAccess,
     request: &DestinationCorrectionCommitRequest,
 ) -> Result<()> {
-    let reader = cdf_package::PackageReader::open(package_dir)?;
-    reader.verify()?;
-    let replay = reader.replay_view()?;
-    if replay.package_hash != request.correction_package_hash {
+    if package.package_hash() != request.correction_package_hash.as_str() {
         return Err(CdfError::data(format!(
             "Postgres correction package hash {} does not match request {}",
-            replay.package_hash, request.correction_package_hash
+            package.package_hash(),
+            request.correction_package_hash
         )));
     }
     let expected = request
@@ -615,10 +630,8 @@ fn validate_correction_package(
             )
         })
         .collect::<BTreeMap<_, _>>();
-    let actual = reader
-        .manifest()
-        .identity
-        .segments
+    let actual = package
+        .identity_segments()
         .iter()
         .map(|segment| {
             (

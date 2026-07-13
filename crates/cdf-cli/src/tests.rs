@@ -31,8 +31,10 @@ use cdf_kernel::{
     SchemaHash, ScopeKey, SegmentAck, SegmentId, SourcePosition, StateDelta, StateSegment,
     TargetName, VerifyClause, WriteDisposition, with_semantic,
 };
-use cdf_package::{
-    DestinationCommitPlanPreimage, PackageBuilder, PackageReader, PackageStatus, StateDeltaPreimage,
+use cdf_package::{PackageBuilder, PackageReader};
+use cdf_package_contract::{
+    DestinationCommitPlanPreimage, MANIFEST_FILE, PackageStatus, RECEIPTS_FILE, SegmentEntry,
+    StateDeltaPreimage,
 };
 use cdf_project::{
     DEFAULT_SCHEMA_PROMOTION_LEASE_DURATION_MS, PackageArtifactReplayRequest,
@@ -4372,7 +4374,7 @@ fn schema_promote_execute_recovers_every_persisted_crash_boundary() {
             let correction_packages = fs::read_dir(project.root.join(".cdf/packages"))
                 .unwrap()
                 .map(|entry| entry.unwrap().path())
-                .filter(|path| path.join(cdf_package::MANIFEST_FILE).is_file())
+                .filter(|path| path.join(MANIFEST_FILE).is_file())
                 .collect::<Vec<_>>();
             assert_eq!(correction_packages.len(), 1, "{failpoint:?}");
             PackageReader::open(&correction_packages[0])
@@ -4448,7 +4450,7 @@ fn schema_promote_failure_reports_persisted_recovery_status_without_secret_leak(
     let mut receipts = cdf_package::read_receipts(&source_package).unwrap();
     receipts[0].destination = DestinationId::new("postgres").unwrap();
     fs::write(
-        source_package.join(cdf_package::RECEIPTS_FILE),
+        source_package.join(RECEIPTS_FILE),
         serde_json::to_vec_pretty(&receipts).unwrap(),
     )
     .unwrap();
@@ -14004,7 +14006,7 @@ fn package_receipt_count(package_dir: &Path) -> usize {
 }
 
 fn remove_package_receipts(package_dir: &Path) {
-    let path = package_dir.join(cdf_package::RECEIPTS_FILE);
+    let path = package_dir.join(RECEIPTS_FILE);
     if path.exists() {
         fs::remove_file(path).unwrap();
     }
@@ -15639,10 +15641,7 @@ fn doctor_output_position(value: i64) -> SourcePosition {
     })
 }
 
-fn doctor_state_segment(
-    entry: &cdf_package::SegmentEntry,
-    output_position: SourcePosition,
-) -> StateSegment {
+fn doctor_state_segment(entry: &SegmentEntry, output_position: SourcePosition) -> StateSegment {
     StateSegment {
         segment_id: entry.segment_id.clone(),
         scope: ScopeKey::Partition {

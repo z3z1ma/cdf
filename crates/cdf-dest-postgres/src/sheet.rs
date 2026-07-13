@@ -125,7 +125,7 @@ impl DestinationProtocol for PostgresDestination {
         Ok(Box::new(self.begin_correction_session(
             request,
             pending.plan.clone(),
-            pending.package_dir.clone(),
+            pending.package.clone(),
         )?))
     }
 

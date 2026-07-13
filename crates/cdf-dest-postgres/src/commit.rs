@@ -39,7 +39,7 @@ impl PostgresDestination {
         })?;
         Ok(PostgresCommitSession {
             database_url: database_url.to_owned(),
-            package_dir: request.package_dir,
+            package: request.package,
             plan: request.plan,
             client: None,
             phase: PostgresCommitSessionPhase::Begun,
@@ -75,7 +75,7 @@ impl PostgresDestination {
 
 pub(crate) struct PostgresCommitSession {
     database_url: String,
-    package_dir: std::path::PathBuf,
+    package: cdf_package_contract::SharedVerifiedPackageAccess,
     plan: PostgresLoadPlan,
     client: Option<Client>,
     phase: PostgresCommitSessionPhase,
@@ -198,7 +198,7 @@ impl PostgresCommitSession {
         if let Some(delta) = &self.plan.state_delta {
             upsert_state_mirror(&mut client, &self.plan, &receipt, delta)?;
         }
-        insert_quarantine_mirror(&mut client, &self.package_dir, &self.plan, &receipt)?;
+        insert_quarantine_mirror(&mut client, self.package.as_ref(), &self.plan, &receipt)?;
         verify_receipt_in_transaction(&mut client, &receipt)?;
         self.receipt = Some(receipt);
         self.client = Some(client);
@@ -789,11 +789,11 @@ fn upsert_state_mirror(
 
 fn insert_quarantine_mirror(
     client: &mut Client,
-    package_dir: &std::path::Path,
+    package: &dyn cdf_package_contract::VerifiedPackageAccess,
     plan: &PostgresLoadPlan,
     receipt: &Receipt,
 ) -> Result<()> {
-    let records = cdf_package::PackageReader::open(package_dir)?.read_quarantine_records()?;
+    let records = package.quarantine_records()?;
     if records.is_empty() {
         return Ok(());
     }

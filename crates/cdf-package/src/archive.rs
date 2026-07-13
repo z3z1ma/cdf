@@ -11,15 +11,14 @@ use cdf_memory::{
     ConsumerKey, DeterministicMemoryCoordinator, MemoryClass, MemoryCoordinator,
     ReservationRequest, record_batch_retained_bytes, reserve_blocking,
 };
+use cdf_package_contract::{
+    ArchiveSegmentMetadata, ManifestArchives, PackageManifest, ParquetArchiveMetadata, SegmentEntry,
+};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::{
     json::canonical_json_bytes,
-    model::{
-        ArchiveSegmentMetadata, ManifestArchives, PackageManifest, ParquetArchiveMetadata,
-        SegmentEntry,
-    },
     ops::{read_manifest, verify_package, verify_package_identity},
     parquet::{
         transcode_record_batches_to_bounded_parquet_bytes,

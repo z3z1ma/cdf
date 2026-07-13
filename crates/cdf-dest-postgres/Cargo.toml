@@ -14,6 +14,7 @@ cdf-http = { path = "../cdf-http" }
 cdf-kernel = { path = "../cdf-kernel" }
 cdf-memory = { path = "../cdf-memory" }
 cdf-package = { path = "../cdf-package" }
+cdf-package-contract = { path = "../cdf-package-contract" }
 cdf-postgres = { path = "../cdf-postgres" }
 cdf-runtime = { path = "../cdf-runtime" }
 futures-util = "0.3.32"

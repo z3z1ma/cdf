@@ -35,7 +35,9 @@ use cdf_kernel::{
     SchemaSnapshotReference, SchemaSource, ScopeKey, SourcePosition,
     TerminalSchemaObservationQuarantine, TrustLevel, WriteDisposition, source_name, with_semantic,
 };
-use cdf_package::PackageStatus;
+use cdf_package_contract::{
+    DEDUP_SUMMARY_FILE, PackageStatus, QuarantineObservedValue, SegmentEntry,
+};
 use datafusion::{
     catalog::TableProvider, physical_plan::common::collect as collect_stream, prelude::*,
 };
@@ -957,7 +959,7 @@ fn durable_segment_hook_runs_after_publish_with_exact_entry_and_batch() {
     let durable_root = package_dir.path().to_path_buf();
     let observed = Arc::new(Mutex::new(Vec::new()));
     let hook_observed = Arc::clone(&observed);
-    let mut durable_segment = move |entry: &cdf_package::SegmentEntry, batches: &[RecordBatch]| {
+    let mut durable_segment = move |entry: &SegmentEntry, batches: &[RecordBatch]| {
         assert!(durable_root.join(&entry.path).is_file());
         hook_observed.lock().unwrap().push((
             entry.segment_id.clone(),
@@ -1786,7 +1788,7 @@ fn contract_exec_writes_redacted_quarantine_artifact_and_keeps_accepted_rows() {
         quarantine[0].source_position,
         Some(SourcePosition::FileManifest(_))
     ));
-    let cdf_package::QuarantineObservedValue::Hashed { algorithm, value } =
+    let QuarantineObservedValue::Hashed { algorithm, value } =
         &quarantine[0].observed_value_redacted
     else {
         panic!("pii semantic field must be hash-redacted");
@@ -2015,7 +2017,7 @@ fn source_decode_quarantine_facts_fold_into_package_artifacts() {
     ));
     assert_eq!(
         quarantine[0].observed_value_redacted,
-        cdf_package::QuarantineObservedValue::Preserved {
+        QuarantineObservedValue::Preserved {
             value: "42".to_owned()
         }
     );
@@ -2196,8 +2198,7 @@ fn variant_capture_materializes_nested_values_and_contract_evolution_evidence() 
 
     let quarantine = reader.read_quarantine_records().unwrap();
     assert_eq!(quarantine.len(), 1);
-    let cdf_package::QuarantineObservedValue::Hashed { value, .. } =
-        &quarantine[0].observed_value_redacted
+    let QuarantineObservedValue::Hashed { value, .. } = &quarantine[0].observed_value_redacted
     else {
         panic!("pii variant interaction must keep quarantine observed value hashed");
     };
@@ -2745,7 +2746,7 @@ fn merge_dedup_keep_last_runs_after_contract_filtering_and_before_normalize() {
             .identity
             .files
             .iter()
-            .any(|file| file.path == cdf_package::DEDUP_SUMMARY_FILE)
+            .any(|file| file.path == DEDUP_SUMMARY_FILE)
     );
 }
 
@@ -3270,12 +3271,11 @@ fn parallel_segment_frontier_failure_joins_workers_and_prevents_finalization() {
     let (_, services) = StandaloneExecutionHost::default_services(64 * 1024 * 1024).unwrap();
     let pre_finalize =
         |_builder: &cdf_package::PackageBuilder, _draft: EnginePackageDraft<'_>| Ok(());
-    let mut durable_segment =
-        |_entry: &cdf_package::SegmentEntry, _batches: &[RecordBatch]| -> Result<()> {
-            Err(cdf_kernel::CdfError::internal(
-                "stop at canonical segment frontier",
-            ))
-        };
+    let mut durable_segment = |_entry: &SegmentEntry, _batches: &[RecordBatch]| -> Result<()> {
+        Err(cdf_kernel::CdfError::internal(
+            "stop at canonical segment frontier",
+        ))
+    };
     let mut stream_finalize =
         || -> Result<()> { panic!("failed segment frontier must not reach stream finalization") };
 

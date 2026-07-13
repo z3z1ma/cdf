@@ -1,0 +1,12 @@
+[package]
+name = "cdf-package-contract"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+description = "Canonical package artifacts and verified-access contracts for cdf."
+
+[dependencies]
+arrow-schema = { version = "59.1.0", features = ["serde"] }
+cdf-kernel = { path = "../cdf-kernel" }
+serde = { version = "1.0.228", features = ["derive"] }

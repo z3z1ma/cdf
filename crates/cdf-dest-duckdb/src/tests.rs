@@ -22,9 +22,10 @@ use cdf_kernel::{
     RowProvenanceAddress, ScanPlan, ScanRequest, ScopeKey, SegmentAck, SegmentId, SourcePosition,
     StateSegment,
 };
-use cdf_package::{
-    DestinationCommitPlanPreimage, PackageBuilder, PackageReader, PackageStatus,
-    ProcessedObservationEvidenceArtifact, StateDeltaPreimage,
+use cdf_package::{PackageBuilder, PackageReader};
+use cdf_package_contract::{
+    DestinationCommitPlanPreimage, PROCESSED_OBSERVATIONS_FILE, PackageStatus,
+    ProcessedObservationEvidenceArtifact, SegmentEntry, StateDeltaPreimage,
 };
 use cdf_runtime::{DestinationRuntime, DurableSegmentReader, StagedSegmentIngress};
 
@@ -272,7 +273,7 @@ fn write_current_plan_artifacts(builder: &PackageBuilder, schema: &Schema) {
 
 fn write_current_state_artifacts(
     builder: &PackageBuilder,
-    entries: &[cdf_package::SegmentEntry],
+    entries: &[SegmentEntry],
     disposition: WriteDisposition,
     merge_keys: Vec<String>,
 ) {
@@ -303,7 +304,7 @@ fn write_current_state_artifacts(
         .unwrap();
         builder
             .write_json_artifact(
-                cdf_package::PROCESSED_OBSERVATIONS_FILE,
+                PROCESSED_OBSERVATIONS_FILE,
                 &ProcessedObservationEvidenceArtifact::new(
                     None,
                     disposition.clone(),
@@ -501,12 +502,8 @@ fn try_commit_current(
             Box::new(TestDurableSegmentReader { identity, batches }),
         )?)?;
     }
-    let binding = cdf_runtime::VerifiedFinalBinding::from_verified_package(
-        attempt_id,
-        reader,
-        package.verification(),
-        plan,
-    )?;
+    let binding =
+        cdf_runtime::VerifiedFinalBinding::from_verified_package(attempt_id, &package, plan)?;
     Ok(CurrentCommitOutcome {
         receipt: session.bind_final(binding)?.receipt,
     })
@@ -622,8 +619,7 @@ fn verified_final_binding_rejects_execution_plan_drift() {
     let error = cdf_runtime::VerifiedFinalBinding::from_verified_package_with_execution_authority(
         cdf_runtime::LoadAttemptId::new("duckdb-plan-drift").unwrap(),
         PlanId::new("different-execution-plan").unwrap(),
-        package.reader(),
-        package.verification(),
+        &package,
         plan,
     )
     .unwrap_err();

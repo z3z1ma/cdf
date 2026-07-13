@@ -7,14 +7,14 @@ use std::{
 use arrow_array::RecordBatch;
 use arrow_ipc::reader::FileReader;
 use cdf_kernel::{CdfError, Receipt, Result};
+use cdf_package_contract::{
+    FileEntry, MANIFEST_FILE, PackageManifest, PackageStatus, RECEIPTS_FILE, TombstoneReport,
+    VerificationReport,
+};
 
 use crate::{
     archive::verify_parquet_archive_metadata,
     json::{canonical_json_bytes, json_error, manifest_identity_hash},
-    model::{
-        FileEntry, MANIFEST_FILE, PackageManifest, PackageStatus, RECEIPTS_FILE, TombstoneReport,
-        VerificationReport,
-    },
     storage::{
         atomic_write, collect_identity_file_entries, io_error, normalize_artifact_path,
         package_path, write_manifest_atomic,

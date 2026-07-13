@@ -333,7 +333,7 @@ pub(crate) struct PreparedReplayReportRef<'a> {
     pub(crate) checkpoint: &'a cdf_kernel::Checkpoint,
     pub(crate) receipt: &'a cdf_kernel::Receipt,
     pub(crate) receipt_source: ProjectReceiptSource,
-    pub(crate) package_status: &'a cdf_package::PackageStatus,
+    pub(crate) package_status: &'a cdf_package_contract::PackageStatus,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]

@@ -145,15 +145,18 @@ pub struct DestinationOutputSchema {
     pub identifier_policy: Option<IdentifierPolicy>,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 #[non_exhaustive]
 pub struct DestinationPlanningContext<'a> {
-    pub verified_package: &'a VerifiedPackage,
+    pub verified_package: SharedVerifiedPackageAccess,
     pub bulk_path: &'a PreparedBulkPath,
 }
 
 impl<'a> DestinationPlanningContext<'a> {
-    pub fn new(verified_package: &'a VerifiedPackage, bulk_path: &'a PreparedBulkPath) -> Self {
+    pub fn new(
+        verified_package: SharedVerifiedPackageAccess,
+        bulk_path: &'a PreparedBulkPath,
+    ) -> Self {
         Self {
             verified_package,
             bulk_path,
@@ -178,8 +181,6 @@ impl DestinationIngress<'_> {
 pub trait FinalizedPackageIngress {
     fn prepare_package_commit(
         &mut self,
-        package_dir: &Path,
-        reader: &PackageReader,
         inputs: &PackageReplayInputs,
         context: &DestinationPlanningContext<'_>,
     ) -> Result<PreparedDestinationCommit>;
@@ -264,7 +265,7 @@ pub trait DestinationRuntime {
 
     fn prepare_correction_commit(
         &mut self,
-        _package_dir: &Path,
+        _package: SharedVerifiedPackageAccess,
         request: &DestinationCorrectionCommitRequest,
     ) -> Result<DestinationCorrectionCommitPlan> {
         self.ensure_protocol_ready()?;

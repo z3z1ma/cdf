@@ -5,7 +5,8 @@ use std::{
 };
 
 use cdf_kernel::{CdfError, PackageHash};
-use cdf_package::{MANIFEST_FILE, PackageReader, PackageStatus};
+use cdf_package::PackageReader;
+use cdf_package_contract::{ArchiveSegmentMetadata, FileEntry, MANIFEST_FILE, PackageStatus};
 use cdf_project::{
     LocalPromotionCollectionAction, LocalPromotionCollectionAssessment,
     assess_local_promotion_collection, inspect_local_package_promotion_availability,
@@ -558,8 +559,8 @@ impl PackageGcCounts {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 struct PackageVerifyReport {
     package_hash: String,
-    checked_files: Vec<cdf_package::FileEntry>,
-    checked_archives: Vec<cdf_package::ArchiveSegmentMetadata>,
+    checked_files: Vec<FileEntry>,
+    checked_archives: Vec<ArchiveSegmentMetadata>,
 }
 
 impl PackageVerifyReport {
@@ -621,7 +622,7 @@ struct PackageArchiveCliReport {
     status: cdf_package::PackageArchiveWriteStatus,
     fidelity_report_path: String,
     fidelity_statement: String,
-    segments: Vec<cdf_package::ArchiveSegmentMetadata>,
+    segments: Vec<ArchiveSegmentMetadata>,
 }
 
 impl PackageArchiveCliReport {

@@ -7,7 +7,8 @@ use cdf_kernel::{
     CapabilitySupport, CheckpointStatus, CheckpointStore, DestinationProtocol, SourcePosition,
     WriteDisposition,
 };
-use cdf_package::{PackageReader, PackageStatus, QuarantineObservedValue};
+use cdf_package::PackageReader;
+use cdf_package_contract::{DEDUP_SUMMARY_FILE, PackageStatus, QuarantineObservedValue};
 use cdf_project::ProjectRunReport;
 use cdf_state_sqlite::{RunEventKind, RunEventValue, SqliteCheckpointStore};
 use postgres::{Client, NoTls};
@@ -50,7 +51,7 @@ pub(super) fn assert_drift_quarantine_package_evidence(report: &ProjectRunReport
     assert!(files.contains(&"stats/verdict-summary.json"));
     assert!(files.contains(&"stats/quarantine-summary.json"));
     assert!(files.contains(&"quarantine/part-000001.parquet"));
-    assert!(files.contains(&cdf_package::DEDUP_SUMMARY_FILE));
+    assert!(files.contains(&DEDUP_SUMMARY_FILE));
 
     let validation_program: Value = serde_json::from_slice(
         &fs::read(report.package_dir.join("plan/validation-program.json")).unwrap(),

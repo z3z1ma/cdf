@@ -1,10 +1,9 @@
 use cdf_kernel::{CdfError, Result};
+use cdf_package_contract::{FileEntry, ManifestIdentity, PackageManifest, SegmentEntry};
 use serde::Serialize;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::io::Write;
-
-use crate::model::{FileEntry, ManifestIdentity, PackageManifest, SegmentEntry};
 
 pub fn canonical_json_bytes<T: Serialize + ?Sized>(value: &T) -> Result<Vec<u8>> {
     let value = serde_json::to_value(value).map_err(json_error)?;
@@ -183,7 +182,7 @@ pub(crate) fn json_error(error: serde_json::Error) -> CdfError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{MANIFEST_VERSION, ManifestIdentity};
+    use cdf_package_contract::{MANIFEST_VERSION, ManifestIdentity};
     use std::time::Instant;
 
     #[test]

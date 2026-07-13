@@ -733,6 +733,7 @@ dependencies = [
  "cdf-kernel",
  "cdf-memory",
  "cdf-package",
+ "cdf-package-contract",
  "cdf-project",
  "cdf-runtime",
  "cdf-state-sqlite",
@@ -772,6 +773,7 @@ dependencies = [
  "cdf-kernel",
  "cdf-memory",
  "cdf-package",
+ "cdf-package-contract",
  "cdf-project",
  "cdf-python",
  "cdf-runtime",
@@ -823,6 +825,7 @@ dependencies = [
  "cdf-http",
  "cdf-kernel",
  "cdf-package",
+ "cdf-package-contract",
  "cdf-project",
  "cdf-python",
  "cdf-runtime",
@@ -908,6 +911,7 @@ dependencies = [
  "cdf-contract",
  "cdf-kernel",
  "cdf-package",
+ "cdf-package-contract",
  "cdf-runtime",
  "duckdb",
  "proptest",
@@ -929,6 +933,7 @@ dependencies = [
  "cdf-kernel",
  "cdf-memory",
  "cdf-package",
+ "cdf-package-contract",
  "cdf-runtime",
  "hex",
  "object_store 0.14.1",
@@ -952,6 +957,7 @@ dependencies = [
  "cdf-kernel",
  "cdf-memory",
  "cdf-package",
+ "cdf-package-contract",
  "cdf-postgres",
  "cdf-runtime",
  "cdf-source-postgres",
@@ -979,6 +985,7 @@ dependencies = [
  "cdf-kernel",
  "cdf-memory",
  "cdf-package",
+ "cdf-package-contract",
  "cdf-runtime",
  "datafusion",
  "futures-executor",
@@ -1129,12 +1136,22 @@ dependencies = [
  "arrow-schema 59.1.0",
  "cdf-kernel",
  "cdf-memory",
+ "cdf-package-contract",
  "hex",
  "parquet",
  "serde",
  "serde_json",
  "sha2 0.10.9",
  "tempfile",
+]
+
+[[package]]
+name = "cdf-package-contract"
+version = "0.1.0"
+dependencies = [
+ "arrow-schema 59.1.0",
+ "cdf-kernel",
+ "serde",
 ]
 
 [[package]]
@@ -1168,6 +1185,7 @@ dependencies = [
  "cdf-kernel",
  "cdf-memory",
  "cdf-package",
+ "cdf-package-contract",
  "cdf-runtime",
  "cdf-state-sqlite",
  "cdf-transform-gzip",
@@ -1217,7 +1235,7 @@ dependencies = [
  "cdf-http",
  "cdf-kernel",
  "cdf-memory",
- "cdf-package",
+ "cdf-package-contract",
  "futures-channel",
  "futures-executor",
  "futures-util",

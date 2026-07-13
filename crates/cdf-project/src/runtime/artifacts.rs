@@ -2,6 +2,7 @@ use super::prelude::*;
 #[cfg(test)]
 use super::types::LocalFileDuckDbRunRequest;
 use cdf_kernel::CapabilitySupport;
+use cdf_package_contract::{PROCESSED_OBSERVATIONS_FILE, ProcessedObservationEvidenceArtifact};
 
 const QUARANTINE_MIRROR_OUTCOME_FILE: &str = "destination/quarantine-mirror.json";
 
@@ -28,8 +29,8 @@ pub(super) fn write_run_state_commit_artifacts(
         .is_empty()
     {
         builder.write_json_artifact(
-            cdf_package::PROCESSED_OBSERVATIONS_FILE,
-            &cdf_package::ProcessedObservationEvidenceArtifact::new(
+            PROCESSED_OBSERVATIONS_FILE,
+            &ProcessedObservationEvidenceArtifact::new(
                 head.as_ref()
                     .map(|checkpoint| checkpoint.delta.output_position.clone()),
                 context.descriptor.write_disposition.clone(),

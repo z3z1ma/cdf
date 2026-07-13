@@ -4,7 +4,8 @@ use std::{
 };
 
 use cdf_kernel::CdfError;
-use cdf_package::{MANIFEST_FILE, read_manifest, read_receipts};
+use cdf_package::{read_manifest, read_receipts};
+use cdf_package_contract::MANIFEST_FILE;
 use rusqlite::{Connection, OpenFlags, OptionalExtension, Row, Statement, params, types::ValueRef};
 use serde::Serialize;
 use serde_json::{Number, Value};

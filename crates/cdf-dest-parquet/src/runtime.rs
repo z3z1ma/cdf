@@ -5,7 +5,7 @@ use cdf_kernel::{
     CapabilitySupport, CdfError, DestinationId, DestinationProtocol, DestinationSheet,
     ResourceStream, Result, WriteDisposition,
 };
-use cdf_package::{PackageReader, PackageReplayInputs};
+use cdf_package_contract::PackageReplayInputs;
 use cdf_runtime::{
     DestinationCommitPlanningInputs, DestinationCommitPlanningOutcome, DestinationDescription,
     DestinationDriver, DestinationHealthProbe, DestinationHealthResult, DestinationHealthStatus,
@@ -111,14 +111,12 @@ impl DestinationRuntime for ParquetDestination {
 impl cdf_runtime::FinalizedPackageIngress for ParquetDestination {
     fn prepare_package_commit(
         &mut self,
-        _package_dir: &Path,
-        reader: &PackageReader,
         inputs: &PackageReplayInputs,
         context: &DestinationPlanningContext<'_>,
     ) -> Result<PreparedDestinationCommit> {
         self.runtime_capabilities()
             .validate_prepared_bulk_path(context.bulk_path)?;
-        prepare_parquet_commit(self, reader, inputs, context)
+        prepare_parquet_commit(self, inputs, context)
     }
 
     fn begin_prepared_commit(
@@ -228,15 +226,13 @@ impl DestinationRuntime for FilesystemParquetRuntime {
 impl cdf_runtime::FinalizedPackageIngress for FilesystemParquetRuntime {
     fn prepare_package_commit(
         &mut self,
-        _package_dir: &Path,
-        reader: &PackageReader,
         inputs: &PackageReplayInputs,
         context: &DestinationPlanningContext<'_>,
     ) -> Result<PreparedDestinationCommit> {
         self.runtime_capabilities()
             .validate_prepared_bulk_path(context.bulk_path)?;
         let destination = self.destination()?;
-        prepare_parquet_commit(destination, reader, inputs, context)
+        prepare_parquet_commit(destination, inputs, context)
     }
 
     fn begin_prepared_commit(
@@ -281,7 +277,6 @@ fn filesystem_description(root: &Path) -> DestinationDescription {
 
 fn prepare_parquet_commit(
     destination: &ParquetDestination,
-    reader: &PackageReader,
     inputs: &PackageReplayInputs,
     context: &DestinationPlanningContext<'_>,
 ) -> Result<PreparedDestinationCommit> {
@@ -289,9 +284,7 @@ fn prepare_parquet_commit(
         commit: inputs.destination_commit.clone(),
         schema_hash: inputs.schema_hash.clone(),
     };
-    let manifest_segments = reader
-        .identity_segments_verified(context.verified_package)?
-        .to_vec();
+    let manifest_segments = context.verified_package.identity_segments().to_vec();
     let plan = destination.plan_package_commit(&request, &manifest_segments)?;
     let duplicate = plan.duplicate;
     let kernel = plan.kernel.clone();

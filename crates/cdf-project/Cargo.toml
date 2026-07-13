@@ -17,6 +17,7 @@ cdf-http = { path = "../cdf-http" }
 cdf-kernel = { path = "../cdf-kernel" }
 cdf-memory = { path = "../cdf-memory" }
 cdf-package = { path = "../cdf-package" }
+cdf-package-contract = { path = "../cdf-package-contract" }
 cdf-runtime = { path = "../cdf-runtime" }
 cdf-state-sqlite = { path = "../cdf-state-sqlite" }
 hex = "0.4.3"

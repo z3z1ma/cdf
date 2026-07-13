@@ -1,5 +1,3 @@
-use std::path::Path;
-
 use arrow_schema::Schema;
 use cdf_http::SecretUri;
 use cdf_kernel::{
@@ -8,7 +6,7 @@ use cdf_kernel::{
     PackageHash, PipelineId, ResourceStream, Result, SchemaHash, SourcePosition, StateDelta,
     StateSegment, TargetName,
 };
-use cdf_package::{PackageReader, PackageReplayInputs};
+use cdf_package_contract::{PackageReplayInputs, VerifiedPackageAccess};
 use cdf_runtime::{
     DestinationCommitPlanningInputs, DestinationCommitPlanningOutcome, DestinationDescription,
     DestinationDriver, DestinationHealthProbe, DestinationHealthResult, DestinationHealthStatus,
@@ -238,7 +236,7 @@ impl DestinationRuntime for PostgresRuntime {
 
     fn prepare_correction_commit(
         &mut self,
-        package_dir: &Path,
+        package: cdf_package_contract::SharedVerifiedPackageAccess,
         request: &DestinationCorrectionCommitRequest,
     ) -> Result<DestinationCorrectionCommitPlan> {
         let replay = self.replay.as_ref().ok_or_else(|| {
@@ -257,13 +255,10 @@ impl DestinationRuntime for PostgresRuntime {
                 existing_table,
             })?;
         let kernel = plan.kernel.clone();
-        self.destination =
-            self.destination
-                .clone()
-                .with_correction_request(PostgresCorrectionCommitRequest {
-                    package_dir: package_dir.to_path_buf(),
-                    plan,
-                });
+        self.destination = self
+            .destination
+            .clone()
+            .with_correction_request(PostgresCorrectionCommitRequest { package, plan });
         Ok(kernel)
     }
 
@@ -275,8 +270,6 @@ impl DestinationRuntime for PostgresRuntime {
 impl cdf_runtime::FinalizedPackageIngress for PostgresRuntime {
     fn prepare_package_commit(
         &mut self,
-        package_dir: &Path,
-        reader: &PackageReader,
         inputs: &PackageReplayInputs,
         context: &DestinationPlanningContext<'_>,
     ) -> Result<PreparedDestinationCommit> {
@@ -290,17 +283,16 @@ impl cdf_runtime::FinalizedPackageIngress for PostgresRuntime {
             replay.target.clone(),
             replay.dedup.clone(),
             replay.existing_table.clone(),
-            columns_from_package(reader, context.verified_package)?,
+            columns_from_package(context.verified_package.as_ref())?,
         )?;
         let load_plan = self.destination.plan_load(load_input)?;
         let segments = crate::package::expected_segments_for_session(
-            reader,
-            context.verified_package,
+            context.verified_package.as_ref(),
             &load_plan,
             &inputs.destination_commit,
         )?;
         let request = PostgresCommitRequest {
-            package_dir: package_dir.to_path_buf(),
+            package: context.verified_package.clone(),
             plan: load_plan.clone(),
             segments,
         };
@@ -479,10 +471,7 @@ pub fn validate_replay_target(target: &PostgresTarget, package_target: &TargetNa
     Ok(())
 }
 
-fn columns_from_package(
-    reader: &PackageReader,
-    verified: &cdf_package::VerifiedPackage,
-) -> Result<Vec<PostgresColumn>> {
-    let schema = reader.runtime_arrow_schema_verified(verified)?;
+fn columns_from_package(package: &dyn VerifiedPackageAccess) -> Result<Vec<PostgresColumn>> {
+    let schema = package.runtime_arrow_schema()?;
     postgres_columns_for_schema(schema.as_ref())
 }

@@ -6,7 +6,7 @@ use cdf_kernel::{
     CdfError, CommitPlan, DestinationCommitRequest, DestinationId, PackageHash, PlanId, Result,
     SchemaHash, SegmentId, TargetName, WriteDisposition,
 };
-use cdf_package::{PackageReader, SegmentEntry, VerifiedPackage};
+use cdf_package_contract::{SegmentEntry, VerifiedPackageAccess};
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -274,16 +274,14 @@ impl VerifiedFinalBinding {
 
     pub fn from_verified_package(
         attempt_id: LoadAttemptId,
-        reader: &PackageReader,
-        verification: &VerifiedPackage,
+        package: &dyn VerifiedPackageAccess,
         plan: CommitPlan,
     ) -> Result<Self> {
-        let execution_plan_id = reader.recorded_scan_plan_verified(verification)?.plan_id;
+        let execution_plan_id = package.recorded_scan_plan()?.plan_id;
         Self::from_verified_package_with_execution_authority(
             attempt_id,
             execution_plan_id,
-            reader,
-            verification,
+            package,
             plan,
         )
     }
@@ -291,25 +289,16 @@ impl VerifiedFinalBinding {
     pub fn from_verified_package_with_execution_authority(
         attempt_id: LoadAttemptId,
         execution_plan_id: PlanId,
-        reader: &PackageReader,
-        verification: &VerifiedPackage,
+        package: &dyn VerifiedPackageAccess,
         plan: CommitPlan,
     ) -> Result<Self> {
-        let view = reader.replay_view()?;
-        if verification.package_hash() != reader.manifest().package_hash
-            || verification.package_hash() != view.package_hash.as_str()
-        {
-            return Err(CdfError::data(
-                "verified package report does not match the final package manifest hash",
-            ));
-        }
-        let recorded_execution_plan_id = reader.recorded_scan_plan_verified(verification)?.plan_id;
+        let recorded_execution_plan_id = package.recorded_scan_plan()?.plan_id;
         if execution_plan_id != recorded_execution_plan_id {
             return Err(CdfError::contract(format!(
                 "staged execution plan {execution_plan_id} does not match recorded package execution plan {recorded_execution_plan_id}",
             )));
         }
-        let inputs = reader.replay_inputs_verified(verification)?;
+        let inputs = package.replay_inputs()?;
         if plan.target != inputs.destination_commit.target
             || plan.disposition != inputs.destination_commit.disposition
         {
@@ -317,13 +306,13 @@ impl VerifiedFinalBinding {
                 "final package binding target/disposition does not match its commit plan",
             ));
         }
-        let output_schema = reader.runtime_arrow_schema_verified(verification)?;
+        let output_schema = package.runtime_arrow_schema()?;
         let output_arrow_schema_hash =
             cdf_contract::canonical_arrow_schema_hash(output_schema.as_ref())?;
         let schema_hash = inputs.schema_hash.clone();
         let mut seen = BTreeSet::new();
-        let ordered_segments = view
-            .segments
+        let ordered_segments = package
+            .identity_segments()
             .iter()
             .enumerate()
             .map(|(ordinal, entry)| {
@@ -338,7 +327,7 @@ impl VerifiedFinalBinding {
                 StagedSegmentIdentity::from_manifest_entry(entry, schema_hash.clone(), ordinal)
             })
             .collect::<Result<Vec<_>>>()?;
-        let package_hash = PackageHash::new(verification.package_hash())?;
+        let package_hash = PackageHash::new(package.package_hash())?;
         let commit = inputs.destination_commit;
         if commit.package_hash != package_hash
             || commit.idempotency_token.as_str() != package_hash.as_str()

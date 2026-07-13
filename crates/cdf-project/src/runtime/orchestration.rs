@@ -277,7 +277,7 @@ async fn run_project_inner(execution: ProjectRunExecution<'_>) -> Result<Project
         Some(staged) => {
             let staged = std::cell::RefCell::new(staged);
             let mut durable_segment =
-                |entry: &cdf_package::SegmentEntry, batches: &[arrow_array::RecordBatch]| {
+                |entry: &SegmentEntry, batches: &[arrow_array::RecordBatch]| {
                     staged.borrow_mut().stage_segment(entry, batches)
                 };
             let mut stream_finalize = || staged.borrow_mut().finish_background();
@@ -381,7 +381,6 @@ async fn run_project_inner(execution: ProjectRunExecution<'_>) -> Result<Project
     };
     let replay_report = replay_package_with_runtime_and_staged(
         package,
-        execution.package_dir.clone(),
         execution.destination.runtime_mut(),
         execution.checkpoint_store,
         replay_memory,

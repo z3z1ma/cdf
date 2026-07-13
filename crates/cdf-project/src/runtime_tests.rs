@@ -41,11 +41,12 @@ use cdf_kernel::{
     SegmentId, SourcePosition, StateDelta, StateSegment, TargetName, TransactionSupport,
     TrustLevel, VerifyClause, WriteDisposition,
 };
-use cdf_package::{
-    DESTINATION_COMMIT_PLAN_FILE, DestinationCommitPlanPreimage, MANIFEST_FILE, PackageBuilder,
-    PackageManifest, PackageReader, PackageStatus, ProcessedObservationEvidenceArtifact,
-    RECEIPTS_FILE, STATE_INPUT_CHECKPOINT_FILE, STATE_PROPOSED_DELTA_FILE, StateDeltaPreimage,
-    canonical_json_bytes,
+use cdf_package::{PackageBuilder, PackageReader, canonical_json_bytes};
+use cdf_package_contract::{
+    DEDUP_SUMMARY_FILE, DESTINATION_COMMIT_PLAN_FILE, DestinationCommitPlanPreimage, MANIFEST_FILE,
+    PROCESSED_OBSERVATIONS_FILE, PackageManifest, PackageReplayInputs, PackageStatus,
+    ProcessedObservationEvidenceArtifact, RECEIPTS_FILE, STATE_INPUT_CHECKPOINT_FILE,
+    STATE_PROPOSED_DELTA_FILE, SegmentEntry, StateDeltaPreimage,
 };
 use cdf_state_sqlite::{
     RunEventDetails, RunEventKind, RunEventValue, SecretReference, SqliteCheckpointStore,
@@ -901,7 +902,7 @@ fn build_zero_segment_processed_package(package_dir: &Path, package_id: &str) ->
     };
     builder
         .write_json_artifact(
-            cdf_package::PROCESSED_OBSERVATIONS_FILE,
+            PROCESSED_OBSERVATIONS_FILE,
             &ProcessedObservationEvidenceArtifact::new(
                 None,
                 WriteDisposition::Append,
@@ -971,7 +972,7 @@ fn write_compiled_expression_artifacts(builder: &PackageBuilder, stale: bool) {
 
 fn write_state_commit_artifacts(
     builder: &PackageBuilder,
-    segment: &cdf_package::SegmentEntry,
+    segment: &SegmentEntry,
     disposition: WriteDisposition,
     checkpoint_id: &str,
 ) {
@@ -1512,9 +1513,7 @@ impl ProjectDestinationRuntime for MockProjectDestinationRuntime {
 impl cdf_runtime::FinalizedPackageIngress for MockProjectDestinationRuntime {
     fn prepare_package_commit(
         &mut self,
-        _package_dir: &Path,
-        _reader: &PackageReader,
-        inputs: &cdf_package::PackageReplayInputs,
+        inputs: &PackageReplayInputs,
         context: &crate::DestinationPlanningContext<'_>,
     ) -> Result<PreparedDestinationCommit> {
         self.counters.prepares.fetch_add(1, Ordering::SeqCst);
@@ -3937,7 +3936,7 @@ fn merge_dedup_live_run_records_deduped_package_replay_identity_and_duplicate_re
             .identity
             .files
             .iter()
-            .any(|file| file.path == cdf_package::DEDUP_SUMMARY_FILE)
+            .any(|file| file.path == DEDUP_SUMMARY_FILE)
     );
     let summary = reader.read_dedup_summary_json().unwrap().unwrap();
     assert_eq!(summary["rule_id"], "row-rule-0000-dedup");
@@ -6123,7 +6122,6 @@ source = "resources/mock.toml"
 
     let report = replay_package_with_runtime(
         package,
-        package_dir.clone(),
         replay_runtime.as_mut(),
         &store,
         test_execution_services().memory(),
@@ -6224,7 +6222,6 @@ fn generic_replay_streams_verified_segments_through_staged_final_binding() {
 
     let report = replay_package_with_runtime(
         package,
-        package_dir,
         &mut runtime,
         &store,
         test_execution_services().memory(),
@@ -6396,7 +6393,6 @@ fn generic_stage_hook_stops_mock_replay_before_destination_write() {
 
     let error = replay_package_with_runtime(
         package,
-        package_dir.clone(),
         runtime.as_mut(),
         &store,
         test_execution_services().memory(),

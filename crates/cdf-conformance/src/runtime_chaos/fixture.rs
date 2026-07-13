@@ -1,7 +1,7 @@
 use std::path::{Path, PathBuf};
 
 use cdf_kernel::{CdfError, Receipt, Result, TargetName, WriteDisposition};
-use cdf_package::{PackageReplayInputs, PackageStatus};
+use cdf_package_contract::{PackageReplayInputs, PackageStatus};
 use cdf_project::{
     PackageArtifactRecoveryRequest, PackageArtifactReplayRequest, PackageReplayReport,
     recover_package_from_artifacts, replay_package_from_artifacts,

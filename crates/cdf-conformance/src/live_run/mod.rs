@@ -10,7 +10,8 @@ use cdf_kernel::{
     CdfError, CheckpointId, CheckpointStatus, PipelineId, Receipt, Result, ScanRequest,
     SourcePosition, StateDelta, TargetName, WriteDisposition,
 };
-use cdf_package::{PackageReader, PackageStatus};
+use cdf_package::PackageReader;
+use cdf_package_contract::PackageStatus;
 use cdf_project::{
     InMemoryResourceSourceResolver, ProjectRunReport, ProjectRunRequest, ProjectRunSource,
     ResolvedProjectDestination, compile_project_declarative_resources_with_root, parse_cdf_toml,

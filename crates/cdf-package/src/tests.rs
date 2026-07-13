@@ -22,6 +22,7 @@ use cdf_memory::{
     ConsumerKey, DeterministicMemoryCoordinator, MemoryClass, MemoryCoordinator,
     record_batch_retained_bytes,
 };
+use cdf_package_contract::*;
 
 #[cfg(unix)]
 #[test]

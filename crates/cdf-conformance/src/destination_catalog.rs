@@ -598,9 +598,7 @@ impl DestinationRuntime for FourthRuntime {
 impl cdf_runtime::FinalizedPackageIngress for FourthRuntime {
     fn prepare_package_commit(
         &mut self,
-        _package_dir: &Path,
-        _reader: &cdf_package::PackageReader,
-        inputs: &cdf_package::PackageReplayInputs,
+        inputs: &cdf_package_contract::PackageReplayInputs,
         context: &cdf_runtime::DestinationPlanningContext<'_>,
     ) -> Result<cdf_runtime::PreparedDestinationCommit> {
         fourth_runtime_capabilities().validate_prepared_bulk_path(context.bulk_path)?;

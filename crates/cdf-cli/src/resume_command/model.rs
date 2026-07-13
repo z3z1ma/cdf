@@ -1,7 +1,8 @@
 use std::path::{Path, PathBuf};
 
 use cdf_kernel::{Checkpoint, CheckpointStatus, CheckpointStore, Receipt, StateDelta};
-use cdf_package::{PackageReader, PackageStatus};
+use cdf_package::PackageReader;
+use cdf_package_contract::{PackageReplayInputs, PackageStatus};
 use cdf_project::{PackageReplayReport, ProjectReceiptSource};
 use cdf_state_sqlite::{RunEvent, SqliteCheckpointStore};
 
@@ -13,7 +14,7 @@ pub(super) struct ResumePackageFacts {
     pub(super) path: PathBuf,
     pub(super) reader: PackageReader,
     pub(super) status: PackageStatus,
-    pub(super) replay_inputs: Option<cdf_package::PackageReplayInputs>,
+    pub(super) replay_inputs: Option<PackageReplayInputs>,
     pub(super) receipts: Vec<Receipt>,
 }
 

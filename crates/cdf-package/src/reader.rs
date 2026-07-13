@@ -17,26 +17,24 @@ use cdf_memory::{
     ConsumerKey, MemoryClass, MemoryCoordinator, MemoryLease, ReservationRequest,
     record_batch_retained_bytes, reserve_blocking,
 };
+use cdf_package_contract::{
+    DEDUP_SUMMARY_FILE, DESTINATION_COMMIT_PLAN_FILE, DestinationCommitPlanPreimage,
+    PROCESSED_OBSERVATIONS_FILE, PackageManifest, PackageReplayInputs, PackageStatus,
+    ProcessedObservationEvidenceArtifact, QuarantineRecord, ReplayView, SCAN_PLAN_FILE,
+    STATE_INPUT_CHECKPOINT_FILE, STATE_PROPOSED_DELTA_FILE, SegmentEntry, StateDeltaPreimage,
+    TombstoneReport, VerificationReport, VerifiedPackageAccess,
+};
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use serde::de::DeserializeOwned;
 use sha2::{Digest, Sha256};
 
 use crate::{
-    artifacts::{
-        DEDUP_SUMMARY_FILE, DESTINATION_COMMIT_PLAN_FILE, DestinationCommitPlanPreimage,
-        PROCESSED_OBSERVATIONS_FILE, PackageReplayInputs, ProcessedObservationEvidenceArtifact,
-        SCAN_PLAN_FILE, STATE_INPUT_CHECKPOINT_FILE, STATE_PROPOSED_DELTA_FILE, StateDeltaPreimage,
-        read_json_artifact, read_optional_json_artifact,
-    },
-    model::{
-        PackageManifest, PackageStatus, ReplayView, SegmentEntry, TombstoneReport,
-        VerificationReport,
-    },
+    artifacts::{read_json_artifact, read_optional_json_artifact},
     ops::{
         append_receipt, read_manifest, read_receipts, read_segment_file, tombstone_package,
         update_package_status, verify_package,
     },
-    quarantine::{QuarantineRecord, quarantine_records_from_package_file},
+    quarantine::quarantine_records_from_package_file,
     storage::{normalize_artifact_path, package_path},
 };
 
@@ -67,6 +65,33 @@ impl Eq for VerifiedPackage {}
 pub struct VerifiedPackageReader {
     reader: PackageReader,
     verified: VerifiedPackage,
+}
+
+impl VerifiedPackageAccess for VerifiedPackageReader {
+    fn package_hash(&self) -> &str {
+        self.verified.package_hash()
+    }
+
+    fn identity_segments(&self) -> &[SegmentEntry] {
+        &self.reader.manifest.identity.segments
+    }
+
+    fn recorded_scan_plan(&self) -> Result<ScanPlan> {
+        self.reader.recorded_scan_plan_verified(&self.verified)
+    }
+
+    fn replay_inputs(&self) -> Result<PackageReplayInputs> {
+        self.reader.replay_inputs_verified(&self.verified)
+    }
+
+    fn runtime_arrow_schema(&self) -> Result<arrow_schema::SchemaRef> {
+        self.reader.runtime_arrow_schema_verified(&self.verified)
+    }
+
+    fn quarantine_records(&self) -> Result<Vec<QuarantineRecord>> {
+        self.reader.require_verification(&self.verified)?;
+        self.reader.read_quarantine_records()
+    }
 }
 
 impl VerifiedPackageReader {

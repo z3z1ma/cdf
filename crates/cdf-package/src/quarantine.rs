@@ -4,31 +4,12 @@ use ::parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use arrow_array::{Array, RecordBatch, StringArray, UInt64Array};
 use arrow_schema::{DataType, Field, Schema};
 use cdf_kernel::{CdfError, Result, SourcePosition};
-use serde::{Deserialize, Serialize};
+use cdf_package_contract::{QuarantineObservedValue, QuarantineRecord};
 
 use crate::{
     json::canonical_json_bytes,
     storage::{normalize_artifact_path, package_path},
 };
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct QuarantineRecord {
-    pub source_row_ordinal: u64,
-    pub rule_id: String,
-    pub error_code: String,
-    pub source_position: Option<SourcePosition>,
-    pub observed_value_redacted: QuarantineObservedValue,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
-pub enum QuarantineObservedValue {
-    Null,
-    Preserved { value: String },
-    Hashed { algorithm: String, value: String },
-    Omitted,
-    Masked { value: String },
-}
 
 pub fn quarantine_records_from_parquet_file(
     path: impl AsRef<Path>,

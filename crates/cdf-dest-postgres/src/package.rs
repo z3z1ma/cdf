@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 
-use cdf_package::{PackageReader, VerifiedPackage};
+use cdf_package_contract::VerifiedPackageAccess;
 
 use crate::{validate::plan_segment_acks, *};
 
@@ -16,24 +16,24 @@ pub(crate) struct PostgresExpectedSegment {
 }
 
 pub(crate) fn expected_segments_for_session(
-    reader: &PackageReader,
-    verified: &VerifiedPackage,
+    package: &dyn VerifiedPackageAccess,
     plan: &PostgresLoadPlan,
     request: &DestinationCommitRequest,
 ) -> Result<PostgresSessionSegments> {
-    let manifest = reader.manifest();
-    let manifest_segments = reader.identity_segments_verified(verified)?;
+    let manifest_segments = package.identity_segments();
     let plan_hash = plan_package_hash(plan)?;
-    if manifest.package_hash != plan_hash.as_str() {
+    if package.package_hash() != plan_hash.as_str() {
         return Err(CdfError::data(format!(
             "Postgres plan package hash {} does not match package {}",
-            plan_hash, manifest.package_hash
+            plan_hash,
+            package.package_hash()
         )));
     }
-    if request.package_hash.as_str() != manifest.package_hash {
+    if request.package_hash.as_str() != package.package_hash() {
         return Err(CdfError::data(format!(
             "Postgres commit request package hash {} does not match package {}",
-            request.package_hash, manifest.package_hash
+            request.package_hash,
+            package.package_hash()
         )));
     }
 

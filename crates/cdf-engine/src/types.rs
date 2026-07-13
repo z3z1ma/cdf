@@ -10,7 +10,8 @@ use cdf_kernel::{
     RunPhaseMetric, ScanPlan, ScanPredicate, ScanRequest, SchemaHash, SegmentId, SourcePosition,
     TerminalSchemaObservationQuarantine, WriteDisposition,
 };
-use cdf_package::{PackageManifest, SegmentEntry, VerifiedPackage};
+use cdf_package::VerifiedPackage;
+use cdf_package_contract::{PackageManifest, SegmentEntry};
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

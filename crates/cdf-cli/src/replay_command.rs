@@ -7,7 +7,8 @@ use cdf_kernel::{
     CdfError, Checkpoint, PackageHash, Receipt, RunEvent, RunEventAppend, RunEventDetails,
     RunEventKind, RunEventSink, RunEventValue, RunId, ScopeKey, SegmentAck, StateDelta,
 };
-use cdf_package::{PackageReader, PackageReplayInputs};
+use cdf_package::PackageReader;
+use cdf_package_contract::PackageReplayInputs;
 use cdf_project::{
     PackageArtifactRecoveryRequest, PackageArtifactReplayRequest, PackageReplayReport,
     ProjectResolutionContext, ResolvedProjectDestination, RuntimeStage,

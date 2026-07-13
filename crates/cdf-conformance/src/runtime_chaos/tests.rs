@@ -1,7 +1,7 @@
 use std::fs;
 
 use cdf_kernel::{CheckpointStatus, CheckpointStore, Result};
-use cdf_package::PackageStatus;
+use cdf_package_contract::PackageStatus;
 use cdf_state_sqlite::SqliteCheckpointStore;
 
 use crate::run_matrix::local_postgres::LivePostgres;

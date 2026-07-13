@@ -29,9 +29,10 @@ use cdf_kernel::{
     ResourceStream, RowProvenanceAddress, ScanPredicate, ScanRequest, SchemaSnapshotReference,
     SchemaSource, ScopeKey, SegmentId, SortDirection, SourcePosition, TrustLevel, with_source_name,
 };
-use cdf_package::{
-    DestinationCommitPlanPreimage, PackageBuilder, PackageManifest, PackageReader,
-    QuarantineObservedValue, QuarantineRecord, SegmentEntry, StateDeltaPreimage,
+use cdf_package::{PackageBuilder, PackageReader};
+use cdf_package_contract::{
+    DestinationCommitPlanPreimage, PackageManifest, QuarantineObservedValue, QuarantineRecord,
+    SegmentEntry, StateDeltaPreimage,
 };
 use cdf_runtime::DestinationRuntime;
 use cdf_source_postgres::{PostgresTableResource, discover_postgres_table_catalog_schema};
@@ -733,6 +734,7 @@ fn try_session_commit(
     let mut runtime = PostgresRuntime::for_replay(&destination, env.target(table), dedup, None);
     let reader = PackageReader::open(package_dir)?;
     let verified = reader.verify_for_consumption()?;
+    let package = Arc::new(reader.clone().with_verification(verified.clone())?);
     let inputs = reader.replay_inputs_verified(&verified)?;
     let request = &inputs.destination_commit;
     let manifest = reader.manifest();
@@ -743,10 +745,8 @@ fn try_session_commit(
     let mut prepared = match runtime.ingress() {
         cdf_runtime::DestinationIngress::FinalizedPackage(ingress) => ingress
             .prepare_package_commit(
-                package_dir,
-                &reader,
                 &inputs,
-                &cdf_runtime::DestinationPlanningContext::new(&verified, &bulk_path),
+                &cdf_runtime::DestinationPlanningContext::new(package, &bulk_path),
             )?,
         cdf_runtime::DestinationIngress::StagedSegments(_) => {
             return Err(CdfError::internal(
@@ -803,10 +803,11 @@ fn try_low_level_session_commit(
     let destination = env.destination();
     let reader = PackageReader::open(package_dir)?;
     let verified = reader.verify_for_consumption()?;
+    let package = Arc::new(reader.clone().with_verification(verified)?);
     let segments =
-        crate::package::expected_segments_for_session(&reader, &verified, &plan, &request)?;
+        crate::package::expected_segments_for_session(package.as_ref(), &plan, &request)?;
     let mut session = destination.begin_commit_session(PostgresCommitRequest {
-        package_dir: package_dir.to_path_buf(),
+        package,
         plan,
         segments,
     })?;
@@ -826,7 +827,7 @@ fn try_correction_commit(
     let destination = env
         .destination()
         .with_correction_request(PostgresCorrectionCommitRequest {
-            package_dir: package_dir.to_path_buf(),
+            package: Arc::new(PackageReader::open(package_dir)?.into_verified()?),
             plan,
         });
     let generic_plan = destination.plan_correction(&request)?;
@@ -1205,11 +1206,12 @@ fn live_begin_session_abort_rolls_back_system_migrations() {
     let destination = env.destination();
     let reader = PackageReader::open(package_dir.path()).unwrap();
     let verified = reader.verify_for_consumption().unwrap();
+    let package = Arc::new(reader.clone().with_verification(verified).unwrap());
     let segments =
-        crate::package::expected_segments_for_session(&reader, &verified, &plan, &request).unwrap();
+        crate::package::expected_segments_for_session(package.as_ref(), &plan, &request).unwrap();
     let mut session = destination
         .begin_commit_session(PostgresCommitRequest {
-            package_dir: package_dir.path().to_path_buf(),
+            package,
             plan,
             segments,
         })
@@ -1750,7 +1752,12 @@ fn live_addressed_correction_updates_exact_rows_preserves_residuals_and_replays(
         })
         .unwrap();
     let commit_request = PostgresCorrectionCommitRequest {
-        package_dir: correction_dir.path().to_path_buf(),
+        package: Arc::new(
+            PackageReader::open(correction_dir.path())
+                .unwrap()
+                .into_verified()
+                .unwrap(),
+        ),
         plan: plan.clone(),
     };
     let destination = env

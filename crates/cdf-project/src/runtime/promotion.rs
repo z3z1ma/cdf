@@ -23,9 +23,9 @@ use cdf_kernel::{
     PromotionSettlementStore, Receipt, ResourceId, SchemaHash, ScopeKey, ScopeLease,
     SourcePosition, StateDelta, StateSegment, TargetName,
 };
-use cdf_package::{
-    DestinationCommitPlanPreimage, MANIFEST_FILE, PackageBuilder, PackageReader, PackageStatus,
-    StateDeltaPreimage,
+use cdf_package::{PackageBuilder, PackageReader};
+use cdf_package_contract::{
+    DestinationCommitPlanPreimage, MANIFEST_FILE, PackageStatus, StateDeltaPreimage,
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -1502,8 +1502,9 @@ fn settle_correction_package(
     if !reader.receipts()?.is_empty() {
         return verify_stored_correction_receipt(destination, package);
     }
+    let verified_package = Arc::new(reader.clone().into_verified()?);
     let runtime = destination.runtime_mut();
-    let plan = runtime.prepare_correction_commit(&package.package_dir, &request)?;
+    let plan = runtime.prepare_correction_commit(verified_package, &request)?;
     let protocol = runtime.protocol();
     let mut session = protocol.begin_correction(request.clone(), plan.clone())?;
     session.apply_migrations()?;
@@ -1544,8 +1545,9 @@ fn verify_stored_correction_receipt(
         package.state_delta.segments.clone(),
         package.artifact.operations.clone(),
     )?;
+    let verified_package = Arc::new(reader.clone().into_verified()?);
     let runtime = destination.runtime_mut();
-    let plan = runtime.prepare_correction_commit(&package.package_dir, &request)?;
+    let plan = runtime.prepare_correction_commit(verified_package, &request)?;
     let protocol = runtime.protocol();
     plan.validate_receipt(&request, &receipt)?;
     let verification = protocol.verify_correction(&receipt)?;

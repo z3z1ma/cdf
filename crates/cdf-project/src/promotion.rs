@@ -17,6 +17,9 @@ use cdf_kernel::{
     RowProvenanceAddress, TypeMappingFidelity,
 };
 use cdf_package::PackageReader;
+#[cfg(test)]
+use cdf_package_contract::{DestinationCommitPlanPreimage, RECEIPTS_FILE};
+use cdf_package_contract::{PackageStatus, StateDeltaPreimage};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
@@ -460,7 +463,7 @@ fn inspect_local_promotion_package(package_dir: &Path) -> LocalPackagePromotionA
             return availability;
         }
     };
-    if reader.manifest().lifecycle.status == cdf_package::PackageStatus::Archived {
+    if reader.manifest().lifecycle.status == PackageStatus::Archived {
         availability.status = LocalPromotionAvailabilityStatus::TombstoneOnly;
         return availability;
     }
@@ -1205,7 +1208,7 @@ struct CanonicalResidualScan {
 
 fn structurally_verified_package_receipts(
     reader: &PackageReader,
-    delta: &cdf_package::StateDeltaPreimage,
+    delta: &StateDeltaPreimage,
     package_hash: &PackageHash,
 ) -> cdf_kernel::Result<Vec<cdf_kernel::Receipt>> {
     let mut receipts = reader.receipts()?;
@@ -1395,7 +1398,7 @@ fn inventory_local_packages(
             }
         };
         report.package_hash = Some(reader.manifest().package_hash.clone());
-        let archived = reader.manifest().lifecycle.status == cdf_package::PackageStatus::Archived;
+        let archived = reader.manifest().lifecycle.status == PackageStatus::Archived;
         if !archived && let Err(error) = reader.verify() {
             coverage_complete = false;
             report.detail = Some(error.to_string());
@@ -2896,7 +2899,7 @@ mod tests {
             version: CHECKPOINT_STATE_VERSION,
             files: Vec::new(),
         });
-        let state_delta = cdf_package::StateDeltaPreimage {
+        let state_delta = StateDeltaPreimage {
             checkpoint_id: CheckpointId::new("checkpoint-archived").unwrap(),
             pipeline_id: PipelineId::new("pipeline-archived").unwrap(),
             resource_id: ResourceId::new("source.resource").unwrap(),
@@ -2914,7 +2917,7 @@ mod tests {
             .unwrap();
         builder
             .write_commit_plan_preimage_artifact(
-                &cdf_package::DestinationCommitPlanPreimage::package_hash_token(
+                &DestinationCommitPlanPreimage::package_hash_token(
                     TargetName::new("archived_target").unwrap(),
                     WriteDisposition::Append,
                     Vec::new(),
@@ -2923,9 +2926,7 @@ mod tests {
                 ),
             )
             .unwrap();
-        let manifest = builder
-            .finish_with_status(cdf_package::PackageStatus::Archived)
-            .unwrap();
+        let manifest = builder.finish_with_status(PackageStatus::Archived).unwrap();
         let package_hash = PackageHash::new(manifest.package_hash).unwrap();
         cdf_package::PackageReader::open(&package_dir)
             .unwrap()
@@ -3409,7 +3410,7 @@ mod tests {
         let mut receipts = reader.receipts().unwrap();
         receipts[0].schema_hash = SchemaHash::new("sha256:wrong").unwrap();
         fs::write(
-            invalid_receipt.join(cdf_package::RECEIPTS_FILE),
+            invalid_receipt.join(RECEIPTS_FILE),
             serde_json::to_vec_pretty(&receipts).unwrap(),
         )
         .unwrap();
@@ -3608,7 +3609,7 @@ mod tests {
         let schema_hash = SchemaHash::new("sha256:schema").unwrap();
         builder.write_input_checkpoint_artifact(&None).unwrap();
         builder
-            .write_state_delta_preimage_artifact(&cdf_package::StateDeltaPreimage {
+            .write_state_delta_preimage_artifact(&StateDeltaPreimage {
                 checkpoint_id: CheckpointId::new(format!("checkpoint-{package_id}")).unwrap(),
                 pipeline_id: PipelineId::new("pipeline").unwrap(),
                 resource_id: ResourceId::new(resource_id).unwrap(),
@@ -3623,7 +3624,7 @@ mod tests {
             .unwrap();
         builder
             .write_commit_plan_preimage_artifact(
-                &cdf_package::DestinationCommitPlanPreimage::package_hash_token(
+                &DestinationCommitPlanPreimage::package_hash_token(
                     TargetName::new("events").unwrap(),
                     WriteDisposition::Append,
                     Vec::new(),
@@ -3632,9 +3633,7 @@ mod tests {
                 ),
             )
             .unwrap();
-        let manifest = builder
-            .finish_with_status(cdf_package::PackageStatus::Packaged)
-            .unwrap();
+        let manifest = builder.finish_with_status(PackageStatus::Packaged).unwrap();
         if add_receipt {
             let package_hash = PackageHash::new(manifest.package_hash).unwrap();
             PackageReader::open(&package_dir)

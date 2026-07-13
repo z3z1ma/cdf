@@ -24,10 +24,8 @@ use cdf_kernel::{
     PipelineId, PredicateId, ResourceId, ResourceStream, RunId, ScanPredicate, ScanRequest,
     ScopeKey, SegmentId, SourcePosition, StateSegment, TargetName, WriteDisposition,
 };
-use cdf_package::{
-    DestinationCommitPlanPreimage, PackageBuilder, PackageReader, StateDeltaPreimage,
-    archive_package_to_parquet,
-};
+use cdf_package::{PackageBuilder, PackageReader, archive_package_to_parquet};
+use cdf_package_contract::{DestinationCommitPlanPreimage, PackageStatus, StateDeltaPreimage};
 use cdf_project::{
     PackageArtifactReplayRequest, ProjectRunRequest, ProjectRunSource, ResolvedProjectDestination,
     replay_package_from_artifacts, run_project,
@@ -598,7 +596,7 @@ fn build_package_fixture(
         .ok_or_else(|| bench_error("package fixture requires at least one batch"))?;
     let schema_hash = schema_hash(schema.as_ref())?;
     let builder = PackageBuilder::create(&package_dir, package_id)?;
-    builder.update_status(cdf_package::PackageStatus::Extracting)?;
+    builder.update_status(PackageStatus::Extracting)?;
     builder.write_json_artifact(
         "plan/benchmark-fixture.json",
         &serde_json::json!({

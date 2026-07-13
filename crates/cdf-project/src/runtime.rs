@@ -64,9 +64,10 @@ mod prelude {
         ScanPlan, ScanRequest, SchemaHash, ScopeKey, SegmentAck, SegmentId, SourcePosition,
         StateDelta, StateSegment, TargetName, WriteDisposition,
     };
-    pub(super) use cdf_package::{
-        DestinationCommitPlanPreimage, PackageReader, PackageReplayInputs, PackageStatus,
-        SegmentEntry, StateDeltaPreimage, VerifiedPackage, VerifiedPackageReader,
+    pub(super) use cdf_package::{PackageReader, VerifiedPackage, VerifiedPackageReader};
+    pub(super) use cdf_package_contract::{
+        DestinationCommitPlanPreimage, PackageReplayInputs, PackageStatus, SegmentEntry,
+        StateDeltaPreimage,
     };
     pub(super) use cdf_runtime::ExecutionServices;
     pub(super) use cdf_state_sqlite::{RunLedgerSnapshot, SqliteCheckpointStore, SqliteRunLedger};

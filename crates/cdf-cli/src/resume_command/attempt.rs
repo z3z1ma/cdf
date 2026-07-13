@@ -1,7 +1,8 @@
 use std::path::{Path, PathBuf};
 
 use cdf_kernel::{CdfError, Checkpoint, Receipt, RunEventSink, RunId, StateDelta};
-use cdf_package::{PackageReader, PackageStatus};
+use cdf_package::PackageReader;
+use cdf_package_contract::{PackageReplayInputs, PackageStatus};
 use cdf_project::{
     PackageArtifactRecoveryRequest, PackageArtifactReplayRequest, recover_package_from_artifacts,
     replay_package_from_artifacts,
@@ -207,7 +208,7 @@ impl<'a> ResumeAttempt<'a> {
     fn replay_finalized_package(
         &self,
         package: &ResumePackageFacts,
-        inputs: &cdf_package::PackageReplayInputs,
+        inputs: &PackageReplayInputs,
     ) -> Result<ResumeReport, CliError> {
         let mut selected =
             match self.selected_destination_or_report(&inputs.destination_commit.target)? {

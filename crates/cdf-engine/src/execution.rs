@@ -32,7 +32,10 @@ use cdf_memory::{
     ConsumerKey, DEFAULT_PROCESS_BUDGET_BYTES, DeterministicMemoryCoordinator, MemoryClass,
     MemoryCoordinator, MemoryLease, ReservationRequest, reserve,
 };
-use cdf_package::{PackageBuilder, PackageStatus, QuarantineObservedValue, QuarantineRecord};
+use cdf_package::PackageBuilder;
+use cdf_package_contract::{
+    PackageStatus, QuarantineObservedValue, QuarantineRecord, SegmentEntry,
+};
 use futures_util::{StreamExt, stream::FuturesOrdered};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -58,8 +61,7 @@ use crate::{
 
 pub type PackagePreFinalizeHook<'a> =
     dyn Fn(&PackageBuilder, EnginePackageDraft<'_>) -> Result<()> + 'a;
-pub type DurableSegmentHook<'a> =
-    dyn FnMut(&cdf_package::SegmentEntry, &[RecordBatch]) -> Result<()> + 'a;
+pub type DurableSegmentHook<'a> = dyn FnMut(&SegmentEntry, &[RecordBatch]) -> Result<()> + 'a;
 pub type StreamingFinalizeHook<'a> = dyn FnMut() -> Result<()> + 'a;
 const SOURCE_ROW_FIELD: &str = "_cdf_internal_source_row";
 
@@ -68,11 +70,7 @@ struct DurableSegmentObserver<'a> {
 }
 
 impl DurableSegmentObserver<'_> {
-    fn observe(
-        &mut self,
-        segment: &cdf_package::SegmentEntry,
-        batches: &[RecordBatch],
-    ) -> Result<()> {
+    fn observe(&mut self, segment: &SegmentEntry, batches: &[RecordBatch]) -> Result<()> {
         match self.hook.as_deref_mut() {
             Some(hook) => hook(segment, batches),
             None => Ok(()),
@@ -1037,7 +1035,7 @@ struct PreparedKernelOutput {
 struct OutputWriteState<'a> {
     profile: &'a mut ExecutionProfile,
     lineage: &'a mut LineageSummary,
-    segments: &'a mut Vec<cdf_package::SegmentEntry>,
+    segments: &'a mut Vec<SegmentEntry>,
     segment_positions: &'a mut Vec<EngineSegmentPosition>,
     output_schema: &'a mut Option<SchemaArtifact>,
     expected_schema: &'a Schema,
@@ -1789,7 +1787,7 @@ where
 
     let builder = PackageBuilder::create(package_dir, plan.package_id.clone())?;
     builder.update_status(PackageStatus::Extracting)?;
-    builder.write_json_artifact(cdf_package::SCAN_PLAN_FILE, &plan.scan)?;
+    builder.write_json_artifact(cdf_package_contract::SCAN_PLAN_FILE, &plan.scan)?;
     builder.write_json_artifact("plan/explain.json", &plan.explain)?;
     if let Some(graph) = &plan.operator_graph {
         graph.validate()?;
@@ -4119,7 +4117,8 @@ mod transform_kernel_tests {
     };
     use cdf_kernel::{BatchId, TrustLevel};
     use cdf_memory::{DeterministicMemoryCoordinator, MemoryCoordinator};
-    use cdf_package::{PackageBuilder, QuarantineObservedValue, QuarantineRecord};
+    use cdf_package::PackageBuilder;
+    use cdf_package_contract::{QuarantineObservedValue, QuarantineRecord};
 
     use super::{
         QuarantinePartAccumulator, ResidualBatchContext, TransformKernelMode, apply_contract_exec,
