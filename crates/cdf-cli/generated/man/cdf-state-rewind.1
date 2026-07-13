@@ -4,19 +4,19 @@
 .SH NAME
 cdf\-state\-rewind \- Create a marker that rewinds checkpoint state
 .SH SYNOPSIS
-\fBcdf state rewind\fR [\fB\-\-pipeline\fR] [\fB\-q\fR|\fB\-\-quiet\fR] [\fB\-\-resource\fR] [\fB\-v\fR|\fB\-\-verbose\fR]... [\fB\-\-color\fR] [\fB\-\-scope\fR] [\fB\-\-no\-color\fR] [\fB\-\-scope\-json\fR] [\fB\-\-progress\fR] [\fB\-\-target\-checkpoint\fR] [\fB\-\-marker\-checkpoint\fR] [\fB\-\-unicode\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fIRESOURCE\fR]
+\fBcdf state rewind\fR [\fB\-\-pipeline\fR] [\fB\-q\fR|\fB\-\-quiet\fR] [\fB\-\-scope\fR] [\fB\-v\fR|\fB\-\-verbose\fR]... [\fB\-\-color\fR] [\fB\-\-scope\-json\fR] [\fB\-\-progress\fR] [\fB\-\-to\fR] [\fB\-\-unicode\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fIRESOURCE\fR]
 .SH DESCRIPTION
 Create a marker that rewinds checkpoint state
 .SH OPTIONS
 .TP
 \fB\-\-pipeline\fR \fI<ID>\fR
-Pipeline identifier compatibility option
+Pipeline identifier
 .TP
 \fB\-q\fR, \fB\-\-quiet\fR
 Suppress progress and non\-primary success narration
 .TP
-\fB\-\-resource\fR \fI<RESOURCE>\fR
-Resource identifier (compatibility form)
+\fB\-\-scope\fR \fI<KEY=VALUE>\fR
+Checkpoint scope entry as key=value; may be repeated
 .TP
 \fB\-v\fR, \fB\-\-verbose\fR
 Show evidence detail; repeat for diagnostics
@@ -36,14 +36,8 @@ always
 never
 .RE
 .TP
-\fB\-\-scope\fR \fI<KEY=VALUE>\fR
-Checkpoint scope entry as key=value; may be repeated
-.TP
-\fB\-\-no\-color\fR
-Compatibility alias for \-\-color never
-.TP
 \fB\-\-scope\-json\fR \fI<JSON>\fR
-JSON checkpoint scope compatibility form
+Checkpoint scope encoded as JSON
 .TP
 \fB\-\-progress\fR \fI<WHEN>\fR
 Progress policy: auto, always, or never
@@ -60,11 +54,8 @@ always
 never
 .RE
 .TP
-\fB\-\-target\-checkpoint\fR \fI<CHECKPOINT>\fR
-Checkpoint to rewind to
-.TP
-\fB\-\-marker\-checkpoint\fR \fI<CHECKPOINT>\fR
-Explicit rewind marker identifier for scripts
+\fB\-\-to\fR \fI<CHECKPOINT>\fR
+Destination URI or cursor upper bound, as shown in usage
 .TP
 \fB\-\-unicode\fR \fI<WHEN>\fR
 Unicode policy: auto, always, or never

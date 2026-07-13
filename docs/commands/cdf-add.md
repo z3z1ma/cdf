@@ -18,7 +18,6 @@ Options:
       --color <WHEN>          Color policy: auto, always, or never [possible values: auto, always, never]
       --cursor <FIELD>        Cursor field
       --cursor-param <PARAM>  Request parameter carrying the cursor
-      --no-color              Compatibility alias for --color never
       --progress <WHEN>       Progress policy: auto, always, or never [possible values: auto, always, never]
       --unicode <WHEN>        Unicode policy: auto, always, or never [possible values: auto, always, never]
   -h, --help                  Print help

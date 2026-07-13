@@ -4,16 +4,13 @@
 .SH NAME
 cdf\-schema\-pin \- Pin a discovered schema into the project contract
 .SH SYNOPSIS
-\fBcdf schema pin\fR [\fB\-q\fR|\fB\-\-quiet\fR] [\fB\-\-resource\fR] [\fB\-v\fR|\fB\-\-verbose\fR]... [\fB\-\-color\fR] [\fB\-\-no\-color\fR] [\fB\-\-progress\fR] [\fB\-\-unicode\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fIRESOURCE\fR]
+\fBcdf schema pin\fR [\fB\-q\fR|\fB\-\-quiet\fR] [\fB\-v\fR|\fB\-\-verbose\fR]... [\fB\-\-color\fR] [\fB\-\-progress\fR] [\fB\-\-unicode\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fIRESOURCE\fR]
 .SH DESCRIPTION
 Pin a discovered schema into the project contract
 .SH OPTIONS
 .TP
 \fB\-q\fR, \fB\-\-quiet\fR
 Suppress progress and non\-primary success narration
-.TP
-\fB\-\-resource\fR \fI<RESOURCE>\fR
-Resource identifier (compatibility form)
 .TP
 \fB\-v\fR, \fB\-\-verbose\fR
 Show evidence detail; repeat for diagnostics
@@ -32,9 +29,6 @@ always
 .IP \(bu 2
 never
 .RE
-.TP
-\fB\-\-no\-color\fR
-Compatibility alias for \-\-color never
 .TP
 \fB\-\-progress\fR \fI<WHEN>\fR
 Progress policy: auto, always, or never

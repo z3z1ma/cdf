@@ -49,10 +49,7 @@ pub(crate) fn run(
     }
     let mut args = args;
     let requested = args.resource_id.clone().ok_or_else(|| {
-        CliError::usage_with(
-            "run requires RESOURCE or --resource",
-            error_catalog::RUN_ARGUMENT,
-        )
+        CliError::usage_with("run requires RESOURCE", error_catalog::RUN_ARGUMENT)
     })?;
     let mut context =
         ProjectContext::load_for_command("run", cli.project.as_ref(), cli.env.as_deref())?;
@@ -90,14 +87,13 @@ pub(crate) fn run(
         &ScanArgs {
             resource_id: explicit.resource_id.clone(),
             destination_uri: None,
-            target: None,
             projection: None,
             filters: Vec::new(),
             limit: None,
             order_by: Vec::new(),
-            package_id: Some(explicit.package_id.clone()),
             no_pin: false,
         },
+        Some(&explicit.package_id),
         identifier_policy.as_ref(),
         &resolved.destination.runtime_capabilities(),
     )?;
@@ -416,27 +412,16 @@ fn shell_argument(value: &str) -> String {
 
 fn resolved_run_args(args: RunArgs) -> Result<ResolvedRunArgs, CliError> {
     let resource_id = args.resource_id.ok_or_else(|| {
-        CliError::usage_with(
-            "run requires RESOURCE or --resource",
-            error_catalog::RUN_ARGUMENT,
-        )
+        CliError::usage_with("run requires RESOURCE", error_catalog::RUN_ARGUMENT)
     })?;
     let suffix = minted_run_suffix(&resource_id);
-    let package_id = args.package_id.unwrap_or_else(|| format!("pkg-{suffix}"));
-    let checkpoint_id = args
-        .checkpoint_id
-        .unwrap_or_else(|| format!("checkpoint-{suffix}"));
+    let package_id = format!("pkg-{suffix}");
+    let checkpoint_id = format!("checkpoint-{suffix}");
     Ok(ResolvedRunArgs {
         resource_id: resource_id.clone(),
-        pipeline_id: PipelineId::new(
-            args.pipeline_id
-                .unwrap_or_else(|| DEFAULT_RUN_PIPELINE_ID.to_owned()),
-        )?,
+        pipeline_id: PipelineId::new(DEFAULT_RUN_PIPELINE_ID)?,
         destination_uri: args.destination_uri,
-        target: TargetName::new(
-            args.target
-                .unwrap_or_else(|| default_target_for_resource(&resource_id)),
-        )?,
+        target: TargetName::new(default_target_for_resource(&resource_id))?,
         package_id,
         checkpoint_id: CheckpointId::new(checkpoint_id)?,
         jobs: args.jobs,

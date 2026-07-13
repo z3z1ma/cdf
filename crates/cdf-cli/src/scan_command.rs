@@ -67,6 +67,7 @@ pub(crate) fn plan_or_explain(
     let plan = build_engine_plan_for_resource(
         &prepared.resource,
         &args,
+        None,
         identifier_policy.as_ref(),
         &resolved.destination.runtime_capabilities(),
     )?;
@@ -107,6 +108,7 @@ pub(crate) fn preview(
     let plan = build_engine_plan_for_resource(
         &prepared.resource,
         &args,
+        None,
         identifier_policy.as_ref(),
         &resolved.destination.runtime_capabilities(),
     )?;
@@ -290,6 +292,7 @@ pub(crate) fn prepare_discover_resource_for_cli(
 pub(crate) fn build_engine_plan_for_resource(
     source: &crate::project_run_resource::CliProjectRunSource,
     args: &ScanArgs,
+    run_package_id: Option<&str>,
     identifier_policy: Option<&IdentifierPolicy>,
     destination_capabilities: &cdf_runtime::DestinationRuntimeCapabilities,
 ) -> Result<EnginePlan, CliError> {
@@ -309,9 +312,8 @@ pub(crate) fn build_engine_plan_for_resource(
         request,
         validation_program,
         boundedness: PlanBoundedness::Bounded,
-        package_id: args
-            .package_id
-            .clone()
+        package_id: run_package_id
+            .map(ToOwned::to_owned)
             .unwrap_or_else(|| format!("cli-{}", resource.descriptor().resource_id)),
     };
     let plan = Planner::new()
@@ -449,10 +451,7 @@ fn scan_report(
 }
 
 fn scan_target(args: &ScanArgs) -> Result<TargetName, CliError> {
-    let target = args
-        .target
-        .clone()
-        .unwrap_or_else(|| default_target_for_resource(&args.resource_id));
+    let target = default_target_for_resource(&args.resource_id);
     TargetName::new(target).map_err(CliError::from)
 }
 

@@ -45,9 +45,8 @@ policy from destination introspection.
 ## Inspect Replay Result
 
 ```bash
-cdf --project /path/to/replay-project state history \
-  --pipeline <pipeline-id> \
-  --resource <resource-id>
+cdf --project /path/to/replay-project state history <resource-id> \
+  --pipeline <pipeline-id>
 ```
 
 `cdf package ls` lists packages under the selected project's configured package

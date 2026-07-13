@@ -17,8 +17,8 @@ From this project root, the supported first commands for the local
 
 ```bash
 cdf validate
-cdf plan local.events --target local_events
-cdf run --resource local.events --pipeline local.events --target local_events
+cdf plan local.events
+cdf run local.events
 ```
 
 Add newline-delimited JSON files under `data/` before running the resource.

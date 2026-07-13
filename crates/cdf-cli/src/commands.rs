@@ -1,5 +1,4 @@
 use cdf_kernel::CdfError;
-use serde::Serialize;
 use serde_json::json;
 
 use crate::{
@@ -30,16 +29,16 @@ pub fn execute(cli: Cli) -> InvocationResult {
 fn dispatch(cli: Cli) -> Result<CommandOutput, CliError> {
     let command = cli.command.clone();
     match command {
-        Command::Help(help_text) => Ok(output(
+        Command::Help(help_text) => CommandOutput::rendered(
             "help",
-            help_text.clone(),
+            RenderDocument::text(help_text.clone()),
             json!({ "help": help_text }),
-        )?),
-        Command::Version => Ok(output(
+        ),
+        Command::Version => CommandOutput::rendered(
             "version",
-            format!("cdf {VERSION}"),
+            RenderDocument::text(format!("cdf {VERSION}")),
             json!({ "version": VERSION }),
-        )?),
+        ),
         Command::Init(args) => crate::project_command::init(args),
         Command::Add(args) => {
             let (_, services) =
@@ -125,25 +124,6 @@ fn cdf_memory_budget() -> Result<u64, CliError> {
         cdf_memory::DEFAULT_SPILL_BUDGET_BYTES,
     )?;
     Ok(resolution.managed_pool_bytes)
-}
-
-pub(crate) fn output<T: Serialize>(
-    command: &'static str,
-    human: String,
-    value: T,
-) -> Result<CommandOutput, CliError> {
-    report_output(command, human, value, 0)
-}
-
-pub(crate) fn report_output<T: Serialize>(
-    command: &'static str,
-    human: String,
-    value: T,
-    exit_code: i32,
-) -> Result<CommandOutput, CliError> {
-    // 10x: compatibility shim for parser-generated help/version text; command
-    // families should return structured RenderDocument values directly.
-    CommandOutput::rendered_with_exit_code(command, RenderDocument::text(human), value, exit_code)
 }
 
 pub(crate) fn json_cli_error(error: serde_json::Error) -> CliError {

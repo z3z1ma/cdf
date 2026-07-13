@@ -19,7 +19,6 @@ Generated from the CLI's clap definitions. Do not edit these pages by hand.
 - [`cdf inspect resource`](cdf-inspect-resource.md)
 - [`cdf inspect lock`](cdf-inspect-lock.md)
 - [`cdf inspect destinations`](cdf-inspect-destinations.md)
-- [`cdf inspect destination`](cdf-inspect-destination.md)
 - [`cdf inspect package`](cdf-inspect-package.md)
 - [`cdf inspect run`](cdf-inspect-run.md)
 - [`cdf diff`](cdf-diff.md)

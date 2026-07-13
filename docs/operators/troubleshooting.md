@@ -12,19 +12,13 @@ explicit target when scripts or documentation need a stable name:
 cdf --project /path/to/project plan <resource-id> --target <target>
 ```
 
-## Stable Run Identifiers
+## Run Identifiers
 
-Current `cdf run` can derive pipeline, target, package id, and checkpoint id
-from the resource id. Pass explicit values when a script needs stable package or
-checkpoint paths:
+`cdf run` owns pipeline, target, package, and checkpoint identities. Automation
+should consume the JSON report instead of choosing artifact identities:
 
 ```bash
-cdf --project /path/to/project run \
-  --resource <resource-id> \
-  --pipeline <pipeline-id> \
-  --target <target> \
-  --package-id <package-id> \
-  --checkpoint-id <checkpoint-id>
+cdf --json --project /path/to/project run <resource-id>
 ```
 
 ## `sql query failed: no such table: <target>`

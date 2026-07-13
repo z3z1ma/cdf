@@ -28,7 +28,6 @@ Register-ArgumentCompleter -Native -CommandName 'cdf' -ScriptBlock {
             [CompletionResult]::new('--quiet', '--quiet', [CompletionResultType]::ParameterName, 'Suppress progress and non-primary success narration')
             [CompletionResult]::new('-v', '-v', [CompletionResultType]::ParameterName, 'Show evidence detail; repeat for diagnostics')
             [CompletionResult]::new('--verbose', '--verbose', [CompletionResultType]::ParameterName, 'Show evidence detail; repeat for diagnostics')
-            [CompletionResult]::new('--no-color', '--no-color', [CompletionResultType]::ParameterName, 'Compatibility alias for --color never')
             [CompletionResult]::new('-h', '-h', [CompletionResultType]::ParameterName, 'Print help (see more with ''--help'')')
             [CompletionResult]::new('--help', '--help', [CompletionResultType]::ParameterName, 'Print help (see more with ''--help'')')
             [CompletionResult]::new('-V', '-V ', [CompletionResultType]::ParameterName, 'Print version')
@@ -64,7 +63,6 @@ Register-ArgumentCompleter -Native -CommandName 'cdf' -ScriptBlock {
             [CompletionResult]::new('--quiet', '--quiet', [CompletionResultType]::ParameterName, 'Suppress progress and non-primary success narration')
             [CompletionResult]::new('-v', '-v', [CompletionResultType]::ParameterName, 'Show evidence detail; repeat for diagnostics')
             [CompletionResult]::new('--verbose', '--verbose', [CompletionResultType]::ParameterName, 'Show evidence detail; repeat for diagnostics')
-            [CompletionResult]::new('--no-color', '--no-color', [CompletionResultType]::ParameterName, 'Compatibility alias for --color never')
             [CompletionResult]::new('-h', '-h', [CompletionResultType]::ParameterName, 'Print help')
             [CompletionResult]::new('--help', '--help', [CompletionResultType]::ParameterName, 'Print help')
             break
@@ -77,7 +75,6 @@ Register-ArgumentCompleter -Native -CommandName 'cdf' -ScriptBlock {
             [CompletionResult]::new('--quiet', '--quiet', [CompletionResultType]::ParameterName, 'Suppress progress and non-primary success narration')
             [CompletionResult]::new('-v', '-v', [CompletionResultType]::ParameterName, 'Show evidence detail; repeat for diagnostics')
             [CompletionResult]::new('--verbose', '--verbose', [CompletionResultType]::ParameterName, 'Show evidence detail; repeat for diagnostics')
-            [CompletionResult]::new('--no-color', '--no-color', [CompletionResultType]::ParameterName, 'Compatibility alias for --color never')
             [CompletionResult]::new('-h', '-h', [CompletionResultType]::ParameterName, 'Print help')
             [CompletionResult]::new('--help', '--help', [CompletionResultType]::ParameterName, 'Print help')
             break
@@ -92,7 +89,6 @@ Register-ArgumentCompleter -Native -CommandName 'cdf' -ScriptBlock {
             [CompletionResult]::new('--quiet', '--quiet', [CompletionResultType]::ParameterName, 'Suppress progress and non-primary success narration')
             [CompletionResult]::new('-v', '-v', [CompletionResultType]::ParameterName, 'Show evidence detail; repeat for diagnostics')
             [CompletionResult]::new('--verbose', '--verbose', [CompletionResultType]::ParameterName, 'Show evidence detail; repeat for diagnostics')
-            [CompletionResult]::new('--no-color', '--no-color', [CompletionResultType]::ParameterName, 'Compatibility alias for --color never')
             [CompletionResult]::new('-h', '-h', [CompletionResultType]::ParameterName, 'Print help')
             [CompletionResult]::new('--help', '--help', [CompletionResultType]::ParameterName, 'Print help')
             break
@@ -109,7 +105,6 @@ Register-ArgumentCompleter -Native -CommandName 'cdf' -ScriptBlock {
             [CompletionResult]::new('--quiet', '--quiet', [CompletionResultType]::ParameterName, 'Suppress progress and non-primary success narration')
             [CompletionResult]::new('-v', '-v', [CompletionResultType]::ParameterName, 'Show evidence detail; repeat for diagnostics')
             [CompletionResult]::new('--verbose', '--verbose', [CompletionResultType]::ParameterName, 'Show evidence detail; repeat for diagnostics')
-            [CompletionResult]::new('--no-color', '--no-color', [CompletionResultType]::ParameterName, 'Compatibility alias for --color never')
             [CompletionResult]::new('-h', '-h', [CompletionResultType]::ParameterName, 'Print help')
             [CompletionResult]::new('--help', '--help', [CompletionResultType]::ParameterName, 'Print help')
             break
@@ -123,20 +118,16 @@ Register-ArgumentCompleter -Native -CommandName 'cdf' -ScriptBlock {
             [CompletionResult]::new('--quiet', '--quiet', [CompletionResultType]::ParameterName, 'Suppress progress and non-primary success narration')
             [CompletionResult]::new('-v', '-v', [CompletionResultType]::ParameterName, 'Show evidence detail; repeat for diagnostics')
             [CompletionResult]::new('--verbose', '--verbose', [CompletionResultType]::ParameterName, 'Show evidence detail; repeat for diagnostics')
-            [CompletionResult]::new('--no-color', '--no-color', [CompletionResultType]::ParameterName, 'Compatibility alias for --color never')
             [CompletionResult]::new('-h', '-h', [CompletionResultType]::ParameterName, 'Print help')
             [CompletionResult]::new('--help', '--help', [CompletionResultType]::ParameterName, 'Print help')
             break
         }
         'cdf;plan' {
-            [CompletionResult]::new('--resource', '--resource', [CompletionResultType]::ParameterName, 'Resource identifier (compatibility form)')
             [CompletionResult]::new('--select', '--select', [CompletionResultType]::ParameterName, 'Comma-separated projected fields')
             [CompletionResult]::new('--filter', '--filter', [CompletionResultType]::ParameterName, 'Filter expression; may be repeated')
             [CompletionResult]::new('--limit', '--limit', [CompletionResultType]::ParameterName, 'Maximum rows to read')
             [CompletionResult]::new('--order-by', '--order-by', [CompletionResultType]::ParameterName, 'Ordering field and optional direction')
-            [CompletionResult]::new('--package-id', '--package-id', [CompletionResultType]::ParameterName, 'Explicit package identifier for script compatibility')
             [CompletionResult]::new('--to', '--to', [CompletionResultType]::ParameterName, 'Destination URI or cursor upper bound, as shown in usage')
-            [CompletionResult]::new('--target', '--target', [CompletionResultType]::ParameterName, 'Destination target/table compatibility option')
             [CompletionResult]::new('--color', '--color', [CompletionResultType]::ParameterName, 'Color policy: auto, always, or never')
             [CompletionResult]::new('--progress', '--progress', [CompletionResultType]::ParameterName, 'Progress policy: auto, always, or never')
             [CompletionResult]::new('--unicode', '--unicode', [CompletionResultType]::ParameterName, 'Unicode policy: auto, always, or never')
@@ -145,20 +136,16 @@ Register-ArgumentCompleter -Native -CommandName 'cdf' -ScriptBlock {
             [CompletionResult]::new('--quiet', '--quiet', [CompletionResultType]::ParameterName, 'Suppress progress and non-primary success narration')
             [CompletionResult]::new('-v', '-v', [CompletionResultType]::ParameterName, 'Show evidence detail; repeat for diagnostics')
             [CompletionResult]::new('--verbose', '--verbose', [CompletionResultType]::ParameterName, 'Show evidence detail; repeat for diagnostics')
-            [CompletionResult]::new('--no-color', '--no-color', [CompletionResultType]::ParameterName, 'Compatibility alias for --color never')
             [CompletionResult]::new('-h', '-h', [CompletionResultType]::ParameterName, 'Print help')
             [CompletionResult]::new('--help', '--help', [CompletionResultType]::ParameterName, 'Print help')
             break
         }
         'cdf;explain' {
-            [CompletionResult]::new('--resource', '--resource', [CompletionResultType]::ParameterName, 'Resource identifier (compatibility form)')
             [CompletionResult]::new('--select', '--select', [CompletionResultType]::ParameterName, 'Comma-separated projected fields')
             [CompletionResult]::new('--filter', '--filter', [CompletionResultType]::ParameterName, 'Filter expression; may be repeated')
             [CompletionResult]::new('--limit', '--limit', [CompletionResultType]::ParameterName, 'Maximum rows to read')
             [CompletionResult]::new('--order-by', '--order-by', [CompletionResultType]::ParameterName, 'Ordering field and optional direction')
-            [CompletionResult]::new('--package-id', '--package-id', [CompletionResultType]::ParameterName, 'Explicit package identifier for script compatibility')
             [CompletionResult]::new('--to', '--to', [CompletionResultType]::ParameterName, 'Destination URI or cursor upper bound, as shown in usage')
-            [CompletionResult]::new('--target', '--target', [CompletionResultType]::ParameterName, 'Destination target/table compatibility option')
             [CompletionResult]::new('--color', '--color', [CompletionResultType]::ParameterName, 'Color policy: auto, always, or never')
             [CompletionResult]::new('--progress', '--progress', [CompletionResultType]::ParameterName, 'Progress policy: auto, always, or never')
             [CompletionResult]::new('--unicode', '--unicode', [CompletionResultType]::ParameterName, 'Unicode policy: auto, always, or never')
@@ -167,18 +154,12 @@ Register-ArgumentCompleter -Native -CommandName 'cdf' -ScriptBlock {
             [CompletionResult]::new('--quiet', '--quiet', [CompletionResultType]::ParameterName, 'Suppress progress and non-primary success narration')
             [CompletionResult]::new('-v', '-v', [CompletionResultType]::ParameterName, 'Show evidence detail; repeat for diagnostics')
             [CompletionResult]::new('--verbose', '--verbose', [CompletionResultType]::ParameterName, 'Show evidence detail; repeat for diagnostics')
-            [CompletionResult]::new('--no-color', '--no-color', [CompletionResultType]::ParameterName, 'Compatibility alias for --color never')
             [CompletionResult]::new('-h', '-h', [CompletionResultType]::ParameterName, 'Print help')
             [CompletionResult]::new('--help', '--help', [CompletionResultType]::ParameterName, 'Print help')
             break
         }
         'cdf;run' {
-            [CompletionResult]::new('--resource', '--resource', [CompletionResultType]::ParameterName, 'Resource identifier (compatibility form)')
-            [CompletionResult]::new('--pipeline', '--pipeline', [CompletionResultType]::ParameterName, 'Pipeline identifier compatibility option')
             [CompletionResult]::new('--to', '--to', [CompletionResultType]::ParameterName, 'Destination URI or cursor upper bound, as shown in usage')
-            [CompletionResult]::new('--target', '--target', [CompletionResultType]::ParameterName, 'Destination target/table compatibility option')
-            [CompletionResult]::new('--package-id', '--package-id', [CompletionResultType]::ParameterName, 'Explicit package identifier for script compatibility')
-            [CompletionResult]::new('--checkpoint-id', '--checkpoint-id', [CompletionResultType]::ParameterName, 'Explicit checkpoint identifier for script compatibility')
             [CompletionResult]::new('--jobs', '--jobs', [CompletionResultType]::ParameterName, 'Maximum concurrent jobs')
             [CompletionResult]::new('--color', '--color', [CompletionResultType]::ParameterName, 'Color policy: auto, always, or never')
             [CompletionResult]::new('--progress', '--progress', [CompletionResultType]::ParameterName, 'Progress policy: auto, always, or never')
@@ -188,18 +169,15 @@ Register-ArgumentCompleter -Native -CommandName 'cdf' -ScriptBlock {
             [CompletionResult]::new('--quiet', '--quiet', [CompletionResultType]::ParameterName, 'Suppress progress and non-primary success narration')
             [CompletionResult]::new('-v', '-v', [CompletionResultType]::ParameterName, 'Show evidence detail; repeat for diagnostics')
             [CompletionResult]::new('--verbose', '--verbose', [CompletionResultType]::ParameterName, 'Show evidence detail; repeat for diagnostics')
-            [CompletionResult]::new('--no-color', '--no-color', [CompletionResultType]::ParameterName, 'Compatibility alias for --color never')
             [CompletionResult]::new('-h', '-h', [CompletionResultType]::ParameterName, 'Print help')
             [CompletionResult]::new('--help', '--help', [CompletionResultType]::ParameterName, 'Print help')
             break
         }
         'cdf;preview' {
-            [CompletionResult]::new('--resource', '--resource', [CompletionResultType]::ParameterName, 'Resource identifier (compatibility form)')
             [CompletionResult]::new('--select', '--select', [CompletionResultType]::ParameterName, 'Comma-separated projected fields')
             [CompletionResult]::new('--filter', '--filter', [CompletionResultType]::ParameterName, 'Filter expression; may be repeated')
             [CompletionResult]::new('--limit', '--limit', [CompletionResultType]::ParameterName, 'Maximum rows to read')
             [CompletionResult]::new('--order-by', '--order-by', [CompletionResultType]::ParameterName, 'Ordering field and optional direction')
-            [CompletionResult]::new('--package-id', '--package-id', [CompletionResultType]::ParameterName, 'Explicit package identifier for script compatibility')
             [CompletionResult]::new('--color', '--color', [CompletionResultType]::ParameterName, 'Color policy: auto, always, or never')
             [CompletionResult]::new('--progress', '--progress', [CompletionResultType]::ParameterName, 'Progress policy: auto, always, or never')
             [CompletionResult]::new('--unicode', '--unicode', [CompletionResultType]::ParameterName, 'Unicode policy: auto, always, or never')
@@ -207,7 +185,6 @@ Register-ArgumentCompleter -Native -CommandName 'cdf' -ScriptBlock {
             [CompletionResult]::new('--quiet', '--quiet', [CompletionResultType]::ParameterName, 'Suppress progress and non-primary success narration')
             [CompletionResult]::new('-v', '-v', [CompletionResultType]::ParameterName, 'Show evidence detail; repeat for diagnostics')
             [CompletionResult]::new('--verbose', '--verbose', [CompletionResultType]::ParameterName, 'Show evidence detail; repeat for diagnostics')
-            [CompletionResult]::new('--no-color', '--no-color', [CompletionResultType]::ParameterName, 'Compatibility alias for --color never')
             [CompletionResult]::new('-h', '-h', [CompletionResultType]::ParameterName, 'Print help')
             [CompletionResult]::new('--help', '--help', [CompletionResultType]::ParameterName, 'Print help')
             break
@@ -220,7 +197,6 @@ Register-ArgumentCompleter -Native -CommandName 'cdf' -ScriptBlock {
             [CompletionResult]::new('--quiet', '--quiet', [CompletionResultType]::ParameterName, 'Suppress progress and non-primary success narration')
             [CompletionResult]::new('-v', '-v', [CompletionResultType]::ParameterName, 'Show evidence detail; repeat for diagnostics')
             [CompletionResult]::new('--verbose', '--verbose', [CompletionResultType]::ParameterName, 'Show evidence detail; repeat for diagnostics')
-            [CompletionResult]::new('--no-color', '--no-color', [CompletionResultType]::ParameterName, 'Compatibility alias for --color never')
             [CompletionResult]::new('-h', '-h', [CompletionResultType]::ParameterName, 'Print help')
             [CompletionResult]::new('--help', '--help', [CompletionResultType]::ParameterName, 'Print help')
             break
@@ -233,7 +209,6 @@ Register-ArgumentCompleter -Native -CommandName 'cdf' -ScriptBlock {
             [CompletionResult]::new('--quiet', '--quiet', [CompletionResultType]::ParameterName, 'Suppress progress and non-primary success narration')
             [CompletionResult]::new('-v', '-v', [CompletionResultType]::ParameterName, 'Show evidence detail; repeat for diagnostics')
             [CompletionResult]::new('--verbose', '--verbose', [CompletionResultType]::ParameterName, 'Show evidence detail; repeat for diagnostics')
-            [CompletionResult]::new('--no-color', '--no-color', [CompletionResultType]::ParameterName, 'Compatibility alias for --color never')
             [CompletionResult]::new('-h', '-h', [CompletionResultType]::ParameterName, 'Print help')
             [CompletionResult]::new('--help', '--help', [CompletionResultType]::ParameterName, 'Print help')
             [CompletionResult]::new('project', 'project', [CompletionResultType]::ParameterValue, 'Show resolved project information')
@@ -241,7 +216,6 @@ Register-ArgumentCompleter -Native -CommandName 'cdf' -ScriptBlock {
             [CompletionResult]::new('resource', 'resource', [CompletionResultType]::ParameterValue, 'Show one resolved resource')
             [CompletionResult]::new('lock', 'lock', [CompletionResultType]::ParameterValue, 'Show the project lock')
             [CompletionResult]::new('destinations', 'destinations', [CompletionResultType]::ParameterValue, 'List resolved destinations')
-            [CompletionResult]::new('destination', 'destination', [CompletionResultType]::ParameterValue, 'List resolved destinations')
             [CompletionResult]::new('package', 'package', [CompletionResultType]::ParameterValue, 'List, verify, archive, and collect packages')
             [CompletionResult]::new('run', 'run', [CompletionResultType]::ParameterValue, 'Execute a governed resource run')
             break
@@ -254,7 +228,6 @@ Register-ArgumentCompleter -Native -CommandName 'cdf' -ScriptBlock {
             [CompletionResult]::new('--quiet', '--quiet', [CompletionResultType]::ParameterName, 'Suppress progress and non-primary success narration')
             [CompletionResult]::new('-v', '-v', [CompletionResultType]::ParameterName, 'Show evidence detail; repeat for diagnostics')
             [CompletionResult]::new('--verbose', '--verbose', [CompletionResultType]::ParameterName, 'Show evidence detail; repeat for diagnostics')
-            [CompletionResult]::new('--no-color', '--no-color', [CompletionResultType]::ParameterName, 'Compatibility alias for --color never')
             [CompletionResult]::new('-h', '-h', [CompletionResultType]::ParameterName, 'Print help')
             [CompletionResult]::new('--help', '--help', [CompletionResultType]::ParameterName, 'Print help')
             break
@@ -267,7 +240,6 @@ Register-ArgumentCompleter -Native -CommandName 'cdf' -ScriptBlock {
             [CompletionResult]::new('--quiet', '--quiet', [CompletionResultType]::ParameterName, 'Suppress progress and non-primary success narration')
             [CompletionResult]::new('-v', '-v', [CompletionResultType]::ParameterName, 'Show evidence detail; repeat for diagnostics')
             [CompletionResult]::new('--verbose', '--verbose', [CompletionResultType]::ParameterName, 'Show evidence detail; repeat for diagnostics')
-            [CompletionResult]::new('--no-color', '--no-color', [CompletionResultType]::ParameterName, 'Compatibility alias for --color never')
             [CompletionResult]::new('-h', '-h', [CompletionResultType]::ParameterName, 'Print help')
             [CompletionResult]::new('--help', '--help', [CompletionResultType]::ParameterName, 'Print help')
             break
@@ -280,7 +252,6 @@ Register-ArgumentCompleter -Native -CommandName 'cdf' -ScriptBlock {
             [CompletionResult]::new('--quiet', '--quiet', [CompletionResultType]::ParameterName, 'Suppress progress and non-primary success narration')
             [CompletionResult]::new('-v', '-v', [CompletionResultType]::ParameterName, 'Show evidence detail; repeat for diagnostics')
             [CompletionResult]::new('--verbose', '--verbose', [CompletionResultType]::ParameterName, 'Show evidence detail; repeat for diagnostics')
-            [CompletionResult]::new('--no-color', '--no-color', [CompletionResultType]::ParameterName, 'Compatibility alias for --color never')
             [CompletionResult]::new('-h', '-h', [CompletionResultType]::ParameterName, 'Print help')
             [CompletionResult]::new('--help', '--help', [CompletionResultType]::ParameterName, 'Print help')
             break
@@ -293,7 +264,6 @@ Register-ArgumentCompleter -Native -CommandName 'cdf' -ScriptBlock {
             [CompletionResult]::new('--quiet', '--quiet', [CompletionResultType]::ParameterName, 'Suppress progress and non-primary success narration')
             [CompletionResult]::new('-v', '-v', [CompletionResultType]::ParameterName, 'Show evidence detail; repeat for diagnostics')
             [CompletionResult]::new('--verbose', '--verbose', [CompletionResultType]::ParameterName, 'Show evidence detail; repeat for diagnostics')
-            [CompletionResult]::new('--no-color', '--no-color', [CompletionResultType]::ParameterName, 'Compatibility alias for --color never')
             [CompletionResult]::new('-h', '-h', [CompletionResultType]::ParameterName, 'Print help')
             [CompletionResult]::new('--help', '--help', [CompletionResultType]::ParameterName, 'Print help')
             break
@@ -306,20 +276,6 @@ Register-ArgumentCompleter -Native -CommandName 'cdf' -ScriptBlock {
             [CompletionResult]::new('--quiet', '--quiet', [CompletionResultType]::ParameterName, 'Suppress progress and non-primary success narration')
             [CompletionResult]::new('-v', '-v', [CompletionResultType]::ParameterName, 'Show evidence detail; repeat for diagnostics')
             [CompletionResult]::new('--verbose', '--verbose', [CompletionResultType]::ParameterName, 'Show evidence detail; repeat for diagnostics')
-            [CompletionResult]::new('--no-color', '--no-color', [CompletionResultType]::ParameterName, 'Compatibility alias for --color never')
-            [CompletionResult]::new('-h', '-h', [CompletionResultType]::ParameterName, 'Print help')
-            [CompletionResult]::new('--help', '--help', [CompletionResultType]::ParameterName, 'Print help')
-            break
-        }
-        'cdf;inspect;destination' {
-            [CompletionResult]::new('--color', '--color', [CompletionResultType]::ParameterName, 'Color policy: auto, always, or never')
-            [CompletionResult]::new('--progress', '--progress', [CompletionResultType]::ParameterName, 'Progress policy: auto, always, or never')
-            [CompletionResult]::new('--unicode', '--unicode', [CompletionResultType]::ParameterName, 'Unicode policy: auto, always, or never')
-            [CompletionResult]::new('-q', '-q', [CompletionResultType]::ParameterName, 'Suppress progress and non-primary success narration')
-            [CompletionResult]::new('--quiet', '--quiet', [CompletionResultType]::ParameterName, 'Suppress progress and non-primary success narration')
-            [CompletionResult]::new('-v', '-v', [CompletionResultType]::ParameterName, 'Show evidence detail; repeat for diagnostics')
-            [CompletionResult]::new('--verbose', '--verbose', [CompletionResultType]::ParameterName, 'Show evidence detail; repeat for diagnostics')
-            [CompletionResult]::new('--no-color', '--no-color', [CompletionResultType]::ParameterName, 'Compatibility alias for --color never')
             [CompletionResult]::new('-h', '-h', [CompletionResultType]::ParameterName, 'Print help')
             [CompletionResult]::new('--help', '--help', [CompletionResultType]::ParameterName, 'Print help')
             break
@@ -332,7 +288,6 @@ Register-ArgumentCompleter -Native -CommandName 'cdf' -ScriptBlock {
             [CompletionResult]::new('--quiet', '--quiet', [CompletionResultType]::ParameterName, 'Suppress progress and non-primary success narration')
             [CompletionResult]::new('-v', '-v', [CompletionResultType]::ParameterName, 'Show evidence detail; repeat for diagnostics')
             [CompletionResult]::new('--verbose', '--verbose', [CompletionResultType]::ParameterName, 'Show evidence detail; repeat for diagnostics')
-            [CompletionResult]::new('--no-color', '--no-color', [CompletionResultType]::ParameterName, 'Compatibility alias for --color never')
             [CompletionResult]::new('-h', '-h', [CompletionResultType]::ParameterName, 'Print help')
             [CompletionResult]::new('--help', '--help', [CompletionResultType]::ParameterName, 'Print help')
             break
@@ -345,7 +300,6 @@ Register-ArgumentCompleter -Native -CommandName 'cdf' -ScriptBlock {
             [CompletionResult]::new('--quiet', '--quiet', [CompletionResultType]::ParameterName, 'Suppress progress and non-primary success narration')
             [CompletionResult]::new('-v', '-v', [CompletionResultType]::ParameterName, 'Show evidence detail; repeat for diagnostics')
             [CompletionResult]::new('--verbose', '--verbose', [CompletionResultType]::ParameterName, 'Show evidence detail; repeat for diagnostics')
-            [CompletionResult]::new('--no-color', '--no-color', [CompletionResultType]::ParameterName, 'Compatibility alias for --color never')
             [CompletionResult]::new('-h', '-h', [CompletionResultType]::ParameterName, 'Print help')
             [CompletionResult]::new('--help', '--help', [CompletionResultType]::ParameterName, 'Print help')
             break
@@ -358,7 +312,6 @@ Register-ArgumentCompleter -Native -CommandName 'cdf' -ScriptBlock {
             [CompletionResult]::new('--quiet', '--quiet', [CompletionResultType]::ParameterName, 'Suppress progress and non-primary success narration')
             [CompletionResult]::new('-v', '-v', [CompletionResultType]::ParameterName, 'Show evidence detail; repeat for diagnostics')
             [CompletionResult]::new('--verbose', '--verbose', [CompletionResultType]::ParameterName, 'Show evidence detail; repeat for diagnostics')
-            [CompletionResult]::new('--no-color', '--no-color', [CompletionResultType]::ParameterName, 'Compatibility alias for --color never')
             [CompletionResult]::new('-h', '-h', [CompletionResultType]::ParameterName, 'Print help')
             [CompletionResult]::new('--help', '--help', [CompletionResultType]::ParameterName, 'Print help')
             [CompletionResult]::new('schema', 'schema', [CompletionResultType]::ParameterValue, 'Discover, pin, compare, and promote schemas')
@@ -372,7 +325,6 @@ Register-ArgumentCompleter -Native -CommandName 'cdf' -ScriptBlock {
             [CompletionResult]::new('--quiet', '--quiet', [CompletionResultType]::ParameterName, 'Suppress progress and non-primary success narration')
             [CompletionResult]::new('-v', '-v', [CompletionResultType]::ParameterName, 'Show evidence detail; repeat for diagnostics')
             [CompletionResult]::new('--verbose', '--verbose', [CompletionResultType]::ParameterName, 'Show evidence detail; repeat for diagnostics')
-            [CompletionResult]::new('--no-color', '--no-color', [CompletionResultType]::ParameterName, 'Compatibility alias for --color never')
             [CompletionResult]::new('-h', '-h', [CompletionResultType]::ParameterName, 'Print help')
             [CompletionResult]::new('--help', '--help', [CompletionResultType]::ParameterName, 'Print help')
             break
@@ -385,7 +337,6 @@ Register-ArgumentCompleter -Native -CommandName 'cdf' -ScriptBlock {
             [CompletionResult]::new('--quiet', '--quiet', [CompletionResultType]::ParameterName, 'Suppress progress and non-primary success narration')
             [CompletionResult]::new('-v', '-v', [CompletionResultType]::ParameterName, 'Show evidence detail; repeat for diagnostics')
             [CompletionResult]::new('--verbose', '--verbose', [CompletionResultType]::ParameterName, 'Show evidence detail; repeat for diagnostics')
-            [CompletionResult]::new('--no-color', '--no-color', [CompletionResultType]::ParameterName, 'Compatibility alias for --color never')
             [CompletionResult]::new('-h', '-h', [CompletionResultType]::ParameterName, 'Print help')
             [CompletionResult]::new('--help', '--help', [CompletionResultType]::ParameterName, 'Print help')
             [CompletionResult]::new('discover', 'discover', [CompletionResultType]::ParameterValue, 'Discover the current physical source schema')
@@ -396,7 +347,6 @@ Register-ArgumentCompleter -Native -CommandName 'cdf' -ScriptBlock {
             break
         }
         'cdf;schema;discover' {
-            [CompletionResult]::new('--resource', '--resource', [CompletionResultType]::ParameterName, 'Resource identifier (compatibility form)')
             [CompletionResult]::new('--color', '--color', [CompletionResultType]::ParameterName, 'Color policy: auto, always, or never')
             [CompletionResult]::new('--progress', '--progress', [CompletionResultType]::ParameterName, 'Progress policy: auto, always, or never')
             [CompletionResult]::new('--unicode', '--unicode', [CompletionResultType]::ParameterName, 'Unicode policy: auto, always, or never')
@@ -404,13 +354,11 @@ Register-ArgumentCompleter -Native -CommandName 'cdf' -ScriptBlock {
             [CompletionResult]::new('--quiet', '--quiet', [CompletionResultType]::ParameterName, 'Suppress progress and non-primary success narration')
             [CompletionResult]::new('-v', '-v', [CompletionResultType]::ParameterName, 'Show evidence detail; repeat for diagnostics')
             [CompletionResult]::new('--verbose', '--verbose', [CompletionResultType]::ParameterName, 'Show evidence detail; repeat for diagnostics')
-            [CompletionResult]::new('--no-color', '--no-color', [CompletionResultType]::ParameterName, 'Compatibility alias for --color never')
             [CompletionResult]::new('-h', '-h', [CompletionResultType]::ParameterName, 'Print help')
             [CompletionResult]::new('--help', '--help', [CompletionResultType]::ParameterName, 'Print help')
             break
         }
         'cdf;schema;pin' {
-            [CompletionResult]::new('--resource', '--resource', [CompletionResultType]::ParameterName, 'Resource identifier (compatibility form)')
             [CompletionResult]::new('--color', '--color', [CompletionResultType]::ParameterName, 'Color policy: auto, always, or never')
             [CompletionResult]::new('--progress', '--progress', [CompletionResultType]::ParameterName, 'Progress policy: auto, always, or never')
             [CompletionResult]::new('--unicode', '--unicode', [CompletionResultType]::ParameterName, 'Unicode policy: auto, always, or never')
@@ -418,13 +366,11 @@ Register-ArgumentCompleter -Native -CommandName 'cdf' -ScriptBlock {
             [CompletionResult]::new('--quiet', '--quiet', [CompletionResultType]::ParameterName, 'Suppress progress and non-primary success narration')
             [CompletionResult]::new('-v', '-v', [CompletionResultType]::ParameterName, 'Show evidence detail; repeat for diagnostics')
             [CompletionResult]::new('--verbose', '--verbose', [CompletionResultType]::ParameterName, 'Show evidence detail; repeat for diagnostics')
-            [CompletionResult]::new('--no-color', '--no-color', [CompletionResultType]::ParameterName, 'Compatibility alias for --color never')
             [CompletionResult]::new('-h', '-h', [CompletionResultType]::ParameterName, 'Print help')
             [CompletionResult]::new('--help', '--help', [CompletionResultType]::ParameterName, 'Print help')
             break
         }
         'cdf;schema;show' {
-            [CompletionResult]::new('--resource', '--resource', [CompletionResultType]::ParameterName, 'Resource identifier (compatibility form)')
             [CompletionResult]::new('--color', '--color', [CompletionResultType]::ParameterName, 'Color policy: auto, always, or never')
             [CompletionResult]::new('--progress', '--progress', [CompletionResultType]::ParameterName, 'Progress policy: auto, always, or never')
             [CompletionResult]::new('--unicode', '--unicode', [CompletionResultType]::ParameterName, 'Unicode policy: auto, always, or never')
@@ -432,13 +378,11 @@ Register-ArgumentCompleter -Native -CommandName 'cdf' -ScriptBlock {
             [CompletionResult]::new('--quiet', '--quiet', [CompletionResultType]::ParameterName, 'Suppress progress and non-primary success narration')
             [CompletionResult]::new('-v', '-v', [CompletionResultType]::ParameterName, 'Show evidence detail; repeat for diagnostics')
             [CompletionResult]::new('--verbose', '--verbose', [CompletionResultType]::ParameterName, 'Show evidence detail; repeat for diagnostics')
-            [CompletionResult]::new('--no-color', '--no-color', [CompletionResultType]::ParameterName, 'Compatibility alias for --color never')
             [CompletionResult]::new('-h', '-h', [CompletionResultType]::ParameterName, 'Print help')
             [CompletionResult]::new('--help', '--help', [CompletionResultType]::ParameterName, 'Print help')
             break
         }
         'cdf;schema;diff' {
-            [CompletionResult]::new('--resource', '--resource', [CompletionResultType]::ParameterName, 'Resource identifier (compatibility form)')
             [CompletionResult]::new('--color', '--color', [CompletionResultType]::ParameterName, 'Color policy: auto, always, or never')
             [CompletionResult]::new('--progress', '--progress', [CompletionResultType]::ParameterName, 'Progress policy: auto, always, or never')
             [CompletionResult]::new('--unicode', '--unicode', [CompletionResultType]::ParameterName, 'Unicode policy: auto, always, or never')
@@ -446,13 +390,11 @@ Register-ArgumentCompleter -Native -CommandName 'cdf' -ScriptBlock {
             [CompletionResult]::new('--quiet', '--quiet', [CompletionResultType]::ParameterName, 'Suppress progress and non-primary success narration')
             [CompletionResult]::new('-v', '-v', [CompletionResultType]::ParameterName, 'Show evidence detail; repeat for diagnostics')
             [CompletionResult]::new('--verbose', '--verbose', [CompletionResultType]::ParameterName, 'Show evidence detail; repeat for diagnostics')
-            [CompletionResult]::new('--no-color', '--no-color', [CompletionResultType]::ParameterName, 'Compatibility alias for --color never')
             [CompletionResult]::new('-h', '-h', [CompletionResultType]::ParameterName, 'Print help')
             [CompletionResult]::new('--help', '--help', [CompletionResultType]::ParameterName, 'Print help')
             break
         }
         'cdf;schema;promote' {
-            [CompletionResult]::new('--resource', '--resource', [CompletionResultType]::ParameterName, 'Resource identifier (compatibility form)')
             [CompletionResult]::new('--type', '--type', [CompletionResultType]::ParameterName, 'type')
             [CompletionResult]::new('--color', '--color', [CompletionResultType]::ParameterName, 'Color policy: auto, always, or never')
             [CompletionResult]::new('--progress', '--progress', [CompletionResultType]::ParameterName, 'Progress policy: auto, always, or never')
@@ -462,7 +404,6 @@ Register-ArgumentCompleter -Native -CommandName 'cdf' -ScriptBlock {
             [CompletionResult]::new('--quiet', '--quiet', [CompletionResultType]::ParameterName, 'Suppress progress and non-primary success narration')
             [CompletionResult]::new('-v', '-v', [CompletionResultType]::ParameterName, 'Show evidence detail; repeat for diagnostics')
             [CompletionResult]::new('--verbose', '--verbose', [CompletionResultType]::ParameterName, 'Show evidence detail; repeat for diagnostics')
-            [CompletionResult]::new('--no-color', '--no-color', [CompletionResultType]::ParameterName, 'Compatibility alias for --color never')
             [CompletionResult]::new('-h', '-h', [CompletionResultType]::ParameterName, 'Print help')
             [CompletionResult]::new('--help', '--help', [CompletionResultType]::ParameterName, 'Print help')
             break
@@ -475,7 +416,6 @@ Register-ArgumentCompleter -Native -CommandName 'cdf' -ScriptBlock {
             [CompletionResult]::new('--quiet', '--quiet', [CompletionResultType]::ParameterName, 'Suppress progress and non-primary success narration')
             [CompletionResult]::new('-v', '-v', [CompletionResultType]::ParameterName, 'Show evidence detail; repeat for diagnostics')
             [CompletionResult]::new('--verbose', '--verbose', [CompletionResultType]::ParameterName, 'Show evidence detail; repeat for diagnostics')
-            [CompletionResult]::new('--no-color', '--no-color', [CompletionResultType]::ParameterName, 'Compatibility alias for --color never')
             [CompletionResult]::new('-h', '-h', [CompletionResultType]::ParameterName, 'Print help')
             [CompletionResult]::new('--help', '--help', [CompletionResultType]::ParameterName, 'Print help')
             [CompletionResult]::new('freeze', 'freeze', [CompletionResultType]::ParameterValue, 'Freeze a contract snapshot')
@@ -484,7 +424,6 @@ Register-ArgumentCompleter -Native -CommandName 'cdf' -ScriptBlock {
             break
         }
         'cdf;contract;freeze' {
-            [CompletionResult]::new('--contract', '--contract', [CompletionResultType]::ParameterName, 'Contract name')
             [CompletionResult]::new('--color', '--color', [CompletionResultType]::ParameterName, 'Color policy: auto, always, or never')
             [CompletionResult]::new('--progress', '--progress', [CompletionResultType]::ParameterName, 'Progress policy: auto, always, or never')
             [CompletionResult]::new('--unicode', '--unicode', [CompletionResultType]::ParameterName, 'Unicode policy: auto, always, or never')
@@ -492,13 +431,11 @@ Register-ArgumentCompleter -Native -CommandName 'cdf' -ScriptBlock {
             [CompletionResult]::new('--quiet', '--quiet', [CompletionResultType]::ParameterName, 'Suppress progress and non-primary success narration')
             [CompletionResult]::new('-v', '-v', [CompletionResultType]::ParameterName, 'Show evidence detail; repeat for diagnostics')
             [CompletionResult]::new('--verbose', '--verbose', [CompletionResultType]::ParameterName, 'Show evidence detail; repeat for diagnostics')
-            [CompletionResult]::new('--no-color', '--no-color', [CompletionResultType]::ParameterName, 'Compatibility alias for --color never')
             [CompletionResult]::new('-h', '-h', [CompletionResultType]::ParameterName, 'Print help')
             [CompletionResult]::new('--help', '--help', [CompletionResultType]::ParameterName, 'Print help')
             break
         }
         'cdf;contract;show' {
-            [CompletionResult]::new('--trust', '--trust', [CompletionResultType]::ParameterName, 'Trust level to show')
             [CompletionResult]::new('--color', '--color', [CompletionResultType]::ParameterName, 'Color policy: auto, always, or never')
             [CompletionResult]::new('--progress', '--progress', [CompletionResultType]::ParameterName, 'Progress policy: auto, always, or never')
             [CompletionResult]::new('--unicode', '--unicode', [CompletionResultType]::ParameterName, 'Unicode policy: auto, always, or never')
@@ -506,13 +443,11 @@ Register-ArgumentCompleter -Native -CommandName 'cdf' -ScriptBlock {
             [CompletionResult]::new('--quiet', '--quiet', [CompletionResultType]::ParameterName, 'Suppress progress and non-primary success narration')
             [CompletionResult]::new('-v', '-v', [CompletionResultType]::ParameterName, 'Show evidence detail; repeat for diagnostics')
             [CompletionResult]::new('--verbose', '--verbose', [CompletionResultType]::ParameterName, 'Show evidence detail; repeat for diagnostics')
-            [CompletionResult]::new('--no-color', '--no-color', [CompletionResultType]::ParameterName, 'Compatibility alias for --color never')
             [CompletionResult]::new('-h', '-h', [CompletionResultType]::ParameterName, 'Print help')
             [CompletionResult]::new('--help', '--help', [CompletionResultType]::ParameterName, 'Print help')
             break
         }
         'cdf;contract;test' {
-            [CompletionResult]::new('--contract', '--contract', [CompletionResultType]::ParameterName, 'Contract name')
             [CompletionResult]::new('--color', '--color', [CompletionResultType]::ParameterName, 'Color policy: auto, always, or never')
             [CompletionResult]::new('--progress', '--progress', [CompletionResultType]::ParameterName, 'Progress policy: auto, always, or never')
             [CompletionResult]::new('--unicode', '--unicode', [CompletionResultType]::ParameterName, 'Unicode policy: auto, always, or never')
@@ -520,7 +455,6 @@ Register-ArgumentCompleter -Native -CommandName 'cdf' -ScriptBlock {
             [CompletionResult]::new('--quiet', '--quiet', [CompletionResultType]::ParameterName, 'Suppress progress and non-primary success narration')
             [CompletionResult]::new('-v', '-v', [CompletionResultType]::ParameterName, 'Show evidence detail; repeat for diagnostics')
             [CompletionResult]::new('--verbose', '--verbose', [CompletionResultType]::ParameterName, 'Show evidence detail; repeat for diagnostics')
-            [CompletionResult]::new('--no-color', '--no-color', [CompletionResultType]::ParameterName, 'Compatibility alias for --color never')
             [CompletionResult]::new('-h', '-h', [CompletionResultType]::ParameterName, 'Print help')
             [CompletionResult]::new('--help', '--help', [CompletionResultType]::ParameterName, 'Print help')
             break
@@ -533,7 +467,6 @@ Register-ArgumentCompleter -Native -CommandName 'cdf' -ScriptBlock {
             [CompletionResult]::new('--quiet', '--quiet', [CompletionResultType]::ParameterName, 'Suppress progress and non-primary success narration')
             [CompletionResult]::new('-v', '-v', [CompletionResultType]::ParameterName, 'Show evidence detail; repeat for diagnostics')
             [CompletionResult]::new('--verbose', '--verbose', [CompletionResultType]::ParameterName, 'Show evidence detail; repeat for diagnostics')
-            [CompletionResult]::new('--no-color', '--no-color', [CompletionResultType]::ParameterName, 'Compatibility alias for --color never')
             [CompletionResult]::new('-h', '-h', [CompletionResultType]::ParameterName, 'Print help')
             [CompletionResult]::new('--help', '--help', [CompletionResultType]::ParameterName, 'Print help')
             [CompletionResult]::new('show', 'show', [CompletionResultType]::ParameterValue, 'Show the selected durable record')
@@ -544,10 +477,9 @@ Register-ArgumentCompleter -Native -CommandName 'cdf' -ScriptBlock {
             break
         }
         'cdf;state;show' {
-            [CompletionResult]::new('--pipeline', '--pipeline', [CompletionResultType]::ParameterName, 'Pipeline identifier compatibility option')
-            [CompletionResult]::new('--resource', '--resource', [CompletionResultType]::ParameterName, 'Resource identifier (compatibility form)')
+            [CompletionResult]::new('--pipeline', '--pipeline', [CompletionResultType]::ParameterName, 'Pipeline identifier')
             [CompletionResult]::new('--scope', '--scope', [CompletionResultType]::ParameterName, 'Checkpoint scope entry as key=value; may be repeated')
-            [CompletionResult]::new('--scope-json', '--scope-json', [CompletionResultType]::ParameterName, 'JSON checkpoint scope compatibility form')
+            [CompletionResult]::new('--scope-json', '--scope-json', [CompletionResultType]::ParameterName, 'Checkpoint scope encoded as JSON')
             [CompletionResult]::new('--color', '--color', [CompletionResultType]::ParameterName, 'Color policy: auto, always, or never')
             [CompletionResult]::new('--progress', '--progress', [CompletionResultType]::ParameterName, 'Progress policy: auto, always, or never')
             [CompletionResult]::new('--unicode', '--unicode', [CompletionResultType]::ParameterName, 'Unicode policy: auto, always, or never')
@@ -555,16 +487,14 @@ Register-ArgumentCompleter -Native -CommandName 'cdf' -ScriptBlock {
             [CompletionResult]::new('--quiet', '--quiet', [CompletionResultType]::ParameterName, 'Suppress progress and non-primary success narration')
             [CompletionResult]::new('-v', '-v', [CompletionResultType]::ParameterName, 'Show evidence detail; repeat for diagnostics')
             [CompletionResult]::new('--verbose', '--verbose', [CompletionResultType]::ParameterName, 'Show evidence detail; repeat for diagnostics')
-            [CompletionResult]::new('--no-color', '--no-color', [CompletionResultType]::ParameterName, 'Compatibility alias for --color never')
             [CompletionResult]::new('-h', '-h', [CompletionResultType]::ParameterName, 'Print help')
             [CompletionResult]::new('--help', '--help', [CompletionResultType]::ParameterName, 'Print help')
             break
         }
         'cdf;state;history' {
-            [CompletionResult]::new('--pipeline', '--pipeline', [CompletionResultType]::ParameterName, 'Pipeline identifier compatibility option')
-            [CompletionResult]::new('--resource', '--resource', [CompletionResultType]::ParameterName, 'Resource identifier (compatibility form)')
+            [CompletionResult]::new('--pipeline', '--pipeline', [CompletionResultType]::ParameterName, 'Pipeline identifier')
             [CompletionResult]::new('--scope', '--scope', [CompletionResultType]::ParameterName, 'Checkpoint scope entry as key=value; may be repeated')
-            [CompletionResult]::new('--scope-json', '--scope-json', [CompletionResultType]::ParameterName, 'JSON checkpoint scope compatibility form')
+            [CompletionResult]::new('--scope-json', '--scope-json', [CompletionResultType]::ParameterName, 'Checkpoint scope encoded as JSON')
             [CompletionResult]::new('--color', '--color', [CompletionResultType]::ParameterName, 'Color policy: auto, always, or never')
             [CompletionResult]::new('--progress', '--progress', [CompletionResultType]::ParameterName, 'Progress policy: auto, always, or never')
             [CompletionResult]::new('--unicode', '--unicode', [CompletionResultType]::ParameterName, 'Unicode policy: auto, always, or never')
@@ -572,19 +502,15 @@ Register-ArgumentCompleter -Native -CommandName 'cdf' -ScriptBlock {
             [CompletionResult]::new('--quiet', '--quiet', [CompletionResultType]::ParameterName, 'Suppress progress and non-primary success narration')
             [CompletionResult]::new('-v', '-v', [CompletionResultType]::ParameterName, 'Show evidence detail; repeat for diagnostics')
             [CompletionResult]::new('--verbose', '--verbose', [CompletionResultType]::ParameterName, 'Show evidence detail; repeat for diagnostics')
-            [CompletionResult]::new('--no-color', '--no-color', [CompletionResultType]::ParameterName, 'Compatibility alias for --color never')
             [CompletionResult]::new('-h', '-h', [CompletionResultType]::ParameterName, 'Print help')
             [CompletionResult]::new('--help', '--help', [CompletionResultType]::ParameterName, 'Print help')
             break
         }
         'cdf;state;rewind' {
-            [CompletionResult]::new('--pipeline', '--pipeline', [CompletionResultType]::ParameterName, 'Pipeline identifier compatibility option')
-            [CompletionResult]::new('--resource', '--resource', [CompletionResultType]::ParameterName, 'Resource identifier (compatibility form)')
+            [CompletionResult]::new('--pipeline', '--pipeline', [CompletionResultType]::ParameterName, 'Pipeline identifier')
             [CompletionResult]::new('--scope', '--scope', [CompletionResultType]::ParameterName, 'Checkpoint scope entry as key=value; may be repeated')
-            [CompletionResult]::new('--scope-json', '--scope-json', [CompletionResultType]::ParameterName, 'JSON checkpoint scope compatibility form')
-            [CompletionResult]::new('--target-checkpoint', '--target-checkpoint', [CompletionResultType]::ParameterName, 'Checkpoint to rewind to')
-            [CompletionResult]::new('--to', '--to', [CompletionResultType]::ParameterName, 'Checkpoint to rewind to')
-            [CompletionResult]::new('--marker-checkpoint', '--marker-checkpoint', [CompletionResultType]::ParameterName, 'Explicit rewind marker identifier for scripts')
+            [CompletionResult]::new('--scope-json', '--scope-json', [CompletionResultType]::ParameterName, 'Checkpoint scope encoded as JSON')
+            [CompletionResult]::new('--to', '--to', [CompletionResultType]::ParameterName, 'Destination URI or cursor upper bound, as shown in usage')
             [CompletionResult]::new('--color', '--color', [CompletionResultType]::ParameterName, 'Color policy: auto, always, or never')
             [CompletionResult]::new('--progress', '--progress', [CompletionResultType]::ParameterName, 'Progress policy: auto, always, or never')
             [CompletionResult]::new('--unicode', '--unicode', [CompletionResultType]::ParameterName, 'Unicode policy: auto, always, or never')
@@ -592,7 +518,6 @@ Register-ArgumentCompleter -Native -CommandName 'cdf' -ScriptBlock {
             [CompletionResult]::new('--quiet', '--quiet', [CompletionResultType]::ParameterName, 'Suppress progress and non-primary success narration')
             [CompletionResult]::new('-v', '-v', [CompletionResultType]::ParameterName, 'Show evidence detail; repeat for diagnostics')
             [CompletionResult]::new('--verbose', '--verbose', [CompletionResultType]::ParameterName, 'Show evidence detail; repeat for diagnostics')
-            [CompletionResult]::new('--no-color', '--no-color', [CompletionResultType]::ParameterName, 'Compatibility alias for --color never')
             [CompletionResult]::new('-h', '-h', [CompletionResultType]::ParameterName, 'Print help')
             [CompletionResult]::new('--help', '--help', [CompletionResultType]::ParameterName, 'Print help')
             break
@@ -605,7 +530,6 @@ Register-ArgumentCompleter -Native -CommandName 'cdf' -ScriptBlock {
             [CompletionResult]::new('--quiet', '--quiet', [CompletionResultType]::ParameterName, 'Suppress progress and non-primary success narration')
             [CompletionResult]::new('-v', '-v', [CompletionResultType]::ParameterName, 'Show evidence detail; repeat for diagnostics')
             [CompletionResult]::new('--verbose', '--verbose', [CompletionResultType]::ParameterName, 'Show evidence detail; repeat for diagnostics')
-            [CompletionResult]::new('--no-color', '--no-color', [CompletionResultType]::ParameterName, 'Compatibility alias for --color never')
             [CompletionResult]::new('-h', '-h', [CompletionResultType]::ParameterName, 'Print help')
             [CompletionResult]::new('--help', '--help', [CompletionResultType]::ParameterName, 'Print help')
             break
@@ -614,7 +538,7 @@ Register-ArgumentCompleter -Native -CommandName 'cdf' -ScriptBlock {
             [CompletionResult]::new('--package', '--package', [CompletionResultType]::ParameterName, 'Package directory')
             [CompletionResult]::new('--to', '--to', [CompletionResultType]::ParameterName, 'Destination URI or cursor upper bound, as shown in usage')
             [CompletionResult]::new('--receipt', '--receipt', [CompletionResultType]::ParameterName, 'Receipt identifier')
-            [CompletionResult]::new('--target', '--target', [CompletionResultType]::ParameterName, 'Destination target/table compatibility option')
+            [CompletionResult]::new('--target', '--target', [CompletionResultType]::ParameterName, 'Destination target or table')
             [CompletionResult]::new('--merge-dedup', '--merge-dedup', [CompletionResultType]::ParameterName, 'Merge deduplication policy')
             [CompletionResult]::new('--color', '--color', [CompletionResultType]::ParameterName, 'Color policy: auto, always, or never')
             [CompletionResult]::new('--progress', '--progress', [CompletionResultType]::ParameterName, 'Progress policy: auto, always, or never')
@@ -623,13 +547,11 @@ Register-ArgumentCompleter -Native -CommandName 'cdf' -ScriptBlock {
             [CompletionResult]::new('--quiet', '--quiet', [CompletionResultType]::ParameterName, 'Suppress progress and non-primary success narration')
             [CompletionResult]::new('-v', '-v', [CompletionResultType]::ParameterName, 'Show evidence detail; repeat for diagnostics')
             [CompletionResult]::new('--verbose', '--verbose', [CompletionResultType]::ParameterName, 'Show evidence detail; repeat for diagnostics')
-            [CompletionResult]::new('--no-color', '--no-color', [CompletionResultType]::ParameterName, 'Compatibility alias for --color never')
             [CompletionResult]::new('-h', '-h', [CompletionResultType]::ParameterName, 'Print help')
             [CompletionResult]::new('--help', '--help', [CompletionResultType]::ParameterName, 'Print help')
             break
         }
         'cdf;resume' {
-            [CompletionResult]::new('--run', '--run', [CompletionResultType]::ParameterName, 'Run identifier compatibility option')
             [CompletionResult]::new('--color', '--color', [CompletionResultType]::ParameterName, 'Color policy: auto, always, or never')
             [CompletionResult]::new('--progress', '--progress', [CompletionResultType]::ParameterName, 'Progress policy: auto, always, or never')
             [CompletionResult]::new('--unicode', '--unicode', [CompletionResultType]::ParameterName, 'Unicode policy: auto, always, or never')
@@ -637,7 +559,6 @@ Register-ArgumentCompleter -Native -CommandName 'cdf' -ScriptBlock {
             [CompletionResult]::new('--quiet', '--quiet', [CompletionResultType]::ParameterName, 'Suppress progress and non-primary success narration')
             [CompletionResult]::new('-v', '-v', [CompletionResultType]::ParameterName, 'Show evidence detail; repeat for diagnostics')
             [CompletionResult]::new('--verbose', '--verbose', [CompletionResultType]::ParameterName, 'Show evidence detail; repeat for diagnostics')
-            [CompletionResult]::new('--no-color', '--no-color', [CompletionResultType]::ParameterName, 'Compatibility alias for --color never')
             [CompletionResult]::new('-h', '-h', [CompletionResultType]::ParameterName, 'Print help')
             [CompletionResult]::new('--help', '--help', [CompletionResultType]::ParameterName, 'Print help')
             break
@@ -650,7 +571,6 @@ Register-ArgumentCompleter -Native -CommandName 'cdf' -ScriptBlock {
             [CompletionResult]::new('--quiet', '--quiet', [CompletionResultType]::ParameterName, 'Suppress progress and non-primary success narration')
             [CompletionResult]::new('-v', '-v', [CompletionResultType]::ParameterName, 'Show evidence detail; repeat for diagnostics')
             [CompletionResult]::new('--verbose', '--verbose', [CompletionResultType]::ParameterName, 'Show evidence detail; repeat for diagnostics')
-            [CompletionResult]::new('--no-color', '--no-color', [CompletionResultType]::ParameterName, 'Compatibility alias for --color never')
             [CompletionResult]::new('-h', '-h', [CompletionResultType]::ParameterName, 'Print help')
             [CompletionResult]::new('--help', '--help', [CompletionResultType]::ParameterName, 'Print help')
             [CompletionResult]::new('package', 'package', [CompletionResultType]::ParameterValue, 'List, verify, archive, and collect packages')
@@ -658,7 +578,7 @@ Register-ArgumentCompleter -Native -CommandName 'cdf' -ScriptBlock {
         }
         'cdf;replay;package' {
             [CompletionResult]::new('--to', '--to', [CompletionResultType]::ParameterName, 'Destination URI or cursor upper bound, as shown in usage')
-            [CompletionResult]::new('--target', '--target', [CompletionResultType]::ParameterName, 'Destination target/table compatibility option')
+            [CompletionResult]::new('--target', '--target', [CompletionResultType]::ParameterName, 'Destination target or table')
             [CompletionResult]::new('--merge-dedup', '--merge-dedup', [CompletionResultType]::ParameterName, 'Merge deduplication policy')
             [CompletionResult]::new('--color', '--color', [CompletionResultType]::ParameterName, 'Color policy: auto, always, or never')
             [CompletionResult]::new('--progress', '--progress', [CompletionResultType]::ParameterName, 'Progress policy: auto, always, or never')
@@ -667,16 +587,14 @@ Register-ArgumentCompleter -Native -CommandName 'cdf' -ScriptBlock {
             [CompletionResult]::new('--quiet', '--quiet', [CompletionResultType]::ParameterName, 'Suppress progress and non-primary success narration')
             [CompletionResult]::new('-v', '-v', [CompletionResultType]::ParameterName, 'Show evidence detail; repeat for diagnostics')
             [CompletionResult]::new('--verbose', '--verbose', [CompletionResultType]::ParameterName, 'Show evidence detail; repeat for diagnostics')
-            [CompletionResult]::new('--no-color', '--no-color', [CompletionResultType]::ParameterName, 'Compatibility alias for --color never')
             [CompletionResult]::new('-h', '-h', [CompletionResultType]::ParameterName, 'Print help')
             [CompletionResult]::new('--help', '--help', [CompletionResultType]::ParameterName, 'Print help')
             break
         }
         'cdf;backfill' {
-            [CompletionResult]::new('--resource', '--resource', [CompletionResultType]::ParameterName, 'Resource identifier (compatibility form)')
             [CompletionResult]::new('--from', '--from', [CompletionResultType]::ParameterName, 'Inclusive cursor lower bound')
             [CompletionResult]::new('--to', '--to', [CompletionResultType]::ParameterName, 'Destination URI or cursor upper bound, as shown in usage')
-            [CompletionResult]::new('--target', '--target', [CompletionResultType]::ParameterName, 'Destination target/table compatibility option')
+            [CompletionResult]::new('--target', '--target', [CompletionResultType]::ParameterName, 'Destination target or table')
             [CompletionResult]::new('--slice-size', '--slice-size', [CompletionResultType]::ParameterName, 'Rows per backfill slice')
             [CompletionResult]::new('--color', '--color', [CompletionResultType]::ParameterName, 'Color policy: auto, always, or never')
             [CompletionResult]::new('--progress', '--progress', [CompletionResultType]::ParameterName, 'Progress policy: auto, always, or never')
@@ -686,7 +604,6 @@ Register-ArgumentCompleter -Native -CommandName 'cdf' -ScriptBlock {
             [CompletionResult]::new('--quiet', '--quiet', [CompletionResultType]::ParameterName, 'Suppress progress and non-primary success narration')
             [CompletionResult]::new('-v', '-v', [CompletionResultType]::ParameterName, 'Show evidence detail; repeat for diagnostics')
             [CompletionResult]::new('--verbose', '--verbose', [CompletionResultType]::ParameterName, 'Show evidence detail; repeat for diagnostics')
-            [CompletionResult]::new('--no-color', '--no-color', [CompletionResultType]::ParameterName, 'Compatibility alias for --color never')
             [CompletionResult]::new('-h', '-h', [CompletionResultType]::ParameterName, 'Print help')
             [CompletionResult]::new('--help', '--help', [CompletionResultType]::ParameterName, 'Print help')
             break
@@ -699,7 +616,6 @@ Register-ArgumentCompleter -Native -CommandName 'cdf' -ScriptBlock {
             [CompletionResult]::new('--quiet', '--quiet', [CompletionResultType]::ParameterName, 'Suppress progress and non-primary success narration')
             [CompletionResult]::new('-v', '-v', [CompletionResultType]::ParameterName, 'Show evidence detail; repeat for diagnostics')
             [CompletionResult]::new('--verbose', '--verbose', [CompletionResultType]::ParameterName, 'Show evidence detail; repeat for diagnostics')
-            [CompletionResult]::new('--no-color', '--no-color', [CompletionResultType]::ParameterName, 'Compatibility alias for --color never')
             [CompletionResult]::new('-h', '-h', [CompletionResultType]::ParameterName, 'Print help')
             [CompletionResult]::new('--help', '--help', [CompletionResultType]::ParameterName, 'Print help')
             [CompletionResult]::new('ls', 'ls', [CompletionResultType]::ParameterValue, 'List durable packages')
@@ -716,7 +632,6 @@ Register-ArgumentCompleter -Native -CommandName 'cdf' -ScriptBlock {
             [CompletionResult]::new('--quiet', '--quiet', [CompletionResultType]::ParameterName, 'Suppress progress and non-primary success narration')
             [CompletionResult]::new('-v', '-v', [CompletionResultType]::ParameterName, 'Show evidence detail; repeat for diagnostics')
             [CompletionResult]::new('--verbose', '--verbose', [CompletionResultType]::ParameterName, 'Show evidence detail; repeat for diagnostics')
-            [CompletionResult]::new('--no-color', '--no-color', [CompletionResultType]::ParameterName, 'Compatibility alias for --color never')
             [CompletionResult]::new('-h', '-h', [CompletionResultType]::ParameterName, 'Print help')
             [CompletionResult]::new('--help', '--help', [CompletionResultType]::ParameterName, 'Print help')
             break
@@ -729,7 +644,6 @@ Register-ArgumentCompleter -Native -CommandName 'cdf' -ScriptBlock {
             [CompletionResult]::new('--quiet', '--quiet', [CompletionResultType]::ParameterName, 'Suppress progress and non-primary success narration')
             [CompletionResult]::new('-v', '-v', [CompletionResultType]::ParameterName, 'Show evidence detail; repeat for diagnostics')
             [CompletionResult]::new('--verbose', '--verbose', [CompletionResultType]::ParameterName, 'Show evidence detail; repeat for diagnostics')
-            [CompletionResult]::new('--no-color', '--no-color', [CompletionResultType]::ParameterName, 'Compatibility alias for --color never')
             [CompletionResult]::new('-h', '-h', [CompletionResultType]::ParameterName, 'Print help')
             [CompletionResult]::new('--help', '--help', [CompletionResultType]::ParameterName, 'Print help')
             break
@@ -742,7 +656,6 @@ Register-ArgumentCompleter -Native -CommandName 'cdf' -ScriptBlock {
             [CompletionResult]::new('--quiet', '--quiet', [CompletionResultType]::ParameterName, 'Suppress progress and non-primary success narration')
             [CompletionResult]::new('-v', '-v', [CompletionResultType]::ParameterName, 'Show evidence detail; repeat for diagnostics')
             [CompletionResult]::new('--verbose', '--verbose', [CompletionResultType]::ParameterName, 'Show evidence detail; repeat for diagnostics')
-            [CompletionResult]::new('--no-color', '--no-color', [CompletionResultType]::ParameterName, 'Compatibility alias for --color never')
             [CompletionResult]::new('-h', '-h', [CompletionResultType]::ParameterName, 'Print help')
             [CompletionResult]::new('--help', '--help', [CompletionResultType]::ParameterName, 'Print help')
             break
@@ -757,7 +670,6 @@ Register-ArgumentCompleter -Native -CommandName 'cdf' -ScriptBlock {
             [CompletionResult]::new('--quiet', '--quiet', [CompletionResultType]::ParameterName, 'Suppress progress and non-primary success narration')
             [CompletionResult]::new('-v', '-v', [CompletionResultType]::ParameterName, 'Show evidence detail; repeat for diagnostics')
             [CompletionResult]::new('--verbose', '--verbose', [CompletionResultType]::ParameterName, 'Show evidence detail; repeat for diagnostics')
-            [CompletionResult]::new('--no-color', '--no-color', [CompletionResultType]::ParameterName, 'Compatibility alias for --color never')
             [CompletionResult]::new('-h', '-h', [CompletionResultType]::ParameterName, 'Print help')
             [CompletionResult]::new('--help', '--help', [CompletionResultType]::ParameterName, 'Print help')
             break
@@ -770,7 +682,6 @@ Register-ArgumentCompleter -Native -CommandName 'cdf' -ScriptBlock {
             [CompletionResult]::new('--quiet', '--quiet', [CompletionResultType]::ParameterName, 'Suppress progress and non-primary success narration')
             [CompletionResult]::new('-v', '-v', [CompletionResultType]::ParameterName, 'Show evidence detail; repeat for diagnostics')
             [CompletionResult]::new('--verbose', '--verbose', [CompletionResultType]::ParameterName, 'Show evidence detail; repeat for diagnostics')
-            [CompletionResult]::new('--no-color', '--no-color', [CompletionResultType]::ParameterName, 'Compatibility alias for --color never')
             [CompletionResult]::new('-h', '-h', [CompletionResultType]::ParameterName, 'Print help')
             [CompletionResult]::new('--help', '--help', [CompletionResultType]::ParameterName, 'Print help')
             break
@@ -783,7 +694,6 @@ Register-ArgumentCompleter -Native -CommandName 'cdf' -ScriptBlock {
             [CompletionResult]::new('--quiet', '--quiet', [CompletionResultType]::ParameterName, 'Suppress progress and non-primary success narration')
             [CompletionResult]::new('-v', '-v', [CompletionResultType]::ParameterName, 'Show evidence detail; repeat for diagnostics')
             [CompletionResult]::new('--verbose', '--verbose', [CompletionResultType]::ParameterName, 'Show evidence detail; repeat for diagnostics')
-            [CompletionResult]::new('--no-color', '--no-color', [CompletionResultType]::ParameterName, 'Compatibility alias for --color never')
             [CompletionResult]::new('-h', '-h', [CompletionResultType]::ParameterName, 'Print help')
             [CompletionResult]::new('--help', '--help', [CompletionResultType]::ParameterName, 'Print help')
             break

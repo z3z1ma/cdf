@@ -4,7 +4,7 @@
 .SH NAME
 cdf\-preview \- Read a bounded preview without committing data
 .SH SYNOPSIS
-\fBcdf preview\fR [\fB\-q\fR|\fB\-\-quiet\fR] [\fB\-\-resource\fR] [\fB\-\-select\fR] [\fB\-v\fR|\fB\-\-verbose\fR]... [\fB\-\-color\fR] [\fB\-\-filter\fR] [\fB\-\-limit\fR] [\fB\-\-no\-color\fR] [\fB\-\-order\-by\fR] [\fB\-\-progress\fR] [\fB\-\-package\-id\fR] [\fB\-\-unicode\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fIRESOURCE\fR]
+\fBcdf preview\fR [\fB\-q\fR|\fB\-\-quiet\fR] [\fB\-\-select\fR] [\fB\-\-filter\fR] [\fB\-v\fR|\fB\-\-verbose\fR]... [\fB\-\-color\fR] [\fB\-\-limit\fR] [\fB\-\-order\-by\fR] [\fB\-\-progress\fR] [\fB\-\-unicode\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fIRESOURCE\fR]
 .SH DESCRIPTION
 Read a bounded preview without committing data
 .SH OPTIONS
@@ -12,11 +12,11 @@ Read a bounded preview without committing data
 \fB\-q\fR, \fB\-\-quiet\fR
 Suppress progress and non\-primary success narration
 .TP
-\fB\-\-resource\fR \fI<RESOURCE>\fR
-Resource identifier (compatibility form)
-.TP
 \fB\-\-select\fR \fI<FIELDS>\fR
 Comma\-separated projected fields
+.TP
+\fB\-\-filter\fR \fI<EXPR>\fR
+Filter expression; may be repeated
 .TP
 \fB\-v\fR, \fB\-\-verbose\fR
 Show evidence detail; repeat for diagnostics
@@ -36,14 +36,8 @@ always
 never
 .RE
 .TP
-\fB\-\-filter\fR \fI<EXPR>\fR
-Filter expression; may be repeated
-.TP
 \fB\-\-limit\fR \fI<N>\fR
 Maximum rows to read
-.TP
-\fB\-\-no\-color\fR
-Compatibility alias for \-\-color never
 .TP
 \fB\-\-order\-by\fR \fI<FIELD[:asc|desc]>\fR
 Ordering field and optional direction
@@ -62,9 +56,6 @@ always
 .IP \(bu 2
 never
 .RE
-.TP
-\fB\-\-package\-id\fR \fI<ID>\fR
-Explicit package identifier for script compatibility
 .TP
 \fB\-\-unicode\fR \fI<WHEN>\fR
 Unicode policy: auto, always, or never

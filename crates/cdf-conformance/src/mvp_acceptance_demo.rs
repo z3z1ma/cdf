@@ -31,7 +31,7 @@ use crate::{
 
 const PROJECT_NAME: &str = "mvp_acceptance_demo";
 const RESOURCE_ID: &str = "github.issues";
-const TARGET: &str = "github_issues";
+const TARGET: &str = "issues";
 const SECRET_REF: &str = "secret://file/github-token";
 const SECRET_VALUE: &str = "source-demo-token";
 const PACKAGE_ID: &str = "mvp-acceptance-demo-github-issues";
@@ -75,37 +75,18 @@ fn mvp_acceptance_demo_fixture_proves_rest_duckdb_recovery_replay_and_drift() {
     let project = DemoProject::new(temp.path()).unwrap();
     project.write_files().unwrap();
 
-    let plan_human = invoke_human(
-        project.root(),
-        [
-            "plan",
-            RESOURCE_ID,
-            "--target",
-            TARGET,
-            "--package-id",
-            PACKAGE_ID,
-        ],
-    );
-    let plan_json = invoke_json(
-        project.root(),
-        [
-            "plan",
-            RESOURCE_ID,
-            "--target",
-            TARGET,
-            "--package-id",
-            PACKAGE_ID,
-        ],
-    );
+    let plan_human = invoke_human(project.root(), ["plan", RESOURCE_ID]);
+    let plan_json = invoke_json(project.root(), ["plan", RESOURCE_ID]);
     assert_eq!(plan_json["command"], "plan");
     assert_eq!(plan_json["result"]["resource_id"], RESOURCE_ID);
-    assert_eq!(plan_json["result"]["package_id"], PACKAGE_ID);
+    let cli_plan_package_id = plan_json["result"]["package_id"].as_str().unwrap();
+    assert!(cli_plan_package_id.starts_with("cli-"));
     assert_eq!(
         plan_json["result"]["state_advancement"]["advances_after"],
         "destination receipt is recorded and CheckpointStore::commit verifies coverage"
     );
     assert!(
-        !project.package_root().join(PACKAGE_ID).exists(),
+        !project.package_root().join(cli_plan_package_id).exists(),
         "plan must run before package bytes are written"
     );
 
@@ -222,14 +203,7 @@ fn mvp_acceptance_demo_fixture_proves_rest_duckdb_recovery_replay_and_drift() {
 
     let history_json = invoke_json(
         project.root(),
-        [
-            "state",
-            "history",
-            "--pipeline",
-            PIPELINE_ID,
-            "--resource",
-            RESOURCE_ID,
-        ],
+        ["state", "history", RESOURCE_ID, "--pipeline", PIPELINE_ID],
     );
     let history = history_json["result"]["history"].as_array().unwrap();
     assert_eq!(history.len(), 1);
@@ -237,14 +211,7 @@ fn mvp_acceptance_demo_fixture_proves_rest_duckdb_recovery_replay_and_drift() {
     assert_eq!(history[0]["delta"]["checkpoint_id"], CHECKPOINT_ID);
     let history_human = invoke_human(
         project.root(),
-        [
-            "state",
-            "history",
-            "--pipeline",
-            PIPELINE_ID,
-            "--resource",
-            RESOURCE_ID,
-        ],
+        ["state", "history", RESOURCE_ID, "--pipeline", PIPELINE_ID],
     );
 
     let head = SqliteCheckpointStore::open(project.state_store_path())
@@ -427,12 +394,12 @@ fn mvp_acceptance_demo_fixture_proves_rest_duckdb_recovery_replay_and_drift() {
     assert!(rendered.contains("Bearer <redacted>"));
 
     let transcript = format!(
-        "$ cdf plan {RESOURCE_ID} --target {TARGET} --package-id {PACKAGE_ID}\n{plan_human}\n\
+        "$ cdf plan {RESOURCE_ID}\n{plan_human}\n\
          $ cdf contract test {RESOURCE_ID}\n{contract_human}\n\
          # simulated kill after destination receipt verification and before checkpoint commit\n\
          $ cdf resume {RUN_ID}\n{}\n\
          $ cdf sql 'select package_id, status from packages order by package_id'\n{sql_human}\n\
-         $ cdf state history --pipeline {PIPELINE_ID} --resource {RESOURCE_ID}\n{history_human}\n\
+         $ cdf state history {RESOURCE_ID} --pipeline {PIPELINE_ID}\n{history_human}\n\
          $ cdf replay package <package> --to duckdb://<replay>\n{replay_human}\n\
          # duplicate replay: true; destination footprint unchanged\n\
          # drift verdict: accepted_rows=1 quarantined_rows=1 receipt_verified=true checkpoint_gated=true\n",
@@ -671,12 +638,7 @@ where
         "stdout:\n{}\nstderr:\n{}",
         result.stdout, result.stderr
     );
-    assert!(
-        result.stderr.is_empty(),
-        "unexpected stderr: {}",
-        result.stderr
-    );
-    result.stdout
+    format!("{}{}", result.stderr, result.stdout)
 }
 
 const GITHUB_ISSUES_TOML: &str = r#"

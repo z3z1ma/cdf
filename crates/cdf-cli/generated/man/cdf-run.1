@@ -4,7 +4,7 @@
 .SH NAME
 cdf\-run \- Execute a governed resource run
 .SH SYNOPSIS
-\fBcdf run\fR [\fB\-q\fR|\fB\-\-quiet\fR] [\fB\-\-resource\fR] [\fB\-\-pipeline\fR] [\fB\-v\fR|\fB\-\-verbose\fR]... [\fB\-\-color\fR] [\fB\-\-to\fR] [\fB\-\-no\-color\fR] [\fB\-\-target\fR] [\fB\-\-package\-id\fR] [\fB\-\-progress\fR] [\fB\-\-checkpoint\-id\fR] [\fB\-\-unicode\fR] [\fB\-\-jobs\fR] [\fB\-\-loop\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fIRESOURCE\fR]
+\fBcdf run\fR [\fB\-q\fR|\fB\-\-quiet\fR] [\fB\-\-to\fR] [\fB\-\-jobs\fR] [\fB\-v\fR|\fB\-\-verbose\fR]... [\fB\-\-color\fR] [\fB\-\-loop\fR] [\fB\-\-progress\fR] [\fB\-\-unicode\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fIRESOURCE\fR]
 .SH DESCRIPTION
 Execute a governed resource run
 .SH OPTIONS
@@ -12,11 +12,11 @@ Execute a governed resource run
 \fB\-q\fR, \fB\-\-quiet\fR
 Suppress progress and non\-primary success narration
 .TP
-\fB\-\-resource\fR \fI<RESOURCE>\fR
-Resource identifier (compatibility form)
+\fB\-\-to\fR \fI<DEST>\fR
+Destination URI or cursor upper bound, as shown in usage
 .TP
-\fB\-\-pipeline\fR \fI<ID>\fR
-Pipeline identifier compatibility option
+\fB\-\-jobs\fR \fI<N>\fR
+Maximum concurrent jobs
 .TP
 \fB\-v\fR, \fB\-\-verbose\fR
 Show evidence detail; repeat for diagnostics
@@ -36,17 +36,8 @@ always
 never
 .RE
 .TP
-\fB\-\-to\fR \fI<DEST>\fR
-Destination URI or cursor upper bound, as shown in usage
-.TP
-\fB\-\-no\-color\fR
-Compatibility alias for \-\-color never
-.TP
-\fB\-\-target\fR \fI<TARGET>\fR
-Destination target/table compatibility option
-.TP
-\fB\-\-package\-id\fR \fI<ID>\fR
-Explicit package identifier for script compatibility
+\fB\-\-loop\fR
+Continue polling for work
 .TP
 \fB\-\-progress\fR \fI<WHEN>\fR
 Progress policy: auto, always, or never
@@ -63,9 +54,6 @@ always
 never
 .RE
 .TP
-\fB\-\-checkpoint\-id\fR \fI<ID>\fR
-Explicit checkpoint identifier for script compatibility
-.TP
 \fB\-\-unicode\fR \fI<WHEN>\fR
 Unicode policy: auto, always, or never
 .br
@@ -80,12 +68,6 @@ always
 .IP \(bu 2
 never
 .RE
-.TP
-\fB\-\-jobs\fR \fI<N>\fR
-Maximum concurrent jobs
-.TP
-\fB\-\-loop\fR
-Continue polling for work
 .TP
 \fB\-h\fR, \fB\-\-help\fR
 Print help

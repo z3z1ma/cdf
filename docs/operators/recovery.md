@@ -60,13 +60,11 @@ run-ledger history, or reconstruct quarantine lineage.
 ## Inspect Recovery State
 
 ```bash
-cdf --project /path/to/project state show \
-  --pipeline <pipeline-id> \
-  --resource <resource-id>
+cdf --project /path/to/project state show <resource-id> \
+  --pipeline <pipeline-id>
 
-cdf --project /path/to/project state history \
-  --pipeline <pipeline-id> \
-  --resource <resource-id>
+cdf --project /path/to/project state history <resource-id> \
+  --pipeline <pipeline-id>
 ```
 
 Use `--scope-json` only when the resource uses a non-default scope key.

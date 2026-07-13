@@ -1503,6 +1503,29 @@ struct PerObservationSchemaCoercionArtifact {
     coercion_plan: cdf_contract::SchemaCoercionPlan,
 }
 
+fn record_observation_schema_coercion(
+    evidence: &mut BTreeMap<String, PerObservationSchemaCoercionArtifact>,
+    expected: &EffectiveSchemaObservationCoercion,
+    coercion_plan: cdf_contract::SchemaCoercionPlan,
+) -> Result<()> {
+    let artifact = PerObservationSchemaCoercionArtifact {
+        observation_id: expected.observation_id.clone(),
+        physical_schema_hash: expected.physical_schema_hash.to_string(),
+        coercion_plan,
+    };
+    if let Some(existing) = evidence.get(&expected.observation_id) {
+        if existing != &artifact {
+            return Err(CdfError::data(format!(
+                "schema observation {:?} produced inconsistent coercion evidence",
+                expected.observation_id
+            )));
+        }
+    } else {
+        evidence.insert(expected.observation_id.clone(), artifact);
+    }
+    Ok(())
+}
+
 enum PartitionSchemaDisposition {
     Admitted(EffectiveSchemaObservationCoercion),
     Quarantined(TerminalSchemaObservationQuarantine),
@@ -2039,22 +2062,11 @@ where
                 let batch_coercion = reconciled.coercion_plan;
                 if let Some(batch_coercion) = batch_coercion {
                     if let Some(expected) = &partition_schema_evidence {
-                        let artifact = PerObservationSchemaCoercionArtifact {
-                            observation_id: expected.observation_id.clone(),
-                            physical_schema_hash: expected.physical_schema_hash.to_string(),
-                            coercion_plan: batch_coercion,
-                        };
-                        match per_observation_schema_evidence
-                            .insert(expected.observation_id.clone(), artifact.clone())
-                        {
-                            Some(existing) if existing != artifact => {
-                                return Err(CdfError::data(format!(
-                                    "schema observation {:?} produced inconsistent coercion evidence across batches",
-                                    expected.observation_id
-                                )));
-                            }
-                            _ => {}
-                        }
+                        record_observation_schema_coercion(
+                            &mut per_observation_schema_evidence,
+                            expected,
+                            batch_coercion,
+                        )?;
                     } else {
                         if let Some(existing) = &schema_coercion
                             && existing != &batch_coercion
@@ -2288,6 +2300,29 @@ where
             } else {
                 None
             };
+            if let Some(expected) = partition_schema_evidence
+                && !per_observation_schema_evidence.contains_key(&expected.observation_id)
+            {
+                let attestation = fallback_attestation.as_ref().ok_or_else(|| {
+                    CdfError::data(format!(
+                        "schema observation {:?} produced no batches and has no execution-time attestation",
+                        expected.observation_id
+                    ))
+                })?;
+                if attestation.physical_schema_hash() != Some(&expected.physical_schema_hash) {
+                    return Err(CdfError::data(format!(
+                        "schema observation {:?} produced no batches and changed physical schema between planning and execution; expected {}, attested {:?}; re-plan before retrying",
+                        expected.observation_id,
+                        expected.physical_schema_hash,
+                        attestation.physical_schema_hash()
+                    )));
+                }
+                record_observation_schema_coercion(
+                    &mut per_observation_schema_evidence,
+                    expected,
+                    expected.coercion_plan.clone(),
+                )?;
+            }
             let source_position = aggregate_processed_partition_positions(
                 &observation_id,
                 &observed_positions,

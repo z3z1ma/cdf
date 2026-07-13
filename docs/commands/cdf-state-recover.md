@@ -14,10 +14,9 @@ Options:
   -v, --verbose...            Show evidence detail; repeat for diagnostics
       --color <WHEN>          Color policy: auto, always, or never [possible values: auto, always, never]
       --receipt <ID>          Receipt identifier
-      --no-color              Compatibility alias for --color never
-      --target <TARGET>       Destination target/table compatibility option
-      --merge-dedup <POLICY>  Merge deduplication policy
       --progress <WHEN>       Progress policy: auto, always, or never [possible values: auto, always, never]
+      --target <TARGET>       Destination target or table
+      --merge-dedup <POLICY>  Merge deduplication policy
       --unicode <WHEN>        Unicode policy: auto, always, or never [possible values: auto, always, never]
   -h, --help                  Print help
 ```

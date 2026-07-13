@@ -22,7 +22,6 @@ _cdf() {
 '(-v --verbose)--quiet[Suppress progress and non-primary success narration]' \
 '(-q --quiet)*-v[Show evidence detail; repeat for diagnostics]' \
 '(-q --quiet)*--verbose[Show evidence detail; repeat for diagnostics]' \
-'(--color)--no-color[Compatibility alias for --color never]' \
 '-h[Print help (see more with '\''--help'\'')]' \
 '--help[Print help (see more with '\''--help'\'')]' \
 '-V[Print version]' \
@@ -45,7 +44,6 @@ _arguments "${_arguments_options[@]}" : \
 '(-v --verbose)--quiet[Suppress progress and non-primary success narration]' \
 '(-q --quiet)*-v[Show evidence detail; repeat for diagnostics]' \
 '(-q --quiet)*--verbose[Show evidence detail; repeat for diagnostics]' \
-'(--color)--no-color[Compatibility alias for --color never]' \
 '-h[Print help]' \
 '--help[Print help]' \
 '*::command -- Command path to explain:_default' \
@@ -60,10 +58,9 @@ _arguments "${_arguments_options[@]}" : \
 '(-v --verbose)--quiet[Suppress progress and non-primary success narration]' \
 '(-q --quiet)*-v[Show evidence detail; repeat for diagnostics]' \
 '(-q --quiet)*--verbose[Show evidence detail; repeat for diagnostics]' \
-'(--color)--no-color[Compatibility alias for --color never]' \
 '-h[Print help]' \
 '--help[Print help]' \
-'*::extra -- Additional compatibility arguments:_default' \
+'*::extra -- Unexpected operands:_default' \
 && ret=0
 ;;
 (init)
@@ -77,7 +74,6 @@ _arguments "${_arguments_options[@]}" : \
 '(-v --verbose)--quiet[Suppress progress and non-primary success narration]' \
 '(-q --quiet)*-v[Show evidence detail; repeat for diagnostics]' \
 '(-q --quiet)*--verbose[Show evidence detail; repeat for diagnostics]' \
-'(--color)--no-color[Compatibility alias for --color never]' \
 '-h[Print help]' \
 '--help[Print help]' \
 '*::directory -- Directory to initialize:_default' \
@@ -96,7 +92,6 @@ _arguments "${_arguments_options[@]}" : \
 '(-v --verbose)--quiet[Suppress progress and non-primary success narration]' \
 '(-q --quiet)*-v[Show evidence detail; repeat for diagnostics]' \
 '(-q --quiet)*--verbose[Show evidence detail; repeat for diagnostics]' \
-'(--color)--no-color[Compatibility alias for --color never]' \
 '-h[Print help]' \
 '--help[Print help]' \
 '*::values -- Identifiers or paths shown in usage:_default' \
@@ -112,22 +107,18 @@ _arguments "${_arguments_options[@]}" : \
 '(-v --verbose)--quiet[Suppress progress and non-primary success narration]' \
 '(-q --quiet)*-v[Show evidence detail; repeat for diagnostics]' \
 '(-q --quiet)*--verbose[Show evidence detail; repeat for diagnostics]' \
-'(--color)--no-color[Compatibility alias for --color never]' \
 '-h[Print help]' \
 '--help[Print help]' \
-'*::extra -- Additional compatibility arguments:_default' \
+'*::extra -- Unexpected operands:_default' \
 && ret=0
 ;;
 (plan)
 _arguments "${_arguments_options[@]}" : \
-'--resource=[Resource identifier (compatibility form)]:RESOURCE:_default' \
 '--select=[Comma-separated projected fields]:FIELDS:_default' \
 '*--filter=[Filter expression; may be repeated]:EXPR:_default' \
 '--limit=[Maximum rows to read]:N:_default' \
 '*--order-by=[Ordering field and optional direction]:FIELD[:asc|desc]:_default' \
-'--package-id=[Explicit package identifier for script compatibility]:ID:_default' \
 '--to=[Destination URI or cursor upper bound, as shown in usage]:DEST:_default' \
-'--target=[Destination target/table compatibility option]:TARGET:_default' \
 '--color=[Color policy\: auto, always, or never]:WHEN:(auto always never)' \
 '--progress=[Progress policy\: auto, always, or never]:WHEN:(auto always never)' \
 '--unicode=[Unicode policy\: auto, always, or never]:WHEN:(auto always never)' \
@@ -136,7 +127,6 @@ _arguments "${_arguments_options[@]}" : \
 '(-v --verbose)--quiet[Suppress progress and non-primary success narration]' \
 '(-q --quiet)*-v[Show evidence detail; repeat for diagnostics]' \
 '(-q --quiet)*--verbose[Show evidence detail; repeat for diagnostics]' \
-'(--color)--no-color[Compatibility alias for --color never]' \
 '-h[Print help]' \
 '--help[Print help]' \
 '*::resource_arg -- Resource identifier:_default' \
@@ -144,14 +134,11 @@ _arguments "${_arguments_options[@]}" : \
 ;;
 (explain)
 _arguments "${_arguments_options[@]}" : \
-'--resource=[Resource identifier (compatibility form)]:RESOURCE:_default' \
 '--select=[Comma-separated projected fields]:FIELDS:_default' \
 '*--filter=[Filter expression; may be repeated]:EXPR:_default' \
 '--limit=[Maximum rows to read]:N:_default' \
 '*--order-by=[Ordering field and optional direction]:FIELD[:asc|desc]:_default' \
-'--package-id=[Explicit package identifier for script compatibility]:ID:_default' \
 '--to=[Destination URI or cursor upper bound, as shown in usage]:DEST:_default' \
-'--target=[Destination target/table compatibility option]:TARGET:_default' \
 '--color=[Color policy\: auto, always, or never]:WHEN:(auto always never)' \
 '--progress=[Progress policy\: auto, always, or never]:WHEN:(auto always never)' \
 '--unicode=[Unicode policy\: auto, always, or never]:WHEN:(auto always never)' \
@@ -160,7 +147,6 @@ _arguments "${_arguments_options[@]}" : \
 '(-v --verbose)--quiet[Suppress progress and non-primary success narration]' \
 '(-q --quiet)*-v[Show evidence detail; repeat for diagnostics]' \
 '(-q --quiet)*--verbose[Show evidence detail; repeat for diagnostics]' \
-'(--color)--no-color[Compatibility alias for --color never]' \
 '-h[Print help]' \
 '--help[Print help]' \
 '*::resource_arg -- Resource identifier:_default' \
@@ -168,12 +154,7 @@ _arguments "${_arguments_options[@]}" : \
 ;;
 (run)
 _arguments "${_arguments_options[@]}" : \
-'--resource=[Resource identifier (compatibility form)]:RESOURCE:_default' \
-'--pipeline=[Pipeline identifier compatibility option]:ID:_default' \
 '--to=[Destination URI or cursor upper bound, as shown in usage]:DEST:_default' \
-'--target=[Destination target/table compatibility option]:TARGET:_default' \
-'--package-id=[Explicit package identifier for script compatibility]:ID:_default' \
-'--checkpoint-id=[Explicit checkpoint identifier for script compatibility]:ID:_default' \
 '--jobs=[Maximum concurrent jobs]:N:_default' \
 '--color=[Color policy\: auto, always, or never]:WHEN:(auto always never)' \
 '--progress=[Progress policy\: auto, always, or never]:WHEN:(auto always never)' \
@@ -183,7 +164,6 @@ _arguments "${_arguments_options[@]}" : \
 '(-v --verbose)--quiet[Suppress progress and non-primary success narration]' \
 '(-q --quiet)*-v[Show evidence detail; repeat for diagnostics]' \
 '(-q --quiet)*--verbose[Show evidence detail; repeat for diagnostics]' \
-'(--color)--no-color[Compatibility alias for --color never]' \
 '-h[Print help]' \
 '--help[Print help]' \
 '*::resource_arg -- Resource identifier:_default' \
@@ -191,12 +171,10 @@ _arguments "${_arguments_options[@]}" : \
 ;;
 (preview)
 _arguments "${_arguments_options[@]}" : \
-'--resource=[Resource identifier (compatibility form)]:RESOURCE:_default' \
 '--select=[Comma-separated projected fields]:FIELDS:_default' \
 '*--filter=[Filter expression; may be repeated]:EXPR:_default' \
 '--limit=[Maximum rows to read]:N:_default' \
 '*--order-by=[Ordering field and optional direction]:FIELD[:asc|desc]:_default' \
-'--package-id=[Explicit package identifier for script compatibility]:ID:_default' \
 '--color=[Color policy\: auto, always, or never]:WHEN:(auto always never)' \
 '--progress=[Progress policy\: auto, always, or never]:WHEN:(auto always never)' \
 '--unicode=[Unicode policy\: auto, always, or never]:WHEN:(auto always never)' \
@@ -204,7 +182,6 @@ _arguments "${_arguments_options[@]}" : \
 '(-v --verbose)--quiet[Suppress progress and non-primary success narration]' \
 '(-q --quiet)*-v[Show evidence detail; repeat for diagnostics]' \
 '(-q --quiet)*--verbose[Show evidence detail; repeat for diagnostics]' \
-'(--color)--no-color[Compatibility alias for --color never]' \
 '-h[Print help]' \
 '--help[Print help]' \
 '*::resource_arg -- Resource identifier:_default' \
@@ -219,7 +196,6 @@ _arguments "${_arguments_options[@]}" : \
 '(-v --verbose)--quiet[Suppress progress and non-primary success narration]' \
 '(-q --quiet)*-v[Show evidence detail; repeat for diagnostics]' \
 '(-q --quiet)*--verbose[Show evidence detail; repeat for diagnostics]' \
-'(--color)--no-color[Compatibility alias for --color never]' \
 '-h[Print help]' \
 '--help[Print help]' \
 '*::query -- SQL query text:_default' \
@@ -234,7 +210,6 @@ _arguments "${_arguments_options[@]}" : \
 '(-v --verbose)--quiet[Suppress progress and non-primary success narration]' \
 '(-q --quiet)*-v[Show evidence detail; repeat for diagnostics]' \
 '(-q --quiet)*--verbose[Show evidence detail; repeat for diagnostics]' \
-'(--color)--no-color[Compatibility alias for --color never]' \
 '-h[Print help]' \
 '--help[Print help]' \
 ":: :_cdf__subcmd__inspect_commands" \
@@ -256,7 +231,6 @@ _arguments "${_arguments_options[@]}" : \
 '(-v --verbose)--quiet[Suppress progress and non-primary success narration]' \
 '(-q --quiet)*-v[Show evidence detail; repeat for diagnostics]' \
 '(-q --quiet)*--verbose[Show evidence detail; repeat for diagnostics]' \
-'(--color)--no-color[Compatibility alias for --color never]' \
 '-h[Print help]' \
 '--help[Print help]' \
 '*::values -- Identifiers or paths shown in usage:_default' \
@@ -271,7 +245,6 @@ _arguments "${_arguments_options[@]}" : \
 '(-v --verbose)--quiet[Suppress progress and non-primary success narration]' \
 '(-q --quiet)*-v[Show evidence detail; repeat for diagnostics]' \
 '(-q --quiet)*--verbose[Show evidence detail; repeat for diagnostics]' \
-'(--color)--no-color[Compatibility alias for --color never]' \
 '-h[Print help]' \
 '--help[Print help]' \
 '*::values -- Identifiers or paths shown in usage:_default' \
@@ -286,7 +259,6 @@ _arguments "${_arguments_options[@]}" : \
 '(-v --verbose)--quiet[Suppress progress and non-primary success narration]' \
 '(-q --quiet)*-v[Show evidence detail; repeat for diagnostics]' \
 '(-q --quiet)*--verbose[Show evidence detail; repeat for diagnostics]' \
-'(--color)--no-color[Compatibility alias for --color never]' \
 '-h[Print help]' \
 '--help[Print help]' \
 '*::values -- Identifiers or paths shown in usage:_default' \
@@ -301,7 +273,6 @@ _arguments "${_arguments_options[@]}" : \
 '(-v --verbose)--quiet[Suppress progress and non-primary success narration]' \
 '(-q --quiet)*-v[Show evidence detail; repeat for diagnostics]' \
 '(-q --quiet)*--verbose[Show evidence detail; repeat for diagnostics]' \
-'(--color)--no-color[Compatibility alias for --color never]' \
 '-h[Print help]' \
 '--help[Print help]' \
 '*::values -- Identifiers or paths shown in usage:_default' \
@@ -316,22 +287,6 @@ _arguments "${_arguments_options[@]}" : \
 '(-v --verbose)--quiet[Suppress progress and non-primary success narration]' \
 '(-q --quiet)*-v[Show evidence detail; repeat for diagnostics]' \
 '(-q --quiet)*--verbose[Show evidence detail; repeat for diagnostics]' \
-'(--color)--no-color[Compatibility alias for --color never]' \
-'-h[Print help]' \
-'--help[Print help]' \
-'*::values -- Identifiers or paths shown in usage:_default' \
-&& ret=0
-;;
-(destination)
-_arguments "${_arguments_options[@]}" : \
-'--color=[Color policy\: auto, always, or never]:WHEN:(auto always never)' \
-'--progress=[Progress policy\: auto, always, or never]:WHEN:(auto always never)' \
-'--unicode=[Unicode policy\: auto, always, or never]:WHEN:(auto always never)' \
-'(-v --verbose)-q[Suppress progress and non-primary success narration]' \
-'(-v --verbose)--quiet[Suppress progress and non-primary success narration]' \
-'(-q --quiet)*-v[Show evidence detail; repeat for diagnostics]' \
-'(-q --quiet)*--verbose[Show evidence detail; repeat for diagnostics]' \
-'(--color)--no-color[Compatibility alias for --color never]' \
 '-h[Print help]' \
 '--help[Print help]' \
 '*::values -- Identifiers or paths shown in usage:_default' \
@@ -346,7 +301,6 @@ _arguments "${_arguments_options[@]}" : \
 '(-v --verbose)--quiet[Suppress progress and non-primary success narration]' \
 '(-q --quiet)*-v[Show evidence detail; repeat for diagnostics]' \
 '(-q --quiet)*--verbose[Show evidence detail; repeat for diagnostics]' \
-'(--color)--no-color[Compatibility alias for --color never]' \
 '-h[Print help]' \
 '--help[Print help]' \
 '*::values -- Identifiers or paths shown in usage:_default' \
@@ -361,7 +315,6 @@ _arguments "${_arguments_options[@]}" : \
 '(-v --verbose)--quiet[Suppress progress and non-primary success narration]' \
 '(-q --quiet)*-v[Show evidence detail; repeat for diagnostics]' \
 '(-q --quiet)*--verbose[Show evidence detail; repeat for diagnostics]' \
-'(--color)--no-color[Compatibility alias for --color never]' \
 '-h[Print help]' \
 '--help[Print help]' \
 '*::values -- Identifiers or paths shown in usage:_default' \
@@ -380,7 +333,6 @@ _arguments "${_arguments_options[@]}" : \
 '(-v --verbose)--quiet[Suppress progress and non-primary success narration]' \
 '(-q --quiet)*-v[Show evidence detail; repeat for diagnostics]' \
 '(-q --quiet)*--verbose[Show evidence detail; repeat for diagnostics]' \
-'(--color)--no-color[Compatibility alias for --color never]' \
 '-h[Print help]' \
 '--help[Print help]' \
 ":: :_cdf__subcmd__diff_commands" \
@@ -402,10 +354,9 @@ _arguments "${_arguments_options[@]}" : \
 '(-v --verbose)--quiet[Suppress progress and non-primary success narration]' \
 '(-q --quiet)*-v[Show evidence detail; repeat for diagnostics]' \
 '(-q --quiet)*--verbose[Show evidence detail; repeat for diagnostics]' \
-'(--color)--no-color[Compatibility alias for --color never]' \
 '-h[Print help]' \
 '--help[Print help]' \
-'*::extra -- Additional compatibility arguments:_default' \
+'*::extra -- Unexpected operands:_default' \
 && ret=0
 ;;
         esac
@@ -421,7 +372,6 @@ _arguments "${_arguments_options[@]}" : \
 '(-v --verbose)--quiet[Suppress progress and non-primary success narration]' \
 '(-q --quiet)*-v[Show evidence detail; repeat for diagnostics]' \
 '(-q --quiet)*--verbose[Show evidence detail; repeat for diagnostics]' \
-'(--color)--no-color[Compatibility alias for --color never]' \
 '-h[Print help]' \
 '--help[Print help]' \
 ":: :_cdf__subcmd__schema_commands" \
@@ -436,7 +386,6 @@ _arguments "${_arguments_options[@]}" : \
         case $line[1] in
             (discover)
 _arguments "${_arguments_options[@]}" : \
-'--resource=[Resource identifier (compatibility form)]:RESOURCE:_default' \
 '--color=[Color policy\: auto, always, or never]:WHEN:(auto always never)' \
 '--progress=[Progress policy\: auto, always, or never]:WHEN:(auto always never)' \
 '--unicode=[Unicode policy\: auto, always, or never]:WHEN:(auto always never)' \
@@ -444,7 +393,6 @@ _arguments "${_arguments_options[@]}" : \
 '(-v --verbose)--quiet[Suppress progress and non-primary success narration]' \
 '(-q --quiet)*-v[Show evidence detail; repeat for diagnostics]' \
 '(-q --quiet)*--verbose[Show evidence detail; repeat for diagnostics]' \
-'(--color)--no-color[Compatibility alias for --color never]' \
 '-h[Print help]' \
 '--help[Print help]' \
 '*::resource_arg -- Resource identifier:_default' \
@@ -452,7 +400,6 @@ _arguments "${_arguments_options[@]}" : \
 ;;
 (pin)
 _arguments "${_arguments_options[@]}" : \
-'--resource=[Resource identifier (compatibility form)]:RESOURCE:_default' \
 '--color=[Color policy\: auto, always, or never]:WHEN:(auto always never)' \
 '--progress=[Progress policy\: auto, always, or never]:WHEN:(auto always never)' \
 '--unicode=[Unicode policy\: auto, always, or never]:WHEN:(auto always never)' \
@@ -460,7 +407,6 @@ _arguments "${_arguments_options[@]}" : \
 '(-v --verbose)--quiet[Suppress progress and non-primary success narration]' \
 '(-q --quiet)*-v[Show evidence detail; repeat for diagnostics]' \
 '(-q --quiet)*--verbose[Show evidence detail; repeat for diagnostics]' \
-'(--color)--no-color[Compatibility alias for --color never]' \
 '-h[Print help]' \
 '--help[Print help]' \
 '*::resource_arg -- Resource identifier:_default' \
@@ -468,7 +414,6 @@ _arguments "${_arguments_options[@]}" : \
 ;;
 (show)
 _arguments "${_arguments_options[@]}" : \
-'--resource=[Resource identifier (compatibility form)]:RESOURCE:_default' \
 '--color=[Color policy\: auto, always, or never]:WHEN:(auto always never)' \
 '--progress=[Progress policy\: auto, always, or never]:WHEN:(auto always never)' \
 '--unicode=[Unicode policy\: auto, always, or never]:WHEN:(auto always never)' \
@@ -476,7 +421,6 @@ _arguments "${_arguments_options[@]}" : \
 '(-v --verbose)--quiet[Suppress progress and non-primary success narration]' \
 '(-q --quiet)*-v[Show evidence detail; repeat for diagnostics]' \
 '(-q --quiet)*--verbose[Show evidence detail; repeat for diagnostics]' \
-'(--color)--no-color[Compatibility alias for --color never]' \
 '-h[Print help]' \
 '--help[Print help]' \
 '*::resource_arg -- Resource identifier:_default' \
@@ -484,7 +428,6 @@ _arguments "${_arguments_options[@]}" : \
 ;;
 (diff)
 _arguments "${_arguments_options[@]}" : \
-'--resource=[Resource identifier (compatibility form)]:RESOURCE:_default' \
 '--color=[Color policy\: auto, always, or never]:WHEN:(auto always never)' \
 '--progress=[Progress policy\: auto, always, or never]:WHEN:(auto always never)' \
 '--unicode=[Unicode policy\: auto, always, or never]:WHEN:(auto always never)' \
@@ -492,7 +435,6 @@ _arguments "${_arguments_options[@]}" : \
 '(-v --verbose)--quiet[Suppress progress and non-primary success narration]' \
 '(-q --quiet)*-v[Show evidence detail; repeat for diagnostics]' \
 '(-q --quiet)*--verbose[Show evidence detail; repeat for diagnostics]' \
-'(--color)--no-color[Compatibility alias for --color never]' \
 '-h[Print help]' \
 '--help[Print help]' \
 '*::resource_arg -- Resource identifier:_default' \
@@ -500,7 +442,6 @@ _arguments "${_arguments_options[@]}" : \
 ;;
 (promote)
 _arguments "${_arguments_options[@]}" : \
-'--resource=[Resource identifier (compatibility form)]:RESOURCE:_default' \
 '*--type=[]:JSON_POINTER=ARROW_TYPE:_default' \
 '--color=[Color policy\: auto, always, or never]:WHEN:(auto always never)' \
 '--progress=[Progress policy\: auto, always, or never]:WHEN:(auto always never)' \
@@ -510,7 +451,6 @@ _arguments "${_arguments_options[@]}" : \
 '(-v --verbose)--quiet[Suppress progress and non-primary success narration]' \
 '(-q --quiet)*-v[Show evidence detail; repeat for diagnostics]' \
 '(-q --quiet)*--verbose[Show evidence detail; repeat for diagnostics]' \
-'(--color)--no-color[Compatibility alias for --color never]' \
 '-h[Print help]' \
 '--help[Print help]' \
 '*::resource_arg -- Resource identifier:_default' \
@@ -529,7 +469,6 @@ _arguments "${_arguments_options[@]}" : \
 '(-v --verbose)--quiet[Suppress progress and non-primary success narration]' \
 '(-q --quiet)*-v[Show evidence detail; repeat for diagnostics]' \
 '(-q --quiet)*--verbose[Show evidence detail; repeat for diagnostics]' \
-'(--color)--no-color[Compatibility alias for --color never]' \
 '-h[Print help]' \
 '--help[Print help]' \
 ":: :_cdf__subcmd__contract_commands" \
@@ -544,7 +483,6 @@ _arguments "${_arguments_options[@]}" : \
         case $line[1] in
             (freeze)
 _arguments "${_arguments_options[@]}" : \
-'--contract=[Contract name]:CONTRACT:_default' \
 '--color=[Color policy\: auto, always, or never]:WHEN:(auto always never)' \
 '--progress=[Progress policy\: auto, always, or never]:WHEN:(auto always never)' \
 '--unicode=[Unicode policy\: auto, always, or never]:WHEN:(auto always never)' \
@@ -552,7 +490,6 @@ _arguments "${_arguments_options[@]}" : \
 '(-v --verbose)--quiet[Suppress progress and non-primary success narration]' \
 '(-q --quiet)*-v[Show evidence detail; repeat for diagnostics]' \
 '(-q --quiet)*--verbose[Show evidence detail; repeat for diagnostics]' \
-'(--color)--no-color[Compatibility alias for --color never]' \
 '-h[Print help]' \
 '--help[Print help]' \
 '*::value -- Contract or trust selector shown in usage:_default' \
@@ -560,7 +497,6 @@ _arguments "${_arguments_options[@]}" : \
 ;;
 (show)
 _arguments "${_arguments_options[@]}" : \
-'--trust=[Trust level to show]:TRUST:_default' \
 '--color=[Color policy\: auto, always, or never]:WHEN:(auto always never)' \
 '--progress=[Progress policy\: auto, always, or never]:WHEN:(auto always never)' \
 '--unicode=[Unicode policy\: auto, always, or never]:WHEN:(auto always never)' \
@@ -568,7 +504,6 @@ _arguments "${_arguments_options[@]}" : \
 '(-v --verbose)--quiet[Suppress progress and non-primary success narration]' \
 '(-q --quiet)*-v[Show evidence detail; repeat for diagnostics]' \
 '(-q --quiet)*--verbose[Show evidence detail; repeat for diagnostics]' \
-'(--color)--no-color[Compatibility alias for --color never]' \
 '-h[Print help]' \
 '--help[Print help]' \
 '*::value -- Contract or trust selector shown in usage:_default' \
@@ -576,7 +511,6 @@ _arguments "${_arguments_options[@]}" : \
 ;;
 (test)
 _arguments "${_arguments_options[@]}" : \
-'--contract=[Contract name]:CONTRACT:_default' \
 '--color=[Color policy\: auto, always, or never]:WHEN:(auto always never)' \
 '--progress=[Progress policy\: auto, always, or never]:WHEN:(auto always never)' \
 '--unicode=[Unicode policy\: auto, always, or never]:WHEN:(auto always never)' \
@@ -584,7 +518,6 @@ _arguments "${_arguments_options[@]}" : \
 '(-v --verbose)--quiet[Suppress progress and non-primary success narration]' \
 '(-q --quiet)*-v[Show evidence detail; repeat for diagnostics]' \
 '(-q --quiet)*--verbose[Show evidence detail; repeat for diagnostics]' \
-'(--color)--no-color[Compatibility alias for --color never]' \
 '-h[Print help]' \
 '--help[Print help]' \
 '*::value -- Contract or trust selector shown in usage:_default' \
@@ -603,7 +536,6 @@ _arguments "${_arguments_options[@]}" : \
 '(-v --verbose)--quiet[Suppress progress and non-primary success narration]' \
 '(-q --quiet)*-v[Show evidence detail; repeat for diagnostics]' \
 '(-q --quiet)*--verbose[Show evidence detail; repeat for diagnostics]' \
-'(--color)--no-color[Compatibility alias for --color never]' \
 '-h[Print help]' \
 '--help[Print help]' \
 ":: :_cdf__subcmd__state_commands" \
@@ -618,10 +550,9 @@ _arguments "${_arguments_options[@]}" : \
         case $line[1] in
             (show)
 _arguments "${_arguments_options[@]}" : \
-'--pipeline=[Pipeline identifier compatibility option]:ID:_default' \
-'--resource=[Resource identifier (compatibility form)]:RESOURCE:_default' \
+'--pipeline=[Pipeline identifier]:ID:_default' \
 '*--scope=[Checkpoint scope entry as key=value; may be repeated]:KEY=VALUE:_default' \
-'--scope-json=[JSON checkpoint scope compatibility form]:JSON:_default' \
+'--scope-json=[Checkpoint scope encoded as JSON]:JSON:_default' \
 '--color=[Color policy\: auto, always, or never]:WHEN:(auto always never)' \
 '--progress=[Progress policy\: auto, always, or never]:WHEN:(auto always never)' \
 '--unicode=[Unicode policy\: auto, always, or never]:WHEN:(auto always never)' \
@@ -629,7 +560,6 @@ _arguments "${_arguments_options[@]}" : \
 '(-v --verbose)--quiet[Suppress progress and non-primary success narration]' \
 '(-q --quiet)*-v[Show evidence detail; repeat for diagnostics]' \
 '(-q --quiet)*--verbose[Show evidence detail; repeat for diagnostics]' \
-'(--color)--no-color[Compatibility alias for --color never]' \
 '-h[Print help]' \
 '--help[Print help]' \
 '*::resource_arg -- Resource identifier:_default' \
@@ -637,10 +567,9 @@ _arguments "${_arguments_options[@]}" : \
 ;;
 (history)
 _arguments "${_arguments_options[@]}" : \
-'--pipeline=[Pipeline identifier compatibility option]:ID:_default' \
-'--resource=[Resource identifier (compatibility form)]:RESOURCE:_default' \
+'--pipeline=[Pipeline identifier]:ID:_default' \
 '*--scope=[Checkpoint scope entry as key=value; may be repeated]:KEY=VALUE:_default' \
-'--scope-json=[JSON checkpoint scope compatibility form]:JSON:_default' \
+'--scope-json=[Checkpoint scope encoded as JSON]:JSON:_default' \
 '--color=[Color policy\: auto, always, or never]:WHEN:(auto always never)' \
 '--progress=[Progress policy\: auto, always, or never]:WHEN:(auto always never)' \
 '--unicode=[Unicode policy\: auto, always, or never]:WHEN:(auto always never)' \
@@ -648,7 +577,6 @@ _arguments "${_arguments_options[@]}" : \
 '(-v --verbose)--quiet[Suppress progress and non-primary success narration]' \
 '(-q --quiet)*-v[Show evidence detail; repeat for diagnostics]' \
 '(-q --quiet)*--verbose[Show evidence detail; repeat for diagnostics]' \
-'(--color)--no-color[Compatibility alias for --color never]' \
 '-h[Print help]' \
 '--help[Print help]' \
 '*::resource_arg -- Resource identifier:_default' \
@@ -656,13 +584,10 @@ _arguments "${_arguments_options[@]}" : \
 ;;
 (rewind)
 _arguments "${_arguments_options[@]}" : \
-'--pipeline=[Pipeline identifier compatibility option]:ID:_default' \
-'--resource=[Resource identifier (compatibility form)]:RESOURCE:_default' \
+'--pipeline=[Pipeline identifier]:ID:_default' \
 '*--scope=[Checkpoint scope entry as key=value; may be repeated]:KEY=VALUE:_default' \
-'--scope-json=[JSON checkpoint scope compatibility form]:JSON:_default' \
-'--target-checkpoint=[Checkpoint to rewind to]:CHECKPOINT:_default' \
-'--to=[Checkpoint to rewind to]:CHECKPOINT:_default' \
-'--marker-checkpoint=[Explicit rewind marker identifier for scripts]:CHECKPOINT:_default' \
+'--scope-json=[Checkpoint scope encoded as JSON]:JSON:_default' \
+'--to=[Destination URI or cursor upper bound, as shown in usage]:CHECKPOINT:_default' \
 '--color=[Color policy\: auto, always, or never]:WHEN:(auto always never)' \
 '--progress=[Progress policy\: auto, always, or never]:WHEN:(auto always never)' \
 '--unicode=[Unicode policy\: auto, always, or never]:WHEN:(auto always never)' \
@@ -670,7 +595,6 @@ _arguments "${_arguments_options[@]}" : \
 '(-v --verbose)--quiet[Suppress progress and non-primary success narration]' \
 '(-q --quiet)*-v[Show evidence detail; repeat for diagnostics]' \
 '(-q --quiet)*--verbose[Show evidence detail; repeat for diagnostics]' \
-'(--color)--no-color[Compatibility alias for --color never]' \
 '-h[Print help]' \
 '--help[Print help]' \
 '*::resource_arg -- Resource identifier:_default' \
@@ -685,10 +609,9 @@ _arguments "${_arguments_options[@]}" : \
 '(-v --verbose)--quiet[Suppress progress and non-primary success narration]' \
 '(-q --quiet)*-v[Show evidence detail; repeat for diagnostics]' \
 '(-q --quiet)*--verbose[Show evidence detail; repeat for diagnostics]' \
-'(--color)--no-color[Compatibility alias for --color never]' \
 '-h[Print help]' \
 '--help[Print help]' \
-'*::extra -- Additional compatibility arguments:_default' \
+'*::extra -- Unexpected operands:_default' \
 && ret=0
 ;;
 (recover)
@@ -696,7 +619,7 @@ _arguments "${_arguments_options[@]}" : \
 '--package=[Package directory]:DIR:_default' \
 '--to=[Destination URI or cursor upper bound, as shown in usage]:DEST:_default' \
 '--receipt=[Receipt identifier]:ID:_default' \
-'--target=[Destination target/table compatibility option]:TARGET:_default' \
+'--target=[Destination target or table]:TARGET:_default' \
 '--merge-dedup=[Merge deduplication policy]:POLICY:_default' \
 '--color=[Color policy\: auto, always, or never]:WHEN:(auto always never)' \
 '--progress=[Progress policy\: auto, always, or never]:WHEN:(auto always never)' \
@@ -705,7 +628,6 @@ _arguments "${_arguments_options[@]}" : \
 '(-v --verbose)--quiet[Suppress progress and non-primary success narration]' \
 '(-q --quiet)*-v[Show evidence detail; repeat for diagnostics]' \
 '(-q --quiet)*--verbose[Show evidence detail; repeat for diagnostics]' \
-'(--color)--no-color[Compatibility alias for --color never]' \
 '-h[Print help]' \
 '--help[Print help]' \
 '*::values -- Identifiers or paths shown in usage:_default' \
@@ -717,7 +639,6 @@ esac
 ;;
 (resume)
 _arguments "${_arguments_options[@]}" : \
-'--run=[Run identifier compatibility option]:RUN_ID:_default' \
 '--color=[Color policy\: auto, always, or never]:WHEN:(auto always never)' \
 '--progress=[Progress policy\: auto, always, or never]:WHEN:(auto always never)' \
 '--unicode=[Unicode policy\: auto, always, or never]:WHEN:(auto always never)' \
@@ -725,7 +646,6 @@ _arguments "${_arguments_options[@]}" : \
 '(-v --verbose)--quiet[Suppress progress and non-primary success narration]' \
 '(-q --quiet)*-v[Show evidence detail; repeat for diagnostics]' \
 '(-q --quiet)*--verbose[Show evidence detail; repeat for diagnostics]' \
-'(--color)--no-color[Compatibility alias for --color never]' \
 '-h[Print help]' \
 '--help[Print help]' \
 '*::run_arg -- Run identifier; omit to scan interrupted work:_default' \
@@ -740,7 +660,6 @@ _arguments "${_arguments_options[@]}" : \
 '(-v --verbose)--quiet[Suppress progress and non-primary success narration]' \
 '(-q --quiet)*-v[Show evidence detail; repeat for diagnostics]' \
 '(-q --quiet)*--verbose[Show evidence detail; repeat for diagnostics]' \
-'(--color)--no-color[Compatibility alias for --color never]' \
 '-h[Print help]' \
 '--help[Print help]' \
 ":: :_cdf__subcmd__replay_commands" \
@@ -756,7 +675,7 @@ _arguments "${_arguments_options[@]}" : \
             (package)
 _arguments "${_arguments_options[@]}" : \
 '--to=[Destination URI or cursor upper bound, as shown in usage]:DEST:_default' \
-'--target=[Destination target/table compatibility option]:TARGET:_default' \
+'--target=[Destination target or table]:TARGET:_default' \
 '--merge-dedup=[Merge deduplication policy]:POLICY:_default' \
 '--color=[Color policy\: auto, always, or never]:WHEN:(auto always never)' \
 '--progress=[Progress policy\: auto, always, or never]:WHEN:(auto always never)' \
@@ -765,7 +684,6 @@ _arguments "${_arguments_options[@]}" : \
 '(-v --verbose)--quiet[Suppress progress and non-primary success narration]' \
 '(-q --quiet)*-v[Show evidence detail; repeat for diagnostics]' \
 '(-q --quiet)*--verbose[Show evidence detail; repeat for diagnostics]' \
-'(--color)--no-color[Compatibility alias for --color never]' \
 '-h[Print help]' \
 '--help[Print help]' \
 '*::package_dir -- Package directory:_default' \
@@ -777,10 +695,9 @@ esac
 ;;
 (backfill)
 _arguments "${_arguments_options[@]}" : \
-'--resource=[Resource identifier (compatibility form)]:RESOURCE:_default' \
 '--from=[Inclusive cursor lower bound]:CURSOR:_default' \
 '--to=[Destination URI or cursor upper bound, as shown in usage]:CURSOR:_default' \
-'--target=[Destination target/table compatibility option]:TARGET:_default' \
+'--target=[Destination target or table]:TARGET:_default' \
 '--slice-size=[Rows per backfill slice]:N:_default' \
 '--color=[Color policy\: auto, always, or never]:WHEN:(auto always never)' \
 '--progress=[Progress policy\: auto, always, or never]:WHEN:(auto always never)' \
@@ -790,7 +707,6 @@ _arguments "${_arguments_options[@]}" : \
 '(-v --verbose)--quiet[Suppress progress and non-primary success narration]' \
 '(-q --quiet)*-v[Show evidence detail; repeat for diagnostics]' \
 '(-q --quiet)*--verbose[Show evidence detail; repeat for diagnostics]' \
-'(--color)--no-color[Compatibility alias for --color never]' \
 '-h[Print help]' \
 '--help[Print help]' \
 '*::resource_arg -- Resource identifier:_default' \
@@ -805,7 +721,6 @@ _arguments "${_arguments_options[@]}" : \
 '(-v --verbose)--quiet[Suppress progress and non-primary success narration]' \
 '(-q --quiet)*-v[Show evidence detail; repeat for diagnostics]' \
 '(-q --quiet)*--verbose[Show evidence detail; repeat for diagnostics]' \
-'(--color)--no-color[Compatibility alias for --color never]' \
 '-h[Print help]' \
 '--help[Print help]' \
 ":: :_cdf__subcmd__package_commands" \
@@ -827,7 +742,6 @@ _arguments "${_arguments_options[@]}" : \
 '(-v --verbose)--quiet[Suppress progress and non-primary success narration]' \
 '(-q --quiet)*-v[Show evidence detail; repeat for diagnostics]' \
 '(-q --quiet)*--verbose[Show evidence detail; repeat for diagnostics]' \
-'(--color)--no-color[Compatibility alias for --color never]' \
 '-h[Print help]' \
 '--help[Print help]' \
 '*::packages_dir -- Package directory:_default' \
@@ -842,7 +756,6 @@ _arguments "${_arguments_options[@]}" : \
 '(-v --verbose)--quiet[Suppress progress and non-primary success narration]' \
 '(-q --quiet)*-v[Show evidence detail; repeat for diagnostics]' \
 '(-q --quiet)*--verbose[Show evidence detail; repeat for diagnostics]' \
-'(--color)--no-color[Compatibility alias for --color never]' \
 '-h[Print help]' \
 '--help[Print help]' \
 '*::packages_dir -- Package directory:_default' \
@@ -857,7 +770,6 @@ _arguments "${_arguments_options[@]}" : \
 '(-v --verbose)--quiet[Suppress progress and non-primary success narration]' \
 '(-q --quiet)*-v[Show evidence detail; repeat for diagnostics]' \
 '(-q --quiet)*--verbose[Show evidence detail; repeat for diagnostics]' \
-'(--color)--no-color[Compatibility alias for --color never]' \
 '-h[Print help]' \
 '--help[Print help]' \
 '*::package_dir -- Package directory:_default' \
@@ -874,7 +786,6 @@ _arguments "${_arguments_options[@]}" : \
 '(-v --verbose)--quiet[Suppress progress and non-primary success narration]' \
 '(-q --quiet)*-v[Show evidence detail; repeat for diagnostics]' \
 '(-q --quiet)*--verbose[Show evidence detail; repeat for diagnostics]' \
-'(--color)--no-color[Compatibility alias for --color never]' \
 '-h[Print help]' \
 '--help[Print help]' \
 '*::package_dir -- Package directory:_default' \
@@ -893,10 +804,9 @@ _arguments "${_arguments_options[@]}" : \
 '(-v --verbose)--quiet[Suppress progress and non-primary success narration]' \
 '(-q --quiet)*-v[Show evidence detail; repeat for diagnostics]' \
 '(-q --quiet)*--verbose[Show evidence detail; repeat for diagnostics]' \
-'(--color)--no-color[Compatibility alias for --color never]' \
 '-h[Print help]' \
 '--help[Print help]' \
-'*::extra -- Additional compatibility arguments:_default' \
+'*::extra -- Unexpected operands:_default' \
 && ret=0
 ;;
 (status)
@@ -908,10 +818,9 @@ _arguments "${_arguments_options[@]}" : \
 '(-v --verbose)--quiet[Suppress progress and non-primary success narration]' \
 '(-q --quiet)*-v[Show evidence detail; repeat for diagnostics]' \
 '(-q --quiet)*--verbose[Show evidence detail; repeat for diagnostics]' \
-'(--color)--no-color[Compatibility alias for --color never]' \
 '-h[Print help]' \
 '--help[Print help]' \
-'*::extra -- Additional compatibility arguments:_default' \
+'*::extra -- Unexpected operands:_default' \
 && ret=0
 ;;
         esac
@@ -1020,16 +929,10 @@ _cdf__subcmd__inspect_commands() {
 'resource:Show one resolved resource' \
 'lock:Show the project lock' \
 'destinations:List resolved destinations' \
-'destination:List resolved destinations' \
 'package:List, verify, archive, and collect packages' \
 'run:Execute a governed resource run' \
     )
     _describe -t commands 'cdf inspect commands' commands "$@"
-}
-(( $+functions[_cdf__subcmd__inspect__subcmd__destination_commands] )) ||
-_cdf__subcmd__inspect__subcmd__destination_commands() {
-    local commands; commands=()
-    _describe -t commands 'cdf inspect destination commands' commands "$@"
 }
 (( $+functions[_cdf__subcmd__inspect__subcmd__destinations_commands] )) ||
 _cdf__subcmd__inspect__subcmd__destinations_commands() {

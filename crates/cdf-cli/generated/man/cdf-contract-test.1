@@ -4,13 +4,10 @@
 .SH NAME
 cdf\-contract\-test \- Test data against a contract
 .SH SYNOPSIS
-\fBcdf contract test\fR [\fB\-\-contract\fR] [\fB\-q\fR|\fB\-\-quiet\fR] [\fB\-v\fR|\fB\-\-verbose\fR]... [\fB\-\-color\fR] [\fB\-\-no\-color\fR] [\fB\-\-progress\fR] [\fB\-\-unicode\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fICONTRACT\fR]
+\fBcdf contract test\fR [\fB\-q\fR|\fB\-\-quiet\fR] [\fB\-v\fR|\fB\-\-verbose\fR]... [\fB\-\-color\fR] [\fB\-\-progress\fR] [\fB\-\-unicode\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fICONTRACT\fR]
 .SH DESCRIPTION
 Test data against a contract
 .SH OPTIONS
-.TP
-\fB\-\-contract\fR \fI<CONTRACT>\fR
-Contract name
 .TP
 \fB\-q\fR, \fB\-\-quiet\fR
 Suppress progress and non\-primary success narration
@@ -32,9 +29,6 @@ always
 .IP \(bu 2
 never
 .RE
-.TP
-\fB\-\-no\-color\fR
-Compatibility alias for \-\-color never
 .TP
 \fB\-\-progress\fR \fI<WHEN>\fR
 Progress policy: auto, always, or never

@@ -24,7 +24,6 @@ const INSPECT_NOUNS: &[&str] = &[
     "resource",
     "lock",
     "destinations",
-    "destination",
     "package",
     "run",
 ];
@@ -38,7 +37,6 @@ const PACKAGE_SUBCOMMANDS: &[&str] = &["ls", "gc", "verify", "archive"];
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Cli {
     pub json: bool,
-    pub no_color: bool,
     pub terminal: TerminalPolicy,
     pub project: Option<PathBuf>,
     pub env: Option<String>,
@@ -96,23 +94,17 @@ pub struct ValidateArgs {
 pub struct ScanArgs {
     pub resource_id: String,
     pub destination_uri: Option<String>,
-    pub target: Option<String>,
     pub projection: Option<Vec<String>>,
     pub filters: Vec<String>,
     pub limit: Option<u64>,
     pub order_by: Vec<String>,
-    pub package_id: Option<String>,
     pub no_pin: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Default)]
 pub struct RunArgs {
     pub resource_id: Option<String>,
-    pub pipeline_id: Option<String>,
     pub destination_uri: Option<String>,
-    pub target: Option<String>,
-    pub package_id: Option<String>,
-    pub checkpoint_id: Option<String>,
     pub jobs: Option<u16>,
     pub loop_mode: bool,
 }
@@ -256,9 +248,7 @@ impl Cli {
         }
 
         let mut json = false;
-        let mut no_color_alias = false;
         let mut color = PolicyMode::Auto;
-        let mut color_explicit = false;
         let mut progress = PolicyMode::Auto;
         let mut unicode = PolicyMode::Auto;
         let mut quiet = false;
@@ -275,10 +265,6 @@ impl Cli {
                 }
                 "--json" => {
                     json = true;
-                    index += 1;
-                }
-                "--no-color" => {
-                    no_color_alias = true;
                     index += 1;
                 }
                 "-q" | "--quiet" => {
@@ -301,7 +287,6 @@ impl Cli {
                 option if option == "--color" || option.starts_with("--color=") => {
                     let (value, consumed) = policy_value(&raw, index, "--color")?;
                     color = PolicyMode::parse("--color", value)?;
-                    color_explicit = true;
                     index += consumed;
                 }
                 option if option == "--progress" || option.starts_with("--progress=") => {
@@ -340,14 +325,6 @@ impl Cli {
                 "-q/--quiet cannot be combined with -v/--verbose; choose one",
             ));
         }
-        if no_color_alias && color_explicit {
-            return Err(CliError::usage(
-                "--no-color conflicts with --color; use only --color never",
-            ));
-        }
-        if no_color_alias {
-            color = PolicyMode::Never;
-        }
         let terminal = TerminalPolicy {
             color,
             progress,
@@ -363,7 +340,6 @@ impl Cli {
         let command = parse_command(&remaining)?;
         Ok(Self {
             json,
-            no_color: color == PolicyMode::Never,
             terminal,
             project,
             env,
@@ -490,18 +466,12 @@ fn parse_scan(
     matches: &ArgMatches,
     accepts_target: bool,
 ) -> Result<ScanArgs, CliError> {
-    let resource_id = resource_arg(
+    let resource_id = single_positional_arg(
         command,
         &values(matches, "resource_arg"),
-        string_value(matches, "resource"),
         "accepts one resource id",
     )?
     .ok_or_else(|| CliError::usage(format!("{command} requires a resource id")))?;
-    let target = if accepts_target {
-        string_value(matches, "target")
-    } else {
-        None
-    };
     let destination_uri = if accepts_target {
         string_value(matches, "to")
     } else {
@@ -521,29 +491,22 @@ fn parse_scan(
     Ok(ScanArgs {
         resource_id,
         destination_uri,
-        target,
         projection,
         filters: values(matches, "filter"),
         limit,
         order_by: values(matches, "order_by"),
-        package_id: string_value(matches, "package_id"),
         no_pin: accepts_target && matches.get_flag("no_pin"),
     })
 }
 
 fn parse_run(matches: &ArgMatches) -> Result<RunArgs, CliError> {
     Ok(RunArgs {
-        resource_id: resource_arg(
+        resource_id: single_positional_arg(
             "run",
             &values(matches, "resource_arg"),
-            string_value(matches, "resource"),
             "accepts at most one resource id",
         )?,
-        pipeline_id: string_value(matches, "pipeline"),
         destination_uri: string_value(matches, "to"),
-        target: string_value(matches, "target"),
-        package_id: string_value(matches, "package_id"),
-        checkpoint_id: string_value(matches, "checkpoint_id"),
         jobs: string_value(matches, "jobs")
             .map(|value| parse_nonzero_u16("--jobs", &value))
             .transpose()?,
@@ -584,7 +547,7 @@ fn parse_inspect(matches: &ArgMatches) -> Result<InspectArgs, CliError> {
             no_extra_values("inspect lock", &values)?;
             InspectNoun::Lock
         }
-        "destinations" | "destination" => {
+        "destinations" => {
             no_extra_values("inspect destinations", &values)?;
             InspectNoun::Destinations
         }
@@ -662,10 +625,9 @@ fn parse_schema(matches: &ArgMatches) -> Result<SchemaCommand, CliError> {
 }
 
 fn parse_schema_resource(command: &str, matches: &ArgMatches) -> Result<String, CliError> {
-    resource_arg(
+    single_positional_arg(
         command,
         &values(matches, "resource_arg"),
-        string_value(matches, "resource"),
         "accepts at most one resource id",
     )?
     .ok_or_else(|| CliError::usage(format!("{command} requires a resource id")))
@@ -679,25 +641,13 @@ fn parse_contract(matches: &ArgMatches) -> Result<ContractCommand, CliError> {
     };
     match subcommand {
         "freeze" => Ok(ContractCommand::Freeze {
-            contract: optional_named_or_positional(
-                "--contract",
-                string_value(matches, "contract"),
-                &values(matches, "value"),
-            )?,
+            contract: optional_single_value("contract freeze", &values(matches, "value"))?,
         }),
         "show" => Ok(ContractCommand::Show {
-            trust: optional_named_or_positional(
-                "--trust",
-                string_value(matches, "trust"),
-                &values(matches, "value"),
-            )?,
+            trust: optional_single_value("contract show", &values(matches, "value"))?,
         }),
         "test" => Ok(ContractCommand::Test {
-            contract: optional_named_or_positional(
-                "--contract",
-                string_value(matches, "contract"),
-                &values(matches, "value"),
-            )?,
+            contract: optional_single_value("contract test", &values(matches, "value"))?,
         }),
         other => Err(unknown_subcommand_error(
             &["contract"],
@@ -733,13 +683,12 @@ fn parse_state(matches: &ArgMatches) -> Result<StateCommand, CliError> {
 }
 
 fn parse_state_scope(matches: &ArgMatches) -> Result<StateScopeArgs, CliError> {
-    let resource_id = resource_arg(
+    let resource_id = single_positional_arg(
         "state command",
         &values(matches, "resource_arg"),
-        string_value(matches, "resource"),
         "accepts at most one resource id",
     )?
-    .ok_or_else(|| CliError::usage("state command requires RESOURCE or --resource"))?;
+    .ok_or_else(|| CliError::usage("state command requires RESOURCE"))?;
     Ok(StateScopeArgs {
         pipeline_id: string_value(matches, "pipeline"),
         resource_id,
@@ -752,9 +701,8 @@ fn parse_rewind(matches: &ArgMatches) -> Result<RewindArgs, CliError> {
     Ok(RewindArgs {
         scope: parse_state_scope(matches)?,
         target_checkpoint_id: string_value(matches, "target_checkpoint")
-            .ok_or_else(|| CliError::usage("state rewind requires --to or --target-checkpoint"))?,
-        marker_checkpoint_id: string_value(matches, "marker_checkpoint")
-            .unwrap_or_else(|| mint_cli_id("rewind-marker")),
+            .ok_or_else(|| CliError::usage("state rewind requires --to"))?,
+        marker_checkpoint_id: mint_cli_id("rewind-marker"),
     })
 }
 
@@ -774,10 +722,9 @@ fn parse_state_recover(matches: &ArgMatches) -> Result<StateRecoverArgs, CliErro
 
 fn parse_resume(matches: &ArgMatches) -> Result<ResumeArgs, CliError> {
     Ok(ResumeArgs {
-        run_id: resource_arg(
+        run_id: single_positional_arg(
             "resume",
             &values(matches, "run_arg"),
-            string_value(matches, "run"),
             "accepts at most one run id",
         )?,
     })
@@ -814,27 +761,17 @@ fn parse_replay_package(matches: &ArgMatches) -> Result<ReplayPackageArgs, CliEr
 }
 
 fn parse_backfill(matches: &ArgMatches) -> Result<BackfillArgs, CliError> {
-    let positional_resource = resource_arg(
+    let resource_id = single_positional_arg(
         "backfill",
         &values(matches, "resource_arg"),
-        None,
         "accepts at most one resource id",
-    )?;
-    let resource_option = string_value(matches, "resource");
-    if let (Some(positional), Some(option)) = (&positional_resource, &resource_option)
-        && positional != option
-    {
-        return Err(CliError::usage(
-            "backfill positional RESOURCE and --resource must match when both are supplied",
-        ));
-    }
+    )?
+    .ok_or_else(|| CliError::usage("backfill requires RESOURCE"))?;
     let slice_size = string_value(matches, "slice_size")
         .map(|value| parse_u64("--slice-size", &value))
         .transpose()?;
     Ok(BackfillArgs {
-        resource_id: positional_resource
-            .or(resource_option)
-            .ok_or_else(|| CliError::usage("backfill requires RESOURCE or --resource"))?,
+        resource_id,
         from: string_value(matches, "from")
             .ok_or_else(|| CliError::usage("backfill requires --from"))?,
         to: string_value(matches, "to").ok_or_else(|| CliError::usage("backfill requires --to"))?,
@@ -897,7 +834,6 @@ pub(crate) fn cli_command() -> ClapCommand {
         .arg(flag("quiet", "quiet").short('q').global(true).conflicts_with("verbose").help("Suppress progress and non-primary success narration"))
         .arg(flag("verbose", "verbose").short('v').global(true).action(ArgAction::Count).conflicts_with("quiet").help("Show evidence detail; repeat for diagnostics"))
         .arg(policy_option("color", "color", "WHEN", "Color policy: auto, always, or never"))
-        .arg(flag("no_color", "no-color").global(true).conflicts_with("color").help("Compatibility alias for --color never"))
         .arg(policy_option("progress", "progress", "WHEN", "Progress policy: auto, always, or never"))
         .arg(policy_option("unicode", "unicode", "WHEN", "Unicode policy: auto, always, or never"))
         .arg_required_else_help(false)
@@ -959,16 +895,13 @@ pub(crate) fn cli_command() -> ClapCommand {
 fn scan_command(name: &'static str, accepts_target: bool) -> ClapCommand {
     let mut command = cmd(name)
         .arg(values_arg("resource_arg").value_name("RESOURCE"))
-        .arg(option("resource", "resource", "RESOURCE"))
-        .arg(option("projection", "select", "FIELDS").alias("projection"))
+        .arg(option("projection", "select", "FIELDS"))
         .arg(append_option("filter", "filter", "EXPR"))
         .arg(option("limit", "limit", "N"))
-        .arg(append_option("order_by", "order-by", "FIELD[:asc|desc]"))
-        .arg(option("package_id", "package-id", "ID"));
+        .arg(append_option("order_by", "order-by", "FIELD[:asc|desc]"));
     if accepts_target {
         command = command
             .arg(option("to", "to", "DEST"))
-            .arg(option("target", "target", "TARGET"))
             .arg(flag("no_pin", "no-pin"));
     }
     command
@@ -977,12 +910,7 @@ fn scan_command(name: &'static str, accepts_target: bool) -> ClapCommand {
 fn run_command() -> ClapCommand {
     cmd("run")
         .arg(values_arg("resource_arg").value_name("RESOURCE"))
-        .arg(option("resource", "resource", "RESOURCE"))
-        .arg(option("pipeline", "pipeline", "ID"))
         .arg(option("to", "to", "DEST"))
-        .arg(option("target", "target", "TARGET"))
-        .arg(option("package_id", "package-id", "ID"))
-        .arg(option("checkpoint_id", "checkpoint-id", "ID"))
         .arg(option("jobs", "jobs", "N"))
         .arg(flag("loop", "loop"))
 }
@@ -1006,9 +934,7 @@ fn schema_command() -> ClapCommand {
 }
 
 fn schema_resource_command(name: &'static str) -> ClapCommand {
-    cmd(name)
-        .arg(values_arg("resource_arg").value_name("RESOURCE"))
-        .arg(option("resource", "resource", "RESOURCE"))
+    cmd(name).arg(values_arg("resource_arg").value_name("RESOURCE"))
 }
 
 fn inspect_command() -> ClapCommand {
@@ -1018,46 +944,26 @@ fn inspect_command() -> ClapCommand {
         .subcommand(cmd("resource").arg(values_arg("values").value_name("ID")))
         .subcommand(cmd("lock").arg(values_arg("values").hide(true)))
         .subcommand(cmd("destinations").arg(values_arg("values").hide(true)))
-        .subcommand(cmd("destination").arg(values_arg("values").hide(true)))
         .subcommand(cmd("package").arg(values_arg("values").value_name("DIR")))
         .subcommand(cmd("run").arg(values_arg("values").value_name("RUN_ID")))
 }
 
 fn contract_command() -> ClapCommand {
     cmd("contract")
-        .subcommand(
-            cmd("freeze")
-                .arg(values_arg("value").value_name("CONTRACT"))
-                .arg(option("contract", "contract", "CONTRACT")),
-        )
-        .subcommand(
-            cmd("show")
-                .arg(values_arg("value").value_name("TRUST"))
-                .arg(option("trust", "trust", "TRUST")),
-        )
-        .subcommand(
-            cmd("test")
-                .arg(values_arg("value").value_name("CONTRACT"))
-                .arg(option("contract", "contract", "CONTRACT")),
-        )
+        .subcommand(cmd("freeze").arg(values_arg("value").value_name("CONTRACT")))
+        .subcommand(cmd("show").arg(values_arg("value").value_name("TRUST")))
+        .subcommand(cmd("test").arg(values_arg("value").value_name("CONTRACT")))
 }
 
 fn state_command() -> ClapCommand {
     cmd("state")
         .subcommand(state_scope_command("show"))
         .subcommand(state_scope_command("history"))
-        .subcommand(
-            state_scope_command("rewind")
-                .arg(
-                    option("target_checkpoint", "target-checkpoint", "CHECKPOINT")
-                        .visible_alias("to"),
-                )
-                .arg(option(
-                    "marker_checkpoint",
-                    "marker-checkpoint",
-                    "CHECKPOINT",
-                )),
-        )
+        .subcommand(state_scope_command("rewind").arg(option(
+            "target_checkpoint",
+            "to",
+            "CHECKPOINT",
+        )))
         .subcommand(cmd("migrate").arg(values_arg("extra").hide(true)))
         .subcommand(
             cmd("recover")
@@ -1074,25 +980,17 @@ fn state_scope_command(name: &'static str) -> ClapCommand {
     cmd(name)
         .arg(values_arg("resource_arg").value_name("RESOURCE"))
         .arg(option("pipeline", "pipeline", "ID"))
-        .arg(option("resource", "resource", "RESOURCE"))
         .arg(append_option("scope", "scope", "KEY=VALUE"))
         .arg(option("scope_json", "scope-json", "JSON"))
 }
 
 fn resume_command() -> ClapCommand {
-    cmd("resume")
-        .arg(values_arg("run_arg").value_name("RUN_ID"))
-        .arg(
-            option("run", "run", "RUN_ID")
-                .alias("run-id")
-                .value_name("RUN_ID"),
-        )
+    cmd("resume").arg(values_arg("run_arg").value_name("RUN_ID"))
 }
 
 fn backfill_command() -> ClapCommand {
     cmd("backfill")
         .arg(values_arg("resource_arg").value_name("RESOURCE"))
-        .arg(option("resource", "resource", "RESOURCE"))
         .arg(option("from", "from", "CURSOR"))
         .arg(option("to", "to", "CURSOR"))
         .arg(option("target", "target", "TARGET"))
@@ -1154,7 +1052,7 @@ fn cmd(name: &'static str) -> ClapCommand {
         "resources" => "List project resources",
         "resource" => "Show one resolved resource",
         "lock" => "Show the project lock",
-        "destinations" | "destination" => "List resolved destinations",
+        "destinations" => "List resolved destinations",
         _ => "Operate on cdf project evidence",
     };
     ClapCommand::new(name).about(about).args_override_self(true)
@@ -1208,16 +1106,13 @@ fn option_help(long: &str) -> &'static str {
     match long {
         "project" => "Project directory or cdf.toml path",
         "env" => "Project environment name",
-        "resource" => "Resource identifier (compatibility form)",
         "to" => "Destination URI or cursor upper bound, as shown in usage",
-        "target" => "Destination target/table compatibility option",
+        "target" => "Destination target or table",
         "select" => "Comma-separated projected fields",
         "filter" => "Filter expression; may be repeated",
         "limit" => "Maximum rows to read",
         "order-by" => "Ordering field and optional direction",
-        "package-id" => "Explicit package identifier for script compatibility",
-        "checkpoint-id" => "Explicit checkpoint identifier for script compatibility",
-        "pipeline" => "Pipeline identifier compatibility option",
+        "pipeline" => "Pipeline identifier",
         "jobs" => "Maximum concurrent jobs",
         "loop" => "Continue polling for work",
         "deep" => "Run probes that may contact configured systems",
@@ -1225,7 +1120,7 @@ fn option_help(long: &str) -> &'static str {
         "execute" => "Apply the planned operation",
         "force" => "Replace an existing artifact when safe",
         "scope" => "Checkpoint scope entry as key=value; may be repeated",
-        "scope-json" => "JSON checkpoint scope compatibility form",
+        "scope-json" => "Checkpoint scope encoded as JSON",
         "from" => "Inclusive cursor lower bound",
         "slice-size" => "Rows per backfill slice",
         "format" => "Archive output format",
@@ -1240,13 +1135,9 @@ fn option_help(long: &str) -> &'static str {
         "records" => "Record selector within the source",
         "cursor" => "Cursor field",
         "cursor-param" => "Request parameter carrying the cursor",
-        "run" => "Run identifier compatibility option",
-        "target-checkpoint" => "Checkpoint to rewind to",
-        "marker-checkpoint" => "Explicit rewind marker identifier for scripts",
         "color" => "Color policy: auto, always, or never",
         "progress" => "Progress policy: auto, always, or never",
         "unicode" => "Unicode policy: auto, always, or never",
-        "no-color" => "Compatibility alias for --color never",
         "quiet" => "Suppress progress and non-primary success narration",
         "verbose" => "Show evidence detail; repeat for diagnostics",
         _ => "Set the value named in this command's usage",
@@ -1263,7 +1154,7 @@ fn positional_help(id: &str) -> &'static str {
         "package_dir" | "packages_dir" => "Package directory",
         "value" => "Contract or trust selector shown in usage",
         "values" => "Identifiers or paths shown in usage",
-        "extra" => "Additional compatibility arguments",
+        "extra" => "Unexpected operands",
         _ => "Operand named in this command's usage",
     }
 }
@@ -1300,22 +1191,15 @@ fn values(matches: &ArgMatches, name: &str) -> Vec<String> {
         .unwrap_or_default()
 }
 
-fn resource_arg(
+fn single_positional_arg(
     command: &str,
     positional_values: &[String],
-    option_value: Option<String>,
     too_many_message: &str,
 ) -> Result<Option<String>, CliError> {
     if positional_values.len() > 1 {
         return Err(CliError::usage(format!("{command} {too_many_message}")));
     }
-    match (positional_values.first(), option_value) {
-        (Some(positional), Some(option)) if positional != &option => Err(CliError::usage(format!(
-            "{command} positional RESOURCE and --resource must match when both are supplied"
-        ))),
-        (Some(positional), _) => Ok(Some(positional.clone())),
-        (None, option) => Ok(option),
-    }
+    Ok(positional_values.first().cloned())
 }
 
 fn optional_path_arg(command: &str, args: &[String]) -> Result<Option<PathBuf>, CliError> {
@@ -1347,20 +1231,13 @@ fn required_single_path(
     }
 }
 
-fn optional_named_or_positional(
-    option_name: &str,
-    option_value: Option<String>,
-    positional_values: &[String],
-) -> Result<Option<String>, CliError> {
-    if positional_values.len() > 1 {
-        return Err(CliError::usage("expected at most one value"));
-    }
-    match (positional_values.first(), option_value) {
-        (Some(positional), Some(option)) if positional != &option => Err(CliError::usage(format!(
-            "{option_name} conflicts with positional value"
+fn optional_single_value(command: &str, values: &[String]) -> Result<Option<String>, CliError> {
+    match values {
+        [] => Ok(None),
+        [value] => Ok(Some(value.clone())),
+        _ => Err(CliError::usage(format!(
+            "{command} accepts at most one value"
         ))),
-        (Some(positional), _) => Ok(Some(positional.clone())),
-        (None, option) => Ok(option),
     }
 }
 

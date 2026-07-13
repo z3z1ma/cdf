@@ -470,9 +470,6 @@ fn p2_s5_s7_registry_names_standalone_conformance_without_other_promotions() {
 #[test]
 fn p2_s5_rest_discover_pin_preview_run_package_checkpoint_conformance() {
     const SECRET: &str = "s5-recorded-rest-secret";
-    const PACKAGE_ID: &str = "p2-s5-rest-discover";
-    const CHECKPOINT_ID: &str = "checkpoint-p2-s5-rest-discover";
-    const PIPELINE_ID: &str = "pipeline-p2-s5-rest-discover";
     const BODY: &str = r#"{ "items": [
         { "VendorID": 1, "updated_at": 10 },
         { "VendorID": 2, "updated_at": 20 }
@@ -527,30 +524,17 @@ fn p2_s5_rest_discover_pin_preview_run_package_checkpoint_conformance() {
     assert_eq!(preview["result"]["row_count"], 2);
     assert_eq!(project_tree_snapshot(temp.path()), before_preview);
 
-    let run = invoke_success_json(
-        temp.path(),
-        &[
-            "run",
-            "api.items",
-            "--pipeline",
-            PIPELINE_ID,
-            "--target",
-            "items",
-            "--package-id",
-            PACKAGE_ID,
-            "--checkpoint-id",
-            CHECKPOINT_ID,
-        ],
-        Some(SECRET),
-    );
+    let run = invoke_success_json(temp.path(), &["run", "api.items"], Some(SECRET));
     let report = &run["result"];
     assert_eq!(report["resource_id"], "api.items");
     assert_eq!(report["schema_hash"], pinned_hash);
     assert_eq!(report["schema_snapshot"]["outcome"], "unchanged");
     assert_eq!(report["row_count"], 2);
     assert_eq!(report["checkpoint"]["status"], "committed");
+    let package_id = report["package_id"].as_str().unwrap();
+    let checkpoint_id = report["checkpoint_id"].as_str().unwrap();
 
-    let package_dir = temp.path().join(".cdf/packages").join(PACKAGE_ID);
+    let package_dir = temp.path().join(".cdf/packages").join(package_id);
     let reader = PackageReader::open(&package_dir).unwrap();
     reader.verify().unwrap();
     let receipts = reader.receipts().unwrap();
@@ -571,13 +555,13 @@ fn p2_s5_rest_discover_pin_preview_run_package_checkpoint_conformance() {
     let store = SqliteCheckpointStore::open(temp.path().join(".cdf/state.db")).unwrap();
     let head = store
         .head(
-            &PipelineId::new(PIPELINE_ID).unwrap(),
+            &PipelineId::new("cdf-run").unwrap(),
             &ResourceId::new("api.items").unwrap(),
             &ScopeKey::Resource,
         )
         .unwrap()
         .expect("S5 committed checkpoint head");
-    assert_eq!(head.delta.checkpoint_id.as_str(), CHECKPOINT_ID);
+    assert_eq!(head.delta.checkpoint_id.as_str(), checkpoint_id);
     assert_eq!(head.delta.schema_hash.as_str(), pinned_hash);
     assert!(receipt.covers_state_delta(&head.delta));
     let SourcePosition::Cursor(cursor) = &head.delta.output_position else {
@@ -597,8 +581,6 @@ fn p2_s5_rest_discover_pin_preview_run_package_checkpoint_conformance() {
 
 #[test]
 fn p2_s7_keyless_append_and_precontact_merge_failure_conformance() {
-    const PACKAGE_ID: &str = "p2-s7-keyless-append";
-    const CHECKPOINT_ID: &str = "checkpoint-p2-s7-keyless-append";
     const MISSING_SECRET_SENTINEL: &str = "missing-merge-secret-must-not-resolve";
 
     let append = tempfile::tempdir().unwrap();
@@ -612,19 +594,7 @@ fn p2_s7_keyless_append_and_precontact_merge_failure_conformance() {
     let preview = invoke_cli(append.path(), &["preview", "local.events"]);
     assert_success_without_key_nudge(&preview);
     assert_eq!(success_json(&preview)["result"]["row_count"], 2);
-    let run = invoke_cli(
-        append.path(),
-        &[
-            "run",
-            "local.events",
-            "--target",
-            "events",
-            "--package-id",
-            PACKAGE_ID,
-            "--checkpoint-id",
-            CHECKPOINT_ID,
-        ],
-    );
+    let run = invoke_cli(append.path(), &["run", "local.events"]);
     assert_success_without_key_nudge(&run);
     let run_json = success_json(&run);
     assert_eq!(run_json["result"]["receipt"]["disposition"], "append");

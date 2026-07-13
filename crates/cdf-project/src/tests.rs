@@ -3701,8 +3701,8 @@ fn local_project_scaffold_writes_valid_project_without_runtime_artifacts() {
     let resource = fs::read_to_string(root.join("resources/files.toml")).unwrap();
     assert!(readme.contains("docs/quickstart.md"));
     assert!(readme.contains("cdf validate"));
-    assert!(readme.contains("cdf plan local.events --target local_events"));
-    assert!(readme.contains("cdf run --resource local.events"));
+    assert!(readme.contains("cdf plan local.events"));
+    assert!(readme.contains("cdf run local.events"));
     assert!(!readme.contains("secret://"));
     assert!(!readme.contains(root.to_str().unwrap()));
     assert!(!resource.contains("primary_key"));

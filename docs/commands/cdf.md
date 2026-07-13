@@ -42,9 +42,6 @@ Options:
 
           [possible values: auto, always, never]
 
-      --no-color
-          Compatibility alias for --color never
-
       --progress <WHEN>
           Progress policy: auto, always, or never
 
