@@ -12,7 +12,7 @@ use cdf_runtime::{
     DestinationIngressMode, DestinationInspection, DestinationPlanningContext,
     DestinationReceiptReportingPolicy, DestinationResolutionContext, DestinationRuntime,
     DestinationRuntimeCapabilities, DestinationWriterModel, PreparedDestinationCommit,
-    absolute_under_root, artifact_hash, local_uri_path, reject_unexpected_pending_context,
+    absolute_under_root, artifact_hash, local_uri_path,
 };
 
 use crate::{ParquetCommitRequest, ParquetDestination};
@@ -83,6 +83,10 @@ impl DestinationRuntime for ParquetDestination {
         self
     }
 
+    fn ingress(&mut self) -> cdf_runtime::DestinationIngress<'_> {
+        cdf_runtime::DestinationIngress::FinalizedPackage(self)
+    }
+
     fn describe(&self) -> DestinationDescription {
         DestinationDescription::new(
             self.sheet().destination.clone(),
@@ -102,21 +106,27 @@ impl DestinationRuntime for ParquetDestination {
         cdf_package::validate_parquet_schema(input.output_schema)?;
         cdf_runtime::BulkPathPreparation::from_capabilities(&self.runtime_capabilities())
     }
+}
 
+impl cdf_runtime::FinalizedPackageIngress for ParquetDestination {
     fn prepare_package_commit(
         &mut self,
-        package_dir: &Path,
-        _reader: &PackageReader,
+        _package_dir: &Path,
+        reader: &PackageReader,
         inputs: &PackageReplayInputs,
         context: &DestinationPlanningContext<'_>,
     ) -> Result<PreparedDestinationCommit> {
         self.runtime_capabilities()
             .validate_prepared_bulk_path(context.bulk_path)?;
-        prepare_parquet_commit(self, package_dir, inputs, context.bulk_path.clone())
+        prepare_parquet_commit(self, reader, inputs, context)
     }
 
-    fn bind_prepared_commit(&mut self, prepared: &mut PreparedDestinationCommit) -> Result<()> {
-        reject_unexpected_pending_context(prepared, "Parquet")
+    fn begin_prepared_commit(
+        &mut self,
+        prepared: &mut PreparedDestinationCommit,
+    ) -> Result<Box<dyn cdf_kernel::CommitSession + '_>> {
+        let context = take_parquet_session_context(prepared)?;
+        self.begin_prepared_commit_session(context)
     }
 }
 
@@ -166,6 +176,10 @@ impl DestinationRuntime for FilesystemParquetRuntime {
             .expect("filesystem Parquet destination must be materialized before protocol use")
     }
 
+    fn ingress(&mut self) -> cdf_runtime::DestinationIngress<'_> {
+        cdf_runtime::DestinationIngress::FinalizedPackage(self)
+    }
+
     fn describe(&self) -> DestinationDescription {
         filesystem_description(&self.root)
     }
@@ -206,26 +220,54 @@ impl DestinationRuntime for FilesystemParquetRuntime {
         Ok(DestinationCommitPlanningOutcome::new(sheet, plan))
     }
 
+    fn ensure_protocol_ready(&mut self) -> Result<()> {
+        self.destination().map(|_| ())
+    }
+}
+
+impl cdf_runtime::FinalizedPackageIngress for FilesystemParquetRuntime {
     fn prepare_package_commit(
         &mut self,
-        package_dir: &Path,
-        _reader: &PackageReader,
+        _package_dir: &Path,
+        reader: &PackageReader,
         inputs: &PackageReplayInputs,
         context: &DestinationPlanningContext<'_>,
     ) -> Result<PreparedDestinationCommit> {
         self.runtime_capabilities()
             .validate_prepared_bulk_path(context.bulk_path)?;
         let destination = self.destination()?;
-        prepare_parquet_commit(destination, package_dir, inputs, context.bulk_path.clone())
+        prepare_parquet_commit(destination, reader, inputs, context)
     }
 
-    fn bind_prepared_commit(&mut self, prepared: &mut PreparedDestinationCommit) -> Result<()> {
-        reject_unexpected_pending_context(prepared, "Parquet")
+    fn begin_prepared_commit(
+        &mut self,
+        prepared: &mut PreparedDestinationCommit,
+    ) -> Result<Box<dyn cdf_kernel::CommitSession + '_>> {
+        let context = take_parquet_session_context(prepared)?;
+        self.destination()?.begin_prepared_commit_session(context)
     }
+}
 
-    fn ensure_protocol_ready(&mut self) -> Result<()> {
-        self.destination().map(|_| ())
+pub(crate) fn take_parquet_session_context(
+    prepared: &mut PreparedDestinationCommit,
+) -> Result<crate::api::ParquetSessionContext> {
+    let context = prepared.take_pending_context::<crate::api::ParquetSessionContext>("Parquet")?;
+    if &context.request.commit != prepared.commit() {
+        return Err(CdfError::contract(
+            "Parquet pending context commit does not match the prepared destination commit",
+        ));
     }
+    if &context.request.schema_hash != prepared.schema_hash() {
+        return Err(CdfError::contract(
+            "Parquet pending context schema does not match the prepared destination schema",
+        ));
+    }
+    if &context.plan.kernel != prepared.plan() {
+        return Err(CdfError::contract(
+            "Parquet pending context plan does not match the prepared destination plan",
+        ));
+    }
+    Ok(context)
 }
 
 fn filesystem_description(root: &Path) -> DestinationDescription {
@@ -239,24 +281,31 @@ fn filesystem_description(root: &Path) -> DestinationDescription {
 
 fn prepare_parquet_commit(
     destination: &ParquetDestination,
-    package_dir: &Path,
+    reader: &PackageReader,
     inputs: &PackageReplayInputs,
-    bulk_path: cdf_runtime::PreparedBulkPath,
+    context: &DestinationPlanningContext<'_>,
 ) -> Result<PreparedDestinationCommit> {
     let request = ParquetCommitRequest {
-        package_dir: package_dir.to_path_buf(),
         commit: inputs.destination_commit.clone(),
         schema_hash: inputs.schema_hash.clone(),
     };
-    let plan = destination.plan_package_commit(&request)?;
-    Ok(PreparedDestinationCommit::new(
-        request.commit,
-        plan.kernel,
-        bulk_path,
-        DestinationReceiptReportingPolicy::DestinationCommit {
-            duplicate: plan.duplicate,
-        },
-    ))
+    let manifest_segments = reader
+        .identity_segments_verified(context.verified_package)?
+        .to_vec();
+    let plan = destination.plan_package_commit(&request, &manifest_segments)?;
+    let duplicate = plan.duplicate;
+    let kernel = plan.kernel.clone();
+    Ok(PreparedDestinationCommit::from_verified_inputs(
+        inputs,
+        kernel,
+        context.bulk_path.clone(),
+        DestinationReceiptReportingPolicy::DestinationCommit { duplicate },
+    )?
+    .with_pending_context(crate::api::ParquetSessionContext {
+        request,
+        plan,
+        manifest_segments,
+    }))
 }
 
 pub(crate) fn parquet_runtime_capabilities() -> DestinationRuntimeCapabilities {

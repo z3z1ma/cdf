@@ -25,7 +25,9 @@ use cdf_kernel::{
     StateSegment, TargetName, TransactionMetadata, TransactionSupport, TypeMapping,
     TypeMappingFidelity, VerifyClause, WriteDisposition,
 };
-use cdf_package::{PackageReader, SegmentEntry};
+#[cfg(test)]
+use cdf_package::PackageReader;
+use cdf_package::SegmentEntry;
 use object_store::{
     ObjectStore, ObjectStoreExt, PutMode, PutOptions, PutPayload, PutResult,
     local::LocalFileSystem, path::Path as ObjectPath,

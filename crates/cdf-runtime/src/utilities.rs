@@ -8,18 +8,6 @@ pub fn artifact_hash(value: &impl Serialize) -> Result<String> {
     Ok(format!("sha256:{}", hex::encode(Sha256::digest(bytes))))
 }
 
-pub fn reject_unexpected_pending_context(
-    prepared: &PreparedDestinationCommit,
-    destination: &str,
-) -> Result<()> {
-    if prepared.has_pending_context() {
-        return Err(CdfError::internal(format!(
-            "{destination} prepared destination commit carried unexpected pending context"
-        )));
-    }
-    Ok(())
-}
-
 pub fn commit_request(
     delta: &StateDelta,
     target: TargetName,

@@ -6,7 +6,7 @@ use crate::{
         canonical_json_bytes, sha256_hex,
     },
     package::write_parquet_segment,
-    receipts::{build_receipt, record_package_receipt_once, verify_receipt},
+    receipts::{build_receipt, verify_receipt},
     runtime::parquet_runtime_capabilities,
     sheet::{parquet_protocol_capabilities, parquet_sheet},
     store::{
@@ -20,7 +20,6 @@ pub struct ParquetDestination {
     execution: cdf_runtime::ExecutionServices,
     sheet: DestinationSheet,
     object_key_encoder: ObjectKeyEncoder,
-    pending_sessions: Mutex<BTreeMap<PlanId, ParquetSessionContext>>,
     pub(crate) pending_corrections: Mutex<BTreeMap<PlanId, ParquetCorrectionContext>>,
 }
 
@@ -31,14 +30,13 @@ pub struct ParquetRowLocation {
 }
 
 #[derive(Clone, Debug)]
-pub struct ParquetCommitRequest {
-    pub package_dir: PathBuf,
-    pub commit: DestinationCommitRequest,
-    pub schema_hash: SchemaHash,
+pub(crate) struct ParquetCommitRequest {
+    pub(crate) commit: DestinationCommitRequest,
+    pub(crate) schema_hash: SchemaHash,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ParquetCommitPlan {
+pub(crate) struct ParquetCommitPlan {
     pub kernel: CommitPlan,
     pub manifest_key: String,
     pub provenance_manifest_key: String,
@@ -47,15 +45,6 @@ pub struct ParquetCommitPlan {
     pub duplicate: bool,
     pub rows_planned: u64,
     pub bytes_planned: u64,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ParquetCommitOutcome {
-    pub receipt: Receipt,
-    pub duplicate: bool,
-    pub plan: ParquetCommitPlan,
-    pub object_manifest: ParquetObjectManifest,
-    pub package_receipt_recorded: bool,
 }
 
 pub type ReceiptVerification = cdf_kernel::ReceiptVerification;
@@ -98,7 +87,6 @@ impl ParquetDestination {
             execution,
             sheet,
             object_key_encoder,
-            pending_sessions: Mutex::new(BTreeMap::new()),
             pending_corrections: Mutex::new(BTreeMap::new()),
         })
     }
@@ -111,10 +99,11 @@ impl ParquetDestination {
         Ok((sheet, plan))
     }
 
-    pub fn plan_package_commit(&self, request: &ParquetCommitRequest) -> Result<ParquetCommitPlan> {
-        let reader = PackageReader::open(&request.package_dir)?;
-        reader.verify()?;
-        let manifest_segments = &reader.manifest().identity.segments;
+    pub(crate) fn plan_package_commit(
+        &self,
+        request: &ParquetCommitRequest,
+        manifest_segments: &[SegmentEntry],
+    ) -> Result<ParquetCommitPlan> {
         validate_manifest_requested_segments(&request.commit.segments, manifest_segments)?;
         let rows_planned = manifest_segments
             .iter()
@@ -128,27 +117,7 @@ impl ParquetDestination {
             .iter()
             .map(|segment| segment.segment_id.clone())
             .collect::<Vec<_>>();
-        let plan = self.plan_package_shape(request, &segment_ids, rows_planned, bytes_planned)?;
-        self.remember_session_context(request, &plan)?;
-        Ok(plan)
-    }
-
-    pub fn commit_package(&self, request: ParquetCommitRequest) -> Result<ParquetCommitOutcome> {
-        let plan = self.plan_package_commit(&request)?;
-        let context = self.take_session_context(&request.commit, &plan.kernel)?;
-        let mut session = ParquetCommitSession::new(self, context)?;
-        session.apply_migrations()?;
-        let reader = PackageReader::open(&request.package_dir)?;
-        let memory = self.execution.memory();
-        let maximum_segment_bytes = memory.snapshot().budget_bytes.min(64 * 1024 * 1024);
-        for segment in reader.verified_commit_segment_stream(
-            &request.commit.segments,
-            memory,
-            maximum_segment_bytes,
-        )? {
-            session.write_segment(segment?.into_commit_segment()?)?;
-        }
-        session.finalize_outcome()
+        self.plan_package_shape(request, &segment_ids, rows_planned, bytes_planned)
     }
 
     pub fn verify_receipt(&self, receipt: &Receipt) -> Result<ReceiptVerification> {
@@ -364,47 +333,11 @@ impl ParquetDestination {
         }))
     }
 
-    fn remember_session_context(
+    pub(crate) fn begin_prepared_commit_session(
         &self,
-        request: &ParquetCommitRequest,
-        plan: &ParquetCommitPlan,
-    ) -> Result<()> {
-        // Kernel begin currently carries only portable commit metadata; Parquet keeps
-        // package path/schema context from its package-aware dry run and consumes it at begin.
-        let mut pending = self
-            .pending_sessions
-            .lock()
-            .map_err(|_| CdfError::internal("Parquet commit session context lock was poisoned"))?;
-        pending.insert(
-            plan.kernel.plan_id.clone(),
-            ParquetSessionContext {
-                request: request.clone(),
-                plan: plan.clone(),
-            },
-        );
-        Ok(())
-    }
-
-    fn take_session_context(
-        &self,
-        request: &DestinationCommitRequest,
-        plan: &CommitPlan,
-    ) -> Result<ParquetSessionContext> {
-        let mut pending = self
-            .pending_sessions
-            .lock()
-            .map_err(|_| CdfError::internal("Parquet commit session context lock was poisoned"))?;
-        let context = pending.remove(&plan.plan_id).ok_or_else(|| {
-            CdfError::destination(
-                "Parquet commit sessions require package context from plan_package_commit",
-            )
-        })?;
-        if &context.request.commit != request || &context.plan.kernel != plan {
-            return Err(CdfError::destination(
-                "Parquet commit session context does not match destination request and plan",
-            ));
-        }
-        Ok(context)
+        context: ParquetSessionContext,
+    ) -> Result<Box<dyn CommitSession + '_>> {
+        Ok(Box::new(ParquetCommitSession::new(self, context)?))
     }
 }
 
@@ -416,9 +349,10 @@ struct LoadedManifest {
 }
 
 #[derive(Clone, Debug)]
-struct ParquetSessionContext {
-    request: ParquetCommitRequest,
-    plan: ParquetCommitPlan,
+pub(crate) struct ParquetSessionContext {
+    pub(crate) request: ParquetCommitRequest,
+    pub(crate) plan: ParquetCommitPlan,
+    pub(crate) manifest_segments: Vec<SegmentEntry>,
 }
 
 struct ParquetCommitSession<'a> {
@@ -459,7 +393,7 @@ impl<'a> ParquetCommitSession<'a> {
         })
     }
 
-    fn finalize_outcome(self) -> Result<ParquetCommitOutcome> {
+    fn finalize_receipt(self) -> Result<Receipt> {
         if !self.migrations_applied {
             return Err(CdfError::destination(
                 "migrations must be applied before finalizing",
@@ -474,7 +408,7 @@ impl<'a> ParquetCommitSession<'a> {
         }
 
         if let Some(existing) = self.existing {
-            return duplicate_parquet_outcome(self.request, self.plan, existing);
+            return duplicate_parquet_receipt(self.request, self.plan, existing);
         }
         let mut object_entries = Vec::with_capacity(self.expected_order.len());
         for segment_id in &self.expected_order {
@@ -526,11 +460,11 @@ fn write_commit_segment_object(
     })
 }
 
-fn duplicate_parquet_outcome(
+fn duplicate_parquet_receipt(
     request: ParquetCommitRequest,
-    mut plan: ParquetCommitPlan,
+    plan: ParquetCommitPlan,
     existing: LoadedManifest,
-) -> Result<ParquetCommitOutcome> {
+) -> Result<Receipt> {
     let receipt = build_receipt(
         &request,
         &plan,
@@ -538,15 +472,7 @@ fn duplicate_parquet_outcome(
         existing.manifest_etag,
         existing.replace_pointer,
     )?;
-    let recorded = record_package_receipt_once(&request.package_dir, &receipt)?;
-    plan.duplicate = true;
-    Ok(ParquetCommitOutcome {
-        receipt,
-        duplicate: true,
-        plan,
-        object_manifest: existing.manifest,
-        package_receipt_recorded: recorded,
-    })
+    Ok(receipt)
 }
 
 fn finalize_parquet_objects(
@@ -554,7 +480,7 @@ fn finalize_parquet_objects(
     request: ParquetCommitRequest,
     plan: ParquetCommitPlan,
     object_entries: Vec<ParquetObjectEntry>,
-) -> Result<ParquetCommitOutcome> {
+) -> Result<Receipt> {
     let committed_at_ms = now_ms()?;
     let object_manifest = ParquetObjectManifest {
         manifest_version: MANIFEST_VERSION,
@@ -610,14 +536,7 @@ fn finalize_parquet_objects(
         manifest_put.e_tag,
         replace_pointer,
     )?;
-    let recorded = record_package_receipt_once(&request.package_dir, &receipt)?;
-    Ok(ParquetCommitOutcome {
-        receipt,
-        duplicate: false,
-        plan,
-        object_manifest: persisted_manifest,
-        package_receipt_recorded: recorded,
-    })
+    Ok(receipt)
 }
 
 fn ensure_provenance_manifest(
@@ -703,7 +622,7 @@ impl CommitSession for ParquetCommitSession<'_> {
     }
 
     fn finalize(self: Box<Self>) -> Result<Receipt> {
-        Ok(self.finalize_outcome()?.receipt)
+        self.finalize_receipt()
     }
 
     fn abort(self: Box<Self>) -> Result<()> {
@@ -722,21 +641,6 @@ impl DestinationProtocol for ParquetDestination {
 
     fn plan_commit(&self, request: &DestinationCommitRequest) -> Result<CommitPlan> {
         plan_kernel_commit(&self.sheet, request)
-    }
-
-    fn begin(
-        &self,
-        request: DestinationCommitRequest,
-        plan: CommitPlan,
-    ) -> Result<Box<dyn CommitSession + '_>> {
-        let expected = self.plan_commit(&request)?;
-        if expected != plan {
-            return Err(CdfError::destination(
-                "commit plan does not match destination request",
-            ));
-        }
-        let context = self.take_session_context(&request, &plan)?;
-        Ok(Box::new(ParquetCommitSession::new(self, context)?))
     }
 
     fn verify(&self, receipt: &Receipt) -> Result<ReceiptVerification> {
@@ -799,14 +703,11 @@ fn expected_segments_for_context(
     object_key_encoder: ObjectKeyEncoder,
     context: &ParquetSessionContext,
 ) -> Result<(BTreeMap<SegmentId, ExpectedSegment>, Vec<SegmentId>)> {
-    let reader = PackageReader::open(&context.request.package_dir)?;
-    reader.verify()?;
-
     let mut manifest_by_id = BTreeMap::new();
     let mut expected_order = Vec::new();
     let mut rows_planned = 0_u64;
     let mut bytes_planned = 0_u64;
-    for segment in &reader.manifest().identity.segments {
+    for segment in &context.manifest_segments {
         if manifest_by_id
             .insert(segment.segment_id.clone(), segment)
             .is_some()

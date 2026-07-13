@@ -21,15 +21,15 @@ use cdf_contract::{
     RESIDUAL_ENCODING_METADATA_KEY, RESIDUAL_ENCODING_NAME, VARIANT_COLUMN_NAME,
     VARIANT_SEMANTIC_TAG,
 };
-use cdf_dest_duckdb::{DuckDbCommitRequest, DuckDbDestination};
-use cdf_dest_parquet::{ParquetCommitRequest, ParquetDestination};
+use cdf_dest_duckdb::DuckDbDestination;
+use cdf_dest_parquet::ParquetDestination;
 use cdf_kernel::{
     CHECKPOINT_STATE_VERSION, CdfError, CheckpointId, CheckpointStatus, CheckpointStore,
-    CommitCounts, CursorPosition, CursorValue, DestinationCommitRequest, DestinationId,
-    FileManifest, FilePosition, IdempotencyToken, LeaseOwnerId, PackageHash, PartitionId,
-    PipelineId, PromotionSettlementStore, Receipt, ReceiptId, ResourceId, RunId, SchemaHash,
-    ScopeKey, SegmentAck, SegmentId, SourcePosition, StateDelta, StateSegment, TargetName,
-    VerifyClause, WriteDisposition, with_semantic,
+    CommitCounts, CursorPosition, CursorValue, DeliveryGuarantee, DestinationId, FileManifest,
+    FilePosition, IdempotencyToken, LeaseOwnerId, PackageHash, PartitionId, PipelineId, PlanId,
+    PromotionSettlementStore, Receipt, ReceiptId, ResourceId, RunId, ScanPlan, ScanRequest,
+    SchemaHash, ScopeKey, SegmentAck, SegmentId, SourcePosition, StateDelta, StateSegment,
+    TargetName, VerifyClause, WriteDisposition, with_semantic,
 };
 use cdf_package::{
     DestinationCommitPlanPreimage, PackageBuilder, PackageReader, PackageStatus, StateDeltaPreimage,
@@ -3956,7 +3956,7 @@ fn schema_promote_execute_commits_correction_checkpoint_lock_and_idempotent_publ
     );
     let conn = DuckConnection::open(project.root.join(".cdf/dev.duckdb")).unwrap();
     let rows = conn
-        .prepare("SELECT vendor_id, score, _cdf_variant FROM events ORDER BY _cdf_row")
+        .prepare("SELECT vendor_id, score, _cdf_variant FROM events ORDER BY _cdf_row_key")
         .unwrap()
         .query_map([], |row| {
             Ok((
@@ -4098,7 +4098,7 @@ fn sampled_pin_captures_unseen_field_then_fresh_discovery_promotes_without_sourc
     assert_eq!(report["result"]["phase"], "complete");
     let connection = DuckConnection::open(project.root.join(".cdf/dev.duckdb")).unwrap();
     let promoted_rows = connection
-        .prepare("SELECT score, _cdf_variant FROM events ORDER BY _cdf_row, vendor_id")
+        .prepare("SELECT score, _cdf_variant FROM events ORDER BY _cdf_row_key, vendor_id")
         .unwrap()
         .query_map([], |row| {
             Ok((
@@ -4874,29 +4874,27 @@ fn schema_promote_execute_routes_parquet_through_correction_sidecar() {
     write_vendor_score_parquet(&source_path);
     write_schema_promote_package_fixture(&project, old_hash);
     let source_package = project.root.join(".cdf/packages/pkg-promote-source");
-    let reader = PackageReader::open(&source_package).unwrap();
-    let package_hash = PackageHash::new(reader.manifest().package_hash.clone()).unwrap();
-    let state_delta = reader
-        .state_delta_preimage()
-        .unwrap()
-        .into_state_delta(package_hash.clone());
-    fs::remove_file(source_package.join(cdf_package::RECEIPTS_FILE)).unwrap();
     let (_, services) =
         cdf_engine::StandaloneExecutionHost::default_services(64 * 1024 * 1024).unwrap();
-    ParquetDestination::new_filesystem(project.root.join(".cdf/parquet"), services)
-        .unwrap()
-        .commit_package(ParquetCommitRequest {
-            package_dir: source_package.clone(),
-            commit: DestinationCommitRequest {
-                package_hash: package_hash.clone(),
-                target: target.clone(),
-                disposition: WriteDisposition::Append,
-                segments: state_delta.segments,
-                idempotency_token: IdempotencyToken::new(package_hash.as_str()).unwrap(),
-            },
-            schema_hash: SchemaHash::new(old_hash).unwrap(),
-        })
-        .unwrap();
+    let store = SqliteCheckpointStore::open(
+        project
+            .root
+            .join(".cdf/schema-promote-parquet-fixture-state.db"),
+    )
+    .unwrap();
+    replay_package_from_artifacts(PackageArtifactReplayRequest {
+        package_dir: source_package,
+        destination: ResolvedProjectDestination::new(
+            Box::new(
+                ParquetDestination::new_filesystem(project.root.join(".cdf/parquet"), services)
+                    .unwrap(),
+            ),
+            target.clone(),
+        ),
+        checkpoint_store: &store,
+        after_receipt_verified: None,
+    })
+    .unwrap();
 
     let dry = run([
         "cdf",
@@ -9343,9 +9341,7 @@ schema = {{ fields = [
             ("vendor_id".to_owned(), "BIGINT".to_owned(), true),
             (LONG_SOURCE.to_owned(), "BIGINT".to_owned(), true),
             ("_cdf_variant".to_owned(), "VARCHAR".to_owned(), false),
-            ("_cdf_load".to_owned(), "VARCHAR".to_owned(), true),
-            ("_cdf_segment".to_owned(), "VARCHAR".to_owned(), true),
-            ("_cdf_row".to_owned(), "UBIGINT".to_owned(), true),
+            ("_cdf_row_key".to_owned(), "UBIGINT".to_owned(), true),
         ]
     );
 }
@@ -14820,6 +14816,7 @@ fn write_schema_promote_package_fixture_for_target_with_commit(
     )
     .unwrap();
     let builder = PackageBuilder::create(&package_dir, package_id).unwrap();
+    write_current_replay_artifacts(&builder, batch.schema().as_ref(), schema_hash);
     let segment = builder
         .write_segment(SegmentId::new("seg-000001").unwrap(), &[batch])
         .unwrap();
@@ -14865,33 +14862,82 @@ fn write_schema_promote_package_fixture_for_target_with_commit(
             vec![state_segment],
         ))
         .unwrap();
-    let manifest = builder
-        .finish_with_status(PackageStatus::Checkpointed)
-        .unwrap();
-    let package_hash = PackageHash::new(manifest.package_hash).unwrap();
+    let final_status = if commit_duckdb {
+        PackageStatus::Packaged
+    } else {
+        PackageStatus::Checkpointed
+    };
+    builder.finish_with_status(final_status).unwrap();
     if commit_duckdb {
-        let destination = DuckDbDestination::new(project.root.join(".cdf/dev.duckdb")).unwrap();
-        destination
-            .commit_package(DuckDbCommitRequest {
-                package_dir: package_dir.clone(),
-                commit: DestinationCommitRequest {
-                    package_hash: package_hash.clone(),
-                    target: TargetName::new(target_name).unwrap(),
-                    disposition: WriteDisposition::Append,
-                    segments: vec![StateSegment {
-                        segment_id: segment.segment_id,
-                        scope: ScopeKey::Resource,
-                        output_position: state_delta.output_position.clone(),
-                        row_count: segment.row_count,
-                        byte_count: segment.byte_count,
-                    }],
-                    idempotency_token: IdempotencyToken::new(package_hash.as_str()).unwrap(),
-                },
-                schema_hash: SchemaHash::new(schema_hash).unwrap(),
-                merge_keys: Vec::new(),
-            })
-            .unwrap();
+        let store = SqliteCheckpointStore::open(
+            project
+                .root
+                .join(".cdf")
+                .join(format!("{package_id}-fixture-state.db")),
+        )
+        .unwrap();
+        replay_package_from_artifacts(PackageArtifactReplayRequest {
+            package_dir,
+            destination: ResolvedProjectDestination::new(
+                Box::new(DuckDbDestination::new(project.root.join(".cdf/dev.duckdb")).unwrap()),
+                TargetName::new(target_name).unwrap(),
+            ),
+            checkpoint_store: &store,
+            after_receipt_verified: None,
+        })
+        .unwrap();
     }
+}
+
+fn write_current_replay_artifacts(builder: &PackageBuilder, schema: &Schema, schema_hash: &str) {
+    let mut program = cdf_contract::compile_validation_program(
+        &cdf_contract::ContractPolicy::evolve(),
+        &cdf_contract::ObservedSchema::from_arrow(schema),
+    )
+    .unwrap();
+    program.row_rules.clear();
+    program.transforms.clear();
+    program.compiled_expression_plan = Some(
+        cdf_contract::CompiledExpressionPlan::current(
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+        )
+        .unwrap(),
+    );
+    builder
+        .write_json_artifact("plan/validation-program.json", &program)
+        .unwrap();
+    builder
+        .write_json_artifact(
+            "plan/scan.json",
+            &ScanPlan {
+                plan_id: PlanId::new("cli-current-fixture-plan").unwrap(),
+                request: ScanRequest {
+                    resource_id: ResourceId::new("local.events").unwrap(),
+                    projection: None,
+                    filters: Vec::new(),
+                    limit: None,
+                    order_by: Vec::new(),
+                    scope: ScopeKey::Resource,
+                },
+                partitions: Vec::new(),
+                pushed_predicates: Vec::new(),
+                unsupported_predicates: Vec::new(),
+                estimated_rows: None,
+                estimated_bytes: None,
+                delivery_guarantee: DeliveryGuarantee::AtLeastOnceDuplicateRisk,
+            },
+        )
+        .unwrap();
+    builder.write_runtime_arrow_schema(schema).unwrap();
+    builder
+        .write_json_artifact(
+            "schema/output.arrow.json",
+            &BTreeMap::from([("schema_hash", schema_hash)]),
+        )
+        .unwrap();
 }
 
 #[derive(Clone, Copy)]
@@ -15856,36 +15902,52 @@ fn create_duckdb_doctor_fixture(project: &TestProject, mode: DoctorDriftFixtureM
     fs::create_dir_all(&package_root).unwrap();
     let package_dir = package_root.join("pkg-doctor-1");
     let builder = PackageBuilder::create(&package_dir, "pkg-doctor-1").unwrap();
-    builder
-        .write_segment(SegmentId::new("seg-000001").unwrap(), &[sample_sql_batch()])
+    let batch = sample_sql_batch();
+    write_current_replay_artifacts(&builder, batch.schema().as_ref(), "schema-doctor-1");
+    let entry = builder
+        .write_segment(SegmentId::new("seg-000001").unwrap(), &[batch])
         .unwrap();
-    let manifest = builder.finish().unwrap();
-    let package_hash = PackageHash::new(manifest.package_hash.clone()).unwrap();
     let output_position = doctor_output_position(42);
-    let segment = doctor_state_segment(output_position.clone());
-
-    let destination = DuckDbDestination::new(project.root.join(".cdf/dev.duckdb")).unwrap();
-    let outcome = destination
-        .commit_package(DuckDbCommitRequest {
-            package_dir: package_dir.clone(),
-            commit: DestinationCommitRequest {
-                package_hash: package_hash.clone(),
-                target: TargetName::new("events").unwrap(),
-                disposition: WriteDisposition::Append,
-                segments: vec![segment.clone()],
-                idempotency_token: IdempotencyToken::new(package_hash.as_str()).unwrap(),
-            },
-            schema_hash: SchemaHash::new("schema-doctor-1").unwrap(),
-            merge_keys: Vec::new(),
-        })
+    let segment = doctor_state_segment(&entry, output_position.clone());
+    let state_delta = doctor_delta_preimage(output_position.clone(), segment.clone());
+    builder.write_input_checkpoint_artifact(&None).unwrap();
+    builder
+        .write_state_delta_preimage_artifact(&state_delta)
         .unwrap();
+    builder
+        .write_commit_plan_preimage_artifact(&DestinationCommitPlanPreimage::package_hash_token(
+            TargetName::new("events").unwrap(),
+            WriteDisposition::Append,
+            Vec::new(),
+            SchemaHash::new("schema-doctor-1").unwrap(),
+            vec![segment.clone()],
+        ))
+        .unwrap();
+    let manifest = builder.finish_with_status(PackageStatus::Packaged).unwrap();
+    let package_hash = PackageHash::new(manifest.package_hash).unwrap();
+    let commit_store = SqliteCheckpointStore::open(
+        project
+            .root
+            .join(".cdf/doctor-destination-fixture-state.db"),
+    )
+    .unwrap();
+    let outcome = replay_package_from_artifacts(PackageArtifactReplayRequest {
+        package_dir: package_dir.clone(),
+        destination: ResolvedProjectDestination::new(
+            Box::new(DuckDbDestination::new(project.root.join(".cdf/dev.duckdb")).unwrap()),
+            TargetName::new("events").unwrap(),
+        ),
+        checkpoint_store: &commit_store,
+        after_receipt_verified: None,
+    })
+    .unwrap();
 
     let ledger_output_position = match mode {
         DoctorDriftFixtureMode::Clean => output_position,
         DoctorDriftFixtureMode::StatePositionDrift => doctor_output_position(43),
         DoctorDriftFixtureMode::TargetDrift => output_position,
     };
-    let delta = doctor_delta(&package_hash, ledger_output_position);
+    let delta = doctor_delta(&package_hash, ledger_output_position, &segment);
     let checkpoint_id = delta.checkpoint_id.clone();
     let mut receipt = outcome.receipt;
     if matches!(mode, DoctorDriftFixtureMode::TargetDrift) {
@@ -15918,20 +15980,26 @@ fn doctor_output_position(value: i64) -> SourcePosition {
     })
 }
 
-fn doctor_state_segment(output_position: SourcePosition) -> StateSegment {
+fn doctor_state_segment(
+    entry: &cdf_package::SegmentEntry,
+    output_position: SourcePosition,
+) -> StateSegment {
     StateSegment {
-        segment_id: SegmentId::new("seg-000001").unwrap(),
+        segment_id: entry.segment_id.clone(),
         scope: ScopeKey::Partition {
             partition_id: PartitionId::new("p0").unwrap(),
         },
         output_position,
-        row_count: 3,
-        byte_count: 48,
+        row_count: entry.row_count,
+        byte_count: entry.byte_count,
     }
 }
 
-fn doctor_delta(package_hash: &PackageHash, output_position: SourcePosition) -> StateDelta {
-    StateDelta {
+fn doctor_delta_preimage(
+    output_position: SourcePosition,
+    segment: StateSegment,
+) -> StateDeltaPreimage {
+    StateDeltaPreimage {
         checkpoint_id: CheckpointId::new("checkpoint-doctor-1").unwrap(),
         pipeline_id: PipelineId::new("pipeline-1").unwrap(),
         resource_id: ResourceId::new("local.events").unwrap(),
@@ -15940,10 +16008,19 @@ fn doctor_delta(package_hash: &PackageHash, output_position: SourcePosition) -> 
         parent_checkpoint_id: None,
         input_position: None,
         output_position: output_position.clone(),
-        package_hash: package_hash.clone(),
         schema_hash: SchemaHash::new("schema-doctor-1").unwrap(),
-        segments: vec![doctor_state_segment(output_position)],
+        segments: vec![segment],
     }
+}
+
+fn doctor_delta(
+    package_hash: &PackageHash,
+    output_position: SourcePosition,
+    segment: &StateSegment,
+) -> StateDelta {
+    let mut segment = segment.clone();
+    segment.output_position = output_position.clone();
+    doctor_delta_preimage(output_position, segment).into_state_delta(package_hash.clone())
 }
 
 fn sample_sql_delta(package_hash: &str) -> StateDelta {

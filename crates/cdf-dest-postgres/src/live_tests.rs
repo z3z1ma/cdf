@@ -22,23 +22,28 @@ use cdf_conformance::resource::{
     assert_queryable_resource_conformance, assert_resource_stream_execution_conformance,
 };
 use cdf_kernel::{
-    CanonicalArrowField, CheckpointId, ContractRef, CursorOrderingClaim, CursorPosition,
-    CursorSpec, CursorValue, DestinationCorrectionOperation, DestinationCorrectionPlan,
-    DestinationCorrectionRequest, PartitionId, PipelineId, PredicateId, PromotionId,
-    QueryableResource, ResidualCorrectionOperation, ResourceDescriptor, ResourceId, ResourceStream,
-    RowProvenanceAddress, ScanPredicate, ScanRequest, SchemaSnapshotReference, SchemaSource,
-    ScopeKey, SegmentId, SortDirection, SourcePosition, TrustLevel, with_source_name,
+    CHECKPOINT_STATE_VERSION, CanonicalArrowField, CheckpointId, ContractRef, CursorOrderingClaim,
+    CursorPosition, CursorSpec, CursorValue, DestinationCorrectionOperation,
+    DestinationCorrectionPlan, DestinationCorrectionRequest, PartitionId, PipelineId, PredicateId,
+    PromotionId, QueryableResource, ResidualCorrectionOperation, ResourceDescriptor, ResourceId,
+    ResourceStream, RowProvenanceAddress, ScanPredicate, ScanRequest, SchemaSnapshotReference,
+    SchemaSource, ScopeKey, SegmentId, SortDirection, SourcePosition, TrustLevel, with_source_name,
 };
 use cdf_package::{
-    PackageBuilder, PackageManifest, PackageReader, QuarantineObservedValue, QuarantineRecord,
+    DestinationCommitPlanPreimage, PackageBuilder, PackageManifest, PackageReader,
+    QuarantineObservedValue, QuarantineRecord, SegmentEntry, StateDeltaPreimage,
 };
+use cdf_runtime::DestinationRuntime;
 use cdf_source_postgres::{PostgresTableResource, discover_postgres_table_catalog_schema};
 use futures_util::StreamExt;
 use postgres::{Client, NoTls};
 use tempfile::TempDir;
 
 use super::*;
-use crate::{ddl::target_migrations, identifiers::quote_identifier_unchecked};
+use crate::{
+    commit::validate_session_begin_inputs, ddl::target_migrations,
+    identifiers::quote_identifier_unchecked,
+};
 
 #[test]
 #[ignore = "release-mode local PostgreSQL binary-vs-CSV COPY benchmark"]
@@ -380,10 +385,6 @@ fn residual_batch(rows: &[(i64, i64, Option<&str>)]) -> RecordBatch {
     RecordBatch::try_new(schema, vec![ids, Arc::new(StringArray::from(variants))]).unwrap()
 }
 
-fn residual_columns() -> Vec<PostgresColumn> {
-    postgres_columns_for_schema(residual_batch(&[(1, 1, None)]).schema().as_ref()).unwrap()
-}
-
 fn correction_existing_table_live() -> PostgresExistingTable {
     let mut columns = BTreeMap::new();
     for (name, data_type, nullable) in [
@@ -467,6 +468,11 @@ fn build_package(
     segments: Vec<(&str, RecordBatch)>,
 ) -> PackageManifest {
     let builder = PackageBuilder::create(root, package_id).unwrap();
+    if let Some((_, batch)) = segments.first() {
+        builder
+            .write_runtime_arrow_schema(batch.schema().as_ref())
+            .unwrap();
+    }
     for (segment_id, batch) in segments {
         builder
             .write_segment(SegmentId::new(segment_id).unwrap(), &[batch])
@@ -475,17 +481,88 @@ fn build_package(
     builder.finish().unwrap()
 }
 
+fn replay_merge_keys(disposition: &WriteDisposition) -> Vec<String> {
+    match disposition {
+        WriteDisposition::Merge | WriteDisposition::CdcApply => vec!["id".to_owned()],
+        WriteDisposition::Append | WriteDisposition::Replace => Vec::new(),
+    }
+}
+
+fn write_replay_artifacts(
+    builder: &PackageBuilder,
+    target: TargetName,
+    disposition: WriteDisposition,
+    checkpoint_id: &str,
+    entries: &[SegmentEntry],
+) {
+    let segments = entries
+        .iter()
+        .map(|entry| StateSegment {
+            segment_id: entry.segment_id.clone(),
+            scope: scope(),
+            output_position: position(10),
+            row_count: entry.row_count,
+            byte_count: entry.byte_count,
+        })
+        .collect::<Vec<_>>();
+    let state_delta = StateDeltaPreimage {
+        checkpoint_id: CheckpointId::new(checkpoint_id).unwrap(),
+        pipeline_id: PipelineId::new("pipe-live").unwrap(),
+        resource_id: ResourceId::new("orders").unwrap(),
+        scope: scope(),
+        state_version: CHECKPOINT_STATE_VERSION,
+        parent_checkpoint_id: None,
+        input_position: None,
+        output_position: position(10),
+        schema_hash: schema_hash(),
+        segments: segments.clone(),
+    };
+    let commit_plan = DestinationCommitPlanPreimage::package_hash_token(
+        target,
+        disposition.clone(),
+        replay_merge_keys(&disposition),
+        schema_hash(),
+        segments,
+    );
+    builder.write_input_checkpoint_artifact(&None).unwrap();
+    builder
+        .write_state_delta_preimage_artifact(&state_delta)
+        .unwrap();
+    builder
+        .write_commit_plan_preimage_artifact(&commit_plan)
+        .unwrap();
+}
+
+fn build_replay_package(
+    root: &Path,
+    package_id: &str,
+    target: TargetName,
+    disposition: WriteDisposition,
+    checkpoint_id: &str,
+    segments: Vec<(&str, RecordBatch)>,
+) -> PackageManifest {
+    let builder = PackageBuilder::create(root, package_id).unwrap();
+    if let Some((_, batch)) = segments.first() {
+        builder
+            .write_runtime_arrow_schema(batch.schema().as_ref())
+            .unwrap();
+    }
+    let entries = segments
+        .into_iter()
+        .map(|(segment_id, batch)| {
+            builder
+                .write_segment(SegmentId::new(segment_id).unwrap(), &[batch])
+                .unwrap()
+        })
+        .collect::<Vec<_>>();
+    write_replay_artifacts(&builder, target, disposition, checkpoint_id, &entries);
+    builder.finish().unwrap()
+}
+
 fn columns() -> Vec<PostgresColumn> {
     vec![
         PostgresColumn::new("id", "BIGINT", false).unwrap(),
         PostgresColumn::new("name", "TEXT", true).unwrap(),
-    ]
-}
-
-fn decimal_columns() -> Vec<PostgresColumn> {
-    vec![
-        PostgresColumn::new("id", "BIGINT", false).unwrap(),
-        PostgresColumn::new("amount", "NUMERIC(12,2)", true).unwrap(),
     ]
 }
 
@@ -603,6 +680,11 @@ fn load_input(
     state_delta: Option<StateDelta>,
     columns: Vec<PostgresColumn>,
 ) -> PostgresLoadPlanInput {
+    let merge_keys = replay_merge_keys(&disposition)
+        .into_iter()
+        .map(PostgresIdentifier::user)
+        .collect::<Result<Vec<_>>>()
+        .unwrap();
     PostgresLoadPlanInput {
         package_hash: PackageHash::new(manifest.package_hash.clone()).unwrap(),
         idempotency_token: IdempotencyToken::new(manifest.package_hash.clone()).unwrap(),
@@ -611,7 +693,7 @@ fn load_input(
         schema_hash: schema_hash(),
         segments: state_segments(manifest),
         columns,
-        merge_keys: vec![PostgresIdentifier::user("id").unwrap()],
+        merge_keys,
         dedup,
         existing_table: None,
         resource_id: Some(ResourceId::new("orders").unwrap()),
@@ -619,13 +701,13 @@ fn load_input(
     }
 }
 
-fn commit(env: &LivePostgres, package_dir: &Path, plan: PostgresLoadPlan) -> PostgresCommitOutcome {
-    env.destination()
-        .commit_package(PostgresCommitRequest {
-            package_dir: package_dir.to_path_buf(),
-            plan,
-        })
-        .unwrap()
+struct LiveCommitObservation {
+    receipt: Receipt,
+}
+
+fn commit(env: &LivePostgres, package_dir: &Path, table: &str) -> LiveCommitObservation {
+    let receipt = try_session_commit(env, package_dir, table, MergeDedupPolicy::Last).unwrap();
+    LiveCommitObservation { receipt }
 }
 
 fn commit_request(manifest: &PackageManifest, plan: &PostgresLoadPlan) -> DestinationCommitRequest {
@@ -634,37 +716,124 @@ fn commit_request(manifest: &PackageManifest, plan: &PostgresLoadPlan) -> Destin
         target: plan.kernel.target.clone(),
         disposition: plan.kernel.disposition.clone(),
         segments: state_segments(manifest),
-        idempotency_token: IdempotencyToken::new(manifest.package_hash.clone()).unwrap(),
+        idempotency_token: IdempotencyToken::new(
+            plan.verify.parameters["idempotency_token"].clone(),
+        )
+        .unwrap(),
     }
 }
 
-fn session_commit(
+fn try_session_commit(
     env: &LivePostgres,
     package_dir: &Path,
-    manifest: &PackageManifest,
-    plan: PostgresLoadPlan,
-) -> Receipt {
-    let request = commit_request(manifest, &plan);
-    let kernel_plan = plan.kernel.clone();
-    let destination = env
-        .destination()
-        .with_commit_request(PostgresCommitRequest {
-            package_dir: package_dir.to_path_buf(),
-            plan,
-        });
-    let mut session = destination.begin(request, kernel_plan).unwrap();
-    session.apply_migrations().unwrap();
-    let segments = PackageReader::open(package_dir)
-        .unwrap()
-        .read_commit_segments(&state_segments(manifest))
-        .unwrap();
-    for segment in segments {
-        let ack = session.write_segment(segment).unwrap();
+    table: &str,
+    dedup: MergeDedupPolicy,
+) -> Result<Receipt> {
+    let destination = env.destination();
+    let mut runtime = PostgresRuntime::for_replay(&destination, env.target(table), dedup, None);
+    let reader = PackageReader::open(package_dir)?;
+    let verified = reader.verify_for_consumption()?;
+    let inputs = reader.replay_inputs_verified(&verified)?;
+    let request = &inputs.destination_commit;
+    let manifest = reader.manifest();
+    let output_schema = reader.runtime_arrow_schema_verified(&verified)?;
+    let bulk_path = runtime.prepare_selected_bulk_path(
+        &cdf_runtime::BulkPathPreparationInput::new(output_schema.as_ref()).with_commit(request),
+    )?;
+    let mut prepared = match runtime.ingress() {
+        cdf_runtime::DestinationIngress::FinalizedPackage(ingress) => ingress
+            .prepare_package_commit(
+                package_dir,
+                &reader,
+                &inputs,
+                &cdf_runtime::DestinationPlanningContext::new(&verified, &bulk_path),
+            )?,
+        cdf_runtime::DestinationIngress::StagedSegments(_) => {
+            return Err(CdfError::internal(
+                "Postgres live runtime exposed staged ingress",
+            ));
+        }
+    };
+    prepared.validate_verified_inputs(&inputs)?;
+    let mut session = match runtime.ingress() {
+        cdf_runtime::DestinationIngress::FinalizedPackage(ingress) => {
+            ingress.begin_prepared_commit(&mut prepared)?
+        }
+        cdf_runtime::DestinationIngress::StagedSegments(_) => {
+            return Err(CdfError::internal(
+                "Postgres live runtime changed ingress category",
+            ));
+        }
+    };
+    session.apply_migrations()?;
+    let memory = Arc::new(cdf_memory::DeterministicMemoryCoordinator::new(
+        64 * 1024 * 1024,
+        BTreeMap::new(),
+    )?);
+    for segment in reader.verified_commit_segment_stream_with(
+        &verified,
+        &request.segments,
+        memory,
+        64 * 1024 * 1024,
+    )? {
+        let ack = session.write_segment(segment?.into_commit_segment()?)?;
         assert!(manifest.identity.segments.iter().any(|entry| {
             ack.segment_id == entry.segment_id && ack.row_count == entry.row_count
         }));
     }
-    session.finalize().unwrap()
+    let receipt = session.finalize()?;
+    let verification = runtime.protocol().verify(&receipt)?;
+    if !verification.verified {
+        return Err(CdfError::destination(verification.reason.unwrap_or_else(
+            || "Postgres live receipt verification failed".to_owned(),
+        )));
+    }
+    Ok(receipt)
+}
+
+fn try_low_level_session_commit(
+    env: &LivePostgres,
+    package_dir: &Path,
+    manifest: &PackageManifest,
+    plan: PostgresLoadPlan,
+) -> Result<Receipt> {
+    let request = commit_request(manifest, &plan);
+    let kernel_plan = plan.kernel.clone();
+    validate_session_begin_inputs(&request, &kernel_plan, &plan)?;
+    let destination = env.destination();
+    let reader = PackageReader::open(package_dir)?;
+    let verified = reader.verify_for_consumption()?;
+    let segments =
+        crate::package::expected_segments_for_session(&reader, &verified, &plan, &request)?;
+    let mut session = destination.begin_commit_session(PostgresCommitRequest {
+        package_dir: package_dir.to_path_buf(),
+        plan,
+        segments,
+    })?;
+    session.apply_migrations()?;
+    for segment in reader.read_commit_segments(&request.segments)? {
+        session.write_segment(segment)?;
+    }
+    Box::new(session).finalize()
+}
+
+fn try_correction_commit(
+    env: &LivePostgres,
+    package_dir: &Path,
+    request: DestinationCorrectionCommitRequest,
+    plan: PostgresCorrectionPlan,
+) -> Result<Receipt> {
+    let destination = env
+        .destination()
+        .with_correction_request(PostgresCorrectionCommitRequest {
+            package_dir: package_dir.to_path_buf(),
+            plan,
+        });
+    let generic_plan = destination.plan_correction(&request)?;
+    let mut session = destination.begin_correction(request, generic_plan)?;
+    session.apply_migrations()?;
+    session.apply_corrections()?;
+    session.finalize()
 }
 
 #[test]
@@ -956,41 +1125,45 @@ fn live_begin_session_returns_verifiable_receipt_and_preserves_duplicate_noop() 
         return;
     };
     let package_dir = tempfile::tempdir().unwrap();
-    let manifest = build_package(
+    let _manifest = build_replay_package(
         package_dir.path(),
         "pkg-live-session-append",
+        env.target("orders_session_append").target_name().unwrap(),
+        WriteDisposition::Append,
+        "chk-live-session-append",
         vec![("seg-000001", batch(&[(1, Some("ada")), (2, Some("grace"))]))],
     );
-    let plan = plan(
+    let receipt = try_session_commit(
         &env,
+        package_dir.path(),
         "orders_session_append",
-        &manifest,
-        WriteDisposition::Append,
         MergeDedupPolicy::Last,
-        Some(state_delta(&manifest, "chk-live-session-append")),
-    );
-
-    let receipt = session_commit(&env, package_dir.path(), &manifest, plan.clone());
+    )
+    .unwrap();
     assert_eq!(receipt.counts.rows_written, 2);
     assert!(env.destination().verify_receipt(&receipt).unwrap().verified);
-    assert_eq!(
+    assert!(
         cdf_package::PackageReader::open(package_dir.path())
             .unwrap()
             .receipts()
             .unwrap()
-            .len(),
-        1
+            .is_empty()
     );
 
-    let duplicate = session_commit(&env, package_dir.path(), &manifest, plan);
+    let duplicate = try_session_commit(
+        &env,
+        package_dir.path(),
+        "orders_session_append",
+        MergeDedupPolicy::Last,
+    )
+    .unwrap();
     assert_eq!(duplicate.receipt_id, receipt.receipt_id);
-    assert_eq!(
+    assert!(
         cdf_package::PackageReader::open(package_dir.path())
             .unwrap()
             .receipts()
             .unwrap()
-            .len(),
-        1
+            .is_empty()
     );
 
     let mut client = env.client();
@@ -1028,15 +1201,21 @@ fn live_begin_session_abort_rolls_back_system_migrations() {
     );
     let request = commit_request(&manifest, &plan);
     let kernel_plan = plan.kernel.clone();
-    let destination = env
-        .destination()
-        .with_commit_request(PostgresCommitRequest {
+    validate_session_begin_inputs(&request, &kernel_plan, &plan).unwrap();
+    let destination = env.destination();
+    let reader = PackageReader::open(package_dir.path()).unwrap();
+    let verified = reader.verify_for_consumption().unwrap();
+    let segments =
+        crate::package::expected_segments_for_session(&reader, &verified, &plan, &request).unwrap();
+    let mut session = destination
+        .begin_commit_session(PostgresCommitRequest {
             package_dir: package_dir.path().to_path_buf(),
             plan,
-        });
-    let mut session = destination.begin(request, kernel_plan).unwrap();
+            segments,
+        })
+        .unwrap();
     session.apply_migrations().unwrap();
-    session.abort().unwrap();
+    Box::new(session).abort().unwrap();
 
     let mut client = env.client();
     let loads_exists: bool = client
@@ -1108,29 +1287,18 @@ fn live_append_duplicate_receipt_verification_and_state_mirror() {
         return;
     };
     let package_dir = tempfile::tempdir().unwrap();
-    let manifest = build_package(
+    let manifest = build_replay_package(
         package_dir.path(),
         "pkg-live-append",
+        env.target("orders_append").target_name().unwrap(),
+        WriteDisposition::Append,
+        "chk-live-append",
         vec![
             ("seg-000001", batch(&[(1, Some("ada")), (2, Some("grace"))])),
             ("seg-000002", batch(&[(3, None)])),
         ],
     );
-    let mut first_input = load_input(
-        &env,
-        "orders_append",
-        &manifest,
-        WriteDisposition::Append,
-        MergeDedupPolicy::Last,
-        Some(state_delta(&manifest, "chk-live-append")),
-        columns(),
-    );
-    first_input.idempotency_token = IdempotencyToken::new("operator-append-token").unwrap();
-    let plan = env.destination().plan_load(first_input).unwrap();
-
-    let outcome = commit(&env, package_dir.path(), plan.clone());
-    assert!(!outcome.duplicate);
-    assert!(outcome.package_receipt_recorded);
+    let outcome = commit(&env, package_dir.path(), "orders_append");
     assert_eq!(outcome.receipt.counts.rows_written, 3);
     assert_eq!(outcome.receipt.segment_acks.len(), 2);
     assert_eq!(outcome.receipt.schema_hash, schema_hash());
@@ -1199,11 +1367,8 @@ fn live_append_duplicate_receipt_verification_and_state_mirror() {
         .get(0);
     assert_eq!(state_count, 1);
 
-    let duplicate = commit(&env, package_dir.path(), plan);
-    assert!(duplicate.duplicate);
-    assert!(!duplicate.package_receipt_recorded);
-    assert!(duplicate.package_receipt_error.is_none());
-    assert_eq!(duplicate.receipt.receipt_id, outcome.receipt.receipt_id);
+    let duplicate = commit(&env, package_dir.path(), "orders_append");
+    assert_eq!(duplicate.receipt, outcome.receipt);
     let target_count: i64 = client
         .query_one(
             &format!("SELECT COUNT(*)::bigint FROM {}", target.sql()),
@@ -1212,28 +1377,6 @@ fn live_append_duplicate_receipt_verification_and_state_mirror() {
         .unwrap()
         .get(0);
     assert_eq!(target_count, 3);
-
-    let mut different_token_input = load_input(
-        &env,
-        "orders_append",
-        &manifest,
-        WriteDisposition::Append,
-        MergeDedupPolicy::Last,
-        Some(state_delta(&manifest, "chk-live-append")),
-        columns(),
-    );
-    different_token_input.idempotency_token =
-        IdempotencyToken::new("token-different-but-same-package").unwrap();
-    let duplicate_with_different_token = commit(
-        &env,
-        package_dir.path(),
-        env.destination().plan_load(different_token_input).unwrap(),
-    );
-    assert!(duplicate_with_different_token.duplicate);
-    assert_eq!(
-        duplicate_with_different_token.receipt.receipt_id,
-        outcome.receipt.receipt_id
-    );
 }
 
 #[test]
@@ -1243,6 +1386,9 @@ fn live_append_populates_quarantine_mirror_when_sheet_supports_it() {
     };
     let package_dir = tempfile::tempdir().unwrap();
     let builder = PackageBuilder::create(package_dir.path(), "pkg-live-quarantine-mirror").unwrap();
+    builder
+        .write_runtime_arrow_schema(batch(&[(1, Some("ada"))]).schema().as_ref())
+        .unwrap();
     builder
         .write_quarantine_records(
             "part-000001.parquet",
@@ -1258,24 +1404,23 @@ fn live_append_populates_quarantine_mirror_when_sheet_supports_it() {
             }],
         )
         .unwrap();
-    builder
+    let segment = builder
         .write_segment(
             SegmentId::new("seg-000001").unwrap(),
             &[batch(&[(1, Some("ada"))])],
         )
         .unwrap();
-    let manifest = builder.finish().unwrap();
-    let plan = plan(
-        &env,
-        "orders_quarantine_mirror",
-        &manifest,
+    write_replay_artifacts(
+        &builder,
+        env.target("orders_quarantine_mirror")
+            .target_name()
+            .unwrap(),
         WriteDisposition::Append,
-        MergeDedupPolicy::Last,
-        Some(state_delta(&manifest, "chk-live-quarantine-mirror")),
+        "chk-live-quarantine-mirror",
+        &[segment],
     );
-
-    let outcome = commit(&env, package_dir.path(), plan);
-    assert!(!outcome.duplicate);
+    let manifest = builder.finish().unwrap();
+    commit(&env, package_dir.path(), "orders_quarantine_mirror");
     let mut client = env.client();
     let target = env.target("orders_quarantine_mirror");
     let row = client
@@ -1301,36 +1446,26 @@ fn live_replace_is_atomic_and_reports_deleted_rows() {
         return;
     };
     let first_dir = tempfile::tempdir().unwrap();
-    let first_manifest = build_package(
+    let _first_manifest = build_replay_package(
         first_dir.path(),
         "pkg-live-replace-first",
+        env.target("orders_replace").target_name().unwrap(),
+        WriteDisposition::Append,
+        "chk-live-replace-first",
         vec![("seg-000001", batch(&[(1, Some("ada")), (2, Some("grace"))]))],
     );
-    let first_plan = plan(
-        &env,
-        "orders_replace",
-        &first_manifest,
-        WriteDisposition::Append,
-        MergeDedupPolicy::Last,
-        None,
-    );
-    commit(&env, first_dir.path(), first_plan);
+    commit(&env, first_dir.path(), "orders_replace");
 
     let second_dir = tempfile::tempdir().unwrap();
-    let second_manifest = build_package(
+    let second_manifest = build_replay_package(
         second_dir.path(),
         "pkg-live-replace-second",
+        env.target("orders_replace").target_name().unwrap(),
+        WriteDisposition::Replace,
+        "chk-live-replace-second",
         vec![("seg-000001", batch(&[(3, Some("katherine"))]))],
     );
-    let replace_plan = plan(
-        &env,
-        "orders_replace",
-        &second_manifest,
-        WriteDisposition::Replace,
-        MergeDedupPolicy::Last,
-        None,
-    );
-    let outcome = commit(&env, second_dir.path(), replace_plan);
+    let outcome = commit(&env, second_dir.path(), "orders_replace");
     assert_eq!(outcome.receipt.counts.rows_written, 1);
     assert_eq!(outcome.receipt.counts.rows_inserted, Some(1));
     assert_eq!(outcome.receipt.counts.rows_deleted, Some(2));
@@ -1358,45 +1493,35 @@ fn live_merge_deduplicates_last_row_and_updates_existing_keys() {
         return;
     };
     let first_dir = tempfile::tempdir().unwrap();
-    let first_manifest = build_package(
+    let _first_manifest = build_replay_package(
         first_dir.path(),
         "pkg-live-merge-first",
+        env.target("orders_merge").target_name().unwrap(),
+        WriteDisposition::Merge,
+        "chk-live-merge-first",
         vec![
             ("seg-000001", batch(&[(1, Some("old")), (2, Some("two"))])),
             ("seg-000002", batch(&[(1, Some("new"))])),
         ],
     );
-    let first_plan = plan(
-        &env,
-        "orders_merge",
-        &first_manifest,
-        WriteDisposition::Merge,
-        MergeDedupPolicy::Last,
-        None,
-    );
-    let first = commit(&env, first_dir.path(), first_plan);
+    let first = commit(&env, first_dir.path(), "orders_merge");
     assert_eq!(first.receipt.counts.rows_written, 2);
     assert_eq!(first.receipt.counts.rows_inserted, Some(2));
     assert_eq!(first.receipt.counts.rows_updated, Some(0));
 
     let second_dir = tempfile::tempdir().unwrap();
-    let second_manifest = build_package(
+    let _second_manifest = build_replay_package(
         second_dir.path(),
         "pkg-live-merge-second",
+        env.target("orders_merge").target_name().unwrap(),
+        WriteDisposition::Merge,
+        "chk-live-merge-second",
         vec![(
             "seg-000001",
             batch(&[(1, Some("updated")), (3, Some("three"))]),
         )],
     );
-    let second_plan = plan(
-        &env,
-        "orders_merge",
-        &second_manifest,
-        WriteDisposition::Merge,
-        MergeDedupPolicy::Last,
-        None,
-    );
-    let second = commit(&env, second_dir.path(), second_plan);
+    let second = commit(&env, second_dir.path(), "orders_merge");
     assert_eq!(second.receipt.counts.rows_written, 2);
     assert_eq!(second.receipt.counts.rows_inserted, Some(1));
     assert_eq!(second.receipt.counts.rows_updated, Some(1));
@@ -1438,25 +1563,18 @@ fn live_decimal128_values_preserve_exact_numeric_text() {
         return;
     };
     let package_dir = tempfile::tempdir().unwrap();
-    let manifest = build_package(
+    let _manifest = build_replay_package(
         package_dir.path(),
         "pkg-live-decimal",
+        env.target("orders_decimal").target_name().unwrap(),
+        WriteDisposition::Append,
+        "chk-live-decimal",
         vec![(
             "seg-000001",
             decimal_batch(&[(1, Some(1234_i128)), (2, Some(-5_i128)), (3, None)]),
         )],
     );
-    let plan = plan_with_columns(
-        &env,
-        "orders_decimal",
-        &manifest,
-        WriteDisposition::Append,
-        MergeDedupPolicy::Last,
-        None,
-        decimal_columns(),
-    );
-
-    let outcome = commit(&env, package_dir.path(), plan);
+    let outcome = commit(&env, package_dir.path(), "orders_decimal");
     assert_eq!(outcome.receipt.counts.rows_written, 3);
 
     let mut client = env.client();
@@ -1481,73 +1599,6 @@ fn live_decimal128_values_preserve_exact_numeric_text() {
             (3, None),
         ]
     );
-}
-
-#[cfg(unix)]
-#[test]
-fn live_package_receipt_append_error_does_not_mask_committed_database_receipt() {
-    use std::os::unix::fs::PermissionsExt;
-
-    let Some(env) = LivePostgres::start() else {
-        return;
-    };
-    let package_dir = tempfile::tempdir().unwrap();
-    let manifest = build_package(
-        package_dir.path(),
-        "pkg-live-receipt-append-failure",
-        vec![("seg-000001", batch(&[(1, Some("ada"))]))],
-    );
-    let plan = plan(
-        &env,
-        "orders_receipt_append_failure",
-        &manifest,
-        WriteDisposition::Append,
-        MergeDedupPolicy::Last,
-        None,
-    );
-    let destination_dir = package_dir.path().join("destination");
-    let original_mode = std::fs::metadata(&destination_dir)
-        .unwrap()
-        .permissions()
-        .mode();
-    let mut readonly = std::fs::metadata(&destination_dir).unwrap().permissions();
-    readonly.set_mode(0o500);
-    std::fs::set_permissions(&destination_dir, readonly).unwrap();
-
-    let outcome = env
-        .destination()
-        .commit_package(PostgresCommitRequest {
-            package_dir: package_dir.path().to_path_buf(),
-            plan,
-        })
-        .unwrap();
-
-    let mut restored = std::fs::metadata(&destination_dir).unwrap().permissions();
-    restored.set_mode(original_mode);
-    std::fs::set_permissions(&destination_dir, restored).unwrap();
-
-    assert!(!outcome.duplicate);
-    assert!(!outcome.package_receipt_recorded);
-    assert!(outcome.package_receipt_error.is_some());
-    assert!(
-        env.destination()
-            .verify_receipt(&outcome.receipt)
-            .unwrap()
-            .verified
-    );
-
-    let mut client = env.client();
-    let target_count: i64 = client
-        .query_one(
-            &format!(
-                "SELECT COUNT(*)::bigint FROM {}",
-                env.target("orders_receipt_append_failure").sql()
-            ),
-            &[],
-        )
-        .unwrap()
-        .get(0);
-    assert_eq!(target_count, 1);
 }
 
 #[test]
@@ -1604,12 +1655,7 @@ fn live_rollback_after_stage_copy_leaves_no_target_or_mirror_partial_commit() {
     })
     .unwrap();
 
-    let error = env
-        .destination()
-        .commit_package(PostgresCommitRequest {
-            package_dir: package_dir.path().to_path_buf(),
-            plan: rollback_plan,
-        })
+    let error = try_low_level_session_commit(&env, package_dir.path(), &manifest, rollback_plan)
         .unwrap_err();
     assert!(!error.message.is_empty());
 
@@ -1643,24 +1689,18 @@ fn live_addressed_correction_updates_exact_rows_preserves_residuals_and_replays(
         return;
     };
     let original_dir = tempfile::tempdir().unwrap();
-    let original_manifest = build_package(
+    let original_manifest = build_replay_package(
         original_dir.path(),
         "pkg-live-correction-original",
+        env.target("orders_correction").target_name().unwrap(),
+        WriteDisposition::Append,
+        "chk-live-correction-original",
         vec![(
             "seg-000001",
             residual_batch(&[(1, 42, Some("keep")), (2, 84, None)]),
         )],
     );
-    let original_plan = plan_with_columns(
-        &env,
-        "orders_correction",
-        &original_manifest,
-        WriteDisposition::Append,
-        MergeDedupPolicy::Last,
-        None,
-        residual_columns(),
-    );
-    commit(&env, original_dir.path(), original_plan);
+    commit(&env, original_dir.path(), "orders_correction");
 
     let target = env.target("orders_correction");
     let original_hash = PackageHash::new(original_manifest.package_hash.clone()).unwrap();
@@ -1767,20 +1807,15 @@ fn live_addressed_correction_updates_exact_rows_preserves_residuals_and_replays(
         .unwrap();
     assert_eq!(after.residual_json_v1, Some(preserved.into_bytes()));
 
-    let replay = env
-        .destination()
-        .commit_corrections(request, commit_request)
-        .unwrap();
-    assert!(replay.duplicate);
-    assert_eq!(replay.receipt, receipt);
-    assert!(!replay.package_receipt_recorded);
-    assert_eq!(
+    let replay =
+        try_correction_commit(&env, correction_dir.path(), request, commit_request.plan).unwrap();
+    assert_eq!(replay, receipt);
+    assert!(
         PackageReader::open(correction_dir.path())
             .unwrap()
             .receipts()
             .unwrap()
-            .len(),
-        1
+            .is_empty()
     );
 }
 
@@ -1791,21 +1826,17 @@ fn live_correction_missing_duplicate_and_post_update_failures_roll_back() {
     };
 
     let original_dir = tempfile::tempdir().unwrap();
-    let original_manifest = build_package(
+    let original_manifest = build_replay_package(
         original_dir.path(),
         "pkg-live-correction-negative-original",
+        env.target("orders_correction_missing")
+            .target_name()
+            .unwrap(),
+        WriteDisposition::Append,
+        "chk-live-correction-negative-original",
         vec![("seg-000001", residual_batch(&[(1, 42, Some("keep"))]))],
     );
-    let original_plan = plan_with_columns(
-        &env,
-        "orders_correction_missing",
-        &original_manifest,
-        WriteDisposition::Append,
-        MergeDedupPolicy::Last,
-        None,
-        residual_columns(),
-    );
-    commit(&env, original_dir.path(), original_plan);
+    commit(&env, original_dir.path(), "orders_correction_missing");
     let target = env.target("orders_correction_missing");
     let original_hash = PackageHash::new(original_manifest.package_hash.clone()).unwrap();
     let original_address = RowProvenanceAddress::new(
@@ -1838,16 +1869,8 @@ fn live_correction_missing_duplicate_and_post_update_failures_roll_back() {
             existing_table: correction_existing_table_live(),
         })
         .unwrap();
-    let missing_error = env
-        .destination()
-        .commit_corrections(
-            missing_request,
-            PostgresCorrectionCommitRequest {
-                package_dir: missing_dir.path().to_path_buf(),
-                plan: missing_plan,
-            },
-        )
-        .unwrap_err();
+    let missing_error =
+        try_correction_commit(&env, missing_dir.path(), missing_request, missing_plan).unwrap_err();
     assert!(missing_error.to_string().contains("matched 0 row(s)"));
     assert!(!target_column_exists(
         &mut env.client(),
@@ -1913,16 +1936,13 @@ fn live_correction_missing_duplicate_and_post_update_failures_roll_back() {
             existing_table: correction_existing_table_live(),
         })
         .unwrap();
-    let duplicate_error = env
-        .destination()
-        .commit_corrections(
-            duplicate_request,
-            PostgresCorrectionCommitRequest {
-                package_dir: duplicate_dir.path().to_path_buf(),
-                plan: duplicate_plan,
-            },
-        )
-        .unwrap_err();
+    let duplicate_error = try_correction_commit(
+        &env,
+        duplicate_dir.path(),
+        duplicate_request,
+        duplicate_plan,
+    )
+    .unwrap_err();
     assert!(duplicate_error.to_string().contains("matched 2 row(s)"));
     assert!(!target_column_exists(
         &mut client,
@@ -1951,16 +1971,8 @@ fn live_correction_missing_duplicate_and_post_update_failures_roll_back() {
         .unwrap();
     fail_plan.verify.statement = "SELECT * FROM cdf_missing_correction_receipt".to_owned();
     let fail_hash = fail_request.correction_package_hash.clone();
-    let fail_error = env
-        .destination()
-        .commit_corrections(
-            fail_request,
-            PostgresCorrectionCommitRequest {
-                package_dir: fail_dir.path().to_path_buf(),
-                plan: fail_plan,
-            },
-        )
-        .unwrap_err();
+    let fail_error =
+        try_correction_commit(&env, fail_dir.path(), fail_request, fail_plan).unwrap_err();
     assert!(
         fail_error
             .to_string()

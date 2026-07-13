@@ -252,12 +252,6 @@ pub trait DestinationProtocol {
 
     fn plan_commit(&self, request: &DestinationCommitRequest) -> Result<CommitPlan>;
 
-    fn begin(
-        &self,
-        request: DestinationCommitRequest,
-        plan: CommitPlan,
-    ) -> Result<Box<dyn CommitSession + '_>>;
-
     fn verify(&self, receipt: &Receipt) -> Result<ReceiptVerification>;
 
     fn plan_correction(

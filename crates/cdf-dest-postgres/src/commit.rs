@@ -3,9 +3,7 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-use cdf_package::PackageReader;
 use postgres::{Client, NoTls, Row};
-use std::sync::Arc;
 
 use crate::{
     binary_copy::BinaryCopyEncoder, dml::*, package::*, rows::validate_schema_matches_plan,
@@ -21,7 +19,6 @@ impl PostgresDestination {
         Ok(Self {
             sheet: postgres_destination_sheet(),
             database_url: Some(database_url),
-            pending_commit: None,
             pending_correction: None,
             execution: None,
         })
@@ -31,32 +28,15 @@ impl PostgresDestination {
         self.database_url.as_deref()
     }
 
-    pub fn commit_package(&self, request: PostgresCommitRequest) -> Result<PostgresCommitOutcome> {
-        self.begin_commit_session(request, None)?.run_to_outcome()
-    }
-
     pub(crate) fn begin_commit_session(
         &self,
         request: PostgresCommitRequest,
-        commit_request: Option<DestinationCommitRequest>,
     ) -> Result<PostgresCommitSession> {
         let database_url = self.database_url.as_deref().ok_or_else(|| {
             CdfError::contract(
-                "PostgresDestination::commit_package requires PostgresDestination::connect",
+                "Postgres destination ingress requires a connected destination runtime",
             )
         })?;
-        let session_segments = expected_segments_for_session(
-            &request.package_dir,
-            &request.plan,
-            commit_request.as_ref(),
-        )?;
-        let memory = match &self.execution {
-            Some(execution) => execution.memory(),
-            None => Arc::new(cdf_memory::DeterministicMemoryCoordinator::new(
-                cdf_memory::DEFAULT_PROCESS_BUDGET_BYTES,
-                Default::default(),
-            )?) as Arc<dyn cdf_memory::MemoryCoordinator>,
-        };
         Ok(PostgresCommitSession {
             database_url: database_url.to_owned(),
             package_dir: request.package_dir,
@@ -65,10 +45,8 @@ impl PostgresDestination {
             phase: PostgresCommitSessionPhase::Begun,
             duplicate_receipt: None,
             receipt: None,
-            expected_segments: session_segments.expected,
-            expected_order: session_segments.order,
+            expected_segments: request.segments.expected,
             accepted_segments: BTreeSet::new(),
-            memory,
         })
     }
 
@@ -104,9 +82,7 @@ pub(crate) struct PostgresCommitSession {
     duplicate_receipt: Option<Receipt>,
     receipt: Option<Receipt>,
     expected_segments: BTreeMap<SegmentId, PostgresExpectedSegment>,
-    expected_order: Vec<SegmentId>,
     accepted_segments: BTreeSet<SegmentId>,
-    memory: Arc<dyn cdf_memory::MemoryCoordinator>,
 }
 
 pub(crate) struct ManagedPostgresCommitSession {
@@ -151,37 +127,7 @@ enum PostgresCommitSessionPhase {
 }
 
 impl PostgresCommitSession {
-    fn run_to_outcome(mut self) -> Result<PostgresCommitOutcome> {
-        self.apply_migrations()?;
-        let states = self
-            .expected_order
-            .iter()
-            .map(|segment_id| {
-                self.expected_segments
-                    .get(segment_id)
-                    .map(|expected| expected.state.clone())
-                    .ok_or_else(|| {
-                        CdfError::internal(format!(
-                            "Postgres expected segment {} is missing from session map",
-                            segment_id
-                        ))
-                    })
-            })
-            .collect::<Result<Vec<_>>>()?;
-        let reader = PackageReader::open(&self.package_dir)?;
-        let maximum_segment_bytes = self.memory.snapshot().budget_bytes.min(64 * 1024 * 1024);
-        let stream = reader.verified_commit_segment_stream(
-            &states,
-            Arc::clone(&self.memory),
-            maximum_segment_bytes,
-        )?;
-        for segment in stream {
-            self.write_segment(segment?.into_commit_segment()?)?;
-        }
-        self.finalize_outcome()
-    }
-
-    fn finalize_outcome(mut self) -> Result<PostgresCommitOutcome> {
+    fn finalize_receipt(mut self) -> Result<Receipt> {
         if self.phase != PostgresCommitSessionPhase::Written {
             return Err(CdfError::destination(format!(
                 "cannot finalize Postgres commit session before all segments are written: accepted {} of {}",
@@ -208,15 +154,7 @@ impl PostgresCommitSession {
             .batch_execute("COMMIT")
             .map_err(|error| postgres_error(context, error))?;
 
-        let (recorded, record_error) =
-            record_package_receipt_best_effort(&self.package_dir, &receipt);
-        Ok(PostgresCommitOutcome {
-            receipt,
-            duplicate,
-            plan: self.plan,
-            package_receipt_recorded: recorded,
-            package_receipt_error: record_error,
-        })
+        Ok(receipt)
     }
 
     fn rollback_open_transaction(&mut self) -> Result<()> {
@@ -353,7 +291,7 @@ impl CommitSession for PostgresCommitSession {
     }
 
     fn finalize(self: Box<Self>) -> Result<Receipt> {
-        Ok((*self).finalize_outcome()?.receipt)
+        (*self).finalize_receipt()
     }
 
     fn abort(mut self: Box<Self>) -> Result<()> {
@@ -375,9 +313,8 @@ impl CommitSession for ManagedPostgresCommitSession {
             .inner
             .take()
             .ok_or_else(|| CdfError::internal("managed Postgres session lost its inner state"))?;
-        self.execution.run_blocking("postgres.sync", move || {
-            inner.finalize_outcome().map(|outcome| outcome.receipt)
-        })
+        self.execution
+            .run_blocking("postgres.sync", move || inner.finalize_receipt())
     }
 
     fn abort(mut self: Box<Self>) -> Result<()> {
@@ -513,16 +450,6 @@ fn find_duplicate_receipt(client: &mut Client, plan: &PostgresLoadPlan) -> Resul
         serde_json::from_str(&json).map_err(json_error)
     })
     .transpose()
-}
-
-fn record_package_receipt_best_effort(
-    package_dir: &std::path::Path,
-    receipt: &Receipt,
-) -> (bool, Option<String>) {
-    match record_package_receipt_once(package_dir, receipt) {
-        Ok(recorded) => (recorded, None),
-        Err(error) => (false, Some(error.to_string())),
-    }
 }
 
 fn query_xid(client: &mut Client, plan: &PostgresLoadPlan) -> Result<String> {

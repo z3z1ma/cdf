@@ -18,6 +18,7 @@ use crate::{
 pub const STATE_INPUT_CHECKPOINT_FILE: &str = "state/input_checkpoint.json";
 pub const STATE_PROPOSED_DELTA_FILE: &str = "state/proposed_delta.json";
 pub const DESTINATION_COMMIT_PLAN_FILE: &str = "destination/commit_plan.json";
+pub const SCAN_PLAN_FILE: &str = "plan/scan.json";
 pub const DEDUP_SUMMARY_FILE: &str = "stats/dedup-summary.json";
 pub const PROCESSED_OBSERVATIONS_FILE: &str = "state/processed-observations.json";
 pub const PROCESSED_OBSERVATIONS_VERSION: u16 = 1;

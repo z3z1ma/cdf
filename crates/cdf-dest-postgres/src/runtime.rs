@@ -27,9 +27,11 @@ use crate::{
 
 pub struct PostgresRuntimeDriver;
 
+const POSTGRES_SCHEMES: &[&str] = &["postgres", "postgresql"];
+
 impl DestinationDriver for PostgresRuntimeDriver {
     fn schemes(&self) -> &'static [&'static str] {
-        &["postgres"]
+        POSTGRES_SCHEMES
     }
 
     fn inspect(
@@ -150,6 +152,10 @@ impl DestinationRuntime for PostgresRuntime {
         &self.destination
     }
 
+    fn ingress(&mut self) -> cdf_runtime::DestinationIngress<'_> {
+        cdf_runtime::DestinationIngress::FinalizedPackage(self)
+    }
+
     fn describe(&self) -> DestinationDescription {
         destination_description(&self.destination)
     }
@@ -230,45 +236,6 @@ impl DestinationRuntime for PostgresRuntime {
         ))
     }
 
-    fn prepare_package_commit(
-        &mut self,
-        package_dir: &Path,
-        reader: &PackageReader,
-        inputs: &PackageReplayInputs,
-        context: &DestinationPlanningContext<'_>,
-    ) -> Result<PreparedDestinationCommit> {
-        self.runtime_capabilities()
-            .validate_prepared_bulk_path(context.bulk_path)?;
-        let replay = self.replay.as_ref().ok_or_else(|| {
-            cdf_kernel::CdfError::internal("Postgres package replay requires planning inputs")
-        })?;
-        let load_input = load_plan_input_from_artifacts(
-            inputs,
-            replay.target.clone(),
-            replay.dedup.clone(),
-            replay.existing_table.clone(),
-            columns_from_package(reader)?,
-        )?;
-        let load_plan = self.destination.plan_load(load_input)?;
-        let request = PostgresCommitRequest {
-            package_dir: package_dir.to_path_buf(),
-            plan: load_plan.clone(),
-        };
-        Ok(PreparedDestinationCommit::new(
-            inputs.destination_commit.clone(),
-            load_plan.kernel,
-            context.bulk_path.clone(),
-            DestinationReceiptReportingPolicy::DestinationCommitReceiptOnly,
-        )
-        .with_pending_context(request))
-    }
-
-    fn bind_prepared_commit(&mut self, prepared: &mut PreparedDestinationCommit) -> Result<()> {
-        let request = prepared.take_pending_context::<PostgresCommitRequest>("Postgres")?;
-        self.destination = self.destination.clone().with_commit_request(request);
-        Ok(())
-    }
-
     fn prepare_correction_commit(
         &mut self,
         package_dir: &Path,
@@ -305,10 +272,71 @@ impl DestinationRuntime for PostgresRuntime {
     }
 }
 
+impl cdf_runtime::FinalizedPackageIngress for PostgresRuntime {
+    fn prepare_package_commit(
+        &mut self,
+        package_dir: &Path,
+        reader: &PackageReader,
+        inputs: &PackageReplayInputs,
+        context: &DestinationPlanningContext<'_>,
+    ) -> Result<PreparedDestinationCommit> {
+        self.runtime_capabilities()
+            .validate_prepared_bulk_path(context.bulk_path)?;
+        let replay = self.replay.as_ref().ok_or_else(|| {
+            cdf_kernel::CdfError::internal("Postgres package replay requires planning inputs")
+        })?;
+        let load_input = load_plan_input_from_artifacts(
+            inputs,
+            replay.target.clone(),
+            replay.dedup.clone(),
+            replay.existing_table.clone(),
+            columns_from_package(reader, context.verified_package)?,
+        )?;
+        let load_plan = self.destination.plan_load(load_input)?;
+        let segments = crate::package::expected_segments_for_session(
+            reader,
+            context.verified_package,
+            &load_plan,
+            &inputs.destination_commit,
+        )?;
+        let request = PostgresCommitRequest {
+            package_dir: package_dir.to_path_buf(),
+            plan: load_plan.clone(),
+            segments,
+        };
+        Ok(PreparedDestinationCommit::from_verified_inputs(
+            inputs,
+            load_plan.kernel,
+            context.bulk_path.clone(),
+            DestinationReceiptReportingPolicy::DestinationCommitReceiptOnly,
+        )?
+        .with_pending_context(request))
+    }
+
+    fn begin_prepared_commit(
+        &mut self,
+        prepared: &mut PreparedDestinationCommit,
+    ) -> Result<Box<dyn cdf_kernel::CommitSession + '_>> {
+        let request = prepared.take_pending_context::<PostgresCommitRequest>("Postgres")?;
+        crate::commit::validate_session_begin_inputs(
+            prepared.commit(),
+            prepared.plan(),
+            &request.plan,
+        )?;
+        let session = self.destination.begin_commit_session(request)?;
+        match self.destination.execution.clone() {
+            Some(execution) => Ok(Box::new(crate::commit::ManagedPostgresCommitSession::new(
+                session, execution,
+            ))),
+            None => Ok(Box::new(session)),
+        }
+    }
+}
+
 fn destination_description(destination: &PostgresDestination) -> DestinationDescription {
     DestinationDescription::new(
         destination.sheet().destination.clone(),
-        &["postgres"],
+        POSTGRES_SCHEMES,
         "postgres",
     )
 }
@@ -366,14 +394,17 @@ fn postgres_runtime_capabilities() -> DestinationRuntimeCapabilities {
 }
 
 fn validate_postgres_uri(uri: &str) -> Result<&str> {
-    let raw = uri.strip_prefix("postgres://").ok_or_else(|| {
+    let raw = uri
+        .strip_prefix("postgres://")
+        .or_else(|| uri.strip_prefix("postgresql://"))
+        .ok_or_else(|| {
         cdf_kernel::CdfError::contract(format!(
-            "destination URI `{uri}` is unsupported; expected postgres://..."
+            "destination URI `{uri}` is unsupported; expected postgres://... or postgresql://..."
         ))
     })?;
     if raw.trim().is_empty() {
         return Err(cdf_kernel::CdfError::contract(
-            "Postgres destination URI is malformed; expected postgres://database-url or postgres://secret://provider/key",
+            "Postgres destination URI is malformed; expected postgres://database-url, postgresql://database-url, or postgres://secret://provider/key",
         ));
     }
     Ok(raw)
@@ -448,7 +479,10 @@ pub fn validate_replay_target(target: &PostgresTarget, package_target: &TargetNa
     Ok(())
 }
 
-fn columns_from_package(reader: &PackageReader) -> Result<Vec<PostgresColumn>> {
-    let schema = reader.runtime_arrow_schema()?;
+fn columns_from_package(
+    reader: &PackageReader,
+    verified: &cdf_package::VerifiedPackage,
+) -> Result<Vec<PostgresColumn>> {
+    let schema = reader.runtime_arrow_schema_verified(verified)?;
     postgres_columns_for_schema(schema.as_ref())
 }

@@ -118,7 +118,27 @@ impl DestinationProtocol for MockDestination {
         })
     }
 
-    fn begin(
+    fn verify(
+        &self,
+        receipt: &cdf_kernel::Receipt,
+    ) -> cdf_kernel::Result<cdf_kernel::ReceiptVerification> {
+        let verified = self
+            .receipts
+            .lock()
+            .unwrap()
+            .get(receipt.idempotency_token.as_str())
+            == Some(receipt);
+        Ok(cdf_kernel::ReceiptVerification {
+            verified,
+            receipt_id: receipt.receipt_id.clone(),
+            reason: (!verified).then(|| "mock receipt is not durable".to_owned()),
+        })
+    }
+}
+
+#[cfg(test)]
+impl MockDestination {
+    pub(super) fn begin(
         &self,
         request: DestinationCommitRequest,
         plan: CommitPlan,
@@ -138,23 +158,6 @@ impl DestinationProtocol for MockDestination {
             prepared_path,
             acknowledgements: Vec::new(),
         }))
-    }
-
-    fn verify(
-        &self,
-        receipt: &cdf_kernel::Receipt,
-    ) -> cdf_kernel::Result<cdf_kernel::ReceiptVerification> {
-        let verified = self
-            .receipts
-            .lock()
-            .unwrap()
-            .get(receipt.idempotency_token.as_str())
-            == Some(receipt);
-        Ok(cdf_kernel::ReceiptVerification {
-            verified,
-            receipt_id: receipt.receipt_id.clone(),
-            reason: (!verified).then(|| "mock receipt is not durable".to_owned()),
-        })
     }
 }
 
@@ -552,7 +555,7 @@ mod tests {
     use std::panic::{AssertUnwindSafe, catch_unwind};
 
     use cdf_kernel::{
-        CdfError, CommitSession, ConcurrencyLimit, DestinationId, IdentifierRules, PlanId, Receipt,
+        CdfError, ConcurrencyLimit, DestinationId, IdentifierRules, PlanId, Receipt,
         ReceiptVerification, Result, TransactionSupport, TypeMapping,
     };
 
@@ -762,16 +765,6 @@ mod tests {
                 migrations,
                 delivery_guarantee,
             })
-        }
-
-        fn begin(
-            &self,
-            _request: DestinationCommitRequest,
-            _plan: CommitPlan,
-        ) -> Result<Box<dyn CommitSession + '_>> {
-            Err(CdfError::destination(
-                "faulty conformance destination does not execute commit sessions",
-            ))
         }
 
         fn verify(&self, receipt: &Receipt) -> Result<ReceiptVerification> {

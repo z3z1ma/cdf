@@ -32,23 +32,6 @@ impl Default for RunTelemetryConfig {
     }
 }
 
-pub struct PreparedPackageReplayRequest<'a, Store: CheckpointStore + ?Sized> {
-    pub package_dir: PathBuf,
-    pub destination: ResolvedProjectDestination,
-    pub checkpoint_store: &'a Store,
-    pub inputs: PackageReplayInputs,
-    pub after_receipt_verified: Option<ReceiptVerifiedHook<'a>>,
-}
-
-pub struct PreparedPackageRecoveryRequest<'a, Store: CheckpointStore + ?Sized> {
-    pub package_dir: PathBuf,
-    pub destination: ResolvedProjectDestination,
-    pub checkpoint_store: &'a Store,
-    pub inputs: PackageReplayInputs,
-    pub receipt: Receipt,
-    pub after_receipt_verified: Option<ReceiptVerifiedHook<'a>>,
-}
-
 pub struct PackageArtifactReplayRequest<'a, Store: CheckpointStore + ?Sized> {
     pub package_dir: PathBuf,
     pub destination: ResolvedProjectDestination,

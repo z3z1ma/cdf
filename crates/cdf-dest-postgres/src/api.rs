@@ -80,18 +80,10 @@ pub fn plan_postgres_load(
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct PostgresCommitRequest {
-    pub package_dir: PathBuf,
-    pub plan: PostgresLoadPlan,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct PostgresCommitOutcome {
-    pub receipt: Receipt,
-    pub duplicate: bool,
-    pub plan: PostgresLoadPlan,
-    pub package_receipt_recorded: bool,
-    pub package_receipt_error: Option<String>,
+pub(crate) struct PostgresCommitRequest {
+    pub(crate) package_dir: PathBuf,
+    pub(crate) plan: PostgresLoadPlan,
+    pub(crate) segments: crate::package::PostgresSessionSegments,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

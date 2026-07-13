@@ -498,7 +498,6 @@ pub fn live_replay_case(
         delta,
         target,
         disposition: WriteDisposition::Append,
-        merge_keys: Vec::new(),
     }
 }
 

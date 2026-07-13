@@ -18,7 +18,7 @@ pub(crate) type PackageReplayStageHook<'a> = &'a dyn Fn(PackageReplayStage<'_>) 
 
 pub(crate) struct ActiveStagedIngress {
     attempt_id: cdf_runtime::LoadAttemptId,
-    staging_plan_id: PlanId,
+    execution_plan_id: PlanId,
     schema_hash: SchemaHash,
     session: Option<Box<dyn cdf_runtime::StagedIngressSession>>,
     staged: Vec<cdf_runtime::StagedSegmentIdentity>,
@@ -31,7 +31,7 @@ pub(crate) struct ActiveStagedIngress {
 
 pub(crate) struct StagedIngressPlan {
     pub(crate) checkpoint_id: CheckpointId,
-    pub(crate) staging_plan_id: PlanId,
+    pub(crate) execution_plan_id: PlanId,
     pub(crate) target: TargetName,
     pub(crate) disposition: WriteDisposition,
     pub(crate) schema_hash: SchemaHash,
@@ -122,8 +122,8 @@ impl ActiveStagedIngress {
             preparation = preparation.with_execution(services.capabilities());
         }
         let bulk_path = runtime.prepare_selected_bulk_path(&preparation)?;
-        let attempt_id =
-            staging_attempt_id(&plan.checkpoint_id, &runtime.describe().destination_id)?;
+        let destination_id = runtime.describe().destination_id;
+        let attempt_id = staging_attempt_id(&plan.checkpoint_id, &destination_id)?;
         let scheduling = cdf_runtime::StagingSchedulingContext::new(
             capabilities
                 .max_in_flight_segments
@@ -132,20 +132,30 @@ impl ActiveStagedIngress {
                 .max_in_flight_bytes
                 .expect("validated staged byte bound"),
         )?;
-        let session = runtime.begin_staged_ingress(cdf_runtime::StagedIngressRequest {
-            attempt_id: attempt_id.clone(),
-            binding: cdf_runtime::StagingAttemptBinding {
-                destination_id: runtime.describe().destination_id,
-                target: plan.target,
-                disposition: plan.disposition,
-                schema_hash: plan.schema_hash.clone(),
-                plan_id: plan.staging_plan_id.clone(),
-            },
-            bulk_path: bulk_path.clone(),
-            scheduling: scheduling.clone(),
-            output_schema: plan.output_schema,
-            merge_keys: plan.merge_keys,
-        })?;
+        let cdf_runtime::DestinationIngress::StagedSegments(staged_runtime) = runtime.ingress()
+        else {
+            return Err(CdfError::contract(
+                "staged ingress plan reached a finalized destination runtime",
+            ));
+        };
+        let session =
+            staged_runtime.begin_staged_ingress(cdf_runtime::StagedIngressRequest::new(
+                attempt_id.clone(),
+                cdf_runtime::StagingAttemptBinding {
+                    destination_id,
+                    target: plan.target,
+                    disposition: plan.disposition,
+                    schema_hash: plan.schema_hash.clone(),
+                    output_arrow_schema_hash: cdf_contract::canonical_arrow_schema_hash(
+                        &plan.output_schema,
+                    )?,
+                    merge_keys: plan.merge_keys.clone(),
+                    execution_plan_id: plan.execution_plan_id.clone(),
+                },
+                bulk_path.clone(),
+                scheduling.clone(),
+                plan.output_schema,
+            )?)?;
         let execution = if capabilities.staged_ingress_lane.is_some()
             || capabilities.final_binding_lane.is_some()
         {
@@ -165,7 +175,7 @@ impl ActiveStagedIngress {
         };
         let mut active = Self {
             attempt_id,
-            staging_plan_id: plan.staging_plan_id,
+            execution_plan_id: plan.execution_plan_id,
             schema_hash: plan.schema_hash,
             session: Some(session),
             staged: Vec::new(),
@@ -354,7 +364,10 @@ impl ActiveStagedIngress {
         Ok(())
     }
 
-    fn bind_final(&mut self, binding: cdf_runtime::VerifiedFinalBinding) -> Result<Receipt> {
+    fn bind_final(
+        &mut self,
+        binding: cdf_runtime::VerifiedFinalBinding,
+    ) -> Result<cdf_runtime::DestinationCommitOutcome> {
         let session = self
             .session
             .take()
@@ -465,8 +478,7 @@ where
     Store: CheckpointStore + ?Sized,
 {
     let package = PackageReader::open(&request.package_dir)?.into_verified()?;
-    validate_package_compiled_expression_plan(&request.package_dir)?;
-    let inputs = package.replay_inputs()?;
+    validate_package_compiled_expression_plan(&package)?;
     let runtime_stage_hook =
         |stage: PackageReplayStage<'_>| notify_runtime_replay_stage(stage_hook, stage);
     replay_package_with_resolved_destination(
@@ -474,7 +486,6 @@ where
         request.package_dir,
         request.destination,
         request.checkpoint_store,
-        inputs,
         PackageReplayHooks {
             after_receipt_verified: request.after_receipt_verified,
             stage: Some(&runtime_stage_hook),
@@ -489,13 +500,11 @@ where
     Store: CheckpointStore + ?Sized,
 {
     let package = PackageReader::open(&request.package_dir)?.into_verified()?;
-    validate_package_compiled_expression_plan(&request.package_dir)?;
-    let inputs = package.replay_inputs()?;
+    validate_package_compiled_expression_plan(&package)?;
     recover_package_with_resolved_destination(
         package,
         request.destination,
         request.checkpoint_store,
-        inputs,
         request.receipt,
         PackageReplayHooks {
             after_receipt_verified: request.after_receipt_verified,
@@ -504,72 +513,10 @@ where
     )
 }
 
-pub fn replay_prepared_package<Store>(
-    request: PreparedPackageReplayRequest<'_, Store>,
-) -> Result<PackageReplayReport>
-where
-    Store: CheckpointStore + ?Sized,
-{
-    replay_prepared_package_with_stage_hook(request, None)
-}
-
-pub fn replay_prepared_package_with_stage_hook<Store>(
-    request: PreparedPackageReplayRequest<'_, Store>,
-    stage_hook: Option<RuntimeStageHook<'_>>,
-) -> Result<PackageReplayReport>
-where
-    Store: CheckpointStore + ?Sized,
-{
-    let package = PackageReader::open(&request.package_dir)?.into_verified()?;
-    validate_package_compiled_expression_plan(&request.package_dir)?;
-    let runtime_stage_hook =
-        |stage: PackageReplayStage<'_>| notify_runtime_replay_stage(stage_hook, stage);
-    replay_package_with_resolved_destination(
-        package,
-        request.package_dir,
-        request.destination,
-        request.checkpoint_store,
-        request.inputs,
-        PackageReplayHooks {
-            after_receipt_verified: request.after_receipt_verified,
-            stage: Some(&runtime_stage_hook),
-        },
-    )
-}
-
-pub fn recover_prepared_package<Store>(
-    request: PreparedPackageRecoveryRequest<'_, Store>,
-) -> Result<PackageReplayReport>
-where
-    Store: CheckpointStore + ?Sized,
-{
-    let package = PackageReader::open(&request.package_dir)?.into_verified()?;
-    validate_package_compiled_expression_plan(&request.package_dir)?;
-    recover_package_with_resolved_destination(
-        package,
-        request.destination,
-        request.checkpoint_store,
-        request.inputs,
-        request.receipt,
-        PackageReplayHooks {
-            after_receipt_verified: request.after_receipt_verified,
-            stage: None,
-        },
-    )
-}
-
-fn validate_package_compiled_expression_plan(package_dir: &Path) -> Result<()> {
-    let program_path = package_dir.join("plan/validation-program.json");
-    let program: cdf_contract::ValidationProgram =
-        serde_json::from_slice(&fs::read(&program_path).map_err(|error| {
-            CdfError::data(format!("read {}: {error}", program_path.display()))
-        })?)
-        .map_err(|error| {
-            CdfError::data(format!(
-                "decode compiled-expression validation program {}: {error}",
-                program_path.display()
-            ))
-        })?;
+fn validate_package_compiled_expression_plan(package: &VerifiedPackageReader) -> Result<()> {
+    let program: cdf_contract::ValidationProgram = package
+        .reader()
+        .verified_json_artifact(package.verification(), "plan/validation-program.json")?;
     let compiled = program.compiled_expression_plan.as_ref().ok_or_else(|| {
         CdfError::contract(
             "package validation program has no recorded compiled expression plan; rebuild the package",
@@ -577,17 +524,9 @@ fn validate_package_compiled_expression_plan(package_dir: &Path) -> Result<()> {
     })?;
     compiled.validate_program_binding(&program)?;
 
-    let scan_path = package_dir.join("plan/scan.json");
-    let scan: ScanPlan = serde_json::from_slice(
-        &fs::read(&scan_path)
-            .map_err(|error| CdfError::data(format!("read {}: {error}", scan_path.display())))?,
-    )
-    .map_err(|error| {
-        CdfError::data(format!(
-            "decode compiled-expression scan plan {}: {error}",
-            scan_path.display()
-        ))
-    })?;
+    let scan = package
+        .reader()
+        .recorded_scan_plan_verified(package.verification())?;
     compiled.validate_predicate_bindings(scan.request.filters.iter().map(|predicate| {
         (
             predicate.expression.as_str(),
@@ -618,12 +557,14 @@ fn replay_package_with_resolved_destination<Store>(
     package_dir: PathBuf,
     mut destination: ResolvedProjectDestination,
     checkpoint_store: &Store,
-    inputs: PackageReplayInputs,
     hooks: PackageReplayHooks<'_>,
 ) -> Result<PackageReplayReport>
 where
     Store: CheckpointStore + ?Sized,
 {
+    let inputs = package
+        .reader()
+        .replay_inputs_verified(package.verification())?;
     validate_resolved_destination_target(&destination, &inputs)?;
     let memory = default_replay_memory()?;
     replay_package_with_runtime(
@@ -631,7 +572,6 @@ where
         package_dir,
         destination.runtime_mut(),
         checkpoint_store,
-        inputs,
         memory,
         hooks,
     )
@@ -641,19 +581,20 @@ fn recover_package_with_resolved_destination<Store>(
     package: VerifiedPackageReader,
     mut destination: ResolvedProjectDestination,
     checkpoint_store: &Store,
-    inputs: PackageReplayInputs,
     receipt: Receipt,
     hooks: PackageReplayHooks<'_>,
 ) -> Result<PackageReplayReport>
 where
     Store: CheckpointStore + ?Sized,
 {
+    let inputs = package
+        .reader()
+        .replay_inputs_verified(package.verification())?;
     validate_resolved_destination_target(&destination, &inputs)?;
     recover_package_with_runtime(
         package,
         destination.runtime_mut(),
         checkpoint_store,
-        inputs,
         receipt,
         hooks,
     )
@@ -678,7 +619,6 @@ pub(crate) fn replay_package_with_runtime<Store>(
     package_dir: PathBuf,
     runtime: &mut dyn ProjectDestinationRuntime,
     checkpoint_store: &Store,
-    inputs: PackageReplayInputs,
     memory: Arc<dyn MemoryCoordinator>,
     hooks: PackageReplayHooks<'_>,
 ) -> Result<PackageReplayReport>
@@ -690,7 +630,6 @@ where
         package_dir,
         runtime,
         checkpoint_store,
-        inputs,
         memory,
         hooks,
         None,
@@ -703,7 +642,6 @@ pub(crate) fn replay_package_with_runtime_and_staged<Store>(
     package_dir: PathBuf,
     runtime: &mut dyn ProjectDestinationRuntime,
     checkpoint_store: &Store,
-    inputs: PackageReplayInputs,
     memory: Arc<dyn MemoryCoordinator>,
     hooks: PackageReplayHooks<'_>,
     active_staged: Option<ActiveStagedIngress>,
@@ -711,9 +649,22 @@ pub(crate) fn replay_package_with_runtime_and_staged<Store>(
 where
     Store: CheckpointStore + ?Sized,
 {
-    validate_package_replay_inputs(package.reader(), package.verification(), &inputs)?;
+    let inputs = package
+        .reader()
+        .replay_inputs_verified(package.verification())?;
+    validate_package_replay_inputs(package.reader(), &inputs)?;
     let capabilities = runtime.runtime_capabilities();
     capabilities.validate()?;
+    runtime.ensure_protocol_ready()?;
+    let implemented_ingress_mode = runtime.ingress().mode();
+    if capabilities.ingress_mode != implemented_ingress_mode {
+        return Err(CdfError::contract(format!(
+            "destination {} declares {:?} ingress but implements {:?}",
+            runtime.describe().destination_id,
+            capabilities.ingress_mode,
+            implemented_ingress_mode,
+        )));
+    }
     let output_schema = package
         .reader()
         .runtime_arrow_schema_verified(package.verification())?;
@@ -734,7 +685,7 @@ where
     notify_destination_replay_stage(&hooks, PackageReplayStage::PackageReplayVerified)?;
 
     let checkpoint_id = inputs.state_delta.checkpoint_id.clone();
-    checkpoint_store.propose(inputs.state_delta.clone())?;
+    propose_or_reuse_exact_checkpoint(checkpoint_store, &inputs.state_delta)?;
     if let Err(error) = notify_destination_replay_stage(
         &hooks,
         PackageReplayStage::CheckpointProposed {
@@ -750,9 +701,9 @@ where
     }
     notify_destination_replay_stage(&hooks, PackageReplayStage::DestinationWriteReady)?;
 
-    let (receipt, receipt_source) = match capabilities.ingress_mode {
+    let (receipt, receipt_policy) = match capabilities.ingress_mode {
         cdf_runtime::DestinationIngressMode::StagedDurableSegments => {
-            let receipt = match match active_staged {
+            let outcome = match match active_staged {
                 Some(active) => finalize_active_staged_ingress(
                     runtime,
                     package.reader(),
@@ -772,66 +723,58 @@ where
                     &hooks,
                 ),
             } {
-                Ok(receipt) => receipt,
+                Ok(outcome) => outcome,
                 Err(error) => {
                     let _ = checkpoint_store.abandon(&checkpoint_id);
                     return Err(error);
                 }
             };
-            let package_receipt_recorded = if package
-                .reader()
-                .receipts()?
-                .iter()
-                .any(|existing| existing.receipt_id == receipt.receipt_id)
-            {
-                false
-            } else {
-                package.reader().append_receipt(receipt.clone())?;
-                true
-            };
-            (
-                receipt,
-                ProjectReceiptSource::DestinationCommitReceiptOnly {
-                    package_receipt_recorded,
-                },
-            )
+            (outcome.receipt, outcome.reporting_policy)
         }
         cdf_runtime::DestinationIngressMode::FinalizedPackageOnly => {
-            let mut prepared = match runtime.prepare_package_commit(
-                &package_dir,
-                package.reader(),
-                &inputs,
-                &DestinationPlanningContext::new(package.verification(), &selected_bulk_path)
-                    .with_after_receipt_verified(hooks.after_receipt_verified),
-            ) {
+            let prepared_result = match runtime.ingress() {
+                cdf_runtime::DestinationIngress::FinalizedPackage(finalized) => finalized
+                    .prepare_package_commit(
+                        &package_dir,
+                        package.reader(),
+                        &inputs,
+                        &DestinationPlanningContext::new(
+                            package.verification(),
+                            &selected_bulk_path,
+                        ),
+                    ),
+                cdf_runtime::DestinationIngress::StagedSegments(_) => Err(CdfError::contract(
+                    "finalized package reached a staged destination runtime",
+                )),
+            };
+            let mut prepared = match prepared_result {
                 Ok(prepared) => prepared,
                 Err(error) => {
                     let _ = checkpoint_store.abandon(&checkpoint_id);
                     return Err(error);
                 }
             };
-            if prepared.bulk_path != selected_bulk_path {
+            if let Err(error) = prepared.validate_verified_inputs(&inputs) {
+                let _ = checkpoint_store.abandon(&checkpoint_id);
+                return Err(error);
+            }
+            if prepared.bulk_path() != &selected_bulk_path {
                 let _ = checkpoint_store.abandon(&checkpoint_id);
                 return Err(CdfError::contract(
                     "destination prepared a commit for a different bulk path than schema preflight selected",
                 ));
             }
-            if let Err(error) = capabilities.validate_prepared_bulk_path(&prepared.bulk_path) {
+            if let Err(error) = capabilities.validate_prepared_bulk_path(prepared.bulk_path()) {
                 let _ = checkpoint_store.abandon(&checkpoint_id);
                 return Err(error);
             }
-            let receipt_policy = prepared.reporting_policy.clone();
-            let receipts_before = package.reader().receipts()?.len();
-            if let Err(error) = runtime.bind_prepared_commit(&mut prepared) {
-                let _ = checkpoint_store.abandon(&checkpoint_id);
-                return Err(error);
-            }
+            let receipt_policy = prepared.reporting_policy().clone();
             if let Err(error) = notify_destination_replay_stage(
                 &hooks,
                 PackageReplayStage::DestinationCommitStarted {
-                    plan_id: &prepared.plan.plan_id,
-                    segment_count: prepared.commit.segments.len(),
-                    bulk_path: &prepared.bulk_path,
+                    plan_id: &prepared.plan().plan_id,
+                    segment_count: prepared.commit().segments.len(),
+                    bulk_path: prepared.bulk_path(),
                 },
             ) {
                 let _ = checkpoint_store.abandon(&checkpoint_id);
@@ -840,7 +783,7 @@ where
             let receipt = match commit_prepared_package_through_session(
                 runtime,
                 package.reader(),
-                &prepared,
+                &mut prepared,
                 memory,
                 &hooks,
                 package.verification(),
@@ -851,18 +794,25 @@ where
                     return Err(error);
                 }
             };
-            let package_receipt_recorded = package.reader().receipts()?.len() > receipts_before;
-            (
-                receipt,
-                super::destinations::project_receipt_source(
-                    receipt_policy,
-                    package_receipt_recorded,
-                ),
-            )
+            (receipt, receipt_policy)
         }
     };
 
-    verify_receipt_and_notify(runtime, &inputs, &receipt, &hooks)?;
+    if let Err(error) = verify_destination_receipt_before_checkpoint_with_runtime(
+        runtime,
+        &inputs.state_delta,
+        &inputs.destination_commit.target,
+        &inputs.destination_commit.disposition,
+        &receipt,
+    ) {
+        let _ = checkpoint_store.abandon(&checkpoint_id);
+        return Err(error);
+    }
+
+    let package_receipt_recorded = record_package_receipt_once(package.reader(), &receipt)?;
+    let receipt_source =
+        super::destinations::project_receipt_source(receipt_policy, package_receipt_recorded);
+    notify_verified_receipt(&receipt, &hooks)?;
 
     let checkpoint = checkpoint_store.commit(&inputs.state_delta.checkpoint_id, receipt.clone())?;
     let package_status =
@@ -874,6 +824,41 @@ where
         receipt_source,
         package_status,
     })
+}
+
+pub(crate) fn record_package_receipt_once(
+    reader: &PackageReader,
+    receipt: &Receipt,
+) -> Result<bool> {
+    let matching = reader
+        .receipts()?
+        .into_iter()
+        .filter(|existing| existing.receipt_id == receipt.receipt_id)
+        .collect::<Vec<_>>();
+    match matching.as_slice() {
+        [] => {
+            reader.append_receipt(receipt.clone())?;
+            Ok(true)
+        }
+        [existing] if logically_equivalent_receipts(existing, receipt) => Ok(false),
+        [..] => Err(CdfError::data(format!(
+            "package receipt id {} is already recorded with conflicting logical commit evidence",
+            receipt.receipt_id
+        ))),
+    }
+}
+
+fn logically_equivalent_receipts(left: &Receipt, right: &Receipt) -> bool {
+    left.receipt_id == right.receipt_id
+        && left.destination == right.destination
+        && left.target == right.target
+        && left.package_hash == right.package_hash
+        && left.segment_acks == right.segment_acks
+        && left.disposition == right.disposition
+        && left.idempotency_token == right.idempotency_token
+        && left.counts == right.counts
+        && left.schema_hash == right.schema_hash
+        && left.migrations == right.migrations
 }
 
 struct PackageStagedSegmentReader {
@@ -903,22 +888,27 @@ fn commit_package_through_staged_ingress(
     bulk_path: &cdf_runtime::PreparedBulkPath,
     memory: Arc<dyn MemoryCoordinator>,
     hooks: &PackageReplayHooks<'_>,
-) -> Result<Receipt> {
+) -> Result<cdf_runtime::DestinationCommitOutcome> {
     runtime.ensure_protocol_ready()?;
     let plan = runtime.protocol().plan_commit(&inputs.destination_commit)?;
     let destination_id = runtime.describe().destination_id;
     let attempt_id = staging_attempt_id(&inputs.state_delta.checkpoint_id, &destination_id)?;
-    let request = cdf_runtime::StagedIngressRequest {
-        attempt_id: attempt_id.clone(),
-        binding: cdf_runtime::StagingAttemptBinding {
+    let output_schema = reader.runtime_arrow_schema_verified(verified)?;
+    let request = cdf_runtime::StagedIngressRequest::new(
+        attempt_id.clone(),
+        cdf_runtime::StagingAttemptBinding {
             destination_id,
             target: inputs.destination_commit.target.clone(),
             disposition: inputs.destination_commit.disposition.clone(),
             schema_hash: inputs.schema_hash.clone(),
-            plan_id: plan.plan_id.clone(),
+            output_arrow_schema_hash: cdf_contract::canonical_arrow_schema_hash(
+                output_schema.as_ref(),
+            )?,
+            merge_keys: inputs.merge_keys.clone(),
+            execution_plan_id: reader.recorded_scan_plan_verified(verified)?.plan_id,
         },
-        bulk_path: bulk_path.clone(),
-        scheduling: cdf_runtime::StagingSchedulingContext::new(
+        bulk_path.clone(),
+        cdf_runtime::StagingSchedulingContext::new(
             capabilities
                 .max_in_flight_segments
                 .ok_or_else(|| CdfError::contract("staged ingress omitted its segment bound"))?,
@@ -926,13 +916,19 @@ fn commit_package_through_staged_ingress(
                 .max_in_flight_bytes
                 .ok_or_else(|| CdfError::contract("staged ingress omitted its byte bound"))?,
         )?,
-        output_schema: reader
-            .runtime_arrow_schema_verified(verified)?
-            .as_ref()
-            .clone(),
-        merge_keys: inputs.merge_keys.clone(),
+        output_schema.as_ref().clone(),
+    )?;
+    let session = match runtime.ingress() {
+        cdf_runtime::DestinationIngress::StagedSegments(staged) => {
+            staged.begin_staged_ingress(request)?
+        }
+        cdf_runtime::DestinationIngress::FinalizedPackage(_) => {
+            return Err(CdfError::contract(
+                "staged package commit reached a finalized destination runtime",
+            ));
+        }
     };
-    let mut session = Some(runtime.begin_staged_ingress(request)?);
+    let mut session = Some(session);
     let result = (|| {
         notify_destination_replay_stage(
             hooks,
@@ -999,13 +995,7 @@ fn commit_package_through_staged_ingress(
             ));
         }
         let binding = cdf_runtime::VerifiedFinalBinding::from_verified_package(
-            attempt_id,
-            reader,
-            verified,
-            inputs.destination_commit.target.clone(),
-            inputs.destination_commit.disposition.clone(),
-            inputs.schema_hash.clone(),
-            plan,
+            attempt_id, reader, verified, plan,
         )?;
         binding.validate_staged_identities(&staged)?;
         session
@@ -1028,7 +1018,7 @@ fn finalize_active_staged_ingress(
     inputs: &PackageReplayInputs,
     mut active: ActiveStagedIngress,
     hooks: &PackageReplayHooks<'_>,
-) -> Result<Receipt> {
+) -> Result<cdf_runtime::DestinationCommitOutcome> {
     let result = (|| {
         active.finish_background()?;
         runtime.ensure_protocol_ready()?;
@@ -1063,14 +1053,11 @@ fn finalize_active_staged_ingress(
             )?;
         }
         let binding =
-            cdf_runtime::VerifiedFinalBinding::from_verified_package_with_staging_authority(
+            cdf_runtime::VerifiedFinalBinding::from_verified_package_with_execution_authority(
                 active.attempt_id.clone(),
-                active.staging_plan_id.clone(),
+                active.execution_plan_id.clone(),
                 reader,
                 verified,
-                inputs.destination_commit.target.clone(),
-                inputs.destination_commit.disposition.clone(),
-                inputs.schema_hash.clone(),
                 plan,
             )?;
         binding.validate_staged_identities(&active.staged)?;
@@ -1094,15 +1081,25 @@ pub(crate) fn recover_package_with_runtime<Store>(
     mut package: VerifiedPackageReader,
     runtime: &mut dyn ProjectDestinationRuntime,
     checkpoint_store: &Store,
-    inputs: PackageReplayInputs,
     receipt: Receipt,
     hooks: PackageReplayHooks<'_>,
 ) -> Result<PackageReplayReport>
 where
     Store: CheckpointStore + ?Sized,
 {
-    validate_package_replay_inputs(package.reader(), package.verification(), &inputs)?;
-    verify_receipt_and_notify(runtime, &inputs, &receipt, &hooks)?;
+    let inputs = package
+        .reader()
+        .replay_inputs_verified(package.verification())?;
+    validate_package_replay_inputs(package.reader(), &inputs)?;
+    verify_destination_receipt_before_checkpoint_with_runtime(
+        runtime,
+        &inputs.state_delta,
+        &inputs.destination_commit.target,
+        &inputs.destination_commit.disposition,
+        &receipt,
+    )?;
+    record_package_receipt_once(package.reader(), &receipt)?;
+    notify_verified_receipt(&receipt, &hooks)?;
 
     let checkpoint = commit_or_reuse_committed_checkpoint(
         checkpoint_store,
@@ -1121,17 +1118,24 @@ where
 }
 
 fn commit_prepared_package_through_session(
-    runtime: &dyn ProjectDestinationRuntime,
+    runtime: &mut dyn ProjectDestinationRuntime,
     reader: &PackageReader,
-    prepared: &super::destinations::PreparedDestinationCommit,
+    prepared: &mut super::destinations::PreparedDestinationCommit,
     memory: Arc<dyn MemoryCoordinator>,
     hooks: &PackageReplayHooks<'_>,
     verified: &VerifiedPackage,
 ) -> Result<Receipt> {
     let capabilities = runtime.runtime_capabilities();
-    let mut session = runtime
-        .protocol()
-        .begin(prepared.commit.clone(), prepared.plan.clone())?;
+    let mut session = match runtime.ingress() {
+        cdf_runtime::DestinationIngress::FinalizedPackage(finalized) => {
+            finalized.begin_prepared_commit(prepared)?
+        }
+        cdf_runtime::DestinationIngress::StagedSegments(_) => {
+            return Err(CdfError::contract(
+                "finalized package commit reached a staged destination runtime",
+            ));
+        }
+    };
     if let Err(error) = session.apply_migrations() {
         let _ = session.abort();
         return Err(error);
@@ -1139,7 +1143,7 @@ fn commit_prepared_package_through_session(
     if let Err(error) = write_package_segments_to_session(
         session.as_mut(),
         reader,
-        &prepared.commit,
+        prepared.commit(),
         &capabilities,
         memory,
         hooks,
@@ -1151,19 +1155,7 @@ fn commit_prepared_package_through_session(
     session.finalize()
 }
 
-fn verify_receipt_and_notify(
-    runtime: &mut dyn ProjectDestinationRuntime,
-    inputs: &PackageReplayInputs,
-    receipt: &Receipt,
-    hooks: &PackageReplayHooks<'_>,
-) -> Result<()> {
-    verify_destination_receipt_before_checkpoint_with_runtime(
-        runtime,
-        &inputs.state_delta,
-        &inputs.destination_commit.target,
-        &inputs.destination_commit.disposition,
-        receipt,
-    )?;
+fn notify_verified_receipt(receipt: &Receipt, hooks: &PackageReplayHooks<'_>) -> Result<()> {
     notify_destination_replay_stage(
         hooks,
         PackageReplayStage::DestinationReceiptRecorded { receipt },
@@ -1286,10 +1278,8 @@ fn default_replay_memory() -> Result<Arc<dyn MemoryCoordinator>> {
 
 fn validate_package_replay_inputs(
     reader: &PackageReader,
-    verified: &VerifiedPackage,
     inputs: &PackageReplayInputs,
-) -> Result<ReplayView> {
-    reader.replay_inputs_verified(verified)?;
+) -> Result<cdf_package::ReplayView> {
     let replay = reader.replay_view()?;
     if replay.package_hash != inputs.state_delta.package_hash {
         return Err(CdfError::data(format!(
@@ -1397,6 +1387,43 @@ where
                 Ok(head)
             } else {
                 Err(error)
+            }
+        }
+    }
+}
+
+fn propose_or_reuse_exact_checkpoint<Store>(
+    checkpoint_store: &Store,
+    delta: &StateDelta,
+) -> Result<Checkpoint>
+where
+    Store: CheckpointStore + ?Sized,
+{
+    match checkpoint_store.propose(delta.clone()) {
+        Ok(checkpoint) => Ok(checkpoint),
+        Err(propose_error) => {
+            let existing = checkpoint_store
+                .history(&delta.pipeline_id, &delta.resource_id, &delta.scope)?
+                .into_iter()
+                .find(|checkpoint| checkpoint.delta.checkpoint_id == delta.checkpoint_id);
+            match existing {
+                Some(checkpoint)
+                    if checkpoint.status == CheckpointStatus::Proposed
+                        && !checkpoint.is_head
+                        && checkpoint.receipt.is_none()
+                        && checkpoint.delta == *delta =>
+                {
+                    Ok(checkpoint)
+                }
+                Some(checkpoint) => Err(CdfError::contract(format!(
+                    "checkpoint {} already exists but is not the exact reusable proposal: status={:?}, is_head={}, receipt_present={}, delta_matches={}",
+                    delta.checkpoint_id,
+                    checkpoint.status,
+                    checkpoint.is_head,
+                    checkpoint.receipt.is_some(),
+                    checkpoint.delta == *delta,
+                ))),
+                None => Err(propose_error),
             }
         }
     }

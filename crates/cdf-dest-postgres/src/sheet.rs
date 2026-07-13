@@ -1,5 +1,3 @@
-use crate::commit::ManagedPostgresCommitSession;
-use crate::commit::validate_session_begin_inputs;
 use crate::*;
 use crate::{api::*, ddl::*, validate::*};
 
@@ -8,8 +6,6 @@ pub struct PostgresDestination {
     pub(crate) sheet: PostgresDestinationSheet,
     #[serde(skip)]
     pub(crate) database_url: Option<String>,
-    #[serde(skip)]
-    pub(crate) pending_commit: Option<PostgresCommitRequest>,
     #[serde(skip)]
     pub(crate) pending_correction: Option<PostgresCorrectionCommitRequest>,
     #[serde(skip)]
@@ -20,7 +16,6 @@ impl PartialEq for PostgresDestination {
     fn eq(&self, other: &Self) -> bool {
         self.sheet == other.sheet
             && self.database_url == other.database_url
-            && self.pending_commit == other.pending_commit
             && self.pending_correction == other.pending_correction
     }
 }
@@ -32,7 +27,6 @@ impl Default for PostgresDestination {
         Self {
             sheet: postgres_destination_sheet(),
             database_url: None,
-            pending_commit: None,
             pending_correction: None,
             execution: None,
         }
@@ -60,12 +54,10 @@ impl PostgresDestination {
         plan_postgres_load(input, &self.sheet)
     }
 
-    pub fn with_commit_request(mut self, request: PostgresCommitRequest) -> Self {
-        self.pending_commit = Some(request);
-        self
-    }
-
-    pub fn with_correction_request(mut self, request: PostgresCorrectionCommitRequest) -> Self {
+    pub(crate) fn with_correction_request(
+        mut self,
+        request: PostgresCorrectionCommitRequest,
+    ) -> Self {
         self.pending_correction = Some(request);
         self
     }
@@ -95,26 +87,6 @@ impl DestinationProtocol for PostgresDestination {
             migrations: system_table_migrations(),
             delivery_guarantee: delivery_guarantee(&request.disposition),
         })
-    }
-
-    fn begin(
-        &self,
-        request: DestinationCommitRequest,
-        plan: CommitPlan,
-    ) -> Result<Box<dyn CommitSession + '_>> {
-        let pending = self.pending_commit.as_ref().ok_or_else(|| {
-            CdfError::contract(
-                "PostgresDestination::begin requires PostgresDestination::with_commit_request",
-            )
-        })?;
-        validate_session_begin_inputs(&request, &plan, &pending.plan)?;
-        let session = self.begin_commit_session(pending.clone(), Some(request))?;
-        match self.execution.clone() {
-            Some(execution) => Ok(Box::new(ManagedPostgresCommitSession::new(
-                session, execution,
-            ))),
-            None => Ok(Box::new(session)),
-        }
     }
 
     fn verify(&self, receipt: &Receipt) -> Result<ReceiptVerification> {

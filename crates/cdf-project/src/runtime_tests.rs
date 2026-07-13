@@ -43,9 +43,9 @@ use cdf_kernel::{
 };
 use cdf_package::{
     DESTINATION_COMMIT_PLAN_FILE, DestinationCommitPlanPreimage, MANIFEST_FILE, PackageBuilder,
-    PackageManifest, PackageReader, PackageReplayInputs, PackageStatus,
-    ProcessedObservationEvidenceArtifact, RECEIPTS_FILE, STATE_INPUT_CHECKPOINT_FILE,
-    STATE_PROPOSED_DELTA_FILE, StateDeltaPreimage, canonical_json_bytes,
+    PackageManifest, PackageReader, PackageStatus, ProcessedObservationEvidenceArtifact,
+    RECEIPTS_FILE, STATE_INPUT_CHECKPOINT_FILE, STATE_PROPOSED_DELTA_FILE, StateDeltaPreimage,
+    canonical_json_bytes,
 };
 use cdf_state_sqlite::{
     RunEventDetails, RunEventKind, RunEventValue, SecretReference, SqliteCheckpointStore,
@@ -63,16 +63,16 @@ use crate::{
     BackfillPlanRequest, DependencyTuple, DestinationReceiptReportingPolicy,
     FileManifestRunSummary, LocalFileDuckDbRunRequest, PackageArtifactRecoveryRequest,
     PackageArtifactReplayRequest, PackageReplayHooks, PackageReplayStage,
-    PreparedDestinationCommit, PreparedPackageRecoveryRequest, PreparedPackageReplayRequest,
-    ProjectDestinationDescription, ProjectDestinationDriver, ProjectDestinationRegistry,
-    ProjectDestinationRuntime, ProjectReceiptSource, ProjectResolutionContext, ProjectRunReport,
-    ProjectRunRequest, ProjectRunSource, ResolvedProjectDestination, RunTelemetryConfig,
-    RuntimeStage, TracingRunEventSink, backfill_pipeline_id,
-    generate_lockfile_with_destination_artifacts, parse_cdf_toml, plan_backfill,
-    recover_package_from_artifacts, recover_prepared_package, replay_package_from_artifacts,
-    replay_package_with_runtime, replay_prepared_package, replay_prepared_package_with_stage_hook,
+    PreparedDestinationCommit, ProjectDestinationDescription, ProjectDestinationDriver,
+    ProjectDestinationRegistry, ProjectDestinationRuntime, ProjectReceiptSource,
+    ProjectResolutionContext, ProjectRunReport, ProjectRunRequest, ProjectRunSource,
+    ResolvedProjectDestination, RunTelemetryConfig, RuntimeStage, TracingRunEventSink,
+    backfill_pipeline_id, generate_lockfile_with_destination_artifacts, parse_cdf_toml,
+    plan_backfill, recover_package_from_artifacts, replay_package_from_artifacts,
+    replay_package_from_artifacts_with_stage_hook, replay_package_with_runtime,
     resolve_project_run_destination, run_local_file_to_duckdb_checkpoint, run_project,
-    run_project_with_telemetry, runtime::state_delta_from_run,
+    run_project_with_telemetry,
+    runtime::{record_package_receipt_once, state_delta_from_run},
 };
 
 fn test_execution_services() -> cdf_runtime::ExecutionServices {
@@ -799,11 +799,45 @@ fn build_package(package_dir: &Path, package_id: &str, status: PackageStatus) ->
     build_package_with_expression_tuple(package_dir, package_id, status, false)
 }
 
+fn build_package_for_checkpoint(
+    package_dir: &Path,
+    package_id: &str,
+    status: PackageStatus,
+    checkpoint_id: &str,
+) -> PackageManifest {
+    build_package_with_options(
+        package_dir,
+        package_id,
+        status,
+        false,
+        WriteDisposition::Append,
+        checkpoint_id,
+    )
+}
+
 fn build_package_with_expression_tuple(
     package_dir: &Path,
     package_id: &str,
     status: PackageStatus,
     stale: bool,
+) -> PackageManifest {
+    build_package_with_options(
+        package_dir,
+        package_id,
+        status,
+        stale,
+        WriteDisposition::Append,
+        "checkpoint-artifact",
+    )
+}
+
+fn build_package_with_options(
+    package_dir: &Path,
+    package_id: &str,
+    status: PackageStatus,
+    stale: bool,
+    disposition: WriteDisposition,
+    checkpoint_id: &str,
 ) -> PackageManifest {
     let builder = PackageBuilder::create(package_dir, package_id).unwrap();
     builder.update_status(PackageStatus::Extracting).unwrap();
@@ -825,7 +859,7 @@ fn build_package_with_expression_tuple(
             )],
         )
         .unwrap();
-    write_state_commit_artifacts(&builder, &segment);
+    write_state_commit_artifacts(&builder, &segment, disposition, checkpoint_id);
     write_compiled_expression_artifacts(&builder, stale);
     builder.finish_with_status(status).unwrap()
 }
@@ -935,7 +969,12 @@ fn write_compiled_expression_artifacts(builder: &PackageBuilder, stale: bool) {
         .unwrap();
 }
 
-fn write_state_commit_artifacts(builder: &PackageBuilder, segment: &cdf_package::SegmentEntry) {
+fn write_state_commit_artifacts(
+    builder: &PackageBuilder,
+    segment: &cdf_package::SegmentEntry,
+    disposition: WriteDisposition,
+    checkpoint_id: &str,
+) {
     let scope = scope();
     let output_position = position(3);
     let segments = vec![StateSegment {
@@ -946,7 +985,7 @@ fn write_state_commit_artifacts(builder: &PackageBuilder, segment: &cdf_package:
         byte_count: segment.byte_count,
     }];
     let state_delta = StateDeltaPreimage {
-        checkpoint_id: CheckpointId::new("checkpoint-artifact").unwrap(),
+        checkpoint_id: CheckpointId::new(checkpoint_id).unwrap(),
         pipeline_id: PipelineId::new("pipeline-1").unwrap(),
         resource_id: ResourceId::new("orders").unwrap(),
         scope,
@@ -959,7 +998,7 @@ fn write_state_commit_artifacts(builder: &PackageBuilder, segment: &cdf_package:
     };
     let commit_plan = DestinationCommitPlanPreimage::package_hash_token(
         TargetName::new("orders").unwrap(),
-        WriteDisposition::Append,
+        disposition,
         Vec::new(),
         SchemaHash::new(SCHEMA_HASH).unwrap(),
         segments,
@@ -1028,21 +1067,6 @@ fn destination(path: &Path) -> DuckDbDestination {
     DuckDbDestination::new(path).unwrap()
 }
 
-fn replay_request<'a, Store: CheckpointStore + ?Sized>(
-    package_dir: &Path,
-    destination: &'a DuckDbDestination,
-    checkpoint_store: &'a Store,
-    delta: StateDelta,
-) -> PreparedPackageReplayRequest<'a, Store> {
-    PreparedPackageReplayRequest {
-        package_dir: package_dir.to_path_buf(),
-        destination: resolved_duckdb_destination(destination, TargetName::new("orders").unwrap()),
-        checkpoint_store,
-        inputs: replay_inputs_from_delta(delta, TargetName::new("orders").unwrap()),
-        after_receipt_verified: None,
-    }
-}
-
 fn artifact_replay_request<'a, Store: CheckpointStore + ?Sized>(
     package_dir: &Path,
     destination: &'a DuckDbDestination,
@@ -1060,32 +1084,14 @@ fn recovery_request<'a, Store: CheckpointStore + ?Sized>(
     package_dir: &Path,
     destination: &'a DuckDbDestination,
     checkpoint_store: &'a Store,
-    delta: StateDelta,
     receipt: Receipt,
-) -> PreparedPackageRecoveryRequest<'a, Store> {
-    PreparedPackageRecoveryRequest {
+) -> PackageArtifactRecoveryRequest<'a, Store> {
+    PackageArtifactRecoveryRequest {
         package_dir: package_dir.to_path_buf(),
         destination: resolved_duckdb_destination(destination, TargetName::new("orders").unwrap()),
         checkpoint_store,
-        inputs: replay_inputs_from_delta(delta, TargetName::new("orders").unwrap()),
         receipt,
         after_receipt_verified: None,
-    }
-}
-
-fn replay_inputs_from_delta(delta: StateDelta, target: TargetName) -> PackageReplayInputs {
-    PackageReplayInputs {
-        input_checkpoint: None,
-        destination_commit: DestinationCommitRequest {
-            package_hash: delta.package_hash.clone(),
-            target,
-            disposition: WriteDisposition::Append,
-            segments: delta.segments.clone(),
-            idempotency_token: IdempotencyToken::new(delta.package_hash.as_str()).unwrap(),
-        },
-        merge_keys: Vec::new(),
-        schema_hash: SchemaHash::new(SCHEMA_HASH).unwrap(),
-        state_delta: delta,
     }
 }
 
@@ -1168,20 +1174,6 @@ impl DestinationProtocol for MockDestination {
         })
     }
 
-    fn begin(
-        &self,
-        request: DestinationCommitRequest,
-        plan: CommitPlan,
-    ) -> Result<Box<dyn CommitSession + '_>> {
-        Ok(Box::new(MockCommitSession {
-            destination: self,
-            request,
-            plan,
-            migrations_applied: false,
-            acks: Vec::new(),
-        }))
-    }
-
     fn verify(&self, receipt: &Receipt) -> Result<ReceiptVerification> {
         let verified = self
             .receipts
@@ -1194,6 +1186,22 @@ impl DestinationProtocol for MockDestination {
             receipt_id: receipt.receipt_id.clone(),
             reason: (!verified).then(|| "mock receipt not recorded".to_owned()),
         })
+    }
+}
+
+impl MockDestination {
+    fn begin(
+        &self,
+        request: DestinationCommitRequest,
+        plan: CommitPlan,
+    ) -> Result<Box<dyn CommitSession + '_>> {
+        Ok(Box::new(MockCommitSession {
+            destination: self,
+            request,
+            plan,
+            migrations_applied: false,
+            acks: Vec::new(),
+        }))
     }
 }
 
@@ -1411,6 +1419,38 @@ struct MockProjectDestinationRuntime {
     counters: MockDestinationCounters,
 }
 
+fn mock_bulk_path(
+    path_id: &str,
+    ingress_mode: cdf_runtime::DestinationIngressMode,
+    writer_model: cdf_runtime::DestinationWriterModel,
+    blocking_lane: Option<&str>,
+) -> cdf_runtime::BulkPathDescriptor {
+    cdf_runtime::BulkPathDescriptor {
+        path_id: path_id.to_owned(),
+        version: 1,
+        ingress_mode,
+        writer_model,
+        ordering: cdf_runtime::BulkOrdering::ManifestOrder,
+        rows: cdf_runtime::BulkSizeRange {
+            minimum: 1,
+            preferred: 8_192,
+            maximum: 65_536,
+        },
+        bytes: cdf_runtime::BulkSizeRange {
+            minimum: 1,
+            preferred: 1024 * 1024,
+            maximum: 64 * 1024 * 1024,
+        },
+        max_useful_writers: 1,
+        blocking_lane: blocking_lane.map(str::to_owned),
+        native_internal_parallelism: 1,
+        external_staging: false,
+        fallback: cdf_runtime::BulkFallbackMode::Forbidden,
+        schema_preflight_version: "mock-v1".to_owned(),
+        measured_evidence_version: Some("mock-v1".to_owned()),
+    }
+}
+
 impl MockProjectDestinationRuntime {
     fn with_destination(destination: MockDestination, counters: MockDestinationCounters) -> Self {
         Self {
@@ -1425,6 +1465,10 @@ impl ProjectDestinationRuntime for MockProjectDestinationRuntime {
         &self.destination
     }
 
+    fn ingress(&mut self) -> cdf_runtime::DestinationIngress<'_> {
+        cdf_runtime::DestinationIngress::FinalizedPackage(self)
+    }
+
     fn describe(&self) -> ProjectDestinationDescription {
         ProjectDestinationDescription::new(
             self.destination.sheet.destination.clone(),
@@ -1434,10 +1478,19 @@ impl ProjectDestinationRuntime for MockProjectDestinationRuntime {
     }
 
     fn runtime_capabilities(&self) -> cdf_runtime::DestinationRuntimeCapabilities {
+        let path = mock_bulk_path(
+            "mock-finalized",
+            cdf_runtime::DestinationIngressMode::FinalizedPackageOnly,
+            cdf_runtime::DestinationWriterModel::SingleWriter,
+            None,
+        );
         cdf_runtime::DestinationRuntimeCapabilities {
             commit_payload_mode: cdf_runtime::DestinationCommitPayloadMode::SegmentStreaming,
             max_in_flight_segments: Some(1),
             max_in_flight_bytes: Some(64 * 1024 * 1024),
+            bulk_paths: vec![path],
+            bulk_path: Some("mock-finalized".to_owned()),
+            bulk_evidence_version: Some("mock-v1".to_owned()),
             ..Default::default()
         }
     }
@@ -1451,6 +1504,12 @@ impl ProjectDestinationRuntime for MockProjectDestinationRuntime {
         Ok(())
     }
 
+    fn secret_redaction(&self) -> Option<&str> {
+        Some("fourth-secret")
+    }
+}
+
+impl cdf_runtime::FinalizedPackageIngress for MockProjectDestinationRuntime {
     fn prepare_package_commit(
         &mut self,
         _package_dir: &Path,
@@ -1460,26 +1519,26 @@ impl ProjectDestinationRuntime for MockProjectDestinationRuntime {
     ) -> Result<PreparedDestinationCommit> {
         self.counters.prepares.fetch_add(1, Ordering::SeqCst);
         let plan = self.destination.plan_commit(&inputs.destination_commit)?;
-        Ok(PreparedDestinationCommit::new(
-            inputs.destination_commit.clone(),
+        PreparedDestinationCommit::from_verified_inputs(
+            inputs,
             plan,
             context.bulk_path.clone(),
             DestinationReceiptReportingPolicy::DestinationCommit { duplicate: false },
-        ))
+        )
     }
 
-    fn bind_prepared_commit(&mut self, prepared: &mut PreparedDestinationCommit) -> Result<()> {
+    fn begin_prepared_commit(
+        &mut self,
+        prepared: &mut PreparedDestinationCommit,
+    ) -> Result<Box<dyn CommitSession + '_>> {
         if prepared.has_pending_context() {
             return Err(CdfError::internal(
                 "mock destination received unexpected pending context",
             ));
         }
         self.counters.binds.fetch_add(1, Ordering::SeqCst);
-        Ok(())
-    }
-
-    fn secret_redaction(&self) -> Option<&str> {
-        Some("fourth-secret")
+        self.destination
+            .begin(prepared.commit().clone(), prepared.plan().clone())
     }
 }
 
@@ -1494,6 +1553,10 @@ impl ProjectDestinationRuntime for MockStagedProjectRuntime {
         &self.destination
     }
 
+    fn ingress(&mut self) -> cdf_runtime::DestinationIngress<'_> {
+        cdf_runtime::DestinationIngress::StagedSegments(self)
+    }
+
     fn describe(&self) -> ProjectDestinationDescription {
         ProjectDestinationDescription::new(
             self.destination.sheet.destination.clone(),
@@ -1503,6 +1566,12 @@ impl ProjectDestinationRuntime for MockStagedProjectRuntime {
     }
 
     fn runtime_capabilities(&self) -> cdf_runtime::DestinationRuntimeCapabilities {
+        let path = mock_bulk_path(
+            "mock-staged",
+            cdf_runtime::DestinationIngressMode::StagedDurableSegments,
+            cdf_runtime::DestinationWriterModel::SingleWriter,
+            Some("mock.staged"),
+        );
         cdf_runtime::DestinationRuntimeCapabilities {
             blocking_lanes: vec![cdf_runtime::BlockingLaneSpec {
                 lane_id: "mock.staged".to_owned(),
@@ -1525,10 +1594,15 @@ impl ProjectDestinationRuntime for MockStagedProjectRuntime {
             commit_payload_mode: cdf_runtime::DestinationCommitPayloadMode::SegmentStreaming,
             max_in_flight_segments: Some(1),
             max_in_flight_bytes: Some(self.max_in_flight_bytes),
+            bulk_paths: vec![path],
+            bulk_path: Some("mock-staged".to_owned()),
+            bulk_evidence_version: Some("mock-v1".to_owned()),
             ..Default::default()
         }
     }
+}
 
+impl cdf_runtime::StagedSegmentIngress for MockStagedProjectRuntime {
     fn begin_staged_ingress(
         &mut self,
         request: cdf_runtime::StagedIngressRequest,
@@ -1541,22 +1615,11 @@ impl ProjectDestinationRuntime for MockStagedProjectRuntime {
         }))
     }
 
-    fn prepare_package_commit(
+    fn inspect_staged_ingress(
         &mut self,
-        _package_dir: &Path,
-        _reader: &PackageReader,
-        _inputs: &PackageReplayInputs,
-        _context: &crate::DestinationPlanningContext<'_>,
-    ) -> Result<PreparedDestinationCommit> {
-        Err(CdfError::internal(
-            "staged integration must not prepare a finalized-only commit",
-        ))
-    }
-
-    fn bind_prepared_commit(&mut self, _prepared: &mut PreparedDestinationCommit) -> Result<()> {
-        Err(CdfError::internal(
-            "staged integration must bind through its staged session",
-        ))
+        _attempt_id: &cdf_runtime::LoadAttemptId,
+    ) -> Result<Option<cdf_runtime::StagingSnapshot>> {
+        Ok(None)
     }
 }
 
@@ -1596,7 +1659,7 @@ impl cdf_runtime::StagedIngressSession for MockProjectStagedSession {
             .push(segment.identity.segment_id.clone());
         self.accepted.push(segment.identity.clone());
         Ok(cdf_runtime::StagedSegmentAck {
-            attempt_id: self.request.attempt_id.clone(),
+            attempt_id: self.request.attempt_id().clone(),
             identity: segment.identity,
             external_durable: true,
         })
@@ -1604,15 +1667,18 @@ impl cdf_runtime::StagedIngressSession for MockProjectStagedSession {
 
     fn snapshot(&self) -> Result<cdf_runtime::StagingSnapshot> {
         Ok(cdf_runtime::StagingSnapshot {
-            attempt_id: self.request.attempt_id.clone(),
-            binding: self.request.binding.clone(),
+            attempt_id: self.request.attempt_id().clone(),
+            binding: self.request.binding().clone(),
             recovery: cdf_runtime::StagingRecoveryMode::RollbackRedrive,
             accepted_segments: self.accepted.clone(),
         })
     }
 
-    fn bind_final(self: Box<Self>, binding: cdf_runtime::VerifiedFinalBinding) -> Result<Receipt> {
-        if binding.staging_plan_id() != &self.request.binding.plan_id {
+    fn bind_final(
+        self: Box<Self>,
+        binding: cdf_runtime::VerifiedFinalBinding,
+    ) -> Result<cdf_runtime::DestinationCommitOutcome> {
+        if binding.execution_plan_id() != &self.request.binding().execution_plan_id {
             return Err(CdfError::destination(
                 "mock staged final binding changed plan authority",
             ));
@@ -1659,7 +1725,10 @@ impl cdf_runtime::StagedIngressSession for MockProjectStagedSession {
             .lock()
             .unwrap()
             .push(receipt.clone());
-        Ok(receipt)
+        Ok(cdf_runtime::DestinationCommitOutcome::new(
+            receipt,
+            cdf_runtime::DestinationReceiptReportingPolicy::DestinationCommitReceiptOnly,
+        ))
     }
 
     fn abort(self: Box<Self>) -> Result<()> {
@@ -1873,7 +1942,7 @@ fn sql_runtime_resource(table: &str) -> cdf_declarative::CompiledResource {
         .remove(0)
 }
 
-fn live_plan(resource: &cdf_declarative::CompiledResource, package_id: &str) -> EnginePlan {
+fn live_plan(resource: &dyn QueryableResource, package_id: &str) -> EnginePlan {
     let destination = ResolvedProjectDestination::duckdb(
         "/tmp/cdf-plan-policy-only.duckdb",
         TargetName::new("events").unwrap(),
@@ -1882,7 +1951,7 @@ fn live_plan(resource: &cdf_declarative::CompiledResource, package_id: &str) -> 
     let identifier_policy = destination.column_identifier_policy().unwrap().unwrap();
     let mut policy = ContractPolicy::for_trust(resource.descriptor().trust_level.clone());
     policy.normalization.identifier = identifier_policy;
-    live_plan_with_policy(resource, package_id, &policy)
+    live_plan_for_queryable_with_exact_policy(resource, package_id, &policy)
 }
 
 fn live_plan_for_queryable(resource: &dyn QueryableResource, package_id: &str) -> EnginePlan {
@@ -1895,6 +1964,36 @@ fn live_plan_for_queryable(resource: &dyn QueryableResource, package_id: &str) -
     policy.normalization.identifier = destination.column_identifier_policy().unwrap().unwrap();
     let validation_program = compile_validation_program(
         &policy,
+        &ObservedSchema::from_arrow(resource.schema().as_ref()),
+    )
+    .unwrap();
+    Planner::new()
+        .plan_tier_b(
+            resource,
+            EnginePlanInput {
+                request: ScanRequest {
+                    resource_id: resource.descriptor().resource_id.clone(),
+                    projection: None,
+                    filters: Vec::new(),
+                    limit: None,
+                    order_by: Vec::new(),
+                    scope: resource.descriptor().state_scope.clone(),
+                },
+                validation_program,
+                boundedness: PlanBoundedness::Bounded,
+                package_id: package_id.to_owned(),
+            },
+        )
+        .unwrap()
+}
+
+fn live_plan_for_queryable_with_exact_policy(
+    resource: &dyn QueryableResource,
+    package_id: &str,
+    policy: &ContractPolicy,
+) -> EnginePlan {
+    let validation_program = compile_validation_program(
+        policy,
         &ObservedSchema::from_arrow(resource.schema().as_ref()),
     )
     .unwrap();
@@ -1941,7 +2040,7 @@ fn default_live_plan(resource: &cdf_declarative::CompiledResource, package_id: &
 }
 
 fn live_plan_with_policy(
-    resource: &cdf_declarative::CompiledResource,
+    resource: &dyn QueryableResource,
     package_id: &str,
     policy: &ContractPolicy,
 ) -> EnginePlan {
@@ -1952,35 +2051,15 @@ fn live_plan_with_policy(
     .unwrap();
     let mut policy = policy.clone();
     policy.normalization.identifier = destination.column_identifier_policy().unwrap().unwrap();
-    live_plan_with_exact_policy(resource, package_id, &policy)
+    live_plan_for_queryable_with_exact_policy(resource, package_id, &policy)
 }
 
 fn live_plan_with_exact_policy(
-    resource: &cdf_declarative::CompiledResource,
+    resource: &dyn QueryableResource,
     package_id: &str,
     policy: &ContractPolicy,
 ) -> EnginePlan {
-    let validation_program = compile_validation_program(
-        policy,
-        &ObservedSchema::from_arrow(resource.schema().as_ref()),
-    )
-    .unwrap();
-    plan_compiled_tier_b(
-        resource,
-        EnginePlanInput {
-            request: ScanRequest {
-                resource_id: resource.descriptor().resource_id.clone(),
-                projection: None,
-                filters: Vec::new(),
-                limit: None,
-                order_by: Vec::new(),
-                scope: resource.descriptor().state_scope.clone(),
-            },
-            validation_program,
-            boundedness: PlanBoundedness::Bounded,
-            package_id: package_id.to_owned(),
-        },
-    )
+    live_plan_for_queryable_with_exact_policy(resource, package_id, policy)
 }
 
 fn state_delta_request<'a>(
@@ -2134,7 +2213,7 @@ fn destination_planning_facade_rejects_parquet_merge_without_writes() {
 }
 
 fn project_run_request<'a>(
-    resource: &'a cdf_declarative::CompiledResource,
+    resource: &'a dyn QueryableResource,
     package_id: &str,
     package_root: &Path,
     duckdb_path: &Path,
@@ -2142,8 +2221,8 @@ fn project_run_request<'a>(
     run_id: &str,
 ) -> ProjectRunRequest<'a> {
     ProjectRunRequest {
-        resource: ProjectRunSource::local_file(resource),
-        plan: live_plan(resource, package_id),
+        resource: ProjectRunSource::new(resource),
+        plan: live_plan_for_queryable(resource, package_id),
         package_root: package_root.to_path_buf(),
         state_store_path: state_path.to_path_buf(),
         pipeline_id: PipelineId::new("pipeline-live").unwrap(),
@@ -2161,7 +2240,7 @@ fn project_run_request<'a>(
 }
 
 fn project_run_request_with_policy<'a>(
-    resource: &'a cdf_declarative::CompiledResource,
+    resource: &'a dyn QueryableResource,
     package_id: &str,
     package_root: &Path,
     duckdb_path: &Path,
@@ -2227,7 +2306,7 @@ fn single_segment_manifest_path(report: &ProjectRunReport) -> String {
 }
 
 fn parquet_project_run_request<'a>(
-    resource: &'a cdf_declarative::CompiledResource,
+    resource: &'a dyn QueryableResource,
     package_id: &str,
     package_root: &Path,
     parquet_root: &Path,
@@ -2243,8 +2322,8 @@ fn parquet_project_run_request<'a>(
     let mut policy = ContractPolicy::for_trust(resource.descriptor().trust_level.clone());
     policy.normalization.identifier = identifier_policy;
     ProjectRunRequest {
-        resource: ProjectRunSource::local_file(resource),
-        plan: live_plan_with_exact_policy(resource, package_id, &policy),
+        resource: ProjectRunSource::new(resource),
+        plan: live_plan_for_queryable_with_exact_policy(resource, package_id, &policy),
         package_root: package_root.to_path_buf(),
         state_store_path: state_path.to_path_buf(),
         pipeline_id: PipelineId::new("pipeline-live").unwrap(),
@@ -2258,7 +2337,7 @@ fn parquet_project_run_request<'a>(
 }
 
 fn postgres_project_run_request<'a>(
-    resource: &'a cdf_declarative::CompiledResource,
+    resource: &'a dyn QueryableResource,
     package_id: &str,
     package_root: &Path,
     database_url: &str,
@@ -2277,8 +2356,8 @@ fn postgres_project_run_request<'a>(
     let mut policy = ContractPolicy::for_trust(resource.descriptor().trust_level.clone());
     policy.normalization.identifier = identifier_policy;
     ProjectRunRequest {
-        resource: ProjectRunSource::local_file(resource),
-        plan: live_plan_with_exact_policy(resource, package_id, &policy),
+        resource: ProjectRunSource::new(resource),
+        plan: live_plan_for_queryable_with_exact_policy(resource, package_id, &policy),
         package_root: package_root.to_path_buf(),
         state_store_path: state_path.to_path_buf(),
         pipeline_id: PipelineId::new("pipeline-live").unwrap(),
@@ -2554,17 +2633,18 @@ fn stage_successful_replay(
     db_path: &Path,
     checkpoint_id: &str,
 ) -> (DuckDbDestination, StateDelta, Receipt) {
-    let manifest = build_package(package_dir, "pkg-stage", PackageStatus::Packaged);
+    let manifest = build_package_for_checkpoint(
+        package_dir,
+        "pkg-stage",
+        PackageStatus::Packaged,
+        checkpoint_id,
+    );
     let delta = delta(&manifest, checkpoint_id);
     let destination = destination(db_path);
     let store = SqliteCheckpointStore::open_in_memory().unwrap();
-    let report = replay_prepared_package(replay_request(
-        package_dir,
-        &destination,
-        &store,
-        delta.clone(),
-    ))
-    .unwrap();
+    let report =
+        replay_package_from_artifacts(artifact_replay_request(package_dir, &destination, &store))
+            .unwrap();
     (destination, delta, report.receipt)
 }
 
@@ -2590,11 +2670,10 @@ fn assert_bad_reuse_head_rejected(
     mutate_head(&mut head);
     let store = HeadOnlyCommitFailingStore { head };
 
-    let error = recover_prepared_package(recovery_request(
+    let error = recover_package_from_artifacts(recovery_request(
         &package_dir,
         &destination,
         &store,
-        delta,
         receipt,
     ))
     .unwrap_err();
@@ -3443,7 +3522,9 @@ fn trust_ring_clean_stable_runs_gate_sampled_fast_path_promotion() {
 #[test]
 fn trust_ring_schema_drift_demotes_sampled_fast_path() {
     let temp = tempfile::tempdir().unwrap();
-    let resource = simple_file_resource(temp.path(), SIMPLE_FILE_RESOURCE_APPEND);
+    let resource = simple_file_resource(temp.path(), SIMPLE_FILE_RESOURCE_APPEND)
+        .to_file_resource(test_file_runtime_dependencies())
+        .unwrap();
     let package_root = temp.path().join(".cdf/packages");
     let parquet_root = temp.path().join(".cdf/lake");
     let state_path = temp.path().join(".cdf/state.db");
@@ -3460,7 +3541,8 @@ fn trust_ring_schema_drift_demotes_sampled_fast_path() {
         &state_path,
         "run-trust-drift-clean",
     );
-    clean.plan = live_plan_with_policy(&resource, "pkg-trust-drift-clean", &policy);
+    clean.plan =
+        live_plan_for_queryable_with_exact_policy(&resource, "pkg-trust-drift-clean", &policy);
     let clean_report = futures_executor::block_on(run_project(clean)).unwrap();
     assert!(
         clean_report.ledger_snapshot.events.iter().any(|event| event
@@ -3470,7 +3552,9 @@ fn trust_ring_schema_drift_demotes_sampled_fast_path() {
             == Some(&RunEventValue::String("clean_stable_runs".to_owned())))
     );
 
-    let drift_resource = simple_file_resource(temp.path(), SIMPLE_FILE_RESOURCE_APPEND_DRIFT);
+    let drift_resource = simple_file_resource(temp.path(), SIMPLE_FILE_RESOURCE_APPEND_DRIFT)
+        .to_file_resource(test_file_runtime_dependencies())
+        .unwrap();
     fs::write(
         temp.path().join("data/events.ndjson"),
         "{\"id\":3,\"name\":\"katherine\",\"note\":\"schema drift\"}\n\
@@ -3485,7 +3569,11 @@ fn trust_ring_schema_drift_demotes_sampled_fast_path() {
         &state_path,
         "run-trust-drift-schema",
     );
-    drift.plan = live_plan_with_policy(&drift_resource, "pkg-trust-drift-schema", &policy);
+    drift.plan = live_plan_for_queryable_with_exact_policy(
+        &drift_resource,
+        "pkg-trust-drift-schema",
+        &policy,
+    );
     let report = futures_executor::block_on(run_project(drift)).unwrap();
     let transition = report
         .ledger_snapshot
@@ -4007,7 +4095,9 @@ fn project_run_records_non_mirror_outcome_for_unsupported_quarantine_sheet() {
 #[test]
 fn general_project_run_commits_file_resource_to_parquet_with_ledger_order() {
     let temp = tempfile::tempdir().unwrap();
-    let resource = simple_file_resource(temp.path(), SIMPLE_FILE_RESOURCE_APPEND);
+    let resource = simple_file_resource(temp.path(), SIMPLE_FILE_RESOURCE_APPEND)
+        .to_file_resource(test_file_runtime_dependencies())
+        .unwrap();
     let package_id = "pkg-general-parquet";
     let package_root = temp.path().join(".cdf/packages");
     let parquet_root = temp.path().join(".cdf/lake");
@@ -4074,7 +4164,9 @@ fn general_project_run_commits_file_resource_to_postgres_with_ledger_order() {
         return;
     };
     let temp = tempfile::tempdir().unwrap();
-    let resource = simple_file_resource(temp.path(), SIMPLE_FILE_RESOURCE_APPEND);
+    let resource = simple_file_resource(temp.path(), SIMPLE_FILE_RESOURCE_APPEND)
+        .to_file_resource(test_file_runtime_dependencies())
+        .unwrap();
     let package_id = "pkg-general-postgres";
     let package_root = temp.path().join(".cdf/packages");
     let state_path = temp.path().join(".cdf/state.db");
@@ -4385,7 +4477,9 @@ fn general_project_run_executes_rest_with_discovered_snapshot_hash() {
 #[test]
 fn general_project_run_rejects_unsupported_parquet_disposition_before_writes() {
     let temp = tempfile::tempdir().unwrap();
-    let resource = simple_file_resource(temp.path(), SIMPLE_FILE_RESOURCE_MERGE);
+    let resource = simple_file_resource(temp.path(), SIMPLE_FILE_RESOURCE_MERGE)
+        .to_file_resource(test_file_runtime_dependencies())
+        .unwrap();
     let package_id = "pkg-general-parquet-merge-rejected";
     let package_root = temp.path().join(".cdf/packages");
     let parquet_root = temp.path().join(".cdf/lake");
@@ -4417,7 +4511,9 @@ fn general_project_run_rejects_unsupported_postgres_schema_before_writes() {
         return;
     };
     let temp = tempfile::tempdir().unwrap();
-    let resource = simple_file_resource(temp.path(), POSTGRES_UNSUPPORTED_FILE_RESOURCE);
+    let resource = simple_file_resource(temp.path(), POSTGRES_UNSUPPORTED_FILE_RESOURCE)
+        .to_file_resource(test_file_runtime_dependencies())
+        .unwrap();
     let package_id = "pkg-general-postgres-unsupported-schema";
     let package_root = temp.path().join(".cdf/packages");
     let state_path = temp.path().join(".cdf/state.db");
@@ -4464,7 +4560,9 @@ fn general_project_run_rejects_unsupported_postgres_schema_before_writes() {
 #[test]
 fn parquet_artifact_recovery_after_general_run_failure_does_not_need_source() {
     let temp = tempfile::tempdir().unwrap();
-    let resource = simple_file_resource(temp.path(), SIMPLE_FILE_RESOURCE_APPEND);
+    let resource = simple_file_resource(temp.path(), SIMPLE_FILE_RESOURCE_APPEND)
+        .to_file_resource(test_file_runtime_dependencies())
+        .unwrap();
     let package_id = "pkg-general-parquet-recovery";
     let package_root = temp.path().join(".cdf/packages");
     let package_dir = package_root.join(package_id);
@@ -4480,7 +4578,13 @@ fn parquet_artifact_recovery_after_general_run_failure_does_not_need_source() {
         "run-general-parquet-recovery",
     );
     request.after_receipt_verified = Some(&hook);
-    futures_executor::block_on(run_project(request)).unwrap_err();
+    let initial_error = futures_executor::block_on(run_project(request)).unwrap_err();
+    assert!(
+        initial_error
+            .to_string()
+            .contains("stop before parquet checkpoint"),
+        "{initial_error}"
+    );
 
     let store = SqliteCheckpointStore::open(&state_path).unwrap();
     let receipts = package_receipts(&package_dir);
@@ -4506,7 +4610,9 @@ fn parquet_artifact_recovery_after_general_run_failure_does_not_need_source() {
 #[test]
 fn parquet_artifact_replay_after_source_loss_without_receipt_commits_checkpoint() {
     let temp = tempfile::tempdir().unwrap();
-    let resource = simple_file_resource(temp.path(), SIMPLE_FILE_RESOURCE_APPEND);
+    let resource = simple_file_resource(temp.path(), SIMPLE_FILE_RESOURCE_APPEND)
+        .to_file_resource(test_file_runtime_dependencies())
+        .unwrap();
     let package_id = "pkg-general-parquet-artifact-replay";
     let package_root = temp.path().join(".cdf/packages");
     let package_dir = package_root.join(package_id);
@@ -4524,7 +4630,13 @@ fn parquet_artifact_replay_after_source_loss_without_receipt_commits_checkpoint(
         "run-general-parquet-artifact-replay",
     );
     request.after_receipt_verified = Some(&hook);
-    futures_executor::block_on(run_project(request)).unwrap_err();
+    let initial_error = futures_executor::block_on(run_project(request)).unwrap_err();
+    assert!(
+        initial_error
+            .to_string()
+            .contains("stop before parquet checkpoint"),
+        "{initial_error}"
+    );
     fs::remove_file(temp.path().join("data/events.ndjson")).unwrap();
     remove_package_receipts(&package_dir);
     assert!(package_receipts(&package_dir).is_empty());
@@ -4575,7 +4687,9 @@ fn postgres_artifact_recovery_after_durable_receipt_commits_without_source_conta
         return;
     };
     let temp = tempfile::tempdir().unwrap();
-    let resource = simple_file_resource(temp.path(), SIMPLE_FILE_RESOURCE_APPEND);
+    let resource = simple_file_resource(temp.path(), SIMPLE_FILE_RESOURCE_APPEND)
+        .to_file_resource(test_file_runtime_dependencies())
+        .unwrap();
     let package_id = "pkg-general-postgres-recovery";
     let package_root = temp.path().join(".cdf/packages");
     let package_dir = package_root.join(package_id);
@@ -4639,7 +4753,9 @@ fn postgres_artifact_replay_after_source_loss_without_receipt_commits_checkpoint
         return;
     };
     let temp = tempfile::tempdir().unwrap();
-    let resource = simple_file_resource(temp.path(), SIMPLE_FILE_RESOURCE_APPEND);
+    let resource = simple_file_resource(temp.path(), SIMPLE_FILE_RESOURCE_APPEND)
+        .to_file_resource(test_file_runtime_dependencies())
+        .unwrap();
     let package_id = "pkg-general-postgres-artifact-replay";
     let package_root = temp.path().join(".cdf/packages");
     let package_dir = package_root.join(package_id);
@@ -4720,7 +4836,9 @@ fn postgres_artifact_replay_rejects_mismatched_explicit_target_before_mutation()
         return;
     };
     let temp = tempfile::tempdir().unwrap();
-    let resource = simple_file_resource(temp.path(), SIMPLE_FILE_RESOURCE_APPEND);
+    let resource = simple_file_resource(temp.path(), SIMPLE_FILE_RESOURCE_APPEND)
+        .to_file_resource(test_file_runtime_dependencies())
+        .unwrap();
     let package_id = "pkg-general-postgres-target-mismatch";
     let package_root = temp.path().join(".cdf/packages");
     let package_dir = package_root.join(package_id);
@@ -5142,7 +5260,9 @@ fn general_project_run_executes_table_backed_postgres_sql_resource_stream() {
 #[test]
 fn general_project_run_records_failure_after_durable_receipt_without_advancing_state() {
     let temp = tempfile::tempdir().unwrap();
-    let resource = live_file_resource(temp.path());
+    let resource = live_file_resource(temp.path())
+        .to_file_resource(test_file_runtime_dependencies())
+        .unwrap();
     let package_id = "pkg-general-run-failed";
     let package_root = temp.path().join(".cdf/packages");
     let package_dir = package_root.join(package_id);
@@ -5230,7 +5350,9 @@ fn general_project_run_records_failure_after_durable_receipt_without_advancing_s
 #[test]
 fn package_artifact_recovery_after_general_run_failure_does_not_need_source() {
     let temp = tempfile::tempdir().unwrap();
-    let resource = live_file_resource(temp.path());
+    let resource = live_file_resource(temp.path())
+        .to_file_resource(test_file_runtime_dependencies())
+        .unwrap();
     let package_id = "pkg-general-recovery";
     let package_root = temp.path().join(".cdf/packages");
     let package_dir = package_root.join(package_id);
@@ -6004,7 +6126,6 @@ source = "resources/mock.toml"
         package_dir.clone(),
         replay_runtime.as_mut(),
         &store,
-        inputs.clone(),
         test_execution_services().memory(),
         PackageReplayHooks {
             stage: Some(&stage_hook),
@@ -6022,10 +6143,21 @@ source = "resources/mock.toml"
         report.receipt_source,
         ProjectReceiptSource::DestinationCommit {
             duplicate: false,
-            package_receipt_recorded: false
+            package_receipt_recorded: true
         }
     );
     assert!(report.receipt.covers_state_delta(&inputs.state_delta));
+    let mut conflicting = report.receipt.clone();
+    conflicting.counts.rows_written += 1;
+    let conflict =
+        record_package_receipt_once(&PackageReader::open(&package_dir).unwrap(), &conflicting)
+            .unwrap_err();
+    assert!(
+        conflict
+            .to_string()
+            .contains("conflicting logical commit evidence"),
+        "{conflict}"
+    );
     assert_eq!(
         *replay_stages.lock().unwrap(),
         vec![
@@ -6095,7 +6227,6 @@ fn generic_replay_streams_verified_segments_through_staged_final_binding() {
         package_dir,
         &mut runtime,
         &store,
-        inputs.clone(),
         test_execution_services().memory(),
         PackageReplayHooks {
             stage: Some(&stage_hook),
@@ -6268,7 +6399,6 @@ fn generic_stage_hook_stops_mock_replay_before_destination_write() {
         package_dir.clone(),
         runtime.as_mut(),
         &store,
-        inputs.clone(),
         test_execution_services().memory(),
         PackageReplayHooks {
             stage: Some(&stage_hook),
@@ -6298,19 +6428,20 @@ fn generic_stage_hook_stops_mock_replay_before_destination_write() {
 fn replay_commits_duckdb_receipt_then_checkpoint_and_marks_package_checkpointed() {
     let temp = tempfile::tempdir().unwrap();
     let package_dir = temp.path().join("pkg-success");
-    let manifest = build_package(&package_dir, "pkg-success", PackageStatus::Packaged);
+    let manifest = build_package_for_checkpoint(
+        &package_dir,
+        "pkg-success",
+        PackageStatus::Packaged,
+        "checkpoint-success",
+    );
     let delta = delta(&manifest, "checkpoint-success");
     let db_path = temp.path().join("local.duckdb");
     let destination = destination(&db_path);
     let store = SqliteCheckpointStore::open_in_memory().unwrap();
 
-    let report = replay_prepared_package(replay_request(
-        &package_dir,
-        &destination,
-        &store,
-        delta.clone(),
-    ))
-    .unwrap();
+    let report =
+        replay_package_from_artifacts(artifact_replay_request(&package_dir, &destination, &store))
+            .unwrap();
 
     assert_eq!(report.package_status, PackageStatus::Checkpointed);
     assert_eq!(package_status(&package_dir), PackageStatus::Checkpointed);
@@ -6543,69 +6674,18 @@ fn artifact_replay_rejects_stale_compiled_expression_plan_before_destination_mut
 }
 
 #[test]
-fn prepared_replay_rejects_stale_compiled_expression_plan_before_destination_mutation() {
-    let temp = tempfile::tempdir().unwrap();
-    let package_dir = temp
-        .path()
-        .join("pkg-stale-prepared-compiled-expression-plan");
-    build_package_with_expression_tuple(
-        &package_dir,
-        "pkg-stale-prepared-compiled-expression-plan",
-        PackageStatus::Packaged,
-        true,
-    );
-    let inputs = PackageReader::open(&package_dir)
-        .unwrap()
-        .replay_inputs()
-        .unwrap();
-    let db_path = temp.path().join("local.duckdb");
-    let destination = destination(&db_path);
-    let store = SqliteCheckpointStore::open_in_memory().unwrap();
-
-    let error = replay_prepared_package(PreparedPackageReplayRequest {
-        package_dir: package_dir.clone(),
-        destination: resolved_duckdb_destination(&destination, TargetName::new("orders").unwrap()),
-        checkpoint_store: &store,
-        inputs,
-        after_receipt_verified: None,
-    })
-    .unwrap_err();
-
-    assert!(
-        error
-            .to_string()
-            .contains("expression compatibility tuple is not supported"),
-        "{error}"
-    );
-    assert!(
-        store
-            .history(
-                &PipelineId::new("pipeline-1").unwrap(),
-                &ResourceId::new("orders").unwrap(),
-                &scope()
-            )
-            .unwrap()
-            .is_empty()
-    );
-    assert!(!db_path.exists());
-}
-
-#[test]
-fn duplicate_destination_replay_returns_duplicate_receipt_and_commits_new_store_checkpoint() {
+fn duplicate_destination_replay_returns_duplicate_receipt_and_commits_pinned_checkpoint() {
     let temp = tempfile::tempdir().unwrap();
     let package_dir = temp.path().join("pkg-duplicate");
     let db_path = temp.path().join("local.duckdb");
     let (destination, first_delta, first_receipt) =
         stage_successful_replay(&package_dir, &db_path, "checkpoint-first");
-    let mut second_delta = first_delta.clone();
-    second_delta.checkpoint_id = CheckpointId::new("checkpoint-second").unwrap();
     let second_store = SqliteCheckpointStore::open_in_memory().unwrap();
 
-    let report = replay_prepared_package(replay_request(
+    let report = replay_package_from_artifacts(artifact_replay_request(
         &package_dir,
         &destination,
         &second_store,
-        second_delta.clone(),
     ))
     .unwrap();
 
@@ -6617,10 +6697,8 @@ fn duplicate_destination_replay_returns_duplicate_receipt_and_commits_new_store_
         }
     );
     assert_eq!(
-        assert_head(&second_store, &second_delta)
-            .delta
-            .checkpoint_id,
-        second_delta.checkpoint_id
+        assert_head(&second_store, &first_delta).delta.checkpoint_id,
+        first_delta.checkpoint_id
     );
     let snapshot = destination.read_mirror_snapshot_read_only().unwrap();
     assert_eq!(snapshot.loads.len(), 1);
@@ -6628,19 +6706,64 @@ fn duplicate_destination_replay_returns_duplicate_receipt_and_commits_new_store_
 }
 
 #[test]
+fn logical_receipt_replay_to_second_physical_destination_keeps_one_package_receipt() {
+    let temp = tempfile::tempdir().unwrap();
+    let package_dir = temp.path().join("pkg-second-physical-destination");
+    build_package(
+        &package_dir,
+        "pkg-second-physical-destination",
+        PackageStatus::Packaged,
+    );
+    let first_destination = destination(&temp.path().join("first.duckdb"));
+    let first_store = SqliteCheckpointStore::open_in_memory().unwrap();
+    let first = replay_package_from_artifacts(artifact_replay_request(
+        &package_dir,
+        &first_destination,
+        &first_store,
+    ))
+    .unwrap();
+
+    let second_destination = destination(&temp.path().join("second.duckdb"));
+    let second_store = SqliteCheckpointStore::open_in_memory().unwrap();
+    let second = replay_package_from_artifacts(artifact_replay_request(
+        &package_dir,
+        &second_destination,
+        &second_store,
+    ))
+    .unwrap();
+
+    assert_eq!(second.receipt.receipt_id, first.receipt.receipt_id);
+    assert_ne!(second.receipt.transaction, first.receipt.transaction);
+    assert_eq!(second.checkpoint.receipt, Some(second.receipt.clone()));
+    assert_eq!(
+        second.receipt_source,
+        ProjectReceiptSource::DestinationCommit {
+            duplicate: false,
+            package_receipt_recorded: false
+        }
+    );
+    assert_eq!(package_receipts(&package_dir), vec![first.receipt]);
+}
+
+#[test]
 fn recovery_verifies_durable_receipt_and_commits_without_new_destination_write() {
     let temp = tempfile::tempdir().unwrap();
     let package_dir = temp.path().join("pkg-recovery");
-    let manifest = build_package(&package_dir, "pkg-recovery", PackageStatus::Packaged);
+    let manifest = build_package_for_checkpoint(
+        &package_dir,
+        "pkg-recovery",
+        PackageStatus::Packaged,
+        "checkpoint-recovery",
+    );
     let delta = delta(&manifest, "checkpoint-recovery");
     let db_path = temp.path().join("local.duckdb");
     let destination = destination(&db_path);
     let store = SqliteCheckpointStore::open_in_memory().unwrap();
     let hook = |_receipt: &Receipt| Err(CdfError::internal("stop before checkpoint commit"));
-    let mut request = replay_request(&package_dir, &destination, &store, delta.clone());
+    let mut request = artifact_replay_request(&package_dir, &destination, &store);
     request.after_receipt_verified = Some(&hook);
 
-    let error = replay_prepared_package(request).unwrap_err();
+    let error = replay_package_from_artifacts(request).unwrap_err();
     assert!(error.to_string().contains("stop before checkpoint commit"));
     assert_no_head(&store, &delta);
     assert_eq!(package_status(&package_dir), PackageStatus::Loading);
@@ -6652,11 +6775,10 @@ fn recovery_verifies_durable_receipt_and_commits_without_new_destination_write()
         .loads
         .len();
 
-    let report = recover_prepared_package(recovery_request(
+    let report = recover_package_from_artifacts(recovery_request(
         &package_dir,
         &destination,
         &store,
-        delta.clone(),
         receipts[0].clone(),
     ))
     .unwrap();
@@ -6748,7 +6870,12 @@ fn zero_segment_processed_package_recovers_after_receipt_without_source_or_data_
 fn named_failpoint_after_checkpoint_proposal_stops_before_destination_write() {
     let temp = tempfile::tempdir().unwrap();
     let package_dir = temp.path().join("pkg-after-proposal");
-    let manifest = build_package(&package_dir, "pkg-after-proposal", PackageStatus::Packaged);
+    let manifest = build_package_for_checkpoint(
+        &package_dir,
+        "pkg-after-proposal",
+        PackageStatus::Packaged,
+        "checkpoint-after-proposal",
+    );
     let delta = delta(&manifest, "checkpoint-after-proposal");
     let db_path = temp.path().join("local.duckdb");
     let destination = destination(&db_path);
@@ -6760,8 +6887,8 @@ fn named_failpoint_after_checkpoint_proposal_stops_before_destination_write() {
         Ok(())
     };
 
-    let error = replay_prepared_package_with_stage_hook(
-        replay_request(&package_dir, &destination, &store, delta.clone()),
+    let error = replay_package_from_artifacts_with_stage_hook(
+        artifact_replay_request(&package_dir, &destination, &store),
         Some(&hook),
     )
     .unwrap_err();
@@ -6782,10 +6909,11 @@ fn named_failpoint_after_checkpoint_proposal_stops_before_destination_write() {
 fn named_failpoint_after_checkpoint_commit_allows_status_only_recovery() {
     let temp = tempfile::tempdir().unwrap();
     let package_dir = temp.path().join("pkg-after-checkpoint");
-    let manifest = build_package(
+    let manifest = build_package_for_checkpoint(
         &package_dir,
         "pkg-after-checkpoint",
         PackageStatus::Packaged,
+        "checkpoint-after-checkpoint",
     );
     let delta = delta(&manifest, "checkpoint-after-checkpoint");
     let db_path = temp.path().join("local.duckdb");
@@ -6799,8 +6927,8 @@ fn named_failpoint_after_checkpoint_commit_allows_status_only_recovery() {
         Ok(())
     };
 
-    let error = replay_prepared_package_with_stage_hook(
-        replay_request(&package_dir, &destination, &store, delta.clone()),
+    let error = replay_package_from_artifacts_with_stage_hook(
+        artifact_replay_request(&package_dir, &destination, &store),
         Some(&hook),
     )
     .unwrap_err();
@@ -6815,11 +6943,10 @@ fn named_failpoint_after_checkpoint_commit_allows_status_only_recovery() {
     assert!(destination.verify_receipt(&receipts[0]).unwrap().verified);
     let snapshot_before = destination.read_mirror_snapshot_read_only().unwrap();
 
-    let report = recover_prepared_package(recovery_request(
+    let report = recover_package_from_artifacts(recovery_request(
         &package_dir,
         &destination,
         &store,
-        delta.clone(),
         receipts[0].clone(),
     ))
     .unwrap();
@@ -6872,22 +6999,18 @@ fn recovery_rejects_receipt_verification_failure_without_checkpoint() {
     let (destination, staged_delta, mut receipt) =
         stage_successful_replay(&package_dir, &db_path, "checkpoint-staged");
     receipt.committed_at_ms += 1;
-    let mut recovery_delta = staged_delta.clone();
-    recovery_delta.checkpoint_id = CheckpointId::new("checkpoint-verify-failure").unwrap();
     let store = SqliteCheckpointStore::open_in_memory().unwrap();
-    store.propose(recovery_delta.clone()).unwrap();
 
-    let error = recover_prepared_package(recovery_request(
+    let error = recover_package_from_artifacts(recovery_request(
         &package_dir,
         &destination,
         &store,
-        recovery_delta.clone(),
         receipt,
     ))
     .unwrap_err();
 
     assert!(error.to_string().contains("did not verify"));
-    assert_no_head(&store, &recovery_delta);
+    assert_no_head(&store, &staged_delta);
 }
 
 #[test]
@@ -6898,22 +7021,18 @@ fn recovery_rejects_bad_receipt_identity_without_checkpoint() {
     let (destination, staged_delta, mut receipt) =
         stage_successful_replay(&package_dir, &db_path, "checkpoint-staged");
     receipt.idempotency_token = IdempotencyToken::new("different-token").unwrap();
-    let mut recovery_delta = staged_delta.clone();
-    recovery_delta.checkpoint_id = CheckpointId::new("checkpoint-bad-identity").unwrap();
     let store = SqliteCheckpointStore::open_in_memory().unwrap();
-    store.propose(recovery_delta.clone()).unwrap();
 
-    let error = recover_prepared_package(recovery_request(
+    let error = recover_package_from_artifacts(recovery_request(
         &package_dir,
         &destination,
         &store,
-        recovery_delta.clone(),
         receipt,
     ))
     .unwrap_err();
 
     assert!(error.to_string().contains("idempotency token"));
-    assert_no_head(&store, &recovery_delta);
+    assert_no_head(&store, &staged_delta);
 }
 
 #[test]
@@ -6924,41 +7043,38 @@ fn recovery_rejects_missing_segment_ack_without_checkpoint() {
     let (destination, staged_delta, mut receipt) =
         stage_successful_replay(&package_dir, &db_path, "checkpoint-staged");
     receipt.segment_acks.clear();
-    let mut recovery_delta = staged_delta.clone();
-    recovery_delta.checkpoint_id = CheckpointId::new("checkpoint-missing-ack").unwrap();
     let store = SqliteCheckpointStore::open_in_memory().unwrap();
-    store.propose(recovery_delta.clone()).unwrap();
 
-    let error = recover_prepared_package(recovery_request(
+    let error = recover_package_from_artifacts(recovery_request(
         &package_dir,
         &destination,
         &store,
-        recovery_delta.clone(),
         receipt,
     ))
     .unwrap_err();
 
     assert!(error.to_string().contains("acknowledges 0 segment"));
-    assert_no_head(&store, &recovery_delta);
+    assert_no_head(&store, &staged_delta);
 }
 
 #[test]
 fn replay_rejects_non_replayable_package_before_checkpoint_or_destination_mutation() {
     let temp = tempfile::tempdir().unwrap();
     let package_dir = temp.path().join("pkg-not-replayable");
-    let manifest = build_package(&package_dir, "pkg-not-replayable", PackageStatus::Validated);
+    let manifest = build_package_for_checkpoint(
+        &package_dir,
+        "pkg-not-replayable",
+        PackageStatus::Validated,
+        "checkpoint-not-replayable",
+    );
     let delta = delta(&manifest, "checkpoint-not-replayable");
     let db_path = temp.path().join("local.duckdb");
     let destination = destination(&db_path);
     let store = SqliteCheckpointStore::open_in_memory().unwrap();
 
-    let error = replay_prepared_package(replay_request(
-        &package_dir,
-        &destination,
-        &store,
-        delta.clone(),
-    ))
-    .unwrap_err();
+    let error =
+        replay_package_from_artifacts(artifact_replay_request(&package_dir, &destination, &store))
+            .unwrap_err();
 
     assert!(error.to_string().contains("not replayable"));
     assert_eq!(package_status(&package_dir), PackageStatus::Validated);
@@ -6972,77 +7088,28 @@ fn replay_rejects_non_replayable_package_before_checkpoint_or_destination_mutati
 }
 
 #[test]
-fn replay_rejects_bad_package_hash_and_segment_mismatch_before_mutation() {
-    let temp = tempfile::tempdir().unwrap();
-    let package_dir = temp.path().join("pkg-mismatch");
-    let manifest = build_package(&package_dir, "pkg-mismatch", PackageStatus::Packaged);
-    let db_path = temp.path().join("local.duckdb");
-    let destination = destination(&db_path);
-
-    let bad_hash_store = SqliteCheckpointStore::open_in_memory().unwrap();
-    let mut bad_hash_delta = delta(&manifest, "checkpoint-bad-hash");
-    bad_hash_delta.package_hash = PackageHash::new("sha256:wrong-package").unwrap();
-    let error = replay_prepared_package(replay_request(
-        &package_dir,
-        &destination,
-        &bad_hash_store,
-        bad_hash_delta.clone(),
-    ))
-    .unwrap_err();
-    assert!(error.to_string().contains("package hash"));
-    assert!(
-        bad_hash_store
-            .history(
-                &bad_hash_delta.pipeline_id,
-                &bad_hash_delta.resource_id,
-                &bad_hash_delta.scope
-            )
-            .unwrap()
-            .is_empty()
-    );
-
-    let bad_segment_store = SqliteCheckpointStore::open_in_memory().unwrap();
-    let mut bad_segment_delta = delta(&manifest, "checkpoint-bad-segment");
-    bad_segment_delta.segments[0].byte_count += 1;
-    let error = replay_prepared_package(replay_request(
-        &package_dir,
-        &destination,
-        &bad_segment_store,
-        bad_segment_delta.clone(),
-    ))
-    .unwrap_err();
-    assert!(error.to_string().contains("StateDelta segment"));
-    assert!(
-        bad_segment_store
-            .history(
-                &bad_segment_delta.pipeline_id,
-                &bad_segment_delta.resource_id,
-                &bad_segment_delta.scope
-            )
-            .unwrap()
-            .is_empty()
-    );
-    assert_eq!(package_status(&package_dir), PackageStatus::Packaged);
-    assert!(!db_path.exists());
-}
-
-#[test]
 fn destination_failure_before_receipt_abandons_proposed_checkpoint() {
     let temp = tempfile::tempdir().unwrap();
     let package_dir = temp.path().join("pkg-destination-failure");
-    let manifest = build_package(
+    build_package_with_options(
         &package_dir,
         "pkg-destination-failure",
         PackageStatus::Packaged,
+        false,
+        WriteDisposition::CdcApply,
+        "checkpoint-destination-failure",
     );
-    let delta = delta(&manifest, "checkpoint-destination-failure");
+    let delta = PackageReader::open(&package_dir)
+        .unwrap()
+        .replay_inputs()
+        .unwrap()
+        .state_delta;
     let db_path = temp.path().join("local.duckdb");
     let destination = destination(&db_path);
     let store = SqliteCheckpointStore::open_in_memory().unwrap();
-    let mut request = replay_request(&package_dir, &destination, &store, delta.clone());
-    request.inputs.destination_commit.disposition = WriteDisposition::CdcApply;
-
-    let error = replay_prepared_package(request).unwrap_err();
+    let error =
+        replay_package_from_artifacts(artifact_replay_request(&package_dir, &destination, &store))
+            .unwrap_err();
 
     assert!(
         error.to_string().contains("does not support cdc_apply"),
@@ -7062,23 +7129,20 @@ fn destination_failure_before_receipt_abandons_proposed_checkpoint() {
 fn checkpoint_failure_after_receipt_keeps_receipt_recoverable_and_state_unadvanced() {
     let temp = tempfile::tempdir().unwrap();
     let package_dir = temp.path().join("pkg-checkpoint-failure");
-    let manifest = build_package(
+    let manifest = build_package_for_checkpoint(
         &package_dir,
         "pkg-checkpoint-failure",
         PackageStatus::Packaged,
+        "checkpoint-fails-once",
     );
     let delta = delta(&manifest, "checkpoint-fails-once");
     let db_path = temp.path().join("local.duckdb");
     let destination = destination(&db_path);
     let store = CommitFailingStore::new();
 
-    let error = replay_prepared_package(replay_request(
-        &package_dir,
-        &destination,
-        &store,
-        delta.clone(),
-    ))
-    .unwrap_err();
+    let error =
+        replay_package_from_artifacts(artifact_replay_request(&package_dir, &destination, &store))
+            .unwrap_err();
 
     assert!(
         error
@@ -7099,11 +7163,10 @@ fn checkpoint_failure_after_receipt_keeps_receipt_recoverable_and_state_unadvanc
     ));
 
     store.allow_commit();
-    let report = recover_prepared_package(recovery_request(
+    let report = recover_package_from_artifacts(recovery_request(
         &package_dir,
         &destination,
         &store,
-        delta.clone(),
         receipts[0].clone(),
     ))
     .unwrap();
@@ -7123,20 +7186,16 @@ fn recovery_refuses_receipts_not_covering_state_delta_counts() {
     let (destination, staged_delta, mut receipt) =
         stage_successful_replay(&package_dir, &db_path, "checkpoint-staged");
     receipt.segment_acks[0].row_count += 1;
-    let mut recovery_delta = staged_delta.clone();
-    recovery_delta.checkpoint_id = CheckpointId::new("checkpoint-wrong-counts").unwrap();
     let store = SqliteCheckpointStore::open_in_memory().unwrap();
-    store.propose(recovery_delta.clone()).unwrap();
 
-    let error = recover_prepared_package(recovery_request(
+    let error = recover_package_from_artifacts(recovery_request(
         &package_dir,
         &destination,
         &store,
-        recovery_delta.clone(),
         receipt,
     ))
     .unwrap_err();
 
     assert!(error.to_string().contains("StateDelta has"));
-    assert_no_head(&store, &recovery_delta);
+    assert_no_head(&store, &staged_delta);
 }

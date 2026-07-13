@@ -28,6 +28,7 @@ use cdf_kernel::{
     SegmentId, SourcePosition,
 };
 use cdf_package::{PackageBuilder, PackageStatus, SegmentEntry};
+use cdf_runtime::DestinationRuntime;
 use object_store::{memory::InMemory, path::Path as ObjectPath};
 
 #[test]
@@ -137,7 +138,9 @@ fn test_execution() -> cdf_runtime::ExecutionServices {
         std::sync::OnceLock::new();
     SERVICES
         .get_or_init(|| {
-            cdf_engine::StandaloneExecutionHost::default_services(64 * 1024 * 1024)
+            // Parallel destination tests share this host; keep their independent
+            // memory-pressure assertions from contending for the same logical ledger.
+            cdf_engine::StandaloneExecutionHost::default_services(2 * 1024 * 1024 * 1024)
                 .unwrap()
                 .1
         })
@@ -244,7 +247,7 @@ fn finalize_correction(
 }
 
 fn commit_correction_base(
-    destination: &ParquetDestination,
+    destination: &mut ParquetDestination,
     package_dir: &Path,
     package_id: &str,
 ) -> BuiltPackage {
@@ -256,9 +259,12 @@ fn commit_correction_base(
             vec![sample_batch(vec![1, 2], vec![Some("ada"), Some("grace")])],
         )],
     );
-    destination
-        .commit_package(request(package_dir, &built, WriteDisposition::Append))
-        .unwrap();
+    commit_through_ingress(
+        destination,
+        package_dir,
+        request(package_dir, &built, WriteDisposition::Append),
+    )
+    .unwrap();
     built
 }
 
@@ -302,12 +308,11 @@ fn build_package(
 }
 
 fn request(
-    package_dir: &Path,
+    _package_dir: &Path,
     built: &BuiltPackage,
     disposition: WriteDisposition,
 ) -> ParquetCommitRequest {
     ParquetCommitRequest {
-        package_dir: package_dir.to_path_buf(),
         commit: DestinationCommitRequest {
             package_hash: built.hash.clone(),
             target: TargetName::new("orders").unwrap(),
@@ -332,6 +337,44 @@ fn state_segment(segment: &SegmentEntry) -> StateSegment {
         }),
         row_count: segment.row_count,
         byte_count: segment.row_count * 16,
+    }
+}
+
+fn replay_inputs(request: &ParquetCommitRequest) -> cdf_package::PackageReplayInputs {
+    let scope = request
+        .commit
+        .segments
+        .first()
+        .map_or(ScopeKey::Resource, |segment| segment.scope.clone());
+    let output_position = request.commit.segments.last().map_or_else(
+        || {
+            SourcePosition::Cursor(CursorPosition {
+                version: 1,
+                field: "id".to_owned(),
+                value: CursorValue::U64(0),
+            })
+        },
+        |segment| segment.output_position.clone(),
+    );
+    cdf_package::PackageReplayInputs {
+        input_checkpoint: None,
+        state_delta: cdf_kernel::StateDelta {
+            checkpoint_id: cdf_kernel::CheckpointId::new("checkpoint-parquet-prepared-test")
+                .unwrap(),
+            pipeline_id: cdf_kernel::PipelineId::new("pipeline-parquet-prepared-test").unwrap(),
+            resource_id: cdf_kernel::ResourceId::new("orders").unwrap(),
+            scope,
+            state_version: cdf_kernel::CHECKPOINT_STATE_VERSION,
+            parent_checkpoint_id: None,
+            input_position: None,
+            output_position,
+            package_hash: request.commit.package_hash.clone(),
+            schema_hash: request.schema_hash.clone(),
+            segments: request.commit.segments.clone(),
+        },
+        destination_commit: request.commit.clone(),
+        merge_keys: Vec::new(),
+        schema_hash: request.schema_hash.clone(),
     }
 }
 
@@ -453,60 +496,85 @@ fn receipt_with_pointer_store(receipt: &Receipt, pointer: StoredJson) -> Receipt
     receipt
 }
 
-fn commit_with_session(
-    dest: &ParquetDestination,
-    commit: &ParquetCommitRequest,
-) -> (ParquetCommitPlan, Receipt) {
-    let plan = dest.plan_package_commit(commit).unwrap();
-    let mut session = DestinationProtocol::begin(dest, commit.commit.clone(), plan.kernel.clone())
-        .expect("begin Parquet commit session");
-    session.apply_migrations().unwrap();
-    let reader = PackageReader::open(&commit.package_dir).unwrap();
+#[derive(Debug)]
+struct CommittedPackage {
+    receipt: Receipt,
+    duplicate: bool,
+    plan: ParquetCommitPlan,
+    object_manifest: ParquetObjectManifest,
+}
+
+fn commit_through_ingress(
+    dest: &mut ParquetDestination,
+    package_dir: &Path,
+    commit: ParquetCommitRequest,
+) -> Result<CommittedPackage> {
+    let reader = PackageReader::open(package_dir)?;
+    let plan = dest.plan_package_commit(&commit, &reader.manifest().identity.segments)?;
+    let duplicate = plan.duplicate;
+    let inputs = replay_inputs(&commit);
+    let verified = reader.verify_for_consumption()?;
+    let capabilities = dest.runtime_capabilities();
+    let bulk_path = cdf_runtime::BulkPathPreparation::from_capabilities(&capabilities)?
+        .into_selected(&capabilities)?;
+    let mut prepared = match dest.ingress() {
+        cdf_runtime::DestinationIngress::FinalizedPackage(ingress) => ingress
+            .prepare_package_commit(
+                package_dir,
+                &reader,
+                &inputs,
+                &cdf_runtime::DestinationPlanningContext::new(&verified, &bulk_path),
+            )?,
+        cdf_runtime::DestinationIngress::StagedSegments(_) => {
+            return Err(CdfError::contract(
+                "Parquet test destination exposed staged ingress",
+            ));
+        }
+    };
+    prepared.validate_verified_inputs(&inputs)?;
     let memory = dest.execution().memory();
     let maximum_segment_bytes = memory.snapshot().budget_bytes.min(64 * 1024 * 1024);
-    for segment in reader
-        .verified_commit_segment_stream(&commit.commit.segments, memory, maximum_segment_bytes)
-        .unwrap()
-    {
-        let ack = session
-            .write_segment(segment.unwrap().into_commit_segment().unwrap())
-            .unwrap();
+    let mut session = match dest.ingress() {
+        cdf_runtime::DestinationIngress::FinalizedPackage(ingress) => {
+            ingress.begin_prepared_commit(&mut prepared)?
+        }
+        cdf_runtime::DestinationIngress::StagedSegments(_) => {
+            return Err(CdfError::contract(
+                "Parquet test destination changed ingress category",
+            ));
+        }
+    };
+    session.apply_migrations()?;
+    for segment in reader.verified_commit_segment_stream_with(
+        &verified,
+        &commit.commit.segments,
+        memory,
+        maximum_segment_bytes,
+    )? {
+        let ack = session.write_segment(segment?.into_commit_segment()?)?;
         assert!(commit.commit.segments.iter().any(|state| {
             ack.segment_id == state.segment_id
                 && ack.row_count == state.row_count
                 && ack.byte_count == state.byte_count
         }));
     }
-    let receipt = session.finalize().unwrap();
-    (plan, receipt)
+    let receipt = session.finalize()?;
+    let object_manifest = load_manifest(dest, &plan.manifest_key);
+    Ok(CommittedPackage {
+        receipt,
+        duplicate,
+        plan,
+        object_manifest,
+    })
 }
 
-fn assert_same_receipt_identity(left: &Receipt, right: &Receipt) {
-    assert_eq!(left.receipt_id, right.receipt_id);
-    assert_eq!(left.destination, right.destination);
-    assert_eq!(left.target, right.target);
-    assert_eq!(left.package_hash, right.package_hash);
-    assert_eq!(left.segment_acks, right.segment_acks);
-    assert_eq!(left.disposition, right.disposition);
-    assert_eq!(left.idempotency_token, right.idempotency_token);
-    assert_eq!(left.counts, right.counts);
-    assert_eq!(left.schema_hash, right.schema_hash);
-    assert_eq!(left.migrations, right.migrations);
-    assert_eq!(left.verify.kind, right.verify.kind);
-    assert_eq!(left.verify.statement, right.verify.statement);
-    assert_eq!(
-        left.transaction
-            .as_ref()
-            .map(|transaction| transaction.system.as_str()),
-        Some("object_store")
-    );
-    assert_eq!(
-        right
-            .transaction
-            .as_ref()
-            .map(|transaction| transaction.system.as_str()),
-        Some("object_store")
-    );
+fn plan_package_for_test(
+    dest: &ParquetDestination,
+    package_dir: &Path,
+    commit: &ParquetCommitRequest,
+) -> Result<ParquetCommitPlan> {
+    let reader = PackageReader::open(package_dir)?;
+    dest.plan_package_commit(commit, &reader.manifest().identity.segments)
 }
 
 #[test]
@@ -529,11 +597,14 @@ fn unsupported_arrow_types_fail_before_writing_objects() {
         vec![("seg-000001", vec![batch])],
     );
     let root = temp.path().join("lake");
-    let dest = test_filesystem(&root).unwrap();
+    let mut dest = test_filesystem(&root).unwrap();
 
-    let error = dest
-        .commit_package(request(&package_dir, &built, WriteDisposition::Append))
-        .unwrap_err();
+    let error = commit_through_ingress(
+        &mut dest,
+        &package_dir,
+        request(&package_dir, &built, WriteDisposition::Append),
+    )
+    .unwrap_err();
     assert!(
         error
             .to_string()
@@ -634,10 +705,13 @@ fn correction_sidecar_is_content_addressed_verifiable_and_leaves_base_immutable(
             vec![sample_batch(vec![1, 2], vec![Some("ada"), Some("grace")])],
         )],
     );
-    let dest = test_filesystem(temp.path().join("lake")).unwrap();
-    let base = dest
-        .commit_package(request(&package_dir, &built, WriteDisposition::Append))
-        .unwrap();
+    let mut dest = test_filesystem(temp.path().join("lake")).unwrap();
+    let base = commit_through_ingress(
+        &mut dest,
+        &package_dir,
+        request(&package_dir, &built, WriteDisposition::Append),
+    )
+    .unwrap();
     let base_manifest_before = dest
         .store()
         .get_required(dest.execution(), &base.plan.manifest_key)
@@ -787,7 +861,7 @@ fn correction_sidecar_is_content_addressed_verifiable_and_leaves_base_immutable(
 #[test]
 fn ordinary_objects_and_correction_sidecars_share_column_policy_without_changing_object_keys() {
     let temp = tempfile::tempdir().unwrap();
-    let dest = test_filesystem(temp.path().join("lake")).unwrap();
+    let mut dest = test_filesystem(temp.path().join("lake")).unwrap();
     let policy =
         cdf_contract::identifier_policy_from_destination_rules(&dest.sheet().identifier_rules)
             .unwrap();
@@ -806,9 +880,12 @@ fn ordinary_objects_and_correction_sidecars_share_column_policy_without_changing
         "pkg-normalized-columns",
         vec![("seg-000001", vec![batch])],
     );
-    let base = dest
-        .commit_package(request(&package_dir, &built, WriteDisposition::Append))
-        .unwrap();
+    let base = commit_through_ingress(
+        &mut dest,
+        &package_dir,
+        request(&package_dir, &built, WriteDisposition::Append),
+    )
+    .unwrap();
     let base_bytes = dest
         .store()
         .get_required(dest.execution(), &base.object_manifest.objects[0].key)
@@ -900,8 +977,8 @@ fn object_key_construction_requires_declared_policy_and_preserves_component_v1_b
 fn interrupted_sidecar_publication_reuses_orphan_object_and_publishes_manifest_once() {
     let temp = tempfile::tempdir().unwrap();
     let store = Arc::new(InMemory::default());
-    let dest = test_object_store(store, "").unwrap();
-    let built = commit_correction_base(&dest, &temp.path().join("base"), "base");
+    let mut dest = test_object_store(store, "").unwrap();
+    let built = commit_correction_base(&mut dest, &temp.path().join("base"), "base");
     let correction = correction_request(&built.hash);
     let context = build_correction_context(dest.object_key_encoder(), &correction).unwrap();
     let object = context.manifest.objects[0].clone();
@@ -972,8 +1049,8 @@ fn interrupted_sidecar_publication_reuses_orphan_object_and_publishes_manifest_o
 #[test]
 fn correction_abort_writes_nothing_and_tampering_invalidates_receipt() {
     let temp = tempfile::tempdir().unwrap();
-    let dest = test_object_store(Arc::new(InMemory::default()), "").unwrap();
-    let built = commit_correction_base(&dest, &temp.path().join("base"), "base");
+    let mut dest = test_object_store(Arc::new(InMemory::default()), "").unwrap();
+    let built = commit_correction_base(&mut dest, &temp.path().join("base"), "base");
     let correction = correction_request(&built.hash);
     let context = build_correction_context(dest.object_key_encoder(), &correction).unwrap();
     let plan = dest.plan_correction(&correction).unwrap();
@@ -1064,14 +1141,16 @@ fn filesystem_append_materializes_parquet_and_verifies_receipt() {
         )],
     );
     let root = temp.path().join("lake");
-    let dest = test_filesystem(&root).unwrap();
+    let mut dest = test_filesystem(&root).unwrap();
 
-    let outcome = dest
-        .commit_package(request(&package_dir, &built, WriteDisposition::Append))
-        .unwrap();
+    let outcome = commit_through_ingress(
+        &mut dest,
+        &package_dir,
+        request(&package_dir, &built, WriteDisposition::Append),
+    )
+    .unwrap();
 
     assert!(!outcome.duplicate);
-    assert!(outcome.package_receipt_recorded);
     assert_eq!(outcome.receipt.counts.rows_written, 3);
     assert!(dest.verify_receipt(&outcome.receipt).unwrap().verified);
     assert_eq!(outcome.object_manifest.objects.len(), 1);
@@ -1100,12 +1179,14 @@ fn filesystem_append_materializes_parquet_and_verifies_receipt() {
         .unwrap()
         .receipts()
         .unwrap();
-    assert_eq!(receipts.len(), 1);
-    assert_eq!(receipts[0].receipt_id, outcome.receipt.receipt_id);
+    assert!(
+        receipts.is_empty(),
+        "package receipts belong to orchestration"
+    );
 }
 
 #[test]
-fn begin_session_flow_materializes_verifiable_manifest_receipt() {
+fn finalized_package_ingress_materializes_verifiable_manifest_receipt() {
     let temp = tempfile::tempdir().unwrap();
     let package_dir = temp.path().join("pkg-session");
     let built = build_package(
@@ -1116,10 +1197,12 @@ fn begin_session_flow_materializes_verifiable_manifest_receipt() {
             vec![sample_batch(vec![1, 2], vec![Some("ada"), Some("grace")])],
         )],
     );
-    let dest = test_object_store(Arc::new(InMemory::default()), "").unwrap();
+    let mut dest = test_object_store(Arc::new(InMemory::default()), "").unwrap();
     let commit = request(&package_dir, &built, WriteDisposition::Append);
 
-    let (plan, receipt) = commit_with_session(&dest, &commit);
+    let committed = commit_through_ingress(&mut dest, &package_dir, commit.clone()).unwrap();
+    let plan = committed.plan;
+    let receipt = committed.receipt;
 
     assert!(!plan.duplicate);
     assert_eq!(receipt.destination.as_str(), DESTINATION_ID);
@@ -1146,11 +1229,14 @@ fn begin_session_flow_materializes_verifiable_manifest_receipt() {
         .unwrap()
         .receipts()
         .unwrap();
-    assert_eq!(receipts, vec![receipt]);
+    assert!(
+        receipts.is_empty(),
+        "package receipts belong to orchestration"
+    );
 }
 
 #[test]
-fn segment_session_flow_matches_commit_package_receipt_shape() {
+fn finalized_package_ingress_preserves_manifest_segment_order() {
     let temp = tempfile::tempdir().unwrap();
     let package_dir = temp.path().join("pkg-session-equivalence");
     let built = build_package(
@@ -1165,46 +1251,13 @@ fn segment_session_flow_matches_commit_package_receipt_shape() {
         ],
     );
     let commit = request(&package_dir, &built, WriteDisposition::Append);
-    let wrapper_dest = test_object_store(Arc::new(InMemory::default()), "").unwrap();
-    let wrapper = wrapper_dest.commit_package(commit.clone()).unwrap();
-    assert!(!wrapper.duplicate);
-
-    let session_dest = test_object_store(Arc::new(InMemory::default()), "").unwrap();
-    let (_session_plan, session_receipt) = commit_with_session(&session_dest, &commit);
-    let session_manifest = load_manifest(&session_dest, manifest_key(&session_receipt));
-
-    assert_same_receipt_identity(&session_receipt, &wrapper.receipt);
+    let mut dest = test_object_store(Arc::new(InMemory::default()), "").unwrap();
+    let committed = commit_through_ingress(&mut dest, &package_dir, commit).unwrap();
+    let manifest = committed.object_manifest;
+    let receipt = committed.receipt;
+    assert!(!committed.duplicate);
     assert_eq!(
-        session_manifest.manifest_version,
-        wrapper.object_manifest.manifest_version
-    );
-    assert_eq!(
-        session_manifest.destination,
-        wrapper.object_manifest.destination
-    );
-    assert_eq!(session_manifest.target, wrapper.object_manifest.target);
-    assert_eq!(
-        session_manifest.package_hash,
-        wrapper.object_manifest.package_hash
-    );
-    assert_eq!(
-        session_manifest.idempotency_token,
-        wrapper.object_manifest.idempotency_token
-    );
-    assert_eq!(
-        session_manifest.disposition,
-        wrapper.object_manifest.disposition
-    );
-    assert_eq!(
-        session_manifest.schema_hash,
-        wrapper.object_manifest.schema_hash
-    );
-    assert_eq!(
-        session_manifest.total_rows,
-        wrapper.object_manifest.total_rows
-    );
-    assert_eq!(
-        session_receipt.segment_acks,
+        receipt.segment_acks,
         vec![
             SegmentAck {
                 segment_id: SegmentId::new("seg-000001").unwrap(),
@@ -1218,39 +1271,18 @@ fn segment_session_flow_matches_commit_package_receipt_shape() {
             },
         ]
     );
-    assert_eq!(
-        session_manifest.objects.len(),
-        wrapper.object_manifest.objects.len()
-    );
-    for (session_object, wrapper_object) in session_manifest
-        .objects
-        .iter()
-        .zip(wrapper.object_manifest.objects.iter())
-    {
-        assert_eq!(session_object.segment_id, wrapper_object.segment_id);
-        assert_eq!(session_object.key, wrapper_object.key);
-        assert_eq!(session_object.row_count, wrapper_object.row_count);
-        assert_eq!(session_object.byte_count, wrapper_object.byte_count);
-        assert_eq!(
-            session_object.package_byte_count,
-            wrapper_object.package_byte_count
-        );
-        assert_eq!(
-            session_object.parquet_byte_count,
-            wrapper_object.parquet_byte_count
-        );
-        assert_eq!(session_object.sha256, wrapper_object.sha256);
-        assert_eq!(session_object.schema_hash, wrapper_object.schema_hash);
-        assert_ne!(session_object.byte_count, session_object.package_byte_count);
-    }
+    assert_eq!(manifest.objects.len(), 2);
+    assert_eq!(manifest.objects[0].segment_id, "seg-000001");
+    assert_eq!(manifest.objects[1].segment_id, "seg-000002");
     assert!(
-        session_dest
-            .verify_receipt(&session_receipt)
-            .unwrap()
-            .verified
+        manifest
+            .objects
+            .iter()
+            .all(|object| object.byte_count != object.package_byte_count)
     );
-    let protocol: &dyn DestinationProtocol = &session_dest;
-    assert!(protocol.verify(&session_receipt).unwrap().verified);
+    assert!(dest.verify_receipt(&receipt).unwrap().verified);
+    let protocol: &dyn DestinationProtocol = &dest;
+    assert!(protocol.verify(&receipt).unwrap().verified);
 }
 
 #[test]
@@ -1270,11 +1302,16 @@ fn session_finalize_rejects_missing_segments() {
     );
     let dest = test_object_store(Arc::new(InMemory::default()), "").unwrap();
     let commit = request(&package_dir, &built, WriteDisposition::Append);
-    let plan = dest.plan_package_commit(&commit).unwrap();
-    let mut session = DestinationProtocol::begin(&dest, commit.commit.clone(), plan.kernel.clone())
+    let plan = plan_package_for_test(&dest, &package_dir, &commit).unwrap();
+    let mut session = dest
+        .begin_prepared_commit_session(ParquetSessionContext {
+            request: commit.clone(),
+            plan: plan.clone(),
+            manifest_segments: built.segments.clone(),
+        })
         .expect("begin Parquet commit session");
     session.apply_migrations().unwrap();
-    let mut segments = PackageReader::open(&commit.package_dir)
+    let mut segments = PackageReader::open(&package_dir)
         .unwrap()
         .read_commit_segments(&commit.commit.segments)
         .unwrap();
@@ -1291,7 +1328,100 @@ fn session_finalize_rejects_missing_segments() {
 }
 
 #[test]
-fn begin_session_duplicate_replay_preserves_existing_manifest() {
+fn prepared_ingress_rejects_pending_context_commit_schema_and_plan_drift() {
+    let temp = tempfile::tempdir().unwrap();
+    let package_dir = temp.path().join("pkg-prepared-context-drift");
+    let built = build_package(
+        &package_dir,
+        "pkg-prepared-context-drift",
+        vec![("seg-000001", vec![sample_batch(vec![1], vec![Some("ada")])])],
+    );
+    let destination = test_object_store(Arc::new(InMemory::default()), "").unwrap();
+    let request = request(&package_dir, &built, WriteDisposition::Append);
+    let inputs = replay_inputs(&request);
+    let plan = plan_package_for_test(&destination, &package_dir, &request).unwrap();
+    let capabilities = crate::runtime::parquet_runtime_capabilities();
+    let bulk_path = cdf_runtime::BulkPathPreparation::from_capabilities(&capabilities)
+        .unwrap()
+        .into_selected(&capabilities)
+        .unwrap();
+    let prepared = |inputs: &cdf_package::PackageReplayInputs, kernel: CommitPlan| {
+        cdf_runtime::PreparedDestinationCommit::from_verified_inputs(
+            inputs,
+            kernel,
+            bulk_path.clone(),
+            cdf_runtime::DestinationReceiptReportingPolicy::DestinationCommit { duplicate: false },
+        )
+        .unwrap()
+        .with_pending_context(ParquetSessionContext {
+            request: request.clone(),
+            plan: plan.clone(),
+            manifest_segments: built.segments.clone(),
+        })
+    };
+
+    let canonical = prepared(&inputs, plan.kernel.clone());
+    let mut mismatched_commit_inputs = inputs.clone();
+    mismatched_commit_inputs.destination_commit.target = TargetName::new("other_target").unwrap();
+    let error = canonical
+        .validate_verified_inputs(&mismatched_commit_inputs)
+        .unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("does not match verified package commit authority")
+    );
+
+    let mut mismatched_schema_inputs = inputs.clone();
+    mismatched_schema_inputs.schema_hash = SchemaHash::new("schema-other").unwrap();
+    let error = canonical
+        .validate_verified_inputs(&mismatched_schema_inputs)
+        .unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("does not match verified package schema authority")
+    );
+
+    let mut mismatched_kernel = plan.kernel.clone();
+    mismatched_kernel.target = TargetName::new("other_target").unwrap();
+    let error = cdf_runtime::PreparedDestinationCommit::from_verified_inputs(
+        &inputs,
+        mismatched_kernel,
+        bulk_path.clone(),
+        cdf_runtime::DestinationReceiptReportingPolicy::DestinationCommit { duplicate: false },
+    )
+    .err()
+    .expect("mismatched finalized-package plan must fail before mutation");
+    assert!(
+        error
+            .to_string()
+            .contains("plan target/disposition does not match verified package commit authority")
+    );
+
+    let mut commit_inputs = inputs.clone();
+    commit_inputs.destination_commit.target = TargetName::new("other_target").unwrap();
+    let mut commit_plan = plan.kernel.clone();
+    commit_plan.target = commit_inputs.destination_commit.target.clone();
+    let mut commit_drift = prepared(&commit_inputs, commit_plan);
+    let error = crate::runtime::take_parquet_session_context(&mut commit_drift).unwrap_err();
+    assert!(error.to_string().contains("context commit does not match"));
+
+    let mut schema_inputs = inputs.clone();
+    schema_inputs.schema_hash = SchemaHash::new("schema-other").unwrap();
+    let mut schema_drift = prepared(&schema_inputs, plan.kernel.clone());
+    let error = crate::runtime::take_parquet_session_context(&mut schema_drift).unwrap_err();
+    assert!(error.to_string().contains("context schema does not match"));
+
+    let mut drift_plan = plan.kernel.clone();
+    drift_plan.plan_id = PlanId::new("different-plan").unwrap();
+    let mut plan_drift = prepared(&inputs, drift_plan);
+    let error = crate::runtime::take_parquet_session_context(&mut plan_drift).unwrap_err();
+    assert!(error.to_string().contains("context plan does not match"));
+}
+
+#[test]
+fn finalized_package_ingress_duplicate_replay_preserves_existing_manifest() {
     let temp = tempfile::tempdir().unwrap();
     let package_dir = temp.path().join("pkg-session-duplicate");
     let built = build_package(
@@ -1302,31 +1432,33 @@ fn begin_session_duplicate_replay_preserves_existing_manifest() {
             vec![sample_batch(vec![1, 2], vec![Some("left"), Some("right")])],
         )],
     );
-    let dest = test_object_store(Arc::new(InMemory::default()), "").unwrap();
+    let mut dest = test_object_store(Arc::new(InMemory::default()), "").unwrap();
     let commit = request(&package_dir, &built, WriteDisposition::Append);
 
-    let first = dest.commit_package(commit.clone()).unwrap();
+    let first = commit_through_ingress(&mut dest, &package_dir, commit.clone()).unwrap();
     let manifest_before = dest
         .store()
         .get_required(dest.execution(), &first.plan.manifest_key)
         .unwrap();
-    let (duplicate_plan, duplicate_receipt) = commit_with_session(&dest, &commit);
+    let duplicate = commit_through_ingress(&mut dest, &package_dir, commit).unwrap();
     let manifest_after = dest
         .store()
         .get_required(dest.execution(), &first.plan.manifest_key)
         .unwrap();
 
-    assert!(duplicate_plan.duplicate);
-    assert_eq!(first.receipt.receipt_id, duplicate_receipt.receipt_id);
+    assert!(duplicate.duplicate);
+    assert_eq!(first.receipt.receipt_id, duplicate.receipt.receipt_id);
     assert_eq!(manifest_before, manifest_after);
-    assert!(dest.verify_receipt(&duplicate_receipt).unwrap().verified);
+    assert!(dest.verify_receipt(&duplicate.receipt).unwrap().verified);
 
     let receipts = PackageReader::open(&package_dir)
         .unwrap()
         .receipts()
         .unwrap();
-    assert_eq!(receipts.len(), 1);
-    assert_eq!(receipts[0].receipt_id, first.receipt.receipt_id);
+    assert!(
+        receipts.is_empty(),
+        "package receipts belong to orchestration"
+    );
 }
 
 #[test]
@@ -1343,9 +1475,14 @@ fn begin_session_abort_before_write_leaves_manifest_unwritten() {
     );
     let dest = test_object_store(Arc::new(InMemory::default()), "").unwrap();
     let commit = request(&package_dir, &built, WriteDisposition::Append);
-    let plan = dest.plan_package_commit(&commit).unwrap();
+    let plan = plan_package_for_test(&dest, &package_dir, &commit).unwrap();
 
-    let session = DestinationProtocol::begin(&dest, commit.commit.clone(), plan.kernel.clone())
+    let session = dest
+        .begin_prepared_commit_session(ParquetSessionContext {
+            request: commit.clone(),
+            plan: plan.clone(),
+            manifest_segments: built.segments.clone(),
+        })
         .expect("begin Parquet commit session");
     session.abort().unwrap();
 
@@ -1377,18 +1514,18 @@ fn in_memory_object_store_duplicate_replay_is_noop() {
         )],
     );
     let store = Arc::new(InMemory::default());
-    let dest = test_object_store(store, "lake").unwrap();
+    let mut dest = test_object_store(store, "lake").unwrap();
     let commit = request(&package_dir, &built, WriteDisposition::Append);
 
-    let first = dest.commit_package(commit.clone()).unwrap();
+    let first = commit_through_ingress(&mut dest, &package_dir, commit.clone()).unwrap();
     assert!(first.object_manifest.committed_at_ms > 1_700_000_000_000);
     let manifest_before = dest
         .store()
         .get_required(dest.execution(), &first.plan.manifest_key)
         .unwrap();
-    let duplicate_plan = dest.plan_package_commit(&commit).unwrap();
+    let duplicate_plan = plan_package_for_test(&dest, &package_dir, &commit).unwrap();
     assert!(duplicate_plan.duplicate);
-    let second = dest.commit_package(commit).unwrap();
+    let second = commit_through_ingress(&mut dest, &package_dir, commit).unwrap();
     let manifest_after = dest
         .store()
         .get_required(dest.execution(), &first.plan.manifest_key)
@@ -1397,7 +1534,6 @@ fn in_memory_object_store_duplicate_replay_is_noop() {
     assert!(!first.duplicate);
     assert!(second.duplicate);
     assert!(second.plan.duplicate);
-    assert!(!second.package_receipt_recorded);
     assert_eq!(first.receipt.receipt_id, second.receipt.receipt_id);
     assert_eq!(manifest_before, manifest_after);
 }
@@ -1406,7 +1542,7 @@ fn in_memory_object_store_duplicate_replay_is_noop() {
 fn replace_writes_current_pointer_to_latest_manifest() {
     let temp = tempfile::tempdir().unwrap();
     let root = temp.path().join("lake");
-    let dest = test_filesystem(&root).unwrap();
+    let mut dest = test_filesystem(&root).unwrap();
 
     let first_dir = temp.path().join("pkg-first");
     let first = build_package(
@@ -1414,9 +1550,12 @@ fn replace_writes_current_pointer_to_latest_manifest() {
         "pkg-first",
         vec![("seg-000001", vec![sample_batch(vec![1], vec![Some("old")])])],
     );
-    let first_outcome = dest
-        .commit_package(request(&first_dir, &first, WriteDisposition::Replace))
-        .unwrap();
+    let first_outcome = commit_through_ingress(
+        &mut dest,
+        &first_dir,
+        request(&first_dir, &first, WriteDisposition::Replace),
+    )
+    .unwrap();
 
     let second_dir = temp.path().join("pkg-second");
     let second = build_package(
@@ -1427,9 +1566,12 @@ fn replace_writes_current_pointer_to_latest_manifest() {
             vec![sample_batch(vec![9, 10], vec![Some("new"), Some("rows")])],
         )],
     );
-    let second_outcome = dest
-        .commit_package(request(&second_dir, &second, WriteDisposition::Replace))
-        .unwrap();
+    let second_outcome = commit_through_ingress(
+        &mut dest,
+        &second_dir,
+        request(&second_dir, &second, WriteDisposition::Replace),
+    )
+    .unwrap();
 
     let pointer_key = second_outcome.plan.replace_pointer_key.as_ref().unwrap();
     let pointer_bytes = dest
@@ -1451,9 +1593,9 @@ fn replace_writes_current_pointer_to_latest_manifest() {
 }
 
 #[test]
-fn zero_data_append_and_replace_record_receipts_without_objects_or_pointer_mutation() {
+fn zero_data_append_and_replace_emit_receipts_without_objects_or_pointer_mutation() {
     let temp = tempfile::tempdir().unwrap();
-    let dest = test_object_store(Arc::new(InMemory::default()), "").unwrap();
+    let mut dest = test_object_store(Arc::new(InMemory::default()), "").unwrap();
 
     let data_dir = temp.path().join("pkg-data");
     let data = build_package(
@@ -1464,9 +1606,12 @@ fn zero_data_append_and_replace_record_receipts_without_objects_or_pointer_mutat
             vec![sample_batch(vec![1, 2], vec![Some("old"), Some("rows")])],
         )],
     );
-    let seeded = dest
-        .commit_package(request(&data_dir, &data, WriteDisposition::Replace))
-        .unwrap();
+    let seeded = commit_through_ingress(
+        &mut dest,
+        &data_dir,
+        request(&data_dir, &data, WriteDisposition::Replace),
+    )
+    .unwrap();
     let pointer_key = seeded.plan.replace_pointer_key.clone().unwrap();
     let pointer_before = dest
         .store()
@@ -1480,11 +1625,11 @@ fn zero_data_append_and_replace_record_receipts_without_objects_or_pointer_mutat
         let package_dir = temp.path().join(package_id);
         let empty = build_package(&package_dir, package_id, Vec::new());
         let commit = request(&package_dir, &empty, disposition.clone());
-        let plan = dest.plan_package_commit(&commit).unwrap();
+        let plan = plan_package_for_test(&dest, &package_dir, &commit).unwrap();
         assert!(plan.object_keys.is_empty());
         assert!(plan.replace_pointer_key.is_none());
 
-        let outcome = dest.commit_package(commit).unwrap();
+        let outcome = commit_through_ingress(&mut dest, &package_dir, commit).unwrap();
         assert!(outcome.receipt.segment_acks.is_empty());
         assert_eq!(outcome.receipt.counts.rows_written, 0);
         assert!(dest.verify_receipt(&outcome.receipt).unwrap().verified);
@@ -1512,9 +1657,12 @@ fn dry_run_plan_reports_keys_without_writing() {
     let root = temp.path().join("lake");
     let dest = test_filesystem(&root).unwrap();
 
-    let plan = dest
-        .plan_package_commit(&request(&package_dir, &built, WriteDisposition::Replace))
-        .unwrap();
+    let plan = plan_package_for_test(
+        &dest,
+        &package_dir,
+        &request(&package_dir, &built, WriteDisposition::Replace),
+    )
+    .unwrap();
     let encoded_token = built.hash.as_str().replace(':', "~3a");
 
     assert_eq!(plan.rows_planned, 1);
@@ -1572,11 +1720,11 @@ fn duplicate_column_names_fail_before_writing_objects() {
         "pkg-duplicate-columns",
         vec![("seg-000001", vec![batch])],
     );
-    let dest = test_object_store(Arc::new(InMemory::default()), "").unwrap();
+    let mut dest = test_object_store(Arc::new(InMemory::default()), "").unwrap();
     let commit = request(&package_dir, &built, WriteDisposition::Append);
-    let plan = dest.plan_package_commit(&commit).unwrap();
+    let plan = plan_package_for_test(&dest, &package_dir, &commit).unwrap();
 
-    let error = dest.commit_package(commit).unwrap_err();
+    let error = commit_through_ingress(&mut dest, &package_dir, commit).unwrap_err();
 
     assert!(
         error
@@ -1615,13 +1763,13 @@ fn replace_duplicate_replay_requires_current_pointer_identity() {
             vec![sample_batch(vec![1, 2], vec![Some("left"), Some("right")])],
         )],
     );
-    let dest = test_object_store(Arc::new(InMemory::default()), "").unwrap();
+    let mut dest = test_object_store(Arc::new(InMemory::default()), "").unwrap();
     let commit = request(&package_dir, &built, WriteDisposition::Replace);
-    let first = dest.commit_package(commit.clone()).unwrap();
+    let first = commit_through_ingress(&mut dest, &package_dir, commit.clone()).unwrap();
     let pointer_key = first.plan.replace_pointer_key.as_ref().unwrap().clone();
     let original_pointer = load_replace_pointer(&dest, &pointer_key);
 
-    let replay = dest.commit_package(commit.clone()).unwrap();
+    let replay = commit_through_ingress(&mut dest, &package_dir, commit.clone()).unwrap();
     assert!(replay.duplicate);
     assert!(replay.plan.duplicate);
     assert!(dest.verify_receipt(&replay.receipt).unwrap().verified);
@@ -1646,7 +1794,7 @@ fn replace_duplicate_replay_requires_current_pointer_identity() {
         }
         store_replace_pointer(&dest, &pointer_key, &pointer);
 
-        let error = dest.commit_package(commit.clone()).unwrap_err();
+        let error = commit_through_ingress(&mut dest, &package_dir, commit.clone()).unwrap_err();
         assert!(
             error
                 .to_string()
@@ -1668,10 +1816,13 @@ fn verify_receipt_rejects_replace_pointer_identity_mismatch() {
             vec![sample_batch(vec![1], vec![Some("current")])],
         )],
     );
-    let dest = test_object_store(Arc::new(InMemory::default()), "").unwrap();
-    let outcome = dest
-        .commit_package(request(&package_dir, &built, WriteDisposition::Replace))
-        .unwrap();
+    let mut dest = test_object_store(Arc::new(InMemory::default()), "").unwrap();
+    let outcome = commit_through_ingress(
+        &mut dest,
+        &package_dir,
+        request(&package_dir, &built, WriteDisposition::Replace),
+    )
+    .unwrap();
     let pointer_key = replace_pointer_key_from_receipt(&outcome.receipt).to_owned();
     let original_pointer = load_replace_pointer(&dest, &pointer_key);
 
@@ -1720,10 +1871,13 @@ fn verify_receipt_rejects_manifest_identity_mismatch() {
             vec![sample_batch(vec![1], vec![Some("manifest")])],
         )],
     );
-    let dest = test_object_store(Arc::new(InMemory::default()), "").unwrap();
-    let outcome = dest
-        .commit_package(request(&package_dir, &built, WriteDisposition::Append))
-        .unwrap();
+    let mut dest = test_object_store(Arc::new(InMemory::default()), "").unwrap();
+    let outcome = commit_through_ingress(
+        &mut dest,
+        &package_dir,
+        request(&package_dir, &built, WriteDisposition::Append),
+    )
+    .unwrap();
     let key = manifest_key(&outcome.receipt).to_owned();
     let original_manifest = load_manifest(&dest, &key);
 
@@ -1768,10 +1922,13 @@ fn object_store_root_prefix_normalizes_and_rejects_parent_traversal() {
         )],
     );
     let store = Arc::new(InMemory::default());
-    let dest = test_object_store(store.clone(), "//lake//").unwrap();
-    let outcome = dest
-        .commit_package(request(&package_dir, &built, WriteDisposition::Append))
-        .unwrap();
+    let mut dest = test_object_store(store.clone(), "//lake//").unwrap();
+    let outcome = commit_through_ingress(
+        &mut dest,
+        &package_dir,
+        request(&package_dir, &built, WriteDisposition::Append),
+    )
+    .unwrap();
     let object_key = &outcome.object_manifest.objects[0].key;
 
     let prefixed = ObjectPath::from(format!("lake/{object_key}"));
@@ -1793,7 +1950,7 @@ fn object_store_root_prefix_normalizes_and_rejects_parent_traversal() {
 fn verification_fails_for_tampered_and_missing_objects() {
     let temp = tempfile::tempdir().unwrap();
     let store = Arc::new(InMemory::default());
-    let dest = test_object_store(store, "").unwrap();
+    let mut dest = test_object_store(store, "").unwrap();
 
     let tamper_dir = temp.path().join("pkg-tamper");
     let tamper_pkg = build_package(
@@ -1804,9 +1961,12 @@ fn verification_fails_for_tampered_and_missing_objects() {
             vec![sample_batch(vec![1], vec![Some("tamper")])],
         )],
     );
-    let tamper = dest
-        .commit_package(request(&tamper_dir, &tamper_pkg, WriteDisposition::Append))
-        .unwrap();
+    let tamper = commit_through_ingress(
+        &mut dest,
+        &tamper_dir,
+        request(&tamper_dir, &tamper_pkg, WriteDisposition::Append),
+    )
+    .unwrap();
     dest.store()
         .put(
             dest.execution(),
@@ -1817,9 +1977,12 @@ fn verification_fails_for_tampered_and_missing_objects() {
     let verification = dest.verify_receipt(&tamper.receipt).unwrap();
     assert!(!verification.verified);
     assert!(verification.reason.unwrap().contains("sha256 mismatch"));
-    let replay_error = dest
-        .commit_package(request(&tamper_dir, &tamper_pkg, WriteDisposition::Append))
-        .unwrap_err();
+    let replay_error = commit_through_ingress(
+        &mut dest,
+        &tamper_dir,
+        request(&tamper_dir, &tamper_pkg, WriteDisposition::Append),
+    )
+    .unwrap_err();
     assert!(replay_error.to_string().contains("refusing to overwrite"));
 
     let missing_dir = temp.path().join("pkg-missing");
@@ -1831,13 +1994,12 @@ fn verification_fails_for_tampered_and_missing_objects() {
             vec![sample_batch(vec![2], vec![Some("missing")])],
         )],
     );
-    let missing = dest
-        .commit_package(request(
-            &missing_dir,
-            &missing_pkg,
-            WriteDisposition::Append,
-        ))
-        .unwrap();
+    let missing = commit_through_ingress(
+        &mut dest,
+        &missing_dir,
+        request(&missing_dir, &missing_pkg, WriteDisposition::Append),
+    )
+    .unwrap();
     dest.store()
         .delete(dest.execution(), &missing.object_manifest.objects[0].key)
         .unwrap();
@@ -1862,6 +2024,6 @@ fn requested_segment_validation_rejects_mismatched_segments() {
     let mut bad = request(&package_dir, &built, WriteDisposition::Append);
     bad.commit.segments[0].row_count += 1;
 
-    let error = dest.plan_package_commit(&bad).unwrap_err();
+    let error = plan_package_for_test(&dest, &package_dir, &bad).unwrap_err();
     assert!(error.to_string().contains("requested segment"));
 }

@@ -10,7 +10,6 @@ use crate::{
     ddl::{provenance_unique_index_statement, system_table_ddl, system_table_migrations},
     identifiers::quote_identifier_unchecked,
     mirrors::{record_load_sql, verify_clause},
-    package::record_package_receipt_once,
     rows::{correction_cell_text, postgres_type_for_arrow},
     validate::{disposition_name, token_suffix},
     *,
@@ -63,18 +62,9 @@ impl PostgresCorrectionPlan {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct PostgresCorrectionCommitRequest {
-    pub package_dir: PathBuf,
-    pub plan: PostgresCorrectionPlan,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct PostgresCorrectionCommitOutcome {
-    pub receipt: Receipt,
-    pub duplicate: bool,
-    pub counts: CommitCounts,
-    pub package_receipt_recorded: bool,
-    pub package_receipt_error: Option<String>,
+pub(crate) struct PostgresCorrectionCommitRequest {
+    pub(crate) package_dir: PathBuf,
+    pub(crate) plan: PostgresCorrectionPlan,
 }
 
 pub fn plan_postgres_correction(
@@ -239,15 +229,6 @@ impl PostgresDestination {
         plan_postgres_correction(input, &self.sheet)
     }
 
-    pub fn commit_corrections(
-        &self,
-        request: DestinationCorrectionCommitRequest,
-        commit: PostgresCorrectionCommitRequest,
-    ) -> Result<PostgresCorrectionCommitOutcome> {
-        self.begin_correction_session(request, commit.plan, commit.package_dir)?
-            .run_to_outcome()
-    }
-
     pub(crate) fn begin_correction_session(
         &self,
         request: DestinationCorrectionCommitRequest,
@@ -263,7 +244,6 @@ impl PostgresDestination {
         validate_correction_package(&package_dir, &request)?;
         Ok(PostgresCorrectionSession {
             database_url: database_url.to_owned(),
-            package_dir,
             request,
             plan,
             client: None,
@@ -335,7 +315,6 @@ impl PostgresDestination {
 
 pub(crate) struct PostgresCorrectionSession {
     database_url: String,
-    package_dir: PathBuf,
     request: DestinationCorrectionCommitRequest,
     plan: PostgresCorrectionPlan,
     client: Option<Client>,
@@ -354,19 +333,12 @@ enum PostgresCorrectionSessionPhase {
 }
 
 impl PostgresCorrectionSession {
-    fn run_to_outcome(mut self) -> Result<PostgresCorrectionCommitOutcome> {
-        self.apply_migrations()?;
-        let counts = self.apply_corrections()?;
-        self.finalize_outcome(counts)
-    }
-
-    fn finalize_outcome(mut self, counts: CommitCounts) -> Result<PostgresCorrectionCommitOutcome> {
+    fn finalize_receipt(mut self) -> Result<Receipt> {
         if self.phase != PostgresCorrectionSessionPhase::Corrected {
             return Err(CdfError::destination(
                 "cannot finalize Postgres correction before addressed updates complete",
             ));
         }
-        let duplicate = self.duplicate_receipt.is_some();
         let receipt = self
             .duplicate_receipt
             .take()
@@ -380,15 +352,7 @@ impl PostgresCorrectionSession {
         client
             .batch_execute("COMMIT")
             .map_err(|error| correction_postgres_error("commit Postgres correction", error))?;
-        let (package_receipt_recorded, package_receipt_error) =
-            record_correction_package_receipt(&self.package_dir, &receipt);
-        Ok(PostgresCorrectionCommitOutcome {
-            receipt,
-            duplicate,
-            counts,
-            package_receipt_recorded,
-            package_receipt_error,
-        })
+        Ok(receipt)
     }
 
     fn rollback_open_transaction(&mut self) -> Result<()> {
@@ -495,10 +459,10 @@ impl CorrectionCommitSession for PostgresCorrectionSession {
     }
 
     fn finalize(self: Box<Self>) -> Result<Receipt> {
-        let counts = self.counts.clone().ok_or_else(|| {
+        self.counts.as_ref().ok_or_else(|| {
             CdfError::destination("Postgres correction session has not applied corrections")
         })?;
-        Ok((*self).finalize_outcome(counts)?.receipt)
+        (*self).finalize_receipt()
     }
 
     fn abort(mut self: Box<Self>) -> Result<()> {
@@ -971,16 +935,6 @@ fn set_correction_search_path(client: &mut Client, target: &PostgresTarget) -> R
             schema.quoted()
         ))
         .map_err(|error| correction_postgres_error("set Postgres correction search_path", error))
-}
-
-fn record_correction_package_receipt(
-    package_dir: &Path,
-    receipt: &Receipt,
-) -> (bool, Option<String>) {
-    match record_package_receipt_once(package_dir, receipt) {
-        Ok(recorded) => (recorded, None),
-        Err(error) => (false, Some(error.to_string())),
-    }
 }
 
 fn correction_now_ms() -> Result<i64> {

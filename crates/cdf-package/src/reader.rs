@@ -1,6 +1,6 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
-    fs::File,
+    fs::{self, File},
     path::{Path, PathBuf},
     sync::{
         Arc,
@@ -10,20 +10,22 @@ use std::{
 
 use arrow_array::{Array, RecordBatch, UInt64Array};
 use cdf_kernel::{
-    CdfError, Checkpoint, CommitSegment, PackageHash, PayloadRetention, Receipt, Result, SegmentId,
-    StateSegment,
+    CdfError, Checkpoint, CommitSegment, PackageHash, PayloadRetention, Receipt, Result, ScanPlan,
+    SegmentId, StateSegment,
 };
 use cdf_memory::{
     ConsumerKey, MemoryClass, MemoryCoordinator, MemoryLease, ReservationRequest,
     record_batch_retained_bytes, reserve_blocking,
 };
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
+use serde::de::DeserializeOwned;
+use sha2::{Digest, Sha256};
 
 use crate::{
     artifacts::{
         DEDUP_SUMMARY_FILE, DESTINATION_COMMIT_PLAN_FILE, DestinationCommitPlanPreimage,
         PROCESSED_OBSERVATIONS_FILE, PackageReplayInputs, ProcessedObservationEvidenceArtifact,
-        STATE_INPUT_CHECKPOINT_FILE, STATE_PROPOSED_DELTA_FILE, StateDeltaPreimage,
+        SCAN_PLAN_FILE, STATE_INPUT_CHECKPOINT_FILE, STATE_PROPOSED_DELTA_FILE, StateDeltaPreimage,
         read_json_artifact, read_optional_json_artifact,
     },
     model::{
@@ -35,6 +37,7 @@ use crate::{
         update_package_status, verify_package,
     },
     quarantine::{QuarantineRecord, quarantine_records_from_package_file},
+    storage::{normalize_artifact_path, package_path},
 };
 
 #[derive(Clone, Debug)]
@@ -256,6 +259,18 @@ impl PackageReader {
         &self.manifest
     }
 
+    pub fn recorded_scan_plan_verified(&self, verified: &VerifiedPackage) -> Result<ScanPlan> {
+        self.verified_json_artifact(verified, SCAN_PLAN_FILE)
+    }
+
+    pub fn identity_segments_verified(
+        &self,
+        verified: &VerifiedPackage,
+    ) -> Result<&[SegmentEntry]> {
+        self.require_verification(verified)?;
+        Ok(&self.manifest.identity.segments)
+    }
+
     pub fn verify(&self) -> Result<VerificationReport> {
         verify_package(&self.package_dir)
     }
@@ -293,6 +308,77 @@ impl PackageReader {
             ));
         }
         Ok(())
+    }
+
+    /// Reads an identity-bearing artifact under package verification authority
+    /// and revalidates its exact bytes at the point of consumption.
+    pub fn verified_identity_bytes(
+        &self,
+        verified: &VerifiedPackage,
+        relative_path: impl AsRef<Path>,
+    ) -> Result<Vec<u8>> {
+        self.require_verification(verified)?;
+        let relative_path = normalize_artifact_path(relative_path.as_ref())?;
+        let entry = self
+            .manifest
+            .identity
+            .files
+            .iter()
+            .find(|entry| entry.path == relative_path)
+            .ok_or_else(|| {
+                CdfError::data(format!(
+                    "verified package identity does not contain artifact {relative_path}"
+                ))
+            })?;
+        let path = package_path(&self.package_dir, &relative_path);
+        let bytes = fs::read(&path)
+            .map_err(|error| CdfError::data(format!("read {}: {error}", path.display())))?;
+        let byte_count = u64::try_from(bytes.len())
+            .map_err(|_| CdfError::data("identity artifact byte count exceeds u64"))?;
+        let sha256 = hex::encode(Sha256::digest(&bytes));
+        if byte_count != entry.byte_count || sha256 != entry.sha256 {
+            return Err(CdfError::data(format!(
+                "identity artifact {relative_path} changed after package verification: expected {} bytes with sha256 {}, observed {byte_count} bytes with sha256 {sha256}",
+                entry.byte_count, entry.sha256
+            )));
+        }
+        Ok(bytes)
+    }
+
+    pub fn verified_json_artifact<T: DeserializeOwned>(
+        &self,
+        verified: &VerifiedPackage,
+        relative_path: impl AsRef<Path>,
+    ) -> Result<T> {
+        let relative_path = relative_path.as_ref();
+        serde_json::from_slice(&self.verified_identity_bytes(verified, relative_path)?).map_err(
+            |error| {
+                CdfError::data(format!(
+                    "decode package artifact {}: {error}",
+                    relative_path.display()
+                ))
+            },
+        )
+    }
+
+    pub fn verified_optional_json_artifact<T: DeserializeOwned>(
+        &self,
+        verified: &VerifiedPackage,
+        relative_path: impl AsRef<Path>,
+    ) -> Result<Option<T>> {
+        self.require_verification(verified)?;
+        let relative_path = normalize_artifact_path(relative_path.as_ref())?;
+        if !self
+            .manifest
+            .identity
+            .files
+            .iter()
+            .any(|entry| entry.path == relative_path)
+        {
+            return Ok(None);
+        }
+        self.verified_json_artifact(verified, relative_path)
+            .map(Some)
     }
 
     pub fn update_status(&mut self, status: PackageStatus) -> Result<&PackageManifest> {
@@ -351,10 +437,7 @@ impl PackageReader {
         &self,
         verified: &VerifiedPackage,
     ) -> Result<arrow_schema::SchemaRef> {
-        self.require_verification(verified)?;
-        let path = self.package_dir.join(crate::RUNTIME_ARROW_SCHEMA_FILE);
-        let bytes = std::fs::read(&path)
-            .map_err(|error| CdfError::data(format!("read {}: {error}", path.display())))?;
+        let bytes = self.verified_identity_bytes(verified, crate::RUNTIME_ARROW_SCHEMA_FILE)?;
         crate::runtime_schema_from_bytes(bytes)
     }
 
@@ -367,15 +450,14 @@ impl PackageReader {
         &self,
         verified: &VerifiedPackage,
     ) -> Result<PackageReplayInputs> {
-        self.require_verification(verified)?;
         let replay = self.replay_view()?;
         PackageReplayInputs::from_preimages_with_processed(
             replay.package_hash,
-            self.input_checkpoint()?,
-            self.state_delta_preimage()?,
-            self.destination_commit_plan_preimage()?,
+            self.verified_json_artifact(verified, STATE_INPUT_CHECKPOINT_FILE)?,
+            self.verified_json_artifact(verified, STATE_PROPOSED_DELTA_FILE)?,
+            self.verified_json_artifact(verified, DESTINATION_COMMIT_PLAN_FILE)?,
             &replay.segments,
-            self.processed_observation_evidence()?,
+            self.verified_optional_json_artifact(verified, PROCESSED_OBSERVATIONS_FILE)?,
         )
     }
 

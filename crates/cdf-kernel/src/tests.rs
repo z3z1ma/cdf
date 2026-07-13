@@ -115,6 +115,21 @@ impl DestinationProtocol for FakeSessionDestination {
         Ok(sample_commit_plan(request))
     }
 
+    fn verify(&self, receipt: &Receipt) -> Result<ReceiptVerification> {
+        let verified = receipt.destination == self.sheet.destination;
+        Ok(ReceiptVerification {
+            verified,
+            receipt_id: receipt.receipt_id.clone(),
+            reason: if verified {
+                None
+            } else {
+                Some("receipt destination does not match verifier".to_owned())
+            },
+        })
+    }
+}
+
+impl FakeSessionDestination {
     fn begin(
         &self,
         request: DestinationCommitRequest,
@@ -132,19 +147,6 @@ impl DestinationProtocol for FakeSessionDestination {
             migrations_applied: false,
             accepted_segments: Vec::new(),
         }))
-    }
-
-    fn verify(&self, receipt: &Receipt) -> Result<ReceiptVerification> {
-        let verified = receipt.destination == self.sheet.destination;
-        Ok(ReceiptVerification {
-            verified,
-            receipt_id: receipt.receipt_id.clone(),
-            reason: if verified {
-                None
-            } else {
-                Some("receipt destination does not match verifier".to_owned())
-            },
-        })
     }
 }
 

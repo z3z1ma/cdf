@@ -257,7 +257,7 @@ async fn run_project_inner(execution: ProjectRunExecution<'_>) -> Result<Project
         execution.destination.runtime_mut(),
         StagedIngressPlan {
             checkpoint_id: execution.checkpoint_id.clone(),
-            staging_plan_id: manifest_plan.plan.scan.plan_id.clone(),
+            execution_plan_id: manifest_plan.plan.scan.plan_id.clone(),
             target: execution.target.clone(),
             disposition: manifest_plan.plan.write_disposition.clone(),
             schema_hash: execution.schema_hash.clone(),
@@ -384,7 +384,6 @@ async fn run_project_inner(execution: ProjectRunExecution<'_>) -> Result<Project
         execution.package_dir.clone(),
         execution.destination.runtime_mut(),
         execution.checkpoint_store,
-        replay_inputs,
         replay_memory,
         PackageReplayHooks {
             after_receipt_verified: execution.after_receipt_verified,

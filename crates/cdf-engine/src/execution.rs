@@ -1766,7 +1766,7 @@ where
 
     let builder = PackageBuilder::create(package_dir, plan.package_id.clone())?;
     builder.update_status(PackageStatus::Extracting)?;
-    builder.write_json_artifact("plan/scan.json", &plan.scan)?;
+    builder.write_json_artifact(cdf_package::SCAN_PLAN_FILE, &plan.scan)?;
     builder.write_json_artifact("plan/explain.json", &plan.explain)?;
     if let Some(graph) = &plan.operator_graph {
         graph.validate()?;

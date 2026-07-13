@@ -21,9 +21,8 @@ pub use orchestration::{
 pub use planning::*;
 pub use promotion::*;
 pub use replay::{
-    recover_package_from_artifacts, recover_prepared_package, replay_package_from_artifacts,
-    replay_package_from_artifacts_with_stage_hook, replay_prepared_package,
-    replay_prepared_package_with_stage_hook,
+    recover_package_from_artifacts, replay_package_from_artifacts,
+    replay_package_from_artifacts_with_stage_hook,
 };
 pub use resources::*;
 pub use tracing_bridge::TracingRunEventSink;
@@ -34,7 +33,10 @@ pub(crate) use artifacts::state_delta_from_run;
 #[cfg(test)]
 pub(crate) use orchestration::run_local_file_to_duckdb_checkpoint;
 #[cfg(test)]
-pub(crate) use replay::{PackageReplayHooks, PackageReplayStage, replay_package_with_runtime};
+pub(crate) use replay::{
+    PackageReplayHooks, PackageReplayStage, record_package_receipt_once,
+    replay_package_with_runtime,
+};
 
 mod prelude {
     pub(super) use std::{
@@ -64,7 +66,7 @@ mod prelude {
     };
     pub(super) use cdf_package::{
         DestinationCommitPlanPreimage, PackageReader, PackageReplayInputs, PackageStatus,
-        ReplayView, SegmentEntry, StateDeltaPreimage, VerifiedPackage, VerifiedPackageReader,
+        SegmentEntry, StateDeltaPreimage, VerifiedPackage, VerifiedPackageReader,
     };
     pub(super) use cdf_runtime::ExecutionServices;
     pub(super) use cdf_state_sqlite::{RunLedgerSnapshot, SqliteCheckpointStore, SqliteRunLedger};

@@ -32,7 +32,6 @@ pub use staging::*;
 pub use transformed_byte_source::*;
 pub use utilities::*;
 
-pub type ReceiptVerifiedHook<'a> = &'a dyn Fn(&cdf_kernel::Receipt) -> cdf_kernel::Result<()>;
 pub type RuntimeSecretProvider =
     dyn cdf_http::SecretProvider + Send + Sync + std::panic::RefUnwindSafe;
 
@@ -45,7 +44,7 @@ mod prelude {
     pub(crate) use arrow_schema::{Schema, SchemaRef};
     pub(crate) use cdf_contract::{IdentifierPolicy, identifier_policy_from_destination_rules};
     pub(crate) use cdf_kernel::{
-        CapabilitySupport, CdfError, CommitPlan, DestinationCommitRequest,
+        CapabilitySupport, CdfError, CommitPlan, CommitSession, DestinationCommitRequest,
         DestinationCorrectionCommitPlan, DestinationCorrectionCommitRequest, DestinationId,
         DestinationProtocol, DestinationSheet, DestinationSheetArtifact, Receipt,
         ReceiptVerification, ResourceStream, Result, SchemaHash, StateDelta, TargetName,
@@ -54,13 +53,13 @@ mod prelude {
     pub(crate) use cdf_package::{PackageReader, PackageReplayInputs, VerifiedPackage};
     pub(crate) use serde::{Deserialize, Serialize};
 
+    pub(crate) use crate::RuntimeSecretProvider;
     pub(crate) use crate::bulk::*;
     pub(crate) use crate::capabilities::*;
     pub(crate) use crate::context::*;
     pub(crate) use crate::destination::*;
     pub(crate) use crate::staging::*;
     pub(crate) use crate::utilities::*;
-    pub(crate) use crate::{ReceiptVerifiedHook, RuntimeSecretProvider};
 }
 
 #[cfg(test)]

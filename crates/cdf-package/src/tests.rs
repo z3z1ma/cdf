@@ -800,6 +800,36 @@ fn consumption_verification_authority_is_bound_to_one_package_directory() {
 }
 
 #[test]
+fn verified_identity_artifact_read_rejects_post_verification_change() {
+    let temp = tempfile::tempdir().unwrap();
+    let builder = PackageBuilder::create(temp.path(), "pkg-plan-consumption-binding").unwrap();
+    builder
+        .write_json_artifact(
+            "plan/scan.json",
+            &BTreeMap::from([("plan_id", "recorded-plan")]),
+        )
+        .unwrap();
+    let (_, verified) = builder.finish_verified().unwrap();
+    let reader = PackageReader::open(temp.path()).unwrap();
+
+    fs::write(
+        temp.path().join("plan/scan.json"),
+        br#"{"plan_id":"changed"}"#,
+    )
+    .unwrap();
+
+    let error = reader
+        .verified_json_artifact::<BTreeMap<String, String>>(&verified, "plan/scan.json")
+        .unwrap_err();
+    assert!(
+        error
+            .message
+            .contains("identity artifact plan/scan.json changed after package verification"),
+        "{error}"
+    );
+}
+
+#[test]
 fn verified_commit_stream_holds_one_accounted_segment_window() {
     let temp = tempfile::tempdir().unwrap();
     let manifest = build_archive_fixture(temp.path());

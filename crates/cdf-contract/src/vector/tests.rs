@@ -113,6 +113,139 @@ fn vector_plan_accepts_non_semantic_schema_metadata_added_by_execution() {
 }
 
 #[test]
+fn prebound_vector_evaluator_accepts_the_compiled_source_to_output_name_transition() {
+    let (mut program, batch) = program_and_batch(vec![Some(1), Some(2)]);
+    program
+        .column_programs
+        .iter_mut()
+        .find(|column| column.source_name == "status")
+        .unwrap()
+        .output_name = "normalized_status".to_owned();
+    let mut evaluator = VectorValidationEvaluator::new_bound(&program, batch.schema()).unwrap();
+    let fields = batch
+        .schema()
+        .fields()
+        .iter()
+        .map(|field| {
+            if field.name() == "status" {
+                Arc::new(field.as_ref().clone().with_name("normalized_status"))
+            } else {
+                field.clone()
+            }
+        })
+        .collect::<Vec<_>>();
+    let normalized =
+        RecordBatch::try_new(Arc::new(Schema::new(fields)), batch.columns().to_vec()).unwrap();
+
+    evaluator
+        .evaluate(&ContractEvaluationContext::default(), &normalized)
+        .unwrap();
+}
+
+#[test]
+fn prebound_vector_evaluator_rejects_conflicting_source_provenance() {
+    let (mut program, batch) = program_and_batch(vec![Some(1)]);
+    program
+        .column_programs
+        .iter_mut()
+        .find(|column| column.source_name == "status")
+        .unwrap()
+        .output_name = "normalized_status".to_owned();
+    let mut evaluator = VectorValidationEvaluator::new_bound(&program, batch.schema()).unwrap();
+    let fields = batch
+        .schema()
+        .fields()
+        .iter()
+        .map(|field| {
+            if field.name() == "status" {
+                Arc::new(cdf_kernel::with_source_name(
+                    field.as_ref().clone().with_name("normalized_status"),
+                    "different_source",
+                ))
+            } else {
+                field.clone()
+            }
+        })
+        .collect::<Vec<_>>();
+    let substituted =
+        RecordBatch::try_new(Arc::new(Schema::new(fields)), batch.columns().to_vec()).unwrap();
+
+    assert!(
+        evaluator
+            .evaluate(&ContractEvaluationContext::default(), &substituted)
+            .unwrap_err()
+            .to_string()
+            .contains("prebound physical expression schema")
+    );
+}
+
+#[test]
+fn vector_plan_rejects_aliases_owned_by_multiple_ordinals() {
+    let (mut program, batch) = program_and_batch(vec![Some(1)]);
+    program
+        .column_programs
+        .iter_mut()
+        .find(|column| column.source_name == "status")
+        .unwrap()
+        .output_name = "id".to_owned();
+
+    let error = bind_vector_validation_plan(&program, batch.schema()).unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("resolves to multiple validation program columns")
+    );
+}
+
+#[test]
+fn vector_plan_rejects_global_alias_collision_outside_projected_schema() {
+    let schema = Schema::new(vec![
+        Field::new("first", DataType::Int64, false),
+        Field::new("second", DataType::Int64, false),
+    ]);
+    let mut policy = ContractPolicy::for_trust(TrustLevel::Governed);
+    policy.rows.rules = vec![RowRule::Nullability {
+        column: "first".to_owned(),
+    }];
+    let mut program =
+        compile_validation_program(&policy, &ObservedSchema::from_arrow(&schema)).unwrap();
+    program
+        .column_programs
+        .iter_mut()
+        .find(|column| column.source_name == "second")
+        .unwrap()
+        .output_name = "first".to_owned();
+    let projected = Arc::new(Schema::new(vec![Field::new(
+        "second",
+        DataType::Int64,
+        false,
+    )]));
+
+    let error = bind_vector_validation_plan(&program, projected).unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("resolves to multiple validation program columns")
+    );
+}
+
+#[test]
+fn vector_plan_rejects_conflicting_name_and_source_provenance_at_bind_time() {
+    let (program, _) = program_and_batch(vec![Some(1)]);
+    let conflicting = Arc::new(Schema::new(vec![cdf_kernel::with_source_name(
+        Field::new("id", DataType::Int64, false),
+        "status",
+    )]));
+
+    let error = bind_vector_validation_plan(&program, conflicting).unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("resolve to different validation program columns")
+    );
+}
+
+#[test]
 fn prebound_vector_evaluator_rejects_same_typed_ordinal_substitution() {
     let expected = Arc::new(Schema::new(vec![
         Field::new("id", DataType::Int64, false),

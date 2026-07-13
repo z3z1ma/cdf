@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use arrow_array::{
     Array, BooleanArray, Float32Array, Float64Array, Int8Array, Int16Array, Int32Array, Int64Array,
@@ -22,7 +22,14 @@ use crate::{
 #[derive(Debug)]
 pub struct VectorValidationPlan {
     schema: SchemaRef,
+    column_names: Vec<BoundColumnNames>,
     rules: Vec<VectorRule>,
+}
+
+#[derive(Debug)]
+struct BoundColumnNames {
+    accepted: Vec<String>,
+    source: String,
 }
 
 #[derive(Debug)]
@@ -79,27 +86,17 @@ impl<'a> VectorValidationEvaluator<'a> {
 
     fn plan_for(&mut self, schema: SchemaRef) -> Result<&VectorValidationPlan> {
         if let Some(plan) = &self.plan {
-            if !schema_matches_bound_columns(plan.schema.as_ref(), schema.as_ref()) {
-                return Err(CdfError::data(
-                    "contract batch schema does not match the prebound physical expression schema",
-                ));
+            if !plan.matches_schema(schema.as_ref()) {
+                return Err(CdfError::data(format!(
+                    "contract batch schema does not match the prebound physical expression schema: expected {:?}, observed {:?}",
+                    plan.schema, schema
+                )));
             }
         } else {
             self.plan = Some(bind_vector_validation_plan(self.program, schema)?);
         }
         Ok(self.plan.as_ref().expect("vector plan was bound"))
     }
-}
-
-fn schema_matches_bound_columns(expected: &Schema, actual: &Schema) -> bool {
-    expected.fields().len() == actual.fields().len()
-        && expected
-            .fields()
-            .iter()
-            .zip(actual.fields())
-            .all(|(expected, actual)| {
-                expected.name() == actual.name() && expected.data_type() == actual.data_type()
-            })
 }
 
 #[derive(Clone, Debug)]
@@ -202,7 +199,23 @@ pub fn bind_vector_validation_plan(
     program: &ValidationProgram,
     schema: SchemaRef,
 ) -> Result<VectorValidationPlan> {
-    validate_schema_coverage(program, schema.as_ref())?;
+    validate_global_alias_ownership(program)?;
+    let column_ordinals = validate_schema_coverage(program, schema.as_ref())?;
+    let column_names = schema
+        .fields()
+        .iter()
+        .zip(column_ordinals)
+        .map(|(field, column_ordinal)| {
+            let column = &program.column_programs[column_ordinal];
+            let source = column.source_name.clone();
+            let mut accepted = vec![field.name().clone(), source.clone()];
+            accepted.push(column.source_name.clone());
+            accepted.push(column.output_name.clone());
+            accepted.sort();
+            accepted.dedup();
+            BoundColumnNames { accepted, source }
+        })
+        .collect::<Vec<_>>();
     let disposition = program
         .row_dispositions
         .iter()
@@ -246,16 +259,52 @@ pub fn bind_vector_validation_plan(
             kind,
         });
     }
-    Ok(VectorValidationPlan { schema, rules })
+    Ok(VectorValidationPlan {
+        schema,
+        column_names,
+        rules,
+    })
+}
+
+fn validate_global_alias_ownership(program: &ValidationProgram) -> Result<()> {
+    let mut owners = HashMap::with_capacity(program.column_programs.len().saturating_mul(2));
+    for (ordinal, column) in program.column_programs.iter().enumerate() {
+        for alias in [&column.source_name, &column.output_name] {
+            if let Some(existing) = owners.insert(alias.as_str(), ordinal)
+                && existing != ordinal
+            {
+                return Err(CdfError::contract(format!(
+                    "validation program alias {alias:?} resolves to multiple validation program columns"
+                )));
+            }
+        }
+    }
+    Ok(())
 }
 
 impl VectorValidationPlan {
+    fn matches_schema(&self, actual: &Schema) -> bool {
+        self.schema.fields().len() == actual.fields().len()
+            && self
+                .schema
+                .fields()
+                .iter()
+                .zip(actual.fields())
+                .zip(&self.column_names)
+                .all(|((expected, actual), names)| {
+                    expected.data_type() == actual.data_type()
+                        && expected.is_nullable() == actual.is_nullable()
+                        && names.accepted.iter().any(|name| name == actual.name())
+                        && source_name(actual.as_ref()).is_none_or(|source| source == names.source)
+                })
+    }
+
     pub fn evaluate_masks(
         &self,
         context: &ContractEvaluationContext,
         batch: &RecordBatch,
     ) -> Result<VectorMaskEvaluation> {
-        if !same_validation_shape(batch.schema().as_ref(), self.schema.as_ref()) {
+        if !self.matches_schema(batch.schema().as_ref()) {
             return Err(CdfError::contract(
                 "vector validation plan is bound to a different Arrow schema; rebind the plan",
             ));
@@ -381,19 +430,6 @@ impl VectorValidationPlan {
             summary: masks.summary,
         })
     }
-}
-
-fn same_validation_shape(left: &Schema, right: &Schema) -> bool {
-    left.fields().len() == right.fields().len()
-        && left
-            .fields()
-            .iter()
-            .zip(right.fields())
-            .all(|(left, right)| {
-                left.name() == right.name()
-                    && left.data_type() == right.data_type()
-                    && left.is_nullable() == right.is_nullable()
-            })
 }
 
 enum PredicateBinding<'a> {
@@ -953,19 +989,18 @@ fn resolve_column(
     Some((index, column.redaction.clone()))
 }
 
-fn validate_schema_coverage(program: &ValidationProgram, schema: &Schema) -> Result<()> {
+fn validate_schema_coverage(program: &ValidationProgram, schema: &Schema) -> Result<Vec<usize>> {
+    let mut selected_columns = HashSet::with_capacity(schema.fields().len());
+    let mut column_ordinals = Vec::with_capacity(schema.fields().len());
     for field in schema.fields() {
-        let name = source_name(field).unwrap_or_else(|| field.name());
-        let column = program
-            .column_programs
-            .iter()
-            .find(|column| column.source_name == name || column.output_name == name)
-            .ok_or_else(|| {
-                CdfError::contract(format!(
-                    "validation program does not cover field {:?}",
-                    field.name()
-                ))
-            })?;
+        let column_ordinal = resolve_schema_field_column(program, field.as_ref())?;
+        if !selected_columns.insert(column_ordinal) {
+            return Err(CdfError::contract(format!(
+                "validation program column {:?} is bound to multiple field ordinals",
+                program.column_programs[column_ordinal].source_name
+            )));
+        }
+        let column = &program.column_programs[column_ordinal];
         let observed = crate::ArrowType::from(field.data_type());
         if observed != column.arrow_type {
             return Err(CdfError::contract(format!(
@@ -975,8 +1010,64 @@ fn validate_schema_coverage(program: &ValidationProgram, schema: &Schema) -> Res
                 observed
             )));
         }
+        column_ordinals.push(column_ordinal);
     }
-    Ok(())
+    Ok(column_ordinals)
+}
+
+fn resolve_schema_field_column(
+    program: &ValidationProgram,
+    field: &arrow_schema::Field,
+) -> Result<usize> {
+    let name_matches = program
+        .column_programs
+        .iter()
+        .enumerate()
+        .filter_map(|(ordinal, column)| {
+            (column.source_name == *field.name() || column.output_name == *field.name())
+                .then_some(ordinal)
+        })
+        .collect::<Vec<_>>();
+    if name_matches.len() > 1 {
+        return Err(CdfError::contract(format!(
+            "field name {:?} resolves to multiple validation program columns",
+            field.name()
+        )));
+    }
+    let name_match = name_matches.first().copied();
+
+    let Some(provenance) = source_name(field) else {
+        return name_match.ok_or_else(|| {
+            CdfError::contract(format!(
+                "validation program does not cover field {:?}",
+                field.name()
+            ))
+        });
+    };
+    let provenance_matches = program
+        .column_programs
+        .iter()
+        .enumerate()
+        .filter_map(|(ordinal, column)| (column.source_name == provenance).then_some(ordinal))
+        .collect::<Vec<_>>();
+    if provenance_matches.len() > 1 {
+        return Err(CdfError::contract(format!(
+            "cdf:source_name provenance {provenance:?} resolves to multiple validation program columns"
+        )));
+    }
+    let provenance_match = provenance_matches.first().copied().ok_or_else(|| {
+        CdfError::contract(format!(
+            "validation program does not cover cdf:source_name provenance {provenance:?} on field {:?}",
+            field.name()
+        ))
+    })?;
+    if name_match.is_some_and(|name_ordinal| name_ordinal != provenance_match) {
+        return Err(CdfError::contract(format!(
+            "field name {:?} and cdf:source_name provenance {provenance:?} resolve to different validation program columns",
+            field.name()
+        )));
+    }
+    Ok(provenance_match)
 }
 
 fn downcast_error(rule: &str, data_type: &DataType) -> CdfError {

@@ -1,6 +1,6 @@
 use crate::prelude::*;
 use cdf_kernel::{
-    BatchStream, BoxFuture, CommitCounts, CommitSession, ConcurrencyLimit, DeliveryGuarantee,
+    BatchStream, BoxFuture, CommitCounts, CommitSegment, ConcurrencyLimit, DeliveryGuarantee,
     DestinationId, ErrorKind, IdempotencySupport, IdempotencyToken, IdentifierRules,
     MigrationRecord, PackageHash, PartitionId, PartitionPlan, PlanId, QueryableResource, ReceiptId,
     ResourceCapabilities, ResourceDescriptor, ResourceId, ResourceStream, ScanPlan, ScanRequest,
@@ -34,14 +34,6 @@ impl DestinationProtocol for MockProtocol {
         })
     }
 
-    fn begin(
-        &self,
-        _request: DestinationCommitRequest,
-        _plan: CommitPlan,
-    ) -> Result<Box<dyn CommitSession + '_>> {
-        Err(CdfError::destination("mock commit session is not used"))
-    }
-
     fn verify(&self, receipt: &Receipt) -> Result<ReceiptVerification> {
         Ok(ReceiptVerification {
             verified: true,
@@ -61,23 +53,153 @@ impl DestinationRuntime for MockRuntime {
         &self.protocol
     }
 
+    fn ingress(&mut self) -> DestinationIngress<'_> {
+        DestinationIngress::FinalizedPackage(self)
+    }
+
     fn describe(&self) -> DestinationDescription {
         self.description.clone()
     }
 
+    fn runtime_capabilities(&self) -> DestinationRuntimeCapabilities {
+        let descriptor = mock_bulk_descriptor(
+            "mock_finalized",
+            "mock-finalized-v1",
+            DestinationIngressMode::FinalizedPackageOnly,
+            DestinationWriterModel::SingleWriter,
+        );
+        DestinationRuntimeCapabilities {
+            commit_payload_mode: DestinationCommitPayloadMode::SegmentStreaming,
+            max_in_flight_segments: Some(1),
+            max_in_flight_bytes: Some(64 * 1024 * 1024),
+            bulk_paths: vec![descriptor],
+            bulk_path: Some("mock_finalized".to_owned()),
+            bulk_evidence_version: Some("mock-finalized-v1".to_owned()),
+            ..Default::default()
+        }
+    }
+}
+
+impl FinalizedPackageIngress for MockRuntime {
     fn prepare_package_commit(
         &mut self,
         _package_dir: &Path,
         _reader: &PackageReader,
-        _inputs: &PackageReplayInputs,
-        _context: &DestinationPlanningContext<'_>,
+        inputs: &PackageReplayInputs,
+        context: &DestinationPlanningContext<'_>,
     ) -> Result<PreparedDestinationCommit> {
-        Err(CdfError::destination(
-            "mock package preparation is not used",
-        ))
+        let plan = self.protocol.plan_commit(&inputs.destination_commit)?;
+        Ok(PreparedDestinationCommit::from_verified_inputs(
+            inputs,
+            plan,
+            context.bulk_path.clone(),
+            DestinationReceiptReportingPolicy::DestinationCommit { duplicate: false },
+        )?
+        .with_pending_context(inputs.schema_hash.clone()))
     }
 
-    fn bind_prepared_commit(&mut self, _prepared: &mut PreparedDestinationCommit) -> Result<()> {
+    fn begin_prepared_commit(
+        &mut self,
+        prepared: &mut PreparedDestinationCommit,
+    ) -> Result<Box<dyn CommitSession + '_>> {
+        let schema_hash = prepared.take_pending_context::<SchemaHash>("mock schema")?;
+        if prepared.plan().target != prepared.commit().target
+            || prepared.plan().disposition != prepared.commit().disposition
+        {
+            return Err(CdfError::contract(
+                "mock finalized commit plan does not match commit authority",
+            ));
+        }
+        Ok(Box::new(MockFinalizedSession {
+            destination_id: self.protocol.sheet.destination.clone(),
+            request: prepared.commit().clone(),
+            plan: prepared.plan().clone(),
+            schema_hash,
+            acknowledgements: Vec::new(),
+        }))
+    }
+}
+
+struct MockFinalizedSession {
+    destination_id: DestinationId,
+    request: DestinationCommitRequest,
+    plan: CommitPlan,
+    schema_hash: SchemaHash,
+    acknowledgements: Vec<SegmentAck>,
+}
+
+impl CommitSession for MockFinalizedSession {
+    fn apply_migrations(&mut self) -> Result<()> {
+        Ok(())
+    }
+
+    fn write_segment(&mut self, segment: CommitSegment) -> Result<SegmentAck> {
+        let expected = self
+            .request
+            .segments
+            .get(self.acknowledgements.len())
+            .ok_or_else(|| {
+                CdfError::contract("mock finalized session received an extra segment")
+            })?;
+        if expected != &segment.state {
+            return Err(CdfError::contract(
+                "mock finalized session segment does not match commit authority",
+            ));
+        }
+        let package_byte_count = segment.package_byte_count;
+        let state = segment.state.clone();
+        let rows = segment.into_batches()?.try_fold(0_u64, |rows, batch| {
+            rows.checked_add(batch.batch.num_rows() as u64)
+                .ok_or_else(|| CdfError::data("mock finalized row count overflowed"))
+        })?;
+        if rows != state.row_count {
+            return Err(CdfError::data(
+                "mock finalized segment rows do not match commit authority",
+            ));
+        }
+        let ack = SegmentAck {
+            segment_id: state.segment_id,
+            row_count: state.row_count,
+            byte_count: package_byte_count,
+        };
+        self.acknowledgements.push(ack.clone());
+        Ok(ack)
+    }
+
+    fn finalize(self: Box<Self>) -> Result<Receipt> {
+        if self.acknowledgements.len() != self.request.segments.len() {
+            return Err(CdfError::destination(
+                "mock finalized session is missing committed segments",
+            ));
+        }
+        Ok(Receipt {
+            receipt_id: ReceiptId::new(format!(
+                "receipt-{}",
+                self.request.package_hash.as_str().replace(':', "-")
+            ))?,
+            destination: self.destination_id,
+            target: self.request.target,
+            package_hash: self.request.package_hash,
+            segment_acks: self.acknowledgements.clone(),
+            disposition: self.request.disposition,
+            idempotency_token: self.request.idempotency_token,
+            transaction: None,
+            counts: CommitCounts {
+                rows_written: self.acknowledgements.iter().map(|ack| ack.row_count).sum(),
+                ..CommitCounts::default()
+            },
+            schema_hash: self.schema_hash,
+            migrations: self.plan.migrations,
+            committed_at_ms: 0,
+            verify: VerifyClause {
+                kind: "mock".to_owned(),
+                statement: "verify mock receipt".to_owned(),
+                parameters: Default::default(),
+            },
+        })
+    }
+
+    fn abort(self: Box<Self>) -> Result<()> {
         Ok(())
     }
 }
@@ -110,6 +232,10 @@ impl MockStagedRuntime {
 impl DestinationRuntime for MockStagedRuntime {
     fn protocol(&self) -> &dyn DestinationProtocol {
         self.protocol.as_ref()
+    }
+
+    fn ingress(&mut self) -> DestinationIngress<'_> {
+        DestinationIngress::StagedSegments(self)
     }
 
     fn describe(&self) -> DestinationDescription {
@@ -145,16 +271,18 @@ impl DestinationRuntime for MockStagedRuntime {
             replay_policy_values: Default::default(),
         }
     }
+}
 
+impl StagedSegmentIngress for MockStagedRuntime {
     fn begin_staged_ingress(
         &mut self,
         request: StagedIngressRequest,
     ) -> Result<Box<dyn StagedIngressSession>> {
         self.runtime_capabilities()
-            .validate_prepared_bulk_path(&request.bulk_path)?;
+            .validate_prepared_bulk_path(request.bulk_path())?;
         let mut attempts = self.attempts.lock().unwrap();
-        match attempts.get(&request.attempt_id) {
-            Some(existing) if existing.binding != request.binding => {
+        match attempts.get(request.attempt_id()) {
+            Some(existing) if &existing.binding != request.binding() => {
                 return Err(CdfError::destination(
                     "staging attempt id is already bound to different authority",
                 ));
@@ -162,9 +290,9 @@ impl DestinationRuntime for MockStagedRuntime {
             Some(_) => {}
             None => {
                 attempts.insert(
-                    request.attempt_id.clone(),
+                    request.attempt_id().clone(),
                     MockAttempt {
-                        binding: request.binding.clone(),
+                        binding: request.binding().clone(),
                         accepted_segments: Vec::new(),
                     },
                 );
@@ -195,24 +323,6 @@ impl DestinationRuntime for MockStagedRuntime {
                 accepted_segments: attempt.accepted_segments,
             }))
     }
-
-    fn prepare_package_commit(
-        &mut self,
-        _package_dir: &Path,
-        _reader: &PackageReader,
-        _inputs: &PackageReplayInputs,
-        _context: &DestinationPlanningContext<'_>,
-    ) -> Result<PreparedDestinationCommit> {
-        Err(CdfError::destination(
-            "mock staged runtime uses final binding",
-        ))
-    }
-
-    fn bind_prepared_commit(&mut self, _prepared: &mut PreparedDestinationCommit) -> Result<()> {
-        Err(CdfError::destination(
-            "mock staged runtime uses final binding",
-        ))
-    }
 }
 
 struct MockStagedSession {
@@ -226,7 +336,7 @@ impl StagedIngressSession for MockStagedSession {
         while segment.reader_mut().next_batch()?.is_some() {}
         let mut attempts = self.attempts.lock().unwrap();
         let accepted = attempts
-            .get_mut(&self.request.attempt_id)
+            .get_mut(self.request.attempt_id())
             .ok_or_else(|| CdfError::destination("mock staging attempt is not attached"))?;
         if segment.identity.ordinal != u32::try_from(accepted.accepted_segments.len()).unwrap() {
             return Err(CdfError::destination(
@@ -235,7 +345,7 @@ impl StagedIngressSession for MockStagedSession {
         }
         accepted.accepted_segments.push(segment.identity.clone());
         Ok(StagedSegmentAck {
-            attempt_id: self.request.attempt_id.clone(),
+            attempt_id: self.request.attempt_id().clone(),
             identity: segment.identity,
             external_durable: true,
         })
@@ -246,28 +356,34 @@ impl StagedIngressSession for MockStagedSession {
             .attempts
             .lock()
             .unwrap()
-            .get(&self.request.attempt_id)
+            .get(self.request.attempt_id())
             .cloned()
             .ok_or_else(|| CdfError::destination("mock staging attempt is absent"))?
             .accepted_segments;
         Ok(StagingSnapshot {
-            attempt_id: self.request.attempt_id.clone(),
-            binding: self.request.binding.clone(),
+            attempt_id: self.request.attempt_id().clone(),
+            binding: self.request.binding().clone(),
             recovery: StagingRecoveryMode::Resumable,
             accepted_segments,
         })
     }
 
-    fn bind_final(self: Box<Self>, binding: VerifiedFinalBinding) -> Result<Receipt> {
-        if binding.attempt_id() != &self.request.attempt_id {
+    fn bind_final(
+        self: Box<Self>,
+        binding: VerifiedFinalBinding,
+    ) -> Result<DestinationCommitOutcome> {
+        if binding.attempt_id() != self.request.attempt_id() {
             return Err(CdfError::destination(
                 "final binding attempt does not match staged session",
             ));
         }
-        if binding.commit().target != self.request.binding.target
-            || binding.commit().disposition != self.request.binding.disposition
-            || binding.schema_hash() != &self.request.binding.schema_hash
-            || binding.staging_plan_id() != &self.request.binding.plan_id
+        if binding.commit().target != self.request.binding().target
+            || binding.commit().disposition != self.request.binding().disposition
+            || binding.schema_hash() != &self.request.binding().schema_hash
+            || binding.output_arrow_schema_hash()
+                != &self.request.binding().output_arrow_schema_hash
+            || binding.merge_keys() != self.request.binding().merge_keys
+            || binding.execution_plan_id() != &self.request.binding().execution_plan_id
         {
             return Err(CdfError::destination(
                 "final binding does not match the staged attempt authority",
@@ -277,7 +393,7 @@ impl StagedIngressSession for MockStagedSession {
             .attempts
             .lock()
             .unwrap()
-            .get(&self.request.attempt_id)
+            .get(self.request.attempt_id())
             .cloned()
             .ok_or_else(|| CdfError::destination("mock staging attempt is absent"))?
             .accepted_segments;
@@ -289,14 +405,17 @@ impl StagedIngressSession for MockStagedSession {
             .get(&binding.commit().package_hash)
             .cloned()
         {
-            return Ok(receipt);
+            return Ok(DestinationCommitOutcome::new(
+                receipt,
+                DestinationReceiptReportingPolicy::DestinationCommit { duplicate: true },
+            ));
         }
         let receipt = Receipt {
             receipt_id: ReceiptId::new(format!(
                 "receipt-{}",
                 binding.commit().package_hash.as_str().replace(':', "-")
             ))?,
-            destination: self.request.binding.destination_id.clone(),
+            destination: self.request.binding().destination_id.clone(),
             target: binding.commit().target.clone(),
             package_hash: binding.commit().package_hash.clone(),
             segment_acks: accepted
@@ -313,7 +432,7 @@ impl StagedIngressSession for MockStagedSession {
                 system: "mock_staged".to_owned(),
                 values: [(
                     "load_attempt_id".to_owned(),
-                    self.request.attempt_id.to_string(),
+                    self.request.attempt_id().to_string(),
                 )]
                 .into_iter()
                 .collect(),
@@ -338,15 +457,18 @@ impl StagedIngressSession for MockStagedSession {
         self.attempts
             .lock()
             .unwrap()
-            .remove(&self.request.attempt_id);
-        Ok(receipt)
+            .remove(self.request.attempt_id());
+        Ok(DestinationCommitOutcome::new(
+            receipt,
+            DestinationReceiptReportingPolicy::DestinationCommit { duplicate: false },
+        ))
     }
 
     fn abort(self: Box<Self>) -> Result<()> {
         self.attempts
             .lock()
             .unwrap()
-            .remove(&self.request.attempt_id);
+            .remove(self.request.attempt_id());
         Ok(())
     }
 }
@@ -1025,24 +1147,27 @@ fn source_registry_compiles_hashes_and_resolves_mock_without_order_authority() {
 fn staged_ingress_types_cannot_claim_package_commit_authority() {
     let attempt_id = LoadAttemptId::new("attempt_01").unwrap();
     let schema_hash = SchemaHash::new("schema-v1").unwrap();
-    let request = StagedIngressRequest {
-        attempt_id: attempt_id.clone(),
-        binding: StagingAttemptBinding {
+    let request = StagedIngressRequest::new(
+        attempt_id.clone(),
+        StagingAttemptBinding {
             destination_id: DestinationId::new("mock").unwrap(),
             target: TargetName::new("events").unwrap(),
             disposition: WriteDisposition::Append,
             schema_hash: schema_hash.clone(),
-            plan_id: PlanId::new("plan-staging").unwrap(),
+            output_arrow_schema_hash: cdf_contract::canonical_arrow_schema_hash(
+                &arrow_schema::Schema::empty(),
+            )
+            .unwrap(),
+            merge_keys: Vec::new(),
+            execution_plan_id: PlanId::new("plan-staging").unwrap(),
         },
-        bulk_path: test_prepared_bulk_path(),
-        scheduling: StagingSchedulingContext::new(2, 1024).unwrap(),
-        output_schema: arrow_schema::Schema::empty(),
-        merge_keys: Vec::new(),
-    };
-    let value = serde_json::to_value(&request).unwrap();
-    assert_eq!(value["attempt_id"], "attempt_01");
-    assert!(value.get("package_hash").is_none());
-    assert!(value.get("idempotency_token").is_none());
+        test_prepared_bulk_path(),
+        StagingSchedulingContext::new(2, 1024).unwrap(),
+        arrow_schema::Schema::empty(),
+    )
+    .unwrap();
+    assert_eq!(request.attempt_id(), &attempt_id);
+    assert_eq!(request.binding().schema_hash, schema_hash);
 
     let identity = staged_identity("seg-a", 0, schema_hash);
     let ack = StagedSegmentAck {
@@ -1056,6 +1181,32 @@ fn staged_ingress_types_cannot_claim_package_commit_authority() {
 }
 
 #[test]
+fn staged_ingress_request_rejects_schema_payload_outside_binding_authority() {
+    let error = StagedIngressRequest::new(
+        LoadAttemptId::new("attempt_schema_mismatch").unwrap(),
+        StagingAttemptBinding {
+            destination_id: DestinationId::new("mock_staged").unwrap(),
+            target: TargetName::new("events").unwrap(),
+            disposition: WriteDisposition::Append,
+            schema_hash: SchemaHash::new("schema-v1").unwrap(),
+            output_arrow_schema_hash: SchemaHash::new("wrong-output-schema").unwrap(),
+            merge_keys: Vec::new(),
+            execution_plan_id: PlanId::new("plan-staged").unwrap(),
+        },
+        test_prepared_bulk_path(),
+        StagingSchedulingContext::new(2, 1024).unwrap(),
+        arrow_schema::Schema::empty(),
+    )
+    .unwrap_err();
+
+    assert!(
+        error
+            .to_string()
+            .contains("does not match binding wrong-output-schema")
+    );
+}
+
+#[test]
 fn final_binding_requires_exact_ordered_staged_identities() {
     let schema_hash = SchemaHash::new("schema-v1").unwrap();
     let first = staged_identity("seg-a", 0, schema_hash.clone());
@@ -1064,7 +1215,7 @@ fn final_binding_requires_exact_ordered_staged_identities() {
     let target = TargetName::new("events").unwrap();
     let binding = VerifiedFinalBinding {
         attempt_id: LoadAttemptId::new("attempt_02").unwrap(),
-        staging_plan_id: PlanId::new("plan-staged").unwrap(),
+        execution_plan_id: PlanId::new("plan-staged").unwrap(),
         commit: DestinationCommitRequest {
             package_hash: package_hash.clone(),
             target: target.clone(),
@@ -1073,8 +1224,13 @@ fn final_binding_requires_exact_ordered_staged_identities() {
             idempotency_token: IdempotencyToken::new(package_hash.as_str()).unwrap(),
         },
         schema_hash,
+        output_arrow_schema_hash: cdf_contract::canonical_arrow_schema_hash(
+            &arrow_schema::Schema::empty(),
+        )
+        .unwrap(),
+        merge_keys: Vec::new(),
         plan: CommitPlan {
-            plan_id: PlanId::new("plan-staged").unwrap(),
+            plan_id: PlanId::new("destination-plan-staged").unwrap(),
             target,
             disposition: WriteDisposition::Append,
             idempotency: IdempotencySupport::PackageToken,
@@ -1134,8 +1290,8 @@ fn staged_session_reattaches_rejects_mismatch_and_binds_receipt_only_at_finaliza
             .accepted_segments,
         vec![first.clone(), second.clone()]
     );
-    let mut wrong_authority = staged_request(attempt.clone(), schema_hash.clone());
-    wrong_authority.binding.target = TargetName::new("other_events").unwrap();
+    let wrong_authority =
+        staged_request_for_target(attempt.clone(), schema_hash.clone(), "other_events");
     assert!(runtime.begin_staged_ingress(wrong_authority).is_err());
 
     let mismatch = test_final_binding(
@@ -1163,7 +1319,12 @@ fn staged_session_reattaches_rejects_mismatch_and_binds_receipt_only_at_finaliza
             .unwrap()
             .contains("attempt_session")
     );
-    let receipt = reattached.bind_final(binding).unwrap();
+    let outcome = reattached.bind_final(binding).unwrap();
+    assert_eq!(
+        outcome.reporting_policy,
+        DestinationReceiptReportingPolicy::DestinationCommit { duplicate: false }
+    );
+    let receipt = outcome.receipt;
     assert_eq!(receipt.package_hash.as_str(), "sha256:package-final");
     assert_eq!(receipt.segment_acks.len(), 2);
     assert!(runtime.inspect_staged_ingress(&attempt).unwrap().is_none());
@@ -1202,7 +1363,11 @@ fn staged_session_reattaches_rejects_mismatch_and_binds_receipt_only_at_finaliza
             vec![first, second],
         ))
         .unwrap();
-    assert_eq!(duplicate.receipt_id, receipt.receipt_id);
+    assert_eq!(
+        duplicate.reporting_policy,
+        DestinationReceiptReportingPolicy::DestinationCommit { duplicate: true }
+    );
+    assert_eq!(duplicate.receipt.receipt_id, receipt.receipt_id);
 }
 
 #[test]
@@ -1232,11 +1397,10 @@ fn staged_abort_is_repeatable_and_finalized_only_runtime_fails_closed() {
             "finalized only",
         ),
     };
-    assert!(
-        finalized
-            .begin_staged_ingress(staged_request(attempt, schema_hash))
-            .is_err()
-    );
+    assert!(matches!(
+        finalized.ingress(),
+        DestinationIngress::FinalizedPackage(_)
+    ));
 }
 
 #[test]
@@ -1292,20 +1456,33 @@ fn staged_identity(
 }
 
 fn staged_request(attempt_id: LoadAttemptId, schema_hash: SchemaHash) -> StagedIngressRequest {
-    StagedIngressRequest {
+    staged_request_for_target(attempt_id, schema_hash, "events")
+}
+
+fn staged_request_for_target(
+    attempt_id: LoadAttemptId,
+    schema_hash: SchemaHash,
+    target: &str,
+) -> StagedIngressRequest {
+    StagedIngressRequest::new(
         attempt_id,
-        binding: StagingAttemptBinding {
+        StagingAttemptBinding {
             destination_id: DestinationId::new("mock_staged").unwrap(),
-            target: TargetName::new("events").unwrap(),
+            target: TargetName::new(target).unwrap(),
             disposition: WriteDisposition::Append,
             schema_hash,
-            plan_id: PlanId::new("plan-staged").unwrap(),
+            output_arrow_schema_hash: cdf_contract::canonical_arrow_schema_hash(
+                &arrow_schema::Schema::empty(),
+            )
+            .unwrap(),
+            merge_keys: Vec::new(),
+            execution_plan_id: PlanId::new("plan-staged").unwrap(),
         },
-        bulk_path: test_prepared_bulk_path(),
-        scheduling: StagingSchedulingContext::new(2, 1024).unwrap(),
-        output_schema: arrow_schema::Schema::empty(),
-        merge_keys: Vec::new(),
-    }
+        test_prepared_bulk_path(),
+        StagingSchedulingContext::new(2, 1024).unwrap(),
+        arrow_schema::Schema::empty(),
+    )
+    .unwrap()
 }
 
 fn test_prepared_bulk_path() -> PreparedBulkPath {
@@ -1381,7 +1558,7 @@ fn test_final_binding(
     let target = TargetName::new("events").unwrap();
     VerifiedFinalBinding {
         attempt_id,
-        staging_plan_id: PlanId::new("plan-staged").unwrap(),
+        execution_plan_id: PlanId::new("plan-staged").unwrap(),
         commit: DestinationCommitRequest {
             package_hash: package_hash.clone(),
             target: target.clone(),
@@ -1390,6 +1567,11 @@ fn test_final_binding(
             idempotency_token: IdempotencyToken::new(package_hash.as_str()).unwrap(),
         },
         schema_hash,
+        output_arrow_schema_hash: cdf_contract::canonical_arrow_schema_hash(
+            &arrow_schema::Schema::empty(),
+        )
+        .unwrap(),
+        merge_keys: Vec::new(),
         plan: CommitPlan {
             plan_id: PlanId::new("plan-staged").unwrap(),
             target,

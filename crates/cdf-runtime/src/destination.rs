@@ -6,28 +6,88 @@ pub enum DestinationReceiptReportingPolicy {
     DestinationCommitReceiptOnly,
 }
 
-pub struct PreparedDestinationCommit {
-    pub commit: DestinationCommitRequest,
-    pub plan: CommitPlan,
-    pub bulk_path: PreparedBulkPath,
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DestinationCommitOutcome {
+    pub receipt: Receipt,
     pub reporting_policy: DestinationReceiptReportingPolicy,
-    pub pending_context: Option<Box<dyn Any + Send + Sync>>,
+}
+
+impl DestinationCommitOutcome {
+    pub fn new(receipt: Receipt, reporting_policy: DestinationReceiptReportingPolicy) -> Self {
+        Self {
+            receipt,
+            reporting_policy,
+        }
+    }
+}
+
+pub struct PreparedDestinationCommit {
+    commit: DestinationCommitRequest,
+    schema_hash: SchemaHash,
+    plan: CommitPlan,
+    bulk_path: PreparedBulkPath,
+    reporting_policy: DestinationReceiptReportingPolicy,
+    pending_context: Option<Box<dyn Any + Send + Sync>>,
 }
 
 impl PreparedDestinationCommit {
-    pub fn new(
-        commit: DestinationCommitRequest,
+    pub fn from_verified_inputs(
+        inputs: &PackageReplayInputs,
         plan: CommitPlan,
         bulk_path: PreparedBulkPath,
         reporting_policy: DestinationReceiptReportingPolicy,
-    ) -> Self {
-        Self {
-            commit,
+    ) -> Result<Self> {
+        let prepared = Self {
+            commit: inputs.destination_commit.clone(),
+            schema_hash: inputs.schema_hash.clone(),
             plan,
             bulk_path,
             reporting_policy,
             pending_context: None,
+        };
+        prepared.validate_verified_inputs(inputs)?;
+        Ok(prepared)
+    }
+
+    pub fn commit(&self) -> &DestinationCommitRequest {
+        &self.commit
+    }
+
+    pub fn schema_hash(&self) -> &SchemaHash {
+        &self.schema_hash
+    }
+
+    pub fn plan(&self) -> &CommitPlan {
+        &self.plan
+    }
+
+    pub fn bulk_path(&self) -> &PreparedBulkPath {
+        &self.bulk_path
+    }
+
+    pub fn reporting_policy(&self) -> &DestinationReceiptReportingPolicy {
+        &self.reporting_policy
+    }
+
+    pub fn validate_verified_inputs(&self, inputs: &PackageReplayInputs) -> Result<()> {
+        if self.commit != inputs.destination_commit {
+            return Err(CdfError::contract(
+                "prepared destination commit does not match verified package commit authority",
+            ));
         }
+        if self.schema_hash != inputs.schema_hash {
+            return Err(CdfError::contract(
+                "prepared destination schema does not match verified package schema authority",
+            ));
+        }
+        if self.plan.target != self.commit.target
+            || self.plan.disposition != self.commit.disposition
+        {
+            return Err(CdfError::contract(
+                "prepared destination plan target/disposition does not match verified package commit authority",
+            ));
+        }
+        Ok(())
     }
 
     pub fn with_pending_context(
@@ -90,7 +150,6 @@ pub struct DestinationOutputSchema {
 pub struct DestinationPlanningContext<'a> {
     pub verified_package: &'a VerifiedPackage,
     pub bulk_path: &'a PreparedBulkPath,
-    pub after_receipt_verified: Option<ReceiptVerifiedHook<'a>>,
 }
 
 impl<'a> DestinationPlanningContext<'a> {
@@ -98,18 +157,55 @@ impl<'a> DestinationPlanningContext<'a> {
         Self {
             verified_package,
             bulk_path,
-            after_receipt_verified: None,
         }
     }
+}
 
-    pub fn with_after_receipt_verified(mut self, hook: Option<ReceiptVerifiedHook<'a>>) -> Self {
-        self.after_receipt_verified = hook;
-        self
+pub enum DestinationIngress<'a> {
+    FinalizedPackage(&'a mut dyn FinalizedPackageIngress),
+    StagedSegments(&'a mut dyn StagedSegmentIngress),
+}
+
+impl DestinationIngress<'_> {
+    pub fn mode(&self) -> DestinationIngressMode {
+        match self {
+            Self::FinalizedPackage(_) => DestinationIngressMode::FinalizedPackageOnly,
+            Self::StagedSegments(_) => DestinationIngressMode::StagedDurableSegments,
+        }
     }
+}
+
+pub trait FinalizedPackageIngress {
+    fn prepare_package_commit(
+        &mut self,
+        package_dir: &Path,
+        reader: &PackageReader,
+        inputs: &PackageReplayInputs,
+        context: &DestinationPlanningContext<'_>,
+    ) -> Result<PreparedDestinationCommit>;
+
+    fn begin_prepared_commit(
+        &mut self,
+        prepared: &mut PreparedDestinationCommit,
+    ) -> Result<Box<dyn CommitSession + '_>>;
+}
+
+pub trait StagedSegmentIngress {
+    fn begin_staged_ingress(
+        &mut self,
+        request: StagedIngressRequest,
+    ) -> Result<Box<dyn StagedIngressSession>>;
+
+    fn inspect_staged_ingress(
+        &mut self,
+        attempt_id: &LoadAttemptId,
+    ) -> Result<Option<StagingSnapshot>>;
 }
 
 pub trait DestinationRuntime {
     fn protocol(&self) -> &dyn DestinationProtocol;
+
+    fn ingress(&mut self) -> DestinationIngress<'_>;
 
     fn destination_sheet(&self) -> Result<DestinationSheet> {
         Ok(self.protocol().sheet().clone())
@@ -134,23 +230,6 @@ pub trait DestinationRuntime {
     ) -> Result<PreparedBulkPath> {
         let capabilities = self.runtime_capabilities();
         self.prepare_bulk_paths(input)?.into_selected(&capabilities)
-    }
-
-    fn begin_staged_ingress(
-        &mut self,
-        _request: StagedIngressRequest,
-    ) -> Result<Box<dyn StagedIngressSession>> {
-        Err(CdfError::destination(format!(
-            "destination {} requires a finalized package before ingress",
-            self.describe().destination_id
-        )))
-    }
-
-    fn inspect_staged_ingress(
-        &mut self,
-        _attempt_id: &LoadAttemptId,
-    ) -> Result<Option<StagingSnapshot>> {
-        Ok(None)
     }
 
     fn supported_dispositions(&self) -> &[WriteDisposition] {
@@ -182,16 +261,6 @@ pub trait DestinationRuntime {
             plan,
         ))
     }
-
-    fn prepare_package_commit(
-        &mut self,
-        package_dir: &Path,
-        reader: &PackageReader,
-        inputs: &PackageReplayInputs,
-        context: &DestinationPlanningContext<'_>,
-    ) -> Result<PreparedDestinationCommit>;
-
-    fn bind_prepared_commit(&mut self, prepared: &mut PreparedDestinationCommit) -> Result<()>;
 
     fn prepare_correction_commit(
         &mut self,

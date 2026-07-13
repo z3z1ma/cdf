@@ -3,8 +3,8 @@ use std::collections::BTreeSet;
 use arrow_array::RecordBatch;
 use arrow_schema::Schema;
 use cdf_kernel::{
-    CdfError, CommitPlan, DestinationCommitRequest, DestinationId, IdempotencyToken, PackageHash,
-    PlanId, Receipt, Result, SchemaHash, SegmentId, TargetName, WriteDisposition,
+    CdfError, CommitPlan, DestinationCommitRequest, DestinationId, PackageHash, PlanId, Result,
+    SchemaHash, SegmentId, TargetName, WriteDisposition,
 };
 use cdf_package::{PackageReader, SegmentEntry, VerifiedPackage};
 use serde::{Deserialize, Serialize};
@@ -88,17 +88,63 @@ pub struct StagingAttemptBinding {
     pub target: TargetName,
     pub disposition: WriteDisposition,
     pub schema_hash: SchemaHash,
-    pub plan_id: PlanId,
+    pub output_arrow_schema_hash: SchemaHash,
+    pub merge_keys: Vec<String>,
+    pub execution_plan_id: PlanId,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct StagedIngressRequest {
-    pub attempt_id: LoadAttemptId,
-    pub binding: StagingAttemptBinding,
-    pub bulk_path: crate::PreparedBulkPath,
-    pub scheduling: StagingSchedulingContext,
-    pub output_schema: Schema,
-    pub merge_keys: Vec<String>,
+    attempt_id: LoadAttemptId,
+    binding: StagingAttemptBinding,
+    bulk_path: crate::PreparedBulkPath,
+    scheduling: StagingSchedulingContext,
+    output_schema: Schema,
+}
+
+impl StagedIngressRequest {
+    pub fn new(
+        attempt_id: LoadAttemptId,
+        binding: StagingAttemptBinding,
+        bulk_path: crate::PreparedBulkPath,
+        scheduling: StagingSchedulingContext,
+        output_schema: Schema,
+    ) -> Result<Self> {
+        let observed = cdf_contract::canonical_arrow_schema_hash(&output_schema)?;
+        if observed != binding.output_arrow_schema_hash {
+            return Err(CdfError::contract(format!(
+                "staged ingress output schema hash {observed} does not match binding {}",
+                binding.output_arrow_schema_hash
+            )));
+        }
+        Ok(Self {
+            attempt_id,
+            binding,
+            bulk_path,
+            scheduling,
+            output_schema,
+        })
+    }
+
+    pub fn attempt_id(&self) -> &LoadAttemptId {
+        &self.attempt_id
+    }
+
+    pub fn binding(&self) -> &StagingAttemptBinding {
+        &self.binding
+    }
+
+    pub fn bulk_path(&self) -> &crate::PreparedBulkPath {
+        &self.bulk_path
+    }
+
+    pub fn scheduling(&self) -> &StagingSchedulingContext {
+        &self.scheduling
+    }
+
+    pub fn output_schema(&self) -> &Schema {
+        &self.output_schema
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -184,9 +230,11 @@ pub struct StagingSnapshot {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct VerifiedFinalBinding {
     pub(crate) attempt_id: LoadAttemptId,
-    pub(crate) staging_plan_id: PlanId,
+    pub(crate) execution_plan_id: PlanId,
     pub(crate) commit: DestinationCommitRequest,
     pub(crate) schema_hash: SchemaHash,
+    pub(crate) output_arrow_schema_hash: SchemaHash,
+    pub(crate) merge_keys: Vec<String>,
     pub(crate) plan: CommitPlan,
     pub(crate) ordered_segments: Vec<StagedSegmentIdentity>,
 }
@@ -196,8 +244,8 @@ impl VerifiedFinalBinding {
         &self.attempt_id
     }
 
-    pub fn staging_plan_id(&self) -> &PlanId {
-        &self.staging_plan_id
+    pub fn execution_plan_id(&self) -> &PlanId {
+        &self.execution_plan_id
     }
 
     pub fn commit(&self) -> &DestinationCommitRequest {
@@ -212,6 +260,14 @@ impl VerifiedFinalBinding {
         &self.plan
     }
 
+    pub fn output_arrow_schema_hash(&self) -> &SchemaHash {
+        &self.output_arrow_schema_hash
+    }
+
+    pub fn merge_keys(&self) -> &[String] {
+        &self.merge_keys
+    }
+
     pub fn ordered_segments(&self) -> &[StagedSegmentIdentity] {
         &self.ordered_segments
     }
@@ -220,33 +276,23 @@ impl VerifiedFinalBinding {
         attempt_id: LoadAttemptId,
         reader: &PackageReader,
         verification: &VerifiedPackage,
-        target: TargetName,
-        disposition: WriteDisposition,
-        schema_hash: SchemaHash,
         plan: CommitPlan,
     ) -> Result<Self> {
-        let staging_plan_id = plan.plan_id.clone();
-        Self::from_verified_package_with_staging_authority(
+        let execution_plan_id = reader.recorded_scan_plan_verified(verification)?.plan_id;
+        Self::from_verified_package_with_execution_authority(
             attempt_id,
-            staging_plan_id,
+            execution_plan_id,
             reader,
             verification,
-            target,
-            disposition,
-            schema_hash,
             plan,
         )
     }
 
-    #[allow(clippy::too_many_arguments)]
-    pub fn from_verified_package_with_staging_authority(
+    pub fn from_verified_package_with_execution_authority(
         attempt_id: LoadAttemptId,
-        staging_plan_id: PlanId,
+        execution_plan_id: PlanId,
         reader: &PackageReader,
         verification: &VerifiedPackage,
-        target: TargetName,
-        disposition: WriteDisposition,
-        schema_hash: SchemaHash,
         plan: CommitPlan,
     ) -> Result<Self> {
         let view = reader.replay_view()?;
@@ -257,11 +303,24 @@ impl VerifiedFinalBinding {
                 "verified package report does not match the final package manifest hash",
             ));
         }
-        if plan.target != target || plan.disposition != disposition {
+        let recorded_execution_plan_id = reader.recorded_scan_plan_verified(verification)?.plan_id;
+        if execution_plan_id != recorded_execution_plan_id {
+            return Err(CdfError::contract(format!(
+                "staged execution plan {execution_plan_id} does not match recorded package execution plan {recorded_execution_plan_id}",
+            )));
+        }
+        let inputs = reader.replay_inputs_verified(verification)?;
+        if plan.target != inputs.destination_commit.target
+            || plan.disposition != inputs.destination_commit.disposition
+        {
             return Err(CdfError::contract(
                 "final package binding target/disposition does not match its commit plan",
             ));
         }
+        let output_schema = reader.runtime_arrow_schema_verified(verification)?;
+        let output_arrow_schema_hash =
+            cdf_contract::canonical_arrow_schema_hash(output_schema.as_ref())?;
+        let schema_hash = inputs.schema_hash.clone();
         let mut seen = BTreeSet::new();
         let ordered_segments = view
             .segments
@@ -280,16 +339,14 @@ impl VerifiedFinalBinding {
             })
             .collect::<Result<Vec<_>>>()?;
         let package_hash = PackageHash::new(verification.package_hash())?;
-        let commit = DestinationCommitRequest {
-            package_hash: package_hash.clone(),
-            target,
-            disposition,
-            segments: reader
-                .replay_inputs_verified(verification)?
-                .state_delta
-                .segments,
-            idempotency_token: IdempotencyToken::new(package_hash.as_str())?,
-        };
+        let commit = inputs.destination_commit;
+        if commit.package_hash != package_hash
+            || commit.idempotency_token.as_str() != package_hash.as_str()
+        {
+            return Err(CdfError::contract(
+                "verified package replay inputs do not bind the final package token",
+            ));
+        }
         let commit_ids = commit
             .segments
             .iter()
@@ -306,9 +363,11 @@ impl VerifiedFinalBinding {
         }
         Ok(Self {
             attempt_id,
-            staging_plan_id,
+            execution_plan_id,
             commit,
             schema_hash,
+            output_arrow_schema_hash,
+            merge_keys: inputs.merge_keys,
             plan,
             ordered_segments,
         })
@@ -327,6 +386,9 @@ impl VerifiedFinalBinding {
 pub trait StagedIngressSession: Send {
     fn stage_segment(&mut self, segment: StagedSegmentRequest) -> Result<StagedSegmentAck>;
     fn snapshot(&self) -> Result<StagingSnapshot>;
-    fn bind_final(self: Box<Self>, binding: VerifiedFinalBinding) -> Result<Receipt>;
+    fn bind_final(
+        self: Box<Self>,
+        binding: VerifiedFinalBinding,
+    ) -> Result<crate::DestinationCommitOutcome>;
     fn abort(self: Box<Self>) -> Result<()>;
 }

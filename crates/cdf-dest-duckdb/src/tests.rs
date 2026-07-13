@@ -13,13 +13,20 @@ use cdf_conformance::destination::{
     representative_commit_request,
 };
 use cdf_kernel::{
-    CanonicalArrowField, CorrectionStrategy, CursorPosition, CursorValue,
-    DestinationCorrectionCommitRequest, DestinationCorrectionOperation, DestinationCorrectionPlan,
+    CHECKPOINT_STATE_VERSION, CanonicalArrowField, CheckpointId, CorrectionStrategy,
+    CursorPosition, CursorValue, DeliveryGuarantee, DestinationCorrectionCommitRequest,
+    DestinationCorrectionOperation, DestinationCorrectionPlan,
     DestinationCorrectionReceiptEvidence, DestinationCorrectionRequest, IdempotencyToken,
-    PackageHash, PartitionId, PromotionId, ResidualCorrectionOperation, RowProvenanceAddress,
-    ScopeKey, SegmentAck, SegmentId, SourcePosition,
+    PackageHash, PartitionId, PipelineId, PlanId, ProcessedObservationOutcome,
+    ProcessedObservationPosition, PromotionId, ResidualCorrectionOperation, ResourceId,
+    RowProvenanceAddress, ScanPlan, ScanRequest, ScopeKey, SegmentAck, SegmentId, SourcePosition,
+    StateSegment,
 };
-use cdf_package::{PackageBuilder, PackageStatus};
+use cdf_package::{
+    DestinationCommitPlanPreimage, PackageBuilder, PackageReader, PackageStatus,
+    ProcessedObservationEvidenceArtifact, StateDeltaPreimage,
+};
+use cdf_runtime::{DestinationRuntime, DurableSegmentReader, StagedSegmentIngress};
 
 use crate::sheet::duckdb_correction_capabilities;
 
@@ -149,10 +156,28 @@ fn finalize_correction(
 }
 
 fn build_package(package_dir: &Path, package_id: &str, batches: &[RecordBatch]) -> PackageHash {
-    build_package_segments(
+    build_package_for_commit(
+        package_dir,
+        package_id,
+        batches,
+        WriteDisposition::Append,
+        Vec::new(),
+    )
+}
+
+fn build_package_for_commit(
+    package_dir: &Path,
+    package_id: &str,
+    batches: &[RecordBatch],
+    disposition: WriteDisposition,
+    merge_keys: Vec<String>,
+) -> PackageHash {
+    build_package_segments_for_commit(
         package_dir,
         package_id,
         &[(SegmentId::new("seg-000001").unwrap(), batches.to_vec())],
+        disposition,
+        merge_keys,
     )
 }
 
@@ -161,31 +186,158 @@ fn build_package_segments(
     package_id: &str,
     segments: &[(SegmentId, Vec<RecordBatch>)],
 ) -> PackageHash {
+    build_package_segments_for_commit(
+        package_dir,
+        package_id,
+        segments,
+        WriteDisposition::Append,
+        Vec::new(),
+    )
+}
+
+fn build_package_segments_for_commit(
+    package_dir: &Path,
+    package_id: &str,
+    segments: &[(SegmentId, Vec<RecordBatch>)],
+    disposition: WriteDisposition,
+    merge_keys: Vec<String>,
+) -> PackageHash {
     let builder = PackageBuilder::create(package_dir, package_id).unwrap();
     builder.update_status(PackageStatus::Extracting).unwrap();
+    let schema = segments
+        .iter()
+        .flat_map(|(_, batches)| batches)
+        .next()
+        .map_or_else(|| Arc::new(Schema::empty()), RecordBatch::schema);
+    write_current_plan_artifacts(&builder, schema.as_ref());
+    builder.write_runtime_arrow_schema(schema.as_ref()).unwrap();
     builder
         .write_json_artifact(
-            "plan/resource_plan.json",
-            &BTreeMap::from([("resource", "orders")]),
-        )
-        .unwrap();
-    builder
-        .write_json_artifact(
-            "schema/output.json",
+            "schema/output.arrow.json",
             &BTreeMap::from([("schema_hash", "schema-v1")]),
         )
         .unwrap();
-    builder
-        .write_json_artifact(
-            "destination/commit_plan.json",
-            &BTreeMap::from([("target", "orders")]),
-        )
-        .unwrap();
-    for (segment_id, batches) in segments {
-        builder.write_segment(segment_id.clone(), batches).unwrap();
-    }
+    let entries = segments
+        .iter()
+        .map(|(segment_id, batches)| builder.write_segment(segment_id.clone(), batches).unwrap())
+        .collect::<Vec<_>>();
+    write_current_state_artifacts(&builder, &entries, disposition, merge_keys);
     let manifest = builder.finish().unwrap();
     PackageHash::new(manifest.package_hash).unwrap()
+}
+
+fn write_current_plan_artifacts(builder: &PackageBuilder, schema: &Schema) {
+    let mut program = cdf_contract::compile_validation_program(
+        &cdf_contract::ContractPolicy::evolve(),
+        &cdf_contract::ObservedSchema::from_arrow(schema),
+    )
+    .unwrap();
+    program.row_rules.clear();
+    program.transforms.clear();
+    program.compiled_expression_plan = Some(
+        cdf_contract::CompiledExpressionPlan::current(
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+        )
+        .unwrap(),
+    );
+    builder
+        .write_json_artifact("plan/validation-program.json", &program)
+        .unwrap();
+    builder
+        .write_json_artifact(
+            "plan/scan.json",
+            &ScanPlan {
+                plan_id: PlanId::new("duckdb-current-test-plan").unwrap(),
+                request: ScanRequest {
+                    resource_id: ResourceId::new("orders").unwrap(),
+                    projection: None,
+                    filters: Vec::new(),
+                    limit: None,
+                    order_by: Vec::new(),
+                    scope: ScopeKey::Resource,
+                },
+                partitions: Vec::new(),
+                pushed_predicates: Vec::new(),
+                unsupported_predicates: Vec::new(),
+                estimated_rows: None,
+                estimated_bytes: None,
+                delivery_guarantee: DeliveryGuarantee::AtLeastOnceDuplicateRisk,
+            },
+        )
+        .unwrap();
+}
+
+fn write_current_state_artifacts(
+    builder: &PackageBuilder,
+    entries: &[cdf_package::SegmentEntry],
+    disposition: WriteDisposition,
+    merge_keys: Vec<String>,
+) {
+    let scope = ScopeKey::Partition {
+        partition_id: PartitionId::new("p0").unwrap(),
+    };
+    let output_position = SourcePosition::Cursor(CursorPosition {
+        version: CHECKPOINT_STATE_VERSION,
+        field: "id".to_owned(),
+        value: CursorValue::I64(3),
+    });
+    let segments = entries
+        .iter()
+        .map(|entry| StateSegment {
+            segment_id: entry.segment_id.clone(),
+            scope: scope.clone(),
+            output_position: output_position.clone(),
+            row_count: entry.row_count,
+            byte_count: entry.byte_count,
+        })
+        .collect::<Vec<_>>();
+    if entries.is_empty() {
+        let observation = ProcessedObservationPosition::new(
+            "duckdb-current-test-empty-observation",
+            ProcessedObservationOutcome::Quarantined,
+            output_position.clone(),
+        )
+        .unwrap();
+        builder
+            .write_json_artifact(
+                cdf_package::PROCESSED_OBSERVATIONS_FILE,
+                &ProcessedObservationEvidenceArtifact::new(
+                    None,
+                    disposition.clone(),
+                    vec![observation],
+                    output_position.clone(),
+                )
+                .unwrap(),
+            )
+            .unwrap();
+    }
+    builder.write_input_checkpoint_artifact(&None).unwrap();
+    builder
+        .write_state_delta_preimage_artifact(&StateDeltaPreimage {
+            checkpoint_id: CheckpointId::new("checkpoint-duckdb-current-test").unwrap(),
+            pipeline_id: PipelineId::new("pipeline-duckdb-current-test").unwrap(),
+            resource_id: ResourceId::new("orders").unwrap(),
+            scope,
+            state_version: CHECKPOINT_STATE_VERSION,
+            parent_checkpoint_id: None,
+            input_position: None,
+            output_position,
+            schema_hash: SchemaHash::new("schema-v1").unwrap(),
+            segments: segments.clone(),
+        })
+        .unwrap();
+    builder
+        .write_commit_plan_preimage_artifact(&DestinationCommitPlanPreimage::package_hash_token(
+            TargetName::new("orders").unwrap(),
+            disposition,
+            merge_keys,
+            SchemaHash::new("schema-v1").unwrap(),
+            segments,
+        ))
+        .unwrap();
 }
 
 fn state_segment(rows: u64) -> StateSegment {
@@ -214,7 +366,7 @@ fn request(
     disposition: WriteDisposition,
     merge_keys: Vec<String>,
     rows: u64,
-) -> DuckDbCommitRequest {
+) -> CurrentCommitRequest {
     request_with_segments(
         package_dir,
         package_hash,
@@ -230,18 +382,25 @@ fn request_with_segments(
     disposition: WriteDisposition,
     merge_keys: Vec<String>,
     segments: Vec<StateSegment>,
-) -> DuckDbCommitRequest {
-    DuckDbCommitRequest {
+) -> CurrentCommitRequest {
+    let package = PackageReader::open(package_dir)
+        .unwrap()
+        .into_verified()
+        .unwrap();
+    let inputs = package.replay_inputs().unwrap();
+    assert_eq!(inputs.destination_commit.package_hash, package_hash);
+    assert_eq!(inputs.destination_commit.disposition, disposition);
+    assert_eq!(inputs.merge_keys, merge_keys);
+    assert_eq!(inputs.destination_commit.segments.len(), segments.len());
+    for (recorded, expected) in inputs.destination_commit.segments.iter().zip(&segments) {
+        assert_eq!(recorded.segment_id, expected.segment_id);
+        assert_eq!(recorded.row_count, expected.row_count);
+    }
+    CurrentCommitRequest {
         package_dir: package_dir.to_path_buf(),
-        commit: DestinationCommitRequest {
-            package_hash: package_hash.clone(),
-            target: TargetName::new("orders").unwrap(),
-            disposition,
-            segments,
-            idempotency_token: IdempotencyToken::new(package_hash.as_str()).unwrap(),
-        },
-        schema_hash: SchemaHash::new("schema-v1").unwrap(),
-        merge_keys,
+        commit: inputs.destination_commit,
+        schema_hash: inputs.schema_hash,
+        merge_keys: inputs.merge_keys,
     }
 }
 
@@ -249,63 +408,141 @@ fn destination(path: &Path) -> DuckDbDestination {
     DuckDbDestination::new(path).unwrap()
 }
 
-fn finalize_session(dest: &DuckDbDestination, request: &DuckDbCommitRequest) -> Receipt {
-    let plan = dest.plan_package_commit(request).unwrap();
-    let mut session = dest
-        .begin(request.commit.clone(), plan.kernel.clone())
-        .unwrap();
-    session.apply_migrations().unwrap();
-    let segments = PackageReader::open(&request.package_dir)
-        .unwrap()
-        .read_commit_segments(&request.commit.segments)
-        .unwrap();
-    for segment in segments {
-        let ack = session.write_segment(segment).unwrap();
-        assert!(request.commit.segments.iter().any(|state| {
-            ack.segment_id == state.segment_id
-                && ack.row_count == state.row_count
-                && ack.byte_count == state.byte_count
-        }));
+#[derive(Debug)]
+struct CurrentCommitOutcome {
+    receipt: Receipt,
+}
+
+#[derive(Clone, Debug)]
+struct CurrentCommitRequest {
+    package_dir: PathBuf,
+    commit: DestinationCommitRequest,
+    schema_hash: SchemaHash,
+    merge_keys: Vec<String>,
+}
+
+struct TestDurableSegmentReader {
+    identity: cdf_runtime::StagedSegmentIdentity,
+    batches: std::vec::IntoIter<RecordBatch>,
+}
+
+impl DurableSegmentReader for TestDurableSegmentReader {
+    fn identity(&self) -> &cdf_runtime::StagedSegmentIdentity {
+        &self.identity
     }
-    session.finalize().unwrap()
+
+    fn next_batch(&mut self) -> Result<Option<RecordBatch>> {
+        Ok(self.batches.next())
+    }
 }
 
-fn finalize_empty_session(dest: &DuckDbDestination, request: &DuckDbCommitRequest) -> Receipt {
-    let plan = dest.plan_empty_package_commit(request).unwrap();
-    assert_eq!(plan.effect, DuckDbCommitEffect::NoData);
-    let mut session = dest
-        .begin(request.commit.clone(), plan.kernel.clone())
-        .unwrap();
-    session.apply_migrations().unwrap();
-    session.finalize().unwrap()
+fn commit_current(
+    destination: &DuckDbDestination,
+    request: CurrentCommitRequest,
+) -> CurrentCommitOutcome {
+    try_commit_current(destination, request).unwrap()
 }
 
-fn assert_same_receipt_shape(left: &Receipt, right: &Receipt) {
-    assert_eq!(left.receipt_id, right.receipt_id);
-    assert_eq!(left.destination, right.destination);
-    assert_eq!(left.target, right.target);
-    assert_eq!(left.package_hash, right.package_hash);
-    assert_eq!(left.segment_acks, right.segment_acks);
-    assert_eq!(left.disposition, right.disposition);
-    assert_eq!(left.idempotency_token, right.idempotency_token);
-    assert_eq!(left.counts, right.counts);
-    assert_eq!(left.schema_hash, right.schema_hash);
-    assert_eq!(left.migrations, right.migrations);
-    assert_eq!(left.verify, right.verify);
-    assert_eq!(
-        left.transaction.as_ref().map(|tx| tx.system.as_str()),
-        Some("duckdb")
-    );
-    assert_eq!(
-        right.transaction.as_ref().map(|tx| tx.system.as_str()),
-        Some("duckdb")
-    );
+fn try_commit_current(
+    destination: &DuckDbDestination,
+    request: CurrentCommitRequest,
+) -> Result<CurrentCommitOutcome> {
+    static ATTEMPT: AtomicU64 = AtomicU64::new(0);
+    let package = PackageReader::open(&request.package_dir)?.into_verified()?;
+    let reader = package.reader();
+    let verified = package.verification();
+    let output_schema = reader.runtime_arrow_schema_verified(verified)?;
+    let mut runtime = destination.clone();
+    let capabilities = runtime.runtime_capabilities();
+    let destination_id = runtime.sheet().destination.clone();
+    let bulk_path = runtime.prepare_selected_bulk_path(
+        &cdf_runtime::BulkPathPreparationInput::new(output_schema.as_ref())
+            .with_commit(&request.commit),
+    )?;
+    let plan = runtime.plan_commit(&request.commit)?;
+    let attempt_id = cdf_runtime::LoadAttemptId::new(format!(
+        "duckdb-test-{}",
+        ATTEMPT.fetch_add(1, Ordering::Relaxed)
+    ))?;
+    let mut session = runtime.begin_staged_ingress(cdf_runtime::StagedIngressRequest::new(
+        attempt_id.clone(),
+        cdf_runtime::StagingAttemptBinding {
+            destination_id,
+            target: request.commit.target.clone(),
+            disposition: request.commit.disposition.clone(),
+            schema_hash: request.schema_hash.clone(),
+            output_arrow_schema_hash: cdf_contract::canonical_arrow_schema_hash(
+                output_schema.as_ref(),
+            )?,
+            merge_keys: request.merge_keys.clone(),
+            execution_plan_id: reader.recorded_scan_plan_verified(verified)?.plan_id,
+        },
+        bulk_path,
+        cdf_runtime::StagingSchedulingContext::new(
+            capabilities
+                .max_in_flight_segments
+                .ok_or_else(|| CdfError::contract("test destination omitted segment bound"))?,
+            capabilities
+                .max_in_flight_bytes
+                .ok_or_else(|| CdfError::contract("test destination omitted byte bound"))?,
+        )?,
+        output_schema.as_ref().clone(),
+    )?)?;
+    for (ordinal, entry) in reader.manifest().identity.segments.iter().enumerate() {
+        let identity = cdf_runtime::StagedSegmentIdentity::from_manifest_entry(
+            entry,
+            request.schema_hash.clone(),
+            u32::try_from(ordinal)
+                .map_err(|_| CdfError::data("test package has too many segments"))?,
+        )?;
+        let batches = reader.read_segment(&entry.segment_id)?.into_iter();
+        session.stage_segment(cdf_runtime::StagedSegmentRequest::new(
+            identity.clone(),
+            Box::new(TestDurableSegmentReader { identity, batches }),
+        )?)?;
+    }
+    let binding = cdf_runtime::VerifiedFinalBinding::from_verified_package(
+        attempt_id,
+        reader,
+        package.verification(),
+        plan,
+    )?;
+    Ok(CurrentCommitOutcome {
+        receipt: session.bind_final(binding)?.receipt,
+    })
+}
+
+fn plan_current_package_commit(
+    destination: &DuckDbDestination,
+    request: &CurrentCommitRequest,
+) -> Result<DuckDbCommitPlan> {
+    let reader = PackageReader::open(&request.package_dir)?;
+    let schema =
+        if request
+            .package_dir
+            .join(cdf_package::RUNTIME_ARROW_SCHEMA_FILE)
+            .exists()
+        {
+            reader.runtime_arrow_schema()?
+        } else {
+            let first =
+                reader.manifest().identity.segments.first().ok_or_else(|| {
+                    CdfError::data("DuckDB package has no segment schema authority")
+                })?;
+            reader
+                .read_segment(&first.segment_id)?
+                .into_iter()
+                .next()
+                .map(|batch| batch.schema())
+                .ok_or_else(|| CdfError::data("DuckDB package first segment has no Arrow batch"))?
+        };
+    destination.plan_schema_commit(&request.commit, schema.as_ref())
 }
 
 #[test]
 fn sheet_declares_duckdb_destination_contract() {
     let temp = tempfile::tempdir().unwrap();
-    let dest = destination(&temp.path().join("local.duckdb"));
+    let mut dest = destination(&temp.path().join("local.duckdb"));
     let sheet = dest.sheet();
     assert_eq!(sheet.destination.as_str(), "duckdb");
     assert_eq!(sheet.transactions, TransactionSupport::AtomicPackage);
@@ -316,12 +553,19 @@ fn sheet_declares_duckdb_destination_contract() {
             .supported_dispositions
             .contains(&WriteDisposition::Append)
     );
+    let runtime = &mut dest as &mut dyn cdf_runtime::DestinationRuntime;
     assert_eq!(
-        cdf_runtime::DestinationRuntime::runtime_capabilities(&dest)
-            .bulk_path
-            .as_deref(),
+        runtime.runtime_capabilities().bulk_path.as_deref(),
         Some("arrow_record_batch_appender")
     );
+    assert_eq!(
+        runtime.runtime_capabilities().ingress_mode,
+        cdf_runtime::DestinationIngressMode::StagedDurableSegments
+    );
+    assert!(matches!(
+        runtime.ingress(),
+        cdf_runtime::DestinationIngress::StagedSegments(_)
+    ));
 }
 
 #[test]
@@ -353,7 +597,47 @@ fn reusable_destination_conformance_suite_accepts_duckdb_sheet_and_plans() {
 }
 
 #[test]
-fn segment_session_flow_returns_wrapper_receipt_shape_and_verifies() {
+fn verified_final_binding_rejects_execution_plan_drift() {
+    let temp = tempfile::tempdir().unwrap();
+    let package_dir = temp.path().join("pkg-execution-plan-drift");
+    let package_hash = build_package(
+        &package_dir,
+        "pkg-execution-plan-drift",
+        &[sample_batch(vec![1], vec![Some("ada")])],
+    );
+    let request = request(
+        &package_dir,
+        package_hash,
+        WriteDisposition::Append,
+        Vec::new(),
+        1,
+    );
+    let destination = destination(&temp.path().join("plan-drift.duckdb"));
+    let plan = destination.plan_commit(&request.commit).unwrap();
+    let package = PackageReader::open(&package_dir)
+        .unwrap()
+        .into_verified()
+        .unwrap();
+
+    let error = cdf_runtime::VerifiedFinalBinding::from_verified_package_with_execution_authority(
+        cdf_runtime::LoadAttemptId::new("duckdb-plan-drift").unwrap(),
+        PlanId::new("different-execution-plan").unwrap(),
+        package.reader(),
+        package.verification(),
+        plan,
+    )
+    .unwrap_err();
+
+    assert!(
+        error
+            .to_string()
+            .contains("does not match recorded package execution plan"),
+        "{error}"
+    );
+}
+
+#[test]
+fn staged_segment_ingress_returns_verifiable_receipt_and_exact_provenance() {
     let temp = tempfile::tempdir().unwrap();
     let package = temp.path().join("pkg-session");
     let package_hash = build_package_segments(
@@ -380,28 +664,25 @@ fn segment_session_flow_returns_wrapper_receipt_shape_and_verifies() {
             state_segment_for("seg-000002", 1, 3),
         ],
     );
-    let wrapper_dest = destination(&temp.path().join("wrapper.duckdb"));
-    let wrapper = wrapper_dest.commit_package(request.clone()).unwrap();
-    assert!(!wrapper.duplicate);
-
     let session_dest = destination(&temp.path().join("session.duckdb"));
-    let receipt = finalize_session(&session_dest, &request);
+    let receipt = commit_current(&session_dest, request.clone()).receipt;
 
-    assert_same_receipt_shape(&receipt, &wrapper.receipt);
+    assert_eq!(
+        receipt.transaction.as_ref().map(|tx| tx.system.as_str()),
+        Some("duckdb")
+    );
     assert_eq!(
         receipt.segment_acks,
-        vec![
-            SegmentAck {
-                segment_id: SegmentId::new("seg-000001").unwrap(),
-                row_count: 2,
-                byte_count: 32,
-            },
-            SegmentAck {
-                segment_id: SegmentId::new("seg-000002").unwrap(),
-                row_count: 1,
-                byte_count: 16,
-            },
-        ]
+        request
+            .commit
+            .segments
+            .iter()
+            .map(|state| SegmentAck {
+                segment_id: state.segment_id.clone(),
+                row_count: state.row_count,
+                byte_count: state.byte_count,
+            })
+            .collect::<Vec<_>>()
     );
     assert!(session_dest.verify_receipt(&receipt).unwrap().verified);
     let protocol: &dyn DestinationProtocol = &session_dest;
@@ -425,51 +706,7 @@ fn segment_session_flow_returns_wrapper_receipt_shape_and_verifies() {
 }
 
 #[test]
-fn session_finalize_rejects_missing_segments() {
-    let temp = tempfile::tempdir().unwrap();
-    let package = temp.path().join("pkg-session-missing-segments");
-    let package_hash = build_package_segments(
-        &package,
-        "pkg-session-missing-segments",
-        &[
-            (
-                SegmentId::new("seg-000001").unwrap(),
-                vec![sample_batch(vec![1], vec![Some("ada")])],
-            ),
-            (
-                SegmentId::new("seg-000002").unwrap(),
-                vec![sample_batch(vec![2], vec![Some("grace")])],
-            ),
-        ],
-    );
-    let request = request_with_segments(
-        &package,
-        package_hash,
-        WriteDisposition::Append,
-        Vec::new(),
-        vec![
-            state_segment_for("seg-000001", 1, 1),
-            state_segment_for("seg-000002", 1, 2),
-        ],
-    );
-    let dest = destination(&temp.path().join("local.duckdb"));
-    let plan = dest.plan_package_commit(&request).unwrap();
-    let mut session = dest
-        .begin(request.commit.clone(), plan.kernel.clone())
-        .unwrap();
-    session.apply_migrations().unwrap();
-    let mut segments = PackageReader::open(&request.package_dir)
-        .unwrap()
-        .read_commit_segments(&request.commit.segments)
-        .unwrap();
-    session.write_segment(segments.remove(0)).unwrap();
-
-    let error = session.finalize().unwrap_err();
-    assert!(error.to_string().contains("accepted 1 of 2"), "{error}");
-}
-
-#[test]
-fn begin_session_duplicate_returns_existing_receipt_without_extra_rows() {
+fn staged_duplicate_returns_existing_receipt_without_extra_rows() {
     let temp = tempfile::tempdir().unwrap();
     let package = temp.path().join("pkg-session-duplicate");
     let package_hash = build_package(
@@ -490,10 +727,10 @@ fn begin_session_duplicate_returns_existing_receipt_without_extra_rows() {
         3,
     );
 
-    let first = finalize_session(&dest, &request);
-    let duplicate = finalize_session(&dest, &request);
+    let first = commit_current(&dest, request.clone()).receipt;
+    let duplicate = commit_current(&dest, request.clone()).receipt;
 
-    assert_same_receipt_shape(&duplicate, &first);
+    assert_eq!(duplicate, first);
     assert!(dest.verify_receipt(&duplicate).unwrap().verified);
 
     let conn = Connection::open(db_path).unwrap();
@@ -505,14 +742,6 @@ fn begin_session_duplicate_returns_existing_receipt_without_extra_rows() {
     let mirror = dest.read_mirror_snapshot_read_only().unwrap();
     assert_eq!(mirror.loads.len(), 1);
     assert_eq!(mirror.state.len(), 1);
-    assert_eq!(
-        PackageReader::open(&package)
-            .unwrap()
-            .receipts()
-            .unwrap()
-            .len(),
-        1
-    );
 }
 
 #[test]
@@ -537,15 +766,13 @@ fn append_commit_is_idempotent_and_verifiable_after_reopen() {
         3,
     );
 
-    let outcome = dest.commit_package(request.clone()).unwrap();
-    assert!(!outcome.duplicate);
+    let outcome = commit_current(&dest, request.clone());
     assert_eq!(outcome.receipt.counts.rows_written, 3);
     assert!(dest.verify_receipt(&outcome.receipt).unwrap().verified);
 
     let reopened = destination(&db_path);
     assert!(reopened.verify_receipt(&outcome.receipt).unwrap().verified);
-    let duplicate = reopened.commit_package(request).unwrap();
-    assert!(duplicate.duplicate);
+    let duplicate = commit_current(&reopened, request);
     assert_eq!(duplicate.receipt.receipt_id, outcome.receipt.receipt_id);
 
     let conn = Connection::open(db_path).unwrap();
@@ -610,7 +837,7 @@ fn zero_data_append_and_replace_record_receipts_without_mutating_target_data() {
         Vec::new(),
         Vec::new(),
     );
-    let append_receipt = finalize_empty_session(&dest, &empty_append);
+    let append_receipt = commit_current(&dest, empty_append).receipt;
     assert!(append_receipt.segment_acks.is_empty());
     assert_eq!(append_receipt.counts, CommitCounts::default());
     assert!(dest.verify_receipt(&append_receipt).unwrap().verified);
@@ -632,17 +859,25 @@ fn zero_data_append_and_replace_record_receipts_without_mutating_target_data() {
         "pkg-data",
         &[sample_batch(vec![1, 2], vec![Some("old"), Some("rows")])],
     );
-    dest.commit_package(request(
-        &data_dir,
-        data_hash,
-        WriteDisposition::Append,
-        Vec::new(),
-        2,
-    ))
-    .unwrap();
+    commit_current(
+        &dest,
+        request(
+            &data_dir,
+            data_hash,
+            WriteDisposition::Append,
+            Vec::new(),
+            2,
+        ),
+    );
 
     let empty_replace_dir = temp.path().join("pkg-empty-replace");
-    let empty_replace_hash = build_package_segments(&empty_replace_dir, "pkg-empty-replace", &[]);
+    let empty_replace_hash = build_package_segments_for_commit(
+        &empty_replace_dir,
+        "pkg-empty-replace",
+        &[],
+        WriteDisposition::Replace,
+        Vec::new(),
+    );
     let empty_replace = request_with_segments(
         &empty_replace_dir,
         empty_replace_hash,
@@ -650,7 +885,7 @@ fn zero_data_append_and_replace_record_receipts_without_mutating_target_data() {
         Vec::new(),
         Vec::new(),
     );
-    let replace_receipt = finalize_empty_session(&dest, &empty_replace);
+    let replace_receipt = commit_current(&dest, empty_replace).receipt;
     assert!(replace_receipt.segment_acks.is_empty());
     assert_eq!(replace_receipt.counts, CommitCounts::default());
     assert!(dest.verify_receipt(&replace_receipt).unwrap().verified);
@@ -673,30 +908,35 @@ fn replace_rebuilds_target_atomically() {
     );
     let db_path = temp.path().join("local.duckdb");
     let dest = destination(&db_path);
-    dest.commit_package(request(
-        &first_package,
-        first_hash,
-        WriteDisposition::Append,
-        Vec::new(),
-        2,
-    ))
-    .unwrap();
+    commit_current(
+        &dest,
+        request(
+            &first_package,
+            first_hash,
+            WriteDisposition::Append,
+            Vec::new(),
+            2,
+        ),
+    );
 
     let second_package = temp.path().join("pkg-second");
-    let second_hash = build_package(
+    let second_hash = build_package_for_commit(
         &second_package,
         "pkg-second",
         &[sample_batch(vec![9], vec![Some("new")])],
+        WriteDisposition::Replace,
+        Vec::new(),
     );
-    let outcome = dest
-        .commit_package(request(
+    let outcome = commit_current(
+        &dest,
+        request(
             &second_package,
             second_hash.clone(),
             WriteDisposition::Replace,
             Vec::new(),
             1,
-        ))
-        .unwrap();
+        ),
+    );
     assert_eq!(outcome.receipt.counts.rows_written, 1);
 
     let conn = Connection::open(db_path).unwrap();
@@ -732,33 +972,38 @@ fn merge_deduplicates_exact_replayed_rows_and_updates_keys() {
     );
     let db_path = temp.path().join("local.duckdb");
     let dest = destination(&db_path);
-    dest.commit_package(request(
-        &initial_package,
-        initial_hash.clone(),
-        WriteDisposition::Append,
-        Vec::new(),
-        2,
-    ))
-    .unwrap();
+    commit_current(
+        &dest,
+        request(
+            &initial_package,
+            initial_hash.clone(),
+            WriteDisposition::Append,
+            Vec::new(),
+            2,
+        ),
+    );
 
     let merge_package = temp.path().join("pkg-merge");
-    let merge_hash = build_package(
+    let merge_hash = build_package_for_commit(
         &merge_package,
         "pkg-merge",
         &[sample_batch(
             vec![1, 1, 3],
             vec![Some("new"), Some("new"), Some("insert")],
         )],
+        WriteDisposition::Merge,
+        vec!["id".to_owned()],
     );
-    let outcome = dest
-        .commit_package(request(
+    let outcome = commit_current(
+        &dest,
+        request(
             &merge_package,
             merge_hash.clone(),
             WriteDisposition::Merge,
             vec!["id".to_owned()],
             3,
-        ))
-        .unwrap();
+        ),
+    );
     assert_eq!(outcome.receipt.counts.rows_written, 2);
     assert_eq!(outcome.receipt.counts.rows_updated, Some(1));
     assert_eq!(outcome.receipt.counts.rows_inserted, Some(1));
@@ -814,15 +1059,17 @@ fn preexisting_targets_without_current_provenance_fail_without_mutation() {
     drop(conn);
 
     let dest = destination(&db_path);
-    let error = dest
-        .plan_package_commit(&request(
+    let error = plan_current_package_commit(
+        &dest,
+        &request(
             &package,
             package_hash,
             WriteDisposition::Append,
             Vec::new(),
             1,
-        ))
-        .unwrap_err();
+        ),
+    )
+    .unwrap_err();
     let message = error.to_string();
     assert!(
         message.contains("current compact _cdf_row_key"),
@@ -862,15 +1109,17 @@ fn compact_provenance_requires_exact_non_null_types_and_unique_address() {
     )
     .unwrap();
     drop(conn);
-    let error = destination(&nullable_path)
-        .plan_package_commit(&request(
+    let error = plan_current_package_commit(
+        &destination(&nullable_path),
+        &request(
             &package,
             package_hash.clone(),
             WriteDisposition::Append,
             Vec::new(),
             1,
-        ))
-        .unwrap_err();
+        ),
+    )
+    .unwrap_err();
     assert!(error.to_string().contains("is nullable"), "{error}");
 
     let wrong_type_path = temp.path().join("wrong-type.duckdb");
@@ -884,15 +1133,17 @@ fn compact_provenance_requires_exact_non_null_types_and_unique_address() {
     )
     .unwrap();
     drop(conn);
-    let error = destination(&wrong_type_path)
-        .plan_package_commit(&request(
+    let error = plan_current_package_commit(
+        &destination(&wrong_type_path),
+        &request(
             &package,
             package_hash,
             WriteDisposition::Append,
             Vec::new(),
             1,
-        ))
-        .unwrap_err();
+        ),
+    )
+    .unwrap_err();
     let message = error.to_string();
     assert!(
         message.contains("_cdf_row_key has type BIGINT"),
@@ -918,15 +1169,17 @@ fn user_columns_cannot_impersonate_reserved_provenance() {
     let package_hash = build_package(&package, "pkg-reserved", &[batch]);
     let db_path = temp.path().join("reserved.duckdb");
     let dest = destination(&db_path);
-    let error = dest
-        .commit_package(request(
+    let error = try_commit_current(
+        &dest,
+        request(
             &package,
             package_hash,
             WriteDisposition::Append,
             Vec::new(),
             1,
-        ))
-        .unwrap_err();
+        ),
+    )
+    .unwrap_err();
     let message = error.to_string();
     assert!(message.contains("reserved `_cdf_*` namespace"), "{message}");
     assert!(!db_path.exists());
@@ -939,14 +1192,16 @@ fn addressed_correction_adds_nullable_column_preserves_residuals_and_replays_as_
     let original_hash = build_package(&package, "pkg-residual", &[residual_batch()]);
     let db_path = temp.path().join("correction.duckdb");
     let dest = destination(&db_path);
-    dest.commit_package(request(
-        &package,
-        original_hash.clone(),
-        WriteDisposition::Append,
-        Vec::new(),
-        2,
-    ))
-    .unwrap();
+    commit_current(
+        &dest,
+        request(
+            &package,
+            original_hash.clone(),
+            WriteDisposition::Append,
+            Vec::new(),
+            2,
+        ),
+    );
 
     let conn = Connection::open(&db_path).unwrap();
     let readback: (String, String, String, u64) = conn
@@ -1062,7 +1317,7 @@ fn addressed_correction_adds_nullable_column_preserves_residuals_and_replays_as_
     assert_eq!(second_after.residual_json_v1, None);
 
     let replay = finalize_correction(&reopened, &correction);
-    assert_same_receipt_shape(&replay, &receipt);
+    assert_eq!(replay, receipt);
     let conn = Connection::open(&db_path).unwrap();
     let loads: u64 = conn
         .query_row("SELECT count(*) FROM _cdf_loads", [], |row| row.get(0))
@@ -1085,14 +1340,16 @@ fn correction_failure_after_planning_rolls_back_nullable_migration_and_all_updat
     let original_hash = build_package(&package, "pkg-rollback", &[residual_batch()]);
     let db_path = temp.path().join("rollback.duckdb");
     let dest = destination(&db_path);
-    dest.commit_package(request(
-        &package,
-        original_hash.clone(),
-        WriteDisposition::Append,
-        Vec::new(),
-        2,
-    ))
-    .unwrap();
+    commit_current(
+        &dest,
+        request(
+            &package,
+            original_hash.clone(),
+            WriteDisposition::Append,
+            Vec::new(),
+            2,
+        ),
+    );
     let correction = correction_request(vec![
         correction_operation(&original_hash, 0, 42),
         correction_operation(&original_hash, 1, 84),
@@ -1150,14 +1407,16 @@ fn correction_session_abort_before_finalize_is_a_noop() {
     let original_hash = build_package(&package, "pkg-abort", &[residual_batch()]);
     let db_path = temp.path().join("abort.duckdb");
     let dest = destination(&db_path);
-    dest.commit_package(request(
-        &package,
-        original_hash.clone(),
-        WriteDisposition::Append,
-        Vec::new(),
-        2,
-    ))
-    .unwrap();
+    commit_current(
+        &dest,
+        request(
+            &package,
+            original_hash.clone(),
+            WriteDisposition::Append,
+            Vec::new(),
+            2,
+        ),
+    );
     let correction = correction_request(vec![correction_operation(&original_hash, 0, 42)]);
     let plan = dest.plan_correction(&correction).unwrap();
     let mut session = dest.begin_correction(correction, plan).unwrap();
@@ -1198,14 +1457,16 @@ fn correction_dry_plan_uses_read_only_database_without_wal_or_byte_changes() {
     let original_hash = build_package(&package, "pkg-dry-correction", &[residual_batch()]);
     let db_path = temp.path().join("dry-correction.duckdb");
     let dest = destination(&db_path);
-    dest.commit_package(request(
-        &package,
-        original_hash.clone(),
-        WriteDisposition::Append,
-        Vec::new(),
-        2,
-    ))
-    .unwrap();
+    commit_current(
+        &dest,
+        request(
+            &package,
+            original_hash.clone(),
+            WriteDisposition::Append,
+            Vec::new(),
+            2,
+        ),
+    );
     let correction = correction_request(vec![correction_operation(&original_hash, 0, 42)]);
     let bytes_before = fs::read(&db_path).unwrap();
     let files_before = fs::read_dir(temp.path())
@@ -1231,14 +1492,16 @@ fn correction_missing_address_fails_dry_plan_without_migration_or_receipt() {
     let original_hash = build_package(&package, "pkg-missing-address", &[residual_batch()]);
     let db_path = temp.path().join("missing-address.duckdb");
     let dest = destination(&db_path);
-    dest.commit_package(request(
-        &package,
-        original_hash.clone(),
-        WriteDisposition::Append,
-        Vec::new(),
-        2,
-    ))
-    .unwrap();
+    commit_current(
+        &dest,
+        request(
+            &package,
+            original_hash.clone(),
+            WriteDisposition::Append,
+            Vec::new(),
+            2,
+        ),
+    );
     let correction = correction_request(vec![correction_operation(&original_hash, 99, 42)]);
 
     let error = dest.plan_correction(&correction).unwrap_err();
@@ -1265,21 +1528,25 @@ fn correction_missing_address_fails_dry_plan_without_migration_or_receipt() {
 fn merge_rejects_conflicting_duplicate_keys() {
     let temp = tempfile::tempdir().unwrap();
     let package = temp.path().join("pkg-conflict");
-    let package_hash = build_package(
+    let package_hash = build_package_for_commit(
         &package,
         "pkg-conflict",
         &[sample_batch(vec![1, 1], vec![Some("left"), Some("right")])],
+        WriteDisposition::Merge,
+        vec!["id".to_owned()],
     );
     let dest = destination(&temp.path().join("local.duckdb"));
-    let error = dest
-        .commit_package(request(
+    let error = try_commit_current(
+        &dest,
+        request(
             &package,
             package_hash,
             WriteDisposition::Merge,
             vec!["id".to_owned()],
             2,
-        ))
-        .unwrap_err();
+        ),
+    )
+    .unwrap_err();
     assert!(
         error
             .to_string()
@@ -1299,15 +1566,17 @@ fn dry_run_plan_reports_create_table_ddl_without_writing() {
     );
     let db_path = temp.path().join("local.duckdb");
     let dest = destination(&db_path);
-    let plan = dest
-        .plan_package_commit(&request(
+    let plan = plan_current_package_commit(
+        &dest,
+        &request(
             &package,
             package_hash,
             WriteDisposition::Append,
             Vec::new(),
             1,
-        ))
-        .unwrap();
+        ),
+    )
+    .unwrap();
     assert!(plan.ddl.iter().any(|ddl| ddl.contains("CREATE TABLE")));
     assert!(
         !db_path.exists() || {

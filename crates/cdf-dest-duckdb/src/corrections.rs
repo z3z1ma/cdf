@@ -78,7 +78,7 @@ pub(crate) fn plan_correction_request(
     }
     let conn = destination.open_read_only_connection()?;
     let mirror_request = mirror_request(request);
-    let context = match find_duplicate_receipt(&conn, &mirror_request.commit)? {
+    let context = match find_duplicate_receipt(&conn, &mirror_request)? {
         Some(receipt) => {
             let ddl = receipt
                 .migrations
@@ -459,7 +459,7 @@ fn commit_corrections(
     let mut conn = destination.open_connection()?;
     ensure_mirror_tables(&conn)?;
     let mirror_request = mirror_request(&context.request);
-    if let Some(receipt) = find_duplicate_receipt(&conn, &mirror_request.commit)? {
+    if let Some(receipt) = find_duplicate_receipt(&conn, &mirror_request)? {
         context.plan.validate_receipt(&context.request, &receipt)?;
         return Ok(receipt);
     }
@@ -488,13 +488,7 @@ fn commit_corrections(
             committed_at_ms,
             &duckdb_version,
         )?;
-        insert_mirrors(
-            &tx,
-            &mirror_request.commit,
-            &receipt.segment_acks,
-            &receipt,
-            None,
-        )?;
+        insert_mirrors(&tx, &mirror_request, &receipt.segment_acks, &receipt, None)?;
         tx.commit()
             .map_err(|error| duckdb_error("commit DuckDB correction transaction", error))?;
         receipt
@@ -562,18 +556,13 @@ fn correction_counts(request: &DestinationCorrectionCommitRequest) -> CommitCoun
     }
 }
 
-fn mirror_request(request: &DestinationCorrectionCommitRequest) -> DuckDbCommitRequest {
-    DuckDbCommitRequest {
-        package_dir: PathBuf::new(),
-        commit: DestinationCommitRequest {
-            package_hash: request.correction_package_hash.clone(),
-            target: request.target.clone(),
-            disposition: request.resource_disposition.clone(),
-            segments: request.segments.clone(),
-            idempotency_token: request.idempotency_token.clone(),
-        },
-        schema_hash: request.new_schema_hash().clone(),
-        merge_keys: Vec::new(),
+fn mirror_request(request: &DestinationCorrectionCommitRequest) -> DestinationCommitRequest {
+    DestinationCommitRequest {
+        package_hash: request.correction_package_hash.clone(),
+        target: request.target.clone(),
+        disposition: request.resource_disposition.clone(),
+        segments: request.segments.clone(),
+        idempotency_token: request.idempotency_token.clone(),
     }
 }
 

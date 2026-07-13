@@ -16,14 +16,11 @@ use cdf_kernel::{
     SegmentId, SourcePosition, StateDelta, StateSegment, TargetName, WriteDisposition,
 };
 use cdf_package::{
-    DestinationCommitPlanPreimage, PackageManifest, PackageReplayInputs, PackageStatus,
-    SegmentEntry, StateDeltaPreimage,
+    DestinationCommitPlanPreimage, PackageManifest, PackageStatus, SegmentEntry, StateDeltaPreimage,
 };
 use cdf_project::{
-    PackageArtifactRecoveryRequest, PackageArtifactReplayRequest, PreparedPackageRecoveryRequest,
-    PreparedPackageReplayRequest, ReceiptVerifiedHook, ResolvedProjectDestination,
-    recover_package_from_artifacts, recover_prepared_package, replay_package_from_artifacts,
-    replay_prepared_package,
+    PackageArtifactRecoveryRequest, PackageArtifactReplayRequest, ReceiptVerifiedHook,
+    ResolvedProjectDestination, recover_package_from_artifacts, replay_package_from_artifacts,
 };
 
 pub use cdf_dest_duckdb::{DuckDbDestination, DuckDbMirrorSnapshot};
@@ -43,6 +40,7 @@ pub struct PreparedPackageFixtureSpec {
     pub disposition: WriteDisposition,
     pub schema_hash: SchemaHash,
     pub segment_id: SegmentId,
+    pub checkpoint_id: CheckpointId,
     pub status: PackageStatus,
 }
 
@@ -55,6 +53,7 @@ impl PreparedPackageFixtureSpec {
             disposition: WriteDisposition::Append,
             schema_hash: SchemaHash::new(DEFAULT_PREPARED_SCHEMA_HASH)?,
             segment_id: SegmentId::new(DEFAULT_PREPARED_SEGMENT_ID)?,
+            checkpoint_id: CheckpointId::new("checkpoint-prepared-artifact")?,
             status: PackageStatus::Packaged,
         })
     }
@@ -93,15 +92,23 @@ impl PreparedPackageFixture {
             .collect()
     }
 
-    pub fn replay_case(&self, delta: StateDelta) -> PreparedPackageReplayCase {
-        PreparedPackageReplayCase {
+    pub fn replay_case(&self) -> Result<PreparedPackageReplayCase> {
+        let inputs = PackageReader::open(&self.package_dir)?.replay_inputs()?;
+        if inputs.destination_commit.target != self.target
+            || inputs.destination_commit.disposition != self.disposition
+            || inputs.schema_hash != self.schema_hash
+        {
+            return Err(CdfError::contract(
+                "package replay fixture metadata does not match its recorded replay authority",
+            ));
+        }
+        Ok(PreparedPackageReplayCase {
             package_dir: self.package_dir.clone(),
-            delta,
+            delta: inputs.state_delta,
             target: self.target.clone(),
             disposition: self.disposition.clone(),
-            merge_keys: Vec::new(),
             schema_hash: self.schema_hash.clone(),
-        }
+        })
     }
 }
 
@@ -111,7 +118,6 @@ pub struct PreparedPackageReplayCase {
     pub delta: StateDelta,
     pub target: TargetName,
     pub disposition: WriteDisposition,
-    pub merge_keys: Vec<String>,
     pub schema_hash: SchemaHash,
 }
 
@@ -121,15 +127,14 @@ impl PreparedPackageReplayCase {
         destination: &'a DuckDbDestination,
         checkpoint_store: &'a Store,
         after_receipt_verified: Option<ReceiptVerifiedHook<'a>>,
-    ) -> PreparedPackageReplayRequest<'a, Store>
+    ) -> PackageArtifactReplayRequest<'a, Store>
     where
         Store: CheckpointStore + ?Sized,
     {
-        PreparedPackageReplayRequest {
+        PackageArtifactReplayRequest {
             package_dir: self.package_dir.clone(),
             destination: resolved_duckdb_destination(destination, self.target.clone()),
             checkpoint_store,
-            inputs: self.inputs().unwrap(),
             after_receipt_verified,
         }
     }
@@ -140,35 +145,17 @@ impl PreparedPackageReplayCase {
         checkpoint_store: &'a Store,
         receipt: Receipt,
         after_receipt_verified: Option<ReceiptVerifiedHook<'a>>,
-    ) -> PreparedPackageRecoveryRequest<'a, Store>
+    ) -> PackageArtifactRecoveryRequest<'a, Store>
     where
         Store: CheckpointStore + ?Sized,
     {
-        PreparedPackageRecoveryRequest {
+        PackageArtifactRecoveryRequest {
             package_dir: self.package_dir.clone(),
             destination: resolved_duckdb_destination(destination, self.target.clone()),
             checkpoint_store,
-            inputs: self.inputs().unwrap(),
             receipt,
             after_receipt_verified,
         }
-    }
-
-    fn inputs(&self) -> Result<PackageReplayInputs> {
-        let destination_commit = cdf_kernel::DestinationCommitRequest {
-            target: self.target.clone(),
-            disposition: self.disposition.clone(),
-            package_hash: self.delta.package_hash.clone(),
-            segments: self.delta.segments.clone(),
-            idempotency_token: cdf_kernel::IdempotencyToken::new(self.delta.package_hash.as_str())?,
-        };
-        Ok(PackageReplayInputs {
-            input_checkpoint: None,
-            state_delta: self.delta.clone(),
-            destination_commit,
-            merge_keys: self.merge_keys.clone(),
-            schema_hash: self.schema_hash.clone(),
-        })
     }
 }
 
@@ -234,7 +221,7 @@ fn write_compiled_expression_artifacts(builder: &PackageBuilder, schema: &Schema
     Ok(())
 }
 
-pub fn replay_prepared_package_case<Store>(
+pub fn replay_package_case<Store>(
     case: &PreparedPackageReplayCase,
     destination: &DuckDbDestination,
     checkpoint_store: &Store,
@@ -242,7 +229,7 @@ pub fn replay_prepared_package_case<Store>(
 where
     Store: CheckpointStore + ?Sized,
 {
-    replay_prepared_package(case.replay_request(destination, checkpoint_store, None))
+    replay_package_from_artifacts(case.replay_request(destination, checkpoint_store, None))
 }
 
 pub fn replay_package_artifacts<Store>(
@@ -263,7 +250,7 @@ where
     })
 }
 
-pub fn recover_prepared_package_case<Store>(
+pub fn recover_package_case<Store>(
     case: &PreparedPackageReplayCase,
     destination: &DuckDbDestination,
     checkpoint_store: &Store,
@@ -272,7 +259,12 @@ pub fn recover_prepared_package_case<Store>(
 where
     Store: CheckpointStore + ?Sized,
 {
-    recover_prepared_package(case.recovery_request(destination, checkpoint_store, receipt, None))
+    recover_package_from_artifacts(case.recovery_request(
+        destination,
+        checkpoint_store,
+        receipt,
+        None,
+    ))
 }
 
 pub fn recover_package_artifacts<Store>(
@@ -346,7 +338,8 @@ pub fn assert_duplicate_replay_identity(
 ) {
     assert_eq!(
         report.receipt_source,
-        ProjectReceiptSource::DestinationCommitReceiptOnly {
+        ProjectReceiptSource::DestinationCommit {
+            duplicate: true,
             package_receipt_recorded: false
         },
         "duplicate replay must surface duplicate/no-op receipt behavior"
@@ -625,7 +618,7 @@ fn write_prepared_state_commit_artifacts(
         byte_count: segment.byte_count,
     }];
     let state_delta = StateDeltaPreimage {
-        checkpoint_id: CheckpointId::new("checkpoint-prepared-artifact")?,
+        checkpoint_id: spec.checkpoint_id.clone(),
         pipeline_id: PipelineId::new("pipeline-1")?,
         resource_id: ResourceId::new("orders")?,
         scope,

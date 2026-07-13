@@ -7,12 +7,10 @@ use std::{
 };
 
 use cdf_kernel::{
-    CHECKPOINT_STATE_VERSION, CheckpointId, CheckpointStatus, CheckpointStore, CommitCounts,
-    CursorPosition, CursorValue, DestinationId, IdempotencyToken, PackageHash, PartitionId,
-    PipelineId, Receipt, ReceiptId, ResourceId, SchemaHash, ScopeKey, SegmentAck, SourcePosition,
-    StateDelta, TargetName, VerifyClause, WriteDisposition,
+    CheckpointId, CheckpointStatus, CheckpointStore, CommitCounts, DestinationId, IdempotencyToken,
+    PackageHash, Receipt, ReceiptId, SegmentAck, TargetName, VerifyClause,
 };
-use cdf_project::{RuntimeStage, replay_prepared_package_with_stage_hook};
+use cdf_project::{RuntimeStage, replay_package_from_artifacts_with_stage_hook};
 
 use super::*;
 
@@ -21,10 +19,6 @@ const HELPER_FAILPOINT_ENV: &str = "CDF_CONFORMANCE_LIFECYCLE_FAILPOINT";
 const HELPER_PACKAGE_DIR_ENV: &str = "CDF_CONFORMANCE_PACKAGE_DIR";
 const HELPER_DUCKDB_PATH_ENV: &str = "CDF_CONFORMANCE_DUCKDB_PATH";
 const HELPER_SQLITE_PATH_ENV: &str = "CDF_CONFORMANCE_SQLITE_PATH";
-const HELPER_DELTA_JSON_ENV: &str = "CDF_CONFORMANCE_STATE_DELTA_JSON";
-const HELPER_TARGET_ENV: &str = "CDF_CONFORMANCE_TARGET";
-const HELPER_DISPOSITION_ENV: &str = "CDF_CONFORMANCE_DISPOSITION";
-const HELPER_SCHEMA_HASH_ENV: &str = "CDF_CONFORMANCE_SCHEMA_HASH";
 const HELPER_TEST_NAME: &str =
     "package_replay::tests::committed_before_checkpointed_helper_process";
 const HELPER_EXIT_CODE: i32 = 87;
@@ -41,8 +35,8 @@ enum LifecycleFailpoint {
 fn packaged_no_receipts_replay_commits_destination_receipt_checkpoint_and_status() {
     let temp = tempfile::tempdir().unwrap();
     let package_dir = temp.path().join("pkg-success");
-    let fixture = prepared_fixture(&package_dir, "pkg-success");
-    let case = fixture.replay_case(delta_for_fixture(&fixture, "checkpoint-success"));
+    let fixture = prepared_fixture(&package_dir, "pkg-success", "checkpoint-success");
+    let case = fixture.replay_case().unwrap();
     let destination = DuckDbDestination::new(temp.path().join("local.duckdb")).unwrap();
     let store = SqliteCheckpointStore::open(temp.path().join("state.sqlite")).unwrap();
 
@@ -55,11 +49,12 @@ fn packaged_no_receipts_replay_commits_destination_receipt_checkpoint_and_status
         "fixture must start at the packaged/no-receipts boundary"
     );
 
-    let report = replay_prepared_package_case(&case, &destination, &store).unwrap();
+    let report = replay_package_case(&case, &destination, &store).unwrap();
 
     assert_eq!(
         report.receipt_source,
-        ProjectReceiptSource::DestinationCommitReceiptOnly {
+        ProjectReceiptSource::DestinationCommit {
+            duplicate: false,
             package_receipt_recorded: true
         }
     );
@@ -70,12 +65,16 @@ fn packaged_no_receipts_replay_commits_destination_receipt_checkpoint_and_status
 fn package_artifacts_replay_commits_destination_receipt_checkpoint_and_status() {
     let temp = tempfile::tempdir().unwrap();
     let package_dir = temp.path().join("pkg-artifact-success");
-    let fixture = prepared_fixture(&package_dir, "pkg-artifact-success");
+    let fixture = prepared_fixture(
+        &package_dir,
+        "pkg-artifact-success",
+        "checkpoint-artifact-success",
+    );
     let destination = DuckDbDestination::new(temp.path().join("local.duckdb")).unwrap();
     let store = SqliteCheckpointStore::open(temp.path().join("state.sqlite")).unwrap();
 
     let report = replay_package_artifacts(&package_dir, &destination, &store).unwrap();
-    let case = fixture.replay_case(report.checkpoint.delta.clone());
+    let case = fixture.replay_case().unwrap();
 
     assert_packaged_replay_committed_without_source_contact(&case, &destination, &store, &report);
     assert_eq!(
@@ -88,18 +87,16 @@ fn package_artifacts_replay_commits_destination_receipt_checkpoint_and_status() 
 fn duplicate_replay_returns_noop_receipt_and_single_destination_load() {
     let temp = tempfile::tempdir().unwrap();
     let package_dir = temp.path().join("pkg-duplicate");
-    let fixture = prepared_fixture(&package_dir, "pkg-duplicate");
-    let first_case = fixture.replay_case(delta_for_fixture(&fixture, "checkpoint-first"));
+    let fixture = prepared_fixture(&package_dir, "pkg-duplicate", "checkpoint-duplicate");
+    let first_case = fixture.replay_case().unwrap();
     let destination = DuckDbDestination::new(temp.path().join("local.duckdb")).unwrap();
     let first_store = SqliteCheckpointStore::open(temp.path().join("state-first.sqlite")).unwrap();
-    let first_report =
-        replay_prepared_package_case(&first_case, &destination, &first_store).unwrap();
+    let first_report = replay_package_case(&first_case, &destination, &first_store).unwrap();
 
-    let second_case = fixture.replay_case(delta_for_fixture(&fixture, "checkpoint-second"));
+    let second_case = fixture.replay_case().unwrap();
     let second_store =
         SqliteCheckpointStore::open(temp.path().join("state-second.sqlite")).unwrap();
-    let second_report =
-        replay_prepared_package_case(&second_case, &destination, &second_store).unwrap();
+    let second_report = replay_package_case(&second_case, &destination, &second_store).unwrap();
     let snapshot = destination.read_mirror_snapshot_read_only().unwrap();
 
     assert_checkpoint_head_matches(&second_store, &second_case.delta);
@@ -217,7 +214,7 @@ fn helper_process_crash_recovers_from_durable_receipt_without_second_load() {
         .destination
         .read_mirror_snapshot_read_only()
         .unwrap();
-    let report = recover_prepared_package_case(
+    let report = recover_package_case(
         &crashed.case,
         &crashed.destination,
         &crashed.store,
@@ -272,7 +269,7 @@ fn helper_process_after_checkpoint_commit_finalizes_status_without_second_load()
         .destination
         .read_mirror_snapshot_read_only()
         .unwrap();
-    let report = recover_prepared_package_case(
+    let report = recover_package_case(
         &crashed.case,
         &crashed.destination,
         &crashed.store,
@@ -314,7 +311,7 @@ fn bad_recovery_inputs_fail_closed_without_checkpoint_head() {
 
     let mut missing_ack = receipt.clone();
     missing_ack.segment_acks.clear();
-    let error = recover_prepared_package_case(
+    let error = recover_package_case(
         &crashed.case,
         &crashed.destination,
         &crashed.store,
@@ -326,7 +323,7 @@ fn bad_recovery_inputs_fail_closed_without_checkpoint_head() {
 
     let mut failed_verification = receipt;
     failed_verification.committed_at_ms += 1;
-    let error = recover_prepared_package_case(
+    let error = recover_package_case(
         &crashed.case,
         &crashed.destination,
         &crashed.store,
@@ -341,8 +338,8 @@ fn bad_recovery_inputs_fail_closed_without_checkpoint_head() {
 fn negative_self_tests_prove_package_replay_harness_checks_required_edges() {
     let temp = tempfile::tempdir().unwrap();
     let package_dir = temp.path().join("pkg-negative");
-    let fixture = prepared_fixture(&package_dir, "pkg-negative");
-    let case = fixture.replay_case(delta_for_fixture(&fixture, "checkpoint-negative"));
+    let fixture = prepared_fixture(&package_dir, "pkg-negative", "checkpoint-negative");
+    let case = fixture.replay_case().unwrap();
     let commit_plan: serde_json::Value = serde_json::from_str(
         &fs::read_to_string(case.package_dir.join("destination/commit_plan.json")).unwrap(),
     )
@@ -364,7 +361,7 @@ fn negative_self_tests_prove_package_replay_harness_checks_required_edges() {
 
     let destination = DuckDbDestination::new(temp.path().join("local.duckdb")).unwrap();
     let store = SqliteCheckpointStore::open(temp.path().join("state.sqlite")).unwrap();
-    let report = replay_prepared_package_case(&case, &destination, &store).unwrap();
+    let report = replay_package_case(&case, &destination, &store).unwrap();
     let snapshot = destination.read_mirror_snapshot_read_only().unwrap();
     let mut wrong_success = report.clone();
     wrong_success.package_status = PackageStatus::Loading;
@@ -460,15 +457,16 @@ fn committed_before_checkpointed_helper_process() {
     let package_dir = PathBuf::from(env::var(HELPER_PACKAGE_DIR_ENV).unwrap());
     let db_path = PathBuf::from(env::var(HELPER_DUCKDB_PATH_ENV).unwrap());
     let sqlite_path = PathBuf::from(env::var(HELPER_SQLITE_PATH_ENV).unwrap());
-    let delta: StateDelta =
-        serde_json::from_str(&env::var(HELPER_DELTA_JSON_ENV).unwrap()).expect("helper delta json");
+    let inputs = PackageReader::open(&package_dir)
+        .unwrap()
+        .replay_inputs()
+        .unwrap();
     let case = PreparedPackageReplayCase {
         package_dir,
-        delta,
-        target: TargetName::new(env::var(HELPER_TARGET_ENV).unwrap()).unwrap(),
-        disposition: parse_disposition(&env::var(HELPER_DISPOSITION_ENV).unwrap()),
-        merge_keys: Vec::new(),
-        schema_hash: SchemaHash::new(env::var(HELPER_SCHEMA_HASH_ENV).unwrap()).unwrap(),
+        delta: inputs.state_delta,
+        target: inputs.destination_commit.target,
+        disposition: inputs.destination_commit.disposition,
+        schema_hash: inputs.schema_hash,
     };
     let destination = DuckDbDestination::new(db_path).unwrap();
     let store = SqliteCheckpointStore::open(sqlite_path).unwrap();
@@ -492,7 +490,7 @@ fn committed_before_checkpointed_helper_process() {
         Ok(())
     };
 
-    let _ = replay_prepared_package_with_stage_hook(
+    let _ = replay_package_from_artifacts_with_stage_hook(
         case.replay_request(&destination, &store, None),
         Some(&hook),
     )
@@ -517,8 +515,8 @@ fn stage_helper_crash(
 ) -> CrashedReplay {
     let temp = tempfile::tempdir().unwrap();
     let package_dir = temp.path().join(package_id);
-    let fixture = prepared_fixture(&package_dir, package_id);
-    let case = fixture.replay_case(delta_for_fixture(&fixture, checkpoint_id));
+    let fixture = prepared_fixture(&package_dir, package_id, checkpoint_id);
+    let case = fixture.replay_case().unwrap();
     let db_path = temp.path().join("local.duckdb");
     let sqlite_path = temp.path().join("state.sqlite");
 
@@ -533,16 +531,6 @@ fn stage_helper_crash(
         .env(HELPER_PACKAGE_DIR_ENV, &case.package_dir)
         .env(HELPER_DUCKDB_PATH_ENV, &db_path)
         .env(HELPER_SQLITE_PATH_ENV, &sqlite_path)
-        .env(
-            HELPER_DELTA_JSON_ENV,
-            serde_json::to_string(&case.delta).unwrap(),
-        )
-        .env(HELPER_TARGET_ENV, case.target.as_str())
-        .env(
-            HELPER_DISPOSITION_ENV,
-            disposition_name_for_test(&case.disposition),
-        )
-        .env(HELPER_SCHEMA_HASH_ENV, case.schema_hash.as_str())
         .output()
         .unwrap();
     assert_eq!(
@@ -580,40 +568,14 @@ fn read_mirror_snapshot_if_exists(destination: &DuckDbDestination) -> DuckDbMirr
     }
 }
 
-fn prepared_fixture(package_dir: &Path, package_id: &str) -> PreparedPackageFixture {
-    build_prepared_package_fixture(
-        PreparedPackageFixtureSpec::new(package_dir, package_id).unwrap(),
-    )
-    .unwrap()
-}
-
-fn delta_for_fixture(fixture: &PreparedPackageFixture, checkpoint_id: &str) -> StateDelta {
-    let scope = ScopeKey::Partition {
-        partition_id: PartitionId::new("p0").unwrap(),
-    };
-    let output_position = position(3);
-
-    StateDelta {
-        checkpoint_id: CheckpointId::new(checkpoint_id).unwrap(),
-        pipeline_id: PipelineId::new("pipeline-1").unwrap(),
-        resource_id: ResourceId::new("orders").unwrap(),
-        scope: scope.clone(),
-        state_version: CHECKPOINT_STATE_VERSION,
-        parent_checkpoint_id: None,
-        input_position: None,
-        output_position: output_position.clone(),
-        package_hash: fixture.package_hash().unwrap(),
-        schema_hash: fixture.schema_hash.clone(),
-        segments: fixture.state_segments(scope, output_position),
-    }
-}
-
-fn position(value: i64) -> SourcePosition {
-    SourcePosition::Cursor(CursorPosition {
-        version: CHECKPOINT_STATE_VERSION,
-        field: "id".to_owned(),
-        value: CursorValue::I64(value),
-    })
+fn prepared_fixture(
+    package_dir: &Path,
+    package_id: &str,
+    checkpoint_id: &str,
+) -> PreparedPackageFixture {
+    let mut spec = PreparedPackageFixtureSpec::new(package_dir, package_id).unwrap();
+    spec.checkpoint_id = CheckpointId::new(checkpoint_id).unwrap();
+    build_prepared_package_fixture(spec).unwrap()
 }
 
 fn fake_receipt(case: &PreparedPackageReplayCase) -> Receipt {
@@ -662,25 +624,6 @@ fn assert_harness_panics(f: impl FnOnce()) {
         catch_unwind(AssertUnwindSafe(f)).is_err(),
         "corrupted conformance case passed the harness"
     );
-}
-
-fn parse_disposition(value: &str) -> WriteDisposition {
-    match value {
-        "append" => WriteDisposition::Append,
-        "replace" => WriteDisposition::Replace,
-        "merge" => WriteDisposition::Merge,
-        "cdc_apply" => WriteDisposition::CdcApply,
-        other => panic!("unknown helper disposition {other}"),
-    }
-}
-
-fn disposition_name_for_test(disposition: &WriteDisposition) -> &'static str {
-    match disposition {
-        WriteDisposition::Append => "append",
-        WriteDisposition::Replace => "replace",
-        WriteDisposition::Merge => "merge",
-        WriteDisposition::CdcApply => "cdc_apply",
-    }
 }
 
 fn parse_lifecycle_failpoint(value: &str) -> LifecycleFailpoint {

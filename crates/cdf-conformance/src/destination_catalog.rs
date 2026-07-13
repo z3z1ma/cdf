@@ -265,7 +265,7 @@ fn fourth_registered_destination_inherits_the_generic_bulk_matrix_contract() {
     );
     assert_eq!(
         registry.registered_schemes(),
-        ["duckdb", "fourth", "parquet", "postgres"]
+        ["duckdb", "fourth", "parquet", "postgres", "postgresql"]
     );
 
     let package_dir = root.path().join("package");
@@ -338,6 +338,13 @@ fn fourth_registered_destination_inherits_the_generic_bulk_matrix_contract() {
     })
     .unwrap();
     assert!(destination.verify(&report.receipt).unwrap().verified);
+    assert_eq!(
+        PackageReader::open(&package_dir)
+            .unwrap()
+            .receipts()
+            .unwrap(),
+        vec![report.receipt.clone()]
+    );
     assert_eq!(destination.committed_paths(), ["fourth_compat"]);
     assert!(
         destination.preparation_contexts().contains(&(true, false)),
@@ -373,6 +380,13 @@ fn fourth_registered_destination_inherits_the_generic_bulk_matrix_contract() {
     .unwrap();
     assert_eq!(duplicate.receipt, report.receipt);
     assert_eq!(destination.committed_segments(), committed_once);
+    assert_eq!(
+        PackageReader::open(&package_dir)
+            .unwrap()
+            .receipts()
+            .unwrap(),
+        vec![report.receipt.clone()]
+    );
 
     let crash_package_dir = root.path().join("crash-package");
     build_prepared_package_fixture(
@@ -403,11 +417,18 @@ fn fourth_registered_destination_inherits_the_generic_bulk_matrix_contract() {
         .is_err()
     );
     let durable_receipt = crashed_receipt.lock().unwrap().clone().unwrap();
+    assert_eq!(
+        PackageReader::open(&crash_package_dir)
+            .unwrap()
+            .receipts()
+            .unwrap(),
+        vec![durable_receipt.clone()]
+    );
     let recovery_runtime = registry
         .resolve("fourth://local/matrix", &resolution)
         .unwrap();
     let recovered = recover_package_from_artifacts(PackageArtifactRecoveryRequest {
-        package_dir: crash_package_dir,
+        package_dir: crash_package_dir.clone(),
         checkpoint_store: &crash_store,
         destination: ResolvedProjectDestination::new(recovery_runtime, target),
         receipt: durable_receipt.clone(),
@@ -415,6 +436,13 @@ fn fourth_registered_destination_inherits_the_generic_bulk_matrix_contract() {
     })
     .unwrap();
     assert_eq!(recovered.receipt, durable_receipt);
+    assert_eq!(
+        PackageReader::open(&crash_package_dir)
+            .unwrap()
+            .receipts()
+            .unwrap(),
+        vec![durable_receipt]
+    );
 }
 
 #[cfg(test)]
@@ -479,6 +507,10 @@ struct FourthRuntime {
 impl DestinationRuntime for FourthRuntime {
     fn protocol(&self) -> &dyn cdf_kernel::DestinationProtocol {
         &self.destination
+    }
+
+    fn ingress(&mut self) -> cdf_runtime::DestinationIngress<'_> {
+        cdf_runtime::DestinationIngress::FinalizedPackage(self)
     }
 
     fn describe(&self) -> DestinationDescription {
@@ -560,7 +592,10 @@ impl DestinationRuntime for FourthRuntime {
             rejected,
         })
     }
+}
 
+#[cfg(test)]
+impl cdf_runtime::FinalizedPackageIngress for FourthRuntime {
     fn prepare_package_commit(
         &mut self,
         _package_dir: &Path,
@@ -570,28 +605,29 @@ impl DestinationRuntime for FourthRuntime {
     ) -> Result<cdf_runtime::PreparedDestinationCommit> {
         fourth_runtime_capabilities().validate_prepared_bulk_path(context.bulk_path)?;
         let plan = self.destination.plan_commit(&inputs.destination_commit)?;
-        Ok(cdf_runtime::PreparedDestinationCommit::new(
-            inputs.destination_commit.clone(),
+        cdf_runtime::PreparedDestinationCommit::from_verified_inputs(
+            inputs,
             plan,
             context.bulk_path.clone(),
             cdf_runtime::DestinationReceiptReportingPolicy::DestinationCommitReceiptOnly,
-        ))
+        )
     }
 
-    fn bind_prepared_commit(
+    fn begin_prepared_commit(
         &mut self,
         prepared: &mut cdf_runtime::PreparedDestinationCommit,
-    ) -> Result<()> {
+    ) -> Result<Box<dyn cdf_kernel::CommitSession + '_>> {
         if prepared.has_pending_context() {
             return Err(cdf_kernel::CdfError::internal(
                 "fourth fixture received unexpected pending context",
             ));
         }
         self.destination.record_prepared_path(
-            prepared.plan.plan_id.clone(),
-            prepared.bulk_path.descriptor.path_id.clone(),
+            prepared.plan().plan_id.clone(),
+            prepared.bulk_path().descriptor.path_id.clone(),
         );
-        Ok(())
+        self.destination
+            .begin(prepared.commit().clone(), prepared.plan().clone())
     }
 }
 
@@ -656,7 +692,6 @@ fn generic_project_and_cli_runtime_sources_do_not_import_destination_crates() {
     );
 }
 
-#[cfg(test)]
 #[cfg(test)]
 fn assert_no_concrete_destination_imports(root: &Path, allowed_files: &[&str]) {
     let mut pending = vec![root.to_path_buf()];

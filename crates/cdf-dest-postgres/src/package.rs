@@ -1,14 +1,12 @@
-use std::{collections::BTreeMap, path::Path};
+use std::collections::BTreeMap;
 
-use cdf_kernel::{CursorPosition, CursorValue, ScopeKey, SourcePosition};
-use cdf_package::PackageReader;
+use cdf_package::{PackageReader, VerifiedPackage};
 
 use crate::{validate::plan_segment_acks, *};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct PostgresSessionSegments {
     pub(crate) expected: BTreeMap<SegmentId, PostgresExpectedSegment>,
-    pub(crate) order: Vec<SegmentId>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -18,30 +16,27 @@ pub(crate) struct PostgresExpectedSegment {
 }
 
 pub(crate) fn expected_segments_for_session(
-    package_dir: &Path,
+    reader: &PackageReader,
+    verified: &VerifiedPackage,
     plan: &PostgresLoadPlan,
-    request: Option<&DestinationCommitRequest>,
+    request: &DestinationCommitRequest,
 ) -> Result<PostgresSessionSegments> {
-    let reader = PackageReader::open(package_dir)?;
-    reader.verify()?;
-    let replay = reader.replay_view()?;
+    let manifest = reader.manifest();
+    let manifest_segments = reader.identity_segments_verified(verified)?;
     let plan_hash = plan_package_hash(plan)?;
-    if replay.package_hash != plan_hash {
+    if manifest.package_hash != plan_hash.as_str() {
         return Err(CdfError::data(format!(
             "Postgres plan package hash {} does not match package {}",
-            plan_hash, replay.package_hash
+            plan_hash, manifest.package_hash
         )));
     }
-    if let Some(request) = request
-        && request.package_hash != replay.package_hash
-    {
+    if request.package_hash.as_str() != manifest.package_hash {
         return Err(CdfError::data(format!(
             "Postgres commit request package hash {} does not match package {}",
-            request.package_hash, replay.package_hash
+            request.package_hash, manifest.package_hash
         )));
     }
 
-    let manifest_segments = &reader.manifest().identity.segments;
     let plan_by_id = plan_segment_map(plan)?;
     let mut manifest_by_id = BTreeMap::new();
     let mut order = Vec::with_capacity(manifest_segments.len());
@@ -58,7 +53,7 @@ pub(crate) fn expected_segments_for_session(
         order.push(segment.segment_id.clone());
     }
 
-    let states = state_segments_for_session(plan, request);
+    let states = request.segments.clone();
     let mut state_by_id = BTreeMap::new();
     for state in states {
         if state_by_id
@@ -135,20 +130,7 @@ pub(crate) fn expected_segments_for_session(
         );
     }
 
-    Ok(PostgresSessionSegments { expected, order })
-}
-
-pub(crate) fn record_package_receipt_once(package_dir: &Path, receipt: &Receipt) -> Result<bool> {
-    let reader = PackageReader::open(package_dir)?;
-    let receipts = reader.receipts()?;
-    if receipts
-        .iter()
-        .any(|existing| existing.receipt_id == receipt.receipt_id)
-    {
-        return Ok(false);
-    }
-    reader.append_receipt(receipt.clone())?;
-    Ok(true)
+    Ok(PostgresSessionSegments { expected })
 }
 
 fn plan_segment_map(plan: &PostgresLoadPlan) -> Result<BTreeMap<SegmentId, SegmentAck>> {
@@ -161,37 +143,6 @@ fn plan_segment_map(plan: &PostgresLoadPlan) -> Result<BTreeMap<SegmentId, Segme
         }
     }
     Ok(by_id)
-}
-
-fn state_segments_for_session(
-    plan: &PostgresLoadPlan,
-    request: Option<&DestinationCommitRequest>,
-) -> Vec<StateSegment> {
-    if let Some(request) = request {
-        return request.segments.clone();
-    }
-    if let Some(delta) = &plan.state_delta {
-        return delta.segments.clone();
-    }
-    plan_segment_acks(plan)
-        .into_iter()
-        .map(synthetic_state_segment)
-        .collect()
-}
-
-fn synthetic_state_segment(ack: SegmentAck) -> StateSegment {
-    let position_value = ack.segment_id.as_str().to_owned();
-    StateSegment {
-        segment_id: ack.segment_id,
-        scope: ScopeKey::Resource,
-        output_position: SourcePosition::Cursor(CursorPosition {
-            version: 1,
-            field: "segment_id".to_owned(),
-            value: CursorValue::String(position_value),
-        }),
-        row_count: ack.row_count,
-        byte_count: ack.byte_count,
-    }
 }
 
 fn plan_package_hash(plan: &PostgresLoadPlan) -> Result<PackageHash> {

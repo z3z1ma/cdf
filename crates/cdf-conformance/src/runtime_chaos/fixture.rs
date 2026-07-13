@@ -1,11 +1,10 @@
 use std::path::{Path, PathBuf};
 
-use cdf_kernel::{CdfError, CheckpointId, Receipt, Result, TargetName, WriteDisposition};
+use cdf_kernel::{CdfError, Receipt, Result, TargetName, WriteDisposition};
 use cdf_package::{PackageReplayInputs, PackageStatus};
 use cdf_project::{
     PackageArtifactRecoveryRequest, PackageArtifactReplayRequest, PackageReplayReport,
-    PreparedPackageReplayRequest, recover_package_from_artifacts, replay_package_from_artifacts,
-    replay_prepared_package,
+    recover_package_from_artifacts, replay_package_from_artifacts,
 };
 use cdf_state_sqlite::SqliteCheckpointStore;
 
@@ -64,23 +63,6 @@ pub(crate) fn recover_after_crash(
             })?,
             "recover_package_from_artifacts_with_supplied_durable_receipt".to_owned(),
         )),
-        None if window == ChaosCrashWindow::CheckpointProposedBeforeDestinationWrite => {
-            let mut inputs = fixture.inputs.clone();
-            inputs.state_delta.checkpoint_id = CheckpointId::new(format!(
-                "{}-recovery",
-                inputs.state_delta.checkpoint_id.as_str()
-            ))?;
-            Ok((
-                replay_prepared_package(PreparedPackageReplayRequest {
-                    package_dir: fixture.package_dir.clone(),
-                    destination: destination.resolved()?,
-                    checkpoint_store: store,
-                    inputs,
-                    after_receipt_verified: None,
-                })?,
-                "replay_prepared_package_without_source_contact_replacement_checkpoint".to_owned(),
-            ))
-        }
         None => Ok((
             replay_package_from_artifacts(PackageArtifactReplayRequest {
                 package_dir: fixture.package_dir.clone(),
@@ -88,7 +70,12 @@ pub(crate) fn recover_after_crash(
                 checkpoint_store: store,
                 after_receipt_verified: None,
             })?,
-            "replay_package_from_artifacts_without_source_contact".to_owned(),
+            match window {
+                ChaosCrashWindow::CheckpointProposedBeforeDestinationWrite => {
+                    "replay_package_from_artifacts_reusing_pinned_proposal".to_owned()
+                }
+                _ => "replay_package_from_artifacts_without_source_contact".to_owned(),
+            },
         )),
     }
 }

@@ -1,21 +1,17 @@
-use std::{collections::BTreeMap, path::Path};
+use std::collections::BTreeMap;
 
 use arrow_schema::Schema;
-use cdf_kernel::{
-    DestinationCommitRequest, DestinationProtocol, ResourceStream, Result, SchemaHash,
-};
-use cdf_package::{PackageReader, PackageReplayInputs};
+use cdf_kernel::{DestinationProtocol, ResourceStream, Result, SchemaHash};
 use cdf_runtime::{
     DestinationCommitPlanningInputs, DestinationCommitPlanningOutcome, DestinationDescription,
     DestinationDriver, DestinationHealthProbe, DestinationHealthResult, DestinationHealthStatus,
-    DestinationIngressMode, DestinationInspection, DestinationPlanningContext,
-    DestinationReceiptReportingPolicy, DestinationResolutionContext, DestinationRuntime,
-    DestinationRuntimeCapabilities, DestinationWriterModel, PreparedDestinationCommit,
-    absolute_under_root, artifact_hash, local_uri_path, reject_unexpected_pending_context,
+    DestinationIngressMode, DestinationInspection, DestinationResolutionContext,
+    DestinationRuntime, DestinationRuntimeCapabilities, DestinationWriterModel,
+    absolute_under_root, artifact_hash, local_uri_path,
 };
 
 use crate::{
-    DuckDbCommitRequest, DuckDbDestination,
+    DuckDbDestination,
     package::{field_plan, validate_user_schema_fields},
 };
 
@@ -54,10 +50,7 @@ impl DestinationDriver for DuckDbRuntimeDriver {
         context: &DestinationResolutionContext<'_>,
     ) -> Result<Box<dyn DestinationRuntime>> {
         let path = absolute_under_root(context.project_root()?, local_uri_path(uri, "duckdb")?);
-        Ok(Box::new(DuckDbDestination::new_with_execution(
-            path,
-            context.execution_services().cloned(),
-        )?))
+        Ok(Box::new(DuckDbDestination::new(path)?))
     }
 
     fn health(
@@ -137,6 +130,10 @@ impl DestinationDriver for DuckDbRuntimeDriver {
 impl DestinationRuntime for DuckDbDestination {
     fn protocol(&self) -> &dyn DestinationProtocol {
         self
+    }
+
+    fn ingress(&mut self) -> cdf_runtime::DestinationIngress<'_> {
+        cdf_runtime::DestinationIngress::StagedSegments(self)
     }
 
     fn describe(&self) -> DestinationDescription {
@@ -229,48 +226,6 @@ impl DestinationRuntime for DuckDbDestination {
         ))
     }
 
-    fn prepare_package_commit(
-        &mut self,
-        package_dir: &Path,
-        _reader: &PackageReader,
-        inputs: &PackageReplayInputs,
-        context: &DestinationPlanningContext<'_>,
-    ) -> Result<PreparedDestinationCommit> {
-        self.runtime_capabilities()
-            .validate_prepared_bulk_path(context.bulk_path)?;
-        let request = DuckDbCommitRequest {
-            package_dir: package_dir.to_path_buf(),
-            commit: inputs.destination_commit.clone(),
-            schema_hash: inputs.schema_hash.clone(),
-            merge_keys: inputs.merge_keys.clone(),
-        };
-        let duplicate = has_duplicate_receipt(self, &request.commit)?;
-        let plan = if request.commit.segments.is_empty() {
-            self.plan_empty_package_commit(&request)?
-        } else {
-            self.plan_package_commit(&request)?
-        };
-        Ok(PreparedDestinationCommit::new(
-            request.commit,
-            plan.kernel,
-            context.bulk_path.clone(),
-            DestinationReceiptReportingPolicy::DestinationCommit { duplicate },
-        ))
-    }
-
-    fn begin_staged_ingress(
-        &mut self,
-        request: cdf_runtime::StagedIngressRequest,
-    ) -> Result<Box<dyn cdf_runtime::StagedIngressSession>> {
-        self.runtime_capabilities()
-            .validate_prepared_bulk_path(&request.bulk_path)?;
-        self.begin_staged_ingress_session(request)
-    }
-
-    fn bind_prepared_commit(&mut self, prepared: &mut PreparedDestinationCommit) -> Result<()> {
-        reject_unexpected_pending_context(prepared, "DuckDB")
-    }
-
     fn validate_run_preflight(
         &mut self,
         _resource: &dyn ResourceStream,
@@ -281,17 +236,20 @@ impl DestinationRuntime for DuckDbDestination {
     }
 }
 
-fn has_duplicate_receipt(
-    destination: &DuckDbDestination,
-    request: &DestinationCommitRequest,
-) -> Result<bool> {
-    if !destination.database_path().exists() {
-        return Ok(false);
+impl cdf_runtime::StagedSegmentIngress for DuckDbDestination {
+    fn begin_staged_ingress(
+        &mut self,
+        request: cdf_runtime::StagedIngressRequest,
+    ) -> Result<Box<dyn cdf_runtime::StagedIngressSession>> {
+        self.runtime_capabilities()
+            .validate_prepared_bulk_path(request.bulk_path())?;
+        self.begin_staged_ingress_session(request)
     }
-    let snapshot = destination.read_mirror_snapshot_read_only()?;
-    Ok(snapshot.loads.into_iter().any(|load| {
-        load.target == request.target.as_str()
-            && load.idempotency_token == request.idempotency_token.as_str()
-            && load.package_hash == request.package_hash.as_str()
-    }))
+
+    fn inspect_staged_ingress(
+        &mut self,
+        _attempt_id: &cdf_runtime::LoadAttemptId,
+    ) -> Result<Option<cdf_runtime::StagingSnapshot>> {
+        Ok(None)
+    }
 }

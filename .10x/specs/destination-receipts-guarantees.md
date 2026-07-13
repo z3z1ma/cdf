@@ -1,6 +1,6 @@
 Status: active
 Created: 2026-07-05
-Updated: 2026-07-11
+Updated: 2026-07-13
 
 # Destinations, receipts, and delivery guarantees
 
@@ -12,17 +12,19 @@ Destination row-provenance, correction/readback capability sheets, and residual-
 
 ## Destination protocol
 
-A destination MUST be a commit protocol, not an unverified sink. It MUST expose a destination sheet, dry-runnable commit planning, commit sessions with migration, segment-write, finalize, and abort operations, and trait-level receipt verification.
+A destination MUST be a verified protocol, not an unverified sink. It MUST expose a destination sheet, dry-runnable commit planning, trait-level receipt verification, and exactly the ingress category advertised by its selected runtime capability. Finalized-package destinations MUST expose commit sessions with migration, segment-write, finalize, and abort operations. Staged-ingress destinations MUST expose the staged segment and verified final-binding lifecycle governed by `.10x/specs/streaming-destination-ingress.md`.
 
 `plan_commit` MUST be plan-time/dry-runnable and MUST surface migration DDL, target, disposition, and idempotency behavior before data moves.
 
 Package-embedded commit-plan evidence MUST follow `.10x/decisions/package-state-commit-preimage-artifacts.md`. When package-token idempotency uses the finalized package hash, the identity-participating artifact records `idempotency_token_source = "package_hash"` rather than a concrete token value. The concrete destination commit request uses the finalized package hash as the token after package identity is known.
 
-`DestinationProtocol::begin` MUST be implemented by every destination protocol implementation. Session support is not optional and MUST NOT be hidden behind an error-returning default implementation. If a destination category cannot support sessions, that category must be modeled explicitly in the destination sheet and active specs before implementation.
+The capability split is governed by `.10x/decisions/destination-ingress-protocol-capability-split.md`. A runtime advertising `FinalizedPackageOnly` MUST return `DestinationIngress::FinalizedPackage` backed by `FinalizedPackageIngress::begin_prepared_commit`; session support MUST NOT be hidden behind an error-returning default implementation. A runtime advertising `StagedDurableSegments` MUST return `DestinationIngress::StagedSegments`, implement `StagedSegmentIngress` and verified final binding, and MUST NOT retain a second finalized session merely for interface compatibility.
 
-`CommitSession` MUST accept package segments incrementally, either as a segment stream or as per-segment writes returning `SegmentAck`. Fully materialized package replay MUST feed recorded package segments through the same API shape as future streaming package-to-destination commits. A session MAY be synchronous for MVP, but the API shape MUST NOT require callers to preload a whole package into the destination session.
+`CommitSession` MUST accept package segments incrementally, either as a segment stream or as per-segment writes returning `SegmentAck`. Fully materialized package replay for a finalized-package destination MUST feed recorded package segments through the same API shape as future streaming package-to-destination commits. A finalized session MAY be synchronous for MVP, but the API shape MUST NOT require callers to preload a whole package into the destination session. Staged destinations obey the equivalent bounded-reader requirement in the streaming-ingress spec.
 
 `finalize` MUST return a durable receipt over every segment accepted by the session or an error. There is no accepted ambiguous third state.
+
+Destination adapters MUST return destination receipts without mutating package receipt artifacts. After trait-level verification succeeds, generic orchestration MUST append the logical receipt to the package exactly once for either ingress category and MUST do so before checkpoint commit. `ReceiptId` identifies one logical destination/target/package commit, not one physical replay attempt. When a verified replay to another physical destination instance returns the same receipt id, generic orchestration MUST accept it as already recorded only when destination, target, package hash, ordered segment acknowledgements, disposition, idempotency token, counts, schema hash, and migrations are identical. Transaction metadata, executable verification details, and commit time MAY truthfully differ by physical instance and MUST remain present on that run's checkpoint receipt. Any same-id difference in logical commit fields MUST fail closed. A verification failure MUST leave no package receipt and no committed checkpoint. This ownership rule applies equally to correction sessions: destination protocols return verified destination evidence; the generic correction workflow owns package evidence persistence.
 
 Pre-finalization staged ingress follows `.10x/specs/streaming-destination-ingress.md`. A staged acknowledgement is explicitly not a committed `SegmentAck` or receipt. Every final destination commit still carries the verified package hash as its idempotency token; only final package binding may convert matching staged identities into committed acknowledgements.
 

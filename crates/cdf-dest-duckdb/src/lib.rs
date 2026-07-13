@@ -19,21 +19,19 @@ use arrow_array::{
     TimestampNanosecondArray, TimestampSecondArray, UInt8Array, UInt16Array, UInt32Array,
     UInt64Array,
 };
-use arrow_schema::{DataType, Field, Schema, SchemaRef, TimeUnit};
+use arrow_schema::{DataType, Field, Schema, TimeUnit};
 use cdf_contract::is_framework_variant_field;
 use cdf_kernel::{
-    CapabilitySupport, CdfError, CommitCounts, CommitPlan, CommitSegment, CommitSession,
-    ConcurrencyLimit, CorrectionCommitSession, CorrectionStrategy, CorrectionStrategyCapability,
+    CapabilitySupport, CdfError, CommitCounts, CommitPlan, ConcurrencyLimit,
+    CorrectionCommitSession, CorrectionStrategy, CorrectionStrategyCapability,
     DESTINATION_CORRECTION_RECEIPT_EVIDENCE_KEY, DeliveryGuarantee, DestinationCommitRequest,
     DestinationCorrectionCommitPlan, DestinationCorrectionCommitRequest,
     DestinationCorrectionOperation, DestinationCorrectionReceiptEvidence, DestinationId,
     DestinationProtocol, DestinationResidualReadback, DestinationSheet, IdempotencySupport,
     IdentifierRules, MigrationRecord, PlanId, Receipt, ReceiptId, Result, RowProvenanceAddress,
-    RowProvenanceCapabilities, SchemaHash, SegmentAck, StateSegment, TargetName,
-    TransactionMetadata, TransactionSupport, TypeMapping, TypeMappingFidelity, VerifyClause,
-    WriteDisposition,
+    RowProvenanceCapabilities, SchemaHash, SegmentAck, TargetName, TransactionMetadata,
+    TransactionSupport, TypeMapping, TypeMappingFidelity, VerifyClause, WriteDisposition,
 };
-use cdf_package::PackageReader;
 use duckdb::{
     AccessMode, Config, Connection, OptionalExt, params, params_from_iter,
     types::{TimeUnit as DuckTimeUnit, Value},

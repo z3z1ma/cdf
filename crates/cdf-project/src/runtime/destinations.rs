@@ -9,7 +9,7 @@ pub use cdf_runtime::{
     DestinationRegistry as ProjectDestinationRegistry,
     DestinationResolutionContext as ProjectResolutionContext,
     DestinationRuntime as ProjectDestinationRuntime, PreparedDestinationCommit,
-    absolute_under_root, commit_request, local_uri_path, reject_unexpected_pending_context,
+    absolute_under_root, commit_request, local_uri_path,
 };
 
 pub(super) fn project_receipt_source(

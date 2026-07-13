@@ -60,16 +60,3 @@ pub(crate) fn build_receipt(
         },
     })
 }
-
-pub(crate) fn record_package_receipt_once(package_dir: &Path, receipt: &Receipt) -> Result<bool> {
-    let reader = PackageReader::open(package_dir)?;
-    let receipts = reader.receipts()?;
-    if receipts
-        .iter()
-        .any(|existing| existing.receipt_id == receipt.receipt_id)
-    {
-        return Ok(false);
-    }
-    reader.append_receipt(receipt.clone())?;
-    Ok(true)
-}

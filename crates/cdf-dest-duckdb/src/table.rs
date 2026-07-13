@@ -16,7 +16,6 @@ pub(crate) fn plan_table(
         ));
     }
 
-    let target_exists = !existing.is_empty();
     match disposition {
         WriteDisposition::Replace => {
             ddl.push(format!(
@@ -61,11 +60,7 @@ pub(crate) fn plan_table(
         }
     }
 
-    Ok(TablePlan {
-        target,
-        ddl,
-        target_exists,
-    })
+    Ok(TablePlan { target, ddl })
 }
 
 pub(crate) fn plan_absent_table(
@@ -101,11 +96,7 @@ pub(crate) fn plan_absent_table(
         ));
     }
 
-    Ok(TablePlan {
-        target,
-        ddl,
-        target_exists: false,
-    })
+    Ok(TablePlan { target, ddl })
 }
 
 pub(crate) fn existing_columns(
