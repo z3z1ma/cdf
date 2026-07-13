@@ -711,9 +711,10 @@ fn p2_preview_run_parity_law_covers_supported_archetypes() {
 #[test]
 fn p2_s8_multifile_preview_traverses_the_same_planned_partitions_as_run() {
     let temp = tempfile::tempdir().unwrap();
-    let resource = file_fixture::multi_resource(temp.path(), MatrixDisposition::Append).unwrap();
+    let compiled = file_fixture::multi_resource(temp.path(), MatrixDisposition::Append).unwrap();
+    let resource = crate::source_fixture::resolve_local_file(&compiled, temp.path()).unwrap();
     let plan = plan_json::file_engine_plan(
-        &resource,
+        resource.as_ref(),
         "p2-s8-multifile-preview-run",
         MatrixDisposition::Append,
         None,
@@ -725,7 +726,7 @@ fn p2_s8_multifile_preview_traverses_the_same_planned_partitions_as_run() {
 
     let preview = futures_executor::block_on(cdf_engine::preview_resource(
         &plan,
-        &resource,
+        resource.as_ref(),
         cdf_engine::EnginePreviewLimits::default(),
     ))
     .unwrap();
@@ -752,9 +753,12 @@ fn p2_s8_multifile_preview_traverses_the_same_planned_partitions_as_run() {
     assert!(preview.fields.iter().any(|field| field == "id"));
 
     let package = temp.path().join("package");
-    let run =
-        futures_executor::block_on(cdf_engine::execute_to_package(&plan, &resource, &package))
-            .unwrap();
+    let run = futures_executor::block_on(cdf_engine::execute_to_package(
+        &plan,
+        resource.as_ref(),
+        &package,
+    ))
+    .unwrap();
     assert_eq!(run.profile.output_rows, preview.row_count);
     assert_eq!(run.profile.output_batches, preview.inspected_batch_count);
     cdf_package::PackageReader::open(package)
@@ -846,13 +850,19 @@ fn preview_fingerprint(cell: RunMatrixCell, postgres: &LivePostgres) -> Result<P
 
     let (preview, partition_count) = match cell.source_archetype {
         SourceArchetype::File => {
-            let resource = file_fixture::resource(temp.path(), cell.disposition)?;
-            let plan = plan_json::file_engine_plan(&resource, &package_id, cell.disposition, None)?;
+            let compiled = file_fixture::resource(temp.path(), cell.disposition)?;
+            let resource = crate::source_fixture::resolve_local_file(&compiled, temp.path())?;
+            let plan = plan_json::file_engine_plan(
+                resource.as_ref(),
+                &package_id,
+                cell.disposition,
+                None,
+            )?;
             let partitions = resource.plan_partitions(&plan.scan.request)?;
             assert_file_partitions_match_plan_identity(&partitions, &plan.scan.partitions);
             let preview = futures_executor::block_on(cdf_engine::preview_resource(
                 &plan,
-                &resource,
+                resource.as_ref(),
                 cdf_engine::EnginePreviewLimits::default(),
             ))?;
             (preview, partitions.len())

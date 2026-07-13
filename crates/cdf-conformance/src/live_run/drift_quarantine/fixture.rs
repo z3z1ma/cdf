@@ -2,17 +2,17 @@ use std::{
     cell::Cell,
     fs,
     path::{Path, PathBuf},
+    sync::Arc,
 };
 
 use cdf_contract::{
     ContractPolicy, DedupKeep, IdentifierPolicy, ObservedSchema, RowRule,
     compile_validation_program,
 };
-use cdf_declarative::CompiledResource;
 use cdf_engine::{EnginePlan, EnginePlanInput, PlanBoundedness, Planner};
 use cdf_kernel::{
-    CdfError, CheckpointId, CheckpointStatus, CheckpointStore, PipelineId, Receipt, ResourceId,
-    ResourceStream, Result, RunId, ScanRequest, ScopeKey, TargetName, WriteDisposition,
+    CdfError, CheckpointId, CheckpointStatus, CheckpointStore, PipelineId, QueryableResource,
+    Receipt, ResourceId, Result, RunId, ScanRequest, ScopeKey, TargetName, WriteDisposition,
 };
 use cdf_project::{
     InMemoryResourceSourceResolver, ProjectRunReport, ProjectRunRequest, ProjectRunSource,
@@ -112,7 +112,7 @@ pub(super) fn run_scenario(
     let checkpoint_id = CheckpointId::new(format!("checkpoint-e6-drift-quarantine-{run_label}"))?;
     let run_id = RunId::new(format!("run-e6-drift-quarantine-{run_label}"))?;
     let identifier_policy = destination.column_identifier_policy()?;
-    let plan = drift_quarantine_plan(&resource, &package_id, identifier_policy.as_ref())?;
+    let plan = drift_quarantine_plan(resource.as_ref(), &package_id, identifier_policy.as_ref())?;
     assert_frozen_contract_program(&plan);
 
     fs::create_dir_all(&spec.package_root)
@@ -142,7 +142,7 @@ pub(super) fn run_scenario(
     };
 
     let report = futures_executor::block_on(run_project(ProjectRunRequest {
-        resource: ProjectRunSource::local_file(&resource),
+        resource: ProjectRunSource::new(resource.as_ref()),
         plan,
         package_root: spec.package_root.clone(),
         state_store_path: spec.state_store_path.clone(),
@@ -169,7 +169,7 @@ fn write_source(project_root: &Path, source: &str) -> Result<()> {
         .map_err(|error| CdfError::data(format!("write drift fixture source: {error}")))
 }
 
-fn compile_resource(project_root: &Path) -> Result<CompiledResource> {
+fn compile_resource(project_root: &Path) -> Result<Arc<dyn QueryableResource>> {
     let config = parse_cdf_toml(PROJECT_TOML)?;
     let resolver =
         InMemoryResourceSourceResolver::new().with_toml("resources/live.toml", RESOURCE_TOML);
@@ -188,11 +188,11 @@ fn compile_resource(project_root: &Path) -> Result<CompiledResource> {
             resource.descriptor().resource_id
         )));
     }
-    Ok(resource)
+    crate::source_fixture::resolve_local_file(&resource, project_root)
 }
 
 fn drift_quarantine_plan(
-    resource: &CompiledResource,
+    resource: &dyn QueryableResource,
     package_id: &str,
     identifier_policy: Option<&IdentifierPolicy>,
 ) -> Result<EnginePlan> {

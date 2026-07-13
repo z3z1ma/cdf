@@ -1,6 +1,6 @@
-use std::cell::Cell;
+use std::{cell::Cell, sync::Arc};
 
-use cdf_declarative::{CompiledResource, RestResource, SqlResource};
+use cdf_declarative::{RestResource, SqlResource};
 use cdf_dest_parquet::ParquetDestination;
 use cdf_kernel::{
     CdfError, DestinationProtocol, PipelineId, QueryableResource, Result, RunId, SourcePosition,
@@ -146,7 +146,7 @@ pub(crate) fn excluded_for_source<'a>(
 }
 
 enum MatrixSource {
-    File(CompiledResource),
+    File(Arc<dyn QueryableResource>),
     Python(cdf_python::PythonResource),
     Rest {
         resource: RestResource,
@@ -162,10 +162,13 @@ impl MatrixSource {
         postgres: &LivePostgres,
     ) -> Result<Self> {
         match cell.source_archetype {
-            SourceArchetype::File => Ok(Self::File(file_fixture::resource(
-                project_root,
-                cell.disposition,
-            )?)),
+            SourceArchetype::File => {
+                let compiled = file_fixture::resource(project_root, cell.disposition)?;
+                Ok(Self::File(crate::source_fixture::resolve_local_file(
+                    &compiled,
+                    project_root,
+                )?))
+            }
             SourceArchetype::Python => Ok(Self::Python(python_fixture::resource(
                 project_root,
                 cell.disposition,
@@ -183,7 +186,7 @@ impl MatrixSource {
 
     fn queryable(&self) -> &dyn QueryableResource {
         match self {
-            Self::File(resource) => resource,
+            Self::File(resource) => resource.as_ref(),
             Self::Python(resource) => resource,
             Self::Rest { resource, .. } => resource,
             Self::Sql(resource) => resource.compiled(),
@@ -197,9 +200,12 @@ impl MatrixSource {
         identifier_policy: Option<&cdf_contract::IdentifierPolicy>,
     ) -> Result<cdf_engine::EnginePlan> {
         match self {
-            Self::File(resource) => {
-                plan_json::file_engine_plan(resource, package_id, disposition, identifier_policy)
-            }
+            Self::File(resource) => plan_json::file_engine_plan(
+                resource.as_ref(),
+                package_id,
+                disposition,
+                identifier_policy,
+            ),
             Self::Python(resource) => {
                 plan_json::planned_engine_plan(resource, package_id, identifier_policy)
             }
@@ -214,7 +220,7 @@ impl MatrixSource {
 
     fn project_run_source(&self) -> ProjectRunSource<'_> {
         match self {
-            Self::File(resource) => ProjectRunSource::local_file(resource),
+            Self::File(resource) => ProjectRunSource::new(resource.as_ref()),
             Self::Python(resource) => ProjectRunSource::new(resource),
             Self::Rest { resource, .. } => ProjectRunSource::rest(resource),
             Self::Sql(resource) => ProjectRunSource::sql(resource),

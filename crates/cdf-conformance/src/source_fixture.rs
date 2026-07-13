@@ -21,14 +21,17 @@ pub(crate) fn resolve_local_file(
     project_root: &Path,
 ) -> Result<Arc<dyn QueryableResource>> {
     let execution = crate::test_execution_services();
+    let mut formats = FormatRegistry::default();
+    formats.register(Arc::new(cdf_format_json::NdjsonFormatDriver::new()?))?;
+    let formats = Arc::new(formats);
     let mut registry = SourceRegistry::new();
-    registry.register(FileSourceDriver::new(|secrets, execution| {
+    registry.register(FileSourceDriver::new(move |secrets, execution| {
         Ok(FileRuntimeDependencies::new(
             FileTransportFacade::new()
                 .with_shared_secret_provider(secrets)
                 .with_execution_services(execution.clone()),
             execution,
-            Arc::new(FormatRegistry::default()),
+            formats.clone(),
             Arc::new(ByteTransformRegistry::default()),
         ))
     })?)?;
