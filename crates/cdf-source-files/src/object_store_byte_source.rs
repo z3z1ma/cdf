@@ -244,45 +244,51 @@ async fn sequential_next(
         )?,
     )
     .await?;
-    let Some(bytes) = state
-        .stream
-        .try_next()
-        .await
-        .map_err(|error| object_error("stream object body", error))?
-    else {
-        drop(lease);
-        verify_download_identity(&state.expected, &state.expected, state.transferred_bytes)?;
-        if state.expected.etag.is_none() && state.expected.version.is_none() {
-            let metadata = state
-                .store
-                .head(&state.path)
-                .await
-                .map_err(|error| object_error("reattest weak object generation", error))?;
-            let observed =
-                crate::transport::object_identity(state.expected.location.clone(), metadata);
-            verify_download_identity(&state.expected, &observed, state.transferred_bytes)?;
+    loop {
+        state.cancellation.check()?;
+        let Some(bytes) = state
+            .stream
+            .try_next()
+            .await
+            .map_err(|error| object_error("stream object body", error))?
+        else {
+            drop(lease);
+            verify_download_identity(&state.expected, &state.expected, state.transferred_bytes)?;
+            if state.expected.etag.is_none() && state.expected.version.is_none() {
+                let metadata = state
+                    .store
+                    .head(&state.path)
+                    .await
+                    .map_err(|error| object_error("reattest weak object generation", error))?;
+                let observed =
+                    crate::transport::object_identity(state.expected.location.clone(), metadata);
+                verify_download_identity(&state.expected, &observed, state.transferred_bytes)?;
+            }
+            return Ok(None);
+        };
+        let length = u64::try_from(bytes.len())
+            .map_err(|_| CdfError::data("object-store response chunk exceeds u64"))?;
+        if length == 0 {
+            continue;
         }
-        return Ok(None);
-    };
-    let length = u64::try_from(bytes.len())
-        .map_err(|_| CdfError::data("object-store response chunk exceeds u64"))?;
-    if length > state.maximum_chunk_bytes {
-        return Err(CdfError::data(format!(
-            "object-store response chunk {length} exceeds its pre-admitted {}-byte envelope",
-            state.maximum_chunk_bytes
-        )));
+        if length > state.maximum_chunk_bytes {
+            return Err(CdfError::data(format!(
+                "object-store response chunk {length} exceeds its pre-admitted {}-byte envelope",
+                state.maximum_chunk_bytes
+            )));
+        }
+        state.transferred_bytes = state
+            .transferred_bytes
+            .checked_add(length)
+            .ok_or_else(|| CdfError::data("object-store transfer byte count overflowed"))?;
+        if state.transferred_bytes > state.expected.size_bytes.unwrap_or_default() {
+            return Err(CdfError::data(
+                "object-store sequential response exceeded planned generation length",
+            ));
+        }
+        state.cancellation.check()?;
+        return Ok(Some((AccountedBytes::new(bytes, lease)?, state)));
     }
-    state.transferred_bytes = state
-        .transferred_bytes
-        .checked_add(length)
-        .ok_or_else(|| CdfError::data("object-store transfer byte count overflowed"))?;
-    if state.transferred_bytes > state.expected.size_bytes.unwrap_or_default() {
-        return Err(CdfError::data(
-            "object-store sequential response exceeded planned generation length",
-        ));
-    }
-    state.cancellation.check()?;
-    Ok(Some((AccountedBytes::new(bytes, lease)?, state)))
 }
 
 fn object_error(action: &str, error: object_store::Error) -> CdfError {
@@ -294,7 +300,7 @@ mod tests {
     use std::collections::BTreeMap;
 
     use cdf_memory::DeterministicMemoryCoordinator;
-    use futures_util::TryStreamExt;
+    use futures_util::{StreamExt, TryStreamExt};
     use object_store::{ObjectStoreExt, PutPayload, memory::InMemory};
 
     use super::*;
@@ -338,6 +344,53 @@ mod tests {
         assert_eq!(streamed, body);
         assert_eq!(ranged.payload(), b"456789");
         drop(ranged);
+        assert_eq!(coordinator.snapshot().current_bytes, 0);
+    }
+
+    #[test]
+    fn object_store_sequential_source_skips_empty_provider_frames_under_one_lease() {
+        const WINDOW_BYTES: u64 = 4 * 1024 * 1024;
+        let store = Arc::new(InMemory::new());
+        let path = ObjectPath::from("events/empty-frames.bin");
+        futures_executor::block_on(store.put(&path, PutPayload::from(Bytes::from_static(b"abc"))))
+            .unwrap();
+        let metadata = futures_executor::block_on(store.head(&path)).unwrap();
+        let expected = crate::transport::object_identity(
+            "s3://bucket/events/empty-frames.bin".to_owned(),
+            metadata,
+        );
+        let coordinator =
+            Arc::new(DeterministicMemoryCoordinator::new(WINDOW_BYTES, BTreeMap::new()).unwrap());
+        let memory: Arc<dyn MemoryCoordinator> = coordinator.clone();
+        let stream = futures_util::stream::iter([
+            Ok::<Bytes, object_store::Error>(Bytes::new()),
+            Ok::<Bytes, object_store::Error>(Bytes::new()),
+            Ok::<Bytes, object_store::Error>(Bytes::from_static(b"abc")),
+        ])
+        .boxed();
+        let state = SequentialState {
+            stream,
+            store,
+            path,
+            expected,
+            memory,
+            cancellation: RunCancellation::default(),
+            maximum_chunk_bytes: WINDOW_BYTES,
+            transferred_bytes: 0,
+        };
+
+        let (chunk, state) = futures_executor::block_on(sequential_next(state))
+            .unwrap()
+            .unwrap();
+        assert_eq!(chunk.payload(), b"abc");
+        assert_eq!(chunk.lease().bytes(), 3);
+        assert_eq!(coordinator.snapshot().peak_bytes, WINDOW_BYTES);
+        drop(chunk);
+        assert!(
+            futures_executor::block_on(sequential_next(state))
+                .unwrap()
+                .is_none()
+        );
         assert_eq!(coordinator.snapshot().current_bytes, 0);
     }
 

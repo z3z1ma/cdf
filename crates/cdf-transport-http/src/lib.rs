@@ -354,35 +354,41 @@ async fn http_sequential_next(
         )?,
     )
     .await?;
-    let Some(bytes) = state.stream.try_next().await.map_err(http_body_error)? else {
-        drop(lease);
-        if state.transferred_bytes != state.expected_size {
+    loop {
+        state.cancellation.check()?;
+        let Some(bytes) = state.stream.try_next().await.map_err(http_body_error)? else {
+            drop(lease);
+            if state.transferred_bytes != state.expected_size {
+                return Err(CdfError::data(format!(
+                    "HTTP sequential response returned {} bytes for planned {}-byte generation",
+                    state.transferred_bytes, state.expected_size
+                )));
+            }
+            return Ok(None);
+        };
+        let length = u64::try_from(bytes.len())
+            .map_err(|_| CdfError::data("HTTP response chunk exceeds u64"))?;
+        if length == 0 {
+            continue;
+        }
+        if length > state.maximum_chunk_bytes {
             return Err(CdfError::data(format!(
-                "HTTP sequential response returned {} bytes for planned {}-byte generation",
-                state.transferred_bytes, state.expected_size
+                "HTTP response chunk {length} exceeds its pre-admitted {}-byte envelope",
+                state.maximum_chunk_bytes
             )));
         }
-        return Ok(None);
-    };
-    let length = u64::try_from(bytes.len())
-        .map_err(|_| CdfError::data("HTTP response chunk exceeds u64"))?;
-    if length > state.maximum_chunk_bytes {
-        return Err(CdfError::data(format!(
-            "HTTP response chunk {length} exceeds its pre-admitted {}-byte envelope",
-            state.maximum_chunk_bytes
-        )));
+        state.transferred_bytes = state
+            .transferred_bytes
+            .checked_add(length)
+            .ok_or_else(|| CdfError::data("HTTP transfer byte count overflowed"))?;
+        if state.transferred_bytes > state.expected_size {
+            return Err(CdfError::data(
+                "HTTP sequential response exceeded planned generation length",
+            ));
+        }
+        state.cancellation.check()?;
+        return Ok(Some((AccountedBytes::new(bytes, lease)?, state)));
     }
-    state.transferred_bytes = state
-        .transferred_bytes
-        .checked_add(length)
-        .ok_or_else(|| CdfError::data("HTTP transfer byte count overflowed"))?;
-    if state.transferred_bytes > state.expected_size {
-        return Err(CdfError::data(
-            "HTTP sequential response exceeded planned generation length",
-        ));
-    }
-    state.cancellation.check()?;
-    Ok(Some((AccountedBytes::new(bytes, lease)?, state)))
 }
 
 fn validate_chunk_target(target: u64, capabilities: &ByteSourceCapabilities) -> Result<()> {
@@ -592,6 +598,35 @@ mod tests {
                 .count(),
             1
         );
+        assert_eq!(coordinator.snapshot().current_bytes, 0);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn http_sequential_source_skips_empty_transport_frames_under_one_lease() {
+        const WINDOW_BYTES: u64 = 4 * 1024 * 1024;
+        let coordinator =
+            Arc::new(DeterministicMemoryCoordinator::new(WINDOW_BYTES, BTreeMap::new()).unwrap());
+        let memory: Arc<dyn MemoryCoordinator> = coordinator.clone();
+        let stream: HttpBodyStream = Box::pin(stream::iter([
+            Ok::<Bytes, reqwest::Error>(Bytes::new()),
+            Ok::<Bytes, reqwest::Error>(Bytes::new()),
+            Ok::<Bytes, reqwest::Error>(Bytes::from_static(b"abc")),
+        ]));
+        let state = HttpSequentialState {
+            stream,
+            expected_size: 3,
+            memory,
+            cancellation: RunCancellation::default(),
+            maximum_chunk_bytes: WINDOW_BYTES,
+            transferred_bytes: 0,
+        };
+
+        let (chunk, state) = http_sequential_next(state).await.unwrap().unwrap();
+        assert_eq!(chunk.payload(), b"abc");
+        assert_eq!(chunk.lease().bytes(), 3);
+        assert_eq!(coordinator.snapshot().peak_bytes, WINDOW_BYTES);
+        drop(chunk);
+        assert!(http_sequential_next(state).await.unwrap().is_none());
         assert_eq!(coordinator.snapshot().current_bytes, 0);
     }
 
