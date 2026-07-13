@@ -17,25 +17,35 @@ use arrow_ipc::writer::FileWriter;
 use arrow_schema::{
     DataType, Field, Fields, IntervalUnit, Schema, TimeUnit, UnionFields, UnionMode,
 };
+use bytes::Bytes;
 use cdf_contract::{ContractPolicy, ObservedSchema, compile_validation_program};
 use cdf_declarative::{
-    AuthDeclaration, CompiledResourcePlan, FileRuntimeDependencies, FileTransportFacade,
-    HttpFileRequest, HttpFileResponse, HttpFileTransport, SourceDeclaration,
+    AuthDeclaration, CompiledResourcePlan, FileIdentityMetadata, FileRuntimeDependencies,
+    FileTransportFacade, FileTransportLocation, FileTransportResource, HttpFileRequest,
+    HttpFileResponse, HttpFileTransport, SourceDeclaration,
 };
 use cdf_engine::{EnginePlan, EnginePlanInput, PlanBoundedness, Planner};
 use cdf_http::{
     HttpMethod, HttpRequest, HttpResponse, HttpTransport, SecretProvider, SecretUri, SecretValue,
 };
 use cdf_kernel::{
-    CapabilitySupport, CdfError, CheckpointId, ConcurrencyLimit, ContractRef, DestinationId,
-    DestinationProtocol, DestinationSheet, DiscoveryManifestHash, DiscoveryManifestReference,
-    IdempotencySupport, IdentifierRules, LeaseOwnerId, PipelineId, QueryableResource, ResourceId,
-    ResourceStream, RunId, ScanRequest, SchemaHash, SchemaSource, ScopeKey, ScopeLease,
-    ScopeLeaseClock, ScopeLeaseStore, SourcePosition, TargetName, TransactionSupport, TypeMapping,
-    TypeMappingFidelity, WriteDisposition, source_name,
+    BoxFuture, CapabilitySupport, CdfError, CheckpointId, ConcurrencyLimit, ContractRef,
+    DestinationId, DestinationProtocol, DestinationSheet, DiscoveryManifestHash,
+    DiscoveryManifestReference, IdempotencySupport, IdentifierRules, LeaseOwnerId, PipelineId,
+    QueryableResource, ResourceId, ResourceStream, RunId, ScanRequest, SchemaHash, SchemaSource,
+    ScopeKey, ScopeLease, ScopeLeaseClock, ScopeLeaseStore, SourcePosition, TargetName,
+    TransactionSupport, TypeMapping, TypeMappingFidelity, WriteDisposition, source_name,
+};
+use cdf_memory::{
+    AccountedBytes, ConsumerKey, MemoryClass, MemoryCoordinator, ReservationRequest, reserve,
+};
+use cdf_runtime::{
+    AccountedByteStream, ByteExtent, ByteSource, ByteSourceCapabilities, ContentIdentity,
+    GenerationStrength, RunCancellation, SequentialReadRequest,
 };
 use cdf_state_sqlite::InMemoryScopeLeaseStore;
 use flate2::{Compression, write::GzEncoder};
+use futures_util::stream;
 use object_store::{ObjectStoreExt, PutPayload, memory::InMemory, path::Path as ObjectPath};
 
 #[test]
@@ -2991,9 +3001,173 @@ struct RecordingHttpFileTransport {
 
 struct RecordingHttpFileTransportState {
     requests: Vec<HttpFileRequest>,
-    body: Vec<u8>,
+    body: Arc<Vec<u8>>,
     etag: String,
     missing: BTreeSet<String>,
+}
+
+struct RecordingHttpByteSource {
+    state: Arc<Mutex<RecordingHttpFileTransportState>>,
+    url: String,
+    etag: Option<String>,
+    identity: ContentIdentity,
+    capabilities: ByteSourceCapabilities,
+    memory: Arc<dyn MemoryCoordinator>,
+}
+
+impl RecordingHttpByteSource {
+    fn new(
+        state: Arc<Mutex<RecordingHttpFileTransportState>>,
+        resource: &FileTransportResource,
+        expected: &FileIdentityMetadata,
+        memory: Arc<dyn MemoryCoordinator>,
+    ) -> Result<Self> {
+        let FileTransportLocation::HttpUrl { url } = &resource.location else {
+            return Err(CdfError::contract(
+                "recording HTTP byte source requires an HTTP(S) resource",
+            ));
+        };
+        let identity = ContentIdentity {
+            stable_id: url.clone(),
+            size_bytes: expected.size_bytes,
+            generation: expected.etag.clone(),
+            checksum: expected.sha256().map(str::to_owned),
+            strength: if expected.sha256().is_some() {
+                GenerationStrength::ContentAddressed
+            } else {
+                GenerationStrength::Strong
+            },
+        };
+        identity.validate()?;
+        let capabilities = ByteSourceCapabilities {
+            known_length: true,
+            reopenable: true,
+            seekable: true,
+            exact_ranges: true,
+            useful_range_concurrency: 4,
+            minimum_chunk_bytes: 1,
+            maximum_chunk_bytes: 32 * 1024 * 1024,
+        };
+        capabilities.validate()?;
+        Ok(Self {
+            state,
+            url: url.clone(),
+            etag: expected.etag.clone(),
+            identity,
+            capabilities,
+            memory,
+        })
+    }
+}
+
+impl ByteSource for RecordingHttpByteSource {
+    fn identity(&self) -> &ContentIdentity {
+        &self.identity
+    }
+
+    fn capabilities(&self) -> &ByteSourceCapabilities {
+        &self.capabilities
+    }
+
+    fn open_sequential(
+        &self,
+        request: SequentialReadRequest,
+    ) -> BoxFuture<'_, Result<AccountedByteStream>> {
+        Box::pin(async move {
+            request.cancellation.check()?;
+            if request.preferred_chunk_bytes < self.capabilities.minimum_chunk_bytes
+                || request.preferred_chunk_bytes > self.capabilities.maximum_chunk_bytes
+            {
+                return Err(CdfError::contract(
+                    "recording HTTP sequential chunk target is outside source capabilities",
+                ));
+            }
+            let body = {
+                let mut state = self.state.lock().unwrap();
+                let mut request = HttpFileRequest::new(HttpMethod::Get, self.url.clone());
+                if let Some(etag) = &self.etag {
+                    request.headers.insert("if-match".to_owned(), etag.clone());
+                }
+                state.requests.push(request);
+                Arc::clone(&state.body)
+            };
+            let state = RecordingSequentialState {
+                body,
+                offset: 0,
+                chunk_bytes: usize::try_from(request.preferred_chunk_bytes)
+                    .map_err(|_| CdfError::data("test chunk size exceeds usize"))?,
+                memory: Arc::clone(&self.memory),
+                cancellation: request.cancellation,
+            };
+            Ok(Box::pin(stream::try_unfold(state, |mut state| async move {
+                state.cancellation.check()?;
+                if state.offset == state.body.len() {
+                    return Ok(None);
+                }
+                let end = state
+                    .offset
+                    .saturating_add(state.chunk_bytes)
+                    .min(state.body.len());
+                let bytes = Bytes::copy_from_slice(&state.body[state.offset..end]);
+                let reservation = ReservationRequest::new(
+                    ConsumerKey::new("project-http-fixture", MemoryClass::Source)?,
+                    u64::try_from(bytes.len())
+                        .map_err(|_| CdfError::data("test byte length exceeds u64"))?,
+                )?;
+                let lease = reserve(Arc::clone(&state.memory), reservation).await?;
+                state.offset = end;
+                Ok(Some((AccountedBytes::new(bytes, lease)?, state)))
+            })) as AccountedByteStream)
+        })
+    }
+
+    fn read_exact_range(
+        &self,
+        extent: ByteExtent,
+        cancellation: RunCancellation,
+    ) -> BoxFuture<'_, Result<AccountedBytes>> {
+        Box::pin(async move {
+            cancellation.check()?;
+            let end = extent
+                .start
+                .checked_add(extent.length)
+                .ok_or_else(|| CdfError::data("test byte range overflow"))?;
+            let start = usize::try_from(extent.start)
+                .map_err(|_| CdfError::data("test byte range start exceeds usize"))?;
+            let end = usize::try_from(end)
+                .map_err(|_| CdfError::data("test byte range end exceeds usize"))?;
+            let bytes = {
+                let mut state = self.state.lock().unwrap();
+                if end > state.body.len() {
+                    return Err(CdfError::data("test byte range exceeds fixture"));
+                }
+                let mut request = HttpFileRequest::new(HttpMethod::Get, self.url.clone());
+                request.headers.insert(
+                    "range".to_owned(),
+                    format!("bytes={}-{}", extent.start, end.saturating_sub(1)),
+                );
+                if let Some(etag) = &self.etag {
+                    request.headers.insert("if-match".to_owned(), etag.clone());
+                }
+                state.requests.push(request);
+                Bytes::copy_from_slice(&state.body[start..end])
+            };
+            let reservation = ReservationRequest::new(
+                ConsumerKey::new("project-http-fixture-range", MemoryClass::Source)?,
+                extent.length,
+            )?;
+            let lease = reserve(Arc::clone(&self.memory), reservation).await?;
+            AccountedBytes::new(bytes, lease)
+        })
+    }
+}
+
+struct RecordingSequentialState {
+    body: Arc<Vec<u8>>,
+    offset: usize,
+    chunk_bytes: usize,
+    memory: Arc<dyn MemoryCoordinator>,
+    cancellation: RunCancellation,
 }
 
 impl RecordingHttpFileTransport {
@@ -3001,7 +3175,7 @@ impl RecordingHttpFileTransport {
         Self {
             state: Arc::new(Mutex::new(RecordingHttpFileTransportState {
                 requests: Vec::new(),
-                body,
+                body: Arc::new(body),
                 etag: "\"fixture-etag\"".to_owned(),
                 missing: BTreeSet::new(),
             })),
@@ -3058,7 +3232,7 @@ impl HttpFileTransport for RecordingHttpFileTransport {
         if request.method != HttpMethod::Get {
             return Ok((HttpFileResponse::new(405), 0));
         }
-        std::fs::write(destination, &state.body)
+        std::fs::write(destination, state.body.as_slice())
             .map_err(|error| CdfError::data(format!("write test HTTP download: {error}")))?;
         let len = state.body.len() as u64;
         Ok((
@@ -3068,6 +3242,20 @@ impl HttpFileTransport for RecordingHttpFileTransport {
                 .with_header("Last-Modified", "Wed, 08 Jul 2026 12:00:00 GMT"),
             len,
         ))
+    }
+
+    fn open_byte_source(
+        &self,
+        resource: &FileTransportResource,
+        expected: &FileIdentityMetadata,
+        memory: Arc<dyn MemoryCoordinator>,
+    ) -> Result<Option<Arc<dyn ByteSource>>> {
+        Ok(Some(Arc::new(RecordingHttpByteSource::new(
+            Arc::clone(&self.state),
+            resource,
+            expected,
+            memory,
+        )?)))
     }
 }
 

@@ -17,6 +17,7 @@ use cdf_source_files::{
     HttpFileTransport,
 };
 use futures_util::{Stream, TryStreamExt, stream};
+use sha2::{Digest, Sha256};
 
 const MINIMUM_CHUNK_BYTES: u64 = 8 * 1024;
 const MAXIMUM_CHUNK_BYTES: u64 = 32 * 1024 * 1024;
@@ -123,9 +124,6 @@ impl HttpFileTransport for ReqwestHttpTransport {
         expected: &FileIdentityMetadata,
         memory: Arc<dyn MemoryCoordinator>,
     ) -> Result<Option<Arc<dyn ByteSource>>> {
-        if expected.etag.is_none() {
-            return Ok(None);
-        }
         if resource.auth.is_some() {
             return Err(CdfError::auth(
                 "HTTP byte-source auth must be resolved by the transport provider before open",
@@ -133,7 +131,11 @@ impl HttpFileTransport for ReqwestHttpTransport {
         }
         let url = match &resource.location {
             cdf_source_files::FileTransportLocation::HttpUrl { url } => url.clone(),
-            _ => return Ok(None),
+            _ => {
+                return Err(CdfError::contract(
+                    "HTTP byte source requires an HTTP(S) file resource",
+                ));
+            }
         };
         resource
             .egress_allowlist
@@ -201,28 +203,39 @@ impl HttpByteSource {
         let size_bytes = expected
             .size_bytes
             .ok_or_else(|| CdfError::data("HTTP byte source requires Content-Length"))?;
-        let etag = expected
-            .etag
-            .clone()
-            .ok_or_else(|| CdfError::data("HTTP byte source requires a strong ETag"))?;
+        let checksum = expected.sha256().map(str::to_owned);
+        let generation = expected.etag.clone().or_else(|| {
+            expected
+                .modified
+                .as_ref()
+                .map(|modified| format!("last-modified:{modified};size:{size_bytes}"))
+        });
+        if generation.is_none() && checksum.is_none() {
+            return Err(CdfError::data(
+                "HTTP byte source requires ETag, Last-Modified, or SHA-256 content identity",
+            ));
+        }
+        let exact_ranges = expected.etag.is_some();
         let identity = ContentIdentity {
             stable_id: url.clone(),
             size_bytes: Some(size_bytes),
-            generation: Some(etag),
-            checksum: expected.sha256().map(str::to_owned),
-            strength: if expected.sha256().is_some() {
+            generation,
+            checksum: checksum.clone(),
+            strength: if checksum.is_some() {
                 GenerationStrength::ContentAddressed
-            } else {
+            } else if exact_ranges {
                 GenerationStrength::Strong
+            } else {
+                GenerationStrength::Weak
             },
         };
         identity.validate()?;
         let capabilities = ByteSourceCapabilities {
             known_length: true,
             reopenable: true,
-            seekable: true,
-            exact_ranges: true,
-            useful_range_concurrency: 16,
+            seekable: exact_ranges,
+            exact_ranges,
+            useful_range_concurrency: if exact_ranges { 16 } else { 0 },
             minimum_chunk_bytes: MINIMUM_CHUNK_BYTES,
             maximum_chunk_bytes: MAXIMUM_CHUNK_BYTES,
         };
@@ -238,10 +251,12 @@ impl HttpByteSource {
     }
 
     fn request(&self) -> reqwest::RequestBuilder {
-        self.client.get(&self.url).header(
-            "if-match",
-            self.expected.etag.as_deref().unwrap_or_default(),
-        )
+        let request = self.client.get(&self.url);
+        if let Some(etag) = &self.expected.etag {
+            request.header("if-match", etag)
+        } else {
+            request
+        }
     }
 }
 
@@ -270,6 +285,8 @@ impl ByteSource for HttpByteSource {
                 cancellation: request.cancellation,
                 maximum_chunk_bytes: request.preferred_chunk_bytes,
                 transferred_bytes: 0,
+                expected_checksum: self.expected.sha256().map(str::to_owned),
+                hasher: Sha256::new(),
             };
             Ok(Box::pin(stream::try_unfold(state, http_sequential_next)) as AccountedByteStream)
         })
@@ -282,6 +299,11 @@ impl ByteSource for HttpByteSource {
     ) -> BoxFuture<'_, Result<AccountedBytes>> {
         Box::pin(async move {
             cancellation.check()?;
+            if !self.capabilities.exact_ranges {
+                return Err(CdfError::contract(
+                    "weakly versioned HTTP objects require sequential verified spooling",
+                ));
+            }
             let end = extent
                 .start
                 .checked_add(extent.length)
@@ -340,6 +362,8 @@ struct HttpSequentialState {
     cancellation: RunCancellation,
     maximum_chunk_bytes: u64,
     transferred_bytes: u64,
+    expected_checksum: Option<String>,
+    hasher: Sha256,
 }
 
 async fn http_sequential_next(
@@ -364,6 +388,18 @@ async fn http_sequential_next(
                     state.transferred_bytes, state.expected_size
                 )));
             }
+            if let Some(expected) = &state.expected_checksum {
+                let observed = format!("{:x}", state.hasher.finalize());
+                if observed
+                    != expected
+                        .strip_prefix("sha256:")
+                        .unwrap_or(expected.as_str())
+                {
+                    return Err(CdfError::data(
+                        "HTTP sequential response checksum does not match planned content identity",
+                    ));
+                }
+            }
             return Ok(None);
         };
         let length = u64::try_from(bytes.len())
@@ -386,6 +422,7 @@ async fn http_sequential_next(
                 "HTTP sequential response exceeded planned generation length",
             ));
         }
+        state.hasher.update(&bytes);
         state.cancellation.check()?;
         return Ok(Some((AccountedBytes::new(bytes, lease)?, state)));
     }
@@ -416,14 +453,26 @@ fn validate_response(
             ))
         });
     }
-    let etag = response
-        .headers()
-        .get("etag")
-        .and_then(|value| value.to_str().ok());
-    if etag != expected.etag.as_deref() {
-        return Err(CdfError::data(
-            "HTTP object generation changed (ETag mismatch)",
-        ));
+    if let Some(expected_etag) = expected.etag.as_deref() {
+        let etag = response
+            .headers()
+            .get("etag")
+            .and_then(|value| value.to_str().ok());
+        if etag != Some(expected_etag) {
+            return Err(CdfError::data(
+                "HTTP object generation changed (ETag mismatch)",
+            ));
+        }
+    } else if let Some(expected_modified) = expected.modified.as_deref() {
+        let modified = response
+            .headers()
+            .get("last-modified")
+            .and_then(|value| value.to_str().ok());
+        if modified != Some(expected_modified) {
+            return Err(CdfError::data(
+                "HTTP object generation changed (Last-Modified mismatch)",
+            ));
+        }
     }
     if expected_status == 200 {
         let content_length = response
@@ -619,6 +668,8 @@ mod tests {
             cancellation: RunCancellation::default(),
             maximum_chunk_bytes: WINDOW_BYTES,
             transferred_bytes: 0,
+            expected_checksum: None,
+            hasher: Sha256::new(),
         };
 
         let (chunk, state) = http_sequential_next(state).await.unwrap().unwrap();
@@ -631,7 +682,7 @@ mod tests {
     }
 
     #[test]
-    fn weak_http_identity_selects_verified_spool_instead_of_ranges() {
+    fn weak_http_identity_selects_sequential_verified_spool_instead_of_ranges() {
         let transport = ReqwestHttpTransport::new().unwrap();
         let resource = FileTransportResource::http_url("https://example.test/events.bin");
         let expected = FileIdentityMetadata {
@@ -645,11 +696,13 @@ mod tests {
         let memory: Arc<dyn MemoryCoordinator> =
             Arc::new(DeterministicMemoryCoordinator::new(1024 * 1024, BTreeMap::new()).unwrap());
 
-        assert!(
-            transport
-                .open_byte_source(&resource, &expected, memory)
-                .unwrap()
-                .is_none()
-        );
+        let source = transport
+            .open_byte_source(&resource, &expected, memory)
+            .unwrap()
+            .unwrap();
+        assert!(!source.capabilities().seekable);
+        assert!(!source.capabilities().exact_ranges);
+        assert_eq!(source.capabilities().useful_range_concurrency, 0);
+        assert_eq!(source.identity().strength, GenerationStrength::Weak);
     }
 }

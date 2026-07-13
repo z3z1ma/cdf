@@ -30,6 +30,7 @@ futures-executor = "0.3.32"
 [dev-dependencies]
 arrow-array = "59.1.0"
 arrow-ipc = "59.1.0"
+bytes = "1.11.0"
 cdf-dest-duckdb = { path = "../cdf-dest-duckdb" }
 cdf-dest-parquet = { path = "../cdf-dest-parquet" }
 cdf-dest-postgres = { path = "../cdf-dest-postgres" }
@@ -39,6 +40,7 @@ cdf-format-json = { path = "../cdf-format-json" }
 cdf-format-parquet = { path = "../cdf-format-parquet" }
 cdf-transform-gzip = { path = "../cdf-transform-gzip" }
 flate2 = "1.1.9"
+futures-util = "0.3.32"
 object_store = { git = "https://github.com/apache/arrow-rs-object-store.git", rev = "c7316d29face118e7409eead0cda098f38589428" }
 postgres = "0.19"
 tempfile = "3.27.0"

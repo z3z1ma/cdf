@@ -29,7 +29,6 @@ use futures_util::TryStreamExt;
 use sha2::{Digest, Sha256};
 use tokio::io::AsyncWriteExt;
 
-use crate::range_discovery_byte_source::RangeDiscoveryByteSource;
 use crate::{
     ByteRange, FileCompressionDeclaration, FileFormatDeclaration, FileIdentityMetadata,
     FileResourcePlan, FileTransport, FileTransportFacade, FileTransportLocation,
@@ -49,7 +48,7 @@ pub struct FileRuntimeDependencies {
     max_spool_bytes: u64,
 }
 
-const DEFAULT_MAX_REMOTE_SPOOL_BYTES: u64 = 64 * 1024 * 1024 * 1024;
+const DEFAULT_MAX_FILE_SPOOL_BYTES: u64 = 64 * 1024 * 1024 * 1024;
 
 impl FileRuntimeDependencies {
     pub fn new(
@@ -72,14 +71,14 @@ impl FileRuntimeDependencies {
             execution,
             formats,
             transforms,
-            max_spool_bytes: DEFAULT_MAX_REMOTE_SPOOL_BYTES,
+            max_spool_bytes: DEFAULT_MAX_FILE_SPOOL_BYTES,
         }
     }
 
     pub fn with_max_spool_bytes(mut self, max_spool_bytes: u64) -> Result<Self> {
         if max_spool_bytes == 0 {
             return Err(CdfError::contract(
-                "remote file spool budget must be greater than zero",
+                "file spool budget must be greater than zero",
             ));
         }
         self.max_spool_bytes = max_spool_bytes;
@@ -88,10 +87,6 @@ impl FileRuntimeDependencies {
 
     pub fn max_spool_bytes(&self) -> u64 {
         self.max_spool_bytes
-    }
-
-    fn transport(&self) -> Arc<dyn FileTransport> {
-        Arc::clone(&self.transport)
     }
 
     fn execution(&self) -> &ExecutionServices {
@@ -104,6 +99,11 @@ impl FileRuntimeDependencies {
 
     pub fn transforms(&self) -> &Arc<ByteTransformRegistry> {
         &self.transforms
+    }
+
+    #[cfg(test)]
+    fn transport(&self) -> Arc<dyn FileTransport> {
+        Arc::clone(&self.transport)
     }
 
     pub fn with_transport<R>(&self, f: impl FnOnce(&dyn FileTransport) -> Result<R>) -> Result<R> {
@@ -139,28 +139,50 @@ pub fn discover_local_binary_schema_bounded(
     let source_size = fs::metadata(path)
         .map_err(|error| CdfError::data(format!("stat {} for discovery: {error}", path.display())))?
         .len();
-    let transformed = if transform_name == "none" {
-        None
-    } else {
-        Some(spool_transformed_file(
-            path,
-            dependencies.transforms().resolve_name(transform_name)?,
-            dependencies,
-        )?)
-    };
-    let decode_path = transformed.as_ref().map_or(path, |spool| spool.path());
     let driver = dependencies.formats().resolve(format.as_str())?;
-    let source = Arc::new(LocalByteSource::open(
-        decode_path,
+    let upstream: Arc<dyn ByteSource> = Arc::new(LocalByteSource::open(
+        path,
         dependencies.execution().memory(),
     )?);
+    let transform_id = (transform_name != "none")
+        .then(|| dependencies.transforms().resolve_name(transform_name))
+        .transpose()?
+        .map(|driver| driver.descriptor().transform_id.clone());
+    let source = match transform_id.as_ref() {
+        Some(transform_id) => transformed_byte_source(upstream, transform_id, dependencies)?,
+        None => upstream,
+    };
+    let logical_source_identity = source.identity().clone();
+    let needs_spool = transform_id.is_some()
+        && driver.descriptor().source_access != cdf_runtime::FormatSourceAccess::Sequential;
     let options = driver.canonical_options(serde_json::json!({}))?;
     let discovery_memory = dependencies.execution().memory();
     let observation = dependencies.execution().run_io({
+        let dependencies = dependencies.clone();
         let driver = Arc::clone(&driver);
         let source = Arc::clone(&source);
         async move {
-            driver
+            let mut spool = None;
+            let source = if needs_spool {
+                let accounted = Arc::new(
+                    spool_byte_source_async(
+                        source,
+                        None,
+                        &dependencies,
+                        cdf_runtime::RunCancellation::default(),
+                    )
+                    .await?,
+                );
+                let local: Arc<dyn ByteSource> = Arc::new(LocalByteSource::open(
+                    accounted.path(),
+                    dependencies.execution().memory(),
+                )?);
+                spool = Some(accounted);
+                local
+            } else {
+                source
+            };
+            let observation = driver
                 .discover(
                     source,
                     FormatDiscoveryRequest {
@@ -171,13 +193,15 @@ pub fn discover_local_binary_schema_bounded(
                         cancellation: cdf_runtime::RunCancellation::default(),
                     },
                 )
-                .await
+                .await?;
+            drop(spool);
+            Ok::<_, CdfError>(observation)
         }
     })?;
     let schema = observation.arrow_schema;
     let inner_probe_bytes = observation.sampled_bytes;
     let mut source_identity = BTreeMap::from([
-        ("stable_id".to_owned(), observation.identity.stable_id),
+        ("stable_id".to_owned(), logical_source_identity.stable_id),
         ("format".to_owned(), format.as_str().to_owned()),
         (
             "format_driver_version".to_owned(),
@@ -197,7 +221,7 @@ pub fn discover_local_binary_schema_bounded(
     Ok(BoundedBinarySchemaProbe {
         schema,
         source_identity,
-        probe_bytes_read: initial_bytes_read.saturating_add(if transformed.is_some() {
+        probe_bytes_read: initial_bytes_read.saturating_add(if transform_id.is_some() {
             source_size.saturating_add(inner_probe_bytes)
         } else {
             inner_probe_bytes
@@ -220,107 +244,87 @@ pub fn discover_transport_binary_schema_bounded(
         ))
     })?;
     let driver = dependencies.formats().resolve(format.as_str())?;
-    let mut source = dependencies.with_transport(|transport| {
-        transport.open_byte_source(&resource, &metadata, dependencies.execution().memory())
-    })?;
-    if source.is_none()
-        && transform_name == "none"
-        && driver.descriptor().source_access != cdf_runtime::FormatSourceAccess::Sequential
-    {
-        source = RangeDiscoveryByteSource::try_new(
-            dependencies.transport(),
-            resource.clone(),
-            &metadata,
-            dependencies.execution().memory(),
-        )?
-        .map(|source| Arc::new(source) as Arc<dyn ByteSource>);
-    }
-    let mut probe = if let Some(upstream) = source {
-        let transform_id = (transform_name != "none")
-            .then(|| dependencies.transforms().resolve_name(transform_name))
-            .transpose()?
-            .map(|driver| driver.descriptor().transform_id.clone());
-        let source = match transform_id.as_ref() {
-            Some(transform_id) => transformed_byte_source(upstream, transform_id, dependencies)?,
-            None => upstream,
-        };
-        let needs_spool = transform_id.is_some()
-            && driver.descriptor().source_access != cdf_runtime::FormatSourceAccess::Sequential;
-        let execution = dependencies.execution().clone();
-        let memory = execution.memory();
-        let options = driver.canonical_options(serde_json::json!({}))?;
-        let observation = execution.run_io({
-            let dependencies = dependencies.clone();
-            let driver = Arc::clone(&driver);
-            async move {
-                let mut spool = None;
-                let source = if needs_spool {
-                    let accounted = Arc::new(
-                        spool_byte_source_async(
-                            source,
-                            None,
-                            &dependencies,
-                            cdf_runtime::RunCancellation::default(),
-                        )
-                        .await?,
-                    );
-                    let local: Arc<dyn ByteSource> = Arc::new(LocalByteSource::open(
-                        accounted.path(),
-                        dependencies.execution().memory(),
-                    )?);
-                    spool = Some(accounted);
-                    local
-                } else {
-                    source
-                };
-                let observation = driver
-                    .discover(
-                        source,
-                        FormatDiscoveryRequest {
-                            options,
-                            maximum_bytes: max_metadata_bytes,
-                            maximum_records: 1_000,
-                            memory,
-                            cancellation: cdf_runtime::RunCancellation::default(),
-                        },
-                    )
-                    .await?;
-                drop(spool);
-                Ok::<_, CdfError>(observation)
-            }
+    let upstream = dependencies
+        .with_transport(|transport| {
+            transport.open_byte_source(&resource, &metadata, dependencies.execution().memory())
+        })?
+        .ok_or_else(|| {
+            CdfError::contract(format!(
+                "file transport for `{}` does not expose the required byte-source runtime",
+                diagnostic_location(&metadata.location)
+            ))
         })?;
-        let mut source_identity = BTreeMap::from([
-            ("stable_id".to_owned(), observation.identity.stable_id),
-            ("format".to_owned(), format.as_str().to_owned()),
-            (
-                "format_driver_version".to_owned(),
-                driver.descriptor().semantic_version.clone(),
-            ),
-            ("compression".to_owned(), transform_name.to_owned()),
-            ("source_size_bytes".to_owned(), size_bytes.to_string()),
-            ("size_bytes".to_owned(), size_bytes.to_string()),
-        ]);
-        merge_discovery_evidence(&mut source_identity, observation.evidence)?;
-        BoundedBinarySchemaProbe {
-            schema: observation.arrow_schema,
-            source_identity,
-            probe_bytes_read: observation.sampled_bytes,
+    let transform_id = (transform_name != "none")
+        .then(|| dependencies.transforms().resolve_name(transform_name))
+        .transpose()?
+        .map(|driver| driver.descriptor().transform_id.clone());
+    let source = match transform_id.as_ref() {
+        Some(transform_id) => transformed_byte_source(upstream, transform_id, dependencies)?,
+        None => upstream,
+    };
+    let logical_source_identity = source.identity().clone();
+    let needs_spool = driver.descriptor().source_access
+        != cdf_runtime::FormatSourceAccess::Sequential
+        && (!source.capabilities().seekable || transform_id.is_some());
+    let execution = dependencies.execution().clone();
+    let memory = execution.memory();
+    let options = driver.canonical_options(serde_json::json!({}))?;
+    let observation = execution.run_io({
+        let dependencies = dependencies.clone();
+        let driver = Arc::clone(&driver);
+        async move {
+            let mut spool = None;
+            let source = if needs_spool {
+                let accounted = Arc::new(
+                    spool_byte_source_async(
+                        source,
+                        None,
+                        &dependencies,
+                        cdf_runtime::RunCancellation::default(),
+                    )
+                    .await?,
+                );
+                let local: Arc<dyn ByteSource> = Arc::new(LocalByteSource::open(
+                    accounted.path(),
+                    dependencies.execution().memory(),
+                )?);
+                spool = Some(accounted);
+                local
+            } else {
+                source
+            };
+            let observation = driver
+                .discover(
+                    source,
+                    FormatDiscoveryRequest {
+                        options,
+                        maximum_bytes: max_metadata_bytes,
+                        maximum_records: 1_000,
+                        memory,
+                        cancellation: cdf_runtime::RunCancellation::default(),
+                    },
+                )
+                .await?;
+            drop(spool);
+            Ok::<_, CdfError>(observation)
         }
-    } else {
-        let downloaded = spool_transport_file(
-            &dependencies.transport(),
-            &resource,
-            &metadata,
-            dependencies.max_spool_bytes(),
-        )?;
-        discover_local_binary_schema_bounded(
-            downloaded.path(),
-            dependencies,
-            format,
-            transform_name,
-            0,
-            max_metadata_bytes,
-        )?
+    })?;
+    let mut source_identity = BTreeMap::from([
+        ("stable_id".to_owned(), logical_source_identity.stable_id),
+        ("format".to_owned(), format.as_str().to_owned()),
+        (
+            "format_driver_version".to_owned(),
+            driver.descriptor().semantic_version.clone(),
+        ),
+        ("compression".to_owned(), transform_name.to_owned()),
+        ("source_size_bytes".to_owned(), size_bytes.to_string()),
+        ("size_bytes".to_owned(), size_bytes.to_string()),
+    ]);
+    merge_discovery_evidence(&mut source_identity, observation.evidence)?;
+    let mut probe = BoundedBinarySchemaProbe {
+        schema: observation.arrow_schema,
+        source_identity,
+        probe_bytes_read: observation.sampled_bytes,
     };
     probe
         .source_identity
@@ -639,10 +643,6 @@ enum PreparedFileInput {
         source: Arc<dyn ByteSource>,
         size_bytes: Option<u64>,
     },
-    Path {
-        path: PathBuf,
-        spool: Option<Arc<tempfile::NamedTempFile>>,
-    },
 }
 
 struct AccountedSpool {
@@ -653,32 +653,6 @@ struct AccountedSpool {
 impl AccountedSpool {
     fn path(&self) -> &Path {
         self.file.path()
-    }
-}
-
-#[derive(Clone, Default)]
-struct FileKeepalive {
-    legacy: Option<Arc<tempfile::NamedTempFile>>,
-    accounted: Option<Arc<AccountedSpool>>,
-}
-
-impl FileKeepalive {
-    fn legacy(file: Arc<tempfile::NamedTempFile>) -> Self {
-        Self {
-            legacy: Some(file),
-            accounted: None,
-        }
-    }
-
-    fn accounted(file: Arc<AccountedSpool>) -> Self {
-        Self {
-            legacy: None,
-            accounted: Some(file),
-        }
-    }
-
-    fn hold(&self) {
-        let _ = (&self.legacy, &self.accounted);
     }
 }
 
@@ -867,74 +841,73 @@ fn prepare_file_input(
 ) -> Result<PreparedFileInput> {
     if resolved.compression.transform_id.is_none() {
         let expected = expected_file_identity(resolved);
-        let source: Option<Arc<dyn ByteSource>> = match &resolved.open {
-            ResolvedFileOpen::LocalPath(path) => Some(Arc::new(LocalByteSource::open(
+        let source: Arc<dyn ByteSource> = match &resolved.open {
+            ResolvedFileOpen::LocalPath(path) => Arc::new(LocalByteSource::open(
                 path,
                 dependencies.execution().memory(),
-            )?)),
-            ResolvedFileOpen::Transport(resource) => dependencies.with_transport(|transport| {
-                transport.open_byte_source(resource, &expected, dependencies.execution().memory())
-            })?,
+            )?),
+            ResolvedFileOpen::Transport(resource) => dependencies
+                .with_transport(|transport| {
+                    transport.open_byte_source(
+                        resource,
+                        &expected,
+                        dependencies.execution().memory(),
+                    )
+                })?
+                .ok_or_else(|| missing_byte_source_runtime(resolved))?,
         };
-        if let Some(source) = source {
-            return Ok(
-                if matches!(resolved.open, ResolvedFileOpen::Transport(_))
-                    && source_access == cdf_runtime::FormatSourceAccess::Adaptive
-                {
-                    PreparedFileInput::SpoolSource {
-                        source,
-                        size_bytes: Some(resolved.size_bytes),
-                    }
-                } else {
-                    PreparedFileInput::Source(source)
-                },
-            );
-        }
+        return Ok(
+            if matches!(resolved.open, ResolvedFileOpen::Transport(_))
+                && source_access == cdf_runtime::FormatSourceAccess::Adaptive
+            {
+                PreparedFileInput::SpoolSource {
+                    source,
+                    size_bytes: Some(resolved.size_bytes),
+                }
+            } else {
+                PreparedFileInput::Source(source)
+            },
+        );
     }
     if let Some(transform_id) = &resolved.compression.transform_id {
         let expected = expected_file_identity(resolved);
-        let upstream: Option<Arc<dyn ByteSource>> = match &resolved.open {
-            ResolvedFileOpen::LocalPath(path) => Some(Arc::new(LocalByteSource::open(
+        let upstream: Arc<dyn ByteSource> = match &resolved.open {
+            ResolvedFileOpen::LocalPath(path) => Arc::new(LocalByteSource::open(
                 path,
                 dependencies.execution().memory(),
-            )?)),
-            ResolvedFileOpen::Transport(resource) => dependencies.with_transport(|transport| {
-                transport.open_byte_source(resource, &expected, dependencies.execution().memory())
-            })?,
+            )?),
+            ResolvedFileOpen::Transport(resource) => dependencies
+                .with_transport(|transport| {
+                    transport.open_byte_source(
+                        resource,
+                        &expected,
+                        dependencies.execution().memory(),
+                    )
+                })?
+                .ok_or_else(|| missing_byte_source_runtime(resolved))?,
         };
-        if let Some(upstream) = upstream {
-            let transformed = transformed_byte_source(upstream, transform_id, dependencies)?;
-            return Ok(
-                if source_access == cdf_runtime::FormatSourceAccess::Adaptive {
-                    PreparedFileInput::SpoolSource {
-                        source: transformed,
-                        size_bytes: None,
-                    }
-                } else {
-                    PreparedFileInput::Source(transformed)
-                },
-            );
-        }
+        let transformed = transformed_byte_source(upstream, transform_id, dependencies)?;
+        return Ok(
+            if source_access == cdf_runtime::FormatSourceAccess::Adaptive {
+                PreparedFileInput::SpoolSource {
+                    source: transformed,
+                    size_bytes: None,
+                }
+            } else {
+                PreparedFileInput::Source(transformed)
+            },
+        );
     }
-    match &resolved.open {
-        ResolvedFileOpen::LocalPath(path) => Ok(PreparedFileInput::Path {
-            path: path.clone(),
-            spool: None,
-        }),
-        ResolvedFileOpen::Transport(resource) => {
-            let expected = expected_file_identity(resolved);
-            let spool = Arc::new(spool_transport_file(
-                &dependencies.transport(),
-                resource,
-                &expected,
-                dependencies.max_spool_bytes(),
-            )?);
-            Ok(PreparedFileInput::Path {
-                path: spool.path().to_path_buf(),
-                spool: Some(spool),
-            })
-        }
-    }
+    Err(CdfError::internal(
+        "file preparation reached an unclassified compression state",
+    ))
+}
+
+fn missing_byte_source_runtime(resolved: &ResolvedFileMatch) -> CdfError {
+    CdfError::contract(format!(
+        "file transport for `{}` does not expose the required byte-source runtime",
+        diagnostic_location(&resolved.path_text)
+    ))
 }
 
 fn expected_file_identity(resolved: &ResolvedFileMatch) -> FileIdentityMetadata {
@@ -973,7 +946,7 @@ async fn stream_prepared_file_match(
             sha256: resolved.sha256.clone(),
         }],
     }));
-    let (source, keepalive): (Arc<dyn ByteSource>, Option<FileKeepalive>) = match prepared {
+    let (source, spool_guard): (Arc<dyn ByteSource>, Option<Arc<AccountedSpool>>) = match prepared {
         PreparedFileInput::Source(source) => (source, None),
         PreparedFileInput::SpoolSource { source, size_bytes } => {
             let spool = Arc::new(
@@ -984,40 +957,13 @@ async fn stream_prepared_file_match(
                 spool.path(),
                 dependencies.execution().memory(),
             )?);
-            (local, Some(FileKeepalive::accounted(spool)))
-        }
-        PreparedFileInput::Path {
-            path: source_path,
-            mut spool,
-        } => {
-            let source_path = if let Some(transform_id) = &resolved.compression.transform_id {
-                let transformed = Arc::new(
-                    spool_transformed_file_async(
-                        source_path,
-                        dependencies.transforms().resolve(transform_id)?,
-                        dependencies,
-                    )
-                    .await?,
-                );
-                let path = transformed.path().to_path_buf();
-                spool = Some(transformed);
-                path
-            } else {
-                source_path
-            };
-            (
-                Arc::new(LocalByteSource::open(
-                    source_path,
-                    dependencies.execution().memory(),
-                )?),
-                spool.map(FileKeepalive::legacy),
-            )
+            (local, Some(spool))
         }
     };
 
     stream_registered_format(
         source,
-        keepalive,
+        spool_guard,
         dependencies
             .formats()
             .resolve(file_format_name(declaration))?,
@@ -1064,35 +1010,20 @@ fn stream_file_match_blocking(
     })
 }
 
-fn spool_transformed_file(
-    source_path: &Path,
-    transform: Arc<dyn cdf_runtime::ByteTransformDriver>,
-    dependencies: &FileRuntimeDependencies,
-) -> Result<tempfile::NamedTempFile> {
-    let execution = dependencies.execution().clone();
-    let dependencies = dependencies.clone();
-    let source_path = source_path.to_path_buf();
-    execution.run_io(async move {
-        spool_transformed_file_async(source_path, transform, &dependencies).await
-    })
-}
-
 async fn spool_byte_source_async(
     source: Arc<dyn ByteSource>,
     size_bytes: Option<u64>,
     dependencies: &FileRuntimeDependencies,
     cancellation: cdf_runtime::RunCancellation,
 ) -> Result<AccountedSpool> {
-    if size_bytes == Some(0)
-        || size_bytes.is_some_and(|bytes| bytes > dependencies.max_spool_bytes())
-    {
+    if size_bytes.is_some_and(|bytes| bytes > dependencies.max_spool_bytes()) {
         return Err(CdfError::data(format!(
-            "remote file requires {} spool bytes, exceeding the configured {}-byte disk budget; increase the spool budget or use a streaming format runtime",
+            "file requires {} spool bytes, exceeding the configured {}-byte disk budget; increase the spool budget or use a streaming format runtime",
             size_bytes.unwrap_or_default(),
             dependencies.max_spool_bytes()
         )));
     }
-    let initially_reserved = size_bytes.unwrap_or(1);
+    let initially_reserved = size_bytes.unwrap_or(1).max(1);
     let mut reservation = dependencies
         .execution()
         .spill()
@@ -1100,15 +1031,15 @@ async fn spool_byte_source_async(
         .ok_or_else(|| {
             let snapshot = dependencies.execution().spill().snapshot();
             CdfError::data(format!(
-                "remote spool requires {initially_reserved} bytes but the shared spill budget has {} of {} bytes in use; increase the spill budget or reduce concurrent remote files",
+                "file spool requires {initially_reserved} bytes but the shared spill budget has {} of {} bytes in use; increase the spill budget or reduce concurrent files",
                 snapshot.current_bytes, snapshot.budget_bytes
             ))
         })?;
     let file = tempfile::NamedTempFile::new()
-        .map_err(|error| CdfError::data(format!("create accounted remote spool: {error}")))?;
+        .map_err(|error| CdfError::data(format!("create accounted file spool: {error}")))?;
     let mut output = tokio::fs::File::create(file.path())
         .await
-        .map_err(|error| CdfError::data(format!("open accounted remote spool: {error}")))?;
+        .map_err(|error| CdfError::data(format!("open accounted file spool: {error}")))?;
     let capabilities = source.capabilities();
     let chunk_bytes = (4 * 1024 * 1024_u64).clamp(
         capabilities.minimum_chunk_bytes,
@@ -1125,43 +1056,43 @@ async fn spool_byte_source_async(
     while let Some(chunk) = input.try_next().await? {
         cancellation.check()?;
         let chunk_bytes = u64::try_from(chunk.payload().len())
-            .map_err(|_| CdfError::data("remote spool chunk exceeds u64"))?;
+            .map_err(|_| CdfError::data("file spool chunk exceeds u64"))?;
         let next_transferred = transferred
             .checked_add(chunk_bytes)
-            .ok_or_else(|| CdfError::data("remote spool byte count overflowed"))?;
+            .ok_or_else(|| CdfError::data("file spool byte count overflowed"))?;
         if next_transferred > dependencies.max_spool_bytes() {
             return Err(CdfError::data(
-                "remote spool exceeded its configured disk bound",
+                "file spool exceeded its configured disk bound",
             ));
         }
         if next_transferred > reservation.bytes()
             && !reservation.try_grow(next_transferred - reservation.bytes())?
         {
             return Err(CdfError::data(
-                "remote spool exhausted the shared spill budget while streaming transformed output",
+                "file spool exhausted the shared spill budget while streaming transformed output",
             ));
         }
         if size_bytes.is_some_and(|expected| next_transferred > expected) {
             return Err(CdfError::data(
-                "remote spool exceeded its planned generation length",
+                "file spool exceeded its planned generation length",
             ));
         }
         output
             .write_all(chunk.payload())
             .await
-            .map_err(|error| CdfError::data(format!("write accounted remote spool: {error}")))?;
+            .map_err(|error| CdfError::data(format!("write accounted file spool: {error}")))?;
         hasher.update(chunk.payload());
         transferred = next_transferred;
     }
     output
         .flush()
         .await
-        .map_err(|error| CdfError::data(format!("flush accounted remote spool: {error}")))?;
+        .map_err(|error| CdfError::data(format!("flush accounted file spool: {error}")))?;
     if let Some(size_bytes) = size_bytes
         && transferred != size_bytes
     {
         return Err(CdfError::data(format!(
-            "remote spool wrote {transferred} bytes for a planned {size_bytes}-byte generation"
+            "file spool wrote {transferred} bytes for a planned {size_bytes}-byte generation"
         )));
     }
     if let Some(expected) = &source.identity().checksum {
@@ -1169,7 +1100,7 @@ async fn spool_byte_source_async(
         let expected = expected.strip_prefix("sha256:").unwrap_or(expected);
         if observed != expected {
             return Err(CdfError::data(
-                "remote spool checksum does not match planned content identity",
+                "file spool checksum does not match planned content identity",
             ));
         }
     }
@@ -1209,62 +1140,9 @@ fn transformed_byte_source(
     )?))
 }
 
-async fn spool_transformed_file_async(
-    source_path: PathBuf,
-    transform: Arc<dyn cdf_runtime::ByteTransformDriver>,
-    dependencies: &FileRuntimeDependencies,
-) -> Result<tempfile::NamedTempFile> {
-    const TRANSFORM_CHUNK_BYTES: u64 = 1024 * 1024;
-
-    let spool = tempfile::NamedTempFile::new()
-        .map_err(|error| CdfError::data(format!("create transformed file spool: {error}")))?;
-    let destination = spool.path().to_path_buf();
-    let memory = dependencies.execution().memory();
-    let source = Arc::new(LocalByteSource::open(&source_path, Arc::clone(&memory))?);
-    let descriptor = transform.descriptor().clone();
-    let output_chunk_bytes = TRANSFORM_CHUNK_BYTES.min(descriptor.maximum_output_chunk_bytes);
-    let transformed = TransformedByteSource::new(
-        source,
-        transform,
-        TransformSourceConfig {
-            preferred_input_chunk_bytes: TRANSFORM_CHUNK_BYTES,
-            maximum_expanded_bytes: dependencies
-                .max_spool_bytes()
-                .min(descriptor.maximum_expanded_bytes),
-            maximum_expansion_ratio: descriptor.maximum_expansion_ratio,
-            memory,
-            consumer: ConsumerKey::new(
-                format!("file-transform-{}", descriptor.transform_id.as_str()),
-                MemoryClass::Transform,
-            )?,
-        },
-    )?;
-    let cancellation = cdf_runtime::RunCancellation::default();
-    let mut input = transformed
-        .open_sequential(SequentialReadRequest {
-            preferred_chunk_bytes: output_chunk_bytes,
-            cancellation,
-        })
-        .await?;
-    let mut output = tokio::fs::File::create(&destination)
-        .await
-        .map_err(|error| CdfError::data(format!("create transformed spool: {error}")))?;
-    while let Some(chunk) = input.try_next().await? {
-        output
-            .write_all(chunk.payload())
-            .await
-            .map_err(|error| CdfError::data(format!("write transformed spool: {error}")))?;
-    }
-    output
-        .flush()
-        .await
-        .map_err(|error| CdfError::data(format!("flush transformed spool: {error}")))?;
-    Ok(spool)
-}
-
 fn stream_registered_format(
     source: Arc<dyn ByteSource>,
-    keepalive: Option<FileKeepalive>,
+    spool_guard: Option<Arc<AccountedSpool>>,
     driver: Arc<dyn FormatDriver>,
     options: ReadOptions,
     source_position: Option<SourcePosition>,
@@ -1281,10 +1159,7 @@ fn stream_registered_format(
         &scope_id,
         NATIVE_STREAM_ITEMS,
         move |mut sender, cancellation| async move {
-            let _keepalive = keepalive;
-            if let Some(keepalive) = &_keepalive {
-                keepalive.hold();
-            }
+            let _spool_guard = spool_guard;
             let options_json = driver.canonical_options(serde_json::json!({}))?;
             let physical_schema = match physical_schema_authority.schema {
                 Some(schema) => {
@@ -1367,26 +1242,6 @@ fn stream_registered_format(
         },
     )?;
     Ok(Box::pin(stream))
-}
-
-fn spool_transport_file(
-    transport: &Arc<dyn FileTransport>,
-    resource: &FileTransportResource,
-    expected: &FileIdentityMetadata,
-    max_spool_bytes: u64,
-) -> Result<tempfile::NamedTempFile> {
-    let size_bytes = expected
-        .size_bytes
-        .ok_or_else(|| CdfError::data("remote file spool requires a planned content length"))?;
-    if size_bytes > max_spool_bytes {
-        return Err(CdfError::data(format!(
-            "remote file requires {size_bytes} spool bytes, exceeding the configured {max_spool_bytes}-byte disk budget; increase the spool budget or use a streaming format runtime"
-        )));
-    }
-    let spool = tempfile::NamedTempFile::new()
-        .map_err(|error| CdfError::data(format!("create remote file spool: {error}")))?;
-    transport.download_to_path(resource, expected, spool.path())?;
-    Ok(spool)
 }
 
 fn validate_partition(
@@ -3273,6 +3128,8 @@ mod tests {
         .unwrap();
         assert_eq!(probe.schema.as_ref(), schema.as_ref());
         assert_eq!(probe.source_identity.get("compression").unwrap(), "gzip");
+        let stable_id = probe.source_identity.get("stable_id").unwrap();
+        assert!(stable_id.ends_with("events.parquet.gz#transform:gzip"));
         let stream = stream_file_match_blocking(
             &resolved[0],
             &plan.format,

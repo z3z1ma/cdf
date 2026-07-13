@@ -1152,6 +1152,7 @@ dependencies = [
  "arrow-cast 59.1.0",
  "arrow-ipc",
  "arrow-schema 59.1.0",
+ "bytes",
  "cdf-contract",
  "cdf-declarative",
  "cdf-dest-duckdb",
@@ -1171,6 +1172,7 @@ dependencies = [
  "cdf-transform-gzip",
  "flate2",
  "futures-executor",
+ "futures-util",
  "hex",
  "object_store 0.14.1",
  "postgres",
@@ -1440,6 +1442,7 @@ dependencies = [
  "cdf-source-files",
  "futures-util",
  "reqwest 0.13.4",
+ "sha2 0.10.9",
  "tokio",
 ]
 
