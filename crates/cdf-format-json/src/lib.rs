@@ -126,6 +126,7 @@ impl FormatDriver for NdjsonFormatDriver {
                 sampled_bytes,
                 sampled_records: u64::try_from(sampled_records)
                     .map_err(|_| CdfError::data("NDJSON sampled record count exceeds u64"))?,
+                evidence: std::collections::BTreeMap::new(),
             })
         })
     }
@@ -296,6 +297,7 @@ impl FormatDriver for JsonDocumentFormatDriver {
                 sampled_bytes,
                 sampled_records: u64::try_from(sampled_records)
                     .map_err(|_| CdfError::data("JSON sampled record count exceeds u64"))?,
+                evidence: std::collections::BTreeMap::new(),
             })
         })
     }

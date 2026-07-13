@@ -147,6 +147,9 @@ fn parquet_driver_discovers_plans_and_decodes_through_neutral_byte_source() {
     .unwrap();
     assert_eq!(observation.arrow_schema.as_ref(), schema.as_ref());
     assert!(observation.sampled_bytes > 0);
+    assert_eq!(observation.evidence["row_count"], "4");
+    assert_eq!(observation.evidence["row_group_count"], "1");
+    assert!(observation.evidence["footer_sha256"].starts_with("sha256:"));
 
     let units = futures_executor::block_on(driver.plan_decode_units(
         Arc::clone(&source),

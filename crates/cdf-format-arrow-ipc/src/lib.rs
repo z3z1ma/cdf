@@ -114,6 +114,7 @@ impl FormatDriver for ArrowIpcFileFormatDriver {
                 arrow_schema: schema,
                 sampled_bytes,
                 sampled_records: 0,
+                evidence: std::collections::BTreeMap::new(),
             })
         })
     }

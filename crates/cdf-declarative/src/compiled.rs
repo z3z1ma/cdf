@@ -1,4 +1,3 @@
-use std::sync::atomic::Ordering;
 use std::{
     collections::{BTreeMap, BTreeSet},
     path::{Component, Path, PathBuf},
@@ -24,10 +23,7 @@ use cdf_kernel::{
     TrustLevel, TypePolicyAllowances, WriteDisposition, with_cdf_metadata,
 };
 use cdf_runtime::{CompiledSourcePlan, SourceCompileRequest, SourceRegistry};
-use cdf_source_files::{
-    FileFormatDeclaration, FileIdentityMetadata, FileResourcePlan, FileRuntimeDependencies,
-    FileSourceDriver, FileTransportResource,
-};
+use cdf_source_files::{FileFormatDeclaration, FileResourcePlan, FileSourceDriver};
 use cdf_source_postgres::PostgresSourceDriver;
 use cdf_source_rest::{RestResourcePlan, RestSourceDriver, cursor_pushdown_value};
 use sha2::{Digest, Sha256};
@@ -37,19 +33,6 @@ use crate::sql_runtime::{
     sql_capabilities_for, sql_partition_for_plan, sql_predicate_fidelity_for,
 };
 use cdf_source_rest::{CURSOR_QUERY_PARAM_METADATA, CURSOR_QUERY_VALUE_METADATA};
-
-#[derive(Clone, Debug)]
-pub struct LocalParquetSchemaProbe {
-    pub schema: SchemaRef,
-    pub source_identity: BTreeMap<String, String>,
-}
-
-#[derive(Clone, Debug)]
-pub struct BoundedLocalParquetSchemaProbe {
-    pub schema: SchemaRef,
-    pub source_identity: BTreeMap<String, String>,
-    pub probe_bytes_read: u64,
-}
 
 #[derive(Clone, Debug)]
 pub struct CompiledResource {
@@ -200,31 +183,6 @@ pub fn validate_document(document: &DeclarativeDocument) -> Result<()> {
     compile_document(document).map(drop)
 }
 
-pub fn discover_local_parquet_schema(path: impl AsRef<Path>) -> Result<LocalParquetSchemaProbe> {
-    let discovery = cdf_formats::discover_local_parquet_schema(path)?;
-    Ok(LocalParquetSchemaProbe {
-        schema: discovery.schema,
-        source_identity: discovery.source_identity.cache_evidence(),
-    })
-}
-
-pub fn discover_local_parquet_schema_bounded(
-    path: impl AsRef<Path>,
-    initial_bytes_read: u64,
-    max_metadata_bytes: u64,
-) -> Result<BoundedLocalParquetSchemaProbe> {
-    let discovery = cdf_formats::discover_local_parquet_schema_bounded(
-        path,
-        initial_bytes_read,
-        max_metadata_bytes,
-    )?;
-    Ok(BoundedLocalParquetSchemaProbe {
-        schema: discovery.schema,
-        source_identity: discovery.source_identity.cache_evidence(),
-        probe_bytes_read: discovery.probe_bytes_read,
-    })
-}
-
 #[derive(Clone, Debug)]
 pub struct LocalArrowIpcSchemaProbe {
     pub schema: SchemaRef,
@@ -260,62 +218,6 @@ pub fn discover_local_arrow_ipc_schema_bounded(
 
 pub fn physical_arrow_schema_hash(schema: &Schema) -> Result<SchemaHash> {
     cdf_formats::schema_hash(schema)
-}
-
-pub fn discover_transport_parquet_schema(
-    resource: FileTransportResource,
-    dependencies: &FileRuntimeDependencies,
-) -> Result<LocalParquetSchemaProbe> {
-    let probe = discover_transport_parquet_schema_bounded(resource, dependencies, None)?;
-    Ok(LocalParquetSchemaProbe {
-        schema: probe.schema,
-        source_identity: probe.source_identity,
-    })
-}
-
-pub fn discover_transport_parquet_schema_bounded(
-    resource: FileTransportResource,
-    dependencies: &FileRuntimeDependencies,
-    max_metadata_bytes: impl Into<Option<u64>>,
-) -> Result<BoundedLocalParquetSchemaProbe> {
-    let metadata = dependencies.with_transport(|transport| transport.metadata(&resource))?;
-    let size_bytes = metadata.size_bytes.ok_or_else(|| {
-        CdfError::data(format!(
-            "HTTP(S) Parquet discovery for `{}` did not receive Content-Length metadata",
-            metadata.location
-        ))
-    })?;
-    let max_metadata_bytes = max_metadata_bytes.into();
-    let (range_reader, bytes_read) = match max_metadata_bytes {
-        Some(max_bytes) => dependencies.bounded_range_reader(resource, size_bytes, max_bytes),
-        None => (
-            dependencies.range_reader(resource, size_bytes),
-            Arc::new(std::sync::atomic::AtomicU64::new(0)),
-        ),
-    };
-    let discovery =
-        cdf_formats::discover_parquet_schema_from_chunk_reader(&range_reader, size_bytes, None)?;
-    let mut source_identity = discovery.source_identity.cache_evidence();
-    append_transport_source_identity(&mut source_identity, metadata);
-    Ok(BoundedLocalParquetSchemaProbe {
-        schema: discovery.schema,
-        source_identity,
-        probe_bytes_read: bytes_read.load(Ordering::Relaxed),
-    })
-}
-
-fn append_transport_source_identity(
-    source_identity: &mut BTreeMap<String, String>,
-    metadata: FileIdentityMetadata,
-) {
-    let sha256 = metadata.sha256().map(str::to_owned);
-    source_identity.insert("url".to_owned(), metadata.location);
-    if let Some(etag) = metadata.etag {
-        source_identity.insert("etag".to_owned(), etag);
-    }
-    if let Some(sha256) = sha256 {
-        source_identity.insert("sha256".to_owned(), sha256);
-    }
 }
 
 impl ResourceStream for CompiledResource {

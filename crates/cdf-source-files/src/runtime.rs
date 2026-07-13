@@ -4,15 +4,12 @@ use std::{
     fs::{self, File},
     io::{Read, Seek, SeekFrom},
     path::{Component, Path, PathBuf},
-    sync::{
-        Arc,
-        atomic::{AtomicU64, Ordering},
-    },
+    sync::Arc,
     time::UNIX_EPOCH,
 };
 
 use arrow_schema::SchemaRef;
-use cdf_formats::{RangeChunkReader, ReadOptions};
+use cdf_formats::ReadOptions;
 use cdf_kernel::{
     BatchStream, BoxFuture, CdfError, DeliveryGuarantee, EffectiveSchemaRuntime,
     PLAN_PHYSICAL_SCHEMA_HASH_KEY, PLAN_SCHEMA_OBSERVATION_BINDING_KEY,
@@ -32,6 +29,7 @@ use futures_util::TryStreamExt;
 use sha2::{Digest, Sha256};
 use tokio::io::AsyncWriteExt;
 
+use crate::range_discovery_byte_source::RangeDiscoveryByteSource;
 use crate::{
     ByteRange, FileCompressionDeclaration, FileFormatDeclaration, FileIdentityMetadata,
     FileResourcePlan, FileTransport, FileTransportFacade, FileTransportLocation,
@@ -111,48 +109,6 @@ impl FileRuntimeDependencies {
     pub fn with_transport<R>(&self, f: impl FnOnce(&dyn FileTransport) -> Result<R>) -> Result<R> {
         f(self.transport.as_ref())
     }
-
-    pub fn range_reader(
-        &self,
-        resource: FileTransportResource,
-        size_bytes: u64,
-    ) -> RangeChunkReader {
-        transport_range_reader(self.transport(), resource, size_bytes)
-    }
-
-    pub fn bounded_range_reader(
-        &self,
-        resource: FileTransportResource,
-        size_bytes: u64,
-        max_bytes: u64,
-    ) -> (RangeChunkReader, Arc<AtomicU64>) {
-        let bytes_read = Arc::new(AtomicU64::new(0));
-        let counter = Arc::clone(&bytes_read);
-        let transport = self.transport();
-        let reader = RangeChunkReader::new(size_bytes, move |start, length| {
-            let length = u64::try_from(length).map_err(|error| {
-                CdfError::internal(format!("range length conversion failed: {error}"))
-            })?;
-            counter
-                .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
-                    current.checked_add(length).filter(|total| *total <= max_bytes)
-                })
-                .map_err(|current| {
-                    CdfError::data(format!(
-                        "remote schema metadata probe exceeded its {max_bytes}-byte per-file budget after {current} bytes"
-                    ))
-                })?;
-            let range = ByteRange::new(start, length)?;
-            match transport.read_range(&resource, range) {
-                Ok(bytes) => Ok(bytes),
-                Err(error) => {
-                    counter.fetch_sub(length, Ordering::Relaxed);
-                    Err(error)
-                }
-            }
-        });
-        (reader, bytes_read)
-    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -228,6 +184,7 @@ pub fn discover_local_binary_schema_bounded(
             driver.descriptor().semantic_version.clone(),
         ),
     ]);
+    merge_discovery_evidence(&mut source_identity, observation.evidence)?;
     if let Some(generation) = observation.identity.generation {
         source_identity.insert("generation".to_owned(), generation);
     }
@@ -248,7 +205,7 @@ pub fn discover_local_binary_schema_bounded(
     })
 }
 
-pub fn discover_transport_binary_schema_spooled(
+pub fn discover_transport_binary_schema_bounded(
     resource: FileTransportResource,
     dependencies: &FileRuntimeDependencies,
     format: &FileFormatDeclaration,
@@ -262,20 +219,109 @@ pub fn discover_transport_binary_schema_spooled(
             diagnostic_location(&metadata.location)
         ))
     })?;
-    let downloaded = spool_transport_file(
-        &dependencies.transport(),
-        &resource,
-        &metadata,
-        dependencies.max_spool_bytes(),
-    )?;
-    let mut probe = discover_local_binary_schema_bounded(
-        downloaded.path(),
-        dependencies,
-        format,
-        transform_name,
-        0,
-        max_metadata_bytes,
-    )?;
+    let driver = dependencies.formats().resolve(format.as_str())?;
+    let mut source = dependencies.with_transport(|transport| {
+        transport.open_byte_source(&resource, &metadata, dependencies.execution().memory())
+    })?;
+    if source.is_none()
+        && transform_name == "none"
+        && driver.descriptor().source_access != cdf_runtime::FormatSourceAccess::Sequential
+    {
+        source = RangeDiscoveryByteSource::try_new(
+            dependencies.transport(),
+            resource.clone(),
+            &metadata,
+            dependencies.execution().memory(),
+        )?
+        .map(|source| Arc::new(source) as Arc<dyn ByteSource>);
+    }
+    let mut probe = if let Some(upstream) = source {
+        let transform_id = (transform_name != "none")
+            .then(|| dependencies.transforms().resolve_name(transform_name))
+            .transpose()?
+            .map(|driver| driver.descriptor().transform_id.clone());
+        let source = match transform_id.as_ref() {
+            Some(transform_id) => transformed_byte_source(upstream, transform_id, dependencies)?,
+            None => upstream,
+        };
+        let needs_spool = transform_id.is_some()
+            && driver.descriptor().source_access != cdf_runtime::FormatSourceAccess::Sequential;
+        let execution = dependencies.execution().clone();
+        let memory = execution.memory();
+        let options = driver.canonical_options(serde_json::json!({}))?;
+        let observation = execution.run_io({
+            let dependencies = dependencies.clone();
+            let driver = Arc::clone(&driver);
+            async move {
+                let mut spool = None;
+                let source = if needs_spool {
+                    let accounted = Arc::new(
+                        spool_byte_source_async(
+                            source,
+                            None,
+                            &dependencies,
+                            cdf_runtime::RunCancellation::default(),
+                        )
+                        .await?,
+                    );
+                    let local: Arc<dyn ByteSource> = Arc::new(LocalByteSource::open(
+                        accounted.path(),
+                        dependencies.execution().memory(),
+                    )?);
+                    spool = Some(accounted);
+                    local
+                } else {
+                    source
+                };
+                let observation = driver
+                    .discover(
+                        source,
+                        FormatDiscoveryRequest {
+                            options,
+                            maximum_bytes: max_metadata_bytes,
+                            maximum_records: 1_000,
+                            memory,
+                            cancellation: cdf_runtime::RunCancellation::default(),
+                        },
+                    )
+                    .await?;
+                drop(spool);
+                Ok::<_, CdfError>(observation)
+            }
+        })?;
+        let mut source_identity = BTreeMap::from([
+            ("stable_id".to_owned(), observation.identity.stable_id),
+            ("format".to_owned(), format.as_str().to_owned()),
+            (
+                "format_driver_version".to_owned(),
+                driver.descriptor().semantic_version.clone(),
+            ),
+            ("compression".to_owned(), transform_name.to_owned()),
+            ("source_size_bytes".to_owned(), size_bytes.to_string()),
+            ("size_bytes".to_owned(), size_bytes.to_string()),
+        ]);
+        merge_discovery_evidence(&mut source_identity, observation.evidence)?;
+        BoundedBinarySchemaProbe {
+            schema: observation.arrow_schema,
+            source_identity,
+            probe_bytes_read: observation.sampled_bytes,
+        }
+    } else {
+        let downloaded = spool_transport_file(
+            &dependencies.transport(),
+            &resource,
+            &metadata,
+            dependencies.max_spool_bytes(),
+        )?;
+        discover_local_binary_schema_bounded(
+            downloaded.path(),
+            dependencies,
+            format,
+            transform_name,
+            0,
+            max_metadata_bytes,
+        )?
+    };
     probe
         .source_identity
         .insert("url".to_owned(), metadata.location.clone());
@@ -298,6 +344,21 @@ pub fn discover_transport_binary_schema_spooled(
         probe.probe_bytes_read = size_bytes.saturating_add(probe.probe_bytes_read);
     }
     Ok(probe)
+}
+
+fn merge_discovery_evidence(
+    source_identity: &mut BTreeMap<String, String>,
+    evidence: BTreeMap<String, String>,
+) -> Result<()> {
+    for (key, value) in evidence {
+        if source_identity.contains_key(&key) {
+            return Err(CdfError::contract(format!(
+                "format discovery evidence key `{key}` conflicts with source identity authority"
+            )));
+        }
+        source_identity.insert(key, value);
+    }
+    Ok(())
 }
 
 impl LocalFileDiscoveryCandidate {
@@ -2550,20 +2611,6 @@ fn records_compression_metadata(
         || file.compression.magic_signal.transform_id().is_some()
 }
 
-fn transport_range_reader(
-    transport: Arc<dyn FileTransport>,
-    resource: FileTransportResource,
-    size_bytes: u64,
-) -> RangeChunkReader {
-    RangeChunkReader::new(size_bytes, move |start, length| {
-        let length = u64::try_from(length).map_err(|error| {
-            CdfError::internal(format!("range length conversion failed: {error}"))
-        })?;
-        let range = ByteRange::new(start, length)?;
-        transport.read_range(&resource, range)
-    })
-}
-
 fn expand_http_glob(resource_id: &ResourceId, glob: &str) -> Result<Vec<String>> {
     if let Some(months) = expand_http_year_month_glob(glob) {
         return Ok(months);
@@ -2873,6 +2920,7 @@ mod tests {
                     arrow_schema: schema,
                     sampled_bytes: 4,
                     sampled_records: 0,
+                    evidence: BTreeMap::new(),
                 })
             })
         }
@@ -3055,6 +3103,18 @@ mod tests {
             dependencies.execution().memory().snapshot().current_bytes,
             0
         );
+    }
+
+    #[test]
+    fn format_discovery_evidence_cannot_override_source_identity() {
+        let mut identity = BTreeMap::from([("format".to_owned(), "parquet".to_owned())]);
+        let error = merge_discovery_evidence(
+            &mut identity,
+            BTreeMap::from([("format".to_owned(), "forged".to_owned())]),
+        )
+        .unwrap_err();
+        assert!(error.message.contains("conflicts with source identity"));
+        assert_eq!(identity["format"], "parquet");
     }
 
     #[test]

@@ -26,9 +26,9 @@ use cdf_declarative::{
     CompiledResource, CompiledResourcePlan, FileFormatDeclaration, FileRuntimeDependencies,
     FileTransportLocation, FileTransportResource, POSTGRES_CATALOG_DISCOVERY_PROBE,
     discover_local_binary_schema_bounded, discover_postgres_table_catalog_schema,
-    discover_rest_sample_schema, discover_transport_binary_schema_spooled,
-    discover_transport_parquet_schema_bounded, local_file_discovery_candidates,
-    physical_arrow_schema_hash, postgres_table_target_for_sql_plan,
+    discover_rest_sample_schema, discover_transport_binary_schema_bounded,
+    local_file_discovery_candidates, physical_arrow_schema_hash,
+    postgres_table_target_for_sql_plan,
 };
 use cdf_http::{HttpTransport, SecretProvider};
 use cdf_kernel::{
@@ -606,15 +606,7 @@ impl LocalBinaryDiscoveryAdapter {
                         "registered remote format discovery requires file transport dependencies",
                     )
                 })?;
-                if format.as_str() == "parquet" && candidate.compression == "none" {
-                    let probe = discover_transport_parquet_schema_bounded(
-                        resource.clone(),
-                        dependencies,
-                        budget.max_metadata_bytes_per_file(),
-                    )?;
-                    return Ok((probe.schema, probe.source_identity, probe.probe_bytes_read));
-                }
-                let probe = discover_transport_binary_schema_spooled(
+                let probe = discover_transport_binary_schema_bounded(
                     resource.clone(),
                     dependencies,
                     format,

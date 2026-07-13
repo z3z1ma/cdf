@@ -232,6 +232,22 @@ pub trait FileTransport: Send + Sync {
         self.metadata(resource).map(Some)
     }
     fn read_range(&self, resource: &FileTransportResource, range: ByteRange) -> Result<Vec<u8>>;
+    fn read_generation_range(
+        &self,
+        resource: &FileTransportResource,
+        expected: &FileIdentityMetadata,
+        range: ByteRange,
+    ) -> Result<Vec<u8>> {
+        let size_bytes = expected.size_bytes.ok_or_else(|| {
+            CdfError::data("generation-bound range requires a planned content length")
+        })?;
+        let before = self.metadata(resource)?;
+        verify_download_identity(expected, &before, size_bytes)?;
+        let bytes = self.read_range(resource, range)?;
+        let after = self.metadata(resource)?;
+        verify_download_identity(expected, &after, size_bytes)?;
+        Ok(bytes)
+    }
     fn download_to_path(
         &self,
         resource: &FileTransportResource,

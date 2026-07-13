@@ -471,6 +471,7 @@ pub struct PhysicalSchemaObservation {
     pub observed_schema: ObservedSchema,
     pub sampled_bytes: u64,
     pub sampled_records: u64,
+    pub evidence: BTreeMap<String, String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

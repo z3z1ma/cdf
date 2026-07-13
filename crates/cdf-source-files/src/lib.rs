@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 mod driver;
 mod local_byte_source;
 mod object_store_byte_source;
+mod range_discovery_byte_source;
 mod runtime;
 mod transport;
 

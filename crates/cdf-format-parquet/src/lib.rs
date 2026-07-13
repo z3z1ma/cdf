@@ -1,6 +1,7 @@
 #![doc = "Native Parquet format driver for cdf."]
 
 use std::{
+    collections::BTreeMap,
     ops::Range,
     sync::{
         Arc,
@@ -30,6 +31,7 @@ use parquet::{
     errors::ParquetError,
     file::metadata::{ParquetMetaData, ParquetMetaDataReader},
 };
+use sha2::{Digest, Sha256};
 
 #[derive(Clone, Debug)]
 pub struct ParquetFormatDriver {
@@ -115,6 +117,7 @@ impl FormatDriver for ParquetFormatDriver {
                 .await
                 .map_err(parquet_error)?;
             let schema = Arc::clone(builder.schema());
+            let evidence = parquet_discovery_evidence(schema.as_ref(), builder.metadata())?;
             let sampled_bytes = bytes_read.load(Ordering::Relaxed);
             if sampled_bytes > request.maximum_bytes {
                 return Err(CdfError::data(format!(
@@ -128,6 +131,7 @@ impl FormatDriver for ParquetFormatDriver {
                 arrow_schema: schema,
                 sampled_bytes,
                 sampled_records: 0,
+                evidence,
             })
         })
     }
@@ -277,6 +281,58 @@ impl FormatDriver for ParquetFormatDriver {
             })) as PhysicalDecodeStream)
         })
     }
+}
+
+fn parquet_discovery_evidence(
+    schema: &arrow_schema::Schema,
+    metadata: &ParquetMetaData,
+) -> Result<BTreeMap<String, String>> {
+    let file = metadata.file_metadata();
+    let row_count = u64::try_from(file.num_rows())
+        .map_err(|_| CdfError::data("Parquet metadata contains a negative row count"))?;
+    let key_values = file
+        .key_value_metadata()
+        .into_iter()
+        .flatten()
+        .map(|entry| (entry.key.clone(), entry.value.clone()))
+        .collect::<BTreeMap<_, _>>();
+    let row_groups = metadata
+        .row_groups()
+        .iter()
+        .map(|row_group| {
+            let rows = u64::try_from(row_group.num_rows())
+                .map_err(|_| CdfError::data("Parquet row group contains a negative row count"))?;
+            Ok(serde_json::json!({
+                "compressed_size": row_group.compressed_size(),
+                "num_rows": rows,
+                "total_byte_size": row_group.total_byte_size(),
+            }))
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let mut fingerprint = serde_json::json!({
+        "arrow_schema_hash": cdf_contract::canonical_arrow_schema_hash(schema)?.as_str(),
+        "created_by": file.created_by(),
+        "key_value_metadata": key_values,
+        "parquet_schema": format!("{:?}", file.schema_descr()),
+        "row_count": row_count,
+        "row_group_count": metadata.num_row_groups(),
+        "row_groups": row_groups,
+    });
+    fingerprint.sort_all_objects();
+    let fingerprint = serde_json::to_vec(&fingerprint).map_err(|error| {
+        CdfError::internal(format!("serialize Parquet footer evidence: {error}"))
+    })?;
+    Ok(BTreeMap::from([
+        (
+            "footer_sha256".to_owned(),
+            format!("sha256:{:x}", Sha256::digest(fingerprint)),
+        ),
+        ("row_count".to_owned(), row_count.to_string()),
+        (
+            "row_group_count".to_owned(),
+            metadata.num_row_groups().to_string(),
+        ),
+    ]))
 }
 
 struct DecodeState {

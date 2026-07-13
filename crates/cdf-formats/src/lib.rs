@@ -1,7 +1,6 @@
 #![doc = "External data format boundary for cdf."]
 
 mod arrow_ipc_discovery;
-mod parquet_discovery;
 mod readers;
 mod resource;
 mod schema;
@@ -12,11 +11,6 @@ mod types;
 pub use arrow_ipc_discovery::{
     LocalArrowIpcSchemaDiscovery, LocalArrowIpcSourceIdentity, discover_arrow_ipc_file_schema,
     discover_local_arrow_ipc_schema, discover_local_arrow_ipc_schema_bounded,
-};
-pub use parquet_discovery::{
-    BoundedLocalParquetSchemaDiscovery, LocalParquetSchemaDiscovery, LocalParquetSourceIdentity,
-    RangeChunkReader, discover_local_parquet_schema, discover_local_parquet_schema_bounded,
-    discover_parquet_schema_from_chunk_reader,
 };
 pub use readers::{
     discover_csv_schema_from_reader, discover_json_schema_from_reader,
