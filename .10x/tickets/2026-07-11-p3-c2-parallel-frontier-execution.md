@@ -1,6 +1,6 @@
-Status: open
+Status: blocked
 Created: 2026-07-11
-Updated: 2026-07-11
+Updated: 2026-07-12
 Parent: .10x/tickets/2026-07-10-p3-ws-c-deterministic-parallelism.md
 Depends-On: .10x/tickets/done/2026-07-11-p3-c1-scheduler-admission-contract.md, .10x/tickets/done/2026-07-11-p3-a5-streaming-operator-graph.md, .10x/tickets/done/2026-07-11-p3-a3-canonical-segmentation-adaptive-batching.md
 
@@ -28,13 +28,31 @@ No DataFusion/Python-specific tuning or distributed work.
 
 ## Blockers
 
-Depends on C1, A5, and A3.
+Dependencies C1, A5, and A3 are complete. Production partition/unit concurrency now needs a scheduler-owned object that concurrently owns open and batch-poll futures while exposing only canonical outcomes, rather than layering detached prefetch tasks behind the current canonical `FuturesOrdered` open loop. Its cancellation/join and byte-accounting boundary must be designed before implementation.
+
+Retry execution remains semantically blocked because `SourceExecutionCapabilities` declares granularity and typed retryable errors but no ratified attempt budget, deadline, or backoff authority. Inventing a one-off retry count in the engine would violate the scheduler spec's policy/capability split.
 
 ## References
 
 - `.10x/specs/deterministic-parallel-scheduler.md`
 
 ## Progress and notes
+
+- 2026-07-12: Began the next bounded C2 milestone after confirming the engine/runtime worktree is clean. Governing records establish canonical outcome release and exact limited-run authority, while the current source capability contract declares retryable error classes but no attempt budget/backoff policy. This execution will therefore add bounded production partition batch lookahead for unlimited runs, retain exact serial semantics for all limited runs, and add fail-closed retry identity/duplicate acceptance machinery without inventing retry timing or counts.
+- 2026-07-12: Blocked-on-design after a bounded prefetch prototype exposed that the current `FuturesOrdered` open frontier does not provide a safe production ownership point for concurrent stream polling. The prototype wrapped each admitted `BatchStream` in an injected-host task with a one-item channel and retained serial execution for every limited run. A deterministic test stalled partition 0 until partition 1 was polled. The existing engine only polls the canonical open future before entering that partition's drain loop; later immediately-ready open futures therefore do not necessarily spawn their stream producers. A second prototype polled a whole admitted wave before consuming its head, but the focused test still did not complete and it would also make canonical progress depend on every later open in the wave, which is an unacceptable head-of-line regression. All source/test edits were reverted; only this journal remains.
+
+## Journal
+
+- 2026-07-12 inspection: `git status --short crates/cdf-engine crates/cdf-runtime crates/cdf-project .10x/tickets/2026-07-11-p3-c2-parallel-frontier-execution.md` showed the assigned source boundary clean. Unrelated CLI, package, and DX files were already dirty and were not touched.
+- 2026-07-12 focused observation: `cargo test -p cdf-engine operator_graph_compiles_from_capabilities_without_driver_name_dispatch --locked` passed for the initial non-gated prototype, but that invocation began before the deterministic gate was compiled and did not substantiate concurrent stream polling.
+- 2026-07-12 adversarial observation: after compiling the stalled-first gate, the same focused command did not complete until interrupted. Forcing the test scheduler's effective jobs to two ruled out the single-CPU test environment as the cause. Polling the full admitted open wave also failed to yield a completing focused test and introduced an invalid dependency on later opens. Both attempts were interrupted and reverted.
+- 2026-07-12 limit: no property, retry, or position claim is supported. Existing limited-run serial behavior was inspected but not changed or reverified after the prototype was reverted. No workspace-wide checks were run.
+
+## Retrospective
+
+- Concurrent open establishment is not a reusable concurrency boundary for stream outcomes: once the canonical open resolves, the current consumer stops polling the open frontier and drains that stream.
+- A bounded channel is only a payload bound after every producer has a scheduler-owned lifecycle and the admitted producer count itself remains live and replenished; detached per-partition prefetch scopes do not supply canonical completion ownership.
+- A stalled-first gate was the right falsification test: it distinguished real outcome concurrency from fast immediate mock opens and prevented a concurrency claim based only on package identity.
 
 - 2026-07-11: Landed the first production canonical frontier below partition scheduling: segment IPC encode/hash/durable publication executes concurrently through the injected host, while registration and downstream release remain submission-ordinal ordered. Inline/parallel package identities, source rechunking, staged final binding, failure cancellation/join, and zero residual memory are covered. This does not close C2 partition/unit concurrency, retry, global-limit, or file-completion criteria. Evidence: `.10x/evidence/2026-07-11-p3-a5e-parallel-segment-frontier.md`.
 - 2026-07-11: Added the first production partition frontier milestone. Typed CLI sources resolve effective jobs once through `cdf-runtime`; project orchestration carries that nonidentity resolution into the engine; the engine opens source streams concurrently in canonical `FuturesOrdered` order without re-deriving source, destination, host, transport, lane, or memory policy. The window is bounded by the resolved effective jobs and partition count. Global-limit runs deliberately remain serial so discarded partitions cannot perform I/O or acquire attestation authority, and terminal schema quarantines never open payload streams. Jobs 1/4 produce identical manifest identity and lineage with zero residual managed memory. This milestone overlaps open/download latency only; transform concurrency, admission permits, retry/reattest, bounded outcome reordering, and atomic file-unit completion remain open under C2. Evidence: `.10x/evidence/2026-07-11-p3-c2-canonical-open-frontier.md`; review: `.10x/reviews/2026-07-11-p3-c2-canonical-open-frontier-review.md`.
