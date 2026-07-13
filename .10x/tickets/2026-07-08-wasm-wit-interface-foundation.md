@@ -16,6 +16,10 @@ Owns:
 - Minimal crate documentation and tests that make the WIT file discoverable from `cdf-wasm`.
 - Any small validation script or test fixture needed to prove the WIT file contains the ratified package, imports, exports, and async stream shape.
 
+## References
+
+- `.10x/research/2026-07-12-wit-recursive-value-projection.md` evaluates lossless WIT projections for recursive scope/source-position values and records the remaining confirm-or-correct decisions; it is research, not semantic authority.
+
 ## Acceptance criteria
 
 - The WIT package is named `cdf:resource@0.1.0`.
@@ -43,6 +47,8 @@ None. The WIT shape is ratified by `VISION.md` §9.5 / D-26 and `.10x/specs/reso
 - 2026-07-08: Split from `.10x/tickets/2026-07-05-wasm-components-registry-signing.md` because the full WASM/registry/signing ticket is too broad to execute as one slice. This child only makes the WIT interface artifact concrete and reviewable.
 
 ## Journal
+
+- 2026-07-12: Shaping research in `.10x/research/2026-07-12-wit-recursive-value-projection.md` compared canonical rooted arenas, opaque canonical bytes, resource handles, and split recursive host calls against kernel fidelity, deterministic replay/hashing, SDK ergonomics, copy/streaming behavior, and bounded validation. It recommends—but does not ratify—a typed canonical arena/index tree. The ticket remains blocked pending confirmation of the projection, canonical-form/identity rules, and exact limits/error semantics; capability discovery and host/error surfaces remain separately unresolved.
 
 - 2026-07-12: Execution began after reading this ticket, both referenced active specs, the parent ticket, VISION D-26 and §9.5, the normative resource-model sketches in VISION §8, the current `cdf-kernel` resource vocabulary, and the downstream P3 H4 interface-review ticket. The child is executable and dependency-ready: its direct spec dependencies are active, its parent explicitly split this isolated interface artifact, and H4 depends on this foundation. The existing `cdf-wasm` crate is clean; unrelated dirty DX3, J0, kernel, runtime, destination, package-record, workspace lockfile, and CLI files are outside scope and will not be touched. No local `wasm-tools`, `wasmtime`, or `wit-bindgen` executable is available, so source work will pair the WIT artifact with focused crate-local text-shape tests and will record the external syntax-validation limit. Cargo execution remains reserved to the orchestrator/J0 owner.
 - 2026-07-12: Repair execution read the failed adversarial review and rechecked every modeled shape against the active resource/conformance specs, VISION D-26/§§8 and 9.5, and current kernel `resource.rs`, `scope.rs`, `position.rs`, `error.rs`, and `destination.rs`. The review findings were confirmed: reserved identifiers were unescaped, host imports had no resolvable package, and descriptor/request/plan/position/error fields had drifted from current authority.
