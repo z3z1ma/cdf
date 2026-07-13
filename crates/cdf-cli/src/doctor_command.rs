@@ -397,7 +397,7 @@ fn destination_checks(runtime: DestinationRuntime) -> Vec<DoctorCheck> {
     if let Some(error) = runtime.error {
         return vec![DoctorCheck::unsupported("destination", error)];
     }
-    runtime
+    let mut checks = runtime
         .health
         .into_iter()
         .map(|result| {
@@ -418,7 +418,54 @@ fn destination_checks(runtime: DestinationRuntime) -> Vec<DoctorCheck> {
             };
             check.with_details(redact_json_uri_userinfo(json!(result.details)))
         })
-        .collect()
+        .collect::<Vec<_>>();
+    checks.push(destination_bulk_path_check(runtime.capabilities));
+    checks
+}
+
+fn destination_bulk_path_check(
+    capabilities: Option<cdf_runtime::DestinationRuntimeCapabilities>,
+) -> DoctorCheck {
+    let Some(capabilities) = capabilities else {
+        return DoctorCheck::unsupported(
+            "destination_bulk_paths",
+            "destination does not publish runtime bulk-path capabilities",
+        );
+    };
+    if capabilities.bulk_paths.is_empty() {
+        return DoctorCheck::unsupported(
+            "destination_bulk_paths",
+            "destination publishes no bulk path descriptors",
+        );
+    }
+    if let Err(error) = capabilities.validate() {
+        return DoctorCheck::failed(
+            "destination_bulk_paths",
+            format!(
+                "destination bulk-path declaration is invalid: {}",
+                error.message
+            ),
+        )
+        .with_details(json!({
+            "selected_path": &capabilities.bulk_path,
+            "evidence_version": &capabilities.bulk_evidence_version,
+            "paths": &capabilities.bulk_paths,
+        }));
+    }
+    let selected = capabilities.bulk_path.as_deref();
+    let details = json!({
+        "selected_path": selected,
+        "evidence_version": &capabilities.bulk_evidence_version,
+        "paths": &capabilities.bulk_paths,
+    });
+    DoctorCheck::passed(
+        "destination_bulk_paths",
+        format!(
+            "selected measured bulk path {}",
+            selected.unwrap_or("<unavailable>")
+        ),
+    )
+    .with_details(details)
 }
 
 fn redact_json_uri_userinfo(value: serde_json::Value) -> serde_json::Value {
@@ -577,6 +624,48 @@ mod tests {
         assert!(!human.contains("doctor-secret"));
         assert!(json.contains("fourth://[redacted]@example.invalid/db"));
         assert!(human.contains("fourth://[redacted]@example.invalid/db"));
+    }
+
+    #[test]
+    fn destination_doctor_reports_registry_bulk_path_degradation_without_driver_branches() {
+        let descriptor = cdf_runtime::BulkPathDescriptor {
+            path_id: "fourth_native".to_owned(),
+            version: 1,
+            ingress_mode: cdf_runtime::DestinationIngressMode::FinalizedPackageOnly,
+            writer_model: cdf_runtime::DestinationWriterModel::SingleWriter,
+            ordering: cdf_runtime::BulkOrdering::ManifestOrder,
+            rows: cdf_runtime::BulkSizeRange {
+                minimum: 1,
+                preferred: 64,
+                maximum: 128,
+            },
+            bytes: cdf_runtime::BulkSizeRange {
+                minimum: 1,
+                preferred: 1024,
+                maximum: 4096,
+            },
+            max_useful_writers: 1,
+            blocking_lane: None,
+            native_internal_parallelism: 1,
+            external_staging: false,
+            fallback: cdf_runtime::BulkFallbackMode::PreflightOnly,
+            schema_preflight_version: "fourth-schema@1".to_owned(),
+            measured_evidence_version: None,
+        };
+        let check =
+            destination_bulk_path_check(Some(cdf_runtime::DestinationRuntimeCapabilities {
+                bulk_paths: vec![descriptor],
+                bulk_path: Some("fourth_native".to_owned()),
+                ..Default::default()
+            }));
+
+        assert_eq!(check.status, CheckStatus::Failed);
+        assert!(check.message.contains("measured evidence version"));
+        assert_eq!(check.details.unwrap()["selected_path"], "fourth_native");
+
+        let unavailable = destination_bulk_path_check(None);
+        assert_eq!(unavailable.status, CheckStatus::Unsupported);
+        assert!(unavailable.message.contains("does not publish"));
     }
 }
 

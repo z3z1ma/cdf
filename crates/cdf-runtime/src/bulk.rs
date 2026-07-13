@@ -1,13 +1,10 @@
 use arrow_schema::Schema;
-use cdf_kernel::{
-    CdfError, CommitBatch, DestinationCommitRequest, Receipt, Result, RunEventDetails,
-    RunEventValue, SegmentAck, SegmentId, StateSegment,
-};
-use cdf_package::SegmentEntry;
+use cdf_kernel::{CdfError, DestinationCommitRequest, Result};
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    DestinationIngressMode, DestinationWriterModel, ExecutionHostCapabilities, LoadAttemptId,
+    DestinationIngressMode, DestinationRuntimeCapabilities, DestinationWriterModel,
+    ExecutionHostCapabilities,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -21,8 +18,22 @@ pub enum BulkOrdering {
 #[serde(rename_all = "snake_case")]
 pub enum BulkFallbackMode {
     PreflightOnly,
-    RollbackFullRedrive,
     Forbidden,
+}
+
+impl BulkFallbackMode {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::PreflightOnly => "preflight_only",
+            Self::Forbidden => "forbidden",
+        }
+    }
+}
+
+impl std::fmt::Display for BulkFallbackMode {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(self.as_str())
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -57,6 +68,7 @@ pub struct BulkPathDescriptor {
     pub native_internal_parallelism: u16,
     pub external_staging: bool,
     pub fallback: BulkFallbackMode,
+    pub schema_preflight_version: String,
     pub measured_evidence_version: Option<String>,
 }
 
@@ -80,6 +92,18 @@ impl BulkPathDescriptor {
                 "bulk path version, writer count, and native parallelism must be nonzero",
             ));
         }
+        if self.schema_preflight_version.is_empty()
+            || self.schema_preflight_version.len() > 128
+            || self.schema_preflight_version.chars().any(|ch| {
+                !(ch.is_ascii_lowercase()
+                    || ch.is_ascii_digit()
+                    || matches!(ch, '-' | '_' | '.' | '@'))
+            })
+        {
+            return Err(CdfError::contract(
+                "bulk schema-preflight version must contain 1..=128 lowercase ASCII letters, digits, `-`, `_`, `.`, or `@`",
+            ));
+        }
         self.rows.validate("row")?;
         self.bytes.validate("byte")
     }
@@ -87,12 +111,31 @@ impl BulkPathDescriptor {
 
 pub struct BulkPathPreparationInput<'a> {
     pub output_schema: &'a Schema,
-    pub commit: &'a DestinationCommitRequest,
-    pub segments: &'a [SegmentEntry],
-    pub execution: &'a ExecutionHostCapabilities,
+    pub commit: Option<&'a DestinationCommitRequest>,
+    pub execution: Option<ExecutionHostCapabilities>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+impl<'a> BulkPathPreparationInput<'a> {
+    pub fn new(output_schema: &'a Schema) -> Self {
+        Self {
+            output_schema,
+            commit: None,
+            execution: None,
+        }
+    }
+
+    pub fn with_commit(mut self, commit: &'a DestinationCommitRequest) -> Self {
+        self.commit = Some(commit);
+        self
+    }
+
+    pub fn with_execution(mut self, execution: ExecutionHostCapabilities) -> Self {
+        self.execution = Some(execution);
+        self
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PreparedBulkPath {
     pub descriptor: BulkPathDescriptor,
     pub rows_per_batch: u64,
@@ -128,15 +171,52 @@ pub struct BulkPathRejection {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct BulkPathPreparation {
+    pub selected_path_id: String,
     pub eligible: Vec<PreparedBulkPath>,
     pub rejected: Vec<BulkPathRejection>,
 }
 
 impl BulkPathPreparation {
+    pub fn from_capabilities(capabilities: &DestinationRuntimeCapabilities) -> Result<Self> {
+        capabilities.validate()?;
+        let selected_path_id = capabilities
+            .bulk_path
+            .clone()
+            .ok_or_else(|| CdfError::contract("destination has no selected bulk path"))?;
+        let eligible = capabilities
+            .bulk_paths
+            .iter()
+            .cloned()
+            .map(|descriptor| PreparedBulkPath {
+                rows_per_batch: descriptor.rows.preferred,
+                bytes_per_batch: descriptor.bytes.preferred,
+                writers: 1,
+                descriptor,
+            })
+            .collect();
+        let preparation = Self {
+            selected_path_id,
+            eligible,
+            rejected: Vec::new(),
+        };
+        preparation.validate()?;
+        Ok(preparation)
+    }
+
     pub fn validate(&self) -> Result<()> {
         if self.eligible.is_empty() {
             return Err(CdfError::contract(
                 "destination bulk preparation produced no eligible path",
+            ));
+        }
+        if self.selected_path_id.is_empty()
+            || !self
+                .eligible
+                .iter()
+                .any(|path| path.descriptor.path_id == self.selected_path_id)
+        {
+            return Err(CdfError::contract(
+                "destination bulk preparation must select one eligible path",
             ));
         }
         let mut ids = std::collections::BTreeSet::new();
@@ -150,173 +230,20 @@ impl BulkPathPreparation {
         }
         Ok(())
     }
-}
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct BulkBatchAck {
-    pub segment_id: SegmentId,
-    pub batch_ordinal: u32,
-    pub row_count: u64,
-    pub logical_bytes: u64,
-    pub physical_bytes: u64,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct BulkAbortProof {
-    pub attempt_id: LoadAttemptId,
-    pub path_id: String,
-    pub zero_target_visibility: bool,
-    pub external_staging_cleaned: bool,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct BulkAttemptEvidence {
-    pub attempt_id: LoadAttemptId,
-    pub path_id: String,
-    pub path_version: u16,
-    pub rows_per_batch: u64,
-    pub bytes_per_batch: u64,
-    pub writers: u16,
-    pub fallback_reason: Option<String>,
-    pub aborted_before_fallback: bool,
-}
-
-impl BulkAttemptEvidence {
-    pub fn run_event_details(&self) -> RunEventDetails {
-        let mut attributes = std::collections::BTreeMap::from([
-            (
-                "load_attempt_id".to_owned(),
-                RunEventValue::String(self.attempt_id.to_string()),
-            ),
-            (
-                "bulk_path_id".to_owned(),
-                RunEventValue::String(self.path_id.clone()),
-            ),
-            (
-                "bulk_path_version".to_owned(),
-                RunEventValue::U64(u64::from(self.path_version)),
-            ),
-            (
-                "bulk_rows_per_batch".to_owned(),
-                RunEventValue::U64(self.rows_per_batch),
-            ),
-            (
-                "bulk_bytes_per_batch".to_owned(),
-                RunEventValue::U64(self.bytes_per_batch),
-            ),
-            (
-                "bulk_writers".to_owned(),
-                RunEventValue::U64(u64::from(self.writers)),
-            ),
-            (
-                "bulk_aborted_before_fallback".to_owned(),
-                RunEventValue::Bool(self.aborted_before_fallback),
-            ),
-        ]);
-        if let Some(reason) = &self.fallback_reason {
-            attributes.insert(
-                "bulk_fallback_reason".to_owned(),
-                RunEventValue::String(reason.clone()),
-            );
+    pub fn into_selected(
+        self,
+        capabilities: &DestinationRuntimeCapabilities,
+    ) -> Result<PreparedBulkPath> {
+        self.validate()?;
+        for path in &self.eligible {
+            capabilities.validate_prepared_bulk_path(path)?;
         }
-        RunEventDetails { attributes }
+        let selected = self
+            .eligible
+            .into_iter()
+            .find(|path| path.descriptor.path_id == self.selected_path_id)
+            .expect("validated selected path");
+        Ok(selected)
     }
-}
-
-pub struct BulkAttemptCoordinator {
-    paths: std::vec::IntoIter<PreparedBulkPath>,
-    current: Option<(LoadAttemptId, PreparedBulkPath)>,
-    evidence: Vec<BulkAttemptEvidence>,
-}
-
-impl BulkAttemptCoordinator {
-    pub fn new(preparation: BulkPathPreparation) -> Result<Self> {
-        preparation.validate()?;
-        Ok(Self {
-            paths: preparation.eligible.into_iter(),
-            current: None,
-            evidence: Vec::new(),
-        })
-    }
-
-    pub fn start(&mut self, attempt_id: LoadAttemptId) -> Result<&PreparedBulkPath> {
-        if self.current.is_some() {
-            return Err(CdfError::contract(
-                "bulk attempt coordinator already has an active attempt",
-            ));
-        }
-        let path = self
-            .paths
-            .next()
-            .ok_or_else(|| CdfError::destination("bulk path ladder is exhausted"))?;
-        self.evidence.push(BulkAttemptEvidence {
-            attempt_id: attempt_id.clone(),
-            path_id: path.descriptor.path_id.clone(),
-            path_version: path.descriptor.version,
-            rows_per_batch: path.rows_per_batch,
-            bytes_per_batch: path.bytes_per_batch,
-            writers: path.writers,
-            fallback_reason: None,
-            aborted_before_fallback: false,
-        });
-        self.current = Some((attempt_id, path));
-        Ok(&self.current.as_ref().expect("set above").1)
-    }
-
-    pub fn fallback(
-        &mut self,
-        proof: BulkAbortProof,
-        reason: impl Into<String>,
-        next_attempt_id: LoadAttemptId,
-    ) -> Result<&PreparedBulkPath> {
-        let (attempt_id, path) = self
-            .current
-            .as_ref()
-            .ok_or_else(|| CdfError::contract("bulk fallback requires an active attempt"))?;
-        if proof.attempt_id != *attempt_id || proof.path_id != path.descriptor.path_id {
-            return Err(CdfError::contract(
-                "bulk abort proof does not match the active attempt and path",
-            ));
-        }
-        if next_attempt_id == *attempt_id {
-            return Err(CdfError::contract(
-                "bulk fallback must redrive under a new load attempt id",
-            ));
-        }
-        if path.descriptor.fallback != BulkFallbackMode::RollbackFullRedrive
-            || !proof.zero_target_visibility
-            || (path.descriptor.external_staging && !proof.external_staging_cleaned)
-        {
-            return Err(CdfError::destination(
-                "bulk runtime fallback requires a rollback/full-redrive path, zero target visibility, and cleaned external staging",
-            ));
-        }
-        self.current.take();
-        let evidence = self
-            .evidence
-            .last_mut()
-            .ok_or_else(|| CdfError::internal("bulk attempt evidence is missing"))?;
-        evidence.fallback_reason = Some(reason.into());
-        evidence.aborted_before_fallback = true;
-        self.start(next_attempt_id)
-    }
-
-    pub fn complete(&mut self) -> Result<()> {
-        self.current
-            .take()
-            .ok_or_else(|| CdfError::contract("bulk completion requires an active attempt"))?;
-        Ok(())
-    }
-
-    pub fn evidence(&self) -> &[BulkAttemptEvidence] {
-        &self.evidence
-    }
-}
-
-pub trait BulkWriterAttempt {
-    fn apply_migrations(&mut self) -> Result<()>;
-    fn write_batch(&mut self, batch: CommitBatch) -> Result<BulkBatchAck>;
-    fn finish_segment(&mut self, state: &StateSegment) -> Result<SegmentAck>;
-    fn finalize(self: Box<Self>) -> Result<Receipt>;
-    fn abort(self: Box<Self>) -> Result<BulkAbortProof>;
 }

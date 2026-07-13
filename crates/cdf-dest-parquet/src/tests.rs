@@ -98,14 +98,22 @@ fn local_streaming_parquet_reaches_sixty_percent_of_write_roofline() {
         let raw_elapsed = started.elapsed();
         let parquet_rate = encoded.byte_count as f64 / parquet_elapsed.as_secs_f64();
         let raw_rate = encoded.byte_count as f64 / raw_elapsed.as_secs_f64();
-        observations.push((encoded.byte_count, parquet_rate, raw_rate));
+        observations.push((
+            encoded.byte_count,
+            parquet_elapsed,
+            raw_elapsed,
+            parquet_rate,
+            raw_rate,
+        ));
     }
-    observations.sort_by(|left, right| (left.1 / left.2).total_cmp(&(right.1 / right.2)));
-    let (physical_bytes, parquet_rate, raw_rate) = observations[1];
+    observations.sort_by(|left, right| (left.3 / left.4).total_cmp(&(right.3 / right.4)));
+    let (physical_bytes, parquet_elapsed, raw_elapsed, parquet_rate, raw_rate) = observations[1];
     let ratio = parquet_rate / raw_rate;
     eprintln!(
-        "parquet_local_write physical_bytes={} parquet_mib_s={:.1} raw_mib_s={:.1} ratio={ratio:.3}",
+        "parquet_local_write physical_bytes={} wall_time_ns={} raw_wall_time_ns={} parquet_mib_s={:.1} raw_mib_s={:.1} ratio={ratio:.3}",
         physical_bytes,
+        parquet_elapsed.as_nanos(),
+        raw_elapsed.as_nanos(),
         parquet_rate / (1024.0 * 1024.0),
         raw_rate / (1024.0 * 1024.0),
     );

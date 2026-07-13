@@ -529,10 +529,10 @@ fn engine_plan_with_policy<R: ResourceStream + ?Sized>(
         None
     };
     let filters = if resource.schema().field_with_name("active").is_ok() {
-        vec![ScanPredicate {
-            predicate_id: PredicateId::new("active-filter")?,
-            expression: "active = true".to_owned(),
-        }]
+        vec![ScanPredicate::new(
+            PredicateId::new("active-filter")?,
+            "active = true",
+        )?]
     } else {
         Vec::new()
     };

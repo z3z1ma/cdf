@@ -221,6 +221,7 @@ pub fn run_macro_cell(
         reference: request.reference.clone(),
         bias: request.bias.clone(),
         measurement_provider,
+        destination_path: None,
     })
 }
 
@@ -312,6 +313,7 @@ pub fn unavailable_reference_cell(
         reference: Some(reference),
         bias,
         measurement_provider: None,
+        destination_path: None,
     })
 }
 
@@ -328,5 +330,6 @@ fn non_observed(
         reference: request.reference.clone(),
         bias: request.bias.clone(),
         measurement_provider,
+        destination_path: None,
     }
 }

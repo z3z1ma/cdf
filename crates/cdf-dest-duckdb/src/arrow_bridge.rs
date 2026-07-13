@@ -371,7 +371,9 @@ mod tests {
         let scalar_rows_per_second = SCALAR_ROWS as f64 / scalar_elapsed.as_secs_f64();
         let speedup = vector_rows_per_second / scalar_rows_per_second;
         eprintln!(
-            "duckdb_tlc_arrow rows_per_second={vector_rows_per_second:.0} direct_rows_per_second={direct_rows_per_second:.0} scalar_rows_per_second={scalar_rows_per_second:.0} speedup={speedup:.2}x"
+            "duckdb_tlc_arrow rows={} wall_time_ns={} rows_per_second={vector_rows_per_second:.0} direct_rows_per_second={direct_rows_per_second:.0} scalar_rows_per_second={scalar_rows_per_second:.0} speedup={speedup:.2}x",
+            BATCH_ROWS * BATCHES,
+            vector_elapsed.as_nanos(),
         );
         assert!(
             vector_rows_per_second >= 1_000_000.0,

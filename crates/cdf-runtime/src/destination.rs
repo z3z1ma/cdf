@@ -9,6 +9,7 @@ pub enum DestinationReceiptReportingPolicy {
 pub struct PreparedDestinationCommit {
     pub commit: DestinationCommitRequest,
     pub plan: CommitPlan,
+    pub bulk_path: PreparedBulkPath,
     pub reporting_policy: DestinationReceiptReportingPolicy,
     pub pending_context: Option<Box<dyn Any + Send + Sync>>,
 }
@@ -17,11 +18,13 @@ impl PreparedDestinationCommit {
     pub fn new(
         commit: DestinationCommitRequest,
         plan: CommitPlan,
+        bulk_path: PreparedBulkPath,
         reporting_policy: DestinationReceiptReportingPolicy,
     ) -> Self {
         Self {
             commit,
             plan,
+            bulk_path,
             reporting_policy,
             pending_context: None,
         }
@@ -86,13 +89,15 @@ pub struct DestinationOutputSchema {
 #[non_exhaustive]
 pub struct DestinationPlanningContext<'a> {
     pub verified_package: &'a VerifiedPackage,
+    pub bulk_path: &'a PreparedBulkPath,
     pub after_receipt_verified: Option<ReceiptVerifiedHook<'a>>,
 }
 
 impl<'a> DestinationPlanningContext<'a> {
-    pub fn new(verified_package: &'a VerifiedPackage) -> Self {
+    pub fn new(verified_package: &'a VerifiedPackage, bulk_path: &'a PreparedBulkPath) -> Self {
         Self {
             verified_package,
+            bulk_path,
             after_receipt_verified: None,
         }
     }
@@ -120,35 +125,15 @@ pub trait DestinationRuntime {
         &mut self,
         _input: &BulkPathPreparationInput<'_>,
     ) -> Result<BulkPathPreparation> {
-        let eligible = self
-            .runtime_capabilities()
-            .bulk_paths
-            .into_iter()
-            .map(|descriptor| PreparedBulkPath {
-                rows_per_batch: descriptor.rows.preferred,
-                bytes_per_batch: descriptor.bytes.preferred,
-                writers: 1,
-                descriptor,
-            })
-            .collect::<Vec<_>>();
-        let preparation = BulkPathPreparation {
-            eligible,
-            rejected: Vec::new(),
-        };
-        preparation.validate()?;
-        Ok(preparation)
+        BulkPathPreparation::from_capabilities(&self.runtime_capabilities())
     }
 
-    fn begin_bulk_writer(
+    fn prepare_selected_bulk_path(
         &mut self,
-        _commit: DestinationCommitRequest,
-        prepared: PreparedBulkPath,
-    ) -> Result<Box<dyn BulkWriterAttempt>> {
-        Err(CdfError::destination(format!(
-            "destination {} declares bulk path {} but has no bounded bulk writer adapter",
-            self.describe().destination_id,
-            prepared.descriptor.path_id
-        )))
+        input: &BulkPathPreparationInput<'_>,
+    ) -> Result<PreparedBulkPath> {
+        let capabilities = self.runtime_capabilities();
+        self.prepare_bulk_paths(input)?.into_selected(&capabilities)
     }
 
     fn begin_staged_ingress(

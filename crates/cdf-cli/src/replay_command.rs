@@ -129,6 +129,7 @@ impl<'a> ReplayProgressRecorder<'a> {
             RuntimeStage::DestinationCommitStarted {
                 plan_id,
                 segment_count,
+                bulk_path,
             } => {
                 let mut event = self.base_event(RunEventKind::DestinationCommitStarted);
                 event.plan_id = Some(plan_id.clone());
@@ -137,6 +138,26 @@ impl<'a> ReplayProgressRecorder<'a> {
                     (
                         "segment_count",
                         RunEventValue::U64(u64_from_usize(segment_count)?),
+                    ),
+                    (
+                        "bulk_path_id",
+                        RunEventValue::String(bulk_path.descriptor.path_id.clone()),
+                    ),
+                    (
+                        "bulk_path_version",
+                        RunEventValue::U64(u64::from(bulk_path.descriptor.version)),
+                    ),
+                    (
+                        "bulk_rows_per_batch",
+                        RunEventValue::U64(bulk_path.rows_per_batch),
+                    ),
+                    (
+                        "bulk_bytes_per_batch",
+                        RunEventValue::U64(bulk_path.bytes_per_batch),
+                    ),
+                    (
+                        "bulk_writers",
+                        RunEventValue::U64(u64::from(bulk_path.writers)),
                     ),
                 ]);
                 event

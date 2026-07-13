@@ -1,12 +1,11 @@
 use std::{collections::BTreeMap, fs, path::Path};
 
 use cdf_benchmarks::{
-    BenchmarkReport, ChildCommand, EnvelopeSpec, HostCapabilityProvider, HostProbeConfig,
-    LegacyCaseWorkload, MacroRunSpec, PreoptimizationBaselineConfig, PreparedFilePackageWorkload,
-    ProfileTool, ReferenceWorkload, SystemHostProvider, canonical_json_bytes, compare_reports,
-    comparison_fails, generate_envelope, host_class, install_baseline, plan_profile,
-    run_legacy_case_workload, run_preoptimization_baseline, run_prepared_file_to_package,
-    run_reference,
+    BenchmarkReport, ChildCommand, HostCapabilityProvider, HostProbeConfig, LegacyCaseWorkload,
+    MacroRunSpec, PreoptimizationBaselineConfig, PreparedFilePackageWorkload, ProfileTool,
+    ReferenceWorkload, SystemHostProvider, canonical_json_bytes, compare_reports, comparison_fails,
+    host_class, install_baseline, plan_profile, run_legacy_case_workload,
+    run_preoptimization_baseline, run_prepared_file_to_package, run_reference,
 };
 
 fn main() {
@@ -109,11 +108,6 @@ fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             }
             Ok(())
         }
-        [command, report, spec] if command == "envelope" => {
-            let report: BenchmarkReport = serde_json::from_slice(&fs::read(report)?)?;
-            let spec: EnvelopeSpec = serde_json::from_slice(&fs::read(spec)?)?;
-            write_stdout(generate_envelope(&report, &spec)?.as_bytes())
-        }
         [command, report, baseline_root, repository_root, evidence]
             if command == "baseline-install" =>
         {
@@ -158,7 +152,7 @@ fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             })?)
         }
         _ => Err(format!(
-            "usage: {} reference-worker REQUEST.json | host",
+            "usage: {} reference-worker REQUEST.json | host | run-cell REQUEST.json | baseline-run OUTPUT_ROOT REVISION DEPENDENCIES TOOLCHAIN SAMPLES | compare BASELINE.json CURRENT.json",
             executable_name()
         )
         .into()),

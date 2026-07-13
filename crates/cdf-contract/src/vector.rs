@@ -255,7 +255,7 @@ impl VectorValidationPlan {
         context: &ContractEvaluationContext,
         batch: &RecordBatch,
     ) -> Result<VectorMaskEvaluation> {
-        if batch.schema().as_ref() != self.schema.as_ref() {
+        if !same_validation_shape(batch.schema().as_ref(), self.schema.as_ref()) {
             return Err(CdfError::contract(
                 "vector validation plan is bound to a different Arrow schema; rebind the plan",
             ));
@@ -381,6 +381,19 @@ impl VectorValidationPlan {
             summary: masks.summary,
         })
     }
+}
+
+fn same_validation_shape(left: &Schema, right: &Schema) -> bool {
+    left.fields().len() == right.fields().len()
+        && left
+            .fields()
+            .iter()
+            .zip(right.fields())
+            .all(|(left, right)| {
+                left.name() == right.name()
+                    && left.data_type() == right.data_type()
+                    && left.is_nullable() == right.is_nullable()
+            })
 }
 
 enum PredicateBinding<'a> {

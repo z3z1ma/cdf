@@ -81,6 +81,68 @@ fn test_execution_services() -> cdf_runtime::ExecutionServices {
         .1
 }
 
+fn test_file_runtime_dependencies() -> cdf_declarative::FileRuntimeDependencies {
+    let execution = test_execution_services();
+    let mut formats = cdf_runtime::FormatRegistry::default();
+    formats
+        .register(Arc::new(
+            cdf_format_arrow_ipc::ArrowIpcFileFormatDriver::new().unwrap(),
+        ))
+        .unwrap();
+    formats
+        .register(Arc::new(
+            cdf_format_delimited::CsvFormatDriver::new().unwrap(),
+        ))
+        .unwrap();
+    formats
+        .register(Arc::new(
+            cdf_format_json::NdjsonFormatDriver::new().unwrap(),
+        ))
+        .unwrap();
+    formats
+        .register(Arc::new(
+            cdf_format_json::JsonDocumentFormatDriver::new().unwrap(),
+        ))
+        .unwrap();
+    formats
+        .register(Arc::new(
+            cdf_format_parquet::ParquetFormatDriver::new().unwrap(),
+        ))
+        .unwrap();
+    let mut transforms = cdf_runtime::ByteTransformRegistry::default();
+    transforms
+        .register(Arc::new(
+            cdf_transform_gzip::GzipTransformDriver::new().unwrap(),
+        ))
+        .unwrap();
+    cdf_declarative::FileRuntimeDependencies::new(
+        cdf_declarative::FileTransportFacade::new().with_execution_services(execution.clone()),
+        execution,
+        Arc::new(formats),
+        Arc::new(transforms),
+    )
+}
+
+fn plan_compiled_tier_b(
+    resource: &cdf_declarative::CompiledResource,
+    input: EnginePlanInput,
+) -> EnginePlan {
+    match resource.plan() {
+        cdf_declarative::CompiledResourcePlan::Files(_) => Planner::new()
+            .plan_tier_b(
+                &resource
+                    .to_file_resource(test_file_runtime_dependencies())
+                    .unwrap(),
+                input,
+            )
+            .unwrap(),
+        cdf_declarative::CompiledResourcePlan::Rest(_)
+        | cdf_declarative::CompiledResourcePlan::Sql(_) => {
+            Planner::new().plan_tier_b(resource, input).unwrap()
+        }
+    }
+}
+
 const SCHEMA_HASH: &str = "schema-v1";
 const LIVE_FILE_RESOURCE: &str = r#"
 [source.local]
@@ -1394,13 +1456,14 @@ impl ProjectDestinationRuntime for MockProjectDestinationRuntime {
         _package_dir: &Path,
         _reader: &PackageReader,
         inputs: &cdf_package::PackageReplayInputs,
-        _context: &crate::DestinationPlanningContext<'_>,
+        context: &crate::DestinationPlanningContext<'_>,
     ) -> Result<PreparedDestinationCommit> {
         self.counters.prepares.fetch_add(1, Ordering::SeqCst);
         let plan = self.destination.plan_commit(&inputs.destination_commit)?;
         Ok(PreparedDestinationCommit::new(
             inputs.destination_commit.clone(),
             plan,
+            context.bulk_path.clone(),
             DestinationReceiptReportingPolicy::DestinationCommit { duplicate: false },
         ))
     }
@@ -1822,10 +1885,19 @@ fn live_plan(resource: &cdf_declarative::CompiledResource, package_id: &str) -> 
     live_plan_with_policy(resource, package_id, &policy)
 }
 
-fn default_live_plan(resource: &cdf_declarative::CompiledResource, package_id: &str) -> EnginePlan {
-    let observed_schema = ObservedSchema::from_arrow(resource.schema().as_ref());
-    let policy = ContractPolicy::for_trust(resource.descriptor().trust_level.clone());
-    let validation_program = compile_validation_program(&policy, &observed_schema).unwrap();
+fn live_plan_for_queryable(resource: &dyn QueryableResource, package_id: &str) -> EnginePlan {
+    let destination = ResolvedProjectDestination::duckdb(
+        "/tmp/cdf-plan-policy-only.duckdb",
+        TargetName::new("events").unwrap(),
+    )
+    .unwrap();
+    let mut policy = ContractPolicy::for_trust(resource.descriptor().trust_level.clone());
+    policy.normalization.identifier = destination.column_identifier_policy().unwrap().unwrap();
+    let validation_program = compile_validation_program(
+        &policy,
+        &ObservedSchema::from_arrow(resource.schema().as_ref()),
+    )
+    .unwrap();
     Planner::new()
         .plan_tier_b(
             resource,
@@ -1844,6 +1916,28 @@ fn default_live_plan(resource: &cdf_declarative::CompiledResource, package_id: &
             },
         )
         .unwrap()
+}
+
+fn default_live_plan(resource: &cdf_declarative::CompiledResource, package_id: &str) -> EnginePlan {
+    let observed_schema = ObservedSchema::from_arrow(resource.schema().as_ref());
+    let policy = ContractPolicy::for_trust(resource.descriptor().trust_level.clone());
+    let validation_program = compile_validation_program(&policy, &observed_schema).unwrap();
+    plan_compiled_tier_b(
+        resource,
+        EnginePlanInput {
+            request: ScanRequest {
+                resource_id: resource.descriptor().resource_id.clone(),
+                projection: None,
+                filters: Vec::new(),
+                limit: None,
+                order_by: Vec::new(),
+                scope: resource.descriptor().state_scope.clone(),
+            },
+            validation_program,
+            boundedness: PlanBoundedness::Bounded,
+            package_id: package_id.to_owned(),
+        },
+    )
 }
 
 fn live_plan_with_policy(
@@ -1871,24 +1965,22 @@ fn live_plan_with_exact_policy(
         &ObservedSchema::from_arrow(resource.schema().as_ref()),
     )
     .unwrap();
-    Planner::new()
-        .plan_tier_b(
-            resource,
-            EnginePlanInput {
-                request: ScanRequest {
-                    resource_id: resource.descriptor().resource_id.clone(),
-                    projection: None,
-                    filters: Vec::new(),
-                    limit: None,
-                    order_by: Vec::new(),
-                    scope: resource.descriptor().state_scope.clone(),
-                },
-                validation_program,
-                boundedness: PlanBoundedness::Bounded,
-                package_id: package_id.to_owned(),
+    plan_compiled_tier_b(
+        resource,
+        EnginePlanInput {
+            request: ScanRequest {
+                resource_id: resource.descriptor().resource_id.clone(),
+                projection: None,
+                filters: Vec::new(),
+                limit: None,
+                order_by: Vec::new(),
+                scope: resource.descriptor().state_scope.clone(),
             },
-        )
-        .unwrap()
+            validation_program,
+            boundedness: PlanBoundedness::Bounded,
+            package_id: package_id.to_owned(),
+        },
+    )
 }
 
 fn state_delta_request<'a>(
@@ -2030,7 +2122,11 @@ fn destination_planning_facade_rejects_parquet_merge_without_writes() {
         .plan_resource_commit(&resource, &engine_plan)
         .unwrap_err();
 
-    assert!(error.to_string().contains("Parquet destination"));
+    assert!(
+        error
+            .to_string()
+            .contains("parquet_object_store destination")
+    );
     assert!(
         !parquet_root.exists(),
         "Parquet plan preview must not create destination root"
@@ -2619,16 +2715,21 @@ fn general_project_run_records_ledger_events_in_commit_gate_order() {
     let package_root = temp.path().join(".cdf/packages");
     let duckdb_path = temp.path().join(".cdf/dev.duckdb");
     let state_path = temp.path().join(".cdf/state.db");
-
-    let report = futures_executor::block_on(run_project(project_run_request(
+    let file_runtime = resource
+        .to_file_resource(test_file_runtime_dependencies())
+        .unwrap();
+    let mut request = project_run_request(
         &resource,
         package_id,
         &package_root,
         &duckdb_path,
         &state_path,
         "run-general-ledger-order",
-    )))
-    .unwrap();
+    );
+    request.resource = ProjectRunSource::file(&file_runtime);
+    request.plan = live_plan_for_queryable(&file_runtime, package_id);
+
+    let report = futures_executor::block_on(run_project(request)).unwrap();
 
     let kinds = report
         .ledger_snapshot
@@ -2700,6 +2801,27 @@ fn general_project_run_records_ledger_events_in_commit_gate_order() {
             .attributes
             .get("byte_count")
     );
+    let bulk = &report.ledger_snapshot.events[7].details.attributes;
+    assert_eq!(
+        bulk.get("bulk_path_id"),
+        Some(&RunEventValue::String(
+            "arrow_record_batch_appender".to_owned()
+        ))
+    );
+    assert_eq!(bulk.get("bulk_path_version"), Some(&RunEventValue::U64(1)));
+    assert_eq!(
+        bulk.get("bulk_evidence_version"),
+        Some(&RunEventValue::String("p3-d2-2026-07-11-v1".to_owned()))
+    );
+    assert!(matches!(
+        bulk.get("bulk_rows_per_batch"),
+        Some(RunEventValue::U64(value)) if *value > 0
+    ));
+    assert!(matches!(
+        bulk.get("bulk_bytes_per_batch"),
+        Some(RunEventValue::U64(value)) if *value > 0
+    ));
+    assert_eq!(bulk.get("bulk_writers"), Some(&RunEventValue::U64(1)));
     assert!(
         report.ledger_snapshot.events[12]
             .details
@@ -4279,7 +4401,11 @@ fn general_project_run_rejects_unsupported_parquet_disposition_before_writes() {
     )))
     .unwrap_err();
 
-    assert!(error.to_string().contains("Parquet destination"));
+    assert!(
+        error
+            .to_string()
+            .contains("parquet_object_store destination")
+    );
     assert!(!package_root.join(package_id).exists());
     assert!(!parquet_root.exists());
     assert!(!state_path.exists());

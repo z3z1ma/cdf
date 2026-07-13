@@ -615,9 +615,11 @@ fn notify_run_replay_stage(
         PackageReplayStage::DestinationCommitStarted {
             plan_id,
             segment_count,
+            bulk_path,
         } => recorder.append_replay_stage(RuntimeStage::DestinationCommitStarted {
             plan_id,
             segment_count,
+            bulk_path,
         }),
         PackageReplayStage::DestinationSegmentAcknowledged { ack } => {
             recorder.append_replay_stage(RuntimeStage::DestinationSegmentAcknowledged { ack })

@@ -12,6 +12,7 @@ pub enum RuntimeStage<'a> {
     DestinationCommitStarted {
         plan_id: &'a PlanId,
         segment_count: usize,
+        bulk_path: &'a cdf_runtime::PreparedBulkPath,
     },
     DestinationSegmentAcknowledged {
         ack: &'a SegmentAck,

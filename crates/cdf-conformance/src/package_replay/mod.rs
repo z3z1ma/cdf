@@ -346,8 +346,7 @@ pub fn assert_duplicate_replay_identity(
 ) {
     assert_eq!(
         report.receipt_source,
-        ProjectReceiptSource::DestinationCommit {
-            duplicate: true,
+        ProjectReceiptSource::DestinationCommitReceiptOnly {
             package_receipt_recorded: false
         },
         "duplicate replay must surface duplicate/no-op receipt behavior"

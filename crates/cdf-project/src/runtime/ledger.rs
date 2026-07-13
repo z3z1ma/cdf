@@ -183,6 +183,7 @@ impl<'a> ProjectRunRecorder<'a> {
             RuntimeStage::DestinationCommitStarted {
                 plan_id,
                 segment_count,
+                bulk_path,
             } => {
                 let mut event = self.base_event(RunEventKind::DestinationCommitStarted);
                 event.plan_id = Some(plan_id.clone());
@@ -190,6 +191,36 @@ impl<'a> ProjectRunRecorder<'a> {
                 details.insert(
                     "segment_count".to_owned(),
                     RunEventValue::U64(u64_from_usize(segment_count)?),
+                );
+                details.insert(
+                    "bulk_path_id".to_owned(),
+                    RunEventValue::String(bulk_path.descriptor.path_id.clone()),
+                );
+                details.insert(
+                    "bulk_path_version".to_owned(),
+                    RunEventValue::U64(u64::from(bulk_path.descriptor.version)),
+                );
+                details.insert(
+                    "bulk_rows_per_batch".to_owned(),
+                    RunEventValue::U64(bulk_path.rows_per_batch),
+                );
+                details.insert(
+                    "bulk_bytes_per_batch".to_owned(),
+                    RunEventValue::U64(bulk_path.bytes_per_batch),
+                );
+                details.insert(
+                    "bulk_writers".to_owned(),
+                    RunEventValue::U64(u64::from(bulk_path.writers)),
+                );
+                details.insert(
+                    "bulk_evidence_version".to_owned(),
+                    RunEventValue::String(
+                        bulk_path
+                            .descriptor
+                            .measured_evidence_version
+                            .clone()
+                            .expect("validated prepared bulk path"),
+                    ),
                 );
                 event.details = RunEventDetails {
                     attributes: details,

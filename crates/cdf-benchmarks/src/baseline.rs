@@ -294,5 +294,6 @@ fn non_observed(
         reference: None,
         bias: Vec::new(),
         measurement_provider,
+        destination_path: None,
     }
 }

@@ -59,8 +59,7 @@ fn packaged_no_receipts_replay_commits_destination_receipt_checkpoint_and_status
 
     assert_eq!(
         report.receipt_source,
-        ProjectReceiptSource::DestinationCommit {
-            duplicate: false,
+        ProjectReceiptSource::DestinationCommitReceiptOnly {
             package_receipt_recorded: true
         }
     );
@@ -390,8 +389,7 @@ fn negative_self_tests_prove_package_replay_harness_checks_required_edges() {
     assert_harness_panics(|| assert_no_checkpoint_head(&store, &case.delta));
 
     let mut wrong_duplicate = report.clone();
-    wrong_duplicate.receipt_source = ProjectReceiptSource::DestinationCommit {
-        duplicate: false,
+    wrong_duplicate.receipt_source = ProjectReceiptSource::DestinationCommitReceiptOnly {
         package_receipt_recorded: true,
     };
     assert_harness_panics(|| {

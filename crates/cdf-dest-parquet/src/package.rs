@@ -1,4 +1,4 @@
-use std::io::{self, Write};
+use std::io::{self, BufWriter, Write};
 
 use cdf_memory::MemoryCoordinator;
 use cdf_runtime::{SpillBudgetCoordinator, SpillReservation};
@@ -17,6 +17,7 @@ const DATA_PAGE_BYTES: usize = 8 * 1024 * 1024;
 const ROW_GROUP_ROWS: usize = 1024 * 1024;
 const ROW_GROUP_BYTES: usize = 32 * 1024 * 1024;
 const SPILL_GROWTH_BYTES: u64 = 8 * 1024 * 1024;
+const OUTPUT_BUFFER_BYTES: usize = 1024 * 1024;
 
 pub(crate) struct EncodedParquetObject {
     pub(crate) file: NamedTempFile,
@@ -98,7 +99,7 @@ pub(crate) fn write_parquet_segment(
 }
 
 struct SpillHashWriter {
-    file: NamedTempFile,
+    file: BufWriter<NamedTempFile>,
     hash: Sha256,
     bytes: u64,
     spill: SpillReservation,
@@ -107,7 +108,7 @@ struct SpillHashWriter {
 impl SpillHashWriter {
     fn new(file: NamedTempFile, spill: SpillReservation) -> Self {
         Self {
-            file,
+            file: BufWriter::with_capacity(OUTPUT_BUFFER_BYTES, file),
             hash: Sha256::new(),
             bytes: 0,
             spill,
@@ -118,11 +119,14 @@ impl SpillHashWriter {
         self.flush().map_err(|error| {
             CdfError::destination(format!("flush Parquet staging file: {error}"))
         })?;
-        self.file.as_file().sync_all().map_err(|error| {
+        self.file.get_ref().as_file().sync_all().map_err(|error| {
             CdfError::destination(format!("sync Parquet staging file: {error}"))
         })?;
+        let file = self.file.into_inner().map_err(|error| {
+            CdfError::destination(format!("finish Parquet staging buffer: {error}"))
+        })?;
         Ok(EncodedParquetObject {
-            file: self.file,
+            file,
             byte_count: self.bytes,
             sha256: hex::encode(self.hash.finalize()),
             _spill: self.spill,

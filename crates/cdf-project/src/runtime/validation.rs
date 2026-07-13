@@ -1,6 +1,4 @@
-use super::{
-    destinations::ProjectDestinationDescription, prelude::*, resources::ProjectRunSource, types::*,
-};
+use super::{prelude::*, resources::ProjectRunSource, types::*};
 use cdf_contract::{ObservedSchema, normalize_schema};
 
 pub(super) fn validate_project_run_request(request: &mut ProjectRunRequest<'_>) -> Result<()> {
@@ -21,8 +19,7 @@ pub(super) fn validate_project_run_request(request: &mut ProjectRunRequest<'_>) 
     {
         return Err(CdfError::contract(format!(
             "{} destination does not support {:?}",
-            destination_validation_name(&description),
-            disposition
+            description.destination_id, disposition
         )));
     }
     let output = request.destination.output_schema(&request.plan)?;
@@ -32,15 +29,6 @@ pub(super) fn validate_project_run_request(request: &mut ProjectRunRequest<'_>) 
         &output.schema_hash,
     )?;
     Ok(())
-}
-
-fn destination_validation_name(description: &ProjectDestinationDescription) -> &str {
-    match description.schemes.first().copied() {
-        Some("duckdb") => "DuckDB",
-        Some("parquet") => "Parquet",
-        Some("postgres") => "Postgres",
-        _ => description.label.as_str(),
-    }
 }
 
 fn validate_checkpointable_source_position(resource: ProjectRunSource<'_>) -> Result<()> {

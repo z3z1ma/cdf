@@ -158,6 +158,14 @@ impl DestinationRuntime for PostgresRuntime {
         postgres_runtime_capabilities()
     }
 
+    fn prepare_bulk_paths(
+        &mut self,
+        input: &cdf_runtime::BulkPathPreparationInput<'_>,
+    ) -> Result<cdf_runtime::BulkPathPreparation> {
+        postgres_columns_for_schema(input.output_schema)?;
+        cdf_runtime::BulkPathPreparation::from_capabilities(&self.runtime_capabilities())
+    }
+
     fn validate_run_preflight(
         &mut self,
         resource: &dyn ResourceStream,
@@ -227,8 +235,10 @@ impl DestinationRuntime for PostgresRuntime {
         package_dir: &Path,
         reader: &PackageReader,
         inputs: &PackageReplayInputs,
-        _context: &DestinationPlanningContext<'_>,
+        context: &DestinationPlanningContext<'_>,
     ) -> Result<PreparedDestinationCommit> {
+        self.runtime_capabilities()
+            .validate_prepared_bulk_path(context.bulk_path)?;
         let replay = self.replay.as_ref().ok_or_else(|| {
             cdf_kernel::CdfError::internal("Postgres package replay requires planning inputs")
         })?;
@@ -247,6 +257,7 @@ impl DestinationRuntime for PostgresRuntime {
         Ok(PreparedDestinationCommit::new(
             inputs.destination_commit.clone(),
             load_plan.kernel,
+            context.bulk_path.clone(),
             DestinationReceiptReportingPolicy::DestinationCommitReceiptOnly,
         )
         .with_pending_context(request))
@@ -340,7 +351,8 @@ fn postgres_runtime_capabilities() -> DestinationRuntimeCapabilities {
             blocking_lane: Some("postgres.sync".to_owned()),
             native_internal_parallelism: 1,
             external_staging: true,
-            fallback: cdf_runtime::BulkFallbackMode::RollbackFullRedrive,
+            fallback: cdf_runtime::BulkFallbackMode::Forbidden,
+            schema_preflight_version: "postgres-binary-copy-mapping@1".to_owned(),
             measured_evidence_version: Some("p3-d3-2026-07-11-v1".to_owned()),
         }],
         bulk_path: Some("copy_binary".to_owned()),

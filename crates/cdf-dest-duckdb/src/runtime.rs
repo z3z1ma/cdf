@@ -14,7 +14,10 @@ use cdf_runtime::{
     absolute_under_root, artifact_hash, local_uri_path, reject_unexpected_pending_context,
 };
 
-use crate::{DuckDbCommitRequest, DuckDbDestination};
+use crate::{
+    DuckDbCommitRequest, DuckDbDestination,
+    package::{field_plan, validate_user_schema_fields},
+};
 
 pub struct DuckDbRuntimeDriver;
 
@@ -173,7 +176,7 @@ impl DestinationRuntime for DuckDbDestination {
             bulk_paths: vec![cdf_runtime::BulkPathDescriptor {
                 path_id: "arrow_record_batch_appender".to_owned(),
                 version: 1,
-                ingress_mode: DestinationIngressMode::FinalizedPackageOnly,
+                ingress_mode: DestinationIngressMode::StagedDurableSegments,
                 writer_model: DestinationWriterModel::SingleWriter,
                 ordering: cdf_runtime::BulkOrdering::ManifestOrder,
                 rows: cdf_runtime::BulkSizeRange {
@@ -191,6 +194,7 @@ impl DestinationRuntime for DuckDbDestination {
                 native_internal_parallelism: 1,
                 external_staging: false,
                 fallback: cdf_runtime::BulkFallbackMode::Forbidden,
+                schema_preflight_version: "duckdb-arrow-mapping@1".to_owned(),
                 measured_evidence_version: Some("p3-d2-2026-07-11-v1".to_owned()),
             }],
             bulk_path: Some("arrow_record_batch_appender".to_owned()),
@@ -199,6 +203,17 @@ impl DestinationRuntime for DuckDbDestination {
             replay_target_hint: None,
             replay_policy_values: Default::default(),
         }
+    }
+
+    fn prepare_bulk_paths(
+        &mut self,
+        input: &cdf_runtime::BulkPathPreparationInput<'_>,
+    ) -> Result<cdf_runtime::BulkPathPreparation> {
+        validate_user_schema_fields(input.output_schema)?;
+        for field in input.output_schema.fields() {
+            field_plan(field.as_ref())?;
+        }
+        cdf_runtime::BulkPathPreparation::from_capabilities(&self.runtime_capabilities())
     }
 
     fn plan_resource_commit(
@@ -219,8 +234,10 @@ impl DestinationRuntime for DuckDbDestination {
         package_dir: &Path,
         _reader: &PackageReader,
         inputs: &PackageReplayInputs,
-        _context: &DestinationPlanningContext<'_>,
+        context: &DestinationPlanningContext<'_>,
     ) -> Result<PreparedDestinationCommit> {
+        self.runtime_capabilities()
+            .validate_prepared_bulk_path(context.bulk_path)?;
         let request = DuckDbCommitRequest {
             package_dir: package_dir.to_path_buf(),
             commit: inputs.destination_commit.clone(),
@@ -236,6 +253,7 @@ impl DestinationRuntime for DuckDbDestination {
         Ok(PreparedDestinationCommit::new(
             request.commit,
             plan.kernel,
+            context.bulk_path.clone(),
             DestinationReceiptReportingPolicy::DestinationCommit { duplicate },
         ))
     }
@@ -244,6 +262,8 @@ impl DestinationRuntime for DuckDbDestination {
         &mut self,
         request: cdf_runtime::StagedIngressRequest,
     ) -> Result<Box<dyn cdf_runtime::StagedIngressSession>> {
+        self.runtime_capabilities()
+            .validate_prepared_bulk_path(&request.bulk_path)?;
         self.begin_staged_ingress_session(request)
     }
 

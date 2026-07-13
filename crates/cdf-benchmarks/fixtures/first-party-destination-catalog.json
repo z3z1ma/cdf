@@ -1,0 +1,59 @@
+[
+  {
+    "destination_id": "duckdb",
+    "runtime": {
+      "blocking_lanes": [{"lane_id":"duckdb.connection","maximum_concurrency":1,"cpu_slot_cost":1,"native_internal_parallelism":1,"affinity":"pinned","interruption":"cooperative_only"}],
+      "staged_ingress_lane": "duckdb.connection",
+      "final_binding_lane": "duckdb.connection",
+      "ingress_mode": "staged_durable_segments",
+      "staged_ingress": {"recovery":"rollback_redrive","visibility":"isolated_until_final_binding","abort_idempotent":true,"lifecycle_cleanup":true,"final_binding_requires_exclusive_writer":true},
+      "writer_model": "single_writer",
+      "commit_payload_mode": "segment_streaming",
+      "max_in_flight_segments": 2,
+      "max_in_flight_bytes": 134217728,
+      "bulk_paths": [{"path_id":"arrow_record_batch_appender","version":1,"ingress_mode":"staged_durable_segments","writer_model":"single_writer","ordering":"manifest_order","rows":{"minimum":8192,"preferred":65536,"maximum":65536},"bytes":{"minimum":1048576,"preferred":16777216,"maximum":67108864},"max_useful_writers":1,"blocking_lane":"duckdb.connection","native_internal_parallelism":1,"external_staging":false,"fallback":"forbidden","schema_preflight_version":"duckdb-arrow-mapping@1","measured_evidence_version":"p3-d2-2026-07-11-v1"}],
+      "bulk_path": "arrow_record_batch_appender",
+      "bulk_evidence_version": "p3-d2-2026-07-11-v1",
+      "replay_requires_explicit_target": false,
+      "replay_target_hint": null,
+      "replay_policy_values": {}
+    }
+  },
+  {
+    "destination_id": "parquet_object_store",
+    "runtime": {
+      "blocking_lanes": [{"lane_id":"parquet.encode","maximum_concurrency":2,"cpu_slot_cost":1,"native_internal_parallelism":1,"affinity":"shared","interruption":"cooperative_only"}],
+      "ingress_mode": "finalized_package_only",
+      "staged_ingress": null,
+      "writer_model": "single_writer",
+      "commit_payload_mode": "segment_streaming",
+      "max_in_flight_segments": 1,
+      "max_in_flight_bytes": 67108864,
+      "bulk_paths": [{"path_id":"arrow_ipc_to_parquet","version":1,"ingress_mode":"finalized_package_only","writer_model":"single_writer","ordering":"manifest_order","rows":{"minimum":8192,"preferred":65536,"maximum":1048576},"bytes":{"minimum":1048576,"preferred":16777216,"maximum":67108864},"max_useful_writers":1,"blocking_lane":null,"native_internal_parallelism":1,"external_staging":true,"fallback":"forbidden","schema_preflight_version":"parquet-arrow-mapping@1","measured_evidence_version":"p3-d4-2026-07-11-v1"}],
+      "bulk_path": "arrow_ipc_to_parquet",
+      "bulk_evidence_version": "p3-d4-2026-07-11-v1",
+      "replay_requires_explicit_target": false,
+      "replay_target_hint": null,
+      "replay_policy_values": {}
+    }
+  },
+  {
+    "destination_id": "postgres",
+    "runtime": {
+      "blocking_lanes": [{"lane_id":"postgres.sync","maximum_concurrency":4,"cpu_slot_cost":1,"native_internal_parallelism":1,"affinity":"shared","interruption":"cooperative_only"}],
+      "final_binding_lane": "postgres.sync",
+      "ingress_mode": "finalized_package_only",
+      "staged_ingress": null,
+      "writer_model": "single_writer",
+      "commit_payload_mode": "segment_streaming",
+      "max_in_flight_segments": 1,
+      "max_in_flight_bytes": 67108864,
+      "bulk_paths": [{"path_id":"copy_binary","version":1,"ingress_mode":"finalized_package_only","writer_model":"single_writer","ordering":"manifest_order","rows":{"minimum":8192,"preferred":65536,"maximum":1048576},"bytes":{"minimum":1048576,"preferred":16777216,"maximum":67108864},"max_useful_writers":1,"blocking_lane":"postgres.sync","native_internal_parallelism":1,"external_staging":true,"fallback":"forbidden","schema_preflight_version":"postgres-binary-copy-mapping@1","measured_evidence_version":"p3-d3-2026-07-11-v1"}],
+      "bulk_path": "copy_binary",
+      "bulk_evidence_version": "p3-d3-2026-07-11-v1",
+      "replay_requires_explicit_target": true,
+      "replay_target_hint": "schema.table",
+      "replay_policy_values": {"merge_dedup":["fail"]}
+    }
+  }
+]

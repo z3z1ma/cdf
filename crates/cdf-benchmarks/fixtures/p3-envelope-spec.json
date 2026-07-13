@@ -15,6 +15,11 @@
     {"workload_id": "tlc_e2e_duckdb", "label": "Full-year TLC HTTPS → DuckDB", "target": "≤1.5× download + native ingest", "reference_workload_id": "tlc_download_duckdb_native"},
     {"workload_id": "constant_memory_stress", "label": "1 TB synthetic → Parquet", "target": "default budget; stable RSS; linear scaling", "reference_workload_id": null}
   ],
+  "destination_paths": [
+    {"destination_id": "duckdb", "target": "≥1M rows/s; ≥5× scalar appender", "eligible_schema_fixture": "tlc-v1", "ineligible_schema_fixture": "decimal256-v1"},
+    {"destination_id": "postgres", "target": "binary COPY; ≥2× CSV COPY", "eligible_schema_fixture": "tpch-orders-v1", "ineligible_schema_fixture": "unsupported-arrow-v1"},
+    {"destination_id": "parquet_object_store", "target": "≥60% device-write roofline", "eligible_schema_fixture": "wide-entropy-v1", "ineligible_schema_fixture": "unsupported-arrow-v1"}
+  ],
   "profile_links": {
     "json_ndjson_to_package": ["../.10x/evidence/.storage/p3-baseline-cdf-ndjson-sample.txt"]
   }

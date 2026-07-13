@@ -316,10 +316,11 @@ fn sheet_declares_duckdb_destination_contract() {
             .supported_dispositions
             .contains(&WriteDisposition::Append)
     );
-    assert!(
-        dest.capabilities()
-            .bulk_paths
-            .contains(&BulkPath::ArrowRecordBatchAppender)
+    assert_eq!(
+        cdf_runtime::DestinationRuntime::runtime_capabilities(&dest)
+            .bulk_path
+            .as_deref(),
+        Some("arrow_record_batch_appender")
     );
 }
 

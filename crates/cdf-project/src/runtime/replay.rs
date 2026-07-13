@@ -26,6 +26,7 @@ pub(crate) struct ActiveStagedIngress {
     background: Option<BackgroundStaging>,
     execution: Option<ExecutionServices>,
     final_binding_lane: Option<String>,
+    bulk_path: cdf_runtime::PreparedBulkPath,
 }
 
 pub(crate) struct StagedIngressPlan {
@@ -116,6 +117,11 @@ impl ActiveStagedIngress {
         if capabilities.ingress_mode == cdf_runtime::DestinationIngressMode::FinalizedPackageOnly {
             return Ok(None);
         }
+        let mut preparation = cdf_runtime::BulkPathPreparationInput::new(&plan.output_schema);
+        if let Some(services) = services {
+            preparation = preparation.with_execution(services.capabilities());
+        }
+        let bulk_path = runtime.prepare_selected_bulk_path(&preparation)?;
         let attempt_id =
             staging_attempt_id(&plan.checkpoint_id, &runtime.describe().destination_id)?;
         let scheduling = cdf_runtime::StagingSchedulingContext::new(
@@ -135,6 +141,7 @@ impl ActiveStagedIngress {
                 schema_hash: plan.schema_hash.clone(),
                 plan_id: plan.staging_plan_id.clone(),
             },
+            bulk_path: bulk_path.clone(),
             scheduling: scheduling.clone(),
             output_schema: plan.output_schema,
             merge_keys: plan.merge_keys,
@@ -166,6 +173,7 @@ impl ActiveStagedIngress {
             background: None,
             execution,
             final_binding_lane: capabilities.final_binding_lane.clone(),
+            bulk_path,
         };
         if let Some(lane) = capabilities.staged_ingress_lane.as_deref() {
             active.start_background(lane, &capabilities, scheduling.max_in_flight_segments)?;
@@ -418,6 +426,7 @@ pub(crate) enum PackageReplayStage<'a> {
     DestinationCommitStarted {
         plan_id: &'a PlanId,
         segment_count: usize,
+        bulk_path: &'a cdf_runtime::PreparedBulkPath,
     },
     DestinationSegmentAcknowledged {
         ack: &'a SegmentAck,
@@ -705,6 +714,23 @@ where
     validate_package_replay_inputs(package.reader(), package.verification(), &inputs)?;
     let capabilities = runtime.runtime_capabilities();
     capabilities.validate()?;
+    let output_schema = package
+        .reader()
+        .runtime_arrow_schema_verified(package.verification())?;
+    let selected_bulk_path = runtime.prepare_selected_bulk_path(
+        &cdf_runtime::BulkPathPreparationInput::new(output_schema.as_ref())
+            .with_commit(&inputs.destination_commit),
+    )?;
+    let mut active_staged = active_staged;
+    if active_staged
+        .as_ref()
+        .is_some_and(|active| active.bulk_path != selected_bulk_path)
+    {
+        active_staged.take().expect("checked above").abort();
+        return Err(CdfError::contract(
+            "destination bulk-path selection changed after staged ingress began",
+        ));
+    }
     notify_destination_replay_stage(&hooks, PackageReplayStage::PackageReplayVerified)?;
 
     let checkpoint_id = inputs.state_delta.checkpoint_id.clone();
@@ -741,6 +767,7 @@ where
                     package.verification(),
                     &inputs,
                     &capabilities,
+                    &selected_bulk_path,
                     memory,
                     &hooks,
                 ),
@@ -774,7 +801,7 @@ where
                 &package_dir,
                 package.reader(),
                 &inputs,
-                &DestinationPlanningContext::new(package.verification())
+                &DestinationPlanningContext::new(package.verification(), &selected_bulk_path)
                     .with_after_receipt_verified(hooks.after_receipt_verified),
             ) {
                 Ok(prepared) => prepared,
@@ -783,6 +810,16 @@ where
                     return Err(error);
                 }
             };
+            if prepared.bulk_path != selected_bulk_path {
+                let _ = checkpoint_store.abandon(&checkpoint_id);
+                return Err(CdfError::contract(
+                    "destination prepared a commit for a different bulk path than schema preflight selected",
+                ));
+            }
+            if let Err(error) = capabilities.validate_prepared_bulk_path(&prepared.bulk_path) {
+                let _ = checkpoint_store.abandon(&checkpoint_id);
+                return Err(error);
+            }
             let receipt_policy = prepared.reporting_policy.clone();
             let receipts_before = package.reader().receipts()?.len();
             if let Err(error) = runtime.bind_prepared_commit(&mut prepared) {
@@ -794,6 +831,7 @@ where
                 PackageReplayStage::DestinationCommitStarted {
                     plan_id: &prepared.plan.plan_id,
                     segment_count: prepared.commit.segments.len(),
+                    bulk_path: &prepared.bulk_path,
                 },
             ) {
                 let _ = checkpoint_store.abandon(&checkpoint_id);
@@ -862,6 +900,7 @@ fn commit_package_through_staged_ingress(
     verified: &VerifiedPackage,
     inputs: &PackageReplayInputs,
     capabilities: &cdf_runtime::DestinationRuntimeCapabilities,
+    bulk_path: &cdf_runtime::PreparedBulkPath,
     memory: Arc<dyn MemoryCoordinator>,
     hooks: &PackageReplayHooks<'_>,
 ) -> Result<Receipt> {
@@ -878,6 +917,7 @@ fn commit_package_through_staged_ingress(
             schema_hash: inputs.schema_hash.clone(),
             plan_id: plan.plan_id.clone(),
         },
+        bulk_path: bulk_path.clone(),
         scheduling: cdf_runtime::StagingSchedulingContext::new(
             capabilities
                 .max_in_flight_segments
@@ -899,6 +939,7 @@ fn commit_package_through_staged_ingress(
             PackageReplayStage::DestinationCommitStarted {
                 plan_id: &plan.plan_id,
                 segment_count: inputs.destination_commit.segments.len(),
+                bulk_path,
             },
         )?;
         let maximum_segment_bytes = capabilities
@@ -997,6 +1038,7 @@ fn finalize_active_staged_ingress(
             PackageReplayStage::DestinationCommitStarted {
                 plan_id: &plan.plan_id,
                 segment_count: active.staged.len(),
+                bulk_path: &active.bulk_path,
             },
         )?;
         let snapshot = active
@@ -1300,9 +1342,11 @@ fn notify_runtime_replay_stage(
         PackageReplayStage::DestinationCommitStarted {
             plan_id,
             segment_count,
+            bulk_path,
         } => hook(RuntimeStage::DestinationCommitStarted {
             plan_id,
             segment_count,
+            bulk_path,
         }),
         PackageReplayStage::DestinationSegmentAcknowledged { ack } => {
             hook(RuntimeStage::DestinationSegmentAcknowledged { ack })

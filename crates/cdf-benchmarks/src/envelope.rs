@@ -1,10 +1,11 @@
 use std::collections::BTreeMap;
+use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    BenchResult, BenchmarkObservation, BenchmarkReport, Capability, ObservationStatus, bench_error,
-    canonical_sha256, host_class, validate_report,
+    BenchResult, BenchmarkObservation, BenchmarkReport, Capability, DestinationPathEligibility,
+    ObservationStatus, bench_error, canonical_sha256, host_class, validate_report,
 };
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -14,6 +15,8 @@ pub struct EnvelopeSpec {
     pub evidence_status: String,
     pub evidence_record: Option<String>,
     pub targets: Vec<EnvelopeTarget>,
+    #[serde(default)]
+    pub destination_paths: Vec<DestinationEnvelopeTarget>,
     pub profile_links: BTreeMap<String, Vec<String>>,
 }
 
@@ -25,8 +28,38 @@ pub struct EnvelopeTarget {
     pub reference_workload_id: Option<String>,
 }
 
-pub fn generate_envelope(report: &BenchmarkReport, spec: &EnvelopeSpec) -> BenchResult<String> {
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DestinationEnvelopeTarget {
+    pub destination_id: String,
+    pub target: String,
+    pub eligible_schema_fixture: String,
+    pub ineligible_schema_fixture: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DestinationBulkCatalogEntry {
+    pub destination_id: String,
+    pub runtime: cdf_runtime::DestinationRuntimeCapabilities,
+}
+
+impl From<&cdf_runtime::DestinationInspection> for DestinationBulkCatalogEntry {
+    fn from(inspection: &cdf_runtime::DestinationInspection) -> Self {
+        Self {
+            destination_id: inspection.description.destination_id.as_str().to_owned(),
+            runtime: inspection.runtime.clone(),
+        }
+    }
+}
+
+pub fn generate_envelope(
+    report: &BenchmarkReport,
+    spec: &EnvelopeSpec,
+    destination_catalog: &[DestinationBulkCatalogEntry],
+    destination_report: &BenchmarkReport,
+    evidence_root: &Path,
+) -> BenchResult<String> {
     validate_report(report)?;
+    validate_report(destination_report)?;
     validate_envelope_spec(spec)?;
     let report_digest = canonical_sha256(report)?;
     let mut output = String::new();
@@ -82,6 +115,56 @@ pub fn generate_envelope(report: &BenchmarkReport, spec: &EnvelopeSpec) -> Bench
                         .find(|candidate| candidate.comparability.workload_id == *id)
                 });
                 envelope_row(&mut output, target, Some(observation), reference);
+            }
+        }
+    }
+
+    if !spec.destination_paths.is_empty() {
+        output.push_str("\n## Destination bulk-path matrix\n\n");
+        output.push_str("| Destination | Path | Cell | Evidence version | Host class | Target | Observation | Status | Evidence |\n");
+        output.push_str("|---|---|---|---|---|---:|---:|---|---|\n");
+        if spec.destination_paths.len() != destination_catalog.len()
+            || spec.destination_paths.iter().any(|target| {
+                !destination_catalog
+                    .iter()
+                    .any(|entry| entry.destination_id == target.destination_id)
+            })
+        {
+            return Err(bench_error(
+                "destination envelope targets must exactly cover the registered destination catalog",
+            ));
+        }
+        validate_destination_observation_joins(
+            destination_report,
+            destination_catalog,
+            &spec.destination_paths,
+            evidence_root,
+        )?;
+        for entry in destination_catalog {
+            let target = spec
+                .destination_paths
+                .iter()
+                .find(|target| target.destination_id == entry.destination_id)
+                .ok_or_else(|| {
+                    bench_error(format!(
+                        "destination envelope has no target for registered destination {}",
+                        entry.destination_id
+                    ))
+                })?;
+            for path in &entry.runtime.bulk_paths {
+                for eligibility in [
+                    DestinationPathEligibility::Eligible,
+                    DestinationPathEligibility::Ineligible,
+                ] {
+                    destination_path_row(
+                        &mut output,
+                        destination_report,
+                        entry,
+                        path,
+                        eligibility,
+                        target,
+                    );
+                }
             }
         }
     }
@@ -209,7 +292,224 @@ fn validate_envelope_spec(spec: &EnvelopeSpec) -> BenchResult<()> {
             ));
         }
     }
+    let mut destination_ids = std::collections::BTreeSet::new();
+    for path in &spec.destination_paths {
+        if path.destination_id.trim().is_empty()
+            || path.target.trim().is_empty()
+            || path.eligible_schema_fixture.trim().is_empty()
+            || path.ineligible_schema_fixture.trim().is_empty()
+            || !destination_ids.insert(path.destination_id.as_str())
+        {
+            return Err(bench_error(
+                "destination envelope targets require unique destination ids and non-empty targets",
+            ));
+        }
+    }
     Ok(())
+}
+
+fn validate_destination_observation_joins(
+    report: &BenchmarkReport,
+    catalog: &[DestinationBulkCatalogEntry],
+    targets: &[DestinationEnvelopeTarget],
+    evidence_root: &Path,
+) -> BenchResult<()> {
+    let report_host_class = host_class(&report.host)?;
+    let mut cells = std::collections::BTreeSet::new();
+    for observation in &report.observations {
+        let identity = observation.destination_path.as_ref().ok_or_else(|| {
+            bench_error("destination matrix report contains a non-destination observation")
+        })?;
+        if observation.comparability.host_class != report_host_class {
+            return Err(bench_error(format!(
+                "destination observation {} host class {} differs from report host class {}",
+                identity.path_id, observation.comparability.host_class, report_host_class
+            )));
+        }
+        let exact = catalog.iter().any(|entry| {
+            entry.destination_id == identity.destination_id
+                && entry.runtime.bulk_paths.iter().any(|path| {
+                    path.path_id == identity.path_id
+                        && path.measured_evidence_version.as_deref()
+                            == Some(identity.evidence_version.as_str())
+                })
+        });
+        if !exact {
+            return Err(bench_error(format!(
+                "destination observation {}/{} evidence {} does not exactly match a registry descriptor",
+                identity.destination_id, identity.path_id, identity.evidence_version
+            )));
+        }
+        let target = targets
+            .iter()
+            .find(|target| target.destination_id == identity.destination_id)
+            .ok_or_else(|| {
+                bench_error(format!(
+                    "destination observation {} has no envelope target",
+                    identity.destination_id
+                ))
+            })?;
+        let expected_fixture = match identity.eligibility {
+            DestinationPathEligibility::Eligible => target.eligible_schema_fixture.as_str(),
+            DestinationPathEligibility::Ineligible => target.ineligible_schema_fixture.as_str(),
+        };
+        match (identity.eligibility, &observation.status) {
+            (DestinationPathEligibility::Eligible, ObservationStatus::Observed)
+            | (DestinationPathEligibility::Ineligible, ObservationStatus::Ineligible { .. }) => {}
+            (DestinationPathEligibility::Eligible, _) => {
+                return Err(bench_error(format!(
+                    "destination observation {}/{} eligible cell must be observed",
+                    identity.destination_id, identity.path_id
+                )));
+            }
+            (DestinationPathEligibility::Ineligible, _) => {
+                return Err(bench_error(format!(
+                    "destination observation {}/{} ineligible cell must record a schema-preflight rejection",
+                    identity.destination_id, identity.path_id
+                )));
+            }
+        }
+        if identity.schema_fixture != expected_fixture {
+            return Err(bench_error(format!(
+                "destination observation {}/{} schema fixture {} does not match target cell {}",
+                identity.destination_id,
+                identity.path_id,
+                identity.schema_fixture,
+                expected_fixture
+            )));
+        }
+        let eligibility = match identity.eligibility {
+            DestinationPathEligibility::Eligible => "eligible",
+            DestinationPathEligibility::Ineligible => "ineligible",
+        };
+        if !cells.insert((
+            identity.destination_id.as_str(),
+            identity.path_id.as_str(),
+            identity.evidence_version.as_str(),
+            eligibility,
+            identity.schema_fixture.as_str(),
+        )) {
+            return Err(bench_error(format!(
+                "destination observation cell {}/{} ({eligibility}, {}) is duplicated",
+                identity.destination_id, identity.path_id, identity.schema_fixture
+            )));
+        }
+        if !evidence_root.join(&identity.evidence_record).is_file() {
+            return Err(bench_error(format!(
+                "destination observation evidence record {} does not exist",
+                identity.evidence_record
+            )));
+        }
+    }
+    for entry in catalog {
+        let target = targets
+            .iter()
+            .find(|target| target.destination_id == entry.destination_id)
+            .expect("catalog/spec coverage validated before destination observation joins");
+        for path in &entry.runtime.bulk_paths {
+            let evidence = path.measured_evidence_version.as_deref().ok_or_else(|| {
+                bench_error(format!(
+                    "destination path {}/{} has no measured evidence version",
+                    entry.destination_id, path.path_id
+                ))
+            })?;
+            for (eligibility, fixture) in [
+                ("eligible", target.eligible_schema_fixture.as_str()),
+                ("ineligible", target.ineligible_schema_fixture.as_str()),
+            ] {
+                if !cells.contains(&(
+                    entry.destination_id.as_str(),
+                    path.path_id.as_str(),
+                    evidence,
+                    eligibility,
+                    fixture,
+                )) {
+                    return Err(bench_error(format!(
+                        "destination matrix is missing {eligibility} cell for {}/{} fixture {}",
+                        entry.destination_id, path.path_id, fixture
+                    )));
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+fn destination_path_row(
+    output: &mut String,
+    report: &BenchmarkReport,
+    entry: &DestinationBulkCatalogEntry,
+    path: &cdf_runtime::BulkPathDescriptor,
+    eligibility: DestinationPathEligibility,
+    target: &DestinationEnvelopeTarget,
+) {
+    let observation = report.observations.iter().find(|observation| {
+        observation
+            .destination_path
+            .as_ref()
+            .is_some_and(|identity| {
+                identity.destination_id == entry.destination_id
+                    && identity.path_id == path.path_id
+                    && path.measured_evidence_version.as_deref()
+                        == Some(identity.evidence_version.as_str())
+                    && identity.eligibility == eligibility
+                    && identity.schema_fixture
+                        == match eligibility {
+                            DestinationPathEligibility::Eligible => {
+                                target.eligible_schema_fixture.as_str()
+                            }
+                            DestinationPathEligibility::Ineligible => {
+                                target.ineligible_schema_fixture.as_str()
+                            }
+                        }
+            })
+    });
+    let (host, observed, status, evidence) = observation.map_or_else(
+        || {
+            (
+                "—".to_owned(),
+                "—".to_owned(),
+                "unavailable: no exact registry-bound machine observation".to_owned(),
+                "—".to_owned(),
+            )
+        },
+        |observation| {
+            let identity = observation.destination_path.as_ref().unwrap();
+            (
+                observation.comparability.host_class.clone(),
+                observation
+                    .summary
+                    .as_ref()
+                    .map_or_else(|| "—".to_owned(), format_rate),
+                status_text(observation),
+                format!("[record](../{})", escape(&identity.evidence_record)),
+            )
+        },
+    );
+    let cell = match eligibility {
+        DestinationPathEligibility::Eligible => {
+            format!("eligible ({})", target.eligible_schema_fixture)
+        }
+        DestinationPathEligibility::Ineligible => {
+            format!("schema-ineligible ({})", target.ineligible_schema_fixture)
+        }
+    };
+    output.push_str(&format!(
+        "| {} | `{}` | {} | `{}` | `{}` | {} | {} | {} | {} |\n",
+        escape(&entry.destination_id),
+        escape(&path.path_id),
+        escape(&cell),
+        escape(
+            path.measured_evidence_version
+                .as_deref()
+                .unwrap_or("unmeasured")
+        ),
+        escape(&host),
+        escape(&target.target),
+        escape(&observed),
+        escape(&status),
+        evidence,
+    ));
 }
 
 fn format_rate(summary: &crate::MeasurementSummary) -> String {
@@ -245,6 +545,7 @@ fn format_bytes(bytes: u64) -> String {
 fn status_text(observation: &BenchmarkObservation) -> String {
     match &observation.status {
         ObservationStatus::Observed => "observed".to_owned(),
+        ObservationStatus::Ineligible { reason } => format!("ineligible: {}", escape(reason)),
         ObservationStatus::Failed { error } => format!("failed: {}", escape(error)),
         ObservationStatus::TimedOut { timeout_ms } => format!("timed out: {timeout_ms} ms"),
         ObservationStatus::Unavailable { reason } => {

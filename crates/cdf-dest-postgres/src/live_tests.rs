@@ -168,7 +168,9 @@ fn live_binary_copy_is_at_least_twice_csv() {
     let csv_elapsed = started.elapsed();
     let speedup = csv_elapsed.as_secs_f64() / binary_elapsed.as_secs_f64();
     eprintln!(
-        "postgres_local_copy binary_rows_per_second={:.0} csv_rows_per_second={:.0} speedup={speedup:.2}x",
+        "postgres_local_copy rows={} wall_time_ns={} binary_rows_per_second={:.0} csv_rows_per_second={:.0} speedup={speedup:.2}x",
+        ROWS,
+        binary_elapsed.as_nanos(),
         ROWS as f64 / binary_elapsed.as_secs_f64(),
         ROWS as f64 / csv_elapsed.as_secs_f64(),
     );

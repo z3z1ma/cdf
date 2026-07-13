@@ -1,10 +1,25 @@
-use std::fs;
+use std::{fs, path::Path};
 
 use cdf_benchmarks::{
-    BenchmarkReport, ComparisonVerdict, EnvelopeSpec, IoMode, ReferenceIdentity, canonical_sha256,
-    compare_reports, comparison_fails, generate_envelope, install_baseline, report_fixture,
-    summarize_samples,
+    BenchmarkReport, ComparisonVerdict, DestinationBulkCatalogEntry, DestinationPathEligibility,
+    DestinationPathMeasurementIdentity, EnvelopeSpec, IoMode, ReferenceIdentity, canonical_sha256,
+    compare_reports, comparison_fails, generate_envelope, host_class, install_baseline,
+    report_fixture, summarize_samples,
 };
+
+fn workspace_root() -> &'static Path {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(Path::parent)
+        .unwrap()
+}
+
+fn first_party_destination_catalog() -> Vec<DestinationBulkCatalogEntry> {
+    serde_json::from_str(include_str!(
+        "../fixtures/first-party-destination-catalog.json"
+    ))
+    .unwrap()
+}
 
 fn current_report(percent: u64) -> BenchmarkReport {
     let mut report = report_fixture().unwrap();
@@ -195,9 +210,89 @@ fn generated_envelope_matches_committed_golden() {
     .unwrap();
     let spec: EnvelopeSpec =
         serde_json::from_str(include_str!("../fixtures/p3-envelope-spec.json")).unwrap();
-    let generated = generate_envelope(&report, &spec).unwrap();
+    let destination_report: BenchmarkReport = serde_json::from_str(include_str!(
+        "../../../.10x/evidence/.storage/p3-d5-destination-matrix-macos.json"
+    ))
+    .unwrap();
+    let generated = generate_envelope(
+        &report,
+        &spec,
+        &first_party_destination_catalog(),
+        &destination_report,
+        workspace_root(),
+    )
+    .unwrap();
     assert_eq!(
         generated,
         include_str!("../../../docs/performance-envelope.md")
+    );
+}
+
+#[test]
+fn destination_envelope_rejects_invented_or_drifted_registry_evidence() {
+    let report: BenchmarkReport = serde_json::from_str(include_str!(
+        "../../../.10x/evidence/.storage/p3-baseline-macos-ef3d84f6.json"
+    ))
+    .unwrap();
+    let mut destination_report: BenchmarkReport = serde_json::from_str(include_str!(
+        "../../../.10x/evidence/.storage/p3-d5-destination-matrix-macos.json"
+    ))
+    .unwrap();
+    let spec: EnvelopeSpec =
+        serde_json::from_str(include_str!("../fixtures/p3-envelope-spec.json")).unwrap();
+    let report_host_class = host_class(&destination_report.host).unwrap();
+    let observation = destination_report
+        .observations
+        .iter_mut()
+        .find(|observation| observation.comparability.workload_id == "d5_duckdb_eligible")
+        .unwrap();
+    observation.comparability.host_class = report_host_class;
+    observation.destination_path = Some(DestinationPathMeasurementIdentity {
+        destination_id: "duckdb".to_owned(),
+        path_id: "invented_path".to_owned(),
+        evidence_version: "invented-version".to_owned(),
+        eligibility: DestinationPathEligibility::Eligible,
+        schema_fixture: "tlc-v1".to_owned(),
+        evidence_record: ".10x/evidence/2026-07-11-p3-d2-duckdb-closeout.md".to_owned(),
+    });
+
+    let catalog = first_party_destination_catalog();
+    let error = generate_envelope(
+        &report,
+        &spec,
+        &catalog,
+        &destination_report,
+        workspace_root(),
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(
+        error.contains("does not exactly match a registry descriptor"),
+        "{error}"
+    );
+
+    let identity = destination_report
+        .observations
+        .iter_mut()
+        .find(|observation| observation.comparability.workload_id == "d5_duckdb_eligible")
+        .unwrap()
+        .destination_path
+        .as_mut()
+        .unwrap();
+    identity.path_id = "arrow_record_batch_appender".to_owned();
+    identity.evidence_version = "p3-d2-2026-07-11-v1".to_owned();
+    identity.evidence_record = ".10x/evidence/../secret.md".to_owned();
+    let error = generate_envelope(
+        &report,
+        &spec,
+        &catalog,
+        &destination_report,
+        workspace_root(),
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(
+        error.contains("require a .10x/evidence/*.md authority"),
+        "{error}"
     );
 }

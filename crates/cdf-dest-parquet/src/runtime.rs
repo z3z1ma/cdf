@@ -95,14 +95,24 @@ impl DestinationRuntime for ParquetDestination {
         parquet_runtime_capabilities()
     }
 
+    fn prepare_bulk_paths(
+        &mut self,
+        input: &cdf_runtime::BulkPathPreparationInput<'_>,
+    ) -> Result<cdf_runtime::BulkPathPreparation> {
+        cdf_package::validate_parquet_schema(input.output_schema)?;
+        cdf_runtime::BulkPathPreparation::from_capabilities(&self.runtime_capabilities())
+    }
+
     fn prepare_package_commit(
         &mut self,
         package_dir: &Path,
         _reader: &PackageReader,
         inputs: &PackageReplayInputs,
-        _context: &DestinationPlanningContext<'_>,
+        context: &DestinationPlanningContext<'_>,
     ) -> Result<PreparedDestinationCommit> {
-        prepare_parquet_commit(self, package_dir, inputs)
+        self.runtime_capabilities()
+            .validate_prepared_bulk_path(context.bulk_path)?;
+        prepare_parquet_commit(self, package_dir, inputs, context.bulk_path.clone())
     }
 
     fn bind_prepared_commit(&mut self, prepared: &mut PreparedDestinationCommit) -> Result<()> {
@@ -164,6 +174,14 @@ impl DestinationRuntime for FilesystemParquetRuntime {
         parquet_runtime_capabilities()
     }
 
+    fn prepare_bulk_paths(
+        &mut self,
+        input: &cdf_runtime::BulkPathPreparationInput<'_>,
+    ) -> Result<cdf_runtime::BulkPathPreparation> {
+        cdf_package::validate_parquet_schema(input.output_schema)?;
+        cdf_runtime::BulkPathPreparation::from_capabilities(&self.runtime_capabilities())
+    }
+
     fn destination_sheet(&self) -> Result<DestinationSheet> {
         ParquetDestination::destination_sheet()
     }
@@ -193,10 +211,12 @@ impl DestinationRuntime for FilesystemParquetRuntime {
         package_dir: &Path,
         _reader: &PackageReader,
         inputs: &PackageReplayInputs,
-        _context: &DestinationPlanningContext<'_>,
+        context: &DestinationPlanningContext<'_>,
     ) -> Result<PreparedDestinationCommit> {
+        self.runtime_capabilities()
+            .validate_prepared_bulk_path(context.bulk_path)?;
         let destination = self.destination()?;
-        prepare_parquet_commit(destination, package_dir, inputs)
+        prepare_parquet_commit(destination, package_dir, inputs, context.bulk_path.clone())
     }
 
     fn bind_prepared_commit(&mut self, prepared: &mut PreparedDestinationCommit) -> Result<()> {
@@ -221,6 +241,7 @@ fn prepare_parquet_commit(
     destination: &ParquetDestination,
     package_dir: &Path,
     inputs: &PackageReplayInputs,
+    bulk_path: cdf_runtime::PreparedBulkPath,
 ) -> Result<PreparedDestinationCommit> {
     let request = ParquetCommitRequest {
         package_dir: package_dir.to_path_buf(),
@@ -231,6 +252,7 @@ fn prepare_parquet_commit(
     Ok(PreparedDestinationCommit::new(
         request.commit,
         plan.kernel,
+        bulk_path,
         DestinationReceiptReportingPolicy::DestinationCommit {
             duplicate: plan.duplicate,
         },
@@ -275,7 +297,8 @@ pub(crate) fn parquet_runtime_capabilities() -> DestinationRuntimeCapabilities {
             blocking_lane: None,
             native_internal_parallelism: 1,
             external_staging: true,
-            fallback: cdf_runtime::BulkFallbackMode::PreflightOnly,
+            fallback: cdf_runtime::BulkFallbackMode::Forbidden,
+            schema_preflight_version: "parquet-arrow-mapping@1".to_owned(),
             measured_evidence_version: Some("p3-d4-2026-07-11-v1".to_owned()),
         }],
         bulk_path: Some("arrow_ipc_to_parquet".to_owned()),

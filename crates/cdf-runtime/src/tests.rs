@@ -3,10 +3,9 @@ use cdf_kernel::{
     BatchStream, BoxFuture, CommitCounts, CommitSession, ConcurrencyLimit, DeliveryGuarantee,
     DestinationId, ErrorKind, IdempotencySupport, IdempotencyToken, IdentifierRules,
     MigrationRecord, PackageHash, PartitionId, PartitionPlan, PlanId, QueryableResource, ReceiptId,
-    ResourceCapabilities, ResourceDescriptor, ResourceId, ResourceStream, RunEventDetails,
-    RunEventValue, ScanPlan, ScanRequest, SchemaHash, SchemaSource, ScopeKey, SegmentAck,
-    SegmentId, TargetName, TransactionMetadata, TransactionSupport, TrustLevel, TypeMapping,
-    VerifyClause,
+    ResourceCapabilities, ResourceDescriptor, ResourceId, ResourceStream, ScanPlan, ScanRequest,
+    SchemaHash, SchemaSource, ScopeKey, SegmentAck, SegmentId, TargetName, TransactionMetadata,
+    TransactionSupport, TrustLevel, TypeMapping, VerifyClause,
 };
 use std::{
     collections::BTreeMap,
@@ -138,9 +137,9 @@ impl DestinationRuntime for MockStagedRuntime {
             commit_payload_mode: DestinationCommitPayloadMode::SegmentStreaming,
             max_in_flight_segments: Some(2),
             max_in_flight_bytes: Some(1024),
-            bulk_paths: Vec::new(),
+            bulk_paths: vec![test_prepared_bulk_path().descriptor],
             bulk_path: Some("mock_staged".to_owned()),
-            bulk_evidence_version: None,
+            bulk_evidence_version: Some("mock-staged-v1".to_owned()),
             replay_requires_explicit_target: false,
             replay_target_hint: None,
             replay_policy_values: Default::default(),
@@ -151,6 +150,8 @@ impl DestinationRuntime for MockStagedRuntime {
         &mut self,
         request: StagedIngressRequest,
     ) -> Result<Box<dyn StagedIngressSession>> {
+        self.runtime_capabilities()
+            .validate_prepared_bulk_path(&request.bulk_path)?;
         let mut attempts = self.attempts.lock().unwrap();
         match attempts.get(&request.attempt_id) {
             Some(existing) if existing.binding != request.binding => {
@@ -406,7 +407,12 @@ impl DestinationDriver for MockDriver {
                 commit_payload_mode: DestinationCommitPayloadMode::SegmentStreaming,
                 max_in_flight_segments: Some(4),
                 max_in_flight_bytes: Some(64 * 1024 * 1024),
-                bulk_paths: Vec::new(),
+                bulk_paths: vec![mock_bulk_descriptor(
+                    "mock_arrow",
+                    "v1",
+                    DestinationIngressMode::StagedDurableSegments,
+                    DestinationWriterModel::ConcurrentSegments,
+                )],
                 bulk_path: Some("mock_arrow".to_owned()),
                 bulk_evidence_version: Some("v1".to_owned()),
                 replay_requires_explicit_target: false,
@@ -631,7 +637,12 @@ fn runtime_capabilities_are_serializable_plan_evidence() {
         commit_payload_mode: DestinationCommitPayloadMode::SegmentStreaming,
         max_in_flight_segments: Some(8),
         max_in_flight_bytes: Some(128 * 1024 * 1024),
-        bulk_paths: Vec::new(),
+        bulk_paths: vec![mock_bulk_descriptor(
+            "arrow",
+            "2026-07",
+            DestinationIngressMode::StagedDurableSegments,
+            DestinationWriterModel::ConcurrentSegments,
+        )],
         bulk_path: Some("arrow".to_owned()),
         bulk_evidence_version: Some("2026-07".to_owned()),
         replay_requires_explicit_target: true,
@@ -670,6 +681,7 @@ fn bulk_descriptors_compose_two_paths_without_runtime_dispatch_changes() {
         native_internal_parallelism: 1,
         external_staging: true,
         fallback,
+        schema_preflight_version: "mock-schema@1".to_owned(),
         measured_evidence_version: Some("mock-v1".to_owned()),
     };
     let capabilities = DestinationRuntimeCapabilities {
@@ -686,9 +698,11 @@ fn bulk_descriptors_compose_two_paths_without_runtime_dispatch_changes() {
         max_in_flight_segments: Some(4),
         max_in_flight_bytes: Some(64 * 1024 * 1024),
         bulk_paths: vec![
-            descriptor("mock_arrow", BulkFallbackMode::RollbackFullRedrive),
+            descriptor("mock_arrow", BulkFallbackMode::PreflightOnly),
             descriptor("mock_scalar", BulkFallbackMode::PreflightOnly),
         ],
+        bulk_path: Some("mock_arrow".to_owned()),
+        bulk_evidence_version: Some("mock-v1".to_owned()),
         ..Default::default()
     };
     capabilities.validate().unwrap();
@@ -699,126 +713,69 @@ fn bulk_descriptors_compose_two_paths_without_runtime_dispatch_changes() {
 }
 
 #[test]
-fn bulk_fallback_requires_abort_proof_and_a_new_attempt() {
-    let descriptor = |path_id: &str, fallback, external_staging| BulkPathDescriptor {
-        path_id: path_id.to_owned(),
-        version: 1,
-        ingress_mode: DestinationIngressMode::StagedDurableSegments,
-        writer_model: DestinationWriterModel::SingleWriter,
-        ordering: BulkOrdering::ManifestOrder,
-        rows: BulkSizeRange {
-            minimum: 8_192,
-            preferred: 65_536,
-            maximum: 65_536,
-        },
-        bytes: BulkSizeRange {
-            minimum: 1_048_576,
-            preferred: 16_777_216,
-            maximum: 67_108_864,
-        },
-        max_useful_writers: 1,
-        blocking_lane: None,
-        native_internal_parallelism: 1,
-        external_staging,
-        fallback,
-        measured_evidence_version: Some("mock-v1".to_owned()),
+fn bulk_selection_rejects_descriptor_and_evidence_drift() {
+    let descriptor = mock_bulk_descriptor(
+        "native",
+        "native-v1",
+        DestinationIngressMode::FinalizedPackageOnly,
+        DestinationWriterModel::SingleWriter,
+    );
+    let capabilities = DestinationRuntimeCapabilities {
+        bulk_paths: vec![descriptor.clone()],
+        bulk_path: Some("native".to_owned()),
+        bulk_evidence_version: Some("native-v1".to_owned()),
+        ..Default::default()
     };
-    let prepared = |descriptor| PreparedBulkPath {
-        descriptor,
-        rows_per_batch: 65_536,
-        bytes_per_batch: 16_777_216,
+    capabilities.validate().unwrap();
+
+    let mut mismatched_alternative = descriptor.clone();
+    mismatched_alternative.path_id = "compat".to_owned();
+    mismatched_alternative.ingress_mode = DestinationIngressMode::StagedDurableSegments;
+    let mut incoherent_ladder = capabilities.clone();
+    incoherent_ladder.bulk_paths.push(mismatched_alternative);
+    assert!(
+        incoherent_ladder
+            .validate()
+            .unwrap_err()
+            .message
+            .contains("ingress/writer model differs")
+    );
+
+    let mut stale_evidence = capabilities.clone();
+    stale_evidence.bulk_evidence_version = Some("stale".to_owned());
+    assert!(
+        stale_evidence
+            .validate()
+            .unwrap_err()
+            .message
+            .contains("evidence version differs")
+    );
+
+    let mut undeclared = capabilities.clone();
+    undeclared.bulk_path = Some("other".to_owned());
+    assert!(
+        undeclared
+            .validate()
+            .unwrap_err()
+            .message
+            .contains("is not declared")
+    );
+
+    let prepared = PreparedBulkPath {
+        descriptor: BulkPathDescriptor {
+            version: 2,
+            ..descriptor
+        },
+        rows_per_batch: 64 * 1024,
+        bytes_per_batch: 16 * 1024 * 1024,
         writers: 1,
     };
-    let mut coordinator = BulkAttemptCoordinator::new(BulkPathPreparation {
-        eligible: vec![
-            prepared(descriptor(
-                "mock_arrow",
-                BulkFallbackMode::RollbackFullRedrive,
-                true,
-            )),
-            prepared(descriptor(
-                "mock_scalar",
-                BulkFallbackMode::PreflightOnly,
-                false,
-            )),
-        ],
-        rejected: Vec::new(),
-    })
-    .unwrap();
-    let first_attempt = LoadAttemptId::new("attempt-1").unwrap();
-    let next_attempt = LoadAttemptId::new("attempt-2").unwrap();
-    assert_eq!(
-        coordinator
-            .start(first_attempt.clone())
-            .unwrap()
-            .descriptor
-            .path_id,
-        "mock_arrow"
-    );
-
-    let error = coordinator
-        .fallback(
-            BulkAbortProof {
-                attempt_id: first_attempt.clone(),
-                path_id: "mock_arrow".to_owned(),
-                zero_target_visibility: true,
-                external_staging_cleaned: false,
-            },
-            "forced failure",
-            next_attempt.clone(),
-        )
-        .unwrap_err();
-    assert!(error.to_string().contains("cleaned external staging"));
-
-    let error = coordinator
-        .fallback(
-            BulkAbortProof {
-                attempt_id: first_attempt.clone(),
-                path_id: "mock_arrow".to_owned(),
-                zero_target_visibility: true,
-                external_staging_cleaned: true,
-            },
-            "forced failure",
-            first_attempt.clone(),
-        )
-        .unwrap_err();
-    assert!(error.to_string().contains("new load attempt id"));
-
-    // A rejected proof cannot consume either the active attempt or its fallback.
-    assert_eq!(
-        coordinator
-            .fallback(
-                BulkAbortProof {
-                    attempt_id: first_attempt,
-                    path_id: "mock_arrow".to_owned(),
-                    zero_target_visibility: true,
-                    external_staging_cleaned: true,
-                },
-                "forced failure",
-                next_attempt,
-            )
-            .unwrap()
-            .descriptor
-            .path_id,
-        "mock_scalar"
-    );
-    coordinator.complete().unwrap();
-    assert_eq!(coordinator.evidence().len(), 2);
-    assert!(coordinator.evidence()[0].aborted_before_fallback);
-    assert_eq!(
-        coordinator.evidence()[0].fallback_reason.as_deref(),
-        Some("forced failure")
-    );
-    assert!(!coordinator.evidence()[1].aborted_before_fallback);
-    let details = coordinator.evidence()[0].run_event_details();
-    details.validate().unwrap();
-    assert_eq!(
-        details.attributes["bulk_path_id"],
-        RunEventValue::String("mock_arrow".to_owned())
-    );
-    assert_eq!(
-        serde_json::from_slice::<RunEventDetails>(&serde_json::to_vec(&details).unwrap()).unwrap(),
-        details
+    assert!(
+        capabilities
+            .validate_prepared_bulk_path(&prepared)
+            .unwrap_err()
+            .message
+            .contains("differs from its inspected descriptor")
     );
 }
 
@@ -1077,6 +1034,7 @@ fn staged_ingress_types_cannot_claim_package_commit_authority() {
             schema_hash: schema_hash.clone(),
             plan_id: PlanId::new("plan-staging").unwrap(),
         },
+        bulk_path: test_prepared_bulk_path(),
         scheduling: StagingSchedulingContext::new(2, 1024).unwrap(),
         output_schema: arrow_schema::Schema::empty(),
         merge_keys: Vec::new(),
@@ -1343,9 +1301,74 @@ fn staged_request(attempt_id: LoadAttemptId, schema_hash: SchemaHash) -> StagedI
             schema_hash,
             plan_id: PlanId::new("plan-staged").unwrap(),
         },
+        bulk_path: test_prepared_bulk_path(),
         scheduling: StagingSchedulingContext::new(2, 1024).unwrap(),
         output_schema: arrow_schema::Schema::empty(),
         merge_keys: Vec::new(),
+    }
+}
+
+fn test_prepared_bulk_path() -> PreparedBulkPath {
+    PreparedBulkPath {
+        descriptor: BulkPathDescriptor {
+            path_id: "mock_staged".to_owned(),
+            version: 1,
+            ingress_mode: DestinationIngressMode::StagedDurableSegments,
+            writer_model: DestinationWriterModel::SingleWriter,
+            ordering: BulkOrdering::ManifestOrder,
+            rows: BulkSizeRange {
+                minimum: 1,
+                preferred: 64 * 1024,
+                maximum: 1024 * 1024,
+            },
+            bytes: BulkSizeRange {
+                minimum: 1,
+                preferred: 16 * 1024 * 1024,
+                maximum: 64 * 1024 * 1024,
+            },
+            max_useful_writers: 1,
+            blocking_lane: None,
+            native_internal_parallelism: 1,
+            external_staging: false,
+            fallback: BulkFallbackMode::PreflightOnly,
+            schema_preflight_version: "mock-schema@1".to_owned(),
+            measured_evidence_version: Some("mock-staged-v1".to_owned()),
+        },
+        rows_per_batch: 64 * 1024,
+        bytes_per_batch: 16 * 1024 * 1024,
+        writers: 1,
+    }
+}
+
+fn mock_bulk_descriptor(
+    path_id: &str,
+    evidence_version: &str,
+    ingress_mode: DestinationIngressMode,
+    writer_model: DestinationWriterModel,
+) -> BulkPathDescriptor {
+    BulkPathDescriptor {
+        path_id: path_id.to_owned(),
+        version: 1,
+        ingress_mode,
+        writer_model,
+        ordering: BulkOrdering::ManifestOrder,
+        rows: BulkSizeRange {
+            minimum: 1,
+            preferred: 64 * 1024,
+            maximum: 1024 * 1024,
+        },
+        bytes: BulkSizeRange {
+            minimum: 1,
+            preferred: 16 * 1024 * 1024,
+            maximum: 64 * 1024 * 1024,
+        },
+        max_useful_writers: 1,
+        blocking_lane: None,
+        native_internal_parallelism: 1,
+        external_staging: false,
+        fallback: BulkFallbackMode::PreflightOnly,
+        schema_preflight_version: "mock-schema@1".to_owned(),
+        measured_evidence_version: Some(evidence_version.to_owned()),
     }
 }
 

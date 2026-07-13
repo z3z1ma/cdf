@@ -1,4 +1,4 @@
-use std::{sync::Arc, time::Instant};
+use std::{collections::HashMap, sync::Arc, time::Instant};
 
 use arrow_array::{
     ArrayRef, Float32Array, Float64Array, Int8Array, Int16Array, Int32Array, Int64Array,
@@ -81,6 +81,35 @@ fn vector_plan_rejects_schema_drift_and_invalid_rule_type_at_bind_time() {
             .message
             .contains("rebind")
     );
+}
+
+#[test]
+fn vector_plan_accepts_non_semantic_schema_metadata_added_by_execution() {
+    let (program, batch) = program_and_batch(vec![Some(1), Some(2)]);
+    let plan = bind_vector_validation_plan(&program, batch.schema()).unwrap();
+    let fields = batch
+        .schema()
+        .fields()
+        .iter()
+        .map(|field| {
+            let mut metadata = field.metadata().clone();
+            metadata.insert(
+                "cdf:physical_type".to_owned(),
+                format!("{:?}", field.data_type()),
+            );
+            Arc::new(field.as_ref().clone().with_metadata(metadata))
+        })
+        .collect::<Vec<_>>();
+    let enriched = RecordBatch::try_new(
+        Arc::new(Schema::new_with_metadata(
+            fields,
+            HashMap::from([("cdf:source_identity".to_owned(), "fixture-v1".to_owned())]),
+        )),
+        batch.columns().to_vec(),
+    )
+    .unwrap();
+    plan.evaluate(&ContractEvaluationContext::default(), &enriched)
+        .unwrap();
 }
 
 #[test]

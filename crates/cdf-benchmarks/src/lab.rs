@@ -194,6 +194,25 @@ pub struct BenchmarkObservation {
     pub bias: Vec<BiasLabel>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub measurement_provider: Option<MeasurementProviderIdentity>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub destination_path: Option<DestinationPathMeasurementIdentity>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DestinationPathMeasurementIdentity {
+    pub destination_id: String,
+    pub path_id: String,
+    pub evidence_version: String,
+    pub eligibility: DestinationPathEligibility,
+    pub schema_fixture: String,
+    pub evidence_record: String,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DestinationPathEligibility {
+    Eligible,
+    Ineligible,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -228,6 +247,7 @@ pub enum IoMode {
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ObservationStatus {
     Observed,
+    Ineligible { reason: String },
     Failed { error: String },
     TimedOut { timeout_ms: u64 },
     Unavailable { reason: String },
@@ -534,7 +554,8 @@ pub fn validate_report(report: &BenchmarkReport) -> BenchResult<()> {
             ObservationStatus::TimedOut { timeout_ms } if *timeout_ms == 0 => {
                 return Err(bench_error("timed-out cell requires positive timeout_ms"));
             }
-            ObservationStatus::Unavailable { reason }
+            ObservationStatus::Ineligible { reason }
+            | ObservationStatus::Unavailable { reason }
             | ObservationStatus::Inconclusive { reason } => {
                 require_text(reason, "non-observed reason")?;
                 reject_sensitive_identity(reason, "non-observed reason")?;
@@ -575,6 +596,26 @@ pub fn validate_report(report: &BenchmarkReport) -> BenchResult<()> {
             require_text(&provider.version, "measurement provider version")?;
             reject_sensitive_identity(&provider.method, "measurement provider method")?;
             reject_sensitive_identity(&provider.version, "measurement provider version")?;
+        }
+        if let Some(path) = &observation.destination_path {
+            for (value, label) in [
+                (&path.destination_id, "destination id"),
+                (&path.path_id, "destination path id"),
+                (&path.evidence_version, "destination evidence version"),
+                (&path.schema_fixture, "destination schema fixture"),
+            ] {
+                require_text(value, label)?;
+                reject_sensitive_identity(value, label)?;
+            }
+            require_text(&path.evidence_record, "destination evidence record")?;
+            let evidence_name = path.evidence_record.strip_prefix(".10x/evidence/");
+            if !evidence_name.is_some_and(|name| {
+                name.ends_with(".md") && !name.contains(['/', '\\', '@']) && !name.contains("..")
+            }) {
+                return Err(bench_error(
+                    "destination path observations require a .10x/evidence/*.md authority",
+                ));
+            }
         }
     }
     Ok(())

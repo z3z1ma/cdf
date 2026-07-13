@@ -38,8 +38,6 @@ use duckdb::{
     AccessMode, Config, Connection, OptionalExt, params, params_from_iter,
     types::{TimeUnit as DuckTimeUnit, Value},
 };
-use serde::{Deserialize, Serialize};
-
 const DESTINATION_ID: &str = "duckdb";
 const MAIN_SCHEMA: &str = "main";
 const LOCK_SUFFIX: &str = "cdf.lock";

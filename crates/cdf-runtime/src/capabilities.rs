@@ -204,6 +204,77 @@ impl DestinationRuntimeCapabilities {
                     path.path_id
                 )));
             }
+            if path
+                .measured_evidence_version
+                .as_deref()
+                .is_none_or(str::is_empty)
+            {
+                return Err(CdfError::contract(format!(
+                    "bulk path {} requires a measured evidence version",
+                    path.path_id
+                )));
+            }
+            if path.ingress_mode != self.ingress_mode || path.writer_model != self.writer_model {
+                return Err(CdfError::contract(format!(
+                    "bulk path `{}` ingress/writer model differs from destination runtime capabilities",
+                    path.path_id
+                )));
+            }
+        }
+        match (
+            self.bulk_paths.is_empty(),
+            self.bulk_path.as_deref(),
+            self.bulk_evidence_version.as_deref(),
+        ) {
+            (true, None, None) => {}
+            (true, _, _) => {
+                return Err(CdfError::contract(
+                    "destination bulk selection/evidence requires a declared bulk path",
+                ));
+            }
+            (false, Some(selected_id), Some(evidence_version)) => {
+                let selected = self
+                    .bulk_paths
+                    .iter()
+                    .find(|path| path.path_id == selected_id)
+                    .ok_or_else(|| {
+                        CdfError::contract(format!(
+                            "selected bulk path `{selected_id}` is not declared"
+                        ))
+                    })?;
+                if selected.measured_evidence_version.as_deref() != Some(evidence_version) {
+                    return Err(CdfError::contract(format!(
+                        "selected bulk path `{selected_id}` evidence version differs from destination runtime evidence version"
+                    )));
+                }
+            }
+            (false, _, _) => {
+                return Err(CdfError::contract(
+                    "destination bulk descriptors require one selected path and matching evidence version",
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    pub fn validate_prepared_bulk_path(&self, prepared: &crate::PreparedBulkPath) -> Result<()> {
+        self.validate()?;
+        prepared.validate()?;
+        let declared = self
+            .bulk_paths
+            .iter()
+            .find(|path| path.path_id == prepared.descriptor.path_id)
+            .ok_or_else(|| {
+                CdfError::contract(format!(
+                    "prepared bulk path `{}` is not declared by the destination",
+                    prepared.descriptor.path_id
+                ))
+            })?;
+        if declared != &prepared.descriptor {
+            return Err(CdfError::contract(format!(
+                "prepared bulk path `{}` differs from its inspected descriptor",
+                prepared.descriptor.path_id
+            )));
         }
         Ok(())
     }

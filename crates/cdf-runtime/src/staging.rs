@@ -95,6 +95,7 @@ pub struct StagingAttemptBinding {
 pub struct StagedIngressRequest {
     pub attempt_id: LoadAttemptId,
     pub binding: StagingAttemptBinding,
+    pub bulk_path: crate::PreparedBulkPath,
     pub scheduling: StagingSchedulingContext,
     pub output_schema: Schema,
     pub merge_keys: Vec<String>,

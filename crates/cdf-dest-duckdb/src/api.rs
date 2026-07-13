@@ -14,28 +14,6 @@ pub struct DuckDbDestination {
     pub(crate) pending_corrections: Arc<Mutex<BTreeMap<PlanId, DuckDbCorrectionContext>>>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct DuckDbCapabilities {
-    pub sheet: DestinationSheet,
-    pub bulk_paths: Vec<BulkPath>,
-    pub single_writer_lock: String,
-    pub parquet_replay: CapabilitySupport,
-    pub timezone_support: TimezoneSupport,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum BulkPath {
-    ArrowRecordBatchAppender,
-    ParquetScan,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct TimezoneSupport {
-    pub requires_icu_probe: bool,
-    pub timezone_aware_timestamps: CapabilitySupport,
-}
-
 #[derive(Clone, Debug)]
 pub struct DuckDbCommitRequest {
     pub package_dir: PathBuf,
@@ -114,10 +92,7 @@ pub struct DuckDbCommitPlan {
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum DuckDbCommitEffect {
-    Data {
-        bulk_path: BulkPath,
-        target_exists: bool,
-    },
+    Data { target_exists: bool },
     NoData,
 }
 
@@ -258,19 +233,6 @@ impl DuckDbDestination {
         &self.database_path
     }
 
-    pub fn capabilities(&self) -> DuckDbCapabilities {
-        DuckDbCapabilities {
-            sheet: self.sheet.clone(),
-            bulk_paths: vec![BulkPath::ArrowRecordBatchAppender],
-            single_writer_lock: self.lock_path().display().to_string(),
-            parquet_replay: CapabilitySupport::Unsupported,
-            timezone_support: TimezoneSupport {
-                requires_icu_probe: true,
-                timezone_aware_timestamps: CapabilitySupport::Unsupported,
-            },
-        }
-    }
-
     pub fn plan_package_commit(&self, request: &DuckDbCommitRequest) -> Result<DuckDbCommitPlan> {
         let reader = PackageReader::open(&request.package_dir)?;
         let schema = if request
@@ -348,7 +310,6 @@ impl DuckDbDestination {
             kernel,
             ddl: table_plan.ddl,
             effect: DuckDbCommitEffect::Data {
-                bulk_path: BulkPath::ArrowRecordBatchAppender,
                 target_exists: table_plan.target_exists,
             },
         })

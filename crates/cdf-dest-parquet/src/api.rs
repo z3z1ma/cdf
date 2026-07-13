@@ -25,20 +25,6 @@ pub struct ParquetDestination {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ParquetCapabilities {
-    pub sheet: DestinationSheet,
-    pub bulk_paths: Vec<ParquetBulkPath>,
-    pub object_manifest_receipts: CapabilitySupport,
-    pub replace_pointer: CapabilitySupport,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ParquetBulkPath {
-    ArrowIpcPackageRowsToParquet,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ParquetRowLocation {
     pub object_key: String,
     pub row_ordinal: u64,
@@ -115,15 +101,6 @@ impl ParquetDestination {
             pending_sessions: Mutex::new(BTreeMap::new()),
             pending_corrections: Mutex::new(BTreeMap::new()),
         })
-    }
-
-    pub fn capabilities(&self) -> ParquetCapabilities {
-        ParquetCapabilities {
-            sheet: self.sheet.clone(),
-            bulk_paths: vec![ParquetBulkPath::ArrowIpcPackageRowsToParquet],
-            object_manifest_receipts: CapabilitySupport::Supported,
-            replace_pointer: CapabilitySupport::Supported,
-        }
     }
 
     pub fn dry_plan_commit(

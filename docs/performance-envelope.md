@@ -29,6 +29,17 @@ This document is generated from the machine report; edit its inputs, not this fi
 | Full-year TLC HTTPS → DuckDB | ≤1.5× download + native ingest | — | — | — | — | unavailable: full year TLC acquisition and live network benchmark are not enabled |
 | 1 TB synthetic → Parquet | default budget; stable RSS; linear scaling | — | — | — | — | failed: preoptimization materializing data plane cannot safely execute the 100 GiB fixed budget stress law |
 
+## Destination bulk-path matrix
+
+| Destination | Path | Cell | Evidence version | Host class | Target | Observation | Status | Evidence |
+|---|---|---|---|---|---:|---:|---|---|
+| duckdb | `arrow_record_batch_appender` | eligible (tlc-v1) | `p3-d2-2026-07-11-v1` | `host-class-f4bf4d1c46a93156` | ≥1M rows/s; ≥5× scalar appender | 9274639 rows/s | observed | [record](../.10x/evidence/2026-07-12-p3-d5-destination-matrix.md) |
+| duckdb | `arrow_record_batch_appender` | schema-ineligible (decimal256-v1) | `p3-d2-2026-07-11-v1` | `host-class-f4bf4d1c46a93156` | ≥1M rows/s; ≥5× scalar appender | — | ineligible: schema fixture is rejected during bulk-path preflight | [record](../.10x/evidence/2026-07-12-p3-d5-destination-matrix.md) |
+| parquet_object_store | `arrow_ipc_to_parquet` | eligible (wide-entropy-v1) | `p3-d4-2026-07-11-v1` | `host-class-f4bf4d1c46a93156` | ≥60% device-write roofline | 1497.92 MiB/s | observed | [record](../.10x/evidence/2026-07-12-p3-d5-destination-matrix.md) |
+| parquet_object_store | `arrow_ipc_to_parquet` | schema-ineligible (unsupported-arrow-v1) | `p3-d4-2026-07-11-v1` | `host-class-f4bf4d1c46a93156` | ≥60% device-write roofline | — | ineligible: schema fixture is rejected during bulk-path preflight | [record](../.10x/evidence/2026-07-12-p3-d5-destination-matrix.md) |
+| postgres | `copy_binary` | eligible (tpch-orders-v1) | `p3-d3-2026-07-11-v1` | `host-class-f4bf4d1c46a93156` | binary COPY; ≥2× CSV COPY | 1804599 rows/s | observed | [record](../.10x/evidence/2026-07-12-p3-d5-destination-matrix.md) |
+| postgres | `copy_binary` | schema-ineligible (unsupported-arrow-v1) | `p3-d3-2026-07-11-v1` | `host-class-f4bf4d1c46a93156` | binary COPY; ≥2× CSV COPY | — | ineligible: schema fixture is rejected during bulk-path preflight | [record](../.10x/evidence/2026-07-12-p3-d5-destination-matrix.md) |
+
 ## Bias and unavailable evidence
 
 - `raw_arrow_ndjson` (warm): observed; bias: omits_cdf_evidence: omits contract validation package hashing receipts and checkpoints

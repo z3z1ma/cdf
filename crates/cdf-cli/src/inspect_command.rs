@@ -329,7 +329,7 @@ fn inspect_destinations_document(
     context: &ProjectContext,
     runtime: &DestinationRuntime,
 ) -> RenderDocument {
-    RenderDocument::new()
+    let mut document = RenderDocument::new()
         .push(SectionRule::new())
         .push(StatusLine::new(
             StatusKind::Success,
@@ -362,9 +362,30 @@ fn inspect_destinations_document(
                         .map(|lock| lock.destinations.len().to_string())
                         .unwrap_or_else(|| "none".to_owned()),
                 ),
-        )
-        .blank_line()
-        .push(NextCommand::new("cdf plan"))
+        );
+    if let Some(capabilities) = &runtime.capabilities {
+        let selected = capabilities.bulk_path.as_deref();
+        let paths = capabilities.bulk_paths.iter().fold(
+            Table::new(["path", "version", "selection", "fallback", "evidence"]),
+            |table, path| {
+                table.row([
+                    path.path_id.clone(),
+                    path.version.to_string(),
+                    if selected == Some(path.path_id.as_str()) {
+                        "selected".to_owned()
+                    } else {
+                        "available".to_owned()
+                    },
+                    path.fallback.to_string(),
+                    path.measured_evidence_version
+                        .clone()
+                        .unwrap_or_else(|| "unmeasured".to_owned()),
+                ])
+            },
+        );
+        document = document.blank_line().push(paths);
+    }
+    document.blank_line().push(NextCommand::new("cdf plan"))
 }
 
 fn inspect_package_document(
