@@ -29,3 +29,7 @@ This audit cannot directly replace a primary codec or identity-bearing kernel.
 ## Blockers
 
 FX1 remains open; V2's final validation graph seam is complete.
+
+## Journal
+
+- 2026-07-12 (build-graph shaping): `.10x/research/2026-07-12-cargo-product-build-graph-audit.md` confirmed this ticket plus the WS-J spec/decision fully own DataFusion `FileFormat`/kernel selective-adoption and adapter containment. The P0 Cargo graph program therefore opens no competing DataFusion adapter ticket. J6 evidence MUST continue to include dependency/build-graph impact and prove any optional adapter terminates in `cdf-engine` or a focused engine-adapter crate without reaching kernel, runtime, package-contract, CLI-core, or driver contracts.
