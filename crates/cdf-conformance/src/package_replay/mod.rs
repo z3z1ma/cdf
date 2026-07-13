@@ -6,11 +6,14 @@ use std::{
 
 use arrow_array::{ArrayRef, Int64Array, RecordBatch, StringArray};
 use arrow_schema::{DataType, Field, Schema};
+use cdf_contract::{
+    CompiledExpressionPlan, ContractPolicy, ObservedSchema, compile_validation_program,
+};
 use cdf_kernel::{
     CHECKPOINT_STATE_VERSION, CdfError, Checkpoint, CheckpointId, CheckpointStatus,
-    CheckpointStore, CursorPosition, CursorValue, PackageHash, PartitionId, PipelineId, Receipt,
-    ResourceId, Result, SchemaHash, ScopeKey, SegmentId, SourcePosition, StateDelta, StateSegment,
-    TargetName, WriteDisposition,
+    CheckpointStore, CursorPosition, CursorValue, DeliveryGuarantee, PackageHash, PartitionId,
+    PipelineId, PlanId, Receipt, ResourceId, Result, ScanPlan, ScanRequest, SchemaHash, ScopeKey,
+    SegmentId, SourcePosition, StateDelta, StateSegment, TargetName, WriteDisposition,
 };
 use cdf_package::{
     DestinationCommitPlanPreimage, PackageManifest, PackageReplayInputs, PackageStatus,
@@ -174,12 +177,14 @@ pub fn build_prepared_package_fixture(
 ) -> Result<PreparedPackageFixture> {
     let builder = PackageBuilder::create(&spec.package_dir, spec.package_id.clone())?;
     builder.update_status(PackageStatus::Extracting)?;
+    let batch = deterministic_orders_batch()?;
+    write_compiled_expression_artifacts(&builder, batch.schema().as_ref())?;
+    builder.write_runtime_arrow_schema(batch.schema().as_ref())?;
     builder.write_json_artifact(
         "schema/output.arrow.json",
         &BTreeMap::from([("schema_hash", spec.schema_hash.as_str())]),
     )?;
-    let segment =
-        builder.write_segment(spec.segment_id.clone(), &[deterministic_orders_batch()?])?;
+    let segment = builder.write_segment(spec.segment_id.clone(), &[batch])?;
     write_prepared_state_commit_artifacts(&builder, &spec, segment)?;
     let manifest = builder.finish_with_status(spec.status)?;
 
@@ -190,6 +195,43 @@ pub fn build_prepared_package_fixture(
         disposition: spec.disposition,
         schema_hash: spec.schema_hash,
     })
+}
+
+fn write_compiled_expression_artifacts(builder: &PackageBuilder, schema: &Schema) -> Result<()> {
+    let mut program = compile_validation_program(
+        &ContractPolicy::evolve(),
+        &ObservedSchema::from_arrow(schema),
+    )?;
+    program.row_rules.clear();
+    program.transforms.clear();
+    program.compiled_expression_plan = Some(CompiledExpressionPlan::current(
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+    )?);
+    builder.write_json_artifact("plan/validation-program.json", &program)?;
+    builder.write_json_artifact(
+        "plan/scan.json",
+        &ScanPlan {
+            plan_id: PlanId::new("conformance-artifact-plan")?,
+            request: ScanRequest {
+                resource_id: ResourceId::new("orders")?,
+                projection: None,
+                filters: Vec::new(),
+                limit: None,
+                order_by: Vec::new(),
+                scope: ScopeKey::Resource,
+            },
+            partitions: Vec::new(),
+            pushed_predicates: Vec::new(),
+            unsupported_predicates: Vec::new(),
+            estimated_rows: None,
+            estimated_bytes: None,
+            delivery_guarantee: DeliveryGuarantee::AtLeastOnceDuplicateRisk,
+        },
+    )?;
+    Ok(())
 }
 
 pub fn replay_prepared_package_case<Store>(

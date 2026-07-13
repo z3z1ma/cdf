@@ -22,12 +22,16 @@ use cdf_http::{
 };
 use cdf_kernel::{
     CdfError, CursorOrderingClaim, CursorValue, DeduplicationSpec, DeliveryGuarantee, ErrorKind,
-    IncrementalShape, PartitionId, PredicateId, PushdownFidelity, QueryableResource,
-    ResourceStream, ScanPredicate, ScanRequest, SchemaHash, SchemaSource, ScopeKey, SortDirection,
-    SourcePosition, WriteDisposition, physical_type, source_name,
+    Expression, ExpressionNode, IncrementalShape, PartitionId, PredicateId, PushdownFidelity,
+    QueryableResource, ResourceStream, ScanPredicate, ScanRequest, SchemaHash, SchemaSource,
+    ScopeKey, SortDirection, SourcePosition, WriteDisposition, physical_type, source_name,
 };
 use futures_util::StreamExt;
 use tempfile::TempDir;
+
+fn scan_predicate(id: PredicateId, expression: &str) -> ScanPredicate {
+    ScanPredicate::new(id, expression).unwrap()
+}
 
 fn test_file_dependencies(
     transport: impl cdf_source_files::FileTransport + 'static,
@@ -130,14 +134,11 @@ fn book_rest_example_parses_and_negotiates_inexact_cursor_pushdown() {
         resource_id: resource.descriptor().resource_id.clone(),
         projection: None,
         filters: vec![
-            ScanPredicate {
-                predicate_id: cursor_predicate_id.clone(),
-                expression: "updated_at >= \"2026-07-01T00:00:00Z\"".to_owned(),
-            },
-            ScanPredicate {
-                predicate_id: unsupported_predicate_id.clone(),
-                expression: "id = 1".to_owned(),
-            },
+            scan_predicate(
+                cursor_predicate_id.clone(),
+                "updated_at >= \"2026-07-01T00:00:00Z\"",
+            ),
+            scan_predicate(unsupported_predicate_id.clone(), "id = 1"),
         ],
         limit: None,
         order_by: vec![],
@@ -654,15 +655,15 @@ fn rest_cursor_pushdown_accepts_only_safe_literal_tokens() {
         Some(&"-20260701.5".to_owned())
     );
 
-    let plan = resource
-        .negotiate(&rest_cursor_request(&resource, "updated_at >= abc123"))
-        .unwrap();
-    assert_eq!(plan.pushed_predicates.len(), 0);
-    assert_eq!(plan.unsupported_predicates.len(), 1);
+    let error = ScanPredicate::new(
+        PredicateId::new("unsafe-cursor").unwrap(),
+        "updated_at >= abc123",
+    )
+    .unwrap_err();
     assert!(
-        !plan.partitions[0]
-            .metadata
-            .contains_key("cursor_query_value")
+        error
+            .to_string()
+            .contains("expected '<column> <op> <literal>'")
     );
 }
 
@@ -691,10 +692,7 @@ fn rest_runtime_does_not_smuggle_unsupported_predicates_into_urls() {
     let request = ScanRequest {
         resource_id: resource.descriptor().resource_id.clone(),
         projection: None,
-        filters: vec![ScanPredicate {
-            predicate_id,
-            expression: "id = 2".to_owned(),
-        }],
+        filters: vec![scan_predicate(predicate_id, "id = 2")],
         limit: None,
         order_by: vec![],
         scope: ScopeKey::Resource,
@@ -752,7 +750,25 @@ fn rest_runtime_does_not_treat_symbolic_cursor_placeholder_as_executable_pushdow
     let resource = compile_document(&parse_toml(REST_RUNTIME_EXAMPLE).unwrap())
         .unwrap()
         .remove(0);
-    let request = rest_cursor_request(&resource, "updated_at >= checkpoint.cursor");
+    let mut request = rest_cursor_request(&resource, "updated_at >= 0");
+    request.filters = vec![
+        ScanPredicate::from_expression(
+            PredicateId::new("cursor").unwrap(),
+            "updated_at >= checkpoint.cursor",
+            Expression::call(
+                "gte",
+                vec![
+                    ExpressionNode::Column {
+                        name: "updated_at".to_owned(),
+                    },
+                    ExpressionNode::Column {
+                        name: "checkpoint.cursor".to_owned(),
+                    },
+                ],
+            ),
+        )
+        .unwrap(),
+    ];
     let plan = resource.negotiate(&request).unwrap();
 
     assert_eq!(plan.pushed_predicates.len(), 0);
@@ -1734,10 +1750,7 @@ resource:
     let file_request = ScanRequest {
         resource_id: file_resource.descriptor().resource_id.clone(),
         projection: None,
-        filters: vec![ScanPredicate {
-            predicate_id: file_predicate_id.clone(),
-            expression: "event_id = 1".to_owned(),
-        }],
+        filters: vec![scan_predicate(file_predicate_id.clone(), "event_id = 1")],
         limit: None,
         order_by: vec![],
         scope: ScopeKey::Resource,
@@ -2946,10 +2959,7 @@ fn sql_negotiate_pushes_filters_exactly() {
     let request = ScanRequest {
         resource_id: resource.descriptor().resource_id.clone(),
         projection: Some(vec!["id".to_owned()]),
-        filters: vec![ScanPredicate {
-            predicate_id: predicate_id.clone(),
-            expression: "id = 1".to_owned(),
-        }],
+        filters: vec![scan_predicate(predicate_id.clone(), "id = 1")],
         limit: Some(10),
         order_by: vec![cdf_kernel::OrderBy {
             field: "updated_at".to_owned(),
@@ -2983,14 +2993,8 @@ fn sql_negotiate_does_not_smuggle_unstructured_predicates() {
         resource_id: resource.descriptor().resource_id.clone(),
         projection: Some(vec!["id".to_owned(), "updated_at".to_owned()]),
         filters: vec![
-            ScanPredicate {
-                predicate_id: safe.clone(),
-                expression: "updated_at >= 10".to_owned(),
-            },
-            ScanPredicate {
-                predicate_id: unsafe_predicate.clone(),
-                expression: "id = 1 OR 1 = 1".to_owned(),
-            },
+            scan_predicate(safe.clone(), "updated_at >= 10"),
+            scan_predicate(unsafe_predicate.clone(), "id != 1"),
         ],
         limit: Some(10),
         order_by: vec![],
@@ -3341,10 +3345,10 @@ fn rest_cursor_request(resource: &CompiledResource, expression: &str) -> ScanReq
     ScanRequest {
         resource_id: resource.descriptor().resource_id.clone(),
         projection: None,
-        filters: vec![ScanPredicate {
-            predicate_id: PredicateId::new("cursor").unwrap(),
-            expression: expression.to_owned(),
-        }],
+        filters: vec![scan_predicate(
+            PredicateId::new("cursor").unwrap(),
+            expression,
+        )],
         limit: None,
         order_by: vec![],
         scope: ScopeKey::Resource,

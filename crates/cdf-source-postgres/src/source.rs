@@ -11,11 +11,11 @@ use arrow_array::{
 use arrow_schema::{DataType, Field, Schema, SchemaRef, TimeUnit};
 use cdf_kernel::{
     BackpressureSupport, Batch, BatchId, BatchStream, BoxFuture, CapabilitySupport, CdfError,
-    CursorPosition, CursorValue, DeliveryGuarantee, EstimateSupport, FilterCapabilities,
-    IncrementalShape, PartitionId, PartitionPlan, PartitioningCapabilities, PlanId,
-    PushdownFidelity, PushedPredicate, QueryableResource, ReplaySupport, ResourceCapabilities,
-    ResourceDescriptor, ResourceStream, Result, ScanPlan, ScanPredicate, ScanRequest, SchemaHash,
-    SchemaSource, ScopeKind, SortDirection, SourcePosition, source_name,
+    CursorPosition, CursorValue, DeliveryGuarantee, EstimateSupport, Expression, ExpressionLiteral,
+    FilterCapabilities, IncrementalShape, PartitionId, PartitionPlan, PartitioningCapabilities,
+    PlanId, PushdownFidelity, PushedPredicate, QueryableResource, ReplaySupport,
+    ResourceCapabilities, ResourceDescriptor, ResourceStream, Result, ScanPlan, ScanPredicate,
+    ScanRequest, SchemaHash, SchemaSource, ScopeKind, SortDirection, SourcePosition, source_name,
 };
 use futures_util::stream;
 use postgres::{Client, NoTls, Row, types::ToSql};
@@ -217,7 +217,10 @@ pub fn validate_postgres_table_resource_shape(
     Ok(())
 }
 
-pub fn postgres_table_predicate_fidelity(schema: &SchemaRef, expression: &str) -> PushdownFidelity {
+pub fn postgres_table_predicate_fidelity(
+    schema: &SchemaRef,
+    expression: &Expression,
+) -> PushdownFidelity {
     match parse_supported_predicate(schema, expression) {
         Some(_) => PushdownFidelity::Exact,
         None => PushdownFidelity::Unsupported,
@@ -262,7 +265,7 @@ pub fn classify_postgres_table_predicates(
     let mut pushed = Vec::new();
     let mut unsupported = Vec::new();
     for predicate in predicates {
-        match parse_supported_predicate(schema, &predicate.expression) {
+        match parse_supported_predicate(schema, &predicate.canonical_expression) {
             Some(_) => pushed.push(PushedPredicate {
                 predicate: predicate.clone(),
                 fidelity: PushdownFidelity::Exact,
@@ -439,7 +442,9 @@ impl PostgresTableScan {
         let filters = request
             .filters
             .iter()
-            .filter_map(|predicate| parse_supported_predicate(schema, &predicate.expression))
+            .filter_map(|predicate| {
+                parse_supported_predicate(schema, &predicate.canonical_expression)
+            })
             .collect();
         let order_by = request
             .order_by
@@ -716,154 +721,51 @@ struct TypedLiteral {
 
 fn parse_supported_predicate(
     schema: &SchemaRef,
-    expression: &str,
+    expression: &Expression,
 ) -> Option<PostgresStoredPredicate> {
-    let parsed = parse_simple_predicate(expression)?;
-    let field_name = parse_predicate_field(parsed.field)?;
+    let (field_name, operator, literal) = expression.comparison()?;
+    let operator = match operator {
+        "eq" => PostgresPredicateOperator::Eq,
+        "gt" => PostgresPredicateOperator::Gt,
+        "gte" => PostgresPredicateOperator::Gte,
+        "lt" => PostgresPredicateOperator::Lt,
+        "lte" => PostgresPredicateOperator::Lte,
+        _ => return None,
+    };
     let field = field_by_name(schema, &field_name)?;
     source_column_identifier(field).ok()?;
-    let literal = parse_literal_token(parsed.literal)?;
-    if !literal_quoting_is_exact_for_field(field, literal.quoted) {
-        return None;
-    }
-    parse_literal_for_field(field, parsed.operator, &literal.value)?;
-    Some(PostgresStoredPredicate {
-        field: field_name,
-        operator: parsed.operator,
-        literal: literal.value,
-    })
-}
-
-struct ParsedPredicate<'a> {
-    field: &'a str,
-    operator: PostgresPredicateOperator,
-    literal: &'a str,
-}
-
-fn parse_simple_predicate(expression: &str) -> Option<ParsedPredicate<'_>> {
-    for (token, operator) in [
-        (">=", PostgresPredicateOperator::Gte),
-        ("<=", PostgresPredicateOperator::Lte),
-        ("=", PostgresPredicateOperator::Eq),
-        (">", PostgresPredicateOperator::Gt),
-        ("<", PostgresPredicateOperator::Lt),
-    ] {
-        let Some((left, right)) = expression.split_once(token) else {
-            continue;
-        };
-        if right.contains(token) {
-            return None;
-        }
-        return Some(ParsedPredicate {
-            field: left.trim(),
-            operator,
-            literal: right.trim(),
-        });
-    }
-    None
-}
-
-fn parse_predicate_field(value: &str) -> Option<String> {
-    let value = value.trim();
-    if value.is_empty() {
-        return None;
-    }
-    if let Some(unquoted) = parse_quoted_identifier(value) {
-        return Some(unquoted);
-    }
-    if value
-        .chars()
-        .all(|character| character.is_ascii_alphanumeric() || character == '_')
-    {
-        return Some(value.to_owned());
-    }
-    None
-}
-
-fn parse_quoted_identifier(value: &str) -> Option<String> {
-    let inner = value.strip_prefix('"')?.strip_suffix('"')?;
-    if inner.is_empty() {
-        return None;
-    }
-    let mut output = String::new();
-    let mut chars = inner.chars().peekable();
-    while let Some(character) = chars.next() {
-        if character == '"' {
-            if chars.peek() == Some(&'"') {
-                chars.next();
-                output.push('"');
-            } else {
-                return None;
-            }
-        } else {
-            output.push(character);
-        }
-    }
-    Some(output)
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-struct ParsedLiteral {
-    value: String,
-    quoted: bool,
-}
-
-fn parse_literal_token(value: &str) -> Option<ParsedLiteral> {
-    let value = value.trim();
-    if value.is_empty() {
-        return None;
-    }
-    if value.starts_with('\'') {
-        return parse_single_quoted_literal(value);
-    }
-    if value.split_whitespace().count() == 1
-        && !value.contains(';')
-        && !value.contains("--")
-        && !value.contains("/*")
-    {
-        return Some(ParsedLiteral {
-            value: value.to_owned(),
-            quoted: false,
-        });
-    }
-    None
-}
-
-fn parse_single_quoted_literal(value: &str) -> Option<ParsedLiteral> {
-    let mut chars = value.char_indices();
-    if chars.next()? != (0, '\'') {
-        return None;
-    }
-
-    let mut output = String::new();
-    while let Some((index, character)) = chars.next() {
-        if character == '\'' {
-            if value[index + character.len_utf8()..].starts_with('\'') {
-                chars.next();
-                output.push('\'');
-                continue;
-            }
-            if value[index + character.len_utf8()..].trim().is_empty() {
-                return Some(ParsedLiteral {
-                    value: output,
-                    quoted: true,
-                });
-            }
-            return None;
-        }
-        output.push(character);
-    }
-    None
-}
-
-fn literal_quoting_is_exact_for_field(field: &Field, quoted: bool) -> bool {
-    match field.data_type() {
-        DataType::Utf8
-        | DataType::Date32
-        | DataType::Timestamp(TimeUnit::Millisecond | TimeUnit::Microsecond, _) => quoted,
-        DataType::Boolean | DataType::Int64 | DataType::UInt64 | DataType::Float64 => !quoted,
+    let exact_literal_type = match (field.data_type(), literal) {
+        (DataType::Utf8, ExpressionLiteral::String(_))
+        | (DataType::Date32, ExpressionLiteral::String(_))
+        | (
+            DataType::Timestamp(TimeUnit::Millisecond | TimeUnit::Microsecond, _),
+            ExpressionLiteral::String(_),
+        )
+        | (DataType::Boolean, ExpressionLiteral::Boolean(_))
+        | (DataType::Int64, ExpressionLiteral::Signed(_))
+        | (DataType::UInt64, ExpressionLiteral::Unsigned(_))
+        | (DataType::Float32 | DataType::Float64, ExpressionLiteral::Float64Bits(_)) => true,
+        (DataType::UInt64, ExpressionLiteral::Signed(value)) => *value >= 0,
         _ => false,
+    };
+    if !exact_literal_type {
+        return None;
     }
+    let literal = match literal {
+        ExpressionLiteral::Boolean(value) => value.to_string(),
+        ExpressionLiteral::Signed(value) => value.to_string(),
+        ExpressionLiteral::Unsigned(value) => value.to_string(),
+        ExpressionLiteral::Float64Bits(bits) => f64::from_bits(*bits).to_string(),
+        ExpressionLiteral::String(value) => value.clone(),
+        ExpressionLiteral::Null | ExpressionLiteral::StringList(_) => return None,
+        _ => return None,
+    };
+    parse_literal_for_field(field, operator, &literal)?;
+    Some(PostgresStoredPredicate {
+        field: field_name.to_owned(),
+        operator,
+        literal,
+    })
 }
 
 fn parse_literal_for_field(
@@ -1428,32 +1330,27 @@ mod tests {
     #[test]
     fn predicate_parser_accepts_only_structured_literals() {
         let schema = schema();
+        let expression = |value| Expression::parse_comparison(value).unwrap();
         assert_eq!(
-            postgres_table_predicate_fidelity(&schema, "id = 1"),
+            postgres_table_predicate_fidelity(&schema, &expression("id = 1")),
             PushdownFidelity::Exact
         );
         assert_eq!(
-            postgres_table_predicate_fidelity(&schema, "name = 'ada'"),
+            postgres_table_predicate_fidelity(&schema, &expression("name = 'ada'")),
             PushdownFidelity::Exact
         );
+        assert!(Expression::parse_comparison("name = ada").is_err());
         assert_eq!(
-            postgres_table_predicate_fidelity(&schema, "name = ada"),
+            postgres_table_predicate_fidelity(&schema, &expression("id = '1'")),
+            PushdownFidelity::Unsupported
+        );
+        assert!(Expression::parse_comparison("id = 1 OR 1 = 1").is_err());
+        assert_eq!(
+            postgres_table_predicate_fidelity(&schema, &expression("missing = 1")),
             PushdownFidelity::Unsupported
         );
         assert_eq!(
-            postgres_table_predicate_fidelity(&schema, "id = '1'"),
-            PushdownFidelity::Unsupported
-        );
-        assert_eq!(
-            postgres_table_predicate_fidelity(&schema, "id = 1 OR 1 = 1"),
-            PushdownFidelity::Unsupported
-        );
-        assert_eq!(
-            postgres_table_predicate_fidelity(&schema, "missing = 1"),
-            PushdownFidelity::Unsupported
-        );
-        assert_eq!(
-            postgres_table_predicate_fidelity(&schema, "active > true"),
+            postgres_table_predicate_fidelity(&schema, &expression("active > true")),
             PushdownFidelity::Unsupported
         );
     }
@@ -1467,14 +1364,13 @@ mod tests {
             resource_id: descriptor.resource_id.clone(),
             projection: Some(vec!["id".to_owned(), "name".to_owned()]),
             filters: vec![
-                ScanPredicate {
-                    predicate_id: cdf_kernel::PredicateId::new("safe").unwrap(),
-                    expression: "id >= 2".to_owned(),
-                },
-                ScanPredicate {
-                    predicate_id: cdf_kernel::PredicateId::new("unsafe").unwrap(),
-                    expression: "name = 'ada' OR true".to_owned(),
-                },
+                ScanPredicate::new(cdf_kernel::PredicateId::new("safe").unwrap(), "id >= 2")
+                    .unwrap(),
+                ScanPredicate::new(
+                    cdf_kernel::PredicateId::new("unsupported").unwrap(),
+                    "active > true",
+                )
+                .unwrap(),
             ],
             limit: Some(10),
             order_by: vec![cdf_kernel::OrderBy {

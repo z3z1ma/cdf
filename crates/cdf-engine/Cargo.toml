@@ -8,7 +8,9 @@ description = "Planning and execution boundary for cdf."
 
 [dependencies]
 arrow-array = "59.1.0"
+arrow-arith = "59.1.0"
 arrow-ipc = { version = "59.1.0", features = ["lz4"] }
+arrow-ord = "59.1.0"
 arrow-schema = "59.1.0"
 arrow-select = "59.1.0"
 datafusion = { git = "https://github.com/apache/datafusion.git", rev = "7ff7278edc1bf7446303bff51e5883a38414bbdf", default-features = false }

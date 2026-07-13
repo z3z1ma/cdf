@@ -1,307 +1,454 @@
+use arrow_arith::boolean::{and_kleene, is_not_null, is_null, not, or_kleene};
 use arrow_array::{
-    Array, BooleanArray, Int32Array, Int64Array, RecordBatch, StringArray, UInt32Array, UInt64Array,
+    ArrayRef, BooleanArray, Float64Array, Int8Array, Int16Array, Int32Array, Int64Array,
+    LargeStringArray, RecordBatch, Scalar, StringArray, UInt8Array, UInt16Array, UInt32Array,
+    UInt64Array,
 };
-use arrow_schema::DataType;
+use arrow_ord::cmp::{eq, gt, gt_eq, lt, lt_eq, neq};
+use arrow_schema::{DataType, Field, Schema};
 use arrow_select::filter::filter_record_batch;
-use cdf_kernel::{CdfError, Result, ScanPredicate};
+use cdf_contract::{ExpressionLiteral, ExpressionNode, PlannedExpression, TransformDescription};
+use cdf_kernel::{CdfError, Result};
 
-pub(crate) fn apply_residual_filters(
+#[derive(Clone)]
+pub(crate) enum BoundBooleanExpression {
+    Column(BoundColumn),
+    Literal(Option<bool>),
+    Not(Box<Self>),
+    And(Box<Self>, Box<Self>),
+    Or(Box<Self>, Box<Self>),
+    IsNull(BoundColumn),
+    IsNotNull(BoundColumn),
+    Comparison {
+        column: BoundColumn,
+        operator: BoundComparisonOperator,
+        scalar: Scalar<ArrayRef>,
+    },
+}
+
+#[derive(Clone)]
+pub(crate) struct BoundColumn {
+    index: usize,
+    name: String,
+    data_type: DataType,
+}
+
+#[derive(Clone, Copy)]
+pub(crate) enum BoundComparisonOperator {
+    Equal,
+    NotEqual,
+    Greater,
+    GreaterOrEqual,
+    Less,
+    LessOrEqual,
+}
+
+pub(crate) enum BoundExpressionTransform {
+    Derive {
+        column: String,
+        expression: BoundBooleanExpression,
+    },
+    Filter(BoundBooleanExpression),
+}
+
+pub(crate) fn bind_filter_expressions(
+    expressions: &[PlannedExpression],
+    schema: &Schema,
+) -> Result<Vec<BoundBooleanExpression>> {
+    expressions
+        .iter()
+        .map(|expression| bind_boolean_expression(&expression.optimized.root, schema))
+        .collect()
+}
+
+pub(crate) fn bind_expression_transforms(
+    transforms: &[TransformDescription],
+    planned: &[PlannedExpression],
+    schema: &Schema,
+) -> Result<Vec<BoundExpressionTransform>> {
+    let mut schema = schema.clone();
+    let mut planned = planned.iter();
+    let mut bound = Vec::new();
+    for transform in transforms {
+        match transform {
+            TransformDescription::Derive { column, .. } => {
+                let expression = planned.next().ok_or_else(|| {
+                    CdfError::contract("derive transform has no recorded compiled expression plan")
+                })?;
+                bound.push(BoundExpressionTransform::Derive {
+                    column: column.clone(),
+                    expression: bind_boolean_expression(&expression.optimized.root, &schema)?,
+                });
+                schema = schema_with_derived_boolean(&schema, column);
+            }
+            TransformDescription::Filter { .. } => {
+                let expression = planned.next().ok_or_else(|| {
+                    CdfError::contract("filter transform has no recorded compiled expression plan")
+                })?;
+                bound.push(BoundExpressionTransform::Filter(bind_boolean_expression(
+                    &expression.optimized.root,
+                    &schema,
+                )?));
+            }
+            _ => {}
+        }
+    }
+    if planned.next().is_some() {
+        return Err(CdfError::contract(
+            "recorded compiled expression plan has extra transform expressions",
+        ));
+    }
+    Ok(bound)
+}
+
+pub(crate) fn expression_transform_output_schema(
+    transforms: &[TransformDescription],
+    schema: &Schema,
+) -> Schema {
+    transforms.iter().fold(schema.clone(), |schema, transform| {
+        if let TransformDescription::Derive { column, .. } = transform {
+            schema_with_derived_boolean(&schema, column)
+        } else {
+            schema
+        }
+    })
+}
+
+fn schema_with_derived_boolean(schema: &Schema, column: &str) -> Schema {
+    let field = std::sync::Arc::new(Field::new(column, DataType::Boolean, true));
+    let mut fields = schema.fields().iter().cloned().collect::<Vec<_>>();
+    if let Ok(index) = schema.index_of(column) {
+        fields[index] = field;
+    } else {
+        fields.push(field);
+    }
+    Schema::new_with_metadata(fields, schema.metadata().clone())
+}
+
+pub(crate) fn apply_bound_filters(
     batch: &RecordBatch,
-    predicates: &[ScanPredicate],
+    expressions: &[BoundBooleanExpression],
 ) -> Result<RecordBatch> {
-    if predicates.is_empty() || batch.num_rows() == 0 {
+    if expressions.is_empty() || batch.num_rows() == 0 {
         return Ok(batch.clone());
     }
-
-    let mut keep = vec![true; batch.num_rows()];
-    for predicate in predicates {
-        let parsed = ParsedPredicate::parse(&predicate.expression)?;
-        for (row, keep_row) in keep.iter_mut().enumerate() {
-            *keep_row &= evaluate_predicate(batch, &parsed, row)?;
-        }
+    let mut expressions = expressions.iter();
+    let mut keep = evaluate_bound_expression(
+        batch,
+        expressions
+            .next()
+            .expect("non-empty expression slice checked above"),
+    )?;
+    for expression in expressions {
+        keep = and_kleene(&keep, &evaluate_bound_expression(batch, expression)?)?;
     }
 
-    let mask = BooleanArray::from(keep);
-    filter_record_batch(batch, &mask).map_err(CdfError::from)
+    filter_record_batch(batch, &keep).map_err(CdfError::from)
 }
 
-pub(crate) fn predicate_operator(expression: &str) -> Option<String> {
-    ParsedPredicate::split(expression).map(|(_, operator, _)| operator.to_owned())
+pub(crate) fn apply_expression_transforms(
+    batch: RecordBatch,
+    transforms: &[TransformDescription],
+    planned: &[PlannedExpression],
+) -> Result<RecordBatch> {
+    let bound = bind_expression_transforms(transforms, planned, batch.schema().as_ref())?;
+    apply_bound_expression_transforms(batch, &bound)
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-struct ParsedPredicate {
-    column: String,
-    operator: ComparisonOperator,
-    literal: Literal,
-}
-
-impl ParsedPredicate {
-    fn parse(expression: &str) -> Result<Self> {
-        let Some((column, operator, literal)) = Self::split(expression) else {
-            return Err(CdfError::contract(format!(
-                "unsupported predicate expression {expression:?}; MVP predicates use '<column> <op> <literal>'"
-            )));
-        };
-        Ok(Self {
-            column: column.to_owned(),
-            operator: ComparisonOperator::parse(operator)?,
-            literal: Literal::parse(literal),
-        })
-    }
-
-    fn split(expression: &str) -> Option<(&str, &str, &str)> {
-        for operator in [">=", "<=", "!=", "=", ">", "<"] {
-            if let Some(index) = expression.find(operator) {
-                let (column, rest) = expression.split_at(index);
-                let literal = &rest[operator.len()..];
-                let column = column.trim();
-                let literal = literal.trim();
-                if !column.is_empty() && !literal.is_empty() {
-                    return Some((column, operator, literal));
+pub(crate) fn apply_bound_expression_transforms(
+    mut batch: RecordBatch,
+    transforms: &[BoundExpressionTransform],
+) -> Result<RecordBatch> {
+    for transform in transforms {
+        match transform {
+            BoundExpressionTransform::Derive { column, expression } => {
+                let values = evaluate_bound_expression(&batch, expression)?;
+                let mut fields = batch.schema().fields().iter().cloned().collect::<Vec<_>>();
+                let mut columns = batch.columns().to_vec();
+                let field = std::sync::Arc::new(arrow_schema::Field::new(
+                    column,
+                    arrow_schema::DataType::Boolean,
+                    true,
+                ));
+                if let Ok(index) = batch.schema().index_of(column) {
+                    fields[index] = field;
+                    columns[index] = std::sync::Arc::new(values);
+                } else {
+                    fields.push(field);
+                    columns.push(std::sync::Arc::new(values));
                 }
+                batch = RecordBatch::try_new(
+                    std::sync::Arc::new(arrow_schema::Schema::new_with_metadata(
+                        fields,
+                        batch.schema().metadata().clone(),
+                    )),
+                    columns,
+                )?;
+            }
+            BoundExpressionTransform::Filter(expression) => {
+                batch = apply_bound_filters(&batch, std::slice::from_ref(expression))?;
             }
         }
-        None
     }
+    Ok(batch)
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum ComparisonOperator {
-    Eq,
-    NotEq,
-    Gt,
-    GtEq,
-    Lt,
-    LtEq,
-}
-
-impl ComparisonOperator {
-    fn parse(operator: &str) -> Result<Self> {
-        match operator {
-            "=" => Ok(Self::Eq),
-            "!=" => Ok(Self::NotEq),
-            ">" => Ok(Self::Gt),
-            ">=" => Ok(Self::GtEq),
-            "<" => Ok(Self::Lt),
-            "<=" => Ok(Self::LtEq),
-            other => Err(CdfError::contract(format!(
-                "unsupported predicate operator {other:?}"
+fn bind_boolean_expression(
+    node: &ExpressionNode,
+    schema: &Schema,
+) -> Result<BoundBooleanExpression> {
+    match node {
+        ExpressionNode::Column { name } => {
+            let column = bind_column(name, schema)?;
+            if column.data_type != DataType::Boolean {
+                return Err(CdfError::contract(format!(
+                    "predicate field {name:?} does not have its planned boolean type"
+                )));
+            }
+            Ok(BoundBooleanExpression::Column(column))
+        }
+        ExpressionNode::Literal {
+            value: ExpressionLiteral::Boolean(value),
+        } => Ok(BoundBooleanExpression::Literal(Some(*value))),
+        ExpressionNode::Literal {
+            value: ExpressionLiteral::Null,
+        } => Ok(BoundBooleanExpression::Literal(None)),
+        ExpressionNode::Call {
+            function,
+            arguments,
+        } => match (function.name.as_str(), arguments.as_slice()) {
+            ("not", [value]) => Ok(BoundBooleanExpression::Not(Box::new(
+                bind_boolean_expression(value, schema)?,
             ))),
-        }
-    }
-
-    fn compare_ord<T: Ord>(&self, left: T, right: T) -> bool {
-        match self {
-            Self::Eq => left == right,
-            Self::NotEq => left != right,
-            Self::Gt => left > right,
-            Self::GtEq => left >= right,
-            Self::Lt => left < right,
-            Self::LtEq => left <= right,
-        }
-    }
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-enum Literal {
-    Bool(bool),
-    I64(i64),
-    U64(u64),
-    String(String),
-}
-
-impl Literal {
-    fn parse(raw: &str) -> Self {
-        let trimmed = raw.trim();
-        if let Some(unquoted) = trimmed
-            .strip_prefix('\'')
-            .and_then(|value| value.strip_suffix('\''))
-        {
-            return Self::String(unquoted.to_owned());
-        }
-        if let Some(unquoted) = trimmed
-            .strip_prefix('"')
-            .and_then(|value| value.strip_suffix('"'))
-        {
-            return Self::String(unquoted.to_owned());
-        }
-        if trimmed.eq_ignore_ascii_case("true") {
-            return Self::Bool(true);
-        }
-        if trimmed.eq_ignore_ascii_case("false") {
-            return Self::Bool(false);
-        }
-        if let Ok(value) = trimmed.parse::<i64>() {
-            return Self::I64(value);
-        }
-        if let Ok(value) = trimmed.parse::<u64>() {
-            return Self::U64(value);
-        }
-        Self::String(trimmed.to_owned())
-    }
-}
-
-fn evaluate_predicate(
-    batch: &RecordBatch,
-    predicate: &ParsedPredicate,
-    row: usize,
-) -> Result<bool> {
-    let index = batch.schema().index_of(&predicate.column).map_err(|_| {
-        CdfError::data(format!(
-            "predicate field {:?} is not present in resource batch",
-            predicate.column
-        ))
-    })?;
-    let array = batch.column(index);
-    if array.is_null(row) {
-        return Ok(false);
-    }
-
-    match array.data_type() {
-        DataType::Int32 => compare_i64(
-            array
-                .as_any()
-                .downcast_ref::<Int32Array>()
-                .expect("Arrow Int32 array downcast"),
-            row,
-            predicate,
-        ),
-        DataType::Int64 => compare_i64(
-            array
-                .as_any()
-                .downcast_ref::<Int64Array>()
-                .expect("Arrow Int64 array downcast"),
-            row,
-            predicate,
-        ),
-        DataType::UInt32 => compare_u64(
-            array
-                .as_any()
-                .downcast_ref::<UInt32Array>()
-                .expect("Arrow UInt32 array downcast"),
-            row,
-            predicate,
-        ),
-        DataType::UInt64 => compare_u64(
-            array
-                .as_any()
-                .downcast_ref::<UInt64Array>()
-                .expect("Arrow UInt64 array downcast"),
-            row,
-            predicate,
-        ),
-        DataType::Utf8 => compare_string(
-            array
-                .as_any()
-                .downcast_ref::<StringArray>()
-                .expect("Arrow Utf8 array downcast"),
-            row,
-            predicate,
-        ),
-        DataType::Boolean => compare_bool(
-            array
-                .as_any()
-                .downcast_ref::<BooleanArray>()
-                .expect("Arrow Boolean array downcast"),
-            row,
-            predicate,
-        ),
+            ("and", [left, right]) => Ok(BoundBooleanExpression::And(
+                Box::new(bind_boolean_expression(left, schema)?),
+                Box::new(bind_boolean_expression(right, schema)?),
+            )),
+            ("or", [left, right]) => Ok(BoundBooleanExpression::Or(
+                Box::new(bind_boolean_expression(left, schema)?),
+                Box::new(bind_boolean_expression(right, schema)?),
+            )),
+            ("is_null", [ExpressionNode::Column { name }]) => {
+                Ok(BoundBooleanExpression::IsNull(bind_column(name, schema)?))
+            }
+            ("is_not_null", [ExpressionNode::Column { name }]) => Ok(
+                BoundBooleanExpression::IsNotNull(bind_column(name, schema)?),
+            ),
+            (
+                operator @ ("eq" | "neq" | "gt" | "gte" | "lt" | "lte"),
+                [
+                    ExpressionNode::Column { name },
+                    ExpressionNode::Literal { value },
+                ],
+            ) => {
+                let column = bind_column(name, schema)?;
+                let scalar = Scalar::new(scalar_for_array(name, &column.data_type, value)?);
+                Ok(BoundBooleanExpression::Comparison {
+                    column,
+                    operator: match operator {
+                        "eq" => BoundComparisonOperator::Equal,
+                        "neq" => BoundComparisonOperator::NotEqual,
+                        "gt" => BoundComparisonOperator::Greater,
+                        "gte" => BoundComparisonOperator::GreaterOrEqual,
+                        "lt" => BoundComparisonOperator::Less,
+                        "lte" => BoundComparisonOperator::LessOrEqual,
+                        _ => unreachable!("operator admitted by pattern"),
+                    },
+                    scalar,
+                })
+            }
+            (name, _) => Err(CdfError::contract(format!(
+                "recorded expression function {name:?} has no native fused filter lowering"
+            ))),
+        },
         other => Err(CdfError::contract(format!(
-            "predicate field {:?} has unsupported MVP filter type {other}",
-            predicate.column
+            "recorded expression {other:?} does not produce a boolean filter"
         ))),
     }
 }
 
-trait IntValueArray {
-    fn value_i64(&self, row: usize) -> i64;
-}
-
-impl IntValueArray for Int32Array {
-    fn value_i64(&self, row: usize) -> i64 {
-        i64::from(self.value(row))
+fn evaluate_bound_expression(
+    batch: &RecordBatch,
+    expression: &BoundBooleanExpression,
+) -> Result<BooleanArray> {
+    match expression {
+        BoundBooleanExpression::Column(column) => bound_column_array(batch, column)?
+            .as_any()
+            .downcast_ref::<BooleanArray>()
+            .cloned()
+            .ok_or_else(|| CdfError::contract("bound boolean column changed physical type")),
+        BoundBooleanExpression::Literal(Some(value)) => {
+            Ok(BooleanArray::from(vec![*value; batch.num_rows()]))
+        }
+        BoundBooleanExpression::Literal(None) => Ok(BooleanArray::new_null(batch.num_rows())),
+        BoundBooleanExpression::Not(value) => Ok(not(&evaluate_bound_expression(batch, value)?)?),
+        BoundBooleanExpression::And(left, right) => Ok(and_kleene(
+            &evaluate_bound_expression(batch, left)?,
+            &evaluate_bound_expression(batch, right)?,
+        )?),
+        BoundBooleanExpression::Or(left, right) => Ok(or_kleene(
+            &evaluate_bound_expression(batch, left)?,
+            &evaluate_bound_expression(batch, right)?,
+        )?),
+        BoundBooleanExpression::IsNull(column) => {
+            Ok(is_null(bound_column_array(batch, column)?.as_ref())?)
+        }
+        BoundBooleanExpression::IsNotNull(column) => {
+            Ok(is_not_null(bound_column_array(batch, column)?.as_ref())?)
+        }
+        BoundBooleanExpression::Comparison {
+            column,
+            operator,
+            scalar,
+        } => {
+            let array = bound_column_array(batch, column)?;
+            let result = match operator {
+                BoundComparisonOperator::Equal => eq(array, scalar),
+                BoundComparisonOperator::NotEqual => neq(array, scalar),
+                BoundComparisonOperator::Greater => gt(array, scalar),
+                BoundComparisonOperator::GreaterOrEqual => gt_eq(array, scalar),
+                BoundComparisonOperator::Less => lt(array, scalar),
+                BoundComparisonOperator::LessOrEqual => lt_eq(array, scalar),
+            };
+            result.map_err(CdfError::from)
+        }
     }
 }
 
-impl IntValueArray for Int64Array {
-    fn value_i64(&self, row: usize) -> i64 {
-        self.value(row)
-    }
+fn bind_column(name: &str, schema: &Schema) -> Result<BoundColumn> {
+    let index = schema.index_of(name).map_err(|_| missing_field(name))?;
+    Ok(BoundColumn {
+        index,
+        name: name.to_owned(),
+        data_type: schema.field(index).data_type().clone(),
+    })
 }
 
-fn compare_i64<T>(array: &T, row: usize, predicate: &ParsedPredicate) -> Result<bool>
-where
-    T: IntValueArray,
-{
-    let Literal::I64(right) = predicate.literal else {
-        return Err(CdfError::contract(format!(
-            "predicate {:?} requires a signed integer literal",
-            predicate.column
+fn bound_column_array<'a>(batch: &'a RecordBatch, column: &BoundColumn) -> Result<&'a ArrayRef> {
+    let batch_schema = batch.schema();
+    let field = batch_schema.field(column.index);
+    if field.name() != &column.name || field.data_type() != &column.data_type {
+        return Err(CdfError::data(format!(
+            "bound expression field {:?} at ordinal {} changed to {:?} with type {}; replan against the physical scan schema",
+            column.name,
+            column.index,
+            field.name(),
+            field.data_type()
         )));
-    };
-    Ok(predicate.operator.compare_ord(array.value_i64(row), right))
+    }
+    Ok(batch.column(column.index))
 }
 
-trait UIntValueArray {
-    fn value_u64(&self, row: usize) -> u64;
-}
-
-impl UIntValueArray for UInt32Array {
-    fn value_u64(&self, row: usize) -> u64 {
-        u64::from(self.value(row))
+pub(crate) fn predicate_operator(expression: &cdf_contract::Expression) -> Option<String> {
+    match &expression.root {
+        ExpressionNode::Call { function, .. } => Some(
+            match function.name.as_str() {
+                "eq" => "=",
+                "neq" => "!=",
+                "gt" => ">",
+                "gte" => ">=",
+                "lt" => "<",
+                "lte" => "<=",
+                _ => return None,
+            }
+            .to_owned(),
+        ),
+        _ => None,
     }
 }
 
-impl UIntValueArray for UInt64Array {
-    fn value_u64(&self, row: usize) -> u64 {
-        self.value(row)
+fn scalar_for_array(
+    name: &str,
+    data_type: &arrow_schema::DataType,
+    value: &ExpressionLiteral,
+) -> Result<ArrayRef> {
+    macro_rules! signed {
+        ($array:ty, $native:ty) => {{
+            let value = match value {
+                ExpressionLiteral::Signed(value) => Some(
+                    <$native>::try_from(*value)
+                        .map_err(|_| literal_type(name, stringify!($native)))?,
+                ),
+                ExpressionLiteral::Null => None,
+                _ => return Err(literal_type(name, "signed integer")),
+            };
+            std::sync::Arc::new(<$array>::from(vec![value])) as ArrayRef
+        }};
     }
-}
-
-fn compare_u64<T>(array: &T, row: usize, predicate: &ParsedPredicate) -> Result<bool>
-where
-    T: UIntValueArray,
-{
-    let right = match predicate.literal {
-        Literal::U64(value) => value,
-        Literal::I64(value) if value >= 0 => value as u64,
-        _ => {
+    macro_rules! unsigned {
+        ($array:ty, $native:ty) => {{
+            let value = match value {
+                ExpressionLiteral::Unsigned(value) => Some(
+                    <$native>::try_from(*value)
+                        .map_err(|_| literal_type(name, stringify!($native)))?,
+                ),
+                ExpressionLiteral::Signed(value) if *value >= 0 => Some(
+                    <$native>::try_from(*value as u64)
+                        .map_err(|_| literal_type(name, stringify!($native)))?,
+                ),
+                ExpressionLiteral::Null => None,
+                _ => return Err(literal_type(name, "unsigned integer")),
+            };
+            std::sync::Arc::new(<$array>::from(vec![value])) as ArrayRef
+        }};
+    }
+    Ok(match data_type {
+        arrow_schema::DataType::Int8 => signed!(Int8Array, i8),
+        arrow_schema::DataType::Int16 => signed!(Int16Array, i16),
+        arrow_schema::DataType::Int32 => signed!(Int32Array, i32),
+        arrow_schema::DataType::Int64 => signed!(Int64Array, i64),
+        arrow_schema::DataType::UInt8 => unsigned!(UInt8Array, u8),
+        arrow_schema::DataType::UInt16 => unsigned!(UInt16Array, u16),
+        arrow_schema::DataType::UInt32 => unsigned!(UInt32Array, u32),
+        arrow_schema::DataType::UInt64 => unsigned!(UInt64Array, u64),
+        arrow_schema::DataType::Float64 => {
+            let value = match value {
+                ExpressionLiteral::Float64Bits(bits) => Some(f64::from_bits(*bits)),
+                ExpressionLiteral::Null => None,
+                _ => return Err(literal_type(name, "float64")),
+            };
+            std::sync::Arc::new(Float64Array::from(vec![value]))
+        }
+        arrow_schema::DataType::Utf8 => {
+            let value = match value {
+                ExpressionLiteral::String(value) => Some(value.as_str()),
+                ExpressionLiteral::Null => None,
+                _ => return Err(literal_type(name, "string")),
+            };
+            std::sync::Arc::new(StringArray::from(vec![value]))
+        }
+        arrow_schema::DataType::LargeUtf8 => {
+            let value = match value {
+                ExpressionLiteral::String(value) => Some(value.as_str()),
+                ExpressionLiteral::Null => None,
+                _ => return Err(literal_type(name, "string")),
+            };
+            std::sync::Arc::new(LargeStringArray::from(vec![value]))
+        }
+        arrow_schema::DataType::Boolean => {
+            let value = match value {
+                ExpressionLiteral::Boolean(value) => Some(*value),
+                ExpressionLiteral::Null => None,
+                _ => return Err(literal_type(name, "boolean")),
+            };
+            std::sync::Arc::new(BooleanArray::from(vec![value]))
+        }
+        other => {
             return Err(CdfError::contract(format!(
-                "predicate {:?} requires an unsigned integer literal",
-                predicate.column
+                "predicate field {name:?} has unsupported native filter type {other}"
             )));
         }
-    };
-    Ok(predicate.operator.compare_ord(array.value_u64(row), right))
+    })
 }
 
-fn compare_string(array: &StringArray, row: usize, predicate: &ParsedPredicate) -> Result<bool> {
-    let Literal::String(ref right) = predicate.literal else {
-        return Err(CdfError::contract(format!(
-            "predicate {:?} requires a string literal",
-            predicate.column
-        )));
-    };
-    Ok(predicate
-        .operator
-        .compare_ord(array.value(row), right.as_str()))
+fn missing_field(name: &str) -> CdfError {
+    CdfError::data(format!(
+        "predicate field {name:?} is not present in resource batch"
+    ))
 }
 
-fn compare_bool(array: &BooleanArray, row: usize, predicate: &ParsedPredicate) -> Result<bool> {
-    let Literal::Bool(right) = predicate.literal else {
-        return Err(CdfError::contract(format!(
-            "predicate {:?} requires a boolean literal",
-            predicate.column
-        )));
-    };
-    match predicate.operator {
-        ComparisonOperator::Eq | ComparisonOperator::NotEq => {
-            Ok(predicate.operator.compare_ord(array.value(row), right))
-        }
-        _ => Err(CdfError::contract(format!(
-            "predicate {:?} uses an unsupported boolean operator",
-            predicate.column
-        ))),
-    }
+fn literal_type(name: &str, expected: &str) -> CdfError {
+    CdfError::contract(format!(
+        "predicate field {name:?} requires a {expected} literal"
+    ))
 }

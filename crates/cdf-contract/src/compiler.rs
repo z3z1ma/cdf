@@ -74,8 +74,33 @@ pub fn compile_validation_program(
         });
     }
 
+    for transform in &policy.transforms {
+        let TransformDescription::Derive { column, .. } = transform else {
+            continue;
+        };
+        let output_name = normalize_identifier(column, &policy.normalization.identifier)?;
+        if column_programs.iter().any(|program| {
+            program.source_name == *column
+                || program.output_name == *column
+                || program.output_name == output_name
+        }) {
+            return Err(CdfError::contract(format!(
+                "derived field {column:?} collides with an existing source or normalized output field; rename the derived field"
+            )));
+        }
+        column_programs.push(ColumnProgram {
+            source_name: column.clone(),
+            output_name,
+            arrow_type: ArrowType::Boolean,
+            steps: vec![ColumnProgramStep::ApplyTransform(transform.clone())],
+            nested_action: NestedAction::NotNested,
+            redaction: RedactionDecision::Preserve,
+        });
+    }
+
     let row_rules = row_rule_programs(policy, observed_schema);
     Ok(ValidationProgram {
+        compiled_expression_plan: None,
         normalizer_version: policy.normalization.identifier.version.clone(),
         identifier_policy: policy.normalization.identifier.clone(),
         schema_coercion: None,
@@ -136,10 +161,7 @@ pub fn bind_validation_program_to_resource(
             }
             program.row_rules.push(RowRuleProgram {
                 rule_id: format!("row-rule-{:04}-dedup", program.row_rules.len()),
-                predicate: RowRulePredicate::ExactRowDedup {
-                    keys,
-                    keep: DedupKeepProgram::First,
-                },
+                expression: dedup_expression("exact_row_dedup", keys, DedupKeepProgram::First),
                 missing_column: MissingColumnBehavior::Error,
             });
             if let Some(residual) = &mut program.residual {
@@ -224,23 +246,12 @@ fn residual_program(
         .unwrap_or_default();
     let required = row_rules
         .iter()
-        .filter_map(|rule| match &rule.predicate {
-            RowRulePredicate::Nullability { column } => Some(column.as_str()),
-            _ => None,
-        })
+        .filter(|rule| rule.expression_function() == Some("is_not_null"))
+        .flat_map(RowRuleProgram::referenced_columns)
         .collect::<BTreeSet<_>>();
     let rule_controls = row_rules
         .iter()
-        .flat_map(|rule| match &rule.predicate {
-            RowRulePredicate::Nullability { column }
-            | RowRulePredicate::Domain { column, .. }
-            | RowRulePredicate::Range { column, .. }
-            | RowRulePredicate::Regex { column, .. }
-            | RowRulePredicate::Freshness { column, .. } => vec![column.as_str()],
-            RowRulePredicate::Dedup { keys, .. } | RowRulePredicate::ExactRowDedup { keys, .. } => {
-                keys.iter().map(String::as_str).collect()
-            }
-        })
+        .flat_map(RowRuleProgram::referenced_columns)
         .collect::<BTreeSet<_>>();
     ResidualProgram {
         default_verdict,
@@ -557,9 +568,7 @@ fn row_rule_programs(
         }
         programs.push(RowRuleProgram {
             rule_id: format!("nullability:{}", field.source_name),
-            predicate: RowRulePredicate::Nullability {
-                column: field.source_name.clone(),
-            },
+            expression: unary_column_expression("is_not_null", &field.source_name),
             missing_column: MissingColumnBehavior::Skip,
         });
     }
@@ -576,52 +585,125 @@ fn row_rule_programs(
 }
 
 fn row_rule_program_from_policy(index: usize, rule: &RowRule) -> RowRuleProgram {
-    let predicate = match rule {
-        RowRule::Nullability { column } => RowRulePredicate::Nullability {
-            column: column.clone(),
-        },
-        RowRule::Domain { column, allowed } => RowRulePredicate::Domain {
-            column: column.clone(),
-            allowed: allowed.clone(),
-        },
-        RowRule::Range { column, min, max } => RowRulePredicate::Range {
-            column: column.clone(),
-            min: min.clone(),
-            max: max.clone(),
-        },
-        RowRule::Regex { column, pattern } => RowRulePredicate::Regex {
-            column: column.clone(),
-            pattern: pattern.clone(),
-        },
-        RowRule::Freshness { column, max_age_ms } => RowRulePredicate::Freshness {
-            column: column.clone(),
-            max_age_ms: *max_age_ms,
-        },
-        RowRule::Dedup { keys, keep } => RowRulePredicate::Dedup {
-            keys: keys.clone(),
-            keep: match keep {
-                DedupKeep::First => DedupKeepProgram::First,
-                DedupKeep::Last => DedupKeepProgram::Last,
-                DedupKeep::Fail => DedupKeepProgram::Fail,
-            },
-        },
+    let (kind, expression) = match rule {
+        RowRule::Nullability { column } => (
+            "nullability",
+            unary_column_expression("is_not_null", column),
+        ),
+        RowRule::Domain { column, allowed } => (
+            "domain",
+            crate::Expression::call(
+                "in_domain",
+                vec![
+                    crate::ExpressionNode::Column {
+                        name: column.clone(),
+                    },
+                    crate::ExpressionNode::Literal {
+                        value: crate::ExpressionLiteral::StringList(allowed.clone()),
+                    },
+                ],
+            ),
+        ),
+        RowRule::Range { column, min, max } => (
+            "range",
+            crate::Expression::call(
+                "in_range",
+                vec![
+                    crate::ExpressionNode::Column {
+                        name: column.clone(),
+                    },
+                    optional_bound(min),
+                    optional_bound(max),
+                ],
+            ),
+        ),
+        RowRule::Regex { column, pattern } => (
+            "regex",
+            crate::Expression::call(
+                "matches_regex",
+                vec![
+                    crate::ExpressionNode::Column {
+                        name: column.clone(),
+                    },
+                    crate::ExpressionNode::Literal {
+                        value: crate::ExpressionLiteral::String(pattern.clone()),
+                    },
+                ],
+            ),
+        ),
+        RowRule::Freshness { column, max_age_ms } => (
+            "freshness",
+            crate::Expression::call(
+                "fresh_within",
+                vec![
+                    crate::ExpressionNode::Column {
+                        name: column.clone(),
+                    },
+                    crate::ExpressionNode::Literal {
+                        value: crate::ExpressionLiteral::Unsigned(*max_age_ms),
+                    },
+                ],
+            ),
+        ),
+        RowRule::Dedup { keys, keep } => (
+            "dedup",
+            dedup_expression(
+                "dedup",
+                keys.clone(),
+                match keep {
+                    DedupKeep::First => DedupKeepProgram::First,
+                    DedupKeep::Last => DedupKeepProgram::Last,
+                    DedupKeep::Fail => DedupKeepProgram::Fail,
+                },
+            ),
+        ),
     };
     RowRuleProgram {
-        rule_id: format!("row-rule-{index:04}-{}", row_rule_kind(&predicate)),
-        predicate,
+        rule_id: format!("row-rule-{index:04}-{kind}"),
+        expression,
         missing_column: MissingColumnBehavior::Error,
     }
 }
 
-fn row_rule_kind(predicate: &RowRulePredicate) -> &'static str {
-    match predicate {
-        RowRulePredicate::Nullability { .. } => "nullability",
-        RowRulePredicate::Domain { .. } => "domain",
-        RowRulePredicate::Range { .. } => "range",
-        RowRulePredicate::Regex { .. } => "regex",
-        RowRulePredicate::Freshness { .. } => "freshness",
-        RowRulePredicate::Dedup { .. } | RowRulePredicate::ExactRowDedup { .. } => "dedup",
+fn unary_column_expression(function: &str, column: &str) -> crate::Expression {
+    crate::Expression::call(
+        function,
+        vec![crate::ExpressionNode::Column {
+            name: column.to_owned(),
+        }],
+    )
+}
+
+fn optional_bound(value: &Option<String>) -> crate::ExpressionNode {
+    crate::ExpressionNode::Literal {
+        value: value
+            .clone()
+            .map(crate::ExpressionLiteral::String)
+            .unwrap_or(crate::ExpressionLiteral::Null),
     }
+}
+
+fn dedup_expression(
+    function: &str,
+    keys: Vec<String>,
+    keep: DedupKeepProgram,
+) -> crate::Expression {
+    let keep = match keep {
+        DedupKeepProgram::First => "first",
+        DedupKeepProgram::Last => "last",
+        DedupKeepProgram::Fail => "fail",
+    };
+    crate::Expression::call(
+        function,
+        vec![
+            crate::ExpressionNode::Literal {
+                value: crate::ExpressionLiteral::StringList(keys),
+            },
+            crate::ExpressionNode::Literal {
+                value: crate::ExpressionLiteral::String(keep.to_owned()),
+            },
+        ],
+    )
 }
 
 fn action_to_row_disposition(action: &VerdictAction) -> RowDispositionKind {

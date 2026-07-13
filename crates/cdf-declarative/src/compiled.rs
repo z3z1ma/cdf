@@ -290,7 +290,7 @@ impl CompiledResource {
         let mut pushed_predicates = Vec::new();
         let mut unsupported_predicates = Vec::new();
         for predicate in &request.filters {
-            match self.predicate_fidelity(&predicate.expression) {
+            match self.predicate_fidelity(&predicate.canonical_expression) {
                 PushdownFidelity::Unsupported => unsupported_predicates.push(predicate.clone()),
                 fidelity => pushed_predicates.push(PushedPredicate {
                     predicate: predicate.clone(),
@@ -313,7 +313,7 @@ impl CompiledResource {
 }
 
 impl CompiledResource {
-    fn predicate_fidelity(&self, expression: &str) -> PushdownFidelity {
+    fn predicate_fidelity(&self, expression: &cdf_kernel::Expression) -> PushdownFidelity {
         match &self.plan {
             CompiledResourcePlan::Rest(plan) => {
                 if cursor_pushdown_value(&self.descriptor, plan, expression).is_some() {
@@ -1127,7 +1127,7 @@ fn partition_for_plan(
             if let (Some(request), Some(cursor_param)) = (request, rest.cursor_param.as_ref())
                 && rest.cursor_filter_fidelity != PushdownFidelity::Unsupported
                 && let Some(value) = request.filters.iter().find_map(|predicate| {
-                    cursor_pushdown_value(descriptor, rest, &predicate.expression)
+                    cursor_pushdown_value(descriptor, rest, &predicate.canonical_expression)
                 })
             {
                 metadata.insert(CURSOR_QUERY_PARAM_METADATA.to_owned(), cursor_param.clone());

@@ -9,6 +9,7 @@ use super::{
 };
 use std::sync::{Arc, Condvar, Mutex, mpsc};
 
+use cdf_kernel::PushdownFidelity;
 use cdf_memory::{DEFAULT_PROCESS_BUDGET_BYTES, DeterministicMemoryCoordinator, MemoryCoordinator};
 use sha2::{Digest, Sha256};
 
@@ -455,6 +456,7 @@ where
     Store: CheckpointStore + ?Sized,
 {
     let package = PackageReader::open(&request.package_dir)?.into_verified()?;
+    validate_package_compiled_expression_plan(&request.package_dir)?;
     let inputs = package.replay_inputs()?;
     let runtime_stage_hook =
         |stage: PackageReplayStage<'_>| notify_runtime_replay_stage(stage_hook, stage);
@@ -478,6 +480,7 @@ where
     Store: CheckpointStore + ?Sized,
 {
     let package = PackageReader::open(&request.package_dir)?.into_verified()?;
+    validate_package_compiled_expression_plan(&request.package_dir)?;
     let inputs = package.replay_inputs()?;
     recover_package_with_resolved_destination(
         package,
@@ -509,6 +512,7 @@ where
     Store: CheckpointStore + ?Sized,
 {
     let package = PackageReader::open(&request.package_dir)?.into_verified()?;
+    validate_package_compiled_expression_plan(&request.package_dir)?;
     let runtime_stage_hook =
         |stage: PackageReplayStage<'_>| notify_runtime_replay_stage(stage_hook, stage);
     replay_package_with_resolved_destination(
@@ -531,6 +535,7 @@ where
     Store: CheckpointStore + ?Sized,
 {
     let package = PackageReader::open(&request.package_dir)?.into_verified()?;
+    validate_package_compiled_expression_plan(&request.package_dir)?;
     recover_package_with_resolved_destination(
         package,
         request.destination,
@@ -542,6 +547,61 @@ where
             stage: None,
         },
     )
+}
+
+fn validate_package_compiled_expression_plan(package_dir: &Path) -> Result<()> {
+    let program_path = package_dir.join("plan/validation-program.json");
+    let program: cdf_contract::ValidationProgram =
+        serde_json::from_slice(&fs::read(&program_path).map_err(|error| {
+            CdfError::data(format!("read {}: {error}", program_path.display()))
+        })?)
+        .map_err(|error| {
+            CdfError::data(format!(
+                "decode compiled-expression validation program {}: {error}",
+                program_path.display()
+            ))
+        })?;
+    let compiled = program.compiled_expression_plan.as_ref().ok_or_else(|| {
+        CdfError::contract(
+            "package validation program has no recorded compiled expression plan; rebuild the package",
+        )
+    })?;
+    compiled.validate_program_binding(&program)?;
+
+    let scan_path = package_dir.join("plan/scan.json");
+    let scan: ScanPlan = serde_json::from_slice(
+        &fs::read(&scan_path)
+            .map_err(|error| CdfError::data(format!("read {}: {error}", scan_path.display())))?,
+    )
+    .map_err(|error| {
+        CdfError::data(format!(
+            "decode compiled-expression scan plan {}: {error}",
+            scan_path.display()
+        ))
+    })?;
+    compiled.validate_predicate_bindings(scan.request.filters.iter().map(|predicate| {
+        (
+            predicate.expression.as_str(),
+            &predicate.canonical_expression,
+            scan.pushed_predicates.iter().any(|pushed| {
+                pushed.predicate.predicate_id == predicate.predicate_id
+                    && pushed.fidelity == PushdownFidelity::Exact
+            }),
+        )
+    }))?;
+    let mut residuals = scan.unsupported_predicates.iter().collect::<Vec<_>>();
+    residuals.extend(
+        scan.pushed_predicates
+            .iter()
+            .filter(|predicate| predicate.fidelity == PushdownFidelity::Inexact)
+            .map(|predicate| &predicate.predicate),
+    );
+    compiled.validate_residual_bindings(residuals.into_iter().map(|predicate| {
+        (
+            predicate.expression.as_str(),
+            &predicate.canonical_expression,
+        )
+    }))
 }
 
 fn replay_package_with_resolved_destination<Store>(

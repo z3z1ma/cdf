@@ -44,8 +44,12 @@ use crate::{
     EnginePreviewOutput, EngineRunOutput, EngineRunOutputWithSegmentPositions,
     EngineSegmentPosition, ExecutionProfile, LineageSummary,
     output_schema::canonicalize_effective_output_schema,
-    planning::validate_program,
-    predicates::apply_residual_filters,
+    planning::{scan_expression_schema, validate_program},
+    predicates::{
+        BoundBooleanExpression, BoundExpressionTransform, apply_bound_expression_transforms,
+        apply_bound_filters, apply_expression_transforms, bind_expression_transforms,
+        bind_filter_expressions, expression_transform_output_schema,
+    },
     variant_capture::{
         ContractEvolutionArtifact, ResidualDecisionArtifact, ResidualRuntimeVerdict,
         ResidualTypedProjection, contract_evolution_artifact_metadata, normalize_batch,
@@ -57,6 +61,7 @@ pub type PackagePreFinalizeHook<'a> =
 pub type DurableSegmentHook<'a> =
     dyn FnMut(&cdf_package::SegmentEntry, &[RecordBatch]) -> Result<()> + 'a;
 pub type StreamingFinalizeHook<'a> = dyn FnMut() -> Result<()> + 'a;
+const SOURCE_ROW_FIELD: &str = "_cdf_internal_source_row";
 
 struct DurableSegmentObserver<'a> {
     hook: Option<&'a mut DurableSegmentHook<'a>>,
@@ -130,6 +135,29 @@ pub fn normalize_record_batch(
     batch: RecordBatch,
     program: &ValidationProgram,
 ) -> Result<RecordBatch> {
+    if !program.transforms.iter().any(|transform| {
+        matches!(
+            transform,
+            cdf_contract::TransformDescription::Derive { .. }
+                | cdf_contract::TransformDescription::Filter { .. }
+        )
+    }) {
+        return normalize_batch(batch, program);
+    }
+    let compiled = program.compiled_expression_plan.as_ref().ok_or_else(|| {
+        CdfError::contract("validation program has no recorded compiled expression plan")
+    })?;
+    compiled.validate_program_binding(program)?;
+    normalize_batch(
+        apply_expression_transforms(batch, &program.transforms, &compiled.transforms)?,
+        program,
+    )
+}
+
+fn normalize_record_batch_after_expressions(
+    batch: RecordBatch,
+    program: &ValidationProgram,
+) -> Result<RecordBatch> {
     normalize_batch(batch, program)
 }
 
@@ -141,6 +169,7 @@ pub async fn preview_resource<R>(
 where
     R: ResourceStream + ?Sized,
 {
+    plan.validate_compiled_expression_plan()?;
     validate_program(&plan.validation_program)?;
     let schema_authority = plan.schema_authority()?;
     if schema_authority.version != 1 {
@@ -153,8 +182,34 @@ where
     let effective_schema_evidence = validate_effective_schema_plan(plan, resource)?;
     crate::planning::validate_plan_schema_authority(resource, plan)?;
     let runtime_output_schema = plan.output_arrow_schema()?;
+    let expression_schema = scan_expression_schema(
+        resource.schema().as_ref(),
+        plan.explain
+            .projection_pushed
+            .then_some(plan.scan.request.projection.as_deref())
+            .flatten(),
+    )?;
+    let bound_residuals =
+        bind_filter_expressions(&plan.compiled_expression_plan.residuals, &expression_schema)?;
+    let bound_transforms = bind_expression_transforms(
+        &plan.validation_program.transforms,
+        &plan.compiled_expression_plan.transforms,
+        &expression_schema,
+    )?;
+    let bound_tracked_transforms = bind_expression_transforms(
+        &plan.validation_program.transforms,
+        &plan.compiled_expression_plan.transforms,
+        &source_row_tracking_schema(&expression_schema)?,
+    )?;
+    let contract_schema =
+        expression_transform_output_schema(&plan.validation_program.transforms, &expression_schema);
+    let pre_contract_may_filter = !bound_residuals.is_empty()
+        || plan.validation_program.transforms.iter().any(|transform| {
+            matches!(transform, cdf_contract::TransformDescription::Filter { .. })
+        });
     let evaluation_context = ContractEvaluationContext::observed_at(current_observed_at_ms()?);
-    let mut contract_evaluator = VectorValidationEvaluator::new(&plan.validation_program);
+    let mut contract_evaluator =
+        VectorValidationEvaluator::new_bound(&plan.validation_program, Arc::new(contract_schema))?;
     let mut remaining_rows = limits.max_rows;
     let mut remaining_bytes = limits.max_bytes;
     let mut remaining_batches = limits.max_batches;
@@ -316,15 +371,23 @@ where
                         .cdc
                         .as_ref()
                         .map(|metadata| metadata.operation_field.clone());
+                    let track_source_rows =
+                        pre_contract_may_filter || !residual_candidates.is_empty();
                     let mut no_row_limit = None;
+                    let executed =
+                        execute_batch(&record_batch, &bound_residuals, track_source_rows)?;
                     let ExecutedBatch {
                         batch: output,
                         source_rows,
-                    } = execute_batch(
-                        &record_batch,
-                        plan,
+                    } = apply_pre_contract_expressions(
+                        executed.batch,
+                        if track_source_rows {
+                            &bound_tracked_transforms
+                        } else {
+                            &bound_transforms
+                        },
                         &mut no_row_limit,
-                        !residual_candidates.is_empty(),
+                        track_source_rows,
                     )?;
                     let mut discard_quarantine = |_record: QuarantineRecord| Ok(());
                     let contract = apply_contract_exec(
@@ -345,12 +408,17 @@ where
                         TransformKernelMode::Fused,
                         None,
                     )?;
+                    let projected =
+                        apply_projection(&contract.accepted, plan.final_projection.as_deref())?;
                     let normalized = append_residual_variant(
-                        contract.accepted,
+                        projected,
                         &plan.validation_program,
                         contract.variant_values,
                     )?;
-                    let normalized = normalize_record_batch(normalized, &plan.validation_program)?;
+                    let normalized = normalize_record_batch_after_expressions(
+                        normalized,
+                        &plan.validation_program,
+                    )?;
                     let normalized = if effective_schema_evidence.is_some() {
                         canonicalize_effective_output_schema(normalized)?
                     } else {
@@ -888,13 +956,10 @@ fn program_may_quarantine(program: &ValidationProgram) -> bool {
     matches!(
         program.disposition_for(cdf_contract::RuleOutcome::Violation, "quarantine-admission"),
         cdf_contract::RuleDisposition::Quarantine { .. }
-    ) && program.row_rules.iter().any(|rule| {
-        !matches!(
-            rule.predicate,
-            cdf_contract::RowRulePredicate::Dedup { .. }
-                | cdf_contract::RowRulePredicate::ExactRowDedup { .. }
-        )
-    })
+    ) && program
+        .row_rules
+        .iter()
+        .any(|rule| !rule.is_dedup_expression())
 }
 
 enum ResidualDecisionAccumulator {
@@ -1660,6 +1725,7 @@ async fn execute_to_package_inner<'a, R>(
 where
     R: ResourceStream + ?Sized,
 {
+    plan.validate_compiled_expression_plan()?;
     let mut validation_program = plan.validation_program.clone();
     validate_program(&validation_program)?;
     let schema_authority = plan.schema_authority()?;
@@ -1672,6 +1738,31 @@ where
     let effective_schema_evidence = validate_effective_schema_plan(plan, resource)?;
     crate::planning::validate_plan_schema_authority(resource, plan)?;
     let runtime_output_schema = plan.output_arrow_schema()?;
+    let expression_schema = scan_expression_schema(
+        resource.schema().as_ref(),
+        plan.explain
+            .projection_pushed
+            .then_some(plan.scan.request.projection.as_deref())
+            .flatten(),
+    )?;
+    let bound_residuals =
+        bind_filter_expressions(&plan.compiled_expression_plan.residuals, &expression_schema)?;
+    let bound_transforms = bind_expression_transforms(
+        &plan.validation_program.transforms,
+        &plan.compiled_expression_plan.transforms,
+        &expression_schema,
+    )?;
+    let bound_tracked_transforms = bind_expression_transforms(
+        &plan.validation_program.transforms,
+        &plan.compiled_expression_plan.transforms,
+        &source_row_tracking_schema(&expression_schema)?,
+    )?;
+    let contract_schema =
+        expression_transform_output_schema(&plan.validation_program.transforms, &expression_schema);
+    let pre_contract_may_filter = !bound_residuals.is_empty()
+        || plan.validation_program.transforms.iter().any(|transform| {
+            matches!(transform, cdf_contract::TransformDescription::Filter { .. })
+        });
 
     let builder = PackageBuilder::create(package_dir, plan.package_id.clone())?;
     builder.update_status(PackageStatus::Extracting)?;
@@ -1687,7 +1778,8 @@ where
     }
     let package_evaluation_context =
         ContractEvaluationContext::observed_at(current_observed_at_ms()?);
-    let mut contract_evaluator = VectorValidationEvaluator::new(&validation_program);
+    let mut contract_evaluator =
+        VectorValidationEvaluator::new_bound(&validation_program, Arc::new(contract_schema))?;
     if validation_program.requires_observed_at_ms() {
         builder.write_json_artifact(
             "plan/contract-evaluation-context.json",
@@ -1979,14 +2071,21 @@ where
                     ));
                 }
 
+                let track_source_rows =
+                    pre_contract_may_filter || !residual_candidates.is_empty();
+                let executed = execute_batch(&record_batch, &bound_residuals, track_source_rows)?;
                 let ExecutedBatch {
                     batch: output,
                     source_rows,
-                } = execute_batch(
-                    &record_batch,
-                    plan,
+                } = apply_pre_contract_expressions(
+                    executed.batch,
+                    if track_source_rows {
+                        &bound_tracked_transforms
+                    } else {
+                        &bound_transforms
+                    },
                     &mut remaining_limit,
-                    !residual_candidates.is_empty(),
+                    track_source_rows,
                 )?;
                 let batch_source_position = normalize_source_position_for_partition(
                     batch.header.source_position.clone(),
@@ -2055,7 +2154,7 @@ where
                 quarantine_sink.finish()?;
                 residual_decisions.push(batch_residual_decisions)?;
                 merge_verdict_summary(&mut verdict_summary, summary);
-                let output = accepted;
+                let output = apply_projection(&accepted, plan.final_projection.as_deref())?;
                 if output.num_rows() == 0 {
                     phase_measurements.add(
                         RunPhase::ValidationNormalization,
@@ -2804,7 +2903,7 @@ fn prepare_output_batch(
     let normalization_started = phase_measurements.start();
     let normalization_input_bytes = output.get_array_memory_size() as u64;
     let output = append_residual_variant(output, program, variant_values)?;
-    let output = normalize_record_batch(output, program)?;
+    let output = normalize_record_batch_after_expressions(output, program)?;
     let output = if canonicalize_observed_schema {
         canonicalize_effective_output_schema(output)?
     } else {
@@ -3039,11 +3138,9 @@ fn partition_execution_span(context: &ExecutionTraceContext, partition_id: &str)
 
 fn execute_batch(
     batch: &RecordBatch,
-    plan: &EnginePlan,
-    remaining_limit: &mut Option<u64>,
+    residuals: &[BoundBooleanExpression],
     track_source_rows: bool,
 ) -> Result<ExecutedBatch> {
-    const SOURCE_ROW_FIELD: &str = "_cdf_internal_source_row";
     let tracked = if track_source_rows {
         if batch.schema().index_of(SOURCE_ROW_FIELD).is_ok() {
             return Err(CdfError::contract(format!(
@@ -3070,47 +3167,36 @@ fn execute_batch(
     } else {
         batch.clone()
     };
-    let filtered = apply_residual_filters(&tracked, &plan.residual_predicates)?;
-    let limited = match remaining_limit {
+    let filtered = apply_bound_filters(&tracked, residuals)?;
+    Ok(ExecutedBatch {
+        batch: filtered,
+        source_rows: None,
+    })
+}
+
+fn apply_pre_contract_expressions(
+    batch: RecordBatch,
+    transforms: &[BoundExpressionTransform],
+    remaining_limit: &mut Option<u64>,
+    track_source_rows: bool,
+) -> Result<ExecutedBatch> {
+    let transformed = apply_bound_expression_transforms(batch, transforms)?;
+    let transformed = match remaining_limit {
         Some(remaining) => {
-            let take = (*remaining).min(filtered.num_rows() as u64) as usize;
+            let take = (*remaining).min(transformed.num_rows() as u64) as usize;
             *remaining -= take as u64;
-            filtered.slice(0, take)
+            transformed.slice(0, take)
         }
-        None => filtered,
-    };
-    let projected = if track_source_rows {
-        let mut projection = plan.final_projection.clone().unwrap_or_else(|| {
-            limited
-                .schema()
-                .fields()
-                .iter()
-                .filter(|field| field.name() != SOURCE_ROW_FIELD)
-                .map(|field| field.name().clone())
-                .collect()
-        });
-        if projection.is_empty() {
-            projection = limited
-                .schema()
-                .fields()
-                .iter()
-                .filter(|field| field.name() != SOURCE_ROW_FIELD)
-                .map(|field| field.name().clone())
-                .collect();
-        }
-        projection.push(SOURCE_ROW_FIELD.to_owned());
-        apply_projection(&limited, Some(&projection))?
-    } else {
-        apply_projection(&limited, plan.final_projection.as_deref())?
+        None => transformed,
     };
     if !track_source_rows {
         return Ok(ExecutedBatch {
-            batch: projected,
+            batch: transformed,
             source_rows: None,
         });
     }
-    let ordinal_index = projected.schema().index_of(SOURCE_ROW_FIELD)?;
-    let ordinals = projected
+    let ordinal_index = transformed.schema().index_of(SOURCE_ROW_FIELD)?;
+    let ordinals = transformed
         .column(ordinal_index)
         .as_any()
         .downcast_ref::<UInt64Array>()
@@ -3120,14 +3206,29 @@ fn execute_batch(
         .iter()
         .map(|value| usize::try_from(*value).map_err(|error| CdfError::internal(error.to_string())))
         .collect::<Result<Vec<_>>>()?;
-    let keep = (0..projected.num_columns())
+    let keep = (0..transformed.num_columns())
         .filter(|index| *index != ordinal_index)
         .collect::<Vec<_>>();
-    let batch = projected.project(&keep).map_err(CdfError::from)?;
+    let batch = transformed.project(&keep).map_err(CdfError::from)?;
     Ok(ExecutedBatch {
         batch,
         source_rows: Some(source_rows),
     })
+}
+
+fn source_row_tracking_schema(schema: &Schema) -> Result<Schema> {
+    if schema.index_of(SOURCE_ROW_FIELD).is_ok() {
+        return Err(CdfError::contract(format!(
+            "input field {SOURCE_ROW_FIELD:?} conflicts with reserved execution metadata"
+        )));
+    }
+    let mut fields = schema.fields().iter().cloned().collect::<Vec<_>>();
+    fields.push(Arc::new(Field::new(
+        SOURCE_ROW_FIELD,
+        DataType::UInt64,
+        false,
+    )));
+    Ok(Schema::new_with_metadata(fields, schema.metadata().clone()))
 }
 
 fn apply_projection(batch: &RecordBatch, projection: Option<&[String]>) -> Result<RecordBatch> {
@@ -3230,7 +3331,12 @@ fn apply_contract_exec(
     let evaluation = evaluator.evaluate_with_quarantine_sink(
         context.evaluation,
         &residual.typed_batch,
-        |candidate| quarantine_sink(quarantine_record_from_candidate(candidate)?),
+        |candidate| {
+            quarantine_sink(quarantine_record_from_candidate(
+                candidate,
+                residual.typed_source_rows.as_deref(),
+            )?)
+        },
     )?;
     let summary = evaluation.summary;
     let accepted = if summary.accepted_rows == summary.input_rows {
@@ -3265,7 +3371,10 @@ fn apply_contract_exec_without_residual_candidates(
     let batch = restore_contract_nullability(batch, evaluator.program())?;
     let evaluation =
         evaluator.evaluate_with_quarantine_sink(context.evaluation, &batch, |candidate| {
-            quarantine_sink(quarantine_record_from_candidate(candidate)?)
+            quarantine_sink(quarantine_record_from_candidate(
+                candidate,
+                context.source_rows,
+            )?)
         })?;
     let summary = evaluation.summary;
     let accepted = if summary.accepted_rows == summary.input_rows {
@@ -3295,6 +3404,7 @@ fn apply_contract_exec_without_residual_candidates(
 
 struct ResidualExecOutput {
     typed_batch: RecordBatch,
+    typed_source_rows: Option<Vec<usize>>,
     variant_values: Vec<Option<String>>,
     input_rows: u64,
     quarantined_rows: u64,
@@ -3467,6 +3577,13 @@ fn apply_residual_verdicts(
         filter_record_batch(&batch, &accepted_mask).map_err(CdfError::from)?
     };
     let typed_batch = restore_contract_nullability(typed_batch, program)?;
+    let typed_source_rows = context.source_rows.map(|source_rows| {
+        accepted
+            .iter()
+            .zip(source_rows)
+            .filter_map(|(accepted, source_row)| accepted.then_some(*source_row))
+            .collect::<Vec<_>>()
+    });
     let variant_values = accepted
         .into_iter()
         .zip(variants)
@@ -3475,6 +3592,7 @@ fn apply_residual_verdicts(
     let quarantined_rows = input_rows - typed_batch.num_rows() as u64;
     Ok(ResidualExecOutput {
         typed_batch,
+        typed_source_rows,
         variant_values,
         input_rows,
         quarantined_rows,
@@ -3701,9 +3819,21 @@ fn collect_source_position_control_fields(
     }
 }
 
-fn quarantine_record_from_candidate(candidate: QuarantineCandidate) -> Result<QuarantineRecord> {
+fn quarantine_record_from_candidate(
+    candidate: QuarantineCandidate,
+    source_rows: Option<&[usize]>,
+) -> Result<QuarantineRecord> {
+    let source_row_ordinal = match source_rows {
+        Some(rows) => rows
+            .get(candidate.source_row_ordinal)
+            .copied()
+            .ok_or_else(|| {
+                CdfError::internal("contract quarantine ordinal is absent from the source-row map")
+            })?,
+        None => candidate.source_row_ordinal,
+    };
     Ok(QuarantineRecord {
-        source_row_ordinal: u64::try_from(candidate.source_row_ordinal)
+        source_row_ordinal: u64::try_from(source_row_ordinal)
             .map_err(|error| CdfError::internal(error.to_string()))?,
         rule_id: candidate.rule_id,
         error_code: candidate.error_code,
@@ -3948,8 +4078,9 @@ mod transform_kernel_tests {
     use arrow_array::{BooleanArray, Int64Array, RecordBatch, StringArray};
     use arrow_schema::{DataType, Field, Schema};
     use cdf_contract::{
-        ContractEvaluationContext, ContractPolicy, ObservedSchema, SchemaEvolutionMode,
-        VectorValidationEvaluator, compile_validation_program,
+        ContractEvaluationContext, ContractPolicy, Expression, ExpressionUse, ObservedSchema,
+        SchemaEvolutionMode, TransformDescription, VectorValidationEvaluator,
+        compile_validation_program,
     };
     use cdf_kernel::{BatchId, TrustLevel};
     use cdf_memory::{DeterministicMemoryCoordinator, MemoryCoordinator};
@@ -3957,8 +4088,77 @@ mod transform_kernel_tests {
 
     use super::{
         QuarantinePartAccumulator, ResidualBatchContext, TransformKernelMode, apply_contract_exec,
-        reserve_quarantine_evidence,
+        apply_pre_contract_expressions, execute_batch, reserve_quarantine_evidence,
+        source_row_tracking_schema,
     };
+
+    #[test]
+    fn tracked_source_rows_do_not_shift_sequential_derive_filter_bindings() {
+        let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, false)]));
+        let transforms = vec![
+            TransformDescription::Derive {
+                column: "selected".to_owned(),
+                expression: Expression::parse_comparison("id >= 2").unwrap(),
+            },
+            TransformDescription::Filter {
+                expression: Expression::parse_comparison("selected = true").unwrap(),
+            },
+        ];
+        let derive = crate::expression::plan_expression(
+            match &transforms[0] {
+                TransformDescription::Derive { expression, .. } => expression.clone(),
+                _ => unreachable!(),
+            },
+            ExpressionUse::Derive,
+            schema.as_ref(),
+        )
+        .unwrap();
+        let derived_schema = Schema::new(vec![
+            Field::new("id", DataType::Int64, false),
+            Field::new("selected", DataType::Boolean, true),
+        ]);
+        let filter = crate::expression::plan_expression(
+            match &transforms[1] {
+                TransformDescription::Filter { expression } => expression.clone(),
+                _ => unreachable!(),
+            },
+            ExpressionUse::Filter,
+            &derived_schema,
+        )
+        .unwrap();
+        let tracked_schema = source_row_tracking_schema(schema.as_ref()).unwrap();
+        let bound = crate::predicates::bind_expression_transforms(
+            &transforms,
+            &[derive, filter],
+            &tracked_schema,
+        )
+        .unwrap();
+        let input =
+            RecordBatch::try_new(schema, vec![Arc::new(Int64Array::from(vec![1_i64, 2]))]).unwrap();
+        let tracked = execute_batch(&input, &[], true).unwrap();
+        let output =
+            apply_pre_contract_expressions(tracked.batch, &bound, &mut None, true).unwrap();
+
+        assert_eq!(output.batch.num_rows(), 1);
+        assert_eq!(
+            output
+                .batch
+                .column(0)
+                .as_any()
+                .downcast_ref::<Int64Array>()
+                .unwrap()
+                .value(0),
+            2
+        );
+        assert_eq!(output.source_rows, Some(vec![1]));
+        assert!(
+            output
+                .batch
+                .schema()
+                .index_of(super::SOURCE_ROW_FIELD)
+                .is_err()
+        );
+    }
 
     #[test]
     fn production_execution_cannot_call_the_scalar_contract_oracle() {

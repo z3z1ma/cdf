@@ -12,9 +12,9 @@ use cdf_kernel::{CdfError, Result, source_name};
 use regex::Regex;
 
 use crate::{
-    ContractBatchEvaluation, ContractEvaluationContext, MissingColumnBehavior, QuarantineCandidate,
-    RedactionDecision, RowDispositionKind, RowRulePredicate, RuleVerdictSummary, ValidationProgram,
-    VerdictSummary, evaluator::redacted_observed_array_value,
+    ContractBatchEvaluation, ContractEvaluationContext, MissingColumnBehavior, NativeRowRule,
+    QuarantineCandidate, RedactionDecision, RowDispositionKind, RuleVerdictSummary,
+    ValidationProgram, VerdictSummary, evaluator::redacted_observed_array_value,
 };
 
 /// A schema-bound validation program. Array resolution, downcast selection, regex compilation,
@@ -37,6 +37,13 @@ impl<'a> VectorValidationEvaluator<'a> {
             program,
             plan: None,
         }
+    }
+
+    pub fn new_bound(program: &'a ValidationProgram, schema: SchemaRef) -> Result<Self> {
+        Ok(Self {
+            program,
+            plan: Some(bind_vector_validation_plan(program, schema)?),
+        })
     }
 
     pub fn program(&self) -> &'a ValidationProgram {
@@ -71,15 +78,28 @@ impl<'a> VectorValidationEvaluator<'a> {
     }
 
     fn plan_for(&mut self, schema: SchemaRef) -> Result<&VectorValidationPlan> {
-        if self
-            .plan
-            .as_ref()
-            .is_none_or(|plan| plan.schema.as_ref() != schema.as_ref())
-        {
+        if let Some(plan) = &self.plan {
+            if !schema_matches_bound_columns(plan.schema.as_ref(), schema.as_ref()) {
+                return Err(CdfError::data(
+                    "contract batch schema does not match the prebound physical expression schema",
+                ));
+            }
+        } else {
             self.plan = Some(bind_vector_validation_plan(self.program, schema)?);
         }
         Ok(self.plan.as_ref().expect("vector plan was bound"))
     }
+}
+
+fn schema_matches_bound_columns(expected: &Schema, actual: &Schema) -> bool {
+    expected.fields().len() == actual.fields().len()
+        && expected
+            .fields()
+            .iter()
+            .zip(actual.fields())
+            .all(|(expected, actual)| {
+                expected.name() == actual.name() && expected.data_type() == actual.data_type()
+            })
 }
 
 #[derive(Clone, Debug)]
@@ -191,24 +211,20 @@ pub fn bind_vector_validation_plan(
         .unwrap_or(RowDispositionKind::RejectRun);
     let mut rules = Vec::with_capacity(program.row_rules.len());
     for rule in &program.row_rules {
-        let (column_name, predicate) = match &rule.predicate {
-            RowRulePredicate::Nullability { column } => {
-                (column.as_str(), PredicateBinding::Nullability)
+        let native = rule.native_rule()?;
+        let (column_name, predicate) = match native {
+            NativeRowRule::Nullability { column } => (column, PredicateBinding::Nullability),
+            NativeRowRule::Domain { column, allowed } => {
+                (column, PredicateBinding::Domain(allowed))
             }
-            RowRulePredicate::Domain { column, allowed } => {
-                (column.as_str(), PredicateBinding::Domain(allowed))
+            NativeRowRule::Range { column, min, max } => {
+                (column, PredicateBinding::Range(min, max))
             }
-            RowRulePredicate::Range { column, min, max } => (
-                column.as_str(),
-                PredicateBinding::Range(min.as_deref(), max.as_deref()),
-            ),
-            RowRulePredicate::Regex { column, pattern } => {
-                (column.as_str(), PredicateBinding::Regex(pattern))
+            NativeRowRule::Regex { column, pattern } => (column, PredicateBinding::Regex(pattern)),
+            NativeRowRule::Freshness { column, max_age_ms } => {
+                (column, PredicateBinding::Freshness(max_age_ms))
             }
-            RowRulePredicate::Freshness { column, max_age_ms } => {
-                (column.as_str(), PredicateBinding::Freshness(*max_age_ms))
-            }
-            RowRulePredicate::Dedup { .. } | RowRulePredicate::ExactRowDedup { .. } => continue,
+            NativeRowRule::Dedup { .. } | NativeRowRule::ExactRowDedup { .. } => continue,
         };
         let Some((column_index, redaction)) = resolve_column(program, schema.as_ref(), column_name)
         else {
@@ -624,6 +640,38 @@ impl RangeBounds {
             Self::Float64(min, max) => float_mask::<Float64Array>(array, *min, *max),
         }
     }
+
+    fn is_unsatisfiable(&self) -> bool {
+        macro_rules! empty {
+            ($min:expr, $max:expr) => {
+                $min.zip($max)
+                    .and_then(|(min, max)| min.partial_cmp(&max))
+                    .is_some_and(|ordering| ordering.is_gt())
+            };
+        }
+        match self {
+            Self::Int8(min, max) => empty!(*min, *max),
+            Self::Int16(min, max) => empty!(*min, *max),
+            Self::Int32(min, max) => empty!(*min, *max),
+            Self::Int64(min, max) => empty!(*min, *max),
+            Self::UInt8(min, max) => empty!(*min, *max),
+            Self::UInt16(min, max) => empty!(*min, *max),
+            Self::UInt32(min, max) => empty!(*min, *max),
+            Self::UInt64(min, max) => empty!(*min, *max),
+            Self::Float32(min, max) => empty!(*min, *max),
+            Self::Float64(min, max) => empty!(*min, *max),
+        }
+    }
+}
+
+/// Uses the exact vector range binder so planning lints cannot disagree with
+/// executable width, sign, float, or unsupported-type semantics.
+pub fn range_bounds_are_unsatisfiable(
+    data_type: &DataType,
+    min: Option<&str>,
+    max: Option<&str>,
+) -> Result<bool> {
+    Ok(RangeBounds::bind(data_type, min, max)?.is_unsatisfiable())
 }
 
 trait PrimitiveArray: Array {

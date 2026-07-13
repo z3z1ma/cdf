@@ -13,7 +13,8 @@ use std::{
 use arrow_array::{Array, ArrayRef, Int64Array, RecordBatch, StringArray};
 use arrow_schema::{DataType, Field, Schema};
 use cdf_contract::{
-    AnomalyFact, ContractPolicy, DedupKeep, ObservedSchema, RowRule, compile_validation_program,
+    AnomalyFact, CompiledExpressionPlan, ContractPolicy, DedupKeep, ObservedSchema, RowRule,
+    compile_validation_program,
 };
 use cdf_dest_duckdb::DuckDbDestination;
 use cdf_dest_parquet::ParquetDestination;
@@ -36,9 +37,9 @@ use cdf_kernel::{
     PushdownFidelity, QueryableResource, Receipt, ReceiptId, ReceiptVerification, ReplaySupport,
     ResourceCapabilities, ResourceDescriptor, ResourceId, ResourceStream, Result, RewindReport,
     RewindRequest, RunEvent, RunEventSink, RunEventSinkResult, RunId, RunPhase, RunPhaseMetric,
-    RunPhaseStatus, ScanRequest, SchemaHash, SchemaSource, ScopeKey, SegmentAck, SegmentId,
-    SourcePosition, StateDelta, StateSegment, TargetName, TransactionSupport, TrustLevel,
-    VerifyClause, WriteDisposition,
+    RunPhaseStatus, ScanPlan, ScanRequest, SchemaHash, SchemaSource, ScopeKey, SegmentAck,
+    SegmentId, SourcePosition, StateDelta, StateSegment, TargetName, TransactionSupport,
+    TrustLevel, VerifyClause, WriteDisposition,
 };
 use cdf_package::{
     DESTINATION_COMMIT_PLAN_FILE, DestinationCommitPlanPreimage, MANIFEST_FILE, PackageBuilder,
@@ -733,6 +734,15 @@ fn package_id_name_rows(reader: &PackageReader) -> Vec<(i64, Option<String>)> {
 }
 
 fn build_package(package_dir: &Path, package_id: &str, status: PackageStatus) -> PackageManifest {
+    build_package_with_expression_tuple(package_dir, package_id, status, false)
+}
+
+fn build_package_with_expression_tuple(
+    package_dir: &Path,
+    package_id: &str,
+    status: PackageStatus,
+    stale: bool,
+) -> PackageManifest {
     let builder = PackageBuilder::create(package_dir, package_id).unwrap();
     builder.update_status(PackageStatus::Extracting).unwrap();
     builder
@@ -754,6 +764,7 @@ fn build_package(package_dir: &Path, package_id: &str, status: PackageStatus) ->
         )
         .unwrap();
     write_state_commit_artifacts(&builder, &segment);
+    write_compiled_expression_artifacts(&builder, stale);
     builder.finish_with_status(status).unwrap()
 }
 
@@ -817,7 +828,49 @@ fn build_zero_segment_processed_package(package_dir: &Path, package_id: &str) ->
             Vec::new(),
         ))
         .unwrap();
+    write_compiled_expression_artifacts(&builder, false);
     builder.finish().unwrap()
+}
+
+fn write_compiled_expression_artifacts(builder: &PackageBuilder, stale: bool) {
+    let mut program = compile_validation_program(
+        &ContractPolicy::evolve(),
+        &ObservedSchema::from_arrow(sample_batch(vec![], vec![]).schema().as_ref()),
+    )
+    .unwrap();
+    program.row_rules.clear();
+    program.transforms.clear();
+    let mut compiled =
+        CompiledExpressionPlan::current(Vec::new(), Vec::new(), Vec::new(), Vec::new()).unwrap();
+    if stale {
+        compiled.native_filter_lowering_version = "stale-test-version".to_owned();
+    }
+    program.compiled_expression_plan = Some(compiled);
+    builder
+        .write_json_artifact("plan/validation-program.json", &program)
+        .unwrap();
+    builder
+        .write_json_artifact(
+            "plan/scan.json",
+            &ScanPlan {
+                plan_id: PlanId::new("artifact-test-plan").unwrap(),
+                request: ScanRequest {
+                    resource_id: ResourceId::new("orders").unwrap(),
+                    projection: None,
+                    filters: Vec::new(),
+                    limit: None,
+                    order_by: Vec::new(),
+                    scope: ScopeKey::Resource,
+                },
+                partitions: Vec::new(),
+                pushed_predicates: Vec::new(),
+                unsupported_predicates: Vec::new(),
+                estimated_rows: None,
+                estimated_bytes: None,
+                delivery_guarantee: DeliveryGuarantee::AtLeastOnceDuplicateRisk,
+            },
+        )
+        .unwrap();
 }
 
 fn write_state_commit_artifacts(builder: &PackageBuilder, segment: &cdf_package::SegmentEntry) {
@@ -6312,6 +6365,91 @@ fn artifact_replay_rejects_manifest_package_hash_mismatch_before_mutation() {
         error
             .to_string()
             .contains("manifest identity hash mismatch")
+    );
+    assert!(
+        store
+            .history(
+                &PipelineId::new("pipeline-1").unwrap(),
+                &ResourceId::new("orders").unwrap(),
+                &scope()
+            )
+            .unwrap()
+            .is_empty()
+    );
+    assert!(!db_path.exists());
+}
+
+#[test]
+fn artifact_replay_rejects_stale_compiled_expression_plan_before_destination_mutation() {
+    let temp = tempfile::tempdir().unwrap();
+    let package_dir = temp.path().join("pkg-stale-compiled-expression-plan");
+    build_package_with_expression_tuple(
+        &package_dir,
+        "pkg-stale-compiled-expression-plan",
+        PackageStatus::Packaged,
+        true,
+    );
+    let db_path = temp.path().join("local.duckdb");
+    let destination = destination(&db_path);
+    let store = SqliteCheckpointStore::open_in_memory().unwrap();
+
+    let error =
+        replay_package_from_artifacts(artifact_replay_request(&package_dir, &destination, &store))
+            .unwrap_err();
+
+    assert!(
+        error
+            .to_string()
+            .contains("expression compatibility tuple is not supported"),
+        "{error}"
+    );
+    assert!(
+        store
+            .history(
+                &PipelineId::new("pipeline-1").unwrap(),
+                &ResourceId::new("orders").unwrap(),
+                &scope()
+            )
+            .unwrap()
+            .is_empty()
+    );
+    assert!(!db_path.exists());
+}
+
+#[test]
+fn prepared_replay_rejects_stale_compiled_expression_plan_before_destination_mutation() {
+    let temp = tempfile::tempdir().unwrap();
+    let package_dir = temp
+        .path()
+        .join("pkg-stale-prepared-compiled-expression-plan");
+    build_package_with_expression_tuple(
+        &package_dir,
+        "pkg-stale-prepared-compiled-expression-plan",
+        PackageStatus::Packaged,
+        true,
+    );
+    let inputs = PackageReader::open(&package_dir)
+        .unwrap()
+        .replay_inputs()
+        .unwrap();
+    let db_path = temp.path().join("local.duckdb");
+    let destination = destination(&db_path);
+    let store = SqliteCheckpointStore::open_in_memory().unwrap();
+
+    let error = replay_prepared_package(PreparedPackageReplayRequest {
+        package_dir: package_dir.clone(),
+        destination: resolved_duckdb_destination(&destination, TargetName::new("orders").unwrap()),
+        checkpoint_store: &store,
+        inputs,
+        after_receipt_verified: None,
+    })
+    .unwrap_err();
+
+    assert!(
+        error
+            .to_string()
+            .contains("expression compatibility tuple is not supported"),
+        "{error}"
     );
     assert!(
         store

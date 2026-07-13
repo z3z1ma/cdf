@@ -83,6 +83,42 @@ fn vector_plan_rejects_schema_drift_and_invalid_rule_type_at_bind_time() {
     );
 }
 
+#[test]
+fn prebound_vector_evaluator_rejects_same_typed_ordinal_substitution() {
+    let expected = Arc::new(Schema::new(vec![
+        Field::new("id", DataType::Int64, false),
+        Field::new("other", DataType::Int64, false),
+    ]));
+    let mut policy = ContractPolicy::for_trust(TrustLevel::Governed);
+    policy.rows.rules = vec![RowRule::Nullability {
+        column: "id".to_owned(),
+    }];
+    let program =
+        compile_validation_program(&policy, &ObservedSchema::from_arrow(expected.as_ref()))
+            .unwrap();
+    let mut evaluator = VectorValidationEvaluator::new_bound(&program, expected).unwrap();
+    let substituted = RecordBatch::try_new(
+        Arc::new(Schema::new(vec![
+            Field::new("other", DataType::Int64, false),
+            Field::new("id", DataType::Int64, false),
+        ])),
+        vec![
+            Arc::new(Int64Array::from(vec![1_i64])) as ArrayRef,
+            Arc::new(Int64Array::from(vec![2_i64])) as ArrayRef,
+        ],
+    )
+    .unwrap();
+
+    let error = evaluator
+        .evaluate(&ContractEvaluationContext::default(), &substituted)
+        .unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("prebound physical expression schema")
+    );
+}
+
 fn assert_vector_matches_scalar(
     program: &ValidationProgram,
     context: &ContractEvaluationContext,

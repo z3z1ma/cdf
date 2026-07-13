@@ -354,10 +354,13 @@ fn scan_predicate(index: usize, expr: &Expr) -> DataFusionResult<Option<ScanPred
     let Some(expression) = simple_predicate_expression(expr)? else {
         return Ok(None);
     };
-    Ok(Some(ScanPredicate {
-        predicate_id: PredicateId::new(format!("df-filter-{index}")).map_err(cdf_to_datafusion)?,
-        expression,
-    }))
+    Ok(Some(
+        ScanPredicate::new(
+            PredicateId::new(format!("df-filter-{index}")).map_err(cdf_to_datafusion)?,
+            expression,
+        )
+        .map_err(cdf_to_datafusion)?,
+    ))
 }
 
 fn simple_predicate_expression(expr: &Expr) -> DataFusionResult<Option<String>> {

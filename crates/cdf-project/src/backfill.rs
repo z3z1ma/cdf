@@ -86,13 +86,10 @@ pub fn plan_backfill(
                 .iter()
                 .enumerate()
                 .map(|(filter_index, expression)| {
-                    Ok(ScanPredicate {
-                        predicate_id: PredicateId::new(format!(
-                            "backfill-window-{:03}",
-                            filter_index + 1
-                        ))?,
-                        expression: expression.clone(),
-                    })
+                    ScanPredicate::new(
+                        PredicateId::new(format!("backfill-window-{:03}", filter_index + 1))?,
+                        expression.clone(),
+                    )
                 })
                 .collect::<Result<Vec<_>>>()?,
             limit: None,

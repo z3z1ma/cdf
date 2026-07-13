@@ -297,7 +297,35 @@ pub struct ScanRequest {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ScanPredicate {
     pub predicate_id: PredicateId,
+    /// Original operator text retained only for diagnostics and evidence.
     pub expression: String,
+    /// Canonical source/engine execution authority parsed once at the trust boundary.
+    pub canonical_expression: crate::Expression,
+}
+
+impl ScanPredicate {
+    pub fn new(predicate_id: PredicateId, expression: impl Into<String>) -> Result<Self> {
+        let expression = expression.into();
+        let canonical_expression = crate::Expression::parse_comparison(&expression)?;
+        Ok(Self {
+            predicate_id,
+            expression,
+            canonical_expression,
+        })
+    }
+
+    pub fn from_expression(
+        predicate_id: PredicateId,
+        diagnostic: impl Into<String>,
+        canonical_expression: crate::Expression,
+    ) -> Result<Self> {
+        canonical_expression.validate()?;
+        Ok(Self {
+            predicate_id,
+            expression: diagnostic.into(),
+            canonical_expression,
+        })
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

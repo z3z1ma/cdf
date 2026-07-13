@@ -335,10 +335,10 @@ fn scan_request(
         .iter()
         .enumerate()
         .map(|(index, expression)| {
-            Ok(ScanPredicate {
-                predicate_id: PredicateId::new(format!("p{:03}", index + 1))?,
-                expression: expression.clone(),
-            })
+            ScanPredicate::new(
+                PredicateId::new(format!("p{:03}", index + 1))?,
+                expression.clone(),
+            )
         })
         .collect::<cdf_kernel::Result<Vec<_>>>()?;
     Ok(ScanRequest {

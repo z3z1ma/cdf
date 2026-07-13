@@ -126,11 +126,13 @@ fn execute_slice(
     if let Some(identifier_policy) = identifier_policy {
         let mut policy = ContractPolicy::for_trust(source.descriptor().trust_level.clone());
         policy.normalization.identifier = identifier_policy;
-        engine_plan.validation_program = compile_resource_validation_program(
+        let validation_program = compile_resource_validation_program(
             &policy,
             &ObservedSchema::from_arrow(source.queryable().schema().as_ref()),
             source.descriptor(),
         )?;
+        engine_plan
+            .rebind_validation_program(validation_program, source.queryable().schema().as_ref())?;
     }
     let run = host
         .block_on_root(run_project_with_services(

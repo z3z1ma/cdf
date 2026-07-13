@@ -1,7 +1,9 @@
 use std::{collections::BTreeMap, sync::Arc};
 
 use arrow_schema::Schema;
-use cdf_contract::{CanonicalArrowField, SchemaCoercionPlan, ValidationProgram};
+use cdf_contract::{
+    CanonicalArrowField, CompiledExpressionPlan, SchemaCoercionPlan, ValidationProgram,
+};
 use cdf_kernel::{
     CdfError, DeliveryGuarantee, DiscoveryExecutorBudgetEvidence, EffectiveSchemaEvidence,
     EstimateSupport, ProcessedObservationPosition, PushdownFidelity, ResourceId, Result,
@@ -43,6 +45,8 @@ pub struct EnginePlan {
     pub effective_schema_evidence: Option<EffectiveSchemaPlanEvidence>,
     pub final_projection: Option<Vec<String>>,
     pub residual_predicates: Vec<ScanPredicate>,
+    /// Parsed, resolved, optimized, and frozen expressions consumed by execution and replay.
+    pub compiled_expression_plan: CompiledExpressionPlan,
     pub boundedness: PlanBoundedness,
     pub write_disposition: WriteDisposition,
     pub validation_program: ValidationProgram,
@@ -56,6 +60,38 @@ pub struct EnginePlan {
 }
 
 impl EnginePlan {
+    pub fn validate_compiled_expression_plan(&self) -> Result<()> {
+        let compiled = &self.compiled_expression_plan;
+        compiled.validate_program_binding(&self.validation_program)?;
+        compiled.validate_predicate_bindings(self.scan.request.filters.iter().map(
+            |predicate| {
+                (
+                    predicate.expression.as_str(),
+                    &predicate.canonical_expression,
+                    self.scan.pushed_predicates.iter().any(|pushed| {
+                        pushed.predicate.predicate_id == predicate.predicate_id
+                            && pushed.fidelity == PushdownFidelity::Exact
+                    }),
+                )
+            },
+        ))?;
+        compiled.validate_residual_bindings(self.residual_predicates.iter().map(|predicate| {
+            (
+                predicate.expression.as_str(),
+                &predicate.canonical_expression,
+            )
+        }))?;
+        Ok(())
+    }
+
+    pub fn rebind_validation_program(
+        &mut self,
+        program: ValidationProgram,
+        expression_schema: &Schema,
+    ) -> Result<()> {
+        crate::planning::rebind_validation_program(self, program, expression_schema)
+    }
+
     pub fn bind_partition_schedule(
         mut self,
         source: &cdf_runtime::CompiledSourcePlan,

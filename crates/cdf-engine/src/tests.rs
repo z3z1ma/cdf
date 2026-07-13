@@ -15,7 +15,7 @@ use arrow_array::{
 };
 use arrow_schema::{DataType, Field, Schema, SchemaRef, TimeUnit};
 use cdf_contract::{
-    ContractPolicy, DedupKeep, FieldCoercionDecision, NestedDataPolicy, ObservedSchema,
+    ContractPolicy, DedupKeep, Expression, FieldCoercionDecision, NestedDataPolicy, ObservedSchema,
     RESIDUAL_ENCODING_METADATA_KEY, RESIDUAL_ENCODING_NAME, RowRule, SchemaEvolutionMode,
     VARIANT_COLUMN_NAME, VARIANT_SEMANTIC_TAG, VerdictAction, compile_resource_validation_program,
     compile_validation_program, reconcile_schema,
@@ -114,6 +114,105 @@ fn residual_limit_is_consumed_across_partitions() {
 }
 
 #[test]
+fn validation_program_rebind_atomically_rebuilds_compiled_output_schema() {
+    let resource = MockResource::tier_a(sample_batches());
+    let mut plan = Planner::new()
+        .plan_tier_a(
+            &resource,
+            plan_input(Vec::new(), None, None, PlanBoundedness::Bounded),
+        )
+        .unwrap();
+    let before = plan.output_arrow_schema().unwrap();
+    assert!(before.field_with_name("name").is_ok());
+    let mut rebound = plan.validation_program.clone();
+    rename_column_program_output(&mut rebound, "name", "customer_name");
+
+    plan.rebind_validation_program(rebound, resource.schema().as_ref())
+        .unwrap();
+
+    let after = plan.output_arrow_schema().unwrap();
+    assert!(after.field_with_name("name").is_err());
+    assert!(after.field_with_name("customer_name").is_ok());
+    crate::planning::validate_plan_schema_authority(&resource, &plan).unwrap();
+}
+
+#[test]
+fn validation_program_rebind_rejects_new_physical_dependencies_without_mutating_plan() {
+    let resource = MockResource::tier_b(sample_batches());
+    let mut input = plan_input(
+        Vec::new(),
+        Some(vec!["name".to_owned()]),
+        None,
+        PlanBoundedness::Bounded,
+    );
+    input.validation_program = compile_validation_program(
+        &ContractPolicy::evolve(),
+        &ObservedSchema::from_arrow(resource.schema().as_ref()),
+    )
+    .unwrap();
+    input.validation_program.row_rules.clear();
+    let mut plan = Planner::new().plan_tier_b(&resource, input).unwrap();
+    assert_eq!(
+        plan.scan.request.projection,
+        Some(vec!["id".to_owned(), "name".to_owned()])
+    );
+    let original = plan.clone();
+    let mut policy = ContractPolicy::for_trust(TrustLevel::Governed);
+    policy.rows.rules = vec![RowRule::Nullability {
+        column: "active".to_owned(),
+    }];
+    let replacement = compile_validation_program(
+        &policy,
+        &ObservedSchema::from_arrow(resource.schema().as_ref()),
+    )
+    .unwrap();
+
+    let error = plan
+        .rebind_validation_program(replacement, resource.schema().as_ref())
+        .unwrap_err();
+
+    assert!(
+        error
+            .to_string()
+            .contains("outside the compiled physical projection")
+    );
+    assert_eq!(plan, original);
+}
+
+#[test]
+fn tier_b_exact_temporal_pushdown_selects_recorded_source_lowering_without_residual() {
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("id", DataType::Int64, false),
+        Field::new(
+            "updated_at",
+            DataType::Timestamp(TimeUnit::Microsecond, Some("UTC".into())),
+            false,
+        ),
+    ]));
+    let resource = MockResource::tier_b(Vec::new()).with_schema(schema.clone());
+    let plan = Planner::new()
+        .plan_tier_b(
+            &resource,
+            plan_input_for_schema(
+                schema,
+                vec!["updated_at >= '2026-07-12T00:00:00Z'"],
+                None,
+                None,
+                PlanBoundedness::Bounded,
+            ),
+        )
+        .unwrap();
+
+    assert!(plan.residual_predicates.is_empty());
+    assert!(plan.compiled_expression_plan.residuals.is_empty());
+    assert_eq!(
+        plan.compiled_expression_plan.predicates[0].optimizer.name,
+        cdf_contract::SOURCE_EXACT_PUSHDOWN_OPTIMIZER
+    );
+    plan.validate_compiled_expression_plan().unwrap();
+}
+
+#[test]
 fn preview_traverses_every_planned_partition_through_the_engine_front_end() {
     let resource = MockResource::tier_b(sample_batches());
     let plan = Planner::new()
@@ -145,6 +244,28 @@ fn preview_traverses_every_planned_partition_through_the_engine_front_end() {
     assert_eq!(preview.fields, vec!["id", "name", "active", "_cdf_variant"]);
     assert_eq!(preview.limits, limits);
     assert!(!preview.truncated);
+}
+
+#[test]
+fn preview_rejects_stale_compiled_expression_plan_before_source_contact() {
+    let resource = MockResource::tier_b(sample_batches());
+    let mut plan = Planner::new()
+        .plan_tier_b(
+            &resource,
+            plan_input(vec!["id >= 1"], None, None, PlanBoundedness::Bounded),
+        )
+        .unwrap();
+    plan.compiled_expression_plan.native_filter_lowering_version = "stale".to_owned();
+
+    let error = block_on(preview_resource(
+        &plan,
+        &resource,
+        EnginePreviewLimits::default(),
+    ))
+    .unwrap_err();
+
+    assert_eq!(error.kind, cdf_kernel::ErrorKind::Contract);
+    assert_eq!(resource.open_count.load(Ordering::SeqCst), 0);
 }
 
 #[test]
@@ -1732,6 +1853,112 @@ fn contract_exec_writes_redacted_quarantine_artifact_and_keeps_accepted_rows() {
             .iter()
             .any(|file| file.path == "quarantine/part-000001.parquet")
     );
+}
+
+#[test]
+fn contract_quarantine_preserves_source_ordinal_after_transform_filter() {
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("id", DataType::Int32, false),
+        Field::new("name", DataType::Utf8, false),
+        Field::new("active", DataType::Boolean, false),
+    ]));
+    let batch = batch_for_partition_with_schema(
+        "batch-transform-quarantine",
+        "part-0",
+        schema.clone(),
+        vec![1, 2],
+        vec!["ignored", "bad"],
+        vec![true, true],
+    );
+    let resource = MockResource::tier_a(vec![batch]);
+    let mut input = plan_input_for_schema(schema, vec![], None, None, PlanBoundedness::Bounded);
+    let mut policy = ContractPolicy::for_trust(TrustLevel::Governed);
+    policy.transforms = vec![cdf_contract::TransformDescription::Filter {
+        expression: Expression::parse_comparison("id >= 2").unwrap(),
+    }];
+    policy.rows.rules = vec![RowRule::Regex {
+        column: "name".to_owned(),
+        pattern: "^ok$".to_owned(),
+    }];
+    input.validation_program = compile_validation_program(
+        &policy,
+        &ObservedSchema::from_arrow(resource.schema().as_ref()),
+    )
+    .unwrap();
+    let plan = Planner::new().plan_tier_a(&resource, input).unwrap();
+    let temp = TempDir::new().unwrap();
+    block_on(execute_to_package(&plan, &resource, temp.path())).unwrap();
+    let quarantine = cdf_package::PackageReader::open(temp.path())
+        .unwrap()
+        .read_quarantine_records()
+        .unwrap();
+    assert_eq!(quarantine.len(), 1);
+    assert_eq!(quarantine[0].error_code, "regex_violation");
+    assert_eq!(quarantine[0].source_row_ordinal, 1);
+}
+
+#[test]
+fn contract_quarantine_preserves_source_ordinal_after_residual_quarantine() {
+    let id_field = Field::new("id", DataType::Int32, true);
+    let schema = Arc::new(Schema::new(vec![
+        id_field.clone(),
+        Field::new("name", DataType::Utf8, false),
+        Field::new("active", DataType::Boolean, false),
+    ]));
+    let record_batch = RecordBatch::try_new(
+        schema.clone(),
+        vec![
+            Arc::new(Int32Array::from(vec![None, Some(2)])) as ArrayRef,
+            Arc::new(StringArray::from(vec!["ignored", "bad"])) as ArrayRef,
+            Arc::new(BooleanArray::from(vec![true, true])) as ArrayRef,
+        ],
+    )
+    .unwrap();
+    let mut batch = Batch::from_record_batch(
+        BatchId::new("batch-residual-contract-quarantine").unwrap(),
+        ResourceId::new("orders").unwrap(),
+        PartitionId::new("part-0").unwrap(),
+        SchemaHash::new("schema-v1").unwrap(),
+        record_batch,
+    )
+    .unwrap();
+    batch.header.push_residual_candidate(
+        PreContractResidualCandidate::new(
+            0,
+            0,
+            vec!["id".to_owned()],
+            Field::new("id", DataType::Utf8, true),
+            Some(id_field),
+            Arc::new(StringArray::from(vec!["bad-id"])) as ArrayRef,
+            0,
+        )
+        .unwrap(),
+    );
+    let resource = MockResource::tier_a(vec![batch]);
+    let mut input = plan_input_for_schema(schema, vec![], None, None, PlanBoundedness::Bounded);
+    let mut policy = ContractPolicy::for_trust(TrustLevel::Governed);
+    policy.schema.mode = SchemaEvolutionMode::Evolve;
+    policy.rows.rules = vec![RowRule::Regex {
+        column: "name".to_owned(),
+        pattern: "^ok$".to_owned(),
+    }];
+    input.validation_program = compile_validation_program(
+        &policy,
+        &ObservedSchema::from_arrow(resource.schema().as_ref()),
+    )
+    .unwrap();
+    let plan = Planner::new().plan_tier_a(&resource, input).unwrap();
+    let temp = TempDir::new().unwrap();
+    block_on(execute_to_package(&plan, &resource, temp.path())).unwrap();
+    let quarantine = cdf_package::PackageReader::open(temp.path())
+        .unwrap()
+        .read_quarantine_records()
+        .unwrap();
+    let contract = quarantine
+        .iter()
+        .find(|record| record.error_code == "regex_violation")
+        .unwrap();
+    assert_eq!(contract.source_row_ordinal, 1);
 }
 
 #[test]
@@ -3467,7 +3694,7 @@ impl QueryableResource for MockResource {
             projection: CapabilitySupport::Supported,
             filters: FilterCapabilities {
                 default_fidelity: PushdownFidelity::Inexact,
-                supported_operators: vec![">".to_owned(), "=".to_owned()],
+                supported_operators: vec![">".to_owned(), ">=".to_owned(), "=".to_owned()],
             },
             limits: CapabilitySupport::Supported,
             ordering: CapabilitySupport::Unsupported,
@@ -3495,7 +3722,9 @@ impl QueryableResource for MockResource {
             DeliveryGuarantee::EffectivelyOncePerKey,
         )?;
         for pushed in &mut plan.pushed_predicates {
-            if pushed.predicate.expression == "id > 1" {
+            if pushed.predicate.expression == "id > 1"
+                || pushed.predicate.expression == "updated_at >= '2026-07-12T00:00:00Z'"
+            {
                 pushed.fidelity = PushdownFidelity::Exact;
             }
         }
@@ -3767,9 +3996,9 @@ fn plan_input_for_schema(
             filters: filters
                 .into_iter()
                 .enumerate()
-                .map(|(index, expression)| ScanPredicate {
-                    predicate_id: PredicateId::new(format!("p{index}")).unwrap(),
-                    expression: expression.to_owned(),
+                .map(|(index, expression)| {
+                    ScanPredicate::new(PredicateId::new(format!("p{index}")).unwrap(), expression)
+                        .unwrap()
                 })
                 .collect(),
             limit,

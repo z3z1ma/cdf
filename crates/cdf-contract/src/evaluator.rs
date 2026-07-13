@@ -15,7 +15,7 @@ use sha2::{Digest, Sha256};
 use crate::{
     policy::RedactionDecision,
     program::{
-        ColumnProgram, DedupKeepProgram, MissingColumnBehavior, RowRulePredicate, RowRuleProgram,
+        ColumnProgram, DedupKeepProgram, MissingColumnBehavior, NativeRowRule, RowRuleProgram,
         RuleDisposition, RuleOutcome, ValidationProgram,
     },
     schema::ArrowType,
@@ -143,7 +143,7 @@ pub fn package_dedup_rule(program: &ValidationProgram) -> Result<Option<PackageD
     Ok(Some(PackageDedupRuleSpec {
         rule_id: rule.rule_id.clone(),
         keys: keys.to_vec(),
-        keep: keep.clone(),
+        keep,
     }))
 }
 
@@ -338,8 +338,8 @@ struct PackageRowRef {
 fn single_dedup_rule(program: &ValidationProgram) -> Result<Option<&RowRuleProgram>> {
     let mut rules = program.row_rules.iter().filter(|rule| {
         matches!(
-            rule.predicate,
-            RowRulePredicate::Dedup { .. } | RowRulePredicate::ExactRowDedup { .. }
+            rule.expression_function(),
+            Some("dedup" | "exact_row_dedup")
         )
     });
     let first = rules.next();
@@ -353,9 +353,9 @@ fn single_dedup_rule(program: &ValidationProgram) -> Result<Option<&RowRuleProgr
     Ok(first)
 }
 
-fn dedup_rule_parts(rule: &RowRuleProgram) -> Result<(&[String], &DedupKeepProgram)> {
-    match &rule.predicate {
-        RowRulePredicate::Dedup { keys, keep } | RowRulePredicate::ExactRowDedup { keys, keep } => {
+fn dedup_rule_parts(rule: &RowRuleProgram) -> Result<(&[String], DedupKeepProgram)> {
+    match rule.native_rule()? {
+        NativeRowRule::Dedup { keys, keep } | NativeRowRule::ExactRowDedup { keys, keep } => {
             Ok((keys, keep))
         }
         _ => Err(CdfError::internal(
@@ -398,25 +398,20 @@ impl<'a> RuleEvaluation<'a> {
         batch: &'a RecordBatch,
         rule: &'a crate::program::RowRuleProgram,
     ) -> Result<Option<Self>> {
-        let (column_name, kind) = match &rule.predicate {
-            RowRulePredicate::Nullability { column } => {
-                (column.as_str(), PreparedRuleKind::Nullability)
-            }
-            RowRulePredicate::Domain { column, allowed } => (
-                column.as_str(),
+        let native = rule.native_rule()?;
+        let (column_name, kind) = match native {
+            NativeRowRule::Nullability { column } => (column, PreparedRuleKind::Nullability),
+            NativeRowRule::Domain { column, allowed } => (
+                column,
                 PreparedRuleKind::Domain {
                     allowed: allowed.iter().map(String::as_str).collect(),
                 },
             ),
-            RowRulePredicate::Range { column, min, max } => (
-                column.as_str(),
-                PreparedRuleKind::Range {
-                    min: min.as_deref(),
-                    max: max.as_deref(),
-                },
-            ),
-            RowRulePredicate::Regex { column, pattern } => (
-                column.as_str(),
+            NativeRowRule::Range { column, min, max } => {
+                (column, PreparedRuleKind::Range { min, max })
+            }
+            NativeRowRule::Regex { column, pattern } => (
+                column,
                 PreparedRuleKind::Regex {
                     regex: Regex::new(pattern).map_err(|error| {
                         CdfError::contract(format!(
@@ -426,28 +421,28 @@ impl<'a> RuleEvaluation<'a> {
                     })?,
                 },
             ),
-            RowRulePredicate::Freshness { column, max_age_ms } => {
+            NativeRowRule::Freshness { column, max_age_ms } => {
                 let observed_at_ms = context.observed_at_ms.ok_or_else(|| {
                     CdfError::contract(format!(
                         "freshness row rule {:?} requires observed_at_ms evaluation context",
                         rule.rule_id
                     ))
                 })?;
-                let max_age_ms = i64::try_from(*max_age_ms).map_err(|_| {
+                let max_age_ms = i64::try_from(max_age_ms).map_err(|_| {
                     CdfError::contract(format!(
                         "freshness row rule {:?} max_age_ms exceeds i64",
                         rule.rule_id
                     ))
                 })?;
                 (
-                    column.as_str(),
+                    column,
                     PreparedRuleKind::Freshness {
                         observed_at_ms,
                         max_age_ms,
                     },
                 )
             }
-            RowRulePredicate::Dedup { .. } | RowRulePredicate::ExactRowDedup { .. } => {
+            NativeRowRule::Dedup { .. } | NativeRowRule::ExactRowDedup { .. } => {
                 return Ok(None);
             }
         };

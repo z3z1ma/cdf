@@ -14,10 +14,10 @@ use cdf_http::{
 };
 use cdf_kernel::{
     Batch, BatchId, BatchStream, BoxFuture, CdfError, CursorPosition, CursorValue,
-    DeliveryGuarantee, PartitionId, PartitionPlan, PlanId, PreContractResidualCandidate,
-    PushdownFidelity, PushedPredicate, QueryableResource, ResourceCapabilities, ResourceDescriptor,
-    ResourceStream, Result, ScanPlan, ScanRequest, SchemaHash, SchemaSource, SourcePosition,
-    TypePolicyAllowances, WriteDisposition, source_name,
+    DeliveryGuarantee, Expression, ExpressionLiteral, PartitionId, PartitionPlan, PlanId,
+    PreContractResidualCandidate, PushdownFidelity, PushedPredicate, QueryableResource,
+    ResourceCapabilities, ResourceDescriptor, ResourceStream, Result, ScanPlan, ScanRequest,
+    SchemaHash, SchemaSource, SourcePosition, TypePolicyAllowances, WriteDisposition, source_name,
 };
 use cdf_runtime::ExecutionServices;
 use futures_util::stream;
@@ -213,11 +213,12 @@ impl QueryableResource for RestResource {
 
     fn negotiate(&self, request: &ScanRequest) -> Result<ScanPlan> {
         let partition = rest_partition(&self.descriptor, &self.plan, request)?;
+        let selected_cursor =
+            selected_cursor_pushdown(&self.descriptor, &self.plan, request).map(|(index, _)| index);
         let mut pushed_predicates = Vec::new();
         let mut unsupported_predicates = Vec::new();
-        for predicate in &request.filters {
-            if cursor_pushdown_value(&self.descriptor, &self.plan, &predicate.expression).is_some()
-            {
+        for (index, predicate) in request.filters.iter().enumerate() {
+            if selected_cursor == Some(index) {
                 pushed_predicates.push(PushedPredicate {
                     predicate: predicate.clone(),
                     fidelity: self.plan.cursor_filter_fidelity.clone(),
@@ -242,26 +243,27 @@ impl QueryableResource for RestResource {
 pub fn cursor_pushdown_value(
     descriptor: &ResourceDescriptor,
     plan: &RestResourcePlan,
-    expression: &str,
+    expression: &Expression,
 ) -> Option<String> {
     let cursor = descriptor.cursor.as_ref()?;
     let cursor_param = plan.cursor_param.as_deref();
-    for operator in [">=", ">", "="] {
-        let Some((left, right)) = expression.split_once(operator) else {
-            continue;
-        };
-        let left = left.trim();
-        let targets_cursor = expression_side_mentions_name(left, &cursor.field)
-            || cursor_param.is_some_and(|param| expression_side_mentions_name(left, param));
-        if !targets_cursor {
-            continue;
-        }
-        let value = normalize_predicate_literal(right.trim())?;
-        if !value.is_empty() {
-            return Some(value);
-        }
+    let (field, operator, literal) = expression.comparison()?;
+    if !matches!(operator, "gte" | "gt" | "eq")
+        || (field != cursor.field && !cursor_param.is_some_and(|param| field == param))
+    {
+        return None;
     }
-    None
+    match literal {
+        ExpressionLiteral::Boolean(value) => Some(value.to_string()),
+        ExpressionLiteral::Signed(value) => Some(value.to_string()),
+        ExpressionLiteral::Unsigned(value) => Some(value.to_string()),
+        ExpressionLiteral::Float64Bits(bits) => Some(f64::from_bits(*bits).to_string()),
+        ExpressionLiteral::String(value) if !value.is_empty() => Some(value.clone()),
+        ExpressionLiteral::Null
+        | ExpressionLiteral::String(_)
+        | ExpressionLiteral::StringList(_) => None,
+        _ => None,
+    }
 }
 
 pub fn rest_partition(
@@ -287,11 +289,7 @@ pub fn rest_partition(
         metadata.insert("cursor_field".to_owned(), cursor.field.clone());
     }
     if let Some(cursor_param) = &plan.cursor_param
-        && plan.cursor_filter_fidelity != PushdownFidelity::Unsupported
-        && let Some(value) = request
-            .filters
-            .iter()
-            .find_map(|predicate| cursor_pushdown_value(descriptor, plan, &predicate.expression))
+        && let Some((_, value)) = selected_cursor_pushdown(descriptor, plan, request)
     {
         metadata.insert(CURSOR_QUERY_PARAM_METADATA.to_owned(), cursor_param.clone());
         metadata.insert(CURSOR_QUERY_VALUE_METADATA.to_owned(), value);
@@ -304,6 +302,24 @@ pub fn rest_partition(
     })
 }
 
+fn selected_cursor_pushdown(
+    descriptor: &ResourceDescriptor,
+    plan: &RestResourcePlan,
+    request: &ScanRequest,
+) -> Option<(usize, String)> {
+    if plan.cursor_filter_fidelity == PushdownFidelity::Unsupported {
+        return None;
+    }
+    request
+        .filters
+        .iter()
+        .enumerate()
+        .find_map(|(index, predicate)| {
+            cursor_pushdown_value(descriptor, plan, &predicate.canonical_expression)
+                .map(|value| (index, value))
+        })
+}
+
 fn delivery_guarantee(descriptor: &ResourceDescriptor) -> DeliveryGuarantee {
     match descriptor.write_disposition {
         WriteDisposition::Append => DeliveryGuarantee::AtLeastOnceDuplicateRisk,
@@ -311,41 +327,6 @@ fn delivery_guarantee(descriptor: &ResourceDescriptor) -> DeliveryGuarantee {
         WriteDisposition::Merge => DeliveryGuarantee::EffectivelyOncePerKey,
         WriteDisposition::CdcApply => DeliveryGuarantee::EffectivelyOncePerPosition,
     }
-}
-
-fn normalize_predicate_literal(value: &str) -> Option<String> {
-    let value = value.trim();
-    if value.is_empty() {
-        return None;
-    }
-    if let Some(stripped) = value
-        .strip_prefix('"')
-        .and_then(|value| value.strip_suffix('"'))
-        .or_else(|| {
-            value
-                .strip_prefix('\'')
-                .and_then(|value| value.strip_suffix('\''))
-        })
-    {
-        return Some(stripped.to_owned());
-    }
-    let token = value.split_whitespace().next()?;
-    is_unquoted_scalar_literal(token).then(|| token.to_owned())
-}
-
-fn is_unquoted_scalar_literal(value: &str) -> bool {
-    value.chars().any(|character| character.is_ascii_digit())
-        && value
-            .chars()
-            .all(|character| character.is_ascii_digit() || matches!(character, '-' | '+' | '.'))
-}
-
-fn expression_side_mentions_name(expression: &str, name: &str) -> bool {
-    expression
-        .split(|character: char| {
-            !(character.is_ascii_alphanumeric() || matches!(character, '_' | '.'))
-        })
-        .any(|token| token == name || token.ends_with(&format!(".{name}")))
 }
 
 fn execute_rest(
@@ -1687,17 +1668,58 @@ mod tests {
         };
 
         assert_eq!(
-            cursor_pushdown_value(&descriptor, &plan, "updated_at >= \"2026-07-01T00:00:00Z\""),
+            cursor_pushdown_value(
+                &descriptor,
+                &plan,
+                &Expression::parse_comparison("updated_at >= \"2026-07-01T00:00:00Z\"").unwrap(),
+            ),
             Some("2026-07-01T00:00:00Z".to_owned())
         );
-        assert_eq!(cursor_pushdown_value(&descriptor, &plan, "id = 1"), None);
         assert_eq!(
-            cursor_pushdown_value(&descriptor, &plan, "not_updated_at >= \"2026-07-01\""),
+            cursor_pushdown_value(
+                &descriptor,
+                &plan,
+                &Expression::parse_comparison("id = 1").unwrap(),
+            ),
             None
         );
         assert_eq!(
-            cursor_pushdown_value(&descriptor, &plan, "updated_at >= checkpoint.cursor"),
+            cursor_pushdown_value(
+                &descriptor,
+                &plan,
+                &Expression::parse_comparison("not_updated_at >= \"2026-07-01\"").unwrap(),
+            ),
             None
+        );
+        assert!(Expression::parse_comparison("updated_at >= checkpoint.cursor").is_err());
+
+        let request = ScanRequest {
+            resource_id: descriptor.resource_id.clone(),
+            projection: None,
+            filters: vec![
+                cdf_kernel::ScanPredicate::new(
+                    cdf_kernel::PredicateId::new("cursor-5").unwrap(),
+                    "updated_at >= 5",
+                )
+                .unwrap(),
+                cdf_kernel::ScanPredicate::new(
+                    cdf_kernel::PredicateId::new("cursor-10").unwrap(),
+                    "updated_at >= 10",
+                )
+                .unwrap(),
+            ],
+            limit: None,
+            order_by: Vec::new(),
+            scope: cdf_kernel::ScopeKey::Resource,
+        };
+        assert_eq!(
+            selected_cursor_pushdown(&descriptor, &plan, &request),
+            Some((0, "5".to_owned()))
+        );
+        let partition = rest_partition(&descriptor, &plan, &request).unwrap();
+        assert_eq!(
+            partition.metadata.get(CURSOR_QUERY_VALUE_METADATA),
+            Some(&"5".to_owned())
         );
     }
 }

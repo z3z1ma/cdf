@@ -247,12 +247,12 @@ fn assert_frozen_contract_program(plan: &EnginePlan) {
         matches!(rule.change, cdf_contract::SchemaChangeKind::TypeNarrowing)
             && matches!(rule.verdict, cdf_contract::VerdictAction::Quarantine)
     }));
-    assert!(plan.validation_program.row_rules.iter().any(|rule| {
-        matches!(
-            rule.predicate,
-            cdf_contract::RowRulePredicate::Domain { .. }
-        )
-    }));
+    assert!(
+        plan.validation_program
+            .row_rules
+            .iter()
+            .any(|rule| { rule.expression_function() == Some("in_domain") })
+    );
     assert!(plan.validation_program.has_dedup_rule());
 }
 

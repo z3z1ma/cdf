@@ -766,10 +766,7 @@ fn live_postgres_table_resource_executes_scan_and_cursor_conformance() {
             "created_on".to_owned(),
             "touched_at".to_owned(),
         ]),
-        filters: vec![ScanPredicate {
-            predicate_id: predicate_id.clone(),
-            expression: "updated_at >= 20".to_owned(),
-        }],
+        filters: vec![ScanPredicate::new(predicate_id.clone(), "updated_at >= 20").unwrap()],
         limit: Some(10),
         order_by: vec![cdf_kernel::OrderBy {
             field: "updated_at".to_owned(),
@@ -907,10 +904,9 @@ fn live_postgres_table_resource_reads_source_name_physical_columns() {
     let request = ScanRequest {
         resource_id: descriptor.resource_id.clone(),
         projection: Some(vec!["vendor_id".to_owned(), "updated_at".to_owned()]),
-        filters: vec![ScanPredicate {
-            predicate_id: PredicateId::new("vendor").unwrap(),
-            expression: "vendor_id >= 2".to_owned(),
-        }],
+        filters: vec![
+            ScanPredicate::new(PredicateId::new("vendor").unwrap(), "vendor_id >= 2").unwrap(),
+        ],
         limit: None,
         order_by: vec![cdf_kernel::OrderBy {
             field: "vendor_id".to_owned(),

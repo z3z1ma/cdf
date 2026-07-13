@@ -2,6 +2,7 @@
 
 mod dedup_spill;
 mod execution;
+mod expression;
 mod graph_plan;
 mod memory;
 mod output_schema;

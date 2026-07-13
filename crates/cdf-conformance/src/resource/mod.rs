@@ -728,18 +728,9 @@ mod tests {
             resource_id: ResourceId::new("orders").unwrap(),
             projection: Some(vec!["id".to_owned(), "updated_at".to_owned()]),
             filters: vec![
-                ScanPredicate {
-                    predicate_id: exact.clone(),
-                    expression: "id = 1".to_owned(),
-                },
-                ScanPredicate {
-                    predicate_id: inexact.clone(),
-                    expression: "updated_at >= checkpoint.cursor".to_owned(),
-                },
-                ScanPredicate {
-                    predicate_id: unsupported.clone(),
-                    expression: "notes ~~ 'x'".to_owned(),
-                },
+                ScanPredicate::new(exact.clone(), "id = 1").unwrap(),
+                ScanPredicate::new(inexact.clone(), "updated_at >= 1").unwrap(),
+                ScanPredicate::new(unsupported.clone(), "notes = 'x'").unwrap(),
             ],
             limit: Some(100),
             order_by: Vec::new(),

@@ -186,7 +186,7 @@ pub(crate) fn sql_capabilities_for(
 pub(crate) fn sql_predicate_fidelity_for(
     schema: &SchemaRef,
     plan: &SqlResourcePlan,
-    expression: &str,
+    expression: &cdf_kernel::Expression,
 ) -> PushdownFidelity {
     if postgres_table_target_for_planning(plan).is_err() {
         return PushdownFidelity::Unsupported;

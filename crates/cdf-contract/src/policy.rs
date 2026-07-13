@@ -532,10 +532,10 @@ pub enum TransformDescription {
     },
     Derive {
         column: String,
-        expression: String,
+        expression: crate::Expression,
     },
     Filter {
-        expression: String,
+        expression: crate::Expression,
     },
     ExpandNested {
         column: String,
