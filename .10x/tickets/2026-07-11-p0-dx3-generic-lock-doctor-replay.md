@@ -1,8 +1,8 @@
 Status: open
 Created: 2026-07-11
-Updated: 2026-07-11
+Updated: 2026-07-12
 Parent: .10x/tickets/2026-07-11-p0-destination-extension-boundary.md
-Depends-On: .10x/tickets/2026-07-11-p0-dx2-driver-owned-adapters-composition.md
+Depends-On: .10x/tickets/done/2026-07-11-p0-dx2-driver-owned-adapters-composition.md
 
 # P0 DX3: generic lock, doctor, replay, and product surfaces
 
@@ -19,4 +19,4 @@ Replace lockfile URI matches, CLI destination runtime enum, doctor/replay target
 
 ## Blockers
 
-Depends on DX2.
+None. DX2 is complete.
