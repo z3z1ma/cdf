@@ -374,22 +374,14 @@ fn metadata_helpers_round_trip_cdf_annotations() {
 }
 
 #[test]
-fn destination_correction_vocabulary_is_backward_compatible_and_semver_stable() {
-    let legacy_sheet = sample_destination_sheet();
-    let legacy_json = serde_json::to_string(&legacy_sheet).unwrap();
-    assert!(!legacy_json.contains("corrections"));
-    let decoded: DestinationSheetArtifact = serde_json::from_str(&legacy_json).unwrap();
-    assert_eq!(
-        decoded.protocol_capabilities,
-        DestinationProtocolCapabilities::default()
-    );
-    assert_eq!(decoded.sheet, legacy_sheet);
-    assert_eq!(serde_json::to_string(&decoded).unwrap(), legacy_json);
-
+fn destination_sheet_artifact_requires_current_typed_protocol_capabilities() {
+    let sheet = sample_destination_sheet();
+    let bare_sheet_json = serde_json::to_string(&sheet).unwrap();
+    assert!(serde_json::from_str::<DestinationSheetArtifact>(&bare_sheet_json).is_err());
     let object_capabilities = DestinationProtocolCapabilities::default()
         .with_object_key_rules(ObjectKeyRules::component_v1());
     let encoded = serde_json::to_value(
-        DestinationSheetArtifact::new(legacy_sheet.clone(), object_capabilities.clone()).unwrap(),
+        DestinationSheetArtifact::new(sheet.clone(), object_capabilities.clone()).unwrap(),
     )
     .unwrap();
     assert_eq!(
@@ -401,7 +393,7 @@ fn destination_correction_vocabulary_is_backward_compatible_and_semver_stable() 
     );
     assert_eq!(
         serde_json::from_value::<DestinationSheetArtifact>(encoded).unwrap(),
-        DestinationSheetArtifact::new(legacy_sheet.clone(), object_capabilities).unwrap()
+        DestinationSheetArtifact::new(sheet.clone(), object_capabilities).unwrap()
     );
 
     let invalid =
@@ -410,7 +402,7 @@ fn destination_correction_vocabulary_is_backward_compatible_and_semver_stable() 
             policy: ObjectKeyPolicy::ComponentV1,
         });
     assert!(
-        DestinationSheetArtifact::new(legacy_sheet, invalid)
+        DestinationSheetArtifact::new(sheet, invalid)
             .unwrap_err()
             .message
             .contains("unsupported object-key rules version")
@@ -1272,10 +1264,10 @@ fn sampled_discovery_coverage_evidence_is_total_and_round_trips() {
 }
 
 #[test]
-fn run_phase_metric_round_trips_without_changing_legacy_event_details() {
-    let legacy_json = r#"{"attributes":{"rows":{"type":"u64","value":7}}}"#;
-    let legacy: RunEventDetails = serde_json::from_str(legacy_json).unwrap();
-    assert_eq!(serde_json::to_string(&legacy).unwrap(), legacy_json);
+fn run_phase_metric_preserves_the_current_scalar_event_value_shape() {
+    let scalar_json = r#"{"attributes":{"rows":{"type":"u64","value":7}}}"#;
+    let scalar: RunEventDetails = serde_json::from_str(scalar_json).unwrap();
+    assert_eq!(serde_json::to_string(&scalar).unwrap(), scalar_json);
 
     let details = RunEventDetails::new([(
         "metric",

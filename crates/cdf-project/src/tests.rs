@@ -30,11 +30,12 @@ use cdf_http::{
 };
 use cdf_kernel::{
     BoxFuture, CapabilitySupport, CdfError, CheckpointId, ConcurrencyLimit, ContractRef,
-    DestinationId, DestinationProtocol, DestinationSheet, DiscoveryManifestHash,
-    DiscoveryManifestReference, IdempotencySupport, IdentifierRules, LeaseOwnerId, PipelineId,
-    QueryableResource, ResourceId, ResourceStream, RunId, ScanRequest, SchemaHash, SchemaSource,
-    ScopeKey, ScopeLease, ScopeLeaseClock, ScopeLeaseStore, SourcePosition, TargetName,
-    TransactionSupport, TypeMapping, TypeMappingFidelity, WriteDisposition, source_name,
+    DestinationId, DestinationProtocol, DestinationProtocolCapabilities, DestinationSheet,
+    DestinationSheetArtifact, DiscoveryManifestHash, DiscoveryManifestReference,
+    IdempotencySupport, IdentifierRules, LeaseOwnerId, PipelineId, QueryableResource, ResourceId,
+    ResourceStream, RunId, ScanRequest, SchemaHash, SchemaSource, ScopeKey, ScopeLease,
+    ScopeLeaseClock, ScopeLeaseStore, SourcePosition, TargetName, TransactionSupport, TypeMapping,
+    TypeMappingFidelity, WriteDisposition, source_name,
 };
 use cdf_memory::{
     AccountedBytes, ConsumerKey, MemoryClass, MemoryCoordinator, ReservationRequest, reserve,
@@ -348,6 +349,9 @@ fn lockfile_generation_round_trips_and_diffs_semantic_changes() {
         InMemoryResourceSourceResolver::new().with_toml("resources/github.toml", GITHUB_RESOURCE);
     let resources = compile_project_declarative_resources(&config, &resolver).unwrap();
     let sheet = destination_sheet("duckdb", TypeMappingFidelity::Lossless);
+    let sheet_artifact =
+        DestinationSheetArtifact::new(sheet.clone(), DestinationProtocolCapabilities::default())
+            .unwrap();
     let dependency_tuple = DependencyTuple {
         cdf: "0.1.0".to_owned(),
         arrow_rs: "59.1.0".to_owned(),
@@ -357,16 +361,17 @@ fn lockfile_generation_round_trips_and_diffs_semantic_changes() {
         rust: None,
     };
 
-    let lock = generate_lockfile(
+    let lock = generate_lockfile_with_destination_artifacts(
         &config,
         &resources,
         dependency_tuple.clone(),
-        std::slice::from_ref(&sheet),
+        std::slice::from_ref(&sheet_artifact),
         BTreeMap::new(),
     )
     .unwrap();
     let encoded = lock_to_toml(&lock).unwrap();
-    assert!(!encoded.contains("corrections"));
+    assert!(encoded.contains("protocol_capabilities"));
+    assert!(encoded.contains("corrections"));
     let decoded = parse_lock(&encoded).unwrap();
     assert_eq!(decoded, lock);
     assert_eq!(lock_to_toml(&decoded).unwrap(), encoded);
@@ -401,17 +406,21 @@ fn lockfile_generation_round_trips_and_diffs_semantic_changes() {
     );
     assert_eq!(
         lock.destinations["duckdb"].sheet_hash,
-        semantic_hash(&sheet).unwrap()
+        semantic_hash(&sheet_artifact).unwrap()
     );
 
-    let changed = generate_lockfile(
+    let changed_sheet = destination_sheet(
+        "duckdb",
+        TypeMappingFidelity::LossyRequiresContractAllowance,
+    );
+    let changed_artifact =
+        DestinationSheetArtifact::new(changed_sheet, DestinationProtocolCapabilities::default())
+            .unwrap();
+    let changed = generate_lockfile_with_destination_artifacts(
         &config,
         &resources,
         dependency_tuple.clone(),
-        &[destination_sheet(
-            "duckdb",
-            TypeMappingFidelity::LossyRequiresContractAllowance,
-        )],
+        &[changed_artifact],
         BTreeMap::new(),
     )
     .unwrap();
@@ -3595,6 +3604,8 @@ fn contract_freeze_preserves_existing_dependency_and_destination_data() {
         InMemoryResourceSourceResolver::new().with_toml("resources/github.toml", GITHUB_RESOURCE);
     let resources = compile_project_declarative_resources(&config, &resolver).unwrap();
     let sheet = destination_sheet("duckdb", TypeMappingFidelity::Lossless);
+    let sheet_artifact =
+        DestinationSheetArtifact::new(sheet, DestinationProtocolCapabilities::default()).unwrap();
     let dependency_tuple = DependencyTuple {
         cdf: "0.1.0-old".to_owned(),
         arrow_rs: "59.1.0-old".to_owned(),
@@ -3603,11 +3614,11 @@ fn contract_freeze_preserves_existing_dependency_and_destination_data() {
         duckdb_rs: Some("pinned-duckdb".to_owned()),
         rust: Some("pinned-rust".to_owned()),
     };
-    let existing = generate_lockfile(
+    let existing = generate_lockfile_with_destination_artifacts(
         &config,
         &resources,
         dependency_tuple.clone(),
-        std::slice::from_ref(&sheet),
+        std::slice::from_ref(&sheet_artifact),
         BTreeMap::new(),
     )
     .unwrap();

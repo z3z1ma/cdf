@@ -143,10 +143,6 @@ pub struct ContractSnapshotDrift {
 pub struct LockedDestination {
     pub sheet_hash: String,
     pub sheet: DestinationSheet,
-    #[serde(
-        default,
-        skip_serializing_if = "DestinationProtocolCapabilities::is_default"
-    )]
     pub protocol_capabilities: DestinationProtocolCapabilities,
 }
 
@@ -383,29 +379,6 @@ pub fn validate_project(
         external_resources,
         checked_secrets,
     })
-}
-
-pub fn generate_lockfile(
-    config: &ProjectConfig,
-    resources: &[CompiledResource],
-    dependency_tuple: DependencyTuple,
-    destination_sheets: &[DestinationSheet],
-    contract_snapshots: BTreeMap<String, ContractSnapshot>,
-) -> Result<CdfLock> {
-    let destination_artifacts = destination_sheets
-        .iter()
-        .cloned()
-        .map(|sheet| {
-            DestinationSheetArtifact::new(sheet, DestinationProtocolCapabilities::default())
-        })
-        .collect::<Result<Vec<_>>>()?;
-    generate_lockfile_with_destination_artifacts(
-        config,
-        resources,
-        dependency_tuple,
-        &destination_artifacts,
-        contract_snapshots,
-    )
 }
 
 pub fn generate_lockfile_with_destination_artifacts(

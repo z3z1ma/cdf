@@ -125,10 +125,6 @@ impl DestinationCorrectionCapabilities {
         self
     }
 
-    pub fn is_default(&self) -> bool {
-        self == &Self::default()
-    }
-
     pub fn validate(
         &self,
         destination_transactions: &TransactionSupport,
@@ -240,10 +236,6 @@ impl Default for DestinationProtocolCapabilities {
 }
 
 impl DestinationProtocolCapabilities {
-    pub fn is_default(&self) -> bool {
-        self == &Self::default()
-    }
-
     pub fn with_corrections(mut self, corrections: DestinationCorrectionCapabilities) -> Self {
         self.corrections = corrections;
         self
@@ -313,10 +305,6 @@ pub enum ObjectKeyPolicy {
 pub struct DestinationSheetArtifact {
     #[serde(flatten)]
     pub sheet: DestinationSheet,
-    #[serde(
-        default,
-        skip_serializing_if = "DestinationProtocolCapabilities::is_default"
-    )]
     pub protocol_capabilities: DestinationProtocolCapabilities,
 }
 
