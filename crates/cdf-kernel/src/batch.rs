@@ -1,4 +1,4 @@
-use std::fmt;
+use std::{collections::BTreeSet, fmt, sync::Arc};
 
 use arrow_array::{Array, ArrayRef, RecordBatch};
 use arrow_schema::Field;
@@ -178,6 +178,26 @@ impl BatchHeader {
 
     pub fn take_residual_candidates(&mut self) -> Vec<PreContractResidualCandidate> {
         std::mem::take(&mut self.pre_contract_evidence.residual_candidates)
+    }
+
+    pub fn pre_contract_evidence_retained_bytes(&self) -> Result<u64> {
+        let mut seen = BTreeSet::new();
+        self.pre_contract_evidence
+            .residual_candidates
+            .iter()
+            .try_fold(0_u64, |total, candidate| {
+                let allocation = Arc::as_ptr(&candidate.value) as *const () as usize;
+                if !seen.insert(allocation) {
+                    return Ok(total);
+                }
+                let bytes =
+                    u64::try_from(candidate.value.get_array_memory_size()).map_err(|_| {
+                        crate::CdfError::data("pre-contract evidence memory exceeds u64")
+                    })?;
+                total
+                    .checked_add(bytes)
+                    .ok_or_else(|| crate::CdfError::data("pre-contract evidence memory overflow"))
+            })
     }
 
     pub fn set_payload_counts(&mut self, row_count: u64, byte_count: u64) {

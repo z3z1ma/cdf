@@ -532,10 +532,12 @@ impl AccountedPhysicalBatch {
         let record_batch = batch.record_batch().ok_or_else(|| {
             CdfError::data("format drivers must emit in-memory physical Arrow batches")
         })?;
-        let bytes = record_batch_retained_bytes(record_batch)?;
+        let bytes = record_batch_retained_bytes(record_batch)?
+            .checked_add(batch.header.pre_contract_evidence_retained_bytes()?)
+            .ok_or_else(|| CdfError::data("physical Arrow outcome memory overflow"))?;
         if bytes == 0 || lease.bytes() < bytes {
             return Err(CdfError::data(format!(
-                "physical Arrow outcome requires {bytes} bytes but its lease owns {}",
+                "physical Arrow outcome and evidence require {bytes} bytes but their lease owns {}",
                 lease.bytes()
             )));
         }

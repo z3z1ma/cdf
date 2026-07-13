@@ -128,8 +128,10 @@ pub(super) fn assert_drift_quarantine_package_evidence(report: &ProjectRunReport
     assert_eq!(dedup["output_rows"], 1);
     assert_eq!(dedup["duplicate_key_count"], 1);
     assert_eq!(dedup["dropped_row_count"], 1);
-    assert_eq!(dedup["dropped_rows"][0]["package_row_ordinal"], 0);
-    assert_eq!(dedup["dropped_rows"][0]["kept_package_row_ordinal"], 1);
+    assert_eq!(
+        reader.read_dedup_dropped_provenance().unwrap(),
+        vec![(0, 1)]
+    );
 
     let batches = reader.read_all_segments().unwrap();
     assert_eq!(batches.len(), 1);

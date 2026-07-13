@@ -1036,6 +1036,7 @@ dependencies = [
  "cdf-runtime",
  "futures-executor",
  "futures-util",
+ "serde",
  "serde_json",
 ]
 
