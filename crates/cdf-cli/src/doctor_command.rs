@@ -401,23 +401,40 @@ fn destination_checks(runtime: DestinationRuntime) -> Vec<DoctorCheck> {
         .health
         .into_iter()
         .map(|result| {
+            let message = redact_uri_userinfo(&result.message);
             let check = match result.status {
                 cdf_runtime::DestinationHealthStatus::Passed => {
-                    DoctorCheck::passed(result.probe_id, result.message)
+                    DoctorCheck::passed(result.probe_id, message)
                 }
                 cdf_runtime::DestinationHealthStatus::Failed => {
-                    DoctorCheck::failed(result.probe_id, result.message)
+                    DoctorCheck::failed(result.probe_id, message)
                 }
                 cdf_runtime::DestinationHealthStatus::Skipped => {
-                    DoctorCheck::skipped(result.probe_id, result.message)
+                    DoctorCheck::skipped(result.probe_id, message)
                 }
                 cdf_runtime::DestinationHealthStatus::Unsupported => {
-                    DoctorCheck::unsupported(result.probe_id, result.message)
+                    DoctorCheck::unsupported(result.probe_id, message)
                 }
             };
-            check.with_details(json!(result.details))
+            check.with_details(redact_json_uri_userinfo(json!(result.details)))
         })
         .collect()
+}
+
+fn redact_json_uri_userinfo(value: serde_json::Value) -> serde_json::Value {
+    match value {
+        serde_json::Value::String(value) => serde_json::Value::String(redact_uri_userinfo(&value)),
+        serde_json::Value::Array(values) => {
+            serde_json::Value::Array(values.into_iter().map(redact_json_uri_userinfo).collect())
+        }
+        serde_json::Value::Object(values) => serde_json::Value::Object(
+            values
+                .into_iter()
+                .map(|(key, value)| (key, redact_json_uri_userinfo(value)))
+                .collect(),
+        ),
+        value => value,
+    }
 }
 
 fn ledger_destination_drift_check(context: &ProjectContext) -> DoctorCheck {
@@ -517,6 +534,49 @@ impl DoctorReport {
             .iter()
             .filter(|check| matches!(check.status, CheckStatus::Skipped))
             .count()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::BTreeMap;
+
+    #[test]
+    fn destination_doctor_rendering_redacts_driver_health_in_json_and_human_output() {
+        let runtime = DestinationRuntime {
+            kind: "fourth".to_owned(),
+            destination_id: Some("fourth".to_owned()),
+            label: Some("fourth destination".to_owned()),
+            schemes: vec!["fourth".to_owned()],
+            sheet: None,
+            capabilities: None,
+            health: vec![cdf_runtime::DestinationHealthResult {
+                probe_id: "fourth_ready".to_owned(),
+                status: cdf_runtime::DestinationHealthStatus::Passed,
+                message: "connected to fourth://user:doctor-secret@example.invalid/db".to_owned(),
+                details: BTreeMap::from([(
+                    "endpoint".to_owned(),
+                    json!("fourth://user:doctor-secret@example.invalid/db"),
+                )]),
+            }],
+            error: None,
+        };
+        let checks = destination_checks(runtime);
+        let report = DoctorReport {
+            checks,
+            failed: 0,
+            unsupported: 0,
+        };
+
+        let json = serde_json::to_string(&report).unwrap();
+        let human = report
+            .render_document()
+            .render(&crate::render::RenderConfig::headless_for_width(96));
+        assert!(!json.contains("doctor-secret"));
+        assert!(!human.contains("doctor-secret"));
+        assert!(json.contains("fourth://[redacted]@example.invalid/db"));
+        assert!(human.contains("fourth://[redacted]@example.invalid/db"));
     }
 }
 

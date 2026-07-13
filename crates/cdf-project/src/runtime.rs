@@ -34,10 +34,7 @@ pub(crate) use artifacts::state_delta_from_run;
 #[cfg(test)]
 pub(crate) use orchestration::run_local_file_to_duckdb_checkpoint;
 #[cfg(test)]
-pub(crate) use replay::{
-    PackageReplayHooks, PackageReplayStage, recover_package_with_runtime,
-    replay_package_with_runtime,
-};
+pub(crate) use replay::{PackageReplayHooks, PackageReplayStage, replay_package_with_runtime};
 
 mod prelude {
     pub(super) use std::{

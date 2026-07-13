@@ -39,7 +39,7 @@ pub(crate) struct PackageReplayDestinationArgs<'a> {
 pub(crate) struct ReplayDestination {
     destination: Option<ResolvedProjectDestination>,
     report: RunDestinationReport,
-    kind: String,
+    receipt_source_kind: &'static str,
     secret_redaction: Option<String>,
 }
 
@@ -249,8 +249,8 @@ impl ReplayDestination {
         &self.report
     }
 
-    pub(crate) fn kind(&self) -> &str {
-        &self.kind
+    pub(crate) fn receipt_source_kind(&self) -> &'static str {
+        self.receipt_source_kind
     }
 }
 
@@ -456,19 +456,13 @@ pub(crate) fn build_replay_destination(
         .map_err(|error| {
             replay_destination_resolution_error(context, args.destination_uri, error, uri)
         })?;
-    let report = RunDestinationReport::from_project(&destination.describe(), destination.target());
+    let description = destination.describe();
+    let report = RunDestinationReport::from_project(&description, destination.target());
     let secret_redaction = destination.secret_redaction().map(str::to_owned);
-    let kind = destination
-        .describe()
-        .schemes
-        .first()
-        .copied()
-        .unwrap_or("destination")
-        .to_owned();
     Ok(ReplayDestination {
         destination: Some(destination),
         report,
-        kind,
+        receipt_source_kind: description.product_receipt_source,
         secret_redaction,
     })
 }
@@ -639,7 +633,7 @@ pub(crate) fn replay_package(
     event.destination_id = Some(report.receipt.destination.clone());
     event.details = replay_event_details(
         &receipt_source,
-        replay_destination.kind(),
+        replay_destination.receipt_source_kind(),
         report.package_status.as_str(),
     );
     progress_recorder.append_event(event)?;

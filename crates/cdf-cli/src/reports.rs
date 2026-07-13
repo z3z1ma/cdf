@@ -122,7 +122,7 @@ impl RunCliReport {
         destination: RunDestinationReport,
         schema_snapshot: Option<SchemaSnapshotActionReport>,
     ) -> Self {
-        let destination_kind = destination.kind;
+        let receipt_source_kind = destination.receipt_source_kind;
         Self {
             command: "run",
             run_id: report.run_id.to_string(),
@@ -143,7 +143,7 @@ impl RunCliReport {
             receipt: RunReceiptReport::from_report(report),
             receipt_source: RunReceiptSourceReport::from_project(
                 &report.receipt_source,
-                destination_kind,
+                receipt_source_kind,
             ),
             row_count: report.row_count,
             segment_count: report.segment_count,
@@ -365,7 +365,7 @@ impl ReplayPackageCliReport {
         destination: RunDestinationReport,
         ledger_snapshot: &RunLedgerSnapshot,
     ) -> Self {
-        let destination_kind = destination.kind;
+        let receipt_source_kind = destination.receipt_source_kind;
         Self {
             command: "replay package",
             run_id,
@@ -379,7 +379,10 @@ impl ReplayPackageCliReport {
             checkpoint: RunCheckpointReport::from_checkpoint(report.checkpoint),
             receipt_id: report.receipt.receipt_id.to_string(),
             receipt: RunReceiptReport::from_receipt(report.receipt),
-            receipt_source: RunReceiptSourceReport::from_project(&receipt_source, destination_kind),
+            receipt_source: RunReceiptSourceReport::from_project(
+                &receipt_source,
+                receipt_source_kind,
+            ),
             ledger_events: RunLedgerSummary::from_snapshot(ledger_snapshot),
             writes: WriteEffects {
                 package: true,
@@ -470,13 +473,15 @@ impl RunCheckpointReport {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub(crate) struct RunDestinationReport {
-    kind: &'static str,
+    kind: String,
     destination_id: Option<String>,
     target: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    database_path: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    root: Option<String>,
+    #[serde(flatten)]
+    product_fields: BTreeMap<String, String>,
+    #[serde(skip)]
+    display_label: String,
+    #[serde(skip)]
+    receipt_source_kind: &'static str,
 }
 
 impl RunDestinationReport {
@@ -484,52 +489,26 @@ impl RunDestinationReport {
         description: &ProjectDestinationDescription,
         target: &TargetName,
     ) -> Self {
-        match description
+        let kind = description
             .schemes
             .first()
             .copied()
             .unwrap_or("destination")
-        {
-            "duckdb" => Self::duckdb(description.label.clone(), target.to_string()),
-            "parquet" => Self::parquet(description.label.clone(), target.to_string()),
-            "postgres" => Self::postgres(target.to_string()),
-            _ => Self {
-                kind: "destination",
-                destination_id: None,
-                target: target.to_string(),
-                database_path: None,
-                root: None,
-            },
+            .to_owned();
+        // This is the single output boundary for driver-provided location labels: both
+        // structured and human reports consume the same redacted value from here onward.
+        let display_label = redact_uri_userinfo(&description.label);
+        let mut product_fields = BTreeMap::new();
+        if let Some(field) = description.product_location_field {
+            product_fields.insert(field.to_owned(), display_label.clone());
         }
-    }
-
-    pub(crate) fn duckdb(database_path: String, target: String) -> Self {
         Self {
-            kind: "duckdb",
+            kind,
             destination_id: None,
-            target,
-            database_path: Some(database_path),
-            root: None,
-        }
-    }
-
-    pub(crate) fn parquet(root: String, target: String) -> Self {
-        Self {
-            kind: "parquet",
-            destination_id: None,
-            target,
-            database_path: None,
-            root: Some(root),
-        }
-    }
-
-    pub(crate) fn postgres(target: String) -> Self {
-        Self {
-            kind: "postgres",
-            destination_id: None,
-            target,
-            database_path: None,
-            root: None,
+            target: target.to_string(),
+            product_fields,
+            display_label,
+            receipt_source_kind: description.product_receipt_source,
         }
     }
 
@@ -539,27 +518,16 @@ impl RunDestinationReport {
     }
 
     fn summary(&self) -> String {
-        let destination = self.destination_id.as_deref().unwrap_or(self.kind);
-        match self.kind {
-            "duckdb" => format!(
+        let destination = self.destination_id.as_deref().unwrap_or(&self.kind);
+        if self.display_label == self.kind {
+            format!("{destination} target {}", self.target)
+        } else {
+            format!(
                 "{} {} target {}",
                 destination,
-                self.database_path
-                    .as_deref()
-                    .map(safe_display_value)
-                    .unwrap_or_else(|| "unknown".to_owned()),
+                safe_display_value(&self.display_label),
                 self.target
-            ),
-            "parquet" => format!(
-                "{} {} target {}",
-                destination,
-                self.root
-                    .as_deref()
-                    .map(safe_display_value)
-                    .unwrap_or_else(|| "unknown".to_owned()),
-                self.target
-            ),
-            _ => format!("{destination} target {}", self.target),
+            )
         }
     }
 }
@@ -605,85 +573,64 @@ fn write_disposition_name(disposition: &cdf_kernel::WriteDisposition) -> &'stati
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
-enum RunReceiptSourceReport {
-    DuckDbCommit {
-        duplicate: bool,
-        no_op: bool,
-        package_receipt_recorded: bool,
-    },
-    DestinationCommit {
-        duplicate: bool,
-        no_op: bool,
-        package_receipt_recorded: bool,
-    },
-    DestinationCommitReceiptOnly {
-        package_receipt_recorded: bool,
-    },
-    FileManifestNoChangedFiles {
-        no_op: bool,
-    },
-    SuppliedDurableReceipt,
+struct RunReceiptSourceReport {
+    kind: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    duplicate: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    no_op: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    package_receipt_recorded: Option<bool>,
 }
 
 impl RunReceiptSourceReport {
-    fn from_project(source: &ProjectReceiptSource, destination_kind: &str) -> Self {
+    fn from_project(source: &ProjectReceiptSource, receipt_source_kind: &'static str) -> Self {
         match source {
             ProjectReceiptSource::DestinationCommit {
                 duplicate,
                 package_receipt_recorded,
-            } if destination_kind == "duckdb" => Self::DuckDbCommit {
-                duplicate: *duplicate,
-                no_op: *duplicate,
-                package_receipt_recorded: *package_receipt_recorded,
-            },
-            ProjectReceiptSource::DestinationCommit {
-                duplicate,
-                package_receipt_recorded,
-            } => Self::DestinationCommit {
-                duplicate: *duplicate,
-                no_op: *duplicate,
-                package_receipt_recorded: *package_receipt_recorded,
+            } => Self {
+                kind: receipt_source_kind,
+                duplicate: Some(*duplicate),
+                no_op: Some(*duplicate),
+                package_receipt_recorded: Some(*package_receipt_recorded),
             },
             ProjectReceiptSource::DestinationCommitReceiptOnly {
                 package_receipt_recorded,
-            } => Self::DestinationCommitReceiptOnly {
-                package_receipt_recorded: *package_receipt_recorded,
+            } => Self {
+                kind: "destination_commit_receipt_only",
+                duplicate: None,
+                no_op: None,
+                package_receipt_recorded: Some(*package_receipt_recorded),
             },
-            ProjectReceiptSource::FileManifestNoChangedFiles => {
-                Self::FileManifestNoChangedFiles { no_op: true }
-            }
-            ProjectReceiptSource::SuppliedDurableReceipt => Self::SuppliedDurableReceipt,
+            ProjectReceiptSource::FileManifestNoChangedFiles => Self {
+                kind: "file_manifest_no_changed_files",
+                duplicate: None,
+                no_op: Some(true),
+                package_receipt_recorded: None,
+            },
+            ProjectReceiptSource::SuppliedDurableReceipt => Self {
+                kind: "supplied_durable_receipt",
+                duplicate: None,
+                no_op: None,
+                package_receipt_recorded: None,
+            },
         }
     }
 
     fn duplicate_no_op(&self) -> Option<(bool, bool)> {
-        match self {
-            Self::DuckDbCommit {
-                duplicate, no_op, ..
-            }
-            | Self::DestinationCommit {
-                duplicate, no_op, ..
-            } => Some((*duplicate, *no_op)),
-            Self::FileManifestNoChangedFiles { no_op } => Some((false, *no_op)),
-            Self::DestinationCommitReceiptOnly { .. } | Self::SuppliedDurableReceipt => None,
-        }
+        self.no_op
+            .map(|no_op| (self.duplicate.unwrap_or(false), no_op))
     }
 
     fn kind_name(&self) -> &'static str {
-        match self {
-            Self::DuckDbCommit { .. } => "duck_db_commit",
-            Self::DestinationCommit { .. } => "destination_commit",
-            Self::DestinationCommitReceiptOnly { .. } => "destination_commit_receipt_only",
-            Self::FileManifestNoChangedFiles { .. } => "file_manifest_no_changed_files",
-            Self::SuppliedDurableReceipt => "supplied_durable_receipt",
-        }
+        self.kind
     }
 }
 
 pub(crate) fn replay_event_details(
     source: &ProjectReceiptSource,
-    destination_kind: &str,
+    receipt_source_kind: &str,
     package_status: &str,
 ) -> RunEventDetails {
     let mut attributes = BTreeMap::from([(
@@ -695,14 +642,9 @@ pub(crate) fn replay_event_details(
             duplicate,
             package_receipt_recorded,
         } => {
-            let receipt_source = if destination_kind == "duckdb" {
-                "duck_db_commit"
-            } else {
-                "destination_commit"
-            };
             attributes.insert(
                 "receipt_source".to_owned(),
-                RunEventValue::String(receipt_source.to_owned()),
+                RunEventValue::String(receipt_source_kind.to_owned()),
             );
             attributes.insert("duplicate".to_owned(), RunEventValue::Bool(*duplicate));
             attributes.insert("no_op".to_owned(), RunEventValue::Bool(*duplicate));
@@ -941,9 +883,15 @@ mod tests {
             resource_id: "local.events".to_owned(),
             pipeline_id: "pipeline".to_owned(),
             target: "events".to_owned(),
-            destination: RunDestinationReport::duckdb(
-                "postgres://user:secret-value@localhost/db".to_owned(),
-                "events".to_owned(),
+            destination: RunDestinationReport::from_project(
+                &ProjectDestinationDescription::new(
+                    cdf_kernel::DestinationId::new("duckdb").unwrap(),
+                    &["duckdb"],
+                    "postgres://user:secret-value@localhost/db",
+                )
+                .with_product_location_field("database_path")
+                .with_product_receipt_source("duck_db_commit"),
+                &TargetName::new("events").unwrap(),
             )
             .with_receipt_destination("duckdb".to_owned()),
             package_id: "pkg-redacted".to_owned(),
@@ -976,10 +924,11 @@ mod tests {
                     rows_deleted: None,
                 },
             },
-            receipt_source: RunReceiptSourceReport::DestinationCommit {
-                duplicate: false,
-                no_op: false,
-                package_receipt_recorded: true,
+            receipt_source: RunReceiptSourceReport {
+                kind: "duck_db_commit",
+                duplicate: Some(false),
+                no_op: Some(false),
+                package_receipt_recorded: Some(true),
             },
             row_count: 2,
             segment_count: 1,
@@ -996,5 +945,9 @@ mod tests {
 
         assert!(!rendered.contains("secret-value"));
         assert!(rendered.contains("postgres://[redacted]@localhost/db"));
+
+        let json = serde_json::to_string(&report).unwrap();
+        assert!(!json.contains("secret-value"));
+        assert!(json.contains(r#""database_path":"postgres://[redacted]@localhost/db""#));
     }
 }

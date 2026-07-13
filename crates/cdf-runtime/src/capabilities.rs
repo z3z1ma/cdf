@@ -9,6 +9,8 @@ pub struct DestinationDescription {
     pub destination_id: DestinationId,
     pub schemes: &'static [&'static str],
     pub label: String,
+    pub product_location_field: Option<&'static str>,
+    pub product_receipt_source: &'static str,
 }
 
 impl DestinationDescription {
@@ -21,8 +23,45 @@ impl DestinationDescription {
             destination_id,
             schemes,
             label: label.into(),
+            product_location_field: None,
+            product_receipt_source: "destination_commit",
         }
     }
+
+    pub fn with_product_location_field(mut self, field: &'static str) -> Self {
+        self.product_location_field = Some(field);
+        self
+    }
+
+    pub fn with_product_receipt_source(mut self, source: &'static str) -> Self {
+        self.product_receipt_source = source;
+        self
+    }
+
+    pub fn validate(&self) -> Result<()> {
+        if let Some(field) = self.product_location_field {
+            validate_product_identifier("location field", field)?;
+            if matches!(field, "kind" | "destination_id" | "target") {
+                return Err(CdfError::contract(format!(
+                    "destination product location field `{field}` collides with a reserved report field"
+                )));
+            }
+        }
+        validate_product_identifier("receipt source", self.product_receipt_source)
+    }
+}
+
+fn validate_product_identifier(kind: &str, value: &str) -> Result<()> {
+    if value.is_empty()
+        || !value
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'_')
+    {
+        return Err(CdfError::contract(format!(
+            "destination product {kind} `{value}` must be a non-empty snake_case identifier"
+        )));
+    }
+    Ok(())
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]

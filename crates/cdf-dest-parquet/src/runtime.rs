@@ -214,6 +214,7 @@ fn filesystem_description(root: &Path) -> DestinationDescription {
         &["parquet"],
         root.display().to_string(),
     )
+    .with_product_location_field("root")
 }
 
 fn prepare_parquet_commit(

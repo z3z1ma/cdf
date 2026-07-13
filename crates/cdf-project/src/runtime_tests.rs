@@ -59,18 +59,19 @@ use tracing::{
 };
 
 use crate::{
-    BackfillPlanRequest, DestinationReceiptReportingPolicy, FileManifestRunSummary,
-    LocalFileDuckDbRunRequest, PackageArtifactRecoveryRequest, PackageArtifactReplayRequest,
-    PackageReplayHooks, PackageReplayStage, PreparedDestinationCommit,
-    PreparedPackageRecoveryRequest, PreparedPackageReplayRequest, ProjectDestinationDescription,
-    ProjectDestinationDriver, ProjectDestinationRegistry, ProjectDestinationRuntime,
-    ProjectReceiptSource, ProjectResolutionContext, ProjectRunReport, ProjectRunRequest,
-    ProjectRunSource, ResolvedProjectDestination, RunTelemetryConfig, RuntimeStage,
-    TracingRunEventSink, backfill_pipeline_id, plan_backfill, recover_package_from_artifacts,
-    recover_package_with_runtime, recover_prepared_package, replay_package_from_artifacts,
+    BackfillPlanRequest, DependencyTuple, DestinationReceiptReportingPolicy,
+    FileManifestRunSummary, LocalFileDuckDbRunRequest, PackageArtifactRecoveryRequest,
+    PackageArtifactReplayRequest, PackageReplayHooks, PackageReplayStage,
+    PreparedDestinationCommit, PreparedPackageRecoveryRequest, PreparedPackageReplayRequest,
+    ProjectDestinationDescription, ProjectDestinationDriver, ProjectDestinationRegistry,
+    ProjectDestinationRuntime, ProjectReceiptSource, ProjectResolutionContext, ProjectRunReport,
+    ProjectRunRequest, ProjectRunSource, ResolvedProjectDestination, RunTelemetryConfig,
+    RuntimeStage, TracingRunEventSink, backfill_pipeline_id,
+    generate_lockfile_with_destination_artifacts, parse_cdf_toml, plan_backfill,
+    recover_package_from_artifacts, recover_prepared_package, replay_package_from_artifacts,
     replay_package_with_runtime, replay_prepared_package, replay_prepared_package_with_stage_hook,
-    run_local_file_to_duckdb_checkpoint, run_project, run_project_with_telemetry,
-    runtime::state_delta_from_run,
+    resolve_project_run_destination, run_local_file_to_duckdb_checkpoint, run_project,
+    run_project_with_telemetry, runtime::state_delta_from_run,
 };
 
 fn test_execution_services() -> cdf_runtime::ExecutionServices {
@@ -1227,6 +1228,51 @@ impl ProjectDestinationDriver for MockProjectDestinationDriver {
         &["mock"]
     }
 
+    fn inspect(
+        &self,
+        _uri: &str,
+        _context: &ProjectResolutionContext<'_>,
+    ) -> Result<cdf_runtime::DestinationInspection> {
+        let sheet_artifact = cdf_kernel::DestinationSheetArtifact::new(
+            self.destination.sheet.clone(),
+            Default::default(),
+        )?;
+        Ok(cdf_runtime::DestinationInspection {
+            description: ProjectDestinationDescription::new(
+                self.destination.sheet.destination.clone(),
+                &["mock"],
+                "mock fourth destination",
+            ),
+            sheet_artifact_hash: cdf_runtime::artifact_hash(&sheet_artifact)?,
+            sheet_artifact,
+            runtime: cdf_runtime::DestinationRuntimeCapabilities {
+                commit_payload_mode: cdf_runtime::DestinationCommitPayloadMode::SegmentStreaming,
+                max_in_flight_segments: Some(1),
+                max_in_flight_bytes: Some(64 * 1024 * 1024),
+                ..Default::default()
+            },
+            health_probes: vec![cdf_runtime::DestinationHealthProbe {
+                probe_id: "mock_ready".to_owned(),
+                description: "mock fourth destination readiness".to_owned(),
+                requires_credentials: true,
+                mutates_destination: false,
+            }],
+        })
+    }
+
+    fn health(
+        &self,
+        _uri: &str,
+        _context: &ProjectResolutionContext<'_>,
+    ) -> Result<Vec<cdf_runtime::DestinationHealthResult>> {
+        Ok(vec![cdf_runtime::DestinationHealthResult {
+            probe_id: "mock_ready".to_owned(),
+            status: cdf_runtime::DestinationHealthStatus::Passed,
+            message: "mock fourth destination is ready".to_owned(),
+            details: Default::default(),
+        }])
+    }
+
     fn resolve(
         &self,
         uri: &str,
@@ -1314,6 +1360,10 @@ impl ProjectDestinationRuntime for MockProjectDestinationRuntime {
         }
         self.counters.binds.fetch_add(1, Ordering::SeqCst);
         Ok(())
+    }
+
+    fn secret_redaction(&self) -> Option<&str> {
+        Some("fourth-secret")
     }
 }
 
@@ -5654,7 +5704,7 @@ impl CheckpointStore for HeadOnlyCommitFailingStore {
 }
 
 #[test]
-fn generic_package_replay_and_recovery_drive_mock_runtime_without_destination_branch() {
+fn generic_lock_plan_replay_and_recovery_drive_mock_runtime_without_destination_branch() {
     let temp = tempfile::tempdir().unwrap();
     let package_dir = temp.path().join("pkg-generic-mock");
     build_package(&package_dir, "pkg-generic-mock", PackageStatus::Packaged);
@@ -5673,8 +5723,93 @@ fn generic_package_replay_and_recovery_drive_mock_runtime_without_destination_br
             counters.clone(),
         ))
         .unwrap();
-    let context = ProjectResolutionContext::new();
+    let target = TargetName::new("orders").unwrap();
+    let context = ProjectResolutionContext::for_project_run(temp.path(), &target);
+    let inspection = registry
+        .inspect(
+            "mock://user:fourth-secret@example.invalid/database",
+            &context,
+        )
+        .unwrap();
+    assert_eq!(inspection.description.destination_id.as_str(), "mock");
+    assert_eq!(inspection.sheet_artifact.sheet.destination.as_str(), "mock");
+    assert!(
+        inspection
+            .health_probes
+            .iter()
+            .all(|probe| !probe.mutates_destination)
+    );
+    assert_eq!(destination.write_count(), 0, "inspection must not mutate");
+    let lock_config = parse_cdf_toml(
+        r#"
+[project]
+name = "fourth-driver-lock"
+default_environment = "dev"
+normalizer = "namecase-v1"
+
+[environments.dev]
+state = ".cdf/state.db"
+packages = ".cdf/packages"
+destination = "mock://user:fourth-secret@example.invalid/database"
+
+[resources."mock.*"]
+source = "resources/mock.toml"
+"#,
+    )
+    .unwrap();
+    let lock = generate_lockfile_with_destination_artifacts(
+        &lock_config,
+        &[],
+        DependencyTuple {
+            cdf: "test".to_owned(),
+            arrow_rs: "test".to_owned(),
+            datafusion: None,
+            object_store: None,
+            duckdb_rs: None,
+            rust: None,
+        },
+        std::slice::from_ref(&inspection.sheet_artifact),
+        BTreeMap::new(),
+    )
+    .unwrap();
+    assert_eq!(
+        lock.destinations["mock"].sheet_artifact().unwrap(),
+        inspection.sheet_artifact
+    );
+    assert_eq!(
+        destination.write_count(),
+        0,
+        "lock generation must not mutate"
+    );
+    let health = registry
+        .health(
+            "mock://user:fourth-secret@example.invalid/database",
+            &context,
+        )
+        .unwrap();
+    assert_eq!(
+        health[0].status,
+        cdf_runtime::DestinationHealthStatus::Passed
+    );
+    assert_eq!(destination.write_count(), 0, "health must not mutate");
+    let resource = sql_runtime_resource("public.events");
+    let mut planned_destination =
+        resolve_project_run_destination(&registry, "mock://registered", &context).unwrap();
+    let mut plan_policy = ContractPolicy::for_trust(resource.descriptor().trust_level.clone());
+    plan_policy.normalization.identifier = planned_destination
+        .column_identifier_policy()
+        .unwrap()
+        .unwrap();
+    let engine_plan = live_plan_with_exact_policy(&resource, "pkg-fourth-plan", &plan_policy);
+    let planned = planned_destination
+        .plan_resource_commit(&resource, &engine_plan)
+        .unwrap();
+    assert_eq!(planned.description.destination_id.as_str(), "mock");
+    assert_eq!(planned.target, target);
+    assert_eq!(destination.write_count(), 0, "planning must not mutate");
+
     let mut replay_runtime = registry.resolve("mock://registered", &context).unwrap();
+    assert_eq!(replay_runtime.secret_redaction(), Some("fourth-secret"));
     let replay_stages = Arc::new(Mutex::new(Vec::new()));
     let replay_stages_hook = Arc::clone(&replay_stages);
     let stage_hook = move |stage: PackageReplayStage<'_>| {
@@ -5699,7 +5834,7 @@ fn generic_package_replay_and_recovery_drive_mock_runtime_without_destination_br
     )
     .unwrap();
 
-    assert_eq!(counters.resolve_count(), 1);
+    assert_eq!(counters.resolve_count(), 2);
     assert_eq!(counters.prepare_count(), 1);
     assert_eq!(counters.bind_count(), 1);
     assert_eq!(destination.write_count(), 1);
@@ -5727,34 +5862,18 @@ fn generic_package_replay_and_recovery_drive_mock_runtime_without_destination_br
     );
 
     let writes_before_recovery = destination.write_count();
-    let mut recovery_runtime = registry.resolve("mock://registered", &context).unwrap();
-    let recovery_stages = Arc::new(Mutex::new(Vec::new()));
-    let recovery_stages_hook = Arc::clone(&recovery_stages);
-    let recovery_stage_hook = move |stage: PackageReplayStage<'_>| {
-        recovery_stages_hook
-            .lock()
-            .unwrap()
-            .push(package_replay_stage_name(stage));
-        Ok(())
-    };
-    let recovery_package = PackageReader::open(&package_dir)
-        .unwrap()
-        .into_verified()
-        .unwrap();
-    let recovery = recover_package_with_runtime(
-        recovery_package,
-        recovery_runtime.as_mut(),
-        &store,
-        inputs.clone(),
-        report.receipt.clone(),
-        PackageReplayHooks {
-            stage: Some(&recovery_stage_hook),
-            ..Default::default()
-        },
-    )
+    let recovery_destination =
+        resolve_project_run_destination(&registry, "mock://registered", &context).unwrap();
+    let recovery = recover_package_from_artifacts(PackageArtifactRecoveryRequest {
+        package_dir: package_dir.clone(),
+        destination: recovery_destination,
+        checkpoint_store: &store,
+        receipt: report.receipt.clone(),
+        after_receipt_verified: None,
+    })
     .unwrap();
 
-    assert_eq!(counters.resolve_count(), 2);
+    assert_eq!(counters.resolve_count(), 3);
     assert_eq!(counters.prepare_count(), 1);
     assert_eq!(counters.bind_count(), 1);
     assert_eq!(destination.write_count(), writes_before_recovery);
@@ -5763,14 +5882,6 @@ fn generic_package_replay_and_recovery_drive_mock_runtime_without_destination_br
         ProjectReceiptSource::SuppliedDurableReceipt
     );
     assert_eq!(recovery.checkpoint, report.checkpoint);
-    assert_eq!(
-        *recovery_stages.lock().unwrap(),
-        vec![
-            "destination_receipt_recorded",
-            "checkpoint_committed",
-            "package_status_updated",
-        ]
-    );
 }
 
 #[test]

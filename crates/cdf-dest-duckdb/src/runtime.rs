@@ -142,6 +142,8 @@ impl DestinationRuntime for DuckDbDestination {
             &["duckdb"],
             self.database_path().display().to_string(),
         )
+        .with_product_location_field("database_path")
+        .with_product_receipt_source("duck_db_commit")
     }
 
     fn runtime_capabilities(&self) -> DestinationRuntimeCapabilities {

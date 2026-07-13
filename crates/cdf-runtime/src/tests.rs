@@ -367,6 +367,8 @@ impl DurableSegmentReader for EmptySegmentReader {
 struct MockDriver {
     schemes: &'static [&'static str],
     destination: &'static str,
+    product_location_field: Option<&'static str>,
+    product_receipt_source: &'static str,
 }
 
 impl DestinationDriver for MockDriver {
@@ -385,11 +387,7 @@ impl DestinationDriver for MockDriver {
             cdf_kernel::DestinationProtocolCapabilities::default(),
         )?;
         Ok(DestinationInspection {
-            description: DestinationDescription::new(
-                sheet.destination.clone(),
-                self.schemes,
-                self.destination,
-            ),
+            description: self.description(sheet.destination.clone()),
             sheet_artifact_hash: artifact_hash(&sheet_artifact)?,
             sheet_artifact,
             runtime: DestinationRuntimeCapabilities {
@@ -431,13 +429,21 @@ impl DestinationDriver for MockDriver {
     ) -> Result<Box<dyn DestinationRuntime>> {
         let sheet = mock_sheet(self.destination);
         Ok(Box::new(MockRuntime {
-            description: DestinationDescription::new(
-                sheet.destination.clone(),
-                self.schemes,
-                self.destination,
-            ),
+            description: self.description(sheet.destination.clone()),
             protocol: MockProtocol { sheet },
         }))
+    }
+}
+
+impl MockDriver {
+    fn description(&self, destination_id: DestinationId) -> DestinationDescription {
+        let mut description =
+            DestinationDescription::new(destination_id, self.schemes, self.destination)
+                .with_product_receipt_source(self.product_receipt_source);
+        if let Some(field) = self.product_location_field {
+            description = description.with_product_location_field(field);
+        }
+        description
     }
 }
 
@@ -470,12 +476,16 @@ fn registry_resolves_and_inspects_without_order_authority() {
         .register(MockDriver {
             schemes: ALPHA,
             destination: "alpha_destination",
+            product_location_field: None,
+            product_receipt_source: "destination_commit",
         })
         .unwrap();
     forward
         .register(MockDriver {
             schemes: BETA,
             destination: "beta_destination",
+            product_location_field: None,
+            product_receipt_source: "destination_commit",
         })
         .unwrap();
     let mut reverse = DestinationRegistry::new();
@@ -483,12 +493,16 @@ fn registry_resolves_and_inspects_without_order_authority() {
         .register(MockDriver {
             schemes: BETA,
             destination: "beta_destination",
+            product_location_field: None,
+            product_receipt_source: "destination_commit",
         })
         .unwrap();
     reverse
         .register(MockDriver {
             schemes: ALPHA,
             destination: "alpha_destination",
+            product_location_field: None,
+            product_receipt_source: "destination_commit",
         })
         .unwrap();
 
@@ -522,6 +536,8 @@ fn registry_rejects_empty_malformed_and_duplicate_schemes() {
             .register(MockDriver {
                 schemes: EMPTY,
                 destination: "empty",
+                product_location_field: None,
+                product_receipt_source: "destination_commit",
             })
             .is_err()
     );
@@ -530,6 +546,8 @@ fn registry_rejects_empty_malformed_and_duplicate_schemes() {
             .register(MockDriver {
                 schemes: MALFORMED,
                 destination: "malformed",
+                product_location_field: None,
+                product_receipt_source: "destination_commit",
             })
             .is_err()
     );
@@ -537,6 +555,8 @@ fn registry_rejects_empty_malformed_and_duplicate_schemes() {
         .register(MockDriver {
             schemes: ALPHA,
             destination: "alpha",
+            product_location_field: None,
+            product_receipt_source: "destination_commit",
         })
         .unwrap();
     assert!(
@@ -544,6 +564,8 @@ fn registry_rejects_empty_malformed_and_duplicate_schemes() {
             .register(MockDriver {
                 schemes: ALPHA,
                 destination: "duplicate",
+                product_location_field: None,
+                product_receipt_source: "destination_commit",
             })
             .is_err()
     );
@@ -551,6 +573,43 @@ fn registry_rejects_empty_malformed_and_duplicate_schemes() {
         registry
             .resolve("unknown://target", &DestinationResolutionContext::new())
             .is_err()
+    );
+}
+
+#[test]
+fn registry_rejects_product_metadata_that_cannot_compose_with_stable_reports() {
+    static RESERVED: &[&str] = &["reserved"];
+    let mut registry = DestinationRegistry::new();
+    registry
+        .register(MockDriver {
+            schemes: RESERVED,
+            destination: "reserved_destination",
+            product_location_field: Some("target"),
+            product_receipt_source: "destination_commit",
+        })
+        .unwrap();
+    let context = DestinationResolutionContext::new();
+
+    let inspect_error = registry.inspect("reserved://target", &context).unwrap_err();
+    assert!(inspect_error.message.contains("reserved report field"));
+    let resolve_error = registry
+        .resolve("reserved://target", &context)
+        .err()
+        .expect("reserved metadata must fail resolution");
+    assert!(resolve_error.message.contains("reserved report field"));
+
+    let invalid_source = DestinationDescription::new(
+        DestinationId::new("invalid_source").unwrap(),
+        &["invalid-source"],
+        "invalid source",
+    )
+    .with_product_receipt_source("Destination Commit");
+    assert!(
+        invalid_source
+            .validate()
+            .unwrap_err()
+            .message
+            .contains("non-empty snake_case identifier")
     );
 }
 

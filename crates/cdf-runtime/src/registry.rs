@@ -84,6 +84,7 @@ impl DestinationRegistry {
         context: &DestinationResolutionContext<'_>,
     ) -> Result<DestinationInspection> {
         let inspection = self.driver_for_uri(uri)?.inspect(uri, context)?;
+        inspection.description.validate()?;
         inspection.runtime.validate()?;
         Ok(inspection)
     }
@@ -94,6 +95,7 @@ impl DestinationRegistry {
         context: &DestinationResolutionContext<'_>,
     ) -> Result<Box<dyn DestinationRuntime>> {
         let runtime = self.driver_for_uri(uri)?.resolve(uri, context)?;
+        runtime.describe().validate()?;
         let capabilities = runtime.runtime_capabilities();
         capabilities.validate()?;
         if let Some(execution) = context.execution_services() {
