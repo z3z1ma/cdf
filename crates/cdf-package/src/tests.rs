@@ -18,7 +18,10 @@ use cdf_kernel::{
     SegmentId, SourcePosition, StateDelta, StateSegment, TargetName, VerifyClause,
     WriteDisposition, aggregate_processed_observation_positions,
 };
-use cdf_memory::{DeterministicMemoryCoordinator, MemoryCoordinator};
+use cdf_memory::{
+    ConsumerKey, DeterministicMemoryCoordinator, MemoryClass, MemoryCoordinator,
+    record_batch_retained_bytes,
+};
 
 #[cfg(unix)]
 #[test]
@@ -1915,6 +1918,77 @@ fn persisted_archive_default_fails_on_tamper_and_force_replaces() {
 
     assert_eq!(replaced.status, PackageArchiveWriteStatus::Replaced);
     verify_package(temp.path()).unwrap();
+}
+
+#[test]
+fn persisted_archive_enforces_one_accounted_input_output_window() {
+    assert_eq!(ARCHIVE_SEGMENT_WINDOW_BYTES, 64 * 1024 * 1024);
+    let package = tempfile::tempdir().unwrap();
+    build_archive_fixture(package.path());
+    let reader = PackageReader::open(package.path()).unwrap();
+
+    let memory: Arc<dyn MemoryCoordinator> =
+        Arc::new(DeterministicMemoryCoordinator::new(64 * 1024, BTreeMap::new()).unwrap());
+    let archive = tempfile::tempdir().unwrap();
+    write_streamed_archive_temp_tree_with_memory(
+        &reader,
+        archive.path(),
+        Arc::clone(&memory),
+        64 * 1024,
+    )
+    .unwrap();
+    let snapshot = memory.snapshot();
+    let consumer = ConsumerKey::new(ARCHIVE_SEGMENT_MEMORY_CONSUMER, MemoryClass::Package).unwrap();
+    assert_eq!(snapshot.current_bytes, 0);
+    assert_eq!(snapshot.peak_bytes, 64 * 1024);
+    assert_eq!(snapshot.consumers[&consumer].current_bytes, 0);
+    assert_eq!(snapshot.consumers[&consumer].peak_bytes, 64 * 1024);
+
+    let batches = reader
+        .read_segment(&reader.manifest().identity.segments[0].segment_id)
+        .unwrap();
+    let retained_arrow_bytes = batches
+        .iter()
+        .map(|batch| record_batch_retained_bytes(batch).unwrap())
+        .sum::<u64>();
+    let combined_window = retained_arrow_bytes + 1;
+    let combined_memory: Arc<dyn MemoryCoordinator> =
+        Arc::new(DeterministicMemoryCoordinator::new(combined_window, BTreeMap::new()).unwrap());
+    let combined_archive = tempfile::tempdir().unwrap();
+    let error = write_streamed_archive_temp_tree_with_memory(
+        &reader,
+        combined_archive.path(),
+        Arc::clone(&combined_memory),
+        combined_window,
+    )
+    .unwrap_err();
+    assert!(
+        error
+            .message
+            .contains("Parquet output exceeds its 1-byte package archive window"),
+        "{error}"
+    );
+    assert_eq!(combined_memory.snapshot().current_bytes, 0);
+    assert!(
+        fs::read_dir(combined_archive.path().join("data"))
+            .unwrap()
+            .next()
+            .is_none()
+    );
+
+    let oversized_window = retained_arrow_bytes - 1;
+    let oversized_memory: Arc<dyn MemoryCoordinator> =
+        Arc::new(DeterministicMemoryCoordinator::new(oversized_window, BTreeMap::new()).unwrap());
+    let oversized_archive = tempfile::tempdir().unwrap();
+    let error = write_streamed_archive_temp_tree_with_memory(
+        &reader,
+        oversized_archive.path(),
+        Arc::clone(&oversized_memory),
+        oversized_window,
+    )
+    .unwrap_err();
+    assert!(error.message.contains("Arrow bytes above its"), "{error}");
+    assert_eq!(oversized_memory.snapshot().current_bytes, 0);
 }
 
 #[test]

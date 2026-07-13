@@ -20,7 +20,7 @@ The prior destination-specific `CommitSegmentRetention` type was deleted and pac
 
 All listed checks passed. The focused runtime law observes nonzero coordinator usage after converting the native-driver envelope into a kernel batch and zero usage only after dropping that batch.
 
-The full `cdf-package` suite separately exposed two archive force-replacement failures. They reproduce outside this retention path and are owned by `.10x/tickets/2026-07-11-package-archive-force-replacement-regression.md`.
+The full `cdf-package` suite separately exposed two archive force-replacement failures. They reproduce outside this retention path and are owned by `.10x/tickets/done/2026-07-11-package-archive-force-replacement-regression.md`.
 
 ## What this supports
 

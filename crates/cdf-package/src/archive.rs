@@ -7,7 +7,10 @@ use std::{
 };
 
 use cdf_kernel::{CdfError, Result};
-use cdf_memory::{DEFAULT_PROCESS_BUDGET_BYTES, DeterministicMemoryCoordinator, MemoryCoordinator};
+use cdf_memory::{
+    ConsumerKey, DeterministicMemoryCoordinator, MemoryClass, MemoryCoordinator,
+    ReservationRequest, record_batch_retained_bytes, reserve_blocking,
+};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
@@ -18,7 +21,10 @@ use crate::{
         SegmentEntry,
     },
     ops::{read_manifest, verify_package, verify_package_identity},
-    parquet::transcode_record_batches_to_parquet_bytes,
+    parquet::{
+        transcode_record_batches_to_bounded_parquet_bytes,
+        transcode_record_batches_to_parquet_bytes,
+    },
     reader::PackageReader,
     storage::{io_error, package_path, sync_directory, write_manifest_atomic},
 };
@@ -31,6 +37,8 @@ const PARQUET_DATA_DIR: &str = "archive/parquet/data";
 const FIDELITY_REPORT_PATH: &str = "archive/parquet/fidelity.json";
 const SOURCE_FORMAT: &str = "arrow_ipc_lz4";
 const ARCHIVE_FORMAT: &str = "parquet";
+pub(crate) const ARCHIVE_SEGMENT_WINDOW_BYTES: u64 = 64 * 1024 * 1024;
+pub(crate) const ARCHIVE_SEGMENT_MEMORY_CONSUMER: &str = "package-parquet-archive-segment";
 
 static ARCHIVE_TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
@@ -195,37 +203,101 @@ fn write_streamed_archive_temp_tree(
     reader: &PackageReader,
     temp_dir: &Path,
 ) -> Result<ParquetArchiveMetadata> {
+    let memory: std::sync::Arc<dyn MemoryCoordinator> = std::sync::Arc::new(
+        DeterministicMemoryCoordinator::new(ARCHIVE_SEGMENT_WINDOW_BYTES, Default::default())?,
+    );
+    write_streamed_archive_temp_tree_with_memory(
+        reader,
+        temp_dir,
+        memory,
+        ARCHIVE_SEGMENT_WINDOW_BYTES,
+    )
+}
+
+pub(crate) fn write_streamed_archive_temp_tree_with_memory(
+    reader: &PackageReader,
+    temp_dir: &Path,
+    memory: std::sync::Arc<dyn MemoryCoordinator>,
+    maximum_window_bytes: u64,
+) -> Result<ParquetArchiveMetadata> {
+    if maximum_window_bytes == 0 {
+        return Err(CdfError::contract(
+            "package Parquet archive segment window must be nonzero",
+        ));
+    }
+    if maximum_window_bytes > memory.snapshot().budget_bytes {
+        return Err(CdfError::data(format!(
+            "package Parquet archive segment window {maximum_window_bytes} exceeds managed budget {}",
+            memory.snapshot().budget_bytes
+        )));
+    }
     let data_dir = temp_dir.join("data");
     fs::create_dir_all(&data_dir)
         .map_err(|error| io_error(format!("create {}", data_dir.display()), error))?;
-    let memory: std::sync::Arc<dyn MemoryCoordinator> = std::sync::Arc::new(
-        DeterministicMemoryCoordinator::new(DEFAULT_PROCESS_BUDGET_BYTES, Default::default())?,
-    );
-    let stream = reader.verified_canonical_segment_stream(memory, 64 * 1024 * 1024)?;
     let mut segments = Vec::with_capacity(reader.manifest().identity.segments.len());
-    for segment in stream {
-        let segment = segment?;
-        let parquet_bytes = transcode_record_batches_to_parquet_bytes(&segment.batches)?;
-        let archive_path = archive_segment_path(segment.entry.segment_id.as_str())?;
+    for entry in &reader.manifest().identity.segments {
+        let request = ReservationRequest::new(
+            ConsumerKey::new(ARCHIVE_SEGMENT_MEMORY_CONSUMER, MemoryClass::Package)?,
+            maximum_window_bytes,
+        )?
+        .as_minimum_working_set();
+        let _window = reserve_blocking(std::sync::Arc::clone(&memory), &request)?;
+        let batches = reader.read_segment(&entry.segment_id)?;
+        let retained_arrow_bytes = batches.iter().try_fold(0_u64, |total, batch| {
+            total
+                .checked_add(record_batch_retained_bytes(batch)?)
+                .ok_or_else(|| CdfError::data("archive segment retained Arrow memory overflow"))
+        })?;
+        if retained_arrow_bytes > maximum_window_bytes {
+            return Err(CdfError::data(format!(
+                "segment {} retains {retained_arrow_bytes} Arrow bytes above its {maximum_window_bytes}-byte package Parquet archive window",
+                entry.segment_id
+            )));
+        }
+        let row_count = batches.iter().try_fold(0_u64, |total, batch| {
+            total
+                .checked_add(
+                    u64::try_from(batch.num_rows())
+                        .map_err(|_| CdfError::data("archive segment row count exceeds u64"))?,
+                )
+                .ok_or_else(|| CdfError::data("archive segment row count overflow"))
+        })?;
+        if row_count != entry.row_count {
+            return Err(CdfError::data(format!(
+                "segment {} manifest row count {} differs from package data {row_count}",
+                entry.segment_id, entry.row_count
+            )));
+        }
+        let maximum_parquet_bytes = maximum_window_bytes - retained_arrow_bytes;
+        let parquet_bytes =
+            transcode_record_batches_to_bounded_parquet_bytes(&batches, maximum_parquet_bytes)?;
+        let retained_parquet_bytes = u64::try_from(parquet_bytes.capacity())
+            .map_err(|_| CdfError::data("archive Parquet output allocation exceeds u64"))?;
+        let retained_window_bytes = retained_arrow_bytes
+            .checked_add(retained_parquet_bytes)
+            .ok_or_else(|| CdfError::data("archive segment retained memory overflow"))?;
+        if retained_window_bytes > maximum_window_bytes {
+            return Err(CdfError::data(format!(
+                "segment {} retains {retained_arrow_bytes} Arrow bytes plus {retained_parquet_bytes} Parquet output bytes, above its {maximum_window_bytes}-byte package Parquet archive window",
+                entry.segment_id
+            )));
+        }
+        let archive_path = archive_segment_path(entry.segment_id.as_str())?;
         let file_name = Path::new(&archive_path).file_name().ok_or_else(|| {
             CdfError::internal(format!("archive path {archive_path} has no file name"))
         })?;
         let path = data_dir.join(file_name);
         write_new_file(&path, &parquet_bytes)?;
         segments.push(ArchiveSegmentMetadata {
-            segment_id: segment.entry.segment_id.as_str().to_owned(),
-            source_path: segment.entry.path,
-            source_byte_count: segment.entry.byte_count,
-            source_sha256: segment.entry.sha256,
-            source_row_count: segment.entry.row_count,
+            segment_id: entry.segment_id.as_str().to_owned(),
+            source_path: entry.path.clone(),
+            source_byte_count: entry.byte_count,
+            source_sha256: entry.sha256.clone(),
+            source_row_count: entry.row_count,
             archive_path,
             archive_byte_count: parquet_bytes.len() as u64,
             archive_sha256: sha256_hex(&parquet_bytes),
-            archive_row_count: segment
-                .batches
-                .iter()
-                .map(|batch| batch.num_rows() as u64)
-                .sum(),
+            archive_row_count: row_count,
         });
     }
     sync_directory(&data_dir)?;

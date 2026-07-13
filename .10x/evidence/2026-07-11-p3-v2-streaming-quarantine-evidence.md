@@ -15,7 +15,7 @@ Vector validation now separates masks from candidate emission and calls an engin
 - `cargo test -p cdf-package quarantine --lib` — two passed, including a 20,000-record writer split into 4,096-record calls and exact readback.
 - `cargo test -p cdf-engine --lib` — 91 passed, four explicit performance/stress tests ignored.
 - `cargo clippy -p cdf-contract -p cdf-package -p cdf-engine --all-targets -- -D warnings` — passed.
-- Full package tests reached 50 passing before the two already-owned archive-force regression tests failed exactly as recorded in `.10x/tickets/2026-07-11-package-archive-force-replacement-regression.md`; focused quarantine/dedup tests and strict Clippy pass.
+- Full package tests reached 50 passing before the two already-owned archive-force regression tests failed exactly as recorded in `.10x/tickets/done/2026-07-11-package-archive-force-replacement-regression.md`; focused quarantine/dedup tests and strict Clippy pass.
 - `CDF_A5_FUSION_BENCH_ITERATIONS=200 cargo test --release -p cdf-engine fused_transform_hot_path_benchmark --lib -- --ignored --nocapture` — unfused 1.942 GiB/s, fused 15.496 GiB/s, 7.979x.
 
 ## What this supports or challenges
