@@ -832,6 +832,27 @@ fn build_package_with_options(
     disposition: WriteDisposition,
     checkpoint_id: &str,
 ) -> PackageManifest {
+    build_package_with_options_and_scan_tamper(
+        package_dir,
+        package_id,
+        status,
+        stale,
+        disposition,
+        checkpoint_id,
+        false,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn build_package_with_options_and_scan_tamper(
+    package_dir: &Path,
+    package_id: &str,
+    status: PackageStatus,
+    stale: bool,
+    disposition: WriteDisposition,
+    checkpoint_id: &str,
+    duplicate_scan_observation: bool,
+) -> PackageManifest {
     let builder = PackageBuilder::create(package_dir, package_id).unwrap();
     builder.update_status(PackageStatus::Extracting).unwrap();
     builder
@@ -870,7 +891,7 @@ fn build_package_with_options(
         )
         .unwrap();
     write_state_commit_artifacts(&builder, &segment, disposition, checkpoint_id);
-    write_compiled_expression_artifacts(&builder, stale, true, None);
+    write_compiled_expression_artifacts(&builder, stale, true, None, duplicate_scan_observation);
     builder.finish_with_status(status).unwrap()
 }
 
@@ -990,6 +1011,7 @@ fn build_zero_segment_processed_package(package_dir: &Path, package_id: &str) ->
             cdf_engine::PhysicalObservationEvidence::arrow_schema(physical_schema.as_ref())
                 .unwrap(),
         )),
+        false,
     );
     builder.finish().unwrap()
 }
@@ -1002,6 +1024,7 @@ fn write_compiled_expression_artifacts(
         &cdf_kernel::TerminalSchemaObservationQuarantine,
         cdf_engine::PhysicalObservationEvidence,
     )>,
+    duplicate_scan_observation: bool,
 ) {
     let schema = sample_batch(vec![], vec![]).schema();
     let mut program = compile_validation_program(
@@ -1036,6 +1059,18 @@ fn write_compiled_expression_artifacts(
             .as_mut()
             .unwrap()
             .native_filter_lowering_version = "stale-test-version".to_owned();
+    }
+    if duplicate_scan_observation {
+        let mut duplicate = plan.scan.partitions[0].clone();
+        duplicate.partition_id = PartitionId::new("artifact-fixture-duplicate").unwrap();
+        duplicate.scope = ScopeKey::Partition {
+            partition_id: duplicate.partition_id.clone(),
+        };
+        duplicate.metadata.insert(
+            cdf_kernel::PLAN_SCHEMA_OBSERVATION_ID_KEY.to_owned(),
+            "artifact-fixture".to_owned(),
+        );
+        plan.scan.partitions.push(duplicate);
     }
     builder
         .write_json_artifact("plan/validation-program.json", &plan.validation_program)
@@ -1150,7 +1185,13 @@ impl ResourceStream for ArtifactPlanResource {
     }
 
     fn plan_partitions(&self, _request: &ScanRequest) -> Result<Vec<cdf_kernel::PartitionPlan>> {
-        Ok(Vec::new())
+        let partition_id = PartitionId::new("artifact-fixture")?;
+        Ok(vec![cdf_kernel::PartitionPlan {
+            partition_id: partition_id.clone(),
+            scope: ScopeKey::Partition { partition_id },
+            start_position: None,
+            metadata: BTreeMap::new(),
+        }])
     }
 
     fn open(
@@ -6625,6 +6666,44 @@ fn artifact_replay_reconstructs_delta_and_commit_request_from_package_files() {
     );
     assert_head(&store, &report.checkpoint.delta);
     assert_eq!(package_receipts(&package_dir), vec![report.receipt.clone()]);
+}
+
+#[test]
+fn artifact_replay_rejects_duplicate_scan_observation_before_mutation() {
+    let temp = tempfile::tempdir().unwrap();
+    let package_dir = temp.path().join("pkg-artifact-duplicate-scan-observation");
+    build_package_with_options_and_scan_tamper(
+        &package_dir,
+        "pkg-artifact-duplicate-scan-observation",
+        PackageStatus::Packaged,
+        false,
+        WriteDisposition::Append,
+        "checkpoint-artifact",
+        true,
+    );
+    let db_path = temp.path().join("local.duckdb");
+    let destination = destination(&db_path);
+    let store = SqliteCheckpointStore::open_in_memory().unwrap();
+
+    let error =
+        replay_package_from_artifacts(artifact_replay_request(&package_dir, &destination, &store))
+            .unwrap_err();
+
+    assert!(
+        error.to_string().contains("assigned to planned partitions"),
+        "{error}"
+    );
+    assert!(!db_path.exists());
+    assert!(
+        store
+            .history(
+                &PipelineId::new("pipeline-1").unwrap(),
+                &ResourceId::new("orders").unwrap(),
+                &scope(),
+            )
+            .unwrap()
+            .is_empty()
+    );
 }
 
 #[test]

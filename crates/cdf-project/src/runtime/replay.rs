@@ -587,6 +587,10 @@ fn validate_package_compiled_schema_admission(package: &VerifiedPackageReader) -
             "schema/stream-admission-evidence.json",
         )?;
     evidence.validate(&admission)?;
+    let scan: cdf_kernel::ScanPlan = package
+        .reader()
+        .verified_json_artifact(package.verification(), cdf_package_contract::SCAN_PLAN_FILE)?;
+    cdf_kernel::validate_scan_partition_observation_identities(&scan)?;
     let mut admitted = std::collections::BTreeMap::new();
     let mut partial_admissions = std::collections::BTreeMap::new();
     let mut unpositioned_admissions = std::collections::BTreeMap::new();
@@ -623,10 +627,37 @@ fn validate_package_compiled_schema_admission(package: &VerifiedPackageReader) -
         unpositioned_admissions.keys().map(String::as_str),
         &lineage,
     )?;
+    for (observation_id, source_position) in &admitted {
+        let matching_partitions = scan
+            .partitions
+            .iter()
+            .filter(|partition| {
+                cdf_kernel::partition_schema_observation_id(partition) == observation_id
+            })
+            .collect::<Vec<_>>();
+        if matching_partitions.len() != 1 {
+            return Err(CdfError::data(format!(
+                "complete stream-admission observation {observation_id:?} is not bound to one planned partition"
+            )));
+        }
+        let partition = matching_partitions[0];
+        if lineage
+            .input_observations
+            .iter()
+            .filter(|observation| {
+                observation.observation_id == *observation_id
+                    && observation.partition_id == partition.partition_id
+                    && observation.output_position.as_ref() == Some(source_position)
+            })
+            .count()
+            != 1
+        {
+            return Err(CdfError::data(format!(
+                "complete stream-admission observation {observation_id:?} does not match its planned partition and execution lineage"
+            )));
+        }
+    }
     if !partial_admissions.is_empty() {
-        let scan: cdf_kernel::ScanPlan = package
-            .reader()
-            .verified_json_artifact(package.verification(), cdf_package_contract::SCAN_PLAN_FILE)?;
         for (observation_id, (attempted_position, observed_rows, partition_binding)) in
             &partial_admissions
         {
@@ -660,9 +691,6 @@ fn validate_package_compiled_schema_admission(package: &VerifiedPackageReader) -
         }
     }
     if !unpositioned_admissions.is_empty() {
-        let scan: cdf_kernel::ScanPlan = package
-            .reader()
-            .verified_json_artifact(package.verification(), cdf_package_contract::SCAN_PLAN_FILE)?;
         for (observation_id, partition_binding) in &unpositioned_admissions {
             let matching_partitions = scan
                 .partitions

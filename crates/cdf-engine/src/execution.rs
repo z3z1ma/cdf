@@ -173,7 +173,7 @@ where
 {
     plan.validate_compiled_expression_plan()?;
     validate_program(&plan.validation_program)?;
-    crate::planning::validate_scan_partition_observation_identities(&plan.scan)?;
+    cdf_kernel::validate_scan_partition_observation_identities(&plan.scan)?;
     let schema_authority = plan.schema_authority();
     if schema_authority.version != 1 {
         return Err(CdfError::data(format!(
@@ -2190,7 +2190,7 @@ where
     plan.validate_compiled_expression_plan()?;
     let validation_program = plan.validation_program.clone();
     validate_program(&validation_program)?;
-    crate::planning::validate_scan_partition_observation_identities(&plan.scan)?;
+    cdf_kernel::validate_scan_partition_observation_identities(&plan.scan)?;
     let schema_authority = plan.schema_authority();
     if schema_authority.version != 1 {
         return Err(CdfError::data(format!(

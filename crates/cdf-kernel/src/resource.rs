@@ -455,6 +455,28 @@ pub fn partition_schema_observation_id(partition: &PartitionPlan) -> &str {
         .map_or_else(|| partition.partition_id.as_str(), String::as_str)
 }
 
+pub fn validate_scan_partition_observation_identities(scan: &ScanPlan) -> Result<()> {
+    let mut partitions_by_observation = BTreeMap::new();
+    for partition in &scan.partitions {
+        let observation_id = partition_schema_observation_id(partition);
+        if observation_id.is_empty() {
+            return Err(CdfError::contract(format!(
+                "planned partition {:?} carries an empty schema observation identity",
+                partition.partition_id
+            )));
+        }
+        if let Some(first_partition) =
+            partitions_by_observation.insert(observation_id, partition.partition_id.as_str())
+        {
+            return Err(CdfError::contract(format!(
+                "schema observation {observation_id:?} is assigned to planned partitions {first_partition:?} and {:?}; observation identities must be partition-scoped",
+                partition.partition_id
+            )));
+        }
+    }
+    Ok(())
+}
+
 pub fn partition_source_identity_binding(partition: &PartitionPlan) -> Result<String> {
     if let Some(binding) = partition.metadata.get(PLAN_SCHEMA_OBSERVATION_BINDING_KEY) {
         if binding.is_empty() {
