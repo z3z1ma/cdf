@@ -5,7 +5,7 @@ use cdf_source_files::{FileCompressionDeclaration, FileFormatDeclaration};
 use schemars::{JsonSchema, schema_for};
 use serde::{Deserialize, Serialize};
 
-pub const DECLARATIVE_SCHEMA_VERSION: &str = "cdf-declarative-v1";
+pub const DECLARATIVE_SCHEMA_VERSION: &str = "cdf-declarative-v2";
 pub const DECLARATIVE_SCHEMA_ARTIFACT_PATH: &str = "schemas/cdf-declarative.schema.json";
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -79,8 +79,8 @@ pub enum ResetSemanticsDeclaration {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct ResourceDeclaration {
-    pub id: Option<String>,
     pub source: Option<String>,
     pub path: Option<String>,
     pub query: Option<String>,

@@ -151,7 +151,6 @@ kind = "files"
 root = "data"
 
 [resource.events]
-id = "local.events"
 glob = "events.ndjson"
 format = "ndjson"
 primary_key = ["id"]
@@ -168,7 +167,6 @@ kind = "files"
 root = "data"
 
 [resource.events]
-id = "local.events"
 glob = "events.ndjson"
 format = "ndjson"
 primary_key = ["id"]
@@ -185,7 +183,6 @@ kind = "files"
 root = "data"
 
 [resource.events]
-id = "local.events"
 glob = "events-*.ndjson"
 format = "ndjson"
 primary_key = ["id"]
@@ -202,7 +199,6 @@ kind = "files"
 root = "data"
 
 [resource.events]
-id = "local.events"
 glob = "events-*.ndjson"
 format = "ndjson"
 primary_key = ["id"]
@@ -657,7 +653,6 @@ kind = "files"
 root = "data"
 
 [resource.events]
-id = "local.events"
 glob = "events.ndjson"
 format = "ndjson"
 primary_key = ["id"]
@@ -675,7 +670,6 @@ kind = "files"
 root = "data"
 
 [resource.events]
-id = "local.events"
 glob = "events.ndjson"
 format = "ndjson"
 primary_key = ["id"]
@@ -693,7 +687,6 @@ kind = "files"
 root = "data"
 
 [resource.events]
-id = "local.events"
 glob = "events.ndjson"
 format = "ndjson"
 primary_key = ["id"]
@@ -711,7 +704,6 @@ kind = "rest"
 base_url = "https://api.example.test"
 
 [resource.items]
-id = "api.items"
 path = "/items"
 records = "$"
 primary_key = ["id"]
@@ -729,7 +721,6 @@ auth = { kind = "bearer", token = "secret://env/API_TOKEN" }
 egress_allowlist = ["api.example.test"]
 
 [resource.items]
-id = "api.items"
 path = "/items"
 records = "$.items"
 primary_key = ["id"]
@@ -748,7 +739,6 @@ connection = "secret://env/POSTGRES_URL"
 dialect = "postgres"
 
 [resource.orders]
-id = "postgres.orders"
 table = "public.orders"
 primary_key = ["id"]
 cursor = { field = "updated_at", ordering = "exact", lag = "0ms" }
@@ -1835,7 +1825,6 @@ kind = "files"
 root = "data"
 
 [resource.events]
-id = "local.events"
 glob = "events.ndjson"
 format = "ndjson"
 write_disposition = "append"
@@ -1910,7 +1899,6 @@ auth = {{ kind = "bearer", token = "secret://env/API_TOKEN" }}
 egress_allowlist = ["api.example.test"]
 
 [resource.items]
-id = "api.items"
 path = "/items"
 paginate = {{ kind = "cursor_param", query_param = "cursor", response_field = "next_cursor" }}
 records = "$.items"

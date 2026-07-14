@@ -305,7 +305,6 @@ base_url = "https://fixtures.example.test"
 egress_allowlist = ["fixtures.example.test"]
 
 [resource.items]
-id = "api.items"
 path = "/items"
 records = "$.items"
 primary_key = ["id"]
@@ -453,7 +452,6 @@ kind = "files"
 root = "data"
 
 [resource.events]
-id = "local.events"
 glob = "events.ndjson"
 format = "ndjson"
 primary_key = ["id"]

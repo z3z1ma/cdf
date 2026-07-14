@@ -193,7 +193,7 @@ trust = "governed"
 }
 
 #[test]
-fn explicit_resource_id_is_preserved_for_existing_compatibility() {
+fn explicit_resource_id_is_rejected_in_favor_of_canonical_id() {
     let input = r#"
 [source.tlc]
 kind = "files"
@@ -206,11 +206,8 @@ format = "parquet"
 write_disposition = "append"
 trust = "governed"
 "#;
-    let resources = compile_document(&parse_toml(input).unwrap()).unwrap();
-
-    assert_eq!(resources[0].descriptor().resource_id.as_str(), "yellow");
-    assert_eq!(resources[0].source_name(), "tlc");
-    assert_eq!(resources[0].resource_name(), "yellow");
+    let error = parse_toml(input).unwrap_err();
+    assert!(error.to_string().contains("unknown field `id`"));
 }
 
 #[test]
@@ -2848,6 +2845,7 @@ sample = { fields = ["id"] }
 #[test]
 fn json_schema_artifact_exposes_editor_schema_model() {
     let artifact = declarative_json_schema_artifact();
+    assert_eq!(artifact.version, "cdf-declarative-v2");
     assert_eq!(artifact.version, DECLARATIVE_SCHEMA_VERSION);
     assert_eq!(artifact.path, DECLARATIVE_SCHEMA_ARTIFACT_PATH);
 
@@ -2855,6 +2853,16 @@ fn json_schema_artifact_exposes_editor_schema_model() {
     assert!(schema.contains("DeclarativeDocument"));
     assert!(schema.contains("link_header"));
     assert!(schema.contains("records_transform"));
+
+    let resource_schema = artifact
+        .schema
+        .pointer("/$defs/ResourceDeclaration")
+        .unwrap();
+    assert_eq!(
+        resource_schema.get("additionalProperties"),
+        Some(&serde_json::Value::Bool(false))
+    );
+    assert!(resource_schema.pointer("/properties/id").is_none());
 
     let field_type_schema = artifact
         .schema

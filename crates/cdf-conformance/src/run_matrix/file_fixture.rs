@@ -113,7 +113,6 @@ kind = "files"
 root = "data"
 
 [resource.events]
-id = "{RESOURCE_ID}"
 glob = "{glob}"
 format = "ndjson"
 primary_key = ["id"]

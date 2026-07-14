@@ -80,7 +80,6 @@ auth = {{ kind = "bearer", token = "{SECRET_REF}" }}
 egress_allowlist = ["api.example.test"]
 
 [resource.events]
-id = "{RESOURCE_ID}"
 path = "/events"
 records = "$.items"
 primary_key = ["id"]

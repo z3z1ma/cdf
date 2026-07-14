@@ -59,7 +59,6 @@ connection = "{SECRET_REF}"
 dialect = "postgres"
 
 [resource.events]
-id = "{RESOURCE_ID}"
 table = "{table}"
 primary_key = ["id"]
 merge_key = ["id"]

@@ -364,10 +364,7 @@ fn compile_resource(
         )));
     }
 
-    let resource_id = resource
-        .id
-        .clone()
-        .unwrap_or_else(|| format!("{source_name}.{name}"));
+    let resource_id = format!("{source_name}.{name}");
     let descriptor_resource_id = ResourceId::new(resource_id.clone())?;
     let schema = compile_schema(resource)?;
     let schema_source = compile_schema_source(&resource_id, resource)?;
@@ -451,7 +448,7 @@ fn compile_resource(
 fn compile_neutral_source_plan(
     source: &SourceDeclaration,
     resource: &ResourceDeclaration,
-    compatibility_plan: &CompiledResourcePlan,
+    typed_plan: &CompiledResourcePlan,
     descriptor: &ResourceDescriptor,
     schema: &Schema,
     type_policy_allowances: TypePolicyAllowances,
@@ -576,9 +573,9 @@ fn compile_neutral_source_plan(
             }
         }
         SourceDeclaration::Files(files) => {
-            let CompiledResourcePlan::Files(file_plan) = compatibility_plan else {
+            let CompiledResourcePlan::Files(file_plan) = typed_plan else {
                 return Err(CdfError::internal(
-                    "file declaration compiled to a non-file compatibility plan",
+                    "file declaration compiled to a non-file typed plan",
                 ));
             };
             registry.register(FileSourceDriver::new(|_, _| {

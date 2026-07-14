@@ -42,7 +42,6 @@ kind = "files"
 root = "data"
 
 [resource.events]
-id = "local.drift_events"
 glob = "events.ndjson"
 format = "ndjson"
 primary_key = ["id"]

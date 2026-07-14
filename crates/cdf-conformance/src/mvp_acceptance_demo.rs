@@ -650,7 +650,6 @@ auth = { kind = "bearer", token = "secret://file/github-token" }
 egress_allowlist = ["api.github.test"]
 
 [resource.issues]
-id = "github.issues"
 path = "/repos/acme/cdf/issues"
 params = { state = "all", per_page = 100 }
 records = "$"
