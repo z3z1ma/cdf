@@ -1,5 +1,8 @@
 use crate::internal::*;
 use crate::*;
+use std::{io::Cursor, sync::Arc};
+
+use arrow_json::reader::{ReaderBuilder as JsonReaderBuilder, infer_json_schema};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PythonBridgeOptions {
@@ -66,12 +69,6 @@ impl PythonBridgeOptions {
             sanitize_id_part(self.partition_id.as_str())
         );
         self
-    }
-
-    fn read_options(&self) -> Result<ReadOptions> {
-        ReadOptions::new(self.resource_id.clone(), self.partition_id.clone())
-            .with_batch_id_prefix(self.batch_id_prefix.clone())?
-            .with_batch_size(self.dict_batch_rows)
     }
 }
 
@@ -141,23 +138,6 @@ impl PythonBatchRead {
             .iter()
             .map(|batch| batch.header.byte_count)
             .sum()
-    }
-
-    fn push_read(
-        &mut self,
-        read: FormatRead,
-        kind: PythonYieldKind,
-        options: &PythonBridgeOptions,
-        next_batch_index: &mut usize,
-    ) -> Result<()> {
-        self.remember_descriptor(read.descriptor, read.schema_hash.clone())?;
-        for mut batch in read.batches {
-            *next_batch_index += 1;
-            batch.header.batch_id = batch_id(options, *next_batch_index)?;
-            self.batches.push(batch);
-            self.yield_kinds.push(kind.clone());
-        }
-        Ok(())
     }
 
     fn push_record_batches(
@@ -238,7 +218,9 @@ impl PythonResourceBridge {
     where
         I: IntoIterator<Item = serde_json::Value>,
     {
+        let mut read = PythonBatchRead::empty();
         let mut json_rows = Vec::new();
+        let mut next_batch_index = 0;
         for row in rows {
             if !row.is_object() {
                 return Err(CdfError::data(
@@ -246,10 +228,11 @@ impl PythonResourceBridge {
                 ));
             }
             json_rows.push(serde_json::to_string(&row).map_err(json_error)?);
+            if json_rows.len() == self.options.dict_batch_rows {
+                self.flush_json_rows(&mut json_rows, &mut read, &mut next_batch_index)?;
+            }
         }
 
-        let mut read = PythonBatchRead::empty();
-        let mut next_batch_index = 0;
         self.flush_json_rows(&mut json_rows, &mut read, &mut next_batch_index)?;
         Ok(read)
     }
@@ -293,6 +276,9 @@ impl PythonResourceBridge {
                 Some(_) => unreachable!("arrow boundary kinds are exhausted"),
                 None if item.cast::<PyDict>().is_ok() => {
                     json_rows.push(python_dict_to_json(py, &item)?);
+                    if json_rows.len() == self.options.dict_batch_rows {
+                        self.flush_json_rows(&mut json_rows, &mut read, &mut next_batch_index)?;
+                    }
                 }
                 None => {
                     return Err(CdfError::data(
@@ -397,23 +383,52 @@ impl PythonResourceBridge {
             return Ok(());
         }
 
-        let mut bytes = Vec::new();
+        let byte_count = json_rows.iter().try_fold(0_u64, |total, row| {
+            total
+                .checked_add(
+                    u64::try_from(row.len())
+                        .map_err(|_| CdfError::data("Python dict row length exceeds u64"))?,
+                )
+                .and_then(|total| total.checked_add(1))
+                .ok_or_else(|| CdfError::data("Python dict conversion window size overflowed"))
+        })?;
+        if byte_count > self.options.max_boundary_bytes {
+            return Err(CdfError::data(format!(
+                "Python dict conversion window requires {byte_count} bytes but the boundary limit is {} bytes; lower dict_batch_rows or raise max_boundary_bytes",
+                self.options.max_boundary_bytes
+            )));
+        }
+        let mut bytes = Vec::with_capacity(
+            usize::try_from(byte_count)
+                .map_err(|_| CdfError::data("Python dict conversion window exceeds usize"))?,
+        );
         for row in json_rows.drain(..) {
             bytes.extend_from_slice(row.as_bytes());
             bytes.push(b'\n');
         }
-        let format_read = read_ndjson_bytes(
-            &bytes,
-            &self.options.read_options()?,
-            &JsonOptions::default(),
-        )?;
-        read.push_read(
-            format_read,
+        let record_batches = decode_json_rows_window(&bytes, self.options.dict_batch_rows)?;
+        read.push_record_batches(
+            record_batches,
             PythonYieldKind::DictRows,
             &self.options,
             next_batch_index,
         )
     }
+}
+
+fn decode_json_rows_window(bytes: &[u8], batch_rows: usize) -> Result<Vec<RecordBatch>> {
+    let (schema, _) = infer_json_schema(Cursor::new(bytes), Some(batch_rows))
+        .map_err(|error| CdfError::data(format!("infer Python dict-row schema: {error}")))?;
+    let mut reader = JsonReaderBuilder::new(Arc::new(schema))
+        .with_batch_size(batch_rows)
+        .build(Cursor::new(bytes))
+        .map_err(|error| CdfError::data(format!("initialize Python dict-row decoder: {error}")))?;
+    reader
+        .by_ref()
+        .map(|batch| {
+            batch.map_err(|error| CdfError::data(format!("decode Python dict rows: {error}")))
+        })
+        .collect()
 }
 
 fn materialize_dlt_resource<'py>(resource: &Bound<'py, PyAny>) -> Result<Bound<'py, PyAny>> {

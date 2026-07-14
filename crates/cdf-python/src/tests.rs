@@ -8,7 +8,7 @@ use std::{
 };
 
 use arrow_array::{ArrayRef, Int64Array, StringArray};
-use arrow_ipc::writer::StreamWriter;
+use arrow_ipc::{reader::StreamReader, writer::StreamWriter};
 use arrow_schema::{DataType, Field, Schema};
 use cdf_http::{EgressAllowlist, HeaderMap, HttpMethod, SecretValue};
 use cdf_kernel::{
@@ -46,6 +46,24 @@ fn dict_rows_batch_through_ndjson_into_kernel_batches() {
         read.schema_hash.clone().unwrap()
     );
     assert_eq!(read.batches[0].header.batch_id.as_str(), "orders-p0-000001");
+}
+
+#[test]
+fn dict_row_conversion_window_enforces_the_boundary_byte_limit() {
+    let bridge = PythonResourceBridge::new(
+        PythonBridgeOptions::new(
+            ResourceId::new("orders").unwrap(),
+            PartitionId::new("p0").unwrap(),
+        )
+        .with_max_boundary_bytes(8)
+        .unwrap(),
+    );
+
+    let error = bridge
+        .batches_from_json_dict_rows([serde_json::json!({"payload": "too large"})])
+        .unwrap_err();
+
+    assert!(error.message.contains("boundary limit is 8 bytes"));
 }
 
 #[test]
@@ -343,15 +361,9 @@ fn pycapsule_model_documents_array_boundary_names() {
 
 #[test]
 fn can_read_back_hash_from_arrow_ipc_bytes() {
-    let read = read_ndjson_bytes(
-        br#"{"id":1,"name":"ada"}"#,
-        &ReadOptions::new(
-            ResourceId::new("hash").unwrap(),
-            PartitionId::new("p0").unwrap(),
-        ),
-        &JsonOptions::default(),
-    )
-    .unwrap();
+    let read = bridge()
+        .batches_from_json_dict_rows([serde_json::json!({"id": 1, "name": "ada"})])
+        .unwrap();
     let bytes = {
         let batch = read.batches[0].record_batch().unwrap();
         let mut output = Vec::new();
@@ -360,16 +372,10 @@ fn can_read_back_hash_from_arrow_ipc_bytes() {
         writer.finish().unwrap();
         output
     };
-    let imported = cdf_formats::read_arrow_ipc_stream(
-        Cursor::new(bytes),
-        &ReadOptions::new(
-            ResourceId::new("hash").unwrap(),
-            PartitionId::new("p0").unwrap(),
-        ),
-    )
-    .unwrap();
+    let mut imported = StreamReader::try_new(Cursor::new(bytes), None).unwrap();
+    let imported = imported.next().unwrap().unwrap();
 
-    assert_eq!(imported.batches[0].header.row_count, 1);
+    assert_eq!(imported.num_rows(), 1);
 }
 
 #[test]

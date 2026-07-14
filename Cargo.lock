@@ -1210,9 +1210,9 @@ version = "0.1.0"
 dependencies = [
  "arrow-array 59.1.0",
  "arrow-ipc",
+ "arrow-json",
  "arrow-schema 59.1.0",
  "cdf-declarative",
- "cdf-formats",
  "cdf-http",
  "cdf-kernel",
  "cdf-runtime",
