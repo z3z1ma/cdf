@@ -18,7 +18,6 @@ pub struct ValidationProgram {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub compiled_expression_plan: Option<crate::CompiledExpressionPlan>,
     pub normalizer_version: String,
-    #[serde(default)]
     pub identifier_policy: IdentifierPolicy,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub schema_coercion: Option<SchemaCoercionPlan>,

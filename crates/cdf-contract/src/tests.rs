@@ -51,13 +51,14 @@ fn validation_program_coercion_evidence_is_optional_and_round_trips() {
         compile_validation_program(&ContractPolicy::for_trust(TrustLevel::Governed), &observed)
             .unwrap();
 
-    let mut legacy_json = serde_json::to_value(&program).unwrap();
-    legacy_json
+    let mut schema_without_coercion = serde_json::to_value(&program).unwrap();
+    schema_without_coercion
         .as_object_mut()
         .unwrap()
         .remove("schema_coercion");
-    let legacy = serde_json::from_value::<ValidationProgram>(legacy_json).unwrap();
-    assert!(legacy.schema_coercion.is_none());
+    let without_coercion =
+        serde_json::from_value::<ValidationProgram>(schema_without_coercion).unwrap();
+    assert!(without_coercion.schema_coercion.is_none());
 
     let reconciliation = reconcile_schema(
         &Schema::new(vec![Field::new("id", DataType::Int32, false)]),
@@ -76,21 +77,20 @@ fn validation_program_coercion_evidence_is_optional_and_round_trips() {
 }
 
 #[test]
-fn legacy_validation_program_without_identifier_policy_uses_versioned_default() {
+fn validation_program_requires_recorded_identifier_policy() {
     let schema = Schema::new(vec![Field::new("id", DataType::Int64, false)]);
     let observed = ObservedSchema::from_arrow(&schema);
     let program =
         compile_validation_program(&ContractPolicy::for_trust(TrustLevel::Governed), &observed)
             .unwrap();
-    let mut legacy_json = serde_json::to_value(&program).unwrap();
-    legacy_json
+    let mut incomplete = serde_json::to_value(&program).unwrap();
+    incomplete
         .as_object_mut()
         .unwrap()
         .remove("identifier_policy");
 
-    let legacy = serde_json::from_value::<ValidationProgram>(legacy_json).unwrap();
-    assert_eq!(legacy.identifier_policy, IdentifierPolicy::default());
-    assert_eq!(legacy.normalizer_version, legacy.identifier_policy.version);
+    let error = serde_json::from_value::<ValidationProgram>(incomplete).unwrap_err();
+    assert!(error.to_string().contains("identifier_policy"));
 }
 
 #[test]
