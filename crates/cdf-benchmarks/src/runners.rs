@@ -1,36 +1,38 @@
 use std::{
     fs,
-    io::Cursor,
     path::{Path, PathBuf},
-    sync::atomic::{AtomicU64, Ordering},
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    },
     time::{SystemTime, UNIX_EPOCH},
 };
 
 use cdf_contract::{ContractPolicy, ObservedSchema, compile_validation_program};
 use cdf_declarative::{
-    RestRuntimeDependencies, compile_document, compile_document_with_project_root, parse_toml,
+    CompiledResource, RestRuntimeDependencies, compile_document,
+    compile_document_with_project_root, parse_toml,
 };
 use cdf_dest_postgres::{MergeDedupPolicy, PostgresTarget};
 use cdf_engine::{
     EngineExecutionOptions, EnginePackageDraft, EnginePlanInput, PlanBoundedness, Planner,
     execute_to_package, execute_to_package_with_segment_positions_and_pre_finalize,
 };
-use cdf_formats::{
-    CsvOptions, FileFormat, FileResource, FileSource, JsonOptions, read_arrow_ipc_stream,
-};
 use cdf_kernel::{
-    CHECKPOINT_STATE_VERSION, CdfError, CheckpointId, CursorPosition, CursorValue, PartitionId,
-    PipelineId, PredicateId, ResourceId, ResourceStream, RunId, ScanPredicate, ScanRequest,
-    ScopeKey, SegmentId, SourcePosition, StateSegment, TargetName, WriteDisposition,
+    CHECKPOINT_STATE_VERSION, CdfError, CheckpointId, CursorPosition, CursorValue, PipelineId,
+    PredicateId, ResourceId, ResourceStream, RunId, ScanPredicate, ScanRequest, ScopeKey,
+    SegmentId, SourcePosition, StateSegment, TargetName, WriteDisposition,
     canonical_arrow_schema_hash,
 };
 use cdf_package::{PackageBuilder, PackageReader, archive_package_to_parquet};
 use cdf_package_contract::{DestinationCommitPlanPreimage, PackageStatus, StateDeltaPreimage};
 use cdf_project::{
-    PackageArtifactReplayRequest, ProjectRunRequest, ProjectRunSource, ResolvedProjectDestination,
+    EnvSecretProvider, PackageArtifactReplayRequest, ProjectRunRequest, ProjectRunSource,
+    ResolvedProjectDestination, prepare_declared_file_schema_artifacts,
     replay_package_from_artifacts, run_project,
 };
-use cdf_runtime::ReadOptions;
+use cdf_runtime::{ByteTransformRegistry, FormatRegistry};
+use cdf_source_files::{FileResource, FileRuntimeDependencies, FileTransportFacade};
 use cdf_state_sqlite::InMemoryCheckpointStore;
 use datafusion::prelude::{SessionContext, col, lit};
 use duckdb::{Connection, appender_params_from_iter, types::Value};
@@ -42,15 +44,15 @@ use crate::{
     BenchResult, PhaseMetric, WorkerMeasurement, bench_error,
     catalog::{FixtureSpec, fixture_spec, validate_spec},
     fixtures::{
-        active_for_id, arrow_filter_project, arrow_ipc_stream_bytes, category_for_id,
-        record_batch_range, record_batches_for_spec, rest_fixture_body, startup_ndjson,
-        write_local_fixture_file,
+        active_for_id, arrow_filter_project, category_for_id, record_batch_range,
+        record_batches_for_spec, rest_fixture_body, startup_ndjson, write_local_fixture_file,
     },
     matrix::{CaseDefinition, CaseKind, CaseOutcome, LocalFormat, ReplayDestination},
     resource::{FixtureTransport, MemoryResource},
 };
 
 const POSTGRES_URL_ENV: &str = "CDF_BENCH_POSTGRES_URL";
+const BENCHMARK_MANAGED_MEMORY_BYTES: u64 = 512 * 1024 * 1024;
 static POSTGRES_PACKAGE_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Clone, Copy, Debug)]
@@ -86,6 +88,87 @@ pub struct LegacyCaseWorkload {
     pub output_root: PathBuf,
 }
 
+fn benchmark_file_resource(
+    source_path: &Path,
+    format_id: &str,
+    spec: &FixtureSpec,
+) -> BenchResult<FileResource> {
+    let project_root = source_path
+        .parent()
+        .ok_or_else(|| bench_error("benchmark source path must have a parent directory"))?;
+    let file_name = source_path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .ok_or_else(|| bench_error("benchmark source file name must be valid UTF-8"))?;
+    let fields = benchmark_schema_fields(spec);
+    let document = parse_toml(&format!(
+        r#"
+[source.bench]
+kind = "files"
+root = "."
+
+[resource.orders]
+glob = {}
+format = {}
+write_disposition = "append"
+trust = "governed"
+schema = {{ fields = [
+{}
+] }}
+"#,
+        serde_json::to_string(file_name)?,
+        serde_json::to_string(format_id)?,
+        fields.join(",\n")
+    ))?;
+    let compiled = compile_document_with_project_root(&document, project_root)?
+        .into_iter()
+        .next()
+        .ok_or_else(|| bench_error("benchmark file declaration compiled no resource"))?;
+    resolve_benchmark_file_resource(compiled)
+}
+
+fn resolve_benchmark_file_resource(compiled: CompiledResource) -> BenchResult<FileResource> {
+    let dependencies = benchmark_file_dependencies()?;
+    let secrets = EnvSecretProvider::from_map(std::iter::empty::<(&str, &str)>());
+    let prepared =
+        prepare_declared_file_schema_artifacts(&compiled, &secrets, dependencies.clone())?;
+    prepared
+        .into_parts()
+        .0
+        .into_file_resource(dependencies)
+        .map_err(Into::into)
+}
+
+fn benchmark_schema_fields(spec: &FixtureSpec) -> Vec<String> {
+    let mut fields = vec![
+        r#"  { name = "id", type = "int64", nullable = false }"#.to_owned(),
+        r#"  { name = "active", type = "boolean", nullable = false }"#.to_owned(),
+        r#"  { name = "category", type = "string", nullable = false }"#.to_owned(),
+        r#"  { name = "amount", type = "float64", nullable = false }"#.to_owned(),
+    ];
+    fields.extend((0..spec.wide_columns).map(|column| {
+        format!(r#"  {{ name = "metric_{column:03}", type = "int64", nullable = false }}"#)
+    }));
+    fields
+}
+
+fn benchmark_file_dependencies() -> BenchResult<FileRuntimeDependencies> {
+    let execution =
+        cdf_engine::StandaloneExecutionHost::default_services(BENCHMARK_MANAGED_MEMORY_BYTES)?.1;
+    let mut formats = FormatRegistry::default();
+    formats.register(Arc::new(cdf_format_delimited::CsvFormatDriver::new()?))?;
+    formats.register(Arc::new(cdf_format_json::NdjsonFormatDriver::new()?))?;
+    formats.register(Arc::new(cdf_format_json::JsonDocumentFormatDriver::new()?))?;
+    formats.register(Arc::new(cdf_format_parquet::ParquetFormatDriver::new()?))?;
+    let transport = FileTransportFacade::new().with_execution_services(execution.clone());
+    Ok(FileRuntimeDependencies::new(
+        transport,
+        execution,
+        Arc::new(formats),
+        Arc::new(ByteTransformRegistry::default()),
+    ))
+}
+
 pub fn run_legacy_case_workload(request: &LegacyCaseWorkload) -> BenchResult<WorkerMeasurement> {
     let case = crate::benchmark_cases()
         .iter()
@@ -112,18 +195,13 @@ pub fn run_prepared_file_to_package(
 ) -> BenchResult<WorkerMeasurement> {
     let spec = fixture_spec(&request.fixture_name)?;
     validate_spec(&spec)?;
-    let format = match request.format {
-        PreparedFileFormat::Csv => FileFormat::Csv(CsvOptions::default()),
-        PreparedFileFormat::Json => FileFormat::Json(JsonOptions::default()),
-        PreparedFileFormat::Ndjson => FileFormat::Ndjson(JsonOptions::default()),
-        PreparedFileFormat::Parquet => FileFormat::Parquet,
+    let format_id = match request.format {
+        PreparedFileFormat::Csv => "csv",
+        PreparedFileFormat::Json => "json",
+        PreparedFileFormat::Ndjson => "ndjson",
+        PreparedFileFormat::Parquet => "parquet",
     };
-    let options = ReadOptions::new(
-        ResourceId::new("bench.prepared")?,
-        PartitionId::new("prepared-file")?,
-    )
-    .with_batch_size(spec.batch_size)?;
-    let resource = FileResource::new(FileSource::new(&request.source_path, format, options))?;
+    let resource = benchmark_file_resource(&request.source_path, format_id, &spec)?;
     let pre_finalize = |_builder: &PackageBuilder, _draft: EnginePackageDraft<'_>| Ok(());
     let output = block_on(execute_to_package_with_segment_positions_and_pre_finalize(
         &identity_engine_plan(&resource, "pkg-p3-prepared")?,
@@ -160,7 +238,6 @@ pub fn run_case(case: &CaseDefinition, root: &Path) -> BenchResult<CaseOutcome> 
         CaseKind::NativeDuckDb { .. } => run_native_duckdb_insert(&spec)?,
         CaseKind::CdfEnginePackage { .. } => run_cdf_engine_package(&spec, root)?,
         CaseKind::FileToPackage { format, .. } => run_file_to_package(&spec, root, format)?,
-        CaseKind::ArrowIpcStreamToPackage { .. } => run_arrow_ipc_stream_to_package(&spec, root)?,
         CaseKind::RestDecode { .. } => run_rest_decode(&spec)?,
         CaseKind::ArchiveIpcToParquet { .. } => run_archive_ipc_to_parquet(&spec, root)?,
         CaseKind::PackageReplay { destination, .. } => {
@@ -252,44 +329,11 @@ fn run_file_to_package(
 ) -> BenchResult<WorkMetric> {
     let data_root = root.join("data");
     let path = write_local_fixture_file(&data_root, spec, format)?;
-    let options = ReadOptions::new(
-        ResourceId::new("bench.orders")?,
-        PartitionId::new(format!("file-{}", format.label()))?,
-    )
-    .with_batch_size(spec.batch_size)?;
-    let resource = FileResource::new(FileSource::new(path, format.file_format(), options))?;
+    let resource = benchmark_file_resource(&path, format.format_id(), spec)?;
     let output = block_on(execute_to_package(
         &engine_plan(&resource, "pkg-file-benchmark")?,
         &resource,
         root.join(format!("pkg-file-{}", format.label())),
-    ))?;
-    Ok(WorkMetric {
-        rows: output.profile.output_rows,
-        bytes: output.profile.output_bytes,
-    })
-}
-
-fn run_arrow_ipc_stream_to_package(spec: &FixtureSpec, root: &Path) -> BenchResult<WorkMetric> {
-    let read = read_arrow_ipc_stream(
-        Cursor::new(arrow_ipc_stream_bytes(spec)?),
-        &ReadOptions::new(
-            ResourceId::new("bench.orders")?,
-            PartitionId::new("arrow-ipc-stream")?,
-        )
-        .with_batch_size(spec.batch_size)?,
-    )?;
-    let resource = MemoryResource::from_batches(
-        read.descriptor,
-        PartitionId::new("arrow-ipc-stream")?,
-        ScopeKey::Stream {
-            name: "arrow_ipc_stdout".to_owned(),
-        },
-        read.batches,
-    )?;
-    let output = block_on(execute_to_package(
-        &engine_plan(&resource, "pkg-arrow-ipc-benchmark")?,
-        &resource,
-        root.join("pkg-arrow-ipc-benchmark"),
     ))?;
     Ok(WorkMetric {
         rows: output.profile.output_rows,
@@ -465,6 +509,7 @@ schema = { fields = [
 "#,
     )?;
     let resource = compile_document_with_project_root(&document, &project_root)?.remove(0);
+    let resource = resolve_benchmark_file_resource(resource)?;
     let package_id = "pkg-startup-benchmark";
     let destination = ResolvedProjectDestination::new(
         Box::new(cdf_dest_duckdb::DuckDbDestination::new(
@@ -478,7 +523,7 @@ schema = { fields = [
     }
     let plan = engine_plan_with_policy(&resource, package_id, &policy)?;
     let report = block_on(run_project(ProjectRunRequest {
-        resource: ProjectRunSource::local_file(&resource),
+        resource: ProjectRunSource::file(&resource),
         plan,
         package_root: project_root.join(".cdf/packages"),
         state_store_path: project_root.join(".cdf/state.db"),

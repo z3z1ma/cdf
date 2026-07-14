@@ -1,5 +1,3 @@
-use cdf_formats::{CsvOptions, FileFormat, JsonOptions};
-
 use crate::{BenchResult, bench_error};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -88,9 +86,6 @@ pub(crate) enum CaseKind {
         fixture: &'static str,
         format: LocalFormat,
     },
-    ArrowIpcStreamToPackage {
-        fixture: &'static str,
-    },
     RestDecode {
         fixture: &'static str,
     },
@@ -114,7 +109,6 @@ impl CaseKind {
             | Self::NativeDuckDb { fixture }
             | Self::CdfEnginePackage { fixture }
             | Self::FileToPackage { fixture, .. }
-            | Self::ArrowIpcStreamToPackage { fixture }
             | Self::RestDecode { fixture }
             | Self::ArchiveIpcToParquet { fixture }
             | Self::PackageReplay { fixture, .. }
@@ -154,13 +148,8 @@ impl LocalFormat {
         }
     }
 
-    pub(crate) fn file_format(self) -> FileFormat {
-        match self {
-            Self::Csv => FileFormat::Csv(CsvOptions::default()),
-            Self::Json => FileFormat::Json(JsonOptions::default()),
-            Self::Ndjson => FileFormat::Ndjson(JsonOptions::default()),
-            Self::Parquet => FileFormat::Parquet,
-        }
+    pub(crate) fn format_id(self) -> &'static str {
+        self.label()
     }
 }
 
@@ -254,12 +243,6 @@ const CASES: &[CaseDefinition] = &[
         },
     },
     CaseDefinition {
-        label: "trend.cdf_arrow_ipc_stream_to_package.medium",
-        suite: BenchmarkSuite::Full,
-        metric_class: MetricClass::TrendOnly,
-        kind: CaseKind::ArrowIpcStreamToPackage { fixture: "medium" },
-    },
-    CaseDefinition {
         label: "trend.cdf_package_replay.parquet_package_receipt_checkpoint.medium",
         suite: BenchmarkSuite::Full,
         metric_class: MetricClass::TrendOnly,
@@ -311,7 +294,7 @@ const COVERAGE: &[CoverageCell] = &[
     CoverageCell {
         area: "arrow_ipc_file_to_package",
         status: "deferred",
-        reason: "Public declarative FileResource rejects arrow_ipc; the executable subset uses read_arrow_ipc_stream.",
+        reason: "P3 B3 owns the native Arrow IPC stream driver; the lab does not report a removed compatibility reader as the current CDF path.",
     },
     CoverageCell {
         area: "package_replay_duckdb_parquet",

@@ -78,31 +78,6 @@ impl MemoryResource {
             batches: cdf_batches,
         })
     }
-
-    pub(crate) fn from_batches(
-        descriptor: ResourceDescriptor,
-        partition_id: PartitionId,
-        scope: ScopeKey,
-        batches: Vec<Batch>,
-    ) -> BenchResult<Self> {
-        let schema = batches
-            .first()
-            .and_then(|batch| batch.record_batch())
-            .map(RecordBatch::schema)
-            .ok_or_else(|| bench_error("format read did not produce an Arrow batch"))?;
-        let partition = PartitionPlan {
-            partition_id,
-            scope,
-            start_position: None,
-            metadata: BTreeMap::from([("kind".to_owned(), "format_read".to_owned())]),
-        };
-        Ok(Self {
-            descriptor,
-            schema,
-            partition,
-            batches,
-        })
-    }
 }
 
 impl ResourceStream for MemoryResource {
