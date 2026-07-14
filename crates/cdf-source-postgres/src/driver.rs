@@ -15,17 +15,29 @@ use crate::{PostgresTableResource, PostgresTarget, postgres_table_capabilities};
 #[derive(Clone, Debug)]
 pub struct PostgresSourceDriver {
     descriptor: SourceDriverDescriptor,
+    option_schema: serde_json::Value,
 }
 
 impl PostgresSourceDriver {
     pub fn new() -> Result<Self> {
         let option_schema = serde_json::json!({
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
             "source": {
-                "connection": "secret_uri",
-                "dialect": {"type": "string", "default": "postgres"}
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["connection"],
+                "properties": {
+                    "connection": {"type": "string", "pattern": "^secret://"},
+                    "dialect": {"const": "postgres", "default": "postgres"}
+                }
             },
             "resource": {
-                "table": "schema.table"
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["table"],
+                "properties": {
+                    "table": {"type": "string", "minLength": 1}
+                }
             }
         });
         Ok(Self {
@@ -36,6 +48,7 @@ impl PostgresSourceDriver {
                 kinds: vec!["sql".to_owned()],
                 schemes: vec!["postgres".to_owned(), "postgresql".to_owned()],
             },
+            option_schema,
         })
     }
 }
@@ -43,6 +56,10 @@ impl PostgresSourceDriver {
 impl SourceDriver for PostgresSourceDriver {
     fn descriptor(&self) -> &SourceDriverDescriptor {
         &self.descriptor
+    }
+
+    fn option_schema(&self) -> &serde_json::Value {
+        &self.option_schema
     }
 
     fn compile(&self, request: SourceCompileRequest) -> Result<CompiledSourcePlan> {

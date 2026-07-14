@@ -4,7 +4,7 @@ use cdf_kernel::{CdfError, QueryableResource, Result};
 
 use crate::{
     CompiledSourcePlan, SourceCompileRequest, SourceDriver, SourceDriverDescriptor, SourceDriverId,
-    SourceResolutionContext,
+    SourceResolutionContext, artifact_hash,
 };
 
 #[derive(Default)]
@@ -29,6 +29,13 @@ impl SourceRegistry {
     pub fn register_shared(&mut self, driver: Arc<dyn SourceDriver>) -> Result<()> {
         let descriptor = driver.descriptor();
         descriptor.validate()?;
+        validate_option_schema(driver.option_schema())?;
+        if artifact_hash(driver.option_schema())? != descriptor.option_schema_hash {
+            return Err(CdfError::contract(format!(
+                "source driver `{}` option schema does not match its declared hash",
+                descriptor.driver_id.as_str()
+            )));
+        }
         if self.drivers.contains_key(&descriptor.driver_id) {
             return Err(CdfError::contract(format!(
                 "source driver `{}` is already registered",
@@ -111,6 +118,18 @@ impl SourceRegistry {
             .collect()
     }
 
+    pub fn option_schemas(&self) -> BTreeMap<String, serde_json::Value> {
+        self.drivers
+            .iter()
+            .map(|(driver_id, driver)| {
+                (
+                    driver_id.as_str().to_owned(),
+                    driver.option_schema().clone(),
+                )
+            })
+            .collect()
+    }
+
     fn driver_for_kind(&self, kind: &str) -> Result<&Arc<dyn SourceDriver>> {
         let driver_id = self.kinds.get(kind).ok_or_else(|| {
             CdfError::contract(format!("no source driver registered for kind `{kind}`"))
@@ -134,4 +153,44 @@ impl SourceRegistry {
         }
         Ok(())
     }
+}
+
+fn validate_option_schema(schema: &serde_json::Value) -> Result<()> {
+    let object = schema
+        .as_object()
+        .ok_or_else(|| CdfError::contract("source driver option schema must be a JSON object"))?;
+    if object.get("$schema").and_then(serde_json::Value::as_str)
+        != Some("https://json-schema.org/draft/2020-12/schema")
+    {
+        return Err(CdfError::contract(
+            "source driver option schema must declare JSON Schema draft 2020-12",
+        ));
+    }
+    for section in ["source", "resource"] {
+        let section_schema = object
+            .get(section)
+            .and_then(serde_json::Value::as_object)
+            .ok_or_else(|| {
+                CdfError::contract(format!(
+                    "source driver option schema must declare an object `{section}` section"
+                ))
+            })?;
+        if section_schema
+            .get("type")
+            .and_then(serde_json::Value::as_str)
+            != Some("object")
+            || section_schema
+                .get("additionalProperties")
+                .and_then(serde_json::Value::as_bool)
+                != Some(false)
+            || !section_schema
+                .get("properties")
+                .is_some_and(serde_json::Value::is_object)
+        {
+            return Err(CdfError::contract(format!(
+                "source driver option schema `{section}` must be a closed object with properties"
+            )));
+        }
+    }
+    Ok(())
 }

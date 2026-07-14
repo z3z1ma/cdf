@@ -901,11 +901,16 @@ fn bulk_selection_rejects_descriptor_and_evidence_drift() {
 
 struct MockSourceDriver {
     descriptor: SourceDriverDescriptor,
+    option_schema: serde_json::Value,
 }
 
 impl SourceDriver for MockSourceDriver {
     fn descriptor(&self) -> &SourceDriverDescriptor {
         &self.descriptor
+    }
+
+    fn option_schema(&self) -> &serde_json::Value {
+        &self.option_schema
     }
 
     fn compile(&self, request: SourceCompileRequest) -> Result<CompiledSourcePlan> {
@@ -1069,10 +1074,15 @@ impl cdf_http::SecretProvider for NoopSecretProvider {
 
 #[test]
 fn source_registry_compiles_hashes_and_resolves_mock_without_order_authority() {
+    let option_schema = serde_json::json!({
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "source": {"type": "object", "additionalProperties": false, "properties": {}},
+        "resource": {"type": "object", "additionalProperties": false, "properties": {}}
+    });
     let descriptor = SourceDriverDescriptor {
         driver_id: SourceDriverId::new("mock_source").unwrap(),
         driver_version: "1.0.0".to_owned(),
-        option_schema_hash: format!("sha256:{}", "a".repeat(64)),
+        option_schema_hash: artifact_hash(&option_schema).unwrap(),
         kinds: vec!["mock".to_owned()],
         schemes: vec!["mock".to_owned()],
     };
@@ -1080,6 +1090,7 @@ fn source_registry_compiles_hashes_and_resolves_mock_without_order_authority() {
     registry
         .register(MockSourceDriver {
             descriptor: descriptor.clone(),
+            option_schema: option_schema.clone(),
         })
         .unwrap();
     let resource_descriptor = ResourceDescriptor {
@@ -1134,13 +1145,51 @@ fn source_registry_compiles_hashes_and_resolves_mock_without_order_authority() {
     let resource = registry.resolve(&plan, &context).unwrap();
     assert_eq!(resource.descriptor().resource_id.as_str(), "mock.events");
 
+    assert_eq!(
+        registry.option_schemas(),
+        BTreeMap::from([("mock_source".to_owned(), option_schema.clone())])
+    );
+
+    let mut invalid = SourceRegistry::new();
+    let mut mismatched = descriptor.clone();
+    mismatched.option_schema_hash = format!("sha256:{}", "f".repeat(64));
+    let error = invalid
+        .register(MockSourceDriver {
+            descriptor: mismatched,
+            option_schema: option_schema.clone(),
+        })
+        .unwrap_err();
+    assert!(error.message.contains("does not match its declared hash"));
+
+    let invalid_schema = serde_json::json!({
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "source": {"type": "object", "additionalProperties": true},
+        "resource": {"type": "object", "additionalProperties": false, "properties": {}}
+    });
+    let mut invalid = SourceRegistry::new();
+    let mut invalid_descriptor = descriptor.clone();
+    invalid_descriptor.option_schema_hash = artifact_hash(&invalid_schema).unwrap();
+    let error = invalid
+        .register(MockSourceDriver {
+            descriptor: invalid_descriptor,
+            option_schema: invalid_schema,
+        })
+        .unwrap_err();
+    assert!(error.message.contains("must be a closed object"));
+
     let mut reordered = SourceRegistry::new();
-    reordered.register(MockSourceDriver { descriptor }).unwrap();
+    reordered
+        .register(MockSourceDriver {
+            descriptor,
+            option_schema: option_schema.clone(),
+        })
+        .unwrap();
     assert_eq!(reordered.descriptors(), registry.descriptors());
     assert!(
         reordered
             .register(MockSourceDriver {
-                descriptor: reordered.descriptors()[0].clone()
+                descriptor: reordered.descriptors()[0].clone(),
+                option_schema,
             })
             .is_err()
     );

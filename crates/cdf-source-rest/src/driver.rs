@@ -24,6 +24,7 @@ type TransportFactory = dyn Fn() -> Result<Box<dyn HttpTransport>> + Send + Sync
 #[derive(Clone)]
 pub struct RestSourceDriver {
     descriptor: SourceDriverDescriptor,
+    option_schema: serde_json::Value,
     transport_factory: Arc<TransportFactory>,
 }
 
@@ -41,10 +42,7 @@ impl RestSourceDriver {
     where
         F: Fn() -> Result<Box<dyn HttpTransport>> + Send + Sync + 'static,
     {
-        let option_schema = serde_json::json!({
-            "source": ["source_name", "base_url", "auth", "rate_limit", "egress_allowlist"],
-            "resource": ["path", "params", "paginate", "records", "records_transform", "cursor_param", "cursor_filter_fidelity"]
-        });
+        let option_schema = option_schema();
         Ok(Self {
             descriptor: SourceDriverDescriptor {
                 driver_id: SourceDriverId::new("rest")?,
@@ -53,6 +51,7 @@ impl RestSourceDriver {
                 kinds: vec!["rest".to_owned()],
                 schemes: vec!["rest+http".to_owned(), "rest+https".to_owned()],
             },
+            option_schema,
             transport_factory: Arc::new(transport_factory),
         })
     }
@@ -61,6 +60,10 @@ impl RestSourceDriver {
 impl SourceDriver for RestSourceDriver {
     fn descriptor(&self) -> &SourceDriverDescriptor {
         &self.descriptor
+    }
+
+    fn option_schema(&self) -> &serde_json::Value {
+        &self.option_schema
     }
 
     fn compile(&self, request: SourceCompileRequest) -> Result<CompiledSourcePlan> {
@@ -106,6 +109,122 @@ impl SourceDriver for RestSourceDriver {
             dependencies,
         )?))
     }
+}
+
+fn option_schema() -> serde_json::Value {
+    let auth = serde_json::json!({
+        "oneOf": [
+            {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["kind", "token"],
+                "properties": {
+                    "kind": {"const": "bearer"},
+                    "token": {"type": "string", "pattern": "^secret://"}
+                }
+            },
+            {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["kind", "name", "value"],
+                "properties": {
+                    "kind": {"const": "header"},
+                    "name": {"type": "string", "minLength": 1},
+                    "value": {"type": "string", "pattern": "^secret://"}
+                }
+            }
+        ]
+    });
+    let quota = serde_json::json!({
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["remaining_header", "reset_header", "reset"],
+        "properties": {
+            "remaining_header": {"type": "string", "minLength": 1},
+            "reset_header": {"type": "string", "minLength": 1},
+            "reset": {"enum": ["delay_seconds", "epoch_seconds"]}
+        }
+    });
+    let pagination = serde_json::json!({
+        "oneOf": [
+            {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["kind"],
+                "properties": {"kind": {"const": "link_header"}}
+            },
+            {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["kind", "query_param", "response_field"],
+                "properties": {
+                    "kind": {"enum": ["cursor_param", "next_token"]},
+                    "query_param": {"type": "string", "minLength": 1},
+                    "response_field": {"type": "string", "minLength": 1},
+                    "initial": {"type": ["string", "null"]}
+                }
+            },
+            {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["kind", "query_param"],
+                "properties": {
+                    "kind": {"const": "page_number"},
+                    "query_param": {"type": "string", "minLength": 1},
+                    "start_page": {"type": ["integer", "null"], "minimum": 1}
+                }
+            },
+            {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["kind", "offset_param", "limit_param", "limit"],
+                "properties": {
+                    "kind": {"const": "offset"},
+                    "offset_param": {"type": "string", "minLength": 1},
+                    "limit_param": {"type": "string", "minLength": 1},
+                    "start_offset": {"type": ["integer", "null"], "minimum": 0},
+                    "limit": {"type": "integer", "minimum": 1}
+                }
+            }
+        ]
+    });
+    serde_json::json!({
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "source": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["source_name", "base_url"],
+            "properties": {
+                "source_name": {"type": "string", "minLength": 1},
+                "base_url": {"type": "string", "format": "uri"},
+                "auth": auth,
+                "rate_limit": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                        "requests_per_minute": {"type": ["integer", "null"], "minimum": 1},
+                        "respect_headers": {"type": "array", "items": {"type": "string"}, "uniqueItems": true},
+                        "quota_headers": {"type": "array", "items": quota}
+                    }
+                },
+                "egress_allowlist": {"type": "array", "items": {"type": "string"}, "uniqueItems": true}
+            }
+        },
+        "resource": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["path", "params", "records", "cursor_filter_fidelity"],
+            "properties": {
+                "path": {"type": "string"},
+                "params": {"type": "object", "additionalProperties": {"type": ["string", "number", "boolean"]}},
+                "paginate": pagination,
+                "records": {"type": "string", "minLength": 1},
+                "records_transform": {"type": "string", "minLength": 1},
+                "cursor_param": {"type": "string", "minLength": 1},
+                "cursor_filter_fidelity": {"enum": ["exact", "inexact", "unsupported"]}
+            }
+        }
+    })
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

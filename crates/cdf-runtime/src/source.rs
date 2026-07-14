@@ -449,6 +449,7 @@ impl<'a> SourceResolutionContext<'a> {
 
 pub trait SourceDriver: Send + Sync {
     fn descriptor(&self) -> &SourceDriverDescriptor;
+    fn option_schema(&self) -> &serde_json::Value;
     fn compile(&self, request: SourceCompileRequest) -> Result<CompiledSourcePlan>;
     fn resolve(
         &self,

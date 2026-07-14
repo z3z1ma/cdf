@@ -27,6 +27,7 @@ type RuntimeFactory = dyn Fn(Arc<dyn SecretProvider + Send + Sync>, ExecutionSer
 #[derive(Clone)]
 pub struct FileSourceDriver {
     descriptor: SourceDriverDescriptor,
+    option_schema: serde_json::Value,
     formats: Arc<FormatRegistry>,
     runtime_factory: Arc<RuntimeFactory>,
 }
@@ -51,10 +52,7 @@ impl FileSourceDriver {
             + Sync
             + 'static,
     {
-        let option_schema = serde_json::json!({
-            "source": ["source_name", "root", "auth", "credentials", "egress_allowlist"],
-            "resource": ["glob", "format", "compression"]
-        });
+        let option_schema = option_schema();
         Ok(Self {
             descriptor: SourceDriverDescriptor {
                 driver_id: SourceDriverId::new("files")?,
@@ -70,6 +68,7 @@ impl FileSourceDriver {
                     "https".to_owned(),
                 ],
             },
+            option_schema,
             formats,
             runtime_factory: Arc::new(runtime_factory),
         })
@@ -79,6 +78,10 @@ impl FileSourceDriver {
 impl SourceDriver for FileSourceDriver {
     fn descriptor(&self) -> &SourceDriverDescriptor {
         &self.descriptor
+    }
+
+    fn option_schema(&self) -> &serde_json::Value {
+        &self.option_schema
     }
 
     fn compile(&self, request: SourceCompileRequest) -> Result<CompiledSourcePlan> {
@@ -165,6 +168,58 @@ impl SourceDriver for FileSourceDriver {
             dependencies,
         )?))
     }
+}
+
+fn option_schema() -> serde_json::Value {
+    let auth = serde_json::json!({
+        "oneOf": [
+            {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["kind", "token"],
+                "properties": {
+                    "kind": {"const": "bearer"},
+                    "token": {"type": "string", "pattern": "^secret://"}
+                }
+            },
+            {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["kind", "name", "value"],
+                "properties": {
+                    "kind": {"const": "header"},
+                    "name": {"type": "string", "minLength": 1},
+                    "value": {"type": "string", "pattern": "^secret://"}
+                }
+            }
+        ]
+    });
+    serde_json::json!({
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "source": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["source_name", "root"],
+            "properties": {
+                "source_name": {"type": "string", "minLength": 1},
+                "root": {"type": "string", "minLength": 1},
+                "auth": auth,
+                "credentials": {"type": "string", "pattern": "^secret://"},
+                "egress_allowlist": {"type": "array", "items": {"type": "string"}, "uniqueItems": true}
+            }
+        },
+        "resource": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["glob", "compression"],
+            "properties": {
+                "glob": {"type": "string", "minLength": 1},
+                "format": {"type": "string", "minLength": 1},
+                "format_options": {"type": "object"},
+                "compression": {"type": "string", "minLength": 1}
+            }
+        }
+    })
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
