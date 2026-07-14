@@ -93,8 +93,14 @@ None. Scope, authority, behavior-preservation constraints, and acceptance eviden
 
 ### Verdict
 
-Pass after shaping repair. Scope, authority lifetime, production composition, public API visibility, consumer propagation, evidence obligations, dependency relationship, and semantic provenance are concrete enough for a cold-start executor. Residual risk is integration with the parent’s uncommitted DX3 diff; the ticket’s narrow ownership and review/evidence gates make that coordination auditable.
+Concerns after implementation review. The registry lifetime, production composition, public API, consumer propagation, fourth-driver lifecycle, no-source resume, duplicate suppression, redaction, and permanent architecture law all pass focused falsification. Review found no driver-id branch, registry clone, `ProjectContext` registry ownership, helper-local reconstruction, fake resume helper, or compatibility alias. The execution review did find two significant generic redaction defects; both were repaired and are covered by the fourth-driver JSON/human/error assertions.
+
+Ticket closure remains blocked by its explicit full existing-CLI-suite criterion: the complete run is 273/291, with 18 failures on separately active compatibility, codec, deep-validation, renderer, and schema-promotion surfaces. The new authority tests are green, but focused evidence cannot substitute for that criterion. The next action is to clear those owning ticket surfaces, rerun the complete CLI suite, then perform final closure review; the implementation itself does not need another registry redesign.
 
 ## Retrospective
 
-Pending execution.
+- The only convincing registry-injection proof was a stateful fourth driver driven through public `invoke_with_destination_registry`; direct resolver tests would have missed the real `ResumeAttempt` authority break.
+- Testing a secret-bearing successful project URI would have weakened an existing security fence because project configuration intentionally rejects plaintext userinfo. The correct split is a safe project URI for lifecycle coverage and explicit userinfo on replay inputs for output/error redaction coverage.
+- The fourth-driver test found report-layer leaks unrelated to registry mechanics. Extension fixtures should always use distinctive secret sentinels because generic report code can accidentally serialize configuration even when driver errors are redacted.
+- Adding one cross-cutting borrowed authority pushed a per-slice helper over a reasonable argument boundary. Grouping loop-invariant state in a concrete executor made the dependency shape clearer without adding a provider trait or compatibility facade.
+- Full CLI runs are currently useful as integration inventory but not fast feedback: this run linked for minutes and surfaced 18 known cross-ticket failures. Focused architecture/lifecycle tests caught the actual defects quickly; the lean CLI graph and test-topology tickets remain justified.
