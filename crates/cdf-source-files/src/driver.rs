@@ -7,15 +7,16 @@ use cdf_kernel::{
     ResourceCapabilities, Result, ScopeKind,
 };
 use cdf_runtime::{
-    CompiledSourcePlan, ExecutionServices, SourceAttestationStrength, SourceCompileRequest,
-    SourceDriver, SourceDriverDescriptor, SourceDriverId, SourceExecutionCapabilities,
-    SourceExecutorClass, SourceResolutionContext, SourceRetryGranularity, artifact_hash,
+    CompiledFormatBinding, CompiledSourcePlan, ExecutionServices, FormatRegistry,
+    SourceAttestationStrength, SourceCompileRequest, SourceDriver, SourceDriverDescriptor,
+    SourceDriverId, SourceExecutionCapabilities, SourceExecutorClass, SourceResolutionContext,
+    SourceRetryGranularity, artifact_hash,
 };
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    FileCompressionDeclaration, FileFormatDeclaration, FileResource, FileResourcePlan,
-    FileRuntimeDependencies,
+    FileCompressionDeclaration, FileFormatDeclaration, FileResource, FileResourceDefinition,
+    FileResourcePlan, FileRuntimeDependencies,
 };
 
 type RuntimeFactory = dyn Fn(Arc<dyn SecretProvider + Send + Sync>, ExecutionServices) -> Result<FileRuntimeDependencies>
@@ -26,6 +27,7 @@ type RuntimeFactory = dyn Fn(Arc<dyn SecretProvider + Send + Sync>, ExecutionSer
 #[derive(Clone)]
 pub struct FileSourceDriver {
     descriptor: SourceDriverDescriptor,
+    formats: Arc<FormatRegistry>,
     runtime_factory: Arc<RuntimeFactory>,
 }
 
@@ -39,7 +41,7 @@ impl std::fmt::Debug for FileSourceDriver {
 }
 
 impl FileSourceDriver {
-    pub fn new<F>(runtime_factory: F) -> Result<Self>
+    pub fn new<F>(formats: Arc<FormatRegistry>, runtime_factory: F) -> Result<Self>
     where
         F: Fn(
                 Arc<dyn SecretProvider + Send + Sync>,
@@ -68,6 +70,7 @@ impl FileSourceDriver {
                     "https".to_owned(),
                 ],
             },
+            formats,
             runtime_factory: Arc::new(runtime_factory),
         })
     }
@@ -82,7 +85,16 @@ impl SourceDriver for FileSourceDriver {
         let source: FileSourceOptions = decode_options("file source", request.source_options)?;
         let resource: FileResourceOptions =
             decode_options("file resource", request.resource_options)?;
-        let physical = FilePhysicalPlan { source, resource };
+        let compiled_format = CompiledFormatBinding::compile(
+            self.formats.as_ref(),
+            resource.format.as_str(),
+            resource.format_options.clone(),
+        )?;
+        let physical = FilePhysicalPlan {
+            source,
+            resource,
+            compiled_format,
+        };
         physical.to_runtime_plan()?;
         CompiledSourcePlan::new(
             self.descriptor.clone(),
@@ -110,16 +122,17 @@ impl SourceDriver for FileSourceDriver {
             Arc::clone(context.secret_provider()),
             context.execution().clone(),
         )?;
-        dependencies
-            .formats()
-            .resolve(physical.resource.format.as_str())?;
+        physical.compiled_format.verify(dependencies.formats())?;
         Ok(Arc::new(FileResource::new(
-            plan.descriptor.clone(),
-            Arc::new(plan.schema.clone()),
-            plan.resource_capabilities.clone(),
-            physical.to_runtime_plan()?,
-            plan.type_policy_allowances,
-            plan.effective_schema_runtime.clone(),
+            FileResourceDefinition {
+                descriptor: plan.descriptor.clone(),
+                schema: Arc::new(plan.schema.clone()),
+                capabilities: plan.resource_capabilities.clone(),
+                plan: physical.to_runtime_plan()?,
+                type_policy_allowances: plan.type_policy_allowances,
+                effective_schema_runtime: plan.effective_schema_runtime.clone(),
+                compiled_format: physical.compiled_format,
+            },
             dependencies,
         )?))
     }
@@ -144,7 +157,13 @@ struct FileResourceOptions {
     glob: String,
     format: FileFormatDeclaration,
     format_declared: bool,
+    #[serde(default = "empty_format_options")]
+    format_options: serde_json::Value,
     compression: FileCompressionDeclaration,
+}
+
+fn empty_format_options() -> serde_json::Value {
+    serde_json::json!({})
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -159,6 +178,7 @@ enum AuthOptions {
 struct FilePhysicalPlan {
     source: FileSourceOptions,
     resource: FileResourceOptions,
+    compiled_format: CompiledFormatBinding,
 }
 
 impl FilePhysicalPlan {
@@ -171,6 +191,7 @@ impl FilePhysicalPlan {
             glob: self.resource.glob.clone(),
             format: self.resource.format.clone(),
             format_declared: self.resource.format_declared,
+            format_options: self.resource.format_options.clone(),
             compression: self.resource.compression.clone(),
             auth: self
                 .source
@@ -261,5 +282,116 @@ fn execution_capabilities() -> SourceExecutionCapabilities {
         canonical_order: true,
         bounded: true,
         telemetry_version: "v1".to_owned(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use arrow_schema::Schema;
+    use cdf_kernel::{
+        ResourceDescriptor, ResourceId, SchemaHash, SchemaSource, ScopeKey, TrustLevel,
+        WriteDisposition,
+    };
+
+    fn compile_request() -> SourceCompileRequest {
+        SourceCompileRequest {
+            source_kind: "files".to_owned(),
+            source_options: BTreeMap::from([
+                (
+                    "source_name".to_owned(),
+                    serde_json::Value::String("events".to_owned()),
+                ),
+                (
+                    "root".to_owned(),
+                    serde_json::Value::String("/tmp/events".to_owned()),
+                ),
+                ("egress_allowlist".to_owned(), serde_json::json!([])),
+            ]),
+            resource_options: BTreeMap::from([
+                (
+                    "glob".to_owned(),
+                    serde_json::Value::String("*.parquet".to_owned()),
+                ),
+                (
+                    "format".to_owned(),
+                    serde_json::Value::String("parquet".to_owned()),
+                ),
+                ("format_declared".to_owned(), serde_json::Value::Bool(false)),
+                ("format_options".to_owned(), serde_json::json!({})),
+                (
+                    "compression".to_owned(),
+                    serde_json::Value::String("auto".to_owned()),
+                ),
+            ]),
+            descriptor: ResourceDescriptor {
+                resource_id: ResourceId::new("events.raw").unwrap(),
+                schema_source: SchemaSource::Declared {
+                    schema_hash: SchemaHash::new(format!("sha256:{}", "a".repeat(64))).unwrap(),
+                    source: "test".to_owned(),
+                },
+                primary_key: Vec::new(),
+                merge_key: Vec::new(),
+                cursor: None,
+                write_disposition: WriteDisposition::Append,
+                deduplication: None,
+                contract: None,
+                state_scope: ScopeKey::Resource,
+                freshness: None,
+                trust_level: TrustLevel::Governed,
+            },
+            schema: Schema::empty(),
+            type_policy_allowances: Default::default(),
+            effective_schema_runtime: None,
+        }
+    }
+
+    #[test]
+    fn compiled_file_plan_pins_complete_format_driver_semantics() {
+        let formats = crate::test_format_registry();
+        let driver = FileSourceDriver::new(Arc::clone(&formats), |_, _| {
+            Err(CdfError::internal("compile-only test runtime factory"))
+        })
+        .unwrap();
+        let plan = driver.compile(compile_request()).unwrap();
+        let physical: FilePhysicalPlan =
+            serde_json::from_value(plan.physical_plan.clone()).unwrap();
+
+        assert_eq!(
+            physical.compiled_format.descriptor.format_id.as_str(),
+            "parquet"
+        );
+        assert_eq!(
+            physical.compiled_format.descriptor.semantic_version,
+            "1.0.0"
+        );
+        assert_eq!(
+            physical.compiled_format.descriptor.decode_unit_policy,
+            "row_group"
+        );
+        assert_eq!(
+            physical.compiled_format.descriptor.detection_probe,
+            cdf_runtime::FormatDetectionProbe {
+                prefix_bytes: 4,
+                suffix_bytes: 4,
+            }
+        );
+        assert_eq!(
+            physical.compiled_format.canonical_options,
+            serde_json::json!({})
+        );
+        physical.compiled_format.verify(formats.as_ref()).unwrap();
+
+        let mut incompatible = physical.compiled_format;
+        incompatible.descriptor.semantic_version = "2.0.0".to_owned();
+        let error = match incompatible.verify(formats.as_ref()) {
+            Ok(_) => panic!("incompatible compiled format plan must fail verification"),
+            Err(error) => error,
+        };
+        assert!(
+            error
+                .message
+                .contains("does not match the registered driver")
+        );
     }
 }

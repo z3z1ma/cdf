@@ -249,7 +249,7 @@ pub fn cursor_pushdown_value(
     let cursor_param = plan.cursor_param.as_deref();
     let (field, operator, literal) = expression.comparison()?;
     if !matches!(operator, "gte" | "gt" | "eq")
-        || (field != cursor.field && !cursor_param.is_some_and(|param| field == param))
+        || (field != cursor.field && cursor_param.is_none_or(|param| field != param))
     {
         return None;
     }

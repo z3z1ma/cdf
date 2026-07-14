@@ -732,7 +732,7 @@ fn parse_supported_predicate(
         "lte" => PostgresPredicateOperator::Lte,
         _ => return None,
     };
-    let field = field_by_name(schema, &field_name)?;
+    let field = field_by_name(schema, field_name)?;
     source_column_identifier(field).ok()?;
     let exact_literal_type = match (field.data_type(), literal) {
         (DataType::Utf8, ExpressionLiteral::String(_))

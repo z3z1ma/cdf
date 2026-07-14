@@ -89,6 +89,8 @@ pub struct ResourceDeclaration {
     #[schemars(range(min = 1))]
     pub sample_files: Option<u64>,
     pub format: Option<FileFormatDeclaration>,
+    #[serde(default)]
+    pub format_options: BTreeMap<String, serde_json::Value>,
     pub compression: Option<FileCompressionDeclaration>,
     #[serde(default)]
     pub params: BTreeMap<String, ParamValueDeclaration>,

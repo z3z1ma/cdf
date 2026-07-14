@@ -11,9 +11,9 @@ use cdf_kernel::{Batch, BatchId, BoxFuture, CdfError, PushdownFidelity, Result};
 use cdf_memory::{ConsumerKey, MemoryClass, ReservationRequest, reserve};
 use cdf_runtime::{
     AccountedPhysicalBatch, ByteExtent, ByteSource, DecodePlanningRequest, DecodeUnitPlan,
-    FormatDetection, FormatDetectionConfidence, FormatDiscoveryRequest, FormatDriver,
-    FormatDriverDescriptor, FormatId, FormatProbe, MagicSignature, PhysicalDecodeRequest,
-    PhysicalDecodeStream, PhysicalSchemaObservation,
+    FormatDetection, FormatDetectionConfidence, FormatDetectionProbe, FormatDiscoveryRequest,
+    FormatDriver, FormatDriverDescriptor, FormatId, FormatProbe, MagicSignature,
+    PhysicalDecodeRequest, PhysicalDecodeStream, PhysicalSchemaObservation,
 };
 use futures_util::stream;
 
@@ -39,6 +39,10 @@ impl ArrowIpcFileFormatDriver {
                     bytes: MAGIC.to_vec(),
                     strong: true,
                 }],
+                detection_probe: FormatDetectionProbe {
+                    prefix_bytes: 6,
+                    suffix_bytes: 6,
+                },
                 option_schema: serde_json::json!({
                     "type": "object",
                     "additionalProperties": false

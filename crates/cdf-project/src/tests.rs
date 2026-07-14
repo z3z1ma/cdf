@@ -1398,7 +1398,7 @@ fn generic_schema_discovery_dispatch_preserves_local_parquet_behavior_without_wr
     assert!(!temp.path().join(".cdf/schemas").exists());
     assert_eq!(
         discovery.snapshot.artifact.metadata["probe"],
-        SCHEMA_DISCOVERY_PROBE_PARQUET_FOOTER
+        "registered-format-discovery"
     );
     assert_eq!(
         discovery.snapshot.artifact.metadata["format"],
@@ -1444,7 +1444,7 @@ fn generic_discover_prepare_preserves_local_parquet_autopin_behavior() {
     assert!(snapshot_path.is_file());
     assert_eq!(
         discovery.snapshot.artifact.metadata["probe"],
-        SCHEMA_DISCOVERY_PROBE_PARQUET_FOOTER
+        "registered-format-discovery"
     );
     assert_eq!(
         discovery.snapshot.artifact.schema.fields[0].name,
@@ -1486,7 +1486,7 @@ fn http_parquet_schema_discovery_uses_bounded_ranges_without_artifacts() {
     assert!(!temp.path().join(".cdf/state.db").exists());
     assert_eq!(
         discovery.snapshot.artifact.metadata["probe"],
-        SCHEMA_DISCOVERY_PROBE_PARQUET_FOOTER
+        "registered-format-discovery"
     );
     assert_eq!(discovery.snapshot.artifact.metadata["source_kind"], "files");
     assert_eq!(
@@ -2491,11 +2491,12 @@ fn exhaustive_discovery_uses_exact_verified_baseline_and_schema_only_effective_h
                 "format".to_owned(),
                 SCHEMA_DISCOVERY_FORMAT_PARQUET.to_owned(),
             ),
-            (
-                "probe".to_owned(),
-                SCHEMA_DISCOVERY_PROBE_PARQUET_FOOTER.to_owned(),
-            ),
+            ("probe".to_owned(), "registered-format-discovery".to_owned()),
             ("source_kind".to_owned(), "files".to_owned()),
+            (
+                "format_options_hash".to_owned(),
+                cdf_runtime::artifact_hash(&serde_json::json!({})).unwrap(),
+            ),
         ]),
     )
     .unwrap();
@@ -2744,7 +2745,10 @@ fn exhaustive_local_parquet_discovery_budget_and_incompatibility_fail_without_ar
     )
     .unwrap_err()
     .to_string();
-    assert!(budget_error.contains("read 405 metadata bytes"), "{budget_error}");
+    assert!(
+        budget_error.contains("read 405 metadata bytes"),
+        "{budget_error}"
+    );
     assert!(budget_error.contains("8-byte budget"), "{budget_error}");
     assert!(
         budget_error.contains("increase the per-file"),
@@ -3069,11 +3073,19 @@ trust = "governed"
 "#;
     let config = parse_cdf_toml(project).unwrap();
     let resolver = InMemoryResourceSourceResolver::new().with_toml("resources/sql.toml", sql);
-    let error = compile_project_declarative_resources(&config, &resolver).unwrap_err();
-    assert_eq!(
-        error.to_string(),
-        "Contract: Postgres source dialect must be `postgres` when declared"
+    let mut resources = compile_project_declarative_resources(&config, &resolver).unwrap();
+    let error = discover_resource_schema(
+        &resources.remove(0),
+        &EnvSecretProvider::from_map(std::iter::empty::<(&str, &str)>()),
+    )
+    .unwrap_err();
+    let message = error.to_string();
+    assert!(
+        message.contains("unsupported schema discovery slice"),
+        "{message}"
     );
+    assert!(message.contains("SQL dialect `mysql`"), "{message}");
+    assert!(message.contains("only dialect `postgres`"), "{message}");
 }
 
 fn json_response(body: &str) -> HttpResponse {

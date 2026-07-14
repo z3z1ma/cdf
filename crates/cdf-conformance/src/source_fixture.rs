@@ -25,22 +25,27 @@ pub(crate) fn resolve_local_file(
     formats.register(Arc::new(cdf_format_json::NdjsonFormatDriver::new()?))?;
     let formats = Arc::new(formats);
     let mut registry = SourceRegistry::new();
-    registry.register(FileSourceDriver::new(move |secrets, execution| {
-        Ok(FileRuntimeDependencies::new(
-            FileTransportFacade::new()
-                .with_shared_secret_provider(secrets)
-                .with_execution_services(execution.clone()),
-            execution,
-            formats.clone(),
-            Arc::new(ByteTransformRegistry::default()),
-        ))
-    })?)?;
-    let plan = resource.source_plan().ok_or_else(|| {
+    let compile_formats = Arc::clone(&formats);
+    registry.register(FileSourceDriver::new(
+        compile_formats,
+        move |secrets, execution| {
+            Ok(FileRuntimeDependencies::new(
+                FileTransportFacade::new()
+                    .with_shared_secret_provider(secrets)
+                    .with_execution_services(execution.clone()),
+                execution,
+                formats.clone(),
+                Arc::new(ByteTransformRegistry::default()),
+            ))
+        },
+    )?)?;
+    let request = resource.source_compile_request().ok_or_else(|| {
         CdfError::contract(format!(
-            "conformance resource `{}` has no executable source driver plan",
+            "conformance resource `{}` has no source compile request",
             resource.descriptor().resource_id
         ))
     })?;
+    let plan = registry.compile(request.clone())?;
     let context = SourceResolutionContext::new(project_root, Arc::new(NoSecrets), &execution);
-    registry.resolve(plan, &context)
+    registry.resolve(&plan, &context)
 }

@@ -50,11 +50,37 @@ fn test_file_dependencies(
             cdf_format_parquet::ParquetFormatDriver::new().unwrap(),
         ))
         .unwrap();
+    formats
+        .register(Arc::new(
+            cdf_format_delimited::CsvFormatDriver::new().unwrap(),
+        ))
+        .unwrap();
+    formats
+        .register(Arc::new(
+            cdf_format_json::NdjsonFormatDriver::new().unwrap(),
+        ))
+        .unwrap();
+    formats
+        .register(Arc::new(
+            cdf_format_json::JsonDocumentFormatDriver::new().unwrap(),
+        ))
+        .unwrap();
+    let mut transforms = cdf_runtime::ByteTransformRegistry::default();
+    transforms
+        .register(Arc::new(
+            cdf_transform_gzip::GzipTransformDriver::new().unwrap(),
+        ))
+        .unwrap();
+    transforms
+        .register(Arc::new(
+            cdf_transform_zstd::ZstdTransformDriver::new().unwrap(),
+        ))
+        .unwrap();
     FileRuntimeDependencies::new(
         transport,
         execution,
         Arc::new(formats),
-        Arc::new(cdf_runtime::ByteTransformRegistry::default()),
+        Arc::new(transforms),
     )
 }
 
@@ -97,19 +123,12 @@ fn book_rest_example_parses_and_negotiates_inexact_cursor_pushdown() {
         resource.capabilities().filters.default_fidelity,
         PushdownFidelity::Inexact
     );
-    let source_plan = resource.source_plan().expect("neutral REST source plan");
-    assert_eq!(source_plan.driver.driver_id.as_str(), "rest");
+    let source_request = resource
+        .source_compile_request()
+        .expect("neutral REST source compile request");
+    assert_eq!(source_request.source_kind, "rest");
     assert_eq!(
-        source_plan
-            .execution_capabilities
-            .blocking_lane
-            .as_ref()
-            .unwrap()
-            .lane_id,
-        "rest-source.sync"
-    );
-    assert_eq!(
-        source_plan.type_policy_allowances,
+        source_request.type_policy_allowances,
         resource.type_policy_allowances()
     );
 
@@ -1690,7 +1709,7 @@ fn yaml_sql_and_file_resources_compile_to_mvp_descriptors() {
     let events_dir = root.path().join("data/events");
     fs::create_dir_all(&events_dir).unwrap();
     fs::write(
-        events_dir.join("one.json"),
+        events_dir.join("one.ndjson"),
         "{\"event_id\":1,\"payload\":\"ok\"}\n",
     )
     .unwrap();
@@ -1719,7 +1738,7 @@ resource:
         - { name: updated_at, type: timestamp_micros, nullable: false, timezone: UTC }
   events:
     source: local
-    glob: events/*.json
+    glob: events/*.ndjson
     format: ndjson
     write_disposition: append
     trust: experimental
@@ -1735,9 +1754,12 @@ resource:
         .collect::<Vec<_>>();
     assert_eq!(ids, vec!["local.events", "warehouse.orders"]);
 
-    let file_resource = resources
+    let compiled_file_resource = resources
         .iter()
         .find(|resource| resource.descriptor().resource_id.as_str() == "local.events")
+        .unwrap();
+    let file_resource = compiled_file_resource
+        .to_file_resource(test_file_dependencies(FileTransportFacade::new()))
         .unwrap();
     assert_eq!(
         file_resource.capabilities().incremental,
@@ -1753,7 +1775,7 @@ resource:
         scope: ScopeKey::Resource,
     };
     assert_queryable_resource_conformance(
-        file_resource,
+        &file_resource,
         [ResourceConformanceCase::new(file_request)
             .with_expected_predicates([PredicateExpectation::unsupported(file_predicate_id)])],
     );
@@ -1893,15 +1915,18 @@ trust = "governed"
 schema = { fields = [{ name = "id", type = "int64" }] }
 "#;
 
-    let resource = compile_document_with_project_root(&parse_toml(input).unwrap(), root.path())
+    let compiled = compile_document_with_project_root(&parse_toml(input).unwrap(), root.path())
         .unwrap()
         .remove(0);
-    assert!(resource.descriptor().primary_key.is_empty());
-    assert_eq!(resource.descriptor().merge_key, vec!["id"]);
+    assert!(compiled.descriptor().primary_key.is_empty());
+    assert_eq!(compiled.descriptor().merge_key, vec!["id"]);
     assert_eq!(
-        resource.descriptor().write_disposition,
+        compiled.descriptor().write_disposition,
         WriteDisposition::Merge
     );
+    let resource = compiled
+        .to_file_resource(test_file_dependencies(FileTransportFacade::new()))
+        .unwrap();
     let request = ScanRequest {
         resource_id: resource.descriptor().resource_id.clone(),
         projection: None,
@@ -2319,11 +2344,13 @@ trust = "governed"
         };
         assert_eq!(plan.format, expected);
         assert!(!plan.format_declared);
-        let source_plan = resource.source_plan().expect("neutral file source plan");
-        assert_eq!(source_plan.driver.driver_id.as_str(), "files");
+        let source_request = resource
+            .source_compile_request()
+            .expect("neutral file source compile request");
+        assert_eq!(source_request.source_kind, "files");
         assert_eq!(
-            source_plan.execution_capabilities.executor_class,
-            cdf_runtime::SourceExecutorClass::Cpu
+            source_request.resource_options.get("format"),
+            Some(&serde_json::Value::String(expected.as_str().to_owned()))
         );
     }
 
@@ -2350,7 +2377,7 @@ trust = "governed"
 }
 
 #[test]
-fn inferred_parquet_glob_confirms_every_file_before_partition_planning() {
+fn inferred_parquet_glob_defers_content_confirmation_to_admission() {
     let root = tempfile::tempdir().unwrap();
     let data_dir = root.path().join("data");
     fs::create_dir_all(&data_dir).unwrap();
@@ -2369,21 +2396,20 @@ fn inferred_parquet_glob_confirms_every_file_before_partition_planning() {
         assert_eq!(partition.metadata["format"], "parquet");
         assert_eq!(partition.metadata["format_declared"], "false");
         assert_eq!(partition.metadata["format_extension"], "parquet");
-        assert_eq!(partition.metadata["format_magic"], "parquet");
+        assert_eq!(partition.metadata["format_detection"], "none");
+        assert_eq!(partition.metadata["format_driver_version"], "1.0.0");
     }
 
     fs::write(data_dir.join("b.parquet"), b"not parquet").unwrap();
-    let error = resource
+    let changed_partitions = resource
         .plan_partitions(&scan_request_for(&resource))
-        .unwrap_err();
-    let message = error.to_string();
-    assert!(message.contains("file format confirmation failed for resource `local.events`"));
-    assert!(message.contains("file `b.parquet`"));
-    assert!(message.contains("declared format `<omitted>`"));
-    assert!(message.contains("inferred format `parquet`"));
-    assert!(message.contains("extension signal `parquet`"));
-    assert!(message.contains("magic bytes signal `unknown`"));
-    assert!(message.contains("format = \"parquet\""));
+        .unwrap();
+    let changed = changed_partitions
+        .into_iter()
+        .find(|partition| partition.metadata["path"].ends_with("b.parquet"))
+        .unwrap();
+    let error = expect_open_or_stream_error(futures_executor::block_on(resource.open(changed)));
+    assert!(error.to_string().to_ascii_lowercase().contains("parquet"));
 }
 
 #[test]
@@ -2402,7 +2428,7 @@ fn inferred_parquet_and_arrow_preview_and_run_share_resolved_format() {
 }
 
 #[test]
-fn explicit_binary_format_still_requires_matching_extension_and_magic() {
+fn explicit_binary_format_defers_magic_confirmation_to_admission() {
     let root = tempfile::tempdir().unwrap();
     let data_dir = root.path().join("data");
     fs::create_dir_all(&data_dir).unwrap();
@@ -2420,32 +2446,41 @@ trust = "governed"
 "#;
     let resource = compile_document_with_project_root(&parse_toml(input).unwrap(), root.path())
         .unwrap()
-        .remove(0);
-    let error = resource
+        .remove(0)
+        .into_file_resource(test_file_dependencies(FileTransportFacade::new()))
+        .unwrap();
+    let partition = resource
         .plan_partitions(&scan_request_for(&resource))
-        .unwrap_err();
-    let message = error.to_string();
-    assert!(message.contains("declared format `parquet`"));
-    assert!(message.contains("inferred format `parquet`"));
-    assert!(message.contains("extension signal `parquet`"));
-    assert!(message.contains("magic bytes signal `arrow_ipc`"));
+        .unwrap()
+        .remove(0);
+    assert_eq!(partition.metadata["format_detection"], "none");
+    let error = expect_open_or_stream_error(futures_executor::block_on(resource.open(partition)));
+    assert!(error.to_string().to_ascii_lowercase().contains("parquet"));
 
     write_test_parquet(&data_dir.join("extensionless"), 12);
     let extensionless = input.replace("events.parquet", "extensionless");
     let resource =
         compile_document_with_project_root(&parse_toml(&extensionless).unwrap(), root.path())
             .unwrap()
-            .remove(0);
+            .remove(0)
+            .into_file_resource(test_file_dependencies(FileTransportFacade::new()))
+            .unwrap();
     let partition = resource
         .plan_partitions(&scan_request_for(&resource))
         .unwrap()
         .remove(0);
-    assert_eq!(partition.metadata["format_extension"], "unknown");
-    assert_eq!(partition.metadata["format_magic"], "parquet");
+    assert_eq!(partition.metadata["format_extension"], "none");
+    assert_eq!(partition.metadata["format_detection"], "none");
+    assert_eq!(
+        first_i64_value(&drain_batches(
+            futures_executor::block_on(resource.open(partition)).unwrap()
+        )),
+        12
+    );
 }
 
 #[test]
-fn inferred_https_parquet_confirmation_uses_only_bounded_ranges() {
+fn inferred_https_parquet_inventory_reads_no_payload_ranges() {
     let bytes =
         cdf_package::transcode_record_batches_to_parquet_bytes(&[test_id_batch(21)]).unwrap();
     assert!(bytes.len() > 12);
@@ -2469,21 +2504,13 @@ trust = "governed"
         .unwrap();
 
     let partitions = resource
-        .plan_partitions(&scan_request_for(&compiled))
+        .plan_partitions(&scan_request_for(&resource))
         .unwrap();
     assert_eq!(partitions.len(), 1);
     assert_eq!(partitions[0].metadata["format"], "parquet");
     assert_eq!(partitions[0].metadata["format_declared"], "false");
-    assert_eq!(partitions[0].metadata["format_magic"], "parquet");
-    let ranges = transport.ranges();
-    assert_eq!(ranges.len(), 3);
-    assert_eq!(ranges[0], ByteRange::new(0, 4).unwrap());
-    assert_eq!(ranges[1], ByteRange::new(0, 6).unwrap());
-    assert_eq!(
-        ranges[2],
-        ByteRange::new(bytes.len() as u64 - 6, 6).unwrap()
-    );
-    assert_eq!(ranges.iter().map(|range| range.length).sum::<u64>(), 16);
+    assert_eq!(partitions[0].metadata["format_detection"], "none");
+    assert!(transport.ranges().is_empty());
 }
 
 #[test]
@@ -2547,12 +2574,9 @@ fn file_glob_partition_checksum_changes_when_file_content_changes() {
 
 #[test]
 fn file_partition_attestation_rejects_identity_change_after_planning() {
-    let (root, compiled) = compile_local_glob_runtime_resource([("events.ndjson", "{\"id\":1}\n")]);
-    let resource = compiled
-        .to_file_resource(test_file_dependencies(FileTransportFacade::new()))
-        .unwrap();
+    let (root, resource) = compile_local_glob_runtime_resource([("events.ndjson", "{\"id\":1}\n")]);
     let partition = resource
-        .plan_partitions(&scan_request_for(&compiled))
+        .plan_partitions(&scan_request_for(&resource))
         .unwrap()
         .remove(0);
 
@@ -2567,14 +2591,11 @@ fn file_partition_attestation_rejects_identity_change_after_planning() {
 
 #[test]
 fn file_glob_run_and_preview_open_the_requested_partition() {
-    let (_root, compiled) = compile_local_glob_runtime_resource([
+    let (_root, resource) = compile_local_glob_runtime_resource([
         ("b.ndjson", "{\"id\":2}\n"),
         ("a.ndjson", "{\"id\":1}\n"),
     ]);
-    let request = scan_request_for(&compiled);
-    let resource = compiled
-        .to_file_resource(test_file_dependencies(FileTransportFacade::new()))
-        .unwrap();
+    let request = scan_request_for(&resource);
     let partitions = resource.plan_partitions(&request).unwrap();
 
     let preview_batches = drain_batches(
@@ -2622,11 +2643,8 @@ fn file_runtime_auto_compression_decodes_gzip_and_zstd_ndjson() {
         ),
     )
     .unwrap();
-    let compiled = compile_local_file_runtime_resource(&root, "*.ndjson.*", None);
-    let request = scan_request_for(&compiled);
-    let resource = compiled
-        .to_file_resource(test_file_dependencies(FileTransportFacade::new()))
-        .unwrap();
+    let resource = compile_local_file_runtime_resource(&root, "*.ndjson.*", None);
+    let request = scan_request_for(&resource);
 
     let partitions = resource.plan_partitions(&request).unwrap();
 
@@ -2681,11 +2699,8 @@ fn file_runtime_explicit_compression_overrides_extension_inference() {
         ),
     )
     .unwrap();
-    let compiled = compile_local_file_runtime_resource(&root, "*.zst", Some("gzip"));
-    let request = scan_request_for(&compiled);
-    let resource = compiled
-        .to_file_resource(test_file_dependencies(FileTransportFacade::new()))
-        .unwrap();
+    let resource = compile_local_file_runtime_resource(&root, "*.zst", Some("gzip"));
+    let request = scan_request_for(&resource);
 
     let partition = resource.plan_partitions(&request).unwrap().remove(0);
 
@@ -2705,7 +2720,7 @@ fn file_runtime_explicit_compression_overrides_extension_inference() {
             .metadata
             .get("compression_magic")
             .map(String::as_str),
-        Some("gzip")
+        Some("none")
     );
     let batches = drain_batches(futures_executor::block_on(resource.open(partition)).unwrap());
     assert_eq!(first_i64_value(&batches), 7);
@@ -2726,15 +2741,14 @@ fn file_runtime_explicit_compression_mismatch_names_file_and_signals() {
     .unwrap();
     let resource = compile_local_file_runtime_resource(&root, "*.gz", Some("gzip"));
 
-    let error = resource
+    let partition = resource
         .plan_partitions(&scan_request_for(&resource))
-        .unwrap_err();
+        .unwrap()
+        .remove(0);
+    let error = expect_open_or_stream_error(futures_executor::block_on(resource.open(partition)));
 
     let message = error.to_string();
-    assert!(message.contains("events.ndjson.gz"));
-    assert!(message.contains("declared `gzip`"));
-    assert!(message.contains("extension signal `gzip`"));
-    assert!(message.contains("magic bytes signal `zstd`"));
+    assert!(message.to_ascii_lowercase().contains("gzip"), "{message}");
 }
 
 #[test]
@@ -2752,12 +2766,9 @@ fn file_glob_zero_matches_still_reports_actionable_data_error() {
 
 #[test]
 fn file_runtime_rejects_partition_path_not_produced_by_glob_before_read() {
-    let (_root, compiled) =
+    let (_root, resource) =
         compile_local_glob_runtime_resource([("events.ndjson", "{\"id\":1}\n")]);
-    let request = scan_request_for(&compiled);
-    let resource = compiled
-        .to_file_resource(test_file_dependencies(FileTransportFacade::new()))
-        .unwrap();
+    let request = scan_request_for(&resource);
     let mut partition = resource.plan_partitions(&request).unwrap().remove(0);
     let unplanned_path = "other.ndjson".to_owned();
     partition
@@ -2781,14 +2792,11 @@ fn file_runtime_rejects_partition_path_not_produced_by_glob_before_read() {
 
 #[test]
 fn file_runtime_rejects_legacy_partition_id_for_multi_file_glob() {
-    let (_root, compiled) = compile_local_glob_runtime_resource([
+    let (_root, resource) = compile_local_glob_runtime_resource([
         ("a.ndjson", "{\"id\":1}\n"),
         ("b.ndjson", "{\"id\":2}\n"),
     ]);
-    let request = scan_request_for(&compiled);
-    let resource = compiled
-        .to_file_resource(test_file_dependencies(FileTransportFacade::new()))
-        .unwrap();
+    let request = scan_request_for(&resource);
     let mut partition = resource.plan_partitions(&request).unwrap().remove(0);
     partition.partition_id = PartitionId::new("files").unwrap();
 
@@ -2939,10 +2947,10 @@ trust = "governed"
     let text = file
         .replace("*.parquet", "*.ndjson")
         .replace("format = \"parquet\"", "format = \"ndjson\"");
-    let error = compile_document(&parse_toml(&text).unwrap())
-        .unwrap_err()
-        .to_string();
-    assert!(error.contains("row sampling inside text files is excluded"));
+    let resource = compile_document(&parse_toml(&text).unwrap())
+        .unwrap()
+        .remove(0);
+    assert_eq!(resource.schema_discovery_sample_files(), Some(7));
 }
 
 #[test]
@@ -2951,19 +2959,10 @@ fn sql_negotiate_pushes_filters_exactly() {
         .unwrap()
         .remove(0);
     let predicate_id = PredicateId::new("p1").unwrap();
-    let source_plan = resource
-        .source_plan()
-        .expect("neutral Postgres source plan");
-    assert_eq!(source_plan.driver.driver_id.as_str(), "postgres");
-    assert_eq!(
-        source_plan
-            .execution_capabilities
-            .blocking_lane
-            .as_ref()
-            .unwrap()
-            .lane_id,
-        "postgres-source.sync"
-    );
+    let source_request = resource
+        .source_compile_request()
+        .expect("neutral Postgres source compile request");
+    assert_eq!(source_request.source_kind, "sql");
     let request = ScanRequest {
         resource_id: resource.descriptor().resource_id.clone(),
         projection: Some(vec!["id".to_owned()]),
@@ -3116,14 +3115,26 @@ fn sql_runtime_fails_closed_for_query_and_non_postgres_dialect() {
 
     let non_postgres =
         SQL_RUNTIME_EXAMPLE.replace(r#"dialect = "postgres""#, r#"dialect = "sqlite""#);
-    let error = compile_document(&parse_toml(&non_postgres).unwrap()).unwrap_err();
+    let non_postgres = compile_document(&parse_toml(&non_postgres).unwrap())
+        .unwrap()
+        .remove(0);
+    let error = non_postgres
+        .to_sql_resource(SqlRuntimeDependencies::new())
+        .unwrap_err();
     assert!(error.to_string().contains("`postgres`"), "{error}");
 }
 
 #[test]
 fn sql_runtime_rejects_malformed_table_and_empty_declared_schema() {
     let malformed = SQL_RUNTIME_EXAMPLE.replace(r#"table = "public.orders""#, r#"table = "a.b.c""#);
-    assert!(compile_document(&parse_toml(&malformed).unwrap()).is_err());
+    let malformed = compile_document(&parse_toml(&malformed).unwrap())
+        .unwrap()
+        .remove(0);
+    assert!(
+        malformed
+            .to_sql_resource(SqlRuntimeDependencies::new())
+            .is_err()
+    );
 
     let empty_schema = r#"
 [source.warehouse]
@@ -3395,7 +3406,7 @@ fn drain_batches(mut stream: cdf_kernel::BatchStream) -> Vec<cdf_kernel::Batch> 
     })
 }
 
-fn compile_local_glob_runtime_resource<I>(files: I) -> (TempDir, CompiledResource)
+fn compile_local_glob_runtime_resource<I>(files: I) -> (TempDir, FileResource)
 where
     I: IntoIterator<Item = (&'static str, &'static str)>,
 {
@@ -3418,9 +3429,12 @@ write_disposition = "append"
 trust = "governed"
 schema = { fields = [{ name = "id", type = "int64" }] }
 "#;
-    let resource = compile_document_with_project_root(&parse_toml(input).unwrap(), root.path())
+    let compiled = compile_document_with_project_root(&parse_toml(input).unwrap(), root.path())
         .unwrap()
         .remove(0);
+    let resource = compiled
+        .to_file_resource(test_file_dependencies(FileTransportFacade::new()))
+        .unwrap();
     (root, resource)
 }
 
@@ -3428,7 +3442,7 @@ fn compile_local_file_runtime_resource(
     root: &TempDir,
     glob: &str,
     compression: Option<&str>,
-) -> CompiledResource {
+) -> FileResource {
     let compression_line = compression
         .map(|value| format!(r#"compression = "{value}""#))
         .unwrap_or_default();
@@ -3450,9 +3464,11 @@ schema = {{ fields = [{{ name = "id", type = "int64" }}] }}
     compile_document_with_project_root(&parse_toml(&input).unwrap(), root.path())
         .unwrap()
         .remove(0)
+        .into_file_resource(test_file_dependencies(FileTransportFacade::new()))
+        .unwrap()
 }
 
-fn compile_inferred_binary_resource(root: &TempDir, glob: &str) -> CompiledResource {
+fn compile_inferred_binary_resource(root: &TempDir, glob: &str) -> FileResource {
     let input = format!(
         r#"
 [source.local]
@@ -3468,6 +3484,8 @@ trust = "governed"
     compile_document_with_project_root(&parse_toml(&input).unwrap(), root.path())
         .unwrap()
         .remove(0)
+        .into_file_resource(test_file_dependencies(FileTransportFacade::new()))
+        .unwrap()
 }
 
 #[derive(Clone)]
@@ -3562,11 +3580,8 @@ fn write_test_arrow(path: &Path, id: i64) {
     writer.finish().unwrap();
 }
 
-fn assert_preview_run_first_id(resource: &CompiledResource, expected: i64) {
+fn assert_preview_run_first_id(resource: &FileResource, expected: i64) {
     let request = scan_request_for(resource);
-    let resource = resource
-        .to_file_resource(test_file_dependencies(FileTransportFacade::new()))
-        .unwrap();
     let partition = resource.plan_partitions(&request).unwrap().remove(0);
     let preview = drain_batches(
         futures_executor::block_on(resource.open_preview(partition.clone())).unwrap(),
@@ -3590,7 +3605,7 @@ fn zstd_bytes(bytes: &[u8]) -> Vec<u8> {
     zstd::stream::encode_all(Cursor::new(bytes), 0).unwrap()
 }
 
-fn scan_request_for(resource: &CompiledResource) -> ScanRequest {
+fn scan_request_for(resource: &(impl ResourceStream + ?Sized)) -> ScanRequest {
     ScanRequest {
         resource_id: resource.descriptor().resource_id.clone(),
         projection: None,
@@ -3629,6 +3644,17 @@ fn expect_open_error(result: cdf_kernel::Result<cdf_kernel::BatchStream>) -> Cdf
     match result {
         Ok(_) => panic!("REST open unexpectedly succeeded"),
         Err(error) => error,
+    }
+}
+
+fn expect_open_or_stream_error(result: cdf_kernel::Result<cdf_kernel::BatchStream>) -> CdfError {
+    match result {
+        Err(error) => error,
+        Ok(mut stream) => match futures_executor::block_on(stream.next()) {
+            Some(Err(error)) => error,
+            Some(Ok(_)) => panic!("malformed input emitted a partial batch before failing"),
+            None => panic!("malformed input completed without an error"),
+        },
     }
 }
 

@@ -22,10 +22,9 @@ use cdf_kernel::{
     ResourceStream, Result, ScanPlan, ScanRequest, SchemaHash, SchemaSource, ScopeKey, ScopeKind,
     TrustLevel, TypePolicyAllowances, WriteDisposition, with_cdf_metadata,
 };
-use cdf_runtime::{CompiledSourcePlan, SourceCompileRequest, SourceRegistry};
-use cdf_source_files::{FileFormatDeclaration, FileResourcePlan, FileSourceDriver};
-use cdf_source_postgres::PostgresSourceDriver;
-use cdf_source_rest::{RestResourcePlan, RestSourceDriver, cursor_pushdown_value};
+use cdf_runtime::SourceCompileRequest;
+use cdf_source_files::{FileFormatDeclaration, FileResourcePlan};
+use cdf_source_rest::{RestResourcePlan, cursor_pushdown_value};
 use sha2::{Digest, Sha256};
 
 use crate::declarations::*;
@@ -42,7 +41,7 @@ pub struct CompiledResource {
     schema: SchemaRef,
     capabilities: ResourceCapabilities,
     plan: CompiledResourcePlan,
-    source_plan: Option<CompiledSourcePlan>,
+    source_compile_request: Option<SourceCompileRequest>,
     effective_schema_runtime: Option<EffectiveSchemaRuntime>,
     schema_discovery_sample_files: Option<u64>,
     type_policy_allowances: TypePolicyAllowances,
@@ -69,8 +68,8 @@ impl CompiledResource {
         &self.plan
     }
 
-    pub fn source_plan(&self) -> Option<&CompiledSourcePlan> {
-        self.source_plan.as_ref()
+    pub fn source_compile_request(&self) -> Option<&SourceCompileRequest> {
+        self.source_compile_request.as_ref()
     }
 
     pub fn schema_discovery_sample_files(&self) -> Option<u64> {
@@ -98,9 +97,9 @@ impl CompiledResource {
         let mut resource = self.clone();
         resource.descriptor.schema_source = schema_source.clone();
         resource.schema = Arc::clone(&schema);
-        if let Some(plan) = &mut resource.source_plan {
-            plan.descriptor.schema_source = schema_source;
-            plan.schema = schema.as_ref().clone();
+        if let Some(request) = &mut resource.source_compile_request {
+            request.descriptor.schema_source = schema_source;
+            request.schema = schema.as_ref().clone();
         }
         resource
     }
@@ -113,9 +112,9 @@ impl CompiledResource {
         runtime.validate_for_resource(&self.descriptor)?;
         let mut resource = self.clone();
         resource.schema = Arc::clone(&schema);
-        if let Some(plan) = &mut resource.source_plan {
-            plan.schema = schema.as_ref().clone();
-            plan.effective_schema_runtime = Some(runtime.clone());
+        if let Some(request) = &mut resource.source_compile_request {
+            request.schema = schema.as_ref().clone();
+            request.effective_schema_runtime = Some(runtime.clone());
         }
         resource.effective_schema_runtime = Some(runtime);
         Ok(resource)
@@ -422,7 +421,7 @@ fn compile_resource(
             allow_lossy_mapping: types.allow_lossy_mapping,
         })
         .unwrap_or_default();
-    let source_plan = compile_neutral_source_plan(
+    let source_compile_request = build_source_compile_request(
         source,
         resource,
         &plan,
@@ -438,28 +437,26 @@ fn compile_resource(
         schema: Arc::new(schema),
         capabilities,
         plan,
-        source_plan,
+        source_compile_request,
         effective_schema_runtime: None,
         schema_discovery_sample_files: resource.sample_files,
         type_policy_allowances,
     })
 }
 
-fn compile_neutral_source_plan(
+fn build_source_compile_request(
     source: &SourceDeclaration,
     resource: &ResourceDeclaration,
     typed_plan: &CompiledResourcePlan,
     descriptor: &ResourceDescriptor,
     schema: &Schema,
     type_policy_allowances: TypePolicyAllowances,
-) -> Result<Option<CompiledSourcePlan>> {
-    let mut registry = SourceRegistry::new();
+) -> Result<Option<SourceCompileRequest>> {
     let request = match source {
         SourceDeclaration::Sql(sql) => {
             let Some(table) = &resource.table else {
                 return Ok(None);
             };
-            registry.register(PostgresSourceDriver::new()?)?;
             SourceCompileRequest {
                 source_kind: "sql".to_owned(),
                 source_options: BTreeMap::from([
@@ -485,11 +482,6 @@ fn compile_neutral_source_plan(
             }
         }
         SourceDeclaration::Rest(rest) => {
-            registry.register(RestSourceDriver::new(|| {
-                Err(CdfError::internal(
-                    "compile-only REST driver transport factory was invoked",
-                ))
-            })?)?;
             let mut source_options = BTreeMap::from([
                 (
                     "source_name".to_owned(),
@@ -578,11 +570,6 @@ fn compile_neutral_source_plan(
                     "file declaration compiled to a non-file typed plan",
                 ));
             };
-            registry.register(FileSourceDriver::new(|_, _| {
-                Err(CdfError::internal(
-                    "compile-only file driver transport factory was invoked",
-                ))
-            })?)?;
             let mut source_options = BTreeMap::from([
                 (
                     "source_name".to_owned(),
@@ -620,6 +607,10 @@ fn compile_neutral_source_plan(
                         serde_json::Value::Bool(file_plan.format_declared),
                     ),
                     (
+                        "format_options".to_owned(),
+                        file_plan.format_options.clone(),
+                    ),
+                    (
                         "compression".to_owned(),
                         json_value(&file_plan.compression)?,
                     ),
@@ -631,7 +622,7 @@ fn compile_neutral_source_plan(
             }
         }
     };
-    registry.compile(request).map(Some)
+    Ok(Some(request))
 }
 
 fn json_value(value: &impl serde::Serialize) -> Result<serde_json::Value> {
@@ -848,11 +839,6 @@ fn compile_file_plan(
         Some(format) => (format.clone(), true),
         None => (infer_binary_file_format(resource_id, resource)?, false),
     };
-    if resource.sample_files.is_some() && !matches!(format.as_str(), "parquet" | "arrow_ipc") {
-        return Err(CdfError::contract(format!(
-            "file resource `{resource_id}` sample_files is only supported for Parquet and Arrow IPC schema discovery; row sampling inside text files is excluded"
-        )));
-    }
     let compression = resource.compression.clone().unwrap_or_default();
     format.validate()?;
     compression.validate()?;
@@ -864,6 +850,9 @@ fn compile_file_plan(
         })?,
         format,
         format_declared,
+        format_options: serde_json::Value::Object(
+            resource.format_options.clone().into_iter().collect(),
+        ),
         compression,
         auth: source.auth.as_ref().map(compile_auth).transpose()?,
         credentials: source

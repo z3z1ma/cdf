@@ -174,19 +174,20 @@ pub(crate) fn build_project_run_resource(
     let execution = execution.ok_or_else(|| {
         cdf_kernel::CdfError::internal("runtime source resolution requires execution services")
     })?;
-    let plan = resource.source_plan().ok_or_else(|| {
+    let request = resource.source_compile_request().ok_or_else(|| {
         cdf_kernel::CdfError::contract(format!(
-            "resource `{}` has no executable source driver plan",
+            "resource `{}` has no source compile request",
             resource.descriptor().resource_id
         ))
     })?;
     let registry = crate::source_registry::builtin_source_registry()?;
+    let plan = registry.compile(request.clone())?;
     let secrets = context.secret_provider();
     let resolution =
         cdf_runtime::SourceResolutionContext::new(&context.root, Arc::new(secrets), execution);
     Ok(CliProjectRunSource::from_shared(
-        registry.resolve(plan, &resolution)?,
-        plan.clone(),
+        registry.resolve(&plan, &resolution)?,
+        plan,
     ))
 }
 

@@ -2,7 +2,6 @@ use std::{
     collections::BTreeMap,
     fmt,
     fs::{self, File},
-    io::{Read, Seek, SeekFrom},
     path::{Component, Path, PathBuf},
     sync::Arc,
     time::UNIX_EPOCH,
@@ -19,7 +18,8 @@ use cdf_kernel::{
 };
 use cdf_memory::{ConsumerKey, MemoryClass};
 use cdf_runtime::{
-    ByteSource, ByteTransformId, ByteTransformRegistry, DecodePlanningRequest, ExecutionServices,
+    ByteSource, ByteTransformId, ByteTransformRegistry, CompiledFormatBinding,
+    DecodePlanningRequest, ExecutionServices, FormatDetection, FormatDetectionConfidence,
     FormatDiscoveryRequest, FormatDriver, FormatRegistry, PhysicalDecodeRequest,
     SequentialReadRequest, TransformSourceConfig, TransformedByteSource,
 };
@@ -30,9 +30,9 @@ use sha2::{Digest, Sha256};
 use tokio::io::AsyncWriteExt;
 
 use crate::{
-    ByteRange, FileCompressionDeclaration, FileFormatDeclaration, FileIdentityMetadata,
-    FileResourcePlan, FileTransport, FileTransportFacade, FileTransportLocation,
-    FileTransportResource, LocalByteSource,
+    FileCompressionDeclaration, FileFormatDeclaration, FileIdentityMetadata, FileResourcePlan,
+    FileTransport, FileTransportFacade, FileTransportLocation, FileTransportResource,
+    LocalByteSource,
 };
 
 const NATIVE_TARGET_BATCH_ROWS: usize = 64 * 1024;
@@ -93,7 +93,7 @@ impl FileRuntimeDependencies {
         &self.execution
     }
 
-    pub(crate) fn formats(&self) -> &Arc<FormatRegistry> {
+    pub fn formats(&self) -> &Arc<FormatRegistry> {
         &self.formats
     }
 
@@ -131,6 +131,7 @@ pub fn discover_local_binary_schema_bounded(
     path: impl AsRef<Path>,
     dependencies: &FileRuntimeDependencies,
     format: &FileFormatDeclaration,
+    format_options: &serde_json::Value,
     transform_name: &str,
     initial_bytes_read: u64,
     max_metadata_bytes: u64,
@@ -155,7 +156,7 @@ pub fn discover_local_binary_schema_bounded(
     let logical_source_identity = source.identity().clone();
     let needs_spool = transform_id.is_some()
         && driver.descriptor().source_access != cdf_runtime::FormatSourceAccess::Sequential;
-    let options = driver.canonical_options(serde_json::json!({}))?;
+    let options = driver.canonical_options(format_options.clone())?;
     let discovery_memory = dependencies.execution().memory();
     let observation = dependencies.execution().run_io({
         let dependencies = dependencies.clone();
@@ -236,6 +237,7 @@ pub fn discover_transport_binary_schema_bounded(
     resource: FileTransportResource,
     dependencies: &FileRuntimeDependencies,
     format: &FileFormatDeclaration,
+    format_options: &serde_json::Value,
     transform_name: &str,
     max_metadata_bytes: u64,
 ) -> Result<BoundedBinarySchemaProbe> {
@@ -264,7 +266,7 @@ pub fn discover_transport_binary_schema_bounded(
         && (!source.capabilities().seekable || transform_id.is_some());
     let execution = dependencies.execution().clone();
     let memory = execution.memory();
-    let options = driver.canonical_options(serde_json::json!({}))?;
+    let options = driver.canonical_options(format_options.clone())?;
     let observation = execution.run_io({
         let dependencies = dependencies.clone();
         let driver = Arc::clone(&driver);
@@ -378,6 +380,7 @@ impl LocalFileDiscoveryCandidate {
 pub fn local_file_discovery_candidates(
     resource_id: &ResourceId,
     plan: &FileResourcePlan,
+    formats: &FormatRegistry,
     transforms: &ByteTransformRegistry,
 ) -> Result<Vec<LocalFileDiscoveryCandidate>> {
     if is_http_root(&plan.root) {
@@ -401,7 +404,9 @@ pub fn local_file_discovery_candidates(
 
     contained_matches(&root, matches)?
         .into_iter()
-        .map(|path| local_file_discovery_candidate(resource_id, &root, path, plan, transforms))
+        .map(|path| {
+            local_file_discovery_candidate(resource_id, &root, path, plan, formats, transforms)
+        })
         .collect()
 }
 
@@ -422,19 +427,46 @@ pub struct FileResource {
     plan: FileResourcePlan,
     type_policy_allowances: TypePolicyAllowances,
     effective_schema_runtime: Option<Arc<EffectiveSchemaRuntime>>,
+    compiled_format: CompiledFormatBinding,
     dependencies: FileRuntimeDependencies,
+}
+
+#[derive(Clone, Debug)]
+pub struct FileResourceDefinition {
+    pub descriptor: ResourceDescriptor,
+    pub schema: SchemaRef,
+    pub capabilities: ResourceCapabilities,
+    pub plan: FileResourcePlan,
+    pub type_policy_allowances: TypePolicyAllowances,
+    pub effective_schema_runtime: Option<EffectiveSchemaRuntime>,
+    pub compiled_format: CompiledFormatBinding,
 }
 
 impl FileResource {
     pub fn new(
-        descriptor: ResourceDescriptor,
-        schema: SchemaRef,
-        capabilities: ResourceCapabilities,
-        plan: FileResourcePlan,
-        type_policy_allowances: TypePolicyAllowances,
-        effective_schema_runtime: Option<EffectiveSchemaRuntime>,
+        definition: FileResourceDefinition,
         dependencies: FileRuntimeDependencies,
     ) -> Result<Self> {
+        let FileResourceDefinition {
+            descriptor,
+            schema,
+            capabilities,
+            mut plan,
+            type_policy_allowances,
+            effective_schema_runtime,
+            compiled_format,
+        } = definition;
+        let planned_driver = dependencies.formats().resolve(plan.format.as_str())?;
+        if compiled_format.descriptor.format_id != planned_driver.descriptor().format_id {
+            return Err(CdfError::contract(format!(
+                "compiled format `{}` does not match file plan format selection `{}`",
+                compiled_format.descriptor.format_id,
+                plan.format.as_str()
+            )));
+        }
+        compiled_format.verify(dependencies.formats())?;
+        plan.format =
+            FileFormatDeclaration::named(compiled_format.descriptor.format_id.as_str().to_owned())?;
         Ok(Self {
             descriptor,
             schema,
@@ -442,6 +474,7 @@ impl FileResource {
             plan,
             type_policy_allowances,
             effective_schema_runtime: effective_schema_runtime.map(Arc::new),
+            compiled_format,
             dependencies,
         })
     }
@@ -451,19 +484,7 @@ impl FileResource {
     }
 
     pub fn open_preview(&self, partition: PartitionPlan) -> BoxFuture<'_, Result<BatchStream>> {
-        let descriptor = self.descriptor.clone();
-        let schema = Arc::clone(&self.schema);
-        let plan = self.plan.clone();
-        let dependencies = self.dependencies.clone();
-        open_file_resource_with_dependencies(
-            &descriptor,
-            schema,
-            &plan,
-            partition,
-            dependencies,
-            self.type_policy_allowances,
-            self.effective_schema_runtime.clone(),
-        )
+        open_file_resource_with_dependencies(self.clone(), partition)
     }
 }
 
@@ -496,24 +517,14 @@ impl ResourceStream for FileResource {
                 &self.descriptor,
                 &self.plan,
                 transport,
+                self.dependencies.formats(),
                 self.dependencies.transforms(),
             )
         })
     }
 
     fn open(&self, partition: PartitionPlan) -> BoxFuture<'_, Result<BatchStream>> {
-        let descriptor = self.descriptor.clone();
-        let schema = Arc::clone(&self.schema);
-        let plan = self.plan.clone();
-        open_file_resource_with_dependencies(
-            &descriptor,
-            schema,
-            &plan,
-            partition,
-            self.dependencies.clone(),
-            self.type_policy_allowances,
-            self.effective_schema_runtime.clone(),
-        )
+        open_file_resource_with_dependencies(self.clone(), partition)
     }
 
     fn attest_partition(
@@ -524,10 +535,6 @@ impl ResourceStream for FileResource {
         let plan = self.plan.clone();
         let partition = partition.clone();
         let dependencies = self.dependencies.clone();
-        let discovery_budget = self
-            .effective_schema_runtime
-            .as_ref()
-            .and_then(|runtime| runtime.discovery_executor_budget.clone());
         Box::pin(async move {
             let resolved = dependencies.with_transport(|transport| {
                 validate_partition(
@@ -535,10 +542,10 @@ impl ResourceStream for FileResource {
                     &plan,
                     &partition,
                     transport,
+                    dependencies.formats(),
                     dependencies.transforms(),
                 )
             })?;
-            let transform_name = resolved.compression.mode_name().to_owned();
             let processed_position = SourcePosition::FileManifest(cdf_kernel::FileManifest {
                 version: 1,
                 files: vec![cdf_kernel::FilePosition {
@@ -549,28 +556,9 @@ impl ResourceStream for FileResource {
                     sha256: resolved.sha256,
                 }],
             });
-            let physical_schema_hash = match (&resolved.open, plan.format.as_str()) {
-                (ResolvedFileOpen::LocalPath(path), format @ ("parquet" | "arrow_ipc")) => {
-                    let budget = discovery_budget.as_ref().ok_or_else(|| {
-                        CdfError::data(
-                            "schema-observation attestation requires the plan-recorded discovery executor budget",
-                        )
-                    })?;
-                    let probe = discover_local_binary_schema_bounded(
-                        path,
-                        &dependencies,
-                        &FileFormatDeclaration::named(format)?,
-                        &transform_name,
-                        0,
-                        budget.max_metadata_bytes_per_file,
-                    )?;
-                    Some(cdf_formats::schema_hash(probe.schema.as_ref())?)
-                }
-                _ => None,
-            };
             Ok(Some(cdf_kernel::PartitionAttestation::new(
                 processed_position,
-                physical_schema_hash,
+                None,
             )))
         })
     }
@@ -659,6 +647,8 @@ struct PreparedFilePartition {
     input: PreparedFileInput,
     options: ReadOptions,
     physical_schema_authority: PhysicalSchemaAuthority,
+    canonical_format_options: serde_json::Value,
+    driver: Arc<dyn FormatDriver>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -671,29 +661,12 @@ struct CompressionEvidence {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 struct CompressionSignal(Option<ByteTransformId>);
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum FormatSignal {
-    Unknown,
-    Parquet,
-    ArrowIpc,
-    ArrowIpcStream,
-}
-
-impl FormatSignal {
-    fn as_str(self) -> &'static str {
-        match self {
-            Self::Unknown => "unknown",
-            Self::Parquet => "parquet",
-            Self::ArrowIpc => "arrow_ipc",
-            Self::ArrowIpcStream => "arrow_ipc_stream",
-        }
-    }
-}
-
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct FormatEvidence {
-    extension_signal: FormatSignal,
-    magic_signal: FormatSignal,
+    format_id: String,
+    driver_version: String,
+    extension: Option<String>,
+    detection: FormatDetection,
 }
 
 impl CompressionSignal {
@@ -717,19 +690,27 @@ impl CompressionEvidence {
 pub fn file_partitions_for_plan(
     descriptor: &ResourceDescriptor,
     plan: &FileResourcePlan,
+    formats: &FormatRegistry,
     transforms: &ByteTransformRegistry,
 ) -> Result<Vec<PartitionPlan>> {
     let transport = FileTransportFacade::new();
-    file_partitions_for_plan_with_transport(descriptor, plan, &transport, transforms)
+    file_partitions_for_plan_with_transport(descriptor, plan, &transport, formats, transforms)
 }
 
 pub(crate) fn file_partitions_for_plan_with_transport(
     descriptor: &ResourceDescriptor,
     plan: &FileResourcePlan,
     transport: &dyn FileTransport,
+    formats: &FormatRegistry,
     transforms: &ByteTransformRegistry,
 ) -> Result<Vec<PartitionPlan>> {
-    let matches = resolve_file_matches(&descriptor.resource_id, plan, transport, transforms)?;
+    let matches = resolve_file_matches(
+        &descriptor.resource_id,
+        plan,
+        transport,
+        formats,
+        transforms,
+    )?;
     if matches.is_empty() {
         return Err(no_file_matches_error(&descriptor.resource_id, plan));
     }
@@ -742,23 +723,27 @@ pub(crate) fn file_partitions_for_plan_with_transport(
 }
 
 fn open_file_resource_with_dependencies(
-    descriptor: &ResourceDescriptor,
-    _declared_schema: SchemaRef,
-    plan: &FileResourcePlan,
+    resource: FileResource,
     partition: PartitionPlan,
-    dependencies: FileRuntimeDependencies,
-    allowances: cdf_kernel::TypePolicyAllowances,
-    effective_schema_runtime: Option<Arc<EffectiveSchemaRuntime>>,
 ) -> BoxFuture<'static, Result<BatchStream>> {
-    let descriptor = descriptor.clone();
-    let plan = plan.clone();
+    let FileResource {
+        descriptor,
+        schema: _,
+        capabilities: _,
+        plan,
+        type_policy_allowances,
+        effective_schema_runtime,
+        compiled_format,
+        dependencies,
+    } = resource;
     let prepared = match prepare_file_partition(
         &descriptor,
         &plan,
         &partition,
         &dependencies,
-        allowances,
+        type_policy_allowances,
         effective_schema_runtime.as_deref(),
+        &compiled_format,
     ) {
         Ok(prepared) => prepared,
         Err(error) => return Box::pin(async move { Err(error) }),
@@ -774,8 +759,7 @@ fn open_file_resource_with_dependencies(
         NATIVE_STREAM_ITEMS,
         move |mut sender, _cancellation| async move {
             let mut batches =
-                stream_prepared_file_match(prepared, &plan.format, &dependencies, _cancellation)
-                    .await?;
+                stream_prepared_file_match(prepared, &dependencies, _cancellation).await?;
             while let Some(batch) = batches.try_next().await? {
                 sender.send(batch).await?;
             }
@@ -792,6 +776,7 @@ fn prepare_file_partition(
     dependencies: &FileRuntimeDependencies,
     _allowances: cdf_kernel::TypePolicyAllowances,
     effective_schema_runtime: Option<&EffectiveSchemaRuntime>,
+    compiled_format: &CompiledFormatBinding,
 ) -> Result<PreparedFilePartition> {
     let resolved = dependencies.with_transport(|transport| {
         validate_partition(
@@ -799,6 +784,7 @@ fn prepare_file_partition(
             plan,
             partition,
             transport,
+            dependencies.formats(),
             dependencies.transforms(),
         )
     })?;
@@ -815,11 +801,8 @@ fn prepare_file_partition(
         descriptor.resource_id.clone(),
         partition.partition_id.clone(),
     );
-    let source_access = dependencies
-        .formats()
-        .resolve(file_format_name(&plan.format))?
-        .descriptor()
-        .source_access;
+    let driver = compiled_format.verify(dependencies.formats())?;
+    let source_access = driver.descriptor().source_access;
     let input = prepare_file_input(&resolved, source_access, dependencies)?;
     Ok(PreparedFilePartition {
         resolved,
@@ -829,6 +812,8 @@ fn prepare_file_partition(
             hash: planned_physical_schema_hash,
             schema: planned_physical_schema,
         },
+        canonical_format_options: compiled_format.canonical_options.clone(),
+        driver,
     })
 }
 
@@ -905,7 +890,6 @@ fn expected_file_identity(resolved: &ResolvedFileMatch) -> FileIdentityMetadata 
 
 async fn stream_prepared_file_match(
     prepared: PreparedFilePartition,
-    declaration: &FileFormatDeclaration,
     dependencies: &FileRuntimeDependencies,
     cancellation: cdf_runtime::RunCancellation,
 ) -> Result<BatchStream> {
@@ -914,6 +898,8 @@ async fn stream_prepared_file_match(
         input: prepared,
         options,
         physical_schema_authority,
+        canonical_format_options,
+        driver,
     } = prepared;
     let position = Some(SourcePosition::FileManifest(cdf_kernel::FileManifest {
         version: 1,
@@ -944,10 +930,9 @@ async fn stream_prepared_file_match(
         RegisteredFormatStreamRequest {
             source,
             spool_guard,
-            driver: dependencies
-                .formats()
-                .resolve(file_format_name(declaration))?,
+            driver,
             options,
+            canonical_format_options,
             source_position: position,
             physical_schema_authority,
         },
@@ -963,27 +948,21 @@ fn stream_file_match_blocking(
     dependencies: &FileRuntimeDependencies,
     physical_schema_authority: PhysicalSchemaAuthority,
 ) -> Result<BatchStream> {
+    let driver = dependencies.formats().resolve(declaration.as_str())?;
+    let canonical_format_options = driver.canonical_options(serde_json::json!({}))?;
     let prepared = PreparedFilePartition {
         resolved: resolved.clone(),
-        input: prepare_file_input(
-            resolved,
-            dependencies
-                .formats()
-                .resolve(file_format_name(declaration))?
-                .descriptor()
-                .source_access,
-            dependencies,
-        )?,
+        input: prepare_file_input(resolved, driver.descriptor().source_access, dependencies)?,
         options,
         physical_schema_authority,
+        canonical_format_options,
+        driver,
     };
-    let declaration = declaration.clone();
     let dependencies = dependencies.clone();
     let execution = dependencies.execution().clone();
     execution.run_io(async move {
         stream_prepared_file_match(
             prepared,
-            &declaration,
             &dependencies,
             cdf_runtime::RunCancellation::default(),
         )
@@ -1126,6 +1105,7 @@ struct RegisteredFormatStreamRequest {
     spool_guard: Option<Arc<AccountedSpool>>,
     driver: Arc<dyn FormatDriver>,
     options: ReadOptions,
+    canonical_format_options: serde_json::Value,
     source_position: Option<SourcePosition>,
     physical_schema_authority: PhysicalSchemaAuthority,
 }
@@ -1139,6 +1119,7 @@ fn stream_registered_format(
         spool_guard,
         driver,
         options,
+        canonical_format_options,
         source_position,
         physical_schema_authority,
     } = request;
@@ -1153,7 +1134,7 @@ fn stream_registered_format(
         NATIVE_STREAM_ITEMS,
         move |mut sender, cancellation| async move {
             let _spool_guard = spool_guard;
-            let options_json = driver.canonical_options(serde_json::json!({}))?;
+            let options_json = driver.canonical_options(canonical_format_options)?;
             let physical_schema = match physical_schema_authority.schema {
                 Some(schema) => {
                     let schema_hash =
@@ -1242,6 +1223,7 @@ fn validate_partition(
     plan: &FileResourcePlan,
     partition: &PartitionPlan,
     transport: &dyn FileTransport,
+    formats: &FormatRegistry,
     transforms: &ByteTransformRegistry,
 ) -> Result<ResolvedFileMatch> {
     if partition.metadata.get("kind").map(String::as_str) != Some("files") {
@@ -1276,7 +1258,13 @@ fn validate_partition(
             "declarative file partition scope does not match file path `{path}`",
         )));
     }
-    let matches = resolve_file_matches(&descriptor.resource_id, plan, transport, transforms)?;
+    let matches = resolve_file_matches(
+        &descriptor.resource_id,
+        plan,
+        transport,
+        formats,
+        transforms,
+    )?;
     let match_count = matches.len();
     let Some(resolved) = matches.into_iter().find(|file| file.path_text == *path) else {
         return Err(CdfError::contract(format!(
@@ -1330,36 +1318,41 @@ fn validate_partition(
         }
     }
     validate_compression_metadata(partition, &resolved, &plan.compression, path)?;
-    if records_format_metadata(plan) {
-        validate_partition_metadata_value(
-            partition,
-            "format",
-            file_format_name(&plan.format),
-            path,
-        )?;
-        validate_partition_metadata_value(
-            partition,
-            "format_declared",
-            if plan.format_declared {
-                "true"
-            } else {
-                "false"
-            },
-            path,
-        )?;
-        validate_partition_metadata_value(
-            partition,
-            "format_extension",
-            resolved.format.extension_signal.as_str(),
-            path,
-        )?;
-        validate_partition_metadata_value(
-            partition,
-            "format_magic",
-            resolved.format.magic_signal.as_str(),
-            path,
-        )?;
-    }
+    validate_partition_metadata_value(partition, "format", &resolved.format.format_id, path)?;
+    validate_partition_metadata_value(
+        partition,
+        "format_driver_version",
+        &resolved.format.driver_version,
+        path,
+    )?;
+    validate_partition_metadata_value(
+        partition,
+        "format_declared",
+        if plan.format_declared {
+            "true"
+        } else {
+            "false"
+        },
+        path,
+    )?;
+    validate_partition_metadata_value(
+        partition,
+        "format_extension",
+        resolved.format.extension.as_deref().unwrap_or("none"),
+        path,
+    )?;
+    validate_partition_metadata_value(
+        partition,
+        "format_detection",
+        format_detection_confidence_name(resolved.format.detection.confidence),
+        path,
+    )?;
+    validate_partition_metadata_value(
+        partition,
+        "format_detection_reason",
+        &resolved.format.detection.reason,
+        path,
+    )?;
     Ok(resolved)
 }
 
@@ -1458,24 +1451,30 @@ fn partition_for_file_match(
     if let Some(bytes_loaded) = file.bytes_loaded {
         metadata.insert("bytes_loaded".to_owned(), bytes_loaded.to_string());
     }
-    if records_format_metadata(plan) {
-        metadata.insert(
-            "format".to_owned(),
-            file_format_name(&plan.format).to_owned(),
-        );
-        metadata.insert(
-            "format_declared".to_owned(),
-            plan.format_declared.to_string(),
-        );
-        metadata.insert(
-            "format_extension".to_owned(),
-            file.format.extension_signal.as_str().to_owned(),
-        );
-        metadata.insert(
-            "format_magic".to_owned(),
-            file.format.magic_signal.as_str().to_owned(),
-        );
-    }
+    metadata.insert("format".to_owned(), file.format.format_id.clone());
+    metadata.insert(
+        "format_driver_version".to_owned(),
+        file.format.driver_version.clone(),
+    );
+    metadata.insert(
+        "format_declared".to_owned(),
+        plan.format_declared.to_string(),
+    );
+    metadata.insert(
+        "format_extension".to_owned(),
+        file.format
+            .extension
+            .clone()
+            .unwrap_or_else(|| "none".to_owned()),
+    );
+    metadata.insert(
+        "format_detection".to_owned(),
+        format_detection_confidence_name(file.format.detection.confidence).to_owned(),
+    );
+    metadata.insert(
+        "format_detection_reason".to_owned(),
+        file.format.detection.reason.clone(),
+    );
     if records_compression_metadata(file, &plan.compression) {
         metadata.insert(
             "compression".to_owned(),
@@ -1532,13 +1531,14 @@ fn resolve_file_matches(
     resource_id: &ResourceId,
     plan: &FileResourcePlan,
     transport: &dyn FileTransport,
+    formats: &FormatRegistry,
     transforms: &ByteTransformRegistry,
 ) -> Result<Vec<ResolvedFileMatch>> {
     if is_http_root(&plan.root) {
-        return resolve_http_file_match(resource_id, plan, transport, transforms);
+        return resolve_http_file_match(resource_id, plan, transport, formats, transforms);
     }
     if is_object_store_root(&plan.root) {
-        return resolve_object_store_matches(resource_id, plan, transport, transforms);
+        return resolve_object_store_matches(resource_id, plan, transport, formats, transforms);
     }
 
     let root = PathBuf::from(&plan.root);
@@ -1558,7 +1558,7 @@ fn resolve_file_matches(
     let matches = contained_matches(&root, matches)?;
     matches
         .into_iter()
-        .map(|path| resolved_file_match(resource_id, &root, path, plan, transforms))
+        .map(|path| resolved_file_match(resource_id, &root, path, plan, formats, transforms))
         .collect()
 }
 
@@ -1566,6 +1566,7 @@ fn resolve_object_store_matches(
     resource_id: &ResourceId,
     plan: &FileResourcePlan,
     transport: &dyn FileTransport,
+    formats: &FormatRegistry,
     transforms: &ByteTransformRegistry,
 ) -> Result<Vec<ResolvedFileMatch>> {
     let root_resource = FileTransportResource::object_store_url(plan.root.clone())
@@ -1587,16 +1588,9 @@ fn resolve_object_store_matches(
             Some(credentials) => resource.with_credentials(credentials.clone()),
             None => resource,
         };
-        let compression =
-            resolve_transport_compression(plan, transport, &resource, &metadata, transforms)?;
-        let format = resolve_transport_format(
-            resource_id,
-            plan,
-            transport,
-            &resource,
-            &metadata,
-            &compression,
-        )?;
+        let compression = resolve_transport_compression(plan, &metadata.location, transforms)?;
+        let format =
+            resolve_transport_format(resource_id, plan, &metadata.location, &compression, formats)?;
         matches.push(resolved_transport_file_match(
             resource,
             metadata,
@@ -1620,6 +1614,7 @@ fn resolve_http_file_match(
     resource_id: &ResourceId,
     plan: &FileResourcePlan,
     transport: &dyn FileTransport,
+    formats: &FormatRegistry,
     transforms: &ByteTransformRegistry,
 ) -> Result<Vec<ResolvedFileMatch>> {
     let globs = expand_http_glob(resource_id, &plan.glob)?;
@@ -1635,16 +1630,9 @@ fn resolve_http_file_match(
         let Some(metadata) = transport.metadata_if_exists(&resource)? else {
             continue;
         };
-        let compression =
-            resolve_transport_compression(plan, transport, &resource, &metadata, transforms)?;
-        let format = resolve_transport_format(
-            resource_id,
-            plan,
-            transport,
-            &resource,
-            &metadata,
-            &compression,
-        )?;
+        let compression = resolve_transport_compression(plan, &metadata.location, transforms)?;
+        let format =
+            resolve_transport_format(resource_id, plan, &metadata.location, &compression, formats)?;
         matches.push(resolved_transport_file_match(
             resource,
             metadata,
@@ -1869,6 +1857,7 @@ fn resolved_file_match(
     root: &Path,
     path: PathBuf,
     plan: &FileResourcePlan,
+    formats: &FormatRegistry,
     transforms: &ByteTransformRegistry,
 ) -> Result<ResolvedFileMatch> {
     let metadata = fs::metadata(&path).map_err(|error| {
@@ -1899,8 +1888,8 @@ fn resolved_file_match(
         ))
     })?;
     let path_text = path_text.replace(std::path::MAIN_SEPARATOR, "/");
-    let compression = resolve_local_compression(&path_text, &path, &plan.compression, transforms)?;
-    let (format, _) = resolve_local_format(resource_id, plan, &path_text, &path, &compression)?;
+    let compression = resolve_local_compression(&path_text, &plan.compression, transforms)?;
+    let (format, _) = resolve_local_format(resource_id, plan, &path_text, &compression, formats)?;
     let sha256 = file_sha256(&path)?;
     Ok(ResolvedFileMatch {
         open: ResolvedFileOpen::LocalPath(path),
@@ -1921,6 +1910,7 @@ fn local_file_discovery_candidate(
     root: &Path,
     path: PathBuf,
     plan: &FileResourcePlan,
+    formats: &FormatRegistry,
     transforms: &ByteTransformRegistry,
 ) -> Result<LocalFileDiscoveryCandidate> {
     let metadata = fs::metadata(&path).map_err(|error| {
@@ -1946,16 +1936,14 @@ fn local_file_discovery_candidate(
         ))
     })?;
     let relative_path = relative_path.replace(std::path::MAIN_SEPARATOR, "/");
-    let compression =
-        resolve_local_compression(&relative_path, &path, &plan.compression, transforms)?;
-    let (_, format_bytes_read) =
-        resolve_local_format(resource_id, plan, &relative_path, &path, &compression)?;
+    let compression = resolve_local_compression(&relative_path, &plan.compression, transforms)?;
+    resolve_local_format(resource_id, plan, &relative_path, &compression, formats)?;
     Ok(LocalFileDiscoveryCandidate {
         path,
         relative_path,
         size_bytes: metadata.len(),
         compression: compression.mode_name().to_owned(),
-        selection_bytes_read: metadata.len().min(4) + format_bytes_read,
+        selection_bytes_read: 0,
     })
 }
 
@@ -2000,169 +1988,94 @@ fn resolve_local_format(
     resource_id: &ResourceId,
     plan: &FileResourcePlan,
     path_text: &str,
-    path: &Path,
     compression: &CompressionEvidence,
+    formats: &FormatRegistry,
 ) -> Result<(FormatEvidence, u64)> {
-    let extension_signal = format_extension_signal(path_text, compression);
-    if !requires_binary_format_confirmation(plan, extension_signal) {
-        return Ok((
-            FormatEvidence {
-                extension_signal,
-                magic_signal: FormatSignal::Unknown,
-            },
-            0,
-        ));
-    }
-    if compression.transform_id.is_some() {
-        validate_compressed_format_extension(resource_id, plan, path_text, extension_signal)?;
-        return Ok((
-            FormatEvidence {
-                extension_signal,
-                magic_signal: FormatSignal::Unknown,
-            },
-            0,
-        ));
-    }
-    let (magic_signal, bytes_read) = local_format_magic_signal(path)?;
-    validate_format_evidence(resource_id, plan, path_text, extension_signal, magic_signal)?;
-    Ok((
-        FormatEvidence {
-            extension_signal,
-            magic_signal,
-        },
-        bytes_read,
-    ))
+    let driver = formats.resolve(plan.format.as_str())?;
+    let extension = format_extension(path_text, compression);
+    validate_format_extension(resource_id, plan, path_text, extension.as_deref(), formats)?;
+    Ok((deferred_format_evidence(driver.as_ref(), extension), 0))
 }
 
 fn resolve_transport_format(
     resource_id: &ResourceId,
     plan: &FileResourcePlan,
-    transport: &dyn FileTransport,
-    resource: &FileTransportResource,
-    metadata: &FileIdentityMetadata,
+    location: &str,
     compression: &CompressionEvidence,
+    formats: &FormatRegistry,
 ) -> Result<FormatEvidence> {
-    let extension_signal = format_extension_signal(&metadata.location, compression);
-    if !requires_binary_format_confirmation(plan, extension_signal) {
-        return Ok(FormatEvidence {
-            extension_signal,
-            magic_signal: FormatSignal::Unknown,
-        });
-    }
-    if compression.transform_id.is_some() {
-        validate_compressed_format_extension(
-            resource_id,
-            plan,
-            &diagnostic_location(&metadata.location),
-            extension_signal,
-        )?;
-        return Ok(FormatEvidence {
-            extension_signal,
-            magic_signal: FormatSignal::Unknown,
-        });
-    }
-    let size_bytes = metadata.size_bytes.ok_or_else(|| {
-        CdfError::data(format!(
-            "HTTP(S) file metadata for `{}` did not include Content-Length for format confirmation",
-            diagnostic_location(&metadata.location)
-        ))
-    })?;
-    let magic_signal = transport_format_magic_signal(transport, resource, size_bytes)?;
-    validate_format_evidence(
+    let driver = formats.resolve(plan.format.as_str())?;
+    let extension = format_extension(location, compression);
+    let diagnostic = diagnostic_location(location);
+    validate_format_extension(
         resource_id,
         plan,
-        &diagnostic_location(&metadata.location),
-        extension_signal,
-        magic_signal,
+        &diagnostic,
+        extension.as_deref(),
+        formats,
     )?;
-    Ok(FormatEvidence {
-        extension_signal,
-        magic_signal,
-    })
+    Ok(deferred_format_evidence(driver.as_ref(), extension))
 }
 
-fn requires_binary_format_confirmation(
-    plan: &FileResourcePlan,
-    extension_signal: FormatSignal,
-) -> bool {
-    matches!(plan.format.as_str(), "parquet" | "arrow_ipc")
-        || extension_signal != FormatSignal::Unknown
-}
-
-fn validate_compressed_format_extension(
+fn validate_format_extension(
     resource_id: &ResourceId,
     plan: &FileResourcePlan,
     path_text: &str,
-    extension_signal: FormatSignal,
+    extension: Option<&str>,
+    formats: &FormatRegistry,
 ) -> Result<()> {
-    let expected = format_declaration_signal(&plan.format);
-    if expected.is_none()
-        || expected == Some(extension_signal)
-        || (plan.format_declared && extension_signal == FormatSignal::Unknown)
-    {
+    let Some(extension) = extension else {
+        if plan.format_declared {
+            return Ok(());
+        }
+        return Err(CdfError::data(format!(
+            "file `{path_text}` for resource `{resource_id}` has no extension that can attest inferred format `{}`; declare `format` explicitly",
+            plan.format.as_str()
+        )));
+    };
+    let Some(extension_driver) = formats.by_extension(extension) else {
+        if plan.format_declared {
+            return Ok(());
+        }
+        return Err(CdfError::data(format!(
+            "file `{path_text}` for resource `{resource_id}` has unregistered extension `.{extension}` for inferred format `{}`; declare `format` explicitly or register the extension",
+            plan.format.as_str()
+        )));
+    };
+    if extension_driver.descriptor().format_id.as_str() == plan.format.as_str() {
         return Ok(());
     }
     Err(CdfError::data(format!(
-        "compressed file format mismatch for resource `{resource_id}`, file `{path_text}`: inner extension signal `{}` does not match declared `{}`",
-        extension_signal.as_str(),
-        file_format_name(&plan.format),
+        "file format mismatch for resource `{resource_id}`, file `{path_text}`: extension `.{extension}` selects `{}` but the compiled resource selects `{}`; change `format` or the file extension",
+        extension_driver.descriptor().format_id,
+        plan.format.as_str(),
     )))
 }
 
-fn validate_format_evidence(
-    resource_id: &ResourceId,
-    plan: &FileResourcePlan,
-    path_text: &str,
-    extension_signal: FormatSignal,
-    magic_signal: FormatSignal,
-) -> Result<()> {
-    let expected_signal = format_declaration_signal(&plan.format);
-    let extension_agrees = expected_signal == Some(extension_signal)
-        || (plan.format_declared && extension_signal == FormatSignal::Unknown);
-    if extension_agrees && expected_signal == Some(magic_signal) {
-        return Ok(());
-    }
-
-    let declared = if plan.format_declared {
-        file_format_name(&plan.format)
-    } else {
-        "<omitted>"
-    };
-    let mut format_requirement = match plan.format.as_str() {
-        "parquet" => "expected Parquet file framing with PAR1 header/footer; ",
-        "arrow_ipc" => "expected Arrow IPC file framing with ARROW1 header/footer; ",
-        _ => "",
-    };
-    if magic_signal == FormatSignal::ArrowIpcStream {
-        format_requirement = "Arrow IPC stream framing is unsupported; expected Arrow IPC file framing with ARROW1 header/footer; ";
-    }
-    Err(CdfError::data(format!(
-        "file format confirmation failed for resource `{resource_id}`, file `{path_text}`: declared format `{declared}`, inferred format `{}`, resolved format `{}`, extension signal `{}`, magic bytes signal `{}`; {format_requirement}make the file extension and magic agree with `format = \"{}\"`, or change the explicit format to match the file",
-        extension_signal.as_str(),
-        file_format_name(&plan.format),
-        extension_signal.as_str(),
-        magic_signal.as_str(),
-        file_format_name(&plan.format),
-    )))
-}
-
-fn format_declaration_signal(format: &FileFormatDeclaration) -> Option<FormatSignal> {
-    match format.as_str() {
-        "parquet" => Some(FormatSignal::Parquet),
-        "arrow_ipc" => Some(FormatSignal::ArrowIpc),
-        _ => None,
+fn deferred_format_evidence(
+    driver: &dyn FormatDriver,
+    extension: Option<String>,
+) -> FormatEvidence {
+    FormatEvidence {
+        format_id: driver.descriptor().format_id.to_string(),
+        driver_version: driver.descriptor().semantic_version.clone(),
+        extension,
+        detection: FormatDetection {
+            confidence: FormatDetectionConfidence::None,
+            reason: "content detection is deferred to the admitted decode stream".to_owned(),
+        },
     }
 }
 
-fn file_format_name(format: &FileFormatDeclaration) -> &str {
-    format.as_str()
+fn format_detection_confidence_name(confidence: FormatDetectionConfidence) -> &'static str {
+    match confidence {
+        FormatDetectionConfidence::None => "none",
+        FormatDetectionConfidence::Weak => "weak",
+        FormatDetectionConfidence::Strong => "strong",
+    }
 }
 
-fn records_format_metadata(plan: &FileResourcePlan) -> bool {
-    matches!(plan.format.as_str(), "parquet" | "arrow_ipc")
-}
-
-fn format_extension_signal(path_text: &str, compression: &CompressionEvidence) -> FormatSignal {
+fn format_extension(path_text: &str, compression: &CompressionEvidence) -> Option<String> {
     let path_without_fragment = path_text.split('#').next().unwrap_or(path_text);
     let mut path_without_query = path_without_fragment
         .split('?')
@@ -2174,87 +2087,9 @@ fn format_extension_signal(path_text: &str, compression: &CompressionEvidence) -
     {
         path_without_query.truncate(inner.len());
     }
-    if path_without_query.ends_with(".parquet") {
-        FormatSignal::Parquet
-    } else if path_without_query.ends_with(".arrow") {
-        FormatSignal::ArrowIpc
-    } else {
-        FormatSignal::Unknown
-    }
-}
-
-fn local_format_magic_signal(path: &Path) -> Result<(FormatSignal, u64)> {
-    let mut file = File::open(path).map_err(|error| {
-        CdfError::data(format!(
-            "open matched file {} for format detection: {error}",
-            path.display()
-        ))
-    })?;
-    let size_bytes = file
-        .metadata()
-        .map_err(|error| {
-            CdfError::data(format!(
-                "stat matched file {} for format detection: {error}",
-                path.display()
-            ))
-        })?
-        .len();
-    let mut head = [0_u8; 6];
-    let head_read = file.read(&mut head).map_err(|error| {
-        CdfError::data(format!(
-            "read matched file {} header for format detection: {error}",
-            path.display()
-        ))
-    })?;
-    let tail_length = size_bytes.min(6);
-    file.seek(SeekFrom::Start(size_bytes.saturating_sub(tail_length)))
-        .map_err(|error| {
-            CdfError::data(format!(
-                "seek matched file {} footer for format detection: {error}",
-                path.display()
-            ))
-        })?;
-    let mut tail = [0_u8; 6];
-    let tail_read = file.read(&mut tail).map_err(|error| {
-        CdfError::data(format!(
-            "read matched file {} footer for format detection: {error}",
-            path.display()
-        ))
-    })?;
-    Ok((
-        format_magic_signal(&head[..head_read], &tail[..tail_read]),
-        (head_read + tail_read) as u64,
-    ))
-}
-
-fn transport_format_magic_signal(
-    transport: &dyn FileTransport,
-    resource: &FileTransportResource,
-    size_bytes: u64,
-) -> Result<FormatSignal> {
-    if size_bytes == 0 {
-        return Ok(FormatSignal::Unknown);
-    }
-    let head_length = size_bytes.min(6);
-    let tail_length = size_bytes.min(6);
-    let head = transport.read_range(resource, ByteRange::new(0, head_length)?)?;
-    let tail = transport.read_range(
-        resource,
-        ByteRange::new(size_bytes - tail_length, tail_length)?,
-    )?;
-    Ok(format_magic_signal(&head, &tail))
-}
-
-fn format_magic_signal(head: &[u8], tail: &[u8]) -> FormatSignal {
-    if head.starts_with(b"PAR1") && tail.ends_with(b"PAR1") {
-        FormatSignal::Parquet
-    } else if head.starts_with(b"ARROW1") && tail.ends_with(b"ARROW1") {
-        FormatSignal::ArrowIpc
-    } else if head.starts_with(&[0xff, 0xff, 0xff, 0xff]) {
-        FormatSignal::ArrowIpcStream
-    } else {
-        FormatSignal::Unknown
-    }
+    path_without_query
+        .rsplit_once('.')
+        .map(|(_, extension)| extension.to_owned())
 }
 
 fn diagnostic_location(location: &str) -> String {
@@ -2268,47 +2103,30 @@ fn diagnostic_location(location: &str) -> String {
 
 fn resolve_local_compression(
     path_text: &str,
-    path: &Path,
     declared: &FileCompressionDeclaration,
     transforms: &ByteTransformRegistry,
 ) -> Result<CompressionEvidence> {
     let extension_signal = compression_extension_signal(path_text, transforms);
-    let magic_signal = compression_magic_signal(path, transforms)?;
     resolve_compression_signals(
         path_text,
         declared,
         extension_signal,
-        magic_signal,
+        CompressionSignal::default(),
         transforms,
     )
 }
 
 fn resolve_transport_compression(
     plan: &FileResourcePlan,
-    transport: &dyn FileTransport,
-    resource: &FileTransportResource,
-    metadata: &FileIdentityMetadata,
+    location: &str,
     transforms: &ByteTransformRegistry,
 ) -> Result<CompressionEvidence> {
-    let extension_signal = compression_extension_signal(&metadata.location, transforms);
-    let size_bytes = metadata.size_bytes.ok_or_else(|| {
-        CdfError::data(format!(
-            "remote file metadata for `{}` omitted byte size for compression confirmation",
-            diagnostic_location(&metadata.location)
-        ))
-    })?;
-    let length = size_bytes.min(transforms.maximum_strong_magic_probe_bytes()?);
-    let magic_signal = if length == 0 {
-        CompressionSignal::default()
-    } else {
-        let magic = transport.read_range(resource, ByteRange::new(0, length)?)?;
-        compression_magic_signal_from_bytes(&magic, transforms)?
-    };
+    let extension_signal = compression_extension_signal(location, transforms);
     resolve_compression_signals(
-        &diagnostic_location(&metadata.location),
+        &diagnostic_location(location),
         &plan.compression,
         extension_signal,
-        magic_signal,
+        CompressionSignal::default(),
         transforms,
     )
 }
@@ -2321,32 +2139,9 @@ fn resolve_compression_signals(
     transforms: &ByteTransformRegistry,
 ) -> Result<CompressionEvidence> {
     let transform_id = if declared.is_auto() {
-        match (extension_signal.transform_id(), magic_signal.transform_id()) {
-            (Some(extension), Some(magic)) if extension != magic => {
-                return Err(compression_signal_error(
-                    path_text,
-                    declared,
-                    &extension_signal,
-                    &magic_signal,
-                ));
-            }
-            (_, Some(magic)) => Some(magic.clone()),
-            (Some(extension), None) => {
-                let driver = transforms.resolve(extension)?;
-                if driver.descriptor().magic.iter().any(|magic| magic.strong) {
-                    return Err(compression_signal_error(
-                        path_text,
-                        declared,
-                        &extension_signal,
-                        &magic_signal,
-                    ));
-                }
-                Some(extension.clone())
-            }
-            (None, None) => None,
-        }
+        extension_signal.transform_id().cloned()
     } else if declared.is_none() {
-        if extension_signal.transform_id().is_some() || magic_signal.transform_id().is_some() {
+        if magic_signal.transform_id().is_some() {
             return Err(compression_signal_error(
                 path_text,
                 declared,
@@ -2357,15 +2152,10 @@ fn resolve_compression_signals(
         None
     } else {
         let declared_id = ByteTransformId::new(declared.as_str().to_owned())?;
-        let driver = transforms.resolve(&declared_id)?;
-        if extension_signal
+        transforms.resolve(&declared_id)?;
+        if magic_signal
             .transform_id()
-            .is_some_and(|extension| extension != &declared_id)
-            || magic_signal
-                .transform_id()
-                .is_some_and(|magic| magic != &declared_id)
-            || (magic_signal.transform_id().is_none()
-                && driver.descriptor().magic.iter().any(|magic| magic.strong))
+            .is_some_and(|magic| magic != &declared_id)
         {
             return Err(compression_signal_error(
                 path_text,
@@ -2400,39 +2190,6 @@ fn compression_extension_signal(
             .by_extension(extension)
             .map(|driver| driver.descriptor().transform_id.clone())
     }))
-}
-
-fn compression_magic_signal(
-    path: &Path,
-    transforms: &ByteTransformRegistry,
-) -> Result<CompressionSignal> {
-    let mut file = File::open(path).map_err(|error| {
-        CdfError::data(format!(
-            "open matched file {} for compression detection: {error}",
-            path.display()
-        ))
-    })?;
-    let probe_bytes = usize::try_from(transforms.maximum_strong_magic_probe_bytes()?)
-        .map_err(|_| CdfError::contract("byte-transform magic probe exceeds usize"))?;
-    let mut magic = vec![0_u8; probe_bytes];
-    let bytes_read = file.read(&mut magic).map_err(|error| {
-        CdfError::data(format!(
-            "read matched file {} for compression detection: {error}",
-            path.display()
-        ))
-    })?;
-    compression_magic_signal_from_bytes(&magic[..bytes_read], transforms)
-}
-
-fn compression_magic_signal_from_bytes(
-    magic: &[u8],
-    transforms: &ByteTransformRegistry,
-) -> Result<CompressionSignal> {
-    Ok(CompressionSignal(
-        transforms
-            .detect_strong_magic(magic)?
-            .map(|driver| driver.descriptor().transform_id.clone()),
-    ))
 }
 
 fn compression_signal_error(
@@ -2693,6 +2450,10 @@ mod tests {
                     extensions: vec!["mock".to_owned()],
                     mime_types: Vec::new(),
                     magic: Vec::new(),
+                    detection_probe: cdf_runtime::FormatDetectionProbe {
+                        prefix_bytes: 4,
+                        suffix_bytes: 0,
+                    },
                     option_schema: serde_json::json!({
                         "type": "object",
                         "additionalProperties": false
@@ -2880,6 +2641,46 @@ mod tests {
         }
     }
 
+    struct RangeCountingTransport {
+        inner: FileTransportFacade,
+        range_reads: Arc<AtomicUsize>,
+    }
+
+    impl FileTransport for RangeCountingTransport {
+        fn metadata(&self, resource: &FileTransportResource) -> Result<FileIdentityMetadata> {
+            self.inner.metadata(resource)
+        }
+
+        fn metadata_if_exists(
+            &self,
+            resource: &FileTransportResource,
+        ) -> Result<Option<FileIdentityMetadata>> {
+            self.inner.metadata_if_exists(resource)
+        }
+
+        fn read_range(
+            &self,
+            resource: &FileTransportResource,
+            range: crate::ByteRange,
+        ) -> Result<Vec<u8>> {
+            self.range_reads.fetch_add(1, Ordering::Relaxed);
+            self.inner.read_range(resource, range)
+        }
+
+        fn list(&self, resource: &FileTransportResource) -> Result<Vec<FileIdentityMetadata>> {
+            self.inner.list(resource)
+        }
+
+        fn open_byte_source(
+            &self,
+            resource: &FileTransportResource,
+            expected: &FileIdentityMetadata,
+            memory: Arc<dyn cdf_memory::MemoryCoordinator>,
+        ) -> Result<Arc<dyn cdf_runtime::ByteSource>> {
+            self.inner.open_byte_source(resource, expected, memory)
+        }
+    }
+
     #[test]
     fn external_format_and_transform_compose_without_runtime_dispatch_edits() {
         let root = tempfile::tempdir().unwrap();
@@ -2905,6 +2706,7 @@ mod tests {
             glob: "events.mock.mt".to_owned(),
             format: FileFormatDeclaration::named("external_mock").unwrap(),
             format_declared: true,
+            format_options: serde_json::json!({}),
             compression: FileCompressionDeclaration::auto(),
             auth: None,
             credentials: None,
@@ -2913,7 +2715,13 @@ mod tests {
         let resource_id = ResourceId::new("external.events").unwrap();
         let resolved = dependencies
             .with_transport(|transport| {
-                resolve_file_matches(&resource_id, &plan, transport, dependencies.transforms())
+                resolve_file_matches(
+                    &resource_id,
+                    &plan,
+                    transport,
+                    dependencies.formats(),
+                    dependencies.transforms(),
+                )
             })
             .unwrap();
         assert_eq!(resolved[0].compression.mode_name(), "external_passthrough");
@@ -2921,6 +2729,7 @@ mod tests {
             &path,
             &dependencies,
             &plan.format,
+            &plan.format_options,
             "external_passthrough",
             0,
             1024,
@@ -3040,6 +2849,7 @@ mod tests {
                     ResourceId::new("events").unwrap(),
                     PartitionId::new("file-0").unwrap(),
                 ),
+                canonical_format_options: serde_json::json!({}),
                 source_position: None,
                 physical_schema_authority: PhysicalSchemaAuthority::default(),
             },
@@ -3098,6 +2908,7 @@ mod tests {
             glob: "events.parquet.gz".to_owned(),
             format: FileFormatDeclaration::parquet(),
             format_declared: true,
+            format_options: serde_json::json!({}),
             compression: FileCompressionDeclaration::auto(),
             auth: None,
             credentials: None,
@@ -3106,15 +2917,22 @@ mod tests {
         let resource_id = ResourceId::new("events.raw").unwrap();
         let resolved = dependencies
             .with_transport(|transport| {
-                resolve_file_matches(&resource_id, &plan, transport, dependencies.transforms())
+                resolve_file_matches(
+                    &resource_id,
+                    &plan,
+                    transport,
+                    dependencies.formats(),
+                    dependencies.transforms(),
+                )
             })
             .unwrap();
         assert_eq!(resolved[0].compression.mode_name(), "gzip");
-        assert_eq!(resolved[0].format.extension_signal, FormatSignal::Parquet);
+        assert_eq!(resolved[0].format.extension.as_deref(), Some("parquet"));
         let probe = discover_local_binary_schema_bounded(
             root.path().join("events.parquet.gz"),
             &dependencies,
             &FileFormatDeclaration::parquet(),
+            &plan.format_options,
             "gzip",
             0,
             64 * 1024 * 1024,
@@ -3186,6 +3004,7 @@ mod tests {
             glob: "events.arrow".to_owned(),
             format: FileFormatDeclaration::arrow_ipc(),
             format_declared: true,
+            format_options: serde_json::json!({}),
             compression: FileCompressionDeclaration::none(),
             auth: None,
             credentials: None,
@@ -3198,6 +3017,7 @@ mod tests {
                     &resource_id,
                     &plan,
                     transport,
+                    crate::test_format_registry().as_ref(),
                     crate::test_transform_registry().as_ref(),
                 )
             })
@@ -3250,6 +3070,7 @@ mod tests {
             glob: "events.parquet".to_owned(),
             format: FileFormatDeclaration::parquet(),
             format_declared: true,
+            format_options: serde_json::json!({}),
             compression: FileCompressionDeclaration::none(),
             auth: None,
             credentials: None,
@@ -3262,6 +3083,7 @@ mod tests {
                     &resource_id,
                     &plan,
                     transport,
+                    dependencies.formats(),
                     dependencies.transforms(),
                 )
             })
@@ -3328,6 +3150,7 @@ mod tests {
             glob: "2026/**/*.parquet".to_owned(),
             format: FileFormatDeclaration::parquet(),
             format_declared: true,
+            format_options: serde_json::json!({}),
             compression: FileCompressionDeclaration::none(),
             auth: None,
             credentials: None,
@@ -3339,6 +3162,7 @@ mod tests {
             &resource_id,
             &plan,
             &transport,
+            crate::test_format_registry().as_ref(),
             crate::test_transform_registry().as_ref(),
         )
         .unwrap();
@@ -3354,6 +3178,53 @@ mod tests {
             ]
         );
         assert!(matches.iter().all(|file| file.etag.is_some()));
+    }
+
+    #[test]
+    fn remote_inventory_never_reads_payload_for_format_or_compression_detection() {
+        let store = Arc::new(InMemory::new());
+        futures_executor::block_on(store.put(
+            &ObjectPath::from("prod/events.ndjson.gz"),
+            PutPayload::from_static(b"not payload CDF should inspect during inventory"),
+        ))
+        .unwrap();
+        let range_reads = Arc::new(AtomicUsize::new(0));
+        let transport = RangeCountingTransport {
+            inner: FileTransportFacade::new()
+                .with_object_store("s3://events", store)
+                .with_execution_services(crate::test_execution_services()),
+            range_reads: Arc::clone(&range_reads),
+        };
+        let plan = FileResourcePlan {
+            source: "events".to_owned(),
+            root: "s3://events/prod".to_owned(),
+            glob: "events.ndjson.gz".to_owned(),
+            format: FileFormatDeclaration::ndjson(),
+            format_declared: true,
+            format_options: serde_json::json!({}),
+            compression: FileCompressionDeclaration::auto(),
+            auth: None,
+            credentials: None,
+            allowlist: cdf_http::EgressAllowlist::allow_any(),
+        };
+
+        let matches = resolve_object_store_matches(
+            &ResourceId::new("events.raw").unwrap(),
+            &plan,
+            &transport,
+            crate::test_format_registry().as_ref(),
+            crate::test_transform_registry().as_ref(),
+        )
+        .unwrap();
+
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0].compression.mode_name(), "gzip");
+        assert_eq!(matches[0].format.format_id, "ndjson");
+        assert_eq!(
+            matches[0].format.detection.confidence,
+            FormatDetectionConfidence::None
+        );
+        assert_eq!(range_reads.load(Ordering::Relaxed), 0);
     }
 
     #[test]
@@ -3406,6 +3277,7 @@ mod tests {
             glob: "2026/**/*.ndjson.gz".to_owned(),
             format: FileFormatDeclaration::ndjson(),
             format_declared: true,
+            format_options: serde_json::json!({}),
             compression: FileCompressionDeclaration::auto(),
             auth: None,
             credentials: None,
@@ -3416,6 +3288,7 @@ mod tests {
             &resource_id,
             &plan,
             transport.as_ref(),
+            crate::test_format_registry().as_ref(),
             crate::test_transform_registry().as_ref(),
         )
         .unwrap();
@@ -3494,6 +3367,7 @@ mod tests {
             glob: "events.csv".to_owned(),
             format: FileFormatDeclaration::csv(),
             format_declared: true,
+            format_options: serde_json::json!({}),
             compression: FileCompressionDeclaration::none(),
             auth: None,
             credentials: None,
@@ -3502,13 +3376,20 @@ mod tests {
         let resource_id = ResourceId::new("events.csv").unwrap();
         let resolved = dependencies
             .with_transport(|transport| {
-                resolve_file_matches(&resource_id, &plan, transport, dependencies.transforms())
+                resolve_file_matches(
+                    &resource_id,
+                    &plan,
+                    transport,
+                    dependencies.formats(),
+                    dependencies.transforms(),
+                )
             })
             .unwrap();
         let probe = discover_local_binary_schema_bounded(
             &path,
             &dependencies,
             &plan.format,
+            &plan.format_options,
             "none",
             0,
             1024 * 1024,
@@ -3567,6 +3448,7 @@ mod tests {
             glob: "events.json".to_owned(),
             format: FileFormatDeclaration::json(),
             format_declared: true,
+            format_options: serde_json::json!({}),
             compression: FileCompressionDeclaration::none(),
             auth: None,
             credentials: None,
@@ -3575,13 +3457,20 @@ mod tests {
         let resource_id = ResourceId::new("events.json").unwrap();
         let resolved = dependencies
             .with_transport(|transport| {
-                resolve_file_matches(&resource_id, &plan, transport, dependencies.transforms())
+                resolve_file_matches(
+                    &resource_id,
+                    &plan,
+                    transport,
+                    dependencies.formats(),
+                    dependencies.transforms(),
+                )
             })
             .unwrap();
         let probe = discover_local_binary_schema_bounded(
             &path,
             &dependencies,
             &plan.format,
+            &plan.format_options,
             "none",
             0,
             1024 * 1024,

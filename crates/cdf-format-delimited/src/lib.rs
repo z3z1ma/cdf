@@ -8,8 +8,9 @@ use cdf_memory::{ConsumerKey, MemoryClass, MemoryLease, ReservationRequest, rese
 use cdf_runtime::{
     AccountedByteStream, AccountedChunksReader, AccountedPhysicalBatch, ByteExtent, ByteSource,
     DecodePlanningRequest, DecodeUnitPlan, FormatDetection, FormatDetectionConfidence,
-    FormatDiscoveryRequest, FormatDriver, FormatDriverDescriptor, FormatId, FormatProbe,
-    PhysicalDecodeRequest, PhysicalDecodeStream, PhysicalSchemaObservation, SequentialReadRequest,
+    FormatDetectionProbe, FormatDiscoveryRequest, FormatDriver, FormatDriverDescriptor, FormatId,
+    FormatProbe, PhysicalDecodeRequest, PhysicalDecodeStream, PhysicalSchemaObservation,
+    SequentialReadRequest,
 };
 use futures_util::{TryStreamExt, stream};
 
@@ -30,6 +31,10 @@ impl CsvFormatDriver {
                 extensions: vec!["csv".to_owned()],
                 mime_types: vec!["text/csv".to_owned()],
                 magic: Vec::new(),
+                detection_probe: FormatDetectionProbe {
+                    prefix_bytes: 4096,
+                    suffix_bytes: 0,
+                },
                 option_schema: serde_json::json!({
                     "type": "object",
                     "additionalProperties": false

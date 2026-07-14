@@ -35,9 +35,13 @@ arrow-ipc = "59.1.0"
 cdf-conformance = { path = "../cdf-conformance" }
 cdf-engine = { path = "../cdf-engine" }
 cdf-format-arrow-ipc = { path = "../cdf-format-arrow-ipc" }
+cdf-format-delimited = { path = "../cdf-format-delimited" }
+cdf-format-json = { path = "../cdf-format-json" }
 cdf-format-parquet = { path = "../cdf-format-parquet" }
 cdf-memory = { path = "../cdf-memory" }
 cdf-package = { path = "../cdf-package" }
+cdf-transform-gzip = { path = "../cdf-transform-gzip" }
+cdf-transform-zstd = { path = "../cdf-transform-zstd" }
 flate2 = "1.1.9"
 futures-executor = "0.3.32"
 tempfile = "3.27.0"

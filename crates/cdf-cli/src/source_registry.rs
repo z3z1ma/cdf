@@ -12,17 +12,22 @@ pub(crate) fn builtin_source_registry() -> Result<SourceRegistry> {
     registry.register(RestSourceDriver::new(|| {
         Ok(Box::new(ReqwestHttpTransport::new()?))
     })?)?;
-    registry.register(FileSourceDriver::new(|secrets, execution| {
-        Ok(FileRuntimeDependencies::new(
-            FileTransportFacade::new()
-                .with_http_transport(ReqwestHttpTransport::new()?)
-                .with_shared_secret_provider(secrets)
-                .with_execution_services(execution.clone()),
-            execution,
-            builtin_format_registry()?,
-            builtin_transform_registry()?,
-        ))
-    })?)?;
+    let formats = builtin_format_registry()?;
+    let runtime_formats = std::sync::Arc::clone(&formats);
+    registry.register(FileSourceDriver::new(
+        formats,
+        move |secrets, execution| {
+            Ok(FileRuntimeDependencies::new(
+                FileTransportFacade::new()
+                    .with_http_transport(ReqwestHttpTransport::new()?)
+                    .with_shared_secret_provider(secrets)
+                    .with_execution_services(execution.clone()),
+                execution,
+                std::sync::Arc::clone(&runtime_formats),
+                builtin_transform_registry()?,
+            ))
+        },
+    )?)?;
     Ok(registry)
 }
 

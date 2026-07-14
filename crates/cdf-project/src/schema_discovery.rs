@@ -12,10 +12,8 @@ use crate::{
     DiscoveryExecutorBudget, DiscoveryIdentityStrength, DiscoveryManifestArtifact,
     DiscoveryManifestInput, DiscoveryManifestStore, DiscoveryMetadataScope,
     DiscoveryMetadataVariance, DiscoveryParticipation, DiscoverySchemaVerdict,
-    DiscoverySchemaVerdictKind, DiscoverySelectorCandidate, SCHEMA_DISCOVERY_FORMAT_ARROW_IPC,
-    SCHEMA_DISCOVERY_FORMAT_PARQUET, SCHEMA_DISCOVERY_PROBE_ARROW_IPC_FILE_SCHEMA,
-    SCHEMA_DISCOVERY_PROBE_PARQUET_FOOTER, SchemaSnapshotArtifact, SchemaSnapshotStore,
-    plan_discovery_selection,
+    DiscoverySchemaVerdictKind, DiscoverySelectorCandidate, SchemaSnapshotArtifact,
+    SchemaSnapshotStore, plan_discovery_selection,
 };
 use cdf_contract::{
     AggregateFileSchemaVerdict, AggregateMetadataVariance, AggregateSchemaCandidate,
@@ -525,15 +523,9 @@ fn discover_resource_schema_artifacts_inner(
         CompiledResourcePlan::Files(plan) if !is_remote_file_root(&plan.root) => {
             discover_local_binary_resource_schema(resource, plan, file_dependencies, options)
         }
-        CompiledResourcePlan::Files(plan) => match plan.format.as_str() {
-            "parquet" | "arrow_ipc" | "ndjson" | "csv" | "json" => {
-                discover_remote_binary_resource_schema(resource, plan, file_dependencies, options)
-            }
-            other => Err(unsupported_discover_slice(
-                resource.descriptor(),
-                format!("format `{other}` has no project discovery adapter"),
-            )),
-        },
+        CompiledResourcePlan::Files(plan) => {
+            discover_remote_binary_resource_schema(resource, plan, file_dependencies, options)
+        }
         CompiledResourcePlan::Sql(plan) => Ok(ResourceSchemaDiscoveryArtifacts {
             discovery: discover_postgres_resource_schema(resource, plan, secret_provider)?,
             discovery_manifest: None,
@@ -564,7 +556,7 @@ fn discover_remote_binary_resource_schema(
         plan,
         file_dependencies,
         options,
-        LocalBinaryDiscoveryAdapter::for_format(resource, &plan.format)?,
+        RegisteredFormatDiscoveryAdapter::new(plan)?,
     )
 }
 
@@ -573,7 +565,7 @@ fn discover_remote_file_resource_schema(
     plan: &cdf_declarative::FileResourcePlan,
     file_dependencies: Option<FileRuntimeDependencies>,
     options: SchemaDiscoveryExecutionOptions,
-    adapter: LocalBinaryDiscoveryAdapter,
+    adapter: RegisteredFormatDiscoveryAdapter,
 ) -> Result<ResourceSchemaDiscoveryArtifacts> {
     let dependencies = file_dependencies.ok_or_else(|| {
         unsupported_discover_slice(
@@ -689,13 +681,19 @@ impl BinaryDiscoveryCandidate {
 }
 
 #[derive(Clone, Debug)]
-enum LocalBinaryDiscoveryAdapter {
-    Registered(FileFormatDeclaration),
+struct RegisteredFormatDiscoveryAdapter {
+    format: FileFormatDeclaration,
+    format_options: serde_json::Value,
+    format_options_hash: String,
 }
 
-impl LocalBinaryDiscoveryAdapter {
-    fn for_format(_resource: &CompiledResource, format: &FileFormatDeclaration) -> Result<Self> {
-        Ok(Self::Registered(format.clone()))
+impl RegisteredFormatDiscoveryAdapter {
+    fn new(plan: &cdf_declarative::FileResourcePlan) -> Result<Self> {
+        Ok(Self {
+            format: plan.format.clone(),
+            format_options: plan.format_options.clone(),
+            format_options_hash: cdf_runtime::artifact_hash(&plan.format_options)?,
+        })
     }
 
     fn probe(
@@ -704,14 +702,11 @@ impl LocalBinaryDiscoveryAdapter {
         budget: &DiscoveryExecutorBudget,
         file_dependencies: Option<&FileRuntimeDependencies>,
     ) -> Result<(arrow_schema::SchemaRef, BTreeMap<String, String>, u64)> {
-        match (self, &candidate.source) {
-            (
-                Self::Registered(format),
-                BinaryDiscoveryCandidateSource::Local {
-                    path,
-                    selection_bytes_read,
-                },
-            ) => {
+        match &candidate.source {
+            BinaryDiscoveryCandidateSource::Local {
+                path,
+                selection_bytes_read,
+            } => {
                 let dependencies = file_dependencies.ok_or_else(|| {
                     CdfError::contract(
                         "registered format discovery requires file runtime dependencies",
@@ -720,14 +715,15 @@ impl LocalBinaryDiscoveryAdapter {
                 let probe = discover_local_binary_schema_bounded(
                     path,
                     dependencies,
-                    format,
+                    &self.format,
+                    &self.format_options,
                     &candidate.compression,
                     *selection_bytes_read,
                     budget.max_metadata_bytes_per_file(),
                 )?;
                 Ok((probe.schema, probe.source_identity, probe.probe_bytes_read))
             }
-            (Self::Registered(format), BinaryDiscoveryCandidateSource::Transport(resource)) => {
+            BinaryDiscoveryCandidateSource::Transport(resource) => {
                 let dependencies = file_dependencies.ok_or_else(|| {
                     CdfError::contract(
                         "registered remote format discovery requires file transport dependencies",
@@ -736,7 +732,8 @@ impl LocalBinaryDiscoveryAdapter {
                 let probe = discover_transport_binary_schema_bounded(
                     resource.clone(),
                     dependencies,
-                    format,
+                    &self.format,
+                    &self.format_options,
                     &candidate.compression,
                     budget.max_metadata_bytes_per_file(),
                 )?;
@@ -746,20 +743,13 @@ impl LocalBinaryDiscoveryAdapter {
     }
 
     fn snapshot_metadata(&self) -> BTreeMap<String, String> {
-        let (probe, format) = match self {
-            Self::Registered(format) if format.as_str() == "parquet" => (
-                SCHEMA_DISCOVERY_PROBE_PARQUET_FOOTER,
-                SCHEMA_DISCOVERY_FORMAT_PARQUET,
-            ),
-            Self::Registered(format) if format.as_str() == "arrow_ipc" => (
-                SCHEMA_DISCOVERY_PROBE_ARROW_IPC_FILE_SCHEMA,
-                SCHEMA_DISCOVERY_FORMAT_ARROW_IPC,
-            ),
-            Self::Registered(format) => ("registered-format-discovery", format.as_str()),
-        };
         BTreeMap::from([
-            ("probe".to_owned(), probe.to_owned()),
-            ("format".to_owned(), format.to_owned()),
+            ("probe".to_owned(), "registered-format-discovery".to_owned()),
+            ("format".to_owned(), self.format.as_str().to_owned()),
+            (
+                "format_options_hash".to_owned(),
+                self.format_options_hash.clone(),
+            ),
             ("source_kind".to_owned(), "files".to_owned()),
             (
                 "cdf:normalizer".to_owned(),
@@ -781,10 +771,11 @@ fn discover_local_binary_resource_schema(
             "file discovery requires explicit transport, format, and transform registry dependencies",
         )
     })?;
-    let adapter = LocalBinaryDiscoveryAdapter::for_format(resource, &plan.format)?;
+    let adapter = RegisteredFormatDiscoveryAdapter::new(plan)?;
     let candidates = local_file_discovery_candidates(
         &resource.descriptor().resource_id,
         plan,
+        dependencies.formats(),
         dependencies.transforms(),
     )?
     .into_iter()
@@ -803,7 +794,7 @@ fn discover_local_binary_resource_schema(
 fn discover_binary_resource_schema(
     resource: &CompiledResource,
     options: SchemaDiscoveryExecutionOptions,
-    adapter: LocalBinaryDiscoveryAdapter,
+    adapter: RegisteredFormatDiscoveryAdapter,
     candidates: Vec<BinaryDiscoveryCandidate>,
     file_dependencies: Option<&FileRuntimeDependencies>,
     transport_label: &str,
@@ -1213,7 +1204,7 @@ fn contract_policy_for_resource(resource: &CompiledResource) -> ContractPolicy {
 }
 
 fn probe_binary_candidate(
-    adapter: &LocalBinaryDiscoveryAdapter,
+    adapter: &RegisteredFormatDiscoveryAdapter,
     candidate: &BinaryDiscoveryCandidate,
     budget: &DiscoveryExecutorBudget,
     file_dependencies: Option<&FileRuntimeDependencies>,

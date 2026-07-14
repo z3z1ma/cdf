@@ -1,5 +1,6 @@
 use cdf_kernel::{CdfError, ResourceStream, Result};
-use cdf_source_files::{FileResource, FileRuntimeDependencies};
+use cdf_runtime::CompiledFormatBinding;
+use cdf_source_files::{FileResource, FileResourceDefinition, FileRuntimeDependencies};
 
 use crate::{CompiledResource, CompiledResourcePlan};
 
@@ -22,13 +23,21 @@ fn build_file_resource(
             "only compiled file resources can be opened with file runtime dependencies",
         ));
     };
+    let compiled_format = CompiledFormatBinding::compile(
+        dependencies.formats(),
+        plan.format.as_str(),
+        plan.format_options.clone(),
+    )?;
     FileResource::new(
-        resource.descriptor().clone(),
-        resource.schema(),
-        resource.capabilities().clone(),
-        plan.clone(),
-        resource.type_policy_allowances(),
-        resource.effective_schema_runtime().cloned(),
+        FileResourceDefinition {
+            descriptor: resource.descriptor().clone(),
+            schema: resource.schema(),
+            capabilities: resource.capabilities().clone(),
+            plan: plan.clone(),
+            type_policy_allowances: resource.type_policy_allowances(),
+            effective_schema_runtime: resource.effective_schema_runtime().cloned(),
+            compiled_format,
+        },
         dependencies,
     )
 }

@@ -14,9 +14,9 @@ use cdf_kernel::{Batch, BatchId, BoxFuture, CdfError, PushdownFidelity, Result};
 use cdf_memory::{ConsumerKey, MemoryClass, ReservationRequest, reserve};
 use cdf_runtime::{
     AccountedPhysicalBatch, ByteExtent, ByteSource, DecodePlanningRequest, DecodeUnitPlan,
-    FormatDetection, FormatDetectionConfidence, FormatDiscoveryRequest, FormatDriver,
-    FormatDriverDescriptor, FormatId, FormatProbe, GenerationStrength, MagicSignature,
-    PhysicalDecodeRequest, PhysicalDecodeStream, PhysicalSchemaObservation,
+    FormatDetection, FormatDetectionConfidence, FormatDetectionProbe, FormatDiscoveryRequest,
+    FormatDriver, FormatDriverDescriptor, FormatId, FormatProbe, GenerationStrength,
+    MagicSignature, PhysicalDecodeRequest, PhysicalDecodeStream, PhysicalSchemaObservation,
 };
 use futures_util::{
     FutureExt, StreamExt, TryStreamExt, future::BoxFuture as FuturesBoxFuture, stream,
@@ -51,6 +51,10 @@ impl ParquetFormatDriver {
                     bytes: b"PAR1".to_vec(),
                     strong: true,
                 }],
+                detection_probe: FormatDetectionProbe {
+                    prefix_bytes: 4,
+                    suffix_bytes: 4,
+                },
                 option_schema: serde_json::json!({
                     "type": "object",
                     "additionalProperties": false

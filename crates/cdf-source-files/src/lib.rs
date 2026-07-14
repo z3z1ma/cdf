@@ -126,6 +126,7 @@ pub struct FileResourcePlan {
     pub glob: String,
     pub format: FileFormatDeclaration,
     pub format_declared: bool,
+    pub format_options: serde_json::Value,
     pub compression: FileCompressionDeclaration,
     pub auth: Option<AuthScheme>,
     pub credentials: Option<SecretUri>,

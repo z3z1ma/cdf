@@ -371,6 +371,7 @@ pub struct FormatDriverDescriptor {
     pub extensions: Vec<String>,
     pub mime_types: Vec<String>,
     pub magic: Vec<MagicSignature>,
+    pub detection_probe: FormatDetectionProbe,
     pub option_schema: serde_json::Value,
     pub projection_pushdown: PushdownFidelity,
     pub predicate_pushdown: PushdownFidelity,
@@ -378,6 +379,45 @@ pub struct FormatDriverDescriptor {
     pub decode_unit_policy: String,
     pub minimum_working_set_bytes: u64,
     pub maximum_working_set_bytes: u64,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FormatDetectionProbe {
+    pub prefix_bytes: u32,
+    pub suffix_bytes: u32,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CompiledFormatBinding {
+    pub descriptor: FormatDriverDescriptor,
+    pub canonical_options: serde_json::Value,
+}
+
+impl CompiledFormatBinding {
+    pub fn compile(
+        registry: &FormatRegistry,
+        id_or_alias: &str,
+        options: serde_json::Value,
+    ) -> Result<Self> {
+        let driver = registry.resolve(id_or_alias)?;
+        Ok(Self {
+            descriptor: driver.descriptor().clone(),
+            canonical_options: driver.canonical_options(options)?,
+        })
+    }
+
+    pub fn verify(&self, registry: &FormatRegistry) -> Result<Arc<dyn FormatDriver>> {
+        let driver = registry.resolve(self.descriptor.format_id.as_str())?;
+        if driver.descriptor() != &self.descriptor
+            || driver.canonical_options(self.canonical_options.clone())? != self.canonical_options
+        {
+            return Err(CdfError::contract(format!(
+                "compiled format binding for `{}` does not match the registered driver version, capabilities, or canonical options",
+                self.descriptor.format_id
+            )));
+        }
+        Ok(driver)
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -401,6 +441,14 @@ impl FormatDriverDescriptor {
         {
             return Err(CdfError::contract(
                 "format driver requires a decode-unit policy and valid working-set bounds",
+            ));
+        }
+        const MAX_DETECTION_PROBE_BYTES: u32 = 1024 * 1024;
+        if self.detection_probe.prefix_bytes > MAX_DETECTION_PROBE_BYTES
+            || self.detection_probe.suffix_bytes > MAX_DETECTION_PROBE_BYTES
+        {
+            return Err(CdfError::contract(
+                "format detection prefix/suffix probes must each be at most 1 MiB",
             ));
         }
         for alias in &self.aliases {
@@ -427,6 +475,19 @@ impl FormatDriverDescriptor {
         }
         for signature in &self.magic {
             signature.validate()?;
+            let signature_end = signature
+                .offset
+                .checked_add(signature.bytes.len() as u64)
+                .ok_or_else(|| CdfError::contract("format magic extent overflowed"))?;
+            if signature_end > u64::from(self.detection_probe.prefix_bytes) {
+                return Err(CdfError::contract(format!(
+                    "format driver {} magic at offset {} requires {} prefix bytes but its detection probe declares {}",
+                    self.format_id,
+                    signature.offset,
+                    signature_end,
+                    self.detection_probe.prefix_bytes
+                )));
+            }
         }
         Ok(())
     }
@@ -780,6 +841,7 @@ impl TransformExpansionGuard {
 pub struct FormatRegistry {
     by_id: BTreeMap<FormatId, Arc<dyn FormatDriver>>,
     aliases: BTreeMap<String, FormatId>,
+    extensions: BTreeMap<String, FormatId>,
     strong_magic: BTreeMap<(u64, Vec<u8>), FormatId>,
 }
 
@@ -803,6 +865,14 @@ impl FormatRegistry {
                 )));
             }
         }
+        for extension in &descriptor.extensions {
+            if let Some(existing) = self.extensions.get(extension) {
+                return Err(CdfError::contract(format!(
+                    "format extension {extension} conflicts between {existing} and {}",
+                    descriptor.format_id
+                )));
+            }
+        }
         for signature in descriptor.magic.iter().filter(|signature| signature.strong) {
             let key = (signature.offset, signature.bytes.clone());
             if let Some(existing) = self.strong_magic.get(&key) {
@@ -815,6 +885,9 @@ impl FormatRegistry {
         let id = descriptor.format_id.clone();
         for alias in &descriptor.aliases {
             self.aliases.insert(alias.clone(), id.clone());
+        }
+        for extension in &descriptor.extensions {
+            self.extensions.insert(extension.clone(), id.clone());
         }
         for signature in descriptor.magic.iter().filter(|signature| signature.strong) {
             self.strong_magic
@@ -842,6 +915,32 @@ impl FormatRegistry {
             .cloned()
             .or_else(|| FormatId::new(id_or_alias).ok())?;
         self.by_id.get(&id).cloned()
+    }
+
+    pub fn by_extension(&self, extension: &str) -> Option<Arc<dyn FormatDriver>> {
+        let id = self.extensions.get(extension)?;
+        self.by_id.get(id).cloned()
+    }
+
+    pub fn detect_strong_magic(&self, prefix: &[u8]) -> Result<Option<Arc<dyn FormatDriver>>> {
+        let mut matched: Option<&FormatId> = None;
+        for ((offset, signature), id) in &self.strong_magic {
+            let start = usize::try_from(*offset)
+                .map_err(|_| CdfError::contract("format magic offset exceeds usize"))?;
+            let Some(end) = start.checked_add(signature.len()) else {
+                return Err(CdfError::contract("format magic extent exceeds usize"));
+            };
+            if prefix.get(start..end) != Some(signature.as_slice()) {
+                continue;
+            }
+            if matched.is_some_and(|existing| existing != id) {
+                return Err(CdfError::contract(
+                    "format magic is ambiguous across registered drivers",
+                ));
+            }
+            matched = Some(id);
+        }
+        Ok(matched.and_then(|id| self.by_id.get(id).cloned()))
     }
 
     pub fn descriptors(&self) -> Vec<FormatDriverDescriptor> {
@@ -1051,6 +1150,10 @@ mod tests {
                 bytes: magic.to_vec(),
                 strong: true,
             }],
+            detection_probe: FormatDetectionProbe {
+                prefix_bytes: magic.len() as u32,
+                suffix_bytes: 0,
+            },
             option_schema: serde_json::json!({"type": "object"}),
             projection_pushdown: PushdownFidelity::Unsupported,
             predicate_pushdown: PushdownFidelity::Unsupported,
