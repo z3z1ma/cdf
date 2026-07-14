@@ -12,5 +12,5 @@ pub fn compile_observed_schema(
 }
 
 pub fn schema_hash(schema: &Schema) -> Result<SchemaHash> {
-    cdf_contract::canonical_arrow_schema_hash(schema)
+    cdf_kernel::canonical_arrow_schema_hash(schema)
 }

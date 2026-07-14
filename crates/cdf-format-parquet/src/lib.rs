@@ -10,7 +10,6 @@ use std::{
 };
 
 use bytes::Bytes;
-use cdf_contract::ObservedSchema;
 use cdf_kernel::{Batch, BatchId, BoxFuture, CdfError, PushdownFidelity, Result};
 use cdf_memory::{ConsumerKey, MemoryClass, ReservationRequest, reserve};
 use cdf_runtime::{
@@ -127,7 +126,6 @@ impl FormatDriver for ParquetFormatDriver {
             }
             Ok(PhysicalSchemaObservation {
                 identity: source.identity().clone(),
-                observed_schema: ObservedSchema::from_arrow(schema.as_ref()),
                 arrow_schema: schema,
                 sampled_bytes,
                 sampled_records: 0,
@@ -213,9 +211,9 @@ impl FormatDriver for ParquetFormatDriver {
             .with_row_groups(vec![usize::try_from(request.unit.ordinal).map_err(
                 |_| CdfError::data("Parquet row-group ordinal exceeds usize"),
             )?]);
-            let actual_hash = cdf_contract::canonical_arrow_schema_hash(builder.schema())?;
+            let actual_hash = cdf_kernel::canonical_arrow_schema_hash(builder.schema())?;
             let expected_hash =
-                cdf_contract::canonical_arrow_schema_hash(request.physical_schema.as_ref())?;
+                cdf_kernel::canonical_arrow_schema_hash(request.physical_schema.as_ref())?;
             if actual_hash != expected_hash {
                 return Err(CdfError::data(format!(
                     "Parquet physical schema changed before decode: planned {}, observed {actual_hash}",
@@ -271,7 +269,7 @@ impl FormatDriver for ParquetFormatDriver {
                     batch_id,
                     state.request.resource_id.clone(),
                     state.request.partition_id.clone(),
-                    cdf_contract::canonical_arrow_schema_hash(
+                    cdf_kernel::canonical_arrow_schema_hash(
                         state.request.physical_schema.as_ref(),
                     )?,
                     record_batch,
@@ -310,7 +308,7 @@ fn parquet_discovery_evidence(
         })
         .collect::<Result<Vec<_>>>()?;
     let mut fingerprint = serde_json::json!({
-        "arrow_schema_hash": cdf_contract::canonical_arrow_schema_hash(schema)?.as_str(),
+        "arrow_schema_hash": cdf_kernel::canonical_arrow_schema_hash(schema)?.as_str(),
         "created_by": file.created_by(),
         "key_value_metadata": key_values,
         "parquet_schema": format!("{:?}", file.schema_descr()),

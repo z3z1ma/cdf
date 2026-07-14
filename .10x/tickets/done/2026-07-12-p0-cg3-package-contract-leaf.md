@@ -1,4 +1,4 @@
-Status: active
+Status: done
 Created: 2026-07-12
 Updated: 2026-07-13
 Parent: .10x/tickets/2026-07-12-p0-cargo-product-build-graph.md
@@ -50,6 +50,9 @@ Extract the canonical package artifact/replay models and verified-access capabil
 - 2026-07-13: Replaced finalized-ingress and correction filesystem arguments with `SharedVerifiedPackageAccess`. Package verification remains minted and enforced by `cdf-package::VerifiedPackageReader`; neutral runtime and destinations see only verified facts. Postgres now carries the capability into commit finalization for quarantine evidence and validates correction identity through it instead of reopening a package path. Generic orchestration no longer forwards a package path or concrete reader to a destination.
 - 2026-07-13: Added resolved-graph tests for the leaf and runtime. Both normal and normal+dev runtime graphs exclude `cdf-package`, Parquet, and Arrow IPC; normal also excludes tempfile. Current canonicalized unique counts are 76 normal and 83 normal+dev, down from the recorded 90-node normal baseline but still above the governing <=67 threshold. The remaining excess is not package implementation: `cdf-contract` alone resolves 65 packages and is now the dominant neutral-runtime edge. The threshold remains an open CG3 closure criterion; it must be solved without weakening the test or reintroducing package implementation.
 - 2026-07-13: Verification: workspace all-target check passed; package suite passed 56/56 with 3 performance tests ignored; runtime suite passed 36/36 with 1 performance test ignored; four exact project replay/staging/checkpoint tests passed; both resolved-graph tests passed; touched-owner Clippy passed with `--no-deps -D warnings`. Full dependency Clippy was attempted and stopped on pre-existing `cdf-contract/src/expression.rs` `map_identity`, outside this batch.
+- 2026-07-13: Closed the numerical graph gap by tracing all three remaining runtime uses of `cdf-contract`. `PhysicalSchemaObservation.observed_schema` was a derived duplicate that no consumer read; runtime's `ResolvedDestination`/`DestinationOutputSchema` facade was an unused duplicate of project orchestration; and structural Arrow-schema hashing was identity logic living above kernel's existing canonical Arrow vocabulary. Deleted both duplicates, moved the unchanged hash encoder and its goldens to kernel, migrated every caller directly, and removed now-unused `cdf-contract` edges from runtime plus all four native format drivers and the file source. No replacement facade or compatibility re-export remains.
+- 2026-07-13: Final graph measurement is 55 unique normal packages and 62 normal+dev packages for `cdf-runtime`, versus the recorded 90-package baseline. The runtime graph test now enforces the <=67 normal ceiling in addition to the exact forbidden implementation/codec edges. The staged replay helper now accepts one `VerifiedPackageReader` instead of independently carrying a reader and verification token. The closure slice is 56 insertions and 433 deletions (net -377); extraction commit `36d7ee12` recorded 873 insertions and 662 deletions under Git's rename accounting.
+- 2026-07-13: Final verification passed: focused kernel/contract/runtime/native-format/file-source suites; both resolved-graph tests; strict touched-owner all-target Clippy with `--no-deps -D warnings`; workspace all-target check; workspace formatting; and diff check. The previously observed identity-map lint was removed mechanically, allowing the strict gate to complete without an allowance.
 
 ## Blockers
 
@@ -64,7 +67,9 @@ None. Package bytes and lifecycle behavior are preservation constraints governed
 - Product replay/checkpoint preservation: the exact project tests `generic_lock_plan_replay_and_recovery_drive_mock_runtime_without_destination_branch`, `generic_replay_streams_verified_segments_through_staged_final_binding`, `artifact_replay_reconstructs_delta_and_commit_request_from_package_files`, and `checkpoint_failure_after_receipt_keeps_receipt_recoverable_and_state_unadvanced` each passed.
 - Integration compilation: `CARGO_BUILD_JOBS=12 cargo check --workspace --all-targets -j 12` passed after all direct-owner migrations.
 - Static quality: `cargo fmt --all`, `git diff --check`, and touched-owner `cargo clippy -p cdf-package-contract -p cdf-package -p cdf-runtime --all-targets --no-deps -j 12 -- -D warnings` passed.
-- Remaining limit: canonicalized `cargo tree` counts are 76 normal and 83 normal+dev for `cdf-runtime`; the <=67 normal threshold and corresponding count assertion are not yet satisfied, so CG3 remains active.
+- Runtime graph ceiling: canonicalized `cargo tree` counts are 55 normal and 62 normal+dev for `cdf-runtime`, down from the 90-package baseline. `crates/cdf-runtime/tests/build_graph.rs` asserts the <=67 normal ceiling and all named forbidden-edge laws; the test passed after the final cut.
+- Native discovery/hash preservation: focused unit suites passed for `cdf-kernel` (31), `cdf-contract` (89 with 2 release-only performance tests ignored), `cdf-runtime` (36 with 1 performance test ignored), Arrow IPC (1 with 1 release-only performance test ignored), JSON (4), Parquet (1), delimited (0), and file source (28). This includes the moved structural-hash goldens and remote/local registered-driver discovery and decode paths.
+- Final static/product compilation: strict touched-owner all-target Clippy passed with `--no-deps -D warnings`; `CARGO_BUILD_JOBS=12 cargo check --workspace --all-targets -j 12` passed in 3m28s; `cargo fmt --all -- --check` and `git diff --check` passed.
 
 ## Review
 
@@ -105,6 +110,27 @@ Golden bytes alone do not prove lifecycle equivalence. Closure still needs the n
 
 Postgres live integration was compile-checked but not exercised against a live server in this batch. E3's already-recorded post-verification filesystem mutation/TOCTOU limits are unchanged: the new capability delegates to the same package implementation authority and does not claim to repair E3.
 
+### Closure adversarial review (2026-07-13)
+
+#### Findings
+
+- No critical or significant closure finding. The remaining graph excess was removed by deleting unused/derived runtime state and relocating existing identity logic to its canonical lower owner; no threshold, feature, or test was weakened.
+- Structural schema hashing has one definition in `cdf-kernel`, beside canonical Arrow vocabulary and existing SHA-256/hex dependencies. Every workspace caller migrated directly; `cdf-contract` has no legacy re-export.
+- `PhysicalSchemaObservation` retains the exact Arrow schema and bounded sampling evidence. Removing an unconsumed `ObservedSchema::from_arrow` copy cannot change discovery output and removes format-driver coupling to the contract compiler.
+- Runtime no longer contains the unused `ResolvedDestination` facade or destination identifier-policy adaptation. `cdf-project::ResolvedProjectDestination` remains the single product orchestration owner and performs the same destination-sheet/compiled-policy equality check before returning its private output-schema value.
+- The staged replay call now binds reader and verification in one `VerifiedPackageReader`; it no longer permits those arguments to drift independently.
+
+#### Verdict
+
+**Pass.** Every CG3 acceptance criterion maps to recorded evidence, the exact graph ceiling is enforced, focused semantics and full workspace compilation are green, and no compatibility or duplicate owner remains.
+
+#### Residual risk
+
+No new residual risk from the graph-closure slice. The earlier live-Postgres and E3 filesystem-mutation limits remain owned by their existing integration/performance authorities and were neither widened nor claimed closed here.
+
 ## Retrospective
 
-- Partial: removing a concrete dependency exposed a second, independent build-graph concentration rather than making it disappear. Resolved-graph measurement must follow every boundary extraction immediately; direct-manifest checks alone would have falsely declared success. Carrying one verified capability through ordinary and correction ingress also removed more code than adapting only the initially observed replay call, and avoided leaving correction as a structurally identical path leak.
+- Removing a concrete dependency exposed a second, independent build-graph concentration rather than making it disappear. Resolved-graph measurement must follow every boundary extraction immediately; direct-manifest checks alone would have falsely declared success.
+- The decisive graph reduction came from asking why runtime needed each heavy edge, not from extracting another crate. Two uses were dead duplication and the third was identity logic already adjacent to its proper lower owner. This is the preferred graph-optimization sequence: eliminate, relocate to an existing authority, then consider a new boundary only if real independent consumers remain.
+- Carrying one verified capability through ordinary, correction, and staged ingress removed more code than adapting only the first replay call and prevented structurally identical path/token leaks from surviving elsewhere.
+- Strict Clippy exposed both a trivial identity map and a more meaningful reader-plus-verification parameter split. Fixing the underlying shapes produced cleaner code than allowances and made the final verified-package invariant more explicit.

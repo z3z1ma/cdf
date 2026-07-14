@@ -138,13 +138,6 @@ impl DestinationCommitPlanningOutcome {
     }
 }
 
-#[derive(Clone, Debug)]
-pub struct DestinationOutputSchema {
-    pub schema: SchemaRef,
-    pub schema_hash: SchemaHash,
-    pub identifier_policy: Option<IdentifierPolicy>,
-}
-
 #[derive(Clone)]
 #[non_exhaustive]
 pub struct DestinationPlanningContext<'a> {
@@ -284,70 +277,4 @@ pub trait DestinationRuntime {
     fn secret_redaction(&self) -> Option<&str> {
         None
     }
-}
-
-pub struct ResolvedDestination {
-    target: TargetName,
-    runtime: Box<dyn DestinationRuntime>,
-}
-
-impl std::fmt::Debug for ResolvedDestination {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("ResolvedDestination")
-            .field("target", &self.target)
-            .field("description", &self.describe())
-            .finish_non_exhaustive()
-    }
-}
-
-impl ResolvedDestination {
-    pub fn new(runtime: Box<dyn DestinationRuntime>, target: TargetName) -> Self {
-        Self { target, runtime }
-    }
-
-    pub fn target(&self) -> &TargetName {
-        &self.target
-    }
-
-    pub fn column_identifier_policy(&self) -> Result<Option<IdentifierPolicy>> {
-        let sheet = self.runtime.destination_sheet()?;
-        identifier_policy_from_destination_rules(&sheet.identifier_rules).map(Some)
-    }
-
-    pub fn describe(&self) -> DestinationDescription {
-        self.runtime.describe()
-    }
-
-    pub fn runtime_capabilities(&self) -> DestinationRuntimeCapabilities {
-        self.runtime.runtime_capabilities()
-    }
-
-    pub fn secret_redaction(&self) -> Option<&str> {
-        self.runtime.secret_redaction()
-    }
-
-    pub fn runtime_mut(&mut self) -> &mut dyn DestinationRuntime {
-        self.runtime.as_mut()
-    }
-}
-
-pub fn destination_output_schema(
-    destination: &ResolvedDestination,
-    schema: SchemaRef,
-    schema_hash: SchemaHash,
-    planned_identifier_policy: &IdentifierPolicy,
-) -> Result<DestinationOutputSchema> {
-    let identifier_policy = destination.column_identifier_policy()?;
-    if let Some(identifier_policy) = &identifier_policy
-        && planned_identifier_policy != identifier_policy
-    {
-        return Err(CdfError::contract(format!(
-            "run plan identifier policy does not match resolved destination sheet: planned {planned_identifier_policy:?}, destination {identifier_policy:?}; rebuild the plan for the selected destination"
-        )));
-    }
-    Ok(DestinationOutputSchema {
-        schema,
-        schema_hash,
-        identifier_policy,
-    })
 }

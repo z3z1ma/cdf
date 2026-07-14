@@ -576,7 +576,7 @@ where
     type_policy.coerce_types = false;
     type_policy.allow_lossy_mapping = false;
     for physical in &runtime.schema_catalog {
-        let computed_hash = cdf_contract::canonical_arrow_schema_hash(physical.schema.as_ref())?;
+        let computed_hash = cdf_kernel::canonical_arrow_schema_hash(physical.schema.as_ref())?;
         if computed_hash != physical.physical_schema_hash {
             return Err(CdfError::data(format!(
                 "physical schema catalog entry {} does not match its canonical schema hash {}",
@@ -616,7 +616,7 @@ where
         .collect::<Result<Vec<_>>>()?;
     Ok(Some(EffectiveSchemaPlanEvidence {
         authority: evidence.clone(),
-        effective_arrow_schema_hash: cdf_contract::canonical_arrow_schema_hash(
+        effective_arrow_schema_hash: cdf_kernel::canonical_arrow_schema_hash(
             resource.schema().as_ref(),
         )?,
         observations,
@@ -651,7 +651,7 @@ where
             schema_hash: Some(schema_hash),
             ..
         } => schema_hash.clone(),
-        _ => cdf_contract::canonical_arrow_schema_hash(resource.schema().as_ref())?,
+        _ => cdf_kernel::canonical_arrow_schema_hash(resource.schema().as_ref())?,
     };
     Ok(EngineSchemaAuthority {
         version: 1,

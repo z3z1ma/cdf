@@ -4,13 +4,17 @@ use cdf_contract::{IdentifierPolicy, identifier_policy_from_destination_rules};
 pub use cdf_runtime::{
     DestinationCommitPlanningInputs, DestinationCommitPlanningOutcome,
     DestinationDescription as ProjectDestinationDescription,
-    DestinationDriver as ProjectDestinationDriver, DestinationOutputSchema,
-    DestinationPlanningContext, DestinationReceiptReportingPolicy,
-    DestinationRegistry as ProjectDestinationRegistry,
+    DestinationDriver as ProjectDestinationDriver, DestinationPlanningContext,
+    DestinationReceiptReportingPolicy, DestinationRegistry as ProjectDestinationRegistry,
     DestinationResolutionContext as ProjectResolutionContext,
     DestinationRuntime as ProjectDestinationRuntime, PreparedDestinationCommit,
     absolute_under_root, commit_request, local_uri_path,
 };
+
+pub(super) struct DestinationOutputSchema {
+    pub(super) schema: arrow_schema::SchemaRef,
+    pub(super) schema_hash: SchemaHash,
+}
 
 pub(super) fn project_receipt_source(
     policy: DestinationReceiptReportingPolicy,
@@ -102,7 +106,7 @@ impl ResolvedProjectDestination {
         identifier_policy_from_destination_rules(&sheet.identifier_rules).map(Some)
     }
 
-    pub fn output_schema(&self, plan: &EnginePlan) -> Result<DestinationOutputSchema> {
+    pub(super) fn output_schema(&self, plan: &EnginePlan) -> Result<DestinationOutputSchema> {
         let identifier_policy = self.column_identifier_policy()?;
         let schema = plan.output_arrow_schema()?;
         if let Some(identifier_policy) = &identifier_policy
@@ -117,7 +121,6 @@ impl ResolvedProjectDestination {
         Ok(DestinationOutputSchema {
             schema,
             schema_hash,
-            identifier_policy,
         })
     }
 

@@ -7,7 +7,6 @@ use std::{
 };
 
 use arrow_schema::SchemaRef;
-use cdf_contract::ObservedSchema;
 use cdf_kernel::{
     Batch, BoxFuture, CdfError, PartitionId, PayloadRetention, PushdownFidelity, ResourceId,
     Result, ScanPredicate, SourcePosition,
@@ -468,7 +467,6 @@ pub struct FormatDiscoveryRequest {
 pub struct PhysicalSchemaObservation {
     pub identity: ContentIdentity,
     pub arrow_schema: SchemaRef,
-    pub observed_schema: ObservedSchema,
     pub sampled_bytes: u64,
     pub sampled_records: u64,
     pub evidence: BTreeMap<String, String>,

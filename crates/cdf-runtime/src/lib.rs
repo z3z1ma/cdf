@@ -41,8 +41,7 @@ mod prelude {
         path::{Path, PathBuf},
     };
 
-    pub(crate) use arrow_schema::{Schema, SchemaRef};
-    pub(crate) use cdf_contract::{IdentifierPolicy, identifier_policy_from_destination_rules};
+    pub(crate) use arrow_schema::Schema;
     pub(crate) use cdf_kernel::{
         CapabilitySupport, CdfError, CommitPlan, CommitSession, DestinationCommitRequest,
         DestinationCorrectionCommitPlan, DestinationCorrectionCommitRequest, DestinationId,

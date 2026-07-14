@@ -116,7 +116,6 @@ impl FormatDriver for CsvFormatDriver {
             let schema = Arc::new(schema);
             Ok(PhysicalSchemaObservation {
                 identity: source.identity().clone(),
-                observed_schema: cdf_contract::ObservedSchema::from_arrow(schema.as_ref()),
                 arrow_schema: schema,
                 sampled_bytes,
                 sampled_records: u64::try_from(sampled_records)
@@ -275,7 +274,7 @@ async fn decode_next(
             batch_id,
             state.request.resource_id.clone(),
             state.request.partition_id.clone(),
-            cdf_contract::canonical_arrow_schema_hash(state.request.physical_schema.as_ref())?,
+            cdf_kernel::canonical_arrow_schema_hash(state.request.physical_schema.as_ref())?,
             record_batch,
         )?;
         batch.header.source_position = state.request.source_position.clone();

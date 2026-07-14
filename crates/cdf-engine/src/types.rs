@@ -173,7 +173,7 @@ pub struct EngineOutputSchema {
 
 impl EngineOutputSchema {
     pub fn from_arrow(schema: &Schema) -> Result<Self> {
-        let arrow_schema_hash = cdf_contract::canonical_arrow_schema_hash(schema)?;
+        let arrow_schema_hash = cdf_kernel::canonical_arrow_schema_hash(schema)?;
         let fields = schema
             .fields()
             .iter()
@@ -207,7 +207,7 @@ impl EngineOutputSchema {
             fields,
             self.metadata.clone().into_iter().collect(),
         ));
-        let actual = cdf_contract::canonical_arrow_schema_hash(schema.as_ref())?;
+        let actual = cdf_kernel::canonical_arrow_schema_hash(schema.as_ref())?;
         if actual != self.arrow_schema_hash {
             return Err(CdfError::data(format!(
                 "compiled output schema hash mismatch: plan records {}, materialized {}",

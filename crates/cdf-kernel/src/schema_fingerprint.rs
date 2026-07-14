@@ -1,6 +1,7 @@
 use arrow_schema::{DataType, Field, IntervalUnit, Schema, TimeUnit, UnionMode};
-use cdf_kernel::{Result, SchemaHash};
 use sha2::{Digest, Sha256};
+
+use crate::{Result, SchemaHash};
 
 pub fn canonical_arrow_schema_hash(schema: &Schema) -> Result<SchemaHash> {
     let mut encoder = StructuralEncoder::new();

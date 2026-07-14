@@ -446,8 +446,7 @@ fn preview_large_plan_selects_and_opens_at_most_the_global_batch_budget() {
 fn preview_terminal_quarantine_uses_run_attestation_without_opening_payloads() {
     let effective_schema = sample_schema();
     let physical_schema = sample_schema();
-    let physical_hash =
-        cdf_contract::canonical_arrow_schema_hash(physical_schema.as_ref()).unwrap();
+    let physical_hash = cdf_kernel::canonical_arrow_schema_hash(physical_schema.as_ref()).unwrap();
     let runtime = terminal_effective_schema_runtime(physical_schema, physical_hash.clone());
     let resource = MockResource::tier_b(sample_batches())
         .with_effective_schema_runtime(effective_schema, runtime)
@@ -599,8 +598,7 @@ fn engine_plan_deserialization_rejects_missing_required_execution_policy() {
 fn effective_schema_reuses_observation_across_partitions_and_attests_only_attempted_inputs() {
     let effective_schema = sample_schema();
     let physical_schema = sample_schema();
-    let physical_hash =
-        cdf_contract::canonical_arrow_schema_hash(physical_schema.as_ref()).unwrap();
+    let physical_hash = cdf_kernel::canonical_arrow_schema_hash(physical_schema.as_ref()).unwrap();
     let mut batches = vec![
         batch_for_partition_with_schema(
             "batch-limit-0",
@@ -696,8 +694,7 @@ fn effective_schema_reuses_observation_across_partitions_and_attests_only_attemp
 fn terminal_schema_observation_quarantine_processes_repeated_partitions_without_opening_data() {
     let effective_schema = sample_schema();
     let physical_schema = sample_schema();
-    let physical_hash =
-        cdf_contract::canonical_arrow_schema_hash(physical_schema.as_ref()).unwrap();
+    let physical_hash = cdf_kernel::canonical_arrow_schema_hash(physical_schema.as_ref()).unwrap();
     let runtime = terminal_effective_schema_runtime(physical_schema, physical_hash.clone());
     let processed_position = terminal_file_position();
     let secret_batches = vec![batch_for_partition_with_schema(
@@ -770,8 +767,7 @@ fn terminal_schema_observation_quarantine_processes_repeated_partitions_without_
 fn terminal_schema_observation_attestation_change_aborts_before_processed_evidence() {
     let effective_schema = sample_schema();
     let physical_schema = sample_schema();
-    let physical_hash =
-        cdf_contract::canonical_arrow_schema_hash(physical_schema.as_ref()).unwrap();
+    let physical_hash = cdf_kernel::canonical_arrow_schema_hash(physical_schema.as_ref()).unwrap();
     let runtime = terminal_effective_schema_runtime(physical_schema, physical_hash);
     let resource = MockResource::tier_b(Vec::new())
         .with_effective_schema_runtime(effective_schema, runtime)
@@ -813,8 +809,7 @@ fn terminal_schema_observation_attestation_change_aborts_before_processed_eviden
 fn terminal_schema_observation_identity_attestation_failure_aborts_before_processed_evidence() {
     let effective_schema = sample_schema();
     let physical_schema = sample_schema();
-    let physical_hash =
-        cdf_contract::canonical_arrow_schema_hash(physical_schema.as_ref()).unwrap();
+    let physical_hash = cdf_kernel::canonical_arrow_schema_hash(physical_schema.as_ref()).unwrap();
     let runtime = terminal_effective_schema_runtime(physical_schema, physical_hash);
     let resource = MockResource::tier_b(Vec::new())
         .with_effective_schema_runtime(effective_schema, runtime)
@@ -2335,8 +2330,7 @@ fn residual_multi_partition_decisions_share_verified_effective_schema_and_keep_i
         Field::new("id", DataType::Int32, true),
         with_semantic(Field::new("note", DataType::Int32, true), "pii:note"),
     ]));
-    let physical_hash =
-        cdf_contract::canonical_arrow_schema_hash(physical_schema.as_ref()).unwrap();
+    let physical_hash = cdf_kernel::canonical_arrow_schema_hash(physical_schema.as_ref()).unwrap();
     let reconciliation = reconcile_schema(
         physical_schema.as_ref(),
         physical_schema.as_ref(),
@@ -2642,7 +2636,7 @@ fn execution_rejects_schema_authority_and_zero_row_output_schema_tampering() {
             .map(|field| field.to_arrow().unwrap())
             .collect::<Vec<_>>(),
     );
-    output.arrow_schema_hash = cdf_contract::canonical_arrow_schema_hash(&forged_schema).unwrap();
+    output.arrow_schema_hash = cdf_kernel::canonical_arrow_schema_hash(&forged_schema).unwrap();
     let temp = TempDir::new().unwrap();
     let error = block_on(execute_to_package(&output_tamper, &resource, temp.path())).unwrap_err();
     assert!(error.to_string().contains("compiled output schema"));

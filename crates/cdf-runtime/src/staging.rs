@@ -110,7 +110,7 @@ impl StagedIngressRequest {
         scheduling: StagingSchedulingContext,
         output_schema: Schema,
     ) -> Result<Self> {
-        let observed = cdf_contract::canonical_arrow_schema_hash(&output_schema)?;
+        let observed = cdf_kernel::canonical_arrow_schema_hash(&output_schema)?;
         if observed != binding.output_arrow_schema_hash {
             return Err(CdfError::contract(format!(
                 "staged ingress output schema hash {observed} does not match binding {}",
@@ -308,7 +308,7 @@ impl VerifiedFinalBinding {
         }
         let output_schema = package.runtime_arrow_schema()?;
         let output_arrow_schema_hash =
-            cdf_contract::canonical_arrow_schema_hash(output_schema.as_ref())?;
+            cdf_kernel::canonical_arrow_schema_hash(output_schema.as_ref())?;
         let schema_hash = inputs.schema_hash.clone();
         let mut seen = BTreeSet::new();
         let ordered_segments = package

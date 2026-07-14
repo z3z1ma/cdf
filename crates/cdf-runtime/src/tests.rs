@@ -1152,7 +1152,7 @@ fn staged_ingress_types_cannot_claim_package_commit_authority() {
             target: TargetName::new("events").unwrap(),
             disposition: WriteDisposition::Append,
             schema_hash: schema_hash.clone(),
-            output_arrow_schema_hash: cdf_contract::canonical_arrow_schema_hash(
+            output_arrow_schema_hash: cdf_kernel::canonical_arrow_schema_hash(
                 &arrow_schema::Schema::empty(),
             )
             .unwrap(),
@@ -1222,7 +1222,7 @@ fn final_binding_requires_exact_ordered_staged_identities() {
             idempotency_token: IdempotencyToken::new(package_hash.as_str()).unwrap(),
         },
         schema_hash,
-        output_arrow_schema_hash: cdf_contract::canonical_arrow_schema_hash(
+        output_arrow_schema_hash: cdf_kernel::canonical_arrow_schema_hash(
             &arrow_schema::Schema::empty(),
         )
         .unwrap(),
@@ -1469,7 +1469,7 @@ fn staged_request_for_target(
             target: TargetName::new(target).unwrap(),
             disposition: WriteDisposition::Append,
             schema_hash,
-            output_arrow_schema_hash: cdf_contract::canonical_arrow_schema_hash(
+            output_arrow_schema_hash: cdf_kernel::canonical_arrow_schema_hash(
                 &arrow_schema::Schema::empty(),
             )
             .unwrap(),
@@ -1565,7 +1565,7 @@ fn test_final_binding(
             idempotency_token: IdempotencyToken::new(package_hash.as_str()).unwrap(),
         },
         schema_hash,
-        output_arrow_schema_hash: cdf_contract::canonical_arrow_schema_hash(
+        output_arrow_schema_hash: cdf_kernel::canonical_arrow_schema_hash(
             &arrow_schema::Schema::empty(),
         )
         .unwrap(),

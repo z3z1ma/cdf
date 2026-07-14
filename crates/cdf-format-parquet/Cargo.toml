@@ -10,7 +10,6 @@ description = "Native Parquet format driver for cdf."
 arrow-array = "59.1.0"
 arrow-schema = "59.1.0"
 bytes = "1.11.0"
-cdf-contract = { path = "../cdf-contract" }
 cdf-kernel = { path = "../cdf-kernel" }
 cdf-memory = { path = "../cdf-memory" }
 cdf-runtime = { path = "../cdf-runtime" }

@@ -49,6 +49,11 @@ fn runtime_graph_excludes_package_implementation_and_codecs() {
                 !packages.contains("tempfile"),
                 "cdf-runtime normal graph reaches forbidden package tempfile:\n{tree}"
             );
+            assert!(
+                packages.len() <= 67,
+                "cdf-runtime normal graph contains {} unique packages, above the 67-package ceiling:\n{tree}",
+                packages.len()
+            );
         }
     }
 }

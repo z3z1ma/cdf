@@ -3953,7 +3953,7 @@ where
         .authority
         .validate_for_resource(resource.descriptor())?;
     let effective_arrow_schema_hash =
-        cdf_contract::canonical_arrow_schema_hash(resource.schema().as_ref())?;
+        cdf_kernel::canonical_arrow_schema_hash(resource.schema().as_ref())?;
     if evidence.effective_arrow_schema_hash != effective_arrow_schema_hash {
         return Err(CdfError::data(format!(
             "serialized effective Arrow schema hash {} does not match execution resource schema {}",

@@ -1138,7 +1138,7 @@ fn stream_registered_format(
             let physical_schema = match physical_schema_authority.schema {
                 Some(schema) => {
                     let schema_hash =
-                        cdf_contract::canonical_arrow_schema_hash(schema.as_ref())?;
+                        cdf_kernel::canonical_arrow_schema_hash(schema.as_ref())?;
                     if let Some(planned_hash) = &physical_schema_authority.hash
                         && planned_hash != &schema_hash
                     {
@@ -1161,7 +1161,7 @@ fn stream_registered_format(
                             },
                         )
                         .await?;
-                    let observed_hash = cdf_contract::canonical_arrow_schema_hash(
+                    let observed_hash = cdf_kernel::canonical_arrow_schema_hash(
                         observation.arrow_schema.as_ref(),
                     )?;
                     if let Some(planned_hash) = &physical_schema_authority.hash
@@ -2745,7 +2745,6 @@ mod tests {
                 let schema = Self::schema();
                 Ok(cdf_runtime::PhysicalSchemaObservation {
                     identity: source.identity().clone(),
-                    observed_schema: cdf_contract::ObservedSchema::from_arrow(schema.as_ref()),
                     arrow_schema: schema,
                     sampled_bytes: 4,
                     sampled_records: 0,
@@ -2812,7 +2811,7 @@ mod tests {
                     cdf_kernel::BatchId::new("external-mock-batch")?,
                     request.resource_id,
                     request.partition_id,
-                    cdf_contract::canonical_arrow_schema_hash(request.physical_schema.as_ref())?,
+                    cdf_kernel::canonical_arrow_schema_hash(request.physical_schema.as_ref())?,
                     record_batch,
                 )?;
                 batch.header.source_position = request.source_position;

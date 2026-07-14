@@ -146,7 +146,7 @@ impl ActiveStagedIngress {
                     target: plan.target,
                     disposition: plan.disposition,
                     schema_hash: plan.schema_hash.clone(),
-                    output_arrow_schema_hash: cdf_contract::canonical_arrow_schema_hash(
+                    output_arrow_schema_hash: cdf_kernel::canonical_arrow_schema_hash(
                         &plan.output_schema,
                     )?,
                     merge_keys: plan.merge_keys.clone(),
@@ -701,8 +701,7 @@ where
                 ),
                 None => commit_package_through_staged_ingress(
                     runtime,
-                    package.reader(),
-                    package.verification(),
+                    &package,
                     &inputs,
                     &capabilities,
                     &selected_bulk_path,
@@ -866,14 +865,15 @@ impl cdf_runtime::DurableSegmentReader for PackageStagedSegmentReader {
 
 fn commit_package_through_staged_ingress(
     runtime: &mut dyn ProjectDestinationRuntime,
-    reader: &PackageReader,
-    verified: &VerifiedPackage,
+    package: &VerifiedPackageReader,
     inputs: &PackageReplayInputs,
     capabilities: &cdf_runtime::DestinationRuntimeCapabilities,
     bulk_path: &cdf_runtime::PreparedBulkPath,
     memory: Arc<dyn MemoryCoordinator>,
     hooks: &PackageReplayHooks<'_>,
 ) -> Result<cdf_runtime::DestinationCommitOutcome> {
+    let reader = package.reader();
+    let verified = package.verification();
     runtime.ensure_protocol_ready()?;
     let plan = runtime.protocol().plan_commit(&inputs.destination_commit)?;
     let destination_id = runtime.describe().destination_id;
@@ -886,7 +886,7 @@ fn commit_package_through_staged_ingress(
             target: inputs.destination_commit.target.clone(),
             disposition: inputs.destination_commit.disposition.clone(),
             schema_hash: inputs.schema_hash.clone(),
-            output_arrow_schema_hash: cdf_contract::canonical_arrow_schema_hash(
+            output_arrow_schema_hash: cdf_kernel::canonical_arrow_schema_hash(
                 output_schema.as_ref(),
             )?,
             merge_keys: inputs.merge_keys.clone(),

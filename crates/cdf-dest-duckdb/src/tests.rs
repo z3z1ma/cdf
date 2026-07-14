@@ -472,7 +472,7 @@ fn try_commit_current(
             target: request.commit.target.clone(),
             disposition: request.commit.disposition.clone(),
             schema_hash: request.schema_hash.clone(),
-            output_arrow_schema_hash: cdf_contract::canonical_arrow_schema_hash(
+            output_arrow_schema_hash: cdf_kernel::canonical_arrow_schema_hash(
                 output_schema.as_ref(),
             )?,
             merge_keys: request.merge_keys.clone(),

@@ -256,10 +256,7 @@ impl CompiledExpressionPlan {
         &self,
         bindings: impl IntoIterator<Item = (&'a str, &'a Expression, bool)>,
     ) -> Result<()> {
-        let bindings = bindings
-            .into_iter()
-            .map(|(source, expression, source_exact)| (source, expression, source_exact))
-            .collect::<Vec<_>>();
+        let bindings = bindings.into_iter().collect::<Vec<_>>();
         validate_filter_bindings("scan predicate", bindings, &self.predicates)
     }
 
