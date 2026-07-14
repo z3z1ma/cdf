@@ -52,6 +52,7 @@ sys.stdout.write(json.dumps({
 pub(crate) fn doctor(
     cli: &crate::args::Cli,
     execution: &cdf_runtime::ExecutionServices,
+    destinations: &cdf_runtime::DestinationRegistry,
 ) -> Result<CommandOutput, CliError> {
     let context = ProjectContext::load(cli.project.as_ref(), cli.env.as_deref())?;
     let mut checks = vec![
@@ -86,7 +87,9 @@ pub(crate) fn doctor(
 
     checks.push(python_check(&context));
     checks.extend(file_transport_checks(&context, execution));
-    checks.extend(destination_checks(context.destination_runtime()));
+    checks.extend(destination_checks(
+        context.destination_runtime(destinations),
+    ));
     checks.push(ledger_destination_drift_check(&context));
 
     let failed = checks

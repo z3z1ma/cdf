@@ -31,6 +31,7 @@ use super::{
 };
 
 pub(super) struct ResumeAttempt<'a> {
+    destinations: &'a cdf_runtime::DestinationRegistry,
     context: &'a ProjectContext,
     run_ledger: &'a SqliteRunLedger,
     snapshot: &'a RunLedgerSnapshot,
@@ -45,6 +46,7 @@ pub(super) struct ResumeAttempt<'a> {
 
 impl<'a> ResumeAttempt<'a> {
     pub(super) fn new(
+        destinations: &'a cdf_runtime::DestinationRegistry,
         context: &'a ProjectContext,
         run_ledger: &'a SqliteRunLedger,
         snapshot: &'a RunLedgerSnapshot,
@@ -62,6 +64,7 @@ impl<'a> ResumeAttempt<'a> {
         };
         let store = context.state_store()?;
         Ok(Self {
+            destinations,
             context,
             run_ledger,
             snapshot,
@@ -255,7 +258,13 @@ impl<'a> ResumeAttempt<'a> {
         &self,
         target: &cdf_kernel::TargetName,
     ) -> Result<Result<SelectedDestination, ResumeReport>, CliError> {
-        match SelectedDestination::from_context(self.context, "resume", target, self.execution) {
+        match SelectedDestination::from_context(
+            self.destinations,
+            self.context,
+            "resume",
+            target,
+            self.execution,
+        ) {
             Ok(destination) => Ok(Ok(destination)),
             Err(error) if error.not_supported => {
                 let report = self.fail_closed(

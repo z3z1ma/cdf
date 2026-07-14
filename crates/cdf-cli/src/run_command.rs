@@ -38,6 +38,7 @@ pub(crate) fn run(
     args: RunArgs,
     host: &cdf_engine::StandaloneExecutionHost,
     services: &cdf_runtime::ExecutionServices,
+    destinations: &cdf_runtime::DestinationRegistry,
 ) -> Result<CommandOutput, CliError> {
     if args.loop_mode {
         return Err(CliError::not_supported_with(
@@ -69,10 +70,16 @@ pub(crate) fn run(
         None
     };
     let explicit = resolved_run_args(args)?;
-    let prepared =
-        prepare_runtime_resource_for_cli(&context, &explicit.resource_id, false, Some(services))?;
+    let prepared = prepare_runtime_resource_for_cli(
+        destinations,
+        &context,
+        &explicit.resource_id,
+        false,
+        Some(services),
+    )?;
     let state_store_path = context.state_store_path()?;
     let resolved = resolve_selected_destination_with_services(
+        destinations,
         &context,
         &explicit.target,
         explicit.destination_uri.as_deref(),

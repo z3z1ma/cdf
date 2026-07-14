@@ -1,6 +1,6 @@
-Status: open
+Status: active
 Created: 2026-07-12
-Updated: 2026-07-12
+Updated: 2026-07-13
 Parent: .10x/tickets/2026-07-11-p0-dx3-generic-lock-doctor-replay.md
 Depends-On: .10x/tickets/done/2026-07-11-p0-dx2-driver-owned-adapters-composition.md
 
@@ -60,6 +60,9 @@ Thread the borrowed registry explicitly through command dispatch and every curre
 - 2026-07-12 (shaping): Source authority shows `builtin_destination_registry()` is rebuilt inside `destination_uri.rs`, `replay_command.rs`, and `destination_registry.rs` inspection helpers. `ProjectContext::destination_runtime` reaches the latter; `ResumeAttempt -> SelectedDestination -> resolve_selected_destination_with_services` reaches the former. Consequently a caller-registered fourth driver cannot reach real CLI resume even though project artifact recovery is generic.
 - 2026-07-12 (shaping): Selected explicit top-down borrowing as the smallest complete seam. Storing the registry in `ProjectContext` would mix configuration/state with runtime composition; a service locator/global would violate the active decision; a provider/factory trait would add a single-implementation abstraction and permit per-helper reconstruction. No product-semantic blocker remains.
 - 2026-07-12 (adversarial shaping review): Traced the active contract/decision through `lib.rs -> commands.rs` and all current consumers. Confirmed hidden builtin reconstruction in `destination_uri.rs`, `replay_command.rs`, and both artifact/runtime helpers in `destination_registry.rs`; confirmed `state recover` reuses replay destination construction and `ResumeAttempt -> SelectedDestination` reaches the builtin-only resolver. Tightened the ticket to name the complete propagation set, preserve the authorized `doctor_drift.rs` exception, forbid double parsing, and require separate real-CLI resume proofs for the no-receipt replay and durable-receipt recovery branches.
+- 2026-07-13 (execution): Made the ticket active and threaded one borrowed `DestinationRegistry` from parsed CLI dispatch through every generic destination consumer named in Scope, including deep validation, schema/contract lock updates, plan/preview discovery, run/backfill, replay/state recovery, doctor/inspect, and `ResumeAttempt -> SelectedDestination`. Deleted every helper-local builtin reconstruction; `ProjectContext` remains registry-agnostic.
+- 2026-07-13 (execution): Added the public `invoke_with_destination_registry` composition entry point. Production `invoke` parses once, constructs the builtin registry exactly once only after a successful parse, and enters the same parsed-command execution path. `CARGO_BUILD_JOBS=12 cargo check -p cdf-cli --lib -j12` and `cargo check -p cdf-cli --tests -j12` both passed. These checks prove the propagation compiles across library and test call sites; they do not yet prove the fourth-driver runtime behavior.
+- 2026-07-13 (execution): Re-ran the requested ingress naming audit. Live source and active records use only `DestinationIngress::{FinalizedPackage, StagedSegments}`, `FinalizedPackageIngress`, and `StagedSegmentIngress`; no `FinalizedDestinationRuntime`, `StagedDestinationRuntime`, or runtime-suffixed compatibility alias exists. No code change was necessary because the accepted naming had already landed without a legacy surface.
 
 ## Blockers
 

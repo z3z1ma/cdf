@@ -18,14 +18,20 @@ pub(super) struct SelectedDestination {
 
 impl SelectedDestination {
     pub(super) fn from_context(
+        destinations: &cdf_runtime::DestinationRegistry,
         context: &ProjectContext,
         command: &'static str,
         target: &TargetName,
         execution: &cdf_runtime::ExecutionServices,
     ) -> Result<Self, CliError> {
-        let resolved =
-            resolve_selected_destination_with_services(context, target, None, Some(execution))
-                .map_err(|error| resume_destination_resolution_error(context, error, command))?;
+        let resolved = resolve_selected_destination_with_services(
+            destinations,
+            context,
+            target,
+            None,
+            Some(execution),
+        )
+        .map_err(|error| resume_destination_resolution_error(context, error, command))?;
         Ok(Self {
             destination: Some(resolved.destination),
             secret_redaction: resolved.secret_redaction,

@@ -186,8 +186,11 @@ impl ProjectContext {
         SqliteCheckpointStore::open(self.state_store_path()?)
     }
 
-    pub fn destination_runtime(&self) -> DestinationRuntime {
-        crate::destination_registry::inspect_destination_runtime(self)
+    pub fn destination_runtime(
+        &self,
+        registry: &cdf_runtime::DestinationRegistry,
+    ) -> DestinationRuntime {
+        crate::destination_registry::inspect_destination_runtime(registry, self)
     }
 
     pub fn duckdb_destination_path(&self) -> Option<PathBuf> {

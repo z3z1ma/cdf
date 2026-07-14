@@ -36,6 +36,7 @@ pub(crate) fn add(
     cli: &Cli,
     args: AddArgs,
     execution: &cdf_runtime::ExecutionServices,
+    destinations: &cdf_runtime::DestinationRegistry,
 ) -> Result<CommandOutput, CliError> {
     let context =
         ProjectContext::load_for_command("add", cli.project.as_ref(), cli.env.as_deref())?;
@@ -64,7 +65,14 @@ pub(crate) fn add(
     let report = AddReport::from_parts(&context, &request, &proposed, &discovery.snapshot.artifact);
 
     if !args.dry_run {
-        write_add_artifacts(&context, &request, &proposed, &pinned_resource, &artifacts)?;
+        write_add_artifacts(
+            destinations,
+            &context,
+            &request,
+            &proposed,
+            &pinned_resource,
+            &artifacts,
+        )?;
     }
 
     CommandOutput::rendered("add", add_document(&report), report)
@@ -206,6 +214,7 @@ impl SecretProvider for AddSecretProvider<'_> {
 }
 
 fn write_add_artifacts(
+    destinations: &cdf_runtime::DestinationRegistry,
     context: &ProjectContext,
     request: &AddResourceRequest,
     proposed: &ProposedResource,
@@ -216,6 +225,7 @@ fn write_add_artifacts(
     resources.push(pinned_resource.clone());
     let updated_config = parse_cdf_toml(&proposed.project_toml)?;
     let destination_artifacts = crate::destination_registry::inspect_destination_artifacts(
+        destinations,
         context,
         &context.environment.destination,
     )?;

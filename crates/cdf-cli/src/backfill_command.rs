@@ -31,6 +31,7 @@ pub(crate) fn backfill(
         &cdf_engine::StandaloneExecutionHost,
         &cdf_runtime::ExecutionServices,
     )>,
+    destinations: &cdf_runtime::DestinationRegistry,
 ) -> Result<CommandOutput, CliError> {
     let context = ProjectContext::load(cli.project.as_ref(), cli.env.as_deref())?;
     let resource = context.resource(&args.resource_id)?;
@@ -68,6 +69,7 @@ pub(crate) fn backfill(
     let mut reports = Vec::with_capacity(plan.slices.len());
     for slice in &plan.slices {
         let report = execute_slice(
+            destinations,
             &context,
             &target,
             source,
@@ -98,6 +100,7 @@ pub(crate) fn backfill(
 }
 
 fn execute_slice(
+    destinations: &cdf_runtime::DestinationRegistry,
     context: &ProjectContext,
     target: &TargetName,
     source: ProjectRunSource<'_>,
@@ -111,6 +114,7 @@ fn execute_slice(
 ) -> Result<BackfillSliceExecutionReport, CliError> {
     let (host, services) = execution;
     let resolved = crate::destination_uri::resolve_selected_destination_with_services(
+        destinations,
         context,
         target,
         None,

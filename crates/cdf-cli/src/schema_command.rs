@@ -34,13 +34,14 @@ pub(crate) fn schema(
     cli: &Cli,
     command: SchemaCommand,
     execution: &cdf_runtime::ExecutionServices,
+    destination_registry: &cdf_runtime::DestinationRegistry,
 ) -> Result<CommandOutput, CliError> {
     match command {
         SchemaCommand::Discover(args) => discover(cli, args, execution),
-        SchemaCommand::Pin(args) => pin(cli, args, execution),
+        SchemaCommand::Pin(args) => pin(cli, args, execution, destination_registry),
         SchemaCommand::Show(args) => show(cli, args),
         SchemaCommand::Diff(args) => diff(cli, args, execution),
-        SchemaCommand::Promote(args) => promote(cli, args, execution),
+        SchemaCommand::Promote(args) => promote(cli, args, execution, destination_registry),
     }
 }
 
@@ -48,11 +49,12 @@ fn promote(
     cli: &Cli,
     args: SchemaPromoteArgs,
     execution: &cdf_runtime::ExecutionServices,
+    destination_registry: &cdf_runtime::DestinationRegistry,
 ) -> Result<CommandOutput, CliError> {
     let context = load_context(cli, "schema promote")?;
     let resource = context.resource(&args.resource_id)?;
     if args.execute {
-        return execute_promotion(&context, resource, &args, execution);
+        return execute_promotion(&context, resource, &args, execution, destination_registry);
     }
     let reference = pinned_snapshot_reference(&context, resource)
         .ok_or_else(|| no_pinned_snapshot_error(&args.resource_id))?;
@@ -92,6 +94,7 @@ fn execute_promotion(
     resource: &CompiledResource,
     args: &SchemaPromoteArgs,
     execution: &cdf_runtime::ExecutionServices,
+    destination_registry: &cdf_runtime::DestinationRegistry,
 ) -> Result<CommandOutput, CliError> {
     let current_authority = context.lock_authority.as_ref().ok_or_else(|| {
         CdfError::contract("schema promote --execute requires an exact cdf.lock precondition")
@@ -162,6 +165,7 @@ fn execute_promotion(
     for target in &report.targets {
         let target_name = TargetName::new(target.target.clone())?;
         let resolved = resolve_selected_destination_with_services(
+            destination_registry,
             context,
             &target_name,
             None,
@@ -241,6 +245,7 @@ fn pin(
     cli: &Cli,
     args: SchemaResourceArgs,
     execution: &cdf_runtime::ExecutionServices,
+    destinations: &cdf_runtime::DestinationRegistry,
 ) -> Result<CommandOutput, CliError> {
     let context = load_context(cli, "schema pin")?;
     let resource = context.resource(&args.resource_id)?;
@@ -281,7 +286,7 @@ fn pin(
         },
         normalized_schema,
     );
-    let lockfile = update_lockfile(&context, &pinned_resource)?;
+    let lockfile = update_lockfile(destinations, &context, &pinned_resource)?;
     let status = match previous {
         Some(_) if unchanged => "unchanged",
         Some(previous) if previous.schema_hash == snapshot.schema_hash => "unchanged",
@@ -436,10 +441,12 @@ fn discover_artifacts_for_cli_resource(
 }
 
 fn update_lockfile(
+    destinations: &cdf_runtime::DestinationRegistry,
     context: &ProjectContext,
     pinned_resource: &CompiledResource,
 ) -> Result<SchemaLockfileWrite, CliError> {
     let destination_artifacts = crate::destination_registry::inspect_destination_artifacts(
+        destinations,
         context,
         &context.environment.destination,
     )?;

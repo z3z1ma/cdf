@@ -392,6 +392,7 @@ fn replay_report_ref(report: &PackageReplayReport) -> PreparedReplayReportRef<'_
 }
 
 pub(crate) fn build_replay_destination(
+    registry: &cdf_runtime::DestinationRegistry,
     context: &ProjectContext,
     args: PackageReplayDestinationArgs<'_>,
     inputs: &PackageReplayInputs,
@@ -401,10 +402,6 @@ pub(crate) fn build_replay_destination(
         .destination_uri
         .unwrap_or(context.environment.destination.as_str());
     let secret_provider = context.secret_provider();
-    let registry =
-        crate::destination_registry::builtin_destination_registry().map_err(|error| {
-            replay_destination_resolution_error(context, args.destination_uri, error, uri)
-        })?;
     let inspection_context =
         cdf_runtime::DestinationResolutionContext::for_project_inspection(&context.root)
             .with_environment_name(&context.environment.name)
@@ -602,9 +599,11 @@ pub(crate) fn replay_package(
     cli: &Cli,
     args: ReplayPackageArgs,
     execution: &cdf_runtime::ExecutionServices,
+    destinations: &cdf_runtime::DestinationRegistry,
 ) -> Result<CommandOutput, CliError> {
     let package = load_package_replay_context(cli, &args.package_dir)?;
     let mut replay_destination = build_replay_destination(
+        destinations,
         &package.project,
         PackageReplayDestinationArgs {
             destination_uri: args.destination_uri.as_deref(),

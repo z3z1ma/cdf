@@ -16,7 +16,11 @@ use crate::{
     },
 };
 
-pub(crate) fn inspect(cli: &Cli, args: InspectArgs) -> Result<CommandOutput, CliError> {
+pub(crate) fn inspect(
+    cli: &Cli,
+    args: InspectArgs,
+    destinations: &cdf_runtime::DestinationRegistry,
+) -> Result<CommandOutput, CliError> {
     match args.noun {
         InspectNoun::Package(path) => inspect_package(path),
         noun => {
@@ -64,7 +68,7 @@ pub(crate) fn inspect(cli: &Cli, args: InspectArgs) -> Result<CommandOutput, Cli
                     CommandOutput::rendered("inspect lock", inspect_lock_document(lock), lock)
                 }
                 InspectNoun::Destinations => {
-                    let runtime = context.destination_runtime();
+                    let runtime = context.destination_runtime(destinations);
                     let report = json!({
                             "environment_destination": context.environment.destination,
                             "runtime": runtime,

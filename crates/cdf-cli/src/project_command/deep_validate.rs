@@ -28,6 +28,7 @@ use crate::{
 pub(super) fn run(
     cli: &Cli,
     execution: &cdf_runtime::ExecutionServices,
+    destinations: &cdf_runtime::DestinationRegistry,
 ) -> Result<CommandOutput, CliError> {
     let context = ProjectContext::load_for_command(
         "validate --deep",
@@ -45,7 +46,11 @@ pub(super) fn run(
     let mut resources = Vec::with_capacity(context.resources.len());
     for (resource, origin) in context.resources.iter().zip(&context.resource_origins) {
         resources.push(deep_validate_resource(
-            &context, resource, origin, execution,
+            destinations,
+            &context,
+            resource,
+            origin,
+            execution,
         ));
     }
     let summary = DeepValidateSummary::from_resources(&resources);
@@ -65,6 +70,7 @@ pub(super) fn run(
 }
 
 fn deep_validate_resource(
+    destinations: &cdf_runtime::DestinationRegistry,
     context: &ProjectContext,
     resource: &CompiledResource,
     origin: &ProjectResourceOrigin,
@@ -85,7 +91,7 @@ fn deep_validate_resource(
     physical_schema_reconciliation_check(context, resource, execution, &mut diagnostics);
     let validation_program = validation_program_check(&working_resource, &mut diagnostics);
     let normalization = normalization_check(&working_resource, &mut diagnostics);
-    let destination = destination_check(context, &working_resource, &mut diagnostics);
+    let destination = destination_check(destinations, context, &working_resource, &mut diagnostics);
     let status = if diagnostics
         .iter()
         .any(|diagnostic| diagnostic.severity == "error")
@@ -368,6 +374,7 @@ fn normalization_check(
 }
 
 fn destination_check(
+    destinations: &cdf_runtime::DestinationRegistry,
     context: &ProjectContext,
     resource: &CompiledResource,
     diagnostics: &mut Vec<DeepValidateDiagnostic>,
@@ -386,7 +393,7 @@ fn destination_check(
             return DeepValidateDestinationReport::failed("target derivation failed");
         }
     };
-    let mut resolved = match resolve_environment_destination(context, &target) {
+    let mut resolved = match resolve_environment_destination(destinations, context, &target) {
         Ok(resolved) => resolved,
         Err(error) => {
             diagnostics.push(diagnostic(

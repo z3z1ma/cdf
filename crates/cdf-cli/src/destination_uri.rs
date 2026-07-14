@@ -5,7 +5,6 @@ use cdf_project::{
 
 use crate::{
     context::ProjectContext,
-    destination_registry::builtin_destination_registry,
     render::redaction::{redact_exact, redact_uri_userinfo},
     suggestions,
 };
@@ -22,21 +21,24 @@ pub(crate) struct EnvironmentDestination {
 }
 
 pub(crate) fn resolve_environment_destination(
+    registry: &cdf_runtime::DestinationRegistry,
     context: &ProjectContext,
     target: &TargetName,
 ) -> Result<EnvironmentDestination, CdfError> {
-    resolve_selected_destination_with_services(context, target, None, None)
+    resolve_selected_destination_with_services(registry, context, target, None, None)
 }
 
 pub(crate) fn resolve_selected_destination(
+    registry: &cdf_runtime::DestinationRegistry,
     context: &ProjectContext,
     target: &TargetName,
     destination_uri: Option<&str>,
 ) -> Result<EnvironmentDestination, CdfError> {
-    resolve_selected_destination_with_services(context, target, destination_uri, None)
+    resolve_selected_destination_with_services(registry, context, target, destination_uri, None)
 }
 
 pub(crate) fn resolve_selected_destination_with_services(
+    registry: &cdf_runtime::DestinationRegistry,
     context: &ProjectContext,
     target: &TargetName,
     destination_uri: Option<&str>,
@@ -51,8 +53,7 @@ pub(crate) fn resolve_selected_destination_with_services(
         destination_context = destination_context.with_execution_services(services);
     }
     let uri = destination_uri.unwrap_or(context.environment.destination.as_str());
-    let registry = builtin_destination_registry()?;
-    let destination = resolve_project_run_destination(&registry, uri, &destination_context)?;
+    let destination = resolve_project_run_destination(registry, uri, &destination_context)?;
     let secret_redaction = destination.secret_redaction().map(str::to_owned);
     Ok(EnvironmentDestination {
         destination,

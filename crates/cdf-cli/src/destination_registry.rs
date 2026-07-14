@@ -48,10 +48,10 @@ mod tests {
 }
 
 pub(crate) fn inspect_destination_artifacts(
+    registry: &DestinationRegistry,
     context: &ProjectContext,
     uri: &str,
 ) -> Result<Vec<cdf_kernel::DestinationSheetArtifact>> {
-    let registry = builtin_destination_registry()?;
     let resolution =
         cdf_runtime::DestinationResolutionContext::for_project_inspection(&context.root)
             .with_environment_name(&context.environment.name)
@@ -59,12 +59,11 @@ pub(crate) fn inspect_destination_artifacts(
     Ok(vec![registry.inspect(uri, &resolution)?.sheet_artifact])
 }
 
-pub(crate) fn inspect_destination_runtime(context: &ProjectContext) -> DestinationRuntime {
+pub(crate) fn inspect_destination_runtime(
+    registry: &DestinationRegistry,
+    context: &ProjectContext,
+) -> DestinationRuntime {
     let uri = &context.environment.destination;
-    let registry = match builtin_destination_registry() {
-        Ok(registry) => registry,
-        Err(error) => return unsupported_runtime(uri, error.to_string()),
-    };
     let resolution =
         cdf_runtime::DestinationResolutionContext::for_project_inspection(&context.root)
             .with_environment_name(&context.environment.name)

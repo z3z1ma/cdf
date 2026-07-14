@@ -47,6 +47,7 @@ pub(crate) fn plan_or_explain(
     args: ScanArgs,
     command: &'static str,
     execution: &cdf_runtime::ExecutionServices,
+    destinations: &cdf_runtime::DestinationRegistry,
 ) -> Result<CommandOutput, CliError> {
     let context = ProjectContext::load_for_command_with_locked_snapshots(
         command,
@@ -56,13 +57,19 @@ pub(crate) fn plan_or_explain(
     )?;
     let target = scan_target(&args)?;
     let prepared = prepare_runtime_resource_for_cli(
+        destinations,
         &context,
         &args.resource_id,
         args.no_pin,
         Some(execution),
     )?;
-    let resolved =
-        resolve_scan_destination(&context, &target, args.destination_uri.as_deref(), command)?;
+    let resolved = resolve_scan_destination(
+        destinations,
+        &context,
+        &target,
+        args.destination_uri.as_deref(),
+        command,
+    )?;
     let identifier_policy = resolved.destination.column_identifier_policy()?;
     let plan = build_engine_plan_for_resource(
         &prepared.resource,
@@ -92,13 +99,20 @@ pub(crate) fn preview(
     args: ScanArgs,
     host: &cdf_engine::StandaloneExecutionHost,
     execution: &cdf_runtime::ExecutionServices,
+    destinations: &cdf_runtime::DestinationRegistry,
 ) -> Result<CommandOutput, CliError> {
     let context =
         ProjectContext::load_for_command("preview", cli.project.as_ref(), cli.env.as_deref())?;
-    let prepared =
-        prepare_runtime_resource_for_cli(&context, &args.resource_id, false, Some(execution))?;
+    let prepared = prepare_runtime_resource_for_cli(
+        destinations,
+        &context,
+        &args.resource_id,
+        false,
+        Some(execution),
+    )?;
     let target = scan_target(&args)?;
     let resolved = resolve_scan_destination(
+        destinations,
         &context,
         &target,
         args.destination_uri.as_deref(),
@@ -125,6 +139,7 @@ pub(crate) fn preview(
 }
 
 pub(crate) fn prepare_discover_resource_for_cli(
+    destinations: &cdf_runtime::DestinationRegistry,
     context: &ProjectContext,
     resource: &CompiledResource,
     no_pin: bool,
@@ -228,6 +243,7 @@ pub(crate) fn prepare_discover_resource_for_cli(
         (false, false)
     } else {
         let destination_artifacts = crate::destination_registry::inspect_destination_artifacts(
+            destinations,
             context,
             &context.environment.destination,
         )?;
@@ -482,12 +498,13 @@ fn destination_plan_report(
 }
 
 fn resolve_scan_destination(
+    destinations: &cdf_runtime::DestinationRegistry,
     context: &ProjectContext,
     target: &TargetName,
     destination_uri: Option<&str>,
     command: &'static str,
 ) -> Result<EnvironmentDestination, CliError> {
-    resolve_selected_destination(context, target, destination_uri).map_err(|error| {
+    resolve_selected_destination(destinations, context, target, destination_uri).map_err(|error| {
         plan_destination_resolution_error(command, context, destination_uri, error)
     })
 }

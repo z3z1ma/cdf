@@ -11,11 +11,11 @@ use crate::{
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
-pub fn execute(cli: Cli) -> InvocationResult {
+pub fn execute(cli: Cli, destinations: &cdf_runtime::DestinationRegistry) -> InvocationResult {
     let json_mode = cli.json;
     let stdout_config = RenderConfig::detect(&cli.terminal, OutputChannel::Stdout);
     let stderr_config = RenderConfig::detect(&cli.terminal, OutputChannel::Stderr);
-    match dispatch(cli) {
+    match dispatch(cli, destinations) {
         Ok(output) => InvocationResult::from_output_with_configs(
             json_mode,
             &stdout_config,
@@ -26,7 +26,10 @@ pub fn execute(cli: Cli) -> InvocationResult {
     }
 }
 
-fn dispatch(cli: Cli) -> Result<CommandOutput, CliError> {
+fn dispatch(
+    cli: Cli,
+    destinations: &cdf_runtime::DestinationRegistry,
+) -> Result<CommandOutput, CliError> {
     let command = cli.command.clone();
     match command {
         Command::Help(help_text) => CommandOutput::rendered(
@@ -43,68 +46,77 @@ fn dispatch(cli: Cli) -> Result<CommandOutput, CliError> {
         Command::Add(args) => {
             let (_, services) =
                 cdf_engine::StandaloneExecutionHost::default_services(cdf_memory_budget()?)?;
-            crate::add_command::add(&cli, args, &services)
+            crate::add_command::add(&cli, args, &services, destinations)
         }
         Command::Validate(args) => {
             let (_, services) =
                 cdf_engine::StandaloneExecutionHost::default_services(cdf_memory_budget()?)?;
-            crate::project_command::validate(&cli, args, &services)
+            crate::project_command::validate(&cli, args, &services, destinations)
         }
         Command::Plan(args) => {
             let (_, services) =
                 cdf_engine::StandaloneExecutionHost::default_services(cdf_memory_budget()?)?;
-            crate::scan_command::plan_or_explain(&cli, args, "plan", &services)
+            crate::scan_command::plan_or_explain(&cli, args, "plan", &services, destinations)
         }
         Command::Explain(args) => {
             let (_, services) =
                 cdf_engine::StandaloneExecutionHost::default_services(cdf_memory_budget()?)?;
-            crate::scan_command::plan_or_explain(&cli, args, "explain", &services)
+            crate::scan_command::plan_or_explain(&cli, args, "explain", &services, destinations)
         }
         Command::Run(args) => {
             let managed = cdf_memory_budget()?;
             let (host, services) = cdf_engine::StandaloneExecutionHost::default_services(managed)?;
-            crate::run_command::run(&cli, args, host.as_ref(), &services)
+            crate::run_command::run(&cli, args, host.as_ref(), &services, destinations)
         }
         Command::Preview(args) => {
             let (host, services) =
                 cdf_engine::StandaloneExecutionHost::default_services(cdf_memory_budget()?)?;
-            crate::scan_command::preview(&cli, args, host.as_ref(), &services)
+            crate::scan_command::preview(&cli, args, host.as_ref(), &services, destinations)
         }
         Command::Sql(args) => crate::sql_command::sql(&cli, args),
-        Command::Inspect(args) => crate::inspect_command::inspect(&cli, args),
+        Command::Inspect(args) => crate::inspect_command::inspect(&cli, args, destinations),
         Command::DiffSchema => crate::project_command::diff_schema(&cli),
         Command::Schema(command) => {
             let (_, services) =
                 cdf_engine::StandaloneExecutionHost::default_services(cdf_memory_budget()?)?;
-            crate::schema_command::schema(&cli, command, &services)
+            crate::schema_command::schema(&cli, command, &services, destinations)
         }
-        Command::Contract(command) => crate::contract_command::contract(&cli, command),
+        Command::Contract(command) => {
+            crate::contract_command::contract(&cli, command, destinations)
+        }
         Command::State(command) => {
             let (_, services) =
                 cdf_engine::StandaloneExecutionHost::default_services(cdf_memory_budget()?)?;
-            crate::state_command::state(&cli, command, &services)
+            crate::state_command::state(&cli, command, &services, destinations)
         }
         Command::Resume(args) => {
             let (_, services) =
                 cdf_engine::StandaloneExecutionHost::default_services(cdf_memory_budget()?)?;
-            crate::resume_command::resume(&cli, args, &services)
+            crate::resume_command::resume(&cli, args, &services, destinations)
         }
         Command::ReplayPackage(args) => {
             let (_, services) =
                 cdf_engine::StandaloneExecutionHost::default_services(cdf_memory_budget()?)?;
-            crate::replay_command::replay_package(&cli, args, &services)
+            crate::replay_command::replay_package(&cli, args, &services, destinations)
         }
         Command::Backfill(args) if args.execute => {
             let (host, services) =
                 cdf_engine::StandaloneExecutionHost::default_services(cdf_memory_budget()?)?;
-            crate::backfill_command::backfill(&cli, args, Some((host.as_ref(), &services)))
+            crate::backfill_command::backfill(
+                &cli,
+                args,
+                Some((host.as_ref(), &services)),
+                destinations,
+            )
         }
-        Command::Backfill(args) => crate::backfill_command::backfill(&cli, args, None),
+        Command::Backfill(args) => {
+            crate::backfill_command::backfill(&cli, args, None, destinations)
+        }
         Command::Package(command) => crate::package_command::package(&cli, command),
         Command::Doctor => {
             let (_, services) =
                 cdf_engine::StandaloneExecutionHost::default_services(cdf_memory_budget()?)?;
-            crate::doctor_command::doctor(&cli, &services)
+            crate::doctor_command::doctor(&cli, &services, destinations)
         }
         Command::Status => crate::status_command::status(&cli),
     }

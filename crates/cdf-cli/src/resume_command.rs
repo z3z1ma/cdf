@@ -27,6 +27,7 @@ pub(crate) fn resume(
     cli: &Cli,
     args: ResumeArgs,
     execution: &cdf_runtime::ExecutionServices,
+    destinations: &cdf_runtime::DestinationRegistry,
 ) -> Result<CommandOutput, CliError> {
     let context = ProjectContext::load(cli.project.as_ref(), cli.env.as_deref())?;
     let state_path = context.state_store_path()?;
@@ -59,6 +60,7 @@ pub(crate) fn resume(
         },
     };
     resume_run(
+        destinations,
         &context,
         &state_path,
         run_id,
@@ -69,6 +71,7 @@ pub(crate) fn resume(
 }
 
 fn resume_run(
+    destinations: &cdf_runtime::DestinationRegistry,
     context: &ProjectContext,
     state_path: &std::path::Path,
     run_id: RunId,
@@ -90,7 +93,14 @@ fn resume_run(
             let _ = sink.try_emit(event);
         }
     }
-    let attempt = ResumeAttempt::new(context, &run_ledger, &snapshot, event_sink, execution)?;
+    let attempt = ResumeAttempt::new(
+        destinations,
+        context,
+        &run_ledger,
+        &snapshot,
+        event_sink,
+        execution,
+    )?;
     let outcome = attempt.execute();
     match outcome {
         Ok(report) => finish_resume_report(report, progress.map(|progress| progress.snapshot())),

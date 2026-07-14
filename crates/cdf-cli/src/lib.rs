@@ -45,7 +45,22 @@ pub fn invoke(args: impl IntoIterator<Item = OsString>) -> InvocationResult {
     let args = args.into_iter().collect::<Vec<_>>();
     let json_mode = args.iter().any(|arg| arg == "--json");
     match args::Cli::parse(args) {
-        Ok(cli) => commands::execute(cli),
+        Ok(cli) => match destination_registry::builtin_destination_registry() {
+            Ok(registry) => commands::execute(cli, &registry),
+            Err(error) => output::InvocationResult::from_error(json_mode, error.into()),
+        },
+        Err(error) => output::InvocationResult::from_error(json_mode, error),
+    }
+}
+
+pub fn invoke_with_destination_registry(
+    args: impl IntoIterator<Item = OsString>,
+    registry: &cdf_runtime::DestinationRegistry,
+) -> InvocationResult {
+    let args = args.into_iter().collect::<Vec<_>>();
+    let json_mode = args.iter().any(|arg| arg == "--json");
+    match args::Cli::parse(args) {
+        Ok(cli) => commands::execute(cli, registry),
         Err(error) => output::InvocationResult::from_error(json_mode, error),
     }
 }

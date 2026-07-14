@@ -72,6 +72,10 @@ fn test_execution_services() -> cdf_runtime::ExecutionServices {
         .clone()
 }
 
+fn test_destination_registry() -> cdf_runtime::DestinationRegistry {
+    crate::destination_registry::builtin_destination_registry().unwrap()
+}
+
 const PROJECT: &str = r#"
 [project]
 name = "cli_test"
@@ -386,7 +390,8 @@ fn progress_enabled_human_commands_route_through_progress_renderer() {
                 "let progress = human_progress_sink(json_mode, terminal);",
                 "let event_sink = progress.as_ref().map(|sink| sink as &dyn RunEventSink);",
                 "sink.try_emit(event)",
-                "ResumeAttempt::new(context, &run_ledger, &snapshot, event_sink)?",
+                "ResumeAttempt::new(",
+                "destinations,",
                 "finish_resume_report(report, progress.map(|progress| progress.snapshot()))",
             ],
         ),
@@ -399,7 +404,8 @@ fn progress_enabled_human_commands_route_through_progress_renderer() {
             &[
                 "let progress = human_progress_sink(cli.json, &cli.terminal);",
                 "let event_sink = progress.as_ref().map(|sink| sink as &dyn RunEventSink);",
-                "execute_slice(&context, &target, source, &pipeline_id, slice, event_sink)",
+                "execute_slice(",
+                "destinations,",
                 "progress.as_ref().map(|progress| progress.snapshot())",
                 "CommandOutput::rendered_with_progress(",
             ],
@@ -2071,6 +2077,7 @@ fn plan_human_rich_render_uses_glyphs_color_and_operator_panels() {
         },
         "plan",
         &services,
+        &test_destination_registry(),
     )
     .unwrap();
     let result = render_rich(output);
@@ -2310,6 +2317,7 @@ fn backfill_human_rich_render_uses_plan_panels_and_slice_table() {
             slice_size: Some(10),
         },
         None,
+        &test_destination_registry(),
     )
     .unwrap();
     let result = render_rich(output);
@@ -4177,6 +4185,7 @@ fn schema_promote_multi_target_uses_canonical_checkpoint_chain_and_exact_publica
         .iter()
         .map(|target| {
             crate::destination_uri::resolve_environment_destination(
+                &test_destination_registry(),
                 &context,
                 &TargetName::new(target.target.clone()).unwrap(),
             )
@@ -4310,10 +4319,13 @@ fn schema_promote_execute_recovers_every_persisted_crash_boundary() {
         let context = crate::context::ProjectContext::load(Some(&project.root), None).unwrap();
         let resource = context.resource("local.events").unwrap();
         let target = TargetName::new(plan.targets[0].target.clone()).unwrap();
-        let destination =
-            crate::destination_uri::resolve_environment_destination(&context, &target)
-                .unwrap()
-                .destination;
+        let destination = crate::destination_uri::resolve_environment_destination(
+            &test_destination_registry(),
+            &context,
+            &target,
+        )
+        .unwrap()
+        .destination;
         let state_path = context.state_store_path().unwrap();
         let settlement_store = SqlitePromotionSettlementStore::open(&state_path).unwrap();
         let run_ledger = SqliteRunLedger::open(&state_path).unwrap();
@@ -4544,10 +4556,13 @@ fn schema_promote_rejects_tampered_staged_and_correction_authority_before_mutati
         let context = crate::context::ProjectContext::load(Some(&project.root), None).unwrap();
         let resource = context.resource("local.events").unwrap();
         let target = TargetName::new(plan.targets[0].target.clone()).unwrap();
-        let destination =
-            crate::destination_uri::resolve_environment_destination(&context, &target)
-                .unwrap()
-                .destination;
+        let destination = crate::destination_uri::resolve_environment_destination(
+            &test_destination_registry(),
+            &context,
+            &target,
+        )
+        .unwrap()
+        .destination;
         let state_path = context.state_store_path().unwrap();
         let settlement_store = SqlitePromotionSettlementStore::open(&state_path).unwrap();
         let run_ledger = SqliteRunLedger::open(&state_path).unwrap();
@@ -4671,9 +4686,13 @@ fn schema_promote_api_rejects_divergent_caller_lock_before_mutation() {
     let context = crate::context::ProjectContext::load(Some(&project.root), None).unwrap();
     let resource = context.resource("local.events").unwrap();
     let target = TargetName::new(plan.targets[0].target.clone()).unwrap();
-    let destination = crate::destination_uri::resolve_environment_destination(&context, &target)
-        .unwrap()
-        .destination;
+    let destination = crate::destination_uri::resolve_environment_destination(
+        &test_destination_registry(),
+        &context,
+        &target,
+    )
+    .unwrap()
+    .destination;
     let state_path = context.state_store_path().unwrap();
     let settlement_store = SqlitePromotionSettlementStore::open(&state_path).unwrap();
     let run_ledger = SqliteRunLedger::open(&state_path).unwrap();
@@ -4758,10 +4777,13 @@ fn schema_promote_rejects_semantically_rebuilt_correction_packages_without_sourc
         let context = crate::context::ProjectContext::load(Some(&project.root), None).unwrap();
         let resource = context.resource("local.events").unwrap();
         let target = TargetName::new(plan.targets[0].target.clone()).unwrap();
-        let destination =
-            crate::destination_uri::resolve_environment_destination(&context, &target)
-                .unwrap()
-                .destination;
+        let destination = crate::destination_uri::resolve_environment_destination(
+            &test_destination_registry(),
+            &context,
+            &target,
+        )
+        .unwrap()
+        .destination;
         let state_path = context.state_store_path().unwrap();
         let settlement_store = SqlitePromotionSettlementStore::open(&state_path).unwrap();
         let run_ledger = SqliteRunLedger::open(&state_path).unwrap();
@@ -7921,6 +7943,7 @@ fn run_human_rich_render_uses_checkpoint_gate_panel() {
         },
         host.as_ref(),
         &services,
+        &test_destination_registry(),
     )
     .unwrap();
     let result = render_rich(output);
@@ -8500,6 +8523,7 @@ fn resume_human_rich_render_uses_recovery_and_artifact_panels() {
             run_id: Some(run_id.to_string()),
         },
         &test_execution_services(),
+        &test_destination_registry(),
     )
     .unwrap();
     let result = render_rich(output);
@@ -10598,6 +10622,7 @@ fn replay_package_human_rich_render_uses_duplicate_receipt_checkpoint_panels() {
             merge_dedup: None,
         },
         &test_execution_services(),
+        &test_destination_registry(),
     )
     .unwrap();
     let result = render_rich(output);
@@ -13083,6 +13108,7 @@ fn state_show_human_rich_render_uses_scope_and_head_panels() {
             scope: vec!["kind=resource".to_owned()],
         }),
         &test_execution_services(),
+        &test_destination_registry(),
     )
     .unwrap();
     let result = render_rich(output);

@@ -122,6 +122,7 @@ pub(crate) fn build_project_resource_for_inspection(
 }
 
 pub(crate) fn prepare_runtime_resource_for_cli(
+    destinations: &cdf_runtime::DestinationRegistry,
     context: &ProjectContext,
     resource_id: &str,
     no_pin: bool,
@@ -135,7 +136,11 @@ pub(crate) fn prepare_runtime_resource_for_cli(
     }
     let compiled = context.resource(resource_id)?;
     let prepared = crate::scan_command::prepare_discover_resource_for_cli(
-        context, compiled, no_pin, execution,
+        destinations,
+        context,
+        compiled,
+        no_pin,
+        execution,
     )?;
     Ok(PreparedRuntimeResourceForCli {
         resource: build_project_run_resource(context, &prepared.resource, execution)?,

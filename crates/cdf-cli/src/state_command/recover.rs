@@ -23,12 +23,14 @@ pub(super) fn recover(
     cli: &Cli,
     args: StateRecoverArgs,
     execution: &cdf_runtime::ExecutionServices,
+    destinations: &cdf_runtime::DestinationRegistry,
 ) -> Result<CommandOutput, CliError> {
     let package = load_package_replay_context(cli, &args.package_dir)?;
     let selected_receipt = select_recovery_receipt(&package.reader, args.receipt_id.as_deref())?;
     let selection = selected_receipt.selection;
     let selected_receipt_id = selected_receipt.receipt.receipt_id.to_string();
     let mut destination = build_replay_destination(
+        destinations,
         &package.project,
         PackageReplayDestinationArgs {
             destination_uri: Some(&args.destination_uri),

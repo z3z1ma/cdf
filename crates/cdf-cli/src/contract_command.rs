@@ -17,7 +17,11 @@ use crate::{
     },
 };
 
-pub(crate) fn contract(cli: &Cli, command: ContractCommand) -> Result<CommandOutput, CliError> {
+pub(crate) fn contract(
+    cli: &Cli,
+    command: ContractCommand,
+    destinations: &cdf_runtime::DestinationRegistry,
+) -> Result<CommandOutput, CliError> {
     match command {
         ContractCommand::Show { trust } => {
             let trust = trust.unwrap_or_else(|| "governed".to_owned());
@@ -41,14 +45,19 @@ pub(crate) fn contract(cli: &Cli, command: ContractCommand) -> Result<CommandOut
             };
             CommandOutput::rendered("contract show", report.render_document(), report)
         }
-        ContractCommand::Freeze { contract } => freeze(cli, contract),
+        ContractCommand::Freeze { contract } => freeze(cli, contract, destinations),
         ContractCommand::Test { contract } => test(cli, contract),
     }
 }
 
-fn freeze(cli: &Cli, selector: Option<String>) -> Result<CommandOutput, CliError> {
+fn freeze(
+    cli: &Cli,
+    selector: Option<String>,
+    destinations: &cdf_runtime::DestinationRegistry,
+) -> Result<CommandOutput, CliError> {
     let context = ProjectContext::load(cli.project.as_ref(), cli.env.as_deref())?;
     let destination_artifacts = crate::destination_registry::inspect_destination_artifacts(
+        destinations,
         &context,
         &context.environment.destination,
     )?;

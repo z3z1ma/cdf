@@ -55,9 +55,10 @@ pub(crate) fn validate(
     cli: &Cli,
     args: ValidateArgs,
     execution: &cdf_runtime::ExecutionServices,
+    destinations: &cdf_runtime::DestinationRegistry,
 ) -> Result<CommandOutput, CliError> {
     if args.deep {
-        return deep_validate::run(cli, execution);
+        return deep_validate::run(cli, execution, destinations);
     }
     let context =
         ProjectContext::load_for_command("validate", cli.project.as_ref(), cli.env.as_deref())?;
