@@ -179,9 +179,7 @@ pub fn discover_local_binary_schema_bounded(
         .map(|driver| driver.descriptor().transform_id.clone());
     let needs_spool = transform_id.is_some()
         && driver.descriptor().source_access != cdf_runtime::FormatSourceAccess::Sequential;
-    let retain_sequential = driver.descriptor().source_access
-        == cdf_runtime::FormatSourceAccess::Sequential
-        && driver.descriptor().discovery_kind == cdf_runtime::FormatDiscoveryKind::BoundedContent;
+    let retain_sequential = retains_sequential_discovery_payload(driver.descriptor());
     let extraction_content_hash =
         (needs_spool || retain_sequential).then(SourceContentDigest::default);
     let upstream = match extraction_content_hash.as_ref() {
@@ -371,9 +369,7 @@ pub fn discover_transport_binary_schema_bounded(
     let needs_spool = driver.descriptor().source_access
         != cdf_runtime::FormatSourceAccess::Sequential
         && (!upstream.capabilities().seekable || transform_id.is_some());
-    let retain_sequential = driver.descriptor().source_access
-        == cdf_runtime::FormatSourceAccess::Sequential
-        && driver.descriptor().discovery_kind == cdf_runtime::FormatDiscoveryKind::BoundedContent;
+    let retain_sequential = retains_sequential_discovery_payload(driver.descriptor());
     let extraction_content_hash = ((needs_spool || retain_sequential)
         && metadata.generation_strength() == GenerationStrength::Weak)
         .then(SourceContentDigest::default);
@@ -973,6 +969,15 @@ struct PreparedInput {
     extraction_content_hash: Option<SourceContentDigest>,
     hash_sweep_source: Option<Arc<dyn ByteSource>>,
     payload_retention: Option<PayloadRetention>,
+}
+
+fn retains_sequential_discovery_payload(descriptor: &cdf_runtime::FormatDriverDescriptor) -> bool {
+    descriptor.source_access == cdf_runtime::FormatSourceAccess::Sequential
+        && matches!(
+            descriptor.discovery_kind,
+            cdf_runtime::FormatDiscoveryKind::BoundedContent
+                | cdf_runtime::FormatDiscoveryKind::FullContent
+        )
 }
 
 struct PreparedFilePayload {
@@ -4709,6 +4714,21 @@ mod tests {
             0
         );
         assert_eq!(dependencies.execution().spill().snapshot().current_bytes, 0);
+    }
+
+    #[test]
+    fn bounded_and_full_content_drivers_share_the_retained_stream_handoff() {
+        let mut descriptor = ExternalMockFormat::new().descriptor().clone();
+        assert!(retains_sequential_discovery_payload(&descriptor));
+
+        descriptor.discovery_kind = cdf_runtime::FormatDiscoveryKind::FullContent;
+        assert!(retains_sequential_discovery_payload(&descriptor));
+
+        descriptor.discovery_kind = cdf_runtime::FormatDiscoveryKind::FormatMetadata;
+        assert!(!retains_sequential_discovery_payload(&descriptor));
+        descriptor.discovery_kind = cdf_runtime::FormatDiscoveryKind::FullContent;
+        descriptor.source_access = cdf_runtime::FormatSourceAccess::Adaptive;
+        assert!(!retains_sequential_discovery_payload(&descriptor));
     }
 
     #[test]

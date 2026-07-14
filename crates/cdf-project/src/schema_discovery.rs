@@ -928,6 +928,7 @@ fn discover_binary_resource_schema(
         cdf_runtime::FormatDiscoveryKind::BoundedContent => {
             DiscoveryWithinFileCoverage::BoundedContent
         }
+        cdf_runtime::FormatDiscoveryKind::FullContent => DiscoveryWithinFileCoverage::FullContent,
     };
     let within_file_coverage_label = match within_file_coverage {
         DiscoveryWithinFileCoverage::FormatMetadata => "format_metadata",

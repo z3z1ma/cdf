@@ -1,6 +1,6 @@
 Status: active
 Created: 2026-07-11
-Updated: 2026-07-13
+Updated: 2026-07-14
 Parent: .10x/tickets/2026-07-10-p3-ws-b-format-decode-engines.md
 Depends-On: .10x/tickets/2026-07-11-p3-b1-streaming-byte-transforms.md, .10x/tickets/2026-07-11-p0-fx1-native-format-extension-boundary.md, .10x/tickets/done/2026-07-10-p3-ws-l5-preoptimization-baseline.md, .10x/tickets/2026-07-07-rest-json-to-arrow-performance-triage.md
 
@@ -8,7 +8,7 @@ Depends-On: .10x/tickets/2026-07-11-p3-b1-streaming-byte-transforms.md, .10x/tic
 
 ## Scope
 
-Replace production DOM/full-byte JSON paths with streamed tape/SIMD-class physical Arrow decoding for NDJSON, JSON document selectors, and REST pages on the CPU executor; retain bounded DOM only for discovery flexibility.
+Replace production DOM/full-byte JSON paths with streamed tape/SIMD-class physical Arrow decoding for NDJSON, JSON document selectors, and REST pages on the CPU executor; retain bounded DOM only for bounded discovery flexibility, and implement explicit `full_content` discovery through constant-memory streaming inference rather than enlarging the bounded collector.
 
 ## Acceptance criteria
 
@@ -16,6 +16,7 @@ Replace production DOM/full-byte JSON paths with streamed tape/SIMD-class physic
 - REST I/O overlaps CPU decode without blocking the I/O executor.
 - Fatal windows publish no partial accepted batch; recoverable record errors preserve exact quarantine/residual evidence.
 - Depth/token/record limits, selector framing, random rechunking, and jobs are deterministic.
+- Explicit `full_content` discovery observes every record/value with fixed memory, records truthful full-content evidence, and crosses each selected source invocation once through SA3's retained-window/continuation handoff; bounded discovery remains the default.
 - JSON meets the 3x-current and aggregate envelope targets with dependency evidence.
 
 ## Evidence expectations
@@ -34,6 +35,7 @@ Depends on transforms, FX1, L5, and absorbs the REST triage.
 
 - `.10x/specs/native-enterprise-format-catalog.md`
 - `.10x/specs/native-format-codec-runtime.md`
+- `.10x/specs/schema-discovery-and-stream-admission.md`
 
 ## Progress and notes
 
@@ -42,6 +44,7 @@ Depends on transforms, FX1, L5, and absorbs the REST triage.
 - 2026-07-13: Current registry-resolved MVP drift conformance reproduced the open row-local parity blocker exactly: mixed NDJSON containing two declared UTF-8 `event_type` values and one numeric `event_type: 42` aborts `Decoder::flush` with `expected string got 42`. The superseded monolithic reader converted this mismatch into a pre-contract residual candidate so conforming values continued and the offending value was governed. The native streaming driver must regain that behavior without DOM/full-file buffering: fatal framing remains fail-closed, while record-local type mismatches emit exact residual/quarantine evidence and do not poison conforming records in the same input window.
 - 2026-07-13: Restored row-local drift semantics without reviving the DOM decoder. The Arrow tape fast path now runs strict so unknown/type-conflicting fields cannot disappear; it retains accounted source-chunk spans without copying and invokes a bounded, ledger-admitted raw-value recovery only for a failed window. Recovery replays conforming values, nulls only the typed projection backed by an exact residual candidate, preserves scalar types and raw nested JSON bytes, rejects duplicate fields, and records global source-row ordinals. `AccountedPhysicalBatch` now includes pre-contract evidence arrays in its retained-memory charge. The exact DuckDB drift fixture proceeds through package, quarantine, dedup, commit, receipt, and checkpoint; its stale v1 inline-dedup assertion was replaced with the v2 Parquet provenance reader.
 - 2026-07-14: SA2's final transport review confirmed file metadata now uses the shared asynchronous execution host, but the concrete Reqwest provider still lazily owns a blocking client solely for the synchronous REST surface. This ticket's existing requirement that REST I/O overlap CPU decode owns removing that final blocking client/runtime and making the provider async end to end; it must not survive B5 closure as a compatibility shim.
+- 2026-07-14: SA3 review found `full_content` was representable in discovery evidence but not by a format driver, while the current NDJSON discovery collector retains every sampled chunk and therefore cannot honestly scan giant inputs under constant memory. The runtime capability now admits `FormatDiscoveryKind::FullContent` and preserves one live source invocation; this ticket owns the remaining operator configuration and streaming inference engine. It MUST NOT implement full content by setting byte/record bounds to object size or materializing all chunks.
 
 ## Evidence
 

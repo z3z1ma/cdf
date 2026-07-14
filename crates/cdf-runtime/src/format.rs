@@ -431,6 +431,7 @@ pub enum FormatErrorIsolation {
 pub enum FormatDiscoveryKind {
     FormatMetadata,
     BoundedContent,
+    FullContent,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
