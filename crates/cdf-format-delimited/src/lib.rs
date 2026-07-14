@@ -43,6 +43,7 @@ impl CsvFormatDriver {
                 predicate_pushdown: PushdownFidelity::Unsupported,
                 source_access: cdf_runtime::FormatSourceAccess::Sequential,
                 decode_unit_policy: "csv_stream_v1".to_owned(),
+                error_isolation: cdf_runtime::FormatErrorIsolation::DecodeUnit,
                 minimum_working_set_bytes: 1024 * 1024,
                 maximum_working_set_bytes: 64 * 1024 * 1024,
             },

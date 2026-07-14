@@ -419,6 +419,13 @@ impl MagicSignature {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FormatErrorIsolation {
+    DecodeUnit,
+    Record,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FormatDriverDescriptor {
     pub format_id: FormatId,
@@ -433,6 +440,7 @@ pub struct FormatDriverDescriptor {
     pub predicate_pushdown: PushdownFidelity,
     pub source_access: FormatSourceAccess,
     pub decode_unit_policy: String,
+    pub error_isolation: FormatErrorIsolation,
     pub minimum_working_set_bytes: u64,
     pub maximum_working_set_bytes: u64,
 }
@@ -1228,6 +1236,7 @@ mod tests {
             predicate_pushdown: PushdownFidelity::Unsupported,
             source_access: FormatSourceAccess::Sequential,
             decode_unit_policy: "whole_object".to_owned(),
+            error_isolation: FormatErrorIsolation::DecodeUnit,
             minimum_working_set_bytes: 1,
             maximum_working_set_bytes: 1024,
         }))

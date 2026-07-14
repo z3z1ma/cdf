@@ -17,10 +17,10 @@ use cdf_kernel::{
 };
 use cdf_memory::{ConsumerKey, MemoryClass};
 use cdf_runtime::{
-    ByteSource, ByteTransformId, ByteTransformRegistry, CompiledFormatBinding,
+    ByteExtent, ByteSource, ByteTransformId, ByteTransformRegistry, CompiledFormatBinding,
     DecodePlanningRequest, ExecutionServices, FormatDetection, FormatDetectionConfidence,
-    FormatDiscoveryRequest, FormatDriver, FormatRegistry, PhysicalDecodeRequest, ReadOptions,
-    SequentialReadRequest, TransformSourceConfig, TransformedByteSource,
+    FormatDiscoveryRequest, FormatDriver, FormatProbe, FormatRegistry, PhysicalDecodeRequest,
+    ReadOptions, SequentialReadRequest, TransformSourceConfig, TransformedByteSource,
 };
 #[cfg(test)]
 use futures_util::StreamExt;
@@ -126,26 +126,38 @@ pub struct BoundedBinarySchemaProbe {
     pub probe_bytes_read: u64,
 }
 
+#[derive(Clone, Copy, Debug)]
+pub struct BoundedSchemaDiscoveryRequest<'a> {
+    pub resource_id: &'a ResourceId,
+    pub format: &'a FileFormatDeclaration,
+    pub format_declared: bool,
+    pub format_options: &'a serde_json::Value,
+    pub transform_name: &'a str,
+    pub max_metadata_bytes: u64,
+}
+
 pub fn discover_local_binary_schema_bounded(
     path: impl AsRef<Path>,
+    location: &str,
     dependencies: &FileRuntimeDependencies,
-    format: &FileFormatDeclaration,
-    format_options: &serde_json::Value,
-    transform_name: &str,
     initial_bytes_read: u64,
-    max_metadata_bytes: u64,
+    request: BoundedSchemaDiscoveryRequest<'_>,
 ) -> Result<BoundedBinarySchemaProbe> {
-    let path = path.as_ref();
-    let source_size = fs::metadata(path)
+    let path = path.as_ref().to_path_buf();
+    let source_size = fs::metadata(&path)
         .map_err(|error| CdfError::data(format!("stat {} for discovery: {error}", path.display())))?
         .len();
-    let driver = dependencies.formats().resolve(format.as_str())?;
+    let driver = dependencies.formats().resolve(request.format.as_str())?;
     let upstream: Arc<dyn ByteSource> = Arc::new(LocalByteSource::open(
-        path,
+        &path,
         dependencies.execution().memory(),
     )?);
-    let transform_id = (transform_name != "none")
-        .then(|| dependencies.transforms().resolve_name(transform_name))
+    let transform_id = (request.transform_name != "none")
+        .then(|| {
+            dependencies
+                .transforms()
+                .resolve_name(request.transform_name)
+        })
         .transpose()?
         .map(|driver| driver.descriptor().transform_id.clone());
     let source = match transform_id.as_ref() {
@@ -155,8 +167,15 @@ pub fn discover_local_binary_schema_bounded(
     let logical_source_identity = source.identity().clone();
     let needs_spool = transform_id.is_some()
         && driver.descriptor().source_access != cdf_runtime::FormatSourceAccess::Sequential;
-    let options = driver.canonical_options(format_options.clone())?;
+    let options = driver.canonical_options(request.format_options.clone())?;
     let discovery_memory = dependencies.execution().memory();
+    let confirmation = FormatConfirmationContext {
+        resource_id: request.resource_id.clone(),
+        location: location.to_owned(),
+        format_declared: request.format_declared,
+        transform_name: request.transform_name.to_owned(),
+    };
+    let max_metadata_bytes = request.max_metadata_bytes;
     let observation = dependencies.execution().run_io({
         let dependencies = dependencies.clone();
         let driver = Arc::clone(&driver);
@@ -182,6 +201,25 @@ pub fn discover_local_binary_schema_bounded(
             } else {
                 source
             };
+            let logical_size = match spool.as_ref() {
+                Some(spool) => fs::metadata(spool.path())
+                    .map_err(|error| {
+                        CdfError::data(format!(
+                            "stat transformed discovery spool for {}: {error}",
+                            confirmation.location
+                        ))
+                    })?
+                    .len(),
+                None => source_size,
+            };
+            let confirmation_bytes = confirm_registered_format(
+                source.as_ref(),
+                logical_size,
+                &driver,
+                dependencies.formats(),
+                &confirmation,
+            )
+            .await?;
             let observation = driver
                 .discover(
                     source,
@@ -194,16 +232,21 @@ pub fn discover_local_binary_schema_bounded(
                     },
                 )
                 .await?;
+            let probe_bytes_read = if spool.is_some() {
+                source_size
+            } else {
+                observation.sampled_bytes.saturating_add(confirmation_bytes)
+            };
             drop(spool);
-            Ok::<_, CdfError>(observation)
+            Ok::<_, CdfError>((observation, probe_bytes_read))
         }
     })?;
+    let (observation, probe_bytes_read) = observation;
     let schema = observation.arrow_schema;
     let schema_hash = cdf_kernel::canonical_arrow_schema_hash(schema.as_ref())?;
-    let inner_probe_bytes = observation.sampled_bytes;
     let mut source_identity = BTreeMap::from([
         ("stable_id".to_owned(), logical_source_identity.stable_id),
-        ("format".to_owned(), format.as_str().to_owned()),
+        ("format".to_owned(), request.format.as_str().to_owned()),
         (
             "format_driver_version".to_owned(),
             driver.descriptor().semantic_version.clone(),
@@ -219,26 +262,19 @@ pub fn discover_local_binary_schema_bounded(
         source_identity.insert("checksum".to_owned(), checksum);
     }
     source_identity.insert("path".to_owned(), path.to_string_lossy().into_owned());
-    source_identity.insert("compression".to_owned(), transform_name.to_owned());
+    source_identity.insert("compression".to_owned(), request.transform_name.to_owned());
     source_identity.insert("source_size_bytes".to_owned(), source_size.to_string());
     Ok(BoundedBinarySchemaProbe {
         schema,
         source_identity,
-        probe_bytes_read: initial_bytes_read.saturating_add(if transform_id.is_some() {
-            source_size.saturating_add(inner_probe_bytes)
-        } else {
-            inner_probe_bytes
-        }),
+        probe_bytes_read: initial_bytes_read.saturating_add(probe_bytes_read),
     })
 }
 
 pub fn discover_transport_binary_schema_bounded(
     resource: FileTransportResource,
     dependencies: &FileRuntimeDependencies,
-    format: &FileFormatDeclaration,
-    format_options: &serde_json::Value,
-    transform_name: &str,
-    max_metadata_bytes: u64,
+    request: BoundedSchemaDiscoveryRequest<'_>,
 ) -> Result<BoundedBinarySchemaProbe> {
     let metadata = dependencies.with_transport(|transport| transport.metadata(&resource))?;
     let size_bytes = metadata.size_bytes.ok_or_else(|| {
@@ -247,12 +283,16 @@ pub fn discover_transport_binary_schema_bounded(
             diagnostic_location(&metadata.location)
         ))
     })?;
-    let driver = dependencies.formats().resolve(format.as_str())?;
+    let driver = dependencies.formats().resolve(request.format.as_str())?;
     let upstream = dependencies.with_transport(|transport| {
         transport.open_byte_source(&resource, &metadata, dependencies.execution().memory())
     })?;
-    let transform_id = (transform_name != "none")
-        .then(|| dependencies.transforms().resolve_name(transform_name))
+    let transform_id = (request.transform_name != "none")
+        .then(|| {
+            dependencies
+                .transforms()
+                .resolve_name(request.transform_name)
+        })
         .transpose()?
         .map(|driver| driver.descriptor().transform_id.clone());
     let source = match transform_id.as_ref() {
@@ -265,7 +305,14 @@ pub fn discover_transport_binary_schema_bounded(
         && (!source.capabilities().seekable || transform_id.is_some());
     let execution = dependencies.execution().clone();
     let memory = execution.memory();
-    let options = driver.canonical_options(format_options.clone())?;
+    let options = driver.canonical_options(request.format_options.clone())?;
+    let confirmation = FormatConfirmationContext {
+        resource_id: request.resource_id.clone(),
+        location: diagnostic_location(&metadata.location),
+        format_declared: request.format_declared,
+        transform_name: request.transform_name.to_owned(),
+    };
+    let max_metadata_bytes = request.max_metadata_bytes;
     let observation = execution.run_io({
         let dependencies = dependencies.clone();
         let driver = Arc::clone(&driver);
@@ -290,6 +337,25 @@ pub fn discover_transport_binary_schema_bounded(
             } else {
                 source
             };
+            let logical_size = match spool.as_ref() {
+                Some(spool) => fs::metadata(spool.path())
+                    .map_err(|error| {
+                        CdfError::data(format!(
+                            "stat transformed discovery spool for {}: {error}",
+                            confirmation.location
+                        ))
+                    })?
+                    .len(),
+                None => size_bytes,
+            };
+            let confirmation_bytes = confirm_registered_format(
+                source.as_ref(),
+                logical_size,
+                &driver,
+                dependencies.formats(),
+                &confirmation,
+            )
+            .await?;
             let observation = driver
                 .discover(
                     source,
@@ -302,20 +368,26 @@ pub fn discover_transport_binary_schema_bounded(
                     },
                 )
                 .await?;
+            let probe_bytes_read = if spool.is_some() {
+                size_bytes
+            } else {
+                observation.sampled_bytes.saturating_add(confirmation_bytes)
+            };
             drop(spool);
-            Ok::<_, CdfError>(observation)
+            Ok::<_, CdfError>((observation, probe_bytes_read))
         }
     })?;
+    let (observation, probe_bytes_read) = observation;
     let schema_hash = cdf_kernel::canonical_arrow_schema_hash(observation.arrow_schema.as_ref())?;
     let mut source_identity = BTreeMap::from([
         ("stable_id".to_owned(), logical_source_identity.stable_id),
-        ("format".to_owned(), format.as_str().to_owned()),
+        ("format".to_owned(), request.format.as_str().to_owned()),
         (
             "format_driver_version".to_owned(),
             driver.descriptor().semantic_version.clone(),
         ),
         ("schema_hash".to_owned(), schema_hash.to_string()),
-        ("compression".to_owned(), transform_name.to_owned()),
+        ("compression".to_owned(), request.transform_name.to_owned()),
         ("source_size_bytes".to_owned(), size_bytes.to_string()),
         ("size_bytes".to_owned(), size_bytes.to_string()),
     ]);
@@ -323,7 +395,7 @@ pub fn discover_transport_binary_schema_bounded(
     let mut probe = BoundedBinarySchemaProbe {
         schema: observation.arrow_schema,
         source_identity,
-        probe_bytes_read: observation.sampled_bytes,
+        probe_bytes_read,
     };
     probe
         .source_identity
@@ -343,10 +415,120 @@ pub fn discover_transport_binary_schema_bounded(
             .source_identity
             .insert("sha256".to_owned(), sha256.to_owned());
     }
-    if transform_name == "none" {
-        probe.probe_bytes_read = size_bytes.saturating_add(probe.probe_bytes_read);
-    }
     Ok(probe)
+}
+
+struct FormatConfirmationContext {
+    resource_id: ResourceId,
+    location: String,
+    format_declared: bool,
+    transform_name: String,
+}
+
+async fn confirm_registered_format(
+    source: &dyn ByteSource,
+    source_size: u64,
+    driver: &Arc<dyn FormatDriver>,
+    formats: &FormatRegistry,
+    context: &FormatConfirmationContext,
+) -> Result<u64> {
+    if driver.descriptor().magic.is_empty() || source_size == 0 {
+        return Ok(0);
+    }
+    if !source.capabilities().exact_ranges {
+        return Err(CdfError::contract(format!(
+            "format `{}` requires bounded magic confirmation but byte source `{}` does not support exact ranges; spool the admitted stream before format discovery",
+            driver.descriptor().format_id,
+            source.identity().stable_id
+        )));
+    }
+    let descriptors = formats.descriptors();
+    let prefix_length = descriptors
+        .iter()
+        .map(|descriptor| u64::from(descriptor.detection_probe.prefix_bytes))
+        .max()
+        .unwrap_or(0)
+        .min(source_size);
+    let suffix_length = descriptors
+        .iter()
+        .map(|descriptor| u64::from(descriptor.detection_probe.suffix_bytes))
+        .max()
+        .unwrap_or(0)
+        .min(source_size);
+    let cancellation = cdf_runtime::RunCancellation::default();
+    let prefix = if prefix_length == 0 {
+        None
+    } else {
+        Some(
+            source
+                .read_exact_range(ByteExtent::new(0, prefix_length)?, cancellation.clone())
+                .await?,
+        )
+    };
+    let suffix = if suffix_length == 0 {
+        None
+    } else {
+        Some(
+            source
+                .read_exact_range(
+                    ByteExtent::new(source_size - suffix_length, suffix_length)?,
+                    cancellation,
+                )
+                .await?,
+        )
+    };
+    let extension = discovery_format_extension(&context.location, &context.transform_name);
+    let probe = FormatProbe {
+        extension: extension.clone(),
+        mime_type: None,
+        prefix: prefix
+            .as_ref()
+            .map(|bytes| bytes.payload().to_vec())
+            .unwrap_or_default(),
+        suffix: suffix
+            .as_ref()
+            .map(|bytes| bytes.payload().to_vec())
+            .unwrap_or_default(),
+    };
+    let selected_detection = driver.detect(&probe)?;
+    let strong_magic = formats.detect_strong_magic(&probe.prefix)?;
+    let strong_magic_id = strong_magic
+        .as_ref()
+        .map(|detected| detected.descriptor().format_id.as_str());
+    let selected_id = driver.descriptor().format_id.as_str();
+    if strong_magic_id.is_some_and(|detected| detected != selected_id)
+        || selected_detection.confidence == FormatDetectionConfidence::None
+    {
+        let declared = if context.format_declared {
+            selected_id
+        } else {
+            "<omitted>"
+        };
+        let magic = strong_magic_id.unwrap_or("none");
+        return Err(CdfError::data(format!(
+            "file format confirmation failed for resource `{}`, file `{}`: declared format `{declared}`, inferred format `{selected_id}`, extension signal `{}`, magic bytes signal `{magic}`; use `format = \"{selected_id}\"` only when the bytes match, or correct the file/extension",
+            context.resource_id,
+            context.location,
+            extension.as_deref().unwrap_or("none")
+        )));
+    }
+    Ok(prefix_length.saturating_add(suffix_length))
+}
+
+fn discovery_format_extension(location: &str, transform_name: &str) -> Option<String> {
+    let location = location
+        .split('#')
+        .next()
+        .unwrap_or(location)
+        .split('?')
+        .next()
+        .unwrap_or(location);
+    let mut pieces = location.rsplit('.');
+    let outer = pieces.next()?;
+    if transform_name == "none" {
+        return Some(outer.to_ascii_lowercase());
+    }
+    pieces.next().map(str::to_ascii_lowercase)
 }
 
 fn merge_discovery_evidence(
@@ -455,17 +637,20 @@ impl FileResource {
             effective_schema_runtime,
             compiled_format,
         } = definition;
-        let planned_driver = dependencies.formats().resolve(plan.format.as_str())?;
+        let planned_driver = dependencies
+            .formats()
+            .resolve(plan.resolved_format()?.as_str())?;
         if compiled_format.descriptor.format_id != planned_driver.descriptor().format_id {
             return Err(CdfError::contract(format!(
                 "compiled format `{}` does not match file plan format selection `{}`",
                 compiled_format.descriptor.format_id,
-                plan.format.as_str()
+                plan.resolved_format()?.as_str()
             )));
         }
         compiled_format.verify(dependencies.formats())?;
-        plan.format =
-            FileFormatDeclaration::named(compiled_format.descriptor.format_id.as_str().to_owned())?;
+        plan.format = Some(FileFormatDeclaration::named(
+            compiled_format.descriptor.format_id.as_str().to_owned(),
+        )?);
         Ok(Self {
             descriptor,
             schema,
@@ -1990,7 +2175,7 @@ fn resolve_local_format(
     compression: &CompressionEvidence,
     formats: &FormatRegistry,
 ) -> Result<(FormatEvidence, u64)> {
-    let driver = formats.resolve(plan.format.as_str())?;
+    let driver = formats.resolve(plan.resolved_format()?.as_str())?;
     let extension = format_extension(path_text, compression);
     validate_format_extension(resource_id, plan, path_text, extension.as_deref(), formats)?;
     Ok((deferred_format_evidence(driver.as_ref(), extension), 0))
@@ -2003,7 +2188,7 @@ fn resolve_transport_format(
     compression: &CompressionEvidence,
     formats: &FormatRegistry,
 ) -> Result<FormatEvidence> {
-    let driver = formats.resolve(plan.format.as_str())?;
+    let driver = formats.resolve(plan.resolved_format()?.as_str())?;
     let extension = format_extension(location, compression);
     let diagnostic = diagnostic_location(location);
     validate_format_extension(
@@ -2029,7 +2214,7 @@ fn validate_format_extension(
         }
         return Err(CdfError::data(format!(
             "file `{path_text}` for resource `{resource_id}` has no extension that can attest inferred format `{}`; declare `format` explicitly",
-            plan.format.as_str()
+            plan.resolved_format()?.as_str()
         )));
     };
     let Some(extension_driver) = formats.by_extension(extension) else {
@@ -2038,16 +2223,16 @@ fn validate_format_extension(
         }
         return Err(CdfError::data(format!(
             "file `{path_text}` for resource `{resource_id}` has unregistered extension `.{extension}` for inferred format `{}`; declare `format` explicitly or register the extension",
-            plan.format.as_str()
+            plan.resolved_format()?.as_str()
         )));
     };
-    if extension_driver.descriptor().format_id.as_str() == plan.format.as_str() {
+    if extension_driver.descriptor().format_id.as_str() == plan.resolved_format()?.as_str() {
         return Ok(());
     }
     Err(CdfError::data(format!(
         "file format mismatch for resource `{resource_id}`, file `{path_text}`: extension `.{extension}` selects `{}` but the compiled resource selects `{}`; change `format` or the file extension",
         extension_driver.descriptor().format_id,
-        plan.format.as_str(),
+        plan.resolved_format()?.as_str(),
     )))
 }
 
@@ -2461,6 +2646,7 @@ mod tests {
                     predicate_pushdown: cdf_kernel::PushdownFidelity::Unsupported,
                     source_access: cdf_runtime::FormatSourceAccess::Sequential,
                     decode_unit_policy: "whole_mock_file".to_owned(),
+                    error_isolation: cdf_runtime::FormatErrorIsolation::DecodeUnit,
                     minimum_working_set_bytes: 64,
                     maximum_working_set_bytes: 1024 * 1024,
                 },
@@ -2703,7 +2889,7 @@ mod tests {
             source: "external".to_owned(),
             root: root.path().to_string_lossy().into_owned(),
             glob: "events.mock.mt".to_owned(),
-            format: FileFormatDeclaration::named("external_mock").unwrap(),
+            format: Some(FileFormatDeclaration::named("external_mock").unwrap()),
             format_declared: true,
             format_options: serde_json::json!({}),
             compression: FileCompressionDeclaration::auto(),
@@ -2726,18 +2912,23 @@ mod tests {
         assert_eq!(resolved[0].compression.mode_name(), "external_passthrough");
         let probe = discover_local_binary_schema_bounded(
             &path,
+            "events.mock.mt",
             &dependencies,
-            &plan.format,
-            &plan.format_options,
-            "external_passthrough",
             0,
-            1024,
+            BoundedSchemaDiscoveryRequest {
+                resource_id: &resource_id,
+                format: plan.resolved_format().unwrap(),
+                format_declared: plan.format_declared,
+                format_options: &plan.format_options,
+                transform_name: "external_passthrough",
+                max_metadata_bytes: 1024,
+            },
         )
         .unwrap();
         assert_eq!(probe.schema.as_ref(), ExternalMockFormat::schema().as_ref());
         let stream = stream_file_match_blocking(
             &resolved[0],
-            &plan.format,
+            plan.resolved_format().unwrap(),
             ReadOptions::new(resource_id, PartitionId::new("external-file").unwrap()),
             &dependencies,
             PhysicalSchemaAuthority::default(),
@@ -2905,7 +3096,7 @@ mod tests {
             source: "events".to_owned(),
             root: root.path().to_string_lossy().into_owned(),
             glob: "events.parquet.gz".to_owned(),
-            format: FileFormatDeclaration::parquet(),
+            format: Some(FileFormatDeclaration::parquet()),
             format_declared: true,
             format_options: serde_json::json!({}),
             compression: FileCompressionDeclaration::auto(),
@@ -2929,12 +3120,17 @@ mod tests {
         assert_eq!(resolved[0].format.extension.as_deref(), Some("parquet"));
         let probe = discover_local_binary_schema_bounded(
             root.path().join("events.parquet.gz"),
+            "events.parquet.gz",
             &dependencies,
-            &FileFormatDeclaration::parquet(),
-            &plan.format_options,
-            "gzip",
             0,
-            64 * 1024 * 1024,
+            BoundedSchemaDiscoveryRequest {
+                resource_id: &resource_id,
+                format: plan.resolved_format().unwrap(),
+                format_declared: plan.format_declared,
+                format_options: &plan.format_options,
+                transform_name: "gzip",
+                max_metadata_bytes: 64 * 1024 * 1024,
+            },
         )
         .unwrap();
         assert_eq!(probe.schema.as_ref(), schema.as_ref());
@@ -2943,7 +3139,7 @@ mod tests {
         assert!(stable_id.ends_with("events.parquet.gz#transform:gzip"));
         let stream = stream_file_match_blocking(
             &resolved[0],
-            &plan.format,
+            plan.resolved_format().unwrap(),
             ReadOptions::new(resource_id, PartitionId::new("file-events").unwrap()),
             &dependencies,
             PhysicalSchemaAuthority::default(),
@@ -3001,7 +3197,7 @@ mod tests {
             source: "ipc".to_owned(),
             root: "s3://ipc/prod".to_owned(),
             glob: "events.arrow".to_owned(),
-            format: FileFormatDeclaration::arrow_ipc(),
+            format: Some(FileFormatDeclaration::arrow_ipc()),
             format_declared: true,
             format_options: serde_json::json!({}),
             compression: FileCompressionDeclaration::none(),
@@ -3023,7 +3219,7 @@ mod tests {
             .unwrap();
         let stream = stream_file_match_blocking(
             &resolved[0],
-            &plan.format,
+            plan.resolved_format().unwrap(),
             ReadOptions::new(resource_id, PartitionId::new("file-ipc").unwrap()),
             &dependencies,
             PhysicalSchemaAuthority::default(),
@@ -3067,7 +3263,7 @@ mod tests {
             source: "parquet".to_owned(),
             root: "s3://parquet/prod".to_owned(),
             glob: "events.parquet".to_owned(),
-            format: FileFormatDeclaration::parquet(),
+            format: Some(FileFormatDeclaration::parquet()),
             format_declared: true,
             format_options: serde_json::json!({}),
             compression: FileCompressionDeclaration::none(),
@@ -3098,7 +3294,7 @@ mod tests {
         ));
         let stream = stream_file_match_blocking(
             &resolved[0],
-            &plan.format,
+            plan.resolved_format().unwrap(),
             ReadOptions::new(resource_id, PartitionId::new("file-parquet").unwrap()),
             &dependencies,
             PhysicalSchemaAuthority::default(),
@@ -3147,7 +3343,7 @@ mod tests {
             source: "events".to_owned(),
             root: "s3://acme-events/prod".to_owned(),
             glob: "2026/**/*.parquet".to_owned(),
-            format: FileFormatDeclaration::parquet(),
+            format: Some(FileFormatDeclaration::parquet()),
             format_declared: true,
             format_options: serde_json::json!({}),
             compression: FileCompressionDeclaration::none(),
@@ -3198,7 +3394,7 @@ mod tests {
             source: "events".to_owned(),
             root: "s3://events/prod".to_owned(),
             glob: "events.ndjson.gz".to_owned(),
-            format: FileFormatDeclaration::ndjson(),
+            format: Some(FileFormatDeclaration::ndjson()),
             format_declared: true,
             format_options: serde_json::json!({}),
             compression: FileCompressionDeclaration::auto(),
@@ -3274,7 +3470,7 @@ mod tests {
             source: "events".to_owned(),
             root: "s3://acme-events/prod".to_owned(),
             glob: "2026/**/*.ndjson.gz".to_owned(),
-            format: FileFormatDeclaration::ndjson(),
+            format: Some(FileFormatDeclaration::ndjson()),
             format_declared: true,
             format_options: serde_json::json!({}),
             compression: FileCompressionDeclaration::auto(),
@@ -3296,7 +3492,7 @@ mod tests {
         let options = ReadOptions::new(resource_id, PartitionId::new("file-events").unwrap());
         let stream = stream_file_match_blocking(
             &resolved[0],
-            &plan.format,
+            plan.resolved_format().unwrap(),
             options.clone(),
             &dependencies,
             PhysicalSchemaAuthority::default(),
@@ -3326,7 +3522,7 @@ mod tests {
         let constrained = dependencies.with_max_spool_bytes(1).unwrap();
         let stream = stream_file_match_blocking(
             &resolved[0],
-            &plan.format,
+            plan.resolved_format().unwrap(),
             options,
             &constrained,
             PhysicalSchemaAuthority::default(),
@@ -3364,7 +3560,7 @@ mod tests {
             source: "events".to_owned(),
             root: root.path().to_string_lossy().into_owned(),
             glob: "events.csv".to_owned(),
-            format: FileFormatDeclaration::csv(),
+            format: Some(FileFormatDeclaration::csv()),
             format_declared: true,
             format_options: serde_json::json!({}),
             compression: FileCompressionDeclaration::none(),
@@ -3386,19 +3582,24 @@ mod tests {
             .unwrap();
         let probe = discover_local_binary_schema_bounded(
             &path,
+            "events.csv",
             &dependencies,
-            &plan.format,
-            &plan.format_options,
-            "none",
             0,
-            1024 * 1024,
+            BoundedSchemaDiscoveryRequest {
+                resource_id: &resource_id,
+                format: plan.resolved_format().unwrap(),
+                format_declared: plan.format_declared,
+                format_options: &plan.format_options,
+                transform_name: "none",
+                max_metadata_bytes: 1024 * 1024,
+            },
         )
         .unwrap();
         assert_eq!(probe.schema.field(0).data_type(), &DataType::Int64);
         assert_eq!(probe.schema.field(1).data_type(), &DataType::Utf8);
         let stream = stream_file_match_blocking(
             &resolved[0],
-            &plan.format,
+            plan.resolved_format().unwrap(),
             ReadOptions::new(resource_id, PartitionId::new("csv-file").unwrap()),
             &dependencies,
             PhysicalSchemaAuthority::default(),
@@ -3445,7 +3646,7 @@ mod tests {
             source: "events".to_owned(),
             root: root.path().to_string_lossy().into_owned(),
             glob: "events.json".to_owned(),
-            format: FileFormatDeclaration::json(),
+            format: Some(FileFormatDeclaration::json()),
             format_declared: true,
             format_options: serde_json::json!({}),
             compression: FileCompressionDeclaration::none(),
@@ -3467,19 +3668,24 @@ mod tests {
             .unwrap();
         let probe = discover_local_binary_schema_bounded(
             &path,
+            "events.json",
             &dependencies,
-            &plan.format,
-            &plan.format_options,
-            "none",
             0,
-            1024 * 1024,
+            BoundedSchemaDiscoveryRequest {
+                resource_id: &resource_id,
+                format: plan.resolved_format().unwrap(),
+                format_declared: plan.format_declared,
+                format_options: &plan.format_options,
+                transform_name: "none",
+                max_metadata_bytes: 1024 * 1024,
+            },
         )
         .unwrap();
         assert_eq!(probe.schema.field(0).data_type(), &DataType::Int64);
         assert_eq!(probe.schema.field(1).data_type(), &DataType::Utf8);
         let stream = stream_file_match_blocking(
             &resolved[0],
-            &plan.format,
+            plan.resolved_format().unwrap(),
             ReadOptions::new(resource_id, PartitionId::new("json-file").unwrap()),
             &dependencies,
             PhysicalSchemaAuthority::default(),

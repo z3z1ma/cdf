@@ -23,7 +23,7 @@ use cdf_kernel::{
     TrustLevel, TypePolicyAllowances, WriteDisposition, with_cdf_metadata,
 };
 use cdf_runtime::SourceCompileRequest;
-use cdf_source_files::{FileFormatDeclaration, FileResourcePlan};
+use cdf_source_files::FileResourcePlan;
 use cdf_source_rest::{RestResourcePlan, cursor_pushdown_value};
 use sha2::{Digest, Sha256};
 
@@ -560,28 +560,27 @@ fn build_source_compile_request(
                     serde_json::Value::String(credentials.clone()),
                 );
             }
+            let mut resource_options = BTreeMap::from([
+                (
+                    "glob".to_owned(),
+                    serde_json::Value::String(file_plan.glob.clone()),
+                ),
+                (
+                    "format_options".to_owned(),
+                    file_plan.format_options.clone(),
+                ),
+                (
+                    "compression".to_owned(),
+                    json_value(&file_plan.compression)?,
+                ),
+            ]);
+            if let Some(format) = &file_plan.format {
+                resource_options.insert("format".to_owned(), json_value(format)?);
+            }
             SourceCompileRequest {
                 source_kind: "files".to_owned(),
                 source_options,
-                resource_options: BTreeMap::from([
-                    (
-                        "glob".to_owned(),
-                        serde_json::Value::String(file_plan.glob.clone()),
-                    ),
-                    ("format".to_owned(), json_value(&file_plan.format)?),
-                    (
-                        "format_declared".to_owned(),
-                        serde_json::Value::Bool(file_plan.format_declared),
-                    ),
-                    (
-                        "format_options".to_owned(),
-                        file_plan.format_options.clone(),
-                    ),
-                    (
-                        "compression".to_owned(),
-                        json_value(&file_plan.compression)?,
-                    ),
-                ]),
+                resource_options,
                 descriptor: descriptor.clone(),
                 schema: schema.clone(),
                 type_policy_allowances,
@@ -802,12 +801,12 @@ fn compile_file_plan(
     } else {
         EgressAllowlist::from_hosts(source.egress_allowlist.clone())
     };
-    let (format, format_declared) = match &resource.format {
-        Some(format) => (format.clone(), true),
-        None => (infer_binary_file_format(resource_id, resource)?, false),
-    };
+    let format = resource.format.clone();
+    let format_declared = format.is_some();
     let compression = resource.compression.clone().unwrap_or_default();
-    format.validate()?;
+    if let Some(format) = &format {
+        format.validate()?;
+    }
     compression.validate()?;
     Ok(FileResourcePlan {
         source: source_name.to_owned(),
@@ -829,30 +828,6 @@ fn compile_file_plan(
             .transpose()?,
         allowlist,
     })
-}
-
-fn infer_binary_file_format(
-    resource_id: &str,
-    resource: &ResourceDeclaration,
-) -> Result<FileFormatDeclaration> {
-    let glob = resource
-        .glob
-        .as_deref()
-        .ok_or_else(|| CdfError::contract("file resources must declare glob before compilation"))?;
-    let normalized = glob.to_ascii_lowercase();
-    let inner = normalized
-        .rsplit_once('.')
-        .map_or(normalized.as_str(), |(inner, _)| inner);
-    if normalized.ends_with(".parquet") || inner.ends_with(".parquet") {
-        return Ok(FileFormatDeclaration::parquet());
-    }
-    if normalized.ends_with(".arrow") || inner.ends_with(".arrow") {
-        return Ok(FileFormatDeclaration::arrow_ipc());
-    }
-
-    Err(CdfError::contract(format!(
-        "file resource `{resource_id}` cannot infer a binary format from glob `{glob}`: only `.parquet` and `.arrow` inner extensions are inferred; add an explicit `format = \"...\"` declaration"
-    )))
 }
 
 fn compile_file_root(root: &str, project_root: Option<&Path>) -> Result<String> {

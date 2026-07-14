@@ -2319,10 +2319,14 @@ trust = "governed"
 }
 
 #[test]
-fn binary_format_is_inferred_only_from_record_backed_glob_extensions() {
-    for (glob, expected) in [
-        ("2026/**/*.parquet", FileFormatDeclaration::parquet()),
-        ("events.arrow", FileFormatDeclaration::arrow_ipc()),
+fn undeclared_format_remains_unresolved_until_registry_compilation() {
+    for glob in [
+        "2026/**/*.parquet",
+        "events.arrow",
+        "events.ndjson.gz",
+        "events",
+        "*.*",
+        "*.external",
     ] {
         let input = format!(
             r#"
@@ -2342,37 +2346,13 @@ trust = "governed"
         let CompiledResourcePlan::Files(plan) = resource.plan() else {
             panic!("resource must compile as files");
         };
-        assert_eq!(plan.format, expected);
+        assert_eq!(plan.format, None);
         assert!(!plan.format_declared);
         let source_request = resource
             .source_compile_request()
             .expect("neutral file source compile request");
         assert_eq!(source_request.source_kind, "files");
-        assert_eq!(
-            source_request.resource_options.get("format"),
-            Some(&serde_json::Value::String(expected.as_str().to_owned()))
-        );
-    }
-
-    for glob in ["events", "*.*", "*.ipc", "*.feather", "*.ndjson"] {
-        let input = format!(
-            r#"
-[source.local]
-kind = "files"
-root = "data"
-
-[resource.events]
-glob = "{glob}"
-write_disposition = "append"
-trust = "governed"
-"#
-        );
-        let error = compile_document(&parse_toml(&input).unwrap()).unwrap_err();
-        let message = error.to_string();
-        assert!(message.contains("file resource `local.events`"));
-        assert!(message.contains(glob));
-        assert!(message.contains("`format = \"...\"`"));
-        assert!(message.contains("`.parquet` and `.arrow`"));
+        assert!(!source_request.resource_options.contains_key("format"));
     }
 }
 

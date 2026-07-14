@@ -53,7 +53,7 @@ impl FileSourceDriver {
     {
         let option_schema = serde_json::json!({
             "source": ["source_name", "root", "auth", "credentials", "egress_allowlist"],
-            "resource": ["glob", "format", "format_declared", "compression"]
+            "resource": ["glob", "format", "compression"]
         });
         Ok(Self {
             descriptor: SourceDriverDescriptor {
@@ -85,14 +85,42 @@ impl SourceDriver for FileSourceDriver {
         let source: FileSourceOptions = decode_options("file source", request.source_options)?;
         let resource: FileResourceOptions =
             decode_options("file resource", request.resource_options)?;
-        let compiled_format = CompiledFormatBinding::compile(
-            self.formats.as_ref(),
-            resource.format.as_str(),
-            resource.format_options.clone(),
-        )?;
+        let unresolved = FileResourcePlan {
+            source: source.source_name.clone(),
+            root: source.root.clone(),
+            glob: resource.glob.clone(),
+            format: resource.format.clone(),
+            format_declared: resource.format.is_some(),
+            format_options: resource.format_options.clone(),
+            compression: resource.compression.clone(),
+            auth: source
+                .auth
+                .as_ref()
+                .map(AuthOptions::to_runtime)
+                .transpose()?,
+            credentials: source
+                .credentials
+                .as_ref()
+                .map(|value| SecretUri::new(value.clone()))
+                .transpose()?,
+            allowlist: if source.egress_allowlist.is_empty() {
+                EgressAllowlist::allow_any()
+            } else {
+                EgressAllowlist::from_hosts(source.egress_allowlist.clone())
+            },
+        };
+        let (resource_plan, compiled_format) =
+            compile_file_resource_plan(&unresolved, self.formats.as_ref())?;
+        let resolved_format = resource_plan.resolved_format()?.clone();
         let physical = FilePhysicalPlan {
             source,
-            resource,
+            resource: CompiledFileResourceOptions {
+                glob: resource_plan.glob,
+                format: resolved_format,
+                format_declared: resource_plan.format_declared,
+                format_options: resource_plan.format_options,
+                compression: resource_plan.compression,
+            },
             compiled_format,
         };
         physical.to_runtime_plan()?;
@@ -155,8 +183,8 @@ struct FileSourceOptions {
 #[serde(deny_unknown_fields)]
 struct FileResourceOptions {
     glob: String,
-    format: FileFormatDeclaration,
-    format_declared: bool,
+    #[serde(default)]
+    format: Option<FileFormatDeclaration>,
     #[serde(default = "empty_format_options")]
     format_options: serde_json::Value,
     compression: FileCompressionDeclaration,
@@ -177,8 +205,18 @@ enum AuthOptions {
 #[serde(deny_unknown_fields)]
 struct FilePhysicalPlan {
     source: FileSourceOptions,
-    resource: FileResourceOptions,
+    resource: CompiledFileResourceOptions,
     compiled_format: CompiledFormatBinding,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CompiledFileResourceOptions {
+    glob: String,
+    format: FileFormatDeclaration,
+    format_declared: bool,
+    format_options: serde_json::Value,
+    compression: FileCompressionDeclaration,
 }
 
 impl FilePhysicalPlan {
@@ -189,7 +227,7 @@ impl FilePhysicalPlan {
             source: self.source.source_name.clone(),
             root: self.source.root.clone(),
             glob: self.resource.glob.clone(),
-            format: self.resource.format.clone(),
+            format: Some(self.resource.format.clone()),
             format_declared: self.resource.format_declared,
             format_options: self.resource.format_options.clone(),
             compression: self.resource.compression.clone(),
@@ -212,6 +250,62 @@ impl FilePhysicalPlan {
             },
         })
     }
+}
+
+pub fn compile_file_resource_plan(
+    plan: &FileResourcePlan,
+    formats: &FormatRegistry,
+) -> Result<(FileResourcePlan, CompiledFormatBinding)> {
+    let (driver, format_declared) = match plan.format.as_ref() {
+        Some(format) => (formats.resolve(format.as_str())?, plan.format_declared),
+        None if plan.format_declared => {
+            return Err(CdfError::internal(
+                "file resource records an explicitly declared format without a format id",
+            ));
+        }
+        None => (infer_format_from_glob(&plan.glob, formats)?, false),
+    };
+    let compiled_format = CompiledFormatBinding::compile(
+        formats,
+        driver.descriptor().format_id.as_str(),
+        plan.format_options.clone(),
+    )?;
+    let mut resolved = plan.clone();
+    resolved.format = Some(FileFormatDeclaration::named(
+        compiled_format.descriptor.format_id.as_str().to_owned(),
+    )?);
+    resolved.format_declared = format_declared;
+    Ok((resolved, compiled_format))
+}
+
+fn infer_format_from_glob(
+    glob: &str,
+    formats: &FormatRegistry,
+) -> Result<Arc<dyn cdf_runtime::FormatDriver>> {
+    let file_pattern = glob.rsplit('/').next().unwrap_or(glob);
+    let extensions = file_pattern.split('.').skip(1).collect::<Vec<_>>();
+    for extension in extensions.into_iter().rev() {
+        let extension = extension.to_ascii_lowercase();
+        if extension.is_empty()
+            || extension
+                .bytes()
+                .any(|byte| !byte.is_ascii_alphanumeric() && byte != b'_' && byte != b'-')
+        {
+            continue;
+        }
+        if let Some(driver) = formats.by_extension(&extension) {
+            return Ok(driver);
+        }
+    }
+    let registered = formats
+        .descriptors()
+        .into_iter()
+        .map(|descriptor| descriptor.format_id.to_string())
+        .collect::<Vec<_>>()
+        .join(", ");
+    Err(CdfError::contract(format!(
+        "file glob `{glob}` does not contain an extension owned by an installed format driver; add `format = \"...\"` (registered: {registered})"
+    )))
 }
 
 impl AuthOptions {
@@ -311,13 +405,8 @@ mod tests {
             resource_options: BTreeMap::from([
                 (
                     "glob".to_owned(),
-                    serde_json::Value::String("*.parquet".to_owned()),
+                    serde_json::Value::String("*.parquet.gz".to_owned()),
                 ),
-                (
-                    "format".to_owned(),
-                    serde_json::Value::String("parquet".to_owned()),
-                ),
-                ("format_declared".to_owned(), serde_json::Value::Bool(false)),
                 ("format_options".to_owned(), serde_json::json!({})),
                 (
                     "compression".to_owned(),
@@ -393,5 +482,66 @@ mod tests {
                 .message
                 .contains("does not match the registered driver")
         );
+    }
+
+    #[test]
+    fn registry_descriptors_own_undeclared_format_inference() {
+        let formats = crate::test_format_registry();
+        let driver = FileSourceDriver::new(Arc::clone(&formats), |_, _| {
+            Err(CdfError::internal("compile-only test runtime factory"))
+        })
+        .unwrap();
+
+        let mut arrow = compile_request();
+        arrow.resource_options.insert(
+            "glob".to_owned(),
+            serde_json::Value::String("events.feather".to_owned()),
+        );
+        let arrow = driver.compile(arrow).unwrap();
+        let physical: FilePhysicalPlan = serde_json::from_value(arrow.physical_plan).unwrap();
+        assert_eq!(physical.resource.format.as_str(), "arrow_ipc");
+        assert!(!physical.resource.format_declared);
+
+        let mut explicit = compile_request();
+        explicit.resource_options.insert(
+            "format".to_owned(),
+            serde_json::Value::String("json".to_owned()),
+        );
+        let explicit = driver.compile(explicit).unwrap();
+        let physical: FilePhysicalPlan = serde_json::from_value(explicit.physical_plan).unwrap();
+        assert_eq!(physical.resource.format.as_str(), "json");
+        assert!(physical.resource.format_declared);
+
+        let mut unknown = compile_request();
+        unknown.resource_options.insert(
+            "glob".to_owned(),
+            serde_json::Value::String("events.unknown".to_owned()),
+        );
+        let error = driver.compile(unknown).unwrap_err();
+        assert!(error.message.contains("installed format driver"));
+        assert!(error.message.contains("format = \"...\""));
+    }
+
+    #[test]
+    fn recompiling_an_inferred_format_preserves_its_provenance() {
+        let formats = crate::test_format_registry();
+        let unresolved = FileResourcePlan {
+            source: "events".to_owned(),
+            root: "/tmp".to_owned(),
+            glob: "events.parquet".to_owned(),
+            format: None,
+            format_declared: false,
+            format_options: serde_json::json!({}),
+            compression: FileCompressionDeclaration::auto(),
+            auth: None,
+            credentials: None,
+            allowlist: EgressAllowlist::allow_any(),
+        };
+
+        let (compiled, _) = compile_file_resource_plan(&unresolved, formats.as_ref()).unwrap();
+        let (recompiled, _) = compile_file_resource_plan(&compiled, formats.as_ref()).unwrap();
+
+        assert_eq!(recompiled.resolved_format().unwrap().as_str(), "parquet");
+        assert!(!recompiled.format_declared);
     }
 }

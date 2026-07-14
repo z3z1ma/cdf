@@ -21,20 +21,20 @@ use cdf_contract::{
     normalize_arrow_schema, plan_aggregate_arrow_schema_join, reconcile_schema,
 };
 use cdf_declarative::{
-    CompiledResource, CompiledResourcePlan, FileFormatDeclaration, FileRuntimeDependencies,
-    FileTransportLocation, FileTransportResource, POSTGRES_CATALOG_DISCOVERY_PROBE,
-    discover_local_binary_schema_bounded, discover_postgres_table_catalog_schema,
-    discover_rest_sample_schema, discover_transport_binary_schema_bounded,
-    local_file_discovery_candidates, physical_arrow_schema_hash,
-    postgres_table_target_for_sql_plan,
+    BoundedSchemaDiscoveryRequest, CompiledResource, CompiledResourcePlan, FileFormatDeclaration,
+    FileRuntimeDependencies, FileTransportLocation, FileTransportResource,
+    POSTGRES_CATALOG_DISCOVERY_PROBE, discover_local_binary_schema_bounded,
+    discover_postgres_table_catalog_schema, discover_rest_sample_schema,
+    discover_transport_binary_schema_bounded, local_file_discovery_candidates,
+    physical_arrow_schema_hash, postgres_table_target_for_sql_plan,
 };
 use cdf_http::{HttpTransport, SecretProvider};
 use cdf_kernel::{
     CdfError, DISCOVERY_MANIFEST_HASH_METADATA_KEY, DISCOVERY_MANIFEST_PATH_METADATA_KEY,
     DiscoveryCoverageEvidence, DiscoveryExecutorBudgetEvidence, EffectiveSchemaCatalogEntry,
     EffectiveSchemaEvidence, EffectiveSchemaObservationEvidence, EffectiveSchemaRuntime,
-    ResourceDescriptor, ResourceStream, Result, ScanRequest, SchemaBaselineReference, SchemaHash,
-    SchemaObservationFieldQuarantine, SchemaObservationPolicy, SchemaSource,
+    ResourceDescriptor, ResourceId, ResourceStream, Result, ScanRequest, SchemaBaselineReference,
+    SchemaHash, SchemaObservationFieldQuarantine, SchemaObservationPolicy, SchemaSource,
     TerminalSchemaObservationQuarantine,
 };
 use cdf_memory::{
@@ -551,28 +551,24 @@ fn discover_remote_binary_resource_schema(
     file_dependencies: Option<FileRuntimeDependencies>,
     options: SchemaDiscoveryExecutionOptions,
 ) -> Result<ResourceSchemaDiscoveryArtifacts> {
-    discover_remote_file_resource_schema(
-        resource,
-        plan,
-        file_dependencies,
-        options,
-        RegisteredFormatDiscoveryAdapter::new(plan)?,
-    )
-}
-
-fn discover_remote_file_resource_schema(
-    resource: &CompiledResource,
-    plan: &cdf_declarative::FileResourcePlan,
-    file_dependencies: Option<FileRuntimeDependencies>,
-    options: SchemaDiscoveryExecutionOptions,
-    adapter: RegisteredFormatDiscoveryAdapter,
-) -> Result<ResourceSchemaDiscoveryArtifacts> {
     let dependencies = file_dependencies.ok_or_else(|| {
         unsupported_discover_slice(
             resource.descriptor(),
             "remote binary discovery requires explicit file transport dependencies",
         )
     })?;
+    let (plan, _) = cdf_declarative::compile_file_resource_plan(plan, dependencies.formats())?;
+    let adapter = RegisteredFormatDiscoveryAdapter::new(&resource.descriptor().resource_id, &plan)?;
+    discover_remote_file_resource_schema(resource, &plan, dependencies, options, adapter)
+}
+
+fn discover_remote_file_resource_schema(
+    resource: &CompiledResource,
+    plan: &cdf_declarative::FileResourcePlan,
+    dependencies: FileRuntimeDependencies,
+    options: SchemaDiscoveryExecutionOptions,
+    adapter: RegisteredFormatDiscoveryAdapter,
+) -> Result<ResourceSchemaDiscoveryArtifacts> {
     let runtime = resource.to_file_resource(dependencies.clone())?;
     let partitions = runtime.plan_partitions(&discovery_scan_request(resource.descriptor())?)?;
     let mut candidates = Vec::with_capacity(partitions.len());
@@ -682,15 +678,19 @@ impl BinaryDiscoveryCandidate {
 
 #[derive(Clone, Debug)]
 struct RegisteredFormatDiscoveryAdapter {
+    resource_id: ResourceId,
     format: FileFormatDeclaration,
+    format_declared: bool,
     format_options: serde_json::Value,
     format_options_hash: String,
 }
 
 impl RegisteredFormatDiscoveryAdapter {
-    fn new(plan: &cdf_declarative::FileResourcePlan) -> Result<Self> {
+    fn new(resource_id: &ResourceId, plan: &cdf_declarative::FileResourcePlan) -> Result<Self> {
         Ok(Self {
-            format: plan.format.clone(),
+            resource_id: resource_id.clone(),
+            format: plan.resolved_format()?.clone(),
+            format_declared: plan.format_declared,
             format_options: plan.format_options.clone(),
             format_options_hash: cdf_runtime::artifact_hash(&plan.format_options)?,
         })
@@ -714,12 +714,17 @@ impl RegisteredFormatDiscoveryAdapter {
                 })?;
                 let probe = discover_local_binary_schema_bounded(
                     path,
+                    &candidate.location,
                     dependencies,
-                    &self.format,
-                    &self.format_options,
-                    &candidate.compression,
                     *selection_bytes_read,
-                    budget.max_metadata_bytes_per_file(),
+                    BoundedSchemaDiscoveryRequest {
+                        resource_id: &self.resource_id,
+                        format: &self.format,
+                        format_declared: self.format_declared,
+                        format_options: &self.format_options,
+                        transform_name: &candidate.compression,
+                        max_metadata_bytes: budget.max_metadata_bytes_per_file(),
+                    },
                 )?;
                 Ok((probe.schema, probe.source_identity, probe.probe_bytes_read))
             }
@@ -732,10 +737,14 @@ impl RegisteredFormatDiscoveryAdapter {
                 let probe = discover_transport_binary_schema_bounded(
                     resource.clone(),
                     dependencies,
-                    &self.format,
-                    &self.format_options,
-                    &candidate.compression,
-                    budget.max_metadata_bytes_per_file(),
+                    BoundedSchemaDiscoveryRequest {
+                        resource_id: &self.resource_id,
+                        format: &self.format,
+                        format_declared: self.format_declared,
+                        format_options: &self.format_options,
+                        transform_name: &candidate.compression,
+                        max_metadata_bytes: budget.max_metadata_bytes_per_file(),
+                    },
                 )?;
                 Ok((probe.schema, probe.source_identity, probe.probe_bytes_read))
             }
@@ -771,10 +780,11 @@ fn discover_local_binary_resource_schema(
             "file discovery requires explicit transport, format, and transform registry dependencies",
         )
     })?;
-    let adapter = RegisteredFormatDiscoveryAdapter::new(plan)?;
+    let (plan, _) = cdf_declarative::compile_file_resource_plan(plan, dependencies.formats())?;
+    let adapter = RegisteredFormatDiscoveryAdapter::new(&resource.descriptor().resource_id, &plan)?;
     let candidates = local_file_discovery_candidates(
         &resource.descriptor().resource_id,
-        plan,
+        &plan,
         dependencies.formats(),
         dependencies.transforms(),
     )?

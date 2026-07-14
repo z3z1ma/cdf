@@ -30,7 +30,7 @@ No new parser dependency, new native format, optimized decoder, dynamic plugin A
 
 ## Blockers
 
-None external. The 2026-07-13 aggregate adversarial review failed closure. The pinned-`Hints` governance defect is fixed. Remaining in-scope blockers are: replace first-party format branches with descriptor capabilities; bind codec version/options/detection/unit policy into the executable plan; delete the surviving monolithic `cdf-formats` parser/dispatch surface; and prove a project-level external codec over a remote provider. These are FX1 acceptance work, not deferred follow-ups.
+None external. The 2026-07-13 aggregate adversarial review failed closure. The pinned-`Hints` governance defect, first-party format capability branches, and executable codec binding are fixed. Remaining in-scope blockers are: delete the surviving monolithic `cdf-formats` parser/dispatch surface and prove a project-level external codec over a remote provider. These are FX1 acceptance work, not deferred follow-ups.
 
 ## References
 
@@ -84,6 +84,7 @@ None external. The 2026-07-13 aggregate adversarial review failed closure. The p
 - 2026-07-13: Deleted the format crate's duplicate schema-hash and validation-program wrappers and the declarative crate's unused local Arrow IPC discovery compatibility APIs. Canonical Arrow hashing is kernel-owned, validation compilation is contract-owned, and live discovery remains driver-backed. `cdf-declarative` and `cdf-source-files` dropped their `cdf-formats` dependency edges; the remaining consumers are explicitly inventoried for the final parser-facade deletion. Evidence: `.10x/evidence/2026-07-13-fx1-schema-wrapper-and-declarative-shim-deletion.md`.
 - 2026-07-13: Removed `cdf-python` from the monolithic format facade. Its dict fallback now flushes fixed row windows during iteration, rejects windows above the configured byte boundary, and decodes through its owned Arrow JSON boundary before joining the common Python Arrow batch path. The old implementation accumulated the full iterable and the IPC test kept a compatibility reader live; both are gone. P3 H2 still owns fully incremental, ledger-accounted Arrow C/row production and is not misreported as complete. Evidence: `.10x/evidence/2026-07-13-fx1-python-row-window-decoupling.md`.
 - 2026-07-13: Removed `cdf-benchmarks` from the monolithic format facade. File workloads now exercise declarative compilation, compiler-owned physical observation evidence, an explicit benchmark registry, and the resolved file runtime. Deleted the counterfeit Arrow IPC stream benchmark that eagerly decoded through the compatibility reader before timing packaging, plus its orphaned in-memory adapter. The coverage cell remains truthfully deferred to B3. The focused benchmark suites pass serially; the parallel invocation separately exposed the lab's existing 5-second child-timeout contention. Evidence: `.10x/evidence/2026-07-13-fx1-benchmark-registry-path.md`.
+- 2026-07-13: Removed the declarative compiler's Parquet/Arrow-only inference and made installed format descriptor extensions the sole source-plan inference authority, including inner compressed suffixes and external formats. Recompilation preserves inferred/declared provenance; executable plans retain the complete canonical binding. Added descriptor-owned error-isolation grain and made deep validation resolve the standard source runtime before partition/destination planning, eliminating both the JSON id branch and the deleted dependency-free file shim regression. Bounded strong-magic confirmation again emits both signals and fixes, while probe accounting no longer reports a bounded remote range probe as a full-object transfer. Strict Clippy and focused source/project/CLI suites pass. Evidence: `.10x/evidence/2026-07-13-fx1-registry-owned-format-inference.md`.
 
 ## Review
 
@@ -94,6 +95,7 @@ None external. The 2026-07-13 aggregate adversarial review failed closure. The p
   - **Significant:** `cdf-formats` still links the original parser family and retains closed `FileFormat`/eager `FormatRead` dispatch while production crates depend on it, so parser build domains are not actually isolated.
   - **Residual risk:** the external codec law is local-only; the existing HTTP provider law uses first-party Parquet and does not prove external codec composition through the project remote path.
   - 2026-07-13 reconciliation: the critical pinned-hints finding is fixed and covered by `.10x/evidence/2026-07-13-fx1-pinned-hints-governance.md`; the aggregate verdict remains fail while significant findings and residual risk remain.
+  - 2026-07-13 reconciliation: descriptor-owned inference/capabilities and compiled format binding are now covered by `.10x/evidence/2026-07-13-fx1-registry-owned-format-inference.md`; those two significant findings are resolved. The aggregate verdict remains fail on the monolithic parser surface and remote external-codec proof.
 
 ## Retrospective
 

@@ -78,7 +78,6 @@ fn deep_validate_resource(
 ) -> DeepValidateResourceReport {
     let mut diagnostics = Vec::new();
     let mut working_resource = resource.clone();
-    let partition_report = partition_check(context, resource, execution, &mut diagnostics);
     let discovery = discovery_check(context, resource, execution, &mut diagnostics);
     if let Some(discovery) = &discovery.discovery {
         working_resource = resource.with_schema_source_and_schema(
@@ -88,10 +87,33 @@ fn deep_validate_resource(
             Arc::clone(&discovery.normalized_schema),
         );
     }
+    let runtime_resource = match crate::project_run_resource::build_project_run_resource(
+        context,
+        &working_resource,
+        Some(execution),
+    ) {
+        Ok(resource) => Some(resource),
+        Err(error) => {
+            diagnostics.push(diagnostic(
+                "error",
+                "source_runtime_resolution",
+                redact_uri_userinfo(&error.message),
+                "Fix source configuration or the installed source/format driver before plan/run.",
+            ));
+            None
+        }
+    };
+    let partition_report = partition_check(runtime_resource.as_ref(), &mut diagnostics);
     physical_schema_reconciliation_check(context, resource, execution, &mut diagnostics);
     let validation_program = validation_program_check(&working_resource, &mut diagnostics);
     let normalization = normalization_check(&working_resource, &mut diagnostics);
-    let destination = destination_check(destinations, context, &working_resource, &mut diagnostics);
+    let destination = destination_check(
+        destinations,
+        context,
+        &working_resource,
+        runtime_resource.as_ref(),
+        &mut diagnostics,
+    );
     let status = if diagnostics
         .iter()
         .any(|diagnostic| diagnostic.severity == "error")
@@ -122,23 +144,20 @@ fn deep_validate_resource(
 }
 
 fn partition_check(
-    context: &ProjectContext,
-    resource: &CompiledResource,
-    execution: &cdf_runtime::ExecutionServices,
+    resource: Option<&crate::project_run_resource::CliProjectRunSource>,
     diagnostics: &mut Vec<DeepValidateDiagnostic>,
 ) -> DeepValidatePartitionReport {
-    let request = deep_scan_request(resource.descriptor());
-    let partitions = request.and_then(|request| match resource.plan() {
-        CompiledResourcePlan::Files(_) => resource
-            .to_file_resource(crate::project_run_resource::file_runtime_dependencies(
-                context,
-                Some(execution),
-            )?)?
-            .plan_partitions(&request),
-        CompiledResourcePlan::Rest(_) | CompiledResourcePlan::Sql(_) => {
-            resource.plan_partitions(&request)
-        }
-    });
+    let Some(resource) = resource else {
+        return DeepValidatePartitionReport {
+            status: "failed".to_owned(),
+            count: 0,
+            files: Vec::new(),
+            detail: "source runtime resolution failed".to_owned(),
+        };
+    };
+    let resource = resource.as_queryable();
+    let partitions = deep_scan_request(resource.descriptor())
+        .and_then(|request| resource.plan_partitions(&request));
     match partitions {
         Ok(partitions) => DeepValidatePartitionReport {
             status: "ok".to_owned(),
@@ -154,7 +173,7 @@ fn partition_check(
                 "error",
                 "partition_resolution",
                 error.message,
-                "Fix the file glob, source root, or resource declaration before running plan/run.",
+                "Fix the source root, selection, or resource declaration before plan/run.",
             ));
             DeepValidatePartitionReport {
                 status: "failed".to_owned(),
@@ -251,8 +270,41 @@ fn physical_schema_reconciliation_check(
     if matches!(resource.descriptor().schema_source, SchemaSource::Discover) {
         return;
     }
+    let dependencies =
+        match crate::project_run_resource::file_runtime_dependencies(context, Some(execution)) {
+            Ok(dependencies) => dependencies,
+            Err(error) => {
+                diagnostics.push(diagnostic(
+                    "error",
+                    "physical_schema_probe",
+                    redact_uri_userinfo(&error.message),
+                    "Fix the file runtime composition before plan/run.",
+                ));
+                return;
+            }
+        };
+    let (_, compiled_format) =
+        match cdf_declarative::compile_file_resource_plan(plan, dependencies.formats()) {
+            Ok(compiled) => compiled,
+            Err(error) => {
+                diagnostics.push(diagnostic(
+                    "error",
+                    "physical_schema_probe",
+                    redact_uri_userinfo(&error.message),
+                    "Declare `format` explicitly or install a driver that owns the file extension.",
+                ));
+                return;
+            }
+        };
     let probe = resource.with_schema_source_and_schema(SchemaSource::Discover, resource.schema());
-    let discovery = discover_for_deep_validate(context, &probe, execution);
+    let secret_provider = context.secret_provider();
+    let discovery = cdf_project::discover_resource_schema_with_file_dependencies_artifacts(
+        &probe,
+        &secret_provider,
+        dependencies,
+        cdf_project::SchemaDiscoveryExecutionOptions::default(),
+    )
+    .map(|artifacts| artifacts.discovery);
     let observed = match discovery {
         Ok(discovery) => discovery.normalized_schema,
         Err(error) => {
@@ -277,7 +329,8 @@ fn physical_schema_reconciliation_check(
     if let Err(error) =
         reconcile_schema(observed.as_ref(), resource.schema().as_ref(), &policy.types)
     {
-        let row_local = matches!(plan.format.as_str(), "json" | "ndjson");
+        let row_local =
+            compiled_format.descriptor.error_isolation == cdf_runtime::FormatErrorIsolation::Record;
         diagnostics.push(diagnostic(
             if row_local { "warning" } else { "error" },
             if row_local {
@@ -376,11 +429,16 @@ fn normalization_check(
 fn destination_check(
     destinations: &cdf_runtime::DestinationRegistry,
     context: &ProjectContext,
-    resource: &CompiledResource,
+    compiled_resource: &CompiledResource,
+    runtime_resource: Option<&crate::project_run_resource::CliProjectRunSource>,
     diagnostics: &mut Vec<DeepValidateDiagnostic>,
 ) -> DeepValidateDestinationReport {
+    let Some(runtime_resource) = runtime_resource else {
+        return DeepValidateDestinationReport::failed("source runtime resolution failed");
+    };
+    let resource = runtime_resource.as_queryable();
     let target = match cdf_kernel::TargetName::new(default_target_for_resource(
-        resource.descriptor().resource_id.as_str(),
+        compiled_resource.descriptor().resource_id.as_str(),
     )) {
         Ok(target) => target,
         Err(error) => {
@@ -417,28 +475,27 @@ fn destination_check(
             return DeepValidateDestinationReport::failed("destination identifier policy failed");
         }
     };
-    let mut policy = ContractPolicy::for_trust(resource.descriptor().trust_level.clone());
-    let allowances = resource.type_policy_allowances();
+    let mut policy = ContractPolicy::for_trust(compiled_resource.descriptor().trust_level.clone());
+    let allowances = compiled_resource.type_policy_allowances();
     policy.types.coerce_types = allowances.coerce_types;
     policy.types.allow_lossy_mapping = allowances.allow_lossy_mapping;
     if let Some(identifier_policy) = identifier_policy {
         policy.normalization.identifier = identifier_policy;
     }
-    let observed = ObservedSchema::from_arrow(resource.schema().as_ref());
+    let observed = ObservedSchema::from_arrow(compiled_resource.schema().as_ref());
     let engine_plan =
-        compile_resource_validation_program(&policy, &observed, resource.descriptor()).and_then(
-            |validation_program| {
+        compile_resource_validation_program(&policy, &observed, compiled_resource.descriptor())
+            .and_then(|validation_program| {
                 Planner::new().plan_tier_b(
                     resource,
                     EnginePlanInput {
-                        request: deep_scan_request(resource.descriptor())?,
+                        request: deep_scan_request(compiled_resource.descriptor())?,
                         validation_program,
                         boundedness: PlanBoundedness::Bounded,
                         package_id: format!("deep-validate-{}", resource.descriptor().resource_id),
                     },
                 )
-            },
-        );
+            });
     let engine_plan = match engine_plan {
         Ok(plan) => plan,
         Err(error) => {

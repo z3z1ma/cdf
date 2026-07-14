@@ -124,7 +124,7 @@ pub struct FileResourcePlan {
     pub source: String,
     pub root: String,
     pub glob: String,
-    pub format: FileFormatDeclaration,
+    pub format: Option<FileFormatDeclaration>,
     pub format_declared: bool,
     pub format_options: serde_json::Value,
     pub compression: FileCompressionDeclaration,
@@ -133,7 +133,17 @@ pub struct FileResourcePlan {
     pub allowlist: EgressAllowlist,
 }
 
-pub use driver::FileSourceDriver;
+impl FileResourcePlan {
+    pub fn resolved_format(&self) -> cdf_kernel::Result<&FileFormatDeclaration> {
+        self.format.as_ref().ok_or_else(|| {
+            cdf_kernel::CdfError::internal(
+                "file resource format selection was not compiled by the registered source driver",
+            )
+        })
+    }
+}
+
+pub use driver::{FileSourceDriver, compile_file_resource_plan};
 pub use local_byte_source::LocalByteSource;
 pub use object_store_byte_source::ObjectStoreByteSource;
 pub use runtime::*;
