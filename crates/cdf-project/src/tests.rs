@@ -1029,31 +1029,30 @@ fn sampled_discovery_manifest_enforces_truthful_participation() {
 }
 
 #[test]
-fn schema_snapshot_v1_bytes_stay_exact_and_v2_binds_manifest_sidecar() {
-    let legacy_resource = ResourceId::new("legacy.resource").unwrap();
-    let legacy_schema = Schema::new(vec![Field::new("id", DataType::Int64, false)]);
-    let legacy =
-        SchemaSnapshotArtifact::new(&legacy_resource, &legacy_schema, BTreeMap::new()).unwrap();
-    assert_eq!(legacy.version, 1);
+fn schema_snapshot_current_version_covers_schema_and_manifest_and_rejects_old_versions() {
+    let resource = ResourceId::new("current.resource").unwrap();
+    let schema = Schema::new(vec![Field::new("id", DataType::Int64, false)]);
+    let schema_only = SchemaSnapshotArtifact::new(&resource, &schema, BTreeMap::new()).unwrap();
+    assert_eq!(schema_only.version, SCHEMA_SNAPSHOT_ARTIFACT_VERSION);
     assert_eq!(
-        legacy.schema_hash.as_str(),
-        "sha256:72f76d3bcff3c64ec909385548f8861b817b5959e4b3e5257e9e88f6c603e417"
+        schema_only.schema_hash.as_str(),
+        "sha256:7080613cfd096dd56f3081f8867c226ffdbf950890b3c9e034f604e58810c617"
     );
     assert!(
-        serde_json::to_value(&legacy)
+        serde_json::to_value(&schema_only)
             .unwrap()
             .get("discovery_manifest")
             .is_none()
     );
     assert!(
-        serde_json::to_value(legacy.reference())
+        serde_json::to_value(schema_only.reference())
             .unwrap()
             .get("discovery_manifest")
             .is_none()
     );
 
     let manifest = DiscoveryManifestArtifact::new(DiscoveryManifestInput {
-        resource_id: legacy_resource.as_str().to_owned(),
+        resource_id: resource.as_str().to_owned(),
         baseline_schema_hash: None,
         effective_schema_hash: None,
         coverage: DiscoveryCoverageMode::Exhaustive,
@@ -1062,21 +1061,21 @@ fn schema_snapshot_v1_bytes_stay_exact_and_v2_binds_manifest_sidecar() {
         normalizer_version: "namecase-v1".to_owned(),
         policy_version: "evolve-v1".to_owned(),
         candidates: vec![probed_discovery_candidate(
-            "file:///data/legacy.parquet",
-            "sha256:legacy",
+            "file:///data/current.parquet",
+            "sha256:current",
             24,
         )],
     })
     .unwrap();
     let linked = SchemaSnapshotArtifact::new_with_discovery_manifest(
-        &legacy_resource,
-        &legacy_schema,
+        &resource,
+        &schema,
         BTreeMap::new(),
         manifest.reference(),
     )
     .unwrap();
-    assert_eq!(linked.version, 2);
-    assert_ne!(linked.schema_hash, legacy.schema_hash);
+    assert_eq!(linked.version, SCHEMA_SNAPSHOT_ARTIFACT_VERSION);
+    assert_ne!(linked.schema_hash, schema_only.schema_hash);
     assert_eq!(
         linked.discovery_manifest_reference().unwrap(),
         Some(manifest.reference())
@@ -1096,6 +1095,25 @@ fn schema_snapshot_v1_bytes_stay_exact_and_v2_binds_manifest_sidecar() {
     let snapshot_store = SchemaSnapshotStore::new(temp.path());
     snapshot_store.write(&linked).unwrap();
     assert_eq!(snapshot_store.read(&linked.reference()).unwrap(), linked);
+
+    for old_version in 1..SCHEMA_SNAPSHOT_ARTIFACT_VERSION {
+        let mut old = linked.clone();
+        old.version = old_version;
+        std::fs::write(
+            temp.path().join(&old.path),
+            serde_json::to_vec(&old).unwrap(),
+        )
+        .unwrap();
+        let error = snapshot_store
+            .read(&linked.reference())
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("unsupported artifact version")
+                && error.contains(&SCHEMA_SNAPSHOT_ARTIFACT_VERSION.to_string())
+        );
+    }
+    snapshot_store.write(&linked).unwrap();
 
     std::fs::remove_file(temp.path().join(&manifest.path)).unwrap();
     let error = snapshot_store

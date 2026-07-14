@@ -16,9 +16,7 @@ use cdf_kernel::{
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-pub const SCHEMA_SNAPSHOT_ARTIFACT_VERSION: u16 = 1;
-pub const SCHEMA_SNAPSHOT_ARTIFACT_VERSION_WITH_MANIFEST: u16 = 2;
-pub const SCHEMA_SNAPSHOT_ARTIFACT_VERSION_WITH_PROMOTION: u16 = 3;
+pub const SCHEMA_SNAPSHOT_ARTIFACT_VERSION: u16 = 4;
 pub const SCHEMA_SNAPSHOT_PROMOTION_AUTHORITY_VERSION: u16 = 1;
 pub const SCHEMA_SNAPSHOT_DIR: &str = ".cdf/schemas";
 pub const SCHEMA_DISCOVERY_PROBE_PARQUET_FOOTER: &str = "parquet-footer";
@@ -52,24 +50,10 @@ pub struct SchemaSnapshotHashInput {
     pub resource_id: String,
     pub schema: SchemaSnapshotSchema,
     pub metadata: BTreeMap<String, String>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct SchemaSnapshotHashInputWithManifest {
-    pub version: u16,
-    pub resource_id: String,
-    pub schema: SchemaSnapshotSchema,
-    pub metadata: BTreeMap<String, String>,
-    pub discovery_manifest: DiscoveryManifestReference,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct SchemaSnapshotHashInputWithPromotion {
-    pub version: u16,
-    pub resource_id: String,
-    pub schema: SchemaSnapshotSchema,
-    pub metadata: BTreeMap<String, String>,
-    pub promotion_authority: SchemaSnapshotPromotionAuthority,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub discovery_manifest: Option<DiscoveryManifestReference>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub promotion_authority: Option<SchemaSnapshotPromotionAuthority>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -861,6 +845,8 @@ impl SchemaSnapshotArtifact {
             resource_id: resource_id.as_str().to_owned(),
             schema: schema.clone(),
             metadata: metadata.clone(),
+            discovery_manifest: None,
+            promotion_authority: None,
         };
         let hash_input = canonical_json_value(&hash_input)?;
         let schema_hash = schema_hash_for_canonical_value(&hash_input)?;
@@ -885,18 +871,19 @@ impl SchemaSnapshotArtifact {
     ) -> Result<Self> {
         insert_discovery_manifest_metadata(&mut metadata, &discovery_manifest)?;
         let schema = SchemaSnapshotSchema::from_arrow(schema);
-        let hash_input = SchemaSnapshotHashInputWithManifest {
-            version: SCHEMA_SNAPSHOT_ARTIFACT_VERSION_WITH_MANIFEST,
+        let hash_input = SchemaSnapshotHashInput {
+            version: SCHEMA_SNAPSHOT_ARTIFACT_VERSION,
             resource_id: resource_id.as_str().to_owned(),
             schema: schema.clone(),
             metadata: metadata.clone(),
-            discovery_manifest: discovery_manifest.clone(),
+            discovery_manifest: Some(discovery_manifest.clone()),
+            promotion_authority: None,
         };
         let hash_input = canonical_json_value(&hash_input)?;
         let schema_hash = schema_hash_for_canonical_value(&hash_input)?;
         let path = schema_snapshot_relative_path(resource_id, &schema_hash)?;
         Ok(Self {
-            version: SCHEMA_SNAPSHOT_ARTIFACT_VERSION_WITH_MANIFEST,
+            version: SCHEMA_SNAPSHOT_ARTIFACT_VERSION,
             resource_id: resource_id.as_str().to_owned(),
             schema_hash,
             path,
@@ -915,18 +902,19 @@ impl SchemaSnapshotArtifact {
         let schema = SchemaSnapshotSchema::from_arrow(schema);
         promotion_authority.validate_for_artifact(resource_id, &schema)?;
         let metadata = promotion_snapshot_metadata(&promotion_authority);
-        let hash_input = SchemaSnapshotHashInputWithPromotion {
-            version: SCHEMA_SNAPSHOT_ARTIFACT_VERSION_WITH_PROMOTION,
+        let hash_input = SchemaSnapshotHashInput {
+            version: SCHEMA_SNAPSHOT_ARTIFACT_VERSION,
             resource_id: resource_id.as_str().to_owned(),
             schema: schema.clone(),
             metadata: metadata.clone(),
-            promotion_authority: promotion_authority.clone(),
+            discovery_manifest: None,
+            promotion_authority: Some(promotion_authority.clone()),
         };
         let hash_input = canonical_json_value(&hash_input)?;
         let schema_hash = schema_hash_for_canonical_value(&hash_input)?;
         let path = schema_snapshot_relative_path(resource_id, &schema_hash)?;
         Ok(Self {
-            version: SCHEMA_SNAPSHOT_ARTIFACT_VERSION_WITH_PROMOTION,
+            version: SCHEMA_SNAPSHOT_ARTIFACT_VERSION,
             resource_id: resource_id.as_str().to_owned(),
             schema_hash,
             path,
@@ -957,77 +945,35 @@ impl SchemaSnapshotArtifact {
     }
 
     pub fn validate_hash_input(&self) -> Result<()> {
+        if self.version != SCHEMA_SNAPSHOT_ARTIFACT_VERSION {
+            return Err(CdfError::data(format!(
+                "schema snapshot uses unsupported artifact version {}; expected {}",
+                self.version, SCHEMA_SNAPSHOT_ARTIFACT_VERSION
+            )));
+        }
         let discovery_manifest = self.discovery_manifest_reference()?;
-        let expected_input = match (
-            self.version,
-            discovery_manifest.as_ref(),
-            self.promotion_authority.as_ref(),
-        ) {
-            (SCHEMA_SNAPSHOT_ARTIFACT_VERSION, None, None) => {
-                canonical_json_value(&SchemaSnapshotHashInput {
-                    version: self.version,
-                    resource_id: self.resource_id.clone(),
-                    schema: self.schema.clone(),
-                    metadata: self.metadata.clone(),
-                })?
-            }
-            (SCHEMA_SNAPSHOT_ARTIFACT_VERSION_WITH_MANIFEST, Some(discovery_manifest), None) => {
-                canonical_json_value(&SchemaSnapshotHashInputWithManifest {
-                    version: self.version,
-                    resource_id: self.resource_id.clone(),
-                    schema: self.schema.clone(),
-                    metadata: self.metadata.clone(),
-                    discovery_manifest: discovery_manifest.clone(),
-                })?
-            }
-            (SCHEMA_SNAPSHOT_ARTIFACT_VERSION_WITH_PROMOTION, None, Some(promotion_authority)) => {
-                let resource_id = ResourceId::new(self.resource_id.clone())?;
-                promotion_authority.validate_for_artifact(&resource_id, &self.schema)?;
-                if self.metadata != promotion_snapshot_metadata(promotion_authority) {
-                    return Err(CdfError::data(
-                        "schema snapshot version 3 metadata must contain only the normalizer derived from typed promotion authority",
-                    ));
-                }
-                canonical_json_value(&SchemaSnapshotHashInputWithPromotion {
-                    version: self.version,
-                    resource_id: self.resource_id.clone(),
-                    schema: self.schema.clone(),
-                    metadata: self.metadata.clone(),
-                    promotion_authority: promotion_authority.clone(),
-                })?
-            }
-            (SCHEMA_SNAPSHOT_ARTIFACT_VERSION, Some(_), _) => {
+        if discovery_manifest.is_some() && self.promotion_authority.is_some() {
+            return Err(CdfError::data(
+                "schema snapshot cannot combine discovery-manifest and promotion authority",
+            ));
+        }
+        if let Some(promotion_authority) = &self.promotion_authority {
+            let resource_id = ResourceId::new(self.resource_id.clone())?;
+            promotion_authority.validate_for_artifact(&resource_id, &self.schema)?;
+            if self.metadata != promotion_snapshot_metadata(promotion_authority) {
                 return Err(CdfError::data(
-                    "schema snapshot artifact version 1 cannot reference a discovery manifest",
+                    "promoted schema snapshot metadata must contain only the normalizer derived from typed promotion authority",
                 ));
             }
-            (SCHEMA_SNAPSHOT_ARTIFACT_VERSION_WITH_MANIFEST, None, _) => {
-                return Err(CdfError::data(
-                    "schema snapshot artifact version 2 requires a discovery manifest reference",
-                ));
-            }
-            (SCHEMA_SNAPSHOT_ARTIFACT_VERSION_WITH_PROMOTION, Some(_), _) => {
-                return Err(CdfError::data(
-                    "schema snapshot artifact version 3 cannot reference a discovery manifest",
-                ));
-            }
-            (SCHEMA_SNAPSHOT_ARTIFACT_VERSION_WITH_PROMOTION, None, None) => {
-                return Err(CdfError::data(
-                    "schema snapshot artifact version 3 requires promotion lineage",
-                ));
-            }
-            (SCHEMA_SNAPSHOT_ARTIFACT_VERSION, None, Some(_))
-            | (SCHEMA_SNAPSHOT_ARTIFACT_VERSION_WITH_MANIFEST, Some(_), Some(_)) => {
-                return Err(CdfError::data(
-                    "schema snapshot promotion lineage does not match its artifact version",
-                ));
-            }
-            (version, _, _) => {
-                return Err(CdfError::data(format!(
-                    "schema snapshot uses unsupported artifact version {version}; expected 1, 2, or 3"
-                )));
-            }
-        };
+        }
+        let expected_input = canonical_json_value(&SchemaSnapshotHashInput {
+            version: self.version,
+            resource_id: self.resource_id.clone(),
+            schema: self.schema.clone(),
+            metadata: self.metadata.clone(),
+            discovery_manifest,
+            promotion_authority: self.promotion_authority.clone(),
+        })?;
         if self.hash_input != expected_input {
             return Err(CdfError::data(
                 "schema snapshot hash_input does not match artifact schema and metadata",
@@ -1137,16 +1083,12 @@ impl SchemaSnapshotStore {
             .map_err(|error| CdfError::data(format!("read {}: {error}", path.display())))?;
         let artifact = serde_json::from_slice::<SchemaSnapshotArtifact>(&bytes)
             .map_err(|error| CdfError::data(format!("parse {}: {error}", path.display())))?;
-        if !matches!(
-            artifact.version,
-            SCHEMA_SNAPSHOT_ARTIFACT_VERSION
-                | SCHEMA_SNAPSHOT_ARTIFACT_VERSION_WITH_MANIFEST
-                | SCHEMA_SNAPSHOT_ARTIFACT_VERSION_WITH_PROMOTION
-        ) {
+        if artifact.version != SCHEMA_SNAPSHOT_ARTIFACT_VERSION {
             return Err(CdfError::data(format!(
-                "schema snapshot {} uses unsupported artifact version {}; expected 1, 2, or 3",
+                "schema snapshot {} uses unsupported artifact version {}; expected {}",
                 path.display(),
-                artifact.version
+                artifact.version,
+                SCHEMA_SNAPSHOT_ARTIFACT_VERSION
             )));
         }
         artifact.validate_hash_input()?;
