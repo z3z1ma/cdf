@@ -277,12 +277,22 @@ impl FormatDriver for ParquetFormatDriver {
                 let mask = ProjectionMask::roots(builder.parquet_schema(), roots);
                 builder = builder.with_projection(mask);
             }
-            let physical_schema = builder.schema().clone();
+            let physical_schema_metadata = builder.schema().metadata().clone();
             let parquet_stream = builder.build().map_err(parquet_error)?;
+            // Arrow's Parquet stream intentionally strips schema-level metadata from its
+            // projected schema and emitted batches. That metadata is nevertheless part of
+            // CDF's canonical physical observation, so bind the zero-copy batch columns back
+            // to the exact metadata-bearing projected schema before hashing or admission.
+            let physical_schema = Arc::new(arrow_schema::Schema::new_with_metadata(
+                parquet_stream.schema().fields().clone(),
+                physical_schema_metadata,
+            ));
+            let observed_schema_hash =
+                cdf_kernel::canonical_arrow_schema_hash(physical_schema.as_ref())?;
             let state = DecodeState {
                 stream: Box::pin(parquet_stream),
                 request,
-                observed_schema_hash: actual_hash,
+                observed_schema_hash,
                 physical_schema,
                 sequence: 0,
                 emitted_schema: false,
@@ -302,6 +312,18 @@ impl FormatDriver for ParquetFormatDriver {
                     }
                     None => return Ok(None),
                 };
+                let record_batch =
+                    if record_batch.schema().as_ref() == state.physical_schema.as_ref() {
+                        record_batch
+                    } else {
+                        let row_count = record_batch.num_rows();
+                        arrow_array::RecordBatch::try_new_with_options(
+                            Arc::clone(&state.physical_schema),
+                            record_batch.columns().to_vec(),
+                            &arrow_array::RecordBatchOptions::new().with_row_count(Some(row_count)),
+                        )
+                        .map_err(CdfError::from)?
+                    };
                 state.emitted_schema = true;
                 let batch_id = BatchId::new(format!(
                     "{}-u{:08}-b{:08}",

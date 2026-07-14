@@ -1,4 +1,7 @@
-use std::{collections::BTreeMap, sync::Arc};
+use std::{
+    collections::{BTreeMap, HashMap},
+    sync::Arc,
+};
 
 use arrow_array::{Int64Array, RecordBatch};
 use arrow_schema::{DataType, Field, Schema};
@@ -104,7 +107,14 @@ impl ByteSource for MemoryByteSource {
 }
 
 fn fixture() -> (Arc<Schema>, Vec<u8>) {
-    let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, false)]));
+    let schema = Arc::new(Schema::new_with_metadata(
+        vec![Field::new("id", DataType::Int64, false)],
+        HashMap::from([(
+            "org.apache.spark.sql.parquet.row.metadata".to_owned(),
+            r#"{"type":"struct","fields":[{"name":"id","type":"long","nullable":false,"metadata":{}}]}"#
+                .to_owned(),
+        )]),
+    ));
     let batch = RecordBatch::try_new(
         Arc::clone(&schema),
         vec![Arc::new(Int64Array::from(vec![1, 2, 3, 4]))],
@@ -195,6 +205,14 @@ fn parquet_driver_discovers_plans_and_decodes_through_neutral_byte_source() {
     let batches = futures_executor::block_on(stream.try_collect::<Vec<_>>()).unwrap();
     assert_eq!(batches.len(), 1);
     assert_eq!(batches[0].batch().header.row_count, 4);
+    assert_eq!(
+        batches[0].batch().record_batch().unwrap().schema().as_ref(),
+        observation.arrow_schema.as_ref()
+    );
+    assert_eq!(
+        batches[0].batch().header.observed_schema_hash,
+        cdf_kernel::canonical_arrow_schema_hash(observation.arrow_schema.as_ref()).unwrap()
+    );
     drop(batches);
     assert_eq!(memory.snapshot().current_bytes, 0);
 }
