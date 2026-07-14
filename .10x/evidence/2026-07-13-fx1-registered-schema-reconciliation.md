@@ -31,3 +31,7 @@ It challenges the prior ticket statement that compressed or remote Arrow IPC dis
 ## Limits
 
 The focused commands do not prove the full workspace, storage-backed Arrow throughput, fuzz robustness, or the not-yet-implemented sequential Arrow stream driver. The execution boundary currently derives a coercion plan only when a source emitted no trusted precompiled observation plan; that is a source-neutral safety repair, not the final P2 architecture. `.10x/decisions/data-onramp-schema-discovery-reconciliation.md` requires declared observations and verdicts to compile into the plan, so FX1 must add that compiler binding and delete the fallback before closure. FX1 also still requires its project-level external-provider add/pin law and aggregate adversarial closure review.
+
+## Subsequent correction
+
+The temporary execution-derived fallback and the limits it imposed were removed by the compiler-bound work recorded in `.10x/evidence/2026-07-13-fx1-compiler-bound-schema-observations.md`. This record remains the evidence for the original regression and Arrow IPC access correction; it is not authority for the current reconciliation architecture.

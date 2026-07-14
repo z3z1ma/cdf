@@ -573,8 +573,9 @@ where
     }
     let mut type_policy =
         ContractPolicy::for_trust(resource.descriptor().trust_level.clone()).types;
-    type_policy.coerce_types = false;
-    type_policy.allow_lossy_mapping = false;
+    let allowances = resource.type_policy_allowances();
+    type_policy.coerce_types = allowances.coerce_types;
+    type_policy.allow_lossy_mapping = allowances.allow_lossy_mapping;
     for physical in &runtime.schema_catalog {
         let computed_hash = cdf_kernel::canonical_arrow_schema_hash(physical.schema.as_ref())?;
         if computed_hash != physical.physical_schema_hash {
@@ -636,8 +637,8 @@ where
     if let Some(effective) = effective {
         return Ok(EngineSchemaAuthority {
             version: 1,
-            baseline_schema_hash: effective.authority.baseline_snapshot.schema_hash.clone(),
-            effective_schema_hash: effective.authority.effective_snapshot_schema_hash.clone(),
+            baseline_schema_hash: effective.authority.baseline.schema_hash().clone(),
+            effective_schema_hash: effective.authority.effective_schema_hash.clone(),
         });
     }
     let schema_hash = match &resource.descriptor().schema_source {

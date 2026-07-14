@@ -35,7 +35,7 @@ use cdf_kernel::{
     CdfError, DISCOVERY_MANIFEST_HASH_METADATA_KEY, DISCOVERY_MANIFEST_PATH_METADATA_KEY,
     DiscoveryCoverageEvidence, DiscoveryExecutorBudgetEvidence, EffectiveSchemaCatalogEntry,
     EffectiveSchemaEvidence, EffectiveSchemaObservationEvidence, EffectiveSchemaRuntime,
-    ResourceDescriptor, ResourceStream, Result, ScanRequest, SchemaHash,
+    ResourceDescriptor, ResourceStream, Result, ScanRequest, SchemaBaselineReference, SchemaHash,
     SchemaObservationFieldQuarantine, SchemaObservationPolicy, SchemaSource,
     TerminalSchemaObservationQuarantine,
 };
@@ -148,12 +148,64 @@ impl VerifiedSchemaBaseline {
     }
 }
 
+#[derive(Clone, Debug)]
+enum RuntimeSchemaBaseline {
+    Pinned(VerifiedSchemaBaseline),
+    Declared {
+        resource_id: cdf_kernel::ResourceId,
+        reference: SchemaBaselineReference,
+        schema: arrow_schema::SchemaRef,
+    },
+}
+
+impl RuntimeSchemaBaseline {
+    fn resource_id(&self) -> &cdf_kernel::ResourceId {
+        match self {
+            Self::Pinned(baseline) => baseline.resource_id(),
+            Self::Declared { resource_id, .. } => resource_id,
+        }
+    }
+
+    fn reference(&self) -> SchemaBaselineReference {
+        match self {
+            Self::Pinned(baseline) => SchemaBaselineReference::Pinned {
+                snapshot: baseline.snapshot().clone(),
+            },
+            Self::Declared { reference, .. } => reference.clone(),
+        }
+    }
+
+    fn schema(&self) -> &arrow_schema::SchemaRef {
+        match self {
+            Self::Pinned(baseline) => baseline.schema(),
+            Self::Declared { schema, .. } => schema,
+        }
+    }
+
+    fn contains_baseline_observation_schema(&self, schema_hash: &SchemaHash) -> bool {
+        match self {
+            Self::Pinned(baseline) => baseline.contains_baseline_observation_schema(schema_hash),
+            Self::Declared { .. } => false,
+        }
+    }
+
+    fn admits_evolution(&self) -> bool {
+        matches!(self, Self::Pinned(_))
+    }
+
+    fn effective_schema_identity(&self, observed: &SchemaHash) -> SchemaHash {
+        match self {
+            Self::Pinned(_) => observed.clone(),
+            Self::Declared { reference, .. } => reference.schema_hash().clone(),
+        }
+    }
+}
+
 #[non_exhaustive]
 #[derive(Clone, Default)]
 pub struct SchemaDiscoveryExecutionOptions {
     budget: DiscoveryExecutorBudget,
-    verified_baseline: Option<VerifiedSchemaBaseline>,
-    runtime_effective_schema: bool,
+    runtime_baseline: Option<RuntimeSchemaBaseline>,
     memory_coordinator: Option<Arc<dyn MemoryCoordinator>>,
 }
 
@@ -162,8 +214,7 @@ impl std::fmt::Debug for SchemaDiscoveryExecutionOptions {
         formatter
             .debug_struct("SchemaDiscoveryExecutionOptions")
             .field("budget", &self.budget)
-            .field("verified_baseline", &self.verified_baseline)
-            .field("runtime_effective_schema", &self.runtime_effective_schema)
+            .field("runtime_baseline", &self.runtime_baseline)
             .field("memory_coordinator", &self.memory_coordinator.is_some())
             .finish()
     }
@@ -182,12 +233,7 @@ impl SchemaDiscoveryExecutionOptions {
     /// Binds discovery to a baseline previously hydrated and verified by the
     /// snapshot store. Arbitrary hashes are intentionally not accepted.
     pub fn with_verified_baseline(mut self, baseline: VerifiedSchemaBaseline) -> Self {
-        self.verified_baseline = Some(baseline);
-        self
-    }
-
-    pub fn for_runtime_effective_schema(mut self) -> Self {
-        self.runtime_effective_schema = true;
+        self.runtime_baseline = Some(RuntimeSchemaBaseline::Pinned(baseline));
         self
     }
 
@@ -200,22 +246,45 @@ impl SchemaDiscoveryExecutionOptions {
         &self.budget
     }
 
-    pub fn verified_baseline(&self) -> Option<&VerifiedSchemaBaseline> {
-        self.verified_baseline.as_ref()
+    fn with_declared_baseline(mut self, resource: &CompiledResource) -> Result<Self> {
+        let reference = resource
+            .descriptor()
+            .schema_source
+            .baseline_reference()
+            .ok_or_else(|| {
+                CdfError::contract(
+                    "declared runtime schema observation requires a declared schema baseline",
+                )
+            })?;
+        if !matches!(&reference, SchemaBaselineReference::Declared { .. }) {
+            return Err(CdfError::contract(
+                "declared runtime schema observation received a non-declared baseline",
+            ));
+        }
+        self.runtime_baseline = Some(RuntimeSchemaBaseline::Declared {
+            resource_id: resource.descriptor().resource_id.clone(),
+            reference,
+            schema: resource.schema(),
+        });
+        Ok(self)
     }
 
-    fn verified_baseline_hash_for(
+    fn runtime_baseline(&self) -> Option<&RuntimeSchemaBaseline> {
+        self.runtime_baseline.as_ref()
+    }
+
+    fn runtime_baseline_hash_for(
         &self,
         resource_id: &cdf_kernel::ResourceId,
     ) -> Result<Option<SchemaHash>> {
-        match self.verified_baseline.as_ref() {
+        match self.runtime_baseline.as_ref() {
             Some(baseline) if baseline.resource_id() != resource_id => {
                 Err(CdfError::contract(format!(
-                    "verified discovery baseline belongs to resource `{}` but discovery is for `{resource_id}`",
+                    "runtime schema baseline belongs to resource `{}` but discovery is for `{resource_id}`",
                     baseline.resource_id()
                 )))
             }
-            Some(baseline) => Ok(Some(baseline.schema_hash().clone())),
+            Some(baseline) => Ok(Some(baseline.reference().schema_hash().clone())),
             None => Ok(None),
         }
     }
@@ -343,6 +412,66 @@ pub fn prepare_pinned_resource_effective_schema_with_file_dependencies_artifacts
     )
 }
 
+pub fn prepare_declared_file_schema_artifacts(
+    resource: &CompiledResource,
+    secret_provider: &dyn SecretProvider,
+    file_dependencies: FileRuntimeDependencies,
+) -> Result<PreparedEffectiveSchemaResource> {
+    if !matches!(resource.plan(), CompiledResourcePlan::Files(_)) {
+        return Ok(PreparedEffectiveSchemaResource {
+            resource: resource.clone(),
+            discovery_manifest: None,
+        });
+    }
+    if !matches!(
+        resource.descriptor().schema_source,
+        SchemaSource::Declared { .. }
+    ) {
+        return Err(CdfError::contract(
+            "declared schema observation preparation requires a declared resource",
+        ));
+    }
+    let probe_resource =
+        resource.with_schema_source_and_schema(SchemaSource::Discover, resource.schema());
+    let options = SchemaDiscoveryExecutionOptions::new().with_declared_baseline(resource)?;
+    let artifacts = discover_resource_schema_artifacts_inner(
+        &probe_resource,
+        secret_provider,
+        None,
+        Some(file_dependencies),
+        options,
+    )?;
+    let manifest = artifacts.discovery_manifest.as_ref().ok_or_else(|| {
+        CdfError::contract("declared file schema observation requires a discovery manifest")
+    })?;
+    manifest.validate()?;
+    let baseline = resource
+        .descriptor()
+        .schema_source
+        .baseline_reference()
+        .ok_or_else(|| CdfError::internal("declared resource lost its schema baseline"))?;
+    if manifest.baseline_schema_hash.as_ref() != Some(baseline.schema_hash()) {
+        return Err(CdfError::data(
+            "declared schema observation manifest does not match the resource baseline",
+        ));
+    }
+    let runtime = artifacts.effective_schema_runtime.clone().ok_or_else(|| {
+        CdfError::contract("declared file schema observation omitted runtime evidence")
+    })?;
+    if runtime.evidence.baseline != baseline
+        || runtime.evidence.effective_schema_hash != *baseline.schema_hash()
+        || runtime.evidence.discovery_manifest != manifest.reference()
+    {
+        return Err(CdfError::data(
+            "declared schema runtime evidence does not match its compiler observation",
+        ));
+    }
+    Ok(PreparedEffectiveSchemaResource {
+        resource: resource.with_effective_schema(resource.schema(), runtime)?,
+        discovery_manifest: Some(manifest.clone()),
+    })
+}
+
 fn prepare_pinned_resource_effective_schema_artifacts_inner(
     project_root: &Path,
     resource: &CompiledResource,
@@ -369,9 +498,7 @@ fn prepare_pinned_resource_effective_schema_artifacts_inner(
         SchemaSnapshotStore::new(project_root).read_with_verified_baseline(snapshot)?;
     let probe_resource =
         resource.with_schema_source_and_schema(SchemaSource::Discover, baseline.schema().clone());
-    let options = SchemaDiscoveryExecutionOptions::new()
-        .with_verified_baseline(baseline.clone())
-        .for_runtime_effective_schema();
+    let options = SchemaDiscoveryExecutionOptions::new().with_verified_baseline(baseline.clone());
     let artifacts = discover_resource_schema_artifacts_inner(
         &probe_resource,
         secret_provider,
@@ -683,7 +810,7 @@ fn discover_binary_resource_schema(
 ) -> Result<ResourceSchemaDiscoveryArtifacts> {
     ensure_discover_schema_mode(resource)?;
     let baseline_schema_hash =
-        options.verified_baseline_hash_for(&resource.descriptor().resource_id)?;
+        options.runtime_baseline_hash_for(&resource.descriptor().resource_id)?;
     if candidates.is_empty() {
         return Err(CdfError::data(format!(
             "{transport_label} binary discovery for resource `{}` matched no files",
@@ -700,7 +827,11 @@ fn discover_binary_resource_schema(
         .collect::<Vec<_>>();
     let selection = plan_discovery_selection(
         &resource.descriptor().resource_id,
-        resource.schema_discovery_sample_files(),
+        if options.runtime_baseline().is_some() {
+            None
+        } else {
+            resource.schema_discovery_sample_files()
+        },
         &selector_candidates,
     )?;
     let coverage_label = match selection.coverage {
@@ -710,9 +841,7 @@ fn discover_binary_resource_schema(
 
     let scheduled_candidates = candidates
         .iter()
-        .filter(|candidate| {
-            options.runtime_effective_schema || selection.selects(&candidate.location)
-        })
+        .filter(|candidate| selection.selects(&candidate.location))
         .collect::<Vec<_>>();
     let weights = scheduled_candidates
         .iter()
@@ -773,7 +902,7 @@ fn discover_binary_resource_schema(
         })
         .collect::<Vec<_>>();
     let file_aggregate = plan_aggregate_arrow_schema_join(&aggregate_candidates)?;
-    if !options.runtime_effective_schema && !file_aggregate.is_compatible() {
+    if options.runtime_baseline.is_none() && !file_aggregate.is_compatible() {
         let file_reports = file_aggregate
             .files
             .iter()
@@ -805,24 +934,22 @@ fn discover_binary_resource_schema(
     }
 
     let contract = contract_policy_for_resource(resource);
-    let (effective_schema, terminal_quarantines) = if options.runtime_effective_schema {
-        let baseline = options.verified_baseline().ok_or_else(|| {
-            CdfError::contract(
-                "runtime effective-schema discovery requires a verified baseline snapshot",
+    let (effective_schema, terminal_quarantines) =
+        if let Some(baseline) = options.runtime_baseline() {
+            let admit_compatible_evolution = baseline.admits_evolution()
+                && selection.coverage == DiscoveryCoverageMode::Exhaustive;
+            classify_runtime_schema_observations(
+                &probes,
+                baseline,
+                &contract,
+                admit_compatible_evolution,
+            )?
+        } else {
+            (
+                normalize_arrow_schema(&file_aggregate.schema, &IdentifierPolicy::default())?,
+                Vec::new(),
             )
-        })?;
-        classify_runtime_schema_observations(
-            &probes,
-            baseline,
-            &contract,
-            selection.coverage == DiscoveryCoverageMode::Exhaustive,
-        )?
-    } else {
-        (
-            normalize_arrow_schema(&file_aggregate.schema, &IdentifierPolicy::default())?,
-            Vec::new(),
-        )
-    };
+        };
     let normalized = effective_schema;
     let normalized = Arc::new(normalized);
     let metadata = adapter.snapshot_metadata();
@@ -867,6 +994,10 @@ fn discover_binary_resource_schema(
             )
         })
         .collect::<Result<Vec<_>>>()?;
+    let effective_schema_identity = options
+        .runtime_baseline()
+        .map(|baseline| baseline.effective_schema_identity(&effective.schema_hash))
+        .unwrap_or_else(|| effective.schema_hash.clone());
     let manifest = DiscoveryManifestArtifact::new(DiscoveryManifestInput {
         resource_id: resource.descriptor().resource_id.to_string(),
         baseline_schema_hash,
@@ -874,7 +1005,7 @@ fn discover_binary_resource_schema(
         // snapshot binds this manifest, so using that final hash here would be
         // circular. The manifest hash and linked v2 snapshot hash remain the
         // authoritative identities of the complete discovery evidence.
-        effective_schema_hash: Some(effective.schema_hash),
+        effective_schema_hash: Some(effective_schema_identity),
         coverage: selection.coverage.clone(),
         selector: selection.selector.clone(),
         budget: options.budget.clone(),
@@ -936,18 +1067,12 @@ fn discover_binary_resource_schema(
             source_identity,
         },
     };
-    let effective_schema_runtime = if options.runtime_effective_schema {
-        let baseline = options.verified_baseline().ok_or_else(|| {
-            CdfError::contract(
-                "runtime effective-schema discovery requires a verified baseline snapshot",
+    let effective_schema_runtime = if let Some(baseline) = options.runtime_baseline() {
+        let effective_schema_hash = manifest.effective_schema_hash.clone().ok_or_else(|| {
+            CdfError::internal(
+                "local binary discovery manifest omitted its effective schema snapshot hash",
             )
         })?;
-        let effective_snapshot_schema_hash =
-            manifest.effective_schema_hash.clone().ok_or_else(|| {
-                CdfError::internal(
-                    "local binary discovery manifest omitted its effective schema snapshot hash",
-                )
-            })?;
         let mut observations = probes
             .iter()
             .map(|probe| {
@@ -972,8 +1097,8 @@ fn discover_binary_resource_schema(
         schema_catalog
             .dedup_by(|left, right| left.physical_schema_hash == right.physical_schema_hash);
         let mut evidence = EffectiveSchemaEvidence::new(
-            baseline.snapshot().clone(),
-            effective_snapshot_schema_hash,
+            baseline.reference(),
+            effective_schema_hash,
             manifest.reference(),
             observations,
         )?;
@@ -1126,7 +1251,7 @@ fn probe_binary_candidate(
 
 fn classify_runtime_schema_observations(
     probes: &[LocalBinaryProbe],
-    baseline: &VerifiedSchemaBaseline,
+    baseline: &RuntimeSchemaBaseline,
     contract: &ContractPolicy,
     admit_compatible_evolution: bool,
 ) -> Result<(
@@ -1134,8 +1259,7 @@ fn classify_runtime_schema_observations(
     Vec<TerminalSchemaObservationQuarantine>,
 )> {
     let mut effective = baseline.schema().as_ref().clone();
-    let mut physical_type_policy = contract.types.clone();
-    physical_type_policy.coerce_types = false;
+    let physical_type_policy = contract.types.clone();
     let mut quarantines = Vec::new();
     for probe in probes {
         if matches!(&contract.schema.mode, SchemaEvolutionMode::Freeze)
@@ -1166,8 +1290,15 @@ fn classify_runtime_schema_observations(
             effective = normalize_arrow_schema(&report.schema, &IdentifierPolicy::default())?;
             continue;
         }
-        if constrained.is_ok() && report.is_compatible() && !freeze_deviation {
-            continue;
+        if let Ok(constrained) = &constrained {
+            let projects_every_observed_field = constrained
+                .plan
+                .fields
+                .iter()
+                .all(|field| field.decision != cdf_contract::FieldCoercionDecision::Extra);
+            if projects_every_observed_field || (report.is_compatible() && !freeze_deviation) {
+                continue;
+            }
         }
 
         let mut fields = report
@@ -1541,12 +1672,12 @@ pub fn prepare_local_parquet_discover_resource(
         });
     }
 
-    let discovery = discover_resource_schema_artifacts(
-        resource,
-        &crate::EnvSecretProvider::from_map(std::iter::empty::<(&str, &str)>()),
-        Default::default(),
-    )?;
-    prepare_discovered_schema(project_root, resource, discovery)
+    let project_root = project_root.as_ref();
+    let secret_provider = crate::EnvSecretProvider::from_map(std::iter::empty::<(&str, &str)>());
+    let discovery =
+        discover_resource_schema_artifacts(resource, &secret_provider, Default::default())?;
+    let prepared = prepare_discovered_schema(project_root, resource, discovery)?;
+    attach_pinned_file_runtime(project_root, prepared, &secret_provider, None)
 }
 
 pub fn prepare_discover_resource(
@@ -1561,9 +1692,11 @@ pub fn prepare_discover_resource(
         });
     }
 
+    let project_root = project_root.as_ref();
     let discovery =
         discover_resource_schema_artifacts(resource, secret_provider, Default::default())?;
-    prepare_discovered_schema(project_root, resource, discovery)
+    let prepared = prepare_discovered_schema(project_root, resource, discovery)?;
+    attach_pinned_file_runtime(project_root, prepared, secret_provider, None)
 }
 
 pub fn prepare_discover_resource_with_file_dependencies(
@@ -1579,13 +1712,20 @@ pub fn prepare_discover_resource_with_file_dependencies(
         });
     }
 
+    let project_root = project_root.as_ref();
     let discovery = discover_resource_schema_with_file_dependencies_artifacts(
         resource,
         secret_provider,
-        file_dependencies,
+        file_dependencies.clone(),
         Default::default(),
     )?;
-    prepare_discovered_schema(project_root, resource, discovery)
+    let prepared = prepare_discovered_schema(project_root, resource, discovery)?;
+    attach_pinned_file_runtime(
+        project_root,
+        prepared,
+        secret_provider,
+        Some(file_dependencies),
+    )
 }
 
 pub fn prepare_discover_resource_with_rest_transport(
@@ -1625,6 +1765,23 @@ fn prepare_discovered_schema(
         resource,
         discovery: Some(discovery),
     })
+}
+
+fn attach_pinned_file_runtime(
+    project_root: &Path,
+    mut prepared: PreparedDiscoveredResource,
+    secret_provider: &dyn SecretProvider,
+    file_dependencies: Option<FileRuntimeDependencies>,
+) -> Result<PreparedDiscoveredResource> {
+    let effective = prepare_pinned_resource_effective_schema_artifacts_inner(
+        project_root,
+        &prepared.resource,
+        secret_provider,
+        file_dependencies,
+    )?;
+    let (resource, _) = effective.into_parts();
+    prepared.resource = resource;
+    Ok(prepared)
 }
 
 fn schema_source_needs_pin(source: &SchemaSource) -> bool {
@@ -1754,7 +1911,10 @@ pub fn apply_effective_discovered_schema(
             "effective multi-file schema execution requires verified physical schema runtime evidence",
         )
     })?;
-    if runtime.evidence.baseline_snapshot != *baseline.snapshot()
+    if runtime.evidence.baseline
+        != (SchemaBaselineReference::Pinned {
+            snapshot: baseline.snapshot().clone(),
+        })
         || runtime.evidence.discovery_manifest != manifest.reference()
     {
         return Err(CdfError::data(

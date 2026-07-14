@@ -37,7 +37,7 @@ use crate::{
     },
 };
 
-pub(crate) struct PreparedDiscoveryForCli {
+pub(crate) struct PreparedSchemaForCli {
     pub(crate) resource: CompiledResource,
     pub(crate) schema_snapshot: Option<SchemaSnapshotActionReport>,
 }
@@ -138,13 +138,29 @@ pub(crate) fn preview(
     }
 }
 
-pub(crate) fn prepare_discover_resource_for_cli(
+pub(crate) fn prepare_resource_schema_for_cli(
     destinations: &cdf_runtime::DestinationRegistry,
     context: &ProjectContext,
     resource: &CompiledResource,
     no_pin: bool,
     execution: Option<&cdf_runtime::ExecutionServices>,
-) -> Result<PreparedDiscoveryForCli, CliError> {
+) -> Result<PreparedSchemaForCli, CliError> {
+    if matches!(
+        resource.descriptor().schema_source,
+        SchemaSource::Declared { .. }
+    ) && matches!(resource.plan(), CompiledResourcePlan::Files(_))
+    {
+        let prepared = cdf_project::prepare_declared_file_schema_artifacts(
+            resource,
+            &context.secret_provider(),
+            file_runtime_dependencies(context, execution)?,
+        )?;
+        let (resource, _) = prepared.into_parts();
+        return Ok(PreparedSchemaForCli {
+            resource,
+            schema_snapshot: None,
+        });
+    }
     if let SchemaSource::Discovered { snapshot } = &resource.descriptor().schema_source
         && !no_pin
     {
@@ -166,7 +182,7 @@ pub(crate) fn prepare_discover_resource_for_cli(
             .discovery_manifest()
             .map(DiscoveryCoverageReport::from_manifest);
         let (prepared, _) = prepared.into_parts();
-        return Ok(PreparedDiscoveryForCli {
+        return Ok(PreparedSchemaForCli {
             resource: prepared,
             schema_snapshot: Some(SchemaSnapshotActionReport {
                 outcome: "unchanged",
@@ -193,7 +209,7 @@ pub(crate) fn prepare_discover_resource_for_cli(
         probe_resource.descriptor().schema_source,
         SchemaSource::Discover | SchemaSource::Hints { snapshot: None, .. }
     ) {
-        return Ok(PreparedDiscoveryForCli {
+        return Ok(PreparedSchemaForCli {
             resource: resource.clone(),
             schema_snapshot: None,
         });
@@ -292,7 +308,7 @@ pub(crate) fn prepare_discover_resource_for_cli(
     } else {
         (prepared_resource, discovery_coverage)
     };
-    Ok(PreparedDiscoveryForCli {
+    Ok(PreparedSchemaForCli {
         resource: prepared_resource,
         schema_snapshot: Some(SchemaSnapshotActionReport {
             outcome,
@@ -988,9 +1004,9 @@ struct ScanPlanReport {
 struct ResourceSchemaReport {
     schema_hash: String,
     #[serde(skip_serializing_if = "Option::is_none")]
-    baseline_snapshot_schema_hash: Option<String>,
+    baseline_schema_hash: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    effective_snapshot_schema_hash: Option<String>,
+    effective_schema_hash: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     effective_arrow_schema_hash: Option<String>,
     schema_source: String,
@@ -1183,14 +1199,10 @@ fn resource_schema_report(
     let snapshot = resource.descriptor().schema_source.pinned_snapshot();
     ResourceSchemaReport {
         schema_hash: schema_hash.to_string(),
-        baseline_snapshot_schema_hash: effective
-            .map(|evidence| evidence.authority.baseline_snapshot.schema_hash.to_string()),
-        effective_snapshot_schema_hash: effective.map(|evidence| {
-            evidence
-                .authority
-                .effective_snapshot_schema_hash
-                .to_string()
-        }),
+        baseline_schema_hash: effective
+            .map(|evidence| evidence.authority.baseline.schema_hash().to_string()),
+        effective_schema_hash: effective
+            .map(|evidence| evidence.authority.effective_schema_hash.to_string()),
         effective_arrow_schema_hash: effective
             .map(|evidence| evidence.effective_arrow_schema_hash.to_string()),
         schema_source: schema_source_name(&resource.descriptor().schema_source).to_owned(),

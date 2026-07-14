@@ -12,13 +12,12 @@ use arrow_schema::{DataType, Field, Schema};
 use arrow_select::filter::filter_record_batch;
 use arrow_select::take::take_record_batch;
 use cdf_contract::{
-    ContractEvaluationContext, ContractPolicy, QuarantineCandidate, RESIDUAL_ENCODING_METADATA_KEY,
+    ContractEvaluationContext, QuarantineCandidate, RESIDUAL_ENCODING_METADATA_KEY,
     RedactionDecision, ResidualCandidateVerdict, ResidualFieldRef, ResidualFieldWithRedaction,
-    TypePolicy, VARIANT_COLUMN_NAME, ValidationProgram, VectorValidationEvaluator, VerdictSummary,
+    VARIANT_COLUMN_NAME, ValidationProgram, VectorValidationEvaluator, VerdictSummary,
     encode_package_dedup_keys, encode_residual_json_v1, encode_residual_json_v1_redacted,
     evaluate_package_order_dedup, materialize_schema_coercion, package_dedup_rule,
-    reconcile_schema, reject_untrusted_schema_coercion_metadata,
-    schema_coercion_plan_from_trusted_json,
+    reject_untrusted_schema_coercion_metadata, schema_coercion_plan_from_trusted_json,
 };
 use cdf_kernel::{
     CdfError, PHYSICAL_TYPE_METADATA_KEY, PLAN_PHYSICAL_SCHEMA_HASH_KEY,
@@ -180,7 +179,6 @@ where
     EnginePreviewLimits::new(limits.max_rows, limits.max_bytes, limits.max_batches)?;
     let effective_schema_evidence = validate_effective_schema_plan(plan, resource)?;
     crate::planning::validate_plan_schema_authority(resource, plan)?;
-    let unplanned_schema_policy = resource_schema_constraint_policy(resource);
     let resource_schema = resource.schema();
     let runtime_output_schema = plan.output_arrow_schema()?;
     let expression_schema = scan_expression_schema(
@@ -365,7 +363,6 @@ where
                         } else {
                             &expression_schema
                         },
-                        &unplanned_schema_policy,
                     )?;
                     let record_batch = reconciled.record_batch;
                     let pre_contract_quarantined_rows =
@@ -742,7 +739,6 @@ fn materialize_batch_schema_evidence(
     record_batch: &RecordBatch,
     expected: Option<&EffectiveSchemaObservationCoercion>,
     effective_schema: &Schema,
-    unplanned_schema_policy: &TypePolicy,
 ) -> Result<MaterializedBatchSchema> {
     if let Some(expected) = expected
         && batch.header.observed_schema_hash != expected.physical_schema_hash
@@ -806,35 +802,11 @@ fn materialize_batch_schema_evidence(
                 coercion_plan: None,
             })
         }
-        (None, None) => {
-            let reconciliation = reconcile_schema(
-                record_batch.schema().as_ref(),
-                effective_schema,
-                unplanned_schema_policy,
-            )?;
-            let materialized = materialize_schema_coercion(
-                record_batch,
-                &reconciliation.schema,
-                &reconciliation.plan,
-            )?;
-            validate_effective_batch_schema(materialized.schema().as_ref(), effective_schema)?;
-            Ok(MaterializedBatchSchema {
-                record_batch: materialized,
-                coercion_plan: Some(reconciliation.plan),
-            })
-        }
+        (None, None) => Err(CdfError::data(format!(
+            "physical schema {} differs from the planned effective schema but the engine plan carries no compiled coercion evidence; re-plan the resource before execution",
+            batch.header.observed_schema_hash
+        ))),
     }
-}
-
-fn resource_schema_constraint_policy<R>(resource: &R) -> TypePolicy
-where
-    R: ResourceStream + ?Sized,
-{
-    let mut policy = ContractPolicy::for_trust(resource.descriptor().trust_level.clone()).types;
-    let allowances = resource.type_policy_allowances();
-    policy.coerce_types = allowances.coerce_types;
-    policy.allow_lossy_mapping = allowances.allow_lossy_mapping;
-    policy
 }
 
 fn compact_record_batch_prefix(batch: &RecordBatch, rows: usize) -> Result<RecordBatch> {
@@ -1534,8 +1506,8 @@ impl DedupProvenanceSink {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 struct PerObservationSchemaEvidenceArtifact {
-    baseline_snapshot_schema_hash: String,
-    effective_snapshot_schema_hash: String,
+    baseline_schema_hash: String,
+    effective_schema_hash: String,
     effective_arrow_schema_hash: String,
     discovery_manifest_hash: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1807,7 +1779,6 @@ where
     }
     let effective_schema_evidence = validate_effective_schema_plan(plan, resource)?;
     crate::planning::validate_plan_schema_authority(resource, plan)?;
-    let unplanned_schema_policy = resource_schema_constraint_policy(resource);
     let resource_schema = resource.schema();
     let runtime_output_schema = plan.output_arrow_schema()?;
     let expression_schema = scan_expression_schema(
@@ -2110,7 +2081,6 @@ where
                     } else {
                         &expression_schema
                     },
-                    &unplanned_schema_policy,
                 )?;
                 let record_batch = reconciled.record_batch;
                 let batch_coercion = reconciled.coercion_plan;
@@ -2477,15 +2447,8 @@ where
         builder.write_json_artifact(
             "schema/per-observation-coercion.json",
             &PerObservationSchemaEvidenceArtifact {
-                baseline_snapshot_schema_hash: evidence
-                    .authority
-                    .baseline_snapshot
-                    .schema_hash
-                    .to_string(),
-                effective_snapshot_schema_hash: evidence
-                    .authority
-                    .effective_snapshot_schema_hash
-                    .to_string(),
+                baseline_schema_hash: evidence.authority.baseline.schema_hash().to_string(),
+                effective_schema_hash: evidence.authority.effective_schema_hash.to_string(),
                 effective_arrow_schema_hash: evidence.effective_arrow_schema_hash.to_string(),
                 discovery_manifest_hash: evidence
                     .authority
@@ -3997,9 +3960,8 @@ where
         return Ok(None);
     };
     let schema_authority = plan.schema_authority();
-    if schema_authority.baseline_schema_hash != evidence.authority.baseline_snapshot.schema_hash
-        || schema_authority.effective_schema_hash
-            != evidence.authority.effective_snapshot_schema_hash
+    if schema_authority.baseline_schema_hash != *evidence.authority.baseline.schema_hash()
+        || schema_authority.effective_schema_hash != evidence.authority.effective_schema_hash
     {
         return Err(CdfError::data(
             "engine plan schema authority does not match effective-schema evidence",
@@ -4167,9 +4129,9 @@ mod transform_kernel_tests {
     use arrow_array::{BooleanArray, Int32Array, Int64Array, RecordBatch, StringArray};
     use arrow_schema::{DataType, Field, Schema};
     use cdf_contract::{
-        ContractEvaluationContext, ContractPolicy, Expression, ExpressionUse,
-        FieldCoercionDecision, ObservedSchema, SchemaEvolutionMode, TransformDescription,
-        TypePolicy, VectorValidationEvaluator, compile_validation_program,
+        ContractEvaluationContext, ContractPolicy, Expression, ExpressionUse, ObservedSchema,
+        SchemaEvolutionMode, TransformDescription, VectorValidationEvaluator,
+        compile_validation_program,
     };
     use cdf_kernel::{Batch, BatchId, PartitionId, ResourceId, TrustLevel, with_source_name};
     use cdf_memory::{DeterministicMemoryCoordinator, MemoryCoordinator};
@@ -4183,7 +4145,7 @@ mod transform_kernel_tests {
     };
 
     #[test]
-    fn unplanned_physical_schema_is_constrained_once_at_the_engine_boundary() {
+    fn unplanned_physical_schema_fails_closed_before_execution() {
         let physical_schema = Arc::new(Schema::new(vec![Field::new(
             "VendorID",
             DataType::Int32,
@@ -4207,27 +4169,14 @@ mod transform_kernel_tests {
             "VendorID",
         )]);
 
-        let materialized = materialize_batch_schema_evidence(
-            &batch,
-            &physical,
-            None,
-            &effective,
-            &TypePolicy::strict_fidelity(),
-        )
-        .unwrap();
+        let Err(error) = materialize_batch_schema_evidence(&batch, &physical, None, &effective)
+        else {
+            panic!("unplanned physical schema was accepted")
+        };
+        let error = error.to_string();
 
-        assert_eq!(
-            materialized.record_batch.schema().field(0).name(),
-            "vendor_id"
-        );
-        assert_eq!(
-            materialized.record_batch.schema().field(0).data_type(),
-            &DataType::Int64
-        );
-        let plan = materialized.coercion_plan.unwrap();
-        assert_eq!(plan.fields[0].decision, FieldCoercionDecision::Widened);
-        assert_eq!(plan.fields[0].observed_type.as_deref(), Some("Int32"));
-        assert_eq!(plan.fields[0].constraint_type.as_deref(), Some("Int64"));
+        assert!(error.contains("no compiled coercion evidence"), "{error}");
+        assert!(error.contains("re-plan"), "{error}");
     }
 
     #[test]

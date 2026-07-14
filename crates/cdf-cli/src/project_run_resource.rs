@@ -135,7 +135,7 @@ pub(crate) fn prepare_runtime_resource_for_cli(
         });
     }
     let compiled = context.resource(resource_id)?;
-    let prepared = crate::scan_command::prepare_discover_resource_for_cli(
+    let prepared = crate::scan_command::prepare_resource_schema_for_cli(
         destinations,
         context,
         compiled,

@@ -3422,8 +3422,17 @@ schema = { fields = [
     assert_eq!(schema.field(0).data_type(), &DataType::Int64);
     assert_eq!(schema.field(0).metadata()["cdf:source_name"], "VendorID");
     assert!(!schema.field(0).metadata().contains_key("cdf:physical_type"));
+    let evidence: serde_json::Value = serde_json::from_slice(
+        &fs::read(package_dir.join("schema/effective-schema-evidence.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(evidence["authority"]["baseline"]["kind"], "declared");
+    let per_observation: serde_json::Value = serde_json::from_slice(
+        &fs::read(package_dir.join("schema/per-observation-coercion.json")).unwrap(),
+    )
+    .unwrap();
     let coercion: cdf_contract::SchemaCoercionPlan =
-        serde_json::from_slice(&fs::read(package_dir.join("schema/coercion-plan.json")).unwrap())
+        serde_json::from_value(per_observation["observations"][0]["coercion_plan"].clone())
             .unwrap();
     let vendor = coercion
         .fields
@@ -10024,8 +10033,8 @@ fn run_multi_file_parquet_evolves_from_immutable_pinned_baseline_with_exact_obse
     assert_eq!(evolved_plan.exit_code, 0, "{}", evolved_plan.stderr);
     let evolved_report = stderr_or_stdout_json(&evolved_plan.stdout);
     let schema = &evolved_report["result"]["resource_schema"];
-    assert_eq!(schema["baseline_snapshot_schema_hash"], baseline_hash);
-    assert_ne!(schema["effective_snapshot_schema_hash"], baseline_hash);
+    assert_eq!(schema["baseline_schema_hash"], baseline_hash);
+    assert_ne!(schema["effective_schema_hash"], baseline_hash);
     assert!(schema["effective_arrow_schema_hash"].is_string());
     assert!(
         schema["fields"]
@@ -10126,11 +10135,11 @@ fn run_multi_file_parquet_evolves_from_immutable_pinned_baseline_with_exact_obse
     .unwrap();
     assert_eq!(effective["observations"].as_array().unwrap().len(), 3);
     assert_eq!(
-        effective["authority"]["baseline_snapshot"]["schema_hash"],
+        effective["authority"]["baseline"]["snapshot"]["schema_hash"],
         baseline_hash
     );
     assert_ne!(
-        effective["authority"]["effective_snapshot_schema_hash"],
+        effective["authority"]["effective_schema_hash"],
         effective["effective_arrow_schema_hash"]
     );
     let per_observation: serde_json::Value = serde_json::from_slice(
@@ -10243,8 +10252,8 @@ fn financial_freeze_quarantines_deviating_file_and_commits_mixed_processed_manif
         .as_str()
         .unwrap()
         .to_owned();
-    let baseline_effective_snapshot =
-        baseline_report["result"]["resource_schema"]["effective_snapshot_schema_hash"].clone();
+    let baseline_effective_schema =
+        baseline_report["result"]["resource_schema"]["effective_schema_hash"].clone();
     let baseline_effective_arrow =
         baseline_report["result"]["resource_schema"]["effective_arrow_schema_hash"].clone();
     let snapshot_path = baseline_report["result"]["schema_snapshot"]["path"]
@@ -10266,13 +10275,10 @@ fn financial_freeze_quarantines_deviating_file_and_commits_mixed_processed_manif
     assert_eq!(conforming.exit_code, 0, "{}", conforming.stderr);
     let conforming_report = stderr_or_stdout_json(&conforming.stdout);
     let conforming_schema = &conforming_report["result"]["resource_schema"];
+    assert_eq!(conforming_schema["baseline_schema_hash"], baseline_hash);
     assert_eq!(
-        conforming_schema["baseline_snapshot_schema_hash"],
-        baseline_hash
-    );
-    assert_eq!(
-        conforming_schema["effective_snapshot_schema_hash"],
-        baseline_effective_snapshot
+        conforming_schema["effective_schema_hash"],
+        baseline_effective_schema
     );
     assert_eq!(
         conforming_schema["effective_arrow_schema_hash"],

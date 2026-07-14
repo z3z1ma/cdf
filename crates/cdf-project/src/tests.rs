@@ -805,7 +805,6 @@ fn discovery_executor_budget_defaults_and_rejects_invalid_shapes() {
     assert_eq!(budget.max_concurrent_probes(), 8);
     let options = SchemaDiscoveryExecutionOptions::new();
     assert_eq!(options.budget(), &budget);
-    assert!(options.verified_baseline().is_none());
 
     for (per_file, total, probes, expected) in [
         (0, 1, 1, "max_metadata_bytes_per_file"),
@@ -1563,6 +1562,70 @@ fn object_store_multi_file_parquet_discovery_pins_one_reconciled_snapshot() {
     .unwrap();
     assert_eq!(prepared.discovery_manifest().unwrap().candidates.len(), 2);
     assert!(prepared.resource().effective_schema_runtime().is_some());
+}
+
+#[test]
+fn declared_multi_file_parquet_compiles_every_physical_schema_before_execution() {
+    let temp = tempfile::tempdir().unwrap();
+    write_discover_project(temp.path(), "parquet", "*.parquet");
+    fs::write(
+        temp.path().join("resources/files.toml"),
+        r#"
+[source.local]
+kind = "files"
+root = "data"
+
+[resource.events]
+glob = "*.parquet"
+format = "parquet"
+write_disposition = "append"
+trust = "governed"
+schema = { fields = [
+  { name = "VendorID", type = "int64", nullable = false },
+] }
+"#,
+    )
+    .unwrap();
+    write_vendor_parquet(&temp.path().join("data/01.parquet"));
+    write_vendor_parquet(&temp.path().join("data/02.parquet"));
+    let resource = compile_single_project_resource(temp.path());
+    let dependencies = file_dependencies(FileTransportFacade::new());
+
+    let prepared = prepare_declared_file_schema_artifacts(
+        &resource,
+        &EnvSecretProvider::from_map(std::iter::empty::<(&str, &str)>()),
+        dependencies.clone(),
+    )
+    .unwrap();
+
+    let manifest = prepared.discovery_manifest().unwrap();
+    assert_eq!(manifest.coverage, DiscoveryCoverageMode::Exhaustive);
+    assert_eq!(manifest.candidates.len(), 2);
+    assert!(
+        manifest
+            .candidates
+            .iter()
+            .all(|candidate| { candidate.participation == DiscoveryParticipation::Probed })
+    );
+    let runtime_evidence = prepared.resource().effective_schema_runtime().unwrap();
+    assert!(matches!(
+        runtime_evidence.evidence.baseline,
+        cdf_kernel::SchemaBaselineReference::Declared { .. }
+    ));
+    assert_eq!(runtime_evidence.evidence.observations.len(), 2);
+    assert!(runtime_evidence.terminal_quarantines.is_empty());
+
+    let runtime = prepared.resource().to_file_resource(dependencies).unwrap();
+    let plan = live_plan_for_stream(&runtime, "pkg-declared-multi-file");
+    assert_eq!(plan.scan.partitions.len(), 2);
+    let plan_evidence = plan.effective_schema_evidence().unwrap();
+    assert_eq!(plan_evidence.observations.len(), 2);
+    assert!(plan_evidence.observations.iter().all(|observation| {
+        observation.coercion_plan.fields.iter().any(|field| {
+            field.source_name == "VendorID"
+                && field.decision == cdf_contract::FieldCoercionDecision::Widened
+        })
+    }));
 }
 
 #[test]

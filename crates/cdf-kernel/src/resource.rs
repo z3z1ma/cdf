@@ -141,6 +141,50 @@ impl SchemaSource {
             | SchemaSource::Contract { .. } => None,
         }
     }
+
+    pub fn baseline_reference(&self) -> Option<SchemaBaselineReference> {
+        match self {
+            SchemaSource::Declared {
+                schema_hash,
+                source,
+            } => Some(SchemaBaselineReference::Declared {
+                schema_hash: schema_hash.clone(),
+                source: source.clone(),
+            }),
+            SchemaSource::Discovered { snapshot }
+            | SchemaSource::Hints {
+                snapshot: Some(snapshot),
+                ..
+            } => Some(SchemaBaselineReference::Pinned {
+                snapshot: snapshot.clone(),
+            }),
+            SchemaSource::Discover
+            | SchemaSource::Hints { snapshot: None, .. }
+            | SchemaSource::Contract { .. } => None,
+        }
+    }
+}
+
+#[non_exhaustive]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum SchemaBaselineReference {
+    Declared {
+        schema_hash: SchemaHash,
+        source: String,
+    },
+    Pinned {
+        snapshot: SchemaSnapshotReference,
+    },
+}
+
+impl SchemaBaselineReference {
+    pub fn schema_hash(&self) -> &SchemaHash {
+        match self {
+            Self::Declared { schema_hash, .. } => schema_hash,
+            Self::Pinned { snapshot } => &snapshot.schema_hash,
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -676,8 +720,8 @@ impl EffectiveSchemaCatalogEntry {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EffectiveSchemaEvidence {
     pub version: u16,
-    pub baseline_snapshot: SchemaSnapshotReference,
-    pub effective_snapshot_schema_hash: SchemaHash,
+    pub baseline: SchemaBaselineReference,
+    pub effective_schema_hash: SchemaHash,
     pub discovery_manifest: DiscoveryManifestReference,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub discovery_coverage: Option<DiscoveryCoverageEvidence>,
@@ -686,16 +730,16 @@ pub struct EffectiveSchemaEvidence {
 
 impl EffectiveSchemaEvidence {
     pub fn new(
-        baseline_snapshot: SchemaSnapshotReference,
-        effective_snapshot_schema_hash: SchemaHash,
+        baseline: SchemaBaselineReference,
+        effective_schema_hash: SchemaHash,
         discovery_manifest: DiscoveryManifestReference,
         mut observations: Vec<EffectiveSchemaObservationEvidence>,
     ) -> Result<Self> {
         observations.sort_by(|left, right| left.observation_id.cmp(&right.observation_id));
         let evidence = Self {
             version: EFFECTIVE_SCHEMA_EVIDENCE_VERSION,
-            baseline_snapshot,
-            effective_snapshot_schema_hash,
+            baseline,
+            effective_schema_hash,
             discovery_manifest,
             discovery_coverage: None,
             observations,
@@ -743,9 +787,9 @@ impl EffectiveSchemaEvidence {
 
     pub fn validate_for_resource(&self, descriptor: &ResourceDescriptor) -> Result<()> {
         self.validate_intrinsic()?;
-        if descriptor.schema_source.pinned_snapshot() != Some(&self.baseline_snapshot) {
+        if descriptor.schema_source.baseline_reference().as_ref() != Some(&self.baseline) {
             return Err(CdfError::data(
-                "effective schema evidence baseline does not match the resource's pinned snapshot",
+                "effective schema evidence baseline does not match the resource schema constraint",
             ));
         }
         Ok(())

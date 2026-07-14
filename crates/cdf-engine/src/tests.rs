@@ -31,8 +31,8 @@ use cdf_kernel::{
     PreContractQuarantineFact, PreContractResidualCandidate, PredicateId, PushdownFidelity,
     QueryableResource, ResourceCapabilities, ResourceDescriptor, ResourceId, ResourceStream,
     Result, RunId, RunPhase, RunPhaseStatus, STRATIFIED_HASH_SELECTOR_V1, ScanPlan, ScanPredicate,
-    ScanRequest, SchemaHash, SchemaObservationFieldQuarantine, SchemaObservationPolicy,
-    SchemaSnapshotReference, SchemaSource, ScopeKey, SourcePosition,
+    ScanRequest, SchemaBaselineReference, SchemaHash, SchemaObservationFieldQuarantine,
+    SchemaObservationPolicy, SchemaSnapshotReference, SchemaSource, ScopeKey, SourcePosition,
     TerminalSchemaObservationQuarantine, TrustLevel, WriteDisposition, source_name, with_semantic,
 };
 use cdf_package_contract::{
@@ -642,7 +642,9 @@ fn effective_schema_reuses_observation_across_partitions_and_attests_only_attemp
     let descriptor = descriptor();
     let baseline_snapshot = descriptor.schema_source.pinned_snapshot().unwrap().clone();
     let evidence = EffectiveSchemaEvidence::new(
-        baseline_snapshot,
+        SchemaBaselineReference::Pinned {
+            snapshot: baseline_snapshot,
+        },
         SchemaHash::new("effective-snapshot-v1").unwrap(),
         DiscoveryManifestReference {
             manifest_hash: DiscoveryManifestHash::new("manifest-v1").unwrap(),
@@ -862,7 +864,9 @@ fn terminal_effective_schema_runtime(
 ) -> EffectiveSchemaRuntime {
     let descriptor = descriptor();
     let evidence = EffectiveSchemaEvidence::new(
-        descriptor.schema_source.pinned_snapshot().unwrap().clone(),
+        SchemaBaselineReference::Pinned {
+            snapshot: descriptor.schema_source.pinned_snapshot().unwrap().clone(),
+        },
         SchemaHash::new("effective-snapshot-v1").unwrap(),
         DiscoveryManifestReference {
             manifest_hash: DiscoveryManifestHash::new("manifest-v1").unwrap(),
@@ -2443,7 +2447,9 @@ fn residual_multi_partition_decisions_share_verified_effective_schema_and_keep_i
         .clone();
     let effective_schema_hash = SchemaHash::new("effective-snapshot-v1").unwrap();
     let evidence = EffectiveSchemaEvidence::new(
-        baseline_snapshot,
+        SchemaBaselineReference::Pinned {
+            snapshot: baseline_snapshot,
+        },
         effective_schema_hash.clone(),
         DiscoveryManifestReference {
             manifest_hash: DiscoveryManifestHash::new("manifest-residual-mixed").unwrap(),
