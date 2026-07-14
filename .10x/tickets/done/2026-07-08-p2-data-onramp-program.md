@@ -24,7 +24,7 @@ This parent is a plan and orchestration record. Workstream tickets own the major
 - `.10x/specs/data-onramp-file-sources-transports.md`.
 - `.10x/specs/data-onramp-source-experience-cli.md`.
 - `.10x/specs/data-onramp-conformance.md`.
-- `.10x/specs/sampled-schema-discovery-coverage.md`.
+- `.10x/specs/superseded/sampled-schema-discovery-coverage.md` (historical; active successor: `.10x/specs/schema-discovery-and-stream-admission.md`).
 - `.10x/specs/residual-variant-capture.md`.
 - `.10x/specs/schema-promotion-corrections.md`.
 - `.10x/specs/resource-authoring-planning-batches.md`.

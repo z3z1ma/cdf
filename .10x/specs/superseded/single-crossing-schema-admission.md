@@ -1,12 +1,14 @@
-Status: active
+Status: superseded
 Created: 2026-07-13
 Updated: 2026-07-13
 
 # Single-crossing schema admission
 
+Superseded-By: `.10x/specs/schema-discovery-and-stream-admission.md`
+
 ## Purpose and scope
 
-This specification governs the join between discovery coverage, runtime schema observation, source extraction, and observation caching. It refines `.10x/specs/sampled-schema-discovery-coverage.md`, `.10x/specs/data-onramp-schema-intelligence.md`, `.10x/specs/residual-variant-capture.md`, and `.10x/decisions/single-crossing-expensive-source-boundary.md`.
+This specification governed the join between discovery coverage, runtime schema observation, source extraction, and observation caching. It refined `.10x/specs/superseded/sampled-schema-discovery-coverage.md`, `.10x/specs/data-onramp-schema-intelligence.md`, `.10x/specs/residual-variant-capture.md`, and `.10x/decisions/superseded/single-crossing-expensive-source-boundary.md`.
 
 It applies to file, REST, SQL cursor streams, Python, Lua, and WASM sources. It does not change explicit replay/retry semantics or authorize implicit typed-schema promotion.
 

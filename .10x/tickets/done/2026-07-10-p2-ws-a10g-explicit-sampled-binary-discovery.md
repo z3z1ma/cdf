@@ -2,7 +2,7 @@ Status: done
 Created: 2026-07-10
 Updated: 2026-07-10
 Parent: .10x/tickets/done/2026-07-09-p2-ws-a10-multi-file-schema-discovery-pin.md
-Depends-On: .10x/specs/sampled-schema-discovery-coverage.md, .10x/tickets/done/2026-07-09-p2-ws-a10a-discovery-manifest-artifact-budget.md, .10x/tickets/done/2026-07-09-p2-ws-a10b-aggregate-schema-join-core.md, .10x/tickets/done/2026-07-09-p2-ws-a10c-exhaustive-local-binary-discovery.md, .10x/tickets/done/2026-07-09-p2-ws-a10d-effective-schema-runtime-evidence.md, .10x/tickets/done/2026-07-09-p2-ws-a10e-file-quarantine-processed-positions.md, .10x/tickets/done/2026-07-10-p2-rp2-residual-verdict-runtime-package.md
+Depends-On: .10x/specs/superseded/sampled-schema-discovery-coverage.md, .10x/tickets/done/2026-07-09-p2-ws-a10a-discovery-manifest-artifact-budget.md, .10x/tickets/done/2026-07-09-p2-ws-a10b-aggregate-schema-join-core.md, .10x/tickets/done/2026-07-09-p2-ws-a10c-exhaustive-local-binary-discovery.md, .10x/tickets/done/2026-07-09-p2-ws-a10d-effective-schema-runtime-evidence.md, .10x/tickets/done/2026-07-09-p2-ws-a10e-file-quarantine-processed-positions.md, .10x/tickets/done/2026-07-10-p2-rp2-residual-verdict-runtime-package.md
 
 # P2 WS-A10g explicit sampled binary discovery
 
@@ -13,7 +13,7 @@ Add explicit `sample_files = N` discovery coverage to the format-neutral discove
 ## Acceptance criteria
 
 - `sample_files` is positive, explicit, schema-validated, and absent by default.
-- Candidate selection implements every edge and canonical score/stratum rule in `.10x/specs/sampled-schema-discovery-coverage.md`.
+- Candidate selection implements every edge and canonical score/stratum rule in `.10x/specs/superseded/sampled-schema-discovery-coverage.md`; the active successor preserves that selector under two-axis coverage.
 - `M <= N` records exhaustive coverage; `M > N` records sampled coverage and exact probed/unprobed entries.
 - Selection precedes scheduling and is invariant to enumeration permutation, concurrency, and probe completion order.
 - Budgets fail selected probes without substitution or membership changes.

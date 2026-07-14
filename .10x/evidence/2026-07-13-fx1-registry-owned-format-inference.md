@@ -44,7 +44,7 @@ Static searches found no first-party format inference function or first-party fo
 
 This supports FX1 acceptance that format selection and format-specific capabilities are registry-owned, executable source plans pin codec semantics, and generic orchestration does not branch on first-party format identity. It also restores preview/deep-validation use of the real resolved source boundary after dependency-free file shims were deleted.
 
-It does not close FX1: the monolithic `cdf-formats` parser/dispatch surface and project-level external codec over a remote provider remain. It also does not solve cold-run/pinned-run schema lifecycle reuse. The bounded strong-magic confirmation and the driver discovery observation are still separate reads; `.10x/tickets/2026-07-13-p0-single-crossing-schema-admission.md` owns observation reuse and removal of pre-extraction schema passes.
+It does not close FX1: the monolithic `cdf-formats` parser/dispatch surface and project-level external codec over a remote provider remain. It also does not solve cold-run/pinned-run schema lifecycle reuse. The bounded strong-magic confirmation and the driver discovery observation are still separate reads; `.10x/tickets/2026-07-13-p0-fixed-schema-discovery-stream-admission.md` owns observation reuse and removal of pre-extraction schema passes.
 
 ## Limits
 

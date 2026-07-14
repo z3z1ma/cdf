@@ -1,8 +1,10 @@
-Status: active
+Status: superseded
 Created: 2026-07-10
-Updated: 2026-07-10
+Updated: 2026-07-13
 
 # Sampled schema discovery coverage
+
+Superseded-By: `.10x/specs/schema-discovery-and-stream-admission.md`
 
 ## Purpose and scope
 

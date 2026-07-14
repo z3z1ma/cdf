@@ -1,8 +1,10 @@
-Status: active
+Status: superseded
 Created: 2026-07-13
 Updated: 2026-07-13
 
 # Single-crossing expensive source boundary
+
+Superseded-By: `.10x/decisions/fixed-schema-discovery-and-stream-admission.md`
 
 ## Context
 
@@ -45,4 +47,3 @@ Keep the first sampled window only in memory for later reread.
 ## Consequences
 
 Source plans need a deferred schema-admission operation. Codec/source streams need a retained-prefix or retained-batch handoff. Observation cache entries need versioned identity keys and generation-safe invalidation. File inventory and ordinary planning become payload-free. Existing runtime-baseline logic that disables `sample_files` and probes all candidates must be deleted, not shimmed.
-

@@ -50,7 +50,7 @@ This parent is an aggregate plan. Workstream records own sequencing and integrat
 - `.10x/tickets/2026-07-10-p3-ws-h-interop-boundaries.md`
 - `.10x/tickets/2026-07-11-p3-ws-v-vectorized-validation.md`
 - `.10x/tickets/2026-07-12-p3-ws-j-datafusion-currency-bridges.md`
-- `.10x/tickets/2026-07-13-p0-single-crossing-schema-admission.md`
+- `.10x/tickets/2026-07-13-p0-fixed-schema-discovery-stream-admission.md`
 
 ## Sequencing
 
@@ -93,7 +93,7 @@ P3 does not implement a distributed scheduler, remote worker leases, resident st
 - 2026-07-11: Envelope ownership audit found the ≥1 GB/s/core validation target had no implementation child while the current evaluator is per-rule/per-row scalar. WS-V now owns engine-neutral vector kernels, bitmap verdict algebra, graph integration, scalar differential proof, and the target closeout.
 - 2026-07-11: WS-L completed before any P3 data-plane optimization. The immutable report and honest failing envelope are recorded at `.10x/evidence/2026-07-11-p3-l5-preoptimization-baseline.md`; WS-A now owns the exclusive runtime-spine migration window, while crate-bounded WS-B/WS-D/WS-E work remains eligible only where it does not cross that frozen surface.
 - 2026-07-12: Added WS-J under `.10x/decisions/datafusion-analysis-scheduling-identity-boundary.md` and `.10x/specs/datafusion-currency-bridges.md`. DataFusion is the standard currency for pruning, expressions, catalogs, memory/object-store sessions, plans, and metrics, while deterministic native CDF operators exclusively produce identity-bearing bytes and verdicts. The sequence reuses completed A2 memory authority, open FX1/WX1/G1 seams, and prevents P3 APIs from hardening private substitutes.
-- 2026-07-13: Added the P0 single-crossing schema-admission program after the 100-remote-JSON-file counterexample exposed runtime pre-observation as a second source execution. The governing law now separates metadata-only inventory and bounded reusable schema metadata from payload transfer, fuses row/dynamic observation into the admitted stream, and forbids disabling sampled coverage merely because a baseline exists. SA1-SA5 join FX1, G1/G2/G3, B4/B5, and H2/H4 without adding source-format branches.
+- 2026-07-13: Added the P0 fixed-schema discovery and stream-admission program after the 100-remote-JSON-file counterexample exposed runtime pre-observation as a second source execution. The corrected authority requires a fixed schema before final planning, removes current-schema pre-scans from pinned execution, represents file and within-file discovery coverage independently, and reuses materially downloaded payloads during the same command. SA0-SA5 join FX1, G1/G2/G3, B4/B5, and H2/H4 without adding source-format branches.
 
 ## Blockers
 

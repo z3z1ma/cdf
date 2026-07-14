@@ -1,14 +1,13 @@
 Status: open
 Created: 2026-07-13
 Updated: 2026-07-13
-Parent: .10x/tickets/2026-07-13-p0-single-crossing-schema-admission.md
-Depends-On: .10x/tickets/2026-07-11-p0-fx1-native-format-extension-boundary.md
+Parent: .10x/tickets/2026-07-13-p0-fixed-schema-discovery-stream-admission.md
 
-# P0 SA1: deferred schema-admission plan IR
+# P0 SA1: compiled stream-admission plan IR
 
 ## Scope
 
-Compile one source/codec-neutral, total deferred schema-admission operation and serialize its exact observation/verdict evidence into packages without execution-time reparsing or policy invention.
+Compile one source/codec-neutral, total stream-admission operation against a fixed output schema and serialize its exact physical-observation/verdict evidence into packages without execution-time reparsing, reoptimization, or policy invention.
 
 ## Non-goals
 
@@ -22,12 +21,12 @@ No source I/O, cache, codec loop, or destination behavior.
 
 ## References
 
-- `.10x/specs/single-crossing-schema-admission.md`
+- `.10x/specs/schema-discovery-and-stream-admission.md`
 - `.10x/specs/residual-variant-capture.md`
 
 ## Assumptions
 
-Exact semantics are user-ratified in `.10x/decisions/single-crossing-expensive-source-boundary.md`.
+Exact semantics are user-ratified in `.10x/decisions/fixed-schema-discovery-and-stream-admission.md`.
 
 ## Journal
 
@@ -35,7 +34,7 @@ Pending.
 
 ## Blockers
 
-Depends on FX1 plan authority.
+None. FX1's compiled format binding prerequisite is committed and evidenced.
 
 ## Evidence
 
@@ -48,4 +47,3 @@ Pending.
 ## Retrospective
 
 Pending.
-

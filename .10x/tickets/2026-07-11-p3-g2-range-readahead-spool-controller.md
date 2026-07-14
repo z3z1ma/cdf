@@ -32,7 +32,7 @@ Depends on G1, C1, and memory ledger.
 ## References
 
 - `.10x/specs/remote-local-io-overlap.md`
-- `.10x/specs/single-crossing-schema-admission.md`
+- `.10x/specs/schema-discovery-and-stream-admission.md`
 
 ## Progress and notes
 
@@ -42,4 +42,5 @@ Depends on G1, C1, and memory ledger.
 - 2026-07-12: Added the first explicit access-policy join. Format drivers declare sequential/seekable/adaptive access; sequential HTTP/object-store formats stream directly, while adaptive full/unknown scans use one verified spool. This prevents capability availability from accidentally selecting pathological ranges. Selectivity propagation, controller feedback, retries, cache, and overlap remain open. Evidence/review: `.10x/evidence/2026-07-12-p3-g1-async-http-byte-source.md`, `.10x/reviews/2026-07-12-p3-g1-async-http-byte-source-review.md`.
 - 2026-07-12: Migrated strong-generation full-scan spooling from synchronous transport download to the injected async byte source. The spool reserves the shared spill budget before transfer, streams accounted chunks with async writes, hashes/verifies once, and retains disk authority through decode. Growing-spool overlap, weak providers, transform staging, chaos, cache, and controller feedback remain. Evidence/review: `.10x/evidence/2026-07-12-p3-g2-accounted-async-full-scan-spool.md`, `.10x/reviews/2026-07-12-p3-g2-accounted-async-full-scan-spool-review.md`.
 - 2026-07-12: Removed provider-input plus transformed-output double spooling for injected sources. Unknown transformed lengths now grow the shared spill reservation before disk writes; sequential transformed codecs avoid the spool entirely, while adaptive codecs retain one bounded transformed-output spool. Growing-spool decode overlap remains open. Evidence/review: `.10x/evidence/2026-07-12-p3-b1-streaming-transform-product-composition.md`, `.10x/reviews/2026-07-12-p3-b1-streaming-transform-product-composition-review.md`.
-- 2026-07-13: The new single-crossing law makes G2's cache/spool controller the payload-reuse owner, not schema discovery. A schema observation that requires payload bytes must continue the same live stream or exact spool; cache keys include source generation plus codec/options/normalizer/contract identity. G2 must expose this reusable source session without embedding schema or format policy.
+- 2026-07-13: The fixed-schema discovery/stream-admission model makes G2's cache/spool controller the payload-reuse owner, not schema discovery. A materially downloaded schema observation must continue through the same live stream or exact spool; a small unspooled bounded probe may be reread within its recorded budget. Cache keys include source generation plus codec/options/normalizer/contract identity. G2 must expose this reusable source session without embedding schema or format policy.
+- 2026-07-13: The corrected lifecycle permits rereading a small unspooled bounded probe but requires same-command reuse of any fully downloaded/decompressed payload spool. G2 owns the neutral reusable spool/session handoff; schema discovery owns neither transport caching nor format-specific extraction.

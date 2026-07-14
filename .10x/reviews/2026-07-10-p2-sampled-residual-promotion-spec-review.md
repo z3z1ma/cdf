@@ -1,7 +1,7 @@
 Status: recorded
 Created: 2026-07-10
 Updated: 2026-07-10
-Target: .10x/specs/sampled-schema-discovery-coverage.md, .10x/specs/residual-variant-capture.md, .10x/specs/schema-promotion-corrections.md, .10x/tickets/done/2026-07-10-p2-residual-schema-promotion-program.md
+Target: .10x/specs/superseded/sampled-schema-discovery-coverage.md, .10x/specs/residual-variant-capture.md, .10x/specs/schema-promotion-corrections.md, .10x/tickets/done/2026-07-10-p2-residual-schema-promotion-program.md
 Verdict: pass
 
 # P2 sampled discovery, residual capture, and promotion specification review

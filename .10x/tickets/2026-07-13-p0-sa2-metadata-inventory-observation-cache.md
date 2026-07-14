@@ -1,14 +1,13 @@
 Status: open
 Created: 2026-07-13
 Updated: 2026-07-13
-Parent: .10x/tickets/2026-07-13-p0-single-crossing-schema-admission.md
-Depends-On: .10x/tickets/2026-07-11-p3-g1-streaming-transport-byte-sources.md
+Parent: .10x/tickets/2026-07-13-p0-fixed-schema-discovery-stream-admission.md
 
-# P0 SA2: metadata-only inventory and observation cache
+# P0 SA2: metadata inventory, two-axis coverage, and observation cache
 
 ## Scope
 
-Make file inventory payload-free and add a versioned observation cache keyed by immutable generation plus codec/options/normalizer/contract identity.
+Make local/remote file inventory payload-free, remove local whole-file hashing from planning, encode independent file and within-file coverage, and add a versioned observation cache keyed by immutable generation plus codec/options/normalizer/contract identity.
 
 ## Non-goals
 
@@ -18,13 +17,14 @@ No fused decoder changes or dynamic producer lifecycle.
 
 - Local/object-store/HTTP inventory reads no payload bytes.
 - `sample_files` selection occurs before any probe for every registered format.
+- Manifests encode `all_files|sampled_files` separately from `format_metadata|bounded_content|full_content`; unqualified exhaustive evidence is deleted.
+- Local whole-file hashing occurs while extraction/spooling reads content, never during inventory.
 - Cache exact hits avoid schema I/O; weak/mismatched/corrupt entries miss safely.
 - Cache storage, bounds, cleanup, and telemetry are explicit and remain outside package identity.
 
 ## References
 
-- `.10x/specs/single-crossing-schema-admission.md`
-- `.10x/specs/sampled-schema-discovery-coverage.md`
+- `.10x/specs/schema-discovery-and-stream-admission.md`
 
 ## Assumptions
 
@@ -36,7 +36,7 @@ Pending.
 
 ## Blockers
 
-Depends on G1 generation-bound identities.
+None. Generation-strength and neutral byte-source prerequisites are committed.
 
 ## Evidence
 
@@ -49,4 +49,3 @@ Pending.
 ## Retrospective
 
 Pending.
-
