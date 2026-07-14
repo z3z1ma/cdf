@@ -255,8 +255,8 @@ impl Planner {
             boundedness: input.boundedness,
             write_disposition: finish.write_disposition,
             validation_program,
-            schema_authority: Some(finish.schema_authority),
-            output_schema: Some(finish.output_schema),
+            schema_authority: finish.schema_authority,
+            output_schema: finish.output_schema,
             operator_chain,
             explain,
             package_id: input.package_id,
@@ -504,7 +504,7 @@ pub(crate) fn rebind_validation_program(
     )?;
     candidate.compiled_expression_plan = compiled_expression_plan;
     candidate.validation_program = program;
-    candidate.output_schema = Some(output_schema);
+    candidate.output_schema = output_schema;
     candidate.operator_chain = operator_chain(
         &candidate.scan.request.resource_id,
         &candidate.final_projection,
@@ -665,7 +665,7 @@ where
     R: ResourceStream + ?Sized,
 {
     let expected_authority = schema_authority(resource, plan.effective_schema_evidence.as_ref())?;
-    if plan.schema_authority.as_ref() != Some(&expected_authority) {
+    if plan.schema_authority != expected_authority {
         return Err(CdfError::data(
             "engine plan schema authority does not match the execution resource",
         ));
@@ -679,7 +679,7 @@ where
         )?
         .as_ref(),
     )?;
-    if plan.output_schema.as_ref() != Some(&expected_output) {
+    if plan.output_schema != expected_output {
         return Err(CdfError::data(
             "engine plan compiled output schema does not match the resource, projection, and validation program",
         ));

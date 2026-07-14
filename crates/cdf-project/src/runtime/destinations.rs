@@ -117,7 +117,7 @@ impl ResolvedProjectDestination {
                 plan.validation_program.identifier_policy, identifier_policy
             )));
         }
-        let schema_hash = plan.effective_schema_hash()?.clone();
+        let schema_hash = plan.effective_schema_hash().clone();
         Ok(DestinationOutputSchema {
             schema,
             schema_hash,

@@ -139,6 +139,24 @@ fn validation_program_rebind_atomically_rebuilds_compiled_output_schema() {
 }
 
 #[test]
+fn engine_plan_requires_recorded_schema_authorities() {
+    let resource = MockResource::tier_a(Vec::new());
+    let plan = Planner::new()
+        .plan_tier_a(
+            &resource,
+            plan_input(vec![], None, None, PlanBoundedness::Bounded),
+        )
+        .unwrap();
+
+    for required in ["schema_authority", "output_schema"] {
+        let mut incomplete = serde_json::to_value(&plan).unwrap();
+        incomplete.as_object_mut().unwrap().remove(required);
+        let error = serde_json::from_value::<EnginePlan>(incomplete).unwrap_err();
+        assert!(error.to_string().contains(required));
+    }
+}
+
+#[test]
 fn validation_program_rebind_rejects_new_physical_dependencies_without_mutating_plan() {
     let resource = MockResource::tier_b(sample_batches());
     let mut input = plan_input(
@@ -2285,8 +2303,8 @@ fn residual_contract_exec_captures_safe_values_redacts_pii_and_quarantines_contr
     assert_eq!(planned_schema.fields().len(), 3);
     assert_eq!(planned_schema.field(2).name(), VARIANT_COLUMN_NAME);
     assert_ne!(
-        plan.schema_authority().unwrap().effective_schema_hash,
-        plan.output_schema.as_ref().unwrap().arrow_schema_hash
+        plan.schema_authority().effective_schema_hash,
+        plan.output_schema.arrow_schema_hash
     );
 
     let temp = TempDir::new().unwrap();
@@ -2467,7 +2485,7 @@ fn residual_multi_partition_decisions_share_verified_effective_schema_and_keep_i
     let plan = Planner::new().plan_tier_b(&resource, input).unwrap();
     let planned_schema = plan.output_arrow_schema().unwrap();
     assert_eq!(
-        plan.schema_authority().unwrap().effective_schema_hash,
+        plan.schema_authority().effective_schema_hash,
         effective_schema_hash
     );
 
@@ -2505,10 +2523,7 @@ fn residual_multi_partition_decisions_share_verified_effective_schema_and_keep_i
     .unwrap();
     assert_eq!(
         evolution["baseline_schema_hash"],
-        plan.schema_authority()
-            .unwrap()
-            .baseline_schema_hash
-            .as_str()
+        plan.schema_authority().baseline_schema_hash.as_str()
     );
     assert_eq!(
         evolution["effective_schema_hash"],
@@ -2612,11 +2627,8 @@ fn execution_rejects_schema_authority_and_zero_row_output_schema_tampering() {
     let plan = Planner::new().plan_tier_a(&resource, input).unwrap();
 
     let mut authority_tamper = plan.clone();
-    authority_tamper
-        .schema_authority
-        .as_mut()
-        .unwrap()
-        .effective_schema_hash = SchemaHash::new("sha256:forged-authority").unwrap();
+    authority_tamper.schema_authority.effective_schema_hash =
+        SchemaHash::new("sha256:forged-authority").unwrap();
     let temp = TempDir::new().unwrap();
     let error = block_on(execute_to_package(
         &authority_tamper,
@@ -2627,7 +2639,7 @@ fn execution_rejects_schema_authority_and_zero_row_output_schema_tampering() {
     assert!(error.to_string().contains("schema authority"));
 
     let mut output_tamper = plan;
-    let output = output_tamper.output_schema.as_mut().unwrap();
+    let output = &mut output_tamper.output_schema;
     output.fields.pop();
     let forged_schema = Schema::new(
         output

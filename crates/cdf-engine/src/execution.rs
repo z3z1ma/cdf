@@ -169,7 +169,7 @@ where
 {
     plan.validate_compiled_expression_plan()?;
     validate_program(&plan.validation_program)?;
-    let schema_authority = plan.schema_authority()?;
+    let schema_authority = plan.schema_authority();
     if schema_authority.version != 1 {
         return Err(CdfError::data(format!(
             "unsupported engine schema-authority version {}",
@@ -1749,7 +1749,7 @@ where
     plan.validate_compiled_expression_plan()?;
     let mut validation_program = plan.validation_program.clone();
     validate_program(&validation_program)?;
-    let schema_authority = plan.schema_authority()?;
+    let schema_authority = plan.schema_authority();
     if schema_authority.version != 1 {
         return Err(CdfError::data(format!(
             "unsupported engine schema-authority version {}",
@@ -3940,7 +3940,7 @@ where
         }
         return Ok(None);
     };
-    let schema_authority = plan.schema_authority()?;
+    let schema_authority = plan.schema_authority();
     if schema_authority.baseline_schema_hash != evidence.authority.baseline_snapshot.schema_hash
         || schema_authority.effective_schema_hash
             != evidence.authority.effective_snapshot_schema_hash

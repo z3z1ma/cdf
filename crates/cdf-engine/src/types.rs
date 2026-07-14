@@ -51,10 +51,8 @@ pub struct EnginePlan {
     pub boundedness: PlanBoundedness,
     pub write_disposition: WriteDisposition,
     pub validation_program: ValidationProgram,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub schema_authority: Option<EngineSchemaAuthority>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub output_schema: Option<EngineOutputSchema>,
+    pub schema_authority: EngineSchemaAuthority,
+    pub output_schema: EngineOutputSchema,
     pub operator_chain: Vec<OperatorNode>,
     pub explain: ExplainData,
     pub package_id: String,
@@ -117,20 +115,15 @@ impl EnginePlan {
     }
 
     pub fn output_arrow_schema(&self) -> Result<Arc<Schema>> {
-        self.output_schema
-            .as_ref()
-            .ok_or_else(|| CdfError::data("engine plan has no compiled output schema"))?
-            .to_arrow()
+        self.output_schema.to_arrow()
     }
 
-    pub fn schema_authority(&self) -> Result<&EngineSchemaAuthority> {
-        self.schema_authority
-            .as_ref()
-            .ok_or_else(|| CdfError::data("engine plan has no verified schema authority"))
+    pub fn schema_authority(&self) -> &EngineSchemaAuthority {
+        &self.schema_authority
     }
 
-    pub fn effective_schema_hash(&self) -> Result<&SchemaHash> {
-        Ok(&self.schema_authority()?.effective_schema_hash)
+    pub fn effective_schema_hash(&self) -> &SchemaHash {
+        &self.schema_authority.effective_schema_hash
     }
 
     pub fn segmentation_policy(&self) -> Result<&crate::CanonicalSegmentationPolicy> {
