@@ -126,6 +126,30 @@ impl ByteSource for ObjectStoreByteSource {
                     self.capabilities.maximum_chunk_bytes
                 )));
             }
+            if self.capabilities.exact_ranges {
+                if self.expected.size_bytes == Some(0) {
+                    let metadata =
+                        self.store.head(&self.path).await.map_err(|error| {
+                            object_error("reattest empty object generation", error)
+                        })?;
+                    let observed =
+                        crate::transport::object_identity(self.expected.location.clone(), metadata);
+                    verify_generation_identity(&self.expected, &observed, 0)?;
+                    return Ok(Box::pin(stream::empty()) as AccountedByteStream);
+                }
+                let state = ExactSequentialState {
+                    store: Arc::clone(&self.store),
+                    path: self.path.clone(),
+                    expected: self.expected.clone(),
+                    memory: Arc::clone(&self.memory),
+                    cancellation: request.cancellation,
+                    chunk_bytes: request.preferred_chunk_bytes,
+                    next_offset: 0,
+                    size_bytes: self.expected.size_bytes.unwrap_or_default(),
+                };
+                return Ok(Box::pin(stream::try_unfold(state, exact_sequential_next))
+                    as AccountedByteStream);
+            }
             let result = self
                 .store
                 .get_opts(&self.path, self.get_options())
@@ -142,7 +166,7 @@ impl ByteSource for ObjectStoreByteSource {
                     CdfError::data("object stream metadata omitted content length")
                 })?,
             )?;
-            let state = SequentialState {
+            let state = WeakSequentialState {
                 stream: result.into_stream(),
                 store: Arc::clone(&self.store),
                 path: self.path.clone(),
@@ -152,7 +176,7 @@ impl ByteSource for ObjectStoreByteSource {
                 maximum_chunk_bytes: request.preferred_chunk_bytes,
                 transferred_bytes: 0,
             };
-            Ok(Box::pin(stream::try_unfold(state, sequential_next)) as AccountedByteStream)
+            Ok(Box::pin(stream::try_unfold(state, weak_sequential_next)) as AccountedByteStream)
         })
     }
 
@@ -225,7 +249,74 @@ impl ByteSource for ObjectStoreByteSource {
     }
 }
 
-struct SequentialState {
+struct ExactSequentialState {
+    store: Arc<dyn ObjectStore>,
+    path: ObjectPath,
+    expected: FileIdentityMetadata,
+    memory: Arc<dyn MemoryCoordinator>,
+    cancellation: RunCancellation,
+    chunk_bytes: u64,
+    next_offset: u64,
+    size_bytes: u64,
+}
+
+async fn exact_sequential_next(
+    mut state: ExactSequentialState,
+) -> Result<Option<(AccountedBytes, ExactSequentialState)>> {
+    state.cancellation.check()?;
+    if state.next_offset == state.size_bytes {
+        return Ok(None);
+    }
+    let remaining = state
+        .size_bytes
+        .checked_sub(state.next_offset)
+        .ok_or_else(|| CdfError::internal("object-store sequential range moved backwards"))?;
+    let length = remaining.min(state.chunk_bytes);
+    let end = state
+        .next_offset
+        .checked_add(length)
+        .ok_or_else(|| CdfError::internal("object-store sequential range overflowed"))?;
+    let lease = reserve(
+        Arc::clone(&state.memory),
+        ReservationRequest::new(
+            ConsumerKey::new("object-store-byte-source-sequential", MemoryClass::Source)?,
+            length,
+        )?,
+    )
+    .await?;
+    let options = GetOptions::new()
+        .with_if_match(state.expected.etag.clone())
+        .with_version(state.expected.version.clone())
+        .with_range(Some(state.next_offset..end));
+    let result = state
+        .store
+        .get_opts(&state.path, options)
+        .await
+        .map_err(|error| object_error("read sequential object range", error))?;
+    if result.range != (state.next_offset..end) {
+        return Err(CdfError::data(format!(
+            "object-store sequential range response {:?} does not match requested {}..{end}",
+            result.range, state.next_offset
+        )));
+    }
+    let observed =
+        crate::transport::object_identity(state.expected.location.clone(), result.meta.clone());
+    verify_generation_identity(&state.expected, &observed, state.size_bytes)?;
+    let bytes = result
+        .bytes()
+        .await
+        .map_err(|error| object_error("collect sequential object range", error))?;
+    if u64::try_from(bytes.len()).ok() != Some(length) {
+        return Err(CdfError::data(
+            "object-store sequential range returned a short body",
+        ));
+    }
+    state.cancellation.check()?;
+    state.next_offset = end;
+    Ok(Some((AccountedBytes::new(bytes, lease)?, state)))
+}
+
+struct WeakSequentialState {
     stream: futures_util::stream::BoxStream<'static, object_store::Result<Bytes>>,
     store: Arc<dyn ObjectStore>,
     path: ObjectPath,
@@ -236,9 +327,9 @@ struct SequentialState {
     transferred_bytes: u64,
 }
 
-async fn sequential_next(
-    mut state: SequentialState,
-) -> Result<Option<(AccountedBytes, SequentialState)>> {
+async fn weak_sequential_next(
+    mut state: WeakSequentialState,
+) -> Result<Option<(AccountedBytes, WeakSequentialState)>> {
     state.cancellation.check()?;
     let lease = reserve(
         Arc::clone(&state.memory),
@@ -372,7 +463,7 @@ mod tests {
             Ok::<Bytes, object_store::Error>(Bytes::from_static(b"abc")),
         ])
         .boxed();
-        let state = SequentialState {
+        let state = WeakSequentialState {
             stream,
             store,
             path,
@@ -383,7 +474,7 @@ mod tests {
             transferred_bytes: 0,
         };
 
-        let (chunk, state) = futures_executor::block_on(sequential_next(state))
+        let (chunk, state) = futures_executor::block_on(weak_sequential_next(state))
             .unwrap()
             .unwrap();
         assert_eq!(chunk.payload(), b"abc");
@@ -391,10 +482,52 @@ mod tests {
         assert_eq!(coordinator.snapshot().peak_bytes, WINDOW_BYTES);
         drop(chunk);
         assert!(
-            futures_executor::block_on(sequential_next(state))
+            futures_executor::block_on(weak_sequential_next(state))
                 .unwrap()
                 .is_none()
         );
+        assert_eq!(coordinator.snapshot().current_bytes, 0);
+    }
+
+    #[test]
+    fn strong_object_store_sequential_source_owns_chunk_shape() {
+        const WINDOW_BYTES: u64 = 1024 * 1024;
+        let store = Arc::new(InMemory::new());
+        let path = ObjectPath::from("events/provider-oversized.bin");
+        let body = Bytes::from(vec![b'x'; usize::try_from(WINDOW_BYTES * 2 + 137).unwrap()]);
+        futures_executor::block_on(store.put(&path, PutPayload::from(body.clone()))).unwrap();
+        let metadata = futures_executor::block_on(store.head(&path)).unwrap();
+        assert!(metadata.e_tag.is_some());
+        let expected = crate::transport::object_identity(
+            "s3://bucket/events/provider-oversized.bin".to_owned(),
+            metadata,
+        );
+        let coordinator =
+            Arc::new(DeterministicMemoryCoordinator::new(WINDOW_BYTES, BTreeMap::new()).unwrap());
+        let memory: Arc<dyn MemoryCoordinator> = coordinator.clone();
+        let source = ObjectStoreByteSource::new(store, path, expected, memory).unwrap();
+
+        let (observed, chunk_lengths) = futures_executor::block_on(async {
+            let mut stream = source
+                .open_sequential(SequentialReadRequest {
+                    preferred_chunk_bytes: WINDOW_BYTES,
+                    cancellation: RunCancellation::default(),
+                })
+                .await
+                .unwrap();
+            let mut observed = Vec::with_capacity(body.len());
+            let mut chunk_lengths = Vec::new();
+            while let Some(chunk) = stream.try_next().await.unwrap() {
+                chunk_lengths.push(chunk.payload().len());
+                observed.extend_from_slice(chunk.payload());
+                drop(chunk);
+            }
+            (observed, chunk_lengths)
+        });
+
+        assert_eq!(observed, body);
+        assert_eq!(chunk_lengths, vec![1024 * 1024, 1024 * 1024, 137]);
+        assert_eq!(coordinator.snapshot().peak_bytes, WINDOW_BYTES);
         assert_eq!(coordinator.snapshot().current_bytes, 0);
     }
 
@@ -419,6 +552,36 @@ mod tests {
 
         assert!(
             error.message.contains("precondition") || error.message.contains("Precondition"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn empty_strong_object_is_reattested_without_a_range() {
+        let store = Arc::new(InMemory::new());
+        let path = ObjectPath::from("events/empty.bin");
+        futures_executor::block_on(store.put(&path, PutPayload::from(Bytes::new()))).unwrap();
+        let metadata = futures_executor::block_on(store.head(&path)).unwrap();
+        let expected =
+            crate::transport::object_identity("s3://bucket/events/empty.bin".to_owned(), metadata);
+        let memory: Arc<dyn MemoryCoordinator> =
+            Arc::new(DeterministicMemoryCoordinator::new(1024 * 1024, BTreeMap::new()).unwrap());
+        let source =
+            ObjectStoreByteSource::new(store.clone(), path.clone(), expected, memory).unwrap();
+        futures_executor::block_on(store.put(&path, PutPayload::from_static(b"changed"))).unwrap();
+
+        let error =
+            match futures_executor::block_on(source.open_sequential(SequentialReadRequest {
+                preferred_chunk_bytes: MINIMUM_CHUNK_BYTES,
+                cancellation: RunCancellation::default(),
+            })) {
+                Ok(_) => panic!("mutated empty object unexpectedly opened"),
+                Err(error) => error,
+            };
+
+        assert!(
+            error.message.contains("generation changed")
+                || error.message.contains("generation size"),
             "{error}"
         );
     }
