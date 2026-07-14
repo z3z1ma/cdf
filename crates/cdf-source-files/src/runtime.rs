@@ -4559,6 +4559,99 @@ mod tests {
     }
 
     #[test]
+    fn local_ndjson_discovery_replays_and_continues_the_same_source() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("events.ndjson");
+        std::fs::write(
+            &path,
+            b"{\"id\":1,\"name\":\"alpha\"}\n{\"id\":2,\"name\":\"beta\"}\n",
+        )
+        .unwrap();
+        let dependencies = FileRuntimeDependencies::new(
+            FileTransportFacade::new(),
+            crate::test_execution_services(),
+            crate::test_format_registry(),
+            crate::test_transform_registry(),
+        );
+        let plan = FileResourcePlan {
+            source: "events".to_owned(),
+            root: root.path().to_string_lossy().into_owned(),
+            glob: "events.ndjson".to_owned(),
+            format: Some(FileFormatDeclaration::ndjson()),
+            format_declared: true,
+            format_options: serde_json::json!({}),
+            compression: FileCompressionDeclaration::none(),
+            auth: None,
+            credentials: None,
+            allowlist: cdf_http::EgressAllowlist::allow_any(),
+        };
+        let resource_id = ResourceId::new("events.ndjson").unwrap();
+        let resolved = dependencies
+            .with_transport(|transport| {
+                resolve_file_matches(
+                    &resource_id,
+                    &plan,
+                    transport,
+                    dependencies.formats(),
+                    dependencies.transforms(),
+                )
+            })
+            .unwrap();
+        let probe = discover_local_binary_schema_bounded(
+            &path,
+            "events.ndjson",
+            &dependencies,
+            0,
+            BoundedSchemaDiscoveryRequest {
+                resource_id: &resource_id,
+                format: plan.resolved_format().unwrap(),
+                format_declared: plan.format_declared,
+                format_options: &plan.format_options,
+                transform_name: "none",
+                maximum_bytes: 1024 * 1024,
+                maximum_records: 1_000,
+            },
+        )
+        .unwrap();
+        assert_eq!(probe.schema.field(0).data_type(), &DataType::Int64);
+        assert_eq!(probe.schema.field(1).data_type(), &DataType::Utf8);
+        assert_eq!(dependencies.prepared_payloads().pending_count().unwrap(), 1);
+        std::fs::remove_file(&path).unwrap();
+
+        let stream = stream_file_match_blocking(
+            &resolved[0],
+            plan.resolved_format().unwrap(),
+            ReadOptions::new(resource_id, PartitionId::new("ndjson-file").unwrap()),
+            &dependencies,
+            Arc::clone(&probe.schema),
+            PhysicalSchemaAuthority::default(),
+        )
+        .unwrap();
+        let batches = futures_executor::block_on(stream.collect::<Vec<_>>())
+            .into_iter()
+            .collect::<Result<Vec<_>>>()
+            .unwrap();
+
+        assert_eq!(
+            batches
+                .iter()
+                .map(|batch| batch.header.row_count)
+                .sum::<u64>(),
+            2
+        );
+        assert!(matches!(
+            batches[0].header.source_position,
+            Some(SourcePosition::FileManifest(_))
+        ));
+        assert_eq!(dependencies.prepared_payloads().pending_count().unwrap(), 0);
+        drop(batches);
+        assert_eq!(
+            dependencies.execution().memory().snapshot().current_bytes,
+            0
+        );
+    }
+
+    #[test]
     fn retained_sequential_window_replays_then_continues_one_source_invocation() {
         struct ChunkedTestSource {
             identity: ContentIdentity,
