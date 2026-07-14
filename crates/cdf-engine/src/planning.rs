@@ -603,11 +603,11 @@ where
             })?
             .clone();
         if observation_bindings
-            .insert(observation_id.clone(), binding.clone())
-            .is_some_and(|existing| existing != binding)
+            .insert(observation_id.clone(), binding)
+            .is_some()
         {
             return Err(CdfError::data(format!(
-                "repeated effective schema observation {observation_id:?} carries conflicting source identity bindings"
+                "effective schema observation {observation_id:?} is assigned to more than one planned partition; observation identities must be partition-scoped"
             )));
         }
         match evidence.observation(observation_id) {

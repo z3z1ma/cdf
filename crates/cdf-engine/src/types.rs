@@ -1478,25 +1478,18 @@ impl EngineExecutionEvidence {
     ) -> cdf_kernel::Result<Self> {
         processed_observations
             .sort_by(|left, right| left.observation_id.cmp(&right.observation_id));
-        let mut coalesced = Vec::<ProcessedObservationPosition>::new();
-        for observation in processed_observations {
-            match coalesced.last() {
-                Some(existing)
-                    if existing.observation_id == observation.observation_id
-                        && existing != &observation =>
-                {
-                    return Err(cdf_kernel::CdfError::data(format!(
-                        "repeated processed observation {:?} produced conflicting outcome or position evidence",
-                        observation.observation_id
-                    )));
-                }
-                Some(existing) if existing == &observation => {}
-                _ => coalesced.push(observation),
-            }
+        if let Some(repeated) = processed_observations
+            .windows(2)
+            .find(|pair| pair[0].observation_id == pair[1].observation_id)
+        {
+            return Err(cdf_kernel::CdfError::data(format!(
+                "processed schema observation {:?} is assigned to more than one partition",
+                repeated[0].observation_id
+            )));
         }
         Ok(Self {
             version: ENGINE_EXECUTION_EVIDENCE_VERSION,
-            processed_observations: coalesced,
+            processed_observations,
         })
     }
 

@@ -470,6 +470,70 @@ fn preobserved_widening_is_rejected_by_the_compiled_verdict_program() {
 }
 
 #[test]
+fn planning_rejects_one_schema_observation_identity_across_partitions() {
+    let schema = sample_schema();
+    let physical_hash = cdf_kernel::canonical_arrow_schema_hash(schema.as_ref()).unwrap();
+    let descriptor = descriptor();
+    let evidence = EffectiveSchemaEvidence::new(
+        SchemaBaselineReference::Pinned {
+            snapshot: descriptor.schema_source.pinned_snapshot().unwrap().clone(),
+        },
+        SchemaHash::new("effective-unique-observations-v1").unwrap(),
+        DiscoveryManifestReference {
+            manifest_hash: DiscoveryManifestHash::new("manifest-unique-observations-v1").unwrap(),
+            path: ".cdf/schemas/orders@manifest-unique-observations-v1.discovery.json".to_owned(),
+        },
+        vec![EffectiveSchemaObservationEvidence::new(
+            "input-0",
+            physical_hash.clone(),
+        )],
+    )
+    .unwrap();
+    let runtime = EffectiveSchemaRuntime::new(
+        evidence,
+        vec![EffectiveSchemaCatalogEntry::new(
+            physical_hash,
+            schema.clone(),
+        )],
+    )
+    .unwrap();
+    let resource = MockResource::tier_b(sample_batches())
+        .with_effective_schema_runtime(schema, runtime)
+        .with_duplicate_observation_identity();
+
+    let error = Planner::new()
+        .plan_tier_b(
+            &resource,
+            plan_input(Vec::new(), None, None, PlanBoundedness::Bounded),
+        )
+        .unwrap_err();
+
+    assert!(
+        error
+            .to_string()
+            .contains("more than one planned partition"),
+        "{error}"
+    );
+}
+
+#[test]
+fn execution_evidence_rejects_repeated_observation_identity_even_when_identical() {
+    let observation = cdf_kernel::ProcessedObservationPosition::new(
+        "input-0",
+        cdf_kernel::ProcessedObservationOutcome::Admitted,
+        terminal_file_position(),
+    )
+    .unwrap();
+
+    let error = EngineExecutionEvidence::new(vec![observation.clone(), observation]).unwrap_err();
+
+    assert!(
+        error.to_string().contains("more than one partition"),
+        "{error}"
+    );
+}
+
+#[test]
 fn missing_control_critical_field_becomes_a_named_schema_quarantine() {
     let resource = MockResource::tier_a(sample_batches());
     let plan = Planner::new()
@@ -867,11 +931,11 @@ fn preview_terminal_quarantine_uses_run_attestation_without_opening_payloads() {
     .unwrap();
 
     assert_eq!(resource.open_count.load(Ordering::SeqCst), 0);
-    assert_eq!(resource.attest_count.load(Ordering::SeqCst), 1);
+    assert_eq!(resource.attest_count.load(Ordering::SeqCst), 2);
     assert_eq!(preview.planned_partition_count, 2);
     assert_eq!(preview.payload_opened_partition_count, 0);
     assert_eq!(preview.attested_partition_count, 2);
-    assert_eq!(preview.terminal_quarantine_count, 1);
+    assert_eq!(preview.terminal_quarantine_count, 2);
     assert_eq!(preview.row_count, 0);
 }
 
@@ -993,7 +1057,7 @@ fn engine_plan_deserialization_rejects_missing_required_execution_policy() {
 }
 
 #[test]
-fn effective_schema_reuses_observation_across_partitions_and_attests_only_attempted_inputs() {
+fn effective_schema_binds_only_the_attempted_partition_observation_under_limit() {
     let effective_schema = sample_schema();
     let physical_schema = sample_schema();
     let physical_hash = cdf_kernel::canonical_arrow_schema_hash(physical_schema.as_ref()).unwrap();
@@ -1140,7 +1204,7 @@ fn limited_multi_batch_partition_records_exact_non_checkpointing_partial_attempt
 }
 
 #[test]
-fn terminal_schema_observation_quarantine_processes_repeated_partitions_without_opening_data() {
+fn terminal_schema_observation_quarantine_processes_distinct_partitions_without_opening_data() {
     let effective_schema = sample_schema();
     let physical_schema = incompatible_sample_schema();
     let physical_hash = cdf_kernel::canonical_arrow_schema_hash(physical_schema.as_ref()).unwrap();
@@ -1178,10 +1242,14 @@ fn terminal_schema_observation_quarantine_processes_repeated_partitions_without_
     assert!(output.output.segments.is_empty());
     assert!(output.segment_positions.is_empty());
     assert_eq!(resource.open_count.load(Ordering::SeqCst), 0);
-    assert_eq!(resource.attest_count.load(Ordering::SeqCst), 1);
+    assert_eq!(resource.attest_count.load(Ordering::SeqCst), 2);
     let processed = output.execution_evidence().processed_observations();
-    assert_eq!(processed.len(), 1);
-    assert_eq!(processed[0].source_position, processed_position);
+    assert_eq!(processed.len(), 2);
+    assert!(
+        processed
+            .iter()
+            .all(|observation| observation.source_position == processed_position)
+    );
     assert!(
         temp.path()
             .join("quarantine/schema-observations.json")
@@ -1302,9 +1370,16 @@ fn terminal_effective_schema_runtime(
             plan_input(Vec::new(), None, None, PlanBoundedness::Bounded),
         )
         .unwrap();
-    let CompiledSchemaAdmissionOutcome::Quarantined(terminal) = authority_plan
+    let CompiledSchemaAdmissionOutcome::Quarantined(terminal_0) = authority_plan
         .compiled_schema_admission
         .instantiate_or_quarantine("input-0", physical_schema.as_ref(), &physical_hash)
+        .unwrap()
+    else {
+        panic!("incompatible fixture must compile to terminal quarantine");
+    };
+    let CompiledSchemaAdmissionOutcome::Quarantined(terminal_1) = authority_plan
+        .compiled_schema_admission
+        .instantiate_or_quarantine("input-1", physical_schema.as_ref(), &physical_hash)
         .unwrap()
     else {
         panic!("incompatible fixture must compile to terminal quarantine");
@@ -1319,10 +1394,10 @@ fn terminal_effective_schema_runtime(
             manifest_hash: DiscoveryManifestHash::new("manifest-v1").unwrap(),
             path: ".cdf/schemas/orders@manifest-v1.discovery.json".to_owned(),
         },
-        vec![EffectiveSchemaObservationEvidence::new(
-            "input-0",
-            physical_hash.clone(),
-        )],
+        vec![
+            EffectiveSchemaObservationEvidence::new("input-0", physical_hash.clone()),
+            EffectiveSchemaObservationEvidence::new("input-1", physical_hash.clone()),
+        ],
     )
     .unwrap();
     EffectiveSchemaRuntime::new(
@@ -1333,7 +1408,7 @@ fn terminal_effective_schema_runtime(
         )],
     )
     .unwrap()
-    .with_terminal_quarantines(vec![*terminal])
+    .with_terminal_quarantines(vec![*terminal_0, *terminal_1])
     .unwrap()
     .with_discovery_executor_budget(DiscoveryExecutorBudgetEvidence::new(64, 128, 2).unwrap())
     .unwrap()
@@ -2998,16 +3073,12 @@ fn residual_multi_partition_decisions_share_verified_effective_schema_and_keep_i
     let decisions = evolution["residual_decisions"].as_array().unwrap();
     assert_eq!(decisions.len(), 3);
     assert!(decisions.iter().all(|decision| decision["version"] == 1));
-    assert!(
-        decisions
-            .iter()
-            .all(|decision| decision["observation_id"] == "input-0")
-    );
     let captured = decisions
         .iter()
         .filter(|decision| decision["batch_id"] == "batch-residual-captured")
         .collect::<Vec<_>>();
     assert_eq!(captured.len(), 1);
+    assert_eq!(captured[0]["observation_id"], "input-0");
     assert_eq!(captured[0]["verdict"], "captured");
     assert_eq!(captured[0]["source_path"], serde_json::json!(["note"]));
     let quarantined = decisions
@@ -3015,6 +3086,11 @@ fn residual_multi_partition_decisions_share_verified_effective_schema_and_keep_i
         .filter(|decision| decision["batch_id"] == "batch-residual-quarantined")
         .collect::<Vec<_>>();
     assert_eq!(quarantined.len(), 2);
+    assert!(
+        quarantined
+            .iter()
+            .all(|decision| decision["observation_id"] == "unobserved-part-1")
+    );
     assert!(
         quarantined
             .iter()
@@ -3888,6 +3964,7 @@ struct MockResource {
     attestation_error: Option<String>,
     effective_schema_runtime: Option<EffectiveSchemaRuntime>,
     type_policy_allowances: cdf_kernel::TypePolicyAllowances,
+    duplicate_observation_identity: bool,
 }
 
 #[derive(Clone)]
@@ -4051,6 +4128,7 @@ impl MockResource {
             attestation_error: None,
             effective_schema_runtime: None,
             type_policy_allowances: cdf_kernel::TypePolicyAllowances::default(),
+            duplicate_observation_identity: false,
         }
     }
 
@@ -4101,6 +4179,11 @@ impl MockResource {
         self.type_policy_allowances = allowances;
         self
     }
+
+    fn with_duplicate_observation_identity(mut self) -> Self {
+        self.duplicate_observation_identity = true;
+        self
+    }
 }
 
 impl ResourceStream for MockResource {
@@ -4117,13 +4200,20 @@ impl ResourceStream for MockResource {
             .map(|index| {
                 let mut metadata = BTreeMap::from([("ordinal".to_owned(), index.to_string())]);
                 if let Some(runtime) = &self.effective_schema_runtime {
-                    metadata.insert(
-                        PLAN_SCHEMA_OBSERVATION_ID_KEY.to_owned(),
-                        runtime.evidence.observations[0].observation_id.clone(),
-                    );
+                    let observation_id = if self.duplicate_observation_identity {
+                        runtime.evidence.observations[0].observation_id.clone()
+                    } else {
+                        runtime
+                            .evidence
+                            .observations
+                            .get(index)
+                            .map(|observation| observation.observation_id.clone())
+                            .unwrap_or_else(|| format!("unobserved-part-{index}"))
+                    };
+                    metadata.insert(PLAN_SCHEMA_OBSERVATION_ID_KEY.to_owned(), observation_id);
                     metadata.insert(
                         PLAN_SCHEMA_OBSERVATION_BINDING_KEY.to_owned(),
-                        "binding-input-0".to_owned(),
+                        format!("binding-input-{index}"),
                     );
                 }
                 Ok(PartitionPlan {

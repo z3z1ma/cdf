@@ -364,18 +364,23 @@ where
                     let reconciled = materialize_batch_schema_evidence(
                         &batch,
                         &record_batch,
-                        candidate.expected.as_ref(),
-                        preobserved_physical_observation(
-                            plan.effective_schema_evidence.as_ref(),
-                            candidate.expected.as_ref(),
-                        )?,
+                        BatchSchemaAdmissionContext {
+                            planned_observation_id: planned_partition_observation_id(
+                                &candidate.partition,
+                            ),
+                            expected: candidate.expected.as_ref(),
+                            expected_physical_observation: preobserved_physical_observation(
+                                plan.effective_schema_evidence.as_ref(),
+                                candidate.expected.as_ref(),
+                            )?,
+                            effective_schema: if candidate.expected.is_some() {
+                                resource_schema.as_ref()
+                            } else {
+                                &expression_schema
+                            },
+                        },
                         &plan.compiled_schema_admission,
                         &mut schema_admission_cache,
-                        if candidate.expected.is_some() {
-                            resource_schema.as_ref()
-                        } else {
-                            &expression_schema
-                        },
                     )?;
                     let reconciled = match reconciled {
                         BatchSchemaDisposition::Admitted(reconciled) => reconciled,
@@ -782,6 +787,20 @@ enum BatchSchemaDisposition {
     },
 }
 
+struct BatchSchemaAdmissionContext<'a> {
+    planned_observation_id: &'a str,
+    expected: Option<&'a EffectiveSchemaObservationCoercion>,
+    expected_physical_observation: Option<&'a PhysicalObservationEvidence>,
+    effective_schema: &'a Schema,
+}
+
+fn planned_partition_observation_id(partition: &cdf_kernel::PartitionPlan) -> &str {
+    partition
+        .metadata
+        .get(PLAN_SCHEMA_OBSERVATION_ID_KEY)
+        .map_or_else(|| partition.partition_id.as_str(), String::as_str)
+}
+
 fn preobserved_physical_observation<'a>(
     evidence: Option<&'a EffectiveSchemaPlanEvidence>,
     expected: Option<&EffectiveSchemaObservationCoercion>,
@@ -807,23 +826,27 @@ fn preobserved_physical_observation<'a>(
 fn materialize_batch_schema_evidence(
     batch: &cdf_kernel::Batch,
     record_batch: &RecordBatch,
-    expected: Option<&EffectiveSchemaObservationCoercion>,
-    expected_physical_observation: Option<&PhysicalObservationEvidence>,
+    context: BatchSchemaAdmissionContext<'_>,
     admission: &CompiledSchemaAdmissionPlan,
     admission_cache: &mut BTreeMap<cdf_kernel::SchemaHash, cdf_contract::SchemaCoercionPlan>,
-    effective_schema: &Schema,
 ) -> Result<BatchSchemaDisposition> {
+    let BatchSchemaAdmissionContext {
+        planned_observation_id,
+        expected,
+        expected_physical_observation,
+        effective_schema,
+    } = context;
     if expected.is_some() != expected_physical_observation.is_some() {
         return Err(CdfError::internal(
             "preobserved coercion and physical-observation catalog entry must be supplied together",
         ));
     }
-    let stream_observation_id = match &batch.header.source_position {
-        Some(SourcePosition::FileManifest(manifest)) if manifest.files.len() == 1 => {
-            manifest.files[0].path.clone()
-        }
-        _ => batch.header.partition_id.to_string(),
-    };
+    if planned_observation_id.is_empty() {
+        return Err(CdfError::internal(
+            "planned schema observation identity cannot be empty",
+        ));
+    }
+    let stream_observation_id = planned_observation_id.to_owned();
     if let Some(expected) = expected
         && batch.header.observed_schema_hash != expected.physical_schema_hash
     {
@@ -2483,18 +2506,21 @@ where
                 let reconciled = materialize_batch_schema_evidence(
                     &batch,
                     record_batch,
-                    partition_schema_evidence,
-                    preobserved_physical_observation(
-                        effective_schema_evidence,
-                        partition_schema_evidence,
-                    )?,
+                    BatchSchemaAdmissionContext {
+                        planned_observation_id: planned_partition_observation_id(&partition),
+                        expected: partition_schema_evidence,
+                        expected_physical_observation: preobserved_physical_observation(
+                            effective_schema_evidence,
+                            partition_schema_evidence,
+                        )?,
+                        effective_schema: if partition_schema_evidence.is_some() {
+                            resource_schema.as_ref()
+                        } else {
+                            &expression_schema
+                        },
+                    },
                     &plan.compiled_schema_admission,
                     &mut schema_admission_cache,
-                    if partition_schema_evidence.is_some() {
-                        resource_schema.as_ref()
-                    } else {
-                        &expression_schema
-                    },
                 )?;
                 let reconciled = match reconciled {
                     BatchSchemaDisposition::Admitted(reconciled) => reconciled,
@@ -2638,8 +2664,7 @@ where
                         source_rows: source_rows.as_deref(),
                         cdc_operation_field: cdc_operation_field.as_deref(),
                         batch_id: &batch.header.batch_id,
-                        observation_id: partition_schema_evidence
-                            .map(|evidence| evidence.observation_id.as_str()),
+                        observation_id: partition_observation_id.as_deref(),
                     },
                     if options.unfused_transform {
                         TransformKernelMode::Unfused
@@ -2980,6 +3005,25 @@ where
     builder.write_json_artifact("plan/validation-program.json", &validation_program)?;
     if let Some(coercion) = &validation_program.schema_coercion {
         builder.write_json_artifact("schema/coercion-plan.json", coercion)?;
+    }
+    let lineage_observation_ids = lineage
+        .input_observations
+        .iter()
+        .map(|observation| observation.observation_id.as_str())
+        .collect::<BTreeSet<_>>();
+    if lineage_observation_ids.len() != lineage.input_observations.len() {
+        return Err(CdfError::data(
+            "execution lineage contains a schema observation identity assigned to more than one partition",
+        ));
+    }
+    let stream_observation_ids = stream_admission_evidence
+        .keys()
+        .map(String::as_str)
+        .collect::<BTreeSet<_>>();
+    if lineage_observation_ids != stream_observation_ids {
+        return Err(CdfError::data(
+            "execution lineage does not exactly bind every admitted stream observation to one partition",
+        ));
     }
     let admitted_observations = processed_observations
         .iter()
