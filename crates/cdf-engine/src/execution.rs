@@ -12,11 +12,12 @@ use arrow_schema::{DataType, Field, Schema};
 use arrow_select::filter::filter_record_batch;
 use arrow_select::take::take_record_batch;
 use cdf_contract::{
-    ContractEvaluationContext, QuarantineCandidate, RESIDUAL_ENCODING_METADATA_KEY,
+    ContractEvaluationContext, ContractPolicy, QuarantineCandidate, RESIDUAL_ENCODING_METADATA_KEY,
     RedactionDecision, ResidualCandidateVerdict, ResidualFieldRef, ResidualFieldWithRedaction,
-    VARIANT_COLUMN_NAME, ValidationProgram, VectorValidationEvaluator, VerdictSummary,
+    TypePolicy, VARIANT_COLUMN_NAME, ValidationProgram, VectorValidationEvaluator, VerdictSummary,
     encode_package_dedup_keys, encode_residual_json_v1, encode_residual_json_v1_redacted,
-    evaluate_package_order_dedup, package_dedup_rule, reject_untrusted_schema_coercion_metadata,
+    evaluate_package_order_dedup, materialize_schema_coercion, package_dedup_rule,
+    reconcile_schema, reject_untrusted_schema_coercion_metadata,
     schema_coercion_plan_from_trusted_json,
 };
 use cdf_kernel::{
@@ -179,9 +180,11 @@ where
     EnginePreviewLimits::new(limits.max_rows, limits.max_bytes, limits.max_batches)?;
     let effective_schema_evidence = validate_effective_schema_plan(plan, resource)?;
     crate::planning::validate_plan_schema_authority(resource, plan)?;
+    let unplanned_schema_policy = resource_schema_constraint_policy(resource);
+    let resource_schema = resource.schema();
     let runtime_output_schema = plan.output_arrow_schema()?;
     let expression_schema = scan_expression_schema(
-        resource.schema().as_ref(),
+        resource_schema.as_ref(),
         plan.explain
             .projection_pushed
             .then_some(plan.scan.request.projection.as_deref())
@@ -357,7 +360,12 @@ where
                         &batch,
                         &record_batch,
                         candidate.expected.as_ref(),
-                        resource.schema().as_ref(),
+                        if candidate.expected.is_some() {
+                            resource_schema.as_ref()
+                        } else {
+                            &expression_schema
+                        },
+                        &unplanned_schema_policy,
                     )?;
                     let record_batch = reconciled.record_batch;
                     let pre_contract_quarantined_rows =
@@ -734,6 +742,7 @@ fn materialize_batch_schema_evidence(
     record_batch: &RecordBatch,
     expected: Option<&EffectiveSchemaObservationCoercion>,
     effective_schema: &Schema,
+    unplanned_schema_policy: &TypePolicy,
 ) -> Result<MaterializedBatchSchema> {
     if let Some(expected) = expected
         && batch.header.observed_schema_hash != expected.physical_schema_hash
@@ -770,7 +779,7 @@ fn materialize_batch_schema_evidence(
             })
         }
         (Some(expected), None) => {
-            let materialized = cdf_contract::materialize_schema_coercion(
+            let materialized = materialize_schema_coercion(
                 record_batch,
                 effective_schema,
                 &expected.coercion_plan,
@@ -781,11 +790,51 @@ fn materialize_batch_schema_evidence(
                 coercion_plan: Some(expected.coercion_plan.clone()),
             })
         }
-        (None, _) => Ok(MaterializedBatchSchema {
+        (None, Some(batch_coercion)) => Ok(MaterializedBatchSchema {
             record_batch: record_batch.clone(),
-            coercion_plan: batch_coercion,
+            coercion_plan: Some(batch_coercion.clone()),
         }),
+        (None, None)
+            if validate_effective_batch_schema(
+                record_batch.schema().as_ref(),
+                effective_schema,
+            )
+            .is_ok() =>
+        {
+            Ok(MaterializedBatchSchema {
+                record_batch: record_batch.clone(),
+                coercion_plan: None,
+            })
+        }
+        (None, None) => {
+            let reconciliation = reconcile_schema(
+                record_batch.schema().as_ref(),
+                effective_schema,
+                unplanned_schema_policy,
+            )?;
+            let materialized = materialize_schema_coercion(
+                record_batch,
+                &reconciliation.schema,
+                &reconciliation.plan,
+            )?;
+            validate_effective_batch_schema(materialized.schema().as_ref(), effective_schema)?;
+            Ok(MaterializedBatchSchema {
+                record_batch: materialized,
+                coercion_plan: Some(reconciliation.plan),
+            })
+        }
     }
+}
+
+fn resource_schema_constraint_policy<R>(resource: &R) -> TypePolicy
+where
+    R: ResourceStream + ?Sized,
+{
+    let mut policy = ContractPolicy::for_trust(resource.descriptor().trust_level.clone()).types;
+    let allowances = resource.type_policy_allowances();
+    policy.coerce_types = allowances.coerce_types;
+    policy.allow_lossy_mapping = allowances.allow_lossy_mapping;
+    policy
 }
 
 fn compact_record_batch_prefix(batch: &RecordBatch, rows: usize) -> Result<RecordBatch> {
@@ -1758,9 +1807,11 @@ where
     }
     let effective_schema_evidence = validate_effective_schema_plan(plan, resource)?;
     crate::planning::validate_plan_schema_authority(resource, plan)?;
+    let unplanned_schema_policy = resource_schema_constraint_policy(resource);
+    let resource_schema = resource.schema();
     let runtime_output_schema = plan.output_arrow_schema()?;
     let expression_schema = scan_expression_schema(
-        resource.schema().as_ref(),
+        resource_schema.as_ref(),
         plan.explain
             .projection_pushed
             .then_some(plan.scan.request.projection.as_deref())
@@ -2054,7 +2105,12 @@ where
                     &batch,
                     record_batch,
                     partition_schema_evidence,
-                    resource.schema().as_ref(),
+                    if partition_schema_evidence.is_some() {
+                        resource_schema.as_ref()
+                    } else {
+                        &expression_schema
+                    },
+                    &unplanned_schema_policy,
                 )?;
                 let record_batch = reconciled.record_batch;
                 let batch_coercion = reconciled.coercion_plan;
@@ -4108,23 +4164,71 @@ fn elapsed_ns(started: Option<Instant>, label: &str) -> Result<u64> {
 mod transform_kernel_tests {
     use std::{collections::BTreeMap, hint::black_box, sync::Arc, time::Instant};
 
-    use arrow_array::{BooleanArray, Int64Array, RecordBatch, StringArray};
+    use arrow_array::{BooleanArray, Int32Array, Int64Array, RecordBatch, StringArray};
     use arrow_schema::{DataType, Field, Schema};
     use cdf_contract::{
-        ContractEvaluationContext, ContractPolicy, Expression, ExpressionUse, ObservedSchema,
-        SchemaEvolutionMode, TransformDescription, VectorValidationEvaluator,
-        compile_validation_program,
+        ContractEvaluationContext, ContractPolicy, Expression, ExpressionUse,
+        FieldCoercionDecision, ObservedSchema, SchemaEvolutionMode, TransformDescription,
+        TypePolicy, VectorValidationEvaluator, compile_validation_program,
     };
-    use cdf_kernel::{BatchId, TrustLevel};
+    use cdf_kernel::{Batch, BatchId, PartitionId, ResourceId, TrustLevel, with_source_name};
     use cdf_memory::{DeterministicMemoryCoordinator, MemoryCoordinator};
     use cdf_package::PackageBuilder;
     use cdf_package_contract::{QuarantineObservedValue, QuarantineRecord};
 
     use super::{
         QuarantinePartAccumulator, ResidualBatchContext, TransformKernelMode, apply_contract_exec,
-        apply_pre_contract_expressions, execute_batch, reserve_quarantine_evidence,
-        source_row_tracking_schema,
+        apply_pre_contract_expressions, execute_batch, materialize_batch_schema_evidence,
+        reserve_quarantine_evidence, source_row_tracking_schema,
     };
+
+    #[test]
+    fn unplanned_physical_schema_is_constrained_once_at_the_engine_boundary() {
+        let physical_schema = Arc::new(Schema::new(vec![Field::new(
+            "VendorID",
+            DataType::Int32,
+            false,
+        )]));
+        let physical = RecordBatch::try_new(
+            Arc::clone(&physical_schema),
+            vec![Arc::new(Int32Array::from(vec![1, 2]))],
+        )
+        .unwrap();
+        let batch = Batch::from_record_batch(
+            BatchId::new("physical-1").unwrap(),
+            ResourceId::new("source.events").unwrap(),
+            PartitionId::new("partition-1").unwrap(),
+            cdf_kernel::canonical_arrow_schema_hash(physical_schema.as_ref()).unwrap(),
+            physical.clone(),
+        )
+        .unwrap();
+        let effective = Schema::new(vec![with_source_name(
+            Field::new("vendor_id", DataType::Int64, false),
+            "VendorID",
+        )]);
+
+        let materialized = materialize_batch_schema_evidence(
+            &batch,
+            &physical,
+            None,
+            &effective,
+            &TypePolicy::strict_fidelity(),
+        )
+        .unwrap();
+
+        assert_eq!(
+            materialized.record_batch.schema().field(0).name(),
+            "vendor_id"
+        );
+        assert_eq!(
+            materialized.record_batch.schema().field(0).data_type(),
+            &DataType::Int64
+        );
+        let plan = materialized.coercion_plan.unwrap();
+        assert_eq!(plan.fields[0].decision, FieldCoercionDecision::Widened);
+        assert_eq!(plan.fields[0].observed_type.as_deref(), Some("Int32"));
+        assert_eq!(plan.fields[0].constraint_type.as_deref(), Some("Int64"));
+    }
 
     #[test]
     fn tracked_source_rows_do_not_shift_sequential_derive_filter_bindings() {

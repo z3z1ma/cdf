@@ -1,6 +1,6 @@
-Status: open
+Status: active
 Created: 2026-07-11
-Updated: 2026-07-12
+Updated: 2026-07-13
 Parent: .10x/tickets/2026-07-05-implement-cdf-system.md
 Depends-On: .10x/tickets/done/2026-07-11-p0-dx1-neutral-runtime-crate.md, .10x/tickets/done/2026-07-11-p3-a2-unified-memory-ledger.md, .10x/tickets/done/2026-07-11-p3-a4-injected-execution-host.md, .10x/specs/native-format-codec-runtime.md
 
@@ -30,7 +30,7 @@ No new parser dependency, new native format, optimized decoder, dynamic plugin A
 
 ## Blockers
 
-Depends on neutral runtime, memory, and execution-host contracts. It must land before WS-B adds more codecs.
+None external. Remaining in-scope closure work is: compile declared-schema physical observations and coercion verdicts into the plan so the execution-derived safety fallback can be deleted; prove the project-level external-provider add/pin law; and reconcile aggregate evidence through adversarial review. The neutral runtime, memory, and execution-host dependencies are done.
 
 ## References
 
@@ -73,3 +73,4 @@ Depends on neutral runtime, memory, and execution-host contracts. It must land b
 - 2026-07-12: Extracted CSV into parser-local `cdf-format-delimited`, added a neutral lease-owning `AccountedChunksReader` shared by row-format discovery, and routed CSV discovery/execution through the injected registry. The source fallback rejects CSV, the old project CSV adapter and legacy test expectation are deleted, and local discovery/run preserves manifest position and returns the ledger to zero. Only JSON-document source fallback remains in FX1's original five-format live path. Evidence/review: `.10x/evidence/2026-07-12-p3-b4-streaming-csv-driver.md`, `.10x/reviews/2026-07-12-p3-b4-streaming-csv-driver-review.md`.
 - 2026-07-12: Extracted top-level JSON documents into `cdf-format-json::JsonDocumentFormatDriver` with streamed, memory-authorized object framing into Arrow's tape decoder. Project discovery and source execution now use that driver, and the final source-owned `compile_format`/declared-schema decoder fallback was deleted: every original first-party format must resolve through `FormatRegistry`. One-byte rechunking, bounded complete-record sampling, malformed trailing-comma, live source, project discovery, strict Clippy, and static no-fallback checks pass. FX1 remains open for remote external-provider/add-pin coverage and aggregate closure evidence. Evidence/review: `.10x/evidence/2026-07-12-p3-b5-streaming-json-document-driver.md`, `.10x/reviews/2026-07-12-p3-b5-streaming-json-document-driver-review.md`.
 - 2026-07-12: `FileTransport::open_byte_source` now supplies a provider-neutral remote extension point, and the first implementation streams/ranges object stores directly into the same registered format drivers used locally. Runtime does not branch by format or cloud provider; unavailable providers fall back to the verified spool. Direct Arrow IPC and ranged Parquet fixtures prove the remote seam. FX1 still needs an external mock provider through project add/pin and the aggregate closure audit. Evidence/review: `.10x/evidence/2026-07-12-p3-g1-object-store-byte-source.md`, `.10x/reviews/2026-07-12-p3-g1-object-store-byte-source-review.md`.
+- 2026-07-13: Repaired the registry migration's missing physical-to-declared reconciliation stage at the engine boundary, not in the file adapter. A source that emits a physical batch without precompiled observation evidence is now constrained once by the engine using the resource's trust/type policy; width widening and opt-in parse coercion produce the same serialized verdict plan for files, SQL, REST, and future drivers. `cdf-source-files` retains no contract dependency or coercion implementation. Arrow IPC now truthfully declares seekable access, so transformed inputs take the generic verified-spool policy instead of failing through an impossible sequential contract. Local and remote discovery identities again include the canonical schema hash, and compressed/multi-file/HTTP Arrow discovery parity is executable. Adversarial review rejected this execution-derived plan as the final architecture: the active P2 decision requires declared observations/verdicts in the compiler artifact. The fallback remains a fail-closed regression repair only until FX1 binds declared observations at plan time and deletes it. Evidence: `.10x/evidence/2026-07-13-fx1-registered-schema-reconciliation.md`.

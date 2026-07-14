@@ -1,6 +1,6 @@
 Status: blocked
 Created: 2026-07-12
-Updated: 2026-07-12
+Updated: 2026-07-13
 Parent: .10x/tickets/2026-07-12-p0-cargo-product-build-graph.md
 Depends-On: .10x/tickets/2026-07-12-p0-cg1-lean-cli-core.md
 
@@ -41,6 +41,7 @@ Move parser/help/generated-artifact/terminal/render/output tests to `cdf-cli-cor
 ## Journal
 
 - 2026-07-12 (shaping): Separated test movement/gate cleanup from the crate extraction so the architectural diff and verification-topology diff can be independently reviewed.
+- 2026-07-13 (measured observation): After an engine/source edit, the filtered monolithic `cdf-cli` test command spent 1m44s compiling/linking and then approximately 100s with the 112 KiB process image stopped in macOS `_dyld_start` before the selected test executed in 0.44s. Reusing the identical binary ran subsequent selected tests in 1.1-2.2s total. This is direct evidence that filtering does not make the product test artifact a fast owner and strengthens the existing crate/test-topology requirement; it does not resolve the active fast-lane decision conflict or change this ticket's blocked status.
 
 ## Blockers
 

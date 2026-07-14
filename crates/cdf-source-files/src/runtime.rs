@@ -199,6 +199,7 @@ pub fn discover_local_binary_schema_bounded(
         }
     })?;
     let schema = observation.arrow_schema;
+    let schema_hash = cdf_kernel::canonical_arrow_schema_hash(schema.as_ref())?;
     let inner_probe_bytes = observation.sampled_bytes;
     let mut source_identity = BTreeMap::from([
         ("stable_id".to_owned(), logical_source_identity.stable_id),
@@ -207,6 +208,8 @@ pub fn discover_local_binary_schema_bounded(
             "format_driver_version".to_owned(),
             driver.descriptor().semantic_version.clone(),
         ),
+        ("schema_hash".to_owned(), schema_hash.to_string()),
+        ("size_bytes".to_owned(), source_size.to_string()),
     ]);
     merge_discovery_evidence(&mut source_identity, observation.evidence)?;
     if let Some(generation) = observation.identity.generation {
@@ -302,6 +305,7 @@ pub fn discover_transport_binary_schema_bounded(
             Ok::<_, CdfError>(observation)
         }
     })?;
+    let schema_hash = cdf_kernel::canonical_arrow_schema_hash(observation.arrow_schema.as_ref())?;
     let mut source_identity = BTreeMap::from([
         ("stable_id".to_owned(), logical_source_identity.stable_id),
         ("format".to_owned(), format.as_str().to_owned()),
@@ -309,6 +313,7 @@ pub fn discover_transport_binary_schema_bounded(
             "format_driver_version".to_owned(),
             driver.descriptor().semantic_version.clone(),
         ),
+        ("schema_hash".to_owned(), schema_hash.to_string()),
         ("compression".to_owned(), transform_name.to_owned()),
         ("source_size_bytes".to_owned(), size_bytes.to_string()),
         ("size_bytes".to_owned(), size_bytes.to_string()),
@@ -869,7 +874,7 @@ fn prepare_file_input(
         };
         let transformed = transformed_byte_source(upstream, transform_id, dependencies)?;
         return Ok(
-            if source_access == cdf_runtime::FormatSourceAccess::Adaptive {
+            if source_access != cdf_runtime::FormatSourceAccess::Sequential {
                 PreparedFileInput::SpoolSource {
                     source: transformed,
                     size_bytes: None,
@@ -936,14 +941,16 @@ async fn stream_prepared_file_match(
     };
 
     stream_registered_format(
-        source,
-        spool_guard,
-        dependencies
-            .formats()
-            .resolve(file_format_name(declaration))?,
-        options,
-        position,
-        physical_schema_authority,
+        RegisteredFormatStreamRequest {
+            source,
+            spool_guard,
+            driver: dependencies
+                .formats()
+                .resolve(file_format_name(declaration))?,
+            options,
+            source_position: position,
+            physical_schema_authority,
+        },
         dependencies,
     )
 }
@@ -1114,15 +1121,27 @@ fn transformed_byte_source(
     )?))
 }
 
-fn stream_registered_format(
+struct RegisteredFormatStreamRequest {
     source: Arc<dyn ByteSource>,
     spool_guard: Option<Arc<AccountedSpool>>,
     driver: Arc<dyn FormatDriver>,
     options: ReadOptions,
     source_position: Option<SourcePosition>,
     physical_schema_authority: PhysicalSchemaAuthority,
+}
+
+fn stream_registered_format(
+    request: RegisteredFormatStreamRequest,
     dependencies: &FileRuntimeDependencies,
 ) -> Result<BatchStream> {
+    let RegisteredFormatStreamRequest {
+        source,
+        spool_guard,
+        driver,
+        options,
+        source_position,
+        physical_schema_authority,
+    } = request;
     let memory = dependencies.execution().memory();
     let scope_id = format!(
         "format-{}-{}",
@@ -3011,17 +3030,19 @@ mod tests {
         );
         let driver = dependencies.formats().resolve("parquet").unwrap();
         let stream = stream_registered_format(
-            Arc::new(
-                LocalByteSource::open(temp.path(), dependencies.execution().memory()).unwrap(),
-            ),
-            None,
-            driver,
-            ReadOptions::new(
-                ResourceId::new("events").unwrap(),
-                PartitionId::new("file-0").unwrap(),
-            ),
-            None,
-            PhysicalSchemaAuthority::default(),
+            RegisteredFormatStreamRequest {
+                source: Arc::new(
+                    LocalByteSource::open(temp.path(), dependencies.execution().memory()).unwrap(),
+                ),
+                spool_guard: None,
+                driver,
+                options: ReadOptions::new(
+                    ResourceId::new("events").unwrap(),
+                    PartitionId::new("file-0").unwrap(),
+                ),
+                source_position: None,
+                physical_schema_authority: PhysicalSchemaAuthority::default(),
+            },
             &dependencies,
         )
         .unwrap();

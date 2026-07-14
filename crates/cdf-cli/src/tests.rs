@@ -48,6 +48,7 @@ use cdf_state_sqlite::{
     SqliteCheckpointStore, SqlitePromotionSettlementStore, SqliteRunLedger,
 };
 use duckdb::Connection as DuckConnection;
+use flate2::{Compression, write::GzEncoder};
 use postgres::{Client, NoTls};
 use rusqlite::Connection;
 use serde_json::Value;
@@ -3062,7 +3063,7 @@ fn local_arrow_ipc_discover_pin_show_diff_preview_and_run_share_pinned_schema() 
 }
 
 #[test]
-fn local_arrow_ipc_discovery_rejects_malformed_and_remote_without_writes() {
+fn arrow_ipc_discovery_supports_compression_multi_file_and_remote_without_writes() {
     let malformed = TestProject::new();
     write_arrow_ipc_discover_resource(&malformed, "events.arrow");
     fs::write(malformed.root.join("data/events.arrow"), b"not-arrow-ipc").unwrap();
@@ -3150,10 +3151,16 @@ fn local_arrow_ipc_discovery_rejects_malformed_and_remote_without_writes() {
     );
     assert_no_schema_discovery_writes(&stream);
 
-    for (label, magic, compression_override) in [
-        ("gzip-auto", vec![0x1f, 0x8b, 0x00, 0x00], None),
-        ("zstd-auto", vec![0x28, 0xb5, 0x2f, 0xfd], None),
-        ("gzip-override", vec![0x1f, 0x8b, 0x00, 0x00], Some("gzip")),
+    let compression_source = TestProject::new();
+    write_vendor_arrow_ipc(&compression_source, "events.arrow");
+    let arrow_bytes = fs::read(compression_source.root.join("data/events.arrow")).unwrap();
+    let mut gzip = GzEncoder::new(Vec::new(), Compression::default());
+    gzip.write_all(&arrow_bytes).unwrap();
+    let gzip_bytes = gzip.finish().unwrap();
+    for (label, bytes, compression_override, succeeds) in [
+        ("gzip-auto", gzip_bytes.clone(), None, true),
+        ("gzip-override", gzip_bytes, Some("gzip"), true),
+        ("zstd-malformed", vec![0x28, 0xb5, 0x2f, 0xfd], None, false),
     ] {
         let compressed = TestProject::new();
         write_arrow_ipc_discover_resource(&compressed, "events.arrow");
@@ -3165,7 +3172,7 @@ fn local_arrow_ipc_discovery_rejects_malformed_and_remote_without_writes() {
             );
             fs::write(resource_path, resource).unwrap();
         }
-        fs::write(compressed.root.join("data/events.arrow"), magic).unwrap();
+        fs::write(compressed.root.join("data/events.arrow"), bytes).unwrap();
         let compressed_result = run([
             "cdf",
             "--json",
@@ -3175,11 +3182,22 @@ fn local_arrow_ipc_discovery_rejects_malformed_and_remote_without_writes() {
             "discover",
             "local.events",
         ]);
-        assert_ne!(compressed_result.exit_code, 0, "{label}");
+        if succeeds {
+            assert_eq!(
+                compressed_result.exit_code, 0,
+                "{label}: {}",
+                compressed_result.stderr
+            );
+        } else {
+            assert_ne!(compressed_result.exit_code, 0, "{label}");
+            assert!(
+                compressed_result.stderr.contains("failed:"),
+                "{label}: {}",
+                compressed_result.stderr
+            );
+        }
         assert!(
-            compressed_result
-                .stderr
-                .contains("compressed Arrow IPC discovery is excluded"),
+            !compressed_result.stderr.contains("excluded"),
             "{label}: {}",
             compressed_result.stderr
         );
@@ -3241,20 +3259,27 @@ fn local_arrow_ipc_discovery_rejects_malformed_and_remote_without_writes() {
     ]);
     assert_eq!(diff.exit_code, 0, "{}", diff.stderr);
 
+    let remote_source = TestProject::new();
+    write_vendor_arrow_ipc(&remote_source, "events.arrow");
+    let remote_bytes = fs::read(remote_source.root.join("data/events.arrow")).unwrap();
+    let (base_url, _requests) = serve_parquet_file(remote_bytes, 16);
     let remote = TestProject::new();
     fs::write(
         remote.root.join("resources/files.toml"),
-        r#"
+        format!(
+            r#"
 [source.local]
 kind = "files"
-root = "https://data.example.test/"
+root = "{base_url}/"
+egress_allowlist = ["127.0.0.1"]
 
 [resource.events]
 glob = "events.arrow"
 format = "arrow_ipc"
 write_disposition = "append"
 trust = "governed"
-"#,
+"#
+        ),
     )
     .unwrap();
     let remote_result = run([
@@ -3266,11 +3291,15 @@ trust = "governed"
         "discover",
         "local.events",
     ]);
-    assert_ne!(remote_result.exit_code, 0);
-    assert!(
-        remote_result
-            .stderr
-            .contains("remote Arrow IPC discovery is excluded")
+    assert_eq!(remote_result.exit_code, 0, "{}", remote_result.stderr);
+    let remote_report = stderr_or_stdout_json(&remote_result.stdout);
+    assert_eq!(
+        remote_report["result"]["snapshot_metadata"]["format"],
+        "arrow_ipc"
+    );
+    assert_eq!(
+        remote_report["result"]["source_identity"]["transport"],
+        "remote"
     );
     assert_no_schema_discovery_writes(&remote);
 }

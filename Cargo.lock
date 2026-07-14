@@ -795,6 +795,7 @@ dependencies = [
  "clap_mangen",
  "crossterm",
  "duckdb",
+ "flate2",
  "futures-executor",
  "futures-util",
  "postgres",
