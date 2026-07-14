@@ -14,7 +14,6 @@ cdf-source-postgres = { path = "../cdf-source-postgres" }
 cdf-source-files = { path = "../cdf-source-files" }
 cdf-source-rest = { path = "../cdf-source-rest" }
 cdf-http = { path = "../cdf-http" }
-cdf-formats = { path = "../cdf-formats" }
 cdf-kernel = { path = "../cdf-kernel" }
 cdf-runtime = { path = "../cdf-runtime" }
 futures-util = "0.3.32"

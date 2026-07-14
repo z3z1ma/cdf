@@ -3,7 +3,6 @@
 mod arrow_ipc_discovery;
 mod readers;
 mod resource;
-mod schema;
 #[cfg(test)]
 mod tests;
 mod types;
@@ -23,5 +22,4 @@ pub use readers::{
     stream_parquet_file_with_declared_schema_and_type_policy,
 };
 pub use resource::FileResource;
-pub use schema::{SCHEMA_HASH_PREFIX, compile_observed_schema, schema_hash};
 pub use types::*;

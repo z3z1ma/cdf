@@ -7,7 +7,7 @@ use std::{
 
 use arrow_array::RecordBatch;
 use arrow_ipc::writer::StreamWriter;
-use cdf_formats::{FormatRead, JsonOptions, read_ndjson_bytes, schema_hash};
+use cdf_formats::{FormatRead, JsonOptions, read_ndjson_bytes};
 use cdf_http::{HttpRequest, Redactor, SecretProvider, SecretUri, TraceEvent};
 use cdf_kernel::{
     Batch, BatchId, CdfError, PartitionId, ResourceDescriptor, ResourceId, Result, SchemaHash,

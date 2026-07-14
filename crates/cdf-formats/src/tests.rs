@@ -23,12 +23,13 @@ use cdf_conformance::resource::{
 };
 use cdf_contract::{
     ArrowType, ContractPolicy, FieldCoercionDecision, NORMALIZER_NAMECASE_V1,
-    reject_untrusted_schema_coercion_metadata, schema_coercion_plan_from_reconciled_schema,
-    schema_coercion_plan_from_trusted_json,
+    compile_validation_program, reject_untrusted_schema_coercion_metadata,
+    schema_coercion_plan_from_reconciled_schema, schema_coercion_plan_from_trusted_json,
 };
 use cdf_kernel::{
     ErrorKind, PartitionId, ResourceId, ResourceStream, ScanRequest, SchemaHash, ScopeKey,
-    SegmentId, SourcePosition, physical_type, source_name, with_semantic, with_source_name,
+    SegmentId, SourcePosition, canonical_arrow_schema_hash as schema_hash, physical_type,
+    source_name, with_semantic, with_source_name,
 };
 use cdf_runtime::ReadOptions;
 use futures_util::StreamExt;
@@ -335,7 +336,7 @@ fn ndjson_inference_feeds_contract_observed_schema() {
     )
     .unwrap();
     let program =
-        compile_observed_schema(&ContractPolicy::evolve(), &read.observed_schema).unwrap();
+        compile_validation_program(&ContractPolicy::evolve(), &read.observed_schema).unwrap();
 
     assert_eq!(program.normalizer_version, NORMALIZER_NAMECASE_V1);
     assert!(

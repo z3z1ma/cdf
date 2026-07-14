@@ -19,7 +19,7 @@ use cdf_kernel::{
     Batch, BatchId, BatchStream, CdfError, FileManifest, FilePosition, PreContractQuarantineFact,
     PreContractResidualCandidate, ResourceDescriptor, ResourceId, Result, SchemaHash,
     SchemaSnapshotReference, SchemaSource, ScopeKey, SourcePosition, TrustLevel, WriteDisposition,
-    source_name,
+    canonical_arrow_schema_hash as schema_hash, source_name,
 };
 use cdf_runtime::ReadOptions;
 use futures_util::stream;
@@ -28,7 +28,6 @@ use parquet::file::reader::ChunkReader;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
-use crate::schema::schema_hash;
 use crate::{CsvOptions, FileFormat, FileSource, FormatRead, JsonOptions};
 
 pub fn read_file_source(source: &FileSource) -> Result<FormatRead> {

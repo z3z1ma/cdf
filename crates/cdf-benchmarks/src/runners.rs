@@ -17,12 +17,12 @@ use cdf_engine::{
 };
 use cdf_formats::{
     CsvOptions, FileFormat, FileResource, FileSource, JsonOptions, read_arrow_ipc_stream,
-    schema_hash,
 };
 use cdf_kernel::{
     CHECKPOINT_STATE_VERSION, CdfError, CheckpointId, CursorPosition, CursorValue, PartitionId,
     PipelineId, PredicateId, ResourceId, ResourceStream, RunId, ScanPredicate, ScanRequest,
     ScopeKey, SegmentId, SourcePosition, StateSegment, TargetName, WriteDisposition,
+    canonical_arrow_schema_hash,
 };
 use cdf_package::{PackageBuilder, PackageReader, archive_package_to_parquet};
 use cdf_package_contract::{DestinationCommitPlanPreimage, PackageStatus, StateDeltaPreimage};
@@ -593,7 +593,7 @@ fn build_package_fixture(
         .first()
         .map(|batch| batch.schema())
         .ok_or_else(|| bench_error("package fixture requires at least one batch"))?;
-    let schema_hash = schema_hash(schema.as_ref())?;
+    let schema_hash = canonical_arrow_schema_hash(schema.as_ref())?;
     let builder = PackageBuilder::create(&package_dir, package_id)?;
     builder.update_status(PackageStatus::Extracting)?;
     builder.write_json_artifact(

@@ -171,7 +171,7 @@ impl PythonBatchRead {
             return Ok(());
         };
         let schema = first_batch.schema();
-        let observed_schema_hash = schema_hash(schema.as_ref())?;
+        let observed_schema_hash = cdf_kernel::canonical_arrow_schema_hash(schema.as_ref())?;
         let descriptor = descriptor_for(
             options.resource_id.clone(),
             ScopeKey::Stream {

@@ -182,41 +182,8 @@ pub fn validate_document(document: &DeclarativeDocument) -> Result<()> {
     compile_document(document).map(drop)
 }
 
-#[derive(Clone, Debug)]
-pub struct LocalArrowIpcSchemaProbe {
-    pub schema: SchemaRef,
-    pub source_identity: BTreeMap<String, String>,
-    pub probe_bytes_read: u64,
-}
-
-pub fn discover_local_arrow_ipc_schema(path: impl AsRef<Path>) -> Result<LocalArrowIpcSchemaProbe> {
-    let discovery = cdf_formats::discover_local_arrow_ipc_schema(path)?;
-    Ok(LocalArrowIpcSchemaProbe {
-        schema: discovery.schema,
-        source_identity: discovery.source_identity.cache_evidence(),
-        probe_bytes_read: discovery.probe_bytes_read,
-    })
-}
-
-pub fn discover_local_arrow_ipc_schema_bounded(
-    path: impl AsRef<Path>,
-    initial_bytes_read: u64,
-    max_metadata_bytes: u64,
-) -> Result<LocalArrowIpcSchemaProbe> {
-    let discovery = cdf_formats::discover_local_arrow_ipc_schema_bounded(
-        path,
-        initial_bytes_read,
-        max_metadata_bytes,
-    )?;
-    Ok(LocalArrowIpcSchemaProbe {
-        schema: discovery.schema,
-        source_identity: discovery.source_identity.cache_evidence(),
-        probe_bytes_read: discovery.probe_bytes_read,
-    })
-}
-
 pub fn physical_arrow_schema_hash(schema: &Schema) -> Result<SchemaHash> {
-    cdf_formats::schema_hash(schema)
+    cdf_kernel::canonical_arrow_schema_hash(schema)
 }
 
 impl ResourceStream for CompiledResource {

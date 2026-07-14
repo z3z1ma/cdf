@@ -5,12 +5,11 @@ use std::{
 
 use arrow_array::RecordBatch;
 use arrow_schema::SchemaRef;
-use cdf_formats::schema_hash;
 use cdf_http::{HttpRequest, HttpResponse, HttpTransport};
 use cdf_kernel::{
     Batch, BatchId, BatchStream, CdfError, PartitionId, PartitionPlan, ResourceDescriptor,
     ResourceId, ResourceStream, Result as CdfResult, ScanRequest, SchemaSnapshotReference,
-    SchemaSource, ScopeKey, TrustLevel, WriteDisposition,
+    SchemaSource, ScopeKey, TrustLevel, WriteDisposition, canonical_arrow_schema_hash,
 };
 use futures_util::stream;
 
@@ -34,7 +33,7 @@ impl MemoryResource {
             .first()
             .map(RecordBatch::schema)
             .ok_or_else(|| bench_error("memory resource requires at least one batch"))?;
-        let schema_hash = schema_hash(schema.as_ref())?;
+        let schema_hash = canonical_arrow_schema_hash(schema.as_ref())?;
         let resource_id = ResourceId::new(resource_id)?;
         let partition_id = PartitionId::new(partition_id)?;
         let descriptor = ResourceDescriptor {

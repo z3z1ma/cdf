@@ -70,7 +70,7 @@ impl PythonResource {
                 })
                 .collect::<Result<Vec<_>>>()?,
         ));
-        let schema_hash = cdf_formats::schema_hash(schema.as_ref())?;
+        let schema_hash = cdf_kernel::canonical_arrow_schema_hash(schema.as_ref())?;
         let write_disposition = match metadata.write_disposition.as_str() {
             "append" => WriteDisposition::Append,
             "replace" => WriteDisposition::Replace,

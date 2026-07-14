@@ -12,10 +12,8 @@ use std::{
 
 use arrow_ipc::reader::FileReader;
 use arrow_schema::SchemaRef;
-use cdf_kernel::{CdfError, Result};
+use cdf_kernel::{CdfError, Result, canonical_arrow_schema_hash as schema_hash};
 use serde::{Deserialize, Serialize};
-
-use crate::schema::schema_hash;
 
 #[derive(Clone, Debug)]
 pub struct LocalArrowIpcSchemaDiscovery {
