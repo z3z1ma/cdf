@@ -24,7 +24,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::{
-    CdfLock, DiscoveryCoverageMode, DiscoveryManifestArtifact, LockFileAuthority,
+    CdfLock, DiscoveryFileCoverage, DiscoveryManifestArtifact, LockFileAuthority,
     SCHEMA_SNAPSHOT_PROMOTION_AUTHORITY_VERSION, SchemaSnapshotArtifact,
     SchemaSnapshotPromotionAuthority, SchemaSnapshotPromotionCoercionAuthority,
     SchemaSnapshotPromotionEvidenceAvailability, SchemaSnapshotPromotionPathAuthority,
@@ -44,7 +44,7 @@ pub struct SchemaPromotionPlanReport {
     pub evidence_inventory_complete: bool,
     pub fresh_discovery_schema_hash: Option<String>,
     pub fresh_discovery_manifest_hash: Option<String>,
-    pub fresh_discovery_coverage: Option<DiscoveryCoverageMode>,
+    pub fresh_discovery_file_coverage: Option<DiscoveryFileCoverage>,
     pub fresh_discovery_content_identity: BTreeMap<String, String>,
     pub executable: bool,
     pub paths: Vec<SchemaPromotionPathReport>,
@@ -689,7 +689,7 @@ pub fn plan_schema_promotion(
         evidence_inventory_complete,
         fresh_discovery_schema_hash,
         fresh_discovery_manifest_hash: fresh_authority.manifest_hash,
-        fresh_discovery_coverage: fresh_authority.coverage,
+        fresh_discovery_file_coverage: fresh_authority.file_coverage,
         fresh_discovery_content_identity: fresh_authority.content_identity,
         executable,
         paths,
@@ -766,7 +766,7 @@ pub fn validate_schema_promotion_plan_identity(
         || snapshot_authority.old_snapshot.schema_hash.as_str() != plan.old_schema_hash
         || snapshot_authority.fresh_discovery_schema_hash != plan.fresh_discovery_schema_hash
         || snapshot_authority.fresh_discovery_manifest_hash != plan.fresh_discovery_manifest_hash
-        || snapshot_authority.fresh_discovery_coverage != plan.fresh_discovery_coverage
+        || snapshot_authority.fresh_discovery_file_coverage != plan.fresh_discovery_file_coverage
         || snapshot_authority.fresh_discovery_content_identity
             != plan.fresh_discovery_content_identity
     {
@@ -1686,7 +1686,7 @@ struct FreshDiscoveryAuthority {
     types: BTreeMap<String, DataType>,
     schema_hash: Option<String>,
     manifest_hash: Option<String>,
-    coverage: Option<DiscoveryCoverageMode>,
+    file_coverage: Option<DiscoveryFileCoverage>,
     content_identity: BTreeMap<String, String>,
     unavailable_reason: Option<String>,
 }
@@ -1727,7 +1727,7 @@ fn fresh_discovery_types(
                     types: BTreeMap::new(),
                     schema_hash: None,
                     manifest_hash: None,
-                    coverage: None,
+                    file_coverage: None,
                     content_identity: BTreeMap::new(),
                     unavailable_reason: Some(
                         "fresh discovery supplied neither a verified discovery manifest nor content identity"
@@ -1746,9 +1746,9 @@ fn fresh_discovery_types(
                 manifest_hash: discovery_manifest
                     .as_ref()
                     .map(|manifest| manifest.manifest_hash.to_string()),
-                coverage: discovery_manifest
+                file_coverage: discovery_manifest
                     .as_ref()
-                    .map(|manifest| manifest.coverage.clone()),
+                    .map(|manifest| manifest.file_coverage.clone()),
                 content_identity: content_identity.clone(),
                 unavailable_reason: None,
             })
@@ -1757,7 +1757,7 @@ fn fresh_discovery_types(
             types: BTreeMap::new(),
             schema_hash: None,
             manifest_hash: None,
-            coverage: None,
+            file_coverage: None,
             content_identity: BTreeMap::new(),
             unavailable_reason: Some(reason.clone()),
         }),
@@ -1934,7 +1934,7 @@ fn promotion_snapshot_plan(
         proposed_schema: SchemaSnapshotSchema::from_arrow(proposed_schema),
         fresh_discovery_schema_hash: fresh.schema_hash.clone(),
         fresh_discovery_manifest_hash: fresh.manifest_hash.clone(),
-        fresh_discovery_coverage: fresh.coverage.clone(),
+        fresh_discovery_file_coverage: fresh.file_coverage.clone(),
         fresh_discovery_content_identity: fresh.content_identity.clone(),
         normalizer_version: lineage.normalizer_version.to_owned(),
         contract_policy_hash: lineage.contract_policy_hash.to_owned(),
@@ -2356,7 +2356,7 @@ struct PromotionIdentity<'a> {
     evidence_inventory_complete: bool,
     fresh_discovery_schema_hash: Option<String>,
     fresh_discovery_manifest_hash: Option<String>,
-    fresh_discovery_coverage: Option<DiscoveryCoverageMode>,
+    fresh_discovery_file_coverage: Option<DiscoveryFileCoverage>,
     fresh_discovery_content_identity: BTreeMap<String, String>,
     paths: Vec<PromotionIdentityPath>,
     targets: Vec<PromotionIdentityTarget>,
@@ -2400,7 +2400,7 @@ impl<'a> PromotionIdentity<'a> {
             evidence_inventory_complete: plan.evidence_inventory_complete,
             fresh_discovery_schema_hash: plan.fresh_discovery_schema_hash.clone(),
             fresh_discovery_manifest_hash: plan.fresh_discovery_manifest_hash.clone(),
-            fresh_discovery_coverage: plan.fresh_discovery_coverage.clone(),
+            fresh_discovery_file_coverage: plan.fresh_discovery_file_coverage.clone(),
             fresh_discovery_content_identity: plan.fresh_discovery_content_identity.clone(),
             paths: plan
                 .paths
@@ -3217,7 +3217,7 @@ mod tests {
             types: BTreeMap::new(),
             schema_hash: Some("sha256:fresh".to_owned()),
             manifest_hash: Some("sha256:manifest".to_owned()),
-            coverage: Some(DiscoveryCoverageMode::Exhaustive),
+            file_coverage: Some(DiscoveryFileCoverage::AllFiles),
             content_identity: BTreeMap::from([("etag".to_owned(), "one".to_owned())]),
             unavailable_reason: None,
         };

@@ -426,6 +426,13 @@ pub enum FormatErrorIsolation {
     Record,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FormatDiscoveryKind {
+    FormatMetadata,
+    BoundedContent,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FormatDriverDescriptor {
     pub format_id: FormatId,
@@ -439,6 +446,7 @@ pub struct FormatDriverDescriptor {
     pub projection_pushdown: PushdownFidelity,
     pub predicate_pushdown: PushdownFidelity,
     pub source_access: FormatSourceAccess,
+    pub discovery_kind: FormatDiscoveryKind,
     pub decode_unit_policy: String,
     pub error_isolation: FormatErrorIsolation,
     pub minimum_working_set_bytes: u64,
@@ -1278,6 +1286,7 @@ mod tests {
             projection_pushdown: PushdownFidelity::Unsupported,
             predicate_pushdown: PushdownFidelity::Unsupported,
             source_access: FormatSourceAccess::Sequential,
+            discovery_kind: FormatDiscoveryKind::BoundedContent,
             decode_unit_policy: "whole_object".to_owned(),
             error_isolation: FormatErrorIsolation::DecodeUnit,
             minimum_working_set_bytes: 1,

@@ -813,27 +813,30 @@ fn schema_snapshot_artifact_uses_deterministic_hash_and_project_path() {
 #[test]
 fn discovery_executor_budget_defaults_and_rejects_invalid_shapes() {
     let budget = DiscoveryExecutorBudget::default();
-    assert_eq!(budget.max_metadata_bytes_per_file(), 64 * 1024 * 1024);
+    assert_eq!(budget.max_bytes_per_file(), 64 * 1024 * 1024);
+    assert_eq!(budget.max_records_per_file(), 1_000);
     assert_eq!(budget.max_total_in_flight_bytes(), 128 * 1024 * 1024);
     assert_eq!(budget.max_concurrent_probes(), 8);
     let options = SchemaDiscoveryExecutionOptions::new();
     assert_eq!(options.budget(), &budget);
 
-    for (per_file, total, probes, expected) in [
-        (0, 1, 1, "max_metadata_bytes_per_file"),
-        (1, 0, 1, "max_total_in_flight_bytes"),
-        (1, 1, 0, "max_concurrent_probes"),
-        (2, 1, 1, "cannot exceed"),
-        (u64::MAX / 2 + 1, u64::MAX, 2, "overflows"),
+    for (bytes_per_file, records_per_file, total, probes, expected) in [
+        (0, 1, 1, 1, "max_bytes_per_file"),
+        (1, 0, 1, 1, "max_records_per_file"),
+        (1, 1, 0, 1, "max_total_in_flight_bytes"),
+        (1, 1, 1, 0, "max_concurrent_probes"),
+        (2, 1, 1, 1, "cannot exceed"),
+        (u64::MAX / 2 + 1, 1, u64::MAX, 2, "overflows"),
     ] {
-        let error = DiscoveryExecutorBudget::new(per_file, total, probes)
+        let error = DiscoveryExecutorBudget::new(bytes_per_file, records_per_file, total, probes)
             .unwrap_err()
             .to_string();
         assert!(error.contains(expected), "unexpected error: {error}");
     }
 
     let invalid_json = r#"{
-        "max_metadata_bytes_per_file": 0,
+        "max_bytes_per_file": 0,
+        "max_records_per_file": 1,
         "max_total_in_flight_bytes": 1,
         "max_concurrent_probes": 1
     }"#;
@@ -843,8 +846,8 @@ fn discovery_executor_budget_defaults_and_rejects_invalid_shapes() {
 #[test]
 fn discovery_manifest_is_canonical_content_addressed_and_fail_closed() {
     let resource_id = ResourceId::new("events.raw").unwrap();
-    let first = probed_discovery_candidate("file:///data/a.parquet", "sha256:a", 48);
-    let mut second = probed_discovery_candidate("file:///data/b.parquet", "sha256:b", 64);
+    let first = observed_discovery_candidate("file:///data/a.parquet", "sha256:a", 48);
+    let mut second = observed_discovery_candidate("file:///data/b.parquet", "sha256:b", 64);
     second.metadata_variance = vec![DiscoveryMetadataVariance {
         scope: DiscoveryMetadataScope::Field,
         path: "amount".to_owned(),
@@ -855,7 +858,8 @@ fn discovery_manifest_is_canonical_content_addressed_and_fail_closed() {
         resource_id: resource_id.as_str().to_owned(),
         baseline_schema_hash: Some(SchemaHash::new("sha256:baseline").unwrap()),
         effective_schema_hash: Some(SchemaHash::new("sha256:effective").unwrap()),
-        coverage: DiscoveryCoverageMode::Exhaustive,
+        file_coverage: DiscoveryFileCoverage::AllFiles,
+        within_file_coverage: DiscoveryWithinFileCoverage::FormatMetadata,
         selector: None,
         budget: DiscoveryExecutorBudget::default(),
         normalizer_version: "namecase-v1".to_owned(),
@@ -870,7 +874,8 @@ fn discovery_manifest_is_canonical_content_addressed_and_fail_closed() {
         resource_id: artifact.resource_id.clone(),
         baseline_schema_hash: Some(SchemaHash::new("sha256:next-baseline").unwrap()),
         effective_schema_hash: artifact.effective_schema_hash.clone(),
-        coverage: artifact.coverage.clone(),
+        file_coverage: artifact.file_coverage.clone(),
+        within_file_coverage: artifact.within_file_coverage,
         selector: artifact.selector.clone(),
         budget: artifact.budget.clone(),
         normalizer_version: artifact.normalizer_version.clone(),
@@ -895,7 +900,11 @@ fn discovery_manifest_is_canonical_content_addressed_and_fail_closed() {
         artifact.candidates[1].metadata_variance[0].observed_values,
         vec!["decimal", "utf8"]
     );
-    assert_eq!(artifact.hash_input["coverage"], "exhaustive");
+    assert_eq!(artifact.hash_input["file_coverage"], "all_files");
+    assert_eq!(
+        artifact.hash_input["within_file_coverage"],
+        "format_metadata"
+    );
     assert_eq!(
         artifact.path,
         format!(
@@ -968,9 +977,9 @@ fn discovery_manifest_is_canonical_content_addressed_and_fail_closed() {
 
 #[test]
 fn sampled_discovery_manifest_enforces_truthful_participation() {
-    let first = probed_discovery_candidate("file:///data/00.parquet", "sha256:00", 32);
-    let middle = unprobed_discovery_candidate("file:///data/01.parquet", "etag:01");
-    let last = probed_discovery_candidate("file:///data/02.parquet", "sha256:02", 40);
+    let first = observed_discovery_candidate("file:///data/00.parquet", "sha256:00", 32);
+    let middle = unobserved_discovery_candidate("file:///data/01.parquet", "etag:01");
+    let last = observed_discovery_candidate("file:///data/02.parquet", "sha256:02", 40);
     let selector_candidates = [&first, &middle, &last]
         .into_iter()
         .map(|candidate| DiscoverySelectorCandidate {
@@ -990,7 +999,8 @@ fn sampled_discovery_manifest_enforces_truthful_participation() {
         resource_id: "events.sampled".to_owned(),
         baseline_schema_hash: None,
         effective_schema_hash: Some(SchemaHash::new("sha256:sampled").unwrap()),
-        coverage: DiscoveryCoverageMode::Sampled,
+        file_coverage: DiscoveryFileCoverage::SampledFiles,
+        within_file_coverage: DiscoveryWithinFileCoverage::FormatMetadata,
         selector: Some(selector),
         budget: DiscoveryExecutorBudget::default(),
         normalizer_version: "namecase-v1".to_owned(),
@@ -998,10 +1008,10 @@ fn sampled_discovery_manifest_enforces_truthful_participation() {
         candidates: vec![last, middle.clone(), first],
     };
     let artifact = DiscoveryManifestArtifact::new(input.clone()).unwrap();
-    assert_eq!(artifact.coverage, DiscoveryCoverageMode::Sampled);
+    assert_eq!(artifact.file_coverage, DiscoveryFileCoverage::SampledFiles);
     assert_eq!(
         artifact.candidates[1].participation,
-        DiscoveryParticipation::Unprobed
+        DiscoveryParticipation::Unobserved
     );
     assert!(artifact.candidates[1].physical_schema_hash.is_none());
     assert!(artifact.candidates[1].probe_bytes.is_none());
@@ -1014,30 +1024,31 @@ fn sampled_discovery_manifest_enforces_truthful_participation() {
         .to_string();
     assert!(error.contains("canonical membership, scores, or strata"));
 
-    let mut false_unprobed = input;
-    false_unprobed.candidates[1].physical_schema_hash =
+    let mut false_unobserved = input;
+    false_unobserved.candidates[1].physical_schema_hash =
         Some(SchemaHash::new("sha256:invented").unwrap());
-    let error = DiscoveryManifestArtifact::new(false_unprobed)
+    let error = DiscoveryManifestArtifact::new(false_unobserved)
         .unwrap_err()
         .to_string();
-    assert!(error.contains("unprobed") && error.contains("forbids"));
+    assert!(error.contains("unobserved") && error.contains("forbids"));
 
-    let mut false_probed = middle;
-    false_probed.participation = DiscoveryParticipation::Probed;
+    let mut false_observed = middle;
+    false_observed.participation = DiscoveryParticipation::Observed;
     let error = DiscoveryManifestArtifact::new(DiscoveryManifestInput {
-        resource_id: "events.false-probed".to_owned(),
+        resource_id: "events.false-observed".to_owned(),
         baseline_schema_hash: None,
         effective_schema_hash: None,
-        coverage: DiscoveryCoverageMode::Exhaustive,
+        file_coverage: DiscoveryFileCoverage::AllFiles,
+        within_file_coverage: DiscoveryWithinFileCoverage::FormatMetadata,
         selector: None,
         budget: DiscoveryExecutorBudget::default(),
         normalizer_version: "namecase-v1".to_owned(),
         policy_version: "evolve-v1".to_owned(),
-        candidates: vec![false_probed],
+        candidates: vec![false_observed],
     })
     .unwrap_err()
     .to_string();
-    assert!(error.contains("probed") && error.contains("requires"));
+    assert!(error.contains("observed") && error.contains("requires"));
 }
 
 #[test]
@@ -1067,12 +1078,13 @@ fn schema_snapshot_current_version_covers_schema_and_manifest_and_rejects_old_ve
         resource_id: resource.as_str().to_owned(),
         baseline_schema_hash: None,
         effective_schema_hash: None,
-        coverage: DiscoveryCoverageMode::Exhaustive,
+        file_coverage: DiscoveryFileCoverage::AllFiles,
+        within_file_coverage: DiscoveryWithinFileCoverage::FormatMetadata,
         selector: None,
         budget: DiscoveryExecutorBudget::default(),
         normalizer_version: "namecase-v1".to_owned(),
         policy_version: "evolve-v1".to_owned(),
-        candidates: vec![probed_discovery_candidate(
+        candidates: vec![observed_discovery_candidate(
             "file:///data/current.parquet",
             "sha256:current",
             24,
@@ -1135,7 +1147,7 @@ fn schema_snapshot_current_version_covers_schema_and_manifest_and_rejects_old_ve
     assert!(error.contains("read") && error.contains("discovery"));
 }
 
-fn probed_discovery_candidate(
+fn observed_discovery_candidate(
     location: &str,
     physical_schema_hash: &str,
     probe_bytes: u64,
@@ -1149,10 +1161,11 @@ fn probed_discovery_candidate(
             value: Some(format!("bounded:{location}")),
             strength: DiscoveryIdentityStrength::BoundedObservation,
         },
-        participation: DiscoveryParticipation::Probed,
+        participation: DiscoveryParticipation::Observed,
         metadata_variance: Vec::new(),
         physical_schema_hash: Some(SchemaHash::new(physical_schema_hash).unwrap()),
         probe_bytes: Some(probe_bytes),
+        probe_records: Some(0),
         schema_verdict: Some(DiscoverySchemaVerdict {
             kind: DiscoverySchemaVerdictKind::Admitted,
             rule: "schema-join-v1".to_owned(),
@@ -1161,7 +1174,7 @@ fn probed_discovery_candidate(
     }
 }
 
-fn unprobed_discovery_candidate(location: &str, identity: &str) -> DiscoveryCandidateEvidence {
+fn unobserved_discovery_candidate(location: &str, identity: &str) -> DiscoveryCandidateEvidence {
     DiscoveryCandidateEvidence {
         transport: "file".to_owned(),
         canonical_location: location.to_owned(),
@@ -1171,10 +1184,11 @@ fn unprobed_discovery_candidate(location: &str, identity: &str) -> DiscoveryCand
             value: Some(identity.to_owned()),
             strength: DiscoveryIdentityStrength::WeakEtag,
         },
-        participation: DiscoveryParticipation::Unprobed,
+        participation: DiscoveryParticipation::Unobserved,
         metadata_variance: Vec::new(),
         physical_schema_hash: None,
         probe_bytes: None,
+        probe_records: None,
         schema_verdict: None,
     }
 }
@@ -1561,7 +1575,7 @@ fn object_store_multi_file_parquet_discovery_pins_one_reconciled_snapshot() {
     let manifest = artifacts.discovery_manifest.as_ref().unwrap();
     assert_eq!(manifest.candidates.len(), 2);
     assert!(manifest.candidates.iter().all(|candidate| {
-        candidate.participation == DiscoveryParticipation::Probed
+        candidate.participation == DiscoveryParticipation::Observed
             && candidate
                 .canonical_location
                 .starts_with("s3://tlc/trip-data/2024/")
@@ -1610,13 +1624,17 @@ schema = { fields = [
     .unwrap();
 
     let manifest = prepared.discovery_manifest().unwrap();
-    assert_eq!(manifest.coverage, DiscoveryCoverageMode::Exhaustive);
+    assert_eq!(manifest.file_coverage, DiscoveryFileCoverage::AllFiles);
+    assert_eq!(
+        manifest.within_file_coverage,
+        DiscoveryWithinFileCoverage::FormatMetadata
+    );
     assert_eq!(manifest.candidates.len(), 2);
     assert!(
         manifest
             .candidates
             .iter()
-            .all(|candidate| { candidate.participation == DiscoveryParticipation::Probed })
+            .all(|candidate| { candidate.participation == DiscoveryParticipation::Observed })
     );
     let runtime_evidence = prepared.resource().effective_schema_runtime().unwrap();
     assert!(matches!(
@@ -1684,7 +1702,7 @@ fn object_store_gzip_ndjson_discovers_pins_and_executes_through_one_transport() 
     assert_eq!(manifest.candidates.len(), 1);
     assert_eq!(
         manifest.candidates[0].participation,
-        DiscoveryParticipation::Probed
+        DiscoveryParticipation::Observed
     );
     assert!(manifest.candidates[0].probe_bytes.unwrap() <= 8 * 1024 * 1024);
 
@@ -2074,7 +2092,7 @@ egress_allowlist = ["data.example.test"]
 }
 
 #[test]
-fn local_parquet_discover_autopin_leaves_declared_resources_unprobed() {
+fn local_parquet_discover_autopin_leaves_declared_resources_unobserved() {
     let temp = tempfile::tempdir().unwrap();
     write_discover_project(temp.path(), "parquet", "*.missing");
     let declared = r#"
@@ -2132,10 +2150,21 @@ fn local_ndjson_discovery_is_bounded_and_writes_nothing_until_pin() {
         "vendor_id"
     );
     assert_eq!(
-        artifacts.discovery.snapshot.source_identity["coverage"],
-        "exhaustive"
+        artifacts.discovery.snapshot.source_identity["file_coverage"],
+        "all_files"
     );
-    assert_eq!(artifacts.discovery_manifest.unwrap().candidates.len(), 1);
+    let manifest = artifacts.discovery_manifest.unwrap();
+    assert_eq!(
+        manifest.within_file_coverage,
+        DiscoveryWithinFileCoverage::BoundedContent
+    );
+    assert_eq!(manifest.candidates.len(), 1);
+    assert_eq!(manifest.candidates[0].probe_records, Some(2));
+    assert!(
+        manifest.candidates[0]
+            .probe_bytes
+            .is_some_and(|bytes| bytes > 0)
+    );
     assert!(!temp.path().join(".cdf/schemas").exists());
 }
 
@@ -2171,7 +2200,13 @@ fn local_csv_discovery_uses_the_registered_driver_manifest_path() {
         artifacts.discovery.snapshot.artifact.metadata["probe"],
         "registered-format-discovery"
     );
-    assert_eq!(artifacts.discovery_manifest.unwrap().candidates.len(), 1);
+    let manifest = artifacts.discovery_manifest.unwrap();
+    assert_eq!(
+        manifest.within_file_coverage,
+        DiscoveryWithinFileCoverage::BoundedContent
+    );
+    assert_eq!(manifest.candidates.len(), 1);
+    assert_eq!(manifest.candidates[0].probe_records, Some(2));
 }
 
 #[test]
@@ -2206,11 +2241,17 @@ fn local_json_document_discovery_uses_the_registered_driver_manifest_path() {
         artifacts.discovery.snapshot.artifact.metadata["probe"],
         "registered-format-discovery"
     );
-    assert_eq!(artifacts.discovery_manifest.unwrap().candidates.len(), 1);
+    let manifest = artifacts.discovery_manifest.unwrap();
+    assert_eq!(
+        manifest.within_file_coverage,
+        DiscoveryWithinFileCoverage::BoundedContent
+    );
+    assert_eq!(manifest.candidates.len(), 1);
+    assert_eq!(manifest.candidates[0].probe_records, Some(2));
 }
 
 #[test]
-fn local_parquet_discover_autopin_persists_exhaustive_multi_file_manifest() {
+fn local_parquet_discover_autopin_persists_all_file_metadata_manifest() {
     let temp = tempfile::tempdir().unwrap();
     write_discover_project(temp.path(), "parquet", "*.parquet");
     write_vendor_parquet(&temp.path().join("data/a.parquet"));
@@ -2224,9 +2265,16 @@ fn local_parquet_discover_autopin_persists_exhaustive_multi_file_manifest() {
     )
     .unwrap();
     let discovery = prepared.discovery.unwrap();
-    assert_eq!(discovery.snapshot.source_identity["coverage"], "exhaustive");
+    assert_eq!(
+        discovery.snapshot.source_identity["file_coverage"],
+        "all_files"
+    );
+    assert_eq!(
+        discovery.snapshot.source_identity["within_file_coverage"],
+        "format_metadata"
+    );
     assert_eq!(discovery.snapshot.source_identity["matched_files"], "2");
-    assert_eq!(discovery.snapshot.source_identity["probed_files"], "2");
+    assert_eq!(discovery.snapshot.source_identity["selected_files"], "2");
     let reference = discovery
         .snapshot
         .reference
@@ -2236,22 +2284,25 @@ fn local_parquet_discover_autopin_persists_exhaustive_multi_file_manifest() {
     let manifest = DiscoveryManifestStore::new(temp.path())
         .read(&reference)
         .unwrap();
-    assert_eq!(manifest.coverage, DiscoveryCoverageMode::Exhaustive);
+    assert_eq!(manifest.file_coverage, DiscoveryFileCoverage::AllFiles);
+    assert_eq!(
+        manifest.within_file_coverage,
+        DiscoveryWithinFileCoverage::FormatMetadata
+    );
     assert!(manifest.selector.is_none());
     assert_eq!(manifest.budget.max_concurrent_probes(), 8);
-    assert_eq!(
-        manifest.budget.max_metadata_bytes_per_file(),
-        64 * 1024 * 1024
-    );
+    assert_eq!(manifest.budget.max_bytes_per_file(), 64 * 1024 * 1024);
+    assert_eq!(manifest.budget.max_records_per_file(), 1_000);
     assert_eq!(
         manifest.budget.max_total_in_flight_bytes(),
         128 * 1024 * 1024
     );
     assert_eq!(manifest.candidates.len(), 2);
     assert!(manifest.candidates.iter().all(|candidate| {
-        candidate.participation == DiscoveryParticipation::Probed
+        candidate.participation == DiscoveryParticipation::Observed
             && candidate.physical_schema_hash.is_some()
             && candidate.probe_bytes.is_some()
+            && candidate.probe_records == Some(0)
             && candidate.schema_verdict.is_some()
     }));
     assert_eq!(
@@ -2280,7 +2331,7 @@ fn explicit_sampled_parquet_pin_records_exact_participation_and_is_deterministic
     )
     .unwrap();
     let manifest = first.discovery_manifest.as_ref().unwrap();
-    assert_eq!(manifest.coverage, DiscoveryCoverageMode::Sampled);
+    assert_eq!(manifest.file_coverage, DiscoveryFileCoverage::SampledFiles);
     let selector = manifest.selector.as_ref().unwrap();
     assert_eq!(selector.selector, STRATIFIED_HASH_SELECTOR_V1);
     assert_eq!(selector.sample_files, 3);
@@ -2291,7 +2342,7 @@ fn explicit_sampled_parquet_pin_records_exact_participation_and_is_deterministic
         manifest
             .candidates
             .iter()
-            .filter(|candidate| candidate.participation == DiscoveryParticipation::Probed)
+            .filter(|candidate| candidate.participation == DiscoveryParticipation::Observed)
             .count(),
         3
     );
@@ -2299,30 +2350,30 @@ fn explicit_sampled_parquet_pin_records_exact_participation_and_is_deterministic
         manifest
             .candidates
             .iter()
-            .filter(|candidate| candidate.participation == DiscoveryParticipation::Unprobed)
+            .filter(|candidate| candidate.participation == DiscoveryParticipation::Unobserved)
             .count(),
         6
     );
     assert!(manifest.candidates.iter().all(|candidate| {
-        candidate.participation == DiscoveryParticipation::Probed
+        candidate.participation == DiscoveryParticipation::Observed
             || (candidate.physical_schema_hash.is_none()
                 && candidate.probe_bytes.is_none()
                 && candidate.schema_verdict.is_none())
     }));
     assert_eq!(
-        first.discovery.snapshot.source_identity["coverage"],
-        "sampled"
+        first.discovery.snapshot.source_identity["file_coverage"],
+        "sampled_files"
     );
     assert_eq!(
         first.discovery.snapshot.source_identity["matched_files"],
         "9"
     );
     assert_eq!(
-        first.discovery.snapshot.source_identity["probed_files"],
+        first.discovery.snapshot.source_identity["selected_files"],
         "3"
     );
     assert_eq!(
-        first.discovery.snapshot.source_identity["unprobed_files"],
+        first.discovery.snapshot.source_identity["unobserved_files"],
         "6"
     );
 
@@ -2339,14 +2390,14 @@ fn explicit_sampled_parquet_pin_records_exact_participation_and_is_deterministic
 }
 
 #[test]
-fn explicit_sample_larger_than_set_preserves_exhaustive_manifest_bytes() {
+fn explicit_sample_larger_than_set_preserves_all_files_manifest_bytes() {
     let temp = tempfile::tempdir().unwrap();
     write_discover_project(temp.path(), "parquet", "*.parquet");
     write_vendor_parquet(&temp.path().join("data/a.parquet"));
     write_vendor_parquet(&temp.path().join("data/b.parquet"));
-    let exhaustive_resource = compile_single_project_resource(temp.path());
-    let exhaustive = discover_resource_schema_artifacts(
-        &exhaustive_resource,
+    let all_files_resource = compile_single_project_resource(temp.path());
+    let all_files = discover_resource_schema_artifacts(
+        &all_files_resource,
         &EnvSecretProvider::from_map(std::iter::empty::<(&str, &str)>()),
         Default::default(),
     )
@@ -2361,15 +2412,19 @@ fn explicit_sample_larger_than_set_preserves_exhaustive_manifest_bytes() {
     )
     .unwrap();
     assert_eq!(
-        configured.discovery_manifest.as_ref().unwrap().coverage,
-        DiscoveryCoverageMode::Exhaustive
+        configured
+            .discovery_manifest
+            .as_ref()
+            .unwrap()
+            .file_coverage,
+        DiscoveryFileCoverage::AllFiles
     );
     assert_eq!(
-        serde_json::to_vec(exhaustive.discovery_manifest.as_ref().unwrap()).unwrap(),
+        serde_json::to_vec(all_files.discovery_manifest.as_ref().unwrap()).unwrap(),
         serde_json::to_vec(configured.discovery_manifest.as_ref().unwrap()).unwrap()
     );
     assert_eq!(
-        exhaustive.discovery.snapshot.artifact,
+        all_files.discovery.snapshot.artifact,
         configured.discovery.snapshot.artifact
     );
 }
@@ -2393,13 +2448,13 @@ fn explicit_sampled_arrow_ipc_uses_the_same_format_neutral_selector() {
     )
     .unwrap();
     let manifest = artifacts.discovery_manifest.unwrap();
-    assert_eq!(manifest.coverage, DiscoveryCoverageMode::Sampled);
+    assert_eq!(manifest.file_coverage, DiscoveryFileCoverage::SampledFiles);
     assert_eq!(manifest.selector.unwrap().sample_files, 2);
     assert_eq!(
         manifest
             .candidates
             .iter()
-            .filter(|candidate| candidate.participation == DiscoveryParticipation::Probed)
+            .filter(|candidate| candidate.participation == DiscoveryParticipation::Observed)
             .count(),
         2
     );
@@ -2432,10 +2487,13 @@ fn pinned_schema_preparation_reuses_snapshot_without_observing_runtime_files() {
     )
     .unwrap();
     let initial_manifest = initial.discovery_manifest.as_ref().unwrap();
-    assert_eq!(initial_manifest.coverage, DiscoveryCoverageMode::Sampled);
+    assert_eq!(
+        initial_manifest.file_coverage,
+        DiscoveryFileCoverage::SampledFiles
+    );
     assert_eq!(
         initial_manifest.candidates[1].participation,
-        DiscoveryParticipation::Unprobed
+        DiscoveryParticipation::Unobserved
     );
     write_schema_discovery_artifacts(temp.path(), &initial).unwrap();
     let pinned = resource.with_schema_source_and_schema(
@@ -2467,7 +2525,7 @@ fn sampled_probe_budget_failure_does_not_substitute_an_unselected_candidate() {
         &resource,
         &EnvSecretProvider::from_map(std::iter::empty::<(&str, &str)>()),
         SchemaDiscoveryExecutionOptions::new()
-            .with_budget(DiscoveryExecutorBudget::new(8, 8, 1).unwrap()),
+            .with_budget(DiscoveryExecutorBudget::new(8, 1_000, 8, 1).unwrap()),
     )
     .unwrap_err()
     .to_string();
@@ -2508,7 +2566,7 @@ fn sampled_initial_pin_reports_every_selected_incompatibility_without_writes() {
 }
 
 #[test]
-fn exhaustive_discovery_uses_exact_verified_baseline_and_schema_only_effective_hash() {
+fn all_files_discovery_uses_exact_verified_baseline_and_schema_only_effective_hash() {
     let temp = tempfile::tempdir().unwrap();
     write_discover_project(temp.path(), "parquet", "*.parquet");
     write_vendor_parquet(&temp.path().join("data/a.parquet"));
@@ -2590,7 +2648,7 @@ fn exhaustive_discovery_uses_exact_verified_baseline_and_schema_only_effective_h
 }
 
 #[test]
-fn exhaustive_local_parquet_discovery_aggregates_widening_missing_metadata_and_set_identity() {
+fn all_files_local_parquet_discovery_aggregates_widening_missing_metadata_and_set_identity() {
     let temp = tempfile::tempdir().unwrap();
     write_discover_project(temp.path(), "parquet", "*.parquet");
     write_parquet_fixture(
@@ -2708,7 +2766,7 @@ fn exhaustive_local_parquet_discovery_aggregates_widening_missing_metadata_and_s
 }
 
 #[test]
-fn exhaustive_gzip_parquet_discovery_joins_every_transformed_candidate() {
+fn all_files_gzip_parquet_discovery_joins_every_transformed_candidate() {
     let temp = tempfile::tempdir().unwrap();
     write_discover_project(temp.path(), "parquet", "*.parquet.gz");
     for (name, field, values) in [
@@ -2749,13 +2807,13 @@ fn exhaustive_gzip_parquet_discovery_joins_every_transformed_candidate() {
     let manifest = artifacts.discovery_manifest.unwrap();
     assert_eq!(manifest.candidates.len(), 2);
     assert!(manifest.candidates.iter().all(|candidate| {
-        candidate.participation == DiscoveryParticipation::Probed
+        candidate.participation == DiscoveryParticipation::Observed
             && candidate.canonical_location.ends_with(".parquet.gz")
     }));
 }
 
 #[test]
-fn exhaustive_local_parquet_discovery_budget_and_incompatibility_fail_without_artifacts() {
+fn all_files_local_parquet_discovery_budget_and_incompatibility_fail_without_artifacts() {
     let temp = tempfile::tempdir().unwrap();
     write_discover_project(temp.path(), "parquet", "*.parquet");
     write_vendor_parquet(&temp.path().join("data/a.parquet"));
@@ -2790,7 +2848,7 @@ fn exhaustive_local_parquet_discovery_budget_and_incompatibility_fail_without_ar
     )
     .unwrap_err()
     .to_string();
-    assert!(malformed.contains("a.parquet: probed"));
+    assert!(malformed.contains("a.parquet: observed"));
     assert!(malformed.contains("b.parquet: failed"));
     assert!(!temp.path().join(".cdf/schemas").exists());
 
@@ -2799,7 +2857,7 @@ fn exhaustive_local_parquet_discovery_budget_and_incompatibility_fail_without_ar
         &resource,
         &EnvSecretProvider::from_map(std::iter::empty::<(&str, &str)>()),
         SchemaDiscoveryExecutionOptions::new()
-            .with_budget(DiscoveryExecutorBudget::new(8, 8, 1).unwrap()),
+            .with_budget(DiscoveryExecutorBudget::new(8, 1_000, 8, 1).unwrap()),
     )
     .unwrap_err()
     .to_string();
@@ -2816,7 +2874,7 @@ fn exhaustive_local_parquet_discovery_budget_and_incompatibility_fail_without_ar
 }
 
 #[test]
-fn exhaustive_local_binary_discovery_detects_normalizer_collision_before_artifacts() {
+fn all_files_local_binary_discovery_detects_normalizer_collision_before_artifacts() {
     let temp = tempfile::tempdir().unwrap();
     write_discover_project(temp.path(), "parquet", "*.parquet");
     write_parquet_fixture(

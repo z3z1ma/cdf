@@ -28,27 +28,34 @@ pub(crate) struct SchemaSnapshotActionReport {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub(crate) struct DiscoveryCoverageReport {
-    pub(crate) coverage: String,
+    pub(crate) file_coverage: String,
+    pub(crate) within_file_coverage: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) selector: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) sample_files: Option<u64>,
     pub(crate) matched_files: usize,
-    pub(crate) probed_files: usize,
-    pub(crate) unprobed_files: usize,
+    pub(crate) selected_files: usize,
+    pub(crate) unobserved_files: usize,
 }
 
 impl DiscoveryCoverageReport {
     pub(crate) fn from_manifest(manifest: &DiscoveryManifestArtifact) -> Self {
-        let probed_files = manifest
+        let selected_files = manifest
             .candidates
             .iter()
-            .filter(|candidate| candidate.participation == DiscoveryParticipation::Probed)
+            .filter(|candidate| candidate.participation == DiscoveryParticipation::Observed)
             .count();
         Self {
-            coverage: match manifest.coverage {
-                cdf_project::DiscoveryCoverageMode::Exhaustive => "exhaustive",
-                cdf_project::DiscoveryCoverageMode::Sampled => "sampled",
+            file_coverage: match manifest.file_coverage {
+                cdf_project::DiscoveryFileCoverage::AllFiles => "all_files",
+                cdf_project::DiscoveryFileCoverage::SampledFiles => "sampled_files",
+            }
+            .to_owned(),
+            within_file_coverage: match manifest.within_file_coverage {
+                cdf_project::DiscoveryWithinFileCoverage::FormatMetadata => "format_metadata",
+                cdf_project::DiscoveryWithinFileCoverage::BoundedContent => "bounded_content",
+                cdf_project::DiscoveryWithinFileCoverage::FullContent => "full_content",
             }
             .to_owned(),
             selector: manifest
@@ -60,15 +67,16 @@ impl DiscoveryCoverageReport {
                 .as_ref()
                 .map(|selector| selector.sample_files),
             matched_files: manifest.candidates.len(),
-            probed_files,
-            unprobed_files: manifest.candidates.len() - probed_files,
+            selected_files,
+            unobserved_files: manifest.candidates.len() - selected_files,
         }
     }
 }
 
 pub(crate) fn discovery_coverage_panel(report: &DiscoveryCoverageReport) -> KeyValuePanel {
     KeyValuePanel::new("Discovery Coverage")
-        .row("coverage", report.coverage.clone())
+        .row("file coverage", report.file_coverage.clone())
+        .row("within-file coverage", report.within_file_coverage.clone())
         .row(
             "selector",
             report.selector.clone().unwrap_or_else(|| "none".to_owned()),
@@ -81,8 +89,8 @@ pub(crate) fn discovery_coverage_panel(report: &DiscoveryCoverageReport) -> KeyV
                 .unwrap_or_else(|| "none".to_owned()),
         )
         .row("matched files", report.matched_files.to_string())
-        .row("probed files", report.probed_files.to_string())
-        .row("unprobed files", report.unprobed_files.to_string())
+        .row("selected files", report.selected_files.to_string())
+        .row("unobserved files", report.unobserved_files.to_string())
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]

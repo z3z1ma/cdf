@@ -1136,12 +1136,12 @@ fn schema_promote_document(report: &cdf_project::SchemaPromotionPlanReport) -> R
                 .row(
                     "discovery coverage",
                     report
-                        .fresh_discovery_coverage
+                        .fresh_discovery_file_coverage
                         .as_ref()
                         .map(|coverage| {
                             match coverage {
-                                cdf_project::DiscoveryCoverageMode::Exhaustive => "exhaustive",
-                                cdf_project::DiscoveryCoverageMode::Sampled => "sampled",
+                                cdf_project::DiscoveryFileCoverage::AllFiles => "all_files",
+                                cdf_project::DiscoveryFileCoverage::SampledFiles => "sampled_files",
                             }
                             .to_owned()
                         })

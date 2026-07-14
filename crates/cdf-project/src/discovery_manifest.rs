@@ -16,7 +16,8 @@ use sha2::{Digest, Sha256};
 
 pub const DISCOVERY_MANIFEST_ARTIFACT_VERSION: u16 = 1;
 pub const DISCOVERY_MANIFEST_SUFFIX: &str = ".discovery.json";
-pub const DEFAULT_DISCOVERY_MAX_METADATA_BYTES_PER_FILE: u64 = 64 * 1024 * 1024;
+pub const DEFAULT_DISCOVERY_MAX_BYTES_PER_FILE: u64 = 64 * 1024 * 1024;
+pub const DEFAULT_DISCOVERY_MAX_RECORDS_PER_FILE: u64 = 1_000;
 pub const DEFAULT_DISCOVERY_MAX_TOTAL_IN_FLIGHT_BYTES: u64 = 128 * 1024 * 1024;
 pub const DEFAULT_DISCOVERY_MAX_CONCURRENT_PROBES: u32 = 8;
 pub use cdf_kernel::STRATIFIED_HASH_SELECTOR_V1;
@@ -33,27 +34,35 @@ static TEMP_FILE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
     into = "DiscoveryExecutorBudgetWire"
 )]
 pub struct DiscoveryExecutorBudget {
-    max_metadata_bytes_per_file: u64,
+    max_bytes_per_file: u64,
+    max_records_per_file: u64,
     max_total_in_flight_bytes: u64,
     max_concurrent_probes: u32,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 struct DiscoveryExecutorBudgetWire {
-    max_metadata_bytes_per_file: u64,
+    max_bytes_per_file: u64,
+    max_records_per_file: u64,
     max_total_in_flight_bytes: u64,
     max_concurrent_probes: u32,
 }
 
 impl DiscoveryExecutorBudget {
     pub fn new(
-        max_metadata_bytes_per_file: u64,
+        max_bytes_per_file: u64,
+        max_records_per_file: u64,
         max_total_in_flight_bytes: u64,
         max_concurrent_probes: u32,
     ) -> Result<Self> {
-        if max_metadata_bytes_per_file == 0 {
+        if max_bytes_per_file == 0 {
             return Err(CdfError::contract(
-                "discovery budget max_metadata_bytes_per_file must be greater than zero",
+                "discovery budget max_bytes_per_file must be greater than zero",
+            ));
+        }
+        if max_records_per_file == 0 {
+            return Err(CdfError::contract(
+                "discovery budget max_records_per_file must be greater than zero",
             ));
         }
         if max_total_in_flight_bytes == 0 {
@@ -66,27 +75,32 @@ impl DiscoveryExecutorBudget {
                 "discovery budget max_concurrent_probes must be greater than zero",
             ));
         }
-        if max_metadata_bytes_per_file > max_total_in_flight_bytes {
+        if max_bytes_per_file > max_total_in_flight_bytes {
             return Err(CdfError::contract(format!(
-                "discovery budget max_metadata_bytes_per_file ({max_metadata_bytes_per_file}) cannot exceed max_total_in_flight_bytes ({max_total_in_flight_bytes})"
+                "discovery budget max_bytes_per_file ({max_bytes_per_file}) cannot exceed max_total_in_flight_bytes ({max_total_in_flight_bytes})"
             )));
         }
-        max_metadata_bytes_per_file
+        max_bytes_per_file
             .checked_mul(u64::from(max_concurrent_probes))
             .ok_or_else(|| {
                 CdfError::contract(format!(
-                    "discovery budget overflows scheduled-byte accounting: {max_metadata_bytes_per_file} bytes per file times {max_concurrent_probes} probes"
+                    "discovery budget overflows scheduled-byte accounting: {max_bytes_per_file} bytes per file times {max_concurrent_probes} probes"
                 ))
             })?;
         Ok(Self {
-            max_metadata_bytes_per_file,
+            max_bytes_per_file,
+            max_records_per_file,
             max_total_in_flight_bytes,
             max_concurrent_probes,
         })
     }
 
-    pub fn max_metadata_bytes_per_file(&self) -> u64 {
-        self.max_metadata_bytes_per_file
+    pub fn max_bytes_per_file(&self) -> u64 {
+        self.max_bytes_per_file
+    }
+
+    pub fn max_records_per_file(&self) -> u64 {
+        self.max_records_per_file
     }
 
     pub fn max_total_in_flight_bytes(&self) -> u64 {
@@ -101,7 +115,8 @@ impl DiscoveryExecutorBudget {
 impl Default for DiscoveryExecutorBudget {
     fn default() -> Self {
         Self::new(
-            DEFAULT_DISCOVERY_MAX_METADATA_BYTES_PER_FILE,
+            DEFAULT_DISCOVERY_MAX_BYTES_PER_FILE,
+            DEFAULT_DISCOVERY_MAX_RECORDS_PER_FILE,
             DEFAULT_DISCOVERY_MAX_TOTAL_IN_FLIGHT_BYTES,
             DEFAULT_DISCOVERY_MAX_CONCURRENT_PROBES,
         )
@@ -114,7 +129,8 @@ impl TryFrom<DiscoveryExecutorBudgetWire> for DiscoveryExecutorBudget {
 
     fn try_from(value: DiscoveryExecutorBudgetWire) -> Result<Self> {
         Self::new(
-            value.max_metadata_bytes_per_file,
+            value.max_bytes_per_file,
+            value.max_records_per_file,
             value.max_total_in_flight_bytes,
             value.max_concurrent_probes,
         )
@@ -124,7 +140,8 @@ impl TryFrom<DiscoveryExecutorBudgetWire> for DiscoveryExecutorBudget {
 impl From<DiscoveryExecutorBudget> for DiscoveryExecutorBudgetWire {
     fn from(value: DiscoveryExecutorBudget) -> Self {
         Self {
-            max_metadata_bytes_per_file: value.max_metadata_bytes_per_file,
+            max_bytes_per_file: value.max_bytes_per_file,
+            max_records_per_file: value.max_records_per_file,
             max_total_in_flight_bytes: value.max_total_in_flight_bytes,
             max_concurrent_probes: value.max_concurrent_probes,
         }
@@ -133,16 +150,24 @@ impl From<DiscoveryExecutorBudget> for DiscoveryExecutorBudgetWire {
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum DiscoveryCoverageMode {
-    Exhaustive,
-    Sampled,
+pub enum DiscoveryFileCoverage {
+    AllFiles,
+    SampledFiles,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DiscoveryWithinFileCoverage {
+    FormatMetadata,
+    BoundedContent,
+    FullContent,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum DiscoveryParticipation {
-    Probed,
-    Unprobed,
+    Observed,
+    Unobserved,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -189,6 +214,8 @@ pub struct DiscoveryCandidateEvidence {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub probe_bytes: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub probe_records: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub schema_verdict: Option<DiscoverySchemaVerdict>,
 }
 
@@ -223,7 +250,7 @@ pub(crate) struct DiscoverySelectorCandidate {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct PlannedDiscoverySelection {
-    pub coverage: DiscoveryCoverageMode,
+    pub file_coverage: DiscoveryFileCoverage,
     pub selector: Option<DiscoverySelectorEvidence>,
     selected_locations: BTreeSet<String>,
 }
@@ -265,7 +292,7 @@ pub(crate) fn plan_discovery_selection(
     let matched_count = u64::try_from(candidates.len())
         .map_err(|_| CdfError::contract("discovery candidate count exceeds u64"))?;
     let Some(sample_files) = sample_files else {
-        return Ok(exhaustive_selection(candidates));
+        return Ok(all_files_selection(candidates));
     };
     if sample_files == 0 {
         return Err(CdfError::contract(
@@ -273,7 +300,7 @@ pub(crate) fn plan_discovery_selection(
         ));
     }
     if matched_count <= sample_files {
-        return Ok(exhaustive_selection(candidates));
+        return Ok(all_files_selection(candidates));
     }
 
     let kernel_candidates = candidates
@@ -328,7 +355,7 @@ pub(crate) fn plan_discovery_selection(
         .map(|selection| selection.canonical_location.clone())
         .collect();
     Ok(PlannedDiscoverySelection {
-        coverage: DiscoveryCoverageMode::Sampled,
+        file_coverage: DiscoveryFileCoverage::SampledFiles,
         selector: Some(DiscoverySelectorEvidence {
             selector: STRATIFIED_HASH_SELECTOR_V1.to_owned(),
             sample_files,
@@ -340,9 +367,9 @@ pub(crate) fn plan_discovery_selection(
     })
 }
 
-fn exhaustive_selection(candidates: Vec<DiscoverySelectorCandidate>) -> PlannedDiscoverySelection {
+fn all_files_selection(candidates: Vec<DiscoverySelectorCandidate>) -> PlannedDiscoverySelection {
     PlannedDiscoverySelection {
-        coverage: DiscoveryCoverageMode::Exhaustive,
+        file_coverage: DiscoveryFileCoverage::AllFiles,
         selector: None,
         selected_locations: candidates
             .into_iter()
@@ -370,7 +397,8 @@ pub struct DiscoveryManifestInput {
     pub resource_id: String,
     pub baseline_schema_hash: Option<SchemaHash>,
     pub effective_schema_hash: Option<SchemaHash>,
-    pub coverage: DiscoveryCoverageMode,
+    pub file_coverage: DiscoveryFileCoverage,
+    pub within_file_coverage: DiscoveryWithinFileCoverage,
     pub selector: Option<DiscoverySelectorEvidence>,
     pub budget: DiscoveryExecutorBudget,
     pub normalizer_version: String,
@@ -384,7 +412,8 @@ pub struct DiscoveryManifestHashInput {
     pub resource_id: String,
     pub baseline_schema_hash: Option<SchemaHash>,
     pub effective_schema_hash: Option<SchemaHash>,
-    pub coverage: DiscoveryCoverageMode,
+    pub file_coverage: DiscoveryFileCoverage,
+    pub within_file_coverage: DiscoveryWithinFileCoverage,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub selector: Option<DiscoverySelectorEvidence>,
     pub budget: DiscoveryExecutorBudget,
@@ -401,7 +430,8 @@ pub struct DiscoveryManifestArtifact {
     pub path: String,
     pub baseline_schema_hash: Option<SchemaHash>,
     pub effective_schema_hash: Option<SchemaHash>,
-    pub coverage: DiscoveryCoverageMode,
+    pub file_coverage: DiscoveryFileCoverage,
+    pub within_file_coverage: DiscoveryWithinFileCoverage,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub selector: Option<DiscoverySelectorEvidence>,
     pub budget: DiscoveryExecutorBudget,
@@ -427,7 +457,8 @@ impl DiscoveryManifestArtifact {
             resource_id: input.resource_id.clone(),
             baseline_schema_hash: input.baseline_schema_hash.clone(),
             effective_schema_hash: input.effective_schema_hash.clone(),
-            coverage: input.coverage.clone(),
+            file_coverage: input.file_coverage.clone(),
+            within_file_coverage: input.within_file_coverage,
             selector: input.selector.clone(),
             budget: input.budget.clone(),
             normalizer_version: input.normalizer_version.clone(),
@@ -445,7 +476,8 @@ impl DiscoveryManifestArtifact {
             path,
             baseline_schema_hash: input.baseline_schema_hash,
             effective_schema_hash: input.effective_schema_hash,
-            coverage: input.coverage,
+            file_coverage: input.file_coverage,
+            within_file_coverage: input.within_file_coverage,
             selector: input.selector,
             budget: input.budget,
             normalizer_version: input.normalizer_version,
@@ -472,7 +504,8 @@ impl DiscoveryManifestArtifact {
     pub fn has_same_observation(&self, other: &Self) -> bool {
         self.resource_id == other.resource_id
             && self.effective_schema_hash == other.effective_schema_hash
-            && self.coverage == other.coverage
+            && self.file_coverage == other.file_coverage
+            && self.within_file_coverage == other.within_file_coverage
             && self.selector == other.selector
             && self.budget == other.budget
             && self.normalizer_version == other.normalizer_version
@@ -491,7 +524,8 @@ impl DiscoveryManifestArtifact {
             resource_id: self.resource_id.clone(),
             baseline_schema_hash: self.baseline_schema_hash.clone(),
             effective_schema_hash: self.effective_schema_hash.clone(),
-            coverage: self.coverage.clone(),
+            file_coverage: self.file_coverage.clone(),
+            within_file_coverage: self.within_file_coverage,
             selector: self.selector.clone(),
             budget: self.budget.clone(),
             normalizer_version: self.normalizer_version.clone(),
@@ -513,7 +547,8 @@ impl DiscoveryManifestArtifact {
             resource_id: self.resource_id.clone(),
             baseline_schema_hash: self.baseline_schema_hash.clone(),
             effective_schema_hash: self.effective_schema_hash.clone(),
-            coverage: self.coverage.clone(),
+            file_coverage: self.file_coverage.clone(),
+            within_file_coverage: self.within_file_coverage,
             selector: self.selector.clone(),
             budget: self.budget.clone(),
             normalizer_version: self.normalizer_version.clone(),
@@ -662,43 +697,53 @@ fn validate_manifest_input(input: &DiscoveryManifestInput) -> Result<()> {
             )));
         }
     }
-    let probed_locations = input
+    let observed_locations = input
         .candidates
         .iter()
-        .filter(|candidate| candidate.participation == DiscoveryParticipation::Probed)
+        .filter(|candidate| candidate.participation == DiscoveryParticipation::Observed)
         .map(|candidate| candidate.canonical_location.as_str())
         .collect::<BTreeSet<_>>();
-    match (&input.coverage, &input.selector) {
-        (DiscoveryCoverageMode::Exhaustive, None) => {
-            if probed_locations.len() != input.candidates.len() {
+    match (&input.file_coverage, &input.selector) {
+        (DiscoveryFileCoverage::AllFiles, None) => {
+            if observed_locations.len() != input.candidates.len() {
                 return Err(CdfError::contract(
-                    "exhaustive discovery manifest requires every candidate to be probed",
+                    "all_files discovery manifest requires every candidate to be observed",
                 ));
             }
         }
-        (DiscoveryCoverageMode::Exhaustive, Some(_)) => {
+        (DiscoveryFileCoverage::AllFiles, Some(_)) => {
             return Err(CdfError::contract(
-                "exhaustive discovery manifest forbids sampled selector evidence",
+                "all_files discovery manifest forbids sampled selector evidence",
             ));
         }
-        (DiscoveryCoverageMode::Sampled, None) => {
+        (DiscoveryFileCoverage::SampledFiles, None) => {
             return Err(CdfError::contract(
-                "sampled discovery manifest requires selector evidence",
+                "sampled_files discovery manifest requires selector evidence",
             ));
         }
-        (DiscoveryCoverageMode::Sampled, Some(selector)) => {
+        (DiscoveryFileCoverage::SampledFiles, Some(selector)) => {
             validate_selector(
                 &ResourceId::new(input.resource_id.clone())?,
                 selector,
                 &input.candidates,
-                &probed_locations,
+                &observed_locations,
             )?;
-            if probed_locations.len() == input.candidates.len() {
+            if observed_locations.len() == input.candidates.len() {
                 return Err(CdfError::contract(
-                    "sampled discovery manifest with every candidate probed must be recorded as exhaustive",
+                    "sampled_files discovery manifest with every candidate observed must be recorded as all_files",
                 ));
             }
         }
+    }
+    if input.within_file_coverage == DiscoveryWithinFileCoverage::FormatMetadata
+        && input.candidates.iter().any(|candidate| {
+            candidate.participation == DiscoveryParticipation::Observed
+                && candidate.probe_records != Some(0)
+        })
+    {
+        return Err(CdfError::contract(
+            "format_metadata discovery manifest requires zero observed data records",
+        ));
     }
     Ok(())
 }
@@ -756,30 +801,32 @@ fn validate_candidate(candidate: &DiscoveryCandidateEvidence) -> Result<()> {
         }
     }
     match candidate.participation {
-        DiscoveryParticipation::Probed => {
+        DiscoveryParticipation::Observed => {
             if candidate.physical_schema_hash.is_none()
                 || candidate.probe_bytes.is_none()
+                || candidate.probe_records.is_none()
                 || candidate.schema_verdict.is_none()
             {
                 return Err(CdfError::contract(format!(
-                    "probed discovery candidate `{}` requires physical_schema_hash, probe_bytes, and schema_verdict",
+                    "observed discovery candidate `{}` requires physical_schema_hash, probe_bytes, probe_records, and schema_verdict",
                     candidate.canonical_location
                 )));
             }
             if candidate.probe_bytes == Some(0) {
                 return Err(CdfError::contract(format!(
-                    "probed discovery candidate `{}` requires probe_bytes greater than zero",
+                    "observed discovery candidate `{}` requires probe_bytes greater than zero",
                     candidate.canonical_location
                 )));
             }
         }
-        DiscoveryParticipation::Unprobed => {
+        DiscoveryParticipation::Unobserved => {
             if candidate.physical_schema_hash.is_some()
                 || candidate.probe_bytes.is_some()
+                || candidate.probe_records.is_some()
                 || candidate.schema_verdict.is_some()
             {
                 return Err(CdfError::contract(format!(
-                    "unprobed discovery candidate `{}` forbids physical_schema_hash, probe_bytes, and schema_verdict",
+                    "unobserved discovery candidate `{}` forbids physical_schema_hash, probe_bytes, probe_records, and schema_verdict",
                     candidate.canonical_location
                 )));
             }
@@ -800,7 +847,7 @@ fn validate_selector(
     resource_id: &ResourceId,
     selector: &DiscoverySelectorEvidence,
     candidates: &[DiscoveryCandidateEvidence],
-    probed_locations: &BTreeSet<&str>,
+    observed_locations: &BTreeSet<&str>,
 ) -> Result<()> {
     if selector.selector != STRATIFIED_HASH_SELECTOR_V1 {
         return Err(CdfError::contract(format!(
@@ -824,7 +871,7 @@ fn validate_selector(
     }
     if selector.sample_files >= selector.matched_count {
         return Err(CdfError::contract(
-            "sampled discovery selector covering every candidate must be recorded as exhaustive",
+            "sampled_files selector covering every candidate must be recorded as all_files",
         ));
     }
     if selector.selected.len() as u64 != selector.sample_files {
@@ -868,9 +915,9 @@ fn validate_selector(
             "sampled discovery selector contains duplicate selected locations",
         ));
     }
-    if &selected_locations != probed_locations {
+    if &selected_locations != observed_locations {
         return Err(CdfError::contract(
-            "sampled discovery selector selected locations do not match probed candidates",
+            "sampled discovery selector selected locations do not match observed candidates",
         ));
     }
     for selected in &selector.selected {
@@ -883,7 +930,7 @@ fn validate_selector(
         let candidate = candidates
             .iter()
             .find(|candidate| candidate.canonical_location == selected.canonical_location)
-            .expect("selected/probed location sets were validated above");
+            .expect("selected/observed location sets were validated above");
         if selected.candidate_identity != candidate.identity {
             return Err(CdfError::contract(format!(
                 "sampled discovery selector identity for `{}` does not match candidate evidence",
@@ -913,7 +960,7 @@ fn validate_selector(
         Some(selector.sample_files),
         &selector_candidates,
     )?;
-    if expected.coverage != DiscoveryCoverageMode::Sampled
+    if expected.file_coverage != DiscoveryFileCoverage::SampledFiles
         || expected.selector.as_ref() != Some(selector)
     {
         return Err(CdfError::contract(
@@ -1116,7 +1163,7 @@ mod tests {
             .iter()
             .min_by_key(|candidate| selector_score(&resource_id, candidate).unwrap())
             .unwrap();
-        assert_eq!(one.coverage, DiscoveryCoverageMode::Sampled);
+        assert_eq!(one.file_coverage, DiscoveryFileCoverage::SampledFiles);
         assert_eq!(
             one.selector.unwrap().selected[0].canonical_location,
             expected_lowest.canonical_location
@@ -1172,8 +1219,8 @@ mod tests {
         assert_eq!(
             plan_discovery_selection(&resource_id, Some(19), &candidates)
                 .unwrap()
-                .coverage,
-            DiscoveryCoverageMode::Exhaustive
+                .file_coverage,
+            DiscoveryFileCoverage::AllFiles
         );
         assert_eq!(
             plan_discovery_selection(&resource_id, Some(20), &candidates)
@@ -1301,9 +1348,9 @@ mod tests {
         let candidates = selector_candidates(10_000);
         let expected = plan_discovery_selection(&resource_id, Some(100), &candidates).unwrap();
         for budget in [
-            DiscoveryExecutorBudget::new(1024, 1024, 1).unwrap(),
+            DiscoveryExecutorBudget::new(1024, 1_000, 1024, 1).unwrap(),
             DiscoveryExecutorBudget::default(),
-            DiscoveryExecutorBudget::new(512 * 1024 * 1024, 1024 * 1024 * 1024, 64).unwrap(),
+            DiscoveryExecutorBudget::new(512 * 1024 * 1024, 1_000, 1024 * 1024 * 1024, 64).unwrap(),
         ] {
             assert!(budget.max_concurrent_probes() > 0);
             assert_eq!(

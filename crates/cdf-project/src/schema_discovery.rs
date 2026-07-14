@@ -8,12 +8,12 @@ use std::{
 };
 
 use crate::{
-    DiscoveryBoundedIdentity, DiscoveryCandidateEvidence, DiscoveryCoverageMode,
-    DiscoveryExecutorBudget, DiscoveryIdentityStrength, DiscoveryManifestArtifact,
+    DiscoveryBoundedIdentity, DiscoveryCandidateEvidence, DiscoveryExecutorBudget,
+    DiscoveryFileCoverage, DiscoveryIdentityStrength, DiscoveryManifestArtifact,
     DiscoveryManifestInput, DiscoveryManifestStore, DiscoveryMetadataScope,
     DiscoveryMetadataVariance, DiscoveryParticipation, DiscoverySchemaVerdict,
-    DiscoverySchemaVerdictKind, DiscoverySelectorCandidate, SchemaSnapshotArtifact,
-    SchemaSnapshotStore, plan_discovery_selection,
+    DiscoverySchemaVerdictKind, DiscoverySelectorCandidate, DiscoveryWithinFileCoverage,
+    SchemaSnapshotArtifact, SchemaSnapshotStore, plan_discovery_selection,
 };
 use cdf_contract::{
     AggregateFileSchemaVerdict, AggregateMetadataVariance, AggregateSchemaCandidate,
@@ -519,7 +519,11 @@ fn discover_remote_binary_resource_schema(
         )
     })?;
     let (plan, _) = cdf_declarative::compile_file_resource_plan(plan, dependencies.formats())?;
-    let adapter = RegisteredFormatDiscoveryAdapter::new(&resource.descriptor().resource_id, &plan)?;
+    let adapter = RegisteredFormatDiscoveryAdapter::new(
+        &resource.descriptor().resource_id,
+        &plan,
+        dependencies.formats(),
+    )?;
     discover_remote_file_resource_schema(resource, &plan, dependencies, options, adapter)
 }
 
@@ -599,6 +603,7 @@ struct LocalBinaryProbe {
     bounded_identity_value: String,
     physical_schema_hash: SchemaHash,
     probe_bytes: u64,
+    probe_records: u64,
     schema: arrow_schema::SchemaRef,
     source_identity: BTreeMap<String, String>,
 }
@@ -644,16 +649,27 @@ struct RegisteredFormatDiscoveryAdapter {
     format_declared: bool,
     format_options: serde_json::Value,
     format_options_hash: String,
+    discovery_kind: cdf_runtime::FormatDiscoveryKind,
 }
 
 impl RegisteredFormatDiscoveryAdapter {
-    fn new(resource_id: &ResourceId, plan: &cdf_declarative::FileResourcePlan) -> Result<Self> {
+    fn new(
+        resource_id: &ResourceId,
+        plan: &cdf_declarative::FileResourcePlan,
+        formats: &cdf_runtime::FormatRegistry,
+    ) -> Result<Self> {
+        let format = plan.resolved_format()?.clone();
+        let discovery_kind = formats
+            .resolve(format.as_str())?
+            .descriptor()
+            .discovery_kind;
         Ok(Self {
             resource_id: resource_id.clone(),
-            format: plan.resolved_format()?.clone(),
+            format,
             format_declared: plan.format_declared,
             format_options: plan.format_options.clone(),
             format_options_hash: cdf_runtime::artifact_hash(&plan.format_options)?,
+            discovery_kind,
         })
     }
 
@@ -662,7 +678,7 @@ impl RegisteredFormatDiscoveryAdapter {
         candidate: &BinaryDiscoveryCandidate,
         budget: &DiscoveryExecutorBudget,
         file_dependencies: Option<&FileRuntimeDependencies>,
-    ) -> Result<(arrow_schema::SchemaRef, BTreeMap<String, String>, u64)> {
+    ) -> Result<(arrow_schema::SchemaRef, BTreeMap<String, String>, u64, u64)> {
         match &candidate.source {
             BinaryDiscoveryCandidateSource::Local {
                 path,
@@ -684,10 +700,16 @@ impl RegisteredFormatDiscoveryAdapter {
                         format_declared: self.format_declared,
                         format_options: &self.format_options,
                         transform_name: &candidate.compression,
-                        max_metadata_bytes: budget.max_metadata_bytes_per_file(),
+                        maximum_bytes: budget.max_bytes_per_file(),
+                        maximum_records: budget.max_records_per_file(),
                     },
                 )?;
-                Ok((probe.schema, probe.source_identity, probe.probe_bytes_read))
+                Ok((
+                    probe.schema,
+                    probe.source_identity,
+                    probe.probe_bytes_read,
+                    probe.probe_records_read,
+                ))
             }
             BinaryDiscoveryCandidateSource::Transport(resource) => {
                 let dependencies = file_dependencies.ok_or_else(|| {
@@ -704,10 +726,16 @@ impl RegisteredFormatDiscoveryAdapter {
                         format_declared: self.format_declared,
                         format_options: &self.format_options,
                         transform_name: &candidate.compression,
-                        max_metadata_bytes: budget.max_metadata_bytes_per_file(),
+                        maximum_bytes: budget.max_bytes_per_file(),
+                        maximum_records: budget.max_records_per_file(),
                     },
                 )?;
-                Ok((probe.schema, probe.source_identity, probe.probe_bytes_read))
+                Ok((
+                    probe.schema,
+                    probe.source_identity,
+                    probe.probe_bytes_read,
+                    probe.probe_records_read,
+                ))
             }
         }
     }
@@ -742,7 +770,11 @@ fn discover_local_binary_resource_schema(
         )
     })?;
     let (plan, _) = cdf_declarative::compile_file_resource_plan(plan, dependencies.formats())?;
-    let adapter = RegisteredFormatDiscoveryAdapter::new(&resource.descriptor().resource_id, &plan)?;
+    let adapter = RegisteredFormatDiscoveryAdapter::new(
+        &resource.descriptor().resource_id,
+        &plan,
+        dependencies.formats(),
+    )?;
     let candidates = local_file_discovery_candidates(
         &resource.descriptor().resource_id,
         &plan,
@@ -792,9 +824,22 @@ fn discover_binary_resource_schema(
         resource.schema_discovery_sample_files(),
         &selector_candidates,
     )?;
-    let coverage_label = match selection.coverage {
-        DiscoveryCoverageMode::Exhaustive => "exhaustive",
-        DiscoveryCoverageMode::Sampled => "sampled",
+    let file_coverage_label = match selection.file_coverage {
+        DiscoveryFileCoverage::AllFiles => "all_files",
+        DiscoveryFileCoverage::SampledFiles => "sampled_files",
+    };
+    let within_file_coverage = match adapter.discovery_kind {
+        cdf_runtime::FormatDiscoveryKind::FormatMetadata => {
+            DiscoveryWithinFileCoverage::FormatMetadata
+        }
+        cdf_runtime::FormatDiscoveryKind::BoundedContent => {
+            DiscoveryWithinFileCoverage::BoundedContent
+        }
+    };
+    let within_file_coverage_label = match within_file_coverage {
+        DiscoveryWithinFileCoverage::FormatMetadata => "format_metadata",
+        DiscoveryWithinFileCoverage::BoundedContent => "bounded_content",
+        DiscoveryWithinFileCoverage::FullContent => "full_content",
     };
 
     let scheduled_candidates = candidates
@@ -807,7 +852,7 @@ fn discover_binary_resource_schema(
             candidate
                 .size_bytes
                 .max(1)
-                .min(options.budget.max_metadata_bytes_per_file())
+                .min(options.budget.max_bytes_per_file())
         })
         .collect::<Vec<_>>();
     let probe_results = run_weighted_probe_jobs(
@@ -830,8 +875,8 @@ fn discover_binary_resource_schema(
         match result {
             Ok(probe) => {
                 probe_reports.push(format!(
-                    "{}: probed {} metadata bytes",
-                    probe.location, probe.probe_bytes
+                    "{}: observed {} bytes and {} records",
+                    probe.location, probe.probe_bytes, probe.probe_records
                 ));
                 probes.push(probe);
             }
@@ -843,7 +888,7 @@ fn discover_binary_resource_schema(
     }
     if failed {
         return Err(CdfError::data(format!(
-            "{coverage_label} {transport_label} binary discovery failed for resource `{}` after evaluating every selected candidate without substitution: {}",
+            "{file_coverage_label} + {within_file_coverage_label} {transport_label} binary discovery failed for resource `{}` after evaluating every selected candidate without substitution: {}",
             resource.descriptor().resource_id,
             probe_reports.join("; ")
         )));
@@ -882,10 +927,10 @@ fn discover_binary_resource_schema(
             .join("; ");
         return Err(CdfError::contract(format!(
             "{} for resource `{}` found incompatible files; candidate verdicts: {file_reports}; incompatibilities: {incompatibilities}",
-            if selection.coverage == DiscoveryCoverageMode::Sampled {
+            if selection.file_coverage == DiscoveryFileCoverage::SampledFiles {
                 "initial sampled schema pin"
             } else {
-                "initial exhaustive schema pin"
+                "initial all-files schema pin"
             },
             resource.descriptor().resource_id,
         )));
@@ -895,7 +940,7 @@ fn discover_binary_resource_schema(
     let (effective_schema, terminal_quarantines) =
         if let Some(baseline) = options.runtime_baseline() {
             let admit_compatible_evolution = baseline.admits_evolution()
-                && selection.coverage == DiscoveryCoverageMode::Exhaustive;
+                && selection.file_coverage == DiscoveryFileCoverage::AllFiles;
             classify_runtime_schema_observations(
                 &probes,
                 baseline,
@@ -920,14 +965,14 @@ fn discover_binary_resource_schema(
         .iter()
         .map(|candidate| {
             if !selection.selects(&candidate.location) {
-                return Ok(unprobed_manifest_candidate(candidate));
+                return Ok(unobserved_manifest_candidate(candidate));
             }
             let probe = probes
                 .iter()
                 .find(|probe| probe.location == candidate.location)
                 .ok_or_else(|| {
                     CdfError::internal(format!(
-                        "selected discovery candidate `{}` was not probed",
+                        "selected discovery candidate `{}` was not observed",
                         candidate.location
                     ))
                 })?;
@@ -944,7 +989,7 @@ fn discover_binary_resource_schema(
             manifest_candidate(
                 probe,
                 verdict,
-                (selection.coverage == DiscoveryCoverageMode::Sampled)
+                (selection.file_coverage == DiscoveryFileCoverage::SampledFiles)
                     .then(|| selector_candidate_identity(candidate)),
                 terminal_quarantines
                     .iter()
@@ -964,7 +1009,8 @@ fn discover_binary_resource_schema(
         // circular. The manifest hash and linked v2 snapshot hash remain the
         // authoritative identities of the complete discovery evidence.
         effective_schema_hash: Some(effective_schema_identity),
-        coverage: selection.coverage.clone(),
+        file_coverage: selection.file_coverage.clone(),
+        within_file_coverage,
         selector: selection.selector.clone(),
         budget: options.budget.clone(),
         normalizer_version: NORMALIZER_NAMECASE_V1.to_owned(),
@@ -980,7 +1026,16 @@ fn discover_binary_resource_schema(
     let total_probe_bytes = selected_probes.iter().try_fold(0_u64, |total, probe| {
         total.checked_add(probe.probe_bytes).ok_or_else(|| {
             CdfError::data(format!(
-                "{coverage_label} {transport_label} binary discovery metadata byte accounting overflowed for resource `{}` while adding `{}`; reduce the matched file set or probe budget",
+                "{file_coverage_label} + {within_file_coverage_label} {transport_label} binary discovery byte accounting overflowed for resource `{}` while adding `{}`; reduce the matched file set or probe budget",
+                resource.descriptor().resource_id,
+                probe.location
+            ))
+        })
+    })?;
+    let total_probe_records = selected_probes.iter().try_fold(0_u64, |total, probe| {
+        total.checked_add(probe.probe_records).ok_or_else(|| {
+            CdfError::data(format!(
+                "{file_coverage_label} + {within_file_coverage_label} {transport_label} binary discovery record accounting overflowed for resource `{}` while adding `{}`; reduce the matched file set or record budget",
                 resource.descriptor().resource_id,
                 probe.location
             ))
@@ -988,17 +1043,25 @@ fn discover_binary_resource_schema(
     })?;
     let mut source_identity = BTreeMap::from([
         ("transport".to_owned(), transport_label.to_owned()),
-        ("coverage".to_owned(), coverage_label.to_owned()),
+        ("file_coverage".to_owned(), file_coverage_label.to_owned()),
+        (
+            "within_file_coverage".to_owned(),
+            within_file_coverage_label.to_owned(),
+        ),
         ("matched_files".to_owned(), candidates.len().to_string()),
         (
-            "probed_files".to_owned(),
+            "selected_files".to_owned(),
             selection.selected_count().to_string(),
         ),
         (
-            "unprobed_files".to_owned(),
+            "unobserved_files".to_owned(),
             (candidates.len() - selection.selected_count()).to_string(),
         ),
         ("probe_bytes_read".to_owned(), total_probe_bytes.to_string()),
+        (
+            "probe_records_read".to_owned(),
+            total_probe_records.to_string(),
+        ),
         (
             "discovery_manifest_hash".to_owned(),
             manifest.manifest_hash.to_string(),
@@ -1066,21 +1129,30 @@ fn discover_binary_resource_schema(
             manifest.reference(),
             observations,
         )?;
-        if let Some(selector) = &manifest.selector {
-            evidence = evidence.with_discovery_coverage(DiscoveryCoverageEvidence::sampled(
-                selector.selector.clone(),
-                selector.sample_files,
-                selector.matched_count,
-                u64::try_from(selection.selected_count()).map_err(|_| {
-                    CdfError::contract("sampled discovery selected count exceeds u64")
-                })?,
-            )?)?;
-        }
+        evidence = evidence.with_discovery_coverage(DiscoveryCoverageEvidence::new(
+            file_coverage_label,
+            within_file_coverage_label,
+            manifest
+                .selector
+                .as_ref()
+                .map(|selector| selector.selector.clone()),
+            manifest
+                .selector
+                .as_ref()
+                .map(|selector| selector.sample_files),
+            u64::try_from(candidates.len())
+                .map_err(|_| CdfError::contract("discovery matched count exceeds u64"))?,
+            u64::try_from(selection.selected_count())
+                .map_err(|_| CdfError::contract("discovery selected count exceeds u64"))?,
+            total_probe_bytes,
+            total_probe_records,
+        )?)?;
         Some(
             EffectiveSchemaRuntime::new(evidence, schema_catalog)?
                 .with_terminal_quarantines(terminal_quarantines)?
                 .with_discovery_executor_budget(DiscoveryExecutorBudgetEvidence::new(
-                    options.budget.max_metadata_bytes_per_file(),
+                    options.budget.max_bytes_per_file(),
+                    options.budget.max_records_per_file(),
                     options.budget.max_total_in_flight_bytes(),
                     options.budget.max_concurrent_probes(),
                 )?)?,
@@ -1180,7 +1252,7 @@ fn probe_binary_candidate(
     budget: &DiscoveryExecutorBudget,
     file_dependencies: Option<&FileRuntimeDependencies>,
 ) -> Result<LocalBinaryProbe> {
-    let (schema, source_identity, probe_bytes) =
+    let (schema, source_identity, probe_bytes, probe_records) =
         adapter.probe(candidate, budget, file_dependencies)?;
     let modified_at_ms = source_identity
         .get("modified_unix_millis")
@@ -1206,6 +1278,7 @@ fn probe_binary_candidate(
         bounded_identity_value: fingerprint,
         physical_schema_hash,
         probe_bytes,
+        probe_records,
         schema,
         source_identity,
     })
@@ -1430,10 +1503,11 @@ fn manifest_candidate(
             value: Some(probe.bounded_identity_value.clone()),
             strength: DiscoveryIdentityStrength::BoundedObservation,
         }),
-        participation: DiscoveryParticipation::Probed,
+        participation: DiscoveryParticipation::Observed,
         metadata_variance: manifest_metadata_variance(verdict),
         physical_schema_hash: Some(probe.physical_schema_hash.clone()),
         probe_bytes: Some(probe.probe_bytes),
+        probe_records: Some(probe.probe_records),
         schema_verdict: Some(DiscoverySchemaVerdict {
             kind: if terminal_quarantine.is_some() {
                 DiscoverySchemaVerdictKind::Quarantined
@@ -1466,15 +1540,18 @@ fn selector_candidate_identity(candidate: &BinaryDiscoveryCandidate) -> Discover
     }
 }
 
-fn unprobed_manifest_candidate(candidate: &BinaryDiscoveryCandidate) -> DiscoveryCandidateEvidence {
+fn unobserved_manifest_candidate(
+    candidate: &BinaryDiscoveryCandidate,
+) -> DiscoveryCandidateEvidence {
     DiscoveryCandidateEvidence {
         transport: "file".to_owned(),
         canonical_location: candidate.location.clone(),
         identity: selector_candidate_identity(candidate),
-        participation: DiscoveryParticipation::Unprobed,
+        participation: DiscoveryParticipation::Unobserved,
         metadata_variance: Vec::new(),
         physical_schema_hash: None,
         probe_bytes: None,
+        probe_records: None,
         schema_verdict: None,
     }
 }
@@ -1928,7 +2005,7 @@ mod terminal_evidence_tests {
     fn weighted_discovery_scheduler_uses_parallel_slots_only_within_byte_cap() {
         let active = AtomicUsize::new(0);
         let peak = AtomicUsize::new(0);
-        let budget = DiscoveryExecutorBudget::new(64, 128, 8).unwrap();
+        let budget = DiscoveryExecutorBudget::new(64, 1_000, 128, 8).unwrap();
         let output = run_weighted_probe_jobs(&[64; 8], &budget, None, |index| {
             let current = active.fetch_add(1, Ordering::SeqCst) + 1;
             peak.fetch_max(current, Ordering::SeqCst);

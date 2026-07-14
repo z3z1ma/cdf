@@ -65,7 +65,7 @@ pub struct SchemaSnapshotPromotionAuthority {
     pub proposed_schema: SchemaSnapshotSchema,
     pub fresh_discovery_schema_hash: Option<String>,
     pub fresh_discovery_manifest_hash: Option<String>,
-    pub fresh_discovery_coverage: Option<crate::DiscoveryCoverageMode>,
+    pub fresh_discovery_file_coverage: Option<crate::DiscoveryFileCoverage>,
     pub fresh_discovery_content_identity: BTreeMap<String, String>,
     pub normalizer_version: String,
     pub contract_policy_hash: String,
@@ -720,7 +720,7 @@ impl SchemaSnapshotPromotionAuthority {
         }
         if self.fresh_discovery_manifest_hash.is_some()
             && (self.fresh_discovery_schema_hash.is_none()
-                || self.fresh_discovery_coverage.is_none())
+                || self.fresh_discovery_file_coverage.is_none())
         {
             return Err(CdfError::data(
                 "schema snapshot promotion authority manifest hash requires fresh schema hash and coverage",

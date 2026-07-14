@@ -3232,9 +3232,16 @@ fn arrow_ipc_discovery_supports_compression_multi_file_and_remote_without_writes
     assert_eq!(multi_result.exit_code, 0, "{}", multi_result.stderr);
     let multi_json = stderr_or_stdout_json(&multi_result.stdout);
     let multi_report = &multi_json["result"];
-    assert_eq!(multi_report["source_identity"]["coverage"], "exhaustive");
+    assert_eq!(
+        multi_report["source_identity"]["file_coverage"],
+        "all_files"
+    );
+    assert_eq!(
+        multi_report["source_identity"]["within_file_coverage"],
+        "format_metadata"
+    );
     assert_eq!(multi_report["source_identity"]["matched_files"], "2");
-    assert_eq!(multi_report["source_identity"]["probed_files"], "2");
+    assert_eq!(multi_report["source_identity"]["selected_files"], "2");
     assert_no_schema_discovery_writes(&multi);
     let pin = run([
         "cdf",
@@ -4202,8 +4209,8 @@ fn sampled_pin_captures_unseen_field_then_fresh_discovery_promotes_without_sourc
     ]);
     assert_eq!(pin.exit_code, 0, "{}", pin.stderr);
     assert_eq!(
-        stderr_or_stdout_json(&pin.stdout)["result"]["discovery"]["coverage"],
-        "sampled"
+        stderr_or_stdout_json(&pin.stdout)["result"]["discovery"]["file_coverage"],
+        "sampled_files"
     );
     let before_preview = project_tree_snapshot(&project.root);
     let preview = run([
@@ -5774,7 +5781,7 @@ fn merge_without_key_fails_all_entry_commands_before_contact_or_writes() {
 }
 
 #[test]
-fn multi_file_parquet_no_pin_and_autopin_are_exhaustive_and_byte_stable() {
+fn multi_file_parquet_no_pin_and_autopin_are_all_file_metadata_and_byte_stable() {
     let project = TestProject::new();
     write_parquet_discover_resource(&project, "*.parquet");
     write_vendor_parquet(&project.root.join("data/a.parquet"));
@@ -5821,14 +5828,15 @@ fn multi_file_parquet_no_pin_and_autopin_are_exhaustive_and_byte_stable() {
         .unwrap();
     let manifest_before = fs::read(project.root.join(manifest_path)).unwrap();
     let manifest_json: serde_json::Value = serde_json::from_slice(&manifest_before).unwrap();
-    assert_eq!(manifest_json["coverage"], "exhaustive");
+    assert_eq!(manifest_json["file_coverage"], "all_files");
+    assert_eq!(manifest_json["within_file_coverage"], "format_metadata");
     assert_eq!(manifest_json["candidates"].as_array().unwrap().len(), 2);
     assert!(
         manifest_json["candidates"]
             .as_array()
             .unwrap()
             .iter()
-            .all(|candidate| candidate["participation"] == "probed")
+            .all(|candidate| candidate["participation"] == "observed")
     );
     let second = run([
         "cdf",
@@ -5873,12 +5881,13 @@ fn sampled_discovery_renders_every_cli_path_and_routes_unseen_drift_to_package_q
     ]);
     assert_eq!(discover.exit_code, 0, "{}", discover.stderr);
     let discovery = &stderr_or_stdout_json(&discover.stdout)["result"]["discovery"];
-    assert_eq!(discovery["coverage"], "sampled");
+    assert_eq!(discovery["file_coverage"], "sampled_files");
+    assert_eq!(discovery["within_file_coverage"], "format_metadata");
     assert_eq!(discovery["selector"], STRATIFIED_HASH_SELECTOR_V1);
     assert_eq!(discovery["sample_files"], 2);
     assert_eq!(discovery["matched_files"], 3);
-    assert_eq!(discovery["probed_files"], 2);
-    assert_eq!(discovery["unprobed_files"], 1);
+    assert_eq!(discovery["selected_files"], 2);
+    assert_eq!(discovery["unobserved_files"], 1);
     assert_no_schema_discovery_writes(&project);
 
     let human = run([
@@ -5895,7 +5904,7 @@ fn sampled_discovery_renders_every_cli_path_and_routes_unseen_drift_to_package_q
         "{}",
         human.stdout
     );
-    assert!(human.stdout.contains("sampled"), "{}", human.stdout);
+    assert!(human.stdout.contains("sampled_files"), "{}", human.stdout);
     assert!(human.stdout.contains("matched files"), "{}", human.stdout);
     assert_no_schema_discovery_writes(&project);
 
@@ -5910,8 +5919,8 @@ fn sampled_discovery_renders_every_cli_path_and_routes_unseen_drift_to_package_q
     ]);
     assert_eq!(no_pin.exit_code, 0, "{}", no_pin.stderr);
     assert_eq!(
-        stderr_or_stdout_json(&no_pin.stdout)["result"]["schema_snapshot"]["discovery"]["coverage"],
-        "sampled"
+        stderr_or_stdout_json(&no_pin.stdout)["result"]["schema_snapshot"]["discovery"]["file_coverage"],
+        "sampled_files"
     );
     assert_no_schema_discovery_writes(&project);
 
@@ -5926,8 +5935,8 @@ fn sampled_discovery_renders_every_cli_path_and_routes_unseen_drift_to_package_q
     ]);
     assert_eq!(pin.exit_code, 0, "{}", pin.stderr);
     assert_eq!(
-        stderr_or_stdout_json(&pin.stdout)["result"]["discovery"]["coverage"],
-        "sampled"
+        stderr_or_stdout_json(&pin.stdout)["result"]["discovery"]["file_coverage"],
+        "sampled_files"
     );
 
     let diff = run([
@@ -5941,7 +5950,7 @@ fn sampled_discovery_renders_every_cli_path_and_routes_unseen_drift_to_package_q
     ]);
     assert_eq!(diff.exit_code, 0, "{}", diff.stderr);
     assert_eq!(
-        stderr_or_stdout_json(&diff.stdout)["result"]["discovery"]["unprobed_files"],
+        stderr_or_stdout_json(&diff.stdout)["result"]["discovery"]["unobserved_files"],
         1
     );
 
@@ -5957,8 +5966,8 @@ fn sampled_discovery_renders_every_cli_path_and_routes_unseen_drift_to_package_q
     assert_eq!(preview.exit_code, 0, "{}", preview.stderr);
     let preview_report = stderr_or_stdout_json(&preview.stdout);
     assert_eq!(
-        preview_report["result"]["schema_snapshot"]["discovery"]["coverage"],
-        "sampled"
+        preview_report["result"]["schema_snapshot"]["discovery"]["file_coverage"],
+        "sampled_files"
     );
     assert_eq!(preview_report["result"]["planned_partition_count"], 3);
     assert_eq!(
@@ -5989,8 +5998,8 @@ fn sampled_discovery_renders_every_cli_path_and_routes_unseen_drift_to_package_q
     let run_result = run_valid_run_args(&project);
     assert_eq!(run_result.exit_code, 0, "{}", run_result.stderr);
     assert_eq!(
-        stderr_or_stdout_json(&run_result.stdout)["result"]["schema_snapshot"]["discovery"]["coverage"],
-        "sampled"
+        stderr_or_stdout_json(&run_result.stdout)["result"]["schema_snapshot"]["discovery"]["file_coverage"],
+        "sampled_files"
     );
     let package = run_package_dir(&project, &run_result);
     let schema_evidence: serde_json::Value = serde_json::from_slice(
@@ -6042,8 +6051,8 @@ fn sampled_discovery_renders_every_cli_path_and_routes_unseen_drift_to_package_q
     let auto_report = stderr_or_stdout_json(&auto_pin.stdout);
     assert_eq!(auto_report["result"]["schema_snapshot"]["outcome"], "added");
     assert_eq!(
-        auto_report["result"]["schema_snapshot"]["discovery"]["coverage"],
-        "sampled"
+        auto_report["result"]["schema_snapshot"]["discovery"]["file_coverage"],
+        "sampled_files"
     );
 }
 
@@ -7867,8 +7876,8 @@ fn run_adhoc_http_parquet_uses_bounded_discovery_and_ordinary_run() {
         report["schema_snapshot"]["schema_hash"]
     );
     assert_eq!(
-        report["schema_snapshot"]["discovery"]["coverage"],
-        "exhaustive"
+        report["schema_snapshot"]["discovery"]["file_coverage"],
+        "all_files"
     );
     assert_eq!(report["checkpoint"]["status"], "committed");
     assert_eq!(report["ledger_events"]["terminal_kind"], "run_succeeded");

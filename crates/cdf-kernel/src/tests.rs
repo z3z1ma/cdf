@@ -1330,16 +1330,26 @@ fn receipt_rejects_state_delta_when_identity_or_segments_do_not_match() {
 }
 
 #[test]
-fn sampled_discovery_coverage_evidence_is_total_and_round_trips() {
-    let evidence = DiscoveryCoverageEvidence::sampled("stratified-hash-v1", 2, 5, 2).unwrap();
-    assert_eq!(evidence.unprobed_files, 3);
+fn two_axis_discovery_coverage_evidence_is_total_and_round_trips() {
+    let evidence = DiscoveryCoverageEvidence::new(
+        "sampled_files",
+        "bounded_content",
+        Some("stratified-hash-v1".to_owned()),
+        Some(2),
+        5,
+        2,
+        4096,
+        1000,
+    )
+    .unwrap();
+    assert_eq!(evidence.unobserved_files, 3);
     let encoded = serde_json::to_vec(&evidence).unwrap();
     let decoded: DiscoveryCoverageEvidence = serde_json::from_slice(&encoded).unwrap();
     assert_eq!(decoded, evidence);
     decoded.validate().unwrap();
 
     let mut invalid = evidence;
-    invalid.unprobed_files = 2;
+    invalid.unobserved_files = 2;
     assert!(invalid.validate().is_err());
 }
 

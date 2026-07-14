@@ -910,48 +910,78 @@ impl EffectiveSchemaEvidence {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DiscoveryCoverageEvidence {
     pub version: u16,
-    pub coverage: String,
-    pub selector: String,
-    pub sample_files: u64,
+    pub file_coverage: String,
+    pub within_file_coverage: String,
+    pub selector: Option<String>,
+    pub sample_files: Option<u64>,
     pub matched_files: u64,
-    pub probed_files: u64,
-    pub unprobed_files: u64,
+    pub selected_files: u64,
+    pub unobserved_files: u64,
+    pub observed_bytes: u64,
+    pub observed_records: u64,
 }
 
 impl DiscoveryCoverageEvidence {
-    pub fn sampled(
-        selector: impl Into<String>,
-        sample_files: u64,
+    pub fn new(
+        file_coverage: impl Into<String>,
+        within_file_coverage: impl Into<String>,
+        selector: Option<String>,
+        sample_files: Option<u64>,
         matched_files: u64,
-        probed_files: u64,
+        selected_files: u64,
+        observed_bytes: u64,
+        observed_records: u64,
     ) -> Result<Self> {
-        let unprobed_files = matched_files.checked_sub(probed_files).ok_or_else(|| {
-            CdfError::contract("sampled discovery coverage probed count exceeds matched count")
+        let unobserved_files = matched_files.checked_sub(selected_files).ok_or_else(|| {
+            CdfError::contract("discovery coverage selected count exceeds matched count")
         })?;
         let evidence = Self {
             version: 1,
-            coverage: "sampled".to_owned(),
-            selector: selector.into(),
+            file_coverage: file_coverage.into(),
+            within_file_coverage: within_file_coverage.into(),
+            selector,
             sample_files,
             matched_files,
-            probed_files,
-            unprobed_files,
+            selected_files,
+            unobserved_files,
+            observed_bytes,
+            observed_records,
         };
         evidence.validate()?;
         Ok(evidence)
     }
 
     pub fn validate(&self) -> Result<()> {
+        let file_coverage_valid = match self.file_coverage.as_str() {
+            "all_files" => {
+                self.selector.is_none()
+                    && self.sample_files.is_none()
+                    && self.selected_files == self.matched_files
+                    && self.unobserved_files == 0
+            }
+            "sampled_files" => {
+                self.selector
+                    .as_deref()
+                    .is_some_and(|selector| !selector.trim().is_empty())
+                    && self.sample_files == Some(self.selected_files)
+                    && self.selected_files > 0
+                    && self.selected_files < self.matched_files
+            }
+            _ => false,
+        };
+        let within_file_coverage_valid = matches!(
+            self.within_file_coverage.as_str(),
+            "format_metadata" | "bounded_content" | "full_content"
+        );
         if self.version != 1
-            || self.coverage != "sampled"
-            || self.selector.trim().is_empty()
-            || self.sample_files == 0
-            || self.probed_files != self.sample_files
-            || self.matched_files <= self.probed_files
-            || self.probed_files.checked_add(self.unprobed_files) != Some(self.matched_files)
+            || !file_coverage_valid
+            || !within_file_coverage_valid
+            || self.matched_files == 0
+            || self.selected_files.checked_add(self.unobserved_files) != Some(self.matched_files)
+            || (self.within_file_coverage == "format_metadata" && self.observed_records != 0)
         {
             return Err(CdfError::data(
-                "sampled discovery coverage evidence requires version 1, a selector, positive exact sample membership, and matched = probed + unprobed",
+                "discovery coverage evidence requires valid independent file/within-file axes, exact selection counts, and zero data records for format_metadata",
             ));
         }
         Ok(())
@@ -970,33 +1000,37 @@ pub struct EffectiveSchemaRuntime {
 #[non_exhaustive]
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DiscoveryExecutorBudgetEvidence {
-    pub max_metadata_bytes_per_file: u64,
+    pub max_bytes_per_file: u64,
+    pub max_records_per_file: u64,
     pub max_total_in_flight_bytes: u64,
     pub max_concurrent_probes: u32,
 }
 
 impl DiscoveryExecutorBudgetEvidence {
     pub fn new(
-        max_metadata_bytes_per_file: u64,
+        max_bytes_per_file: u64,
+        max_records_per_file: u64,
         max_total_in_flight_bytes: u64,
         max_concurrent_probes: u32,
     ) -> Result<Self> {
-        if max_metadata_bytes_per_file == 0
+        if max_bytes_per_file == 0
+            || max_records_per_file == 0
             || max_total_in_flight_bytes == 0
             || max_concurrent_probes == 0
-            || max_metadata_bytes_per_file > max_total_in_flight_bytes
+            || max_bytes_per_file > max_total_in_flight_bytes
         {
             return Err(CdfError::contract(
                 "discovery executor budget requires positive limits and per-file bytes no greater than total in-flight bytes",
             ));
         }
-        max_metadata_bytes_per_file
+        max_bytes_per_file
             .checked_mul(u64::from(max_concurrent_probes))
             .ok_or_else(|| {
                 CdfError::contract("discovery executor budget byte accounting overflowed")
             })?;
         Ok(Self {
-            max_metadata_bytes_per_file,
+            max_bytes_per_file,
+            max_records_per_file,
             max_total_in_flight_bytes,
             max_concurrent_probes,
         })
@@ -1035,7 +1069,8 @@ impl EffectiveSchemaRuntime {
         budget: DiscoveryExecutorBudgetEvidence,
     ) -> Result<Self> {
         DiscoveryExecutorBudgetEvidence::new(
-            budget.max_metadata_bytes_per_file,
+            budget.max_bytes_per_file,
+            budget.max_records_per_file,
             budget.max_total_in_flight_bytes,
             budget.max_concurrent_probes,
         )?;

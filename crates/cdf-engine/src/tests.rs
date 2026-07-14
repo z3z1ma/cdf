@@ -1198,7 +1198,9 @@ fn effective_schema_binds_only_the_attempted_partition_observation_under_limit()
         )],
     )
     .unwrap()
-    .with_discovery_executor_budget(DiscoveryExecutorBudgetEvidence::new(64, 128, 2).unwrap())
+    .with_discovery_executor_budget(
+        DiscoveryExecutorBudgetEvidence::new(64, 1_000, 128, 2).unwrap(),
+    )
     .unwrap();
     let resource =
         MockResource::tier_b(batches).with_effective_schema_runtime(effective_schema, runtime);
@@ -1234,7 +1236,7 @@ fn effective_schema_binds_only_the_attempted_partition_observation_under_limit()
         .as_mut()
         .unwrap()
         .discovery_executor_budget =
-        Some(DiscoveryExecutorBudgetEvidence::new(32, 128, 2).unwrap());
+        Some(DiscoveryExecutorBudgetEvidence::new(32, 1_000, 128, 2).unwrap());
     let tampered_package = TempDir::new().unwrap();
     let error = block_on(execute_to_package(
         &tampered,
@@ -1500,7 +1502,9 @@ fn terminal_effective_schema_runtime(
     .unwrap()
     .with_terminal_quarantines(vec![*terminal_0, *terminal_1])
     .unwrap()
-    .with_discovery_executor_budget(DiscoveryExecutorBudgetEvidence::new(64, 128, 2).unwrap())
+    .with_discovery_executor_budget(
+        DiscoveryExecutorBudgetEvidence::new(64, 1_000, 128, 2).unwrap(),
+    )
     .unwrap()
 }
 
@@ -3097,7 +3101,9 @@ fn residual_multi_partition_decisions_share_verified_effective_schema_and_keep_i
         )],
     )
     .unwrap()
-    .with_discovery_executor_budget(DiscoveryExecutorBudgetEvidence::new(64, 128, 2).unwrap())
+    .with_discovery_executor_budget(
+        DiscoveryExecutorBudgetEvidence::new(64, 1_000, 128, 2).unwrap(),
+    )
     .unwrap();
     let resource = MockResource::tier_b(vec![captured_batch, quarantined_batch])
         .with_effective_schema_runtime(schema.clone(), runtime)

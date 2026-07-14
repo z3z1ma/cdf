@@ -124,6 +124,7 @@ pub struct BoundedBinarySchemaProbe {
     pub schema: SchemaRef,
     pub source_identity: BTreeMap<String, String>,
     pub probe_bytes_read: u64,
+    pub probe_records_read: u64,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -133,7 +134,8 @@ pub struct BoundedSchemaDiscoveryRequest<'a> {
     pub format_declared: bool,
     pub format_options: &'a serde_json::Value,
     pub transform_name: &'a str,
-    pub max_metadata_bytes: u64,
+    pub maximum_bytes: u64,
+    pub maximum_records: u64,
 }
 
 pub fn discover_local_binary_schema_bounded(
@@ -175,7 +177,8 @@ pub fn discover_local_binary_schema_bounded(
         format_declared: request.format_declared,
         transform_name: request.transform_name.to_owned(),
     };
-    let max_metadata_bytes = request.max_metadata_bytes;
+    let maximum_bytes = request.maximum_bytes;
+    let maximum_records = request.maximum_records;
     let observation = dependencies.execution().run_io({
         let dependencies = dependencies.clone();
         let driver = Arc::clone(&driver);
@@ -225,8 +228,8 @@ pub fn discover_local_binary_schema_bounded(
                     source,
                     FormatDiscoveryRequest {
                         options,
-                        maximum_bytes: max_metadata_bytes,
-                        maximum_records: 1_000,
+                        maximum_bytes,
+                        maximum_records,
                         memory: discovery_memory,
                         cancellation: cdf_runtime::RunCancellation::default(),
                     },
@@ -242,6 +245,7 @@ pub fn discover_local_binary_schema_bounded(
         }
     })?;
     let (observation, probe_bytes_read) = observation;
+    let probe_records_read = observation.sampled_records;
     let schema = observation.arrow_schema;
     let schema_hash = cdf_kernel::canonical_arrow_schema_hash(schema.as_ref())?;
     let mut source_identity = BTreeMap::from([
@@ -268,6 +272,7 @@ pub fn discover_local_binary_schema_bounded(
         schema,
         source_identity,
         probe_bytes_read: initial_bytes_read.saturating_add(probe_bytes_read),
+        probe_records_read,
     })
 }
 
@@ -312,7 +317,8 @@ pub fn discover_transport_binary_schema_bounded(
         format_declared: request.format_declared,
         transform_name: request.transform_name.to_owned(),
     };
-    let max_metadata_bytes = request.max_metadata_bytes;
+    let maximum_bytes = request.maximum_bytes;
+    let maximum_records = request.maximum_records;
     let observation = execution.run_io({
         let dependencies = dependencies.clone();
         let driver = Arc::clone(&driver);
@@ -361,8 +367,8 @@ pub fn discover_transport_binary_schema_bounded(
                     source,
                     FormatDiscoveryRequest {
                         options,
-                        maximum_bytes: max_metadata_bytes,
-                        maximum_records: 1_000,
+                        maximum_bytes,
+                        maximum_records,
                         memory,
                         cancellation: cdf_runtime::RunCancellation::default(),
                     },
@@ -378,6 +384,7 @@ pub fn discover_transport_binary_schema_bounded(
         }
     })?;
     let (observation, probe_bytes_read) = observation;
+    let probe_records_read = observation.sampled_records;
     let schema_hash = cdf_kernel::canonical_arrow_schema_hash(observation.arrow_schema.as_ref())?;
     let mut source_identity = BTreeMap::from([
         ("stable_id".to_owned(), logical_source_identity.stable_id),
@@ -396,6 +403,7 @@ pub fn discover_transport_binary_schema_bounded(
         schema: observation.arrow_schema,
         source_identity,
         probe_bytes_read,
+        probe_records_read,
     };
     probe
         .source_identity
@@ -2669,6 +2677,7 @@ mod tests {
                     projection_pushdown: cdf_kernel::PushdownFidelity::Unsupported,
                     predicate_pushdown: cdf_kernel::PushdownFidelity::Unsupported,
                     source_access: cdf_runtime::FormatSourceAccess::Sequential,
+                    discovery_kind: cdf_runtime::FormatDiscoveryKind::BoundedContent,
                     decode_unit_policy: "whole_mock_file".to_owned(),
                     error_isolation: cdf_runtime::FormatErrorIsolation::DecodeUnit,
                     minimum_working_set_bytes: 64,
@@ -2947,7 +2956,8 @@ mod tests {
                 format_declared: plan.format_declared,
                 format_options: &plan.format_options,
                 transform_name: "external_passthrough",
-                max_metadata_bytes: 1024,
+                maximum_bytes: 1024,
+                maximum_records: 1_000,
             },
         )
         .unwrap();
@@ -3157,7 +3167,8 @@ mod tests {
                 format_declared: plan.format_declared,
                 format_options: &plan.format_options,
                 transform_name: "gzip",
-                max_metadata_bytes: 64 * 1024 * 1024,
+                maximum_bytes: 64 * 1024 * 1024,
+                maximum_records: 1_000,
             },
         )
         .unwrap();
@@ -3625,7 +3636,8 @@ mod tests {
                 format_declared: plan.format_declared,
                 format_options: &plan.format_options,
                 transform_name: "none",
-                max_metadata_bytes: 1024 * 1024,
+                maximum_bytes: 1024 * 1024,
+                maximum_records: 1_000,
             },
         )
         .unwrap();
@@ -3712,7 +3724,8 @@ mod tests {
                 format_declared: plan.format_declared,
                 format_options: &plan.format_options,
                 transform_name: "none",
-                max_metadata_bytes: 1024 * 1024,
+                maximum_bytes: 1024 * 1024,
+                maximum_records: 1_000,
             },
         )
         .unwrap();
