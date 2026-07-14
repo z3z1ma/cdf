@@ -849,6 +849,37 @@ fn batch_header_serde_defaults_missing_optional_evidence_fields() {
 }
 
 #[test]
+fn materialized_batch_header_rejects_typed_schema_hash_split() {
+    let physical = Schema::new(vec![Field::new("id", DataType::Int64, false)]);
+    let mut header = BatchHeader::new(
+        BatchId::new("batch-materialized").unwrap(),
+        ResourceId::new("orders").unwrap(),
+        PartitionId::new("p0").unwrap(),
+        SchemaHash::new("unbound-before-materialization").unwrap(),
+        1,
+        8,
+    );
+    header.mark_materialized_output(&physical).unwrap();
+    assert_eq!(header.materialized_physical_schema().unwrap(), physical);
+
+    header.physical_observation_schema = Some(
+        CanonicalArrowSchema::from_arrow(&Schema::new(vec![Field::new(
+            "id",
+            DataType::Int32,
+            false,
+        )]))
+        .unwrap(),
+    );
+    let error = header.materialized_physical_schema().unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("does not match batch observation hash"),
+        "{error}"
+    );
+}
+
+#[test]
 fn artifact_values_serde_round_trip() {
     let descriptor = ResourceDescriptor {
         resource_id: ResourceId::new("orders").unwrap(),

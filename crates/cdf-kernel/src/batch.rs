@@ -183,14 +183,23 @@ impl BatchHeader {
                 "physical schema observation is only available for materialized output",
             ));
         }
-        self.physical_observation_schema
+        let schema = self
+            .physical_observation_schema
             .as_ref()
             .ok_or_else(|| {
                 crate::CdfError::data(
                     "materialized output requires an exact typed physical schema observation",
                 )
             })?
-            .to_arrow()
+            .to_arrow()?;
+        let actual = crate::canonical_arrow_schema_hash(&schema)?;
+        if actual != self.observed_schema_hash {
+            return Err(crate::CdfError::data(format!(
+                "materialized typed schema hash {actual} does not match batch observation hash {}",
+                self.observed_schema_hash
+            )));
+        }
+        Ok(schema)
     }
 
     pub fn residual_candidates(&self) -> &[PreContractResidualCandidate] {

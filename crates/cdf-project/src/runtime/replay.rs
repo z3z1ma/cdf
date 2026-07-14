@@ -945,19 +945,14 @@ fn validate_stream_admission_lineage_coverage<'a>(
         .chain(unpositioned)
         .collect::<std::collections::BTreeSet<_>>();
     let mut lineage_ids = std::collections::BTreeSet::new();
-    let mut lineage_bindings = std::collections::BTreeSet::new();
     for observation in &lineage.input_observations {
         if observation.observation_id.is_empty()
-            || !lineage_bindings.insert((
-                observation.observation_id.as_str(),
-                observation.partition_id.as_str(),
-            ))
+            || !lineage_ids.insert(observation.observation_id.as_str())
         {
             return Err(CdfError::data(
-                "execution lineage contains an empty or duplicate stream-admission observation binding",
+                "execution lineage contains an empty or duplicate stream-admission observation identity",
             ));
         }
-        lineage_ids.insert(observation.observation_id.as_str());
     }
     if evidence_ids != lineage_ids {
         return Err(CdfError::data(
@@ -2035,5 +2030,26 @@ mod stream_admission_replay_tests {
         )
         .unwrap_err();
         assert!(error.to_string().contains("exactly cover"), "{error}");
+
+        let mut duplicate_lineage = lineage;
+        duplicate_lineage
+            .input_observations
+            .push(LineageInputObservation {
+                observation_id: "rest".to_owned(),
+                partition_id: PartitionId::new("rest-page-2").unwrap(),
+                observed_rows: 1,
+                output_position: Some(attempted),
+            });
+        let error = validate_stream_admission_lineage_coverage(
+            std::iter::empty(),
+            ["rest"].into_iter(),
+            std::iter::empty(),
+            &duplicate_lineage,
+        )
+        .unwrap_err();
+        assert!(
+            error.to_string().contains("duplicate stream-admission"),
+            "{error}"
+        );
     }
 }
