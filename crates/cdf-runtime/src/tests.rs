@@ -1109,17 +1109,26 @@ fn source_registry_compiles_hashes_and_resolves_mock_without_order_authority() {
         freshness: None,
         trust_level: TrustLevel::Experimental,
     };
-    let plan = registry
-        .compile(SourceCompileRequest {
-            source_kind: "mock".to_owned(),
-            source_options: BTreeMap::new(),
-            resource_options: BTreeMap::new(),
-            descriptor: resource_descriptor,
-            schema: Schema::empty(),
-            type_policy_allowances: Default::default(),
-            effective_schema_runtime: None,
-        })
-        .unwrap();
+    let request = SourceCompileRequest {
+        source_kind: "mock".to_owned(),
+        context: SourceCompileContext {
+            source_name: "mock".to_owned(),
+            project_root: None,
+            cursor_pushdown: None,
+        },
+        source_options: BTreeMap::new(),
+        resource_options: BTreeMap::new(),
+        descriptor: resource_descriptor,
+        schema: Schema::empty(),
+        type_policy_allowances: Default::default(),
+        effective_schema_runtime: None,
+    };
+    let mut invalid_request = request.clone();
+    invalid_request.context.source_name.clear();
+    let error = registry.compile(invalid_request).unwrap_err();
+    assert!(error.message.contains("requires a source name"));
+
+    let plan = registry.compile(request).unwrap();
     assert_eq!(
         registry
             .driver_for_uri("mock://events")

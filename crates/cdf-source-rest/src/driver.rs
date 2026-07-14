@@ -11,9 +11,9 @@ use cdf_kernel::{
 };
 use cdf_runtime::{
     BlockingLaneSpec, CompiledSourcePlan, InterruptionSafety, LaneAffinity,
-    SourceAttestationStrength, SourceCompileRequest, SourceDriver, SourceDriverDescriptor,
-    SourceDriverId, SourceExecutionCapabilities, SourceExecutorClass, SourceResolutionContext,
-    SourceRetryGranularity, artifact_hash,
+    SourceAttestationStrength, SourceCompileRequest, SourceCursorPushdown, SourceDriver,
+    SourceDriverDescriptor, SourceDriverId, SourceExecutionCapabilities, SourceExecutorClass,
+    SourceResolutionContext, SourceRetryGranularity, artifact_hash,
 };
 use serde::{Deserialize, Serialize};
 
@@ -67,10 +67,18 @@ impl SourceDriver for RestSourceDriver {
     }
 
     fn compile(&self, request: SourceCompileRequest) -> Result<CompiledSourcePlan> {
+        request.context.validate()?;
+        let source_name = request.context.source_name.clone();
+        let cursor_pushdown = request.context.cursor_pushdown.clone();
         let source: RestSourceOptions = decode_options("REST source", request.source_options)?;
         let resource: RestResourceOptions =
             decode_options("REST resource", request.resource_options)?;
-        let physical = RestPhysicalPlan { source, resource };
+        let physical = RestPhysicalPlan {
+            source_name,
+            cursor_pushdown,
+            source,
+            resource,
+        };
         physical.to_runtime_plan()?;
         CompiledSourcePlan::new(
             self.descriptor.clone(),
@@ -193,9 +201,8 @@ fn option_schema() -> serde_json::Value {
         "source": {
             "type": "object",
             "additionalProperties": false,
-            "required": ["source_name", "base_url"],
+            "required": ["base_url"],
             "properties": {
-                "source_name": {"type": "string", "minLength": 1},
                 "base_url": {"type": "string", "format": "uri"},
                 "auth": auth,
                 "rate_limit": {
@@ -213,15 +220,13 @@ fn option_schema() -> serde_json::Value {
         "resource": {
             "type": "object",
             "additionalProperties": false,
-            "required": ["path", "params", "records", "cursor_filter_fidelity"],
+            "required": ["path", "params", "records"],
             "properties": {
                 "path": {"type": "string"},
                 "params": {"type": "object", "additionalProperties": {"type": ["string", "number", "boolean"]}},
                 "paginate": pagination,
                 "records": {"type": "string", "minLength": 1},
-                "records_transform": {"type": "string", "minLength": 1},
-                "cursor_param": {"type": "string", "minLength": 1},
-                "cursor_filter_fidelity": {"enum": ["exact", "inexact", "unsupported"]}
+                "records_transform": {"type": "string", "minLength": 1}
             }
         }
     })
@@ -230,7 +235,6 @@ fn option_schema() -> serde_json::Value {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RestSourceOptions {
-    source_name: String,
     base_url: String,
     #[serde(default)]
     auth: Option<AuthOptions>,
@@ -251,10 +255,6 @@ struct RestResourceOptions {
     records: String,
     #[serde(default)]
     records_transform: Option<String>,
-    #[serde(default)]
-    cursor_param: Option<String>,
-    #[serde(default = "default_cursor_fidelity")]
-    cursor_filter_fidelity: String,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -312,6 +312,8 @@ enum PaginationOptions {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RestPhysicalPlan {
+    source_name: String,
+    cursor_pushdown: Option<SourceCursorPushdown>,
     source: RestSourceOptions,
     resource: RestResourceOptions,
 }
@@ -330,18 +332,13 @@ impl RestPhysicalPlan {
             .paginate
             .as_ref()
             .map(PaginationOptions::to_runtime);
-        let cursor_filter_fidelity = match self.resource.cursor_filter_fidelity.as_str() {
-            "exact" => PushdownFidelity::Exact,
-            "inexact" => PushdownFidelity::Inexact,
-            "unsupported" => PushdownFidelity::Unsupported,
-            value => {
-                return Err(CdfError::contract(format!(
-                    "REST cursor filter fidelity `{value}` is unsupported"
-                )));
-            }
-        };
+        let (cursor_param, cursor_filter_fidelity) = self
+            .cursor_pushdown
+            .as_ref()
+            .map(|cursor| (cursor.parameter.clone(), cursor.fidelity.clone()))
+            .unwrap_or((None, PushdownFidelity::Inexact));
         Ok(RestResourcePlan {
-            source: self.source.source_name.clone(),
+            source: self.source_name.clone(),
             base_url: self.source.base_url.clone(),
             path: self.resource.path.clone(),
             params: self
@@ -367,7 +364,7 @@ impl RestPhysicalPlan {
             } else {
                 EgressAllowlist::from_hosts(self.source.egress_allowlist.clone())
             },
-            cursor_param: self.resource.cursor_param.clone(),
+            cursor_param,
             cursor_filter_fidelity,
             records_transform: self.resource.records_transform.clone(),
         })
@@ -474,10 +471,6 @@ fn scalar_param(name: &str, value: &serde_json::Value) -> Result<String> {
     }
 }
 
-fn default_cursor_fidelity() -> String {
-    "inexact".to_owned()
-}
-
 fn rest_capabilities(descriptor: &cdf_kernel::ResourceDescriptor) -> ResourceCapabilities {
     ResourceCapabilities {
         projection: CapabilitySupport::Unsupported,
@@ -548,5 +541,87 @@ fn execution_capabilities() -> SourceExecutionCapabilities {
         canonical_order: true,
         bounded: true,
         telemetry_version: "v1".to_owned(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use arrow_schema::Schema;
+    use cdf_kernel::{
+        CursorOrderingClaim, CursorSpec, ResourceDescriptor, ResourceId, SchemaHash, SchemaSource,
+        ScopeKey, TrustLevel, WriteDisposition,
+    };
+    use cdf_runtime::{SourceCompileContext, SourceCursorPushdown};
+
+    #[test]
+    fn common_context_owns_source_name_and_cursor_pushdown() {
+        let driver =
+            RestSourceDriver::new(|| Err(CdfError::internal("compile-only transport"))).unwrap();
+        assert!(
+            driver.option_schema()["source"]["properties"]
+                .get("source_name")
+                .is_none()
+        );
+        assert!(
+            driver.option_schema()["resource"]["properties"]
+                .get("cursor_param")
+                .is_none()
+        );
+
+        let descriptor = ResourceDescriptor {
+            resource_id: ResourceId::new("api.items").unwrap(),
+            schema_source: SchemaSource::Declared {
+                schema_hash: SchemaHash::new("schema-rest-driver").unwrap(),
+                source: "test".to_owned(),
+            },
+            primary_key: Vec::new(),
+            merge_key: Vec::new(),
+            cursor: Some(CursorSpec {
+                field: "updated_at".to_owned(),
+                ordering: CursorOrderingClaim::Exact,
+                lag_tolerance_ms: 0,
+            }),
+            write_disposition: WriteDisposition::Append,
+            deduplication: None,
+            contract: None,
+            state_scope: ScopeKey::Resource,
+            freshness: None,
+            trust_level: TrustLevel::Governed,
+        };
+        let plan = driver
+            .compile(SourceCompileRequest {
+                source_kind: "rest".to_owned(),
+                context: SourceCompileContext {
+                    source_name: "api".to_owned(),
+                    project_root: None,
+                    cursor_pushdown: Some(SourceCursorPushdown {
+                        parameter: Some("since".to_owned()),
+                        fidelity: PushdownFidelity::Exact,
+                    }),
+                },
+                source_options: BTreeMap::from([
+                    (
+                        "base_url".to_owned(),
+                        serde_json::json!("https://api.example.com"),
+                    ),
+                    ("egress_allowlist".to_owned(), serde_json::json!([])),
+                ]),
+                resource_options: BTreeMap::from([
+                    ("path".to_owned(), serde_json::json!("/items")),
+                    ("params".to_owned(), serde_json::json!({})),
+                    ("records".to_owned(), serde_json::json!("$.items")),
+                ]),
+                descriptor,
+                schema: Schema::empty(),
+                type_policy_allowances: Default::default(),
+                effective_schema_runtime: None,
+            })
+            .unwrap();
+        let physical: RestPhysicalPlan = serde_json::from_value(plan.physical_plan).unwrap();
+        let runtime = physical.to_runtime_plan().unwrap();
+        assert_eq!(runtime.source, "api");
+        assert_eq!(runtime.cursor_param.as_deref(), Some("since"));
+        assert_eq!(runtime.cursor_filter_fidelity, PushdownFidelity::Exact);
     }
 }

@@ -1,15 +1,16 @@
 use std::{
     any::{Any, type_name},
     collections::BTreeMap,
-    path::Path,
+    path::{Path, PathBuf},
     sync::{Arc, Mutex},
 };
 
 use arrow_schema::Schema;
 use cdf_http::SecretProvider;
 use cdf_kernel::{
-    CdfError, EffectiveSchemaRuntime, ErrorKind, PayloadRetention, QueryableResource,
-    ResourceCapabilities, ResourceDescriptor, ResourceId, Result, TypePolicyAllowances,
+    CdfError, EffectiveSchemaRuntime, ErrorKind, PayloadRetention, PushdownFidelity,
+    QueryableResource, ResourceCapabilities, ResourceDescriptor, ResourceId, Result,
+    TypePolicyAllowances,
 };
 use serde::{Deserialize, Serialize};
 
@@ -328,8 +329,47 @@ impl SourceExecutionCapabilities {
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct SourceCompileContext {
+    pub source_name: String,
+    pub project_root: Option<PathBuf>,
+    pub cursor_pushdown: Option<SourceCursorPushdown>,
+}
+
+impl SourceCompileContext {
+    pub fn validate(&self) -> Result<()> {
+        if self.source_name.is_empty() {
+            return Err(CdfError::contract(
+                "source compilation context requires a source name",
+            ));
+        }
+        if let Some(cursor) = &self.cursor_pushdown {
+            cursor.validate()?;
+        }
+        Ok(())
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SourceCursorPushdown {
+    pub parameter: Option<String>,
+    pub fidelity: PushdownFidelity,
+}
+
+impl SourceCursorPushdown {
+    fn validate(&self) -> Result<()> {
+        if self.parameter.as_ref().is_some_and(String::is_empty) {
+            return Err(CdfError::contract(
+                "source cursor pushdown parameter cannot be empty",
+            ));
+        }
+        Ok(())
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct SourceCompileRequest {
     pub source_kind: String,
+    pub context: SourceCompileContext,
     pub source_options: BTreeMap<String, serde_json::Value>,
     pub resource_options: BTreeMap<String, serde_json::Value>,
     pub descriptor: ResourceDescriptor,

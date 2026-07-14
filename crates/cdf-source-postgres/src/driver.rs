@@ -63,6 +63,7 @@ impl SourceDriver for PostgresSourceDriver {
     }
 
     fn compile(&self, request: SourceCompileRequest) -> Result<CompiledSourcePlan> {
+        request.context.validate()?;
         let source: PostgresSourceOptions =
             decode_options("Postgres source", request.source_options)?;
         let resource: PostgresResourceOptions =
@@ -229,6 +230,11 @@ mod tests {
         let plan = driver
             .compile(SourceCompileRequest {
                 source_kind: "sql".to_owned(),
+                context: cdf_runtime::SourceCompileContext {
+                    source_name: "warehouse".to_owned(),
+                    project_root: None,
+                    cursor_pushdown: None,
+                },
                 source_options: BTreeMap::from([
                     (
                         "connection".to_owned(),
@@ -267,6 +273,11 @@ mod tests {
         let error = driver
             .compile(SourceCompileRequest {
                 source_kind: "sql".to_owned(),
+                context: cdf_runtime::SourceCompileContext {
+                    source_name: "warehouse".to_owned(),
+                    project_root: None,
+                    cursor_pushdown: None,
+                },
                 source_options: BTreeMap::from([
                     (
                         "connection".to_owned(),

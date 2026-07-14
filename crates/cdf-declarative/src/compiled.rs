@@ -22,7 +22,7 @@ use cdf_kernel::{
     ResourceStream, Result, ScanPlan, ScanRequest, SchemaHash, SchemaSource, ScopeKey, ScopeKind,
     TrustLevel, TypePolicyAllowances, WriteDisposition, with_cdf_metadata,
 };
-use cdf_runtime::SourceCompileRequest;
+use cdf_runtime::{SourceCompileContext, SourceCompileRequest, SourceCursorPushdown};
 use cdf_source_files::FileResourcePlan;
 use cdf_source_rest::{RestResourcePlan, cursor_pushdown_value};
 use sha2::{Digest, Sha256};
@@ -392,12 +392,14 @@ fn compile_resource(
         })
         .unwrap_or_default();
     let source_compile_request = build_source_compile_request(
+        source_name,
         source,
         resource,
         &plan,
         &descriptor,
         &schema,
         type_policy_allowances,
+        project_root,
     )?;
 
     Ok(CompiledResource {
@@ -415,13 +417,27 @@ fn compile_resource(
 }
 
 fn build_source_compile_request(
+    source_name: &str,
     source: &SourceDeclaration,
     resource: &ResourceDeclaration,
     typed_plan: &CompiledResourcePlan,
     descriptor: &ResourceDescriptor,
     schema: &Schema,
     type_policy_allowances: TypePolicyAllowances,
+    project_root: Option<&Path>,
 ) -> Result<Option<SourceCompileRequest>> {
+    let context = SourceCompileContext {
+        source_name: source_name.to_owned(),
+        project_root: project_root.map(Path::to_path_buf),
+        cursor_pushdown: resource.cursor.as_ref().map(|cursor| SourceCursorPushdown {
+            parameter: cursor.param.clone(),
+            fidelity: cursor
+                .filter_fidelity
+                .as_ref()
+                .map(to_pushdown_fidelity)
+                .unwrap_or(PushdownFidelity::Inexact),
+        }),
+    };
     let request = match source {
         SourceDeclaration::Sql(sql) => {
             let Some(table) = &resource.table else {
@@ -429,6 +445,7 @@ fn build_source_compile_request(
             };
             SourceCompileRequest {
                 source_kind: "sql".to_owned(),
+                context: context.clone(),
                 source_options: BTreeMap::from([
                     (
                         "connection".to_owned(),
@@ -454,18 +471,6 @@ fn build_source_compile_request(
         SourceDeclaration::Rest(rest) => {
             let mut source_options = BTreeMap::from([
                 (
-                    "source_name".to_owned(),
-                    serde_json::Value::String(
-                        descriptor
-                            .resource_id
-                            .as_str()
-                            .split_once('.')
-                            .map(|(source, _)| source)
-                            .unwrap_or(descriptor.resource_id.as_str())
-                            .to_owned(),
-                    ),
-                ),
-                (
                     "base_url".to_owned(),
                     serde_json::Value::String(rest.base_url.clone()),
                 ),
@@ -490,22 +495,6 @@ fn build_source_compile_request(
                     serde_json::Value::String(resource.records.clone().unwrap_or_default()),
                 ),
                 ("params".to_owned(), json_value(&resource.params)?),
-                (
-                    "cursor_filter_fidelity".to_owned(),
-                    serde_json::Value::String(
-                        resource
-                            .cursor
-                            .as_ref()
-                            .and_then(|cursor| cursor.filter_fidelity.as_ref())
-                            .map(|fidelity| match fidelity {
-                                FilterFidelityDeclaration::Exact => "exact",
-                                FilterFidelityDeclaration::Inexact => "inexact",
-                                FilterFidelityDeclaration::Unsupported => "unsupported",
-                            })
-                            .unwrap_or("inexact")
-                            .to_owned(),
-                    ),
-                ),
             ]);
             if let Some(paginate) = &resource.paginate {
                 resource_options.insert("paginate".to_owned(), json_value(paginate)?);
@@ -516,16 +505,9 @@ fn build_source_compile_request(
                     serde_json::Value::String(transform.clone()),
                 );
             }
-            if let Some(param) = resource
-                .cursor
-                .as_ref()
-                .and_then(|cursor| cursor.param.clone())
-            {
-                resource_options
-                    .insert("cursor_param".to_owned(), serde_json::Value::String(param));
-            }
             SourceCompileRequest {
                 source_kind: "rest".to_owned(),
+                context: context.clone(),
                 source_options,
                 resource_options,
                 descriptor: descriptor.clone(),
@@ -541,10 +523,6 @@ fn build_source_compile_request(
                 ));
             };
             let mut source_options = BTreeMap::from([
-                (
-                    "source_name".to_owned(),
-                    serde_json::Value::String(file_plan.source.clone()),
-                ),
                 (
                     "root".to_owned(),
                     serde_json::Value::String(file_plan.root.clone()),
@@ -582,6 +560,7 @@ fn build_source_compile_request(
             }
             SourceCompileRequest {
                 source_kind: "files".to_owned(),
+                context,
                 source_options,
                 resource_options,
                 descriptor: descriptor.clone(),

@@ -69,6 +69,7 @@ impl SourceRegistry {
     }
 
     pub fn compile(&self, request: SourceCompileRequest) -> Result<CompiledSourcePlan> {
+        request.context.validate()?;
         let driver = self.driver_for_kind(&request.source_kind)?;
         let plan = driver.compile(request)?;
         self.verify_plan_driver(&plan, driver.descriptor())?;

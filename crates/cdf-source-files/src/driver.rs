@@ -85,11 +85,13 @@ impl SourceDriver for FileSourceDriver {
     }
 
     fn compile(&self, request: SourceCompileRequest) -> Result<CompiledSourcePlan> {
+        request.context.validate()?;
+        let source_name = request.context.source_name.clone();
         let source: FileSourceOptions = decode_options("file source", request.source_options)?;
         let resource: FileResourceOptions =
             decode_options("file resource", request.resource_options)?;
         let unresolved = FileResourcePlan {
-            source: source.source_name.clone(),
+            source: source_name.clone(),
             root: source.root.clone(),
             glob: resource.glob.clone(),
             format: resource.format.clone(),
@@ -116,6 +118,7 @@ impl SourceDriver for FileSourceDriver {
             compile_file_resource_plan(&unresolved, self.formats.as_ref())?;
         let resolved_format = resource_plan.resolved_format()?.clone();
         let physical = FilePhysicalPlan {
+            source_name,
             source,
             resource: CompiledFileResourceOptions {
                 glob: resource_plan.glob,
@@ -199,9 +202,8 @@ fn option_schema() -> serde_json::Value {
         "source": {
             "type": "object",
             "additionalProperties": false,
-            "required": ["source_name", "root"],
+            "required": ["root"],
             "properties": {
-                "source_name": {"type": "string", "minLength": 1},
                 "root": {"type": "string", "minLength": 1},
                 "auth": auth,
                 "credentials": {"type": "string", "pattern": "^secret://"},
@@ -225,7 +227,6 @@ fn option_schema() -> serde_json::Value {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct FileSourceOptions {
-    source_name: String,
     root: String,
     #[serde(default)]
     auth: Option<AuthOptions>,
@@ -260,6 +261,7 @@ enum AuthOptions {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct FilePhysicalPlan {
+    source_name: String,
     source: FileSourceOptions,
     resource: CompiledFileResourceOptions,
     compiled_format: CompiledFormatBinding,
@@ -280,7 +282,7 @@ impl FilePhysicalPlan {
         self.resource.format.validate()?;
         self.resource.compression.validate()?;
         Ok(FileResourcePlan {
-            source: self.source.source_name.clone(),
+            source: self.source_name.clone(),
             root: self.source.root.clone(),
             glob: self.resource.glob.clone(),
             format: Some(self.resource.format.clone()),
@@ -447,11 +449,12 @@ mod tests {
     fn compile_request() -> SourceCompileRequest {
         SourceCompileRequest {
             source_kind: "files".to_owned(),
+            context: cdf_runtime::SourceCompileContext {
+                source_name: "events".to_owned(),
+                project_root: None,
+                cursor_pushdown: None,
+            },
             source_options: BTreeMap::from([
-                (
-                    "source_name".to_owned(),
-                    serde_json::Value::String("events".to_owned()),
-                ),
                 (
                     "root".to_owned(),
                     serde_json::Value::String("/tmp/events".to_owned()),
@@ -502,6 +505,12 @@ mod tests {
         let physical: FilePhysicalPlan =
             serde_json::from_value(plan.physical_plan.clone()).unwrap();
 
+        assert_eq!(physical.source_name, "events");
+        assert!(
+            driver.option_schema()["source"]["properties"]
+                .get("source_name")
+                .is_none()
+        );
         assert_eq!(
             physical.compiled_format.descriptor.format_id.as_str(),
             "parquet"
