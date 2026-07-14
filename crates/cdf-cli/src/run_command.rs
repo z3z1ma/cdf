@@ -8,7 +8,7 @@ use std::{
 use cdf_declarative::{
     CompiledResource, compile_document_with_project_root, parse_toml as parse_declarative_toml,
 };
-use cdf_kernel::{CdfError, CheckpointId, PipelineId, RunEventSink, SchemaSource, TargetName};
+use cdf_kernel::{CdfError, CheckpointId, PipelineId, RunEventSink, TargetName};
 use cdf_project::{
     LOCK_FILE_NAME, ProjectResourceOrigin, ProjectRunRequest, RunTelemetryConfig,
     SchemaSnapshotStore, run_project_with_scheduler_and_telemetry,
@@ -354,12 +354,19 @@ fn hydrate_adhoc_locked_snapshot(
             resource.descriptor().resource_id
         ))));
     }
-    Ok(resource.with_schema_source_and_schema(
-        SchemaSource::Discovered {
-            snapshot: reference.clone(),
-        },
-        Arc::new(artifact.schema.to_arrow()?),
-    ))
+    let pinned_source = resource
+        .descriptor()
+        .schema_source
+        .with_pinned_snapshot(reference.clone())
+        .ok_or_else(|| {
+            CliError::from(CdfError::internal(
+                "ad-hoc schema source does not support lock hydration",
+            ))
+        })?;
+    Ok(
+        resource
+            .with_schema_source_and_schema(pinned_source, Arc::new(artifact.schema.to_arrow()?)),
+    )
 }
 
 fn persist_local_adhoc_source(source: &Path, destination: &Path) -> Result<(), CliError> {

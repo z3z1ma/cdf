@@ -128,6 +128,38 @@ pub fn insert_discovery_manifest_metadata(
 }
 
 impl SchemaSource {
+    pub fn with_pinned_snapshot(&self, snapshot: SchemaSnapshotReference) -> Option<SchemaSource> {
+        match self {
+            SchemaSource::Discover | SchemaSource::Discovered { .. } => {
+                Some(SchemaSource::Discovered { snapshot })
+            }
+            SchemaSource::Hints {
+                source, hints_hash, ..
+            } => Some(SchemaSource::Hints {
+                source: source.clone(),
+                hints_hash: hints_hash.clone(),
+                snapshot: Some(snapshot),
+            }),
+            SchemaSource::Declared { .. } | SchemaSource::Contract { .. } => None,
+        }
+    }
+
+    pub fn without_pinned_snapshot(&self) -> Option<SchemaSource> {
+        match self {
+            SchemaSource::Discover | SchemaSource::Discovered { .. } => {
+                Some(SchemaSource::Discover)
+            }
+            SchemaSource::Hints {
+                source, hints_hash, ..
+            } => Some(SchemaSource::Hints {
+                source: source.clone(),
+                hints_hash: hints_hash.clone(),
+                snapshot: None,
+            }),
+            SchemaSource::Declared { .. } | SchemaSource::Contract { .. } => None,
+        }
+    }
+
     pub fn pinned_snapshot(&self) -> Option<&SchemaSnapshotReference> {
         match self {
             SchemaSource::Discovered { snapshot } => Some(snapshot),

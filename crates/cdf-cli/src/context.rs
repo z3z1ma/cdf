@@ -6,7 +6,7 @@ use std::{
 };
 
 use cdf_declarative::CompiledResource;
-use cdf_kernel::{CdfError, Result as CdfResult, SchemaSource};
+use cdf_kernel::{CdfError, Result as CdfResult};
 use cdf_project::{
     CdfLock, DefaultSecretProvider, EffectiveEnvironment, EnvSecretProvider,
     FileResourceSourceResolver, FileSecretProvider, LOCK_FILE_NAME, LockFileAuthority,
@@ -244,7 +244,12 @@ fn hydrate_locked_schema_snapshots(
     resources
         .into_iter()
         .map(|resource| {
-            if !matches!(resource.descriptor().schema_source, SchemaSource::Discover) {
+            if resource
+                .descriptor()
+                .schema_source
+                .without_pinned_snapshot()
+                .is_none()
+            {
                 return Ok(resource);
             }
             let resource_id = resource.descriptor().resource_id.as_str();
@@ -268,10 +273,15 @@ fn hydrate_locked_schema_snapshots(
                     reference.path, artifact.resource_id
                 )));
             }
+            let pinned_source = resource
+                .descriptor()
+                .schema_source
+                .with_pinned_snapshot(reference.clone())
+                .ok_or_else(|| {
+                    CdfError::internal("schema source lost pinning support during lock hydration")
+                })?;
             Ok(resource.with_schema_source_and_schema(
-                SchemaSource::Discovered {
-                    snapshot: reference.clone(),
-                },
+                pinned_source,
                 Arc::new(artifact.schema.to_arrow()?),
             ))
         })

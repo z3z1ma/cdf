@@ -3483,7 +3483,52 @@ schema = { fields = [
     let plan_json = stderr_or_stdout_json(&plan.stdout);
     assert_eq!(plan_json["result"]["schema_snapshot"]["outcome"], "added");
     let lock = parse_lock(&fs::read_to_string(project.root.join("cdf.lock")).unwrap()).unwrap();
-    assert!(lock.resources["local.events"].schema_snapshot.is_some());
+    let initial_reference = lock.resources["local.events"]
+        .schema_snapshot
+        .as_ref()
+        .unwrap()
+        .clone();
+    let initial_lock = fs::read(project.root.join("cdf.lock")).unwrap();
+    let initial_snapshot = fs::read(project.root.join(&initial_reference.path)).unwrap();
+
+    let unchanged = run([
+        "cdf",
+        "--json",
+        "--project",
+        project.root_str(),
+        "plan",
+        "local.events",
+    ]);
+    assert_eq!(unchanged.exit_code, 0, "{}", unchanged.stderr);
+    assert_eq!(
+        stderr_or_stdout_json(&unchanged.stdout)["result"]["schema_snapshot"]["outcome"],
+        "unchanged"
+    );
+    assert_eq!(fs::read(project.root.join("cdf.lock")).unwrap(), initial_lock);
+    assert_eq!(
+        fs::read(project.root.join(&initial_reference.path)).unwrap(),
+        initial_snapshot
+    );
+
+    write_vendor_score_parquet(&project.root.join("data/vendors.parquet"));
+    let drifted = run([
+        "cdf",
+        "--json",
+        "--project",
+        project.root_str(),
+        "plan",
+        "local.events",
+    ]);
+    assert_eq!(drifted.exit_code, 0, "{}", drifted.stderr);
+    assert_eq!(
+        stderr_or_stdout_json(&drifted.stdout)["result"]["schema_snapshot"]["outcome"],
+        "unchanged"
+    );
+    assert_eq!(fs::read(project.root.join("cdf.lock")).unwrap(), initial_lock);
+    assert_eq!(
+        fs::read(project.root.join(&initial_reference.path)).unwrap(),
+        initial_snapshot
+    );
 
     let run_result = run_valid_run_args(&project);
     assert_eq!(run_result.exit_code, 0, "{}", run_result.stderr);

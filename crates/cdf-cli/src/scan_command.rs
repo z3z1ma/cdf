@@ -161,7 +161,7 @@ pub(crate) fn prepare_resource_schema_for_cli(
             schema_snapshot: None,
         });
     }
-    if let SchemaSource::Discovered { snapshot } = &resource.descriptor().schema_source
+    if let Some(snapshot) = resource.descriptor().schema_source.pinned_snapshot()
         && !no_pin
     {
         let prepared = if matches!(resource.plan(), CompiledResourcePlan::Files(_)) {
@@ -201,7 +201,14 @@ pub(crate) fn prepare_resource_schema_for_cli(
             .pinned_snapshot()
             .is_some()
     {
-        resource.with_schema_source_and_schema(SchemaSource::Discover, resource.schema())
+        let unpinned_source = resource
+            .descriptor()
+            .schema_source
+            .without_pinned_snapshot()
+            .ok_or_else(|| {
+                CdfError::internal("pinned schema source cannot be inspected unpinned")
+            })?;
+        resource.with_schema_source_and_schema(unpinned_source, resource.schema())
     } else {
         resource.clone()
     };

@@ -280,12 +280,17 @@ fn pin(
             writes.snapshot_written,
         )
     };
-    let pinned_resource = resource.with_schema_source_and_schema(
-        SchemaSource::Discovered {
-            snapshot: snapshot.reference(),
-        },
-        normalized_schema,
-    );
+    let pinned_source = resource
+        .descriptor()
+        .schema_source
+        .with_pinned_snapshot(snapshot.reference())
+        .ok_or_else(|| {
+            CdfError::contract(format!(
+                "resource `{}` does not support schema pinning",
+                resource.descriptor().resource_id
+            ))
+        })?;
+    let pinned_resource = resource.with_schema_source_and_schema(pinned_source, normalized_schema);
     let lockfile = update_lockfile(destinations, &context, &pinned_resource)?;
     let status = match previous {
         Some(_) if unchanged => "unchanged",
