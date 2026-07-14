@@ -1,6 +1,6 @@
-Status: active
+Status: done
 Created: 2026-07-11
-Updated: 2026-07-12
+Updated: 2026-07-13
 Parent: .10x/tickets/2026-07-10-p3-ws-d-destination-bulk-paths.md
 Depends-On: .10x/tickets/done/2026-07-11-p3-d2-duckdb-arrow-bulk.md, .10x/tickets/done/2026-07-11-p3-d3-postgres-binary-copy.md, .10x/tickets/done/2026-07-11-p3-d4-parquet-streaming-writer.md
 
@@ -27,7 +27,7 @@ No new destination implementation.
 
 ## Blockers
 
-Depends on D2-D4.
+None. D2-D4 are terminal and their measured leaf evidence is joined by this closeout.
 
 ## References
 
@@ -91,6 +91,25 @@ Depends on D2-D4.
 - CLI execution remains unverified because the two completed doctor assertions came from interrupted commands and were explicitly recorded as non-evidence. Static inspection shows doctor renders missing descriptors, undeclared selection, and absent evidence strings, but it does not establish that the evidence version corresponds to a measurement or that the global and selected-path evidence versions agree.
 - The DuckDB descriptor now truthfully matches its live `StagedDurableSegments` runtime mode; PostgreSQL remains binary-COPY/finalized-only and Parquet remains streaming-segment/finalized-only in the inspected descriptors. This review did not rerun D2-D4 adapter suites and relies on their accepted closeout evidence for binary framing, Arrow ingestion, bounded Parquet writing, idempotency, disposition, and receipt behavior.
 - Focused CLI/envelope tests remain pending a stable J3 source as journaled. No build or test was run during this review.
+
+### Final closure review (2026-07-13)
+
+#### Findings
+
+No critical or significant findings remain. The earlier failed review was correct for its snapshot, but both findings were subsequently repaired and evidenced:
+
+- The fourth destination is no longer inspection-only. Its registered runtime exposes two measured descriptors, performs schema-specific native rejection/compatibility selection before mutation, carries the exact prepared path into the ordinary finalized-package ingress, settles through the generic package/receipt/checkpoint gate, verifies receipts, suppresses duplicate commits, and recovers the injected post-receipt crash.
+- The destination matrix is no longer caller-authored free-form status data. Generation joins the caller-supplied neutral projection of the product registry with typed machine observations on destination id, path id, descriptor evidence version, host class, schema cell, work/time, and an exact safe `.10x/evidence/<file>.md` authority. Missing, invented, duplicate, drifted, or traversal-shaped cells fail generation. The committed document exposes eligible observations and typed schema-ineligible cells for every selected first-party path.
+
+Current source keeps concrete adapter imports at composition/conformance enrollment boundaries; the reusable runtime, preparation, replay, doctor, inspection, and envelope join consume capability data without branching on a built-in destination or path id. The later compatibility-removal work further deleted the unused bulk coordinator and superseded destination facades rather than weakening this law.
+
+#### Verdict
+
+**Pass.** Every acceptance criterion maps to the ticket's final evidence, the prior significant findings are falsified by the repaired runtime and typed-envelope scenarios, D2-D4 leaf suites remain authoritative within their recorded host limits, and no unresolved follow-up belongs inside D5.
+
+#### Residual risk
+
+The measurements cover one named local host and adapter-level/loopback destination paths. Remote transport overlap, multi-host scaling, and the 1 TB constant-memory closeout remain explicitly owned by P3 G/F/Z tickets and do not weaken this destination-path matrix result.
 
 ## Retrospective
 

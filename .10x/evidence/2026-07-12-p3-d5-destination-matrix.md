@@ -1,7 +1,7 @@
 Status: recorded
 Created: 2026-07-12
-Updated: 2026-07-12
-Relates-To: .10x/tickets/2026-07-11-p3-d5-bulk-path-matrix.md
+Updated: 2026-07-13
+Relates-To: .10x/tickets/done/2026-07-11-p3-d5-bulk-path-matrix.md
 
 # D5 named-host destination bulk matrix
 

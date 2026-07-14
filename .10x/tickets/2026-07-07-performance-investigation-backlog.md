@@ -1,6 +1,6 @@
 Status: open
 Created: 2026-07-07
-Updated: 2026-07-07
+Updated: 2026-07-13
 
 # Triage CDF performance investigation backlog
 
@@ -16,7 +16,7 @@ This is a parent planning ticket. It is not executable implementation scope and 
 - `.10x/tickets/2026-07-07-local-partition-parallelism-triage.md`
 - `.10x/tickets/2026-07-07-package-io-hashing-overhead-triage.md`
 - `.10x/tickets/2026-07-07-streaming-package-to-destination-commit-triage.md`
-- `.10x/tickets/2026-07-07-duckdb-arrow-bulk-load-triage.md`
+- `.10x/tickets/done/2026-07-07-duckdb-arrow-bulk-load-triage.md`
 - `.10x/tickets/2026-07-07-native-parquet-streaming-write-triage.md`
 - `.10x/tickets/done/2026-07-07-datafusion-delegation-pushdown-triage.md`
 - `.10x/tickets/2026-07-07-rest-json-to-arrow-performance-triage.md`
@@ -67,6 +67,7 @@ No source edits, dependency changes, benchmark harness implementation, CI change
 - 2026-07-07: The triage-only baseline benchmark ticket was superseded by P0 Workstream F after the user ratified benchmark implementation as stop-line work. The cancelled record is `.10x/tickets/cancelled/2026-07-07-performance-baseline-benchmark-suite.md`; the implementation owner is `.10x/tickets/done/2026-07-07-p0-workstream-f-benchmark-gate.md`.
 - 2026-07-10: P2 exact-row append dedup makes the pre-existing package-order identity-state cost applicable beyond merge. P3's memory-ledger/spill lane MUST bound or spill this state while preserving `.10x/decisions/keyless-exact-row-deduplication.md`; this parent owns the concern until the P3 graph absorbs it.
 - 2026-07-11: Every remaining performance triage now names its P3 absorber and evidence closeout: streaming commit A/D/F2; DuckDB D2/D5; Parquet D4/D5/F4; REST/JSON B5/G3/B13; batching A3; hashing E1–E4; local parallelism C1–C5; interop IX1/H1–H5; dedup A6/F2. Triage tickets remain open as evidence checklists and own no duplicate implementation. The parent closes after P3 closeout moves each terminal with measured evidence/no-action rationale.
+- 2026-07-13: Moved the DuckDB Arrow triage terminal after D2/D5 supplied the selected API, semantic matrix, and 9.27M rows/s / 23.77x measured closeout. Remaining triage records stay open only where their named absorber evidence is still incomplete.
 
 ## Blockers
 

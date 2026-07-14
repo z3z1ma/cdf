@@ -1,8 +1,8 @@
 Status: open
 Created: 2026-07-10
-Updated: 2026-07-11
+Updated: 2026-07-13
 Parent: .10x/tickets/2026-07-10-p3-terabyte-scale-program.md
-Depends-On: .10x/tickets/done/2026-07-10-p3-ws-l-performance-lab.md, .10x/tickets/2026-07-11-p0-destination-extension-boundary.md, .10x/tickets/done/2026-07-11-p3-a1-staged-ingress-final-binding.md, .10x/tickets/2026-07-07-duckdb-arrow-bulk-load-triage.md, .10x/tickets/2026-07-07-native-parquet-streaming-write-triage.md
+Depends-On: .10x/tickets/done/2026-07-10-p3-ws-l-performance-lab.md, .10x/tickets/2026-07-11-p0-destination-extension-boundary.md, .10x/tickets/done/2026-07-11-p3-a1-staged-ingress-final-binding.md, .10x/tickets/done/2026-07-07-duckdb-arrow-bulk-load-triage.md, .10x/tickets/2026-07-07-native-parquet-streaming-write-triage.md
 
 # P3 WS-D: destination bulk paths
 
@@ -18,7 +18,7 @@ Split by destination; no shared generic branch may name a concrete destination.
 - `.10x/tickets/done/2026-07-11-p3-d2-duckdb-arrow-bulk.md`
 - `.10x/tickets/done/2026-07-11-p3-d3-postgres-binary-copy.md`
 - `.10x/tickets/done/2026-07-11-p3-d4-parquet-streaming-writer.md`
-- `.10x/tickets/2026-07-11-p3-d5-bulk-path-matrix.md`
+- `.10x/tickets/done/2026-07-11-p3-d5-bulk-path-matrix.md`
 
 ## Acceptance criteria
 
@@ -28,7 +28,7 @@ Split by destination; no shared generic branch may name a concrete destination.
 
 ## Blockers
 
-WS-L and D1 are complete. Driver implementations D2-D4 and matrix closeout D5 remain.
+The D1-D5 implementation and matrix are terminal. Parent closure still waits on reconciliation of its historical triage dependencies and program-level accounting.
 
 ## References
 

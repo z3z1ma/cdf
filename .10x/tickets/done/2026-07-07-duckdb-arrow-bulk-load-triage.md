@@ -1,6 +1,6 @@
-Status: open
+Status: done
 Created: 2026-07-07
-Updated: 2026-07-07
+Updated: 2026-07-13
 Parent: .10x/tickets/2026-07-07-performance-investigation-backlog.md
 
 # Triage DuckDB Arrow bulk-load path
@@ -62,7 +62,21 @@ No DuckDB destination rewrite, no unsafe FFI, no type mapping change, no ICU pol
 - 2026-07-07: Opened from performance discussion. DuckDB comparison is likely unfair to CDF until the destination uses a native-ish bulk path or the row-materialization cost is proven negligible.
 - 2026-07-11: P3 audit confirmed scalar appender ingestion and shaped schema-planned driver-owned bulk paths. D1 owns the neutral contract, D2 owns measured Arrow/vtab selection and fallback, and D5 owns guarantee/conformance/throughput closeout. This triage owns no implementation and remains open until D2/D5 attach the measured API choice and ≥1M rows/s/≥5x evidence.
 - 2026-07-11: WS-L measured the prepared tiny-package compatibility path at 0.170 MiB/s median with setup bias, recorded in `.10x/evidence/2026-07-11-p3-l5-preoptimization-baseline.md`. D2/D5 own the large-fixture Arrow-native before/after proof.
+- 2026-07-13: Closed the triage after its D2/D5 absorbers completed. The pinned DuckDB binding's vtab helper was rejected because it retains batches; the winning implementation is the isolated Arrow C Stream/data-chunk appender behind the neutral staged durable-segment ingress. Scalar ingestion was deleted under the current-format-only policy. Final named-host evidence is 9,274,639 rows/s, 23.77x the removed scalar control and above the ≥1M/≥5x targets, with type/disposition/correction/receipt/crash laws passing through the generic matrix.
 
 ## Blockers
 
-None for investigation. Implementation is blocked on identifying a safe API and preserving receipt/conformance guarantees.
+None. The investigation recommendation and bounded implementation were completed by D2 and closed through D5.
+
+## Evidence
+
+- `.10x/tickets/done/2026-07-11-p3-d2-duckdb-arrow-bulk.md` records API selection, bounded staging, type support, before/after controls, and the complete DuckDB suite.
+- `.10x/tickets/done/2026-07-11-p3-d5-bulk-path-matrix.md` and `.10x/evidence/2026-07-12-p3-d5-destination-matrix.md` record the typed registry matrix, current named-host rate, schema-ineligible cell, duplicate/recovery law, and fourth-destination extension proof.
+
+## Review
+
+Fresh closure review found every triage question resolved by terminal implementation evidence: the scalar materialization bottleneck was replaced, the unsafe retaining vtab alternative was rejected, the native appender preserves the staged single-writer/transaction/receipt boundary, unsupported schemas fail in preflight, and no production scalar fallback remains. Verdict: **pass**.
+
+## Retrospective
+
+The decisive comparison was not “Arrow versus rows” in the abstract; it was whether the binding API retained batches and whether provenance could remain vectorized. Inspecting ownership and measuring the exact removed scalar shape prevented selecting a superficially native vtab path that violated bounded memory.
