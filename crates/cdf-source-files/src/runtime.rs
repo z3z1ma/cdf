@@ -1,7 +1,6 @@
 use std::{
     collections::BTreeMap,
-    fmt,
-    fs::{self, File},
+    fmt, fs,
     path::{Component, Path, PathBuf},
     sync::Arc,
     time::UNIX_EPOCH,
@@ -19,8 +18,9 @@ use cdf_memory::{ConsumerKey, MemoryClass};
 use cdf_runtime::{
     ByteExtent, ByteSource, ByteTransformId, ByteTransformRegistry, CompiledFormatBinding,
     DecodePlanningRequest, ExecutionServices, FormatDetection, FormatDetectionConfidence,
-    FormatDiscoveryRequest, FormatDriver, FormatProbe, FormatRegistry, PhysicalDecodeRequest,
-    ReadOptions, SequentialReadRequest, TransformSourceConfig, TransformedByteSource,
+    FormatDiscoveryRequest, FormatDriver, FormatProbe, FormatRegistry, GenerationStrength,
+    PhysicalDecodeRequest, ReadOptions, SequentialReadRequest, TransformSourceConfig,
+    TransformedByteSource,
 };
 #[cfg(test)]
 use futures_util::StreamExt;
@@ -31,7 +31,7 @@ use tokio::io::AsyncWriteExt;
 use crate::{
     FileCompressionDeclaration, FileFormatDeclaration, FileIdentityMetadata, FileResourcePlan,
     FileTransport, FileTransportFacade, FileTransportLocation, FileTransportResource,
-    LocalByteSource,
+    LocalByteSource, local_byte_source::local_source_generation,
 };
 
 const NATIVE_TARGET_BATCH_ROWS: usize = 64 * 1024;
@@ -735,6 +735,7 @@ impl ResourceStream for FileResource {
                 files: vec![cdf_kernel::FilePosition {
                     path: resolved.path_text,
                     size_bytes: resolved.size_bytes,
+                    source_generation: resolved.source_generation,
                     etag: resolved.etag,
                     object_version: resolved.version,
                     sha256: resolved.sha256,
@@ -786,6 +787,8 @@ pub(crate) struct ResolvedFileMatch {
     open: ResolvedFileOpen,
     path_text: String,
     size_bytes: u64,
+    source_generation: Option<String>,
+    identity_strength: GenerationStrength,
     sha256: Option<String>,
     etag: Option<String>,
     version: Option<String>,
@@ -1095,6 +1098,7 @@ async fn stream_prepared_file_match(
         files: vec![cdf_kernel::FilePosition {
             path: resolved.path_text.clone(),
             size_bytes: resolved.size_bytes,
+            source_generation: resolved.source_generation.clone(),
             etag: resolved.etag.clone(),
             object_version: resolved.version.clone(),
             sha256: resolved.sha256.clone(),
@@ -1459,34 +1463,57 @@ fn validate_partition(
             "declarative file partition `{path}` changed size after planning"
         )));
     }
-    match (&resolved.sha256, &resolved.etag, &resolved.version) {
-        (Some(sha256), _, _) => {
+    match (
+        &resolved.sha256,
+        &resolved.etag,
+        &resolved.version,
+        &resolved.source_generation,
+    ) {
+        (Some(sha256), _, _, _) => {
             if partition.metadata.get("sha256").map(String::as_str) != Some(sha256.as_str()) {
                 return Err(CdfError::data(format!(
                     "declarative file partition `{path}` changed checksum after planning"
                 )));
             }
         }
-        (None, Some(etag), _) => {
+        (None, Some(etag), _, _) => {
             if partition.metadata.get("etag").map(String::as_str) != Some(etag.as_str()) {
                 return Err(CdfError::data(format!(
                     "declarative file partition `{path}` changed ETag after planning"
                 )));
             }
         }
-        (None, None, Some(version)) => {
+        (None, None, Some(version), _) => {
             if partition.metadata.get("version").map(String::as_str) != Some(version.as_str()) {
                 return Err(CdfError::data(format!(
                     "declarative file partition `{path}` changed object version after planning"
                 )));
             }
         }
-        (None, None, None) => {
+        (None, None, None, Some(source_generation)) => {
+            if partition
+                .metadata
+                .get("source_generation")
+                .map(String::as_str)
+                != Some(source_generation.as_str())
+            {
+                return Err(CdfError::data(format!(
+                    "declarative file partition `{path}` changed source generation after planning"
+                )));
+            }
+        }
+        (None, None, None, None) => {
             return Err(CdfError::contract(format!(
-                "declarative file partition `{path}` requires checksum, ETag, or object version metadata"
+                "declarative file partition `{path}` requires source generation, checksum, ETag, or object version metadata"
             )));
         }
     }
+    validate_partition_metadata_value(
+        partition,
+        "identity_strength",
+        identity_strength_name(resolved.identity_strength),
+        path,
+    )?;
     validate_compression_metadata(partition, &resolved, &plan.compression, path)?;
     validate_partition_metadata_value(partition, "format", &resolved.format.format_id, path)?;
     validate_partition_metadata_value(
@@ -1606,6 +1633,13 @@ fn partition_for_file_match(
         file_schema_observation_binding(file),
     );
     metadata.insert("bytes".to_owned(), file.size_bytes.to_string());
+    metadata.insert(
+        "identity_strength".to_owned(),
+        identity_strength_name(file.identity_strength).to_owned(),
+    );
+    if let Some(source_generation) = &file.source_generation {
+        metadata.insert("source_generation".to_owned(), source_generation.clone());
+    }
     if let Some(sha256) = &file.sha256 {
         metadata.insert("sha256".to_owned(), sha256.clone());
     }
@@ -1686,6 +1720,8 @@ fn file_schema_observation_binding(file: &ResolvedFileMatch) -> String {
     for value in [
         file.path_text.as_str(),
         size.as_str(),
+        file.source_generation.as_deref().unwrap_or_default(),
+        identity_strength_name(file.identity_strength),
         file.etag.as_deref().unwrap_or_default(),
         file.version.as_deref().unwrap_or_default(),
         file.sha256.as_deref().unwrap_or_default(),
@@ -2060,16 +2096,18 @@ fn resolved_file_match(
     let path_text = path_text.replace(std::path::MAIN_SEPARATOR, "/");
     let compression = resolve_local_compression(&path_text, &plan.compression, transforms)?;
     let (format, _) = resolve_local_format(resource_id, plan, &path_text, &compression, formats)?;
-    let sha256 = file_sha256(&path)?;
+    let source_generation = local_source_generation(&path)?;
     Ok(ResolvedFileMatch {
         open: ResolvedFileOpen::LocalPath(path),
         path_text,
         size_bytes: metadata.len(),
-        sha256: Some(sha256),
+        source_generation: Some(source_generation),
+        identity_strength: GenerationStrength::Weak,
+        sha256: None,
         etag: None,
         version: None,
         modified_ms,
-        bytes_loaded: Some(metadata.len()),
+        bytes_loaded: None,
         compression,
         format,
     })
@@ -2130,6 +2168,7 @@ fn resolved_transport_file_match(
         ))
     })?;
     let sha256 = metadata.sha256().map(str::to_owned);
+    let identity_strength = metadata.generation_strength();
     if sha256.is_none() && metadata.etag.is_none() && metadata.version.is_none() {
         return Err(CdfError::data(format!(
             "remote file metadata for `{}` must include an ETag, object version, or checksum for FileManifest identity",
@@ -2140,6 +2179,8 @@ fn resolved_transport_file_match(
         open: ResolvedFileOpen::Transport(resource),
         path_text: metadata.location,
         size_bytes,
+        source_generation: None,
+        identity_strength,
         sha256,
         etag: metadata.etag,
         version: metadata.version,
@@ -2148,10 +2189,18 @@ fn resolved_transport_file_match(
             .as_deref()
             .and_then(|modified| modified.strip_prefix("unix_ms:"))
             .map(str::to_owned),
-        bytes_loaded: Some(size_bytes),
+        bytes_loaded: None,
         compression,
         format,
     })
+}
+
+fn identity_strength_name(strength: GenerationStrength) -> &'static str {
+    match strength {
+        GenerationStrength::Weak => "weak",
+        GenerationStrength::Strong => "strong",
+        GenerationStrength::ContentAddressed => "content_addressed",
+    }
 }
 
 fn resolve_local_format(
@@ -2510,17 +2559,6 @@ fn is_http_root(root: &str) -> bool {
 
 fn is_object_store_root(root: &str) -> bool {
     root.starts_with("s3://") || root.starts_with("gs://") || root.starts_with("az://")
-}
-
-fn file_sha256(path: &Path) -> Result<String> {
-    let mut file = File::open(path).map_err(|error| {
-        CdfError::data(format!("open matched file {}: {error}", path.display()))
-    })?;
-    let mut hasher = Sha256::new();
-    std::io::copy(&mut file, &mut hasher).map_err(|error| {
-        CdfError::data(format!("hash matched file {}: {error}", path.display()))
-    })?;
-    Ok(hex::encode(hasher.finalize()))
 }
 
 fn file_partition_id(path: &str) -> String {

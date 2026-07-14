@@ -51,6 +51,7 @@ fn active_source_positions() -> Vec<SourcePosition> {
                 FilePosition {
                     path: "orders/a.ndjson".to_owned(),
                     size_bytes: 0,
+                    source_generation: None,
                     etag: None,
                     object_version: None,
                     sha256: Some("sha256-a".to_owned()),
@@ -58,6 +59,7 @@ fn active_source_positions() -> Vec<SourcePosition> {
                 FilePosition {
                     path: "orders/b.ndjson".to_owned(),
                     size_bytes: u64::MAX,
+                    source_generation: None,
                     etag: Some("etag-b".to_owned()),
                     object_version: None,
                     sha256: None,

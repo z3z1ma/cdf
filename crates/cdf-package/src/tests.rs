@@ -1342,6 +1342,7 @@ fn zero_segment_replay_requires_exact_typed_processed_observation_evidence() {
         files: vec![FilePosition {
             path: "month-07.parquet".to_owned(),
             size_bytes: 41,
+            source_generation: None,
             etag: Some("etag-07".to_owned()),
             object_version: None,
             sha256: Some("sha256-07".to_owned()),
@@ -1437,6 +1438,7 @@ fn processed_observation_aggregation_respects_append_and_replace_dispositions() 
         files: vec![FilePosition {
             path: "old.parquet".to_owned(),
             size_bytes: 10,
+            source_generation: None,
             etag: Some("old".to_owned()),
             object_version: None,
             sha256: None,
@@ -1447,6 +1449,7 @@ fn processed_observation_aggregation_respects_append_and_replace_dispositions() 
         files: vec![FilePosition {
             path: "new.parquet".to_owned(),
             size_bytes: 20,
+            source_generation: None,
             etag: Some("new".to_owned()),
             object_version: None,
             sha256: None,

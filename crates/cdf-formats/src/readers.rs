@@ -1327,6 +1327,7 @@ fn file_source_position(path: &Path) -> Result<SourcePosition> {
         files: vec![FilePosition {
             path: path_string(path)?,
             size_bytes: metadata.len(),
+            source_generation: None,
             etag: None,
             object_version: None,
             sha256: Some(file_sha256(path)?),

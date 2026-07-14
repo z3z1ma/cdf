@@ -70,6 +70,9 @@ pub struct FileManifest {
 pub struct FilePosition {
     pub path: String,
     pub size_bytes: u64,
+    /// Transport- or filesystem-provided generation observed without reading payload bytes.
+    /// This remains distinct from a cryptographic content hash.
+    pub source_generation: Option<String>,
     pub etag: Option<String>,
     pub object_version: Option<String>,
     pub sha256: Option<String>,

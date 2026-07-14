@@ -880,6 +880,7 @@ mod tests {
         let file = |path: &str| FilePosition {
             path: path.to_owned(),
             size_bytes: 1,
+            source_generation: None,
             etag: Some(path.to_owned()),
             object_version: None,
             sha256: None,
@@ -1013,6 +1014,7 @@ mod tests {
             files: vec![FilePosition {
                 path: "part.parquet".to_owned(),
                 size_bytes: 42,
+                source_generation: None,
                 etag: Some("etag".to_owned()),
                 object_version: None,
                 sha256: None,

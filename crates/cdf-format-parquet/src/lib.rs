@@ -16,8 +16,7 @@ use cdf_runtime::{
     AccountedPhysicalBatch, ByteExtent, ByteSource, DecodePlanningRequest, DecodeSchemaAuthority,
     DecodeUnitPlan, FormatDetection, FormatDetectionConfidence, FormatDetectionProbe,
     FormatDiscoveryRequest, FormatDriver, FormatDriverDescriptor, FormatId, FormatProbe,
-    GenerationStrength, MagicSignature, PhysicalDecodeRequest, PhysicalDecodeStream,
-    PhysicalSchemaObservation,
+    MagicSignature, PhysicalDecodeRequest, PhysicalDecodeStream, PhysicalSchemaObservation,
 };
 use futures_util::{
     FutureExt, StreamExt, TryStreamExt, future::BoxFuture as FuturesBoxFuture, stream,
@@ -497,12 +496,9 @@ fn parquet_error(error: ParquetError) -> CdfError {
 fn validate_parquet_source(source: &dyn ByteSource) -> Result<()> {
     source.identity().validate()?;
     source.capabilities().validate()?;
-    if source.identity().size_bytes.is_none()
-        || !source.capabilities().exact_ranges
-        || source.identity().strength == GenerationStrength::Weak
-    {
+    if source.identity().size_bytes.is_none() || !source.capabilities().exact_ranges {
         return Err(CdfError::contract(
-            "Parquet random-access decode requires known length and enforceable strong/content-addressed exact ranges; select a verified sequential spool for weak sources",
+            "Parquet random-access decode requires known length and enforceable generation-bound exact ranges; select a verified sequential spool when the provider cannot reattest exact ranges",
         ));
     }
     Ok(())

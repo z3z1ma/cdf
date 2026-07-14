@@ -1879,10 +1879,7 @@ fn http_parquet_auto_pin_plan_preview_and_run_use_file_runtime() {
     );
     assert_eq!(partition.metadata["bytes"], parquet.len().to_string());
     assert_eq!(partition.metadata["etag"], "\"fixture-etag\"");
-    assert_eq!(
-        partition.metadata["bytes_loaded"],
-        parquet.len().to_string()
-    );
+    assert!(!partition.metadata.contains_key("bytes_loaded"));
 
     let preview_stream = futures_executor::block_on(file_resource.open_preview(partition)).unwrap();
     let preview_rows = futures_executor::block_on_stream(preview_stream)

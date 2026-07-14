@@ -1769,6 +1769,7 @@ fn sqlite_round_trips_position_scope_and_state_json() {
             files: vec![FilePosition {
                 path: "orders-1.jsonl".to_owned(),
                 size_bytes: 1024,
+                source_generation: None,
                 etag: Some("etag-1".to_owned()),
                 object_version: None,
                 sha256: Some("file-sha256".to_owned()),

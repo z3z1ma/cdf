@@ -516,16 +516,22 @@ fn file_positions_from_partitions(
                 ))
             })?;
         let sha256 = partition.metadata.get("sha256").cloned();
+        let source_generation = partition.metadata.get("source_generation").cloned();
         let etag = partition.metadata.get("etag").cloned();
         let object_version = partition.metadata.get("version").cloned();
-        if sha256.is_none() && etag.is_none() && object_version.is_none() {
+        if source_generation.is_none()
+            && sha256.is_none()
+            && etag.is_none()
+            && object_version.is_none()
+        {
             return Err(CdfError::contract(format!(
-                "file partition `{path}` manifest comparison requires checksum, ETag, or object version metadata"
+                "file partition `{path}` manifest comparison requires source generation, checksum, ETag, or object version metadata"
             )));
         }
         files.push(FilePosition {
             path,
             size_bytes,
+            source_generation,
             etag,
             object_version,
             sha256,
@@ -557,7 +563,13 @@ fn same_file_identity(previous: &FilePosition, current: &FilePosition) -> bool {
         ) {
             (Some(previous), Some(current), _, _) => previous == current,
             (_, _, Some(previous), Some(current)) => previous == current,
-            _ => false,
+            _ => match (&previous.object_version, &current.object_version) {
+                (Some(previous), Some(current)) => previous == current,
+                _ => match (&previous.source_generation, &current.source_generation) {
+                    (Some(previous), Some(current)) => previous == current,
+                    _ => false,
+                },
+            },
         }
 }
 

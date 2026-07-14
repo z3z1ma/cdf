@@ -1209,6 +1209,7 @@ fn source_position_version_returns_embedded_variant_version() {
                 files: vec![FilePosition {
                     path: "orders.jsonl".to_owned(),
                     size_bytes: 1024,
+                    source_generation: None,
                     etag: Some("etag-1".to_owned()),
                     object_version: Some("version-1".to_owned()),
                     sha256: Some("file-sha256".to_owned()),
@@ -1269,6 +1270,7 @@ fn segment_and_processed_observation_paths_share_file_manifest_aggregation_autho
         files: vec![FilePosition {
             path: "old.parquet".to_owned(),
             size_bytes: 10,
+            source_generation: None,
             etag: Some("old".to_owned()),
             object_version: None,
             sha256: None,
@@ -1279,6 +1281,7 @@ fn segment_and_processed_observation_paths_share_file_manifest_aggregation_autho
         files: vec![FilePosition {
             path: "new.parquet".to_owned(),
             size_bytes: 20,
+            source_generation: None,
             etag: Some("new".to_owned()),
             object_version: None,
             sha256: None,

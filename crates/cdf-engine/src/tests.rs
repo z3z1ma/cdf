@@ -1510,6 +1510,7 @@ fn terminal_file_position() -> SourcePosition {
         files: vec![FilePosition {
             path: "input-0".to_owned(),
             size_bytes: 10,
+            source_generation: None,
             etag: Some("etag-0".to_owned()),
             object_version: None,
             sha256: Some("sha-0".to_owned()),
@@ -2380,6 +2381,7 @@ fn contract_exec_writes_redacted_quarantine_artifact_and_keeps_accepted_rows() {
         files: vec![FilePosition {
             path: "/tmp/cdf/pii.ndjson".to_owned(),
             size_bytes: 64,
+            source_generation: None,
             etag: None,
             object_version: None,
             sha256: Some("sha256-pii-fixture".to_owned()),
@@ -2611,6 +2613,7 @@ fn source_decode_quarantine_facts_fold_into_package_artifacts() {
         files: vec![FilePosition {
             path: "/tmp/cdf/source-drift.ndjson".to_owned(),
             size_bytes: 96,
+            source_generation: None,
             etag: None,
             object_version: None,
             sha256: Some("sha256-source-drift-fixture".to_owned()),
@@ -4886,6 +4889,7 @@ fn batch_with_file_position() -> Batch {
         files: vec![FilePosition {
             path: "/tmp/cdf/events.ndjson".to_owned(),
             size_bytes: 42,
+            source_generation: None,
             etag: None,
             object_version: None,
             sha256: Some("sha256-file".to_owned()),

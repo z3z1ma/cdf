@@ -14,11 +14,10 @@ use cdf_http::{
 };
 use cdf_kernel::{CdfError, ErrorKind, FilePosition, Result};
 use cdf_memory::MemoryCoordinator;
-use cdf_runtime::ByteSource;
+use cdf_runtime::{ByteSource, GenerationStrength};
 use futures_util::TryStreamExt;
 use object_store::{ObjectStore, ObjectStoreExt, path::Path as ObjectPath};
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 use url::Url;
 
 #[derive(Clone, PartialEq, Eq)]
@@ -159,6 +158,9 @@ impl FileIdentityMetadata {
         Ok(FilePosition {
             path: self.location.clone(),
             size_bytes,
+            source_generation: (self.generation_strength() == GenerationStrength::Weak)
+                .then(|| self.modified.clone())
+                .flatten(),
             etag: self.etag.clone(),
             object_version: self.version.clone(),
             sha256: self.sha256().map(str::to_owned),
@@ -170,6 +172,16 @@ impl FileIdentityMetadata {
             .as_ref()
             .filter(|checksum| checksum.algorithm == "sha256")
             .map(|checksum| checksum.value.as_str())
+    }
+
+    pub fn generation_strength(&self) -> GenerationStrength {
+        if self.sha256().is_some() {
+            GenerationStrength::ContentAddressed
+        } else if self.etag.is_some() || self.version.is_some() {
+            GenerationStrength::Strong
+        } else {
+            GenerationStrength::Weak
+        }
     }
 }
 
@@ -710,10 +722,7 @@ fn local_metadata(path: &Path) -> Result<FileIdentityMetadata> {
     Ok(FileIdentityMetadata {
         location: path_to_lossless_string(&canonical),
         size_bytes: Some(metadata.len()),
-        checksum: Some(FileChecksum {
-            algorithm: "sha256".to_owned(),
-            value: file_sha256(&canonical)?,
-        }),
+        checksum: None,
         etag: None,
         version: None,
         modified: metadata
@@ -963,23 +972,6 @@ fn set_header(headers: &mut HeaderMap, name: impl Into<String>, value: impl Into
     headers.insert(name.into().to_ascii_lowercase(), value.into());
 }
 
-fn file_sha256(path: &Path) -> Result<String> {
-    let mut file = File::open(path).map_err(|error| {
-        CdfError::data(format!(
-            "open local file source {}: {error}",
-            path.display()
-        ))
-    })?;
-    let mut hasher = Sha256::new();
-    std::io::copy(&mut file, &mut hasher).map_err(|error| {
-        CdfError::data(format!(
-            "hash local file source {}: {error}",
-            path.display()
-        ))
-    })?;
-    Ok(hex::encode(hasher.finalize()))
-}
-
 fn redacted_location_for_debug(location: &str) -> String {
     Redactor::default().redact_url(location)
 }
@@ -1072,7 +1064,7 @@ mod tests {
     }
 
     #[test]
-    fn file_transport_local_metadata_and_range_share_identity_model() {
+    fn file_transport_local_inventory_is_metadata_only_and_ranges_remain_bounded() {
         let temp = TempDir::new().unwrap();
         let path = temp.path().join("sample.bin");
         fs::write(&path, b"\x00abcdef\xff").unwrap();
@@ -1085,16 +1077,15 @@ mod tests {
         assert_eq!(metadata.size_bytes, Some(8));
         assert_eq!(metadata.etag, None);
         assert!(metadata.modified.is_some());
-        assert_eq!(metadata.checksum.as_ref().unwrap().algorithm, "sha256");
-        assert_eq!(
-            metadata.sha256(),
-            Some("c6e5e5fc9d44950227b9ccef6374a99443228ca0b80d9a7c416d8d4d61c92379")
-        );
+        assert_eq!(metadata.checksum, None);
+        assert_eq!(metadata.sha256(), None);
+        assert_eq!(metadata.generation_strength(), GenerationStrength::Weak);
 
         let position = metadata.file_position_evidence().unwrap();
         assert_eq!(position.size_bytes, 8);
         assert_eq!(position.etag, None);
-        assert_eq!(position.sha256.as_deref(), metadata.sha256());
+        assert_eq!(position.sha256, None);
+        assert_eq!(position.source_generation, metadata.modified);
 
         let bytes = transport
             .read_range(
@@ -1135,6 +1126,7 @@ mod tests {
             FilePosition {
                 path: "https://data.example.org/events.parquet".to_owned(),
                 size_bytes: 12345,
+                source_generation: None,
                 etag: Some("\"etag-1\"".to_owned()),
                 object_version: None,
                 sha256: None,

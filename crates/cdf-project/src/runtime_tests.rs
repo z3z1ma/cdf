@@ -912,6 +912,7 @@ fn build_zero_segment_processed_package(package_dir: &Path, package_id: &str) ->
         files: vec![FilePosition {
             path: "month-07.parquet".to_owned(),
             size_bytes: 41,
+            source_generation: None,
             etag: Some("etag-07".to_owned()),
             object_version: None,
             sha256: Some("sha256-07".to_owned()),
@@ -2607,6 +2608,7 @@ fn file_position_with_identity(
         files: vec![FilePosition {
             path: path.to_owned(),
             size_bytes,
+            source_generation: None,
             etag: None,
             object_version: None,
             sha256,

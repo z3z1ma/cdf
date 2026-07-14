@@ -1955,6 +1955,7 @@ mod stream_admission_replay_tests {
                 files: vec![FilePosition {
                     path: "events.json".to_owned(),
                     size_bytes: 12,
+                    source_generation: None,
                     etag: Some(etag.to_owned()),
                     object_version: Some("v1".to_owned()),
                     sha256: Some("abc".to_owned()),

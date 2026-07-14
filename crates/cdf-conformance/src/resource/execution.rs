@@ -408,6 +408,7 @@ mod tests {
                     files: vec![FilePosition {
                         path: String::new(),
                         size_bytes: 42,
+                        source_generation: None,
                         etag: None,
                         object_version: None,
                         sha256: Some("0".repeat(64)),
@@ -421,6 +422,7 @@ mod tests {
                     files: vec![FilePosition {
                         path: "orders.csv".to_owned(),
                         size_bytes: 0,
+                        source_generation: None,
                         etag: None,
                         object_version: None,
                         sha256: Some("0".repeat(64)),
@@ -434,6 +436,7 @@ mod tests {
                     files: vec![FilePosition {
                         path: "orders.csv".to_owned(),
                         size_bytes: 42,
+                        source_generation: None,
                         etag: None,
                         object_version: None,
                         sha256: None,
@@ -447,6 +450,7 @@ mod tests {
                     files: vec![FilePosition {
                         path: "orders.csv".to_owned(),
                         size_bytes: 42,
+                        source_generation: None,
                         etag: None,
                         object_version: None,
                         sha256: Some("not-a-sha256".to_owned()),
@@ -748,6 +752,7 @@ mod tests {
             files: vec![FilePosition {
                 path: path.to_owned(),
                 size_bytes: 42,
+                source_generation: None,
                 etag: None,
                 object_version: None,
                 sha256: Some("0".repeat(64)),

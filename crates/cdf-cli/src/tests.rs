@@ -15101,6 +15101,7 @@ fn schema_promote_fixture_position() -> SourcePosition {
         files: vec![FilePosition {
             path: "events.parquet".to_owned(),
             size_bytes: 1,
+            source_generation: None,
             etag: None,
             object_version: None,
             sha256: Some("sha256:source".to_owned()),

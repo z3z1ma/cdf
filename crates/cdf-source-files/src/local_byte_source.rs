@@ -69,7 +69,9 @@ impl LocalByteSource {
                 generation.size_bytes, generation.modified_ns, generation.change_token
             )),
             checksum: None,
-            strength: local_generation_strength(),
+            // Metadata generations reattest one planned open, but cannot authorize
+            // cross-command observation-cache reuse without a content hash.
+            strength: GenerationStrength::Weak,
         };
         identity.validate()?;
         let capabilities = ByteSourceCapabilities {
@@ -262,19 +264,17 @@ fn local_change_token(metadata: &std::fs::Metadata) -> String {
     )
 }
 
-#[cfg(unix)]
-fn local_generation_strength() -> GenerationStrength {
-    GenerationStrength::Strong
-}
-
 #[cfg(not(unix))]
 fn local_change_token(metadata: &std::fs::Metadata) -> String {
     format!("portable-size{}", metadata.len())
 }
 
-#[cfg(not(unix))]
-fn local_generation_strength() -> GenerationStrength {
-    GenerationStrength::Weak
+pub(crate) fn local_source_generation(path: &Path) -> Result<String> {
+    let generation = local_generation(path)?;
+    Ok(format!(
+        "local-v1:{}:{}:{}",
+        generation.size_bytes, generation.modified_ns, generation.change_token
+    ))
 }
 
 async fn attest_file(file: &File, expected: &LocalGeneration) -> Result<()> {
