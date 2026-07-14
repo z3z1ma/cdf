@@ -239,10 +239,14 @@ fn discover_for_deep_validate(
     let secret_provider = context.secret_provider();
     if matches!(resource.plan(), CompiledResourcePlan::Rest(_)) {
         let transport = ReqwestHttpTransport::new()?;
-        return cdf_project::discover_resource_schema_with_rest_transport(
-            resource,
-            &secret_provider,
+        let dependencies = cdf_declarative::RestDiscoveryDependencies::new(
             &transport,
+            &secret_provider,
+            execution.memory(),
+        );
+        return cdf_project::discover_resource_schema_with_rest_dependencies(
+            resource,
+            &dependencies,
         );
     }
     if matches!(resource.plan(), CompiledResourcePlan::Files(_)) {

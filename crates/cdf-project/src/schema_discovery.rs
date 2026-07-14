@@ -25,12 +25,13 @@ use cdf_contract::{
 use cdf_declarative::{
     BoundedSchemaDiscoveryRequest, CompiledResource, CompiledResourcePlan, FileFormatDeclaration,
     FileRuntimeDependencies, FileTransportLocation, FileTransportResource,
-    POSTGRES_CATALOG_DISCOVERY_PROBE, discover_local_binary_schema_bounded,
-    discover_postgres_table_catalog_schema, discover_rest_sample_schema,
-    discover_transport_binary_schema_bounded, local_file_discovery_candidates,
-    physical_arrow_schema_hash, postgres_table_target_for_sql_plan,
+    POSTGRES_CATALOG_DISCOVERY_PROBE, RestDiscoveryDependencies,
+    discover_local_binary_schema_bounded, discover_postgres_table_catalog_schema,
+    discover_rest_sample_schema, discover_transport_binary_schema_bounded,
+    local_file_discovery_candidates, physical_arrow_schema_hash,
+    postgres_table_target_for_sql_plan,
 };
-use cdf_http::{HttpTransport, SecretProvider};
+use cdf_http::SecretProvider;
 use cdf_kernel::{
     CdfError, DISCOVERY_MANIFEST_HASH_METADATA_KEY, DISCOVERY_MANIFEST_PATH_METADATA_KEY,
     DiscoveryCoverageEvidence, DiscoveryExecutorBudgetEvidence, EffectiveSchemaCatalogEntry,
@@ -325,22 +326,20 @@ pub fn discover_resource_schema_artifacts(
     secret_provider: &dyn SecretProvider,
     options: SchemaDiscoveryExecutionOptions,
 ) -> Result<ResourceSchemaDiscoveryArtifacts> {
-    discover_resource_schema_artifacts_inner(resource, secret_provider, None, None, options)
+    discover_resource_schema_artifacts_inner(resource, secret_provider, None, options)
 }
 
-pub fn discover_resource_schema_with_rest_transport(
+pub fn discover_resource_schema_with_rest_dependencies(
     resource: &CompiledResource,
-    secret_provider: &dyn SecretProvider,
-    rest_transport: &dyn HttpTransport,
+    rest_dependencies: &RestDiscoveryDependencies<'_>,
 ) -> Result<ResourceSchemaDiscovery> {
-    Ok(discover_resource_schema_artifacts_inner(
-        resource,
-        secret_provider,
-        Some(rest_transport),
-        None,
-        Default::default(),
-    )?
-    .discovery)
+    ensure_discover_schema_mode(resource)?;
+    if !matches!(resource.plan(), CompiledResourcePlan::Rest(_)) {
+        return Err(CdfError::contract(
+            "REST schema discovery dependencies require a REST resource",
+        ));
+    }
+    discover_rest_resource_schema(resource, rest_dependencies)
 }
 
 pub fn discover_resource_schema_with_file_dependencies(
@@ -366,7 +365,6 @@ pub fn discover_resource_schema_with_file_dependencies_artifacts(
     discover_resource_schema_artifacts_inner(
         resource,
         secret_provider,
-        None,
         Some(file_dependencies),
         options,
     )
@@ -446,7 +444,6 @@ pub fn prepare_declared_file_schema_artifacts(
     let artifacts = discover_resource_schema_artifacts_inner(
         &probe_resource,
         secret_provider,
-        None,
         Some(file_dependencies),
         options,
     )?;
@@ -484,7 +481,6 @@ pub fn prepare_declared_file_schema_artifacts(
 fn discover_resource_schema_artifacts_inner(
     resource: &CompiledResource,
     secret_provider: &dyn SecretProvider,
-    rest_transport: Option<&dyn HttpTransport>,
     file_dependencies: Option<FileRuntimeDependencies>,
     options: SchemaDiscoveryExecutionOptions,
 ) -> Result<ResourceSchemaDiscoveryArtifacts> {
@@ -501,17 +497,10 @@ fn discover_resource_schema_artifacts_inner(
             discovery_manifest: None,
             effective_schema_runtime: None,
         }),
-        CompiledResourcePlan::Rest(_) => match rest_transport {
-            Some(transport) => Ok(ResourceSchemaDiscoveryArtifacts {
-                discovery: discover_rest_resource_schema(resource, secret_provider, transport)?,
-                discovery_manifest: None,
-                effective_schema_runtime: None,
-            }),
-            None => Err(unsupported_discover_slice(
-                resource.descriptor(),
-                "REST resource discovery requires an explicit HTTP transport",
-            )),
-        },
+        CompiledResourcePlan::Rest(_) => Err(unsupported_discover_slice(
+            resource.descriptor(),
+            "REST resource discovery requires explicit runtime dependencies",
+        )),
     }
 }
 
@@ -1888,10 +1877,9 @@ fn discover_postgres_resource_schema(
 
 fn discover_rest_resource_schema(
     resource: &CompiledResource,
-    secret_provider: &dyn SecretProvider,
-    rest_transport: &dyn HttpTransport,
+    dependencies: &RestDiscoveryDependencies<'_>,
 ) -> Result<ResourceSchemaDiscovery> {
-    let probe = discover_rest_sample_schema(resource, rest_transport, secret_provider)?;
+    let probe = discover_rest_sample_schema(resource, dependencies)?;
     let metadata = BTreeMap::from([
         ("probe".to_owned(), "rest-sample-page".to_owned()),
         ("source_kind".to_owned(), "rest".to_owned()),
@@ -1955,11 +1943,10 @@ pub fn prepare_discover_resource_with_file_dependencies(
     prepare_discovered_schema(project_root, resource, discovery)
 }
 
-pub fn prepare_discover_resource_with_rest_transport(
+pub fn prepare_discover_resource_with_rest_dependencies(
     project_root: impl AsRef<Path>,
     resource: &CompiledResource,
-    secret_provider: &dyn SecretProvider,
-    rest_transport: &dyn HttpTransport,
+    rest_dependencies: &RestDiscoveryDependencies<'_>,
 ) -> Result<PreparedDiscoveredResource> {
     if !schema_source_needs_pin(&resource.descriptor().schema_source) {
         return Ok(PreparedDiscoveredResource {
@@ -1969,11 +1956,7 @@ pub fn prepare_discover_resource_with_rest_transport(
     }
 
     let discovery = ResourceSchemaDiscoveryArtifacts {
-        discovery: discover_resource_schema_with_rest_transport(
-            resource,
-            secret_provider,
-            rest_transport,
-        )?,
+        discovery: discover_resource_schema_with_rest_dependencies(resource, rest_dependencies)?,
         discovery_manifest: None,
         effective_schema_runtime: None,
     };

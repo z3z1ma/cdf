@@ -357,8 +357,12 @@ fn rest_sample_discovery_infers_scalars_and_uses_runtime_request_path() {
         }"#,
     )]);
     let secret_provider = StaticSecretProvider::new([("secret://env/API_TOKEN", "sample-secret")]);
+    let memory: Arc<dyn cdf_memory::MemoryCoordinator> = Arc::new(
+        cdf_memory::DeterministicMemoryCoordinator::new(64 * 1024 * 1024, BTreeMap::new()).unwrap(),
+    );
+    let dependencies = RestDiscoveryDependencies::new(&transport, &secret_provider, memory);
 
-    let discovery = discover_rest_sample_schema(&resource, &transport, &secret_provider).unwrap();
+    let discovery = discover_rest_sample_schema(&resource, &dependencies).unwrap();
 
     let schema = Arc::clone(&discovery.schema);
     assert_eq!(

@@ -95,7 +95,8 @@ impl SourceDriver for RestSourceDriver {
         let transport = (self.transport_factory)()?;
         let dependencies = RestRuntimeDependencies::from_boxed_transport(transport)
             .with_shared_secret_provider(Arc::clone(context.secret_provider()))
-            .with_execution_services(context.execution().clone());
+            .with_execution_services(context.execution().clone())
+            .with_prepared_payloads(context.prepared_payloads().clone());
         Ok(Arc::new(RestResource::new(
             plan.descriptor.clone(),
             Arc::new(plan.schema.clone()),

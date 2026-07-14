@@ -3149,10 +3149,14 @@ trust = "governed"
     )]);
     let secret_provider =
         StaticSecretProvider::new([("secret://env/API_TOKEN", "rest-discover-secret")]);
+    let dependencies = cdf_declarative::RestDiscoveryDependencies::new(
+        &transport,
+        &secret_provider,
+        test_execution_services().memory(),
+    );
 
     let discovery =
-        discover_resource_schema_with_rest_transport(&resource, &secret_provider, &transport)
-            .unwrap();
+        discover_resource_schema_with_rest_dependencies(&resource, &dependencies).unwrap();
 
     assert!(!temp.path().join(".cdf/schemas").exists());
     assert_eq!(
@@ -3256,14 +3260,18 @@ trust = "governed"
         ] }"#,
     )]);
     let secret_provider = EnvSecretProvider::from_map(std::iter::empty::<(&str, &str)>());
-
-    let prepared = prepare_discover_resource_with_rest_transport(
-        temp.path(),
-        &resource,
-        &secret_provider,
+    let prepared_payloads = cdf_runtime::PreparedSourcePayloads::default();
+    let execution = test_execution_services();
+    let dependencies = cdf_declarative::RestDiscoveryDependencies::new(
         &transport,
+        &secret_provider,
+        execution.memory(),
     )
-    .unwrap();
+    .with_prepared_payloads(prepared_payloads.clone());
+
+    let prepared =
+        prepare_discover_resource_with_rest_dependencies(temp.path(), &resource, &dependencies)
+            .unwrap();
 
     let discovery = prepared.discovery.as_ref().unwrap();
     let snapshot_path = temp.path().join(&discovery.snapshot.artifact.path);
@@ -3285,6 +3293,31 @@ trust = "governed"
             .metadata()["cdf:source_name"],
         "VendorID"
     );
+    assert_eq!(transport.requests().len(), 1);
+    assert_eq!(prepared_payloads.pending_count().unwrap(), 1);
+
+    let runtime = prepared
+        .resource
+        .to_rest_resource(
+            cdf_declarative::RestRuntimeDependencies::new(transport.clone())
+                .with_prepared_payloads(prepared_payloads.clone()),
+        )
+        .unwrap();
+    let plan = live_plan_for_stream(&runtime, "pkg-rest-discovery-handoff");
+    let stream = futures_executor::block_on(runtime.open(plan.scan.partitions[0].clone())).unwrap();
+    let batches = futures_executor::block_on_stream(stream)
+        .collect::<Result<Vec<_>>>()
+        .unwrap();
+    assert_eq!(
+        batches
+            .iter()
+            .map(|batch| batch.header.row_count)
+            .sum::<u64>(),
+        2
+    );
+    assert_eq!(transport.requests().len(), 1);
+    assert_eq!(prepared_payloads.pending_count().unwrap(), 0);
+    assert_eq!(execution.memory().snapshot().current_bytes, 0);
 }
 
 #[test]

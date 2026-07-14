@@ -15,13 +15,18 @@ use cdf_http::{
 use cdf_kernel::{
     Batch, BatchId, BatchStream, BoxFuture, CdfError, CursorPosition, CursorValue,
     DeliveryGuarantee, Expression, ExpressionLiteral, OpenedPartitionStream, PartitionId,
-    PartitionPlan, PlanId, PreContractResidualCandidate, PushdownFidelity, PushedPredicate,
-    QueryableResource, ResourceCapabilities, ResourceDescriptor, ResourceStream, Result, ScanPlan,
-    ScanRequest, SchemaHash, SchemaSource, SourcePosition, TypePolicyAllowances, WriteDisposition,
-    source_name,
+    PartitionPlan, PayloadRetention, PlanId, PreContractResidualCandidate, PushdownFidelity,
+    PushedPredicate, QueryableResource, ResourceCapabilities, ResourceDescriptor, ResourceStream,
+    Result, ScanPlan, ScanRequest, SchemaHash, SchemaSource, SourcePosition, TypePolicyAllowances,
+    WriteDisposition, source_name,
 };
-use cdf_runtime::ExecutionServices;
-use cdf_runtime::ReadOptions;
+use cdf_memory::{
+    ConsumerKey, MemoryClass, MemoryCoordinator, MemoryLease, ReservationRequest, reserve_blocking,
+};
+use cdf_runtime::{
+    ExecutionServices, PreparedSourcePayload, PreparedSourcePayloadKey, PreparedSourcePayloads,
+    ReadOptions, SourceDriverId, artifact_hash,
+};
 use futures_util::stream;
 use serde_json::{Map, Value};
 
@@ -37,6 +42,7 @@ pub struct RestRuntimeDependencies {
     auth_refresh: Option<Arc<Mutex<Box<dyn AuthRefreshHook + Send>>>>,
     retry_policy: RetryPolicy,
     execution: Option<ExecutionServices>,
+    prepared_payloads: PreparedSourcePayloads,
 }
 
 impl RestRuntimeDependencies {
@@ -51,6 +57,7 @@ impl RestRuntimeDependencies {
             auth_refresh: None,
             retry_policy: RetryPolicy::default(),
             execution: None,
+            prepared_payloads: PreparedSourcePayloads::default(),
         }
     }
 
@@ -75,6 +82,15 @@ impl RestRuntimeDependencies {
         self
     }
 
+    pub fn with_prepared_payloads(mut self, prepared_payloads: PreparedSourcePayloads) -> Self {
+        self.prepared_payloads = prepared_payloads;
+        self
+    }
+
+    pub fn prepared_payloads(&self) -> &PreparedSourcePayloads {
+        &self.prepared_payloads
+    }
+
     pub fn with_auth_refresh_hook(mut self, hook: impl AuthRefreshHook + Send + 'static) -> Self {
         self.auth_refresh = Some(Arc::new(Mutex::new(Box::new(hook))));
         self
@@ -95,6 +111,50 @@ impl fmt::Debug for RestRuntimeDependencies {
             .field("auth_refresh", &self.auth_refresh.is_some())
             .field("retry_policy", &self.retry_policy)
             .field("managed_execution", &self.execution.is_some())
+            .field("prepared_payloads", &self.prepared_payloads)
+            .finish()
+    }
+}
+
+#[derive(Clone)]
+pub struct RestDiscoveryDependencies<'a> {
+    transport: &'a dyn HttpTransport,
+    secret_provider: &'a dyn SecretProvider,
+    memory: Arc<dyn MemoryCoordinator>,
+    prepared_payloads: PreparedSourcePayloads,
+}
+
+impl<'a> RestDiscoveryDependencies<'a> {
+    pub fn new(
+        transport: &'a dyn HttpTransport,
+        secret_provider: &'a dyn SecretProvider,
+        memory: Arc<dyn MemoryCoordinator>,
+    ) -> Self {
+        Self {
+            transport,
+            secret_provider,
+            memory,
+            prepared_payloads: PreparedSourcePayloads::default(),
+        }
+    }
+
+    pub fn with_prepared_payloads(mut self, prepared_payloads: PreparedSourcePayloads) -> Self {
+        self.prepared_payloads = prepared_payloads;
+        self
+    }
+
+    pub fn prepared_payloads(&self) -> &PreparedSourcePayloads {
+        &self.prepared_payloads
+    }
+}
+
+impl fmt::Debug for RestDiscoveryDependencies<'_> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("RestDiscoveryDependencies")
+            .field("transport", &"<explicit>")
+            .field("secret_provider", &"<explicit>")
+            .field("prepared_payloads", &self.prepared_payloads)
             .finish()
     }
 }
@@ -113,6 +173,15 @@ pub struct RestResource {
 pub struct RestSampleSchemaDiscovery {
     pub schema: SchemaRef,
     pub source_identity: BTreeMap<String, String>,
+}
+
+struct PreparedRestPage {
+    state: Arc<PreparedRestPageState>,
+}
+
+struct PreparedRestPageState {
+    response: Mutex<Option<HttpResponse>>,
+    _lease: MemoryLease,
 }
 
 impl RestResource {
@@ -361,14 +430,38 @@ fn execute_rest(
     let mut reconciliation_plan = None::<String>;
 
     while let Some(url) = next_url {
-        let mut response = send_page(
-            &dependencies,
-            plan,
-            &url,
-            &mut auth_session,
-            &mut retry_budget,
-            &mut limiter,
-        )?;
+        let prepared_key = prepared_rest_page_key(descriptor, plan, partition, &url)?;
+        let (mut response, prepared_retention) = match dependencies
+            .prepared_payloads
+            .take(&prepared_key)?
+        {
+            Some(payload) => {
+                let (prepared, retention) =
+                    payload.into_typed::<PreparedRestPage>("REST first-page execution")?;
+                let response = prepared
+                    .state
+                    .response
+                    .lock()
+                    .map_err(|_| CdfError::internal("prepared REST page was poisoned"))?
+                    .take()
+                    .ok_or_else(|| CdfError::internal("prepared REST page was already consumed"))?;
+                (response, Some(retention))
+            }
+            None => (
+                send_page(
+                    &dependencies,
+                    plan,
+                    &url,
+                    &mut auth_session,
+                    &mut retry_budget,
+                    &mut limiter,
+                )?,
+                None,
+            ),
+        };
+        if prepared_retention.is_some() {
+            limiter.observe_response(&response, 0);
+        }
         let body = response
             .body()
             .ok_or_else(|| CdfError::data("REST HTTP response did not include a JSON body"))?;
@@ -427,8 +520,7 @@ pub fn discover_rest_sample_schema(
     descriptor: &ResourceDescriptor,
     plan: &RestResourcePlan,
     partition: &PartitionPlan,
-    transport: &dyn HttpTransport,
-    secret_provider: &dyn SecretProvider,
+    dependencies: &RestDiscoveryDependencies<'_>,
 ) -> Result<RestSampleSchemaDiscovery> {
     validate_partition(descriptor, plan, partition)?;
 
@@ -442,8 +534,8 @@ pub fn discover_rest_sample_schema(
         None => base_request_url,
     };
     let mut send_context = RestSendContext {
-        transport,
-        secret_provider: Some(secret_provider),
+        transport: dependencies.transport,
+        secret_provider: Some(dependencies.secret_provider),
         auth_refresh: None,
     };
     let response = send_page_with_transport(
@@ -459,6 +551,27 @@ pub fn discover_rest_sample_schema(
         .ok_or_else(|| CdfError::data("REST HTTP response did not include a JSON body"))?;
     let decoded = decode_response_page(body, &plan.record_selector)?;
     let schema = Arc::new(infer_rest_sample_schema(&decoded.records)?);
+    let retained_bytes = u64::try_from(body.len())
+        .map_err(|_| CdfError::data("REST discovery response exceeds u64"))?;
+    let lease = reserve_blocking(
+        Arc::clone(&dependencies.memory),
+        &ReservationRequest::new(
+            ConsumerKey::new("rest-discovery-retained-page", MemoryClass::Source)?,
+            retained_bytes,
+        )?,
+    )?;
+    let state = Arc::new(PreparedRestPageState {
+        response: Mutex::new(Some(response)),
+        _lease: lease,
+    });
+    let owner: Arc<dyn std::any::Any + Send + Sync> = state.clone();
+    dependencies.prepared_payloads.install(
+        prepared_rest_page_key(descriptor, plan, partition, &url)?,
+        PreparedSourcePayload::new(
+            PreparedRestPage { state },
+            PayloadRetention::new(owner, retained_bytes)?,
+        ),
+    )?;
     let source_identity = BTreeMap::from([
         ("source_kind".to_owned(), "rest".to_owned()),
         ("path".to_owned(), plan.path.clone()),
@@ -473,6 +586,27 @@ pub fn discover_rest_sample_schema(
         schema,
         source_identity,
     })
+}
+
+fn prepared_rest_page_key(
+    descriptor: &ResourceDescriptor,
+    plan: &RestResourcePlan,
+    partition: &PartitionPlan,
+    url: &str,
+) -> Result<PreparedSourcePayloadKey> {
+    let payload_hash = artifact_hash(&serde_json::json!({
+        "version": 1,
+        "resource_id": descriptor.resource_id.as_str(),
+        "partition_id": partition.partition_id.as_str(),
+        "url": url,
+        "record_selector": plan.record_selector,
+        "pagination": plan.pagination.as_ref().map(|pagination| pagination.kind().to_string()),
+    }))?;
+    PreparedSourcePayloadKey::new(
+        descriptor.resource_id.clone(),
+        SourceDriverId::new("rest")?,
+        payload_hash,
+    )
 }
 
 fn validate_partition(

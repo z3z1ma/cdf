@@ -1,7 +1,6 @@
-use cdf_http::{HttpTransport, SecretProvider};
 use cdf_kernel::{CdfError, ResourceStream, Result, ScanRequest};
 use cdf_source_rest::{
-    RestResource, RestRuntimeDependencies, RestSampleSchemaDiscovery,
+    RestDiscoveryDependencies, RestResource, RestRuntimeDependencies, RestSampleSchemaDiscovery,
     discover_rest_sample_schema as discover_source_rest_sample_schema,
 };
 
@@ -38,8 +37,7 @@ fn build_rest_resource(
 
 pub fn discover_rest_sample_schema(
     resource: &CompiledResource,
-    transport: &dyn HttpTransport,
-    secret_provider: &dyn SecretProvider,
+    dependencies: &RestDiscoveryDependencies<'_>,
 ) -> Result<RestSampleSchemaDiscovery> {
     let CompiledResourcePlan::Rest(plan) = resource.plan() else {
         return Err(CdfError::contract(
@@ -63,11 +61,5 @@ pub fn discover_rest_sample_schema(
                 resource.descriptor().resource_id
             ))
         })?;
-    discover_source_rest_sample_schema(
-        resource.descriptor(),
-        plan,
-        &partition,
-        transport,
-        secret_provider,
-    )
+    discover_source_rest_sample_schema(resource.descriptor(), plan, &partition, dependencies)
 }

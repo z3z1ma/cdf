@@ -1311,6 +1311,7 @@ dependencies = [
  "cdf-formats",
  "cdf-http",
  "cdf-kernel",
+ "cdf-memory",
  "cdf-runtime",
  "futures-util",
  "serde",

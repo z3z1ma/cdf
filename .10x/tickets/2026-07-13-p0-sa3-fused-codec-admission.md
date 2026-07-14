@@ -36,6 +36,7 @@ SA1 owns verdict semantics; SA2 owns inventory/cache identity.
 - 2026-07-14: Activated after SA2 closed. Source inspection confirms the governing defect remains exact and bounded: transformed/seekable local and remote discovery create `AccountedSpool`, discover from it, and immediately drop it; `PreparedDiscoveredResource` carries only compiled schema/discovery facts, so final execution cannot consume the already materialized generation. Row-oriented drivers already have incremental accounted streams, providing the retained-window seam without reintroducing format branches into project orchestration.
 - 2026-07-14: Landed the source-neutral, driver-keyed prepared-payload handoff through schema preparation and source resolution. File discovery now retains fully materialized transformed/seekable spools, or a disk-accounted bounded row window plus the still-open continuation; final-plan execution consumes the handoff exactly once. The handoff payload is type-erased at the runtime boundary so REST can reuse the same facility without teaching orchestration about file or REST payload shapes.
 - 2026-07-14: Adversarial implementation pass found and fixed two boundary defects before commit: the discovery wrapper advertised upstream `reopenable` even though it is single-invocation, and the internal local replay spool inherited a caller chunk preference outside `LocalByteSource` bounds. A focused stream law now consumes one discovery chunk, drops the discovery reader at the plan barrier, replays the exact bytes, continues the same source stream, and proves one underlying open.
+- 2026-07-14: REST discovery and execution now share the same driver-keyed prepared-payload store without exposing REST payload shapes to project or CLI orchestration. Discovery retains the exact first `HttpResponse` under a source-memory lease; execution consumes it once, preserves rate-limit/pagination response semantics, and contacts the transport only for subsequent pages. The superseded raw-transport discovery API was deleted rather than retained as a shim; discovery/runtime dependencies remain phase-specific and share only the neutral handoff.
 
 ## Blockers
 
@@ -46,7 +47,9 @@ None. SA0-SA2 are done.
 - Partial file-codec slice: `CARGO_BUILD_JOBS=6 cargo test -p cdf-source-files --lib --no-fail-fast` passed 38/38, including retained sequential replay/continuation, CSV/JSON exact-spool reuse, transformed Parquet reuse, and remote Parquet sequential-spool laws.
 - Partial project integration: focused `cdf-project` tests `unversioned_http_parquet_runs_and_commits_terminal_content_identity` and `object_store_gzip_ndjson_discovers_pins_and_executes_through_one_transport` passed. The former proves one full weak-HTTP transfer across cold discovery and execution; the latter proves retained transformed row payload execution.
 - Compile boundary: `CARGO_BUILD_JOBS=6 cargo check -p cdf-runtime -p cdf-source-files -p cdf-project -p cdf-cli --all-targets` passed.
-- Limits: REST first-page reuse and final ticket closure review remain pending; this evidence closes only the file-codec portion.
+- REST handoff: `generic_discover_prepare_autopins_rest_snapshot` proves one recorded transport request across cold discovery, snapshot compilation, and execution, then zero pending payloads and zero retained source memory. CLI test `cold_rest_run_reuses_the_discovery_page_without_a_second_request` passes against a server that can answer only one request.
+- REST regression surface: all 5 `cdf-source-rest` unit tests, the focused declarative discovery test, both project REST discovery tests, and the four-crate all-target check passed.
+- Limits: explicit `full_content` row-discovery configuration and final ticket closure review remain pending.
 
 ## Review
 

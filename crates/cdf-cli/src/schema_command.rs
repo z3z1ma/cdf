@@ -430,12 +430,13 @@ fn discover_artifacts_for_cli_resource(
         && matches!(resource.plan(), CompiledResourcePlan::Rest(_))
     {
         let transport = ReqwestHttpTransport::new()?;
+        let dependencies = cdf_declarative::RestDiscoveryDependencies::new(
+            &transport,
+            &secret_provider,
+            execution.memory(),
+        );
         Ok(ResourceSchemaDiscoveryArtifacts::new(
-            cdf_project::discover_resource_schema_with_rest_transport(
-                resource,
-                &secret_provider,
-                &transport,
-            )?,
+            cdf_project::discover_resource_schema_with_rest_dependencies(resource, &dependencies)?,
             None,
         ))
     } else {

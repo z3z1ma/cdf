@@ -17,7 +17,9 @@ pub use cdf_source_files::{
 pub use cdf_source_postgres::{
     POSTGRES_CATALOG_DISCOVERY_PROBE, discover_postgres_table_catalog_schema,
 };
-pub use cdf_source_rest::{RestResource, RestResourcePlan, RestRuntimeDependencies};
+pub use cdf_source_rest::{
+    RestDiscoveryDependencies, RestResource, RestResourcePlan, RestRuntimeDependencies,
+};
 pub use compiled::{
     CompiledResource, CompiledResourcePlan, SqlResourcePlan, compile_document,
     compile_document_with_project_root, parse_arrow_field_type, physical_arrow_schema_hash,

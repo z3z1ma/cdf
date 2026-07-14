@@ -6826,6 +6826,42 @@ fn rest_discover_mode_plan_preview_run_autopins_through_file_secret_without_leak
 }
 
 #[test]
+fn cold_rest_run_reuses_the_discovery_page_without_a_second_request() {
+    let project = TestProject::new();
+    fs::write(
+        project.root.join("rest-token"),
+        "rest-single-request-secret\n",
+    )
+    .unwrap();
+    let base_url = serve_json_once(
+        r#"{ "items": [
+            { "VendorID": 1, "updated_at": 10 },
+            { "VendorID": 2, "updated_at": 20 }
+        ] }"#,
+    );
+    write_rest_project(
+        &project,
+        "duckdb://.cdf/dev.duckdb",
+        &base_url,
+        "secret://file/rest-token",
+    );
+    fs::write(
+        project.root.join("resources/api.toml"),
+        rest_discover_resource_with_base_url(&base_url, "secret://file/rest-token"),
+    )
+    .unwrap();
+
+    let result = run_valid_run_resource(&project, "api.items");
+
+    assert_eq!(result.exit_code, 0, "stderr: {}", result.stderr);
+    assert_secret_absent(&result, "rest-single-request-secret");
+    let json = stderr_or_stdout_json(&result.stdout);
+    assert_eq!(json["result"]["row_count"], 2);
+    assert_eq!(json["result"]["schema_snapshot"]["outcome"], "added");
+    assert_eq!(json["result"]["checkpoint"]["status"], "committed");
+}
+
+#[test]
 fn preview_reads_single_ndjson_file_without_creating_runtime_artifacts() {
     let project = TestProject::new();
     let package_root = project.root.join(".cdf/packages");

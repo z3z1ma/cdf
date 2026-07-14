@@ -187,11 +187,15 @@ fn discover_for_add(
         )?),
         CompiledResourcePlan::Rest(_) => {
             let transport = ReqwestHttpTransport::new()?;
+            let dependencies = cdf_declarative::RestDiscoveryDependencies::new(
+                &transport,
+                secret_provider,
+                execution.memory(),
+            );
             Ok(ResourceSchemaDiscoveryArtifacts::new(
-                cdf_project::discover_resource_schema_with_rest_transport(
+                cdf_project::discover_resource_schema_with_rest_dependencies(
                     resource,
-                    secret_provider,
-                    &transport,
+                    &dependencies,
                 )?,
                 None,
             ))

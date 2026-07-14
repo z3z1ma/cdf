@@ -236,11 +236,16 @@ pub(crate) fn prepare_resource_schema_for_cli(
         )?
     } else if matches!(probe_resource.plan(), CompiledResourcePlan::Rest(_)) {
         let transport = ReqwestHttpTransport::new()?;
+        let memory = execution
+            .ok_or_else(|| CdfError::internal("REST discovery requires execution services"))?
+            .memory();
+        let dependencies =
+            cdf_declarative::RestDiscoveryDependencies::new(&transport, &secret_provider, memory)
+                .with_prepared_payloads(prepared_payloads.clone());
         cdf_project::ResourceSchemaDiscoveryArtifacts::new(
-            cdf_project::discover_resource_schema_with_rest_transport(
+            cdf_project::discover_resource_schema_with_rest_dependencies(
                 &probe_resource,
-                &secret_provider,
-                &transport,
+                &dependencies,
             )?,
             None,
         )
