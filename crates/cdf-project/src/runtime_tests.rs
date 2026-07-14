@@ -1031,16 +1031,19 @@ fn write_compiled_expression_artifacts(
         .instantiate(schema.as_ref(), &physical_schema_hash)
         .unwrap();
     if write_stream_evidence {
+        let physical_observation =
+            cdf_engine::PhysicalObservationEvidence::arrow_schema(schema.as_ref()).unwrap();
+        let physical_observation_hash = physical_observation.identity_hash().unwrap();
         builder
             .write_json_artifact(
                 "schema/stream-admission-evidence.json",
                 &CompiledStreamAdmissionEvidence::new(
                     &plan.compiled_schema_admission,
+                    BTreeMap::from([(physical_observation_hash.to_string(), physical_observation)]),
                     vec![
                         StreamAdmissionObservationEvidence::new(
                             "artifact-fixture",
-                            cdf_engine::PhysicalObservationEvidence::arrow_schema(schema.as_ref())
-                                .unwrap(),
+                            physical_observation_hash,
                             coercion_plan,
                             cdf_engine::StreamAdmissionCompletion::Complete {
                                 source_position: position(3),
@@ -1054,15 +1057,17 @@ fn write_compiled_expression_artifacts(
             .unwrap();
     }
     if let Some((quarantine, physical_observation)) = quarantine {
+        let physical_observation_hash = physical_observation.identity_hash().unwrap();
         builder
             .write_json_artifact(
                 "quarantine/schema-admission-evidence.json",
                 &cdf_engine::CompiledSchemaQuarantineEvidence::new(
                     &plan.compiled_schema_admission,
+                    BTreeMap::from([(physical_observation_hash.to_string(), physical_observation)]),
                     vec![
                         cdf_engine::SchemaQuarantineObservationEvidence::new(
                             quarantine,
-                            physical_observation,
+                            physical_observation_hash,
                         )
                         .unwrap(),
                     ],

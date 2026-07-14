@@ -636,7 +636,7 @@ where
             )));
         }
     }
-    let physical_observations = evidence
+    let physical_observation_catalog = evidence
         .observations
         .iter()
         .map(|observation| {
@@ -649,7 +649,7 @@ where
                     ))
                 })?;
             Ok((
-                observation.observation_id.clone(),
+                observation.physical_schema_hash.to_string(),
                 crate::PhysicalObservationEvidence::arrow_schema(physical_schema.as_ref())?,
             ))
         })
@@ -680,9 +680,6 @@ where
             Ok(EffectiveSchemaObservationCoercion {
                 observation_id: observation.observation_id.clone(),
                 physical_schema_hash: observation.physical_schema_hash.clone(),
-                physical_observation: crate::PhysicalObservationEvidence::arrow_schema(
-                    physical_schema.as_ref(),
-                )?,
                 coercion_plan: reconciliation.plan,
             })
         })
@@ -693,7 +690,7 @@ where
             resource.schema().as_ref(),
         )?,
         observations,
-        physical_observations,
+        physical_observation_catalog,
         terminal_quarantines: runtime.terminal_quarantines.clone(),
         discovery_executor_budget: runtime.discovery_executor_budget.clone(),
         observation_bindings,

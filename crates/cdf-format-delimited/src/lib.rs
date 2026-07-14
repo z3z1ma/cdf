@@ -2,6 +2,7 @@
 
 use std::sync::Arc;
 
+use arrow_array::RecordBatch;
 use arrow_csv::reader::{Decoder, Format, ReaderBuilder};
 use cdf_kernel::{Batch, BatchId, BoxFuture, CdfError, PushdownFidelity, Result};
 use cdf_memory::{ConsumerKey, MemoryClass, MemoryLease, ReservationRequest, reserve};
@@ -253,16 +254,22 @@ async fn decode_next(
         if consumed != 0 {
             continue;
         }
-        let Some(record_batch) = state
+        let record_batch = state
             .decoder
             .flush()
-            .map_err(|error| CdfError::data(format!("flush CSV batch: {error}")))?
-        else {
-            state.terminal = state.input_finished;
-            if state.terminal {
-                return Ok(None);
+            .map_err(|error| CdfError::data(format!("flush CSV batch: {error}")))?;
+        let record_batch = match record_batch {
+            Some(batch) => batch,
+            None => {
+                state.terminal = state.input_finished;
+                if state.terminal && state.sequence == 0 {
+                    RecordBatch::new_empty(Arc::clone(&state.request.schema.decoder_schema))
+                } else if state.terminal {
+                    return Ok(None);
+                } else {
+                    continue;
+                }
             }
-            continue;
         };
         let lease = state
             .output_lease
@@ -283,6 +290,9 @@ async fn decode_next(
             cdf_kernel::canonical_arrow_schema_hash(state.request.schema.decoder_schema.as_ref())?,
             record_batch,
         )?;
+        if state.request.schema.authority == cdf_runtime::DecodeSchemaAuthority::FixedAdmission {
+            batch.header.mark_materialized_output();
+        }
         batch.header.source_position = state.request.source_position.clone();
         let physical = AccountedPhysicalBatch::new(batch, lease)?;
         if !state.terminal {
@@ -302,4 +312,79 @@ async fn reserve_output(request: &PhysicalDecodeRequest) -> Result<MemoryLease> 
         .as_minimum_working_set(),
     )
     .await
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{collections::BTreeMap, sync::Arc};
+
+    use arrow_schema::{DataType, Field, Schema};
+    use cdf_kernel::{PartitionId, PhysicalObservationRepresentation, ResourceId};
+    use cdf_memory::{DeterministicMemoryCoordinator, MemoryCoordinator};
+    use cdf_runtime::{AccountedByteStream, DecodeSchemaPlan, RunCancellation};
+    use futures_util::stream;
+
+    use super::*;
+
+    #[test]
+    fn empty_csv_emits_schema_bearing_materialized_batch() {
+        let memory: Arc<dyn MemoryCoordinator> = Arc::new(
+            DeterministicMemoryCoordinator::new(64 * 1024 * 1024, BTreeMap::new()).unwrap(),
+        );
+        let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, true)]));
+        let request = PhysicalDecodeRequest {
+            options: serde_json::json!({}),
+            unit: DecodeUnitPlan {
+                unit_id: "empty-csv".to_owned(),
+                ordinal: 0,
+                extent: None,
+                estimated_working_set_bytes: 1024 * 1024,
+                independently_retryable: true,
+            },
+            resource_id: ResourceId::new("events.empty").unwrap(),
+            partition_id: PartitionId::new("file-empty").unwrap(),
+            batch_id_prefix: "events-empty".to_owned(),
+            schema: DecodeSchemaPlan::fixed_admission(schema),
+            source_position: None,
+            projection: None,
+            predicates: Vec::new(),
+            target_batch_rows: 64,
+            target_batch_bytes: 1024 * 1024,
+            memory,
+            cancellation: RunCancellation::default(),
+        };
+        let batch = futures_executor::block_on(async move {
+            let input: AccountedByteStream = Box::pin(stream::empty());
+            let decoder = ReaderBuilder::new(Arc::clone(&request.schema.decoder_schema))
+                .with_header(true)
+                .with_batch_size(request.target_batch_rows)
+                .build_decoder();
+            let output_lease = reserve_output(&request).await?;
+            let state = DecodeState {
+                input,
+                current: None,
+                offset: 0,
+                decoder,
+                request,
+                output_lease: Some(output_lease),
+                sequence: 0,
+                input_finished: false,
+                terminal: false,
+            };
+            let (batch, state) = decode_next(state)
+                .await?
+                .ok_or_else(|| CdfError::internal("empty CSV omitted schema-bearing batch"))?;
+            if decode_next(state).await?.is_some() {
+                return Err(CdfError::internal("empty CSV emitted multiple batches"));
+            }
+            Result::<AccountedPhysicalBatch>::Ok(batch)
+        })
+        .unwrap();
+
+        assert_eq!(batch.batch().record_batch().unwrap().num_rows(), 0);
+        assert_eq!(
+            batch.batch().header.observation_representation,
+            PhysicalObservationRepresentation::MaterializedOutput
+        );
+    }
 }

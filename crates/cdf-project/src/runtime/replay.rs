@@ -576,7 +576,7 @@ fn validate_package_compiled_schema_admission(package: &VerifiedPackageReader) -
     let has_stream_evidence = files
         .iter()
         .any(|entry| entry.path == "schema/stream-admission-evidence.json");
-    let (admitted, partial_admissions) = if has_stream_evidence {
+    let (admitted, partial_admissions, unpositioned_admissions) = if has_stream_evidence {
         let evidence: cdf_engine::CompiledStreamAdmissionEvidence =
             package.reader().verified_json_artifact(
                 package.verification(),
@@ -584,24 +584,76 @@ fn validate_package_compiled_schema_admission(package: &VerifiedPackageReader) -
             )?;
         evidence.validate(&admission)?;
         let mut admitted = std::collections::BTreeMap::new();
-        let mut partial = std::collections::BTreeSet::new();
+        let mut partial = std::collections::BTreeMap::new();
+        let mut unpositioned = std::collections::BTreeMap::new();
         for observation in evidence.observations {
             match observation.completion {
-                cdf_engine::StreamAdmissionCompletion::Partial => {
-                    partial.insert(observation.observation_id);
+                cdf_engine::StreamAdmissionCompletion::Partial {
+                    attempted_position: Some(attempted_position),
+                    observed_rows,
+                    partition_binding,
+                } => {
+                    partial.insert(
+                        observation.observation_id,
+                        (attempted_position, observed_rows, partition_binding),
+                    );
                 }
+                cdf_engine::StreamAdmissionCompletion::Partial {
+                    attempted_position: None,
+                    ..
+                } => unreachable!("validated stream evidence requires a partial position"),
                 cdf_engine::StreamAdmissionCompletion::Complete { source_position } => {
                     admitted.insert(observation.observation_id, source_position);
                 }
+                cdf_engine::StreamAdmissionCompletion::CompleteUnpositioned {
+                    partition_binding,
+                } => {
+                    unpositioned.insert(observation.observation_id, partition_binding);
+                }
             }
         }
-        (admitted, partial)
+        (admitted, partial, unpositioned)
     } else {
         (
             std::collections::BTreeMap::new(),
-            std::collections::BTreeSet::new(),
+            std::collections::BTreeMap::new(),
+            std::collections::BTreeMap::new(),
         )
     };
+    if !partial_admissions.is_empty() {
+        let scan: cdf_kernel::ScanPlan = package
+            .reader()
+            .verified_json_artifact(package.verification(), cdf_package_contract::SCAN_PLAN_FILE)?;
+        for (observation_id, (attempted_position, _, partition_binding)) in &partial_admissions {
+            let matching_partition = scan.partitions.iter().find(|partition| {
+                planned_partition_observation_id(partition) == observation_id
+                    && cdf_kernel::partition_source_identity_binding(partition)
+                        .is_ok_and(|expected| &expected == partition_binding)
+                    && partial_position_matches_partition_scope(attempted_position, partition)
+            });
+            if matching_partition.is_none() {
+                return Err(CdfError::data(format!(
+                    "partial stream-admission observation {observation_id:?} is not bound to a planned partition and source generation"
+                )));
+            }
+        }
+    }
+    if !unpositioned_admissions.is_empty() {
+        let scan: cdf_kernel::ScanPlan = package
+            .reader()
+            .verified_json_artifact(package.verification(), cdf_package_contract::SCAN_PLAN_FILE)?;
+        for (observation_id, partition_binding) in &unpositioned_admissions {
+            if !scan.partitions.iter().any(|partition| {
+                planned_partition_observation_id(partition) == observation_id
+                    && cdf_kernel::partition_source_identity_binding(partition)
+                        .is_ok_and(|expected| &expected == partition_binding)
+            }) {
+                return Err(CdfError::data(format!(
+                    "unpositioned stream-admission observation {observation_id:?} is not bound to a planned partition"
+                )));
+            }
+        }
+    }
     let quarantine_path = "quarantine/schema-observations.json";
     let (quarantined, quarantine_records) =
         if files.iter().any(|entry| entry.path == quarantine_path) {
@@ -663,8 +715,16 @@ fn validate_package_compiled_schema_admission(package: &VerifiedPackageReader) -
                     ))
                 })?;
             observation.validate(quarantine)?;
-            admission
-                .validate_quarantined_observation(quarantine, &observation.physical_observation)?;
+            let physical_observation = evidence
+                .physical_observation_catalog
+                .get(&observation.physical_observation_hash)
+                .ok_or_else(|| {
+                    CdfError::data(format!(
+                        "schema-quarantine admission evidence {:?} references an absent physical observation",
+                        observation.observation_id
+                    ))
+                })?;
+            admission.validate_quarantined_observation(quarantine, physical_observation)?;
             evidence_ids.insert(observation.observation_id.as_str());
         }
         if evidence_ids
@@ -680,7 +740,10 @@ fn validate_package_compiled_schema_admission(package: &VerifiedPackageReader) -
     }
     if admitted.keys().any(|id| quarantined.contains_key(id))
         || partial_admissions
-            .iter()
+            .keys()
+            .any(|id| quarantined.contains_key(id))
+        || unpositioned_admissions
+            .keys()
             .any(|id| quarantined.contains_key(id))
     {
         return Err(CdfError::data(
@@ -762,6 +825,51 @@ fn validate_package_compiled_schema_admission(package: &VerifiedPackageReader) -
         }
     }
     Ok(())
+}
+
+fn planned_partition_observation_id(partition: &cdf_kernel::PartitionPlan) -> &str {
+    partition
+        .metadata
+        .get(cdf_kernel::PLAN_SCHEMA_OBSERVATION_ID_KEY)
+        .map(String::as_str)
+        .unwrap_or_else(|| match &partition.scope {
+            cdf_kernel::ScopeKey::File { path } => path.as_str(),
+            _ => partition.partition_id.as_str(),
+        })
+}
+
+fn partial_position_matches_partition_scope(
+    position: &cdf_kernel::SourcePosition,
+    partition: &cdf_kernel::PartitionPlan,
+) -> bool {
+    match (position, &partition.scope) {
+        (
+            cdf_kernel::SourcePosition::FileManifest(manifest),
+            cdf_kernel::ScopeKey::File { path },
+        ) => {
+            manifest.files.len() == 1
+                && manifest.files.iter().all(|file| {
+                    file.path.as_str() == path.as_str()
+                        && partition
+                            .metadata
+                            .get("bytes")
+                            .and_then(|bytes| bytes.parse::<u64>().ok())
+                            == Some(file.size_bytes)
+                        && partition.metadata.get("etag") == file.etag.as_ref()
+                        && partition.metadata.get("version") == file.object_version.as_ref()
+                        && partition.metadata.get("sha256") == file.sha256.as_ref()
+                })
+        }
+        (_, cdf_kernel::ScopeKey::File { .. }) => false,
+        (cdf_kernel::SourcePosition::Cursor(cursor), _) => partition
+            .metadata
+            .get("cursor_field")
+            .is_some_and(|field| field == &cursor.field),
+        (cdf_kernel::SourcePosition::Log(log), cdf_kernel::ScopeKey::Stream { name }) => {
+            &log.log == name
+        }
+        (position, _) => partition.start_position.as_ref() == Some(position),
+    }
 }
 
 fn replay_package_with_resolved_destination<Store>(
@@ -1701,4 +1809,77 @@ fn validate_package_segments_match_delta(
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod stream_admission_replay_tests {
+    use std::collections::BTreeMap;
+
+    use cdf_kernel::{
+        CursorPosition, CursorValue, FileManifest, FilePosition, PartitionId, PartitionPlan,
+        ScopeKey, SourcePosition,
+    };
+
+    use super::partial_position_matches_partition_scope;
+
+    #[test]
+    fn partial_position_binding_rejects_wrong_file_generation_and_cursor_field() {
+        let file_partition = PartitionPlan {
+            partition_id: PartitionId::new("file").unwrap(),
+            scope: ScopeKey::File {
+                path: "events.json".to_owned(),
+            },
+            start_position: None,
+            metadata: BTreeMap::from([
+                ("bytes".to_owned(), "12".to_owned()),
+                ("etag".to_owned(), "etag-1".to_owned()),
+                ("version".to_owned(), "v1".to_owned()),
+                ("sha256".to_owned(), "abc".to_owned()),
+            ]),
+        };
+        let file_position = |etag: &str| {
+            SourcePosition::FileManifest(FileManifest {
+                version: 1,
+                files: vec![FilePosition {
+                    path: "events.json".to_owned(),
+                    size_bytes: 12,
+                    etag: Some(etag.to_owned()),
+                    object_version: Some("v1".to_owned()),
+                    sha256: Some("abc".to_owned()),
+                }],
+            })
+        };
+        assert!(partial_position_matches_partition_scope(
+            &file_position("etag-1"),
+            &file_partition
+        ));
+        assert!(!partial_position_matches_partition_scope(
+            &file_position("etag-2"),
+            &file_partition
+        ));
+
+        let cursor_partition = PartitionPlan {
+            partition_id: PartitionId::new("rest").unwrap(),
+            scope: ScopeKey::Partition {
+                partition_id: PartitionId::new("rest").unwrap(),
+            },
+            start_position: None,
+            metadata: BTreeMap::from([("cursor_field".to_owned(), "updated_at".to_owned())]),
+        };
+        let cursor_position = |field: &str| {
+            SourcePosition::Cursor(CursorPosition {
+                version: 1,
+                field: field.to_owned(),
+                value: CursorValue::I64(7),
+            })
+        };
+        assert!(partial_position_matches_partition_scope(
+            &cursor_position("updated_at"),
+            &cursor_partition
+        ));
+        assert!(!partial_position_matches_partition_scope(
+            &cursor_position("wrong"),
+            &cursor_partition
+        ));
+    }
 }

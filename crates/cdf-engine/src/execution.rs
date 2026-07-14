@@ -22,11 +22,12 @@ use cdf_contract::{
 use cdf_kernel::{
     CdfError, PHYSICAL_TYPE_METADATA_KEY, PLAN_PHYSICAL_SCHEMA_HASH_KEY,
     PLAN_SCHEMA_OBSERVATION_BINDING_KEY, PLAN_SCHEMA_OBSERVATION_ID_KEY, PartitionAttestation,
-    PreContractObservedValue, PreContractQuarantineFact, PreContractResidualCandidate,
-    ProcessedObservationOutcome, ProcessedObservationPosition, ResourceStream, Result, RunId,
-    RunPhase, RunPhaseMetric, RunPhaseStatus, SOURCE_NAME_METADATA_KEY, ScopeKey, SourcePosition,
-    StratifiedHashBoundedIdentity, StratifiedHashCandidate, StratifiedHashIdentityStrength,
-    TerminalSchemaObservationQuarantine, WriteDisposition, semantic, source_name,
+    PhysicalObservationRepresentation, PreContractObservedValue, PreContractQuarantineFact,
+    PreContractResidualCandidate, ProcessedObservationOutcome, ProcessedObservationPosition,
+    ResourceStream, Result, RunId, RunPhase, RunPhaseMetric, RunPhaseStatus,
+    SOURCE_NAME_METADATA_KEY, ScopeKey, SourcePosition, StratifiedHashBoundedIdentity,
+    StratifiedHashCandidate, StratifiedHashIdentityStrength, TerminalSchemaObservationQuarantine,
+    WriteDisposition, aggregate_resource_output_position, semantic, source_name,
 };
 use cdf_memory::{
     ConsumerKey, DEFAULT_PROCESS_BUDGET_BYTES, DeterministicMemoryCoordinator, MemoryClass,
@@ -364,6 +365,10 @@ where
                         &batch,
                         &record_batch,
                         candidate.expected.as_ref(),
+                        preobserved_physical_observation(
+                            plan.effective_schema_evidence.as_ref(),
+                            candidate.expected.as_ref(),
+                        )?,
                         &plan.compiled_schema_admission,
                         &mut schema_admission_cache,
                         if candidate.expected.is_some() {
@@ -387,16 +392,17 @@ where
                             break;
                         }
                     };
-                    if matches!(
-                        reconciled.extra_field_evidence,
-                        ExtraFieldEvidence::CaptureFromPhysicalBatch
-                    ) && let Some(coercion_plan) = reconciled.coercion_plan.as_ref()
+                    if let Some(coercion_plan) = reconciled.coercion_plan.as_ref()
                         && plan.compiled_schema_admission.captures_unknown_fields()?
                     {
                         let candidates = stream_admission_residual_candidates(
                             &record_batch,
                             coercion_plan,
                             batch.header.residual_candidates(),
+                            matches!(
+                                reconciled.extra_field_evidence,
+                                ExtraFieldEvidence::AlreadyCaptured
+                            ) && batch.header.materialized_residuals_complete(),
                             0,
                         )?;
                         batch.header.extend_residual_candidates(candidates);
@@ -667,21 +673,9 @@ fn preview_partition_identity(
         } else {
             (None, StratifiedHashIdentityStrength::Unavailable)
         }
-    } else if let Some(binding) = partition.metadata.get(PLAN_SCHEMA_OBSERVATION_BINDING_KEY) {
-        (
-            Some(binding.clone()),
-            StratifiedHashIdentityStrength::BoundedObservation,
-        )
     } else {
-        let bytes = serde_json::to_vec(&(
-            &partition.partition_id,
-            &partition.scope,
-            &partition.start_position,
-            &partition.metadata,
-        ))
-        .map_err(|error| CdfError::internal(error.to_string()))?;
         (
-            Some(format!("sha256:{:x}", Sha256::digest(bytes))),
+            Some(cdf_kernel::partition_source_identity_binding(partition)?),
             StratifiedHashIdentityStrength::BoundedObservation,
         )
     };
@@ -788,14 +782,42 @@ enum BatchSchemaDisposition {
     },
 }
 
+fn preobserved_physical_observation<'a>(
+    evidence: Option<&'a EffectiveSchemaPlanEvidence>,
+    expected: Option<&EffectiveSchemaObservationCoercion>,
+) -> Result<Option<&'a PhysicalObservationEvidence>> {
+    let Some(expected) = expected else {
+        return Ok(None);
+    };
+    evidence
+        .and_then(|evidence| {
+            evidence
+                .physical_observation_catalog
+                .get(expected.physical_schema_hash.as_str())
+        })
+        .map(Some)
+        .ok_or_else(|| {
+            CdfError::internal(format!(
+                "preobserved schema evidence {:?} has no physical-observation catalog entry",
+                expected.observation_id
+            ))
+        })
+}
+
 fn materialize_batch_schema_evidence(
     batch: &cdf_kernel::Batch,
     record_batch: &RecordBatch,
     expected: Option<&EffectiveSchemaObservationCoercion>,
+    expected_physical_observation: Option<&PhysicalObservationEvidence>,
     admission: &CompiledSchemaAdmissionPlan,
     admission_cache: &mut BTreeMap<cdf_kernel::SchemaHash, cdf_contract::SchemaCoercionPlan>,
     effective_schema: &Schema,
 ) -> Result<BatchSchemaDisposition> {
+    if expected.is_some() != expected_physical_observation.is_some() {
+        return Err(CdfError::internal(
+            "preobserved coercion and physical-observation catalog entry must be supplied together",
+        ));
+    }
     let stream_observation_id = match &batch.header.source_position {
         Some(SourcePosition::FileManifest(manifest)) if manifest.files.len() == 1 => {
             manifest.files[0].path.clone()
@@ -824,6 +846,13 @@ fn materialize_batch_schema_evidence(
     };
     match (expected, &batch_coercion) {
         (Some(expected), Some(batch_coercion)) => {
+            if batch.header.observation_representation
+                != PhysicalObservationRepresentation::MaterializedOutput
+            {
+                return Err(CdfError::data(
+                    "a batch carrying source-materialized coercion evidence must identify its payload as materialized output",
+                ));
+            }
             admission.validate_materialized(&expected.coercion_plan)?;
             validate_effective_batch_schema(record_batch.schema().as_ref(), effective_schema)?;
             if batch_coercion != &expected.coercion_plan {
@@ -836,12 +865,28 @@ fn materialize_batch_schema_evidence(
                 record_batch: record_batch.clone(),
                 coercion_plan: Some(batch_coercion.clone()),
                 observation_id: Some(expected.observation_id.clone()),
-                physical_observation: Some(expected.physical_observation.clone()),
+                physical_observation: expected_physical_observation.cloned(),
                 extra_field_evidence: ExtraFieldEvidence::AlreadyCaptured,
             }))
         }
         (Some(expected), None) => {
             admission.validate_materialized(&expected.coercion_plan)?;
+            if batch.header.observation_representation
+                == PhysicalObservationRepresentation::MaterializedOutput
+            {
+                validate_materialized_effective_batch_schema(
+                    record_batch.schema().as_ref(),
+                    effective_schema,
+                    batch.header.residual_candidates(),
+                )?;
+                return Ok(BatchSchemaDisposition::Admitted(AdmittedBatchSchema {
+                    record_batch: record_batch.clone(),
+                    coercion_plan: Some(expected.coercion_plan.clone()),
+                    observation_id: Some(expected.observation_id.clone()),
+                    physical_observation: expected_physical_observation.cloned(),
+                    extra_field_evidence: ExtraFieldEvidence::AlreadyCaptured,
+                }));
+            }
             let materialized = materialize_schema_coercion(
                 record_batch,
                 effective_schema,
@@ -852,12 +897,19 @@ fn materialize_batch_schema_evidence(
                 record_batch: materialized,
                 coercion_plan: Some(expected.coercion_plan.clone()),
                 observation_id: Some(expected.observation_id.clone()),
-                physical_observation: Some(expected.physical_observation.clone()),
+                physical_observation: expected_physical_observation.cloned(),
                 extra_field_evidence: ExtraFieldEvidence::CaptureFromPhysicalBatch,
             }))
         }
         (None, supplied) => {
             if let Some(supplied) = supplied {
+                if batch.header.observation_representation
+                    != PhysicalObservationRepresentation::MaterializedOutput
+                {
+                    return Err(CdfError::data(
+                        "a batch carrying source-materialized coercion evidence must identify its payload as materialized output",
+                    ));
+                }
                 admission.validate_materialized(supplied)?;
                 validate_materialized_effective_batch_schema(
                     record_batch.schema().as_ref(),
@@ -868,9 +920,34 @@ fn materialize_batch_schema_evidence(
                     record_batch: record_batch.clone(),
                     coercion_plan: Some(supplied.clone()),
                     observation_id: Some(stream_observation_id),
-                    physical_observation: Some(PhysicalObservationEvidence::materialized_output(
-                        record_batch.schema().as_ref(),
+                    physical_observation: Some(materialized_output_evidence(
+                        record_batch,
                         batch.header.observed_schema_hash.clone(),
+                        effective_schema,
+                    )?),
+                    extra_field_evidence: ExtraFieldEvidence::AlreadyCaptured,
+                }));
+            }
+            if batch.header.observation_representation
+                == PhysicalObservationRepresentation::MaterializedOutput
+            {
+                validate_materialized_effective_batch_schema(
+                    record_batch.schema().as_ref(),
+                    effective_schema,
+                    batch.header.residual_candidates(),
+                )?;
+                let output_schema_hash =
+                    cdf_kernel::canonical_arrow_schema_hash(record_batch.schema().as_ref())?;
+                let compiled =
+                    admission.instantiate(record_batch.schema().as_ref(), &output_schema_hash)?;
+                return Ok(BatchSchemaDisposition::Admitted(AdmittedBatchSchema {
+                    record_batch: record_batch.clone(),
+                    coercion_plan: Some(compiled),
+                    observation_id: Some(stream_observation_id),
+                    physical_observation: Some(materialized_output_evidence(
+                        record_batch,
+                        batch.header.observed_schema_hash.clone(),
+                        effective_schema,
                     )?),
                     extra_field_evidence: ExtraFieldEvidence::AlreadyCaptured,
                 }));
@@ -937,6 +1014,7 @@ fn stream_admission_residual_candidates(
     physical_batch: &RecordBatch,
     coercion_plan: &cdf_contract::SchemaCoercionPlan,
     existing: &[PreContractResidualCandidate],
+    materialized_residuals_complete: bool,
     source_row_ordinal: u64,
 ) -> Result<Vec<PreContractResidualCandidate>> {
     let mut candidates = Vec::new();
@@ -956,6 +1034,12 @@ fn stream_admission_residual_candidates(
                 && candidate.source_path().first().map(String::as_str)
                     == Some(decision.source_name.as_str())
         }) {
+            if candidate.batch_row_ordinal() >= physical_batch.num_rows() {
+                return Err(CdfError::data(format!(
+                    "extra field {:?} has residual evidence outside the materialized batch",
+                    decision.source_name
+                )));
+            }
             if !covered_rows.insert(candidate.batch_row_ordinal()) {
                 return Err(CdfError::data(format!(
                     "extra field {:?} has duplicate residual evidence for batch row {}",
@@ -963,6 +1047,9 @@ fn stream_admission_residual_candidates(
                     candidate.batch_row_ordinal()
                 )));
             }
+        }
+        if materialized_residuals_complete {
+            continue;
         }
         if covered_rows.len() == physical_batch.num_rows() {
             continue;
@@ -996,6 +1083,51 @@ fn stream_admission_residual_candidates(
         }
     }
     Ok(candidates)
+}
+
+fn materialized_nullable_residual_fields(output: &Schema, effective: &Schema) -> Vec<String> {
+    output
+        .fields()
+        .iter()
+        .zip(effective.fields())
+        .filter(|(output, effective)| output.is_nullable() && !effective.is_nullable())
+        .map(|(_, effective)| {
+            source_name(effective.as_ref())
+                .unwrap_or_else(|| effective.name())
+                .to_owned()
+        })
+        .collect()
+}
+
+fn materialized_output_evidence(
+    batch: &RecordBatch,
+    decoder_observation_hash: cdf_kernel::SchemaHash,
+    effective: &Schema,
+) -> Result<PhysicalObservationEvidence> {
+    let nullable_residual_fields =
+        materialized_nullable_residual_fields(batch.schema().as_ref(), effective);
+    let nullable_residual_sources = nullable_residual_fields
+        .iter()
+        .map(String::as_str)
+        .collect::<BTreeSet<_>>();
+    let fields = effective
+        .fields()
+        .iter()
+        .map(|field| {
+            let source = source_name(field.as_ref()).unwrap_or_else(|| field.name());
+            if nullable_residual_sources.contains(source) {
+                Arc::new(field.as_ref().clone().with_nullable(true))
+            } else {
+                Arc::clone(field)
+            }
+        })
+        .collect::<Vec<_>>();
+    let output_schema = Schema::new_with_metadata(fields, effective.metadata().clone());
+    PhysicalObservationEvidence::materialized_output(
+        &output_schema,
+        decoder_observation_hash,
+        nullable_residual_fields,
+    )
 }
 
 fn compact_record_batch_prefix(batch: &RecordBatch, rows: usize) -> Result<RecordBatch> {
@@ -1695,20 +1827,38 @@ impl DedupProvenanceSink {
 
 fn record_observation_schema_coercion(
     evidence: &mut BTreeMap<String, StreamAdmissionObservationEvidence>,
+    physical_observation_catalog: &mut BTreeMap<String, PhysicalObservationEvidence>,
     observation_id: &str,
     physical_observation: PhysicalObservationEvidence,
     coercion_plan: cdf_contract::SchemaCoercionPlan,
 ) -> Result<()> {
+    let physical_observation_hash = physical_observation.identity_hash()?;
+    match physical_observation_catalog.entry(physical_observation_hash.to_string()) {
+        std::collections::btree_map::Entry::Vacant(entry) => {
+            entry.insert(physical_observation);
+        }
+        std::collections::btree_map::Entry::Occupied(entry)
+            if entry.get() != &physical_observation =>
+        {
+            return Err(CdfError::data(
+                "physical-observation identity collision carries conflicting evidence",
+            ));
+        }
+        std::collections::btree_map::Entry::Occupied(_) => {}
+    }
     let artifact = StreamAdmissionObservationEvidence::new(
         observation_id,
-        physical_observation,
+        physical_observation_hash,
         coercion_plan,
-        crate::StreamAdmissionCompletion::Partial,
+        crate::StreamAdmissionCompletion::Partial {
+            attempted_position: None,
+            observed_rows: 0,
+            partition_binding: String::new(),
+        },
     )?;
     if let Some(existing) = evidence.get(observation_id) {
         if existing.observation_id != artifact.observation_id
             || existing.physical_observation_hash != artifact.physical_observation_hash
-            || existing.physical_observation != artifact.physical_observation
             || existing.coercion_plan != artifact.coercion_plan
         {
             return Err(CdfError::data(format!(
@@ -2062,6 +2212,8 @@ where
     let mut output_schema = Some(schema_artifact(runtime_output_schema.as_ref()));
     let mut stream_admission_evidence =
         BTreeMap::<String, StreamAdmissionObservationEvidence>::new();
+    let mut stream_physical_observation_catalog =
+        BTreeMap::<String, PhysicalObservationEvidence>::new();
     let mut schema_admission_cache =
         BTreeMap::<cdf_kernel::SchemaHash, cdf_contract::SchemaCoercionPlan>::new();
     let mut processed_observations = Vec::new();
@@ -2197,8 +2349,8 @@ where
             let physical_observation = effective_schema_evidence
                 .and_then(|evidence| {
                     evidence
-                        .physical_observations
-                        .get(quarantine.observation_id())
+                        .physical_observation_catalog
+                        .get(quarantine.physical_schema_hash().as_str())
                 })
                 .cloned()
                 .ok_or_else(|| {
@@ -2242,6 +2394,7 @@ where
             observed_positions,
             dynamic_quarantine,
             partition_observation_id,
+            partition_observed_rows,
         ) = async {
             phase_measurements.add(
                 RunPhase::Decode,
@@ -2317,6 +2470,10 @@ where
                     &batch,
                     record_batch,
                     partition_schema_evidence,
+                    preobserved_physical_observation(
+                        effective_schema_evidence,
+                        partition_schema_evidence,
+                    )?,
                     &plan.compiled_schema_admission,
                     &mut schema_admission_cache,
                     if partition_schema_evidence.is_some() {
@@ -2347,16 +2504,17 @@ where
                     }
                 };
                 admitted_batch_count = admitted_batch_count.saturating_add(1);
-                if matches!(
-                    reconciled.extra_field_evidence,
-                    ExtraFieldEvidence::CaptureFromPhysicalBatch
-                ) && let Some(coercion_plan) = reconciled.coercion_plan.as_ref()
+                if let Some(coercion_plan) = reconciled.coercion_plan.as_ref()
                     && plan.compiled_schema_admission.captures_unknown_fields()?
                 {
                     let candidates = stream_admission_residual_candidates(
                         record_batch,
                         coercion_plan,
                         batch.header.residual_candidates(),
+                        matches!(
+                            reconciled.extra_field_evidence,
+                            ExtraFieldEvidence::AlreadyCaptured
+                        ) && batch.header.materialized_residuals_complete(),
                         partition_source_row_ordinal,
                     )?;
                     batch.header.extend_residual_candidates(candidates);
@@ -2385,6 +2543,7 @@ where
                     partition_observation_id = Some(observation_id.to_owned());
                     record_observation_schema_coercion(
                         &mut stream_admission_evidence,
+                        &mut stream_physical_observation_catalog,
                         observation_id,
                         physical_observation,
                         batch_coercion,
@@ -2592,6 +2751,7 @@ where
                 observed_positions,
                 dynamic_quarantine,
                 partition_observation_id,
+                partition_source_row_ordinal,
             ))
         }
         .instrument(partition_span)
@@ -2622,8 +2782,7 @@ where
                 quarantine,
                 physical_observation,
             )?;
-        } else if fully_processed
-            && let Some(observation_id) = partition
+        } else if let Some(observation_id) = partition
                 .metadata
                 .get(PLAN_SCHEMA_OBSERVATION_ID_KEY)
                 .cloned()
@@ -2663,8 +2822,18 @@ where
                 }
                 record_observation_schema_coercion(
                     &mut stream_admission_evidence,
+                    &mut stream_physical_observation_catalog,
                     &expected.observation_id,
-                    expected.physical_observation.clone(),
+                    preobserved_physical_observation(
+                        effective_schema_evidence,
+                        Some(expected),
+                    )?
+                    .cloned()
+                    .ok_or_else(|| {
+                        CdfError::internal(
+                            "preobserved empty partition omitted its physical observation",
+                        )
+                    })?,
                     expected.coercion_plan.clone(),
                 )?;
             }
@@ -2675,24 +2844,51 @@ where
             } else {
                 Some(aggregate_processed_partition_positions(
                     &observation_id,
+                    resource.descriptor(),
+                    resource_schema.as_ref(),
                     &observed_positions,
                     fallback_position,
                 )?)
             };
             if let Some(source_position) = source_position {
-                stream_admission_evidence
+                let evidence = stream_admission_evidence
                     .get_mut(&observation_id)
                     .ok_or_else(|| {
                         CdfError::internal(format!(
                             "admitted observation {observation_id:?} omitted stream-admission evidence"
                         ))
-                    })?
-                    .bind_source_position(source_position.clone())?;
-                processed_observations.push(ProcessedObservationPosition::new(
-                    observation_id,
-                    ProcessedObservationOutcome::Admitted,
-                    source_position,
-                )?);
+                    })?;
+                if fully_processed {
+                    evidence.bind_source_position(source_position.clone())?;
+                    processed_observations.push(ProcessedObservationPosition::new(
+                        observation_id,
+                        ProcessedObservationOutcome::Admitted,
+                        source_position,
+                    )?);
+                } else {
+                    evidence.bind_partial_attempt(
+                        source_position,
+                        partition_observed_rows,
+                        cdf_kernel::partition_source_identity_binding(&partition)?,
+                    )?;
+                }
+            } else {
+                let evidence = stream_admission_evidence
+                    .get_mut(&observation_id)
+                    .ok_or_else(|| {
+                        CdfError::internal(format!(
+                            "admitted observation {observation_id:?} omitted stream-admission evidence"
+                        ))
+                    })?;
+                if fully_processed {
+                    evidence.bind_unpositioned_completion(
+                        cdf_kernel::partition_source_identity_binding(&partition)?,
+                    )?;
+                } else {
+                    return Err(CdfError::data(format!(
+                        "partial schema observation {observation_id:?} requires exact generation and slice-position authority"
+                    )));
+                }
             }
         }
         if remaining_limit.is_some_and(|remaining| remaining > 0) {
@@ -2806,11 +3002,13 @@ where
             "schema/stream-admission-evidence.json",
             &CompiledStreamAdmissionEvidence::new(
                 &plan.compiled_schema_admission,
+                stream_physical_observation_catalog,
                 stream_admission_evidence.into_values().collect(),
             )?,
         )?;
     }
     if !terminal_quarantines.is_empty() {
+        let mut quarantine_physical_observation_catalog = BTreeMap::new();
         let quarantine_evidence = terminal_quarantines
             .iter()
             .map(|quarantine| {
@@ -2822,7 +3020,15 @@ where
                             quarantine.observation_id()
                         ))
                     })?;
-                SchemaQuarantineObservationEvidence::new(quarantine, physical)
+                let physical_hash = physical.identity_hash()?;
+                if physical_hash != *quarantine.physical_schema_hash() {
+                    return Err(CdfError::internal(format!(
+                        "schema quarantine {:?} physical evidence does not match its recorded hash",
+                        quarantine.observation_id()
+                    )));
+                }
+                quarantine_physical_observation_catalog.insert(physical_hash.to_string(), physical);
+                SchemaQuarantineObservationEvidence::new(quarantine, physical_hash)
             })
             .collect::<Result<Vec<_>>>()?;
         if !quarantine_physical_observations.is_empty() {
@@ -2836,6 +3042,7 @@ where
             "quarantine/schema-admission-evidence.json",
             &CompiledSchemaQuarantineEvidence::new(
                 &plan.compiled_schema_admission,
+                quarantine_physical_observation_catalog,
                 quarantine_evidence,
             )?,
         )?;
@@ -3129,6 +3336,8 @@ fn normalize_source_position_for_partition(
 
 fn aggregate_processed_partition_positions(
     observation_id: &str,
+    descriptor: &cdf_kernel::ResourceDescriptor,
+    schema: &Schema,
     observed: &[SourcePosition],
     attested: Option<SourcePosition>,
 ) -> Result<SourcePosition> {
@@ -3136,17 +3345,16 @@ fn aggregate_processed_partition_positions(
     if let Some(attested) = attested {
         positions.push(attested);
     }
-    let first = positions.first().cloned().ok_or_else(|| {
-        CdfError::data(format!(
-            "processed observation {observation_id:?} completed without source-position evidence"
-        ))
-    })?;
-    if positions.iter().any(|position| position != &first) {
+    if positions.is_empty() {
         return Err(CdfError::data(format!(
-            "processed observation {observation_id:?} produced source-position evidence that differs from execution-time attestation"
+            "processed observation {observation_id:?} completed without source-position evidence"
         )));
     }
-    Ok(first)
+    aggregate_resource_output_position(descriptor, schema, None, &positions).map_err(|error| {
+        CdfError::data(format!(
+            "processed observation {observation_id:?} has invalid source-position evidence: {error}"
+        ))
+    })
 }
 
 fn merge_verdict_summary(total: &mut VerdictSummary, batch: VerdictSummary) {

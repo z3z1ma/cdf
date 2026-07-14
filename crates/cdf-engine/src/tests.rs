@@ -175,16 +175,22 @@ fn compiled_stream_admission_is_replay_verifiable_and_rejects_mismatched_evidenc
         .compiled_schema_admission
         .instantiate(resource.schema().as_ref(), &physical_schema_hash)
         .unwrap();
+    let physical_observation =
+        crate::PhysicalObservationEvidence::arrow_schema(resource.schema().as_ref()).unwrap();
+    let physical_observation_hash = physical_observation.identity_hash().unwrap();
     let evidence = CompiledStreamAdmissionEvidence {
         compiled_admission_hash: cdf_runtime::artifact_hash(&plan.compiled_schema_admission)
             .unwrap(),
         baseline_schema_hash: plan.schema_authority.baseline_schema_hash.to_string(),
         effective_schema_hash: plan.schema_authority.effective_schema_hash.to_string(),
+        physical_observation_catalog: BTreeMap::from([(
+            physical_observation_hash.to_string(),
+            physical_observation,
+        )]),
         observations: vec![
             StreamAdmissionObservationEvidence::new(
                 "partition-1",
-                crate::PhysicalObservationEvidence::arrow_schema(resource.schema().as_ref())
-                    .unwrap(),
+                physical_observation_hash,
                 coercion_plan,
                 crate::StreamAdmissionCompletion::Complete {
                     source_position: terminal_file_position(),
@@ -201,9 +207,7 @@ fn compiled_stream_admission_is_replay_verifiable_and_rejects_mismatched_evidenc
         .validate(&plan.compiled_schema_admission)
         .unwrap_err();
     assert!(
-        error
-            .to_string()
-            .contains("physical-observation hash mismatch"),
+        error.to_string().contains("absent physical observation"),
         "{error}"
     );
     let mut unauthorized = evidence.clone();
@@ -212,7 +216,38 @@ fn compiled_stream_admission_is_replay_verifiable_and_rejects_mismatched_evidenc
     let error = unauthorized
         .validate(&plan.compiled_schema_admission)
         .unwrap_err();
-    assert!(error.to_string().contains("does not allow"), "{error}");
+    assert!(
+        error.to_string().contains("compiled coercion verdict"),
+        "{error}"
+    );
+
+    let mut forged = evidence.clone();
+    forged.observations[0].coercion_plan.fields[0].decision = FieldCoercionDecision::Missing;
+    let error = forged
+        .validate(&plan.compiled_schema_admission)
+        .unwrap_err();
+    assert!(
+        error.to_string().contains("compiled coercion verdict"),
+        "{error}"
+    );
+
+    let mut with_unused_catalog_entry = evidence.clone();
+    let unused = crate::PhysicalObservationEvidence::materialized_output(
+        resource.schema().as_ref(),
+        SchemaHash::new("decoder-observation-unused").unwrap(),
+        Vec::<String>::new(),
+    )
+    .unwrap();
+    with_unused_catalog_entry
+        .physical_observation_catalog
+        .insert(unused.identity_hash().unwrap().to_string(), unused);
+    let error = with_unused_catalog_entry
+        .validate(&plan.compiled_schema_admission)
+        .unwrap_err();
+    assert!(
+        error.to_string().contains("exact referenced set"),
+        "{error}"
+    );
 
     let mut mismatched = evidence;
     mismatched.compiled_admission_hash = "sha256:mismatched".to_owned();
@@ -937,6 +972,10 @@ fn effective_schema_reuses_observation_across_partitions_and_attests_only_attemp
     )
     .unwrap();
     assert_eq!(witnessed["observations"].as_array().unwrap().len(), 1);
+    assert_eq!(
+        witnessed["observations"][0]["completion"]["kind"],
+        "complete"
+    );
 
     let mut tampered = plan.clone();
     tampered
@@ -955,6 +994,51 @@ fn effective_schema_reuses_observation_across_partitions_and_attests_only_attemp
     assert!(
         error.to_string().contains("discovery executor budget"),
         "{error}"
+    );
+}
+
+#[test]
+fn limited_multi_batch_partition_records_exact_non_checkpointing_partial_attempt() {
+    let mut batches = sample_batches();
+    for batch in &mut batches {
+        batch.header.partition_id = PartitionId::new("part-0").unwrap();
+        batch.header.source_position = Some(terminal_file_position());
+    }
+    let resource = MockResource::tier_a(batches);
+    let plan = Planner::new()
+        .plan_tier_a(
+            &resource,
+            plan_input(Vec::new(), None, Some(1), PlanBoundedness::Bounded),
+        )
+        .unwrap();
+    let temp = TempDir::new().unwrap();
+
+    block_on(execute_to_package(&plan, &resource, temp.path())).unwrap();
+
+    let evidence: CompiledStreamAdmissionEvidence = serde_json::from_slice(
+        &std::fs::read(temp.path().join("schema/stream-admission-evidence.json")).unwrap(),
+    )
+    .unwrap();
+    let [observation] = evidence.observations.as_slice() else {
+        panic!("expected exactly one partial schema observation");
+    };
+    match &observation.completion {
+        crate::StreamAdmissionCompletion::Partial {
+            attempted_position: Some(position),
+            observed_rows,
+            partition_binding,
+        } => {
+            assert_eq!(position, &terminal_file_position());
+            assert_eq!(*observed_rows, 3);
+            assert!(!partition_binding.is_empty());
+        }
+        other => panic!("expected exact partial attempt, got {other:?}"),
+    }
+    assert!(
+        !temp
+            .path()
+            .join(cdf_package_contract::PROCESSED_OBSERVATIONS_FILE)
+            .exists()
     );
 }
 
@@ -1115,6 +1199,19 @@ fn terminal_effective_schema_runtime(
     physical_schema: SchemaRef,
     physical_hash: SchemaHash,
 ) -> EffectiveSchemaRuntime {
+    let authority_plan = Planner::new()
+        .plan_tier_b(
+            &MockResource::tier_b(Vec::new()),
+            plan_input(Vec::new(), None, None, PlanBoundedness::Bounded),
+        )
+        .unwrap();
+    let CompiledSchemaAdmissionOutcome::Quarantined(terminal) = authority_plan
+        .compiled_schema_admission
+        .instantiate_or_quarantine("input-0", physical_schema.as_ref(), &physical_hash)
+        .unwrap()
+    else {
+        panic!("incompatible fixture must compile to terminal quarantine");
+    };
     let descriptor = descriptor();
     let evidence = EffectiveSchemaEvidence::new(
         SchemaBaselineReference::Pinned {
@@ -1131,38 +1228,6 @@ fn terminal_effective_schema_runtime(
         )],
     )
     .unwrap();
-    let terminal = TerminalSchemaObservationQuarantine::new(
-        "input-0",
-        physical_hash.clone(),
-        "schema-observation:incompatible",
-        "schema_observation_quarantined",
-        SchemaObservationPolicy::Evolve,
-        "publish a compatible source type, declare an allowed coercion, or repin the schema after review",
-        vec![
-            SchemaObservationFieldQuarantine::new_field_path(
-                vec!["id".to_owned()],
-                Some(
-                    cdf_kernel::CanonicalArrowField::from_arrow(&Field::new(
-                        "id",
-                        DataType::Utf8,
-                        false,
-                    ))
-                    .unwrap(),
-                ),
-                Some(
-                    cdf_kernel::CanonicalArrowField::from_arrow(&Field::new(
-                        "id",
-                        DataType::Int32,
-                        false,
-                    ))
-                    .unwrap(),
-                ),
-                "incompatible physical type",
-            )
-            .unwrap(),
-        ],
-    )
-    .unwrap();
     EffectiveSchemaRuntime::new(
         evidence,
         vec![EffectiveSchemaCatalogEntry::new(
@@ -1171,7 +1236,7 @@ fn terminal_effective_schema_runtime(
         )],
     )
     .unwrap()
-    .with_terminal_quarantines(vec![terminal])
+    .with_terminal_quarantines(vec![*terminal])
     .unwrap()
     .with_discovery_executor_budget(DiscoveryExecutorBudgetEvidence::new(64, 128, 2).unwrap())
     .unwrap()
@@ -1659,6 +1724,7 @@ fn compiled_output_schema_strips_runtime_provenance_only_after_serializing_evide
     )
     .unwrap();
     batch.header.schema_coercion_plan = Some(serialized_plan);
+    batch.header.mark_materialized_output();
     let resource = MockResource::tier_a(vec![batch]).with_schema(constraint.clone());
     let input = plan_input_for_schema(constraint, vec![], None, None, PlanBoundedness::Bounded);
     let plan = Planner::new().plan_tier_a(&resource, input).unwrap();
@@ -1705,22 +1771,36 @@ fn package_artifacts_preserve_exact_embedded_lossy_and_extra_reconciliation_deci
     let schema = Arc::new(reconciliation.schema);
     let record_batch =
         RecordBatch::try_new(schema.clone(), vec![Arc::new(Int32Array::from(vec![1, 2]))]).unwrap();
-    let resource = MockResource::tier_a(vec![{
-        let mut batch = Batch::from_record_batch(
-            BatchId::new("batch-json-reconciled").unwrap(),
-            ResourceId::new("orders").unwrap(),
-            PartitionId::new("part-0").unwrap(),
-            SchemaHash::new("schema-json-reconciled").unwrap(),
-            record_batch,
+    let mut batch = Batch::from_record_batch(
+        BatchId::new("batch-json-reconciled").unwrap(),
+        ResourceId::new("orders").unwrap(),
+        PartitionId::new("part-0").unwrap(),
+        SchemaHash::new("schema-json-reconciled").unwrap(),
+        record_batch,
+    )
+    .unwrap();
+    batch.header.schema_coercion_plan = Some(serialized_plan);
+    batch.header.mark_materialized_output();
+    batch.header.push_residual_candidate(
+        PreContractResidualCandidate::new(
+            1,
+            1,
+            vec!["source_only".to_owned()],
+            Field::new("source_only", DataType::Utf8, true),
+            None,
+            Arc::new(StringArray::from(vec!["present-on-one-row"])) as ArrayRef,
+            0,
         )
-        .unwrap();
-        batch.header.schema_coercion_plan = Some(serialized_plan);
-        batch
-    }])
-    .with_type_policy_allowances(cdf_kernel::TypePolicyAllowances {
-        coerce_types: false,
-        allow_lossy_mapping: true,
-    });
+        .unwrap(),
+    );
+    let incomplete_residual_evidence = batch.clone();
+    batch.header.mark_materialized_residuals_complete();
+    let resource = MockResource::tier_a(vec![batch]).with_type_policy_allowances(
+        cdf_kernel::TypePolicyAllowances {
+            coerce_types: false,
+            allow_lossy_mapping: true,
+        },
+    );
     let input = plan_input_for_schema(
         Arc::new(constraint),
         vec![],
@@ -1741,6 +1821,35 @@ fn package_artifacts_preserve_exact_embedded_lossy_and_extra_reconciliation_deci
     assert_eq!(
         coercion_decision(&evidence, "source_only").decision,
         FieldCoercionDecision::Extra
+    );
+
+    let incomplete_resource = MockResource::tier_a(vec![incomplete_residual_evidence])
+        .with_type_policy_allowances(cdf_kernel::TypePolicyAllowances {
+            coerce_types: false,
+            allow_lossy_mapping: true,
+        });
+    let incomplete_plan = Planner::new()
+        .plan_tier_a(
+            &incomplete_resource,
+            plan_input_for_schema(
+                Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)])),
+                vec![],
+                None,
+                None,
+                PlanBoundedness::Bounded,
+            ),
+        )
+        .unwrap();
+    let incomplete_package = TempDir::new().unwrap();
+    let error = block_on(execute_to_package(
+        &incomplete_plan,
+        &incomplete_resource,
+        incomplete_package.path(),
+    ))
+    .unwrap_err();
+    assert!(
+        error.to_string().contains("absent from its physical batch"),
+        "{error}"
     );
 }
 
@@ -1802,6 +1911,7 @@ fn package_execution_rejects_malformed_trusted_coercion_header() {
     )
     .unwrap();
     batch.header.schema_coercion_plan = Some("{not-json".to_owned());
+    batch.header.mark_materialized_output();
     let resource = MockResource::tier_a(vec![batch]);
     let input = plan_input_for_schema(schema, vec![], None, None, PlanBoundedness::Bounded);
     let plan = Planner::new().plan_tier_a(&resource, input).unwrap();
@@ -1837,6 +1947,7 @@ fn package_execution_rejects_valid_header_only_coercion_injection() {
         })
         .to_string(),
     );
+    batch.header.mark_materialized_output();
     let resource = MockResource::tier_a(vec![batch]);
     let input = plan_input_for_schema(schema, vec![], None, None, PlanBoundedness::Bounded);
     let plan = Planner::new().plan_tier_a(&resource, input).unwrap();
@@ -2620,6 +2731,7 @@ fn residual_multi_partition_decisions_share_verified_effective_schema_and_keep_i
     .unwrap();
     captured_batch.header.observed_schema_hash = physical_hash.clone();
     captured_batch.header.schema_coercion_plan = Some(serialized_coercion.clone());
+    captured_batch.header.mark_materialized_output();
     captured_batch.header.source_position = Some(terminal_file_position());
     captured_batch.header.push_residual_candidate(
         PreContractResidualCandidate::new(
@@ -2652,6 +2764,7 @@ fn residual_multi_partition_decisions_share_verified_effective_schema_and_keep_i
     .unwrap();
     quarantined_batch.header.observed_schema_hash = physical_hash.clone();
     quarantined_batch.header.schema_coercion_plan = Some(serialized_coercion);
+    quarantined_batch.header.mark_materialized_output();
     quarantined_batch.header.source_position = Some(terminal_file_position());
     quarantined_batch.header.push_residual_candidate(
         PreContractResidualCandidate::new(
@@ -3093,7 +3206,7 @@ fn package_identity_is_invariant_to_source_batch_rechunking() {
     );
     assert_eq!(
         one_output.manifest.package_hash,
-        "sha256:ec068ec46adadccabb512a445794862a3b782a0d42a20c5c3b9637aabe003b8f"
+        "sha256:e1f0e5a3924258917c30e5c98da6f70cb5dc6e96d39c0550c33cef125988d087"
     );
 }
 
@@ -4447,6 +4560,7 @@ fn parquet_reconciled_batch() -> Batch {
                 record_batch.get_array_memory_size() as u64,
             );
             header.schema_coercion_plan = Some(serialized_plan);
+            header.mark_materialized_output();
             header
         },
         payload: cdf_kernel::BatchPayload::in_memory(record_batch),

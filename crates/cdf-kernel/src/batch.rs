@@ -117,6 +117,7 @@ pub struct BatchHeader {
     pub resource_id: ResourceId,
     pub partition_id: PartitionId,
     pub observed_schema_hash: SchemaHash,
+    pub observation_representation: PhysicalObservationRepresentation,
     pub row_count: u64,
     pub byte_count: u64,
     pub source_position: Option<SourcePosition>,
@@ -129,6 +130,13 @@ pub struct BatchHeader {
     pub cdc: Option<CdcMetadata>,
     #[serde(skip, default)]
     pre_contract_evidence: PreContractEvidence,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PhysicalObservationRepresentation {
+    ArrowSchema,
+    MaterializedOutput,
 }
 
 impl BatchHeader {
@@ -145,6 +153,7 @@ impl BatchHeader {
             resource_id,
             partition_id,
             observed_schema_hash,
+            observation_representation: PhysicalObservationRepresentation::ArrowSchema,
             row_count,
             byte_count,
             source_position: None,
@@ -155,6 +164,10 @@ impl BatchHeader {
             cdc: None,
             pre_contract_evidence: PreContractEvidence::default(),
         }
+    }
+
+    pub fn mark_materialized_output(&mut self) {
+        self.observation_representation = PhysicalObservationRepresentation::MaterializedOutput;
     }
 
     pub fn residual_candidates(&self) -> &[PreContractResidualCandidate] {
@@ -178,6 +191,14 @@ impl BatchHeader {
 
     pub fn take_residual_candidates(&mut self) -> Vec<PreContractResidualCandidate> {
         std::mem::take(&mut self.pre_contract_evidence.residual_candidates)
+    }
+
+    pub fn mark_materialized_residuals_complete(&mut self) {
+        self.pre_contract_evidence.materialized_residuals_complete = true;
+    }
+
+    pub fn materialized_residuals_complete(&self) -> bool {
+        self.pre_contract_evidence.materialized_residuals_complete
     }
 
     pub fn pre_contract_evidence_retained_bytes(&self) -> Result<u64> {
@@ -209,6 +230,7 @@ impl BatchHeader {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 struct PreContractEvidence {
     residual_candidates: Vec<PreContractResidualCandidate>,
+    materialized_residuals_complete: bool,
 }
 
 #[derive(Clone)]

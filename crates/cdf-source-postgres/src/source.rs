@@ -295,6 +295,9 @@ pub fn plan_postgres_table_partition(
     metadata.insert("dialect".to_owned(), POSTGRES_SQL_DIALECT.to_owned());
     metadata.insert("table".to_owned(), target.display_name());
     metadata.insert("resource_id".to_owned(), descriptor.resource_id.to_string());
+    if let Some(cursor) = &descriptor.cursor {
+        metadata.insert("cursor_field".to_owned(), cursor.field.clone());
+    }
     metadata.insert(
         POSTGRES_SQL_SCAN_METADATA.to_owned(),
         serde_json::to_string(&scan).map_err(|error| {
@@ -349,6 +352,7 @@ fn execute_postgres_table(
         observed_schema_hash,
         record_batch,
     )?;
+    batch.header.mark_materialized_output();
     batch.header.source_position = source_position;
     Ok(vec![batch])
 }

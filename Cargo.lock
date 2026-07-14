@@ -1027,10 +1027,13 @@ dependencies = [
 name = "cdf-format-delimited"
 version = "0.1.0"
 dependencies = [
+ "arrow-array 59.1.0",
  "arrow-csv",
+ "arrow-schema 59.1.0",
  "cdf-kernel",
  "cdf-memory",
  "cdf-runtime",
+ "futures-executor",
  "futures-util",
  "serde_json",
 ]

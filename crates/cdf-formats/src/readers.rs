@@ -674,6 +674,7 @@ pub fn stream_parquet_file_with_declared_schema_and_type_policy(
                 batch.header.observed_schema_hash = physical_schema_hash;
                 batch.header.source_position = position;
                 batch.header.schema_coercion_plan = Some(reconciliation_plan);
+                batch.header.mark_materialized_output();
                 batch.header.extend_residual_candidates(candidates);
                 Ok(Some((
                     batch,
@@ -942,6 +943,9 @@ fn build_output_with_pre_contract_evidence(
         )?;
         batch.header.source_position = position.clone();
         batch.header.schema_coercion_plan = schema_coercion_plan.clone();
+        if schema_coercion_plan.is_some() {
+            batch.header.mark_materialized_output();
+        }
         if index == 0 {
             batch.header.pre_contract_quarantine = std::mem::take(&mut quarantine);
         }

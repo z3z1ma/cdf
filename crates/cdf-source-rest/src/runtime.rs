@@ -398,11 +398,13 @@ fn execute_rest(
                 page.observed_schema_hash.clone(),
                 page.record_batch,
             )?;
+            batch.header.mark_materialized_output();
             batch.header.source_position = page.source_position;
             batch.header.pre_contract_quarantine = page.pre_contract_quarantine;
             batch
                 .header
                 .extend_residual_candidates(page.residual_candidates);
+            batch.header.mark_materialized_residuals_complete();
             batch.header.schema_coercion_plan = page.schema_coercion_plan;
             batches.push(batch);
         }

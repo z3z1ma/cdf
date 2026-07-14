@@ -448,6 +448,27 @@ pub const PLAN_SCHEMA_OBSERVATION_ID_KEY: &str = "cdf:schema_observation_id";
 pub const PLAN_SCHEMA_OBSERVATION_BINDING_KEY: &str = "cdf:schema_observation_binding";
 pub const PLAN_PHYSICAL_SCHEMA_HASH_KEY: &str = "cdf:physical_schema_hash";
 
+pub fn partition_source_identity_binding(partition: &PartitionPlan) -> Result<String> {
+    if let Some(binding) = partition.metadata.get(PLAN_SCHEMA_OBSERVATION_BINDING_KEY) {
+        if binding.is_empty() {
+            return Err(CdfError::data(format!(
+                "partition {:?} carries an empty source-identity binding",
+                partition.partition_id
+            )));
+        }
+        return Ok(binding.clone());
+    }
+    use sha2::{Digest, Sha256};
+    let bytes = serde_json::to_vec(&(
+        &partition.partition_id,
+        &partition.scope,
+        &partition.start_position,
+        &partition.metadata,
+    ))
+    .map_err(|error| CdfError::internal(error.to_string()))?;
+    Ok(format!("sha256:{:x}", Sha256::digest(bytes)))
+}
+
 #[non_exhaustive]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PartitionAttestation {

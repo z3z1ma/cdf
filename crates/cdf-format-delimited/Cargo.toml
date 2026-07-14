@@ -7,9 +7,14 @@ publish = false
 description = "Streaming delimited text format drivers for cdf."
 
 [dependencies]
+arrow-array = "59.1.0"
 arrow-csv = "59.1.0"
+arrow-schema = "59.1.0"
 cdf-kernel = { path = "../cdf-kernel" }
 cdf-memory = { path = "../cdf-memory" }
 cdf-runtime = { path = "../cdf-runtime" }
 futures-util = "0.3.32"
 serde_json = "1.0.150"
+
+[dev-dependencies]
+futures-executor = "0.3.32"

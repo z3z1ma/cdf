@@ -543,6 +543,7 @@ impl CompiledSchemaAdmissionPlan {
             || expected.error_code() != quarantine.error_code()
             || expected.policy() != quarantine.policy()
             || expected.remediation() != quarantine.remediation()
+            || expected.fields() != quarantine.fields()
         {
             return Err(CdfError::data(format!(
                 "schema quarantine {:?} does not match the compiled admission action",
@@ -550,6 +551,78 @@ impl CompiledSchemaAdmissionPlan {
             )));
         }
         Ok(())
+    }
+
+    pub fn validate_admitted_observation(
+        &self,
+        observation_id: &str,
+        physical_observation: &PhysicalObservationEvidence,
+        recorded: &SchemaCoercionPlan,
+    ) -> Result<()> {
+        match physical_observation {
+            PhysicalObservationEvidence::MaterializedOutput {
+                output_schema,
+                nullable_residual_fields,
+                ..
+            } => {
+                self.validate_materialized(recorded)?;
+                let output = output_schema.to_arrow()?;
+                let constraint = self.constraint_schema.to_arrow()?;
+                let nullable_residual_fields = nullable_residual_fields
+                    .iter()
+                    .map(String::as_str)
+                    .collect::<BTreeSet<_>>();
+                if output.metadata() != constraint.metadata()
+                    || output.fields().len() != constraint.fields().len()
+                {
+                    return Err(CdfError::data(format!(
+                        "materialized schema observation {observation_id:?} does not carry the compiled effective output schema"
+                    )));
+                }
+                for (output, constraint) in output.fields().iter().zip(constraint.fields()) {
+                    let output_source =
+                        source_name(output.as_ref()).unwrap_or_else(|| output.name());
+                    let constraint_source =
+                        source_name(constraint.as_ref()).unwrap_or_else(|| constraint.name());
+                    let nullable_matches = output.is_nullable() == constraint.is_nullable()
+                        || (output.is_nullable()
+                            && !constraint.is_nullable()
+                            && nullable_residual_fields.contains(constraint_source));
+                    if output.name() != constraint.name()
+                        || output_source != constraint_source
+                        || output.data_type() != constraint.data_type()
+                        || output.metadata() != constraint.metadata()
+                        || !nullable_matches
+                    {
+                        return Err(CdfError::data(format!(
+                            "materialized schema observation {observation_id:?} output field {:?} does not match compiled field {:?}",
+                            output.name(),
+                            constraint.name()
+                        )));
+                    }
+                }
+                Ok(())
+            }
+            PhysicalObservationEvidence::ArrowSchema { schema } => {
+                let observed = schema.to_arrow()?;
+                let physical_hash = physical_observation.identity_hash()?;
+                match self.instantiate_or_quarantine(
+                    observation_id,
+                    observed.as_ref(),
+                    &physical_hash,
+                )? {
+                    CompiledSchemaAdmissionOutcome::Admitted(expected) if expected == *recorded => {
+                        Ok(())
+                    }
+                    CompiledSchemaAdmissionOutcome::Admitted(_) => Err(CdfError::data(format!(
+                        "admitted schema observation {observation_id:?} does not match the compiled coercion verdict"
+                    ))),
+                    CompiledSchemaAdmissionOutcome::Quarantined(_) => Err(CdfError::data(format!(
+                        "admitted schema observation {observation_id:?} conflicts with the compiled quarantine verdict"
+                    ))),
+                }
+            }
+        }
     }
 
     fn control_critical_missing_quarantine(
@@ -647,7 +720,9 @@ impl CompiledSchemaAdmissionPlan {
                 "preobserved schema evidence does not match the compiled admission epoch",
             ));
         }
+        validate_physical_observation_catalog(&evidence.physical_observation_catalog)?;
         let mut admitted = BTreeSet::new();
+        let mut expected_physical_observations = BTreeSet::new();
         for observation in &evidence.observations {
             if observation.observation_id.is_empty()
                 || !admitted.insert(observation.observation_id.as_str())
@@ -656,24 +731,22 @@ impl CompiledSchemaAdmissionPlan {
                     "preobserved schema evidence contains an empty or duplicate admitted observation",
                 ));
             }
-            if observation.physical_observation.identity_hash()? != observation.physical_schema_hash
-            {
-                return Err(CdfError::data(format!(
-                    "preobserved schema evidence {:?} does not bind its physical schema",
-                    observation.observation_id
-                )));
-            }
-            if evidence
-                .physical_observations
-                .get(&observation.observation_id)
-                != Some(&observation.physical_observation)
-            {
-                return Err(CdfError::data(format!(
-                    "preobserved schema evidence {:?} conflicts with its physical-observation catalog",
-                    observation.observation_id
-                )));
-            }
-            self.validate_materialized(&observation.coercion_plan)?;
+            let physical_hash = observation.physical_schema_hash.as_str();
+            expected_physical_observations.insert(physical_hash);
+            let physical = evidence
+                .physical_observation_catalog
+                .get(physical_hash)
+                .ok_or_else(|| {
+                    CdfError::data(format!(
+                        "preobserved schema evidence {:?} references an absent physical observation",
+                        observation.observation_id
+                    ))
+                })?;
+            self.validate_admitted_observation(
+                &observation.observation_id,
+                physical,
+                &observation.coercion_plan,
+            )?;
         }
         let mut quarantined = BTreeSet::new();
         for quarantine in &evidence.terminal_quarantines {
@@ -685,9 +758,11 @@ impl CompiledSchemaAdmissionPlan {
                     "preobserved schema evidence contains a duplicate admitted/quarantined observation",
                 ));
             }
+            let physical_hash = quarantine.physical_schema_hash().as_str();
+            expected_physical_observations.insert(physical_hash);
             let physical = evidence
-                .physical_observations
-                .get(quarantine.observation_id())
+                .physical_observation_catalog
+                .get(physical_hash)
                 .ok_or_else(|| {
                     CdfError::data(format!(
                         "preobserved quarantine {:?} omitted its physical Arrow schema",
@@ -702,14 +777,9 @@ impl CompiledSchemaAdmissionPlan {
             }
             self.validate_quarantined_observation(quarantine, physical)?;
         }
-        let expected = admitted
-            .iter()
-            .chain(quarantined.iter())
-            .copied()
-            .collect::<BTreeSet<_>>();
-        if expected
+        if expected_physical_observations
             != evidence
-                .physical_observations
+                .physical_observation_catalog
                 .keys()
                 .map(String::as_str)
                 .collect::<BTreeSet<_>>()
@@ -822,7 +892,6 @@ pub(crate) enum CompiledSchemaAdmissionOutcome {
 pub struct StreamAdmissionObservationEvidence {
     pub observation_id: String,
     pub physical_observation_hash: String,
-    pub physical_observation: PhysicalObservationEvidence,
     pub coercion_plan: SchemaCoercionPlan,
     pub completion: StreamAdmissionCompletion,
 }
@@ -830,14 +899,23 @@ pub struct StreamAdmissionObservationEvidence {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum StreamAdmissionCompletion {
-    Partial,
-    Complete { source_position: SourcePosition },
+    Partial {
+        attempted_position: Option<SourcePosition>,
+        observed_rows: u64,
+        partition_binding: String,
+    },
+    Complete {
+        source_position: SourcePosition,
+    },
+    CompleteUnpositioned {
+        partition_binding: String,
+    },
 }
 
 impl StreamAdmissionObservationEvidence {
     pub fn new(
         observation_id: impl Into<String>,
-        physical_observation: PhysicalObservationEvidence,
+        physical_observation_hash: SchemaHash,
         coercion_plan: SchemaCoercionPlan,
         completion: StreamAdmissionCompletion,
     ) -> Result<Self> {
@@ -847,11 +925,9 @@ impl StreamAdmissionObservationEvidence {
                 "stream-admission observation id must not be empty",
             ));
         }
-        let physical_observation_hash = physical_observation.identity_hash()?.to_string();
         Ok(Self {
             observation_id,
-            physical_observation_hash,
-            physical_observation,
+            physical_observation_hash: physical_observation_hash.to_string(),
             coercion_plan,
             completion,
         })
@@ -872,6 +948,59 @@ impl StreamAdmissionObservationEvidence {
         self.completion = StreamAdmissionCompletion::Complete { source_position };
         Ok(())
     }
+
+    pub fn bind_partial_attempt(
+        &mut self,
+        attempted_position: SourcePosition,
+        observed_rows: u64,
+        partition_binding: String,
+    ) -> Result<()> {
+        if observed_rows == 0 || partition_binding.is_empty() {
+            return Err(CdfError::data(format!(
+                "partial stream-admission observation {:?} must cover at least one observed row",
+                self.observation_id
+            )));
+        }
+        match &self.completion {
+            StreamAdmissionCompletion::Partial {
+                attempted_position: None,
+                observed_rows: 0,
+                partition_binding: existing_binding,
+            } if existing_binding.is_empty() => {
+                self.completion = StreamAdmissionCompletion::Partial {
+                    attempted_position: Some(attempted_position),
+                    observed_rows,
+                    partition_binding,
+                };
+                Ok(())
+            }
+            StreamAdmissionCompletion::Partial {
+                attempted_position: Some(existing_position),
+                observed_rows: existing_rows,
+                partition_binding: existing_binding,
+            } if existing_position == &attempted_position
+                && *existing_rows == observed_rows
+                && existing_binding == &partition_binding =>
+            {
+                Ok(())
+            }
+            _ => Err(CdfError::data(format!(
+                "stream-admission observation {:?} carries conflicting partial-attempt evidence",
+                self.observation_id
+            ))),
+        }
+    }
+
+    pub fn bind_unpositioned_completion(&mut self, partition_binding: String) -> Result<()> {
+        if partition_binding.is_empty() {
+            return Err(CdfError::data(format!(
+                "unpositioned stream-admission observation {:?} requires a planned partition binding",
+                self.observation_id
+            )));
+        }
+        self.completion = StreamAdmissionCompletion::CompleteUnpositioned { partition_binding };
+        Ok(())
+    }
 }
 
 #[non_exhaustive]
@@ -884,6 +1013,7 @@ pub enum PhysicalObservationEvidence {
     MaterializedOutput {
         output_schema: CompiledArrowSchema,
         decoder_observation_hash: SchemaHash,
+        nullable_residual_fields: Vec<String>,
     },
 }
 
@@ -897,10 +1027,15 @@ impl PhysicalObservationEvidence {
     pub fn materialized_output(
         output_schema: &Schema,
         decoder_observation_hash: SchemaHash,
+        nullable_residual_fields: impl IntoIterator<Item = String>,
     ) -> Result<Self> {
+        let mut nullable_residual_fields = nullable_residual_fields.into_iter().collect::<Vec<_>>();
+        nullable_residual_fields.sort();
+        nullable_residual_fields.dedup();
         Ok(Self::MaterializedOutput {
             output_schema: CompiledArrowSchema::from_arrow(output_schema)?,
             decoder_observation_hash,
+            nullable_residual_fields,
         })
     }
 
@@ -920,9 +1055,23 @@ impl PhysicalObservationEvidence {
             Self::MaterializedOutput {
                 output_schema,
                 decoder_observation_hash,
+                nullable_residual_fields,
             } => {
                 output_schema.to_arrow()?;
                 SchemaHash::new(decoder_observation_hash.to_string())?;
+                if nullable_residual_fields.iter().any(String::is_empty) {
+                    return Err(CdfError::data(
+                        "materialized output residual-field identity must not be empty",
+                    ));
+                }
+                let mut canonical = nullable_residual_fields.clone();
+                canonical.sort();
+                canonical.dedup();
+                if &canonical != nullable_residual_fields {
+                    return Err(CdfError::data(
+                        "materialized output residual-field identities must be sorted and unique",
+                    ));
+                }
             }
         }
         Ok(())
@@ -935,18 +1084,21 @@ pub struct CompiledStreamAdmissionEvidence {
     pub compiled_admission_hash: String,
     pub baseline_schema_hash: String,
     pub effective_schema_hash: String,
+    pub physical_observation_catalog: BTreeMap<String, PhysicalObservationEvidence>,
     pub observations: Vec<StreamAdmissionObservationEvidence>,
 }
 
 impl CompiledStreamAdmissionEvidence {
     pub fn new(
         admission: &CompiledSchemaAdmissionPlan,
+        physical_observation_catalog: BTreeMap<String, PhysicalObservationEvidence>,
         observations: Vec<StreamAdmissionObservationEvidence>,
     ) -> Result<Self> {
         let evidence = Self {
             compiled_admission_hash: cdf_runtime::artifact_hash(admission)?,
             baseline_schema_hash: admission.baseline_schema_hash.to_string(),
             effective_schema_hash: admission.effective_schema_hash.to_string(),
+            physical_observation_catalog,
             observations,
         };
         evidence.validate(admission)?;
@@ -962,7 +1114,9 @@ impl CompiledStreamAdmissionEvidence {
                 "stream-admission evidence does not match the recorded compiled admission plan",
             ));
         }
+        validate_physical_observation_catalog(&self.physical_observation_catalog)?;
         let mut observation_ids = std::collections::BTreeSet::new();
+        let mut referenced_physical_observations = BTreeSet::new();
         for observation in &self.observations {
             if observation.observation_id.is_empty()
                 || !observation_ids.insert(observation.observation_id.as_str())
@@ -971,15 +1125,56 @@ impl CompiledStreamAdmissionEvidence {
                     "stream-admission evidence contains an empty or duplicate observation id",
                 ));
             }
-            if observation.physical_observation_hash
-                != observation.physical_observation.identity_hash()?.as_str()
+            if let StreamAdmissionCompletion::Partial {
+                attempted_position,
+                observed_rows,
+                partition_binding,
+            } = &observation.completion
+                && (attempted_position.is_none()
+                    || *observed_rows == 0
+                    || partition_binding.is_empty())
             {
                 return Err(CdfError::data(format!(
-                    "stream-admission observation {:?} has a physical-observation hash mismatch",
+                    "partial stream-admission observation {:?} omits its exact attempted position, observed row count, or planned partition binding",
                     observation.observation_id
                 )));
             }
-            admission.validate_materialized(&observation.coercion_plan)?;
+            if matches!(
+                &observation.completion,
+                StreamAdmissionCompletion::CompleteUnpositioned { partition_binding }
+                    if partition_binding.is_empty()
+            ) {
+                return Err(CdfError::data(format!(
+                    "unpositioned stream-admission observation {:?} omits its planned partition binding",
+                    observation.observation_id
+                )));
+            }
+            let physical = self
+                .physical_observation_catalog
+                .get(&observation.physical_observation_hash)
+                .ok_or_else(|| {
+                    CdfError::data(format!(
+                        "stream-admission observation {:?} references an absent physical observation",
+                        observation.observation_id
+                    ))
+                })?;
+            referenced_physical_observations.insert(observation.physical_observation_hash.as_str());
+            admission.validate_admitted_observation(
+                &observation.observation_id,
+                physical,
+                &observation.coercion_plan,
+            )?;
+        }
+        if referenced_physical_observations
+            != self
+                .physical_observation_catalog
+                .keys()
+                .map(String::as_str)
+                .collect::<BTreeSet<_>>()
+        {
+            return Err(CdfError::data(
+                "stream-admission evidence physical-observation catalog is not an exact referenced set",
+            ));
         }
         Ok(())
     }
@@ -991,20 +1186,18 @@ pub struct SchemaQuarantineObservationEvidence {
     pub observation_id: String,
     pub quarantine_hash: String,
     pub physical_observation_hash: String,
-    pub physical_observation: PhysicalObservationEvidence,
 }
 
 impl SchemaQuarantineObservationEvidence {
     pub fn new(
         quarantine: &TerminalSchemaObservationQuarantine,
-        physical_observation: PhysicalObservationEvidence,
+        physical_observation_hash: SchemaHash,
     ) -> Result<Self> {
         quarantine.validate()?;
         let evidence = Self {
             observation_id: quarantine.observation_id().to_owned(),
             quarantine_hash: cdf_runtime::artifact_hash(quarantine)?,
-            physical_observation_hash: physical_observation.identity_hash()?.to_string(),
-            physical_observation,
+            physical_observation_hash: physical_observation_hash.to_string(),
         };
         evidence.validate(quarantine)?;
         Ok(evidence)
@@ -1013,7 +1206,6 @@ impl SchemaQuarantineObservationEvidence {
     pub fn validate(&self, quarantine: &TerminalSchemaObservationQuarantine) -> Result<()> {
         if self.observation_id != quarantine.observation_id()
             || self.quarantine_hash != cdf_runtime::artifact_hash(quarantine)?
-            || self.physical_observation_hash != self.physical_observation.identity_hash()?.as_str()
             || self.physical_observation_hash != quarantine.physical_schema_hash().as_str()
             || quarantine.source_position().is_none()
         {
@@ -1032,18 +1224,21 @@ pub struct CompiledSchemaQuarantineEvidence {
     pub compiled_admission_hash: String,
     pub baseline_schema_hash: String,
     pub effective_schema_hash: String,
+    pub physical_observation_catalog: BTreeMap<String, PhysicalObservationEvidence>,
     pub observations: Vec<SchemaQuarantineObservationEvidence>,
 }
 
 impl CompiledSchemaQuarantineEvidence {
     pub fn new(
         admission: &CompiledSchemaAdmissionPlan,
+        physical_observation_catalog: BTreeMap<String, PhysicalObservationEvidence>,
         observations: Vec<SchemaQuarantineObservationEvidence>,
     ) -> Result<Self> {
         let evidence = Self {
             compiled_admission_hash: cdf_runtime::artifact_hash(admission)?,
             baseline_schema_hash: admission.baseline_schema_hash.to_string(),
             effective_schema_hash: admission.effective_schema_hash.to_string(),
+            physical_observation_catalog,
             observations,
         };
         evidence.validate_admission(admission)?;
@@ -1059,7 +1254,9 @@ impl CompiledSchemaQuarantineEvidence {
                 "schema-quarantine evidence does not match the recorded compiled admission plan",
             ));
         }
+        validate_physical_observation_catalog(&self.physical_observation_catalog)?;
         let mut ids = BTreeSet::new();
+        let mut referenced_physical_observations = BTreeSet::new();
         if self.observations.iter().any(|observation| {
             observation.observation_id.is_empty()
                 || !ids.insert(observation.observation_id.as_str())
@@ -1068,8 +1265,43 @@ impl CompiledSchemaQuarantineEvidence {
                 "schema-quarantine evidence contains an empty or duplicate observation id",
             ));
         }
+        for observation in &self.observations {
+            if !self
+                .physical_observation_catalog
+                .contains_key(&observation.physical_observation_hash)
+            {
+                return Err(CdfError::data(
+                    "schema-quarantine evidence references an absent physical observation",
+                ));
+            }
+            referenced_physical_observations.insert(observation.physical_observation_hash.as_str());
+        }
+        if referenced_physical_observations
+            != self
+                .physical_observation_catalog
+                .keys()
+                .map(String::as_str)
+                .collect::<BTreeSet<_>>()
+        {
+            return Err(CdfError::data(
+                "schema-quarantine evidence physical-observation catalog is not an exact referenced set",
+            ));
+        }
         Ok(())
     }
+}
+
+fn validate_physical_observation_catalog(
+    catalog: &BTreeMap<String, PhysicalObservationEvidence>,
+) -> Result<()> {
+    for (identity, observation) in catalog {
+        if identity != observation.identity_hash()?.as_str() {
+            return Err(CdfError::data(format!(
+                "physical-observation catalog key {identity:?} does not match its evidence identity"
+            )));
+        }
+    }
+    Ok(())
 }
 
 #[non_exhaustive]
@@ -1142,7 +1374,7 @@ pub struct EffectiveSchemaPlanEvidence {
     pub authority: EffectiveSchemaEvidence,
     pub effective_arrow_schema_hash: SchemaHash,
     pub observations: Vec<EffectiveSchemaObservationCoercion>,
-    pub physical_observations: BTreeMap<String, PhysicalObservationEvidence>,
+    pub physical_observation_catalog: BTreeMap<String, PhysicalObservationEvidence>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub terminal_quarantines: Vec<TerminalSchemaObservationQuarantine>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1155,7 +1387,6 @@ pub struct EffectiveSchemaPlanEvidence {
 pub struct EffectiveSchemaObservationCoercion {
     pub observation_id: String,
     pub physical_schema_hash: SchemaHash,
-    pub physical_observation: PhysicalObservationEvidence,
     pub coercion_plan: SchemaCoercionPlan,
 }
 

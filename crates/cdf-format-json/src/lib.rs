@@ -793,13 +793,24 @@ async fn decode_next(
             }
         }
         let flushed = state.decoder.flush();
-        let (record_batch, candidates) = match flushed {
-            Ok(Some(batch)) => (batch, Vec::new()),
+        let (record_batch, candidates, materialized_residuals_complete) = match flushed {
+            Ok(Some(batch)) => (batch, Vec::new(), false),
             Ok(None) => {
                 if state.finished {
-                    return Ok(None);
+                    if state.sequence == 0 {
+                        (
+                            RecordBatch::new_empty(Arc::clone(
+                                &state.request.schema.decoder_schema,
+                            )),
+                            Vec::new(),
+                            false,
+                        )
+                    } else {
+                        return Ok(None);
+                    }
+                } else {
+                    continue;
                 }
-                continue;
             }
             Err(initial) => {
                 let recovered = recover_decode_window(
@@ -822,14 +833,16 @@ async fn decode_next(
                     Arc::clone(&state.request.schema.decoder_schema),
                     state.request.target_batch_rows,
                 )?;
-                recovered
+                (recovered.0, recovered.1, true)
             }
         };
         if record_batch.num_rows() == 0 {
-            if state.finished {
+            if state.finished && state.sequence != 0 {
                 return Ok(None);
             }
-            continue;
+            if !state.finished {
+                continue;
+            }
         }
         let lease = state
             .output_lease
@@ -850,8 +863,14 @@ async fn decode_next(
             cdf_kernel::canonical_arrow_schema_hash(state.request.schema.decoder_schema.as_ref())?,
             record_batch,
         )?;
+        if state.request.schema.authority == cdf_runtime::DecodeSchemaAuthority::FixedAdmission {
+            batch.header.mark_materialized_output();
+        }
         batch.header.source_position = state.request.source_position.clone();
         batch.header.extend_residual_candidates(candidates);
+        if materialized_residuals_complete {
+            batch.header.mark_materialized_residuals_complete();
+        }
         state.source_row_ordinal = state
             .source_row_ordinal
             .checked_add(batch.header.row_count)
@@ -1381,5 +1400,51 @@ mod tests {
 
         drop(batches);
         assert_eq!(coordinator.snapshot().current_bytes, 0);
+    }
+
+    #[test]
+    fn empty_ndjson_emits_schema_bearing_materialized_batch() {
+        let memory: Arc<dyn MemoryCoordinator> = Arc::new(
+            DeterministicMemoryCoordinator::new(64 * 1024 * 1024, BTreeMap::new()).unwrap(),
+        );
+        let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, true)]));
+        let request = PhysicalDecodeRequest {
+            options: serde_json::json!({}),
+            unit: DecodeUnitPlan {
+                unit_id: "empty-ndjson".to_owned(),
+                ordinal: 0,
+                extent: None,
+                estimated_working_set_bytes: 1024 * 1024,
+                independently_retryable: true,
+            },
+            resource_id: ResourceId::new("events.empty").unwrap(),
+            partition_id: PartitionId::new("file-empty").unwrap(),
+            batch_id_prefix: "events-empty".to_owned(),
+            schema: cdf_runtime::DecodeSchemaPlan::fixed_admission(schema),
+            source_position: None,
+            projection: None,
+            predicates: Vec::new(),
+            target_batch_rows: 64,
+            target_batch_bytes: 1024 * 1024,
+            memory,
+            cancellation: cdf_runtime::RunCancellation::default(),
+        };
+        let batches = futures_executor::block_on(async move {
+            let input: AccountedByteStream = Box::pin(stream::empty());
+            let mut decoded = decode_ndjson_stream(input, request).await?;
+            let mut batches = Vec::new();
+            while let Some(batch) = decoded.try_next().await? {
+                batches.push(batch);
+            }
+            Result::<Vec<AccountedPhysicalBatch>>::Ok(batches)
+        })
+        .unwrap();
+
+        assert_eq!(batches.len(), 1);
+        assert_eq!(batches[0].batch().record_batch().unwrap().num_rows(), 0);
+        assert_eq!(
+            batches[0].batch().header.observation_representation,
+            cdf_kernel::PhysicalObservationRepresentation::MaterializedOutput
+        );
     }
 }
