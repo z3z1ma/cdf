@@ -1,6 +1,6 @@
 Status: recorded
 Created: 2026-07-08
-Updated: 2026-07-08
+Updated: 2026-07-13
 Relates-To: .10x/tickets/done/2026-07-08-p1-product-ws2a-cli-grammar-decision.md, .10x/tickets/done/2026-07-08-p1-product-ws3a-cli-design-language-decision.md
 
 # P1 CLI inventory evidence
@@ -37,7 +37,7 @@ rg -n "name = \"(clap|clap_builder|clap_complete|clap_mangen|comfy-table|console
 
 ## What this supports or challenges
 
-This supports `.10x/decisions/cli-command-grammar-and-parser.md` and `.10x/decisions/cli-design-language-and-renderer.md` by grounding them in the current source layout and compatibility surface.
+This supported `.10x/decisions/superseded/cli-command-grammar-and-parser.md` and `.10x/decisions/cli-design-language-and-renderer.md` by grounding them in the then-current source layout and compatibility surface.
 
 ## Limits
 

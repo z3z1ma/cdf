@@ -1,6 +1,6 @@
 Status: recorded
 Created: 2026-07-08
-Updated: 2026-07-08
+Updated: 2026-07-13
 Target: .10x/tickets/done/2026-07-08-p1-product-ws2c-product-grammar-semantics.md
 Verdict: pass
 
@@ -24,7 +24,7 @@ Review of the WS2C product grammar semantics implementation in:
 Governing records:
 
 - `.10x/tickets/done/2026-07-08-p1-product-ws2c-product-grammar-semantics.md`
-- `.10x/decisions/cli-command-grammar-and-parser.md`
+- `.10x/decisions/superseded/cli-command-grammar-and-parser.md`
 - `.10x/specs/project-cli-observability-security.md`
 - `.10x/tickets/done/2026-07-08-p1-product-ws2b-clap-parser-foundation.md`
 

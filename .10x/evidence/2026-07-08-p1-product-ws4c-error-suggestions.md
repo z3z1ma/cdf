@@ -1,7 +1,7 @@
 Status: recorded
 Created: 2026-07-08
-Updated: 2026-07-08
-Relates-To: .10x/tickets/done/2026-07-08-p1-product-ws4c-error-suggestions.md, .10x/specs/cli-error-experience-catalog.md, .10x/decisions/cli-command-grammar-and-parser.md
+Updated: 2026-07-13
+Relates-To: .10x/tickets/done/2026-07-08-p1-product-ws4c-error-suggestions.md, .10x/specs/cli-error-experience-catalog.md, .10x/decisions/superseded/cli-command-grammar-and-parser.md
 
 # P1 WS4C error suggestions evidence
 
@@ -38,7 +38,7 @@ Records read before implementation:
 
 - `.10x/tickets/done/2026-07-08-p1-product-ws4c-error-suggestions.md` (read while open before implementation, then moved to done at closure)
 - `.10x/specs/cli-error-experience-catalog.md`
-- `.10x/decisions/cli-command-grammar-and-parser.md`
+- `.10x/decisions/superseded/cli-command-grammar-and-parser.md`
 - `.10x/tickets/done/2026-07-08-p1-product-ws4a-error-envelope-foundation.md`
 - `.10x/tickets/done/2026-07-08-p1-product-ws4b-error-construction-site-migration.md`
 - `.10x/tickets/done/2026-07-08-p1-product-ws2c-product-grammar-semantics.md`

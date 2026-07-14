@@ -1,8 +1,8 @@
 Status: done
 Created: 2026-07-08
-Updated: 2026-07-08
+Updated: 2026-07-13
 Parent: .10x/tickets/done/2026-07-08-p1-product-ws2-command-grammar-redesign.md
-Depends-On: .10x/tickets/done/2026-07-08-p1-product-ws2b-clap-parser-foundation.md, .10x/decisions/cli-command-grammar-and-parser.md
+Depends-On: .10x/tickets/done/2026-07-08-p1-product-ws2b-clap-parser-foundation.md, .10x/decisions/superseded/cli-command-grammar-and-parser.md
 
 # P1 product WS2D: Completions, man pages, and help snapshots
 

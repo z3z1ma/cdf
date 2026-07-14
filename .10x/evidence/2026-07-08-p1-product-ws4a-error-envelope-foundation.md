@@ -1,6 +1,6 @@
 Status: recorded
 Created: 2026-07-08
-Updated: 2026-07-08
+Updated: 2026-07-13
 Relates-To: .10x/tickets/done/2026-07-08-p1-product-ws4a-error-envelope-foundation.md, .10x/specs/cli-error-experience-catalog.md
 
 # P1 WS4A error envelope foundation evidence
@@ -26,7 +26,7 @@ Required records and source were read before edits:
 - `.10x/tickets/done/2026-07-08-p1-product-ws4-error-experience-catalog.md`
 - `.10x/specs/cli-error-experience-catalog.md`
 - `.10x/specs/project-cli-observability-security.md`
-- `.10x/decisions/cli-command-grammar-and-parser.md`
+- `.10x/decisions/superseded/cli-command-grammar-and-parser.md`
 - `.10x/decisions/cli-design-language-and-renderer.md`
 - `crates/cdf-cli/src/output.rs`
 - `crates/cdf-cli/src/commands.rs`

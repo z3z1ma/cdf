@@ -1,6 +1,6 @@
 Status: recorded
 Created: 2026-07-08
-Updated: 2026-07-08
+Updated: 2026-07-13
 Relates-To: .10x/tickets/done/2026-07-08-p1-product-ws4-error-experience-catalog.md, .10x/specs/cli-error-experience-catalog.md
 
 # P1 WS4 error catalog shaping evidence
@@ -20,7 +20,7 @@ Existing source inspection found:
 
 Governing records establish:
 
-- `.10x/decisions/cli-command-grammar-and-parser.md` requires parser suggestions and JSON compatibility.
+- `.10x/decisions/superseded/cli-command-grammar-and-parser.md` required parser suggestions and JSON compatibility when this evidence was recorded.
 - `.10x/decisions/cli-design-language-and-renderer.md` requires renderer-owned human display, redaction, and per-kind error snapshots.
 - `.10x/specs/project-cli-observability-security.md` requires the shared error taxonomy and redaction.
 

@@ -1,6 +1,6 @@
 Status: active
 Created: 2026-07-11
-Updated: 2026-07-11
+Updated: 2026-07-13
 
 # Pre-production CDF has one current format and no compatibility paths
 
@@ -8,7 +8,7 @@ Updated: 2026-07-11
 
 CDF has no production users and no external artifact population to preserve. Compatibility aliases, old artifact readers, deprecated helpers, and slower fallback implementations therefore add branches, build cost, test cost, ambiguity, and hot-path risk without protecting a real customer. The user explicitly ratified that CDF's day-zero customer is the project itself and that no backward compatibility is required for old files, artifacts, APIs, or CLI forms before the first production release.
 
-This decision supersedes pre-production compatibility requirements wherever they appear in `.10x/specs/versioning-lts-release-policy.md`, `.10x/decisions/cli-command-grammar-and-parser.md`, `.10x/decisions/spillable-package-order-dedup.md`, and destination-specific compatibility language. Protocol interoperability required to consume a currently supported external system is not legacy compatibility.
+This decision supersedes pre-production compatibility requirements wherever they appear in `.10x/specs/versioning-lts-release-policy.md`, `.10x/decisions/superseded/cli-command-grammar-and-parser.md`, `.10x/decisions/spillable-package-order-dedup.md`, and destination-specific compatibility language. Protocol interoperability required to consume a currently supported external system is not legacy compatibility.
 
 ## Decision
 

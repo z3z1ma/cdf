@@ -1,14 +1,14 @@
 Status: recorded
 Created: 2026-07-08
-Updated: 2026-07-08
-Target: .10x/decisions/cli-command-grammar-and-parser.md
+Updated: 2026-07-13
+Target: .10x/decisions/superseded/cli-command-grammar-and-parser.md
 Verdict: pass
 
 # CLI command grammar decision review
 
 ## Target
 
-Review of `.10x/decisions/cli-command-grammar-and-parser.md` and WS2A closure readiness.
+Review of `.10x/decisions/superseded/cli-command-grammar-and-parser.md` and WS2A closure readiness.
 
 ## Findings
 

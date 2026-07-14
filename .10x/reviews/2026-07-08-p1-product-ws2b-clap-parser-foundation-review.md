@@ -1,6 +1,6 @@
 Status: recorded
 Created: 2026-07-08
-Updated: 2026-07-08
+Updated: 2026-07-13
 Target: .10x/tickets/done/2026-07-08-p1-product-ws2b-clap-parser-foundation.md
 Verdict: pass
 
@@ -23,7 +23,7 @@ Implementation and closure evidence for `.10x/tickets/done/2026-07-08-p1-product
 
 No blocking findings.
 
-The implementation uses clap v4's builder surface instead of derive. This is allowed by the WS2B ticket and `.10x/decisions/cli-command-grammar-and-parser.md` as an equivalent clap surface. It also avoids adding `clap_derive` and proc-macro transitive dependencies in this foundation slice.
+The implementation uses clap v4's builder surface instead of derive. This was allowed by the WS2B ticket and `.10x/decisions/superseded/cli-command-grammar-and-parser.md` as an equivalent clap surface. It also avoids adding `clap_derive` and proc-macro transitive dependencies in this foundation slice.
 
 `Cargo.lock` was updated even though the user write-scope named `crates/cdf-cli/Cargo.toml` rather than the lockfile. This was necessary for `--locked` Cargo checks after adding the direct `cdf-cli` dependency edge. The lockfile diff is limited to adding `clap` to the local `cdf-cli` dependency list; no package version changed.
 

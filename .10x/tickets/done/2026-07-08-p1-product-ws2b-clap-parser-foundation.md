@@ -1,8 +1,8 @@
 Status: done
 Created: 2026-07-08
-Updated: 2026-07-08
+Updated: 2026-07-13
 Parent: .10x/tickets/done/2026-07-08-p1-product-ws2-command-grammar-redesign.md
-Depends-On: .10x/decisions/cli-command-grammar-and-parser.md
+Depends-On: .10x/decisions/superseded/cli-command-grammar-and-parser.md
 
 # P1 product WS2B: Clap parser foundation
 
@@ -14,7 +14,7 @@ Owns `crates/cdf-cli/Cargo.toml`, `crates/cdf-cli/src/args.rs`, `crates/cdf-cli/
 
 ## Acceptance criteria
 
-- `cdf-cli` uses clap v4 derive or an equivalent clap builder surface ratified by `.10x/decisions/cli-command-grammar-and-parser.md`.
+- `cdf-cli` uses clap v4 derive or an equivalent clap builder surface ratified by `.10x/decisions/superseded/cli-command-grammar-and-parser.md`.
 - Existing `Command`/args shapes or their replacements still drive the current command dispatcher without broad command-module rewrites.
 - `--json`, `--project`, and `--env` compatibility is preserved, including current support for `--json` anywhere in argv.
 - Unknown command usage errors retain exit 2 and JSON error envelope compatibility.

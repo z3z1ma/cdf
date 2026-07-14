@@ -1,7 +1,7 @@
 Status: recorded
 Created: 2026-07-08
-Updated: 2026-07-08
-Relates-To: .10x/tickets/done/2026-07-08-p1-product-ws2b-clap-parser-foundation.md, .10x/decisions/cli-command-grammar-and-parser.md, .10x/specs/project-cli-observability-security.md
+Updated: 2026-07-13
+Relates-To: .10x/tickets/done/2026-07-08-p1-product-ws2b-clap-parser-foundation.md, .10x/decisions/superseded/cli-command-grammar-and-parser.md, .10x/specs/project-cli-observability-security.md
 
 # P1 product WS2B clap parser foundation evidence
 

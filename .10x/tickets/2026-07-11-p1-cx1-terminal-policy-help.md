@@ -1,6 +1,6 @@
 Status: blocked
 Created: 2026-07-11
-Updated: 2026-07-12
+Updated: 2026-07-13
 Parent: .10x/tickets/2026-07-11-p1-ws9-cli-experience-excellence.md
 Depends-On: .10x/specs/cli-interaction-excellence.md
 
@@ -32,7 +32,7 @@ Parser tests, TTY/headless channel snapshots, width/display tests, help/man/comp
 ## References
 
 - `.10x/decisions/cli-progressive-disclosure-terminal-contract.md`
-- `.10x/decisions/cli-command-grammar-and-parser.md`
+- `.10x/decisions/cli-current-command-grammar.md`
 
 ## Journal
 

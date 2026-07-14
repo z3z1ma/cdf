@@ -1,8 +1,10 @@
-Status: active
+Status: superseded
 Created: 2026-07-08
-Updated: 2026-07-08
+Updated: 2026-07-13
 
 # CLI command grammar and parser
+
+Superseded-By: `.10x/decisions/cli-current-command-grammar.md`
 
 ## Context
 
