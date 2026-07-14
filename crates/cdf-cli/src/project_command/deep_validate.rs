@@ -250,7 +250,8 @@ fn discover_for_deep_validate(
                 resource,
                 &secret_provider,
                 crate::project_run_resource::file_runtime_dependencies(context, Some(execution))?,
-                cdf_project::SchemaDiscoveryExecutionOptions::default(),
+                cdf_project::SchemaDiscoveryExecutionOptions::new()
+                    .with_observation_cache(cdf_project::ObservationCacheStore::new(&context.root)),
             )?
             .discovery,
         );
@@ -302,7 +303,8 @@ fn physical_schema_reconciliation_check(
         &probe,
         &secret_provider,
         dependencies,
-        cdf_project::SchemaDiscoveryExecutionOptions::default(),
+        cdf_project::SchemaDiscoveryExecutionOptions::new()
+            .with_observation_cache(cdf_project::ObservationCacheStore::new(&context.root)),
     )
     .map(|artifacts| artifacts.discovery);
     let observed = match discovery {

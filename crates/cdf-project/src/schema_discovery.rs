@@ -13,7 +13,9 @@ use crate::{
     DiscoveryManifestInput, DiscoveryManifestStore, DiscoveryMetadataScope,
     DiscoveryMetadataVariance, DiscoveryParticipation, DiscoverySchemaVerdict,
     DiscoverySchemaVerdictKind, DiscoverySelectorCandidate, DiscoveryWithinFileCoverage,
-    SchemaSnapshotArtifact, SchemaSnapshotStore, plan_discovery_selection,
+    ObservationCacheEntry, ObservationCacheKey, ObservationCacheLookup, ObservationCacheMissReason,
+    ObservationCacheStore, ObservationCacheStoreOutcome, SchemaSnapshotArtifact,
+    SchemaSnapshotStore, StrongObservationSourceIdentity, plan_discovery_selection,
 };
 use cdf_contract::{
     AggregateFileSchemaVerdict, AggregateMetadataVariance, AggregateSchemaCandidate,
@@ -205,6 +207,7 @@ pub struct SchemaDiscoveryExecutionOptions {
     budget: DiscoveryExecutorBudget,
     runtime_baseline: Option<RuntimeSchemaBaseline>,
     memory_coordinator: Option<Arc<dyn MemoryCoordinator>>,
+    observation_cache: Option<ObservationCacheStore>,
 }
 
 impl std::fmt::Debug for SchemaDiscoveryExecutionOptions {
@@ -214,6 +217,7 @@ impl std::fmt::Debug for SchemaDiscoveryExecutionOptions {
             .field("budget", &self.budget)
             .field("runtime_baseline", &self.runtime_baseline)
             .field("memory_coordinator", &self.memory_coordinator.is_some())
+            .field("observation_cache", &self.observation_cache.is_some())
             .finish()
     }
 }
@@ -237,6 +241,11 @@ impl SchemaDiscoveryExecutionOptions {
 
     pub fn with_memory_coordinator(mut self, coordinator: Arc<dyn MemoryCoordinator>) -> Self {
         self.memory_coordinator = Some(coordinator);
+        self
+    }
+
+    pub fn with_observation_cache(mut self, cache: ObservationCacheStore) -> Self {
+        self.observation_cache = Some(cache);
         self
     }
 
@@ -518,11 +527,12 @@ fn discover_remote_binary_resource_schema(
             "remote binary discovery requires explicit file transport dependencies",
         )
     })?;
-    let (plan, _) = cdf_declarative::compile_file_resource_plan(plan, dependencies.formats())?;
+    let (plan, compiled_format) =
+        cdf_declarative::compile_file_resource_plan(plan, dependencies.formats())?;
     let adapter = RegisteredFormatDiscoveryAdapter::new(
         &resource.descriptor().resource_id,
         &plan,
-        dependencies.formats(),
+        &compiled_format,
     )?;
     discover_remote_file_resource_schema(resource, &plan, dependencies, options, adapter)
 }
@@ -582,6 +592,7 @@ fn discover_remote_file_resource_schema(
                 .get("compression")
                 .cloned()
                 .unwrap_or_else(|| "none".to_owned()),
+            cache_source: strong_cache_source_from_partition(&partition, size_bytes)?,
             source: BinaryDiscoveryCandidateSource::Transport(transport_resource),
         });
     }
@@ -595,6 +606,44 @@ fn discover_remote_file_resource_schema(
     )
 }
 
+fn strong_cache_source_from_partition(
+    partition: &cdf_kernel::PartitionPlan,
+    size_bytes: u64,
+) -> Result<Option<StrongObservationSourceIdentity>> {
+    let strength = partition
+        .metadata
+        .get("identity_strength")
+        .map(String::as_str)
+        .ok_or_else(|| {
+            CdfError::internal("remote discovery partition omitted identity strength")
+        })?;
+    if strength == "weak" {
+        return Ok(None);
+    }
+    if !matches!(strength, "strong" | "content_addressed") {
+        return Err(CdfError::data(format!(
+            "remote discovery partition has unsupported identity strength `{strength}`"
+        )));
+    }
+    let location = partition.metadata.get("path").cloned().ok_or_else(|| {
+        CdfError::internal("remote discovery partition omitted canonical location")
+    })?;
+    let checksum = partition.metadata.get("sha256").cloned();
+    let generation = ["etag", "version"]
+        .into_iter()
+        .filter_map(|key| {
+            partition
+                .metadata
+                .get(key)
+                .cloned()
+                .map(|value| (key.to_owned(), value))
+        })
+        .collect();
+    Ok(Some(StrongObservationSourceIdentity::new(
+        location, size_bytes, checksum, generation,
+    )?))
+}
+
 #[derive(Clone, Debug)]
 struct LocalBinaryProbe {
     location: String,
@@ -604,6 +653,8 @@ struct LocalBinaryProbe {
     physical_schema_hash: SchemaHash,
     probe_bytes: u64,
     probe_records: u64,
+    source_bytes_read: u64,
+    cache_status: String,
     schema: arrow_schema::SchemaRef,
     source_identity: BTreeMap<String, String>,
 }
@@ -614,6 +665,7 @@ struct BinaryDiscoveryCandidate {
     size_bytes: u64,
     modified_at_ms: Option<i64>,
     compression: String,
+    cache_source: Option<StrongObservationSourceIdentity>,
     source: BinaryDiscoveryCandidateSource,
 }
 
@@ -634,6 +686,7 @@ impl BinaryDiscoveryCandidate {
             size_bytes: candidate.size_bytes,
             modified_at_ms,
             compression: candidate.compression,
+            cache_source: None,
             source: BinaryDiscoveryCandidateSource::Local {
                 path: candidate.path,
                 selection_bytes_read: candidate.selection_bytes_read,
@@ -649,6 +702,7 @@ struct RegisteredFormatDiscoveryAdapter {
     format_declared: bool,
     format_options: serde_json::Value,
     format_options_hash: String,
+    format_driver_version: String,
     discovery_kind: cdf_runtime::FormatDiscoveryKind,
 }
 
@@ -656,19 +710,17 @@ impl RegisteredFormatDiscoveryAdapter {
     fn new(
         resource_id: &ResourceId,
         plan: &cdf_declarative::FileResourcePlan,
-        formats: &cdf_runtime::FormatRegistry,
+        compiled_format: &cdf_runtime::CompiledFormatBinding,
     ) -> Result<Self> {
         let format = plan.resolved_format()?.clone();
-        let discovery_kind = formats
-            .resolve(format.as_str())?
-            .descriptor()
-            .discovery_kind;
+        let discovery_kind = compiled_format.descriptor.discovery_kind;
         Ok(Self {
             resource_id: resource_id.clone(),
             format,
             format_declared: plan.format_declared,
-            format_options: plan.format_options.clone(),
-            format_options_hash: cdf_runtime::artifact_hash(&plan.format_options)?,
+            format_options: compiled_format.canonical_options.clone(),
+            format_options_hash: cdf_runtime::artifact_hash(&compiled_format.canonical_options)?,
+            format_driver_version: compiled_format.descriptor.semantic_version.clone(),
             discovery_kind,
         })
     }
@@ -740,6 +792,53 @@ impl RegisteredFormatDiscoveryAdapter {
         }
     }
 
+    fn cache_key(
+        &self,
+        candidate: &BinaryDiscoveryCandidate,
+        budget: &DiscoveryExecutorBudget,
+        file_dependencies: Option<&FileRuntimeDependencies>,
+        admission_identity: &str,
+    ) -> Result<Option<ObservationCacheKey>> {
+        let Some(source) = candidate.cache_source.clone() else {
+            return Ok(None);
+        };
+        let dependencies = file_dependencies.ok_or_else(|| {
+            CdfError::contract(
+                "observation cache interpretation requires file runtime dependencies",
+            )
+        })?;
+        let transform = if candidate.compression == "none" {
+            serde_json::json!({"id": "none", "version": "none"})
+        } else {
+            let driver = dependencies
+                .transforms()
+                .resolve_name(&candidate.compression)?;
+            serde_json::json!({
+                "id": driver.descriptor().transform_id.as_str(),
+                "version": driver.descriptor().semantic_version,
+            })
+        };
+        let interpretation_hash = crate::internal::semantic_hash(&serde_json::json!({
+            "format_options_hash": self.format_options_hash,
+            "format_declared": self.format_declared,
+            "transform": transform,
+        }))?;
+        let observation_contract_hash = crate::internal::semantic_hash(&serde_json::json!({
+            "discovery_kind": self.discovery_kind,
+            "maximum_bytes": budget.max_bytes_per_file(),
+            "maximum_records": budget.max_records_per_file(),
+        }))?;
+        Ok(Some(ObservationCacheKey::new(
+            source,
+            self.format.as_str(),
+            self.format_driver_version.clone(),
+            interpretation_hash,
+            observation_contract_hash,
+            NORMALIZER_NAMECASE_V1,
+            admission_identity,
+        )?))
+    }
+
     fn snapshot_metadata(&self) -> BTreeMap<String, String> {
         BTreeMap::from([
             ("probe".to_owned(), "registered-format-discovery".to_owned()),
@@ -747,6 +846,10 @@ impl RegisteredFormatDiscoveryAdapter {
             (
                 "format_options_hash".to_owned(),
                 self.format_options_hash.clone(),
+            ),
+            (
+                "format_driver_version".to_owned(),
+                self.format_driver_version.clone(),
             ),
             ("source_kind".to_owned(), "files".to_owned()),
             (
@@ -769,11 +872,12 @@ fn discover_local_binary_resource_schema(
             "file discovery requires explicit transport, format, and transform registry dependencies",
         )
     })?;
-    let (plan, _) = cdf_declarative::compile_file_resource_plan(plan, dependencies.formats())?;
+    let (plan, compiled_format) =
+        cdf_declarative::compile_file_resource_plan(plan, dependencies.formats())?;
     let adapter = RegisteredFormatDiscoveryAdapter::new(
         &resource.descriptor().resource_id,
         &plan,
-        dependencies.formats(),
+        &compiled_format,
     )?;
     let candidates = local_file_discovery_candidates(
         &resource.descriptor().resource_id,
@@ -841,6 +945,14 @@ fn discover_binary_resource_schema(
         DiscoveryWithinFileCoverage::BoundedContent => "bounded_content",
         DiscoveryWithinFileCoverage::FullContent => "full_content",
     };
+    let contract = contract_policy_for_resource(resource);
+    let policy_version = crate::internal::semantic_hash(&contract)?;
+    let admission_identity = crate::internal::semantic_hash(&serde_json::json!({
+        "resource_id": resource.descriptor().resource_id.as_str(),
+        "baseline_schema_hash": baseline_schema_hash.as_ref().map(ToString::to_string),
+        "policy_version": policy_version.clone(),
+        "normalizer_version": NORMALIZER_NAMECASE_V1,
+    }))?;
 
     let scheduled_candidates = candidates
         .iter()
@@ -855,6 +967,17 @@ fn discover_binary_resource_schema(
                 .min(options.budget.max_bytes_per_file())
         })
         .collect::<Vec<_>>();
+    let cache_keys = scheduled_candidates
+        .iter()
+        .map(|candidate| {
+            adapter.cache_key(
+                candidate,
+                &options.budget,
+                file_dependencies,
+                &admission_identity,
+            )
+        })
+        .collect::<Result<Vec<_>>>()?;
     let probe_results = run_weighted_probe_jobs(
         &weights,
         &options.budget,
@@ -865,6 +988,8 @@ fn discover_binary_resource_schema(
                 scheduled_candidates[index],
                 &options.budget,
                 file_dependencies,
+                options.observation_cache.as_ref(),
+                cache_keys[index].as_ref(),
             )
         },
     )?;
@@ -936,7 +1061,6 @@ fn discover_binary_resource_schema(
         )));
     }
 
-    let contract = contract_policy_for_resource(resource);
     let (effective_schema, terminal_quarantines) =
         if let Some(baseline) = options.runtime_baseline() {
             let admit_compatible_evolution = baseline.admits_evolution()
@@ -1014,7 +1138,7 @@ fn discover_binary_resource_schema(
         selector: selection.selector.clone(),
         budget: options.budget.clone(),
         normalizer_version: NORMALIZER_NAMECASE_V1.to_owned(),
-        policy_version: crate::internal::semantic_hash(&contract_policy_for_resource(resource))?,
+        policy_version,
         candidates: manifest_candidates,
     })?;
     let artifact = SchemaSnapshotArtifact::new_with_discovery_manifest(
@@ -1041,6 +1165,24 @@ fn discover_binary_resource_schema(
             ))
         })
     })?;
+    let total_source_bytes = selected_probes.iter().try_fold(0_u64, |total, probe| {
+        total.checked_add(probe.source_bytes_read).ok_or_else(|| {
+            CdfError::data(format!(
+                "{file_coverage_label} + {within_file_coverage_label} {transport_label} discovery source-byte accounting overflowed for resource `{}` while adding `{}`",
+                resource.descriptor().resource_id,
+                probe.location
+            ))
+        })
+    })?;
+    let cache_hits = selected_probes
+        .iter()
+        .filter(|probe| probe.cache_status == "hit")
+        .count();
+    let cache_misses = selected_probes
+        .iter()
+        .filter(|probe| probe.cache_status.starts_with("miss_"))
+        .count();
+    let cache_bypasses = selected_probes.len() - cache_hits - cache_misses;
     let mut source_identity = BTreeMap::from([
         ("transport".to_owned(), transport_label.to_owned()),
         ("file_coverage".to_owned(), file_coverage_label.to_owned()),
@@ -1061,6 +1203,19 @@ fn discover_binary_resource_schema(
         (
             "probe_records_read".to_owned(),
             total_probe_records.to_string(),
+        ),
+        (
+            "discovery_source_bytes_read".to_owned(),
+            total_source_bytes.to_string(),
+        ),
+        ("observation_cache_hits".to_owned(), cache_hits.to_string()),
+        (
+            "observation_cache_misses".to_owned(),
+            cache_misses.to_string(),
+        ),
+        (
+            "observation_cache_bypasses".to_owned(),
+            cache_bypasses.to_string(),
         ),
         (
             "discovery_manifest_hash".to_owned(),
@@ -1251,9 +1406,64 @@ fn probe_binary_candidate(
     candidate: &BinaryDiscoveryCandidate,
     budget: &DiscoveryExecutorBudget,
     file_dependencies: Option<&FileRuntimeDependencies>,
+    cache: Option<&ObservationCacheStore>,
+    cache_key: Option<&ObservationCacheKey>,
 ) -> Result<LocalBinaryProbe> {
+    let mut cache_status = if cache_key.is_some() {
+        "disabled".to_owned()
+    } else {
+        "bypass_weak_identity".to_owned()
+    };
+    if let (Some(cache), Some(cache_key)) = (cache, cache_key) {
+        match cache.lookup(cache_key) {
+            ObservationCacheLookup::Hit(entry) => {
+                return local_binary_probe_from_parts(
+                    candidate,
+                    Arc::new(entry.arrow_schema()?),
+                    entry.source_identity,
+                    entry.observed_bytes,
+                    entry.observed_records,
+                    0,
+                    "hit".to_owned(),
+                );
+            }
+            ObservationCacheLookup::Miss(reason) => {
+                cache_status = observation_cache_miss_label(reason).to_owned();
+            }
+        }
+    }
     let (schema, source_identity, probe_bytes, probe_records) =
         adapter.probe(candidate, budget, file_dependencies)?;
+    if let (Some(cache), Some(cache_key)) = (cache, cache_key) {
+        let entry = ObservationCacheEntry::new(
+            cache_key.clone(),
+            schema.as_ref(),
+            source_identity.clone(),
+            probe_bytes,
+            probe_records,
+        )?;
+        cache_status.push_str(observation_cache_store_suffix(cache.store(&entry)));
+    }
+    local_binary_probe_from_parts(
+        candidate,
+        schema,
+        source_identity,
+        probe_bytes,
+        probe_records,
+        probe_bytes,
+        cache_status,
+    )
+}
+
+fn local_binary_probe_from_parts(
+    candidate: &BinaryDiscoveryCandidate,
+    schema: arrow_schema::SchemaRef,
+    source_identity: BTreeMap<String, String>,
+    probe_bytes: u64,
+    probe_records: u64,
+    source_bytes_read: u64,
+    cache_status: String,
+) -> Result<LocalBinaryProbe> {
     let modified_at_ms = source_identity
         .get("modified_unix_millis")
         .map(|value| {
@@ -1264,7 +1474,8 @@ fn probe_binary_candidate(
                 ))
             })
         })
-        .transpose()?;
+        .transpose()?
+        .or(candidate.modified_at_ms);
     let physical_schema_hash = physical_arrow_schema_hash(schema.as_ref())?;
     let fingerprint = source_identity
         .get("footer_sha256")
@@ -1279,9 +1490,29 @@ fn probe_binary_candidate(
         physical_schema_hash,
         probe_bytes,
         probe_records,
+        source_bytes_read,
+        cache_status,
         schema,
         source_identity,
     })
+}
+
+fn observation_cache_miss_label(reason: ObservationCacheMissReason) -> &'static str {
+    match reason {
+        ObservationCacheMissReason::Absent => "miss_absent",
+        ObservationCacheMissReason::CorruptOrUnsupported => "miss_corrupt_or_unsupported",
+        ObservationCacheMissReason::Oversized => "miss_oversized",
+        ObservationCacheMissReason::Unavailable => "miss_unavailable",
+    }
+}
+
+fn observation_cache_store_suffix(outcome: ObservationCacheStoreOutcome) -> &'static str {
+    match outcome {
+        ObservationCacheStoreOutcome::Stored => ":stored",
+        ObservationCacheStoreOutcome::AlreadyPresent => ":already_present",
+        ObservationCacheStoreOutcome::SkippedOversized => ":store_skipped_oversized",
+        ObservationCacheStoreOutcome::Unavailable => ":store_unavailable",
+    }
 }
 
 fn classify_runtime_schema_observations(
@@ -1718,7 +1949,8 @@ pub fn prepare_discover_resource_with_file_dependencies(
         resource,
         secret_provider,
         file_dependencies,
-        Default::default(),
+        SchemaDiscoveryExecutionOptions::new()
+            .with_observation_cache(ObservationCacheStore::new(project_root)),
     )?;
     prepare_discovered_schema(project_root, resource, discovery)
 }

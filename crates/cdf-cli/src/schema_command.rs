@@ -411,6 +411,8 @@ fn discover_artifacts_for_cli_resource(
     options: SchemaDiscoveryExecutionOptions,
     execution: &cdf_runtime::ExecutionServices,
 ) -> Result<ResourceSchemaDiscoveryArtifacts, CliError> {
+    let options =
+        options.with_observation_cache(cdf_project::ObservationCacheStore::new(&context.root));
     let secret_provider = context.secret_provider();
     if matches!(resource.descriptor().schema_source, SchemaSource::Discover)
         && matches!(resource.plan(), CompiledResourcePlan::Files(_))

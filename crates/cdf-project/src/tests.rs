@@ -1516,6 +1516,97 @@ fn http_parquet_schema_discovery_uses_bounded_ranges_without_artifacts() {
 }
 
 #[test]
+fn remote_observation_cache_exact_hit_avoids_schema_io_and_generation_change_misses() {
+    let temp = tempfile::tempdir().unwrap();
+    let parquet = vendor_parquet_bytes_with_rows(10_000);
+    write_http_discover_project(temp.path(), "");
+    let resource = compile_single_project_resource(temp.path());
+    let transport = RecordingHttpFileTransport::new(parquet);
+    let dependencies = http_file_dependencies(transport.clone());
+    let secret_provider = EnvSecretProvider::from_map(std::iter::empty::<(&str, &str)>());
+    let cache = ObservationCacheStore::new(temp.path());
+
+    let first = discover_resource_schema_with_file_dependencies_artifacts(
+        &resource,
+        &secret_provider,
+        dependencies.clone(),
+        SchemaDiscoveryExecutionOptions::new().with_observation_cache(cache.clone()),
+    )
+    .unwrap();
+    assert_eq!(
+        first.discovery.snapshot.source_identity["observation_cache_hits"],
+        "0"
+    );
+    assert_eq!(
+        first.discovery.snapshot.source_identity["observation_cache_misses"],
+        "1"
+    );
+    let first_request_count = transport.requests().len();
+
+    let second = discover_resource_schema_with_file_dependencies_artifacts(
+        &resource,
+        &secret_provider,
+        dependencies.clone(),
+        SchemaDiscoveryExecutionOptions::new().with_observation_cache(cache.clone()),
+    )
+    .unwrap();
+    let hit_requests = transport
+        .requests()
+        .into_iter()
+        .skip(first_request_count)
+        .collect::<Vec<_>>();
+    assert!(
+        hit_requests
+            .iter()
+            .all(|request| request.method != HttpMethod::Get)
+    );
+    assert_eq!(
+        second.discovery.snapshot.source_identity["observation_cache_hits"],
+        "1"
+    );
+    assert_eq!(
+        second.discovery.snapshot.source_identity["discovery_source_bytes_read"],
+        "0"
+    );
+    assert_eq!(
+        second.discovery.snapshot.artifact.schema_hash,
+        first.discovery.snapshot.artifact.schema_hash
+    );
+    assert_eq!(
+        second.discovery_manifest.as_ref().unwrap().manifest_hash,
+        first.discovery_manifest.as_ref().unwrap().manifest_hash
+    );
+
+    transport.set_etag("\"fixture-etag-v2\"");
+    let request_count_before_generation_change = transport.requests().len();
+    let changed = discover_resource_schema_with_file_dependencies_artifacts(
+        &resource,
+        &secret_provider,
+        dependencies,
+        SchemaDiscoveryExecutionOptions::new().with_observation_cache(cache),
+    )
+    .unwrap();
+    let changed_requests = transport
+        .requests()
+        .into_iter()
+        .skip(request_count_before_generation_change)
+        .collect::<Vec<_>>();
+    assert!(
+        changed_requests
+            .iter()
+            .any(|request| request.method == HttpMethod::Get)
+    );
+    assert_eq!(
+        changed.discovery.snapshot.source_identity["observation_cache_hits"],
+        "0"
+    );
+    assert_eq!(
+        changed.discovery.snapshot.source_identity["observation_cache_misses"],
+        "1"
+    );
+}
+
+#[test]
 fn object_store_multi_file_parquet_discovery_pins_one_reconciled_snapshot() {
     let temp = tempfile::tempdir().unwrap();
     write_object_store_discover_project(temp.path());
@@ -2137,11 +2228,12 @@ fn local_ndjson_discovery_is_bounded_and_writes_nothing_until_pin() {
     )
     .unwrap();
     let resource = compile_single_project_resource(temp.path());
+    let cache = ObservationCacheStore::new(temp.path());
 
     let artifacts = discover_resource_schema_artifacts(
         &resource,
         &EnvSecretProvider::from_map(std::iter::empty::<(&str, &str)>()),
-        SchemaDiscoveryExecutionOptions::default(),
+        SchemaDiscoveryExecutionOptions::new().with_observation_cache(cache.clone()),
     )
     .unwrap();
 
@@ -2165,6 +2257,11 @@ fn local_ndjson_discovery_is_bounded_and_writes_nothing_until_pin() {
             .probe_bytes
             .is_some_and(|bytes| bytes > 0)
     );
+    assert_eq!(
+        artifacts.discovery.snapshot.source_identity["observation_cache_bypasses"],
+        "1"
+    );
+    assert!(!cache.root().exists());
     assert!(!temp.path().join(".cdf/schemas").exists());
 }
 
@@ -3439,6 +3536,10 @@ impl RecordingHttpFileTransport {
 
     fn requests(&self) -> Vec<HttpFileRequest> {
         self.state.lock().unwrap().requests.clone()
+    }
+
+    fn set_etag(&self, etag: &str) {
+        self.state.lock().unwrap().etag = etag.to_owned();
     }
 }
 

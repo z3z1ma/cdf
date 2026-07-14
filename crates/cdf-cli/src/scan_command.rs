@@ -218,7 +218,8 @@ pub(crate) fn prepare_resource_schema_for_cli(
                 .with_verified_baseline(verified_baseline)
         }
         None => cdf_project::SchemaDiscoveryExecutionOptions::new(),
-    };
+    }
+    .with_observation_cache(cdf_project::ObservationCacheStore::new(&context.root));
     let mut artifacts = if matches!(probe_resource.plan(), CompiledResourcePlan::Files(_)) {
         cdf_project::discover_resource_schema_with_file_dependencies_artifacts(
             &probe_resource,

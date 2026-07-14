@@ -169,19 +169,21 @@ fn discover_for_add(
     secret_provider: &dyn SecretProvider,
     execution: &cdf_runtime::ExecutionServices,
 ) -> Result<ResourceSchemaDiscoveryArtifacts, CliError> {
+    let options = cdf_project::SchemaDiscoveryExecutionOptions::new()
+        .with_observation_cache(cdf_project::ObservationCacheStore::new(&context.root));
     match resource.plan() {
         CompiledResourcePlan::Files(_) => Ok(
             cdf_project::discover_resource_schema_with_file_dependencies_artifacts(
                 resource,
                 secret_provider,
                 file_runtime_dependencies(context, Some(execution))?,
-                Default::default(),
+                options,
             )?,
         ),
         CompiledResourcePlan::Sql(_) => Ok(cdf_project::discover_resource_schema_artifacts(
             resource,
             secret_provider,
-            Default::default(),
+            options,
         )?),
         CompiledResourcePlan::Rest(_) => {
             let transport = ReqwestHttpTransport::new()?;
