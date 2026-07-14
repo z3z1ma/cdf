@@ -1,53 +1,9 @@
 use std::{fmt, path::PathBuf};
 
 use cdf_contract::ObservedSchema;
-use cdf_kernel::{
-    Batch, CdfError, PartitionId, ResourceDescriptor, ResourceId, Result, SchemaHash,
-};
+use cdf_kernel::{Batch, ResourceDescriptor, SchemaHash};
+use cdf_runtime::ReadOptions;
 use serde::{Deserialize, Serialize};
-
-pub const DEFAULT_BATCH_SIZE: usize = 64 * 1024;
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ReadOptions {
-    pub resource_id: ResourceId,
-    pub partition_id: PartitionId,
-    pub batch_id_prefix: String,
-    pub batch_size: usize,
-}
-
-impl ReadOptions {
-    pub fn new(resource_id: ResourceId, partition_id: PartitionId) -> Self {
-        let batch_id_prefix = format!(
-            "{}-{}",
-            sanitize_id_part(resource_id.as_str()),
-            sanitize_id_part(partition_id.as_str())
-        );
-        Self {
-            resource_id,
-            partition_id,
-            batch_id_prefix,
-            batch_size: DEFAULT_BATCH_SIZE,
-        }
-    }
-
-    pub fn with_batch_id_prefix(mut self, prefix: impl Into<String>) -> Result<Self> {
-        let prefix = prefix.into();
-        if prefix.trim().is_empty() {
-            return Err(CdfError::contract("batch id prefix cannot be empty"));
-        }
-        self.batch_id_prefix = prefix;
-        Ok(self)
-    }
-
-    pub fn with_batch_size(mut self, batch_size: usize) -> Result<Self> {
-        if batch_size == 0 {
-            return Err(CdfError::contract("batch size must be greater than zero"));
-        }
-        self.batch_size = batch_size;
-        Ok(self)
-    }
-}
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -125,17 +81,4 @@ impl fmt::Debug for FormatRead {
             .field("batches", &self.batches)
             .finish()
     }
-}
-
-fn sanitize_id_part(value: &str) -> String {
-    value
-        .chars()
-        .map(|character| {
-            if character.is_ascii_alphanumeric() || character == '-' || character == '_' {
-                character
-            } else {
-                '-'
-            }
-        })
-        .collect()
 }

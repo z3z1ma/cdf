@@ -1,7 +1,8 @@
 use std::process::{ExitStatus, Stdio};
 
-use cdf_formats::{JsonOptions, ReadOptions};
+use cdf_formats::JsonOptions;
 use cdf_kernel::{CdfError, ErrorKind, Result};
+use cdf_runtime::ReadOptions;
 use tokio::{process::Command, time::timeout};
 
 use crate::{CommandSpec, StderrTrace, StdoutFormat, SubprocessOutput, SupervisionOptions};

@@ -16,6 +16,7 @@ arrow-schema = "59.1.0"
 bytes = "1.11.0"
 cdf-contract = { path = "../cdf-contract" }
 cdf-kernel = { path = "../cdf-kernel" }
+cdf-runtime = { path = "../cdf-runtime" }
 futures-util = "0.3.32"
 hex = "0.4.3"
 parquet = { version = "59.1.0", default-features = false, features = ["arrow", "brotli", "flate2-zlib-rs", "lz4", "snap", "zstd"] }

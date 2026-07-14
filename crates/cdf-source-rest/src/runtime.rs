@@ -6,7 +6,7 @@ use std::{
 
 use arrow_array::{RecordBatch, new_null_array};
 use arrow_schema::{DataType, Field, Schema, SchemaRef, TimeUnit};
-use cdf_formats::{JsonOptions, ReadOptions, read_ndjson_bytes_with_declared_schema};
+use cdf_formats::{JsonOptions, read_ndjson_bytes_with_declared_schema};
 use cdf_http::{
     AuthRefreshHook, AuthScheme, AuthSession, HttpMethod, HttpRequest, HttpResponse, HttpTransport,
     Paginator, RateLimiter, RetryBudget, RetryDecision, RetryPolicy, RetryUnit, SecretProvider,
@@ -20,6 +20,7 @@ use cdf_kernel::{
     SchemaHash, SchemaSource, SourcePosition, TypePolicyAllowances, WriteDisposition, source_name,
 };
 use cdf_runtime::ExecutionServices;
+use cdf_runtime::ReadOptions;
 use futures_util::stream;
 use serde_json::{Map, Value};
 

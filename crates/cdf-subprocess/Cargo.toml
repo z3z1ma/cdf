@@ -9,6 +9,7 @@ description = "Subprocess adapter boundary for cdf."
 [dependencies]
 cdf-formats = { path = "../cdf-formats" }
 cdf-kernel = { path = "../cdf-kernel" }
+cdf-runtime = { path = "../cdf-runtime" }
 hex = "0.4.3"
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.150"

@@ -8,7 +8,6 @@ use std::{
 };
 
 use arrow_schema::SchemaRef;
-use cdf_formats::ReadOptions;
 use cdf_kernel::{
     BatchStream, BoxFuture, CdfError, DeliveryGuarantee, EffectiveSchemaRuntime,
     PLAN_PHYSICAL_SCHEMA_HASH_KEY, PLAN_SCHEMA_OBSERVATION_BINDING_KEY,
@@ -20,7 +19,7 @@ use cdf_memory::{ConsumerKey, MemoryClass};
 use cdf_runtime::{
     ByteSource, ByteTransformId, ByteTransformRegistry, CompiledFormatBinding,
     DecodePlanningRequest, ExecutionServices, FormatDetection, FormatDetectionConfidence,
-    FormatDiscoveryRequest, FormatDriver, FormatRegistry, PhysicalDecodeRequest,
+    FormatDiscoveryRequest, FormatDriver, FormatRegistry, PhysicalDecodeRequest, ReadOptions,
     SequentialReadRequest, TransformSourceConfig, TransformedByteSource,
 };
 #[cfg(test)]

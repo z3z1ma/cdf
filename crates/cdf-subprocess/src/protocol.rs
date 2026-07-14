@@ -1,7 +1,8 @@
 use std::collections::BTreeMap;
 
-use cdf_formats::{FormatRead, JsonOptions, ReadOptions};
+use cdf_formats::{FormatRead, JsonOptions};
 use cdf_kernel::{CdfError, ForeignState, Result, ScopeKey, SourcePosition};
+use cdf_runtime::ReadOptions;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};

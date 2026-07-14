@@ -30,6 +30,7 @@ use cdf_kernel::{
     ErrorKind, PartitionId, ResourceId, ResourceStream, ScanRequest, SchemaHash, ScopeKey,
     SegmentId, SourcePosition, physical_type, source_name, with_semantic, with_source_name,
 };
+use cdf_runtime::ReadOptions;
 use futures_util::StreamExt;
 
 fn options(resource: &str, partition: &str) -> ReadOptions {

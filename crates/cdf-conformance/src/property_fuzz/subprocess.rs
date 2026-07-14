@@ -1,7 +1,7 @@
 use std::panic;
 
-use cdf_formats::ReadOptions;
 use cdf_kernel::{ErrorKind, ForeignState, PartitionId, ResourceId, SourcePosition};
+use cdf_runtime::ReadOptions;
 use cdf_subprocess::{
     AirbyteMessage, AirbyteStateKind, SingerMessage, StreamIdentity, parse_airbyte_ndjson,
     parse_singer_ndjson, read_airbyte_ndjson_bytes, read_singer_ndjson_bytes,

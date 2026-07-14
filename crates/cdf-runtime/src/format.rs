@@ -24,6 +24,62 @@ pub type AccountedByteStream = Pin<Box<dyn Stream<Item = Result<AccountedBytes>>
 pub type PhysicalDecodeStream =
     Pin<Box<dyn Stream<Item = Result<AccountedPhysicalBatch>> + Send + 'static>>;
 
+pub const DEFAULT_FORMAT_BATCH_ROWS: usize = 64 * 1024;
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ReadOptions {
+    pub resource_id: ResourceId,
+    pub partition_id: PartitionId,
+    pub batch_id_prefix: String,
+    pub batch_size: usize,
+}
+
+impl ReadOptions {
+    pub fn new(resource_id: ResourceId, partition_id: PartitionId) -> Self {
+        let batch_id_prefix = format!(
+            "{}-{}",
+            sanitize_id_part(resource_id.as_str()),
+            sanitize_id_part(partition_id.as_str())
+        );
+        Self {
+            resource_id,
+            partition_id,
+            batch_id_prefix,
+            batch_size: DEFAULT_FORMAT_BATCH_ROWS,
+        }
+    }
+
+    pub fn with_batch_id_prefix(mut self, prefix: impl Into<String>) -> Result<Self> {
+        let prefix = prefix.into();
+        if prefix.trim().is_empty() {
+            return Err(CdfError::contract("batch id prefix cannot be empty"));
+        }
+        self.batch_id_prefix = prefix;
+        Ok(self)
+    }
+
+    pub fn with_batch_size(mut self, batch_size: usize) -> Result<Self> {
+        if batch_size == 0 {
+            return Err(CdfError::contract("batch size must be greater than zero"));
+        }
+        self.batch_size = batch_size;
+        Ok(self)
+    }
+}
+
+fn sanitize_id_part(value: &str) -> String {
+    value
+        .chars()
+        .map(|character| {
+            if character.is_ascii_alphanumeric() || character == '-' || character == '_' {
+                character
+            } else {
+                '-'
+            }
+        })
+        .collect()
+}
+
 pub struct AccountedChunksReader {
     chunks: Vec<AccountedBytes>,
     chunk: usize,
@@ -1082,6 +1138,19 @@ mod tests {
     struct DescriptorOnlyDriver(FormatDriverDescriptor);
 
     struct DescriptorOnlyTransform(ByteTransformDescriptor);
+
+    #[test]
+    fn read_options_derive_stable_batch_identity_and_reject_invalid_overrides() {
+        let options = ReadOptions::new(
+            ResourceId::new("events/raw").unwrap(),
+            PartitionId::new("2026-07-13.json").unwrap(),
+        );
+
+        assert_eq!(options.batch_id_prefix, "events-raw-2026-07-13-json");
+        assert_eq!(options.batch_size, DEFAULT_FORMAT_BATCH_ROWS);
+        assert!(options.clone().with_batch_id_prefix(" ").is_err());
+        assert!(options.with_batch_size(0).is_err());
+    }
 
     impl ByteTransformDriver for DescriptorOnlyTransform {
         fn descriptor(&self) -> &ByteTransformDescriptor {

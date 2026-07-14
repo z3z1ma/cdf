@@ -1,7 +1,8 @@
 use std::panic;
 
-use cdf_formats::{JsonOptions, ReadOptions, read_ndjson_bytes};
+use cdf_formats::{JsonOptions, read_ndjson_bytes};
 use cdf_kernel::{ErrorKind, PartitionId, ResourceId};
+use cdf_runtime::ReadOptions;
 use proptest::prelude::*;
 
 fn read_options() -> ReadOptions {

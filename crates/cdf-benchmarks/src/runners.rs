@@ -16,8 +16,8 @@ use cdf_engine::{
     execute_to_package, execute_to_package_with_segment_positions_and_pre_finalize,
 };
 use cdf_formats::{
-    CsvOptions, FileFormat, FileResource, FileSource, JsonOptions, ReadOptions,
-    read_arrow_ipc_stream, schema_hash,
+    CsvOptions, FileFormat, FileResource, FileSource, JsonOptions, read_arrow_ipc_stream,
+    schema_hash,
 };
 use cdf_kernel::{
     CHECKPOINT_STATE_VERSION, CdfError, CheckpointId, CursorPosition, CursorValue, PartitionId,
@@ -30,6 +30,7 @@ use cdf_project::{
     PackageArtifactReplayRequest, ProjectRunRequest, ProjectRunSource, ResolvedProjectDestination,
     replay_package_from_artifacts, run_project,
 };
+use cdf_runtime::ReadOptions;
 use cdf_state_sqlite::InMemoryCheckpointStore;
 use datafusion::prelude::{SessionContext, col, lit};
 use duckdb::{Connection, appender_params_from_iter, types::Value};

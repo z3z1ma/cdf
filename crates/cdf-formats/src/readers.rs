@@ -21,6 +21,7 @@ use cdf_kernel::{
     SchemaSnapshotReference, SchemaSource, ScopeKey, SourcePosition, TrustLevel, WriteDisposition,
     source_name,
 };
+use cdf_runtime::ReadOptions;
 use futures_util::stream;
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use parquet::file::reader::ChunkReader;
@@ -28,7 +29,7 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 
 use crate::schema::schema_hash;
-use crate::{CsvOptions, FileFormat, FileSource, FormatRead, JsonOptions, ReadOptions};
+use crate::{CsvOptions, FileFormat, FileSource, FormatRead, JsonOptions};
 
 pub fn read_file_source(source: &FileSource) -> Result<FormatRead> {
     let position = file_source_position(&source.path)?;

@@ -10,10 +10,10 @@ use std::{
 use arrow_array::{ArrayRef, Int64Array, RecordBatch, StringArray};
 use arrow_ipc::writer::StreamWriter;
 use arrow_schema::{DataType, Field, Schema};
-use cdf_formats::ReadOptions;
 use cdf_kernel::{
     ErrorKind, ForeignState, PartitionId, ResourceId, ScopeKey, SegmentId, SourcePosition,
 };
+use cdf_runtime::ReadOptions;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
