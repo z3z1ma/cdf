@@ -228,6 +228,27 @@ fn parser_provides_subcommand_help_at_nested_layers() {
     assert!(rewind.stdout.contains("--to <CHECKPOINT>"));
     assert!(!rewind.stdout.contains("--target-checkpoint"));
     assert!(!rewind.stdout.contains("--marker-checkpoint"));
+
+    let state = run(["cdf", "state", "--help"]);
+
+    assert_eq!(state.exit_code, 0);
+    assert!(state.stdout.contains("show"));
+    assert!(state.stdout.contains("recover"));
+    assert!(!state.stdout.contains("migrate"));
+}
+
+#[test]
+fn state_migrate_is_absent_until_a_supported_predecessor_exists() {
+    let result = run(["cdf", "--json", "state", "migrate"]);
+
+    assert_eq!(result.exit_code, 2);
+    let json = assert_json_error_code(&result, "CDF-CLI-USAGE");
+    assert!(
+        json["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("unrecognized subcommand 'migrate'")
+    );
 }
 
 #[test]
@@ -13267,89 +13288,6 @@ fn state_rewind_human_headless_render_reports_marker_and_packages_ahead() {
             result.stdout.contains(expected),
             "missing {expected:?} in:\n{}",
             result.stdout
-        );
-    }
-}
-
-#[test]
-fn state_migrate_initializes_sqlite_components_and_is_idempotent() {
-    let project = TestProject::new();
-    remove_state_store(&project);
-
-    let first = run([
-        "cdf",
-        "--json",
-        "--project",
-        project.root_str(),
-        "state",
-        "migrate",
-    ]);
-
-    assert_eq!(first.exit_code, 0, "stderr: {}", first.stderr);
-    let first_json = stderr_or_stdout_json(&first.stdout);
-    assert_eq!(first_json["command"], "state migrate");
-    assert_eq!(first_json["result"]["applied_count"], 3);
-    assert!(
-        first_json["result"]["state_store_path"]
-            .as_str()
-            .unwrap()
-            .ends_with(".cdf/state.db")
-    );
-    let first_components = first_json["result"]["components"].as_array().unwrap();
-    assert_eq!(first_components[0]["component"], "checkpoint_store");
-    assert_eq!(first_components[0]["before_version"], Value::Null);
-    assert_eq!(first_components[0]["after_version"], 1);
-    assert_eq!(first_components[0]["target_version"], 1);
-    assert_eq!(first_components[0]["applied"], true);
-    assert_eq!(first_components[0]["action"], "initialized");
-    assert_eq!(first_components[1]["component"], "run_ledger");
-    assert_eq!(first_components[1]["before_version"], Value::Null);
-    assert_eq!(first_components[1]["after_version"], 5);
-    assert_eq!(first_components[1]["target_version"], 5);
-    assert_eq!(first_components[1]["applied"], true);
-    assert_eq!(first_components[1]["action"], "initialized");
-    assert_eq!(first_components[2]["component"], "scope_lease_store");
-    assert_eq!(first_components[2]["before_version"], Value::Null);
-    assert_eq!(first_components[2]["after_version"], 1);
-    assert_eq!(first_components[2]["target_version"], 1);
-    assert_eq!(first_components[2]["applied"], true);
-    assert_eq!(first_components[2]["action"], "initialized");
-
-    let second = run([
-        "cdf",
-        "--json",
-        "--project",
-        project.root_str(),
-        "state",
-        "migrate",
-    ]);
-
-    assert_eq!(second.exit_code, 0, "stderr: {}", second.stderr);
-    let second_json = stderr_or_stdout_json(&second.stdout);
-    assert_eq!(second_json["result"]["applied_count"], 0);
-    let second_components = second_json["result"]["components"].as_array().unwrap();
-    assert_eq!(second_components[0]["action"], "current");
-    assert_eq!(second_components[0]["applied"], false);
-    assert_eq!(second_components[1]["action"], "current");
-    assert_eq!(second_components[1]["applied"], false);
-    assert_eq!(second_components[2]["action"], "current");
-    assert_eq!(second_components[2]["applied"], false);
-
-    let human = run(["cdf", "--project", project.root_str(), "state", "migrate"]);
-    assert_eq!(human.exit_code, 0, "stderr: {}", human.stderr);
-    for expected in [
-        "OK state migration checked 3 component(s)",
-        "State store",
-        "mutation performed  none; all SQLite state components were current",
-        "| component",
-        "checkpoint_store",
-        "run_ledger",
-        "scope_lease_store",
-    ] {
-        assert!(
-            human.stdout.contains(expected),
-            "missing {expected:?} in:\n{}",
-            human.stdout
         );
     }
 }

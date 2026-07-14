@@ -2,7 +2,6 @@
 
 mod in_memory;
 mod lease;
-mod migration;
 mod run_ledger;
 mod settlement;
 mod sqlite;
@@ -16,10 +15,6 @@ pub use cdf_kernel::{
 };
 pub use in_memory::InMemoryCheckpointStore;
 pub use lease::{InMemoryScopeLeaseStore, SqliteScopeLeaseStore};
-pub use migration::{
-    SqliteStateComponentMigration, SqliteStateMigrationAction, SqliteStateMigrationReport,
-    migrate_sqlite_state,
-};
 pub use run_ledger::{RunLedgerSnapshot, RunRecord, SqliteRunLedger};
 pub use settlement::SqlitePromotionSettlementStore;
 pub use sqlite::SqliteCheckpointStore;

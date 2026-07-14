@@ -30,7 +30,7 @@ const INSPECT_NOUNS: &[&str] = &[
 const DIFF_SUBCOMMANDS: &[&str] = &["schema"];
 const SCHEMA_SUBCOMMANDS: &[&str] = &["discover", "pin", "show", "diff", "promote"];
 const CONTRACT_SUBCOMMANDS: &[&str] = &["freeze", "show", "test"];
-const STATE_SUBCOMMANDS: &[&str] = &["show", "history", "rewind", "migrate", "recover"];
+const STATE_SUBCOMMANDS: &[&str] = &["show", "history", "rewind", "recover"];
 const REPLAY_SUBCOMMANDS: &[&str] = &["package"];
 const PACKAGE_SUBCOMMANDS: &[&str] = &["ls", "gc", "verify", "archive"];
 
@@ -168,7 +168,6 @@ pub enum StateCommand {
     Show(StateScopeArgs),
     History(StateScopeArgs),
     Rewind(RewindArgs),
-    Migrate,
     Recover(StateRecoverArgs),
 }
 
@@ -661,17 +660,13 @@ fn parse_contract(matches: &ArgMatches) -> Result<ContractCommand, CliError> {
 fn parse_state(matches: &ArgMatches) -> Result<StateCommand, CliError> {
     let Some((subcommand, matches)) = matches.subcommand() else {
         return Err(CliError::usage(
-            "state requires one of show, history, rewind, migrate, or recover",
+            "state requires one of show, history, rewind, or recover",
         ));
     };
     match subcommand {
         "show" => parse_state_scope(matches).map(StateCommand::Show),
         "history" => parse_state_scope(matches).map(StateCommand::History),
         "rewind" => parse_rewind(matches).map(StateCommand::Rewind),
-        "migrate" => {
-            no_extra_values("state migrate", &values(matches, "extra"))?;
-            Ok(StateCommand::Migrate)
-        }
         "recover" => parse_state_recover(matches).map(StateCommand::Recover),
         other => Err(unknown_subcommand_error(
             &["state"],
@@ -964,7 +959,6 @@ fn state_command() -> ClapCommand {
             "to",
             "CHECKPOINT",
         )))
-        .subcommand(cmd("migrate").arg(values_arg("extra").hide(true)))
         .subcommand(
             cmd("recover")
                 .arg(option("package", "package", "DIR"))
@@ -1042,7 +1036,6 @@ fn cmd(name: &'static str) -> ClapCommand {
         "test" => "Test data against a contract",
         "history" => "Show checkpoint history",
         "rewind" => "Create a marker that rewinds checkpoint state",
-        "migrate" => "Migrate the local state store",
         "recover" => "Recover state from a committed package receipt",
         "ls" => "List durable packages",
         "gc" => "Collect packages allowed by retention policy",

@@ -1,6 +1,6 @@
 Status: active
 Created: 2026-07-05
-Updated: 2026-07-10
+Updated: 2026-07-13
 
 # Checkpoints, state, and the commit gate
 
@@ -32,7 +32,7 @@ Positions MUST be typed and versioned. Required position shapes include `CursorP
 
 Scopes MUST support partition, window, file, stream, schema-contract, and destination-load keys. Checkpoint granularity MUST be selected by resource archetype and MUST NOT be forced into one cursor string.
 
-`state_version` MUST gate deserialization. Migrations MUST be explicit, fixture-backed, and reachable through `cdf state migrate`.
+`state_version` MUST gate deserialization. Before CDF's first production compatibility promise, readers MUST accept only the current state version and MUST fail closed on noncurrent, unversioned, or structurally incomplete state. Historical migration readers and CLI migration commands MUST NOT ship under `.10x/decisions/pre-production-current-format-only.md`.
 
 ## Store trait and operations
 

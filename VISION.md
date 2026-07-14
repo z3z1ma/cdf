@@ -856,7 +856,7 @@ Composite       { parts: BTreeMap<PartitionId, Position> }
 ForeignState    { protocol: singer | airbyte, blob, blob_hash }     # adapter tier, quarantined type
 ```
 
-`state_version` gates deserialization; migrating a position type is an explicit, tested path — `cdf state migrate`, with fixtures from every prior version in CI — because silently reinterpreting old positions is how backfills get skipped. `ForeignState` deserves a sentence of philosophy: when a foreign protocol's state is genuinely opaque, the honest design is to say so with a type, hash it, scope it, and commit it under the same gate, rather than to pretend structure the protocol never promised.
+`state_version` gates deserialization. Before the first production compatibility promise, CDF reads exactly the current state schema: noncurrent, unversioned, or incomplete state fails closed and is rebuilt rather than migrated. Once production compatibility begins, supported source versions and explicit fixture-backed upgrade tooling require a ratified release-policy decision—silently reinterpreting old positions is never allowed because that is how backfills get skipped. `ForeignState` deserves a sentence of philosophy: when a foreign protocol's state is genuinely opaque, the honest design is to say so with a type, hash it, scope it, and commit it under the same gate, rather than to pretend structure the protocol never promised.
 
 ### 13.4 Scopes
 

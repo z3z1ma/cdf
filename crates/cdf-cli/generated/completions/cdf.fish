@@ -462,23 +462,22 @@ never\t''"
 complete -c cdf -n "__fish_cdf_using_subcommand contract; and __fish_seen_subcommand_from test" -s q -l quiet -d 'Suppress progress and non-primary success narration'
 complete -c cdf -n "__fish_cdf_using_subcommand contract; and __fish_seen_subcommand_from test" -s v -l verbose -d 'Show evidence detail; repeat for diagnostics'
 complete -c cdf -n "__fish_cdf_using_subcommand contract; and __fish_seen_subcommand_from test" -s h -l help -d 'Print help'
-complete -c cdf -n "__fish_cdf_using_subcommand state; and not __fish_seen_subcommand_from show history rewind migrate recover" -l color -d 'Color policy: auto, always, or never' -r -f -a "auto\t''
+complete -c cdf -n "__fish_cdf_using_subcommand state; and not __fish_seen_subcommand_from show history rewind recover" -l color -d 'Color policy: auto, always, or never' -r -f -a "auto\t''
 always\t''
 never\t''"
-complete -c cdf -n "__fish_cdf_using_subcommand state; and not __fish_seen_subcommand_from show history rewind migrate recover" -l progress -d 'Progress policy: auto, always, or never' -r -f -a "auto\t''
+complete -c cdf -n "__fish_cdf_using_subcommand state; and not __fish_seen_subcommand_from show history rewind recover" -l progress -d 'Progress policy: auto, always, or never' -r -f -a "auto\t''
 always\t''
 never\t''"
-complete -c cdf -n "__fish_cdf_using_subcommand state; and not __fish_seen_subcommand_from show history rewind migrate recover" -l unicode -d 'Unicode policy: auto, always, or never' -r -f -a "auto\t''
+complete -c cdf -n "__fish_cdf_using_subcommand state; and not __fish_seen_subcommand_from show history rewind recover" -l unicode -d 'Unicode policy: auto, always, or never' -r -f -a "auto\t''
 always\t''
 never\t''"
-complete -c cdf -n "__fish_cdf_using_subcommand state; and not __fish_seen_subcommand_from show history rewind migrate recover" -s q -l quiet -d 'Suppress progress and non-primary success narration'
-complete -c cdf -n "__fish_cdf_using_subcommand state; and not __fish_seen_subcommand_from show history rewind migrate recover" -s v -l verbose -d 'Show evidence detail; repeat for diagnostics'
-complete -c cdf -n "__fish_cdf_using_subcommand state; and not __fish_seen_subcommand_from show history rewind migrate recover" -s h -l help -d 'Print help'
-complete -c cdf -n "__fish_cdf_using_subcommand state; and not __fish_seen_subcommand_from show history rewind migrate recover" -f -a "show" -d 'Show the selected durable record'
-complete -c cdf -n "__fish_cdf_using_subcommand state; and not __fish_seen_subcommand_from show history rewind migrate recover" -f -a "history" -d 'Show checkpoint history'
-complete -c cdf -n "__fish_cdf_using_subcommand state; and not __fish_seen_subcommand_from show history rewind migrate recover" -f -a "rewind" -d 'Create a marker that rewinds checkpoint state'
-complete -c cdf -n "__fish_cdf_using_subcommand state; and not __fish_seen_subcommand_from show history rewind migrate recover" -f -a "migrate" -d 'Migrate the local state store'
-complete -c cdf -n "__fish_cdf_using_subcommand state; and not __fish_seen_subcommand_from show history rewind migrate recover" -f -a "recover" -d 'Recover state from a committed package receipt'
+complete -c cdf -n "__fish_cdf_using_subcommand state; and not __fish_seen_subcommand_from show history rewind recover" -s q -l quiet -d 'Suppress progress and non-primary success narration'
+complete -c cdf -n "__fish_cdf_using_subcommand state; and not __fish_seen_subcommand_from show history rewind recover" -s v -l verbose -d 'Show evidence detail; repeat for diagnostics'
+complete -c cdf -n "__fish_cdf_using_subcommand state; and not __fish_seen_subcommand_from show history rewind recover" -s h -l help -d 'Print help'
+complete -c cdf -n "__fish_cdf_using_subcommand state; and not __fish_seen_subcommand_from show history rewind recover" -f -a "show" -d 'Show the selected durable record'
+complete -c cdf -n "__fish_cdf_using_subcommand state; and not __fish_seen_subcommand_from show history rewind recover" -f -a "history" -d 'Show checkpoint history'
+complete -c cdf -n "__fish_cdf_using_subcommand state; and not __fish_seen_subcommand_from show history rewind recover" -f -a "rewind" -d 'Create a marker that rewinds checkpoint state'
+complete -c cdf -n "__fish_cdf_using_subcommand state; and not __fish_seen_subcommand_from show history rewind recover" -f -a "recover" -d 'Recover state from a committed package receipt'
 complete -c cdf -n "__fish_cdf_using_subcommand state; and __fish_seen_subcommand_from show" -l pipeline -d 'Pipeline identifier' -r
 complete -c cdf -n "__fish_cdf_using_subcommand state; and __fish_seen_subcommand_from show" -l scope -d 'Checkpoint scope entry as key=value; may be repeated' -r
 complete -c cdf -n "__fish_cdf_using_subcommand state; and __fish_seen_subcommand_from show" -l scope-json -d 'Checkpoint scope encoded as JSON' -r
@@ -525,18 +524,6 @@ never\t''"
 complete -c cdf -n "__fish_cdf_using_subcommand state; and __fish_seen_subcommand_from rewind" -s q -l quiet -d 'Suppress progress and non-primary success narration'
 complete -c cdf -n "__fish_cdf_using_subcommand state; and __fish_seen_subcommand_from rewind" -s v -l verbose -d 'Show evidence detail; repeat for diagnostics'
 complete -c cdf -n "__fish_cdf_using_subcommand state; and __fish_seen_subcommand_from rewind" -s h -l help -d 'Print help'
-complete -c cdf -n "__fish_cdf_using_subcommand state; and __fish_seen_subcommand_from migrate" -l color -d 'Color policy: auto, always, or never' -r -f -a "auto\t''
-always\t''
-never\t''"
-complete -c cdf -n "__fish_cdf_using_subcommand state; and __fish_seen_subcommand_from migrate" -l progress -d 'Progress policy: auto, always, or never' -r -f -a "auto\t''
-always\t''
-never\t''"
-complete -c cdf -n "__fish_cdf_using_subcommand state; and __fish_seen_subcommand_from migrate" -l unicode -d 'Unicode policy: auto, always, or never' -r -f -a "auto\t''
-always\t''
-never\t''"
-complete -c cdf -n "__fish_cdf_using_subcommand state; and __fish_seen_subcommand_from migrate" -s q -l quiet -d 'Suppress progress and non-primary success narration'
-complete -c cdf -n "__fish_cdf_using_subcommand state; and __fish_seen_subcommand_from migrate" -s v -l verbose -d 'Show evidence detail; repeat for diagnostics'
-complete -c cdf -n "__fish_cdf_using_subcommand state; and __fish_seen_subcommand_from migrate" -s h -l help -d 'Print help'
 complete -c cdf -n "__fish_cdf_using_subcommand state; and __fish_seen_subcommand_from recover" -l package -d 'Package directory' -r
 complete -c cdf -n "__fish_cdf_using_subcommand state; and __fish_seen_subcommand_from recover" -l to -d 'Destination URI or cursor upper bound, as shown in usage' -r
 complete -c cdf -n "__fish_cdf_using_subcommand state; and __fish_seen_subcommand_from recover" -l receipt -d 'Receipt identifier' -r

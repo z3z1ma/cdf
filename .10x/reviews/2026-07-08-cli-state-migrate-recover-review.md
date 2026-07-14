@@ -10,7 +10,7 @@ Verdict: pass
 
 Review of the `cdf state migrate` and `cdf state recover` implementation, including:
 
-- `.10x/decisions/state-migrate-recover-package-receipt.md`
+- `.10x/decisions/superseded/state-migrate-recover-package-receipt.md`
 - `crates/cdf-cli/src/args.rs`
 - `crates/cdf-cli/src/state_command.rs`
 - `crates/cdf-cli/src/state_command/migrate.rs`

@@ -1,6 +1,6 @@
 Status: active
 Created: 2026-07-05
-Updated: 2026-07-08
+Updated: 2026-07-13
 
 # Project format, CLI, observability, and security
 
@@ -31,7 +31,7 @@ merge_dedup = "fail"
 
 The CLI MUST be headless, scheduler-friendly, and support `--json` for commands where structured output is meaningful. Every architectural noun SHOULD have an inspect command.
 
-The required command surface includes `init`, `validate`, `plan`, `explain`, `run`, `preview`, `sql`, `inspect`, `diff schema`, `contract freeze/show/test`, `state show/history/rewind/migrate/recover`, `resume`, `replay package`, `backfill`, `package ls/gc/verify`, `doctor`, and `status`. `package archive` is fast-follow.
+The required command surface includes `init`, `validate`, `plan`, `explain`, `run`, `preview`, `sql`, `inspect`, `diff schema`, `contract freeze/show/test`, `state show/history/rewind/recover`, `resume`, `replay package`, `backfill`, `package ls/gc/verify`, `doctor`, and `status`. State stores initialize only the current schema automatically; no pre-production migration command ships. `package archive` is fast-follow.
 
 `cdf plan` MUST show what will be fetched, pushdown fidelity, DDL preview, delivery guarantee, and state advancement before bytes move.
 

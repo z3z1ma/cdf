@@ -37,7 +37,6 @@ Generated from the CLI's clap definitions. Do not edit these pages by hand.
 - [`cdf state show`](cdf-state-show.md)
 - [`cdf state history`](cdf-state-history.md)
 - [`cdf state rewind`](cdf-state-rewind.md)
-- [`cdf state migrate`](cdf-state-migrate.md)
 - [`cdf state recover`](cdf-state-recover.md)
 - [`cdf resume`](cdf-resume.md)
 - [`cdf replay`](cdf-replay.md)

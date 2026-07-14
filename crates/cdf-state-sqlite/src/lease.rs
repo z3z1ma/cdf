@@ -12,8 +12,9 @@ use cdf_kernel::{
 use rusqlite::{Connection, OpenFlags, OptionalExtension, Row, params};
 
 use crate::support::{
-    decode_json, encode_json, ensure_migration_table, lock_error, read_component_schema_version,
-    sqlite_error, write_component_schema_version,
+    decode_json, encode_json, ensure_schema_version_table, lock_error,
+    read_component_schema_version, require_sqlite_tables, sqlite_error, sqlite_table_exists,
+    write_component_schema_version,
 };
 
 pub(crate) const SCOPE_LEASE_COMPONENT: &str = "scope_lease_store";
@@ -274,8 +275,8 @@ impl ScopeLeaseStore for SqliteScopeLeaseStore {
 }
 
 pub(crate) fn initialize_schema(conn: &Connection) -> Result<()> {
-    ensure_migration_table(conn)?;
     validate_schema_version(conn)?;
+    ensure_schema_version_table(conn)?;
     conn.execute_batch(
         "
         CREATE TABLE IF NOT EXISTS cdf_scope_leases (
@@ -295,10 +296,16 @@ pub(crate) fn initialize_schema(conn: &Connection) -> Result<()> {
 
 fn validate_schema_version(conn: &Connection) -> Result<()> {
     match read_component_schema_version(conn, SCOPE_LEASE_COMPONENT)? {
-        Some(SCOPE_LEASE_SCHEMA_VERSION) | None => Ok(()),
+        Some(SCOPE_LEASE_SCHEMA_VERSION) => {
+            require_sqlite_tables(conn, "scope lease store", &["cdf_scope_leases"])
+        }
         Some(version) => Err(CdfError::internal(format!(
             "unsupported scope lease store SQLite schema version {version}"
         ))),
+        None if sqlite_table_exists(conn, "cdf_scope_leases")? => Err(CdfError::internal(format!(
+            "scope lease store SQLite schema is unversioned; expected current version {SCOPE_LEASE_SCHEMA_VERSION}"
+        ))),
+        None => Ok(()),
     }
 }
 

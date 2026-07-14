@@ -1,7 +1,7 @@
 Status: recorded
 Created: 2026-07-08
 Updated: 2026-07-08
-Relates-To: .10x/tickets/done/2026-07-07-cli-state-migrate-recover.md, .10x/decisions/state-migrate-recover-package-receipt.md, .10x/tickets/done/2026-07-05-cli-surface.md
+Relates-To: .10x/tickets/done/2026-07-07-cli-state-migrate-recover.md, .10x/decisions/superseded/state-migrate-recover-package-receipt.md, .10x/tickets/done/2026-07-05-cli-surface.md
 
 # CLI state migrate/recover evidence
 
@@ -56,7 +56,7 @@ Maintainability checks:
 
 ## Limits
 
-This evidence does not prove broad destination mirror scraping recovery; that behavior is explicitly excluded by `.10x/decisions/state-migrate-recover-package-receipt.md`.
+This evidence does not prove broad destination mirror scraping recovery; that behavior was explicitly excluded by `.10x/decisions/superseded/state-migrate-recover-package-receipt.md` and remains excluded by `.10x/decisions/state-current-schema-package-receipt-recovery.md`.
 
 Record-graph cleanup was validated with `rg` for the old open-ticket path after moving the ticket to `done/`; no stale references remained.
 

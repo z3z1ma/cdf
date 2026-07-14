@@ -1,4 +1,3 @@
-mod migrate;
 mod recover;
 
 use cdf_kernel::{CheckpointId, CheckpointStore, PipelineId, ResourceId, ScopeKey};
@@ -16,7 +15,7 @@ use crate::{
     run_command::DEFAULT_RUN_PIPELINE_ID,
 };
 
-use self::{migrate::migrate, recover::recover};
+use self::recover::recover;
 
 pub(crate) fn state(
     cli: &Cli,
@@ -28,7 +27,6 @@ pub(crate) fn state(
         StateCommand::Show(args) => show(cli, args),
         StateCommand::History(args) => history(cli, args),
         StateCommand::Rewind(args) => rewind(cli, args),
-        StateCommand::Migrate => migrate(cli),
         StateCommand::Recover(args) => recover(cli, args, execution, destinations),
     }
 }

@@ -40,10 +40,10 @@ None. If a migration fixture format or recovery precedence rule is missing, self
 
 - 2026-07-07: Split from `.10x/tickets/done/2026-07-07-cli-remaining-command-planners.md`. Current `state show/history/rewind` work; `state migrate` and `state recover` return not-supported.
 - 2026-07-08: Implemented SQLite state migration reporting API and CLI wiring, plus package-receipt `state recover` through the package replay destination resolver and lower `recover_package_from_artifacts` path. Added focused migration/recovery tests; ticket intentionally remains open pending requested external evidence/review closure work.
-- 2026-07-08: Closed after recording API-shape decision `.10x/decisions/state-migrate-recover-package-receipt.md`, evidence `.10x/evidence/2026-07-08-cli-state-migrate-recover.md`, and review `.10x/reviews/2026-07-08-cli-state-migrate-recover-review.md`. `cdf state migrate` now reports component schema versions and idempotent actions; `cdf state recover` performs verified package-receipt recovery without destination row writes and without bypassing `CheckpointStore::commit`.
+- 2026-07-08: Closed after recording API-shape decision `.10x/decisions/superseded/state-migrate-recover-package-receipt.md`, evidence `.10x/evidence/2026-07-08-cli-state-migrate-recover.md`, and review `.10x/reviews/2026-07-08-cli-state-migrate-recover-review.md`. `cdf state migrate` then reported component schema versions and idempotent actions; `cdf state recover` performed verified package-receipt recovery without destination row writes and without bypassing `CheckpointStore::commit`. The migration half was later superseded by the pre-production current-format-only policy; this terminal ticket remains historical evidence of its 2026-07-08 closure.
 
 ## References
 
-- `.10x/decisions/state-migrate-recover-package-receipt.md`
+- `.10x/decisions/superseded/state-migrate-recover-package-receipt.md`
 - `.10x/evidence/2026-07-08-cli-state-migrate-recover.md`
 - `.10x/reviews/2026-07-08-cli-state-migrate-recover-review.md`

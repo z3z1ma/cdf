@@ -472,7 +472,6 @@ Register-ArgumentCompleter -Native -CommandName 'cdf' -ScriptBlock {
             [CompletionResult]::new('show', 'show', [CompletionResultType]::ParameterValue, 'Show the selected durable record')
             [CompletionResult]::new('history', 'history', [CompletionResultType]::ParameterValue, 'Show checkpoint history')
             [CompletionResult]::new('rewind', 'rewind', [CompletionResultType]::ParameterValue, 'Create a marker that rewinds checkpoint state')
-            [CompletionResult]::new('migrate', 'migrate', [CompletionResultType]::ParameterValue, 'Migrate the local state store')
             [CompletionResult]::new('recover', 'recover', [CompletionResultType]::ParameterValue, 'Recover state from a committed package receipt')
             break
         }
@@ -511,18 +510,6 @@ Register-ArgumentCompleter -Native -CommandName 'cdf' -ScriptBlock {
             [CompletionResult]::new('--scope', '--scope', [CompletionResultType]::ParameterName, 'Checkpoint scope entry as key=value; may be repeated')
             [CompletionResult]::new('--scope-json', '--scope-json', [CompletionResultType]::ParameterName, 'Checkpoint scope encoded as JSON')
             [CompletionResult]::new('--to', '--to', [CompletionResultType]::ParameterName, 'Destination URI or cursor upper bound, as shown in usage')
-            [CompletionResult]::new('--color', '--color', [CompletionResultType]::ParameterName, 'Color policy: auto, always, or never')
-            [CompletionResult]::new('--progress', '--progress', [CompletionResultType]::ParameterName, 'Progress policy: auto, always, or never')
-            [CompletionResult]::new('--unicode', '--unicode', [CompletionResultType]::ParameterName, 'Unicode policy: auto, always, or never')
-            [CompletionResult]::new('-q', '-q', [CompletionResultType]::ParameterName, 'Suppress progress and non-primary success narration')
-            [CompletionResult]::new('--quiet', '--quiet', [CompletionResultType]::ParameterName, 'Suppress progress and non-primary success narration')
-            [CompletionResult]::new('-v', '-v', [CompletionResultType]::ParameterName, 'Show evidence detail; repeat for diagnostics')
-            [CompletionResult]::new('--verbose', '--verbose', [CompletionResultType]::ParameterName, 'Show evidence detail; repeat for diagnostics')
-            [CompletionResult]::new('-h', '-h', [CompletionResultType]::ParameterName, 'Print help')
-            [CompletionResult]::new('--help', '--help', [CompletionResultType]::ParameterName, 'Print help')
-            break
-        }
-        'cdf;state;migrate' {
             [CompletionResult]::new('--color', '--color', [CompletionResultType]::ParameterName, 'Color policy: auto, always, or never')
             [CompletionResult]::new('--progress', '--progress', [CompletionResultType]::ParameterName, 'Progress policy: auto, always, or never')
             [CompletionResult]::new('--unicode', '--unicode', [CompletionResultType]::ParameterName, 'Unicode policy: auto, always, or never')

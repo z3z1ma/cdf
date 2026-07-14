@@ -600,20 +600,6 @@ _arguments "${_arguments_options[@]}" : \
 '*::resource_arg -- Resource identifier:_default' \
 && ret=0
 ;;
-(migrate)
-_arguments "${_arguments_options[@]}" : \
-'--color=[Color policy\: auto, always, or never]:WHEN:(auto always never)' \
-'--progress=[Progress policy\: auto, always, or never]:WHEN:(auto always never)' \
-'--unicode=[Unicode policy\: auto, always, or never]:WHEN:(auto always never)' \
-'(-v --verbose)-q[Suppress progress and non-primary success narration]' \
-'(-v --verbose)--quiet[Suppress progress and non-primary success narration]' \
-'(-q --quiet)*-v[Show evidence detail; repeat for diagnostics]' \
-'(-q --quiet)*--verbose[Show evidence detail; repeat for diagnostics]' \
-'-h[Print help]' \
-'--help[Print help]' \
-'*::extra -- Unexpected operands:_default' \
-&& ret=0
-;;
 (recover)
 _arguments "${_arguments_options[@]}" : \
 '--package=[Package directory]:DIR:_default' \
@@ -1078,7 +1064,6 @@ _cdf__subcmd__state_commands() {
 'show:Show the selected durable record' \
 'history:Show checkpoint history' \
 'rewind:Create a marker that rewinds checkpoint state' \
-'migrate:Migrate the local state store' \
 'recover:Recover state from a committed package receipt' \
     )
     _describe -t commands 'cdf state commands' commands "$@"
@@ -1087,11 +1072,6 @@ _cdf__subcmd__state_commands() {
 _cdf__subcmd__state__subcmd__history_commands() {
     local commands; commands=()
     _describe -t commands 'cdf state history commands' commands "$@"
-}
-(( $+functions[_cdf__subcmd__state__subcmd__migrate_commands] )) ||
-_cdf__subcmd__state__subcmd__migrate_commands() {
-    local commands; commands=()
-    _describe -t commands 'cdf state migrate commands' commands "$@"
 }
 (( $+functions[_cdf__subcmd__state__subcmd__recover_commands] )) ||
 _cdf__subcmd__state__subcmd__recover_commands() {

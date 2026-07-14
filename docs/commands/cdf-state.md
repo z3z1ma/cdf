@@ -11,7 +11,6 @@ Commands:
   show     Show the selected durable record
   history  Show checkpoint history
   rewind   Create a marker that rewinds checkpoint state
-  migrate  Migrate the local state store
   recover  Recover state from a committed package receipt
 
 Options:

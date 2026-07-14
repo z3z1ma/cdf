@@ -721,151 +721,78 @@ fn sqlite_uses_wal_and_single_committed_head_index() {
 }
 
 #[test]
-fn sqlite_state_migration_initializes_missing_database_and_is_idempotent() {
+fn sqlite_state_components_reject_unversioned_existing_tables() {
     let dir = tempdir().unwrap();
-    let db_path = dir.path().join("state.db");
 
-    let first = migrate_sqlite_state(&db_path).unwrap();
-    assert_eq!(first.applied_count(), 3);
-    assert_eq!(first.components.len(), 3);
-    assert_eq!(first.components[0].component, "checkpoint_store");
-    assert_eq!(first.components[0].before_version, None);
-    assert_eq!(first.components[0].after_version, 1);
-    assert_eq!(first.components[0].target_version, 1);
-    assert_eq!(
-        first.components[0].action,
-        SqliteStateMigrationAction::Initialized
-    );
-    assert_eq!(first.components[1].component, "run_ledger");
-    assert_eq!(first.components[1].before_version, None);
-    assert_eq!(first.components[1].after_version, 5);
-    assert_eq!(first.components[1].target_version, 5);
-    assert_eq!(
-        first.components[1].action,
-        SqliteStateMigrationAction::Initialized
-    );
-    assert_eq!(first.components[2].component, "scope_lease_store");
-    assert_eq!(first.components[2].before_version, None);
-    assert_eq!(first.components[2].after_version, 1);
-    assert_eq!(first.components[2].target_version, 1);
-    assert_eq!(
-        first.components[2].action,
-        SqliteStateMigrationAction::Initialized
-    );
+    let checkpoint_path = dir.path().join("checkpoint.db");
+    rusqlite::Connection::open(&checkpoint_path)
+        .unwrap()
+        .execute_batch("CREATE TABLE cdf_checkpoints (id INTEGER);")
+        .unwrap();
+    let checkpoint_error = match SqliteCheckpointStore::open(&checkpoint_path) {
+        Ok(_) => panic!("checkpoint store accepted an unversioned table"),
+        Err(error) => error,
+    };
+    assert!(checkpoint_error.message.contains("unversioned"));
 
-    let second = migrate_sqlite_state(&db_path).unwrap();
-    assert_eq!(second.applied_count(), 0);
-    assert_eq!(
-        second
-            .components
-            .iter()
-            .map(|component| component.action)
-            .collect::<Vec<_>>(),
-        vec![
-            SqliteStateMigrationAction::Current,
-            SqliteStateMigrationAction::Current,
-            SqliteStateMigrationAction::Current
-        ]
-    );
+    let run_path = dir.path().join("run.db");
+    rusqlite::Connection::open(&run_path)
+        .unwrap()
+        .execute_batch("CREATE TABLE cdf_runs (id INTEGER);")
+        .unwrap();
+    let run_error = match SqliteRunLedger::open(&run_path) {
+        Ok(_) => panic!("run ledger accepted an unversioned table"),
+        Err(error) => error,
+    };
+    assert!(run_error.message.contains("unversioned"));
+
+    let lease_path = dir.path().join("lease.db");
+    rusqlite::Connection::open(&lease_path)
+        .unwrap()
+        .execute_batch("CREATE TABLE cdf_scope_leases (id INTEGER);")
+        .unwrap();
+    let lease_error = match SqliteScopeLeaseStore::open(&lease_path) {
+        Ok(_) => panic!("scope lease store accepted an unversioned table"),
+        Err(error) => error,
+    };
+    assert!(lease_error.message.contains("unversioned"));
 }
 
 #[test]
-fn sqlite_state_migration_upgrades_committed_run_ledger_v1_fixture() {
+fn sqlite_state_components_reject_incomplete_current_schema() {
     let dir = tempdir().unwrap();
-    let db_path = dir.path().join("state.db");
-    let conn = rusqlite::Connection::open(&db_path).unwrap();
-    conn.execute_batch(include_str!("../fixtures/run-ledger-v1.sql"))
-        .unwrap();
-    drop(conn);
-
-    let report = migrate_sqlite_state(&db_path).unwrap();
-    assert_eq!(report.components[0].component, "checkpoint_store");
-    assert_eq!(
-        report.components[0].action,
-        SqliteStateMigrationAction::Initialized
-    );
-    assert_eq!(report.components[1].component, "run_ledger");
-    assert_eq!(report.components[1].before_version, Some(1));
-    assert_eq!(report.components[1].after_version, 5);
-    assert_eq!(
-        report.components[1].action,
-        SqliteStateMigrationAction::Migrated
-    );
-
-    let ledger = SqliteRunLedger::open(&db_path).unwrap();
-    let run_id = RunId::new("run-v1-fixture").unwrap();
-    let snapshot = ledger.snapshot(&run_id).unwrap().unwrap();
-    assert_eq!(snapshot.events.len(), 1);
-    ledger
-        .append_event(
-            &run_id,
-            RunEventAppend::new(RunEventKind::ValidationDepthTransitionRecorded),
-        )
-        .unwrap();
-}
-
-#[test]
-fn sqlite_state_migration_upgrades_v3_without_losing_events_and_enables_publication() {
-    let dir = tempdir().unwrap();
-    let db_path = dir.path().join("state.db");
-    let ledger = SqliteRunLedger::open(&db_path).unwrap();
-    let run_id = RunId::new("run-v3-fixture").unwrap();
-    ledger.create_run(Some(run_id.clone())).unwrap();
-    ledger
-        .append_event(&run_id, RunEventAppend::new(RunEventKind::RunStarted))
-        .unwrap();
-    drop(ledger);
-
-    let conn = rusqlite::Connection::open(&db_path).unwrap();
+    let path = dir.path().join("state.db");
+    let conn = rusqlite::Connection::open(&path).unwrap();
     conn.execute_batch(
         "
-        DROP TRIGGER cdf_promotion_publications_no_update;
-        DROP TRIGGER cdf_promotion_publications_no_delete;
-        DROP TABLE cdf_promotion_publications;
-        UPDATE cdf_sqlite_schema_migrations
-        SET version = 3
-        WHERE component = 'run_ledger';
+        CREATE TABLE cdf_sqlite_schema_versions (
+            component TEXT PRIMARY KEY,
+            version INTEGER NOT NULL,
+            recorded_at_ms INTEGER NOT NULL
+        );
+        INSERT INTO cdf_sqlite_schema_versions (component, version, recorded_at_ms)
+        VALUES ('checkpoint_store', 1, 1);
         ",
     )
     .unwrap();
     drop(conn);
 
-    let report = migrate_sqlite_state(&db_path).unwrap();
-    let run_component = report
-        .components
-        .iter()
-        .find(|component| component.component == "run_ledger")
-        .unwrap();
-    assert_eq!(run_component.before_version, Some(3));
-    assert_eq!(run_component.after_version, 5);
-    assert_eq!(run_component.action, SqliteStateMigrationAction::Migrated);
-
-    let ledger = SqliteRunLedger::open(&db_path).unwrap();
-    let snapshot = ledger.snapshot(&run_id).unwrap().unwrap();
-    assert_eq!(snapshot.events.len(), 1);
-    assert_eq!(snapshot.events[0].kind, RunEventKind::RunStarted);
-    let promotion_id = PromotionId::new("promotion-v3-migration").unwrap();
-    let event = PromotionPublicationEvent {
-        version: PROMOTION_PUBLICATION_EVENT_VERSION,
-        promotion_id: promotion_id.clone(),
-        resource_id: resource_id(),
-        old_schema_hash: SchemaHash::new("sha256:old").unwrap(),
-        new_schema_hash: SchemaHash::new("sha256:new").unwrap(),
-        installed_lock_sha256: "sha256:lock".to_owned(),
-        targets: vec![PromotionPublicationTarget {
-            destination_id: DestinationId::new("duckdb").unwrap(),
-            target: TargetName::new("orders").unwrap(),
-            correction_package_hash: PackageHash::new("sha256:correction-v3").unwrap(),
-            receipt_id: ReceiptId::new("receipt-v3").unwrap(),
-            checkpoint_id: CheckpointId::new("checkpoint-v3").unwrap(),
-        }],
-        published_at_ms: 10,
-    };
-    assert_eq!(ledger.publish_promotion(event.clone()).unwrap(), event);
-    assert_eq!(
-        ledger.promotion_publication(&promotion_id).unwrap(),
-        Some(event)
-    );
+    for error in [
+        match SqliteCheckpointStore::open(&path) {
+            Ok(_) => panic!("mutating open recreated an incomplete current schema"),
+            Err(error) => error,
+        },
+        match SqliteCheckpointStore::open_read_only(&path) {
+            Ok(_) => panic!("read-only open accepted an incomplete current schema"),
+            Err(error) => error,
+        },
+    ] {
+        assert!(
+            error
+                .message
+                .contains("required table cdf_checkpoints is missing")
+        );
+    }
 }
 
 #[test]
@@ -963,44 +890,6 @@ where
         .map(|handle| usize::from(handle.join().unwrap().is_ok()))
         .sum::<usize>();
     assert_eq!(successes, 1);
-}
-
-#[test]
-fn lease_migration_preserves_existing_checkpoint_history_and_commit_gate() {
-    let dir = tempdir().unwrap();
-    let path = dir.path().join("checkpoint-v1.db");
-    let checkpoint_store = SqliteCheckpointStore::open(&path).unwrap();
-    let committed = commit_delta(
-        &checkpoint_store,
-        delta(
-            "checkpoint-before-lease-migration",
-            None,
-            partition_scope(),
-            cursor_position(7),
-            "package-before-lease-migration",
-        ),
-    );
-    drop(checkpoint_store);
-
-    let report = migrate_sqlite_state(&path).unwrap();
-    let lease = report
-        .components
-        .iter()
-        .find(|component| component.component == "scope_lease_store")
-        .unwrap();
-    assert_eq!(lease.action, SqliteStateMigrationAction::Initialized);
-
-    let reopened = SqliteCheckpointStore::open(&path).unwrap();
-    let head = reopened
-        .head(
-            &committed.delta.pipeline_id,
-            &committed.delta.resource_id,
-            &committed.delta.scope,
-        )
-        .unwrap()
-        .unwrap();
-    assert_eq!(head.delta.checkpoint_id, committed.delta.checkpoint_id);
-    assert_eq!(head.receipt, committed.receipt);
 }
 
 #[test]
@@ -1327,12 +1216,12 @@ fn sqlite_run_ledger_open_read_only_rejects_unsupported_schema_version() {
     let conn = rusqlite::Connection::open(&db_path).unwrap();
     conn.execute_batch(
         "
-        CREATE TABLE cdf_sqlite_schema_migrations (
+        CREATE TABLE cdf_sqlite_schema_versions (
             component TEXT PRIMARY KEY,
             version INTEGER NOT NULL,
-            applied_at_ms INTEGER NOT NULL
+            recorded_at_ms INTEGER NOT NULL
         );
-        INSERT INTO cdf_sqlite_schema_migrations (component, version, applied_at_ms)
+        INSERT INTO cdf_sqlite_schema_versions (component, version, recorded_at_ms)
         VALUES ('run_ledger', 6, 1);
         ",
     )
@@ -1419,12 +1308,12 @@ fn sqlite_run_ledger_records_schema_version() {
     let ledger = SqliteRunLedger::open_in_memory().unwrap();
     let version: i64 = ledger
         .query_row_for_test(
-            "SELECT version FROM cdf_sqlite_schema_migrations WHERE component = 'run_ledger'",
+            "SELECT version FROM cdf_sqlite_schema_versions WHERE component = 'run_ledger'",
             [],
             |row| row.get(0),
         )
         .unwrap();
-    assert_eq!(version, 5);
+    assert_eq!(version, 1);
 }
 
 #[test]
@@ -1630,36 +1519,6 @@ fn sqlite_promotion_settlement_fences_checkpoint_and_publication_inside_transact
     assert_eq!(
         store.publish_promotion(&lease_c, event.clone()).unwrap(),
         event
-    );
-}
-
-#[test]
-fn sqlite_run_ledger_rejects_unsupported_schema_version() {
-    let dir = tempdir().unwrap();
-    let db_path = dir.path().join("future-run-ledger.db");
-    let conn = rusqlite::Connection::open(&db_path).unwrap();
-    conn.execute_batch(
-        "
-        CREATE TABLE cdf_sqlite_schema_migrations (
-            component TEXT PRIMARY KEY,
-            version INTEGER NOT NULL,
-            applied_at_ms INTEGER NOT NULL
-        );
-        INSERT INTO cdf_sqlite_schema_migrations (component, version, applied_at_ms)
-        VALUES ('run_ledger', 6, 1);
-        ",
-    )
-    .unwrap();
-    drop(conn);
-
-    let error = match SqliteRunLedger::open(&db_path) {
-        Ok(_) => panic!("future run-ledger schema version must fail closed"),
-        Err(error) => error,
-    };
-    assert!(
-        error
-            .to_string()
-            .contains("unsupported run ledger SQLite schema version 6")
     );
 }
 

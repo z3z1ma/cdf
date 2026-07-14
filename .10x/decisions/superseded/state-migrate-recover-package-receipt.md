@@ -1,8 +1,10 @@
-Status: active
+Status: superseded
 Created: 2026-07-08
-Updated: 2026-07-08
+Updated: 2026-07-13
 
 # State migrate/recover operational contract
+
+Superseded-By: `.10x/decisions/state-current-schema-package-receipt-recovery.md`
 
 ## Context
 

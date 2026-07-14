@@ -145,9 +145,6 @@ _cdf() {
             cdf__subcmd__state,history)
                 cmd="cdf__subcmd__state__subcmd__history"
                 ;;
-            cdf__subcmd__state,migrate)
-                cmd="cdf__subcmd__state__subcmd__migrate"
-                ;;
             cdf__subcmd__state,recover)
                 cmd="cdf__subcmd__state__subcmd__recover"
                 ;;
@@ -1294,7 +1291,7 @@ _cdf() {
             return 0
             ;;
         cdf__subcmd__state)
-            opts="-q -v -h --quiet --verbose --color --progress --unicode --help show history rewind migrate recover"
+            opts="-q -v -h --quiet --verbose --color --progress --unicode --help show history rewind recover"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 2 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -1338,32 +1335,6 @@ _cdf() {
                     COMPREPLY=($(compgen -f "${cur}"))
                     return 0
                     ;;
-                --color)
-                    COMPREPLY=($(compgen -W "auto always never" -- "${cur}"))
-                    return 0
-                    ;;
-                --progress)
-                    COMPREPLY=($(compgen -W "auto always never" -- "${cur}"))
-                    return 0
-                    ;;
-                --unicode)
-                    COMPREPLY=($(compgen -W "auto always never" -- "${cur}"))
-                    return 0
-                    ;;
-                *)
-                    COMPREPLY=()
-                    ;;
-            esac
-            COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
-            return 0
-            ;;
-        cdf__subcmd__state__subcmd__migrate)
-            opts="-q -v -h --quiet --verbose --color --progress --unicode --help"
-            if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
-                COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
-                return 0
-            fi
-            case "${prev}" in
                 --color)
                     COMPREPLY=($(compgen -W "auto always never" -- "${cur}"))
                     return 0

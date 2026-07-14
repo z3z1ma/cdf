@@ -12,9 +12,10 @@ use cdf_kernel::{
 use rusqlite::{Connection, OpenFlags, OptionalExtension, Row, Transaction, params};
 
 use crate::support::{
-    decode_json, encode_json, ensure_migration_table, lock_error, missing_checkpoint, now_ms,
-    packages_ahead_of_state, read_component_schema_version, rewind_marker, same_tuple,
-    sqlite_error, validate_state_version, verify_receipt, write_component_schema_version,
+    decode_json, encode_json, ensure_schema_version_table, lock_error, missing_checkpoint, now_ms,
+    packages_ahead_of_state, read_component_schema_version, require_sqlite_tables, rewind_marker,
+    same_tuple, sqlite_error, sqlite_table_exists, validate_state_version, verify_receipt,
+    write_component_schema_version,
 };
 
 pub(crate) const CHECKPOINT_STORE_COMPONENT: &str = "checkpoint_store";
@@ -36,6 +37,7 @@ impl SqliteCheckpointStore {
     pub fn open_read_only(path: impl AsRef<Path>) -> Result<Self> {
         let conn = Connection::open_with_flags(path.as_ref(), OpenFlags::SQLITE_OPEN_READ_ONLY)
             .map_err(sqlite_error)?;
+        validate_schema_version(&conn)?;
         Ok(Self {
             conn: Mutex::new(conn),
         })
@@ -392,11 +394,17 @@ fn verify_current_published_schema_tx(tx: &Transaction<'_>, delta: &StateDelta) 
 }
 
 pub(crate) fn initialize_schema(conn: &Connection) -> Result<()> {
-    ensure_migration_table(conn)?;
     match read_component_schema_version(conn, CHECKPOINT_STORE_COMPONENT)? {
-        Some(CHECKPOINT_STORE_SCHEMA_VERSION) | None => {}
+        Some(CHECKPOINT_STORE_SCHEMA_VERSION) => validate_schema_structure(conn)?,
         Some(version) => return Err(unsupported_checkpoint_schema_version(version)),
+        None if sqlite_table_exists(conn, "cdf_checkpoints")? => {
+            return Err(CdfError::internal(format!(
+                "checkpoint store SQLite schema is unversioned; expected current version {CHECKPOINT_STORE_SCHEMA_VERSION}"
+            )));
+        }
+        None => {}
     }
+    ensure_schema_version_table(conn)?;
 
     conn.execute_batch(
         "
@@ -443,6 +451,20 @@ pub(crate) fn initialize_schema(conn: &Connection) -> Result<()> {
         CHECKPOINT_STORE_COMPONENT,
         CHECKPOINT_STORE_SCHEMA_VERSION,
     )
+}
+
+fn validate_schema_version(conn: &Connection) -> Result<()> {
+    match read_component_schema_version(conn, CHECKPOINT_STORE_COMPONENT)? {
+        Some(CHECKPOINT_STORE_SCHEMA_VERSION) => validate_schema_structure(conn),
+        Some(version) => Err(unsupported_checkpoint_schema_version(version)),
+        None => Err(CdfError::internal(format!(
+            "checkpoint store SQLite schema version is missing; expected {CHECKPOINT_STORE_SCHEMA_VERSION}"
+        ))),
+    }
+}
+
+fn validate_schema_structure(conn: &Connection) -> Result<()> {
+    require_sqlite_tables(conn, "checkpoint store", &["cdf_checkpoints"])
 }
 
 fn unsupported_checkpoint_schema_version(version: i64) -> CdfError {

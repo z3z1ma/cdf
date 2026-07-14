@@ -2,7 +2,7 @@ Status: active
 Created: 2026-07-11
 Updated: 2026-07-13
 Parent: None
-Depends-On: None
+Depends-On: `.10x/tickets/2026-07-11-p0-sx1-source-extension-boundary.md`
 
 # P0: Remove pre-production compatibility vestiges
 
@@ -28,11 +28,12 @@ No compatibility promise for the first production release is introduced here. No
 
 ## Blockers
 
-None.
+Repository-wide closure depends on SX1 replacing the remaining declarative file/REST compatibility adapters with the source extension boundary. Completed slices continue independently; the ticket MUST NOT move to done while those adapters remain.
 
 ## References
 
 - `.10x/decisions/pre-production-current-format-only.md`
+- `.10x/decisions/state-current-schema-package-receipt-recovery.md`
 - `.10x/decisions/destination-ingress-protocol-capability-split.md`
 - `.10x/specs/destination-receipts-guarantees.md`
 - `.10x/specs/streaming-destination-ingress.md`
@@ -73,6 +74,8 @@ None.
 - 2026-07-13: Removed the validation-program compatibility default that silently synthesized `IdentifierPolicy` when the recorded execution artifact omitted it. Current programs always record the exact policy that normalization and destination binding obey, so missing policy now fails deserialization instead of inventing `namecase-v1`. Retained optional coercion, residual, and expression fields as current semantic absence states and renamed the coercion test variables to stop misclassifying that valid shape as legacy compatibility.
 - 2026-07-13: Deleted the declarative resource-id override retained “for existing compatibility.” A resource now has exactly one compiled ID, `<source>.<resource>`, derived from its table positions; `ResourceDeclaration` rejects unknown fields so an old `id` key cannot be silently ignored. Removed redundant canonical IDs from every first-party benchmark, project, and conformance TOML fixture, renamed the neutral source-plan parameter away from compatibility vocabulary, and advanced the published editor schema identity to `cdf-declarative-v2` with `id` absent and `additionalProperties = false`.
 - 2026-07-13: Removed missing-authority inspection compatibility from `EnginePlan`. The older `.10x/decisions/compiled-output-schema-and-runtime-provenance.md` allowed absent schema/output authorities solely for legacy plan inspection; the later repository-wide current-format decision supersedes that clause because no old artifacts exist. `EnginePlan` now requires concrete `EngineSchemaAuthority` and `EngineOutputSchema` values at construction and deserialization, accessors no longer model absence, every planner/rebind path writes them directly, and execution still recomputes them before mutation.
+- 2026-07-13: Deleted the pre-production SQLite migration product rather than carrying four fictional predecessor generations: the generic migration report/API, run-ledger v1-to-v5 upgrade functions, historical SQL fixture, `cdf state migrate`, its command module/tests, and all generated help/man/completion/docs entries are gone. Retained the component schema-version registry and strict open-time gate as the migration-ready seam. After user clarification, collapsed every current component (`checkpoint_store`, `run_ledger`, `scope_lease_store`) to version 1; a real future v2 may add explicit migrations and restore the command under a production compatibility decision.
+- 2026-07-13: Reconciled the state authority graph instead of leaving code ahead of records. Added `.10x/decisions/state-current-schema-package-receipt-recovery.md`, superseded the mixed migrate/recover decision while preserving its current receipt-recovery contract, updated the checkpoint and CLI specs plus `VISION.md`, and corrected Chapter 13 coverage. Historical ticket/evidence records continue to say what shipped on 2026-07-08 and now point to the superseded decision path.
 
 ## Evidence
 
@@ -111,6 +114,9 @@ None.
 - Validation-program current-format verification passed `CARGO_BUILD_JOBS=12 cargo test -p cdf-contract validation_program_ --lib -j12 -- --test-threads=1` (`3 passed`) and `CARGO_BUILD_JOBS=12 cargo clippy -p cdf-contract --lib --tests --no-deps -j12 -- -D warnings`. The negative case removes `identifier_policy` from a freshly compiled program and proves deserialization rejects it by field name; ordinary programs with no coercion evidence still serialize and round-trip their one current shape. `cargo fmt --all -- --check` and `git diff --check` pass.
 - Canonical-ID focused tests passed: `source_and_resource_names_form_canonical_compiled_id`, `explicit_resource_id_is_rejected_in_favor_of_canonical_id`, and `json_schema_artifact_exposes_editor_schema_model` (`1 passed` each). `CARGO_BUILD_JOBS=12 cargo check -p cdf-declarative -p cdf-project -p cdf-conformance -p cdf-benchmarks --tests -j12` passed the complete downstream fixture graph, and strict no-dependency clippy passed for `cdf-declarative`. A full serial declarative library run reached `69 passed; 12 failed`; every failure is on the already-recorded missing file/format/transform runtime-registry injection surface, while both canonical-ID tests passed. That broader runtime failure is not claimed as ID evidence. Formatting and diff checks pass.
 - Engine-plan current-format verification passed `CARGO_BUILD_JOBS=12 cargo check -p cdf-engine -p cdf-project --tests -j12` and strict no-dependency clippy for both crates. `engine_plan_requires_recorded_schema_authorities` removes each required authority from a freshly planned artifact and proves deserialization rejects it by field name; `execution_rejects_schema_authority_and_zero_row_output_schema_tampering` proves present-but-forged authorities still fail before package construction. Source inventory finds no optional authority accessor, `Some(...)` construction, or serde default for either field; formatting and diff checks pass.
+- SQLite current-schema verification passed the full `cdf-state-sqlite` library suite (`35 passed; 0 failed`) after resetting the run ledger to the sole v1 generation. New cases prove all three components reject unversioned existing tables and that both mutating and read-only opens reject a versioned-but-incomplete current checkpoint schema rather than recreating it. The version registry is exercised by `sqlite_run_ledger_records_schema_version`.
+- `CARGO_BUILD_JOBS=12 cargo clippy -p cdf-state-sqlite -p cdf-cli --tests --no-deps -j 12 -- -D warnings` passed. The focused CLI regression `state_migrate_is_absent_until_a_supported_predecessor_exists` passed and the state help test asserts no migration command is advertised.
+- Both committed CLI artifact checks passed after regeneration (`--out-dir crates/cdf-cli/generated --check` and `--docs-dir docs --docs-only --check`). Inventory finds no migration API/type, old migration-table name, `StateCommand::Migrate`, command module, generated page, or `state migrate` reference in production crates/docs. Focused gitleaks scans of `crates`, `.10x`, and `docs` report no leaks; an initial whole-directory scan was stopped because it descended into the build tree and is not claimed as evidence.
 
 ## Review
 
@@ -128,6 +134,7 @@ None.
 - Root's fresh adversarial pass over validation-program deserialization distinguished compatibility defaults from current optional semantics. `identifier_policy` is mandatory identity-bearing execution authority and can no longer be synthesized; `schema_coercion`, `residual`, and `compiled_expression_plan` remain legitimate optional current fields whose serializers omit `None`. The nested identifier `max_length` default is retained as live declarative policy ergonomics, not an old artifact reader. Verdict: **pass** for this slice; repository-wide occurrence classification remains before ticket closure.
 - Root's fresh adversarial pass over canonical IDs checked TOML/YAML deserialization, JSON Schema output, compiler derivation, source-plan lowering, and every embedded first-party declaration. Removing only the compiler fallback would have silently accepted and ignored `id`; the repaired boundary rejects the key and the v2 editor schema forbids it. All migrated fixtures already used values equal to their canonical table-derived IDs, so no current semantics were changed by their deletion. Verdict: **pass** for this slice; direct compiled-resource runtime adapters and remaining occurrence classification stay owned by this ticket.
 - Root's fresh adversarial pass over engine-plan authority checked initial planning, validation-program rebinding, serialization/deserialization, zero-row execution, destination preflight, and tamper rejection. Partition schedule, operator graph, and effective-schema evidence remain optional because they are real current staged-compilation/declared-schema states; schema and output identities do not. Verdict: **pass** for this slice; source-extension compatibility adapters and remaining occurrence classification stay owned by their active tickets.
+- Root's fresh adversarial pass over SQLite state deletion distinguished future migration capability from shipping historical compatibility. It found and repaired three risks before commit: the first draft discarded the useful version gate, retained a misleading run-ledger v5, and would have let a versioned-but-missing table be recreated silently. The final design retains one insert-only component-version registry, labels all current components v1, rejects noncurrent/unversioned/incomplete schemas in read-only and mutating opens, and removes only unused upgrade implementations and the premature CLI product. Package-receipt recovery is unchanged. Verdict: **pass** for this slice; the ticket remains active for SX1-owned source adapters and the repository-wide occurrence classification.
 
 ## Retrospective
 
