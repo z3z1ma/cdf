@@ -42,7 +42,7 @@ use sha2::{Digest, Sha256};
 use tracing::{Instrument, Span, info_span};
 
 use crate::{
-    CompiledSchemaAdmissionPlan, CompiledStreamAdmissionEvidence,
+    CompiledSchemaAdmissionOutcome, CompiledSchemaAdmissionPlan, CompiledStreamAdmissionEvidence,
     EffectiveSchemaObservationCoercion, EffectiveSchemaPlanEvidence, EngineExecutionEvidence,
     EngineExecutionOptions, EnginePackageDraft, EnginePlan, EnginePreviewLimits,
     EnginePreviewOutput, EngineRunOutput, EngineRunOutputWithSegmentPositions,
@@ -248,7 +248,8 @@ where
             disposition => {
                 let expected = disposition.and_then(|item| match item {
                     PartitionSchemaDisposition::Admitted(evidence) => Some(evidence),
-                    PartitionSchemaDisposition::Quarantined(_) => None,
+                    PartitionSchemaDisposition::Quarantined(_)
+                    | PartitionSchemaDisposition::Unobserved => None,
                 });
                 let (location, bounded_identity) = preview_partition_identity(partition)?;
                 *location_counts.entry(location.clone()).or_default() += 1;
@@ -369,6 +370,32 @@ where
                             &expression_schema
                         },
                     )?;
+                    let reconciled = match reconciled {
+                        BatchSchemaDisposition::Admitted(reconciled) => reconciled,
+                        BatchSchemaDisposition::Quarantined(quarantine) => {
+                            terminal_quarantines.insert(quarantine.observation_id().to_owned());
+                            admitted = admitted.saturating_add(1);
+                            inspected_batch_count = inspected_batch_count.saturating_add(1);
+                            remaining_batches = remaining_batches.saturating_sub(1);
+                            remaining_bytes = remaining_bytes.saturating_sub(decoded_bytes);
+                            byte_count = byte_count.saturating_add(decoded_bytes);
+                            quarantined_row_count =
+                                quarantined_row_count.saturating_add(batch.header.row_count);
+                            complete = true;
+                            break;
+                        }
+                    };
+                    if let Some(coercion_plan) = reconciled.coercion_plan.as_ref()
+                        && plan.compiled_schema_admission.captures_unknown_fields()?
+                    {
+                        let candidates = stream_admission_residual_candidates(
+                            &record_batch,
+                            coercion_plan,
+                            batch.header.residual_candidates(),
+                            0,
+                        )?;
+                        batch.header.extend_residual_candidates(candidates);
+                    }
                     let record_batch = reconciled.record_batch;
                     let pre_contract_quarantined_rows =
                         pre_contract_quarantine_summary(&batch.header.pre_contract_quarantine)
@@ -734,11 +761,16 @@ where
     Ok(true)
 }
 
-struct MaterializedBatchSchema {
+struct AdmittedBatchSchema {
     record_batch: RecordBatch,
     coercion_plan: Option<cdf_contract::SchemaCoercionPlan>,
     observation_id: Option<String>,
     physical_schema_hash: Option<cdf_kernel::SchemaHash>,
+}
+
+enum BatchSchemaDisposition {
+    Admitted(AdmittedBatchSchema),
+    Quarantined(TerminalSchemaObservationQuarantine),
 }
 
 fn materialize_batch_schema_evidence(
@@ -748,7 +780,13 @@ fn materialize_batch_schema_evidence(
     admission: &CompiledSchemaAdmissionPlan,
     admission_cache: &mut BTreeMap<cdf_kernel::SchemaHash, cdf_contract::SchemaCoercionPlan>,
     effective_schema: &Schema,
-) -> Result<MaterializedBatchSchema> {
+) -> Result<BatchSchemaDisposition> {
+    let stream_observation_id = match &batch.header.source_position {
+        Some(SourcePosition::FileManifest(manifest)) if manifest.files.len() == 1 => {
+            manifest.files[0].path.clone()
+        }
+        _ => batch.header.partition_id.to_string(),
+    };
     if let Some(expected) = expected
         && batch.header.observed_schema_hash != expected.physical_schema_hash
     {
@@ -778,12 +816,12 @@ fn materialize_batch_schema_evidence(
                     expected.observation_id
                 )));
             }
-            Ok(MaterializedBatchSchema {
+            Ok(BatchSchemaDisposition::Admitted(AdmittedBatchSchema {
                 record_batch: record_batch.clone(),
                 coercion_plan: Some(batch_coercion.clone()),
                 observation_id: Some(expected.observation_id.clone()),
                 physical_schema_hash: Some(expected.physical_schema_hash.clone()),
-            })
+            }))
         }
         (Some(expected), None) => {
             let materialized = materialize_schema_coercion(
@@ -792,45 +830,138 @@ fn materialize_batch_schema_evidence(
                 &expected.coercion_plan,
             )?;
             validate_effective_batch_schema(materialized.schema().as_ref(), effective_schema)?;
-            Ok(MaterializedBatchSchema {
+            Ok(BatchSchemaDisposition::Admitted(AdmittedBatchSchema {
                 record_batch: materialized,
                 coercion_plan: Some(expected.coercion_plan.clone()),
                 observation_id: Some(expected.observation_id.clone()),
                 physical_schema_hash: Some(expected.physical_schema_hash.clone()),
-            })
+            }))
         }
         (None, supplied) => {
+            if let Some(supplied) = supplied {
+                admission.validate_materialized(supplied)?;
+                validate_materialized_effective_batch_schema(
+                    record_batch.schema().as_ref(),
+                    effective_schema,
+                    batch.header.residual_candidates(),
+                )?;
+                return Ok(BatchSchemaDisposition::Admitted(AdmittedBatchSchema {
+                    record_batch: record_batch.clone(),
+                    coercion_plan: Some(supplied.clone()),
+                    observation_id: Some(stream_observation_id),
+                    physical_schema_hash: Some(batch.header.observed_schema_hash.clone()),
+                }));
+            }
+            if cdf_kernel::canonical_arrow_schema_hash(record_batch.schema().as_ref())?
+                == batch.header.observed_schema_hash
+                && validate_effective_batch_schema(record_batch.schema().as_ref(), effective_schema)
+                    .is_ok()
+            {
+                let compiled = admission.instantiate(
+                    record_batch.schema().as_ref(),
+                    &batch.header.observed_schema_hash,
+                )?;
+                return Ok(BatchSchemaDisposition::Admitted(AdmittedBatchSchema {
+                    record_batch: record_batch.clone(),
+                    coercion_plan: Some(compiled),
+                    observation_id: Some(stream_observation_id),
+                    physical_schema_hash: Some(batch.header.observed_schema_hash.clone()),
+                }));
+            }
             let compiled = match admission_cache.get(&batch.header.observed_schema_hash) {
                 Some(plan) => plan.clone(),
                 None => {
-                    let plan = admission.instantiate(
+                    let outcome = admission.instantiate_or_quarantine(
+                        &stream_observation_id,
                         record_batch.schema().as_ref(),
                         &batch.header.observed_schema_hash,
                     )?;
+                    let plan = match outcome {
+                        CompiledSchemaAdmissionOutcome::Admitted(plan) => plan,
+                        CompiledSchemaAdmissionOutcome::Quarantined(quarantine) => {
+                            return Ok(BatchSchemaDisposition::Quarantined(quarantine));
+                        }
+                    };
                     admission_cache.insert(batch.header.observed_schema_hash.clone(), plan.clone());
                     plan
                 }
             };
-            if supplied
-                .as_ref()
-                .is_some_and(|supplied| supplied != &compiled)
-            {
-                return Err(CdfError::data(format!(
-                    "physical schema {} supplied coercion evidence that differs from the compiled stream-admission program",
-                    batch.header.observed_schema_hash
-                )));
-            }
             let materialized =
                 materialize_schema_coercion(record_batch, effective_schema, &compiled)?;
             validate_effective_batch_schema(materialized.schema().as_ref(), effective_schema)?;
-            Ok(MaterializedBatchSchema {
+            Ok(BatchSchemaDisposition::Admitted(AdmittedBatchSchema {
                 record_batch: materialized,
                 coercion_plan: Some(compiled),
-                observation_id: Some(batch.header.partition_id.to_string()),
+                observation_id: Some(stream_observation_id),
                 physical_schema_hash: Some(batch.header.observed_schema_hash.clone()),
-            })
+            }))
         }
     }
+}
+
+fn stream_admission_residual_candidates(
+    physical_batch: &RecordBatch,
+    coercion_plan: &cdf_contract::SchemaCoercionPlan,
+    existing: &[PreContractResidualCandidate],
+    source_row_ordinal: u64,
+) -> Result<Vec<PreContractResidualCandidate>> {
+    let mut candidates = Vec::new();
+    for decision in &coercion_plan.fields {
+        if decision.decision != cdf_contract::FieldCoercionDecision::Extra {
+            continue;
+        }
+        let observed_name = decision.observed_name.as_deref().ok_or_else(|| {
+            CdfError::data(format!(
+                "extra field {:?} has no observed field name",
+                decision.source_name
+            ))
+        })?;
+        let mut covered_rows = BTreeSet::new();
+        for candidate in existing.iter().filter(|candidate| {
+            candidate.expected_field().is_none()
+                && candidate.source_path().first().map(String::as_str)
+                    == Some(decision.source_name.as_str())
+        }) {
+            if !covered_rows.insert(candidate.batch_row_ordinal()) {
+                return Err(CdfError::data(format!(
+                    "extra field {:?} has duplicate residual evidence for batch row {}",
+                    decision.source_name,
+                    candidate.batch_row_ordinal()
+                )));
+            }
+        }
+        if covered_rows.len() == physical_batch.num_rows() {
+            continue;
+        }
+        let field_index = physical_batch
+            .schema()
+            .fields()
+            .iter()
+            .position(|field| field.name() == observed_name)
+            .ok_or_else(|| {
+                CdfError::data(format!(
+                    "extra field {:?} is absent from its physical batch",
+                    decision.source_name
+                ))
+            })?;
+        let field = physical_batch.schema().field(field_index).clone();
+        let values = Arc::clone(physical_batch.column(field_index));
+        for row in 0..physical_batch.num_rows() {
+            if covered_rows.contains(&row) {
+                continue;
+            }
+            candidates.push(PreContractResidualCandidate::new(
+                source_row_ordinal.saturating_add(row as u64),
+                row,
+                vec![decision.source_name.clone()],
+                field.clone(),
+                None,
+                Arc::clone(&values),
+                row,
+            )?);
+        }
+    }
+    Ok(candidates)
 }
 
 fn compact_record_batch_prefix(batch: &RecordBatch, rows: usize) -> Result<RecordBatch> {
@@ -1568,6 +1699,7 @@ fn record_observation_schema_coercion(
 enum PartitionSchemaDisposition {
     Admitted(EffectiveSchemaObservationCoercion),
     Quarantined(TerminalSchemaObservationQuarantine),
+    Unobserved,
 }
 
 impl ExecutionTraceContext {
@@ -2019,7 +2151,8 @@ where
                 .as_ref()
                 .and_then(|item| match item {
                     PartitionSchemaDisposition::Admitted(evidence) => Some(evidence),
-                    PartitionSchemaDisposition::Quarantined(_) => None,
+                    PartitionSchemaDisposition::Quarantined(_)
+                    | PartitionSchemaDisposition::Unobserved => None,
                 });
         if let Some(expected) = partition_schema_evidence {
             attempted_observations.insert(expected.observation_id.clone());
@@ -2031,7 +2164,7 @@ where
 
         let mut segment_assembler =
             crate::CanonicalSegmentAssembler::new(segmentation_policy.clone(), partition_ordinal)?;
-        let (fully_processed, observed_positions) = async {
+        let (fully_processed, observed_positions, dynamic_quarantine) = async {
             phase_measurements.add(
                 RunPhase::Decode,
                 open_duration_ns,
@@ -2043,6 +2176,9 @@ where
             })?;
             let mut fully_processed = true;
             let mut observed_positions = Vec::new();
+            let mut dynamic_quarantine = None;
+            let mut admitted_batch_count = 0_u64;
+            let mut partition_source_row_ordinal = 0_u64;
             loop {
                 let decode_started = phase_measurements.start();
                 let next_batch = stream.next().await;
@@ -2086,7 +2222,6 @@ where
                     }
                     quarantine_sink.finish()?;
                 }
-                let residual_candidates = batch.header.take_residual_candidates();
                 let cdc_operation_field = batch
                     .header
                     .cdc
@@ -2111,6 +2246,38 @@ where
                         &expression_schema
                     },
                 )?;
+                let reconciled = match reconciled {
+                    BatchSchemaDisposition::Admitted(reconciled) => reconciled,
+                    BatchSchemaDisposition::Quarantined(quarantine) => {
+                        if admitted_batch_count != 0 {
+                            return Err(CdfError::data(format!(
+                                "partition {:?} changed to an incompatible physical schema after {admitted_batch_count} admitted batches; the codec must isolate schema epochs before partition admission",
+                                partition.partition_id
+                            )));
+                        }
+                        let source_position = normalize_source_position_for_partition(
+                            batch.header.source_position.clone(),
+                            &partition_scope,
+                        );
+                        dynamic_quarantine = Some((quarantine, source_position));
+                        break;
+                    }
+                };
+                admitted_batch_count = admitted_batch_count.saturating_add(1);
+                if let Some(coercion_plan) = reconciled.coercion_plan.as_ref()
+                    && plan.compiled_schema_admission.captures_unknown_fields()?
+                {
+                    let candidates = stream_admission_residual_candidates(
+                        record_batch,
+                        coercion_plan,
+                        batch.header.residual_candidates(),
+                        partition_source_row_ordinal,
+                    )?;
+                    batch.header.extend_residual_candidates(candidates);
+                }
+                partition_source_row_ordinal = partition_source_row_ordinal
+                    .saturating_add(batch.header.row_count);
+                let residual_candidates = batch.header.take_residual_candidates();
                 let record_batch = reconciled.record_batch;
                 let batch_coercion = reconciled.coercion_plan;
                 if let Some(batch_coercion) = batch_coercion {
@@ -2334,11 +2501,31 @@ where
                     durable: &mut durable_segment_observer,
                 },
             )?;
-            Ok::<_, CdfError>((fully_processed, observed_positions))
+            Ok::<_, CdfError>((fully_processed, observed_positions, dynamic_quarantine))
         }
         .instrument(partition_span)
         .await?;
-        if fully_processed
+        if let Some((quarantine, source_position)) = dynamic_quarantine {
+            let observation_id = quarantine.observation_id().to_owned();
+            let source_position = match source_position {
+                Some(position) => position,
+                None => resource
+                    .attest_partition(&partition)
+                    .await?
+                    .map(PartitionAttestation::into_processed_position)
+                    .ok_or_else(|| {
+                        CdfError::data(format!(
+                            "stream-admission quarantine {observation_id:?} has no source position or partition attestation"
+                        ))
+                    })?,
+            };
+            processed_observations.push(ProcessedObservationPosition::new(
+                observation_id,
+                ProcessedObservationOutcome::Quarantined,
+                source_position,
+            )?);
+            terminal_quarantines.push(quarantine);
+        } else if fully_processed
             && let Some(observation_id) = partition
                 .metadata
                 .get(PLAN_SCHEMA_OBSERVATION_ID_KEY)
@@ -2496,14 +2683,10 @@ where
     if !stream_admission_evidence.is_empty() {
         builder.write_json_artifact(
             "schema/stream-admission-evidence.json",
-            &CompiledStreamAdmissionEvidence {
-                compiled_admission_hash: cdf_runtime::artifact_hash(
-                    &plan.compiled_schema_admission,
-                )?,
-                baseline_schema_hash: schema_authority.baseline_schema_hash.to_string(),
-                effective_schema_hash: schema_authority.effective_schema_hash.to_string(),
-                observations: stream_admission_evidence.into_values().collect(),
-            },
+            &CompiledStreamAdmissionEvidence::new(
+                &plan.compiled_schema_admission,
+                stream_admission_evidence.into_values().collect(),
+            )?,
         )?;
     }
     if !terminal_quarantines.is_empty() {
@@ -2579,6 +2762,7 @@ where
             segments,
             profile,
             lineage,
+            terminal_schema_quarantines: terminal_quarantines.clone(),
         },
         segment_positions,
         phase_metrics: phase_measurements.into_metrics(),
@@ -4111,12 +4295,18 @@ fn partition_schema_disposition(
         .observations
         .binary_search_by(|observation| observation.observation_id.as_str().cmp(observation_id))
         .ok()
-        .map(|index| &evidence.observations[index])
-        .ok_or_else(|| {
-            CdfError::data(format!(
-                "effective-schema evidence has no candidate for observation {observation_id:?}"
-            ))
-        })?;
+        .map(|index| &evidence.observations[index]);
+    let Some(observation) = observation else {
+        if partition
+            .metadata
+            .contains_key(PLAN_PHYSICAL_SCHEMA_HASH_KEY)
+        {
+            return Err(CdfError::data(format!(
+                "unobserved schema candidate {observation_id:?} carries spoofed physical-schema evidence"
+            )));
+        }
+        return Ok(PartitionSchemaDisposition::Unobserved);
+    };
     validate_plan_metadata(
         partition,
         PLAN_PHYSICAL_SCHEMA_HASH_KEY,
@@ -4126,6 +4316,26 @@ fn partition_schema_disposition(
 }
 
 fn validate_effective_batch_schema(observed: &Schema, effective: &Schema) -> Result<()> {
+    validate_effective_batch_schema_with_nullable_sources(observed, effective, &BTreeSet::new())
+}
+
+fn validate_materialized_effective_batch_schema(
+    observed: &Schema,
+    effective: &Schema,
+    residual_candidates: &[PreContractResidualCandidate],
+) -> Result<()> {
+    let nullable_sources = residual_candidates
+        .iter()
+        .filter_map(|candidate| candidate.source_path().first().cloned())
+        .collect::<BTreeSet<_>>();
+    validate_effective_batch_schema_with_nullable_sources(observed, effective, &nullable_sources)
+}
+
+fn validate_effective_batch_schema_with_nullable_sources(
+    observed: &Schema,
+    effective: &Schema,
+    nullable_sources: &BTreeSet<String>,
+) -> Result<()> {
     if observed.fields().len() != effective.fields().len() {
         return Err(CdfError::data(format!(
             "per-observation coercion produced {} fields but the effective schema requires {}",
@@ -4136,10 +4346,14 @@ fn validate_effective_batch_schema(observed: &Schema, effective: &Schema) -> Res
     for (observed, effective) in observed.fields().iter().zip(effective.fields()) {
         let observed_source = source_name(observed.as_ref()).unwrap_or_else(|| observed.name());
         let effective_source = source_name(effective.as_ref()).unwrap_or_else(|| effective.name());
+        let nullable_matches = observed.is_nullable() == effective.is_nullable()
+            || (observed.is_nullable()
+                && !effective.is_nullable()
+                && nullable_sources.contains(effective_source));
         if observed.name() != effective.name()
             || observed_source != effective_source
             || observed.data_type() != effective.data_type()
-            || observed.is_nullable() != effective.is_nullable()
+            || !nullable_matches
         {
             return Err(CdfError::data(format!(
                 "per-observation coercion output field {:?} does not target effective field {:?}",

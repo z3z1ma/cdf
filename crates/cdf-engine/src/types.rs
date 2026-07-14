@@ -1,16 +1,21 @@
-use std::{collections::BTreeMap, sync::Arc};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    sync::Arc,
+};
 
 use arrow_schema::Schema;
 use cdf_contract::{
-    CanonicalArrowField, CompiledExpressionPlan, ContractPolicy, IdentifierPolicy, ResidualProgram,
-    RowDispositionRule, SchemaCoercionPlan, SchemaVerdictRule, TypePolicy, ValidationProgram,
+    CanonicalArrowField, CompiledExpressionPlan, ContractPolicy, FieldCoercionDecision,
+    IdentifierPolicy, ResidualProgram, RowDispositionRule, SchemaChangeKind, SchemaCoercionPlan,
+    SchemaVerdictRule, TypePolicy, ValidationProgram, VerdictAction, plan_schema_reconciliation,
     reconcile_schema,
 };
 use cdf_kernel::{
     CdfError, DeliveryGuarantee, DiscoveryExecutorBudgetEvidence, EffectiveSchemaEvidence,
     EstimateSupport, ProcessedObservationPosition, PushdownFidelity, ResourceId, ResourceStream,
-    Result, RunPhaseMetric, ScanPlan, ScanPredicate, ScanRequest, SchemaHash, SegmentId,
-    SourcePosition, TerminalSchemaObservationQuarantine, WriteDisposition,
+    Result, RunPhaseMetric, ScanPlan, ScanPredicate, ScanRequest, SchemaHash,
+    SchemaObservationFieldQuarantine, SchemaObservationPolicy, SegmentId, SourcePosition,
+    TerminalSchemaObservationQuarantine, WriteDisposition, source_name,
 };
 use cdf_package::VerifiedPackage;
 use cdf_package_contract::{PackageManifest, SegmentEntry};
@@ -299,7 +304,214 @@ impl CompiledSchemaAdmissionPlan {
             )));
         }
         let constraint = self.constraint_schema.to_arrow()?;
-        Ok(reconcile_schema(observed, constraint.as_ref(), &self.type_policy)?.plan)
+        let plan = reconcile_schema(observed, constraint.as_ref(), &self.type_policy)?.plan;
+        self.validate_materialized(&plan)?;
+        Ok(plan)
+    }
+
+    pub(crate) fn instantiate_or_quarantine(
+        &self,
+        observation_id: &str,
+        observed: &Schema,
+        observed_schema_hash: &SchemaHash,
+    ) -> Result<CompiledSchemaAdmissionOutcome> {
+        let actual = cdf_kernel::canonical_arrow_schema_hash(observed)?;
+        if &actual != observed_schema_hash {
+            return Err(CdfError::data(format!(
+                "physical schema hash {observed_schema_hash} does not match observed Arrow schema {actual}",
+            )));
+        }
+        let constraint = self.constraint_schema.to_arrow()?;
+        let report = plan_schema_reconciliation(observed, constraint.as_ref(), &self.type_policy)?;
+        if report.errors.is_empty() {
+            self.validate_materialized(&report.plan)?;
+            return Ok(CompiledSchemaAdmissionOutcome::Admitted(report.plan));
+        }
+        let narrowing_verdict = self
+            .schema_verdicts
+            .iter()
+            .find(|rule| rule.change == SchemaChangeKind::TypeNarrowing)
+            .map(|rule| &rule.verdict);
+        if narrowing_verdict != Some(&VerdictAction::Quarantine) {
+            return report
+                .into_result()
+                .map(|result| CompiledSchemaAdmissionOutcome::Admitted(result.plan));
+        }
+        let mut fields = report
+            .errors
+            .iter()
+            .map(|error| {
+                let observed_field = observed
+                    .fields()
+                    .iter()
+                    .find(|field| {
+                        source_name(field.as_ref()).unwrap_or_else(|| field.name())
+                            == error.source_name
+                    })
+                    .map(|field| CanonicalArrowField::from_arrow(field.as_ref()))
+                    .transpose()?;
+                let effective_field = constraint
+                    .fields()
+                    .iter()
+                    .find(|field| {
+                        source_name(field.as_ref()).unwrap_or_else(|| field.name())
+                            == error.source_name
+                    })
+                    .map(|field| CanonicalArrowField::from_arrow(field.as_ref()))
+                    .transpose()?;
+                SchemaObservationFieldQuarantine::new_field_path(
+                    vec![error.source_name.clone()],
+                    observed_field,
+                    effective_field,
+                    error.message.clone(),
+                )
+            })
+            .collect::<Result<Vec<_>>>()?;
+        if fields.is_empty() {
+            fields.push(SchemaObservationFieldQuarantine::whole_schema(
+                "physical schema is incompatible with the fixed admission schema",
+            )?);
+        }
+        let evolve = self.schema_verdicts.iter().any(|rule| {
+            rule.change == SchemaChangeKind::TypeWidening && rule.verdict == VerdictAction::Admit
+        });
+        let (rule_id, policy, remediation) = if evolve {
+            (
+                "schema-observation:incompatible",
+                SchemaObservationPolicy::Evolve,
+                "publish a compatible source type, declare an allowed coercion, or repin the schema after review",
+            )
+        } else {
+            (
+                "schema-observation:freeze-deviation",
+                SchemaObservationPolicy::Freeze,
+                "restore the pinned schema for this input, explicitly repin after review, or change the resource contract to evolve",
+            )
+        };
+        Ok(CompiledSchemaAdmissionOutcome::Quarantined(
+            TerminalSchemaObservationQuarantine::new(
+                observation_id,
+                observed_schema_hash.clone(),
+                rule_id,
+                "schema_observation_quarantined",
+                policy,
+                remediation,
+                fields,
+            )?,
+        ))
+    }
+
+    /// Validates coercion evidence for a batch that a source codec already materialized.
+    ///
+    /// Materialized batches retain the physical field identities and types in the coercion
+    /// plan, while their Arrow payload has the fixed admission schema. This path therefore
+    /// validates the recorded decisions against this compiled program instead of pretending
+    /// the already-coerced payload is the physical observation.
+    pub fn validate_materialized(&self, plan: &SchemaCoercionPlan) -> Result<()> {
+        let constraint = self.constraint_schema.to_arrow()?;
+        let output_decisions = plan
+            .fields
+            .iter()
+            .filter(|field| field.output_name.is_some())
+            .collect::<Vec<_>>();
+        if output_decisions.len() != constraint.fields().len() {
+            return Err(CdfError::data(format!(
+                "materialized schema-admission evidence covers {} output fields but the compiled constraint requires {}",
+                output_decisions.len(),
+                constraint.fields().len()
+            )));
+        }
+        let mut sources = BTreeSet::new();
+        for (field, decision) in constraint.fields().iter().zip(&output_decisions) {
+            let expected_source = source_name(field.as_ref()).unwrap_or_else(|| field.name());
+            if !sources.insert(decision.source_name.as_str())
+                || decision.source_name != expected_source
+                || decision.output_name.as_deref() != Some(field.name())
+                || decision.constraint_type.as_deref()
+                    != Some(field.data_type().to_string().as_str())
+            {
+                return Err(CdfError::data(format!(
+                    "materialized schema-admission evidence does not target compiled field {:?}",
+                    field.name()
+                )));
+            }
+        }
+        for field in &plan.fields {
+            if !sources.insert(field.source_name.as_str()) && field.output_name.is_none() {
+                return Err(CdfError::data(format!(
+                    "materialized schema-admission evidence repeats source field {:?}",
+                    field.source_name
+                )));
+            }
+            match field.decision {
+                FieldCoercionDecision::Preserved | FieldCoercionDecision::Missing => {}
+                FieldCoercionDecision::Widened
+                    if self.schema_verdict(SchemaChangeKind::TypeWidening)?
+                        == &VerdictAction::Admit => {}
+                FieldCoercionDecision::Extra
+                    if matches!(
+                        self.schema_verdict(SchemaChangeKind::UnknownField)?,
+                        VerdictAction::Admit | VerdictAction::AdmitAsVariant
+                    ) => {}
+                FieldCoercionDecision::Widened => {
+                    return Err(CdfError::data(format!(
+                        "field {:?} requires a width coercion that the compiled schema-admission verdict does not admit",
+                        field.source_name
+                    )));
+                }
+                FieldCoercionDecision::Extra => {
+                    return Err(CdfError::data(format!(
+                        "unknown field {:?} is rejected by the compiled schema-admission verdict",
+                        field.source_name
+                    )));
+                }
+                FieldCoercionDecision::CoercedByPolicy if self.type_policy.coerce_types => {}
+                FieldCoercionDecision::LossyAllowed if self.type_policy.allow_lossy_mapping => {}
+                FieldCoercionDecision::CoercedByPolicy => {
+                    return Err(CdfError::contract(format!(
+                        "field {:?} carries a parse coercion that the compiled schema-admission program does not allow",
+                        field.source_name
+                    )));
+                }
+                FieldCoercionDecision::LossyAllowed => {
+                    return Err(CdfError::contract(format!(
+                        "field {:?} carries a lossy coercion that the compiled schema-admission program does not allow",
+                        field.source_name
+                    )));
+                }
+                FieldCoercionDecision::LossyRejected | FieldCoercionDecision::Unsupported => {
+                    return Err(CdfError::data(format!(
+                        "field {:?} carries a non-materializable schema-admission decision",
+                        field.source_name
+                    )));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    pub(crate) fn captures_unknown_fields(&self) -> Result<bool> {
+        Ok(match self.schema_verdict(SchemaChangeKind::UnknownField)? {
+            VerdictAction::AdmitAsVariant => true,
+            VerdictAction::Admit => self
+                .residual
+                .as_ref()
+                .and_then(|residual| residual.capture.as_ref())
+                .is_some(),
+            _ => false,
+        })
+    }
+
+    fn schema_verdict(&self, change: SchemaChangeKind) -> Result<&VerdictAction> {
+        self.schema_verdicts
+            .iter()
+            .find(|rule| rule.change == change)
+            .map(|rule| &rule.verdict)
+            .ok_or_else(|| {
+                CdfError::data(format!(
+                    "compiled schema-admission program omitted its {change:?} verdict"
+                ))
+            })
     }
 
     pub fn validate_recorded(&self, validation_program: &ValidationProgram) -> Result<()> {
@@ -397,6 +609,11 @@ impl CompiledSchemaAdmissionPlan {
     }
 }
 
+pub(crate) enum CompiledSchemaAdmissionOutcome {
+    Admitted(SchemaCoercionPlan),
+    Quarantined(TerminalSchemaObservationQuarantine),
+}
+
 #[non_exhaustive]
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StreamAdmissionObservationEvidence {
@@ -468,6 +685,7 @@ impl CompiledStreamAdmissionEvidence {
                 ));
             }
             SchemaHash::new(observation.physical_schema_hash.clone())?;
+            admission.validate_materialized(&observation.coercion_plan)?;
         }
         Ok(())
     }
@@ -633,6 +851,7 @@ pub struct EngineRunOutput {
     pub segments: Vec<SegmentEntry>,
     pub profile: ExecutionProfile,
     pub lineage: LineageSummary,
+    pub terminal_schema_quarantines: Vec<TerminalSchemaObservationQuarantine>,
 }
 
 pub const ENGINE_EXECUTION_EVIDENCE_VERSION: u16 = 1;

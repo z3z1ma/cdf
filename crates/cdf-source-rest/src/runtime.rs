@@ -338,7 +338,7 @@ fn execute_rest(
     dependencies: RestRuntimeDependencies,
 ) -> Result<Vec<Batch>> {
     validate_partition(descriptor, plan, partition)?;
-    let schema_hash = execution_schema_hash(descriptor)?;
+    execution_schema_hash(descriptor)?;
     if schema.fields().is_empty() {
         return Err(CdfError::data(
             "declarative REST execution requires a declared schema with at least one field",
@@ -395,7 +395,7 @@ fn execute_rest(
                 ))?,
                 descriptor.resource_id.clone(),
                 partition.partition_id.clone(),
-                schema_hash.clone(),
+                page.observed_schema_hash.clone(),
                 page.record_batch,
             )?;
             batch.header.source_position = page.source_position;
@@ -839,6 +839,7 @@ impl InferredRestKind {
 
 struct ReconciledRestPage {
     record_batch: RecordBatch,
+    observed_schema_hash: SchemaHash,
     source_position: Option<SourcePosition>,
     pre_contract_quarantine: Vec<cdf_kernel::PreContractQuarantineFact>,
     residual_candidates: Vec<cdf_kernel::PreContractResidualCandidate>,
@@ -919,6 +920,7 @@ fn reconcile_rest_page(
             .record_batch()
             .ok_or_else(|| CdfError::internal("REST format batch has no Arrow payload"))?
             .clone(),
+        observed_schema_hash: format_batch.header.observed_schema_hash.clone(),
         source_position,
         pre_contract_quarantine,
         residual_candidates,

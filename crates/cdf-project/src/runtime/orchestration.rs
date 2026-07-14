@@ -406,11 +406,7 @@ async fn run_project_inner(execution: ProjectRunExecution<'_>) -> Result<Project
         row_count,
         segment_count,
         file_manifest: manifest_plan.summary,
-        terminal_schema_quarantines: execution
-            .plan
-            .effective_schema_evidence()
-            .map(|evidence| evidence.terminal_quarantines.clone())
-            .unwrap_or_default(),
+        terminal_schema_quarantines: output.output.terminal_schema_quarantines.clone(),
     })
 }
 

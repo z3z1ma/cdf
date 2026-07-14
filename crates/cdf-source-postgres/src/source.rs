@@ -336,6 +336,8 @@ fn execute_postgres_table(
     }
 
     let (record_batch, source_position) = rows_to_record_batch(&schema, descriptor, &scan, &rows)?;
+    let observed_schema_hash =
+        cdf_kernel::canonical_arrow_schema_hash(record_batch.schema().as_ref())?;
     let mut batch = Batch::from_record_batch(
         BatchId::new(format!(
             "{}-{}-000001",
@@ -344,7 +346,7 @@ fn execute_postgres_table(
         ))?,
         descriptor.resource_id.clone(),
         partition.partition_id,
-        execution_schema_hash(descriptor)?,
+        observed_schema_hash,
         record_batch,
     )?;
     batch.header.source_position = source_position;

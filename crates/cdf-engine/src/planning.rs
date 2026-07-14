@@ -584,11 +584,6 @@ where
                 "effective schema evidence requires every planned partition to identify its schema observation",
             )
         })?;
-        let observation = evidence.observation(observation_id).ok_or_else(|| {
-            CdfError::data(format!(
-                "effective schema evidence has no candidate for planned observation {observation_id:?}"
-            ))
-        })?;
         let binding = partition
             .metadata
             .get(PLAN_SCHEMA_OBSERVATION_BINDING_KEY)
@@ -606,10 +601,17 @@ where
                 "repeated effective schema observation {observation_id:?} carries conflicting source identity bindings"
             )));
         }
-        partition.metadata.insert(
-            PLAN_PHYSICAL_SCHEMA_HASH_KEY.to_owned(),
-            observation.physical_schema_hash.to_string(),
-        );
+        match evidence.observation(observation_id) {
+            Some(observation) => {
+                partition.metadata.insert(
+                    PLAN_PHYSICAL_SCHEMA_HASH_KEY.to_owned(),
+                    observation.physical_schema_hash.to_string(),
+                );
+            }
+            None => {
+                partition.metadata.remove(PLAN_PHYSICAL_SCHEMA_HASH_KEY);
+            }
+        }
     }
     let mut type_policy =
         ContractPolicy::for_trust(resource.descriptor().trust_level.clone()).types;

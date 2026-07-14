@@ -789,11 +789,7 @@ fn discover_binary_resource_schema(
         .collect::<Vec<_>>();
     let selection = plan_discovery_selection(
         &resource.descriptor().resource_id,
-        if options.runtime_baseline().is_some() {
-            None
-        } else {
-            resource.schema_discovery_sample_files()
-        },
+        resource.schema_discovery_sample_files(),
         &selector_candidates,
     )?;
     let coverage_label = match selection.coverage {
@@ -1703,7 +1699,7 @@ pub fn compile_discovered_schema_artifacts(
         SchemaBaselineReference::Pinned {
             snapshot: artifacts.discovery.snapshot.reference.clone(),
         },
-        runtime.evidence.effective_schema_hash.clone(),
+        artifacts.discovery.snapshot.reference.schema_hash.clone(),
         runtime.evidence.discovery_manifest.clone(),
         runtime.evidence.observations.clone(),
     )?;

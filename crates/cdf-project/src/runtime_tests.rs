@@ -2163,6 +2163,7 @@ fn engine_output_with_positions(
             segments,
             profile: ExecutionProfile::default(),
             lineage: LineageSummary::default(),
+            terminal_schema_quarantines: Vec::new(),
         },
         segment_positions,
     )

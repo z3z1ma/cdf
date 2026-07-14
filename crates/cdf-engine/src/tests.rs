@@ -16,9 +16,9 @@ use arrow_array::{
 use arrow_schema::{DataType, Field, Schema, SchemaRef, TimeUnit};
 use cdf_contract::{
     ContractPolicy, DedupKeep, Expression, FieldCoercionDecision, NestedDataPolicy, ObservedSchema,
-    RESIDUAL_ENCODING_METADATA_KEY, RESIDUAL_ENCODING_NAME, RowRule, SchemaEvolutionMode,
-    VARIANT_COLUMN_NAME, VARIANT_SEMANTIC_TAG, VerdictAction, compile_resource_validation_program,
-    compile_validation_program, reconcile_schema,
+    RESIDUAL_ENCODING_METADATA_KEY, RESIDUAL_ENCODING_NAME, RowRule, SchemaChangeKind,
+    SchemaEvolutionMode, VARIANT_COLUMN_NAME, VARIANT_SEMANTIC_TAG, VerdictAction,
+    compile_resource_validation_program, compile_validation_program, reconcile_schema,
 };
 use cdf_kernel::{
     BackpressureSupport, Batch, BatchHeader, BatchId, BatchStream, CapabilitySupport, ContractRef,
@@ -188,12 +188,80 @@ fn compiled_stream_admission_is_replay_verifiable_and_rejects_mismatched_evidenc
     };
 
     evidence.validate(&plan.compiled_schema_admission).unwrap();
+    let mut unauthorized = evidence.clone();
+    unauthorized.observations[0].coercion_plan.fields[0].decision =
+        FieldCoercionDecision::LossyAllowed;
+    let error = unauthorized
+        .validate(&plan.compiled_schema_admission)
+        .unwrap_err();
+    assert!(error.to_string().contains("does not allow"), "{error}");
+
     let mut mismatched = evidence;
     mismatched.compiled_admission_hash = "sha256:mismatched".to_owned();
     let error = mismatched
         .validate(&plan.compiled_schema_admission)
         .unwrap_err();
     assert!(error.to_string().contains("does not match"), "{error}");
+}
+
+#[test]
+fn compiled_stream_admission_enforces_unknown_and_widening_verdicts() {
+    let resource = MockResource::tier_a(sample_batches());
+    let mut plan = Planner::new()
+        .plan_tier_a(
+            &resource,
+            plan_input(Vec::new(), None, None, PlanBoundedness::Bounded),
+        )
+        .unwrap();
+    assert!(
+        plan.compiled_schema_admission
+            .captures_unknown_fields()
+            .unwrap(),
+        "a fixed evolve schema must preserve admitted unknown fields in its residual capture"
+    );
+
+    plan.compiled_schema_admission
+        .schema_verdicts
+        .iter_mut()
+        .find(|rule| rule.change == SchemaChangeKind::UnknownField)
+        .unwrap()
+        .verdict = VerdictAction::RejectRun;
+    let unknown = Schema::new(vec![
+        Field::new("id", DataType::Int32, false),
+        Field::new("name", DataType::Utf8, false),
+        Field::new("active", DataType::Boolean, false),
+        Field::new("unexpected", DataType::Int64, true),
+    ]);
+    let unknown_hash = cdf_kernel::canonical_arrow_schema_hash(&unknown).unwrap();
+    let error = plan
+        .compiled_schema_admission
+        .instantiate(&unknown, &unknown_hash)
+        .unwrap_err();
+    assert!(error.to_string().contains("unknown field"), "{error}");
+
+    plan.compiled_schema_admission
+        .schema_verdicts
+        .iter_mut()
+        .find(|rule| rule.change == SchemaChangeKind::UnknownField)
+        .unwrap()
+        .verdict = VerdictAction::AdmitAsVariant;
+    plan.compiled_schema_admission
+        .schema_verdicts
+        .iter_mut()
+        .find(|rule| rule.change == SchemaChangeKind::TypeWidening)
+        .unwrap()
+        .verdict = VerdictAction::RejectBatch;
+    let narrow = Schema::new(vec![
+        Field::new("id", DataType::Int16, false),
+        Field::new("name", DataType::Utf8, false),
+        Field::new("active", DataType::Boolean, false),
+    ]);
+    let narrow_hash = cdf_kernel::canonical_arrow_schema_hash(&narrow).unwrap();
+    let error = plan
+        .compiled_schema_admission
+        .instantiate(&narrow, &narrow_hash)
+        .unwrap_err();
+    assert!(error.to_string().contains("width coercion"), "{error}");
 }
 
 #[test]
