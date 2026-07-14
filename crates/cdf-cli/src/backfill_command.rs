@@ -66,19 +66,19 @@ pub(crate) fn backfill(
     let pipeline_id = backfill_pipeline_id()?;
     let progress = human_progress_sink(cli.json, &cli.terminal);
     let event_sink = progress.as_ref().map(|sink| sink as &dyn RunEventSink);
+    let executor = BackfillSliceExecutor {
+        destinations,
+        context: &context,
+        target: &target,
+        source,
+        pipeline_id: &pipeline_id,
+        event_sink,
+        host,
+        services,
+    };
     let mut reports = Vec::with_capacity(plan.slices.len());
     for slice in &plan.slices {
-        let report = execute_slice(
-            destinations,
-            &context,
-            &target,
-            source,
-            &pipeline_id,
-            slice,
-            event_sink,
-            (host, services),
-        )
-        .map_err(|error| {
+        let report = executor.execute(slice).map_err(|error| {
             annotate_backfill_slice_error(
                 error,
                 slice,
@@ -99,75 +99,79 @@ pub(crate) fn backfill(
     }
 }
 
-fn execute_slice(
-    destinations: &cdf_runtime::DestinationRegistry,
-    context: &ProjectContext,
-    target: &TargetName,
-    source: ProjectRunSource<'_>,
-    pipeline_id: &PipelineId,
-    slice: &BackfillSlice,
-    event_sink: Option<&dyn RunEventSink>,
-    execution: (
-        &cdf_engine::StandaloneExecutionHost,
-        &cdf_runtime::ExecutionServices,
-    ),
-) -> Result<BackfillSliceExecutionReport, CliError> {
-    let (host, services) = execution;
-    let resolved = crate::destination_uri::resolve_selected_destination_with_services(
-        destinations,
-        context,
-        target,
-        None,
-        Some(services),
-    )
-    .map_err(|error| backfill_destination_resolution_error(context, error))?;
-    let destination = resolved.destination;
-    let identifier_policy = destination.column_identifier_policy()?;
-    let destination_report =
-        RunDestinationReport::from_project(&destination.describe(), destination.target());
-    let scoped = WindowScopedResource::new(source.queryable(), slice.scope.clone());
-    let mut engine_plan = slice.engine_plan.clone();
-    if let Some(identifier_policy) = identifier_policy {
-        let mut policy = ContractPolicy::for_trust(source.descriptor().trust_level.clone());
-        policy.normalization.identifier = identifier_policy;
-        let validation_program = compile_resource_validation_program(
-            &policy,
-            &ObservedSchema::from_arrow(source.queryable().schema().as_ref()),
-            source.descriptor(),
-        )?;
-        engine_plan
-            .rebind_validation_program(validation_program, source.queryable().schema().as_ref())?;
+struct BackfillSliceExecutor<'a> {
+    destinations: &'a cdf_runtime::DestinationRegistry,
+    context: &'a ProjectContext,
+    target: &'a TargetName,
+    source: ProjectRunSource<'a>,
+    pipeline_id: &'a PipelineId,
+    event_sink: Option<&'a dyn RunEventSink>,
+    host: &'a cdf_engine::StandaloneExecutionHost,
+    services: &'a cdf_runtime::ExecutionServices,
+}
+
+impl BackfillSliceExecutor<'_> {
+    fn execute(&self, slice: &BackfillSlice) -> Result<BackfillSliceExecutionReport, CliError> {
+        let resolved = crate::destination_uri::resolve_selected_destination_with_services(
+            self.destinations,
+            self.context,
+            self.target,
+            None,
+            Some(self.services),
+        )
+        .map_err(|error| backfill_destination_resolution_error(self.context, error))?;
+        let destination = resolved.destination;
+        let identifier_policy = destination.column_identifier_policy()?;
+        let destination_report =
+            RunDestinationReport::from_project(&destination.describe(), destination.target());
+        let scoped = WindowScopedResource::new(self.source.queryable(), slice.scope.clone());
+        let mut engine_plan = slice.engine_plan.clone();
+        if let Some(identifier_policy) = identifier_policy {
+            let mut policy =
+                ContractPolicy::for_trust(self.source.descriptor().trust_level.clone());
+            policy.normalization.identifier = identifier_policy;
+            let validation_program = compile_resource_validation_program(
+                &policy,
+                &ObservedSchema::from_arrow(self.source.queryable().schema().as_ref()),
+                self.source.descriptor(),
+            )?;
+            engine_plan.rebind_validation_program(
+                validation_program,
+                self.source.queryable().schema().as_ref(),
+            )?;
+        }
+        let run = self
+            .host
+            .block_on_root(run_project_with_services(
+                ProjectRunRequest {
+                    resource: ProjectRunSource::new(&scoped),
+                    plan: engine_plan,
+                    package_root: self.context.package_root(),
+                    state_store_path: self.context.state_store_path()?,
+                    pipeline_id: self.pipeline_id.clone(),
+                    package_id: slice.package_id.clone(),
+                    checkpoint_id: slice.checkpoint_id()?,
+                    destination,
+                    run_id: None,
+                    event_sink: self.event_sink,
+                    after_receipt_verified: None,
+                },
+                self.services,
+            ))
+            .map_err(|error| redact_error_value(error, resolved.secret_redaction.as_deref()))?;
+        Ok(BackfillSliceExecutionReport {
+            run_id: run.run_id.to_string(),
+            package_id: run.package_id,
+            package_dir: run.package_dir.display().to_string(),
+            package_hash: run.package_hash.to_string(),
+            checkpoint_id: run.checkpoint.delta.checkpoint_id.to_string(),
+            receipt_id: run.receipt.receipt_id.to_string(),
+            row_count: run.row_count,
+            segment_count: run.segment_count,
+            destination: destination_report
+                .with_receipt_destination(run.receipt.destination.to_string()),
+        })
     }
-    let run = host
-        .block_on_root(run_project_with_services(
-            ProjectRunRequest {
-                resource: ProjectRunSource::new(&scoped),
-                plan: engine_plan,
-                package_root: context.package_root(),
-                state_store_path: context.state_store_path()?,
-                pipeline_id: pipeline_id.clone(),
-                package_id: slice.package_id.clone(),
-                checkpoint_id: slice.checkpoint_id()?,
-                destination,
-                run_id: None,
-                event_sink,
-                after_receipt_verified: None,
-            },
-            services,
-        ))
-        .map_err(|error| redact_error_value(error, resolved.secret_redaction.as_deref()))?;
-    Ok(BackfillSliceExecutionReport {
-        run_id: run.run_id.to_string(),
-        package_id: run.package_id,
-        package_dir: run.package_dir.display().to_string(),
-        package_hash: run.package_hash.to_string(),
-        checkpoint_id: run.checkpoint.delta.checkpoint_id.to_string(),
-        receipt_id: run.receipt.receipt_id.to_string(),
-        row_count: run.row_count,
-        segment_count: run.segment_count,
-        destination: destination_report
-            .with_receipt_destination(run.receipt.destination.to_string()),
-    })
 }
 
 fn annotate_backfill_slice_error(

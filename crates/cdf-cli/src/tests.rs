@@ -404,7 +404,8 @@ fn progress_enabled_human_commands_route_through_progress_renderer() {
             &[
                 "let progress = human_progress_sink(cli.json, &cli.terminal);",
                 "let event_sink = progress.as_ref().map(|sink| sink as &dyn RunEventSink);",
-                "execute_slice(",
+                "BackfillSliceExecutor {",
+                "executor.execute(slice)",
                 "destinations,",
                 "progress.as_ref().map(|progress| progress.snapshot())",
                 "CommandOutput::rendered_with_progress(",
@@ -421,6 +422,59 @@ fn progress_enabled_human_commands_route_through_progress_renderer() {
             );
         }
     }
+}
+
+#[test]
+fn destination_registry_composition_is_confined_to_the_cli_root() {
+    let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let src = manifest_dir.join("src");
+    let mut files = Vec::new();
+    collect_rust_files(&src, &mut files);
+    let mut violations = Vec::new();
+
+    for path in files {
+        let relative = path.strip_prefix(manifest_dir).unwrap();
+        let relative_text = relative.to_string_lossy();
+        if relative_text == "src/tests.rs"
+            || relative_text == "src/destination_registry_test_support.rs"
+        {
+            continue;
+        }
+        let text = fs::read_to_string(&path).unwrap();
+        let concrete_driver_import = ["cdf_dest_duckdb", "cdf_dest_parquet", "cdf_dest_postgres"]
+            .iter()
+            .any(|driver| text.contains(driver));
+        let concrete_driver_allowed = matches!(
+            relative_text.as_ref(),
+            "src/destination_registry.rs" | "src/doctor_drift.rs"
+        );
+        if concrete_driver_import && !concrete_driver_allowed {
+            violations.push(format!(
+                "{relative_text} imports a concrete destination outside the composition root"
+            ));
+        }
+        if text.contains("builtin_destination_registry()")
+            && relative_text != "src/destination_registry.rs"
+            && relative_text != "src/lib.rs"
+        {
+            violations.push(format!(
+                "{relative_text} reconstructs the builtin destination registry below the invocation root"
+            ));
+        }
+    }
+
+    let lib = fs::read_to_string(src.join("lib.rs")).unwrap();
+    assert_eq!(
+        lib.matches("destination_registry::builtin_destination_registry()")
+            .count(),
+        1,
+        "production invocation must construct the builtin destination registry exactly once"
+    );
+    assert!(
+        violations.is_empty(),
+        "destination composition boundary regressed:\n{}",
+        violations.join("\n")
+    );
 }
 
 fn collect_rust_files(root: &Path, files: &mut Vec<PathBuf>) {
@@ -8548,6 +8602,217 @@ fn resume_human_rich_render_uses_recovery_and_artifact_panels() {
 }
 
 #[test]
+fn injected_fourth_destination_reaches_lock_plan_run_duplicate_replay_doctor_and_inspect() {
+    let project = TestProject::new();
+    let destination_uri = crate::destination_registry_test_support::destination_uri();
+    let secret = crate::destination_registry_test_support::secret_sentinel();
+    write_project_destination(&project, &destination_uri);
+    let (registry, state) =
+        crate::destination_registry_test_support::registry_with_fourth_destination().unwrap();
+
+    for command in [
+        vec!["contract".to_owned(), "freeze".to_owned()],
+        vec!["inspect".to_owned(), "destinations".to_owned()],
+        vec!["doctor".to_owned()],
+        vec!["plan".to_owned(), "local.events".to_owned()],
+    ] {
+        let command_label = command.join(" ");
+        let result = run_injected_dynamic(&project, &registry, command);
+        assert_eq!(
+            result.exit_code, 0,
+            "{command_label} failed; stdout: {}; stderr: {}",
+            result.stdout, result.stderr
+        );
+        assert!(
+            !result.stdout.contains(secret),
+            "read-only command leaked fixture secret:\n{}",
+            result.stdout
+        );
+        assert_secret_absent(&result, secret);
+        assert_eq!(
+            state.durable_commits(),
+            0,
+            "inspection, health, lock, and planning must not mutate the destination"
+        );
+    }
+    assert!(project.root.join("cdf.lock").is_file());
+    assert!(state.inspections() >= 3);
+    assert!(state.health_checks() >= 2);
+    assert!(state.resolutions() >= 1);
+
+    let loaded = run_injected_dynamic(
+        &project,
+        &registry,
+        vec!["run".to_owned(), "local.events".to_owned()],
+    );
+    assert_eq!(loaded.exit_code, 0, "stderr: {}", loaded.stderr);
+    assert!(
+        !loaded.stdout.contains(secret),
+        "run leaked fixture secret:\n{}",
+        loaded.stdout
+    );
+    assert_secret_absent(&loaded, secret);
+    assert_eq!(state.durable_commits(), 1);
+    assert_eq!(state.commit_begins(), 1);
+    assert!(state.plans() >= 1);
+    let package_dir = run_package_dir(&project, &loaded);
+
+    remove_state_store(&project);
+    let userinfo_uri = crate::destination_registry_test_support::destination_uri_with_userinfo();
+    let replayed = run_injected_dynamic(
+        &project,
+        &registry,
+        vec![
+            "replay".to_owned(),
+            "package".to_owned(),
+            package_dir.display().to_string(),
+            "--to".to_owned(),
+            userinfo_uri.clone(),
+        ],
+    );
+    assert_eq!(replayed.exit_code, 0, "stderr: {}", replayed.stderr);
+    assert!(
+        !replayed.stdout.contains(secret),
+        "replay leaked fixture secret:\n{}",
+        replayed.stdout
+    );
+    assert_secret_absent(&replayed, secret);
+    assert_eq!(
+        state.durable_commits(),
+        1,
+        "duplicate replay must not create another durable destination commit"
+    );
+    assert_eq!(state.commit_begins(), 2);
+    assert!(state.receipt_verifications() >= 2);
+
+    remove_state_store(&project);
+    let human_replay = run_injected_human_dynamic(
+        &project,
+        &registry,
+        vec![
+            "replay".to_owned(),
+            "package".to_owned(),
+            package_dir.display().to_string(),
+            "--to".to_owned(),
+            userinfo_uri.clone(),
+        ],
+    );
+    assert_eq!(human_replay.exit_code, 0, "stderr: {}", human_replay.stderr);
+    assert_secret_absent(&human_replay, secret);
+    assert_eq!(state.durable_commits(), 1);
+
+    let errored = run_injected_dynamic(
+        &project,
+        &registry,
+        vec![
+            "replay".to_owned(),
+            "package".to_owned(),
+            project.root.join("missing-package").display().to_string(),
+            "--to".to_owned(),
+            userinfo_uri,
+        ],
+    );
+    assert_ne!(errored.exit_code, 0);
+    assert_secret_absent(&errored, secret);
+}
+
+#[test]
+fn injected_fourth_destination_resume_replays_finalized_package_without_source_contact() {
+    let project = TestProject::new();
+    let package_dir = create_replay_package_fixture(&project);
+    let destination_uri = crate::destination_registry_test_support::destination_uri();
+    let secret = crate::destination_registry_test_support::secret_sentinel();
+    write_project_destination(&project, &destination_uri);
+    let (registry, state) =
+        crate::destination_registry_test_support::registry_with_fourth_destination().unwrap();
+    let mut reader = PackageReader::open(&package_dir).unwrap();
+    reader.update_status(PackageStatus::Packaged).unwrap();
+    remove_package_receipts(&package_dir);
+    let run_id = create_resume_run_with_package(
+        &project,
+        "run-resume-fourth-replay",
+        &package_dir,
+        &[RunEventKind::PackageFinalized, RunEventKind::RunFailed],
+    );
+
+    let result = run_injected_dynamic(
+        &project,
+        &registry,
+        vec!["resume".to_owned(), run_id.to_string()],
+    );
+
+    assert_eq!(result.exit_code, 0, "stderr: {}", result.stderr);
+    assert!(
+        !result.stdout.contains(secret),
+        "resume replay leaked fixture secret:\n{}",
+        result.stdout
+    );
+    assert_secret_absent(&result, secret);
+    let report = &stderr_or_stdout_json(&result.stdout)["result"];
+    assert_eq!(report["state"], "package_finalized_without_receipt");
+    assert_eq!(report["action"], "replay_package");
+    assert_eq!(report["source_contact"], false);
+    assert_eq!(report["mutated"], true);
+    assert_eq!(report["receipt"]["destination_id"], "fourth");
+    assert_eq!(report["checkpoint"]["status"], "committed");
+    assert_eq!(report["package"]["status"], "checkpointed");
+    assert_eq!(state.durable_commits(), 1);
+    assert_eq!(state.commit_begins(), 1);
+    assert_eq!(package_receipt_count(&package_dir), 1);
+    assert_eq!(package_status(&package_dir), PackageStatus::Checkpointed);
+    assert!(!project.root.join("data/events.ndjson").exists());
+}
+
+#[test]
+fn injected_fourth_destination_resume_verifies_durable_receipt_without_duplicate_commit() {
+    let project = TestProject::new();
+    let package_dir = create_replay_package_fixture(&project);
+    let destination_uri = crate::destination_registry_test_support::destination_uri();
+    let secret = crate::destination_registry_test_support::secret_sentinel();
+    write_project_destination(&project, &destination_uri);
+    let (registry, state) =
+        crate::destination_registry_test_support::registry_with_fourth_destination().unwrap();
+    let run_id = seed_fourth_resume_receipt_before_checkpoint(
+        &project,
+        &package_dir,
+        &destination_uri,
+        &registry,
+        "run-resume-fourth-receipt",
+    );
+    let commits_before_resume = state.durable_commits();
+    let begins_before_resume = state.commit_begins();
+    let verifications_before_resume = state.receipt_verifications();
+
+    let result = run_injected_dynamic(
+        &project,
+        &registry,
+        vec!["resume".to_owned(), run_id.to_string()],
+    );
+
+    assert_eq!(result.exit_code, 0, "stderr: {}", result.stderr);
+    assert!(
+        !result.stdout.contains(secret),
+        "resume receipt recovery leaked fixture secret:\n{}",
+        result.stdout
+    );
+    assert_secret_absent(&result, secret);
+    let report = &stderr_or_stdout_json(&result.stdout)["result"];
+    assert_eq!(
+        report["state"],
+        "receipt_recorded_without_checkpoint_commit"
+    );
+    assert_eq!(report["action"], "verify_receipt_then_commit_checkpoint");
+    assert_eq!(report["source_contact"], false);
+    assert_eq!(report["checkpoint"]["status"], "committed");
+    assert_eq!(state.durable_commits(), commits_before_resume);
+    assert_eq!(state.commit_begins(), begins_before_resume);
+    assert!(state.receipt_verifications() > verifications_before_resume);
+    assert_eq!(package_receipt_count(&package_dir), 1);
+    assert_eq!(package_status(&package_dir), PackageStatus::Checkpointed);
+    assert!(!project.root.join("data/events.ndjson").exists());
+}
+
+#[test]
 fn resume_finalized_package_without_receipt_replays_without_source_contact() {
     let project = TestProject::new();
     let package_dir = create_replay_package_fixture(&project);
@@ -13989,6 +14254,73 @@ fn seed_resume_receipt_before_checkpoint(
     run_id
 }
 
+fn seed_fourth_resume_receipt_before_checkpoint(
+    project: &TestProject,
+    package_dir: &Path,
+    destination_uri: &str,
+    registry: &cdf_runtime::DestinationRegistry,
+    run_id: &str,
+) -> RunId {
+    let mut reader = PackageReader::open(package_dir).unwrap();
+    reader.update_status(PackageStatus::Packaged).unwrap();
+    remove_package_receipts(package_dir);
+    let inputs = reader.replay_inputs().unwrap();
+    let target = inputs.destination_commit.target.clone();
+    let execution = test_execution_services();
+    let resolution =
+        cdf_runtime::DestinationResolutionContext::for_project_run(&project.root, &target)
+            .with_environment_name("dev")
+            .with_execution_services(&execution);
+    let destination = registry.resolve(destination_uri, &resolution).unwrap();
+    let store = SqliteCheckpointStore::open(project.root.join(".cdf/state.db")).unwrap();
+    let stop_after_receipt = |_receipt: &Receipt| {
+        Err(CdfError::internal(
+            "stop fourth fixture before checkpoint commit",
+        ))
+    };
+    let error = replay_package_from_artifacts(PackageArtifactReplayRequest {
+        package_dir: package_dir.to_path_buf(),
+        destination: ResolvedProjectDestination::new(destination, target),
+        checkpoint_store: &store,
+        after_receipt_verified: Some(&stop_after_receipt),
+    })
+    .unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("stop fourth fixture before checkpoint commit")
+    );
+    let reader = PackageReader::open(package_dir).unwrap();
+    assert_eq!(reader.receipts().unwrap().len(), 1);
+    assert_eq!(reader.manifest().lifecycle.status, PackageStatus::Loading);
+    let history = store
+        .history(
+            &inputs.state_delta.pipeline_id,
+            &inputs.state_delta.resource_id,
+            &inputs.state_delta.scope,
+        )
+        .unwrap();
+    assert!(history.iter().any(|checkpoint| {
+        checkpoint.delta.checkpoint_id == inputs.state_delta.checkpoint_id
+            && checkpoint.status == CheckpointStatus::Proposed
+    }));
+
+    let ledger = SqliteRunLedger::open(project.root.join(".cdf/state.db")).unwrap();
+    let run_id = RunId::new(run_id).unwrap();
+    ledger.create_run(Some(run_id.clone())).unwrap();
+    for kind in [
+        RunEventKind::PackageFinalized,
+        RunEventKind::CheckpointProposed,
+        RunEventKind::DestinationReceiptRecorded,
+        RunEventKind::RunFailed,
+    ] {
+        ledger
+            .append_event(&run_id, resume_package_event(kind, package_dir))
+            .unwrap();
+    }
+    run_id
+}
+
 fn resume_package_event(kind: RunEventKind, package_dir: &Path) -> RunEventAppend {
     let reader = PackageReader::open(package_dir).unwrap();
     let inputs = reader.replay_inputs().unwrap();
@@ -15818,6 +16150,35 @@ fn run<const N: usize>(args: [&str; N]) -> crate::InvocationResult {
 
 fn run_dynamic(args: Vec<String>) -> crate::InvocationResult {
     invoke(args.into_iter().map(OsString::from))
+}
+
+fn run_injected_dynamic(
+    project: &TestProject,
+    registry: &cdf_runtime::DestinationRegistry,
+    command: Vec<String>,
+) -> crate::InvocationResult {
+    let mut args = vec![
+        "cdf".to_owned(),
+        "--json".to_owned(),
+        "--project".to_owned(),
+        project.root_str().to_owned(),
+    ];
+    args.extend(command);
+    crate::invoke_with_destination_registry(args.into_iter().map(OsString::from), registry)
+}
+
+fn run_injected_human_dynamic(
+    project: &TestProject,
+    registry: &cdf_runtime::DestinationRegistry,
+    command: Vec<String>,
+) -> crate::InvocationResult {
+    let mut args = vec![
+        "cdf".to_owned(),
+        "--project".to_owned(),
+        project.root_str().to_owned(),
+    ];
+    args.extend(command);
+    crate::invoke_with_destination_registry(args.into_iter().map(OsString::from), registry)
 }
 
 fn render_rich(output: crate::output::CommandOutput) -> crate::InvocationResult {

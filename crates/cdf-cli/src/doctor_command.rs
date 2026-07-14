@@ -489,19 +489,29 @@ fn redact_json_uri_userinfo(value: serde_json::Value) -> serde_json::Value {
 
 fn ledger_destination_drift_check(context: &ProjectContext) -> DoctorCheck {
     match doctor_drift::probe(context) {
-        Ok(probe) => match probe.status {
-            DriftStatus::Passed => DoctorCheck::passed("ledger_destination_drift", probe.message)
-                .with_details(probe.details),
-            DriftStatus::Failed => DoctorCheck::failed("ledger_destination_drift", probe.message)
-                .with_details(probe.details),
-            DriftStatus::Skipped => DoctorCheck::skipped("ledger_destination_drift", probe.message)
-                .with_details(probe.details),
-            DriftStatus::Unsupported => {
-                DoctorCheck::unsupported("ledger_destination_drift", probe.message)
-                    .with_details(probe.details)
+        Ok(probe) => {
+            let message = redact_uri_userinfo(&probe.message);
+            let details = redact_json_uri_userinfo(probe.details);
+            match probe.status {
+                DriftStatus::Passed => {
+                    DoctorCheck::passed("ledger_destination_drift", message).with_details(details)
+                }
+                DriftStatus::Failed => {
+                    DoctorCheck::failed("ledger_destination_drift", message).with_details(details)
+                }
+                DriftStatus::Skipped => {
+                    DoctorCheck::skipped("ledger_destination_drift", message).with_details(details)
+                }
+                DriftStatus::Unsupported => {
+                    DoctorCheck::unsupported("ledger_destination_drift", message)
+                        .with_details(details)
+                }
             }
-        },
-        Err(error) => DoctorCheck::failed("ledger_destination_drift", error.message),
+        }
+        Err(error) => DoctorCheck::failed(
+            "ledger_destination_drift",
+            redact_uri_userinfo(&error.message),
+        ),
     }
 }
 

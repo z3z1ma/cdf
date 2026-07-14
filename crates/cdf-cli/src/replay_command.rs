@@ -471,7 +471,7 @@ pub(crate) fn build_replay_destination(
         .with_destination_policy(destination_policy)
         .with_secret_provider(&secret_provider)
         .with_execution_services(execution);
-    let destination = resolve_project_run_destination(&registry, uri, &destination_context)
+    let destination = resolve_project_run_destination(registry, uri, &destination_context)
         .map_err(|error| {
             replay_destination_resolution_error(context, args.destination_uri, error, uri)
         })?;

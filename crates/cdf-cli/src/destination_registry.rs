@@ -15,38 +15,6 @@ pub(crate) fn builtin_destination_registry() -> Result<DestinationRegistry> {
     Ok(registry)
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn benchmark_destination_catalog_artifact_matches_the_product_registry() {
-        let registry = builtin_destination_registry().unwrap();
-        let context = cdf_runtime::DestinationResolutionContext::for_project_inspection(
-            std::path::Path::new(env!("CARGO_MANIFEST_DIR")),
-        );
-        let actual = [
-            "duckdb:///tmp/cdf-envelope.duckdb",
-            "parquet:///tmp/cdf-envelope-parquet",
-            "postgres://localhost/cdf_envelope",
-        ]
-        .into_iter()
-        .map(|uri| {
-            let inspection = registry.inspect(uri, &context).unwrap();
-            serde_json::json!({
-                "destination_id": inspection.description.destination_id.as_str(),
-                "runtime": inspection.runtime,
-            })
-        })
-        .collect::<Vec<_>>();
-        let expected: Vec<serde_json::Value> = serde_json::from_str(include_str!(
-            "../../cdf-benchmarks/fixtures/first-party-destination-catalog.json"
-        ))
-        .unwrap();
-        assert_eq!(actual, expected);
-    }
-}
-
 pub(crate) fn inspect_destination_artifacts(
     registry: &DestinationRegistry,
     context: &ProjectContext,
@@ -108,5 +76,37 @@ fn unsupported_runtime(uri: &str, reason: String) -> DestinationRuntime {
         capabilities: None,
         health: Vec::new(),
         error: Some(reason),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn benchmark_destination_catalog_artifact_matches_the_product_registry() {
+        let registry = builtin_destination_registry().unwrap();
+        let context = cdf_runtime::DestinationResolutionContext::for_project_inspection(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")),
+        );
+        let actual = [
+            "duckdb:///tmp/cdf-envelope.duckdb",
+            "parquet:///tmp/cdf-envelope-parquet",
+            "postgres://localhost/cdf_envelope",
+        ]
+        .into_iter()
+        .map(|uri| {
+            let inspection = registry.inspect(uri, &context).unwrap();
+            serde_json::json!({
+                "destination_id": inspection.description.destination_id.as_str(),
+                "runtime": inspection.runtime,
+            })
+        })
+        .collect::<Vec<_>>();
+        let expected: Vec<serde_json::Value> = serde_json::from_str(include_str!(
+            "../../cdf-benchmarks/fixtures/first-party-destination-catalog.json"
+        ))
+        .unwrap();
+        assert_eq!(actual, expected);
     }
 }

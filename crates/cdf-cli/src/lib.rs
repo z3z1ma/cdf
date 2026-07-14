@@ -11,6 +11,8 @@ mod commands;
 mod context;
 mod contract_command;
 mod destination_registry;
+#[cfg(test)]
+mod destination_registry_test_support;
 mod destination_uri;
 mod doctor_command;
 mod doctor_drift;

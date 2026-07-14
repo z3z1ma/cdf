@@ -70,7 +70,9 @@ pub(crate) fn inspect(
                 InspectNoun::Destinations => {
                     let runtime = context.destination_runtime(destinations);
                     let report = json!({
-                            "environment_destination": context.environment.destination,
+                            "environment_destination": redact_uri_userinfo(
+                                &context.environment.destination
+                            ),
                             "runtime": runtime,
                             "locked": context.lock.as_ref().map(|lock| &lock.destinations),
                     });
