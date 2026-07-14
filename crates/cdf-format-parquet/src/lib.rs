@@ -120,7 +120,7 @@ impl FormatDriver for ParquetFormatDriver {
             let sampled_bytes = bytes_read.load(Ordering::Relaxed);
             if sampled_bytes > request.maximum_bytes {
                 return Err(CdfError::data(format!(
-                    "Parquet discovery read {sampled_bytes} metadata bytes above its {}-byte budget",
+                    "Parquet discovery read {sampled_bytes} metadata bytes above its {}-byte budget; increase the per-file metadata budget or use a smaller-footer source",
                     request.maximum_bytes
                 )));
             }

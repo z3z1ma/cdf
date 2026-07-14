@@ -136,6 +136,34 @@ fn discover_resource_schema_artifacts(
     }
 }
 
+fn prepare_file_discover_resource(
+    project_root: &Path,
+    resource: &cdf_declarative::CompiledResource,
+    secret_provider: &dyn SecretProvider,
+) -> Result<PreparedDiscoveredResource> {
+    super::prepare_discover_resource_with_file_dependencies(
+        project_root,
+        resource,
+        secret_provider,
+        file_dependencies(FileTransportFacade::new()),
+    )
+}
+
+fn prepare_pinned_file_resource(
+    project_root: &Path,
+    resource: &cdf_declarative::CompiledResource,
+    secret_provider: &dyn SecretProvider,
+) -> Result<cdf_declarative::CompiledResource> {
+    let prepared =
+        super::prepare_pinned_resource_effective_schema_with_file_dependencies_artifacts(
+            project_root,
+            resource,
+            secret_provider,
+            file_dependencies(FileTransportFacade::new()),
+        )?;
+    Ok(prepared.into_parts().0)
+}
+
 const BOOK_PROJECT: &str = r#"
 [project]
 name = "acme_data"
@@ -1305,7 +1333,8 @@ fn local_parquet_discover_autopin_writes_normalized_snapshot_and_pins_clone() {
     write_vendor_parquet(&temp.path().join("data/vendors.parquet"));
     let resource = compile_single_project_resource(temp.path());
 
-    let prepared = prepare_local_parquet_discover_resource(temp.path(), &resource).unwrap();
+    let secrets = EnvSecretProvider::from_map(std::iter::empty::<(&str, &str)>());
+    let prepared = prepare_file_discover_resource(temp.path(), &resource, &secrets).unwrap();
     let discovery = prepared.discovery.as_ref().unwrap();
     let snapshot_path = temp.path().join(&discovery.snapshot.artifact.path);
 
@@ -1339,7 +1368,7 @@ fn local_parquet_discover_autopin_writes_normalized_snapshot_and_pins_clone() {
     let vendor = schema.field_with_name("vendor_id").unwrap();
     assert_eq!(source_name(vendor), Some("VendorID"));
 
-    let repeated = prepare_local_parquet_discover_resource(temp.path(), &resource).unwrap();
+    let repeated = prepare_file_discover_resource(temp.path(), &resource, &secrets).unwrap();
     assert_eq!(
         repeated
             .discovery
@@ -1359,9 +1388,10 @@ fn generic_schema_discovery_dispatch_preserves_local_parquet_behavior_without_wr
     write_vendor_parquet(&temp.path().join("data/vendors.parquet"));
     let resource = compile_single_project_resource(temp.path());
 
-    let discovery = discover_resource_schema(
+    let discovery = discover_resource_schema_with_file_dependencies(
         &resource,
         &EnvSecretProvider::from_map(std::iter::empty::<(&str, &str)>()),
+        file_dependencies(FileTransportFacade::new()),
     )
     .unwrap();
 
@@ -1406,7 +1436,8 @@ fn generic_discover_prepare_preserves_local_parquet_autopin_behavior() {
     let resource = compile_single_project_resource(temp.path());
     let secret_provider = EnvSecretProvider::from_map(std::iter::empty::<(&str, &str)>());
 
-    let prepared = prepare_discover_resource(temp.path(), &resource, &secret_provider).unwrap();
+    let prepared =
+        prepare_file_discover_resource(temp.path(), &resource, &secret_provider).unwrap();
     let discovery = prepared.discovery.as_ref().unwrap();
     let snapshot_path = temp.path().join(&discovery.snapshot.artifact.path);
 
@@ -1996,7 +2027,12 @@ schema = { fields = [
     fs::write(temp.path().join("resources/files.toml"), declared).unwrap();
     let resource = compile_single_project_resource(temp.path());
 
-    let prepared = prepare_local_parquet_discover_resource(temp.path(), &resource).unwrap();
+    let prepared = prepare_file_discover_resource(
+        temp.path(),
+        &resource,
+        &EnvSecretProvider::from_map(std::iter::empty::<(&str, &str)>()),
+    )
+    .unwrap();
 
     assert!(prepared.discovery.is_none());
     assert!(matches!(
@@ -2114,7 +2150,12 @@ fn local_parquet_discover_autopin_persists_exhaustive_multi_file_manifest() {
     write_vendor_parquet(&temp.path().join("data/b.parquet"));
     let resource = compile_single_project_resource(temp.path());
 
-    let prepared = prepare_local_parquet_discover_resource(temp.path(), &resource).unwrap();
+    let prepared = prepare_file_discover_resource(
+        temp.path(),
+        &resource,
+        &EnvSecretProvider::from_map(std::iter::empty::<(&str, &str)>()),
+    )
+    .unwrap();
     let discovery = prepared.discovery.unwrap();
     assert_eq!(discovery.snapshot.source_identity["coverage"], "exhaustive");
     assert_eq!(discovery.snapshot.source_identity["matched_files"], "2");
@@ -2337,7 +2378,7 @@ fn sampled_pin_observes_every_runtime_file_and_quarantines_unseen_incompatibilit
         Arc::clone(&initial.discovery.normalized_schema),
     );
 
-    let prepared = prepare_pinned_resource_effective_schema(
+    let prepared = prepare_pinned_file_resource(
         temp.path(),
         &pinned,
         &EnvSecretProvider::from_map(std::iter::empty::<(&str, &str)>()),
@@ -2703,9 +2744,12 @@ fn exhaustive_local_parquet_discovery_budget_and_incompatibility_fail_without_ar
     )
     .unwrap_err()
     .to_string();
-    assert!(budget_error.contains("metadata budget exceeded"));
-    assert!(budget_error.contains("allowed 8"));
-    assert!(budget_error.contains("increase the per-file"));
+    assert!(budget_error.contains("read 405 metadata bytes"), "{budget_error}");
+    assert!(budget_error.contains("8-byte budget"), "{budget_error}");
+    assert!(
+        budget_error.contains("increase the per-file"),
+        "{budget_error}"
+    );
     assert!(!temp.path().join(".cdf/schemas").exists());
 }
 
@@ -3025,19 +3069,11 @@ trust = "governed"
 "#;
     let config = parse_cdf_toml(project).unwrap();
     let resolver = InMemoryResourceSourceResolver::new().with_toml("resources/sql.toml", sql);
-    let mut resources = compile_project_declarative_resources(&config, &resolver).unwrap();
-    let resource = resources.remove(0);
-
-    let error = discover_resource_schema(
-        &resource,
-        &EnvSecretProvider::from_map(std::iter::empty::<(&str, &str)>()),
-    )
-    .unwrap_err();
-
-    let message = error.to_string();
-    assert!(message.contains("unsupported schema discovery slice"));
-    assert!(message.contains("warehouse.orders"));
-    assert!(message.contains("SQL dialect `mysql` discovery is not implemented"));
+    let error = compile_project_declarative_resources(&config, &resolver).unwrap_err();
+    assert_eq!(
+        error.to_string(),
+        "Contract: Postgres source dialect must be `postgres` when declared"
+    );
 }
 
 fn json_response(body: &str) -> HttpResponse {

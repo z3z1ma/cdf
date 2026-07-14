@@ -3504,7 +3504,10 @@ schema = { fields = [
         stderr_or_stdout_json(&unchanged.stdout)["result"]["schema_snapshot"]["outcome"],
         "unchanged"
     );
-    assert_eq!(fs::read(project.root.join("cdf.lock")).unwrap(), initial_lock);
+    assert_eq!(
+        fs::read(project.root.join("cdf.lock")).unwrap(),
+        initial_lock
+    );
     assert_eq!(
         fs::read(project.root.join(&initial_reference.path)).unwrap(),
         initial_snapshot
@@ -3524,7 +3527,10 @@ schema = { fields = [
         stderr_or_stdout_json(&drifted.stdout)["result"]["schema_snapshot"]["outcome"],
         "unchanged"
     );
-    assert_eq!(fs::read(project.root.join("cdf.lock")).unwrap(), initial_lock);
+    assert_eq!(
+        fs::read(project.root.join("cdf.lock")).unwrap(),
+        initial_lock
+    );
     assert_eq!(
         fs::read(project.root.join(&initial_reference.path)).unwrap(),
         initial_snapshot

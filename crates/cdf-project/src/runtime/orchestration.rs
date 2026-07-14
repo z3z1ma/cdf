@@ -27,7 +27,7 @@ pub(crate) async fn run_local_file_to_duckdb_checkpoint(
 ) -> Result<LocalFileDuckDbRunReport> {
     let destination = ResolvedProjectDestination::duckdb(request.destination_path, request.target)?;
     let request = ProjectRunRequest {
-        resource: ProjectRunSource::local_file(request.resource),
+        resource: ProjectRunSource::new(request.resource),
         plan: request.plan,
         package_root: request.package_root,
         state_store_path: request.state_store_path,

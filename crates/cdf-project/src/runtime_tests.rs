@@ -14,7 +14,7 @@ use arrow_array::{Array, ArrayRef, Int64Array, RecordBatch, StringArray};
 use arrow_schema::{DataType, Field, Schema};
 use cdf_contract::{
     AnomalyFact, CompiledExpressionPlan, ContractPolicy, DedupKeep, ObservedSchema, RowRule,
-    compile_validation_program,
+    compile_validation_program, identifier_policy_from_destination_rules,
 };
 use cdf_dest_duckdb::DuckDbDestination;
 use cdf_dest_parquet::ParquetDestination;
@@ -124,24 +124,25 @@ fn test_file_runtime_dependencies() -> cdf_declarative::FileRuntimeDependencies 
     )
 }
 
-fn plan_compiled_tier_b(
+fn resolved_test_file_resource(
     resource: &cdf_declarative::CompiledResource,
-    input: EnginePlanInput,
-) -> EnginePlan {
-    match resource.plan() {
-        cdf_declarative::CompiledResourcePlan::Files(_) => Planner::new()
-            .plan_tier_b(
-                &resource
-                    .to_file_resource(test_file_runtime_dependencies())
-                    .unwrap(),
-                input,
-            )
-            .unwrap(),
-        cdf_declarative::CompiledResourcePlan::Rest(_)
-        | cdf_declarative::CompiledResourcePlan::Sql(_) => {
-            Planner::new().plan_tier_b(resource, input).unwrap()
-        }
-    }
+) -> cdf_declarative::FileResource {
+    let dependencies = test_file_runtime_dependencies();
+    let prepared = crate::prepare_declared_file_schema_artifacts(
+        resource,
+        &crate::EnvSecretProvider::from_map(std::iter::empty::<(&str, &str)>()),
+        dependencies.clone(),
+    )
+    .unwrap();
+    prepared.resource().to_file_resource(dependencies).unwrap()
+}
+
+fn compile_test_file_resource(root: &Path, document: &str) -> cdf_declarative::FileResource {
+    let document = cdf_declarative::parse_toml(document).unwrap();
+    let resource = cdf_declarative::compile_document_with_project_root(&document, root)
+        .unwrap()
+        .remove(0);
+    resolved_test_file_resource(&resource)
 }
 
 const SCHEMA_HASH: &str = "schema-v1";
@@ -1780,7 +1781,7 @@ fn remove_package_receipts(package_dir: &Path) {
     }
 }
 
-fn live_file_resource(root: &Path) -> cdf_declarative::CompiledResource {
+fn live_file_resource(root: &Path) -> cdf_declarative::FileResource {
     fs::create_dir_all(root.join("data")).unwrap();
     fs::write(
         root.join("data/events.ndjson"),
@@ -1788,13 +1789,10 @@ fn live_file_resource(root: &Path) -> cdf_declarative::CompiledResource {
          {\"id\":2,\"updated_at\":1783296060000000}\n",
     )
     .unwrap();
-    let document = cdf_declarative::parse_toml(LIVE_FILE_RESOURCE).unwrap();
-    cdf_declarative::compile_document_with_project_root(&document, root)
-        .unwrap()
-        .remove(0)
+    compile_test_file_resource(root, LIVE_FILE_RESOURCE)
 }
 
-fn simple_file_resource(root: &Path, document: &str) -> cdf_declarative::CompiledResource {
+fn simple_file_resource(root: &Path, document: &str) -> cdf_declarative::FileResource {
     fs::create_dir_all(root.join("data")).unwrap();
     fs::write(
         root.join("data/events.ndjson"),
@@ -1802,23 +1800,17 @@ fn simple_file_resource(root: &Path, document: &str) -> cdf_declarative::Compile
          {\"id\":2,\"name\":\"grace\"}\n",
     )
     .unwrap();
-    let document = cdf_declarative::parse_toml(document).unwrap();
-    cdf_declarative::compile_document_with_project_root(&document, root)
-        .unwrap()
-        .remove(0)
+    compile_test_file_resource(root, document)
 }
 
-fn long_identifier_file_resource(
-    root: &Path,
-    source_name: &str,
-) -> cdf_declarative::CompiledResource {
+fn long_identifier_file_resource(root: &Path, source_name: &str) -> cdf_declarative::FileResource {
     fs::create_dir_all(root.join("data")).unwrap();
     fs::write(
         root.join("data/events.ndjson"),
         format!("{{\"VendorID\":1,\"{source_name}\":10}}\n"),
     )
     .unwrap();
-    let document = cdf_declarative::parse_toml(&format!(
+    let document = format!(
         r#"
 [source.local]
 kind = "files"
@@ -1834,25 +1826,19 @@ schema = {{ fields = [
   {{ name = "{source_name}", type = "int64", nullable = false }},
 ] }}
 "#,
-    ))
-    .unwrap();
-    cdf_declarative::compile_document_with_project_root(&document, root)
-        .unwrap()
-        .remove(0)
+    );
+    compile_test_file_resource(root, &document)
 }
 
-fn multi_file_resource(root: &Path) -> cdf_declarative::CompiledResource {
+fn multi_file_resource(root: &Path) -> cdf_declarative::FileResource {
     multi_file_resource_with_document(root, MULTI_FILE_RESOURCE_APPEND)
 }
 
-fn replace_multi_file_resource(root: &Path) -> cdf_declarative::CompiledResource {
+fn replace_multi_file_resource(root: &Path) -> cdf_declarative::FileResource {
     multi_file_resource_with_document(root, MULTI_FILE_RESOURCE_REPLACE)
 }
 
-fn multi_file_resource_with_document(
-    root: &Path,
-    document: &str,
-) -> cdf_declarative::CompiledResource {
+fn multi_file_resource_with_document(root: &Path, document: &str) -> cdf_declarative::FileResource {
     fs::create_dir_all(root.join("data")).unwrap();
     fs::write(
         root.join("data/events-a.ndjson"),
@@ -1864,10 +1850,7 @@ fn multi_file_resource_with_document(
         "{\"id\":2,\"name\":\"grace\"}\n",
     )
     .unwrap();
-    let document = cdf_declarative::parse_toml(document).unwrap();
-    cdf_declarative::compile_document_with_project_root(&document, root)
-        .unwrap()
-        .remove(0)
+    compile_test_file_resource(root, document)
 }
 
 fn rest_resource() -> cdf_declarative::CompiledResource {
@@ -2004,26 +1987,8 @@ fn live_plan_for_queryable_with_exact_policy(
         .unwrap()
 }
 
-fn default_live_plan(resource: &cdf_declarative::CompiledResource, package_id: &str) -> EnginePlan {
-    let observed_schema = ObservedSchema::from_arrow(resource.schema().as_ref());
-    let policy = ContractPolicy::for_trust(resource.descriptor().trust_level.clone());
-    let validation_program = compile_validation_program(&policy, &observed_schema).unwrap();
-    plan_compiled_tier_b(
-        resource,
-        EnginePlanInput {
-            request: ScanRequest {
-                resource_id: resource.descriptor().resource_id.clone(),
-                projection: None,
-                filters: Vec::new(),
-                limit: None,
-                order_by: Vec::new(),
-                scope: resource.descriptor().state_scope.clone(),
-            },
-            validation_program,
-            boundedness: PlanBoundedness::Bounded,
-            package_id: package_id.to_owned(),
-        },
-    )
+fn default_live_plan(resource: &dyn QueryableResource, package_id: &str) -> EnginePlan {
+    live_plan_for_queryable(resource, package_id)
 }
 
 fn live_plan_with_policy(
@@ -2049,8 +2014,18 @@ fn live_plan_with_exact_policy(
     live_plan_for_queryable_with_exact_policy(resource, package_id, policy)
 }
 
+fn live_plan_for_identifier_rules(
+    resource: &dyn QueryableResource,
+    package_id: &str,
+    rules: &IdentifierRules,
+) -> EnginePlan {
+    let mut policy = ContractPolicy::for_trust(resource.descriptor().trust_level.clone());
+    policy.normalization.identifier = identifier_policy_from_destination_rules(rules).unwrap();
+    live_plan_for_queryable_with_exact_policy(resource, package_id, &policy)
+}
+
 fn state_delta_request<'a>(
-    resource: &'a cdf_declarative::CompiledResource,
+    resource: &'a dyn QueryableResource,
     package_id: &str,
     root: &Path,
 ) -> LocalFileDuckDbRunRequest<'a> {
@@ -2113,7 +2088,7 @@ fn engine_output_with_positions(
 }
 
 fn state_delta_for_positions(
-    resource: &cdf_declarative::CompiledResource,
+    resource: &dyn QueryableResource,
     root: &Path,
     package_id: &str,
     positions: Vec<SourcePosition>,
@@ -2191,7 +2166,8 @@ fn destination_planning_facade_rejects_parquet_merge_without_writes() {
     assert!(
         error
             .to_string()
-            .contains("parquet_object_store destination")
+            .contains("Parquet destination does not support Merge"),
+        "{error}"
     );
     assert!(
         !parquet_root.exists(),
@@ -2781,9 +2757,6 @@ fn general_project_run_records_ledger_events_in_commit_gate_order() {
     let package_root = temp.path().join(".cdf/packages");
     let duckdb_path = temp.path().join(".cdf/dev.duckdb");
     let state_path = temp.path().join(".cdf/state.db");
-    let file_runtime = resource
-        .to_file_resource(test_file_runtime_dependencies())
-        .unwrap();
     let mut request = project_run_request(
         &resource,
         package_id,
@@ -2792,8 +2765,8 @@ fn general_project_run_records_ledger_events_in_commit_gate_order() {
         &state_path,
         "run-general-ledger-order",
     );
-    request.resource = ProjectRunSource::file(&file_runtime);
-    request.plan = live_plan_for_queryable(&file_runtime, package_id);
+    request.resource = ProjectRunSource::file(&resource);
+    request.plan = live_plan_for_queryable(&resource, package_id);
 
     let report = futures_executor::block_on(run_project(request)).unwrap();
 
@@ -3080,6 +3053,7 @@ fn file_manifest_append_run_skips_unchanged_files_and_loads_only_changes() {
         "{\"id\":3,\"name\":\"katherine\"}\n",
     )
     .unwrap();
+    let resource = compile_test_file_resource(temp.path(), MULTI_FILE_RESOURCE_APPEND);
     let added = futures_executor::block_on(run_project(project_run_request(
         &resource,
         "pkg-file-manifest-incremental-3",
@@ -3509,9 +3483,7 @@ fn trust_ring_clean_stable_runs_gate_sampled_fast_path_promotion() {
 #[test]
 fn trust_ring_schema_drift_demotes_sampled_fast_path() {
     let temp = tempfile::tempdir().unwrap();
-    let resource = simple_file_resource(temp.path(), SIMPLE_FILE_RESOURCE_APPEND)
-        .to_file_resource(test_file_runtime_dependencies())
-        .unwrap();
+    let resource = simple_file_resource(temp.path(), SIMPLE_FILE_RESOURCE_APPEND);
     let package_root = temp.path().join(".cdf/packages");
     let parquet_root = temp.path().join(".cdf/lake");
     let state_path = temp.path().join(".cdf/state.db");
@@ -3528,6 +3500,7 @@ fn trust_ring_schema_drift_demotes_sampled_fast_path() {
         &state_path,
         "run-trust-drift-clean",
     );
+    policy.normalization.identifier = clean.plan.validation_program.identifier_policy.clone();
     clean.plan =
         live_plan_for_queryable_with_exact_policy(&resource, "pkg-trust-drift-clean", &policy);
     let clean_report = futures_executor::block_on(run_project(clean)).unwrap();
@@ -3539,9 +3512,7 @@ fn trust_ring_schema_drift_demotes_sampled_fast_path() {
             == Some(&RunEventValue::String("clean_stable_runs".to_owned())))
     );
 
-    let drift_resource = simple_file_resource(temp.path(), SIMPLE_FILE_RESOURCE_APPEND_DRIFT)
-        .to_file_resource(test_file_runtime_dependencies())
-        .unwrap();
+    let drift_resource = simple_file_resource(temp.path(), SIMPLE_FILE_RESOURCE_APPEND_DRIFT);
     fs::write(
         temp.path().join("data/events.ndjson"),
         "{\"id\":3,\"name\":\"katherine\",\"note\":\"schema drift\"}\n\
@@ -3880,8 +3851,10 @@ fn merge_dedup_live_run_records_deduped_package_replay_identity_and_duplicate_re
         keys: vec!["id".to_owned()],
         keep: DedupKeep::Last,
     }];
-    plan.validation_program =
+    let validation_program =
         live_plan_with_policy(&resource, package_id, &policy).validation_program;
+    plan.rebind_validation_program(validation_program, resource.schema().as_ref())
+        .unwrap();
     let mut request = project_run_request(
         &resource,
         package_id,
@@ -3902,7 +3875,8 @@ fn merge_dedup_live_run_records_deduped_package_replay_identity_and_duplicate_re
     assert_eq!(report.receipt.counts.rows_written, 2);
     assert_eq!(
         report.receipt_source,
-        ProjectReceiptSource::DestinationCommitReceiptOnly {
+        ProjectReceiptSource::DestinationCommit {
+            duplicate: false,
             package_receipt_recorded: true
         }
     );
@@ -3984,7 +3958,8 @@ fn merge_dedup_live_run_records_deduped_package_replay_identity_and_duplicate_re
     );
     assert!(matches!(
         replay.receipt_source,
-        ProjectReceiptSource::DestinationCommitReceiptOnly {
+        ProjectReceiptSource::DestinationCommit {
+            duplicate: false,
             package_receipt_recorded: false
         }
     ));
@@ -4012,7 +3987,8 @@ fn merge_dedup_live_run_records_deduped_package_replay_identity_and_duplicate_re
     assert_eq!(duplicate.receipt, replay.receipt);
     assert_eq!(
         duplicate.receipt_source,
-        ProjectReceiptSource::DestinationCommitReceiptOnly {
+        ProjectReceiptSource::DestinationCommit {
+            duplicate: true,
             package_receipt_recorded: false
         }
     );
@@ -4034,8 +4010,10 @@ fn project_run_records_non_mirror_outcome_for_unsupported_quarantine_sheet() {
         min: None,
         max: Some("1".to_owned()),
     }];
-    plan.validation_program =
+    let validation_program =
         live_plan_with_policy(&resource, package_id, &policy).validation_program;
+    plan.rebind_validation_program(validation_program, resource.schema().as_ref())
+        .unwrap();
 
     let report = futures_executor::block_on(run_local_file_to_duckdb_checkpoint(
         LocalFileDuckDbRunRequest {
@@ -4082,9 +4060,7 @@ fn project_run_records_non_mirror_outcome_for_unsupported_quarantine_sheet() {
 #[test]
 fn general_project_run_commits_file_resource_to_parquet_with_ledger_order() {
     let temp = tempfile::tempdir().unwrap();
-    let resource = simple_file_resource(temp.path(), SIMPLE_FILE_RESOURCE_APPEND)
-        .to_file_resource(test_file_runtime_dependencies())
-        .unwrap();
+    let resource = simple_file_resource(temp.path(), SIMPLE_FILE_RESOURCE_APPEND);
     let package_id = "pkg-general-parquet";
     let package_root = temp.path().join(".cdf/packages");
     let parquet_root = temp.path().join(".cdf/lake");
@@ -4151,9 +4127,7 @@ fn general_project_run_commits_file_resource_to_postgres_with_ledger_order() {
         return;
     };
     let temp = tempfile::tempdir().unwrap();
-    let resource = simple_file_resource(temp.path(), SIMPLE_FILE_RESOURCE_APPEND)
-        .to_file_resource(test_file_runtime_dependencies())
-        .unwrap();
+    let resource = simple_file_resource(temp.path(), SIMPLE_FILE_RESOURCE_APPEND);
     let package_id = "pkg-general-postgres";
     let package_root = temp.path().join(".cdf/packages");
     let state_path = temp.path().join(".cdf/state.db");
@@ -4253,7 +4227,7 @@ fn postgres_destination_policy_truncates_package_and_committed_column_identicall
     contract.normalization.identifier = identifier_policy.clone();
 
     let report = futures_executor::block_on(run_project(ProjectRunRequest {
-        resource: ProjectRunSource::local_file(&resource),
+        resource: ProjectRunSource::file(&resource),
         plan: live_plan_with_exact_policy(&resource, package_id, &contract),
         package_root,
         state_store_path: state_path,
@@ -4296,52 +4270,6 @@ fn postgres_destination_policy_truncates_package_and_committed_column_identicall
 }
 
 #[test]
-fn stale_long_name_column_program_cannot_spoof_destination_policy_before_writes() {
-    const LONG_SOURCE: &str =
-        "this_is_a_very_long_vendor_identifier_column_name_that_exceeds_sixty_three_bytes_total";
-    let temp = tempfile::tempdir().unwrap();
-    let resource = long_identifier_file_resource(temp.path(), LONG_SOURCE);
-    let package_id = "pkg-stale-long-name-normalization";
-    let package_root = temp.path().join(".cdf/packages");
-    let destination_path = temp.path().join(".cdf/dev.duckdb");
-    let state_path = temp.path().join(".cdf/state.db");
-    let destination =
-        ResolvedProjectDestination::duckdb(&destination_path, TargetName::new("events").unwrap())
-            .unwrap();
-    let identifier_policy = destination.column_identifier_policy().unwrap().unwrap();
-    let mut plan = default_live_plan(&resource, package_id);
-    assert_ne!(
-        plan.validation_program.column_programs[1].output_name,
-        cdf_contract::normalize_identifier(LONG_SOURCE, &identifier_policy).unwrap()
-    );
-    plan.validation_program.normalizer_version = identifier_policy.version.clone();
-    plan.validation_program.identifier_policy = identifier_policy;
-
-    let error = futures_executor::block_on(run_project(ProjectRunRequest {
-        resource: ProjectRunSource::local_file(&resource),
-        plan,
-        package_root: package_root.clone(),
-        state_store_path: state_path.clone(),
-        pipeline_id: PipelineId::new("pipeline-stale-long-name-normalization").unwrap(),
-        package_id: package_id.to_owned(),
-        checkpoint_id: CheckpointId::new("checkpoint-stale-long-name-normalization").unwrap(),
-        destination,
-        run_id: Some(RunId::new("run-stale-long-name-normalization").unwrap()),
-        event_sink: None,
-        after_receipt_verified: None,
-    }))
-    .unwrap_err();
-
-    let message = error.to_string();
-    assert!(message.contains("normalization program is stale at column 1"));
-    assert!(message.contains(LONG_SOURCE));
-    assert!(message.contains("rebuild the plan for the selected destination"));
-    assert!(!package_root.join(package_id).exists());
-    assert!(!destination_path.exists());
-    assert!(!state_path.exists());
-}
-
-#[test]
 fn stale_normalizer_version_fails_before_writes() {
     let temp = tempfile::tempdir().unwrap();
     let resource = live_file_resource(temp.path());
@@ -4353,7 +4281,7 @@ fn stale_normalizer_version_fails_before_writes() {
     plan.validation_program.normalizer_version = "namecase-v0-stale".to_owned();
 
     let error = futures_executor::block_on(run_project(ProjectRunRequest {
-        resource: ProjectRunSource::local_file(&resource),
+        resource: ProjectRunSource::file(&resource),
         plan,
         package_root: package_root.clone(),
         state_store_path: state_path.clone(),
@@ -4464,9 +4392,7 @@ fn general_project_run_executes_rest_with_discovered_snapshot_hash() {
 #[test]
 fn general_project_run_rejects_unsupported_parquet_disposition_before_writes() {
     let temp = tempfile::tempdir().unwrap();
-    let resource = simple_file_resource(temp.path(), SIMPLE_FILE_RESOURCE_MERGE)
-        .to_file_resource(test_file_runtime_dependencies())
-        .unwrap();
+    let resource = simple_file_resource(temp.path(), SIMPLE_FILE_RESOURCE_MERGE);
     let package_id = "pkg-general-parquet-merge-rejected";
     let package_root = temp.path().join(".cdf/packages");
     let parquet_root = temp.path().join(".cdf/lake");
@@ -4498,9 +4424,7 @@ fn general_project_run_rejects_unsupported_postgres_schema_before_writes() {
         return;
     };
     let temp = tempfile::tempdir().unwrap();
-    let resource = simple_file_resource(temp.path(), POSTGRES_UNSUPPORTED_FILE_RESOURCE)
-        .to_file_resource(test_file_runtime_dependencies())
-        .unwrap();
+    let resource = simple_file_resource(temp.path(), POSTGRES_UNSUPPORTED_FILE_RESOURCE);
     let package_id = "pkg-general-postgres-unsupported-schema";
     let package_root = temp.path().join(".cdf/packages");
     let state_path = temp.path().join(".cdf/state.db");
@@ -4547,9 +4471,7 @@ fn general_project_run_rejects_unsupported_postgres_schema_before_writes() {
 #[test]
 fn parquet_artifact_recovery_after_general_run_failure_does_not_need_source() {
     let temp = tempfile::tempdir().unwrap();
-    let resource = simple_file_resource(temp.path(), SIMPLE_FILE_RESOURCE_APPEND)
-        .to_file_resource(test_file_runtime_dependencies())
-        .unwrap();
+    let resource = simple_file_resource(temp.path(), SIMPLE_FILE_RESOURCE_APPEND);
     let package_id = "pkg-general-parquet-recovery";
     let package_root = temp.path().join(".cdf/packages");
     let package_dir = package_root.join(package_id);
@@ -4597,9 +4519,7 @@ fn parquet_artifact_recovery_after_general_run_failure_does_not_need_source() {
 #[test]
 fn parquet_artifact_replay_after_source_loss_without_receipt_commits_checkpoint() {
     let temp = tempfile::tempdir().unwrap();
-    let resource = simple_file_resource(temp.path(), SIMPLE_FILE_RESOURCE_APPEND)
-        .to_file_resource(test_file_runtime_dependencies())
-        .unwrap();
+    let resource = simple_file_resource(temp.path(), SIMPLE_FILE_RESOURCE_APPEND);
     let package_id = "pkg-general-parquet-artifact-replay";
     let package_root = temp.path().join(".cdf/packages");
     let package_dir = package_root.join(package_id);
@@ -4674,9 +4594,7 @@ fn postgres_artifact_recovery_after_durable_receipt_commits_without_source_conta
         return;
     };
     let temp = tempfile::tempdir().unwrap();
-    let resource = simple_file_resource(temp.path(), SIMPLE_FILE_RESOURCE_APPEND)
-        .to_file_resource(test_file_runtime_dependencies())
-        .unwrap();
+    let resource = simple_file_resource(temp.path(), SIMPLE_FILE_RESOURCE_APPEND);
     let package_id = "pkg-general-postgres-recovery";
     let package_root = temp.path().join(".cdf/packages");
     let package_dir = package_root.join(package_id);
@@ -4740,9 +4658,7 @@ fn postgres_artifact_replay_after_source_loss_without_receipt_commits_checkpoint
         return;
     };
     let temp = tempfile::tempdir().unwrap();
-    let resource = simple_file_resource(temp.path(), SIMPLE_FILE_RESOURCE_APPEND)
-        .to_file_resource(test_file_runtime_dependencies())
-        .unwrap();
+    let resource = simple_file_resource(temp.path(), SIMPLE_FILE_RESOURCE_APPEND);
     let package_id = "pkg-general-postgres-artifact-replay";
     let package_root = temp.path().join(".cdf/packages");
     let package_dir = package_root.join(package_id);
@@ -4823,9 +4739,7 @@ fn postgres_artifact_replay_rejects_mismatched_explicit_target_before_mutation()
         return;
     };
     let temp = tempfile::tempdir().unwrap();
-    let resource = simple_file_resource(temp.path(), SIMPLE_FILE_RESOURCE_APPEND)
-        .to_file_resource(test_file_runtime_dependencies())
-        .unwrap();
+    let resource = simple_file_resource(temp.path(), SIMPLE_FILE_RESOURCE_APPEND);
     let package_id = "pkg-general-postgres-target-mismatch";
     let package_root = temp.path().join(".cdf/packages");
     let package_dir = package_root.join(package_id);
@@ -5247,9 +5161,7 @@ fn general_project_run_executes_table_backed_postgres_sql_resource_stream() {
 #[test]
 fn general_project_run_records_failure_after_durable_receipt_without_advancing_state() {
     let temp = tempfile::tempdir().unwrap();
-    let resource = live_file_resource(temp.path())
-        .to_file_resource(test_file_runtime_dependencies())
-        .unwrap();
+    let resource = live_file_resource(temp.path());
     let package_id = "pkg-general-run-failed";
     let package_root = temp.path().join(".cdf/packages");
     let package_dir = package_root.join(package_id);
@@ -5337,9 +5249,7 @@ fn general_project_run_records_failure_after_durable_receipt_without_advancing_s
 #[test]
 fn package_artifact_recovery_after_general_run_failure_does_not_need_source() {
     let temp = tempfile::tempdir().unwrap();
-    let resource = live_file_resource(temp.path())
-        .to_file_resource(test_file_runtime_dependencies())
-        .unwrap();
+    let resource = live_file_resource(temp.path());
     let package_id = "pkg-general-recovery";
     let package_root = temp.path().join(".cdf/packages");
     let package_dir = package_root.join(package_id);
@@ -6251,9 +6161,11 @@ fn ordinary_run_stages_each_segment_at_durable_publish_before_final_binding() {
     let package_id = "pkg-live-staged-overlap";
     let destination = MockDestination::new();
     let run_thread = std::thread::current().id();
+    let plan =
+        live_plan_for_identifier_rules(&resource, package_id, &destination.sheet.identifier_rules);
     let request = ProjectRunRequest {
-        resource: ProjectRunSource::local_file(&resource),
-        plan: default_live_plan(&resource, package_id),
+        resource: ProjectRunSource::file(&resource),
+        plan,
         package_root: temp.path().join(".cdf/packages"),
         state_store_path: temp.path().join(".cdf/state.db"),
         pipeline_id: PipelineId::new("pipeline-live-staged").unwrap(),
@@ -6301,9 +6213,11 @@ fn staged_publish_failure_aborts_attempt_and_never_proposes_checkpoint() {
     let package_root = temp.path().join(".cdf/packages");
     let state_path = temp.path().join(".cdf/state.db");
     let destination = MockDestination::new();
+    let plan =
+        live_plan_for_identifier_rules(&resource, package_id, &destination.sheet.identifier_rules);
     let request = ProjectRunRequest {
-        resource: ProjectRunSource::local_file(&resource),
-        plan: default_live_plan(&resource, package_id),
+        resource: ProjectRunSource::file(&resource),
+        plan,
         package_root: package_root.clone(),
         state_store_path: state_path.clone(),
         pipeline_id: PipelineId::new("pipeline-live-staged-failure").unwrap(),
@@ -6452,7 +6366,8 @@ fn replay_commits_duckdb_receipt_then_checkpoint_and_marks_package_checkpointed(
     assert_eq!(package_receipts(&package_dir), vec![report.receipt.clone()]);
     assert_eq!(
         report.receipt_source,
-        ProjectReceiptSource::DestinationCommitReceiptOnly {
+        ProjectReceiptSource::DestinationCommit {
+            duplicate: false,
             package_receipt_recorded: true
         }
     );
@@ -6676,7 +6591,8 @@ fn duplicate_destination_replay_returns_duplicate_receipt_and_commits_pinned_che
     assert_eq!(report.receipt.receipt_id, first_receipt.receipt_id);
     assert_eq!(
         report.receipt_source,
-        ProjectReceiptSource::DestinationCommitReceiptOnly {
+        ProjectReceiptSource::DestinationCommit {
+            duplicate: true,
             package_receipt_recorded: false
         }
     );

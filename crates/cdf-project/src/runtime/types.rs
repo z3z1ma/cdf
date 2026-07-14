@@ -70,7 +70,7 @@ pub enum ProjectReceiptSource {
 
 #[cfg(test)]
 pub struct LocalFileDuckDbRunRequest<'a> {
-    pub resource: &'a CompiledResource,
+    pub resource: &'a dyn QueryableResource,
     pub plan: EnginePlan,
     pub package_root: PathBuf,
     pub destination_path: PathBuf,

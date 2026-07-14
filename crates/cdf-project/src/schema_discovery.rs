@@ -1661,44 +1661,6 @@ fn build_schema_discovery(
     })
 }
 
-pub fn prepare_local_parquet_discover_resource(
-    project_root: impl AsRef<Path>,
-    resource: &CompiledResource,
-) -> Result<PreparedDiscoveredResource> {
-    if !schema_source_needs_pin(&resource.descriptor().schema_source) {
-        return Ok(PreparedDiscoveredResource {
-            resource: resource.clone(),
-            discovery: None,
-        });
-    }
-
-    let project_root = project_root.as_ref();
-    let secret_provider = crate::EnvSecretProvider::from_map(std::iter::empty::<(&str, &str)>());
-    let discovery =
-        discover_resource_schema_artifacts(resource, &secret_provider, Default::default())?;
-    let prepared = prepare_discovered_schema(project_root, resource, discovery)?;
-    attach_pinned_file_runtime(project_root, prepared, &secret_provider, None)
-}
-
-pub fn prepare_discover_resource(
-    project_root: impl AsRef<Path>,
-    resource: &CompiledResource,
-    secret_provider: &dyn SecretProvider,
-) -> Result<PreparedDiscoveredResource> {
-    if !schema_source_needs_pin(&resource.descriptor().schema_source) {
-        return Ok(PreparedDiscoveredResource {
-            resource: resource.clone(),
-            discovery: None,
-        });
-    }
-
-    let project_root = project_root.as_ref();
-    let discovery =
-        discover_resource_schema_artifacts(resource, secret_provider, Default::default())?;
-    let prepared = prepare_discovered_schema(project_root, resource, discovery)?;
-    attach_pinned_file_runtime(project_root, prepared, secret_provider, None)
-}
-
 pub fn prepare_discover_resource_with_file_dependencies(
     project_root: impl AsRef<Path>,
     resource: &CompiledResource,
