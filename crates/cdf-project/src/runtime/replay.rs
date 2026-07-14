@@ -576,64 +576,79 @@ fn validate_package_compiled_schema_admission(package: &VerifiedPackageReader) -
     let has_stream_evidence = files
         .iter()
         .any(|entry| entry.path == "schema/stream-admission-evidence.json");
-    let (admitted, partial_admissions, unpositioned_admissions) = if has_stream_evidence {
-        let evidence: cdf_engine::CompiledStreamAdmissionEvidence =
-            package.reader().verified_json_artifact(
-                package.verification(),
-                "schema/stream-admission-evidence.json",
-            )?;
-        evidence.validate(&admission)?;
-        let mut admitted = std::collections::BTreeMap::new();
-        let mut partial = std::collections::BTreeMap::new();
-        let mut unpositioned = std::collections::BTreeMap::new();
-        for observation in evidence.observations {
-            match observation.completion {
-                cdf_engine::StreamAdmissionCompletion::Partial {
-                    attempted_position: Some(attempted_position),
-                    observed_rows,
-                    partition_binding,
-                } => {
-                    partial.insert(
-                        observation.observation_id,
-                        (attempted_position, observed_rows, partition_binding),
-                    );
-                }
-                cdf_engine::StreamAdmissionCompletion::Partial {
-                    attempted_position: None,
-                    ..
-                } => unreachable!("validated stream evidence requires a partial position"),
-                cdf_engine::StreamAdmissionCompletion::Complete { source_position } => {
-                    admitted.insert(observation.observation_id, source_position);
-                }
-                cdf_engine::StreamAdmissionCompletion::CompleteUnpositioned {
-                    partition_binding,
-                } => {
-                    unpositioned.insert(observation.observation_id, partition_binding);
-                }
+    if !has_stream_evidence {
+        return Err(CdfError::data(
+            "package omitted mandatory stream-admission evidence",
+        ));
+    }
+    let evidence: cdf_engine::CompiledStreamAdmissionEvidence =
+        package.reader().verified_json_artifact(
+            package.verification(),
+            "schema/stream-admission-evidence.json",
+        )?;
+    evidence.validate(&admission)?;
+    let mut admitted = std::collections::BTreeMap::new();
+    let mut partial_admissions = std::collections::BTreeMap::new();
+    let mut unpositioned_admissions = std::collections::BTreeMap::new();
+    for observation in evidence.observations {
+        match observation.completion {
+            cdf_engine::StreamAdmissionCompletion::Partial {
+                attempted_position: Some(attempted_position),
+                observed_rows,
+                partition_binding,
+            } => {
+                partial_admissions.insert(
+                    observation.observation_id,
+                    (attempted_position, observed_rows, partition_binding),
+                );
+            }
+            cdf_engine::StreamAdmissionCompletion::Partial {
+                attempted_position: None,
+                ..
+            } => unreachable!("validated stream evidence requires a partial position"),
+            cdf_engine::StreamAdmissionCompletion::Complete { source_position } => {
+                admitted.insert(observation.observation_id, source_position);
+            }
+            cdf_engine::StreamAdmissionCompletion::CompleteUnpositioned { partition_binding } => {
+                unpositioned_admissions.insert(observation.observation_id, partition_binding);
             }
         }
-        (admitted, partial, unpositioned)
-    } else {
-        (
-            std::collections::BTreeMap::new(),
-            std::collections::BTreeMap::new(),
-            std::collections::BTreeMap::new(),
-        )
-    };
+    }
+    let lineage: cdf_engine::LineageSummary = package
+        .reader()
+        .verified_json_artifact(package.verification(), "lineage/lineage.json")?;
     if !partial_admissions.is_empty() {
         let scan: cdf_kernel::ScanPlan = package
             .reader()
             .verified_json_artifact(package.verification(), cdf_package_contract::SCAN_PLAN_FILE)?;
-        for (observation_id, (attempted_position, _, partition_binding)) in &partial_admissions {
-            let matching_partition = scan.partitions.iter().find(|partition| {
-                planned_partition_observation_id(partition) == observation_id
-                    && cdf_kernel::partition_source_identity_binding(partition)
-                        .is_ok_and(|expected| &expected == partition_binding)
-                    && partial_position_matches_partition_scope(attempted_position, partition)
-            });
-            if matching_partition.is_none() {
+        for (observation_id, (attempted_position, observed_rows, partition_binding)) in
+            &partial_admissions
+        {
+            let matching_partitions = scan
+                .partitions
+                .iter()
+                .filter(|partition| {
+                    planned_partition_observation_id(partition) == observation_id
+                        && cdf_kernel::partition_source_identity_binding(partition)
+                            .is_ok_and(|expected| &expected == partition_binding)
+                        && partial_position_matches_partition_scope(attempted_position, partition)
+                })
+                .collect::<Vec<_>>();
+            if matching_partitions.len() != 1 {
                 return Err(CdfError::data(format!(
                     "partial stream-admission observation {observation_id:?} is not bound to a planned partition and source generation"
+                )));
+            }
+            let partition = matching_partitions[0];
+            if !partial_lineage_matches_exactly(
+                &lineage,
+                observation_id,
+                partition,
+                *observed_rows,
+                attempted_position,
+            ) {
+                return Err(CdfError::data(format!(
+                    "partial stream-admission observation {observation_id:?} row extent or attempted position does not match execution lineage"
                 )));
             }
         }
@@ -643,13 +658,34 @@ fn validate_package_compiled_schema_admission(package: &VerifiedPackageReader) -
             .reader()
             .verified_json_artifact(package.verification(), cdf_package_contract::SCAN_PLAN_FILE)?;
         for (observation_id, partition_binding) in &unpositioned_admissions {
-            if !scan.partitions.iter().any(|partition| {
-                planned_partition_observation_id(partition) == observation_id
-                    && cdf_kernel::partition_source_identity_binding(partition)
-                        .is_ok_and(|expected| &expected == partition_binding)
-            }) {
+            let matching_partitions = scan
+                .partitions
+                .iter()
+                .filter(|partition| {
+                    planned_partition_observation_id(partition) == observation_id
+                        && cdf_kernel::partition_source_identity_binding(partition)
+                            .is_ok_and(|expected| &expected == partition_binding)
+                })
+                .collect::<Vec<_>>();
+            if matching_partitions.len() != 1 {
                 return Err(CdfError::data(format!(
                     "unpositioned stream-admission observation {observation_id:?} is not bound to a planned partition"
+                )));
+            }
+            let partition = matching_partitions[0];
+            if lineage
+                .input_observations
+                .iter()
+                .filter(|observation| {
+                    observation.observation_id == *observation_id
+                        && observation.partition_id == partition.partition_id
+                        && observation.output_position.is_none()
+                })
+                .count()
+                != 1
+            {
+                return Err(CdfError::data(format!(
+                    "unpositioned stream-admission observation {observation_id:?} does not match execution lineage"
                 )));
             }
         }
@@ -870,6 +906,26 @@ fn partial_position_matches_partition_scope(
         }
         (position, _) => partition.start_position.as_ref() == Some(position),
     }
+}
+
+fn partial_lineage_matches_exactly(
+    lineage: &cdf_engine::LineageSummary,
+    observation_id: &str,
+    partition: &cdf_kernel::PartitionPlan,
+    observed_rows: u64,
+    attempted_position: &cdf_kernel::SourcePosition,
+) -> bool {
+    lineage
+        .input_observations
+        .iter()
+        .filter(|observation| {
+            observation.observation_id == observation_id
+                && observation.partition_id == partition.partition_id
+                && observation.observed_rows == observed_rows
+                && observation.output_position.as_ref() == Some(attempted_position)
+        })
+        .count()
+        == 1
 }
 
 fn replay_package_with_resolved_destination<Store>(
@@ -1820,7 +1876,9 @@ mod stream_admission_replay_tests {
         ScopeKey, SourcePosition,
     };
 
-    use super::partial_position_matches_partition_scope;
+    use cdf_engine::{LineageInputObservation, LineageSummary};
+
+    use super::{partial_lineage_matches_exactly, partial_position_matches_partition_scope};
 
     #[test]
     fn partial_position_binding_rejects_wrong_file_generation_and_cursor_field() {
@@ -1880,6 +1938,44 @@ mod stream_admission_replay_tests {
         assert!(!partial_position_matches_partition_scope(
             &cursor_position("wrong"),
             &cursor_partition
+        ));
+
+        let attempted = cursor_position("updated_at");
+        let lineage = LineageSummary {
+            input_partitions: vec![PartitionId::new("rest").unwrap()],
+            input_rows: 7,
+            input_observations: vec![LineageInputObservation {
+                observation_id: "rest".to_owned(),
+                partition_id: PartitionId::new("rest").unwrap(),
+                observed_rows: 7,
+                output_position: Some(attempted.clone()),
+            }],
+            output_segments: Vec::new(),
+        };
+        assert!(partial_lineage_matches_exactly(
+            &lineage,
+            "rest",
+            &cursor_partition,
+            7,
+            &attempted,
+        ));
+        assert!(!partial_lineage_matches_exactly(
+            &lineage,
+            "rest",
+            &cursor_partition,
+            6,
+            &attempted,
+        ));
+        assert!(!partial_lineage_matches_exactly(
+            &lineage,
+            "rest",
+            &cursor_partition,
+            7,
+            &SourcePosition::Cursor(CursorPosition {
+                version: 1,
+                field: "updated_at".to_owned(),
+                value: CursorValue::I64(8),
+            }),
         ));
     }
 }

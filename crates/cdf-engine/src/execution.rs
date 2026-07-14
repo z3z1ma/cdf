@@ -47,9 +47,9 @@ use crate::{
     CompiledStreamAdmissionEvidence, EffectiveSchemaObservationCoercion,
     EffectiveSchemaPlanEvidence, EngineExecutionEvidence, EngineExecutionOptions,
     EnginePackageDraft, EnginePlan, EnginePreviewLimits, EnginePreviewOutput, EngineRunOutput,
-    EngineRunOutputWithSegmentPositions, EngineSegmentPosition, ExecutionProfile, LineageSummary,
-    PhysicalObservationEvidence, SchemaQuarantineObservationEvidence,
-    StreamAdmissionObservationEvidence,
+    EngineRunOutputWithSegmentPositions, EngineSegmentPosition, ExecutionProfile,
+    LineageInputObservation, LineageSummary, PhysicalObservationEvidence,
+    SchemaQuarantineObservationEvidence, StreamAdmissionObservationEvidence,
     output_schema::canonicalize_effective_output_schema,
     planning::{scan_expression_schema, validate_program},
     predicates::{
@@ -2850,6 +2850,12 @@ where
                     fallback_position,
                 )?)
             };
+            lineage.input_observations.push(LineageInputObservation {
+                observation_id: observation_id.clone(),
+                partition_id: partition.partition_id.clone(),
+                observed_rows: partition_observed_rows,
+                output_position: source_position.clone(),
+            });
             if let Some(source_position) = source_position {
                 let evidence = stream_admission_evidence
                     .get_mut(&observation_id)
@@ -2997,16 +3003,14 @@ where
             "processed quarantined observations do not exactly match schema-quarantine evidence",
         ));
     }
-    if !stream_admission_evidence.is_empty() {
-        builder.write_json_artifact(
-            "schema/stream-admission-evidence.json",
-            &CompiledStreamAdmissionEvidence::new(
-                &plan.compiled_schema_admission,
-                stream_physical_observation_catalog,
-                stream_admission_evidence.into_values().collect(),
-            )?,
-        )?;
-    }
+    builder.write_json_artifact(
+        "schema/stream-admission-evidence.json",
+        &CompiledStreamAdmissionEvidence::new(
+            &plan.compiled_schema_admission,
+            stream_physical_observation_catalog,
+            stream_admission_evidence.into_values().collect(),
+        )?,
+    )?;
     if !terminal_quarantines.is_empty() {
         let mut quarantine_physical_observation_catalog = BTreeMap::new();
         let quarantine_evidence = terminal_quarantines

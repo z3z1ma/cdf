@@ -21,8 +21,9 @@ use cdf_dest_parquet::ParquetDestination;
 use cdf_dest_postgres::{MergeDedupPolicy, PostgresDestination, PostgresTarget};
 use cdf_engine::{
     CompiledStreamAdmissionEvidence, EnginePlan, EnginePlanInput, EngineRunOutput,
-    EngineRunOutputWithSegmentPositions, EngineSegmentPosition, ExecutionProfile, LineageSummary,
-    PlanBoundedness, Planner, StreamAdmissionObservationEvidence, negotiate_scan_plan,
+    EngineRunOutputWithSegmentPositions, EngineSegmentPosition, ExecutionProfile,
+    LineageInputObservation, LineageSummary, PlanBoundedness, Planner,
+    StreamAdmissionObservationEvidence, negotiate_scan_plan,
 };
 use cdf_http::{HttpRequest, HttpResponse, HttpTransport, SecretProvider, SecretUri, SecretValue};
 use cdf_kernel::{
@@ -851,6 +852,23 @@ fn build_package_with_options(
             )],
         )
         .unwrap();
+    builder
+        .write_lineage_artifact(
+            "lineage.json",
+            &canonical_json_bytes(&LineageSummary {
+                input_partitions: vec![PartitionId::new("artifact-fixture").unwrap()],
+                input_rows: 3,
+                input_observations: vec![LineageInputObservation {
+                    observation_id: "artifact-fixture".to_owned(),
+                    partition_id: PartitionId::new("artifact-fixture").unwrap(),
+                    observed_rows: 3,
+                    output_position: Some(position(3)),
+                }],
+                output_segments: vec![segment.segment_id.clone()],
+            })
+            .unwrap(),
+        )
+        .unwrap();
     write_state_commit_artifacts(&builder, &segment, disposition, checkpoint_id);
     write_compiled_expression_artifacts(&builder, stale, true, None);
     builder.finish_with_status(status).unwrap()
@@ -861,6 +879,12 @@ fn build_zero_segment_processed_package(package_dir: &Path, package_id: &str) ->
     builder.update_status(PackageStatus::Extracting).unwrap();
     builder
         .write_runtime_arrow_schema(sample_batch(vec![], vec![]).schema().as_ref())
+        .unwrap();
+    builder
+        .write_lineage_artifact(
+            "lineage.json",
+            &canonical_json_bytes(&LineageSummary::default()).unwrap(),
+        )
         .unwrap();
     let output_position = SourcePosition::FileManifest(FileManifest {
         version: CHECKPOINT_STATE_VERSION,
@@ -960,7 +984,7 @@ fn build_zero_segment_processed_package(package_dir: &Path, package_id: &str) ->
     write_compiled_expression_artifacts(
         &builder,
         false,
-        false,
+        true,
         Some((
             &quarantine,
             cdf_engine::PhysicalObservationEvidence::arrow_schema(physical_schema.as_ref())
@@ -1031,26 +1055,34 @@ fn write_compiled_expression_artifacts(
         .instantiate(schema.as_ref(), &physical_schema_hash)
         .unwrap();
     if write_stream_evidence {
-        let physical_observation =
-            cdf_engine::PhysicalObservationEvidence::arrow_schema(schema.as_ref()).unwrap();
-        let physical_observation_hash = physical_observation.identity_hash().unwrap();
+        let (physical_observation_catalog, observations) = if quarantine.is_some() {
+            (BTreeMap::new(), Vec::new())
+        } else {
+            let physical_observation =
+                cdf_engine::PhysicalObservationEvidence::arrow_schema(schema.as_ref()).unwrap();
+            let physical_observation_hash = physical_observation.identity_hash().unwrap();
+            (
+                BTreeMap::from([(physical_observation_hash.to_string(), physical_observation)]),
+                vec![
+                    StreamAdmissionObservationEvidence::new(
+                        "artifact-fixture",
+                        physical_observation_hash,
+                        coercion_plan,
+                        cdf_engine::StreamAdmissionCompletion::Complete {
+                            source_position: position(3),
+                        },
+                    )
+                    .unwrap(),
+                ],
+            )
+        };
         builder
             .write_json_artifact(
                 "schema/stream-admission-evidence.json",
                 &CompiledStreamAdmissionEvidence::new(
                     &plan.compiled_schema_admission,
-                    BTreeMap::from([(physical_observation_hash.to_string(), physical_observation)]),
-                    vec![
-                        StreamAdmissionObservationEvidence::new(
-                            "artifact-fixture",
-                            physical_observation_hash,
-                            coercion_plan,
-                            cdf_engine::StreamAdmissionCompletion::Complete {
-                                source_position: position(3),
-                            },
-                        )
-                        .unwrap(),
-                    ],
+                    physical_observation_catalog,
+                    observations,
                 )
                 .unwrap(),
             )

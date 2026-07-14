@@ -318,6 +318,76 @@ fn compiled_stream_admission_enforces_unknown_and_widening_verdicts() {
 }
 
 #[test]
+fn materialized_stream_admission_rejects_noncanonical_provenance_and_nullable_claims() {
+    let resource = MockResource::tier_a(sample_batches());
+    let plan = Planner::new()
+        .plan_tier_a(
+            &resource,
+            plan_input(Vec::new(), None, None, PlanBoundedness::Bounded),
+        )
+        .unwrap();
+    let output_schema = plan
+        .compiled_schema_admission
+        .constraint_schema
+        .to_arrow()
+        .unwrap();
+    let output_hash = cdf_kernel::canonical_arrow_schema_hash(output_schema.as_ref()).unwrap();
+    let coercion = plan
+        .compiled_schema_admission
+        .instantiate(output_schema.as_ref(), &output_hash)
+        .unwrap();
+    let physical = crate::PhysicalObservationEvidence::materialized_output(
+        output_schema.as_ref(),
+        SchemaHash::new("decoder-observation-v1").unwrap(),
+        Vec::<String>::new(),
+    )
+    .unwrap();
+    let physical_hash = physical.identity_hash().unwrap();
+    let evidence = CompiledStreamAdmissionEvidence::new(
+        &plan.compiled_schema_admission,
+        BTreeMap::from([(physical_hash.to_string(), physical)]),
+        vec![
+            StreamAdmissionObservationEvidence::new(
+                "part-0",
+                physical_hash,
+                coercion,
+                crate::StreamAdmissionCompletion::CompleteUnpositioned {
+                    partition_binding: "binding-v1".to_owned(),
+                },
+            )
+            .unwrap(),
+        ],
+    )
+    .unwrap();
+
+    let mut forged_reason = evidence.clone();
+    forged_reason.observations[0].coercion_plan.fields[0].reason = "forged".to_owned();
+    let error = forged_reason
+        .validate(&plan.compiled_schema_admission)
+        .unwrap_err();
+    assert!(error.to_string().contains("noncanonical"), "{error}");
+
+    let mut forged_nullable = evidence;
+    let forged_physical = crate::PhysicalObservationEvidence::materialized_output(
+        output_schema.as_ref(),
+        SchemaHash::new("decoder-observation-v1").unwrap(),
+        ["id".to_owned()],
+    )
+    .unwrap();
+    let forged_hash = forged_physical.identity_hash().unwrap();
+    forged_nullable.physical_observation_catalog =
+        BTreeMap::from([(forged_hash.to_string(), forged_physical)]);
+    forged_nullable.observations[0].physical_observation_hash = forged_hash.to_string();
+    let error = forged_nullable
+        .validate(&plan.compiled_schema_admission)
+        .unwrap_err();
+    assert!(
+        error.to_string().contains("nullable residual identities"),
+        "{error}"
+    );
+}
+
+#[test]
 fn preobserved_widening_is_rejected_by_the_compiled_verdict_program() {
     let physical_schema = sample_schema();
     let effective_schema = Arc::new(Schema::new(vec![
@@ -3206,7 +3276,7 @@ fn package_identity_is_invariant_to_source_batch_rechunking() {
     );
     assert_eq!(
         one_output.manifest.package_hash,
-        "sha256:e1f0e5a3924258917c30e5c98da6f70cb5dc6e96d39c0550c33cef125988d087"
+        "sha256:2a64bf8fd6114a460dce240870f1b6ae6ad621f38bc87026262303d3055b5885"
     );
 }
 

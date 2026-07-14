@@ -6,9 +6,9 @@ use std::{
 use arrow_schema::Schema;
 use cdf_contract::{
     CanonicalArrowField, CompiledExpressionPlan, ContractPolicy, FieldCoercionDecision,
-    IdentifierPolicy, ResidualProgram, RowDispositionRule, SchemaChangeKind, SchemaCoercionPlan,
-    SchemaVerdictRule, TypePolicy, ValidationProgram, VerdictAction, plan_schema_reconciliation,
-    reconcile_schema,
+    IdentifierPolicy, ResidualProgram, RowDispositionRule, RuleOutcome, SchemaChangeKind,
+    SchemaCoercionPlan, SchemaVerdictRule, TypePolicy, ValidationProgram, VerdictAction,
+    plan_schema_reconciliation, reconcile_schema,
 };
 use cdf_kernel::{
     CdfError, DeliveryGuarantee, DiscoveryExecutorBudgetEvidence, EffectiveSchemaEvidence,
@@ -454,6 +454,11 @@ impl CompiledSchemaAdmissionPlan {
                     field.source_name
                 )));
             }
+            let constraint_field = constraint.fields().iter().find(|constraint| {
+                source_name(constraint.as_ref()).unwrap_or_else(|| constraint.name())
+                    == field.source_name
+            });
+            validate_materialized_field_provenance(field, constraint_field.map(AsRef::as_ref))?;
             match field.decision {
                 FieldCoercionDecision::Preserved => {}
                 FieldCoercionDecision::Missing
@@ -579,6 +584,7 @@ impl CompiledSchemaAdmissionPlan {
                         "materialized schema observation {observation_id:?} does not carry the compiled effective output schema"
                     )));
                 }
+                let mut actual_nullable_residual_fields = BTreeSet::new();
                 for (output, constraint) in output.fields().iter().zip(constraint.fields()) {
                     let output_source =
                         source_name(output.as_ref()).unwrap_or_else(|| output.name());
@@ -588,6 +594,9 @@ impl CompiledSchemaAdmissionPlan {
                         || (output.is_nullable()
                             && !constraint.is_nullable()
                             && nullable_residual_fields.contains(constraint_source));
+                    if output.is_nullable() && !constraint.is_nullable() {
+                        actual_nullable_residual_fields.insert(constraint_source);
+                    }
                     if output.name() != constraint.name()
                         || output_source != constraint_source
                         || output.data_type() != constraint.data_type()
@@ -600,6 +609,11 @@ impl CompiledSchemaAdmissionPlan {
                             constraint.name()
                         )));
                     }
+                }
+                if actual_nullable_residual_fields != nullable_residual_fields {
+                    return Err(CdfError::data(format!(
+                        "materialized schema observation {observation_id:?} nullable residual identities do not exactly match its output-schema delta"
+                    )));
                 }
                 Ok(())
             }
@@ -880,6 +894,104 @@ impl CompiledSchemaAdmissionPlan {
         }
         Ok(())
     }
+}
+
+fn validate_materialized_field_provenance(
+    field: &cdf_contract::FieldCoercion,
+    constraint: Option<&arrow_schema::Field>,
+) -> Result<()> {
+    let invalid = |detail: &str| {
+        CdfError::data(format!(
+            "materialized schema-admission field {:?} carries noncanonical {detail}",
+            field.source_name
+        ))
+    };
+    let observed_name = field.observed_name.as_deref();
+    let observed_type = field.observed_type.as_deref();
+    let constraint_type = field.constraint_type.as_deref();
+    let output_name = field.output_name.as_deref();
+
+    match field.decision {
+        FieldCoercionDecision::Missing => {
+            let constraint = constraint.ok_or_else(|| invalid("missing-field target"))?;
+            if !constraint.is_nullable()
+                || observed_name.is_some()
+                || observed_type.is_some()
+                || output_name != Some(constraint.name())
+                || constraint_type != Some(constraint.data_type().to_string().as_str())
+                || field.outcome != RuleOutcome::Coerced
+                || field.reason != "nullable constraint field is absent; materialize typed nulls"
+                || !field.operator_fixes.is_empty()
+            {
+                return Err(invalid("missing-field provenance"));
+            }
+        }
+        FieldCoercionDecision::Extra => {
+            if constraint.is_some()
+                || observed_name.is_none_or(str::is_empty)
+                || observed_type.is_none_or(str::is_empty)
+                || output_name.is_some()
+                || constraint_type.is_some()
+                || field.outcome != RuleOutcome::AdmittedAsVariant
+                || field.reason != "observed field is outside the constraint projection"
+                || !field.operator_fixes.is_empty()
+            {
+                return Err(invalid("extra-field provenance"));
+            }
+        }
+        FieldCoercionDecision::Preserved
+        | FieldCoercionDecision::Widened
+        | FieldCoercionDecision::CoercedByPolicy
+        | FieldCoercionDecision::LossyAllowed => {
+            let constraint = constraint.ok_or_else(|| invalid("constraint target"))?;
+            let observed_name = observed_name.ok_or_else(|| invalid("observed field name"))?;
+            let observed_type = observed_type.ok_or_else(|| invalid("observed field type"))?;
+            let constraint_type_value = constraint.data_type().to_string();
+            if observed_name.is_empty()
+                || (observed_name != field.source_name && observed_name != constraint.name())
+                || output_name != Some(constraint.name())
+                || constraint_type != Some(constraint_type_value.as_str())
+                || !field.operator_fixes.is_empty()
+            {
+                return Err(invalid("field identity or type provenance"));
+            }
+            let (outcome, reason) = match field.decision {
+                FieldCoercionDecision::Preserved => (
+                    RuleOutcome::Pass,
+                    "observed type already satisfies the constraint".to_owned(),
+                ),
+                FieldCoercionDecision::Widened => (
+                    RuleOutcome::Coerced,
+                    format!("lossless widening from {observed_type} to {constraint_type_value}"),
+                ),
+                FieldCoercionDecision::CoercedByPolicy => (
+                    RuleOutcome::Coerced,
+                    format!(
+                        "explicit coerce_types policy permits parsing from {observed_type} to {constraint_type_value}"
+                    ),
+                ),
+                FieldCoercionDecision::LossyAllowed => (
+                    RuleOutcome::Coerced,
+                    format!(
+                        "allow_lossy_mapping permits lossy cast from {observed_type} to {constraint_type_value}"
+                    ),
+                ),
+                _ => unreachable!(),
+            };
+            if field.outcome != outcome || field.reason != reason {
+                return Err(invalid("decision outcome or reason"));
+            }
+            if field.decision == FieldCoercionDecision::Preserved
+                && observed_type != constraint_type_value
+            {
+                return Err(invalid("preserved type identity"));
+            }
+        }
+        FieldCoercionDecision::LossyRejected | FieldCoercionDecision::Unsupported => {
+            return Err(invalid("non-materializable decision"));
+        }
+    }
+    Ok(())
 }
 
 pub(crate) enum CompiledSchemaAdmissionOutcome {
@@ -1625,7 +1737,16 @@ pub struct ExecutionProfile {
 pub struct LineageSummary {
     pub input_partitions: Vec<cdf_kernel::PartitionId>,
     pub input_rows: u64,
+    pub input_observations: Vec<LineageInputObservation>,
     pub output_segments: Vec<SegmentId>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LineageInputObservation {
+    pub observation_id: String,
+    pub partition_id: cdf_kernel::PartitionId,
+    pub observed_rows: u64,
+    pub output_position: Option<SourcePosition>,
 }
 
 pub const PREVIEW_POLICY_BALANCED_STRATIFIED_V1: &str = "preview-balanced-stratified-v1";
