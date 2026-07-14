@@ -143,7 +143,12 @@ pub(crate) fn prepare_runtime_resource_for_cli(
         execution,
     )?;
     Ok(PreparedRuntimeResourceForCli {
-        resource: build_project_run_resource(context, &prepared.resource, execution)?,
+        resource: build_project_run_resource(
+            context,
+            &prepared.resource,
+            execution,
+            prepared.prepared_payloads,
+        )?,
         schema_snapshot: prepared.schema_snapshot,
     })
 }
@@ -170,6 +175,7 @@ pub(crate) fn build_project_run_resource(
     context: &ProjectContext,
     resource: &CompiledResource,
     execution: Option<&cdf_runtime::ExecutionServices>,
+    prepared_payloads: cdf_runtime::PreparedSourcePayloads,
 ) -> Result<CliProjectRunSource, CliError> {
     let execution = execution.ok_or_else(|| {
         cdf_kernel::CdfError::internal("runtime source resolution requires execution services")
@@ -184,7 +190,8 @@ pub(crate) fn build_project_run_resource(
     let plan = registry.compile(request.clone())?;
     let secrets = context.secret_provider();
     let resolution =
-        cdf_runtime::SourceResolutionContext::new(&context.root, Arc::new(secrets), execution);
+        cdf_runtime::SourceResolutionContext::new(&context.root, Arc::new(secrets), execution)
+            .with_prepared_payloads(prepared_payloads);
     Ok(CliProjectRunSource::from_shared(
         registry.resolve(&plan, &resolution)?,
         plan,

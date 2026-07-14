@@ -149,7 +149,8 @@ impl SourceDriver for FileSourceDriver {
         let dependencies = (self.runtime_factory)(
             Arc::clone(context.secret_provider()),
             context.execution().clone(),
-        )?;
+        )?
+        .with_prepared_payloads(context.prepared_payloads().clone());
         physical.compiled_format.verify(dependencies.formats())?;
         Ok(Arc::new(FileResource::new(
             FileResourceDefinition {

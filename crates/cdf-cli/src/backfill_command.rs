@@ -60,7 +60,12 @@ pub(crate) fn backfill(
             "backfill execution host was not provided",
         ))
     })?;
-    let run_resource = build_project_run_resource(&context, resource, Some(services))?;
+    let run_resource = build_project_run_resource(
+        &context,
+        resource,
+        Some(services),
+        cdf_runtime::PreparedSourcePayloads::default(),
+    )?;
     let source = run_resource.as_project_resource();
     source.validate_supported().map_err(CliError::from)?;
     let pipeline_id = backfill_pipeline_id()?;

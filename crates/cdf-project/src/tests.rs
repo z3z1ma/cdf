@@ -2161,6 +2161,18 @@ fn unversioned_http_parquet_runs_and_commits_terminal_content_identity() {
     assert!(!partition.metadata.contains_key("source_generation"));
     assert!(!partition.metadata.contains_key("sha256"));
     let request_count_before_run = transport.requests().len();
+    let discovery_payload_gets = transport
+        .requests()
+        .into_iter()
+        .filter(|request| {
+            request.method == HttpMethod::Get && !request.headers.contains_key("range")
+        })
+        .count();
+    assert_eq!(
+        discovery_payload_gets, 1,
+        "cold discovery must materialize the unversioned payload exactly once"
+    );
+    assert_eq!(dependencies.prepared_payloads().pending_count().unwrap(), 1);
 
     let report = futures_executor::block_on(run_project(ProjectRunRequest {
         resource: ProjectRunSource::file(&file_resource),
@@ -2213,8 +2225,19 @@ fn unversioned_http_parquet_runs_and_commits_terminal_content_identity() {
         })
         .count();
     assert_eq!(
-        sequential_gets, 1,
-        "execution must transfer the payload once"
+        sequential_gets, 0,
+        "same-command execution must consume the retained discovery spool without another transfer"
+    );
+    assert_eq!(dependencies.prepared_payloads().pending_count().unwrap(), 0);
+    assert_eq!(
+        transport
+            .requests()
+            .iter()
+            .filter(|request| request.method == HttpMethod::Get
+                && !request.headers.contains_key("range"))
+            .count(),
+        1,
+        "cold discovery plus execution must transfer one unversioned payload generation once"
     );
 }
 

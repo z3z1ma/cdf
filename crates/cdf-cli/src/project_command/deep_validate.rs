@@ -91,6 +91,7 @@ fn deep_validate_resource(
         context,
         &working_resource,
         Some(execution),
+        cdf_runtime::PreparedSourcePayloads::default(),
     ) {
         Ok(resource) => Some(resource),
         Err(error) => {

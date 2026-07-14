@@ -1,14 +1,175 @@
-use std::{collections::BTreeMap, path::Path, sync::Arc};
+use std::{
+    any::{Any, type_name},
+    collections::BTreeMap,
+    path::Path,
+    sync::{Arc, Mutex},
+};
 
 use arrow_schema::Schema;
 use cdf_http::SecretProvider;
 use cdf_kernel::{
-    CdfError, EffectiveSchemaRuntime, ErrorKind, QueryableResource, ResourceCapabilities,
-    ResourceDescriptor, Result, TypePolicyAllowances,
+    CdfError, EffectiveSchemaRuntime, ErrorKind, PayloadRetention, QueryableResource,
+    ResourceCapabilities, ResourceDescriptor, ResourceId, Result, TypePolicyAllowances,
 };
 use serde::{Deserialize, Serialize};
 
 use crate::{BlockingLaneSpec, ExecutionServices, artifact_hash};
+
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct PreparedSourcePayloadKey {
+    resource_id: ResourceId,
+    driver_id: SourceDriverId,
+    payload_hash: String,
+}
+
+impl PreparedSourcePayloadKey {
+    pub fn new(
+        resource_id: ResourceId,
+        driver_id: SourceDriverId,
+        payload_hash: impl Into<String>,
+    ) -> Result<Self> {
+        let payload_hash = payload_hash.into();
+        validate_hash("prepared source payload", &payload_hash)?;
+        Ok(Self {
+            resource_id,
+            driver_id,
+            payload_hash,
+        })
+    }
+
+    pub fn resource_id(&self) -> &ResourceId {
+        &self.resource_id
+    }
+
+    pub fn driver_id(&self) -> &SourceDriverId {
+        &self.driver_id
+    }
+}
+
+pub struct PreparedSourcePayload {
+    payload: Box<dyn Any + Send>,
+    payload_type: &'static str,
+    retention: PayloadRetention,
+}
+
+impl std::fmt::Debug for PreparedSourcePayload {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("PreparedSourcePayload")
+            .field("payload_type", &self.payload_type)
+            .field("retained_bytes", &self.retention.bytes())
+            .finish_non_exhaustive()
+    }
+}
+
+impl PreparedSourcePayload {
+    pub fn new<T>(payload: T, retention: PayloadRetention) -> Self
+    where
+        T: Any + Send,
+    {
+        Self {
+            payload: Box::new(payload),
+            payload_type: type_name::<T>(),
+            retention,
+        }
+    }
+
+    pub fn into_typed<T>(self, expected_payload: &'static str) -> Result<(T, PayloadRetention)>
+    where
+        T: Any + Send,
+    {
+        let observed_type = self.payload_type;
+        let payload = self.payload.downcast::<T>().map_err(|_| {
+            CdfError::internal(format!(
+                "prepared source payload for {expected_payload} has type `{observed_type}`, expected `{}`",
+                type_name::<T>()
+            ))
+        })?;
+        Ok((*payload, self.retention))
+    }
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct SourceContentDigest {
+    digest: Arc<Mutex<Option<String>>>,
+}
+
+impl SourceContentDigest {
+    pub fn record(&self, digest: String) -> Result<()> {
+        validate_hash("source content", &digest)?;
+        let mut stored = self
+            .digest
+            .lock()
+            .map_err(|_| CdfError::internal("source content-digest state was poisoned"))?;
+        if stored.as_ref().is_some_and(|existing| existing != &digest) {
+            return Err(CdfError::data(
+                "one source invocation observed conflicting content digests",
+            ));
+        }
+        *stored = Some(digest);
+        Ok(())
+    }
+
+    pub fn completed(&self) -> Result<String> {
+        self.digest
+            .lock()
+            .map_err(|_| CdfError::internal("source content-digest state was poisoned"))?
+            .clone()
+            .ok_or_else(|| CdfError::internal("fully consumed source omitted its content digest"))
+    }
+}
+
+#[derive(Clone, Default)]
+pub struct PreparedSourcePayloads {
+    entries: Arc<Mutex<BTreeMap<PreparedSourcePayloadKey, PreparedSourcePayload>>>,
+}
+
+impl std::fmt::Debug for PreparedSourcePayloads {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("PreparedSourcePayloads")
+            .field("pending", &self.pending_count().ok())
+            .finish_non_exhaustive()
+    }
+}
+
+impl PreparedSourcePayloads {
+    pub fn install(
+        &self,
+        key: PreparedSourcePayloadKey,
+        payload: PreparedSourcePayload,
+    ) -> Result<()> {
+        let mut entries = self
+            .entries
+            .lock()
+            .map_err(|_| CdfError::internal("prepared source payload store was poisoned"))?;
+        if entries.contains_key(&key) {
+            return Err(CdfError::internal(format!(
+                "prepared source payload for resource `{}` and driver `{}` was installed twice",
+                key.resource_id,
+                key.driver_id.as_str()
+            )));
+        }
+        entries.insert(key, payload);
+        Ok(())
+    }
+
+    pub fn take(&self, key: &PreparedSourcePayloadKey) -> Result<Option<PreparedSourcePayload>> {
+        Ok(self
+            .entries
+            .lock()
+            .map_err(|_| CdfError::internal("prepared source payload store was poisoned"))?
+            .remove(key))
+    }
+
+    pub fn pending_count(&self) -> Result<usize> {
+        Ok(self
+            .entries
+            .lock()
+            .map_err(|_| CdfError::internal("prepared source payload store was poisoned"))?
+            .len())
+    }
+}
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct SourceDriverId(String);
@@ -247,6 +408,7 @@ pub struct SourceResolutionContext<'a> {
     project_root: &'a Path,
     secret_provider: Arc<dyn SecretProvider + Send + Sync>,
     execution: &'a ExecutionServices,
+    prepared_payloads: PreparedSourcePayloads,
 }
 
 impl<'a> SourceResolutionContext<'a> {
@@ -259,7 +421,13 @@ impl<'a> SourceResolutionContext<'a> {
             project_root,
             secret_provider,
             execution,
+            prepared_payloads: PreparedSourcePayloads::default(),
         }
+    }
+
+    pub fn with_prepared_payloads(mut self, prepared_payloads: PreparedSourcePayloads) -> Self {
+        self.prepared_payloads = prepared_payloads;
+        self
     }
 
     pub fn project_root(&self) -> &'a Path {
@@ -272,6 +440,10 @@ impl<'a> SourceResolutionContext<'a> {
 
     pub fn execution(&self) -> &'a ExecutionServices {
         self.execution
+    }
+
+    pub fn prepared_payloads(&self) -> &PreparedSourcePayloads {
+        &self.prepared_payloads
     }
 }
 

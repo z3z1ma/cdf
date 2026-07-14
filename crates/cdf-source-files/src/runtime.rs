@@ -10,18 +10,20 @@ use arrow_schema::SchemaRef;
 use cdf_kernel::{
     BatchStream, BoxFuture, CdfError, DeliveryGuarantee, EffectiveSchemaRuntime,
     OpenedPartitionStream, PLAN_PHYSICAL_SCHEMA_HASH_KEY, PLAN_SCHEMA_OBSERVATION_BINDING_KEY,
-    PLAN_SCHEMA_OBSERVATION_ID_KEY, PartitionAttestation, PartitionId, PartitionPlan, PlanId,
-    QueryableResource, ResourceCapabilities, ResourceDescriptor, ResourceId, ResourceStream,
-    Result, ScanPlan, ScanRequest, SchemaHash, ScopeKey, SourcePosition, TypePolicyAllowances,
-    WriteDisposition,
+    PLAN_SCHEMA_OBSERVATION_ID_KEY, PartitionAttestation, PartitionId, PartitionPlan,
+    PayloadRetention, PlanId, QueryableResource, ResourceCapabilities, ResourceDescriptor,
+    ResourceId, ResourceStream, Result, ScanPlan, ScanRequest, SchemaHash, ScopeKey,
+    SourcePosition, TypePolicyAllowances, WriteDisposition,
 };
 use cdf_memory::{ConsumerKey, MemoryClass};
 use cdf_runtime::{
-    AccountedByteStream, ByteExtent, ByteSource, ByteTransformId, ByteTransformRegistry,
-    CompiledFormatBinding, DecodePlanningRequest, ExecutionServices, FormatDetection,
-    FormatDetectionConfidence, FormatDiscoveryRequest, FormatDriver, FormatProbe, FormatRegistry,
-    GenerationStrength, PhysicalDecodeRequest, ReadOptions, SequentialReadRequest,
-    TransformSourceConfig, TransformedByteSource,
+    AccountedByteStream, ByteExtent, ByteSource, ByteSourceCapabilities, ByteTransformId,
+    ByteTransformRegistry, CompiledFormatBinding, ContentIdentity, DecodePlanningRequest,
+    ExecutionServices, FormatDetection, FormatDetectionConfidence, FormatDiscoveryRequest,
+    FormatDriver, FormatProbe, FormatRegistry, GenerationStrength, PhysicalDecodeRequest,
+    PreparedSourcePayload, PreparedSourcePayloadKey, PreparedSourcePayloads, ReadOptions,
+    SequentialReadRequest, SourceContentDigest, SourceDriverId, TransformSourceConfig,
+    TransformedByteSource,
 };
 #[cfg(test)]
 use futures_util::StreamExt;
@@ -45,6 +47,7 @@ pub struct FileRuntimeDependencies {
     execution: ExecutionServices,
     formats: Arc<FormatRegistry>,
     transforms: Arc<ByteTransformRegistry>,
+    prepared_payloads: PreparedSourcePayloads,
     max_spool_bytes: u64,
 }
 
@@ -71,8 +74,14 @@ impl FileRuntimeDependencies {
             execution,
             formats,
             transforms,
+            prepared_payloads: PreparedSourcePayloads::default(),
             max_spool_bytes: DEFAULT_MAX_FILE_SPOOL_BYTES,
         }
+    }
+
+    pub fn with_prepared_payloads(mut self, prepared_payloads: PreparedSourcePayloads) -> Self {
+        self.prepared_payloads = prepared_payloads;
+        self
     }
 
     pub fn with_max_spool_bytes(mut self, max_spool_bytes: u64) -> Result<Self> {
@@ -99,6 +108,10 @@ impl FileRuntimeDependencies {
 
     pub fn transforms(&self) -> &Arc<ByteTransformRegistry> {
         &self.transforms
+    }
+
+    pub fn prepared_payloads(&self) -> &PreparedSourcePayloads {
+        &self.prepared_payloads
     }
 
     #[cfg(test)]
@@ -155,6 +168,7 @@ pub fn discover_local_binary_schema_bounded(
         &path,
         dependencies.execution().memory(),
     )?);
+    let upstream_identity = upstream.identity().clone();
     let transform_id = (request.transform_name != "none")
         .then(|| {
             dependencies
@@ -163,14 +177,38 @@ pub fn discover_local_binary_schema_bounded(
         })
         .transpose()?
         .map(|driver| driver.descriptor().transform_id.clone());
+    let needs_spool = transform_id.is_some()
+        && driver.descriptor().source_access != cdf_runtime::FormatSourceAccess::Sequential;
+    let retain_sequential = driver.descriptor().source_access
+        == cdf_runtime::FormatSourceAccess::Sequential
+        && driver.descriptor().discovery_kind == cdf_runtime::FormatDiscoveryKind::BoundedContent;
+    let extraction_content_hash =
+        (needs_spool || retain_sequential).then(SourceContentDigest::default);
+    let upstream = match extraction_content_hash.as_ref() {
+        Some(observation) => {
+            Arc::new(HashingByteSource::new(upstream, observation.clone())) as Arc<dyn ByteSource>
+        }
+        None => upstream,
+    };
     let source = match transform_id.as_ref() {
         Some(transform_id) => transformed_byte_source(upstream, transform_id, dependencies)?,
         None => upstream,
     };
     let logical_source_identity = source.identity().clone();
-    let needs_spool = transform_id.is_some()
-        && driver.descriptor().source_access != cdf_runtime::FormatSourceAccess::Sequential;
     let options = driver.canonical_options(request.format_options.clone())?;
+    let prepared_payload_key = prepared_file_payload_key(
+        request.resource_id,
+        location,
+        source_size,
+        upstream_identity.generation.as_deref(),
+        None,
+        None,
+        upstream_identity.checksum.as_deref(),
+        driver.as_ref(),
+        &options,
+        request.transform_name,
+        dependencies,
+    )?;
     let discovery_memory = dependencies.execution().memory();
     let confirmation = FormatConfirmationContext {
         resource_id: request.resource_id.clone(),
@@ -184,8 +222,10 @@ pub fn discover_local_binary_schema_bounded(
         let dependencies = dependencies.clone();
         let driver = Arc::clone(&driver);
         let source = Arc::clone(&source);
+        let extraction_content_hash = extraction_content_hash.clone();
         async move {
             let mut spool = None;
+            let mut sequential_capture = None;
             let source = if needs_spool {
                 let accounted = Arc::new(
                     spool_byte_source_async(
@@ -202,6 +242,11 @@ pub fn discover_local_binary_schema_bounded(
                 )?);
                 spool = Some(accounted);
                 local
+            } else if retain_sequential {
+                let capture = SequentialPayloadCapture::new(source, &dependencies).await?;
+                let source = capture.discovery_source();
+                sequential_capture = Some(capture);
+                source
             } else {
                 source
             };
@@ -231,7 +276,7 @@ pub fn discover_local_binary_schema_bounded(
             )?;
             let observation = driver
                 .discover(
-                    source,
+                    Arc::clone(&source),
                     FormatDiscoveryRequest {
                         options,
                         maximum_bytes: discovery_bytes,
@@ -246,7 +291,18 @@ pub fn discover_local_binary_schema_bounded(
             } else {
                 observation.sampled_bytes.saturating_add(confirmation_bytes)
             };
-            drop(spool);
+            if let Some(capture) = sequential_capture {
+                let payload = capture.finish(extraction_content_hash.clone()).await?;
+                dependencies
+                    .prepared_payloads()
+                    .install(prepared_payload_key, payload)?;
+            } else if let Some(spool) = spool {
+                let retention = retain_spool(&spool, logical_size)?;
+                dependencies.prepared_payloads().install(
+                    prepared_payload_key,
+                    prepared_file_payload(source, retention, extraction_content_hash.clone())?,
+                )?;
+            }
             Ok::<_, CdfError>((observation, probe_bytes_read))
         }
     })?;
@@ -312,17 +368,45 @@ pub fn discover_transport_binary_schema_bounded(
         })
         .transpose()?
         .map(|driver| driver.descriptor().transform_id.clone());
+    let needs_spool = driver.descriptor().source_access
+        != cdf_runtime::FormatSourceAccess::Sequential
+        && (!upstream.capabilities().seekable || transform_id.is_some());
+    let retain_sequential = driver.descriptor().source_access
+        == cdf_runtime::FormatSourceAccess::Sequential
+        && driver.descriptor().discovery_kind == cdf_runtime::FormatDiscoveryKind::BoundedContent;
+    let extraction_content_hash = ((needs_spool || retain_sequential)
+        && metadata.generation_strength() == GenerationStrength::Weak)
+        .then(SourceContentDigest::default);
+    let upstream = match extraction_content_hash.as_ref() {
+        Some(observation) => {
+            Arc::new(HashingByteSource::new(upstream, observation.clone())) as Arc<dyn ByteSource>
+        }
+        None => upstream,
+    };
     let source = match transform_id.as_ref() {
         Some(transform_id) => transformed_byte_source(upstream, transform_id, dependencies)?,
         None => upstream,
     };
     let logical_source_identity = source.identity().clone();
-    let needs_spool = driver.descriptor().source_access
-        != cdf_runtime::FormatSourceAccess::Sequential
-        && (!source.capabilities().seekable || transform_id.is_some());
     let execution = dependencies.execution().clone();
     let memory = execution.memory();
     let options = driver.canonical_options(request.format_options.clone())?;
+    let source_generation = (metadata.generation_strength() == GenerationStrength::Weak)
+        .then(|| metadata.modified.as_deref())
+        .flatten();
+    let prepared_payload_key = prepared_file_payload_key(
+        request.resource_id,
+        &metadata.location,
+        size_bytes,
+        source_generation,
+        metadata.etag.as_deref(),
+        metadata.version.as_deref(),
+        metadata.sha256(),
+        driver.as_ref(),
+        &options,
+        request.transform_name,
+        dependencies,
+    )?;
     let confirmation = FormatConfirmationContext {
         resource_id: request.resource_id.clone(),
         location: diagnostic_location(&metadata.location),
@@ -334,8 +418,10 @@ pub fn discover_transport_binary_schema_bounded(
     let observation = execution.run_io({
         let dependencies = dependencies.clone();
         let driver = Arc::clone(&driver);
+        let extraction_content_hash = extraction_content_hash.clone();
         async move {
             let mut spool = None;
+            let mut sequential_capture = None;
             let source = if needs_spool {
                 let accounted = Arc::new(
                     spool_byte_source_async(
@@ -352,6 +438,11 @@ pub fn discover_transport_binary_schema_bounded(
                 )?);
                 spool = Some(accounted);
                 local
+            } else if retain_sequential {
+                let capture = SequentialPayloadCapture::new(source, &dependencies).await?;
+                let source = capture.discovery_source();
+                sequential_capture = Some(capture);
+                source
             } else {
                 source
             };
@@ -381,7 +472,7 @@ pub fn discover_transport_binary_schema_bounded(
             )?;
             let observation = driver
                 .discover(
-                    source,
+                    Arc::clone(&source),
                     FormatDiscoveryRequest {
                         options,
                         maximum_bytes: discovery_bytes,
@@ -396,7 +487,18 @@ pub fn discover_transport_binary_schema_bounded(
             } else {
                 observation.sampled_bytes.saturating_add(confirmation_bytes)
             };
-            drop(spool);
+            if let Some(capture) = sequential_capture {
+                let payload = capture.finish(extraction_content_hash.clone()).await?;
+                dependencies
+                    .prepared_payloads()
+                    .install(prepared_payload_key, payload)?;
+            } else if let Some(spool) = spool {
+                let retention = retain_spool(&spool, logical_size)?;
+                dependencies.prepared_payloads().install(
+                    prepared_payload_key,
+                    prepared_file_payload(source, retention, extraction_content_hash.clone())?,
+                )?;
+            }
             Ok::<_, CdfError>((observation, probe_bytes_read))
         }
     })?;
@@ -868,54 +970,64 @@ enum PreparedFileInput {
 
 struct PreparedInput {
     input: PreparedFileInput,
-    extraction_content_hash: Option<ExtractionContentHash>,
+    extraction_content_hash: Option<SourceContentDigest>,
     hash_sweep_source: Option<Arc<dyn ByteSource>>,
+    payload_retention: Option<PayloadRetention>,
+}
+
+struct PreparedFilePayload {
+    source: Arc<dyn ByteSource>,
+    source_content_digest: Option<SourceContentDigest>,
 }
 
 struct AccountedSpool {
     file: tempfile::NamedTempFile,
     _reservation: cdf_runtime::SpillReservation,
+    bytes: u64,
 }
 
-#[derive(Clone, Debug, Default)]
-struct ExtractionContentHash {
-    digest: Arc<Mutex<Option<String>>>,
+struct SequentialPayloadCapture {
+    source: Arc<CapturingSequentialByteSource>,
+    state: Arc<tokio::sync::Mutex<SequentialCaptureState>>,
+    memory: Arc<dyn cdf_memory::MemoryCoordinator>,
 }
 
-impl ExtractionContentHash {
-    fn record(&self, digest: String) -> Result<()> {
-        let mut stored = self
-            .digest
-            .lock()
-            .map_err(|_| CdfError::internal("extraction content-hash state was poisoned"))?;
-        if stored.as_ref().is_some_and(|existing| existing != &digest) {
-            return Err(CdfError::data(
-                "one extraction observed conflicting content hashes for the same file generation",
-            ));
-        }
-        *stored = Some(digest);
-        Ok(())
-    }
+struct SequentialCaptureState {
+    upstream: Option<Arc<tokio::sync::Mutex<AccountedByteStream>>>,
+    output: Option<tokio::fs::File>,
+    spool_file: Option<tempfile::NamedTempFile>,
+    reservation: Option<cdf_runtime::SpillReservation>,
+    captured_bytes: u64,
+    opened: bool,
+    maximum_spool_bytes: u64,
+}
 
-    fn completed(&self) -> Result<String> {
-        self.digest
-            .lock()
-            .map_err(|_| CdfError::internal("extraction content-hash state was poisoned"))?
-            .clone()
-            .ok_or_else(|| {
-                CdfError::internal("fully consumed file extraction omitted its content hash")
-            })
-    }
+struct CapturingSequentialByteSource {
+    upstream: Arc<dyn ByteSource>,
+    capabilities: ByteSourceCapabilities,
+    state: Arc<tokio::sync::Mutex<SequentialCaptureState>>,
+}
+
+struct ReplayThenContinueByteSource {
+    identity: ContentIdentity,
+    capabilities: ByteSourceCapabilities,
+    state: Arc<Mutex<Option<ReplayContinuation>>>,
+    memory: Arc<dyn cdf_memory::MemoryCoordinator>,
+}
+
+struct ReplayContinuation {
+    spool_path: PathBuf,
+    continuation: Arc<tokio::sync::Mutex<AccountedByteStream>>,
 }
 
 #[derive(Clone)]
 struct HashingByteSource {
     inner: Arc<dyn ByteSource>,
-    observation: ExtractionContentHash,
+    observation: SourceContentDigest,
 }
 
 impl HashingByteSource {
-    fn new(inner: Arc<dyn ByteSource>, observation: ExtractionContentHash) -> Self {
+    fn new(inner: Arc<dyn ByteSource>, observation: SourceContentDigest) -> Self {
         Self { inner, observation }
     }
 }
@@ -967,6 +1079,319 @@ impl AccountedSpool {
     fn path(&self) -> &Path {
         self.file.path()
     }
+
+    fn bytes(&self) -> u64 {
+        self.bytes
+    }
+}
+
+fn retain_spool(spool: &Arc<AccountedSpool>, bytes: u64) -> Result<PayloadRetention> {
+    let owner: Arc<dyn std::any::Any + Send + Sync> = spool.clone();
+    PayloadRetention::new(owner, bytes)
+}
+
+fn prepared_file_payload(
+    source: Arc<dyn ByteSource>,
+    retention: PayloadRetention,
+    source_content_digest: Option<SourceContentDigest>,
+) -> Result<PreparedSourcePayload> {
+    source.identity().validate()?;
+    source.capabilities().validate()?;
+    Ok(PreparedSourcePayload::new(
+        PreparedFilePayload {
+            source,
+            source_content_digest,
+        },
+        retention,
+    ))
+}
+
+impl SequentialPayloadCapture {
+    async fn new(
+        upstream: Arc<dyn ByteSource>,
+        dependencies: &FileRuntimeDependencies,
+    ) -> Result<Self> {
+        let mut reservation = dependencies
+            .execution()
+            .spill()
+            .try_reserve(1)?
+            .ok_or_else(|| {
+                let snapshot = dependencies.execution().spill().snapshot();
+                CdfError::data(format!(
+                    "retained discovery window requires spill capacity but {} of {} bytes are already reserved; raise the spill budget or reduce discovery concurrency",
+                    snapshot.current_bytes, snapshot.budget_bytes
+                ))
+            })?;
+        if reservation.bytes() == 0 && !reservation.try_grow(1)? {
+            return Err(CdfError::data(
+                "retained discovery window could not reserve its initial spill byte",
+            ));
+        }
+        let spool_file = tempfile::NamedTempFile::new().map_err(|error| {
+            CdfError::data(format!("create retained discovery window: {error}"))
+        })?;
+        let output = tokio::fs::File::create(spool_file.path())
+            .await
+            .map_err(|error| CdfError::data(format!("open retained discovery window: {error}")))?;
+        let state = Arc::new(tokio::sync::Mutex::new(SequentialCaptureState {
+            upstream: None,
+            output: Some(output),
+            spool_file: Some(spool_file),
+            reservation: Some(reservation),
+            captured_bytes: 0,
+            opened: false,
+            maximum_spool_bytes: dependencies.max_spool_bytes(),
+        }));
+        let mut capabilities = upstream.capabilities().clone();
+        capabilities.reopenable = false;
+        capabilities.validate()?;
+        Ok(Self {
+            source: Arc::new(CapturingSequentialByteSource {
+                upstream,
+                capabilities,
+                state: Arc::clone(&state),
+            }),
+            state,
+            memory: dependencies.execution().memory(),
+        })
+    }
+
+    fn discovery_source(&self) -> Arc<dyn ByteSource> {
+        Arc::clone(&self.source) as Arc<dyn ByteSource>
+    }
+
+    async fn finish(
+        self,
+        source_content_digest: Option<SourceContentDigest>,
+    ) -> Result<PreparedSourcePayload> {
+        let mut state = self.state.lock().await;
+        if !state.opened {
+            return Err(CdfError::internal(
+                "format discovery did not open its retained sequential source",
+            ));
+        }
+        let mut output = state.output.take().ok_or_else(|| {
+            CdfError::internal("retained discovery window output was already finalized")
+        })?;
+        output
+            .flush()
+            .await
+            .map_err(|error| CdfError::data(format!("flush retained discovery window: {error}")))?;
+        drop(output);
+        let captured_bytes = state.captured_bytes;
+        if captured_bytes == 0 {
+            return Err(CdfError::data(
+                "format discovery retained no source bytes for execution",
+            ));
+        }
+        let continuation = state.upstream.take().ok_or_else(|| {
+            CdfError::internal("retained discovery window omitted its live continuation")
+        })?;
+        let spool_file = state.spool_file.take().ok_or_else(|| {
+            CdfError::internal("retained discovery window omitted its spool file")
+        })?;
+        let reservation = state.reservation.take().ok_or_else(|| {
+            CdfError::internal("retained discovery window omitted its spill reservation")
+        })?;
+        drop(state);
+
+        let spool = Arc::new(AccountedSpool {
+            file: spool_file,
+            _reservation: reservation,
+            bytes: captured_bytes,
+        });
+        let upstream_capabilities = self.source.capabilities();
+        let capabilities = ByteSourceCapabilities {
+            known_length: upstream_capabilities.known_length,
+            reopenable: false,
+            seekable: false,
+            exact_ranges: false,
+            useful_range_concurrency: 0,
+            minimum_chunk_bytes: upstream_capabilities.minimum_chunk_bytes,
+            maximum_chunk_bytes: upstream_capabilities.maximum_chunk_bytes,
+        };
+        capabilities.validate()?;
+        let replay: Arc<dyn ByteSource> = Arc::new(ReplayThenContinueByteSource {
+            identity: self.source.identity().clone(),
+            capabilities,
+            state: Arc::new(Mutex::new(Some(ReplayContinuation {
+                spool_path: spool.path().to_path_buf(),
+                continuation,
+            }))),
+            memory: self.memory,
+        });
+        prepared_file_payload(
+            replay,
+            retain_spool(&spool, captured_bytes)?,
+            source_content_digest,
+        )
+    }
+}
+
+impl ByteSource for CapturingSequentialByteSource {
+    fn identity(&self) -> &ContentIdentity {
+        self.upstream.identity()
+    }
+
+    fn capabilities(&self) -> &ByteSourceCapabilities {
+        &self.capabilities
+    }
+
+    fn open_sequential(
+        &self,
+        request: SequentialReadRequest,
+    ) -> BoxFuture<'_, Result<AccountedByteStream>> {
+        Box::pin(async move {
+            {
+                let mut state = self.state.lock().await;
+                if state.opened {
+                    return Err(CdfError::contract(
+                        "retained discovery source may be opened only once",
+                    ));
+                }
+                // Claim the single invocation before crossing the source boundary. A
+                // duplicate open must not contact the transport and then fail locally.
+                state.opened = true;
+            }
+            let input = self.upstream.open_sequential(request).await?;
+            {
+                let mut state = self.state.lock().await;
+                state.upstream = Some(Arc::new(tokio::sync::Mutex::new(input)));
+            }
+            let state = Arc::clone(&self.state);
+            Ok(Box::pin(futures_util::stream::try_unfold(
+                state,
+                |state| async move {
+                    let upstream = {
+                        let state_guard = state.lock().await;
+                        Arc::clone(state_guard.upstream.as_ref().ok_or_else(|| {
+                            CdfError::internal("retained discovery source lost its upstream stream")
+                        })?)
+                    };
+                    let next = upstream.lock().await.try_next().await?;
+                    let Some(chunk) = next else {
+                        return Ok(None);
+                    };
+                    let chunk_bytes = u64::try_from(chunk.payload().len())
+                        .map_err(|_| CdfError::data("retained discovery chunk exceeds u64"))?;
+                    let mut state_guard = state.lock().await;
+                    let next_bytes = state_guard
+                        .captured_bytes
+                        .checked_add(chunk_bytes)
+                        .ok_or_else(|| {
+                            CdfError::data("retained discovery byte count overflowed")
+                        })?;
+                    if next_bytes > state_guard.maximum_spool_bytes {
+                        return Err(CdfError::data(
+                            "retained discovery window exceeded the configured spool budget",
+                        ));
+                    }
+                    let reservation = state_guard.reservation.as_mut().ok_or_else(|| {
+                        CdfError::internal("retained discovery spill reservation was finalized")
+                    })?;
+                    if next_bytes > reservation.bytes()
+                        && !reservation.try_grow(next_bytes - reservation.bytes())?
+                    {
+                        return Err(CdfError::data(
+                            "retained discovery window exhausted the shared spill budget",
+                        ));
+                    }
+                    state_guard
+                        .output
+                        .as_mut()
+                        .ok_or_else(|| {
+                            CdfError::internal("retained discovery output was finalized")
+                        })?
+                        .write_all(chunk.payload())
+                        .await
+                        .map_err(|error| {
+                            CdfError::data(format!("write retained discovery window: {error}"))
+                        })?;
+                    state_guard.captured_bytes = next_bytes;
+                    drop(state_guard);
+                    Ok(Some((chunk, state)))
+                },
+            )) as AccountedByteStream)
+        })
+    }
+
+    fn read_exact_range(
+        &self,
+        extent: ByteExtent,
+        cancellation: cdf_runtime::RunCancellation,
+    ) -> BoxFuture<'_, Result<cdf_memory::AccountedBytes>> {
+        self.upstream.read_exact_range(extent, cancellation)
+    }
+}
+
+impl ByteSource for ReplayThenContinueByteSource {
+    fn identity(&self) -> &ContentIdentity {
+        &self.identity
+    }
+
+    fn capabilities(&self) -> &ByteSourceCapabilities {
+        &self.capabilities
+    }
+
+    fn open_sequential(
+        &self,
+        request: SequentialReadRequest,
+    ) -> BoxFuture<'_, Result<AccountedByteStream>> {
+        Box::pin(async move {
+            request.cancellation.check()?;
+            let continuation = self
+                .state
+                .lock()
+                .map_err(|_| CdfError::internal("retained payload state was poisoned"))?
+                .take()
+                .ok_or_else(|| {
+                    CdfError::contract("retained source payload may be consumed only once")
+                })?;
+            let replay_source =
+                LocalByteSource::open(&continuation.spool_path, Arc::clone(&self.memory))?;
+            let replay_chunk_bytes = request.preferred_chunk_bytes.clamp(
+                replay_source.capabilities().minimum_chunk_bytes,
+                replay_source.capabilities().maximum_chunk_bytes,
+            );
+            let replay = replay_source
+                .open_sequential(SequentialReadRequest {
+                    preferred_chunk_bytes: replay_chunk_bytes,
+                    cancellation: request.cancellation.clone(),
+                })
+                .await?;
+            let state = (
+                replay,
+                continuation.continuation,
+                false,
+                request.cancellation,
+            );
+            Ok(Box::pin(futures_util::stream::try_unfold(
+                state,
+                |(mut replay, continuation, replay_done, cancellation)| async move {
+                    cancellation.check()?;
+                    if !replay_done {
+                        if let Some(chunk) = replay.try_next().await? {
+                            return Ok(Some((chunk, (replay, continuation, false, cancellation))));
+                        }
+                    }
+                    let next = continuation.lock().await.try_next().await?;
+                    Ok(next.map(|chunk| (chunk, (replay, continuation, true, cancellation))))
+                },
+            )) as AccountedByteStream)
+        })
+    }
+
+    fn read_exact_range(
+        &self,
+        _extent: ByteExtent,
+        _cancellation: cdf_runtime::RunCancellation,
+    ) -> BoxFuture<'_, Result<cdf_memory::AccountedBytes>> {
+        Box::pin(async {
+            Err(CdfError::contract(
+                "retained sequential payload does not support independent ranges",
+            ))
+        })
+    }
 }
 
 struct PreparedFilePartition {
@@ -977,8 +1402,54 @@ struct PreparedFilePartition {
     physical_schema_authority: PhysicalSchemaAuthority,
     canonical_format_options: serde_json::Value,
     driver: Arc<dyn FormatDriver>,
-    extraction_content_hash: Option<ExtractionContentHash>,
+    extraction_content_hash: Option<SourceContentDigest>,
     hash_sweep_source: Option<Arc<dyn ByteSource>>,
+    payload_retention: Option<PayloadRetention>,
+}
+
+fn prepared_file_payload_key(
+    resource_id: &ResourceId,
+    location: &str,
+    size_bytes: u64,
+    source_generation: Option<&str>,
+    etag: Option<&str>,
+    object_version: Option<&str>,
+    sha256: Option<&str>,
+    driver: &dyn FormatDriver,
+    canonical_format_options: &serde_json::Value,
+    transform_name: &str,
+    dependencies: &FileRuntimeDependencies,
+) -> Result<PreparedSourcePayloadKey> {
+    let transform = if transform_name == "none" {
+        serde_json::json!({"id": "none", "version": "none"})
+    } else {
+        let transform = dependencies.transforms().resolve_name(transform_name)?;
+        serde_json::json!({
+            "id": transform.descriptor().transform_id.as_str(),
+            "version": transform.descriptor().semantic_version,
+        })
+    };
+    let payload_hash = cdf_runtime::artifact_hash(&serde_json::json!({
+        "version": 1,
+        "resource_id": resource_id.as_str(),
+        "location": location,
+        "size_bytes": size_bytes,
+        "source_generation": source_generation,
+        "etag": etag,
+        "object_version": object_version,
+        "sha256": sha256,
+        "format": {
+            "id": driver.descriptor().format_id.as_str(),
+            "version": driver.descriptor().semantic_version,
+            "options": canonical_format_options,
+        },
+        "transform": transform,
+    }))?;
+    PreparedSourcePayloadKey::new(
+        resource_id.clone(),
+        SourceDriverId::new("files")?,
+        payload_hash,
+    )
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -1199,7 +1670,14 @@ fn prepare_file_partition(
     );
     let driver = compiled_format.verify(dependencies.formats())?;
     let source_access = driver.descriptor().source_access;
-    let prepared_input = prepare_file_input(&resolved, source_access, dependencies)?;
+    let prepared_input = prepare_file_input(
+        &descriptor.resource_id,
+        &resolved,
+        source_access,
+        driver.as_ref(),
+        &compiled_format.canonical_options,
+        dependencies,
+    )?;
     Ok(PreparedFilePartition {
         resolved,
         input: prepared_input.input,
@@ -1213,51 +1691,79 @@ fn prepare_file_partition(
         driver,
         extraction_content_hash: prepared_input.extraction_content_hash,
         hash_sweep_source: prepared_input.hash_sweep_source,
+        payload_retention: prepared_input.payload_retention,
     })
 }
 
 fn prepare_file_input(
+    resource_id: &ResourceId,
     resolved: &ResolvedFileMatch,
     source_access: cdf_runtime::FormatSourceAccess,
+    driver: &dyn FormatDriver,
+    canonical_format_options: &serde_json::Value,
     dependencies: &FileRuntimeDependencies,
 ) -> Result<PreparedInput> {
+    let prepared_payload_key = prepared_file_payload_key(
+        resource_id,
+        &resolved.path_text,
+        resolved.size_bytes,
+        resolved.source_generation.as_deref(),
+        resolved.etag.as_deref(),
+        resolved.version.as_deref(),
+        resolved.sha256.as_deref(),
+        driver,
+        canonical_format_options,
+        resolved.compression.mode_name(),
+        dependencies,
+    )?;
+    if let Some(payload) = dependencies
+        .prepared_payloads()
+        .take(&prepared_payload_key)?
+    {
+        let (payload, retention) =
+            payload.into_typed::<PreparedFilePayload>("file source execution")?;
+        return Ok(PreparedInput {
+            input: PreparedFileInput::Source(payload.source),
+            extraction_content_hash: payload.source_content_digest,
+            hash_sweep_source: None,
+            payload_retention: Some(retention),
+        });
+    }
     if resolved.compression.transform_id.is_none() {
         let expected = expected_file_identity(resolved);
-        let (source, extraction_content_hash): (
-            Arc<dyn ByteSource>,
-            Option<ExtractionContentHash>,
-        ) = match &resolved.open {
-            ResolvedFileOpen::LocalPath(path) => {
-                let local: Arc<dyn ByteSource> = Arc::new(LocalByteSource::open(
-                    path,
-                    dependencies.execution().memory(),
-                )?);
-                verify_opened_local_generation(resolved, local.as_ref())?;
-                let observation = ExtractionContentHash::default();
-                (
-                    Arc::new(HashingByteSource::new(local, observation.clone())),
-                    Some(observation),
-                )
-            }
-            ResolvedFileOpen::Transport(resource) => {
-                let upstream = dependencies.with_transport(|transport| {
-                    transport.open_byte_source(
-                        resource,
-                        &expected,
+        let (source, extraction_content_hash): (Arc<dyn ByteSource>, Option<SourceContentDigest>) =
+            match &resolved.open {
+                ResolvedFileOpen::LocalPath(path) => {
+                    let local: Arc<dyn ByteSource> = Arc::new(LocalByteSource::open(
+                        path,
                         dependencies.execution().memory(),
-                    )
-                })?;
-                if resolved.identity_strength == GenerationStrength::Weak {
-                    let observation = ExtractionContentHash::default();
+                    )?);
+                    verify_opened_local_generation(resolved, local.as_ref())?;
+                    let observation = SourceContentDigest::default();
                     (
-                        Arc::new(HashingByteSource::new(upstream, observation.clone())),
+                        Arc::new(HashingByteSource::new(local, observation.clone())),
                         Some(observation),
                     )
-                } else {
-                    (upstream, None)
                 }
-            }
-        };
+                ResolvedFileOpen::Transport(resource) => {
+                    let upstream = dependencies.with_transport(|transport| {
+                        transport.open_byte_source(
+                            resource,
+                            &expected,
+                            dependencies.execution().memory(),
+                        )
+                    })?;
+                    if resolved.identity_strength == GenerationStrength::Weak {
+                        let observation = SourceContentDigest::default();
+                        (
+                            Arc::new(HashingByteSource::new(upstream, observation.clone())),
+                            Some(observation),
+                        )
+                    } else {
+                        (upstream, None)
+                    }
+                }
+            };
         let transport_spool = matches!(resolved.open, ResolvedFileOpen::Transport(_))
             && source_access == cdf_runtime::FormatSourceAccess::Adaptive;
         let hash_sweep_source = (extraction_content_hash.is_some()
@@ -1276,13 +1782,14 @@ fn prepare_file_input(
             input,
             extraction_content_hash,
             hash_sweep_source,
+            payload_retention: None,
         });
     }
     if let Some(transform_id) = &resolved.compression.transform_id {
         let expected = expected_file_identity(resolved);
         let (upstream, extraction_content_hash): (
             Arc<dyn ByteSource>,
-            Option<ExtractionContentHash>,
+            Option<SourceContentDigest>,
         ) = match &resolved.open {
             ResolvedFileOpen::LocalPath(path) => {
                 let local: Arc<dyn ByteSource> = Arc::new(LocalByteSource::open(
@@ -1290,7 +1797,7 @@ fn prepare_file_input(
                     dependencies.execution().memory(),
                 )?);
                 verify_opened_local_generation(resolved, local.as_ref())?;
-                let observation = ExtractionContentHash::default();
+                let observation = SourceContentDigest::default();
                 (
                     Arc::new(HashingByteSource::new(local, observation.clone())),
                     Some(observation),
@@ -1305,7 +1812,7 @@ fn prepare_file_input(
                     )
                 })?;
                 if resolved.identity_strength == GenerationStrength::Weak {
-                    let observation = ExtractionContentHash::default();
+                    let observation = SourceContentDigest::default();
                     (
                         Arc::new(HashingByteSource::new(upstream, observation.clone())),
                         Some(observation),
@@ -1328,6 +1835,7 @@ fn prepare_file_input(
             input,
             extraction_content_hash,
             hash_sweep_source: None,
+            payload_retention: None,
         });
     }
     Err(CdfError::internal(
@@ -1380,6 +1888,7 @@ async fn stream_prepared_file_match(
         driver,
         extraction_content_hash: _,
         hash_sweep_source: _,
+        payload_retention,
     } = prepared;
     let position = Some(SourcePosition::FileManifest(cdf_kernel::FileManifest {
         version: 1,
@@ -1392,25 +1901,32 @@ async fn stream_prepared_file_match(
             sha256: resolved.sha256.clone(),
         }],
     }));
-    let (source, spool_guard): (Arc<dyn ByteSource>, Option<Arc<AccountedSpool>>) = match prepared {
-        PreparedFileInput::Source(source) => (source, None),
-        PreparedFileInput::SpoolSource { source, size_bytes } => {
-            let spool = Arc::new(
-                spool_byte_source_async(source, size_bytes, dependencies, cancellation.clone())
-                    .await?,
-            );
-            let local = Arc::new(LocalByteSource::open(
-                spool.path(),
-                dependencies.execution().memory(),
-            )?);
-            (local, Some(spool))
-        }
-    };
+    let (source, payload_retention): (Arc<dyn ByteSource>, Option<PayloadRetention>) =
+        match prepared {
+            PreparedFileInput::Source(source) => (source, payload_retention),
+            PreparedFileInput::SpoolSource { source, size_bytes } => {
+                if payload_retention.is_some() {
+                    return Err(CdfError::internal(
+                        "prepared source payload cannot request a second spool",
+                    ));
+                }
+                let spool = Arc::new(
+                    spool_byte_source_async(source, size_bytes, dependencies, cancellation.clone())
+                        .await?,
+                );
+                let local = Arc::new(LocalByteSource::open(
+                    spool.path(),
+                    dependencies.execution().memory(),
+                )?);
+                let retention = retain_spool(&spool, spool.bytes())?;
+                (local, Some(retention))
+            }
+        };
 
     stream_registered_format(
         RegisteredFormatStreamRequest {
             source,
-            spool_guard,
+            payload_retention,
             driver,
             options,
             admission_schema,
@@ -1433,8 +1949,14 @@ fn stream_file_match_blocking(
 ) -> Result<BatchStream> {
     let driver = dependencies.formats().resolve(declaration.as_str())?;
     let canonical_format_options = driver.canonical_options(serde_json::json!({}))?;
-    let prepared_input =
-        prepare_file_input(resolved, driver.descriptor().source_access, dependencies)?;
+    let prepared_input = prepare_file_input(
+        &options.resource_id,
+        resolved,
+        driver.descriptor().source_access,
+        driver.as_ref(),
+        &canonical_format_options,
+        dependencies,
+    )?;
     let prepared = PreparedFilePartition {
         resolved: resolved.clone(),
         input: prepared_input.input,
@@ -1445,6 +1967,7 @@ fn stream_file_match_blocking(
         driver,
         extraction_content_hash: prepared_input.extraction_content_hash,
         hash_sweep_source: prepared_input.hash_sweep_source,
+        payload_retention: prepared_input.payload_retention,
     };
     let dependencies = dependencies.clone();
     let execution = dependencies.execution().clone();
@@ -1556,6 +2079,7 @@ async fn spool_byte_source_async(
     Ok(AccountedSpool {
         file,
         _reservation: reservation,
+        bytes: transferred,
     })
 }
 
@@ -1590,7 +2114,7 @@ fn transformed_byte_source(
 
 struct RegisteredFormatStreamRequest {
     source: Arc<dyn ByteSource>,
-    spool_guard: Option<Arc<AccountedSpool>>,
+    payload_retention: Option<PayloadRetention>,
     driver: Arc<dyn FormatDriver>,
     options: ReadOptions,
     admission_schema: SchemaRef,
@@ -1605,7 +2129,7 @@ fn stream_registered_format(
 ) -> Result<BatchStream> {
     let RegisteredFormatStreamRequest {
         source,
-        spool_guard,
+        payload_retention,
         driver,
         options,
         admission_schema,
@@ -1623,7 +2147,7 @@ fn stream_registered_format(
         &scope_id,
         NATIVE_STREAM_ITEMS,
         move |mut sender, cancellation| async move {
-            let _spool_guard = spool_guard;
+            let _payload_retention = payload_retention;
             let options_json = driver.canonical_options(canonical_format_options)?;
             let decode_schema = match physical_schema_authority.schema {
                 Some(schema) => {
@@ -3361,7 +3885,7 @@ mod tests {
                 source: Arc::new(
                     LocalByteSource::open(temp.path(), dependencies.execution().memory()).unwrap(),
                 ),
-                spool_guard: None,
+                payload_retention: None,
                 driver,
                 options: ReadOptions::new(
                     ResourceId::new("events").unwrap(),
@@ -3467,6 +3991,8 @@ mod tests {
         assert_eq!(probe.source_identity.get("compression").unwrap(), "gzip");
         let stable_id = probe.source_identity.get("stable_id").unwrap();
         assert!(stable_id.ends_with("events.parquet.gz#transform:gzip"));
+        assert_eq!(dependencies.prepared_payloads().pending_count().unwrap(), 1);
+        std::fs::remove_file(root.path().join("events.parquet.gz")).unwrap();
         let stream = stream_file_match_blocking(
             &resolved[0],
             plan.resolved_format().unwrap(),
@@ -3476,6 +4002,7 @@ mod tests {
             PhysicalSchemaAuthority::default(),
         )
         .unwrap();
+        assert_eq!(dependencies.prepared_payloads().pending_count().unwrap(), 0);
         let batches = futures_executor::block_on(stream.collect::<Vec<_>>())
             .into_iter()
             .collect::<Result<Vec<_>>>()
@@ -3588,8 +4115,9 @@ mod tests {
             crate::test_format_registry(),
             crate::test_transform_registry(),
         );
+        let resource_id = ResourceId::new("local.events").unwrap();
         let mut resolved = resolved_file_match(
-            &ResourceId::new("local.events").unwrap(),
+            &resource_id,
             root.path(),
             fs::canonicalize(&path).unwrap(),
             &plan,
@@ -3598,10 +4126,15 @@ mod tests {
         )
         .unwrap();
         resolved.source_generation = Some("local-v1:stale-planned-generation".to_owned());
+        let driver = dependencies.formats().resolve("ndjson").unwrap();
+        let canonical_options = driver.canonical_options(serde_json::json!({})).unwrap();
 
         let error = prepare_file_input(
+            &resource_id,
             &resolved,
             cdf_runtime::FormatSourceAccess::Sequential,
+            driver.as_ref(),
+            &canonical_options,
             &dependencies,
         )
         .err()
@@ -3661,10 +4194,15 @@ mod tests {
                 )
             })
             .unwrap();
+        let driver = dependencies.formats().resolve("parquet").unwrap();
+        let canonical_options = driver.canonical_options(serde_json::json!({})).unwrap();
         assert!(matches!(
             prepare_file_input(
+                &resource_id,
                 &resolved[0],
                 cdf_runtime::FormatSourceAccess::Adaptive,
+                driver.as_ref(),
+                &canonical_options,
                 &dependencies,
             )
             .unwrap()
@@ -3981,6 +4519,8 @@ mod tests {
         .unwrap();
         assert_eq!(probe.schema.field(0).data_type(), &DataType::Int64);
         assert_eq!(probe.schema.field(1).data_type(), &DataType::Utf8);
+        assert_eq!(dependencies.prepared_payloads().pending_count().unwrap(), 1);
+        std::fs::remove_file(&path).unwrap();
         let stream = stream_file_match_blocking(
             &resolved[0],
             plan.resolved_format().unwrap(),
@@ -4005,11 +4545,170 @@ mod tests {
             batches[0].header.source_position,
             Some(SourcePosition::FileManifest(_))
         ));
+        assert_eq!(dependencies.prepared_payloads().pending_count().unwrap(), 0);
         drop(batches);
         assert_eq!(
             dependencies.execution().memory().snapshot().current_bytes,
             0
         );
+    }
+
+    #[test]
+    fn retained_sequential_window_replays_then_continues_one_source_invocation() {
+        struct ChunkedTestSource {
+            identity: ContentIdentity,
+            capabilities: ByteSourceCapabilities,
+            payload: Arc<Vec<u8>>,
+            memory: Arc<dyn cdf_memory::MemoryCoordinator>,
+            opens: Arc<AtomicUsize>,
+            chunk_bytes: usize,
+        }
+
+        impl ByteSource for ChunkedTestSource {
+            fn identity(&self) -> &ContentIdentity {
+                &self.identity
+            }
+
+            fn capabilities(&self) -> &ByteSourceCapabilities {
+                &self.capabilities
+            }
+
+            fn open_sequential(
+                &self,
+                request: SequentialReadRequest,
+            ) -> BoxFuture<'_, Result<AccountedByteStream>> {
+                let payload = Arc::clone(&self.payload);
+                let memory = Arc::clone(&self.memory);
+                let opens = Arc::clone(&self.opens);
+                let chunk_bytes = self.chunk_bytes;
+                Box::pin(async move {
+                    request.cancellation.check()?;
+                    if opens.fetch_add(1, Ordering::Relaxed) != 0 {
+                        return Err(CdfError::data("test source was opened more than once"));
+                    }
+                    let state = (0_usize, payload, memory, request.cancellation);
+                    Ok(Box::pin(futures_util::stream::try_unfold(
+                        state,
+                        move |(offset, payload, memory, cancellation)| async move {
+                            cancellation.check()?;
+                            if offset == payload.len() {
+                                return Ok(None);
+                            }
+                            let end = offset.saturating_add(chunk_bytes).min(payload.len());
+                            let bytes = bytes::Bytes::copy_from_slice(&payload[offset..end]);
+                            let lease = cdf_memory::reserve(
+                                Arc::clone(&memory),
+                                cdf_memory::ReservationRequest::new(
+                                    cdf_memory::ConsumerKey::new(
+                                        "retained-window-test-source",
+                                        MemoryClass::Source,
+                                    )?,
+                                    u64::try_from(bytes.len()).map_err(|_| {
+                                        CdfError::data("test source chunk exceeds u64")
+                                    })?,
+                                )?,
+                            )
+                            .await?;
+                            let chunk = cdf_memory::AccountedBytes::new(bytes, lease)?;
+                            Ok(Some((chunk, (end, payload, memory, cancellation))))
+                        },
+                    )) as AccountedByteStream)
+                })
+            }
+
+            fn read_exact_range(
+                &self,
+                _extent: ByteExtent,
+                _cancellation: cdf_runtime::RunCancellation,
+            ) -> BoxFuture<'_, Result<cdf_memory::AccountedBytes>> {
+                Box::pin(async {
+                    Err(CdfError::contract(
+                        "sequential test source does not support ranges",
+                    ))
+                })
+            }
+        }
+
+        let dependencies = FileRuntimeDependencies::new(
+            FileTransportFacade::new(),
+            crate::test_execution_services(),
+            crate::test_format_registry(),
+            crate::test_transform_registry(),
+        );
+        let payload = b"first-window|second-window|live-continuation".to_vec();
+        let opens = Arc::new(AtomicUsize::new(0));
+        let source: Arc<dyn ByteSource> = Arc::new(ChunkedTestSource {
+            identity: ContentIdentity {
+                stable_id: "retained-window-test".to_owned(),
+                size_bytes: Some(payload.len() as u64),
+                generation: Some("test-generation".to_owned()),
+                checksum: None,
+                strength: GenerationStrength::Strong,
+            },
+            capabilities: ByteSourceCapabilities {
+                known_length: true,
+                reopenable: false,
+                seekable: false,
+                exact_ranges: false,
+                useful_range_concurrency: 0,
+                minimum_chunk_bytes: 1,
+                maximum_chunk_bytes: 1024,
+            },
+            payload: Arc::new(payload.clone()),
+            memory: dependencies.execution().memory(),
+            opens: Arc::clone(&opens),
+            chunk_bytes: 13,
+        });
+        let observed = dependencies
+            .execution()
+            .run_io({
+                let dependencies = dependencies.clone();
+                async move {
+                    let capture = SequentialPayloadCapture::new(source, &dependencies).await?;
+                    let discovery_source = capture.discovery_source();
+                    assert!(!discovery_source.capabilities().reopenable);
+                    let mut discovery = discovery_source
+                        .open_sequential(SequentialReadRequest {
+                            preferred_chunk_bytes: 13,
+                            cancellation: cdf_runtime::RunCancellation::default(),
+                        })
+                        .await?;
+                    let first = discovery.try_next().await?.ok_or_else(|| {
+                        CdfError::internal("test discovery stream omitted first chunk")
+                    })?;
+                    assert_eq!(first.payload(), b"first-window|");
+                    drop(first);
+                    drop(discovery);
+
+                    let prepared = capture.finish(None).await?;
+                    let (prepared, retention) = prepared
+                        .into_typed::<PreparedFilePayload>("retained-window test execution")?;
+                    assert_eq!(retention.bytes(), 13);
+                    assert!(prepared.source_content_digest.is_none());
+                    let mut execution = prepared
+                        .source
+                        .open_sequential(SequentialReadRequest {
+                            preferred_chunk_bytes: 7,
+                            cancellation: cdf_runtime::RunCancellation::default(),
+                        })
+                        .await?;
+                    let mut observed = Vec::new();
+                    while let Some(chunk) = execution.try_next().await? {
+                        observed.extend_from_slice(chunk.payload());
+                    }
+                    drop(execution);
+                    drop(retention);
+                    Ok::<_, CdfError>(observed)
+                }
+            })
+            .unwrap();
+        assert_eq!(observed, payload);
+        assert_eq!(opens.load(Ordering::Relaxed), 1);
+        assert_eq!(
+            dependencies.execution().memory().snapshot().current_bytes,
+            0
+        );
+        assert_eq!(dependencies.execution().spill().snapshot().current_bytes, 0);
     }
 
     #[test]
@@ -4069,6 +4768,8 @@ mod tests {
         .unwrap();
         assert_eq!(probe.schema.field(0).data_type(), &DataType::Int64);
         assert_eq!(probe.schema.field(1).data_type(), &DataType::Utf8);
+        assert_eq!(dependencies.prepared_payloads().pending_count().unwrap(), 1);
+        std::fs::remove_file(&path).unwrap();
         let stream = stream_file_match_blocking(
             &resolved[0],
             plan.resolved_format().unwrap(),
@@ -4093,6 +4794,7 @@ mod tests {
             batches[0].header.source_position,
             Some(SourcePosition::FileManifest(_))
         ));
+        assert_eq!(dependencies.prepared_payloads().pending_count().unwrap(), 0);
         drop(batches);
         assert_eq!(
             dependencies.execution().memory().snapshot().current_bytes,

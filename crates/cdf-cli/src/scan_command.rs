@@ -40,6 +40,7 @@ use crate::{
 pub(crate) struct PreparedSchemaForCli {
     pub(crate) resource: CompiledResource,
     pub(crate) schema_snapshot: Option<SchemaSnapshotActionReport>,
+    pub(crate) prepared_payloads: cdf_runtime::PreparedSourcePayloads,
 }
 
 pub(crate) fn plan_or_explain(
@@ -145,6 +146,7 @@ pub(crate) fn prepare_resource_schema_for_cli(
     no_pin: bool,
     execution: Option<&cdf_runtime::ExecutionServices>,
 ) -> Result<PreparedSchemaForCli, CliError> {
+    let prepared_payloads = cdf_runtime::PreparedSourcePayloads::default();
     if matches!(
         resource.descriptor().schema_source,
         SchemaSource::Declared { .. }
@@ -153,12 +155,14 @@ pub(crate) fn prepare_resource_schema_for_cli(
         let prepared = cdf_project::prepare_declared_file_schema_artifacts(
             resource,
             &context.secret_provider(),
-            file_runtime_dependencies(context, execution)?,
+            file_runtime_dependencies(context, execution)?
+                .with_prepared_payloads(prepared_payloads.clone()),
         )?;
         let (resource, _) = prepared.into_parts();
         return Ok(PreparedSchemaForCli {
             resource,
             schema_snapshot: None,
+            prepared_payloads,
         });
     }
     if let Some(snapshot) = resource.descriptor().schema_source.pinned_snapshot()
@@ -180,6 +184,7 @@ pub(crate) fn prepare_resource_schema_for_cli(
                 lockfile_written: false,
                 discovery,
             }),
+            prepared_payloads,
         });
     }
     let probe_resource = if no_pin
@@ -207,6 +212,7 @@ pub(crate) fn prepare_resource_schema_for_cli(
         return Ok(PreparedSchemaForCli {
             resource: resource.clone(),
             schema_snapshot: None,
+            prepared_payloads,
         });
     }
     let secret_provider = context.secret_provider();
@@ -224,7 +230,8 @@ pub(crate) fn prepare_resource_schema_for_cli(
         cdf_project::discover_resource_schema_with_file_dependencies_artifacts(
             &probe_resource,
             &secret_provider,
-            file_runtime_dependencies(context, execution)?,
+            file_runtime_dependencies(context, execution)?
+                .with_prepared_payloads(prepared_payloads.clone()),
             options,
         )?
     } else if matches!(probe_resource.plan(), CompiledResourcePlan::Rest(_)) {
@@ -288,6 +295,7 @@ pub(crate) fn prepare_resource_schema_for_cli(
             lockfile_written,
             discovery: discovery_coverage,
         }),
+        prepared_payloads,
     })
 }
 
