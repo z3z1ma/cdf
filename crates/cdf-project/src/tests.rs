@@ -149,21 +149,6 @@ fn prepare_file_discover_resource(
     )
 }
 
-fn prepare_pinned_file_resource(
-    project_root: &Path,
-    resource: &cdf_declarative::CompiledResource,
-    secret_provider: &dyn SecretProvider,
-) -> Result<cdf_declarative::CompiledResource> {
-    let prepared =
-        super::prepare_pinned_resource_effective_schema_with_file_dependencies_artifacts(
-            project_root,
-            resource,
-            secret_provider,
-            file_dependencies(FileTransportFacade::new()),
-        )?;
-    Ok(prepared.into_parts().0)
-}
-
 const BOOK_PROJECT: &str = r#"
 [project]
 name = "acme_data"
@@ -1584,15 +1569,10 @@ fn object_store_multi_file_parquet_discovery_pins_one_reconciled_snapshot() {
 
     write_schema_discovery_artifacts(temp.path(), &artifacts).unwrap();
     let pinned = apply_discovered_schema(&resource, artifacts.discovery.clone());
-    let prepared = prepare_pinned_resource_effective_schema_with_file_dependencies_artifacts(
-        temp.path(),
-        &pinned.resource,
-        &EnvSecretProvider::from_map(std::iter::empty::<(&str, &str)>()),
-        dependencies,
-    )
-    .unwrap();
+    let prepared = prepare_pinned_resource_schema_artifacts(temp.path(), &pinned.resource).unwrap();
     assert_eq!(prepared.discovery_manifest().unwrap().candidates.len(), 2);
-    assert!(prepared.resource().effective_schema_runtime().is_some());
+    assert!(prepared.resource().effective_schema_runtime().is_none());
+    assert_eq!(prepared.resource().schema(), pinned.resource.schema());
 }
 
 #[test]
@@ -1846,6 +1826,15 @@ fn http_parquet_auto_pin_plan_preview_and_run_use_file_runtime() {
     let parquet = vendor_parquet_bytes();
     write_http_discover_project(temp.path(), "");
     let resource = compile_single_project_resource(temp.path());
+    let reference_transport = RecordingHttpFileTransport::new(parquet.clone());
+    let reference_dependencies = http_file_dependencies(reference_transport.clone());
+    discover_resource_schema_with_file_dependencies(
+        &resource,
+        &EnvSecretProvider::from_map(std::iter::empty::<(&str, &str)>()),
+        reference_dependencies,
+    )
+    .unwrap();
+    let expected_discovery_requests = reference_transport.requests();
     let transport = RecordingHttpFileTransport::new(parquet.clone());
     let dependencies = http_file_dependencies(transport.clone());
     let secret_provider = EnvSecretProvider::from_map(std::iter::empty::<(&str, &str)>());
@@ -1858,6 +1847,11 @@ fn http_parquet_auto_pin_plan_preview_and_run_use_file_runtime() {
     )
     .unwrap();
     let discovery = prepared.discovery.as_ref().unwrap();
+    assert_eq!(
+        transport.requests(),
+        expected_discovery_requests,
+        "auto-pin must perform exactly one cold discovery lifecycle"
+    );
     assert!(
         temp.path()
             .join(&discovery.snapshot.artifact.path)
@@ -1953,6 +1947,82 @@ fn http_parquet_auto_pin_plan_preview_and_run_use_file_runtime() {
     assert!(
         !ranged_gets.is_empty(),
         "discovery must retain bounded Parquet range reads"
+    );
+
+    let request_count_before_pinned_prepare = requests.len();
+    let compiled_again = compile_single_project_resource(temp.path());
+    let pinned_compiled = compiled_again.with_schema_source_and_schema(
+        prepared.resource.descriptor().schema_source.clone(),
+        prepared.resource.schema(),
+    );
+    assert!(pinned_compiled.effective_schema_runtime().is_none());
+    let pinned = prepare_pinned_resource_schema_artifacts(temp.path(), &pinned_compiled).unwrap();
+    assert_eq!(
+        transport.requests().len(),
+        request_count_before_pinned_prepare,
+        "pinned preparation must not contact the source"
+    );
+    let (pinned_resource, _) = pinned.into_parts();
+    let pinned_file_resource = pinned_resource
+        .to_file_resource(dependencies.clone())
+        .unwrap();
+    let pinned_plan =
+        live_plan_for_stream(&pinned_file_resource, "pkg-http-parquet-pinned-runtime");
+    let pinned_report = futures_executor::block_on(run_project(ProjectRunRequest {
+        resource: ProjectRunSource::file(&pinned_file_resource),
+        plan: pinned_plan,
+        package_root: temp.path().join(".cdf/packages"),
+        state_store_path: temp.path().join(".cdf/state-pinned.db"),
+        pipeline_id: PipelineId::new("pipeline-http-pinned").unwrap(),
+        package_id: "pkg-http-parquet-pinned-runtime".to_owned(),
+        checkpoint_id: CheckpointId::new("checkpoint-http-parquet-pinned-runtime").unwrap(),
+        destination: ResolvedProjectDestination::duckdb(
+            temp.path().join(".cdf/dev-pinned.duckdb"),
+            TargetName::new("events_pinned").unwrap(),
+        )
+        .unwrap(),
+        run_id: Some(RunId::new("run-http-parquet-pinned-runtime").unwrap()),
+        event_sink: None,
+        after_receipt_verified: None,
+    }))
+    .unwrap();
+    assert_eq!(pinned_report.row_count, 2);
+    let pinned_package = cdf_package::PackageReader::open(&pinned_report.package_dir).unwrap();
+    assert!(
+        pinned_package
+            .manifest()
+            .identity
+            .files
+            .iter()
+            .any(|entry| entry.path == "plan/schema-admission.json")
+    );
+    assert!(
+        pinned_package
+            .manifest()
+            .identity
+            .files
+            .iter()
+            .any(|entry| entry.path == "schema/stream-admission-evidence.json")
+    );
+    let pinned_execution_requests = transport
+        .requests()
+        .into_iter()
+        .skip(request_count_before_pinned_prepare)
+        .collect::<Vec<_>>();
+    assert_eq!(
+        pinned_execution_requests
+            .iter()
+            .filter(|request| request.method == HttpMethod::Get
+                && !request.headers.contains_key("range"))
+            .count(),
+        1,
+        "pinned execution must transfer the extraction payload once: {pinned_execution_requests:?}"
+    );
+    assert!(
+        pinned_execution_requests.iter().all(|request| {
+            request.method != HttpMethod::Get || !request.headers.contains_key("range")
+        }),
+        "pinned execution must not perform a separate schema range probe: {pinned_execution_requests:?}"
     );
 }
 
@@ -2339,7 +2409,7 @@ fn explicit_sampled_arrow_ipc_uses_the_same_format_neutral_selector() {
 }
 
 #[test]
-fn sampled_pin_observes_every_runtime_file_and_quarantines_unseen_incompatibility() {
+fn pinned_schema_preparation_reuses_snapshot_without_observing_runtime_files() {
     let temp = tempfile::tempdir().unwrap();
     write_sampled_discover_project(temp.path(), "parquet", "*.parquet", 2);
     write_parquet_fixture(
@@ -2378,23 +2448,14 @@ fn sampled_pin_observes_every_runtime_file_and_quarantines_unseen_incompatibilit
         Arc::clone(&initial.discovery.normalized_schema),
     );
 
-    let prepared = prepare_pinned_file_resource(
-        temp.path(),
-        &pinned,
-        &EnvSecretProvider::from_map(std::iter::empty::<(&str, &str)>()),
-    )
-    .unwrap();
-    let runtime = prepared.effective_schema_runtime().unwrap();
-    assert_eq!(runtime.evidence.observations.len(), 3);
-    assert_eq!(runtime.terminal_quarantines.len(), 1);
+    fs::remove_dir_all(temp.path().join("data")).unwrap();
+    let prepared = prepare_pinned_resource_schema_artifacts(temp.path(), &pinned).unwrap();
     assert_eq!(
-        runtime.terminal_quarantines[0].observation_id(),
-        "middle.parquet"
+        prepared.discovery_manifest().unwrap().reference(),
+        initial_manifest.reference()
     );
-    assert_eq!(
-        runtime.terminal_quarantines[0].rule_id(),
-        "schema-observation:incompatible"
-    );
+    assert_eq!(prepared.resource().schema(), pinned.schema());
+    assert!(prepared.resource().effective_schema_runtime().is_none());
 }
 
 #[test]
@@ -3010,7 +3071,7 @@ trust = "governed"
 }
 
 #[test]
-fn pinned_json_runtime_preparation_requires_verified_snapshot_before_source_contact() {
+fn pinned_schema_preparation_requires_verified_snapshot_before_source_contact() {
     let temp = tempfile::tempdir().unwrap();
     write_discover_project(temp.path(), "json", "*.missing");
     let resource = compile_single_project_resource(temp.path());
@@ -3029,12 +3090,7 @@ fn pinned_json_runtime_preparation_requires_verified_snapshot_before_source_cont
         resource.schema(),
     );
 
-    let error = prepare_pinned_resource_effective_schema(
-        temp.path(),
-        &pinned,
-        &EnvSecretProvider::from_map(std::iter::empty::<(&str, &str)>()),
-    )
-    .unwrap_err();
+    let error = prepare_pinned_resource_schema(temp.path(), &pinned).unwrap_err();
 
     assert!(
         error.message.contains(".cdf/schemas/missing.json"),

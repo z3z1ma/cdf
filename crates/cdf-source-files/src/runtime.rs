@@ -830,6 +830,7 @@ struct PreparedFilePartition {
     resolved: ResolvedFileMatch,
     input: PreparedFileInput,
     options: ReadOptions,
+    admission_schema: SchemaRef,
     physical_schema_authority: PhysicalSchemaAuthority,
     canonical_format_options: serde_json::Value,
     driver: Arc<dyn FormatDriver>,
@@ -912,7 +913,7 @@ fn open_file_resource_with_dependencies(
 ) -> BoxFuture<'static, Result<BatchStream>> {
     let FileResource {
         descriptor,
-        schema: _,
+        schema,
         capabilities: _,
         plan,
         type_policy_allowances,
@@ -924,6 +925,7 @@ fn open_file_resource_with_dependencies(
         &descriptor,
         &plan,
         &partition,
+        schema,
         &dependencies,
         type_policy_allowances,
         effective_schema_runtime.as_deref(),
@@ -957,6 +959,7 @@ fn prepare_file_partition(
     descriptor: &ResourceDescriptor,
     plan: &FileResourcePlan,
     partition: &PartitionPlan,
+    admission_schema: SchemaRef,
     dependencies: &FileRuntimeDependencies,
     _allowances: cdf_kernel::TypePolicyAllowances,
     effective_schema_runtime: Option<&EffectiveSchemaRuntime>,
@@ -992,6 +995,7 @@ fn prepare_file_partition(
         resolved,
         input,
         options,
+        admission_schema,
         physical_schema_authority: PhysicalSchemaAuthority {
             hash: planned_physical_schema_hash,
             schema: planned_physical_schema,
@@ -1081,6 +1085,7 @@ async fn stream_prepared_file_match(
         resolved,
         input: prepared,
         options,
+        admission_schema,
         physical_schema_authority,
         canonical_format_options,
         driver,
@@ -1116,6 +1121,7 @@ async fn stream_prepared_file_match(
             spool_guard,
             driver,
             options,
+            admission_schema,
             canonical_format_options,
             source_position: position,
             physical_schema_authority,
@@ -1130,6 +1136,7 @@ fn stream_file_match_blocking(
     declaration: &FileFormatDeclaration,
     options: ReadOptions,
     dependencies: &FileRuntimeDependencies,
+    admission_schema: SchemaRef,
     physical_schema_authority: PhysicalSchemaAuthority,
 ) -> Result<BatchStream> {
     let driver = dependencies.formats().resolve(declaration.as_str())?;
@@ -1138,6 +1145,7 @@ fn stream_file_match_blocking(
         resolved: resolved.clone(),
         input: prepare_file_input(resolved, driver.descriptor().source_access, dependencies)?,
         options,
+        admission_schema,
         physical_schema_authority,
         canonical_format_options,
         driver,
@@ -1289,6 +1297,7 @@ struct RegisteredFormatStreamRequest {
     spool_guard: Option<Arc<AccountedSpool>>,
     driver: Arc<dyn FormatDriver>,
     options: ReadOptions,
+    admission_schema: SchemaRef,
     canonical_format_options: serde_json::Value,
     source_position: Option<SourcePosition>,
     physical_schema_authority: PhysicalSchemaAuthority,
@@ -1303,6 +1312,7 @@ fn stream_registered_format(
         spool_guard,
         driver,
         options,
+        admission_schema,
         canonical_format_options,
         source_position,
         physical_schema_authority,
@@ -1319,7 +1329,7 @@ fn stream_registered_format(
         move |mut sender, cancellation| async move {
             let _spool_guard = spool_guard;
             let options_json = driver.canonical_options(canonical_format_options)?;
-            let physical_schema = match physical_schema_authority.schema {
+            let decode_schema = match physical_schema_authority.schema {
                 Some(schema) => {
                     let schema_hash =
                         cdf_kernel::canonical_arrow_schema_hash(schema.as_ref())?;
@@ -1330,33 +1340,9 @@ fn stream_registered_format(
                             "plan physical schema catalog hash {schema_hash} does not match partition authority {planned_hash}"
                         )));
                     }
-                    schema
+                    cdf_runtime::DecodeSchemaPlan::verified_physical(schema)
                 }
-                None => {
-                    let observation = driver
-                        .discover(
-                            source.clone(),
-                            FormatDiscoveryRequest {
-                                options: options_json.clone(),
-                                maximum_bytes: 16 * 1024 * 1024,
-                                maximum_records: 1_000,
-                                memory: Arc::clone(&memory),
-                                cancellation: cancellation.clone(),
-                            },
-                        )
-                        .await?;
-                    let observed_hash = cdf_kernel::canonical_arrow_schema_hash(
-                        observation.arrow_schema.as_ref(),
-                    )?;
-                    if let Some(planned_hash) = &physical_schema_authority.hash
-                        && planned_hash != &observed_hash
-                    {
-                        return Err(CdfError::data(format!(
-                            "physical schema changed before decode: planned {planned_hash}, observed {observed_hash}"
-                        )));
-                    }
-                    observation.arrow_schema
-                }
+                None => cdf_runtime::DecodeSchemaPlan::fixed_admission(admission_schema),
             };
             let units = driver
                 .plan_decode_units(
@@ -1381,7 +1367,7 @@ fn stream_registered_format(
                             resource_id: options.resource_id.clone(),
                             partition_id: options.partition_id.clone(),
                             batch_id_prefix: options.batch_id_prefix.clone(),
-                            physical_schema: Arc::clone(&physical_schema),
+                            schema: decode_schema.clone(),
                             source_position: source_position.clone(),
                             projection: None,
                             predicates: Vec::new(),
@@ -2776,7 +2762,9 @@ mod tests {
                     cdf_kernel::BatchId::new("external-mock-batch")?,
                     request.resource_id,
                     request.partition_id,
-                    cdf_kernel::canonical_arrow_schema_hash(request.physical_schema.as_ref())?,
+                    cdf_kernel::canonical_arrow_schema_hash(
+                        request.schema.decoder_schema.as_ref(),
+                    )?,
                     record_batch,
                 )?;
                 batch.header.source_position = request.source_position;
@@ -2931,6 +2919,7 @@ mod tests {
             plan.resolved_format().unwrap(),
             ReadOptions::new(resource_id, PartitionId::new("external-file").unwrap()),
             &dependencies,
+            Arc::clone(&probe.schema),
             PhysicalSchemaAuthority::default(),
         )
         .unwrap();
@@ -3008,7 +2997,7 @@ mod tests {
             Field::new("name", DataType::Utf8, false),
         ]));
         let record_batch = RecordBatch::try_new(
-            schema,
+            Arc::clone(&schema),
             vec![
                 Arc::new(Int64Array::from_iter_values(0..150_000)) as ArrayRef,
                 Arc::new(StringArray::from_iter_values(
@@ -3041,6 +3030,7 @@ mod tests {
                 ),
                 canonical_format_options: serde_json::json!({}),
                 source_position: None,
+                admission_schema: Arc::clone(&schema),
                 physical_schema_authority: PhysicalSchemaAuthority::default(),
             },
             &dependencies,
@@ -3142,6 +3132,7 @@ mod tests {
             plan.resolved_format().unwrap(),
             ReadOptions::new(resource_id, PartitionId::new("file-events").unwrap()),
             &dependencies,
+            Arc::clone(&probe.schema),
             PhysicalSchemaAuthority::default(),
         )
         .unwrap();
@@ -3222,6 +3213,7 @@ mod tests {
             plan.resolved_format().unwrap(),
             ReadOptions::new(resource_id, PartitionId::new("file-ipc").unwrap()),
             &dependencies,
+            Arc::clone(&schema),
             PhysicalSchemaAuthority::default(),
         )
         .unwrap();
@@ -3237,7 +3229,7 @@ mod tests {
     fn remote_parquet_full_scan_uses_verified_sequential_spool() {
         let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, false)]));
         let batch = RecordBatch::try_new(
-            schema,
+            Arc::clone(&schema),
             vec![Arc::new(Int64Array::from_iter_values(0..100_000))],
         )
         .unwrap();
@@ -3297,6 +3289,7 @@ mod tests {
             plan.resolved_format().unwrap(),
             ReadOptions::new(resource_id, PartitionId::new("file-parquet").unwrap()),
             &dependencies,
+            Arc::clone(&schema),
             PhysicalSchemaAuthority::default(),
         )
         .unwrap();
@@ -3490,11 +3483,13 @@ mod tests {
         assert_eq!(resolved.len(), 1);
         assert_eq!(resolved[0].compression.mode_name(), "gzip");
         let options = ReadOptions::new(resource_id, PartitionId::new("file-events").unwrap());
+        let admission_schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, true)]));
         let stream = stream_file_match_blocking(
             &resolved[0],
             plan.resolved_format().unwrap(),
             options.clone(),
             &dependencies,
+            Arc::clone(&admission_schema),
             PhysicalSchemaAuthority::default(),
         )
         .unwrap();
@@ -3525,6 +3520,7 @@ mod tests {
             plan.resolved_format().unwrap(),
             options,
             &constrained,
+            admission_schema,
             PhysicalSchemaAuthority::default(),
         )
         .unwrap();
@@ -3602,6 +3598,7 @@ mod tests {
             plan.resolved_format().unwrap(),
             ReadOptions::new(resource_id, PartitionId::new("csv-file").unwrap()),
             &dependencies,
+            Arc::clone(&probe.schema),
             PhysicalSchemaAuthority::default(),
         )
         .unwrap();
@@ -3688,6 +3685,7 @@ mod tests {
             plan.resolved_format().unwrap(),
             ReadOptions::new(resource_id, PartitionId::new("json-file").unwrap()),
             &dependencies,
+            Arc::clone(&probe.schema),
             PhysicalSchemaAuthority::default(),
         )
         .unwrap();

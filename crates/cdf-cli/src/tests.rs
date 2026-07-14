@@ -2764,7 +2764,10 @@ fn schema_discover_local_parquet_reports_schema_without_project_writes() {
             .unwrap()
             .starts_with(".cdf/schemas/local.events@sha256:")
     );
-    assert_eq!(report["snapshot_metadata"]["probe"], "parquet-footer");
+    assert_eq!(
+        report["snapshot_metadata"]["probe"],
+        "registered-format-discovery"
+    );
     assert_eq!(report["snapshot_metadata"]["format"], "parquet");
     assert_eq!(report["snapshot_metadata"]["cdf:normalizer"], "namecase-v1");
     assert_eq!(report["fields"][0]["name"], "vendor_id");
@@ -5468,12 +5471,20 @@ fn plan_local_parquet_discover_autopins_snapshot_and_reports_hash() {
         snapshot["schema_hash"]
     );
     assert_eq!(
+        report["resource_schema"]["baseline_schema_hash"],
+        snapshot["schema_hash"]
+    );
+    assert_eq!(
+        report["resource_schema"]["effective_schema_hash"],
+        report["resource_schema"]["schema_hash"]
+    );
+    assert_eq!(
         report["schema_snapshot"]["schema_hash"],
         snapshot["schema_hash"]
     );
     assert_eq!(
         report["resource_schema"]["snapshot_metadata"]["probe"],
-        "parquet-footer"
+        "registered-format-discovery"
     );
     assert_eq!(snapshot["schema"]["fields"][0]["name"], "vendor_id");
     assert_eq!(

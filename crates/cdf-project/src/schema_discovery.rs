@@ -50,12 +50,12 @@ pub struct PreparedDiscoveredResource {
 
 #[non_exhaustive]
 #[derive(Clone, Debug)]
-pub struct PreparedEffectiveSchemaResource {
+pub struct PreparedSchemaResource {
     resource: CompiledResource,
     discovery_manifest: Option<DiscoveryManifestArtifact>,
 }
 
-impl PreparedEffectiveSchemaResource {
+impl PreparedSchemaResource {
     pub fn resource(&self) -> &CompiledResource {
         &self.resource
     }
@@ -363,60 +363,62 @@ pub fn discover_resource_schema_with_file_dependencies_artifacts(
     )
 }
 
-/// Prepares a pinned resource for execution against runtime schema observations.
+/// Hydrates and verifies the fixed schema artifacts for a pinned resource.
 ///
-/// The discovery/compiler adapter owns the decision to observe a source. Generic
-/// command orchestration calls this once and does not branch on concrete formats.
-pub fn prepare_pinned_resource_effective_schema(
+/// Physical source observations belong to the extraction stream. Pinned
+/// preparation therefore has no secret, transport, or format-runtime dependency.
+pub fn prepare_pinned_resource_schema(
     project_root: &Path,
     resource: &CompiledResource,
-    secret_provider: &dyn SecretProvider,
 ) -> Result<CompiledResource> {
     Ok(
-        prepare_pinned_resource_effective_schema_artifacts(
-            project_root,
-            resource,
-            secret_provider,
-        )?
-        .into_parts()
-        .0,
+        prepare_pinned_resource_schema_artifacts(project_root, resource)?
+            .into_parts()
+            .0,
     )
 }
 
-pub fn prepare_pinned_resource_effective_schema_artifacts(
+pub fn prepare_pinned_resource_schema_artifacts(
     project_root: &Path,
     resource: &CompiledResource,
-    secret_provider: &dyn SecretProvider,
-) -> Result<PreparedEffectiveSchemaResource> {
-    prepare_pinned_resource_effective_schema_artifacts_inner(
-        project_root,
-        resource,
-        secret_provider,
-        None,
-    )
-}
-
-pub fn prepare_pinned_resource_effective_schema_with_file_dependencies_artifacts(
-    project_root: &Path,
-    resource: &CompiledResource,
-    secret_provider: &dyn SecretProvider,
-    file_dependencies: FileRuntimeDependencies,
-) -> Result<PreparedEffectiveSchemaResource> {
-    prepare_pinned_resource_effective_schema_artifacts_inner(
-        project_root,
-        resource,
-        secret_provider,
-        Some(file_dependencies),
-    )
+) -> Result<PreparedSchemaResource> {
+    let snapshot = resource
+        .descriptor()
+        .schema_source
+        .pinned_snapshot()
+        .ok_or_else(|| {
+            CdfError::contract("pinned schema preparation requires a schema snapshot")
+        })?;
+    let store = SchemaSnapshotStore::new(project_root);
+    let (_, baseline) = store.read_with_verified_baseline(snapshot)?;
+    if baseline.resource_id() != &resource.descriptor().resource_id {
+        return Err(CdfError::data(format!(
+            "pinned schema snapshot belongs to resource `{}` but preparation requested `{}`",
+            baseline.resource_id(),
+            resource.descriptor().resource_id
+        )));
+    }
+    let discovery_manifest = snapshot
+        .discovery_manifest()?
+        .map(|reference| DiscoveryManifestStore::new(project_root).read(&reference))
+        .transpose()?;
+    let prepared = resource.with_schema_source_and_schema(
+        resource.descriptor().schema_source.clone(),
+        baseline.schema().clone(),
+    );
+    Ok(PreparedSchemaResource {
+        resource: prepared,
+        discovery_manifest,
+    })
 }
 
 pub fn prepare_declared_file_schema_artifacts(
     resource: &CompiledResource,
     secret_provider: &dyn SecretProvider,
     file_dependencies: FileRuntimeDependencies,
-) -> Result<PreparedEffectiveSchemaResource> {
+) -> Result<PreparedSchemaResource> {
     if !matches!(resource.plan(), CompiledResourcePlan::Files(_)) {
-        return Ok(PreparedEffectiveSchemaResource {
+        return Ok(PreparedSchemaResource {
             resource: resource.clone(),
             discovery_manifest: None,
         });
@@ -464,50 +466,9 @@ pub fn prepare_declared_file_schema_artifacts(
             "declared schema runtime evidence does not match its compiler observation",
         ));
     }
-    Ok(PreparedEffectiveSchemaResource {
+    Ok(PreparedSchemaResource {
         resource: resource.with_effective_schema(resource.schema(), runtime)?,
         discovery_manifest: Some(manifest.clone()),
-    })
-}
-
-fn prepare_pinned_resource_effective_schema_artifacts_inner(
-    project_root: &Path,
-    resource: &CompiledResource,
-    secret_provider: &dyn SecretProvider,
-    file_dependencies: Option<FileRuntimeDependencies>,
-) -> Result<PreparedEffectiveSchemaResource> {
-    let should_observe = matches!(resource.plan(), CompiledResourcePlan::Files(_));
-    if !should_observe {
-        return Ok(PreparedEffectiveSchemaResource {
-            resource: resource.clone(),
-            discovery_manifest: None,
-        });
-    }
-    let snapshot = resource
-        .descriptor()
-        .schema_source
-        .pinned_snapshot()
-        .ok_or_else(|| {
-            CdfError::contract(
-                "runtime effective-schema preparation requires a pinned schema snapshot",
-            )
-        })?;
-    let (_, baseline) =
-        SchemaSnapshotStore::new(project_root).read_with_verified_baseline(snapshot)?;
-    let probe_resource =
-        resource.with_schema_source_and_schema(SchemaSource::Discover, baseline.schema().clone());
-    let options = SchemaDiscoveryExecutionOptions::new().with_verified_baseline(baseline.clone());
-    let artifacts = discover_resource_schema_artifacts_inner(
-        &probe_resource,
-        secret_provider,
-        None,
-        file_dependencies,
-        options,
-    )?;
-    let prepared = apply_effective_discovered_schema(resource, &artifacts, &baseline)?;
-    Ok(PreparedEffectiveSchemaResource {
-        resource: prepared,
-        discovery_manifest: artifacts.discovery_manifest,
     })
 }
 
@@ -1068,7 +1029,7 @@ fn discover_binary_resource_schema(
             source_identity,
         },
     };
-    let effective_schema_runtime = if let Some(baseline) = options.runtime_baseline() {
+    let effective_schema_runtime = {
         let effective_schema_hash = manifest.effective_schema_hash.clone().ok_or_else(|| {
             CdfError::internal(
                 "local binary discovery manifest omitted its effective schema snapshot hash",
@@ -1097,8 +1058,14 @@ fn discover_binary_resource_schema(
             .sort_by(|left, right| left.physical_schema_hash.cmp(&right.physical_schema_hash));
         schema_catalog
             .dedup_by(|left, right| left.physical_schema_hash == right.physical_schema_hash);
+        let baseline = options
+            .runtime_baseline()
+            .map(RuntimeSchemaBaseline::reference)
+            .unwrap_or_else(|| SchemaBaselineReference::Pinned {
+                snapshot: discovery.snapshot.reference.clone(),
+            });
         let mut evidence = EffectiveSchemaEvidence::new(
-            baseline.reference(),
+            baseline,
             effective_schema_hash,
             manifest.reference(),
             observations,
@@ -1122,8 +1089,6 @@ fn discover_binary_resource_schema(
                     options.budget.max_concurrent_probes(),
                 )?)?,
         )
-    } else {
-        None
     };
     Ok(ResourceSchemaDiscoveryArtifacts {
         discovery,
@@ -1679,16 +1644,10 @@ pub fn prepare_discover_resource_with_file_dependencies(
     let discovery = discover_resource_schema_with_file_dependencies_artifacts(
         resource,
         secret_provider,
-        file_dependencies.clone(),
+        file_dependencies,
         Default::default(),
     )?;
-    let prepared = prepare_discovered_schema(project_root, resource, discovery)?;
-    attach_pinned_file_runtime(
-        project_root,
-        prepared,
-        secret_provider,
-        Some(file_dependencies),
-    )
+    prepare_discovered_schema(project_root, resource, discovery)
 }
 
 pub fn prepare_discover_resource_with_rest_transport(
@@ -1721,8 +1680,8 @@ fn prepare_discovered_schema(
     resource: &CompiledResource,
     mut artifacts: ResourceSchemaDiscoveryArtifacts,
 ) -> Result<PreparedDiscoveredResource> {
-    let (resource, discovery) = apply_discovered_schema_constraints(resource, artifacts.discovery)?;
-    artifacts.discovery = discovery.clone();
+    let resource = compile_discovered_schema_artifacts(resource, &mut artifacts)?;
+    let discovery = artifacts.discovery.clone();
     write_schema_discovery_artifacts(project_root, &artifacts)?;
     Ok(PreparedDiscoveredResource {
         resource,
@@ -1730,20 +1689,34 @@ fn prepare_discovered_schema(
     })
 }
 
-fn attach_pinned_file_runtime(
-    project_root: &Path,
-    mut prepared: PreparedDiscoveredResource,
-    secret_provider: &dyn SecretProvider,
-    file_dependencies: Option<FileRuntimeDependencies>,
-) -> Result<PreparedDiscoveredResource> {
-    let effective = prepare_pinned_resource_effective_schema_artifacts_inner(
-        project_root,
-        &prepared.resource,
-        secret_provider,
-        file_dependencies,
+pub fn compile_discovered_schema_artifacts(
+    resource: &CompiledResource,
+    artifacts: &mut ResourceSchemaDiscoveryArtifacts,
+) -> Result<CompiledResource> {
+    let (mut prepared, discovery) =
+        apply_discovered_schema_constraints(resource, artifacts.discovery.clone())?;
+    artifacts.discovery = discovery;
+    let Some(runtime) = artifacts.effective_schema_runtime.as_ref() else {
+        return Ok(prepared);
+    };
+    let mut evidence = EffectiveSchemaEvidence::new(
+        SchemaBaselineReference::Pinned {
+            snapshot: artifacts.discovery.snapshot.reference.clone(),
+        },
+        runtime.evidence.effective_schema_hash.clone(),
+        runtime.evidence.discovery_manifest.clone(),
+        runtime.evidence.observations.clone(),
     )?;
-    let (resource, _) = effective.into_parts();
-    prepared.resource = resource;
+    if let Some(coverage) = runtime.evidence.discovery_coverage.clone() {
+        evidence = evidence.with_discovery_coverage(coverage)?;
+    }
+    let mut rebound = EffectiveSchemaRuntime::new(evidence, runtime.schema_catalog.clone())?
+        .with_terminal_quarantines(runtime.terminal_quarantines.clone())?;
+    if let Some(budget) = runtime.discovery_executor_budget.clone() {
+        rebound = rebound.with_discovery_executor_budget(budget)?;
+    }
+    artifacts.effective_schema_runtime = Some(rebound.clone());
+    prepared = prepared.with_effective_schema(prepared.schema(), rebound)?;
     Ok(prepared)
 }
 
@@ -1844,47 +1817,6 @@ pub fn apply_discovered_schema(
         resource: pinned,
         discovery: Some(discovery),
     }
-}
-
-pub fn apply_effective_discovered_schema(
-    resource: &CompiledResource,
-    artifacts: &ResourceSchemaDiscoveryArtifacts,
-    baseline: &VerifiedSchemaBaseline,
-) -> Result<CompiledResource> {
-    if resource.descriptor().resource_id != *baseline.resource_id() {
-        return Err(CdfError::contract(format!(
-            "verified effective-schema baseline belongs to `{}` but resource is `{}`",
-            baseline.resource_id(),
-            resource.descriptor().resource_id
-        )));
-    }
-    let manifest = artifacts.discovery_manifest.as_ref().ok_or_else(|| {
-        CdfError::contract(
-            "effective multi-file schema execution requires a discovery manifest artifact",
-        )
-    })?;
-    manifest.validate()?;
-    if manifest.baseline_schema_hash.as_ref() != Some(baseline.schema_hash()) {
-        return Err(CdfError::data(
-            "discovery manifest baseline hash does not match the verified pinned snapshot",
-        ));
-    }
-    let runtime = artifacts.effective_schema_runtime.clone().ok_or_else(|| {
-        CdfError::contract(
-            "effective multi-file schema execution requires verified physical schema runtime evidence",
-        )
-    })?;
-    if runtime.evidence.baseline
-        != (SchemaBaselineReference::Pinned {
-            snapshot: baseline.snapshot().clone(),
-        })
-        || runtime.evidence.discovery_manifest != manifest.reference()
-    {
-        return Err(CdfError::data(
-            "effective schema runtime authority does not match the verified baseline and discovery manifest",
-        ));
-    }
-    resource.with_effective_schema(Arc::clone(&artifacts.discovery.normalized_schema), runtime)
 }
 
 fn same_effective_fields(left: &arrow_schema::Schema, right: &arrow_schema::Schema) -> bool {

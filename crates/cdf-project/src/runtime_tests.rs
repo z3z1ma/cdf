@@ -13,16 +13,16 @@ use std::{
 use arrow_array::{Array, ArrayRef, Int64Array, RecordBatch, StringArray};
 use arrow_schema::{DataType, Field, Schema};
 use cdf_contract::{
-    AnomalyFact, CompiledExpressionPlan, ContractPolicy, DedupKeep, ObservedSchema, RowRule,
-    compile_validation_program, identifier_policy_from_destination_rules,
+    AnomalyFact, ContractPolicy, DedupKeep, ObservedSchema, RowRule, compile_validation_program,
+    identifier_policy_from_destination_rules,
 };
 use cdf_dest_duckdb::DuckDbDestination;
 use cdf_dest_parquet::ParquetDestination;
 use cdf_dest_postgres::{MergeDedupPolicy, PostgresDestination, PostgresTarget};
 use cdf_engine::{
-    EnginePlan, EnginePlanInput, EngineRunOutput, EngineRunOutputWithSegmentPositions,
-    EngineSegmentPosition, ExecutionProfile, LineageSummary, PlanBoundedness, Planner,
-    negotiate_scan_plan,
+    CompiledStreamAdmissionEvidence, EnginePlan, EnginePlanInput, EngineRunOutput,
+    EngineRunOutputWithSegmentPositions, EngineSegmentPosition, ExecutionProfile, LineageSummary,
+    PlanBoundedness, Planner, StreamAdmissionObservationEvidence, negotiate_scan_plan,
 };
 use cdf_http::{HttpRequest, HttpResponse, HttpTransport, SecretProvider, SecretUri, SecretValue};
 use cdf_kernel::{
@@ -37,9 +37,9 @@ use cdf_kernel::{
     PushdownFidelity, QueryableResource, Receipt, ReceiptId, ReceiptVerification, ReplaySupport,
     ResourceCapabilities, ResourceDescriptor, ResourceId, ResourceStream, Result, RewindReport,
     RewindRequest, RunEvent, RunEventSink, RunEventSinkResult, RunId, RunPhase, RunPhaseMetric,
-    RunPhaseStatus, ScanPlan, ScanRequest, SchemaHash, SchemaSource, ScopeKey, SegmentAck,
-    SegmentId, SourcePosition, StateDelta, StateSegment, TargetName, TransactionSupport,
-    TrustLevel, VerifyClause, WriteDisposition,
+    RunPhaseStatus, ScanRequest, SchemaHash, SchemaSource, ScopeKey, SegmentAck, SegmentId,
+    SourcePosition, StateDelta, StateSegment, TargetName, TransactionSupport, TrustLevel,
+    VerifyClause, WriteDisposition,
 };
 use cdf_package::{PackageBuilder, PackageReader, canonical_json_bytes};
 use cdf_package_contract::{
@@ -921,27 +921,19 @@ fn build_zero_segment_processed_package(package_dir: &Path, package_id: &str) ->
 }
 
 fn write_compiled_expression_artifacts(builder: &PackageBuilder, stale: bool) {
+    let schema = sample_batch(vec![], vec![]).schema();
     let mut program = compile_validation_program(
         &ContractPolicy::evolve(),
-        &ObservedSchema::from_arrow(sample_batch(vec![], vec![]).schema().as_ref()),
+        &ObservedSchema::from_arrow(schema.as_ref()),
     )
     .unwrap();
     program.row_rules.clear();
     program.transforms.clear();
-    let mut compiled =
-        CompiledExpressionPlan::current(Vec::new(), Vec::new(), Vec::new(), Vec::new()).unwrap();
-    if stale {
-        compiled.native_filter_lowering_version = "stale-test-version".to_owned();
-    }
-    program.compiled_expression_plan = Some(compiled);
-    builder
-        .write_json_artifact("plan/validation-program.json", &program)
-        .unwrap();
-    builder
-        .write_json_artifact(
-            "plan/scan.json",
-            &ScanPlan {
-                plan_id: PlanId::new("artifact-test-plan").unwrap(),
+    let resource = ArtifactPlanResource::new(Arc::clone(&schema));
+    let mut plan = Planner::new()
+        .plan_tier_a(
+            &resource,
+            EnginePlanInput {
                 request: ScanRequest {
                     resource_id: ResourceId::new("orders").unwrap(),
                     projection: None,
@@ -950,15 +942,104 @@ fn write_compiled_expression_artifacts(builder: &PackageBuilder, stale: bool) {
                     order_by: Vec::new(),
                     scope: ScopeKey::Resource,
                 },
-                partitions: Vec::new(),
-                pushed_predicates: Vec::new(),
-                unsupported_predicates: Vec::new(),
-                estimated_rows: None,
-                estimated_bytes: None,
-                delivery_guarantee: DeliveryGuarantee::AtLeastOnceDuplicateRisk,
+                validation_program: program,
+                boundedness: PlanBoundedness::Bounded,
+                package_id: "artifact-test-package".to_owned(),
             },
         )
         .unwrap();
+    if stale {
+        plan.validation_program
+            .compiled_expression_plan
+            .as_mut()
+            .unwrap()
+            .native_filter_lowering_version = "stale-test-version".to_owned();
+    }
+    builder
+        .write_json_artifact("plan/validation-program.json", &plan.validation_program)
+        .unwrap();
+    builder
+        .write_json_artifact("plan/scan.json", &plan.scan)
+        .unwrap();
+    builder
+        .write_json_artifact(
+            "plan/schema-admission.json",
+            &plan.compiled_schema_admission,
+        )
+        .unwrap();
+    let physical_schema_hash = cdf_kernel::canonical_arrow_schema_hash(schema.as_ref()).unwrap();
+    let coercion_plan = plan
+        .compiled_schema_admission
+        .instantiate(schema.as_ref(), &physical_schema_hash)
+        .unwrap();
+    builder
+        .write_json_artifact(
+            "schema/stream-admission-evidence.json",
+            &CompiledStreamAdmissionEvidence::new(
+                &plan.compiled_schema_admission,
+                vec![
+                    StreamAdmissionObservationEvidence::new(
+                        "artifact-fixture",
+                        physical_schema_hash,
+                        coercion_plan,
+                    )
+                    .unwrap(),
+                ],
+            )
+            .unwrap(),
+        )
+        .unwrap();
+}
+
+struct ArtifactPlanResource {
+    descriptor: ResourceDescriptor,
+    schema: Arc<Schema>,
+}
+
+impl ArtifactPlanResource {
+    fn new(schema: Arc<Schema>) -> Self {
+        let schema_hash = cdf_kernel::canonical_arrow_schema_hash(schema.as_ref()).unwrap();
+        Self {
+            descriptor: ResourceDescriptor {
+                resource_id: ResourceId::new("orders").unwrap(),
+                schema_source: SchemaSource::Declared {
+                    schema_hash,
+                    source: "artifact-fixture".to_owned(),
+                },
+                primary_key: Vec::new(),
+                merge_key: Vec::new(),
+                cursor: None,
+                write_disposition: WriteDisposition::Append,
+                deduplication: None,
+                contract: None,
+                state_scope: ScopeKey::Resource,
+                freshness: None,
+                trust_level: TrustLevel::Experimental,
+            },
+            schema,
+        }
+    }
+}
+
+impl ResourceStream for ArtifactPlanResource {
+    fn descriptor(&self) -> &ResourceDescriptor {
+        &self.descriptor
+    }
+
+    fn schema(&self) -> Arc<Schema> {
+        Arc::clone(&self.schema)
+    }
+
+    fn plan_partitions(&self, _request: &ScanRequest) -> Result<Vec<cdf_kernel::PartitionPlan>> {
+        Ok(Vec::new())
+    }
+
+    fn open(
+        &self,
+        _partition: cdf_kernel::PartitionPlan,
+    ) -> cdf_kernel::BoxFuture<'_, Result<BatchStream>> {
+        Box::pin(async { Err(CdfError::internal("artifact fixture has no payload")) })
+    }
 }
 
 fn write_state_commit_artifacts(
@@ -6414,6 +6495,8 @@ fn artifact_replay_rejects_corrupted_or_missing_preimages_before_mutation() {
         STATE_INPUT_CHECKPOINT_FILE,
         STATE_PROPOSED_DELTA_FILE,
         DESTINATION_COMMIT_PLAN_FILE,
+        "plan/schema-admission.json",
+        "schema/stream-admission-evidence.json",
     ] {
         let temp = tempfile::tempdir().unwrap();
         let package_dir = temp

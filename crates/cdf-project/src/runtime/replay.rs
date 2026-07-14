@@ -479,6 +479,7 @@ where
 {
     let package = PackageReader::open(&request.package_dir)?.into_verified()?;
     validate_package_compiled_expression_plan(&package)?;
+    validate_package_compiled_schema_admission(&package)?;
     let runtime_stage_hook =
         |stage: PackageReplayStage<'_>| notify_runtime_replay_stage(stage_hook, stage);
     replay_package_with_resolved_destination(
@@ -500,6 +501,7 @@ where
 {
     let package = PackageReader::open(&request.package_dir)?.into_verified()?;
     validate_package_compiled_expression_plan(&package)?;
+    validate_package_compiled_schema_admission(&package)?;
     recover_package_with_resolved_destination(
         package,
         request.destination,
@@ -549,6 +551,46 @@ fn validate_package_compiled_expression_plan(package: &VerifiedPackageReader) ->
             &predicate.canonical_expression,
         )
     }))
+}
+
+fn validate_package_compiled_schema_admission(package: &VerifiedPackageReader) -> Result<()> {
+    let program: cdf_contract::ValidationProgram = package
+        .reader()
+        .verified_json_artifact(package.verification(), "plan/validation-program.json")?;
+    let admission: cdf_engine::CompiledSchemaAdmissionPlan = package
+        .reader()
+        .verified_json_artifact(package.verification(), "plan/schema-admission.json")?;
+    admission.validate_recorded(&program)?;
+
+    let files = &package.reader().manifest().identity.files;
+    let has_stream_evidence = files
+        .iter()
+        .any(|entry| entry.path == "schema/stream-admission-evidence.json");
+    let has_preobserved_evidence = files
+        .iter()
+        .any(|entry| entry.path == "schema/per-observation-coercion.json");
+    if has_stream_evidence {
+        let evidence: cdf_engine::CompiledStreamAdmissionEvidence =
+            package.reader().verified_json_artifact(
+                package.verification(),
+                "schema/stream-admission-evidence.json",
+            )?;
+        evidence.validate(&admission)?;
+    }
+    let row_count = package
+        .reader()
+        .manifest()
+        .identity
+        .segments
+        .iter()
+        .try_fold(0_u64, |rows, segment| rows.checked_add(segment.row_count))
+        .ok_or_else(|| CdfError::data("package segment row count overflowed"))?;
+    if row_count > 0 && !has_stream_evidence && !has_preobserved_evidence {
+        return Err(CdfError::data(
+            "package has data rows but no physical-observation admission evidence",
+        ));
+    }
+    Ok(())
 }
 
 fn replay_package_with_resolved_destination<Store>(

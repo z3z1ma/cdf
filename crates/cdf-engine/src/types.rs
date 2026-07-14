@@ -2,13 +2,15 @@ use std::{collections::BTreeMap, sync::Arc};
 
 use arrow_schema::Schema;
 use cdf_contract::{
-    CanonicalArrowField, CompiledExpressionPlan, SchemaCoercionPlan, ValidationProgram,
+    CanonicalArrowField, CompiledExpressionPlan, ContractPolicy, IdentifierPolicy, ResidualProgram,
+    RowDispositionRule, SchemaCoercionPlan, SchemaVerdictRule, TypePolicy, ValidationProgram,
+    reconcile_schema,
 };
 use cdf_kernel::{
     CdfError, DeliveryGuarantee, DiscoveryExecutorBudgetEvidence, EffectiveSchemaEvidence,
-    EstimateSupport, ProcessedObservationPosition, PushdownFidelity, ResourceId, Result,
-    RunPhaseMetric, ScanPlan, ScanPredicate, ScanRequest, SchemaHash, SegmentId, SourcePosition,
-    TerminalSchemaObservationQuarantine, WriteDisposition,
+    EstimateSupport, ProcessedObservationPosition, PushdownFidelity, ResourceId, ResourceStream,
+    Result, RunPhaseMetric, ScanPlan, ScanPredicate, ScanRequest, SchemaHash, SegmentId,
+    SourcePosition, TerminalSchemaObservationQuarantine, WriteDisposition,
 };
 use cdf_package::VerifiedPackage;
 use cdf_package_contract::{PackageManifest, SegmentEntry};
@@ -48,6 +50,8 @@ pub struct EnginePlan {
     pub residual_predicates: Vec<ScanPredicate>,
     /// Parsed, resolved, optimized, and frozen expressions consumed by execution and replay.
     pub compiled_expression_plan: CompiledExpressionPlan,
+    /// The sole schema-admission program consumed by extraction and replay.
+    pub compiled_schema_admission: CompiledSchemaAdmissionPlan,
     pub boundedness: PlanBoundedness,
     pub write_disposition: WriteDisposition,
     pub validation_program: ValidationProgram,
@@ -89,6 +93,26 @@ impl EnginePlan {
         expression_schema: &Schema,
     ) -> Result<()> {
         crate::planning::rebind_validation_program(self, program, expression_schema)
+    }
+
+    pub fn bind_schema_admission_source(
+        mut self,
+        source: &cdf_runtime::CompiledSourcePlan,
+    ) -> Result<Self> {
+        self.compiled_schema_admission
+            .bind_source(source, &self.scan.request.resource_id)?;
+        Ok(self)
+    }
+
+    pub fn validate_compiled_schema_admission<R>(&self, resource: &R) -> Result<()>
+    where
+        R: ResourceStream + ?Sized,
+    {
+        self.compiled_schema_admission.validate(
+            &self.schema_authority,
+            &self.validation_program,
+            resource,
+        )
     }
 
     pub fn bind_partition_schedule(
@@ -144,6 +168,308 @@ impl EnginePlan {
         }
         policy.validate()?;
         Ok(policy)
+    }
+}
+
+pub const COMPILED_SCHEMA_ADMISSION_VERSION: u16 = 1;
+pub const SCHEMA_ADMISSION_CACHE_KEY_FIELDS: [&str; 5] = [
+    "source_generation",
+    "source_driver_and_codec",
+    "canonical_options",
+    "normalizer_version",
+    "contract_program",
+];
+
+#[non_exhaustive]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CompiledSchemaAdmissionSource {
+    pub driver_id: String,
+    pub driver_version: String,
+    pub option_schema_hash: String,
+    pub physical_plan_hash: String,
+}
+
+#[non_exhaustive]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CompiledSchemaAdmissionPlan {
+    pub version: u16,
+    pub baseline_schema_hash: SchemaHash,
+    pub effective_schema_hash: SchemaHash,
+    pub resource_schema_hash: SchemaHash,
+    pub constraint_schema: EngineOutputSchema,
+    pub normalizer_version: String,
+    pub identifier_policy: IdentifierPolicy,
+    pub type_policy: TypePolicy,
+    pub schema_verdicts: Vec<SchemaVerdictRule>,
+    pub residual: Option<ResidualProgram>,
+    pub row_dispositions: Vec<RowDispositionRule>,
+    pub control_critical_fields: Vec<String>,
+    pub cache_key_fields: Vec<String>,
+    pub contract_program_hash: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<CompiledSchemaAdmissionSource>,
+}
+
+impl CompiledSchemaAdmissionPlan {
+    pub(crate) fn compile(
+        authority: &EngineSchemaAuthority,
+        resource_schema: &Schema,
+        constraint_schema: &Schema,
+        validation_program: &ValidationProgram,
+        type_policy: TypePolicy,
+    ) -> Result<Self> {
+        let mut control_critical_fields = validation_program
+            .residual
+            .iter()
+            .flat_map(|residual| &residual.fields)
+            .filter(|field| field.control_critical)
+            .map(|field| field.source_name.clone())
+            .collect::<Vec<_>>();
+        control_critical_fields.sort();
+        control_critical_fields.dedup();
+        let plan = Self {
+            version: COMPILED_SCHEMA_ADMISSION_VERSION,
+            baseline_schema_hash: authority.baseline_schema_hash.clone(),
+            effective_schema_hash: authority.effective_schema_hash.clone(),
+            resource_schema_hash: cdf_kernel::canonical_arrow_schema_hash(resource_schema)?,
+            constraint_schema: EngineOutputSchema::from_arrow(constraint_schema)?,
+            normalizer_version: validation_program.normalizer_version.clone(),
+            identifier_policy: validation_program.identifier_policy.clone(),
+            type_policy,
+            schema_verdicts: validation_program.schema_verdicts.clone(),
+            residual: validation_program.residual.clone(),
+            row_dispositions: validation_program.row_dispositions.clone(),
+            control_critical_fields,
+            cache_key_fields: SCHEMA_ADMISSION_CACHE_KEY_FIELDS
+                .into_iter()
+                .map(str::to_owned)
+                .collect(),
+            contract_program_hash: cdf_runtime::artifact_hash(validation_program)?,
+            source: None,
+        };
+        plan.validate_intrinsic(validation_program)?;
+        Ok(plan)
+    }
+
+    pub fn bind_source(
+        &mut self,
+        source: &cdf_runtime::CompiledSourcePlan,
+        resource_id: &ResourceId,
+    ) -> Result<()> {
+        source.validate()?;
+        if &source.descriptor.resource_id != resource_id {
+            return Err(CdfError::contract(format!(
+                "compiled schema-admission source belongs to `{}` but engine plan belongs to `{resource_id}`",
+                source.descriptor.resource_id
+            )));
+        }
+        let source_schema_hash = cdf_kernel::canonical_arrow_schema_hash(&source.schema)?;
+        if source_schema_hash != self.resource_schema_hash {
+            return Err(CdfError::data(format!(
+                "compiled source schema {source_schema_hash} does not match schema-admission resource schema {}",
+                self.resource_schema_hash
+            )));
+        }
+        if source.type_policy_allowances.coerce_types != self.type_policy.coerce_types
+            || source.type_policy_allowances.allow_lossy_mapping
+                != self.type_policy.allow_lossy_mapping
+        {
+            return Err(CdfError::data(
+                "compiled source type allowances do not match the schema-admission program",
+            ));
+        }
+        self.source = Some(CompiledSchemaAdmissionSource {
+            driver_id: source.driver.driver_id.as_str().to_owned(),
+            driver_version: source.driver.driver_version.clone(),
+            option_schema_hash: source.driver.option_schema_hash.clone(),
+            physical_plan_hash: source.physical_plan_hash.clone(),
+        });
+        Ok(())
+    }
+
+    pub fn instantiate(
+        &self,
+        observed: &Schema,
+        observed_schema_hash: &SchemaHash,
+    ) -> Result<SchemaCoercionPlan> {
+        let actual = cdf_kernel::canonical_arrow_schema_hash(observed)?;
+        if &actual != observed_schema_hash {
+            return Err(CdfError::data(format!(
+                "physical schema hash {observed_schema_hash} does not match observed Arrow schema {actual}",
+            )));
+        }
+        let constraint = self.constraint_schema.to_arrow()?;
+        Ok(reconcile_schema(observed, constraint.as_ref(), &self.type_policy)?.plan)
+    }
+
+    pub fn validate_recorded(&self, validation_program: &ValidationProgram) -> Result<()> {
+        self.validate_intrinsic(validation_program)
+    }
+
+    fn validate<R>(
+        &self,
+        authority: &EngineSchemaAuthority,
+        validation_program: &ValidationProgram,
+        resource: &R,
+    ) -> Result<()>
+    where
+        R: ResourceStream + ?Sized,
+    {
+        self.validate_intrinsic(validation_program)?;
+        if self.baseline_schema_hash != authority.baseline_schema_hash
+            || self.effective_schema_hash != authority.effective_schema_hash
+        {
+            return Err(CdfError::data(
+                "compiled schema-admission identities do not match engine schema authority",
+            ));
+        }
+        let resource_schema_hash =
+            cdf_kernel::canonical_arrow_schema_hash(resource.schema().as_ref())?;
+        if self.resource_schema_hash != resource_schema_hash {
+            return Err(CdfError::data(format!(
+                "compiled schema-admission resource schema {} does not match execution schema {resource_schema_hash}",
+                self.resource_schema_hash
+            )));
+        }
+        let mut expected =
+            ContractPolicy::for_trust(resource.descriptor().trust_level.clone()).types;
+        let allowances = resource.type_policy_allowances();
+        expected.coerce_types = allowances.coerce_types;
+        expected.allow_lossy_mapping = allowances.allow_lossy_mapping;
+        if self.type_policy != expected {
+            return Err(CdfError::data(
+                "compiled schema-admission type policy does not match execution resource allowances",
+            ));
+        }
+        Ok(())
+    }
+
+    pub(crate) fn validate_intrinsic(&self, validation_program: &ValidationProgram) -> Result<()> {
+        if self.version != COMPILED_SCHEMA_ADMISSION_VERSION {
+            return Err(CdfError::data(format!(
+                "unsupported compiled schema-admission version {}; expected {COMPILED_SCHEMA_ADMISSION_VERSION}",
+                self.version
+            )));
+        }
+        self.constraint_schema.to_arrow()?;
+        if self.normalizer_version != validation_program.normalizer_version
+            || self.identifier_policy != validation_program.identifier_policy
+            || self.schema_verdicts != validation_program.schema_verdicts
+            || self.residual != validation_program.residual
+            || self.row_dispositions != validation_program.row_dispositions
+            || self.contract_program_hash != cdf_runtime::artifact_hash(validation_program)?
+        {
+            return Err(CdfError::data(
+                "compiled schema-admission program does not match the validation program",
+            ));
+        }
+        let mut expected_control_fields = validation_program
+            .residual
+            .iter()
+            .flat_map(|residual| &residual.fields)
+            .filter(|field| field.control_critical)
+            .map(|field| field.source_name.clone())
+            .collect::<Vec<_>>();
+        expected_control_fields.sort();
+        expected_control_fields.dedup();
+        if self.control_critical_fields != expected_control_fields
+            || self.cache_key_fields
+                != SCHEMA_ADMISSION_CACHE_KEY_FIELDS
+                    .into_iter()
+                    .map(str::to_owned)
+                    .collect::<Vec<_>>()
+        {
+            return Err(CdfError::data(
+                "compiled schema-admission control fields or cache-key shape are invalid",
+            ));
+        }
+        if let Some(source) = &self.source
+            && (source.driver_id.is_empty()
+                || source.driver_version.is_empty()
+                || source.option_schema_hash.is_empty()
+                || source.physical_plan_hash.is_empty())
+        {
+            return Err(CdfError::data(
+                "compiled schema-admission source binding is incomplete",
+            ));
+        }
+        Ok(())
+    }
+}
+
+#[non_exhaustive]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StreamAdmissionObservationEvidence {
+    pub observation_id: String,
+    pub physical_schema_hash: String,
+    pub coercion_plan: SchemaCoercionPlan,
+}
+
+impl StreamAdmissionObservationEvidence {
+    pub fn new(
+        observation_id: impl Into<String>,
+        physical_schema_hash: SchemaHash,
+        coercion_plan: SchemaCoercionPlan,
+    ) -> Result<Self> {
+        let observation_id = observation_id.into();
+        if observation_id.is_empty() {
+            return Err(CdfError::contract(
+                "stream-admission observation id must not be empty",
+            ));
+        }
+        Ok(Self {
+            observation_id,
+            physical_schema_hash: physical_schema_hash.to_string(),
+            coercion_plan,
+        })
+    }
+}
+
+#[non_exhaustive]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CompiledStreamAdmissionEvidence {
+    pub compiled_admission_hash: String,
+    pub baseline_schema_hash: String,
+    pub effective_schema_hash: String,
+    pub observations: Vec<StreamAdmissionObservationEvidence>,
+}
+
+impl CompiledStreamAdmissionEvidence {
+    pub fn new(
+        admission: &CompiledSchemaAdmissionPlan,
+        observations: Vec<StreamAdmissionObservationEvidence>,
+    ) -> Result<Self> {
+        let evidence = Self {
+            compiled_admission_hash: cdf_runtime::artifact_hash(admission)?,
+            baseline_schema_hash: admission.baseline_schema_hash.to_string(),
+            effective_schema_hash: admission.effective_schema_hash.to_string(),
+            observations,
+        };
+        evidence.validate(admission)?;
+        Ok(evidence)
+    }
+
+    pub fn validate(&self, admission: &CompiledSchemaAdmissionPlan) -> Result<()> {
+        if self.compiled_admission_hash != cdf_runtime::artifact_hash(admission)?
+            || self.baseline_schema_hash != admission.baseline_schema_hash.as_str()
+            || self.effective_schema_hash != admission.effective_schema_hash.as_str()
+        {
+            return Err(CdfError::data(
+                "stream-admission evidence does not match the recorded compiled admission plan",
+            ));
+        }
+        let mut observation_ids = std::collections::BTreeSet::new();
+        for observation in &self.observations {
+            if observation.observation_id.is_empty()
+                || !observation_ids.insert(observation.observation_id.as_str())
+            {
+                return Err(CdfError::data(
+                    "stream-admission evidence contains an empty or duplicate observation id",
+                ));
+            }
+            SchemaHash::new(observation.physical_schema_hash.clone())?;
+        }
+        Ok(())
     }
 }
 

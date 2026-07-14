@@ -709,7 +709,7 @@ async fn decode_ndjson_stream(
     request: PhysicalDecodeRequest,
 ) -> Result<PhysicalDecodeStream> {
     let decoder = strict_decoder(
-        Arc::clone(&request.physical_schema),
+        Arc::clone(&request.schema.decoder_schema),
         request.target_batch_rows,
     )?;
     let output_lease = reserve_output(&request).await?;
@@ -819,7 +819,7 @@ async fn decode_next(
                     return Err(CdfError::data(format!("flush NDJSON batch: {initial}")));
                 }
                 state.decoder = strict_decoder(
-                    Arc::clone(&state.request.physical_schema),
+                    Arc::clone(&state.request.schema.decoder_schema),
                     state.request.target_batch_rows,
                 )?;
                 recovered
@@ -847,7 +847,7 @@ async fn decode_next(
             batch_id,
             state.request.resource_id.clone(),
             state.request.partition_id.clone(),
-            cdf_kernel::canonical_arrow_schema_hash(state.request.physical_schema.as_ref())?,
+            cdf_kernel::canonical_arrow_schema_hash(state.request.schema.decoder_schema.as_ref())?,
             record_batch,
         )?;
         batch.header.source_position = state.request.source_position.clone();
@@ -909,7 +909,8 @@ async fn recover_decode_window(
     }
 
     let expected = request
-        .physical_schema
+        .schema
+        .decoder_schema
         .fields()
         .iter()
         .map(|field| {
@@ -985,12 +986,13 @@ async fn recover_decode_window(
 
     let nullable = Arc::new(Schema::new_with_metadata(
         request
-            .physical_schema
+            .schema
+            .decoder_schema
             .fields()
             .iter()
             .map(|field| Arc::new(field.as_ref().clone().with_nullable(true)))
             .collect::<Vec<_>>(),
-        request.physical_schema.metadata().clone(),
+        request.schema.decoder_schema.metadata().clone(),
     ));
     let mut decoder = strict_decoder(nullable, batch_row)?;
     let consumed = decoder
@@ -1011,7 +1013,7 @@ async fn recover_decode_window(
         ));
     }
     let recovered = RecordBatch::try_new(
-        Arc::clone(&request.physical_schema),
+        Arc::clone(&request.schema.decoder_schema),
         recovered.columns().to_vec(),
     )
     .map_err(CdfError::from)?;
@@ -1309,7 +1311,7 @@ mod tests {
             resource_id: ResourceId::new("events.raw").unwrap(),
             partition_id: PartitionId::new("file-0001").unwrap(),
             batch_id_prefix: "events-raw".to_owned(),
-            physical_schema: schema,
+            schema: cdf_runtime::DecodeSchemaPlan::verified_physical(schema),
             source_position: None,
             projection: None,
             predicates: Vec::new(),

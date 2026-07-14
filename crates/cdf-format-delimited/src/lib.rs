@@ -187,7 +187,7 @@ impl FormatDriver for CsvFormatDriver {
                     cancellation: request.cancellation.clone(),
                 })
                 .await?;
-            let decoder = ReaderBuilder::new(Arc::clone(&request.physical_schema))
+            let decoder = ReaderBuilder::new(Arc::clone(&request.schema.decoder_schema))
                 .with_header(true)
                 .with_batch_size(request.target_batch_rows)
                 .build_decoder();
@@ -280,7 +280,7 @@ async fn decode_next(
             batch_id,
             state.request.resource_id.clone(),
             state.request.partition_id.clone(),
-            cdf_kernel::canonical_arrow_schema_hash(state.request.physical_schema.as_ref())?,
+            cdf_kernel::canonical_arrow_schema_hash(state.request.schema.decoder_schema.as_ref())?,
             record_batch,
         )?;
         batch.header.source_position = state.request.source_position.clone();

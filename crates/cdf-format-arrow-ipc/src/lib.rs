@@ -10,10 +10,10 @@ use arrow_schema::{Schema, SchemaRef};
 use cdf_kernel::{Batch, BatchId, BoxFuture, CdfError, PushdownFidelity, Result};
 use cdf_memory::{ConsumerKey, MemoryClass, ReservationRequest, reserve};
 use cdf_runtime::{
-    AccountedPhysicalBatch, ByteExtent, ByteSource, DecodePlanningRequest, DecodeUnitPlan,
-    FormatDetection, FormatDetectionConfidence, FormatDetectionProbe, FormatDiscoveryRequest,
-    FormatDriver, FormatDriverDescriptor, FormatId, FormatProbe, MagicSignature,
-    PhysicalDecodeRequest, PhysicalDecodeStream, PhysicalSchemaObservation,
+    AccountedPhysicalBatch, ByteExtent, ByteSource, DecodePlanningRequest, DecodeSchemaAuthority,
+    DecodeUnitPlan, FormatDetection, FormatDetectionConfidence, FormatDetectionProbe,
+    FormatDiscoveryRequest, FormatDriver, FormatDriverDescriptor, FormatId, FormatProbe,
+    MagicSignature, PhysicalDecodeRequest, PhysicalDecodeStream, PhysicalSchemaObservation,
 };
 use futures_util::stream;
 
@@ -170,13 +170,16 @@ impl FormatDriver for ArrowIpcFileFormatDriver {
             }
             let footer = read_footer(source.as_ref(), &request.cancellation, u64::MAX).await?;
             let actual_hash = cdf_kernel::canonical_arrow_schema_hash(footer.schema.as_ref())?;
-            let expected_hash =
-                cdf_kernel::canonical_arrow_schema_hash(request.physical_schema.as_ref())?;
-            if actual_hash != expected_hash {
-                return Err(CdfError::data(format!(
-                    "Arrow IPC physical schema changed before decode: planned {}, observed {actual_hash}",
-                    expected_hash
-                )));
+            if request.schema.authority == DecodeSchemaAuthority::VerifiedPhysicalObservation {
+                let expected_hash = cdf_kernel::canonical_arrow_schema_hash(
+                    request.schema.authority_schema.as_ref(),
+                )?;
+                if actual_hash != expected_hash {
+                    return Err(CdfError::data(format!(
+                        "Arrow IPC physical schema changed before decode: planned {}, observed {actual_hash}",
+                        expected_hash
+                    )));
+                }
             }
             let projection =
                 projection_indices(footer.schema.as_ref(), request.projection.as_deref())?;
@@ -202,6 +205,7 @@ impl FormatDriver for ArrowIpcFileFormatDriver {
                 blocks: footer.record_batches,
                 decoder,
                 request,
+                observed_schema_hash: actual_hash,
                 next_block: 0,
                 sequence: 0,
             };
@@ -247,9 +251,7 @@ impl FormatDriver for ArrowIpcFileFormatDriver {
                     batch_id,
                     state.request.resource_id.clone(),
                     state.request.partition_id.clone(),
-                    cdf_kernel::canonical_arrow_schema_hash(
-                        state.request.physical_schema.as_ref(),
-                    )?,
+                    state.observed_schema_hash.clone(),
                     record_batch,
                 )?;
                 batch.header.source_position = state.request.source_position.clone();
@@ -282,6 +284,7 @@ struct DecodeState {
     blocks: Vec<OwnedBlock>,
     decoder: FileDecoder,
     request: PhysicalDecodeRequest,
+    observed_schema_hash: cdf_kernel::SchemaHash,
     next_block: usize,
     sequence: u64,
 }

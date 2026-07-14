@@ -6,7 +6,7 @@ use std::{
     sync::Arc,
 };
 
-use arrow_schema::SchemaRef;
+use arrow_schema::{Schema, SchemaRef};
 use cdf_kernel::{
     Batch, BoxFuture, CdfError, PartitionId, PayloadRetention, PushdownFidelity, ResourceId,
     Result, ScanPredicate, SourcePosition,
@@ -634,7 +634,7 @@ pub struct PhysicalDecodeRequest {
     pub resource_id: ResourceId,
     pub partition_id: PartitionId,
     pub batch_id_prefix: String,
-    pub physical_schema: SchemaRef,
+    pub schema: DecodeSchemaPlan,
     pub source_position: Option<SourcePosition>,
     pub projection: Option<Vec<String>>,
     pub predicates: Vec<ScanPredicate>,
@@ -642,6 +642,49 @@ pub struct PhysicalDecodeRequest {
     pub target_batch_bytes: u64,
     pub memory: Arc<dyn MemoryCoordinator>,
     pub cancellation: RunCancellation,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DecodeSchemaAuthority {
+    VerifiedPhysicalObservation,
+    FixedAdmission,
+}
+
+#[derive(Clone, Debug)]
+pub struct DecodeSchemaPlan {
+    pub authority_schema: SchemaRef,
+    pub decoder_schema: SchemaRef,
+    pub authority: DecodeSchemaAuthority,
+}
+
+impl DecodeSchemaPlan {
+    pub fn verified_physical(schema: SchemaRef) -> Self {
+        Self {
+            authority_schema: Arc::clone(&schema),
+            decoder_schema: schema,
+            authority: DecodeSchemaAuthority::VerifiedPhysicalObservation,
+        }
+    }
+
+    pub fn fixed_admission(schema: SchemaRef) -> Self {
+        let decoder_schema = Arc::new(Schema::new_with_metadata(
+            schema
+                .fields()
+                .iter()
+                .map(|field| {
+                    let source =
+                        cdf_kernel::source_name(field.as_ref()).unwrap_or_else(|| field.name());
+                    Arc::new(field.as_ref().clone().with_name(source))
+                })
+                .collect::<Vec<_>>(),
+            schema.metadata().clone(),
+        ));
+        Self {
+            authority_schema: schema,
+            decoder_schema,
+            authority: DecodeSchemaAuthority::FixedAdmission,
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -1137,7 +1180,7 @@ mod tests {
     use super::*;
     use arrow_array::{Int64Array, RecordBatch};
     use arrow_schema::{DataType, Field, Schema};
-    use cdf_kernel::{BatchId, PartitionId, ResourceId, SchemaHash};
+    use cdf_kernel::{BatchId, PartitionId, ResourceId, SchemaHash, with_source_name};
     use cdf_memory::{
         ConsumerKey, DeterministicMemoryCoordinator, MemoryClass, MemoryCoordinator,
         ReservationRequest,
@@ -1403,5 +1446,22 @@ mod tests {
         assert_eq!(memory.snapshot().current_bytes, retained_bytes);
         drop(batch);
         assert_eq!(memory.snapshot().current_bytes, 0);
+    }
+
+    #[test]
+    fn fixed_admission_decodes_source_names_without_changing_the_pinned_schema() {
+        let pinned = Arc::new(Schema::new(vec![with_source_name(
+            Field::new("vendor_id", DataType::Int64, false),
+            "VendorID",
+        )]));
+        let plan = DecodeSchemaPlan::fixed_admission(Arc::clone(&pinned));
+
+        assert_eq!(plan.authority, DecodeSchemaAuthority::FixedAdmission);
+        assert_eq!(plan.authority_schema.as_ref(), pinned.as_ref());
+        assert_eq!(plan.decoder_schema.field(0).name(), "VendorID");
+        assert_eq!(
+            cdf_kernel::source_name(plan.decoder_schema.field(0)),
+            Some("VendorID")
+        );
     }
 }

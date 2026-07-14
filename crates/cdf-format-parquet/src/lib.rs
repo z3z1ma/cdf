@@ -13,10 +13,11 @@ use bytes::Bytes;
 use cdf_kernel::{Batch, BatchId, BoxFuture, CdfError, PushdownFidelity, Result};
 use cdf_memory::{ConsumerKey, MemoryClass, ReservationRequest, reserve};
 use cdf_runtime::{
-    AccountedPhysicalBatch, ByteExtent, ByteSource, DecodePlanningRequest, DecodeUnitPlan,
-    FormatDetection, FormatDetectionConfidence, FormatDetectionProbe, FormatDiscoveryRequest,
-    FormatDriver, FormatDriverDescriptor, FormatId, FormatProbe, GenerationStrength,
-    MagicSignature, PhysicalDecodeRequest, PhysicalDecodeStream, PhysicalSchemaObservation,
+    AccountedPhysicalBatch, ByteExtent, ByteSource, DecodePlanningRequest, DecodeSchemaAuthority,
+    DecodeUnitPlan, FormatDetection, FormatDetectionConfidence, FormatDetectionProbe,
+    FormatDiscoveryRequest, FormatDriver, FormatDriverDescriptor, FormatId, FormatProbe,
+    GenerationStrength, MagicSignature, PhysicalDecodeRequest, PhysicalDecodeStream,
+    PhysicalSchemaObservation,
 };
 use futures_util::{
     FutureExt, StreamExt, TryStreamExt, future::BoxFuture as FuturesBoxFuture, stream,
@@ -217,13 +218,16 @@ impl FormatDriver for ParquetFormatDriver {
                 |_| CdfError::data("Parquet row-group ordinal exceeds usize"),
             )?]);
             let actual_hash = cdf_kernel::canonical_arrow_schema_hash(builder.schema())?;
-            let expected_hash =
-                cdf_kernel::canonical_arrow_schema_hash(request.physical_schema.as_ref())?;
-            if actual_hash != expected_hash {
-                return Err(CdfError::data(format!(
-                    "Parquet physical schema changed before decode: planned {}, observed {actual_hash}",
-                    expected_hash
-                )));
+            if request.schema.authority == DecodeSchemaAuthority::VerifiedPhysicalObservation {
+                let expected_hash = cdf_kernel::canonical_arrow_schema_hash(
+                    request.schema.authority_schema.as_ref(),
+                )?;
+                if actual_hash != expected_hash {
+                    return Err(CdfError::data(format!(
+                        "Parquet physical schema changed before decode: planned {}, observed {actual_hash}",
+                        expected_hash
+                    )));
+                }
             }
             if let Some(projection) = &request.projection {
                 let roots = projection
@@ -248,6 +252,7 @@ impl FormatDriver for ParquetFormatDriver {
             let state = DecodeState {
                 stream: Box::pin(parquet_stream),
                 request,
+                observed_schema_hash: actual_hash,
                 sequence: 0,
             };
             Ok(Box::pin(stream::try_unfold(state, |mut state| async move {
@@ -274,9 +279,7 @@ impl FormatDriver for ParquetFormatDriver {
                     batch_id,
                     state.request.resource_id.clone(),
                     state.request.partition_id.clone(),
-                    cdf_kernel::canonical_arrow_schema_hash(
-                        state.request.physical_schema.as_ref(),
-                    )?,
+                    state.observed_schema_hash.clone(),
                     record_batch,
                 )?;
                 batch.header.source_position = state.request.source_position.clone();
@@ -341,6 +344,7 @@ fn parquet_discovery_evidence(
 struct DecodeState {
     stream: PinParquetStream,
     request: PhysicalDecodeRequest,
+    observed_schema_hash: cdf_kernel::SchemaHash,
     sequence: u64,
 }
 

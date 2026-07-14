@@ -164,20 +164,8 @@ pub(crate) fn prepare_resource_schema_for_cli(
     if let Some(snapshot) = resource.descriptor().schema_source.pinned_snapshot()
         && !no_pin
     {
-        let prepared = if matches!(resource.plan(), CompiledResourcePlan::Files(_)) {
-            cdf_project::prepare_pinned_resource_effective_schema_with_file_dependencies_artifacts(
-                &context.root,
-                resource,
-                &context.secret_provider(),
-                file_runtime_dependencies(context, execution)?,
-            )?
-        } else {
-            cdf_project::prepare_pinned_resource_effective_schema_artifacts(
-                &context.root,
-                resource,
-                &context.secret_provider(),
-            )?
-        };
+        let prepared =
+            cdf_project::prepare_pinned_resource_schema_artifacts(&context.root, resource)?;
         let discovery = prepared
             .discovery_manifest()
             .map(DiscoveryCoverageReport::from_manifest);
@@ -251,16 +239,13 @@ pub(crate) fn prepare_resource_schema_for_cli(
     } else {
         cdf_project::discover_resource_schema_artifacts(&probe_resource, &secret_provider, options)?
     };
-    let (prepared_resource, discovery) = cdf_project::apply_discovered_schema_constraints(
-        &probe_resource,
-        artifacts.discovery.clone(),
-    )?;
-    artifacts.discovery = discovery.clone();
+    let prepared_resource =
+        cdf_project::compile_discovered_schema_artifacts(&probe_resource, &mut artifacts)?;
     let discovery_coverage = artifacts
         .discovery_manifest
         .as_ref()
         .map(DiscoveryCoverageReport::from_manifest);
-    let artifact = discovery.snapshot.artifact.clone();
+    let artifact = artifacts.discovery.snapshot.artifact.clone();
     let outcome = if no_pin { "inspection_only" } else { "added" };
     let (snapshot_written, lockfile_written) = if no_pin {
         (false, false)
@@ -291,29 +276,6 @@ pub(crate) fn prepare_resource_schema_for_cli(
             )?;
         }
         (snapshot_written, lockfile_written)
-    };
-    let (prepared_resource, discovery_coverage) = if !no_pin {
-        let prepared = if matches!(prepared_resource.plan(), CompiledResourcePlan::Files(_)) {
-            cdf_project::prepare_pinned_resource_effective_schema_with_file_dependencies_artifacts(
-                &context.root,
-                &prepared_resource,
-                &secret_provider,
-                file_runtime_dependencies(context, execution)?,
-            )?
-        } else {
-            cdf_project::prepare_pinned_resource_effective_schema_artifacts(
-                &context.root,
-                &prepared_resource,
-                &secret_provider,
-            )?
-        };
-        let discovery = prepared
-            .discovery_manifest()
-            .map(DiscoveryCoverageReport::from_manifest);
-        let (resource, _) = prepared.into_parts();
-        (resource, discovery)
-    } else {
-        (prepared_resource, discovery_coverage)
     };
     Ok(PreparedSchemaForCli {
         resource: prepared_resource,
@@ -360,7 +322,8 @@ pub(crate) fn build_engine_plan_for_resource(
         .map_err(CliError::from)?;
     match source.source_plan() {
         Some(source_plan) => plan
-            .bind_partition_schedule(source_plan)
+            .bind_schema_admission_source(source_plan)
+            .and_then(|plan| plan.bind_partition_schedule(source_plan))
             .and_then(|plan| plan.bind_operator_graph(source_plan, destination_capabilities))
             .map_err(CliError::from),
         None => Ok(plan),

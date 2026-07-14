@@ -1,7 +1,8 @@
-Status: open
+Status: active
 Created: 2026-07-13
-Updated: 2026-07-13
+Updated: 2026-07-14
 Parent: .10x/tickets/2026-07-13-p0-fixed-schema-discovery-stream-admission.md
+Depends-On: .10x/tickets/2026-07-13-p0-sa1-compiled-stream-admission-plan.md
 
 # P0 SA0: cold discovery to final-plan lifecycle
 
@@ -34,18 +35,23 @@ The user ratified fixed schema before final plan, direct cold-result reuse, and 
 ## Journal
 
 - 2026-07-13: Inspection identifies two concrete regressions: `prepare_resource_schema_for_cli` writes a new pin and immediately calls pinned effective-schema preparation, while the ordinary pinned branch calls current-file discovery before extraction. This ticket owns removing those lifecycle re-entries without weakening final-plan schema authority.
+- 2026-07-14: Execution began from clean commit `53f6a45a`. The call-graph audit found the duplicate lifecycle in both the CLI (`prepare_resource_schema_for_cli`) and the project helper (`prepare_discover_resource_with_file_dependencies` through `attach_pinned_file_runtime`). Pinned preparation currently requires secret/transport/format dependencies solely to rediscover physical schemas; the replacement will hydrate and verify the snapshot plus linked discovery manifest from project artifacts only.
+- 2026-07-14: The duplicate probe was removed and cold discovery's already-held physical schema catalog was compiled directly into the final cold plan. The HTTP Parquet lifecycle test then passed with the auto-pin request trace byte-for-byte equal to one standalone discovery trace. A pinned rerun correctly performs no preparation probe, but normalized source fields now require SA1's source-neutral admission program because the old per-file coercion evidence was manufactured by the prohibited pre-scan. This is a real dependency, not permission to restore discovery I/O.
+- 2026-07-14: SA1 supplied the missing admission authority. The cold command now consumes its first discovery result directly; ordinary pinned preparation verifies only the snapshot and linked discovery manifest; and the registered-format execution fallback that called `driver.discover(...)` before decode was deleted. The HTTP Parquet regression now exercises a fresh pinned resource and records zero preparation requests, one sequential extraction GET, and zero ranged schema probes.
 
 ## Blockers
 
-None.
+None. SA1's compiled admission operation is integrated and the pinned rerun is green.
 
 ## Evidence
 
-Pending.
+- Cold single-lifecycle: `CARGO_BUILD_JOBS=12 cargo test -p cdf-project tests::http_parquet_auto_pin_plan_preview_and_run_use_file_runtime -- --exact --nocapture` passed. It compares cold auto-pin requests with one standalone discovery trace, then proves a fresh pinned preparation performs no transport calls and pinned execution performs one sequential GET with no range request.
+- Artifact-only pin hydration: both exact `pinned_schema_preparation_*` project tests passed; one removes the source directory before preparation.
+- CLI authority reporting: `CARGO_BUILD_JOBS=12 cargo test -p cdf-cli plan_local_parquet_discover_autopins_snapshot_and_reports_hash -- --nocapture` passed.
 
 ## Review
 
-Pending.
+The old helper names made the lifecycle bug look intentional: "prepare pinned effective schema" both hydrated an artifact and contacted the source. Deleting that API, instead of adding a mode flag, made the no-I/O boundary mechanically legible. Cold discovery and pinned admission need different evidence lifetimes but share one fixed output-schema authority.
 
 ## Retrospective
 

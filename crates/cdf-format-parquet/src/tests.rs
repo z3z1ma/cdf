@@ -173,7 +173,7 @@ fn parquet_driver_discovers_plans_and_decodes_through_neutral_byte_source() {
             resource_id: ResourceId::new("fixture.parquet").unwrap(),
             partition_id: PartitionId::new("file-000001").unwrap(),
             batch_id_prefix: "fixture".to_owned(),
-            physical_schema: schema,
+            schema: cdf_runtime::DecodeSchemaPlan::verified_physical(schema),
             source_position: None,
             projection: None,
             predicates: Vec::new(),

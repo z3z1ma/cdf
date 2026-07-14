@@ -12,9 +12,9 @@ use cdf_kernel::{
 };
 
 use crate::{
-    EffectiveSchemaObservationCoercion, EffectiveSchemaPlanEvidence, EngineOutputSchema,
-    EnginePlan, EnginePlanInput, EngineSchemaAuthority, EstimateExplain, ExplainData, OperatorNode,
-    PartitionExplain, PlanBoundedness, PredicateExplain,
+    CompiledSchemaAdmissionPlan, EffectiveSchemaObservationCoercion, EffectiveSchemaPlanEvidence,
+    EngineOutputSchema, EnginePlan, EnginePlanInput, EngineSchemaAuthority, EstimateExplain,
+    ExplainData, OperatorNode, PartitionExplain, PlanBoundedness, PredicateExplain,
     expression::{
         mark_cursor_subsumed, plan_expression, record_exact_source_expression,
         record_native_contract_expression, validate_recorded_expressions,
@@ -32,6 +32,9 @@ struct PlanFinishContext {
     estimate_support: EstimateSupport,
     output_schema: EngineOutputSchema,
     schema_authority: EngineSchemaAuthority,
+    resource_schema: arrow_schema::Schema,
+    schema_admission_constraint: arrow_schema::Schema,
+    type_policy: cdf_contract::TypePolicy,
     expression_schema: arrow_schema::Schema,
     cursor_field: Option<String>,
 }
@@ -76,6 +79,8 @@ impl Planner {
             .as_ref(),
         )?;
         let schema_authority = schema_authority(resource, effective_schema_evidence.as_ref())?;
+        let resource_schema = resource.schema().as_ref().clone();
+        let type_policy = resource_type_policy(resource);
 
         let mut plan = self.finish_plan(
             scan,
@@ -87,7 +92,10 @@ impl Planner {
                 estimate_support: EstimateSupport::None,
                 output_schema,
                 schema_authority,
-                expression_schema: resource.schema().as_ref().clone(),
+                resource_schema: resource_schema.clone(),
+                schema_admission_constraint: resource_schema.clone(),
+                type_policy,
+                expression_schema: resource_schema,
                 cursor_field: resource
                     .descriptor()
                     .cursor
@@ -133,6 +141,14 @@ impl Planner {
             .as_ref(),
         )?;
         let schema_authority = schema_authority(resource, effective_schema_evidence.as_ref())?;
+        let resource_schema = resource.schema().as_ref().clone();
+        let schema_admission_constraint = scan_expression_schema(
+            &resource_schema,
+            (resource.capabilities().projection == CapabilitySupport::Supported)
+                .then_some(scan.request.projection.as_deref())
+                .flatten(),
+        )?;
+        let type_policy = resource_type_policy(resource);
         let mut plan = self.finish_plan(
             scan,
             input,
@@ -144,7 +160,10 @@ impl Planner {
                 estimate_support: resource.capabilities().estimates.clone(),
                 output_schema,
                 schema_authority,
-                expression_schema: resource.schema().as_ref().clone(),
+                resource_schema: resource_schema.clone(),
+                schema_admission_constraint,
+                type_policy,
+                expression_schema: resource_schema,
                 cursor_field: resource
                     .descriptor()
                     .cursor
@@ -226,6 +245,13 @@ impl Planner {
         compiled_expression_plan.validate_recorded()?;
         let mut validation_program = input.validation_program;
         validation_program.compiled_expression_plan = Some(compiled_expression_plan.clone());
+        let compiled_schema_admission = CompiledSchemaAdmissionPlan::compile(
+            &finish.schema_authority,
+            &finish.resource_schema,
+            &finish.schema_admission_constraint,
+            &validation_program,
+            finish.type_policy,
+        )?;
         let final_projection = input.request.projection.clone();
         let operator_chain = operator_chain(
             &scan.request.resource_id,
@@ -252,6 +278,7 @@ impl Planner {
             final_projection,
             residual_predicates,
             compiled_expression_plan,
+            compiled_schema_admission,
             boundedness: input.boundedness,
             write_disposition: finish.write_disposition,
             validation_program,
@@ -493,6 +520,15 @@ pub(crate) fn rebind_validation_program(
     )?;
     compiled_expression_plan.validate_recorded()?;
     program.compiled_expression_plan = Some(compiled_expression_plan.clone());
+    let source_binding = candidate.compiled_schema_admission.source.clone();
+    let mut compiled_schema_admission = CompiledSchemaAdmissionPlan::compile(
+        &candidate.schema_authority,
+        expression_schema,
+        &physical_expression_schema,
+        &program,
+        candidate.compiled_schema_admission.type_policy.clone(),
+    )?;
+    compiled_schema_admission.source = source_binding;
     let output_schema = EngineOutputSchema::from_arrow(
         compile_output_schema(
             expression_schema,
@@ -503,6 +539,7 @@ pub(crate) fn rebind_validation_program(
         .as_ref(),
     )?;
     candidate.compiled_expression_plan = compiled_expression_plan;
+    candidate.compiled_schema_admission = compiled_schema_admission;
     candidate.validation_program = program;
     candidate.output_schema = output_schema;
     candidate.operator_chain = operator_chain(
@@ -518,6 +555,9 @@ pub(crate) fn rebind_validation_program(
         .operator_chain
         .clone_from(&candidate.operator_chain);
     candidate.validate_compiled_expression_plan()?;
+    candidate
+        .compiled_schema_admission
+        .validate_intrinsic(&candidate.validation_program)?;
     *plan = candidate;
     Ok(())
 }
@@ -661,6 +701,17 @@ where
     })
 }
 
+fn resource_type_policy<R>(resource: &R) -> cdf_contract::TypePolicy
+where
+    R: ResourceStream + ?Sized,
+{
+    let mut policy = ContractPolicy::for_trust(resource.descriptor().trust_level.clone()).types;
+    let allowances = resource.type_policy_allowances();
+    policy.coerce_types = allowances.coerce_types;
+    policy.allow_lossy_mapping = allowances.allow_lossy_mapping;
+    policy
+}
+
 pub fn validate_plan_schema_authority<R>(resource: &R, plan: &EnginePlan) -> Result<()>
 where
     R: ResourceStream + ?Sized,
@@ -685,6 +736,7 @@ where
             "engine plan compiled output schema does not match the resource, projection, and validation program",
         ));
     }
+    plan.validate_compiled_schema_admission(resource)?;
     Ok(())
 }
 

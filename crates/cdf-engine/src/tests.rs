@@ -148,12 +148,52 @@ fn engine_plan_requires_recorded_schema_authorities() {
         )
         .unwrap();
 
-    for required in ["schema_authority", "output_schema"] {
+    for required in [
+        "schema_authority",
+        "output_schema",
+        "compiled_schema_admission",
+    ] {
         let mut incomplete = serde_json::to_value(&plan).unwrap();
         incomplete.as_object_mut().unwrap().remove(required);
         let error = serde_json::from_value::<EnginePlan>(incomplete).unwrap_err();
         assert!(error.to_string().contains(required));
     }
+}
+
+#[test]
+fn compiled_stream_admission_is_replay_verifiable_and_rejects_mismatched_evidence() {
+    let resource = MockResource::tier_a(sample_batches());
+    let plan = Planner::new()
+        .plan_tier_a(
+            &resource,
+            plan_input(Vec::new(), None, None, PlanBoundedness::Bounded),
+        )
+        .unwrap();
+    let physical_schema_hash =
+        cdf_kernel::canonical_arrow_schema_hash(resource.schema().as_ref()).unwrap();
+    let coercion_plan = plan
+        .compiled_schema_admission
+        .instantiate(resource.schema().as_ref(), &physical_schema_hash)
+        .unwrap();
+    let evidence = CompiledStreamAdmissionEvidence {
+        compiled_admission_hash: cdf_runtime::artifact_hash(&plan.compiled_schema_admission)
+            .unwrap(),
+        baseline_schema_hash: plan.schema_authority.baseline_schema_hash.to_string(),
+        effective_schema_hash: plan.schema_authority.effective_schema_hash.to_string(),
+        observations: vec![StreamAdmissionObservationEvidence {
+            observation_id: "partition-1".to_owned(),
+            physical_schema_hash: physical_schema_hash.to_string(),
+            coercion_plan,
+        }],
+    };
+
+    evidence.validate(&plan.compiled_schema_admission).unwrap();
+    let mut mismatched = evidence;
+    mismatched.compiled_admission_hash = "sha256:mismatched".to_owned();
+    let error = mismatched
+        .validate(&plan.compiled_schema_admission)
+        .unwrap_err();
+    assert!(error.to_string().contains("does not match"), "{error}");
 }
 
 #[test]
