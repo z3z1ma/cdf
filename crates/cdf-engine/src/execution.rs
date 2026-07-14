@@ -173,6 +173,7 @@ where
 {
     plan.validate_compiled_expression_plan()?;
     validate_program(&plan.validation_program)?;
+    crate::planning::validate_scan_partition_observation_identities(&plan.scan)?;
     let schema_authority = plan.schema_authority();
     if schema_authority.version != 1 {
         return Err(CdfError::data(format!(
@@ -352,6 +353,11 @@ where
                         break;
                     };
                     let mut batch = batch?;
+                    validate_batch_partition_ownership(
+                        &batch,
+                        &plan.scan.request.resource_id,
+                        &candidate.partition,
+                    )?;
                     let record_batch = batch.record_batch().cloned().ok_or_else(|| {
                         CdfError::data("resource preview requires in-memory Arrow record batches")
                     })?;
@@ -365,7 +371,7 @@ where
                         &batch,
                         &record_batch,
                         BatchSchemaAdmissionContext {
-                            planned_observation_id: planned_partition_observation_id(
+                            planned_observation_id: cdf_kernel::partition_schema_observation_id(
                                 &candidate.partition,
                             ),
                             expected: candidate.expected.as_ref(),
@@ -794,11 +800,28 @@ struct BatchSchemaAdmissionContext<'a> {
     effective_schema: &'a Schema,
 }
 
-fn planned_partition_observation_id(partition: &cdf_kernel::PartitionPlan) -> &str {
-    partition
-        .metadata
-        .get(PLAN_SCHEMA_OBSERVATION_ID_KEY)
-        .map_or_else(|| partition.partition_id.as_str(), String::as_str)
+fn validate_batch_partition_ownership(
+    batch: &cdf_kernel::Batch,
+    resource_id: &cdf_kernel::ResourceId,
+    partition: &cdf_kernel::PartitionPlan,
+) -> Result<()> {
+    if &batch.header.resource_id != resource_id {
+        return Err(CdfError::data(format!(
+            "planned resource `{}` received batch `{}` labeled for resource `{}`",
+            resource_id.as_str(),
+            batch.header.batch_id.as_str(),
+            batch.header.resource_id.as_str()
+        )));
+    }
+    if batch.header.partition_id != partition.partition_id {
+        return Err(CdfError::data(format!(
+            "planned partition `{}` received batch `{}` labeled for partition `{}`",
+            partition.partition_id.as_str(),
+            batch.header.batch_id.as_str(),
+            batch.header.partition_id.as_str()
+        )));
+    }
+    Ok(())
 }
 
 fn preobserved_physical_observation<'a>(
@@ -2167,6 +2190,7 @@ where
     plan.validate_compiled_expression_plan()?;
     let validation_program = plan.validation_program.clone();
     validate_program(&validation_program)?;
+    crate::planning::validate_scan_partition_observation_identities(&plan.scan)?;
     let schema_authority = plan.schema_authority();
     if schema_authority.version != 1 {
         return Err(CdfError::data(format!(
@@ -2462,6 +2486,11 @@ where
                 }
 
                 let mut batch = batch?;
+                validate_batch_partition_ownership(
+                    &batch,
+                    &plan.scan.request.resource_id,
+                    &partition,
+                )?;
                 let decoded_input_bytes = batch.header.byte_count;
                 phase_measurements.add(
                     RunPhase::Decode,
@@ -2507,7 +2536,9 @@ where
                     &batch,
                     record_batch,
                     BatchSchemaAdmissionContext {
-                        planned_observation_id: planned_partition_observation_id(&partition),
+                        planned_observation_id: cdf_kernel::partition_schema_observation_id(
+                            &partition,
+                        ),
                         expected: partition_schema_evidence,
                         expected_physical_observation: preobserved_physical_observation(
                             effective_schema_evidence,

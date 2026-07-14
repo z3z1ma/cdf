@@ -634,7 +634,7 @@ fn validate_package_compiled_schema_admission(package: &VerifiedPackageReader) -
                 .partitions
                 .iter()
                 .filter(|partition| {
-                    planned_partition_observation_id(partition) == observation_id
+                    cdf_kernel::partition_schema_observation_id(partition) == observation_id
                         && cdf_kernel::partition_source_identity_binding(partition)
                             .is_ok_and(|expected| &expected == partition_binding)
                         && partial_position_matches_partition_scope(attempted_position, partition)
@@ -668,7 +668,7 @@ fn validate_package_compiled_schema_admission(package: &VerifiedPackageReader) -
                 .partitions
                 .iter()
                 .filter(|partition| {
-                    planned_partition_observation_id(partition) == observation_id
+                    cdf_kernel::partition_schema_observation_id(partition) == observation_id
                         && cdf_kernel::partition_source_identity_binding(partition)
                             .is_ok_and(|expected| &expected == partition_binding)
                 })
@@ -867,17 +867,6 @@ fn validate_package_compiled_schema_admission(package: &VerifiedPackageReader) -
         }
     }
     Ok(())
-}
-
-fn planned_partition_observation_id(partition: &cdf_kernel::PartitionPlan) -> &str {
-    partition
-        .metadata
-        .get(cdf_kernel::PLAN_SCHEMA_OBSERVATION_ID_KEY)
-        .map(String::as_str)
-        .unwrap_or_else(|| match &partition.scope {
-            cdf_kernel::ScopeKey::File { path } => path.as_str(),
-            _ => partition.partition_id.as_str(),
-        })
 }
 
 fn partial_position_matches_partition_scope(

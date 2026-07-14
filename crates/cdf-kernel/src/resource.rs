@@ -448,6 +448,13 @@ pub const PLAN_SCHEMA_OBSERVATION_ID_KEY: &str = "cdf:schema_observation_id";
 pub const PLAN_SCHEMA_OBSERVATION_BINDING_KEY: &str = "cdf:schema_observation_binding";
 pub const PLAN_PHYSICAL_SCHEMA_HASH_KEY: &str = "cdf:physical_schema_hash";
 
+pub fn partition_schema_observation_id(partition: &PartitionPlan) -> &str {
+    partition
+        .metadata
+        .get(PLAN_SCHEMA_OBSERVATION_ID_KEY)
+        .map_or_else(|| partition.partition_id.as_str(), String::as_str)
+}
+
 pub fn partition_source_identity_binding(partition: &PartitionPlan) -> Result<String> {
     if let Some(binding) = partition.metadata.get(PLAN_SCHEMA_OBSERVATION_BINDING_KEY) {
         if binding.is_empty() {

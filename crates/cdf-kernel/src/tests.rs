@@ -4,6 +4,33 @@ use std::{collections::BTreeMap, sync::Arc};
 use arrow_array::{ArrayRef, Int64Array, RecordBatch};
 use arrow_schema::{DataType, Field, Schema};
 
+#[test]
+fn schema_observation_identity_is_partition_scoped_for_file_partitions() {
+    let partition = PartitionPlan {
+        partition_id: PartitionId::new("file-row-group-7").unwrap(),
+        scope: ScopeKey::File {
+            path: "s3://bucket/object.parquet".to_owned(),
+        },
+        start_position: None,
+        metadata: BTreeMap::new(),
+    };
+
+    assert_eq!(
+        partition_schema_observation_id(&partition),
+        "file-row-group-7"
+    );
+
+    let mut explicit = partition;
+    explicit.metadata.insert(
+        PLAN_SCHEMA_OBSERVATION_ID_KEY.to_owned(),
+        "planned-observation-7".to_owned(),
+    );
+    assert_eq!(
+        partition_schema_observation_id(&explicit),
+        "planned-observation-7"
+    );
+}
+
 fn sample_state_delta_and_receipt() -> (StateDelta, Receipt) {
     let scope = ScopeKey::Partition {
         partition_id: PartitionId::new("p0").unwrap(),

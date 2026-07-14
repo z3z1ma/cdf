@@ -509,9 +509,99 @@ fn planning_rejects_one_schema_observation_identity_across_partitions() {
         .unwrap_err();
 
     assert!(
-        error
-            .to_string()
-            .contains("more than one planned partition"),
+        error.to_string().contains("assigned to planned partitions"),
+        "{error}"
+    );
+}
+
+#[test]
+fn dynamic_planning_rejects_duplicate_observation_identity_without_runtime_evidence() {
+    let resource = MockResource::tier_b(sample_batches()).with_duplicate_observation_identity();
+
+    let error = Planner::new()
+        .plan_tier_b(
+            &resource,
+            plan_input(Vec::new(), None, None, PlanBoundedness::Bounded),
+        )
+        .unwrap_err();
+
+    assert!(
+        error.to_string().contains("assigned to planned partitions"),
+        "{error}"
+    );
+    assert_eq!(resource.open_count.load(Ordering::SeqCst), 0);
+}
+
+#[test]
+fn execution_rejects_duplicate_planned_observations_before_staged_ingress() {
+    let resource = MockResource::tier_b(sample_batches());
+    let mut plan = Planner::new()
+        .plan_tier_b(
+            &resource,
+            plan_input(Vec::new(), None, None, PlanBoundedness::Bounded),
+        )
+        .unwrap();
+    for partition in &mut plan.scan.partitions {
+        partition.metadata.insert(
+            PLAN_SCHEMA_OBSERVATION_ID_KEY.to_owned(),
+            "forged-shared-observation".to_owned(),
+        );
+    }
+    let package_dir = TempDir::new().unwrap();
+    let durable_calls = Arc::new(AtomicUsize::new(0));
+    let hook_calls = Arc::clone(&durable_calls);
+    let mut durable_segment = move |_entry: &SegmentEntry, _batches: &[RecordBatch]| {
+        hook_calls.fetch_add(1, Ordering::SeqCst);
+        Ok(())
+    };
+    let pre_finalize =
+        |_builder: &cdf_package::PackageBuilder, _draft: EnginePackageDraft<'_>| Ok(());
+    let mut stream_finalize = || Ok(());
+
+    let error = block_on(execute_to_package_with_streaming_hooks(
+        &plan,
+        &resource,
+        package_dir.path(),
+        &pre_finalize,
+        &mut durable_segment,
+        &mut stream_finalize,
+        EngineExecutionOptions::default(),
+    ))
+    .unwrap_err();
+
+    assert!(
+        error.to_string().contains("assigned to planned partitions"),
+        "{error}"
+    );
+    assert_eq!(resource.open_count.load(Ordering::SeqCst), 0);
+    assert_eq!(durable_calls.load(Ordering::SeqCst), 0);
+}
+
+#[test]
+fn execution_rejects_batch_labeled_for_another_partition_before_admission() {
+    let resource = MockResource::tier_a(vec![batch_for_partition_with_schema(
+        "misrouted-batch",
+        "part-1",
+        sample_schema(),
+        vec![1],
+        vec!["one"],
+        vec![true],
+    )])
+    .with_misrouted_batches();
+    let plan = Planner::new()
+        .plan_tier_a(
+            &resource,
+            plan_input(Vec::new(), None, None, PlanBoundedness::Bounded),
+        )
+        .unwrap();
+    let package_dir = TempDir::new().unwrap();
+
+    let error = block_on(execute_to_package(&plan, &resource, package_dir.path())).unwrap_err();
+
+    assert!(
+        error.to_string().contains("planned partition")
+            && error.to_string().contains("received batch")
+            && error.to_string().contains("part-1"),
         "{error}"
     );
 }
@@ -3965,6 +4055,7 @@ struct MockResource {
     effective_schema_runtime: Option<EffectiveSchemaRuntime>,
     type_policy_allowances: cdf_kernel::TypePolicyAllowances,
     duplicate_observation_identity: bool,
+    misroute_batches: bool,
 }
 
 #[derive(Clone)]
@@ -4129,6 +4220,7 @@ impl MockResource {
             effective_schema_runtime: None,
             type_policy_allowances: cdf_kernel::TypePolicyAllowances::default(),
             duplicate_observation_identity: false,
+            misroute_batches: false,
         }
     }
 
@@ -4184,6 +4276,11 @@ impl MockResource {
         self.duplicate_observation_identity = true;
         self
     }
+
+    fn with_misrouted_batches(mut self) -> Self {
+        self.misroute_batches = true;
+        self
+    }
 }
 
 impl ResourceStream for MockResource {
@@ -4199,18 +4296,21 @@ impl ResourceStream for MockResource {
         (0..self.partition_count)
             .map(|index| {
                 let mut metadata = BTreeMap::from([("ordinal".to_owned(), index.to_string())]);
-                if let Some(runtime) = &self.effective_schema_runtime {
-                    let observation_id = if self.duplicate_observation_identity {
-                        runtime.evidence.observations[0].observation_id.clone()
-                    } else {
-                        runtime
-                            .evidence
-                            .observations
-                            .get(index)
-                            .map(|observation| observation.observation_id.clone())
-                            .unwrap_or_else(|| format!("unobserved-part-{index}"))
-                    };
+                if self.duplicate_observation_identity {
+                    metadata.insert(
+                        PLAN_SCHEMA_OBSERVATION_ID_KEY.to_owned(),
+                        "duplicate-observation".to_owned(),
+                    );
+                } else if let Some(runtime) = &self.effective_schema_runtime {
+                    let observation_id = runtime
+                        .evidence
+                        .observations
+                        .get(index)
+                        .map(|observation| observation.observation_id.clone())
+                        .unwrap_or_else(|| format!("unobserved-part-{index}"));
                     metadata.insert(PLAN_SCHEMA_OBSERVATION_ID_KEY.to_owned(), observation_id);
+                }
+                if self.effective_schema_runtime.is_some() {
                     metadata.insert(
                         PLAN_SCHEMA_OBSERVATION_BINDING_KEY.to_owned(),
                         format!("binding-input-{index}"),
@@ -4233,7 +4333,9 @@ impl ResourceStream for MockResource {
         let batches = self
             .batches
             .iter()
-            .filter(|batch| batch.header.partition_id == partition.partition_id)
+            .filter(|batch| {
+                self.misroute_batches || batch.header.partition_id == partition.partition_id
+            })
             .cloned()
             .collect::<Vec<_>>();
         Box::pin(

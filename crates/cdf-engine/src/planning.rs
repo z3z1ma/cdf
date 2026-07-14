@@ -69,6 +69,7 @@ impl Planner {
             estimated_bytes: None,
             delivery_guarantee: delivery_guarantee(write_disposition.clone()),
         };
+        validate_scan_partition_observation_identities(&scan)?;
         let effective_schema_evidence = bind_effective_schema_evidence(&mut scan, resource)?;
         let output_schema = CompiledArrowSchema::from_arrow(
             compile_output_schema(
@@ -135,6 +136,7 @@ impl Planner {
         )?;
         let mut scan = resource.negotiate(&physical_request)?;
         validate_negotiated_scan(&physical_request, &scan)?;
+        validate_scan_partition_observation_identities(&scan)?;
         let effective_schema_evidence = bind_effective_schema_evidence(&mut scan, resource)?;
         let output_schema = CompiledArrowSchema::from_arrow(
             compile_output_schema(
@@ -425,6 +427,28 @@ fn validate_negotiated_scan(request: &ScanRequest, scan: &ScanPlan) -> Result<()
         return Err(CdfError::contract(
             "source negotiation did not classify each canonical predicate exactly once",
         ));
+    }
+    Ok(())
+}
+
+pub(crate) fn validate_scan_partition_observation_identities(scan: &ScanPlan) -> Result<()> {
+    let mut partitions_by_observation = BTreeMap::new();
+    for partition in &scan.partitions {
+        let observation_id = cdf_kernel::partition_schema_observation_id(partition);
+        if observation_id.is_empty() {
+            return Err(CdfError::contract(format!(
+                "planned partition {:?} carries an empty schema observation identity",
+                partition.partition_id
+            )));
+        }
+        if let Some(first_partition) =
+            partitions_by_observation.insert(observation_id, partition.partition_id.as_str())
+        {
+            return Err(CdfError::contract(format!(
+                "schema observation {observation_id:?} is assigned to planned partitions {first_partition:?} and {:?}; observation identities must be partition-scoped",
+                partition.partition_id
+            )));
+        }
     }
     Ok(())
 }
