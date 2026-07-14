@@ -562,33 +562,204 @@ fn validate_package_compiled_schema_admission(package: &VerifiedPackageReader) -
         .verified_json_artifact(package.verification(), "plan/schema-admission.json")?;
     admission.validate_recorded(&program)?;
 
+    let inputs = package
+        .reader()
+        .replay_inputs_verified(package.verification())?;
+    if admission.effective_schema_hash != inputs.state_delta.schema_hash {
+        return Err(CdfError::data(format!(
+            "compiled admission effective schema {} does not match StateDelta schema {}",
+            admission.effective_schema_hash, inputs.state_delta.schema_hash
+        )));
+    }
+
     let files = &package.reader().manifest().identity.files;
     let has_stream_evidence = files
         .iter()
         .any(|entry| entry.path == "schema/stream-admission-evidence.json");
-    let has_preobserved_evidence = files
-        .iter()
-        .any(|entry| entry.path == "schema/per-observation-coercion.json");
-    if has_stream_evidence {
+    let (admitted, partial_admissions) = if has_stream_evidence {
         let evidence: cdf_engine::CompiledStreamAdmissionEvidence =
             package.reader().verified_json_artifact(
                 package.verification(),
                 "schema/stream-admission-evidence.json",
             )?;
         evidence.validate(&admission)?;
+        let mut admitted = std::collections::BTreeMap::new();
+        let mut partial = std::collections::BTreeSet::new();
+        for observation in evidence.observations {
+            match observation.completion {
+                cdf_engine::StreamAdmissionCompletion::Partial => {
+                    partial.insert(observation.observation_id);
+                }
+                cdf_engine::StreamAdmissionCompletion::Complete { source_position } => {
+                    admitted.insert(observation.observation_id, source_position);
+                }
+            }
+        }
+        (admitted, partial)
+    } else {
+        (
+            std::collections::BTreeMap::new(),
+            std::collections::BTreeSet::new(),
+        )
+    };
+    let quarantine_path = "quarantine/schema-observations.json";
+    let (quarantined, quarantine_records) =
+        if files.iter().any(|entry| entry.path == quarantine_path) {
+            let quarantines: Vec<cdf_kernel::TerminalSchemaObservationQuarantine> = package
+                .reader()
+                .verified_json_artifact(package.verification(), quarantine_path)?;
+            let mut observations = std::collections::BTreeMap::new();
+            let mut records = std::collections::BTreeMap::new();
+            for quarantine in quarantines {
+                quarantine.validate()?;
+                cdf_kernel::SchemaHash::new(quarantine.physical_schema_hash().to_string())?;
+                let source_position = quarantine.source_position().cloned().ok_or_else(|| {
+                    CdfError::data(format!(
+                        "schema quarantine {:?} omitted its processed source position",
+                        quarantine.observation_id()
+                    ))
+                })?;
+                let observation_id = quarantine.observation_id().to_owned();
+                if observations
+                    .insert(observation_id.clone(), source_position)
+                    .is_some()
+                {
+                    return Err(CdfError::data(
+                        "schema quarantine evidence contains duplicate observation identities",
+                    ));
+                }
+                records.insert(observation_id, quarantine);
+            }
+            (observations, records)
+        } else {
+            (
+                std::collections::BTreeMap::new(),
+                std::collections::BTreeMap::new(),
+            )
+        };
+    let quarantine_admission_path = "quarantine/schema-admission-evidence.json";
+    if quarantine_records.is_empty() {
+        if files
+            .iter()
+            .any(|entry| entry.path == quarantine_admission_path)
+        {
+            return Err(CdfError::data(
+                "schema-quarantine admission evidence exists without quarantined observations",
+            ));
+        }
+    } else {
+        let evidence: cdf_engine::CompiledSchemaQuarantineEvidence = package
+            .reader()
+            .verified_json_artifact(package.verification(), quarantine_admission_path)?;
+        evidence.validate_admission(&admission)?;
+        let mut evidence_ids = std::collections::BTreeSet::new();
+        for observation in &evidence.observations {
+            let quarantine = quarantine_records
+                .get(&observation.observation_id)
+                .ok_or_else(|| {
+                    CdfError::data(format!(
+                        "schema-quarantine admission evidence {:?} has no quarantine record",
+                        observation.observation_id
+                    ))
+                })?;
+            observation.validate(quarantine)?;
+            admission
+                .validate_quarantined_observation(quarantine, &observation.physical_observation)?;
+            evidence_ids.insert(observation.observation_id.as_str());
+        }
+        if evidence_ids
+            != quarantine_records
+                .keys()
+                .map(String::as_str)
+                .collect::<std::collections::BTreeSet<_>>()
+        {
+            return Err(CdfError::data(
+                "schema-quarantine admission evidence does not exactly cover quarantined observations",
+            ));
+        }
     }
-    let row_count = package
-        .reader()
-        .manifest()
-        .identity
-        .segments
-        .iter()
-        .try_fold(0_u64, |rows, segment| rows.checked_add(segment.row_count))
-        .ok_or_else(|| CdfError::data("package segment row count overflowed"))?;
-    if row_count > 0 && !has_stream_evidence && !has_preobserved_evidence {
+    if admitted.keys().any(|id| quarantined.contains_key(id))
+        || partial_admissions
+            .iter()
+            .any(|id| quarantined.contains_key(id))
+    {
         return Err(CdfError::data(
-            "package has data rows but no physical-observation admission evidence",
+            "schema observation is recorded as both admitted and quarantined",
         ));
+    }
+    let processed_path = cdf_package_contract::PROCESSED_OBSERVATIONS_FILE;
+    let processed = if files.iter().any(|entry| entry.path == processed_path) {
+        let evidence: cdf_package_contract::ProcessedObservationEvidenceArtifact = package
+            .reader()
+            .verified_json_artifact(package.verification(), processed_path)?;
+        evidence.validate()?;
+        Some(evidence)
+    } else {
+        None
+    };
+    if admitted.is_empty() && quarantined.is_empty() {
+        if processed.is_some() {
+            return Err(CdfError::data(
+                "processed observations have no matching admission or quarantine evidence",
+            ));
+        }
+        return Ok(());
+    }
+    let processed = processed.ok_or_else(|| {
+        CdfError::data(
+            "schema admission/quarantine evidence requires typed processed-observation evidence",
+        )
+    })?;
+    let processed_admitted = processed
+        .observations
+        .iter()
+        .filter(|observation| {
+            observation.outcome == cdf_kernel::ProcessedObservationOutcome::Admitted
+        })
+        .map(|observation| observation.observation_id.clone())
+        .collect::<std::collections::BTreeSet<_>>();
+    let processed_quarantined = processed
+        .observations
+        .iter()
+        .filter(|observation| {
+            observation.outcome == cdf_kernel::ProcessedObservationOutcome::Quarantined
+        })
+        .map(|observation| observation.observation_id.clone())
+        .collect::<std::collections::BTreeSet<_>>();
+    if admitted
+        .keys()
+        .cloned()
+        .collect::<std::collections::BTreeSet<_>>()
+        != processed_admitted
+        || quarantined
+            .keys()
+            .cloned()
+            .collect::<std::collections::BTreeSet<_>>()
+            != processed_quarantined
+    {
+        return Err(CdfError::data(
+            "processed observation outcomes do not exactly match admission/quarantine evidence",
+        ));
+    }
+    for observation in processed.observations.iter().filter(|observation| {
+        observation.outcome == cdf_kernel::ProcessedObservationOutcome::Admitted
+    }) {
+        if admitted.get(&observation.observation_id) != Some(&observation.source_position) {
+            return Err(CdfError::data(format!(
+                "processed observation {:?} does not match its stream-admission source position",
+                observation.observation_id
+            )));
+        }
+    }
+    for observation in processed.observations.iter().filter(|observation| {
+        observation.outcome == cdf_kernel::ProcessedObservationOutcome::Quarantined
+    }) {
+        if quarantined.get(&observation.observation_id) != Some(&observation.source_position) {
+            return Err(CdfError::data(format!(
+                "processed quarantine {:?} does not match its schema-quarantine source position",
+                observation.observation_id
+            )));
+        }
     }
     Ok(())
 }

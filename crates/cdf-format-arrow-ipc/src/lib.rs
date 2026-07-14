@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+use arrow_array::RecordBatch;
 use arrow_buffer::Buffer;
 use arrow_ipc::{
     MetadataVersion,
@@ -183,6 +184,7 @@ impl FormatDriver for ArrowIpcFileFormatDriver {
             }
             let projection =
                 projection_indices(footer.schema.as_ref(), request.projection.as_deref())?;
+            let physical_schema = footer.schema.clone();
             let mut decoder = FileDecoder::new(footer.schema, footer.version);
             if let Some(projection) = projection {
                 decoder = decoder.with_projection(projection);
@@ -206,13 +208,40 @@ impl FormatDriver for ArrowIpcFileFormatDriver {
                 decoder,
                 request,
                 observed_schema_hash: actual_hash,
+                physical_schema,
+                emitted_schema: false,
                 next_block: 0,
                 sequence: 0,
             };
             Ok(Box::pin(stream::try_unfold(state, |mut state| async move {
                 state.request.cancellation.check()?;
-                let Some(block) = state.blocks.get(state.next_block).cloned() else {
-                    return Ok(None);
+                let block = match state.blocks.get(state.next_block).cloned() {
+                    Some(block) => block,
+                    None if !state.emitted_schema => {
+                        let reservation = ReservationRequest::new(
+                            ConsumerKey::new("arrow-ipc-physical-batch", MemoryClass::Decode)?,
+                            state.request.target_batch_bytes.max(1),
+                        )?
+                        .as_minimum_working_set();
+                        let lease = reserve(Arc::clone(&state.request.memory), reservation).await?;
+                        state.emitted_schema = true;
+                        let batch_id = BatchId::new(format!(
+                            "{}-u{:08}-b{:08}",
+                            state.request.batch_id_prefix,
+                            state.request.unit.ordinal,
+                            state.sequence
+                        ))?;
+                        let mut batch = Batch::from_record_batch(
+                            batch_id,
+                            state.request.resource_id.clone(),
+                            state.request.partition_id.clone(),
+                            state.observed_schema_hash.clone(),
+                            RecordBatch::new_empty(state.physical_schema.clone()),
+                        )?;
+                        batch.header.source_position = state.request.source_position.clone();
+                        return Ok(Some((AccountedPhysicalBatch::new(batch, lease)?, state)));
+                    }
+                    None => return Ok(None),
                 };
                 let reservation = ReservationRequest::new(
                     ConsumerKey::new("arrow-ipc-physical-batch", MemoryClass::Decode)?,
@@ -239,6 +268,7 @@ impl FormatDriver for ArrowIpcFileFormatDriver {
                 let record_batch = record_batch.ok_or_else(|| {
                     CdfError::data("Arrow IPC footer record-batch block contained no record batch")
                 })?;
+                state.emitted_schema = true;
                 let batch_id = BatchId::new(format!(
                     "{}-u{:08}-b{:08}",
                     state.request.batch_id_prefix, state.request.unit.ordinal, state.sequence
@@ -285,6 +315,8 @@ struct DecodeState {
     decoder: FileDecoder,
     request: PhysicalDecodeRequest,
     observed_schema_hash: cdf_kernel::SchemaHash,
+    physical_schema: SchemaRef,
+    emitted_schema: bool,
     next_block: usize,
     sequence: u64,
 }

@@ -61,7 +61,7 @@ pub struct EnginePlan {
     pub write_disposition: WriteDisposition,
     pub validation_program: ValidationProgram,
     pub schema_authority: EngineSchemaAuthority,
-    pub output_schema: EngineOutputSchema,
+    pub output_schema: CompiledArrowSchema,
     pub operator_chain: Vec<OperatorNode>,
     pub explain: ExplainData,
     pub package_id: String,
@@ -201,7 +201,7 @@ pub struct CompiledSchemaAdmissionPlan {
     pub baseline_schema_hash: SchemaHash,
     pub effective_schema_hash: SchemaHash,
     pub resource_schema_hash: SchemaHash,
-    pub constraint_schema: EngineOutputSchema,
+    pub constraint_schema: CompiledArrowSchema,
     pub normalizer_version: String,
     pub identifier_policy: IdentifierPolicy,
     pub type_policy: TypePolicy,
@@ -237,7 +237,7 @@ impl CompiledSchemaAdmissionPlan {
             baseline_schema_hash: authority.baseline_schema_hash.clone(),
             effective_schema_hash: authority.effective_schema_hash.clone(),
             resource_schema_hash: cdf_kernel::canonical_arrow_schema_hash(resource_schema)?,
-            constraint_schema: EngineOutputSchema::from_arrow(constraint_schema)?,
+            constraint_schema: CompiledArrowSchema::from_arrow(constraint_schema)?,
             normalizer_version: validation_program.normalizer_version.clone(),
             identifier_policy: validation_program.identifier_policy.clone(),
             type_policy,
@@ -323,6 +323,17 @@ impl CompiledSchemaAdmissionPlan {
         }
         let constraint = self.constraint_schema.to_arrow()?;
         let report = plan_schema_reconciliation(observed, constraint.as_ref(), &self.type_policy)?;
+        if let Some(quarantine) = self.control_critical_missing_quarantine(
+            observation_id,
+            observed_schema_hash,
+            observed,
+            constraint.as_ref(),
+            &report.plan,
+        )? {
+            return Ok(CompiledSchemaAdmissionOutcome::Quarantined(Box::new(
+                quarantine,
+            )));
+        }
         if report.errors.is_empty() {
             self.validate_materialized(&report.plan)?;
             return Ok(CompiledSchemaAdmissionOutcome::Admitted(report.plan));
@@ -388,7 +399,7 @@ impl CompiledSchemaAdmissionPlan {
                 "restore the pinned schema for this input, explicitly repin after review, or change the resource contract to evolve",
             )
         };
-        Ok(CompiledSchemaAdmissionOutcome::Quarantined(
+        Ok(CompiledSchemaAdmissionOutcome::Quarantined(Box::new(
             TerminalSchemaObservationQuarantine::new(
                 observation_id,
                 observed_schema_hash.clone(),
@@ -398,7 +409,7 @@ impl CompiledSchemaAdmissionPlan {
                 remediation,
                 fields,
             )?,
-        ))
+        )))
     }
 
     /// Validates coercion evidence for a batch that a source codec already materialized.
@@ -444,7 +455,15 @@ impl CompiledSchemaAdmissionPlan {
                 )));
             }
             match field.decision {
-                FieldCoercionDecision::Preserved | FieldCoercionDecision::Missing => {}
+                FieldCoercionDecision::Preserved => {}
+                FieldCoercionDecision::Missing
+                    if !self.control_critical_fields.contains(&field.source_name) => {}
+                FieldCoercionDecision::Missing => {
+                    return Err(CdfError::data(format!(
+                        "control-critical field {:?} is missing from the physical observation",
+                        field.source_name
+                    )));
+                }
                 FieldCoercionDecision::Widened
                     if self.schema_verdict(SchemaChangeKind::TypeWidening)?
                         == &VerdictAction::Admit => {}
@@ -490,6 +509,105 @@ impl CompiledSchemaAdmissionPlan {
         Ok(())
     }
 
+    pub fn validate_quarantined_observation(
+        &self,
+        quarantine: &TerminalSchemaObservationQuarantine,
+        physical_observation: &PhysicalObservationEvidence,
+    ) -> Result<()> {
+        let PhysicalObservationEvidence::ArrowSchema { schema } = physical_observation else {
+            return Err(CdfError::data(
+                "schema quarantine requires an exact physical Arrow schema observation",
+            ));
+        };
+        let observed = schema.to_arrow()?;
+        if physical_observation.identity_hash()? != *quarantine.physical_schema_hash() {
+            return Err(CdfError::data(format!(
+                "schema quarantine {:?} does not bind its physical Arrow schema",
+                quarantine.observation_id()
+            )));
+        }
+        let outcome = self.instantiate_or_quarantine(
+            quarantine.observation_id(),
+            observed.as_ref(),
+            quarantine.physical_schema_hash(),
+        )?;
+        let CompiledSchemaAdmissionOutcome::Quarantined(expected) = outcome else {
+            return Err(CdfError::data(format!(
+                "schema quarantine {:?} conflicts with the compiled admission verdict",
+                quarantine.observation_id()
+            )));
+        };
+        if expected.observation_id() != quarantine.observation_id()
+            || expected.physical_schema_hash() != quarantine.physical_schema_hash()
+            || expected.rule_id() != quarantine.rule_id()
+            || expected.error_code() != quarantine.error_code()
+            || expected.policy() != quarantine.policy()
+            || expected.remediation() != quarantine.remediation()
+        {
+            return Err(CdfError::data(format!(
+                "schema quarantine {:?} does not match the compiled admission action",
+                quarantine.observation_id()
+            )));
+        }
+        Ok(())
+    }
+
+    fn control_critical_missing_quarantine(
+        &self,
+        observation_id: &str,
+        physical_schema_hash: &SchemaHash,
+        observed: &Schema,
+        constraint: &Schema,
+        plan: &SchemaCoercionPlan,
+    ) -> Result<Option<TerminalSchemaObservationQuarantine>> {
+        let fields = plan
+            .fields
+            .iter()
+            .filter(|field| {
+                field.decision == FieldCoercionDecision::Missing
+                    && self.control_critical_fields.contains(&field.source_name)
+            })
+            .map(|decision| {
+                let observed_field = observed
+                    .fields()
+                    .iter()
+                    .find(|field| {
+                        source_name(field.as_ref()).unwrap_or_else(|| field.name())
+                            == decision.source_name
+                    })
+                    .map(|field| CanonicalArrowField::from_arrow(field.as_ref()))
+                    .transpose()?;
+                let effective_field = constraint
+                    .fields()
+                    .iter()
+                    .find(|field| {
+                        source_name(field.as_ref()).unwrap_or_else(|| field.name())
+                            == decision.source_name
+                    })
+                    .map(|field| CanonicalArrowField::from_arrow(field.as_ref()))
+                    .transpose()?;
+                SchemaObservationFieldQuarantine::new_field_path(
+                    vec![decision.source_name.clone()],
+                    observed_field,
+                    effective_field,
+                    "control-critical field is missing from the physical observation",
+                )
+            })
+            .collect::<Result<Vec<_>>>()?;
+        if fields.is_empty() {
+            return Ok(None);
+        }
+        Ok(Some(TerminalSchemaObservationQuarantine::new(
+            observation_id,
+            physical_schema_hash.clone(),
+            "schema-observation:control-critical-missing",
+            "schema_control_field_missing",
+            SchemaObservationPolicy::Freeze,
+            "restore the required cursor/key field or publish the partition to quarantine for correction",
+            fields,
+        )?))
+    }
+
     pub(crate) fn captures_unknown_fields(&self) -> Result<bool> {
         Ok(match self.schema_verdict(SchemaChangeKind::UnknownField)? {
             VerdictAction::AdmitAsVariant => true,
@@ -516,6 +634,91 @@ impl CompiledSchemaAdmissionPlan {
 
     pub fn validate_recorded(&self, validation_program: &ValidationProgram) -> Result<()> {
         self.validate_intrinsic(validation_program)
+    }
+
+    pub(crate) fn validate_preobserved_evidence(
+        &self,
+        evidence: &EffectiveSchemaPlanEvidence,
+    ) -> Result<()> {
+        if evidence.authority.baseline.schema_hash() != &self.baseline_schema_hash
+            || evidence.authority.effective_schema_hash != self.effective_schema_hash
+        {
+            return Err(CdfError::data(
+                "preobserved schema evidence does not match the compiled admission epoch",
+            ));
+        }
+        let mut admitted = BTreeSet::new();
+        for observation in &evidence.observations {
+            if observation.observation_id.is_empty()
+                || !admitted.insert(observation.observation_id.as_str())
+            {
+                return Err(CdfError::data(
+                    "preobserved schema evidence contains an empty or duplicate admitted observation",
+                ));
+            }
+            if observation.physical_observation.identity_hash()? != observation.physical_schema_hash
+            {
+                return Err(CdfError::data(format!(
+                    "preobserved schema evidence {:?} does not bind its physical schema",
+                    observation.observation_id
+                )));
+            }
+            if evidence
+                .physical_observations
+                .get(&observation.observation_id)
+                != Some(&observation.physical_observation)
+            {
+                return Err(CdfError::data(format!(
+                    "preobserved schema evidence {:?} conflicts with its physical-observation catalog",
+                    observation.observation_id
+                )));
+            }
+            self.validate_materialized(&observation.coercion_plan)?;
+        }
+        let mut quarantined = BTreeSet::new();
+        for quarantine in &evidence.terminal_quarantines {
+            quarantine.validate()?;
+            if !quarantined.insert(quarantine.observation_id())
+                || admitted.contains(quarantine.observation_id())
+            {
+                return Err(CdfError::data(
+                    "preobserved schema evidence contains a duplicate admitted/quarantined observation",
+                ));
+            }
+            let physical = evidence
+                .physical_observations
+                .get(quarantine.observation_id())
+                .ok_or_else(|| {
+                    CdfError::data(format!(
+                        "preobserved quarantine {:?} omitted its physical Arrow schema",
+                        quarantine.observation_id()
+                    ))
+                })?;
+            if physical.identity_hash()? != *quarantine.physical_schema_hash() {
+                return Err(CdfError::data(format!(
+                    "preobserved quarantine {:?} does not bind its physical Arrow schema",
+                    quarantine.observation_id()
+                )));
+            }
+            self.validate_quarantined_observation(quarantine, physical)?;
+        }
+        let expected = admitted
+            .iter()
+            .chain(quarantined.iter())
+            .copied()
+            .collect::<BTreeSet<_>>();
+        if expected
+            != evidence
+                .physical_observations
+                .keys()
+                .map(String::as_str)
+                .collect::<BTreeSet<_>>()
+        {
+            return Err(CdfError::data(
+                "preobserved schema evidence physical-observation catalog is incomplete",
+            ));
+        }
+        Ok(())
     }
 
     fn validate<R>(
@@ -611,22 +814,32 @@ impl CompiledSchemaAdmissionPlan {
 
 pub(crate) enum CompiledSchemaAdmissionOutcome {
     Admitted(SchemaCoercionPlan),
-    Quarantined(TerminalSchemaObservationQuarantine),
+    Quarantined(Box<TerminalSchemaObservationQuarantine>),
 }
 
 #[non_exhaustive]
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StreamAdmissionObservationEvidence {
     pub observation_id: String,
-    pub physical_schema_hash: String,
+    pub physical_observation_hash: String,
+    pub physical_observation: PhysicalObservationEvidence,
     pub coercion_plan: SchemaCoercionPlan,
+    pub completion: StreamAdmissionCompletion,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum StreamAdmissionCompletion {
+    Partial,
+    Complete { source_position: SourcePosition },
 }
 
 impl StreamAdmissionObservationEvidence {
     pub fn new(
         observation_id: impl Into<String>,
-        physical_schema_hash: SchemaHash,
+        physical_observation: PhysicalObservationEvidence,
         coercion_plan: SchemaCoercionPlan,
+        completion: StreamAdmissionCompletion,
     ) -> Result<Self> {
         let observation_id = observation_id.into();
         if observation_id.is_empty() {
@@ -634,11 +847,85 @@ impl StreamAdmissionObservationEvidence {
                 "stream-admission observation id must not be empty",
             ));
         }
+        let physical_observation_hash = physical_observation.identity_hash()?.to_string();
         Ok(Self {
             observation_id,
-            physical_schema_hash: physical_schema_hash.to_string(),
+            physical_observation_hash,
+            physical_observation,
             coercion_plan,
+            completion,
         })
+    }
+
+    pub fn bind_source_position(&mut self, source_position: SourcePosition) -> Result<()> {
+        if matches!(
+            &self.completion,
+            StreamAdmissionCompletion::Complete {
+                source_position: existing
+            } if existing != &source_position
+        ) {
+            return Err(CdfError::data(format!(
+                "stream-admission observation {:?} carries conflicting source positions",
+                self.observation_id
+            )));
+        }
+        self.completion = StreamAdmissionCompletion::Complete { source_position };
+        Ok(())
+    }
+}
+
+#[non_exhaustive]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum PhysicalObservationEvidence {
+    ArrowSchema {
+        schema: CompiledArrowSchema,
+    },
+    MaterializedOutput {
+        output_schema: CompiledArrowSchema,
+        decoder_observation_hash: SchemaHash,
+    },
+}
+
+impl PhysicalObservationEvidence {
+    pub fn arrow_schema(schema: &Schema) -> Result<Self> {
+        Ok(Self::ArrowSchema {
+            schema: CompiledArrowSchema::from_arrow(schema)?,
+        })
+    }
+
+    pub fn materialized_output(
+        output_schema: &Schema,
+        decoder_observation_hash: SchemaHash,
+    ) -> Result<Self> {
+        Ok(Self::MaterializedOutput {
+            output_schema: CompiledArrowSchema::from_arrow(output_schema)?,
+            decoder_observation_hash,
+        })
+    }
+
+    pub fn identity_hash(&self) -> Result<SchemaHash> {
+        self.validate()?;
+        match self {
+            Self::ArrowSchema { schema } => Ok(schema.arrow_schema_hash.clone()),
+            Self::MaterializedOutput { .. } => SchemaHash::new(cdf_runtime::artifact_hash(self)?),
+        }
+    }
+
+    pub fn validate(&self) -> Result<()> {
+        match self {
+            Self::ArrowSchema { schema } => {
+                schema.to_arrow()?;
+            }
+            Self::MaterializedOutput {
+                output_schema,
+                decoder_observation_hash,
+            } => {
+                output_schema.to_arrow()?;
+                SchemaHash::new(decoder_observation_hash.to_string())?;
+            }
+        }
+        Ok(())
     }
 }
 
@@ -684,8 +971,102 @@ impl CompiledStreamAdmissionEvidence {
                     "stream-admission evidence contains an empty or duplicate observation id",
                 ));
             }
-            SchemaHash::new(observation.physical_schema_hash.clone())?;
+            if observation.physical_observation_hash
+                != observation.physical_observation.identity_hash()?.as_str()
+            {
+                return Err(CdfError::data(format!(
+                    "stream-admission observation {:?} has a physical-observation hash mismatch",
+                    observation.observation_id
+                )));
+            }
             admission.validate_materialized(&observation.coercion_plan)?;
+        }
+        Ok(())
+    }
+}
+
+#[non_exhaustive]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SchemaQuarantineObservationEvidence {
+    pub observation_id: String,
+    pub quarantine_hash: String,
+    pub physical_observation_hash: String,
+    pub physical_observation: PhysicalObservationEvidence,
+}
+
+impl SchemaQuarantineObservationEvidence {
+    pub fn new(
+        quarantine: &TerminalSchemaObservationQuarantine,
+        physical_observation: PhysicalObservationEvidence,
+    ) -> Result<Self> {
+        quarantine.validate()?;
+        let evidence = Self {
+            observation_id: quarantine.observation_id().to_owned(),
+            quarantine_hash: cdf_runtime::artifact_hash(quarantine)?,
+            physical_observation_hash: physical_observation.identity_hash()?.to_string(),
+            physical_observation,
+        };
+        evidence.validate(quarantine)?;
+        Ok(evidence)
+    }
+
+    pub fn validate(&self, quarantine: &TerminalSchemaObservationQuarantine) -> Result<()> {
+        if self.observation_id != quarantine.observation_id()
+            || self.quarantine_hash != cdf_runtime::artifact_hash(quarantine)?
+            || self.physical_observation_hash != self.physical_observation.identity_hash()?.as_str()
+            || self.physical_observation_hash != quarantine.physical_schema_hash().as_str()
+            || quarantine.source_position().is_none()
+        {
+            return Err(CdfError::data(format!(
+                "schema-quarantine observation {:?} does not bind its quarantine, physical schema, and processed position",
+                self.observation_id
+            )));
+        }
+        Ok(())
+    }
+}
+
+#[non_exhaustive]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CompiledSchemaQuarantineEvidence {
+    pub compiled_admission_hash: String,
+    pub baseline_schema_hash: String,
+    pub effective_schema_hash: String,
+    pub observations: Vec<SchemaQuarantineObservationEvidence>,
+}
+
+impl CompiledSchemaQuarantineEvidence {
+    pub fn new(
+        admission: &CompiledSchemaAdmissionPlan,
+        observations: Vec<SchemaQuarantineObservationEvidence>,
+    ) -> Result<Self> {
+        let evidence = Self {
+            compiled_admission_hash: cdf_runtime::artifact_hash(admission)?,
+            baseline_schema_hash: admission.baseline_schema_hash.to_string(),
+            effective_schema_hash: admission.effective_schema_hash.to_string(),
+            observations,
+        };
+        evidence.validate_admission(admission)?;
+        Ok(evidence)
+    }
+
+    pub fn validate_admission(&self, admission: &CompiledSchemaAdmissionPlan) -> Result<()> {
+        if self.compiled_admission_hash != cdf_runtime::artifact_hash(admission)?
+            || self.baseline_schema_hash != admission.baseline_schema_hash.as_str()
+            || self.effective_schema_hash != admission.effective_schema_hash.as_str()
+        {
+            return Err(CdfError::data(
+                "schema-quarantine evidence does not match the recorded compiled admission plan",
+            ));
+        }
+        let mut ids = BTreeSet::new();
+        if self.observations.iter().any(|observation| {
+            observation.observation_id.is_empty()
+                || !ids.insert(observation.observation_id.as_str())
+        }) {
+            return Err(CdfError::data(
+                "schema-quarantine evidence contains an empty or duplicate observation id",
+            ));
         }
         Ok(())
     }
@@ -701,14 +1082,14 @@ pub struct EngineSchemaAuthority {
 
 #[non_exhaustive]
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct EngineOutputSchema {
+pub struct CompiledArrowSchema {
     pub version: u16,
     pub arrow_schema_hash: SchemaHash,
     pub fields: Vec<CanonicalArrowField>,
     pub metadata: BTreeMap<String, String>,
 }
 
-impl EngineOutputSchema {
+impl CompiledArrowSchema {
     pub fn from_arrow(schema: &Schema) -> Result<Self> {
         let arrow_schema_hash = cdf_kernel::canonical_arrow_schema_hash(schema)?;
         let fields = schema
@@ -731,7 +1112,7 @@ impl EngineOutputSchema {
     pub fn to_arrow(&self) -> Result<Arc<Schema>> {
         if self.version != 1 {
             return Err(CdfError::data(format!(
-                "unsupported engine output schema version {}",
+                "unsupported compiled Arrow schema version {}",
                 self.version
             )));
         }
@@ -747,7 +1128,7 @@ impl EngineOutputSchema {
         let actual = cdf_kernel::canonical_arrow_schema_hash(schema.as_ref())?;
         if actual != self.arrow_schema_hash {
             return Err(CdfError::data(format!(
-                "compiled output schema hash mismatch: plan records {}, materialized {}",
+                "compiled Arrow schema hash mismatch: plan records {}, materialized {}",
                 self.arrow_schema_hash, actual
             )));
         }
@@ -761,6 +1142,7 @@ pub struct EffectiveSchemaPlanEvidence {
     pub authority: EffectiveSchemaEvidence,
     pub effective_arrow_schema_hash: SchemaHash,
     pub observations: Vec<EffectiveSchemaObservationCoercion>,
+    pub physical_observations: BTreeMap<String, PhysicalObservationEvidence>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub terminal_quarantines: Vec<TerminalSchemaObservationQuarantine>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -773,6 +1155,7 @@ pub struct EffectiveSchemaPlanEvidence {
 pub struct EffectiveSchemaObservationCoercion {
     pub observation_id: String,
     pub physical_schema_hash: SchemaHash,
+    pub physical_observation: PhysicalObservationEvidence,
     pub coercion_plan: SchemaCoercionPlan,
 }
 

@@ -145,7 +145,7 @@ fn compile_test_file_resource(root: &Path, document: &str) -> cdf_declarative::F
     resolved_test_file_resource(&resource)
 }
 
-const SCHEMA_HASH: &str = "schema-v1";
+const SCHEMA_HASH: &str = "sha256:f3e5592a1a5159773a70d3dfc1255d47a98be505b2ce6e57218e5c879c4eaeef";
 const LIVE_FILE_RESOURCE: &str = r#"
 [source.local]
 kind = "files"
@@ -852,7 +852,7 @@ fn build_package_with_options(
         )
         .unwrap();
     write_state_commit_artifacts(&builder, &segment, disposition, checkpoint_id);
-    write_compiled_expression_artifacts(&builder, stale);
+    write_compiled_expression_artifacts(&builder, stale, true, None);
     builder.finish_with_status(status).unwrap()
 }
 
@@ -903,6 +903,47 @@ fn build_zero_segment_processed_package(package_dir: &Path, package_id: &str) ->
             .unwrap(),
         )
         .unwrap();
+    let physical_schema = std::sync::Arc::new(Schema::new(vec![
+        Field::new("id", DataType::Utf8, false),
+        Field::new("name", DataType::Utf8, true),
+    ]));
+    let physical_hash = cdf_kernel::canonical_arrow_schema_hash(physical_schema.as_ref()).unwrap();
+    let mut quarantine = cdf_kernel::TerminalSchemaObservationQuarantine::new(
+        "month-07.parquet",
+        physical_hash,
+        "schema-observation:incompatible",
+        "schema_observation_quarantined",
+        cdf_kernel::SchemaObservationPolicy::Evolve,
+        "publish a compatible source type, declare an allowed coercion, or repin the schema after review",
+        vec![
+            cdf_kernel::SchemaObservationFieldQuarantine::new_field_path(
+                vec!["id".to_owned()],
+                Some(
+                    cdf_kernel::CanonicalArrowField::from_arrow(physical_schema.field(0)).unwrap(),
+                ),
+                Some(
+                    cdf_kernel::CanonicalArrowField::from_arrow(&Field::new(
+                        "id",
+                        DataType::Int64,
+                        false,
+                    ))
+                    .unwrap(),
+                ),
+                "incompatible fixture schema",
+            )
+            .unwrap(),
+        ],
+    )
+    .unwrap();
+    quarantine
+        .bind_source_position(state_delta.output_position.clone())
+        .unwrap();
+    builder
+        .write_json_artifact(
+            "quarantine/schema-observations.json",
+            &vec![quarantine.clone()],
+        )
+        .unwrap();
     builder.write_input_checkpoint_artifact(&None).unwrap();
     builder
         .write_state_delta_preimage_artifact(&state_delta)
@@ -916,11 +957,28 @@ fn build_zero_segment_processed_package(package_dir: &Path, package_id: &str) ->
             Vec::new(),
         ))
         .unwrap();
-    write_compiled_expression_artifacts(&builder, false);
+    write_compiled_expression_artifacts(
+        &builder,
+        false,
+        false,
+        Some((
+            &quarantine,
+            cdf_engine::PhysicalObservationEvidence::arrow_schema(physical_schema.as_ref())
+                .unwrap(),
+        )),
+    );
     builder.finish().unwrap()
 }
 
-fn write_compiled_expression_artifacts(builder: &PackageBuilder, stale: bool) {
+fn write_compiled_expression_artifacts(
+    builder: &PackageBuilder,
+    stale: bool,
+    write_stream_evidence: bool,
+    quarantine: Option<(
+        &cdf_kernel::TerminalSchemaObservationQuarantine,
+        cdf_engine::PhysicalObservationEvidence,
+    )>,
+) {
     let schema = sample_batch(vec![], vec![]).schema();
     let mut program = compile_validation_program(
         &ContractPolicy::evolve(),
@@ -972,23 +1030,47 @@ fn write_compiled_expression_artifacts(builder: &PackageBuilder, stale: bool) {
         .compiled_schema_admission
         .instantiate(schema.as_ref(), &physical_schema_hash)
         .unwrap();
-    builder
-        .write_json_artifact(
-            "schema/stream-admission-evidence.json",
-            &CompiledStreamAdmissionEvidence::new(
-                &plan.compiled_schema_admission,
-                vec![
-                    StreamAdmissionObservationEvidence::new(
-                        "artifact-fixture",
-                        physical_schema_hash,
-                        coercion_plan,
-                    )
-                    .unwrap(),
-                ],
+    if write_stream_evidence {
+        builder
+            .write_json_artifact(
+                "schema/stream-admission-evidence.json",
+                &CompiledStreamAdmissionEvidence::new(
+                    &plan.compiled_schema_admission,
+                    vec![
+                        StreamAdmissionObservationEvidence::new(
+                            "artifact-fixture",
+                            cdf_engine::PhysicalObservationEvidence::arrow_schema(schema.as_ref())
+                                .unwrap(),
+                            coercion_plan,
+                            cdf_engine::StreamAdmissionCompletion::Complete {
+                                source_position: position(3),
+                            },
+                        )
+                        .unwrap(),
+                    ],
+                )
+                .unwrap(),
             )
-            .unwrap(),
-        )
-        .unwrap();
+            .unwrap();
+    }
+    if let Some((quarantine, physical_observation)) = quarantine {
+        builder
+            .write_json_artifact(
+                "quarantine/schema-admission-evidence.json",
+                &cdf_engine::CompiledSchemaQuarantineEvidence::new(
+                    &plan.compiled_schema_admission,
+                    vec![
+                        cdf_engine::SchemaQuarantineObservationEvidence::new(
+                            quarantine,
+                            physical_observation,
+                        )
+                        .unwrap(),
+                    ],
+                )
+                .unwrap(),
+            )
+            .unwrap();
+    }
 }
 
 struct ArtifactPlanResource {
@@ -1069,6 +1151,24 @@ fn write_state_commit_artifacts(
         schema_hash: SchemaHash::new(SCHEMA_HASH).unwrap(),
         segments: segments.clone(),
     };
+    let processed = ProcessedObservationPosition::new(
+        "artifact-fixture",
+        ProcessedObservationOutcome::Admitted,
+        state_delta.output_position.clone(),
+    )
+    .unwrap();
+    builder
+        .write_json_artifact(
+            PROCESSED_OBSERVATIONS_FILE,
+            &ProcessedObservationEvidenceArtifact::new(
+                None,
+                disposition.clone(),
+                vec![processed],
+                state_delta.output_position.clone(),
+            )
+            .unwrap(),
+        )
+        .unwrap();
     let commit_plan = DestinationCommitPlanPreimage::package_hash_token(
         TargetName::new("orders").unwrap(),
         disposition,

@@ -39,6 +39,7 @@ The user ratified fixed schema before final plan, direct cold-result reuse, and 
 - 2026-07-14: The duplicate probe was removed and cold discovery's already-held physical schema catalog was compiled directly into the final cold plan. The HTTP Parquet lifecycle test then passed with the auto-pin request trace byte-for-byte equal to one standalone discovery trace. A pinned rerun correctly performs no preparation probe, but normalized source fields now require SA1's source-neutral admission program because the old per-file coercion evidence was manufactured by the prohibited pre-scan. This is a real dependency, not permission to restore discovery I/O.
 - 2026-07-14: SA1 supplied the missing admission authority. The cold command now consumes its first discovery result directly; ordinary pinned preparation verifies only the snapshot and linked discovery manifest; and the registered-format execution fallback that called `driver.discover(...)` before decode was deleted. The HTTP Parquet regression now exercises a fresh pinned resource and records zero preparation requests, one sequential extraction GET, and zero ranged schema probes.
 - 2026-07-14: Rebound cold discovery's effective identity to the final linked snapshot hash before final planning. This removes the former first-run-only schema identity: cold auto-pin, the committed checkpoint, and every later pinned command now name the same fixed schema epoch.
+- 2026-07-14: The first independent review rejected closure because the integrated package evidence did not yet bind every execution outcome strongly enough for exact replay. No discovery pre-scan was restored. The repair instead carried the compiler's physical observations and the stream's exact positions through SA1's generic evidence model, including schema-only codec output for empty columnar inputs.
 
 ## Blockers
 
@@ -50,6 +51,7 @@ None. SA1's compiled admission operation is integrated and the pinned rerun is g
 - Artifact-only pin hydration: both exact `pinned_schema_preparation_*` project tests passed; one removes the source directory before preparation.
 - CLI authority reporting: `CARGO_BUILD_JOBS=12 cargo test -p cdf-cli plan_local_parquet_discover_autopins_snapshot_and_reports_hash -- --nocapture` passed.
 - Cold/pinned identity stability is covered by the local/HTTP ad-hoc, plan auto-pin, and run auto-pin CLI regressions; they now assert equality between the execution schema and the linked pinned snapshot rather than preserving the superseded schema-only identity.
+- The repaired pinned multi-file lifecycle remains green: `CARGO_BUILD_JOBS=12 cargo test -p cdf-cli --lib pinned_multi_file_parquet_keeps_fixed_schema_and_admits_new_physical_schemas_in_stream -- --nocapture` passed with three files, including a zero-row Parquet file, and no preparation discovery pass.
 
 ## Review
 

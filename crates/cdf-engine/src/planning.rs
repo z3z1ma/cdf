@@ -12,9 +12,10 @@ use cdf_kernel::{
 };
 
 use crate::{
-    CompiledSchemaAdmissionPlan, EffectiveSchemaObservationCoercion, EffectiveSchemaPlanEvidence,
-    EngineOutputSchema, EnginePlan, EnginePlanInput, EngineSchemaAuthority, EstimateExplain,
-    ExplainData, OperatorNode, PartitionExplain, PlanBoundedness, PredicateExplain,
+    CompiledArrowSchema, CompiledSchemaAdmissionPlan, EffectiveSchemaObservationCoercion,
+    EffectiveSchemaPlanEvidence, EnginePlan, EnginePlanInput, EngineSchemaAuthority,
+    EstimateExplain, ExplainData, OperatorNode, PartitionExplain, PlanBoundedness,
+    PredicateExplain,
     expression::{
         mark_cursor_subsumed, plan_expression, record_exact_source_expression,
         record_native_contract_expression, validate_recorded_expressions,
@@ -30,7 +31,7 @@ struct PlanFinishContext {
     projection_pushed: bool,
     limit_pushed: bool,
     estimate_support: EstimateSupport,
-    output_schema: EngineOutputSchema,
+    output_schema: CompiledArrowSchema,
     schema_authority: EngineSchemaAuthority,
     resource_schema: arrow_schema::Schema,
     schema_admission_constraint: arrow_schema::Schema,
@@ -69,7 +70,7 @@ impl Planner {
             delivery_guarantee: delivery_guarantee(write_disposition.clone()),
         };
         let effective_schema_evidence = bind_effective_schema_evidence(&mut scan, resource)?;
-        let output_schema = EngineOutputSchema::from_arrow(
+        let output_schema = CompiledArrowSchema::from_arrow(
             compile_output_schema(
                 resource.schema().as_ref(),
                 &input.validation_program,
@@ -103,6 +104,10 @@ impl Planner {
                     .map(|cursor| cursor.field.clone()),
             },
         )?;
+        if let Some(evidence) = &effective_schema_evidence {
+            plan.compiled_schema_admission
+                .validate_preobserved_evidence(evidence)?;
+        }
         plan.effective_schema_evidence = effective_schema_evidence;
         Ok(plan)
     }
@@ -131,7 +136,7 @@ impl Planner {
         let mut scan = resource.negotiate(&physical_request)?;
         validate_negotiated_scan(&physical_request, &scan)?;
         let effective_schema_evidence = bind_effective_schema_evidence(&mut scan, resource)?;
-        let output_schema = EngineOutputSchema::from_arrow(
+        let output_schema = CompiledArrowSchema::from_arrow(
             compile_output_schema(
                 resource.schema().as_ref(),
                 &input.validation_program,
@@ -171,6 +176,10 @@ impl Planner {
                     .map(|cursor| cursor.field.clone()),
             },
         )?;
+        if let Some(evidence) = &effective_schema_evidence {
+            plan.compiled_schema_admission
+                .validate_preobserved_evidence(evidence)?;
+        }
         plan.effective_schema_evidence = effective_schema_evidence;
         Ok(plan)
     }
@@ -529,7 +538,7 @@ pub(crate) fn rebind_validation_program(
         candidate.compiled_schema_admission.type_policy.clone(),
     )?;
     compiled_schema_admission.source = source_binding;
-    let output_schema = EngineOutputSchema::from_arrow(
+    let output_schema = CompiledArrowSchema::from_arrow(
         compile_output_schema(
             expression_schema,
             &program,
@@ -627,6 +636,24 @@ where
             )));
         }
     }
+    let physical_observations = evidence
+        .observations
+        .iter()
+        .map(|observation| {
+            let physical_schema = runtime
+                .physical_schema(&observation.physical_schema_hash)
+                .ok_or_else(|| {
+                    CdfError::data(format!(
+                        "effective schema runtime omitted physical schema {} for observation {:?}",
+                        observation.physical_schema_hash, observation.observation_id
+                    ))
+                })?;
+            Ok((
+                observation.observation_id.clone(),
+                crate::PhysicalObservationEvidence::arrow_schema(physical_schema.as_ref())?,
+            ))
+        })
+        .collect::<Result<BTreeMap<_, _>>>()?;
     let observations = evidence
         .observations
         .iter()
@@ -653,6 +680,9 @@ where
             Ok(EffectiveSchemaObservationCoercion {
                 observation_id: observation.observation_id.clone(),
                 physical_schema_hash: observation.physical_schema_hash.clone(),
+                physical_observation: crate::PhysicalObservationEvidence::arrow_schema(
+                    physical_schema.as_ref(),
+                )?,
                 coercion_plan: reconciliation.plan,
             })
         })
@@ -663,6 +693,7 @@ where
             resource.schema().as_ref(),
         )?,
         observations,
+        physical_observations,
         terminal_quarantines: runtime.terminal_quarantines.clone(),
         discovery_executor_budget: runtime.discovery_executor_budget.clone(),
         observation_bindings,
@@ -724,7 +755,7 @@ where
             "engine plan schema authority does not match the execution resource",
         ));
     }
-    let expected_output = EngineOutputSchema::from_arrow(
+    let expected_output = CompiledArrowSchema::from_arrow(
         compile_output_schema(
             resource.schema().as_ref(),
             &plan.validation_program,

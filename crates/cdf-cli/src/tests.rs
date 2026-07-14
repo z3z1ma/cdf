@@ -2885,7 +2885,7 @@ fn local_arrow_ipc_discover_pin_show_diff_preview_and_run_share_pinned_schema() 
     let baseline_hash = auto_pin_json["result"]["schema_snapshot"]["schema_hash"]
         .as_str()
         .unwrap();
-    assert_ne!(pinned_hash, baseline_hash);
+    assert_eq!(pinned_hash, baseline_hash);
     let snapshot_path = auto_pin_json["result"]["resource_schema"]["snapshot_path"]
         .as_str()
         .unwrap();
@@ -3008,12 +3008,12 @@ fn local_arrow_ipc_discover_pin_show_diff_preview_and_run_share_pinned_schema() 
         packaged_schema.field(0).metadata()["cdf:source_name"],
         "VendorID"
     );
-    let per_observation: serde_json::Value = serde_json::from_slice(
-        &fs::read(package_dir.join("schema/per-observation-coercion.json")).unwrap(),
+    let stream_admission: serde_json::Value = serde_json::from_slice(
+        &fs::read(package_dir.join("schema/stream-admission-evidence.json")).unwrap(),
     )
     .unwrap();
     let coercion: cdf_contract::SchemaCoercionPlan =
-        serde_json::from_value(per_observation["observations"][0]["coercion_plan"].clone())
+        serde_json::from_value(stream_admission["observations"][0]["coercion_plan"].clone())
             .unwrap();
     let vendor = coercion
         .fields
@@ -3435,12 +3435,12 @@ schema = { fields = [
     )
     .unwrap();
     assert_eq!(evidence["authority"]["baseline"]["kind"], "declared");
-    let per_observation: serde_json::Value = serde_json::from_slice(
-        &fs::read(package_dir.join("schema/per-observation-coercion.json")).unwrap(),
+    let stream_admission: serde_json::Value = serde_json::from_slice(
+        &fs::read(package_dir.join("schema/stream-admission-evidence.json")).unwrap(),
     )
     .unwrap();
     let coercion: cdf_contract::SchemaCoercionPlan =
-        serde_json::from_value(per_observation["observations"][0]["coercion_plan"].clone())
+        serde_json::from_value(stream_admission["observations"][0]["coercion_plan"].clone())
             .unwrap();
     let vendor = coercion
         .fields
@@ -6009,6 +6009,14 @@ fn sampled_discovery_renders_every_cli_path_and_routes_unseen_drift_to_package_q
     .unwrap();
     assert_eq!(quarantine[0]["observation_id"], "middle.parquet");
     assert_eq!(quarantine[0]["rule_id"], "schema-observation:incompatible");
+    let quarantine_admission: serde_json::Value = serde_json::from_slice(
+        &fs::read(package.join("quarantine/schema-admission-evidence.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        quarantine_admission["observations"][0]["observation_id"],
+        "middle.parquet"
+    );
     assert!(cdf_package::PackageReader::open(&package).is_ok());
     let processed: serde_json::Value = serde_json::from_slice(
         &fs::read(package.join("state/processed-observations.json")).unwrap(),
@@ -10183,8 +10191,8 @@ fn pinned_multi_file_parquet_keeps_fixed_schema_and_admits_new_physical_schemas_
     assert_eq!(preview_report["result"]["attested_partition_count"], 0);
     assert_eq!(preview_report["result"]["inspected_partition_count"], 3);
     assert_eq!(
-        preview_report["result"]["inspected_batch_count"], 2,
-        "the opened empty Parquet partition produces no record batch"
+        preview_report["result"]["inspected_batch_count"], 3,
+        "the empty Parquet partition carries its physical schema in a zero-row batch"
     );
     assert_eq!(preview_report["result"]["row_count"], 4);
     assert_eq!(preview_report["result"]["terminal_quarantine_count"], 0);
@@ -10247,7 +10255,7 @@ fn pinned_multi_file_parquet_keeps_fixed_schema_and_admits_new_physical_schemas_
     )
     .unwrap();
     let observations = stream_admission["observations"].as_array().unwrap();
-    assert_eq!(observations.len(), 2);
+    assert_eq!(observations.len(), 3);
     assert!(observations.iter().any(|observation| {
         observation["coercion_plan"]["fields"]
             .as_array()
@@ -10425,6 +10433,17 @@ fn financial_freeze_quarantines_deviating_file_and_commits_mixed_processed_manif
     assert_eq!(
         quarantines[0]["rule_id"],
         "schema-observation:freeze-deviation"
+    );
+    let quarantine_admission: serde_json::Value = serde_json::from_slice(
+        &fs::read(package.join("quarantine/schema-admission-evidence.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        quarantine_admission["observations"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
     );
     let processed: serde_json::Value = serde_json::from_slice(
         &fs::read(package.join("state/processed-observations.json")).unwrap(),
@@ -14770,12 +14789,20 @@ fn write_large_vendor_arrow_ipc(project: &TestProject, filename: &str) {
         ],
         HashMap::from([("owner".to_owned(), "source-system".to_owned())]),
     ));
+    let mut state = 0x9e37_79b9_7f4a_7c15_u64;
+    let mut payload = String::with_capacity(1_000_000);
+    for _ in 0..1_000_000 {
+        state ^= state << 13;
+        state ^= state >> 7;
+        state ^= state << 17;
+        payload.push(char::from(b'a' + (state % 26) as u8));
+    }
     let batch = RecordBatch::try_new(
         schema,
         vec![
             Arc::new(Int32Array::from_iter_values([1_i32, 2_i32])),
             Arc::new(StringArray::from(vec![
-                Some("x".repeat(1_000_000)),
+                Some(payload),
                 Some("second".to_owned()),
             ])),
         ],
@@ -14911,16 +14938,7 @@ fn write_schema_promote_package_fixture_for_target_with_commit(
     let segment = builder
         .write_segment(SegmentId::new("seg-000001").unwrap(), &[batch])
         .unwrap();
-    let output_position = SourcePosition::FileManifest(FileManifest {
-        version: CHECKPOINT_STATE_VERSION,
-        files: vec![FilePosition {
-            path: "events.parquet".to_owned(),
-            size_bytes: 1,
-            etag: None,
-            object_version: None,
-            sha256: Some("sha256:source".to_owned()),
-        }],
-    });
+    let output_position = schema_promote_fixture_position();
     let state_segment = StateSegment {
         segment_id: segment.segment_id.clone(),
         scope: ScopeKey::Resource,
@@ -14943,6 +14961,25 @@ fn write_schema_promote_package_fixture_for_target_with_commit(
     builder.write_input_checkpoint_artifact(&None).unwrap();
     builder
         .write_state_delta_preimage_artifact(&state_delta)
+        .unwrap();
+    builder
+        .write_json_artifact(
+            cdf_package_contract::PROCESSED_OBSERVATIONS_FILE,
+            &cdf_package_contract::ProcessedObservationEvidenceArtifact::new(
+                None,
+                WriteDisposition::Append,
+                vec![
+                    cdf_kernel::ProcessedObservationPosition::new(
+                        "cli-current-fixture",
+                        cdf_kernel::ProcessedObservationOutcome::Admitted,
+                        state_delta.output_position.clone(),
+                    )
+                    .unwrap(),
+                ],
+                state_delta.output_position.clone(),
+            )
+            .unwrap(),
+        )
         .unwrap();
     builder
         .write_commit_plan_preimage_artifact(&DestinationCommitPlanPreimage::package_hash_token(
@@ -15033,8 +15070,12 @@ fn write_current_replay_artifacts(builder: &PackageBuilder, schema: &Schema, sch
                 vec![
                     StreamAdmissionObservationEvidence::new(
                         "cli-current-fixture",
-                        physical_schema_hash,
+                        cdf_engine::PhysicalObservationEvidence::arrow_schema(schema.as_ref())
+                            .unwrap(),
                         coercion_plan,
+                        cdf_engine::StreamAdmissionCompletion::Complete {
+                            source_position: schema_promote_fixture_position(),
+                        },
                     )
                     .unwrap(),
                 ],
@@ -15049,6 +15090,19 @@ fn write_current_replay_artifacts(builder: &PackageBuilder, schema: &Schema, sch
             &BTreeMap::from([("schema_hash", schema_hash)]),
         )
         .unwrap();
+}
+
+fn schema_promote_fixture_position() -> SourcePosition {
+    SourcePosition::FileManifest(FileManifest {
+        version: CHECKPOINT_STATE_VERSION,
+        files: vec![FilePosition {
+            path: "events.parquet".to_owned(),
+            size_bytes: 1,
+            etag: None,
+            object_version: None,
+            sha256: Some("sha256:source".to_owned()),
+        }],
+    })
 }
 
 struct ReplayArtifactResource {

@@ -645,6 +645,7 @@ pub struct TerminalSchemaObservationQuarantine {
     policy: SchemaObservationPolicy,
     remediation: String,
     fields: Vec<SchemaObservationFieldQuarantine>,
+    source_position: Option<SourcePosition>,
 }
 
 impl TerminalSchemaObservationQuarantine {
@@ -665,6 +666,7 @@ impl TerminalSchemaObservationQuarantine {
             policy,
             remediation: remediation.into(),
             fields,
+            source_position: None,
         };
         quarantine.validate()?;
         Ok(quarantine)
@@ -713,6 +715,25 @@ impl TerminalSchemaObservationQuarantine {
 
     pub fn fields(&self) -> &[SchemaObservationFieldQuarantine] {
         &self.fields
+    }
+
+    pub fn source_position(&self) -> Option<&SourcePosition> {
+        self.source_position.as_ref()
+    }
+
+    pub fn bind_source_position(&mut self, source_position: SourcePosition) -> Result<()> {
+        if self
+            .source_position
+            .as_ref()
+            .is_some_and(|existing| existing != &source_position)
+        {
+            return Err(CdfError::data(format!(
+                "schema quarantine {:?} carries conflicting source positions",
+                self.observation_id
+            )));
+        }
+        self.source_position = Some(source_position);
+        Ok(())
     }
 }
 

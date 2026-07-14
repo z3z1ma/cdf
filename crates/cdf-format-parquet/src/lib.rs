@@ -160,9 +160,21 @@ impl FormatDriver for ParquetFormatDriver {
             ))
             .await
             .map_err(parquet_error)?;
-            builder
-                .metadata()
-                .row_groups()
+            let row_groups = builder.metadata().row_groups();
+            if row_groups.is_empty() {
+                let unit = DecodeUnitPlan {
+                    unit_id: "parquet-schema-only".to_owned(),
+                    ordinal: 0,
+                    extent: None,
+                    estimated_working_set_bytes: request
+                        .target_batch_bytes
+                        .min(self.descriptor.maximum_working_set_bytes),
+                    independently_retryable: true,
+                };
+                unit.validate()?;
+                return Ok(vec![unit]);
+            }
+            row_groups
                 .iter()
                 .enumerate()
                 .map(|(ordinal, row_group)| {
@@ -213,10 +225,27 @@ impl FormatDriver for ParquetFormatDriver {
             ))
             .await
             .map_err(parquet_error)?
-            .with_batch_size(request.target_batch_rows)
-            .with_row_groups(vec![usize::try_from(request.unit.ordinal).map_err(
-                |_| CdfError::data("Parquet row-group ordinal exceeds usize"),
-            )?]);
+            .with_batch_size(request.target_batch_rows);
+            if request.unit.unit_id == "parquet-schema-only" {
+                if !builder.metadata().row_groups().is_empty() {
+                    return Err(CdfError::data(
+                        "Parquet schema-only decode unit no longer describes an empty file",
+                    ));
+                }
+            } else {
+                let row_group = usize::try_from(request.unit.ordinal)
+                    .map_err(|_| CdfError::data("Parquet row-group ordinal exceeds usize"))?;
+                let expected_unit_id = format!("row-group-{:08}", request.unit.ordinal);
+                if request.unit.unit_id != expected_unit_id
+                    || row_group >= builder.metadata().row_groups().len()
+                {
+                    return Err(CdfError::contract(format!(
+                        "Parquet decode unit {:?} does not identify row group {}",
+                        request.unit.unit_id, request.unit.ordinal
+                    )));
+                }
+                builder = builder.with_row_groups(vec![row_group]);
+            }
             let actual_hash = cdf_kernel::canonical_arrow_schema_hash(builder.schema())?;
             if request.schema.authority == DecodeSchemaAuthority::VerifiedPhysicalObservation {
                 let expected_hash = cdf_kernel::canonical_arrow_schema_hash(
@@ -248,12 +277,15 @@ impl FormatDriver for ParquetFormatDriver {
                 let mask = ProjectionMask::roots(builder.parquet_schema(), roots);
                 builder = builder.with_projection(mask);
             }
+            let physical_schema = builder.schema().clone();
             let parquet_stream = builder.build().map_err(parquet_error)?;
             let state = DecodeState {
                 stream: Box::pin(parquet_stream),
                 request,
                 observed_schema_hash: actual_hash,
+                physical_schema,
                 sequence: 0,
+                emitted_schema: false,
             };
             Ok(Box::pin(stream::try_unfold(state, |mut state| async move {
                 state.request.cancellation.check()?;
@@ -263,10 +295,14 @@ impl FormatDriver for ParquetFormatDriver {
                 )?
                 .as_minimum_working_set();
                 let lease = reserve(Arc::clone(&state.request.memory), reservation).await?;
-                let Some(record_batch) = state.stream.try_next().await.map_err(parquet_error)?
-                else {
-                    return Ok(None);
+                let record_batch = match state.stream.try_next().await.map_err(parquet_error)? {
+                    Some(record_batch) => record_batch,
+                    None if !state.emitted_schema => {
+                        arrow_array::RecordBatch::new_empty(Arc::clone(&state.physical_schema))
+                    }
+                    None => return Ok(None),
                 };
+                state.emitted_schema = true;
                 let batch_id = BatchId::new(format!(
                     "{}-u{:08}-b{:08}",
                     state.request.batch_id_prefix, state.request.unit.ordinal, state.sequence
@@ -345,7 +381,9 @@ struct DecodeState {
     stream: PinParquetStream,
     request: PhysicalDecodeRequest,
     observed_schema_hash: cdf_kernel::SchemaHash,
+    physical_schema: arrow_schema::SchemaRef,
     sequence: u64,
+    emitted_schema: bool,
 }
 
 type PinParquetStream = std::pin::Pin<

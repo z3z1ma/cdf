@@ -701,7 +701,7 @@ impl AccountedPhysicalBatch {
         let bytes = record_batch_retained_bytes(record_batch)?
             .checked_add(batch.header.pre_contract_evidence_retained_bytes()?)
             .ok_or_else(|| CdfError::data("physical Arrow outcome memory overflow"))?;
-        if bytes == 0 || lease.bytes() < bytes {
+        if lease.bytes() < bytes {
             return Err(CdfError::data(format!(
                 "physical Arrow outcome and evidence require {bytes} bytes but their lease owns {}",
                 lease.bytes()
@@ -1441,6 +1441,46 @@ mod tests {
         .unwrap();
         let accounted = AccountedPhysicalBatch::new(batch, lease).unwrap();
         let batch = accounted.into_batch().unwrap();
+
+        assert_eq!(batch.retained_bytes(), retained_bytes);
+        assert_eq!(memory.snapshot().current_bytes, retained_bytes);
+        drop(batch);
+        assert_eq!(memory.snapshot().current_bytes, 0);
+    }
+
+    #[test]
+    fn schema_bearing_empty_batch_retains_its_arrow_container_bytes() {
+        let record_batch = RecordBatch::new_empty(Arc::new(Schema::new(vec![Field::new(
+            "id",
+            DataType::Int64,
+            false,
+        )])));
+        let retained_bytes = record_batch_retained_bytes(&record_batch).unwrap();
+        assert!(retained_bytes > 0);
+        let memory = DeterministicMemoryCoordinator::new(4096, BTreeMap::new()).unwrap();
+        let lease = memory
+            .try_reserve(
+                &ReservationRequest::new(
+                    ConsumerKey::new("empty-format-test", MemoryClass::Decode).unwrap(),
+                    4096,
+                )
+                .unwrap(),
+            )
+            .unwrap()
+            .unwrap();
+        let batch = Batch::from_record_batch(
+            BatchId::new("empty-batch").unwrap(),
+            ResourceId::new("events").unwrap(),
+            PartitionId::new("part-0").unwrap(),
+            SchemaHash::new("schema-empty").unwrap(),
+            record_batch,
+        )
+        .unwrap();
+
+        let batch = AccountedPhysicalBatch::new(batch, lease)
+            .unwrap()
+            .into_batch()
+            .unwrap();
 
         assert_eq!(batch.retained_bytes(), retained_bytes);
         assert_eq!(memory.snapshot().current_bytes, retained_bytes);
