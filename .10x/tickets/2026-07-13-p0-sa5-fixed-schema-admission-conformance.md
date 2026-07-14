@@ -2,7 +2,7 @@ Status: open
 Created: 2026-07-13
 Updated: 2026-07-13
 Parent: .10x/tickets/2026-07-13-p0-fixed-schema-discovery-stream-admission.md
-Depends-On: .10x/tickets/2026-07-13-p0-sa0-cold-discovery-final-plan-lifecycle.md, .10x/tickets/2026-07-13-p0-sa1-compiled-stream-admission-plan.md, .10x/tickets/2026-07-13-p0-sa2-metadata-inventory-observation-cache.md, .10x/tickets/2026-07-13-p0-sa3-fused-codec-admission.md, .10x/tickets/2026-07-13-p0-sa4-dynamic-producer-admission.md
+Depends-On: .10x/tickets/done/2026-07-13-p0-sa0-cold-discovery-final-plan-lifecycle.md, .10x/tickets/done/2026-07-13-p0-sa1-compiled-stream-admission-plan.md, .10x/tickets/2026-07-13-p0-sa2-metadata-inventory-observation-cache.md, .10x/tickets/2026-07-13-p0-sa3-fused-codec-admission.md, .10x/tickets/2026-07-13-p0-sa4-dynamic-producer-admission.md
 
 # P0 SA5: fixed-schema discovery/admission conformance closure
 

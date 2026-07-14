@@ -1,8 +1,8 @@
-Status: active
+Status: done
 Created: 2026-07-13
 Updated: 2026-07-14
 Parent: .10x/tickets/2026-07-13-p0-fixed-schema-discovery-stream-admission.md
-Depends-On: .10x/tickets/2026-07-13-p0-sa1-compiled-stream-admission-plan.md
+Depends-On: .10x/tickets/done/2026-07-13-p0-sa1-compiled-stream-admission-plan.md
 
 # P0 SA0: cold discovery to final-plan lifecycle
 
@@ -55,7 +55,11 @@ None. SA1's compiled admission operation is integrated and the pinned rerun is g
 
 ## Review
 
-Pending fresh adversarial review of the integrated SA0/SA1 batch.
+The integrated SA0/SA1 implementation received repeated immutable adversarial review because lifecycle correctness depends on exact evidence authority. Review findings about replay coverage, typed materialized provenance, partition-scoped observation identity, live staged-ingress timing, and scan/replay parity were repaired without restoring any discovery pre-scan. The final review of `41702d78` returned no critical or significant findings.
+
+Verdict: pass.
+
+Residual risk: same-command payload-spool reuse and observation caching are intentionally owned by SA2/SA3; they do not weaken SA0's one-discovery/final-plan lifecycle.
 
 ## Retrospective
 

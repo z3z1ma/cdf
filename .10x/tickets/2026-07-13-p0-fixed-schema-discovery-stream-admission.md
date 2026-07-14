@@ -1,6 +1,6 @@
-Status: open
+Status: active
 Created: 2026-07-13
-Updated: 2026-07-13
+Updated: 2026-07-14
 Parent: .10x/tickets/2026-07-10-p3-terabyte-scale-program.md
 
 # P0 fixed-schema discovery and stream-admission program
@@ -11,8 +11,8 @@ Separate cold discovery from pinned execution: freeze a persistent or run-local 
 
 ## Children and sequence
 
-1. `.10x/tickets/2026-07-13-p0-sa0-cold-discovery-final-plan-lifecycle.md` makes cold discovery feed final planning directly and deletes the second pinned-preparation pass.
-2. `.10x/tickets/2026-07-13-p0-sa1-compiled-stream-admission-plan.md` defines the source/codec-neutral compiled stream-admission operation and package evidence.
+1. `.10x/tickets/done/2026-07-13-p0-sa0-cold-discovery-final-plan-lifecycle.md` makes cold discovery feed final planning directly and deletes the second pinned-preparation pass. Done.
+2. `.10x/tickets/done/2026-07-13-p0-sa1-compiled-stream-admission-plan.md` defines the source/codec-neutral compiled stream-admission operation and package evidence. Done.
 3. `.10x/tickets/2026-07-13-p0-sa2-metadata-inventory-observation-cache.md` removes payload reads/hashing from inventory, encodes both coverage axes, and adds exact cache identity.
 4. `.10x/tickets/2026-07-13-p0-sa3-fused-codec-admission.md` fuses row/binary observation with extraction, retains first windows, and hands discovery spools to execution.
 5. `.10x/tickets/2026-07-13-p0-sa4-dynamic-producer-admission.md` applies the bootstrap-barrier law to Python/Lua/WASM.
@@ -44,6 +44,7 @@ No same-run typed schema epoch, implicit promotion, or cache-as-authority behavi
 - 2026-07-13: Opened from the user's 100-remote-JSON-file counterexample. Current runtime-baseline selection explicitly sets `sample_files` to `None`, probes every candidate, then extraction opens the source again. The current FX1 refactor is preserving descriptor/version/options/probe-policy authority so SA1 can compile admission without format branches; it must not add a generic pre-extraction probe loop.
 - 2026-07-13: FX1 delivered the first prerequisite without claiming this program complete: ordinary remote file inventory now resolves format/compression from metadata and registered descriptors with zero payload ranges, and executable format bindings pin all codec semantics required by deferred admission. SA2 remains open for local payload-free identity and caching; SA3 remains open for retained-window discovery/extraction. Evidence: `.10x/evidence/2026-07-13-fx1-compiled-format-binding-metadata-inventory.md`.
 - 2026-07-13: The user corrected the absolute single-crossing model. A final plan still requires a fixed schema, so cold discovery may consume its explicit two-axis budget before plan finalization and may reread a small unspooled prefix. The prohibited behavior is a hidden full pre-scan, a second pinned-preparation discovery pass, or discarding a materialized payload spool. Ordinary pinned runs compile total admission and observe physical reality only while extracting. The active decision/spec were superseded and this graph was reshaped around those exact semantics.
+- 2026-07-14: SA0 and SA1 closed after exact cross-crate lifecycle and replay review. Cold discovery now feeds the final plan directly; pinned preparation performs no current-file schema discovery; the compiled stream-admission program is source/codec-neutral; and kernel-owned partition observation identity is enforced across planning, preview, execution, package evidence, and replay before mutation. SA2 is the next active child.
 
 ## Blockers
 

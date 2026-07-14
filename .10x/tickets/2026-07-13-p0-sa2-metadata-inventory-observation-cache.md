@@ -1,6 +1,6 @@
-Status: open
+Status: active
 Created: 2026-07-13
-Updated: 2026-07-13
+Updated: 2026-07-14
 Parent: .10x/tickets/2026-07-13-p0-fixed-schema-discovery-stream-admission.md
 
 # P0 SA2: metadata inventory, two-axis coverage, and observation cache
@@ -32,7 +32,7 @@ Cache keys and authority limits are fixed by the governing spec.
 
 ## Journal
 
-Pending.
+- 2026-07-14: Execution began after SA0/SA1 closed. Initial source audit confirms two remaining inventory violations: local transport metadata computes `file_sha256`, and file-resource planning computes it again. Discovery selection already precedes registered-format probes, providing the seam for exact two-axis evidence. No observation cache exists yet; this ticket will add one keyed only by strong generation/checksum plus compiled format/options, normalizer, and admission identity, with weak local metadata forced to miss.
 
 ## Blockers
 

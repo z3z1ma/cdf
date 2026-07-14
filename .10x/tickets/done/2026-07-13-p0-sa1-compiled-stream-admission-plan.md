@@ -1,4 +1,4 @@
-Status: active
+Status: done
 Created: 2026-07-13
 Updated: 2026-07-14
 Parent: .10x/tickets/2026-07-13-p0-fixed-schema-discovery-stream-admission.md
@@ -102,7 +102,11 @@ None. FX1's compiled format binding prerequisite is committed and evidenced.
 
 ## Review
 
-Pending fresh adversarial review of the integrated SA0/SA1 batch.
+Immutable adversarial reviews found and drove repair of every critical/significant authority gap: omitted/empty admission evidence, prose-based coercion claims, typed-schema/hash splits, duplicate identities, staged-ingress timing, divergent execution/replay identity derivation, batch misrouting, and complete replay binding. The final narrow review of `89b15dca..41702d78` returned no findings and confirmed that planning, preview, execution, and replay all enforce the kernel-owned scan invariant before mutation.
+
+Verdict: pass.
+
+Residual risk: codec-window fusion, retained payload reuse, and dynamic-producer bootstrap are explicitly delegated to SA3/SA4. Physical-schema catalog deduplication remains independently hash-keyed so partition-scoped observation identity does not duplicate schema payloads.
 
 ## Retrospective
 
