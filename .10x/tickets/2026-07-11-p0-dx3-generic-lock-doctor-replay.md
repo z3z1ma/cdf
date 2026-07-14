@@ -1,6 +1,6 @@
-Status: active
+Status: blocked
 Created: 2026-07-11
-Updated: 2026-07-12
+Updated: 2026-07-13
 Parent: .10x/tickets/2026-07-11-p0-destination-extension-boundary.md
 Depends-On: .10x/tickets/done/2026-07-11-p0-dx2-driver-owned-adapters-composition.md, .10x/tickets/2026-07-12-p0-dx3a-cli-destination-registry-authority.md
 
@@ -20,7 +20,7 @@ Replace lockfile URI matches, CLI destination runtime enum, doctor/replay target
 ## Blockers
 
 - Remaining focused report, doctor, and project reruns are pending the orchestrator-owned Cargo slot. A single focused `cdf-runtime` metadata-validation test passed after the earlier unrelated kernel compile failure cleared; no additional Cargo command was started after the orchestrator reserved the slot for other work. DX3 did not edit or repair the unrelated kernel files.
-- The fourth-driver regression now exercises real lock generation, project planning, project replay, artifact recovery, and doctor rendering, but not the CLI `resume` orchestrator. `ResumeAttempt` obtains the builtin registry through `ProjectContext`/`SelectedDestination` with no injectable registry seam. `.10x/tickets/2026-07-12-p0-dx3a-cli-destination-registry-authority.md` is the bounded executable owner for propagating the single CLI registry authority and proving a fourth driver through real resume. Direct artifact recovery is not claimed as resume evidence.
+- DX3A has implemented and focused-tested the real public CLI `resume` path with the injected fourth driver, resolving this ticket's original architectural blocker. DX3A itself is now blocked only by its explicit full-CLI-suite gate (272/291); this parent remains blocked until that child moves terminal, after which its fourth-driver evidence can be consumed without repetition.
 
 ## Journal
 

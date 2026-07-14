@@ -1,4 +1,4 @@
-Status: active
+Status: blocked
 Created: 2026-07-12
 Updated: 2026-07-13
 Parent: .10x/tickets/2026-07-11-p0-dx3-generic-lock-doctor-replay.md
@@ -68,10 +68,18 @@ Thread the borrowed registry explicitly through command dispatch and every curre
 - 2026-07-13 (execution): `CARGO_BUILD_JOBS=12 cargo test -p cdf-cli injected_fourth_destination -- --nocapture` passed all 3 public-path fourth-driver cases. `cargo test -p cdf-cli destination_registry_composition_is_confined_to_the_cli_root --lib -- --nocapture` passed the permanent composition assertion. The assertion confines concrete first-party imports to `destination_registry.rs` plus the authorized `doctor_drift.rs`, permits test-only fixture code, and pins exactly one production builtin construction in `lib.rs`.
 - 2026-07-13 (execution): `CARGO_BUILD_JOBS=12 cargo clippy -p cdf-cli --tests --no-deps -j12 -- -D warnings` passed after grouping loop-invariant backfill execution dependencies into `BackfillSliceExecutor`, removing an accidental registry double borrow, and moving the registry unit module after production items. Focused serial backfill execution proved both successful SQL cursor commits and failure/recovery behavior; three renderer/progress expectation tests remain red independently of the registry path.
 - 2026-07-13 (execution): The complete `cargo test -p cdf-cli --lib -j12` run completed in 44.55s with 273 passed and 18 failed. All new registry-authority and fourth-driver tests passed. The failures are pre-existing active-surface drift across Arrow IPC/coercion, deep-validation dependency injection, renderer table/progress expectations, schema-promotion destination fixtures, and obsolete unsupported-code expectations; none fail in the registry propagation or fourth-driver path. This is recorded as a suite-level limitation, not claimed as green closure evidence. A strict workspace clippy attempt also exposed pre-existing `nonminimal_bool` in `cdf-source-rest` and `needless_borrow` in `cdf-source-postgres`; CLI-only strict clippy is green.
+- 2026-07-13 (closure audit): Root reran the exact complete CLI library gate after the subsequent compatibility, JSON, schema, and state commits. It completed in 47.41s with 272 passed and 19 failed. All injected-registry, fourth-driver run/replay/resume, composition-law, doctor, inspect, redaction, and state-current-schema cases passed. The remaining failures are outside registry propagation and are now listed under Blockers instead of leaving this ticket inaccurately active with “None.”
 
 ## Blockers
 
-None. Scope, authority, behavior-preservation constraints, and acceptance evidence are established by the referenced active records and current source.
+The implementation is complete, but the explicit full existing-CLI-suite acceptance criterion is red (272/291). Durable owners for the failing categories are:
+
+- `.10x/tickets/2026-07-11-p1-cx2-compact-renderer-errors.md` and `.10x/tickets/2026-07-11-p1-cx3-live-progress-activity.md` — narrow table/list assertions and stderr progress expectations.
+- `.10x/tickets/2026-07-11-p0-sx1-source-extension-boundary.md`, `.10x/tickets/2026-07-11-p0-fx1-native-format-extension-boundary.md`, and `.10x/tickets/2026-07-11-p3-b3-arrow-ipc-codecs.md` — deep-validation runtime injection, compressed/remote Arrow IPC, and discovery identity parity.
+- `.10x/tickets/2026-07-11-p0-remove-preproduction-compatibility-vestiges.md` and `.10x/tickets/2026-07-11-p3-ws-v-vectorized-validation.md` — physical-to-compiled schema/coercion binding on actual file batches and stale error-contract assertions.
+- The active schema-promotion/product surface under `.10x/tickets/2026-07-05-implement-cdf-system.md` — Parquet execution-service injection, Postgres provenance preconditions, and current residual-count expectations.
+
+Closure requires those owners to clear the 19 named tests, one fresh complete CLI run, and a final review. No further registry redesign is indicated.
 
 ## Evidence
 
@@ -79,6 +87,7 @@ None. Scope, authority, behavior-preservation constraints, and acceptance eviden
 - Public injection and fourth driver: focused `injected_fourth_destination` run passed 3/3. It proves lock/inspect/doctor/plan are non-mutating, run performs one durable commit, duplicate JSON/human replay does not add one, errors redact userinfo, no-receipt resume contacts no source and commits receipt/checkpoint/package, and durable-receipt resume verifies and commits checkpoint/package without beginning another destination commit.
 - Architecture law: `destination_registry_composition_is_confined_to_the_cli_root` passed 1/1. It proves the checked source-import and builtin-construction constraints at this revision; it does not prove external crates cannot compose their own registry.
 - Local quality: `cargo fmt --all`, `git diff --check`, `cargo check -p cdf-cli --tests -j12`, and CLI-only strict clippy passed. The full CLI suite is not green: 273/291 passed with 18 unrelated active-surface failures named in the Journal. Therefore the ticket is not yet closed solely on a global-suite claim.
+- Current closure gate: `CARGO_BUILD_JOBS=12 cargo test -p cdf-cli --lib -j 12` completed with 272 passed and 19 failed in 47.41s. Every DX3A-specific authority/composition/fourth-driver case passed; the exact non-registry failures are recorded in the command output and grouped under Blockers. This is failure evidence, not a closure pass.
 
 ## Review
 
@@ -96,6 +105,8 @@ None. Scope, authority, behavior-preservation constraints, and acceptance eviden
 Concerns after implementation review. The registry lifetime, production composition, public API, consumer propagation, fourth-driver lifecycle, no-source resume, duplicate suppression, redaction, and permanent architecture law all pass focused falsification. Review found no driver-id branch, registry clone, `ProjectContext` registry ownership, helper-local reconstruction, fake resume helper, or compatibility alias. The execution review did find two significant generic redaction defects; both were repaired and are covered by the fourth-driver JSON/human/error assertions.
 
 Ticket closure remains blocked by its explicit full existing-CLI-suite criterion: the complete run is 273/291, with 18 failures on separately active compatibility, codec, deep-validation, renderer, and schema-promotion surfaces. The new authority tests are green, but focused evidence cannot substitute for that criterion. The next action is to clear those owning ticket surfaces, rerun the complete CLI suite, then perform final closure review; the implementation itself does not need another registry redesign.
+
+The 2026-07-13 closure audit reconfirmed that verdict with 272/291. Status is now `blocked` rather than `active`, and the blocker graph names the current owners. No critical or significant registry-authority defect was found.
 
 ## Retrospective
 
