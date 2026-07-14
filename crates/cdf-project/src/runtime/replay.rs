@@ -617,6 +617,12 @@ fn validate_package_compiled_schema_admission(package: &VerifiedPackageReader) -
     let lineage: cdf_engine::LineageSummary = package
         .reader()
         .verified_json_artifact(package.verification(), "lineage/lineage.json")?;
+    validate_stream_admission_lineage_coverage(
+        admitted.keys().map(String::as_str),
+        partial_admissions.keys().map(String::as_str),
+        unpositioned_admissions.keys().map(String::as_str),
+        &lineage,
+    )?;
     if !partial_admissions.is_empty() {
         let scan: cdf_kernel::ScanPlan = package
             .reader()
@@ -926,6 +932,39 @@ fn partial_lineage_matches_exactly(
         })
         .count()
         == 1
+}
+
+fn validate_stream_admission_lineage_coverage<'a>(
+    admitted: impl Iterator<Item = &'a str>,
+    partial: impl Iterator<Item = &'a str>,
+    unpositioned: impl Iterator<Item = &'a str>,
+    lineage: &cdf_engine::LineageSummary,
+) -> Result<()> {
+    let evidence_ids = admitted
+        .chain(partial)
+        .chain(unpositioned)
+        .collect::<std::collections::BTreeSet<_>>();
+    let mut lineage_ids = std::collections::BTreeSet::new();
+    let mut lineage_bindings = std::collections::BTreeSet::new();
+    for observation in &lineage.input_observations {
+        if observation.observation_id.is_empty()
+            || !lineage_bindings.insert((
+                observation.observation_id.as_str(),
+                observation.partition_id.as_str(),
+            ))
+        {
+            return Err(CdfError::data(
+                "execution lineage contains an empty or duplicate stream-admission observation binding",
+            ));
+        }
+        lineage_ids.insert(observation.observation_id.as_str());
+    }
+    if evidence_ids != lineage_ids {
+        return Err(CdfError::data(
+            "stream-admission evidence does not exactly cover execution lineage observations",
+        ));
+    }
+    Ok(())
 }
 
 fn replay_package_with_resolved_destination<Store>(
@@ -1878,7 +1917,10 @@ mod stream_admission_replay_tests {
 
     use cdf_engine::{LineageInputObservation, LineageSummary};
 
-    use super::{partial_lineage_matches_exactly, partial_position_matches_partition_scope};
+    use super::{
+        partial_lineage_matches_exactly, partial_position_matches_partition_scope,
+        validate_stream_admission_lineage_coverage,
+    };
 
     #[test]
     fn partial_position_binding_rejects_wrong_file_generation_and_cursor_field() {
@@ -1977,5 +2019,21 @@ mod stream_admission_replay_tests {
                 value: CursorValue::I64(8),
             }),
         ));
+
+        validate_stream_admission_lineage_coverage(
+            std::iter::empty(),
+            ["rest"].into_iter(),
+            std::iter::empty(),
+            &lineage,
+        )
+        .unwrap();
+        let error = validate_stream_admission_lineage_coverage(
+            std::iter::empty(),
+            std::iter::empty(),
+            std::iter::empty(),
+            &lineage,
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("exactly cover"), "{error}");
     }
 }

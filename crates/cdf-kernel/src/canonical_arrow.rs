@@ -1,9 +1,17 @@
 use std::{collections::BTreeMap, sync::Arc};
 
-use arrow_schema::{DataType, Field, IntervalUnit, TimeUnit, UnionFields, UnionMode};
+use arrow_schema::{DataType, Field, IntervalUnit, Schema, TimeUnit, UnionFields, UnionMode};
 use serde::{Deserialize, Serialize};
 
 use crate::{CdfError, Result};
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+#[non_exhaustive]
+pub struct CanonicalArrowSchema {
+    pub fields: Vec<CanonicalArrowField>,
+    pub metadata: BTreeMap<String, String>,
+}
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -152,6 +160,33 @@ impl CanonicalArrowField {
             Field::new(&self.name, self.data_type.to_arrow()?, self.nullable)
                 .with_metadata(self.metadata.clone().into_iter().collect()),
         )
+    }
+}
+
+impl CanonicalArrowSchema {
+    pub fn from_arrow(schema: &Schema) -> Result<Self> {
+        Ok(Self {
+            fields: schema
+                .fields()
+                .iter()
+                .map(|field| CanonicalArrowField::from_arrow(field))
+                .collect::<Result<Vec<_>>>()?,
+            metadata: schema
+                .metadata()
+                .iter()
+                .map(|(key, value)| (key.clone(), value.clone()))
+                .collect(),
+        })
+    }
+
+    pub fn to_arrow(&self) -> Result<Schema> {
+        Ok(Schema::new_with_metadata(
+            self.fields
+                .iter()
+                .map(CanonicalArrowField::to_arrow)
+                .collect::<Result<Vec<_>>>()?,
+            self.metadata.clone().into_iter().collect(),
+        ))
     }
 }
 

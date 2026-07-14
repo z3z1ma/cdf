@@ -250,6 +250,7 @@ pub fn read_arrow_ipc_file_path_with_declared_schema(
                 quarantine: Vec::new(),
                 residual_candidates: reconciled.residual_candidates,
                 schema_coercion_plan: Some(&reconciliation_plan),
+                physical_schema: Some(physical_schema.as_ref()),
             },
         )?,
         physical_schema_hash,
@@ -470,6 +471,7 @@ fn read_ndjson_bytes_with_declared_schema_and_scope(
                 quarantine: filtered.quarantine_facts,
                 residual_candidates: Vec::new(),
                 schema_coercion_plan: None,
+                physical_schema: None,
             },
         );
     }
@@ -522,6 +524,7 @@ fn read_ndjson_bytes_with_declared_schema_and_scope(
                 quarantine: filtered.quarantine_facts,
                 residual_candidates: reconciled.residual_candidates,
                 schema_coercion_plan: Some(&reconciliation_plan),
+                physical_schema: Some(physical_schema.as_ref()),
             },
         )?,
         physical_schema_hash,
@@ -674,7 +677,9 @@ pub fn stream_parquet_file_with_declared_schema_and_type_policy(
                 batch.header.observed_schema_hash = physical_schema_hash;
                 batch.header.source_position = position;
                 batch.header.schema_coercion_plan = Some(reconciliation_plan);
-                batch.header.mark_materialized_output();
+                batch
+                    .header
+                    .mark_materialized_output(physical_schema.as_ref())?;
                 batch.header.extend_residual_candidates(candidates);
                 Ok(Some((
                     batch,
@@ -727,6 +732,7 @@ fn read_parquet_chunk_reader_with_declared_schema_and_scope<T: ChunkReader + 'st
                 quarantine: Vec::new(),
                 residual_candidates: reconciled.residual_candidates,
                 schema_coercion_plan: Some(&reconciliation_plan),
+                physical_schema: Some(physical_schema.as_ref()),
             },
         )?,
         physical_schema_hash,
@@ -875,6 +881,7 @@ fn build_output(
             quarantine: Vec::new(),
             residual_candidates: Vec::new(),
             schema_coercion_plan: None,
+            physical_schema: None,
         },
     )
 }
@@ -883,6 +890,7 @@ struct PreContractReadEvidence<'a> {
     quarantine: Vec<PreContractQuarantineFact>,
     residual_candidates: Vec<Vec<PreContractResidualCandidate>>,
     schema_coercion_plan: Option<&'a SchemaCoercionPlan>,
+    physical_schema: Option<&'a Schema>,
 }
 
 fn build_output_with_pre_contract_evidence(
@@ -897,6 +905,7 @@ fn build_output_with_pre_contract_evidence(
         mut quarantine,
         mut residual_candidates,
         schema_coercion_plan,
+        physical_schema,
     } = evidence;
     if record_batches.is_empty() {
         record_batches.push(RecordBatch::new_empty(Arc::clone(&schema)));
@@ -944,7 +953,13 @@ fn build_output_with_pre_contract_evidence(
         batch.header.source_position = position.clone();
         batch.header.schema_coercion_plan = schema_coercion_plan.clone();
         if schema_coercion_plan.is_some() {
-            batch.header.mark_materialized_output();
+            batch
+                .header
+                .mark_materialized_output(physical_schema.ok_or_else(|| {
+                    CdfError::internal(
+                        "source-materialized coercion requires a typed physical schema observation",
+                    )
+                })?)?;
         }
         if index == 0 {
             batch.header.pre_contract_quarantine = std::mem::take(&mut quarantine);

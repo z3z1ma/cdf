@@ -339,8 +339,8 @@ fn execute_postgres_table(
     }
 
     let (record_batch, source_position) = rows_to_record_batch(&schema, descriptor, &scan, &rows)?;
-    let observed_schema_hash =
-        cdf_kernel::canonical_arrow_schema_hash(record_batch.schema().as_ref())?;
+    let physical_schema = record_batch.schema();
+    let observed_schema_hash = cdf_kernel::canonical_arrow_schema_hash(physical_schema.as_ref())?;
     let mut batch = Batch::from_record_batch(
         BatchId::new(format!(
             "{}-{}-000001",
@@ -352,7 +352,9 @@ fn execute_postgres_table(
         observed_schema_hash,
         record_batch,
     )?;
-    batch.header.mark_materialized_output();
+    batch
+        .header
+        .mark_materialized_output(physical_schema.as_ref())?;
     batch.header.source_position = source_position;
     Ok(vec![batch])
 }

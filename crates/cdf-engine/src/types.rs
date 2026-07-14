@@ -6,9 +6,9 @@ use std::{
 use arrow_schema::Schema;
 use cdf_contract::{
     CanonicalArrowField, CompiledExpressionPlan, ContractPolicy, FieldCoercionDecision,
-    IdentifierPolicy, ResidualProgram, RowDispositionRule, RuleOutcome, SchemaChangeKind,
-    SchemaCoercionPlan, SchemaVerdictRule, TypePolicy, ValidationProgram, VerdictAction,
-    plan_schema_reconciliation, reconcile_schema,
+    IdentifierPolicy, ResidualProgram, RowDispositionRule, SchemaChangeKind, SchemaCoercionPlan,
+    SchemaVerdictRule, TypePolicy, ValidationProgram, VerdictAction, plan_schema_reconciliation,
+    reconcile_schema,
 };
 use cdf_kernel::{
     CdfError, DeliveryGuarantee, DiscoveryExecutorBudgetEvidence, EffectiveSchemaEvidence,
@@ -305,7 +305,7 @@ impl CompiledSchemaAdmissionPlan {
         }
         let constraint = self.constraint_schema.to_arrow()?;
         let plan = reconcile_schema(observed, constraint.as_ref(), &self.type_policy)?.plan;
-        self.validate_materialized(&plan)?;
+        self.validate_materialized(observed, &plan)?;
         Ok(plan)
     }
 
@@ -335,7 +335,7 @@ impl CompiledSchemaAdmissionPlan {
             )));
         }
         if report.errors.is_empty() {
-            self.validate_materialized(&report.plan)?;
+            self.validate_materialized(observed, &report.plan)?;
             return Ok(CompiledSchemaAdmissionOutcome::Admitted(report.plan));
         }
         let narrowing_verdict = self
@@ -414,51 +414,21 @@ impl CompiledSchemaAdmissionPlan {
 
     /// Validates coercion evidence for a batch that a source codec already materialized.
     ///
-    /// Materialized batches retain the physical field identities and types in the coercion
-    /// plan, while their Arrow payload has the fixed admission schema. This path therefore
-    /// validates the recorded decisions against this compiled program instead of pretending
-    /// the already-coerced payload is the physical observation.
-    pub fn validate_materialized(&self, plan: &SchemaCoercionPlan) -> Result<()> {
+    /// The typed physical observation is the authority for every relation decision. Display
+    /// strings in the serialized plan remain diagnostics and are never trusted as type evidence.
+    pub fn validate_materialized(
+        &self,
+        observed: &Schema,
+        plan: &SchemaCoercionPlan,
+    ) -> Result<()> {
         let constraint = self.constraint_schema.to_arrow()?;
-        let output_decisions = plan
-            .fields
-            .iter()
-            .filter(|field| field.output_name.is_some())
-            .collect::<Vec<_>>();
-        if output_decisions.len() != constraint.fields().len() {
-            return Err(CdfError::data(format!(
-                "materialized schema-admission evidence covers {} output fields but the compiled constraint requires {}",
-                output_decisions.len(),
-                constraint.fields().len()
-            )));
-        }
-        let mut sources = BTreeSet::new();
-        for (field, decision) in constraint.fields().iter().zip(&output_decisions) {
-            let expected_source = source_name(field.as_ref()).unwrap_or_else(|| field.name());
-            if !sources.insert(decision.source_name.as_str())
-                || decision.source_name != expected_source
-                || decision.output_name.as_deref() != Some(field.name())
-                || decision.constraint_type.as_deref()
-                    != Some(field.data_type().to_string().as_str())
-            {
-                return Err(CdfError::data(format!(
-                    "materialized schema-admission evidence does not target compiled field {:?}",
-                    field.name()
-                )));
-            }
+        let report = plan_schema_reconciliation(observed, constraint.as_ref(), &self.type_policy)?;
+        if !report.errors.is_empty() || report.plan != *plan {
+            return Err(CdfError::data(
+                "materialized schema-admission evidence does not match the typed physical observation and compiled constraint",
+            ));
         }
         for field in &plan.fields {
-            if !sources.insert(field.source_name.as_str()) && field.output_name.is_none() {
-                return Err(CdfError::data(format!(
-                    "materialized schema-admission evidence repeats source field {:?}",
-                    field.source_name
-                )));
-            }
-            let constraint_field = constraint.fields().iter().find(|constraint| {
-                source_name(constraint.as_ref()).unwrap_or_else(|| constraint.name())
-                    == field.source_name
-            });
-            validate_materialized_field_provenance(field, constraint_field.map(AsRef::as_ref))?;
             match field.decision {
                 FieldCoercionDecision::Preserved => {}
                 FieldCoercionDecision::Missing
@@ -566,11 +536,13 @@ impl CompiledSchemaAdmissionPlan {
     ) -> Result<()> {
         match physical_observation {
             PhysicalObservationEvidence::MaterializedOutput {
+                physical_schema,
                 output_schema,
                 nullable_residual_fields,
                 ..
             } => {
-                self.validate_materialized(recorded)?;
+                let physical = physical_schema.to_arrow()?;
+                self.validate_materialized(physical.as_ref(), recorded)?;
                 let output = output_schema.to_arrow()?;
                 let constraint = self.constraint_schema.to_arrow()?;
                 let nullable_residual_fields = nullable_residual_fields
@@ -896,104 +868,6 @@ impl CompiledSchemaAdmissionPlan {
     }
 }
 
-fn validate_materialized_field_provenance(
-    field: &cdf_contract::FieldCoercion,
-    constraint: Option<&arrow_schema::Field>,
-) -> Result<()> {
-    let invalid = |detail: &str| {
-        CdfError::data(format!(
-            "materialized schema-admission field {:?} carries noncanonical {detail}",
-            field.source_name
-        ))
-    };
-    let observed_name = field.observed_name.as_deref();
-    let observed_type = field.observed_type.as_deref();
-    let constraint_type = field.constraint_type.as_deref();
-    let output_name = field.output_name.as_deref();
-
-    match field.decision {
-        FieldCoercionDecision::Missing => {
-            let constraint = constraint.ok_or_else(|| invalid("missing-field target"))?;
-            if !constraint.is_nullable()
-                || observed_name.is_some()
-                || observed_type.is_some()
-                || output_name != Some(constraint.name())
-                || constraint_type != Some(constraint.data_type().to_string().as_str())
-                || field.outcome != RuleOutcome::Coerced
-                || field.reason != "nullable constraint field is absent; materialize typed nulls"
-                || !field.operator_fixes.is_empty()
-            {
-                return Err(invalid("missing-field provenance"));
-            }
-        }
-        FieldCoercionDecision::Extra => {
-            if constraint.is_some()
-                || observed_name.is_none_or(str::is_empty)
-                || observed_type.is_none_or(str::is_empty)
-                || output_name.is_some()
-                || constraint_type.is_some()
-                || field.outcome != RuleOutcome::AdmittedAsVariant
-                || field.reason != "observed field is outside the constraint projection"
-                || !field.operator_fixes.is_empty()
-            {
-                return Err(invalid("extra-field provenance"));
-            }
-        }
-        FieldCoercionDecision::Preserved
-        | FieldCoercionDecision::Widened
-        | FieldCoercionDecision::CoercedByPolicy
-        | FieldCoercionDecision::LossyAllowed => {
-            let constraint = constraint.ok_or_else(|| invalid("constraint target"))?;
-            let observed_name = observed_name.ok_or_else(|| invalid("observed field name"))?;
-            let observed_type = observed_type.ok_or_else(|| invalid("observed field type"))?;
-            let constraint_type_value = constraint.data_type().to_string();
-            if observed_name.is_empty()
-                || (observed_name != field.source_name && observed_name != constraint.name())
-                || output_name != Some(constraint.name())
-                || constraint_type != Some(constraint_type_value.as_str())
-                || !field.operator_fixes.is_empty()
-            {
-                return Err(invalid("field identity or type provenance"));
-            }
-            let (outcome, reason) = match field.decision {
-                FieldCoercionDecision::Preserved => (
-                    RuleOutcome::Pass,
-                    "observed type already satisfies the constraint".to_owned(),
-                ),
-                FieldCoercionDecision::Widened => (
-                    RuleOutcome::Coerced,
-                    format!("lossless widening from {observed_type} to {constraint_type_value}"),
-                ),
-                FieldCoercionDecision::CoercedByPolicy => (
-                    RuleOutcome::Coerced,
-                    format!(
-                        "explicit coerce_types policy permits parsing from {observed_type} to {constraint_type_value}"
-                    ),
-                ),
-                FieldCoercionDecision::LossyAllowed => (
-                    RuleOutcome::Coerced,
-                    format!(
-                        "allow_lossy_mapping permits lossy cast from {observed_type} to {constraint_type_value}"
-                    ),
-                ),
-                _ => unreachable!(),
-            };
-            if field.outcome != outcome || field.reason != reason {
-                return Err(invalid("decision outcome or reason"));
-            }
-            if field.decision == FieldCoercionDecision::Preserved
-                && observed_type != constraint_type_value
-            {
-                return Err(invalid("preserved type identity"));
-            }
-        }
-        FieldCoercionDecision::LossyRejected | FieldCoercionDecision::Unsupported => {
-            return Err(invalid("non-materializable decision"));
-        }
-    }
-    Ok(())
-}
-
 pub(crate) enum CompiledSchemaAdmissionOutcome {
     Admitted(SchemaCoercionPlan),
     Quarantined(Box<TerminalSchemaObservationQuarantine>),
@@ -1123,8 +997,8 @@ pub enum PhysicalObservationEvidence {
         schema: CompiledArrowSchema,
     },
     MaterializedOutput {
+        physical_schema: CompiledArrowSchema,
         output_schema: CompiledArrowSchema,
-        decoder_observation_hash: SchemaHash,
         nullable_residual_fields: Vec<String>,
     },
 }
@@ -1137,16 +1011,16 @@ impl PhysicalObservationEvidence {
     }
 
     pub fn materialized_output(
+        physical_schema: &Schema,
         output_schema: &Schema,
-        decoder_observation_hash: SchemaHash,
         nullable_residual_fields: impl IntoIterator<Item = String>,
     ) -> Result<Self> {
         let mut nullable_residual_fields = nullable_residual_fields.into_iter().collect::<Vec<_>>();
         nullable_residual_fields.sort();
         nullable_residual_fields.dedup();
         Ok(Self::MaterializedOutput {
+            physical_schema: CompiledArrowSchema::from_arrow(physical_schema)?,
             output_schema: CompiledArrowSchema::from_arrow(output_schema)?,
-            decoder_observation_hash,
             nullable_residual_fields,
         })
     }
@@ -1165,12 +1039,12 @@ impl PhysicalObservationEvidence {
                 schema.to_arrow()?;
             }
             Self::MaterializedOutput {
+                physical_schema,
                 output_schema,
-                decoder_observation_hash,
                 nullable_residual_fields,
             } => {
+                physical_schema.to_arrow()?;
                 output_schema.to_arrow()?;
-                SchemaHash::new(decoder_observation_hash.to_string())?;
                 if nullable_residual_fields.iter().any(String::is_empty) {
                     return Err(CdfError::data(
                         "materialized output residual-field identity must not be empty",

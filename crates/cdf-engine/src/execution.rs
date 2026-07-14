@@ -853,7 +853,8 @@ fn materialize_batch_schema_evidence(
                     "a batch carrying source-materialized coercion evidence must identify its payload as materialized output",
                 ));
             }
-            admission.validate_materialized(&expected.coercion_plan)?;
+            let physical_schema = batch.header.materialized_physical_schema()?;
+            admission.validate_materialized(&physical_schema, &expected.coercion_plan)?;
             validate_effective_batch_schema(record_batch.schema().as_ref(), effective_schema)?;
             if batch_coercion != &expected.coercion_plan {
                 return Err(CdfError::data(format!(
@@ -870,10 +871,11 @@ fn materialize_batch_schema_evidence(
             }))
         }
         (Some(expected), None) => {
-            admission.validate_materialized(&expected.coercion_plan)?;
             if batch.header.observation_representation
                 == PhysicalObservationRepresentation::MaterializedOutput
             {
+                let physical_schema = batch.header.materialized_physical_schema()?;
+                admission.validate_materialized(&physical_schema, &expected.coercion_plan)?;
                 validate_materialized_effective_batch_schema(
                     record_batch.schema().as_ref(),
                     effective_schema,
@@ -887,6 +889,8 @@ fn materialize_batch_schema_evidence(
                     extra_field_evidence: ExtraFieldEvidence::AlreadyCaptured,
                 }));
             }
+            let observed_schema = record_batch.schema();
+            admission.validate_materialized(observed_schema.as_ref(), &expected.coercion_plan)?;
             let materialized = materialize_schema_coercion(
                 record_batch,
                 effective_schema,
@@ -910,7 +914,8 @@ fn materialize_batch_schema_evidence(
                         "a batch carrying source-materialized coercion evidence must identify its payload as materialized output",
                     ));
                 }
-                admission.validate_materialized(supplied)?;
+                let physical_schema = batch.header.materialized_physical_schema()?;
+                admission.validate_materialized(&physical_schema, supplied)?;
                 validate_materialized_effective_batch_schema(
                     record_batch.schema().as_ref(),
                     effective_schema,
@@ -922,6 +927,7 @@ fn materialize_batch_schema_evidence(
                     observation_id: Some(stream_observation_id),
                     physical_observation: Some(materialized_output_evidence(
                         record_batch,
+                        &physical_schema,
                         batch.header.observed_schema_hash.clone(),
                         effective_schema,
                     )?),
@@ -931,21 +937,22 @@ fn materialize_batch_schema_evidence(
             if batch.header.observation_representation
                 == PhysicalObservationRepresentation::MaterializedOutput
             {
+                let physical_schema = batch.header.materialized_physical_schema()?;
                 validate_materialized_effective_batch_schema(
                     record_batch.schema().as_ref(),
                     effective_schema,
                     batch.header.residual_candidates(),
                 )?;
-                let output_schema_hash =
-                    cdf_kernel::canonical_arrow_schema_hash(record_batch.schema().as_ref())?;
-                let compiled =
-                    admission.instantiate(record_batch.schema().as_ref(), &output_schema_hash)?;
+                let physical_schema_hash =
+                    cdf_kernel::canonical_arrow_schema_hash(&physical_schema)?;
+                let compiled = admission.instantiate(&physical_schema, &physical_schema_hash)?;
                 return Ok(BatchSchemaDisposition::Admitted(AdmittedBatchSchema {
                     record_batch: record_batch.clone(),
                     coercion_plan: Some(compiled),
                     observation_id: Some(stream_observation_id),
                     physical_observation: Some(materialized_output_evidence(
                         record_batch,
+                        &physical_schema,
                         batch.header.observed_schema_hash.clone(),
                         effective_schema,
                     )?),
@@ -1101,9 +1108,16 @@ fn materialized_nullable_residual_fields(output: &Schema, effective: &Schema) ->
 
 fn materialized_output_evidence(
     batch: &RecordBatch,
+    physical_schema: &Schema,
     decoder_observation_hash: cdf_kernel::SchemaHash,
     effective: &Schema,
 ) -> Result<PhysicalObservationEvidence> {
+    let physical_hash = cdf_kernel::canonical_arrow_schema_hash(physical_schema)?;
+    if physical_hash != decoder_observation_hash {
+        return Err(CdfError::data(format!(
+            "materialized physical schema hash {physical_hash} does not match batch observation hash {decoder_observation_hash}"
+        )));
+    }
     let nullable_residual_fields =
         materialized_nullable_residual_fields(batch.schema().as_ref(), effective);
     let nullable_residual_sources = nullable_residual_fields
@@ -1124,8 +1138,8 @@ fn materialized_output_evidence(
         .collect::<Vec<_>>();
     let output_schema = Schema::new_with_metadata(fields, effective.metadata().clone());
     PhysicalObservationEvidence::materialized_output(
+        physical_schema,
         &output_schema,
-        decoder_observation_hash,
         nullable_residual_fields,
     )
 }

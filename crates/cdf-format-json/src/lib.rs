@@ -864,7 +864,9 @@ async fn decode_next(
             record_batch,
         )?;
         if state.request.schema.authority == cdf_runtime::DecodeSchemaAuthority::FixedAdmission {
-            batch.header.mark_materialized_output();
+            batch
+                .header
+                .mark_materialized_output(state.request.schema.decoder_schema.as_ref())?;
         }
         batch.header.source_position = state.request.source_position.clone();
         batch.header.extend_residual_candidates(candidates);

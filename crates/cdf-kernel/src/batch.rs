@@ -1,11 +1,11 @@
 use std::{collections::BTreeSet, fmt, sync::Arc};
 
 use arrow_array::{Array, ArrayRef, RecordBatch};
-use arrow_schema::Field;
+use arrow_schema::{Field, Schema};
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    BatchStats,
+    BatchStats, CanonicalArrowSchema,
     error::Result,
     ids::{BatchId, PartitionId, ResourceId, SchemaHash},
     position::SourcePosition,
@@ -118,6 +118,8 @@ pub struct BatchHeader {
     pub partition_id: PartitionId,
     pub observed_schema_hash: SchemaHash,
     pub observation_representation: PhysicalObservationRepresentation,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub physical_observation_schema: Option<CanonicalArrowSchema>,
     pub row_count: u64,
     pub byte_count: u64,
     pub source_position: Option<SourcePosition>,
@@ -154,6 +156,7 @@ impl BatchHeader {
             partition_id,
             observed_schema_hash,
             observation_representation: PhysicalObservationRepresentation::ArrowSchema,
+            physical_observation_schema: None,
             row_count,
             byte_count,
             source_position: None,
@@ -166,8 +169,28 @@ impl BatchHeader {
         }
     }
 
-    pub fn mark_materialized_output(&mut self) {
+    pub fn mark_materialized_output(&mut self, physical_schema: &Schema) -> Result<()> {
         self.observation_representation = PhysicalObservationRepresentation::MaterializedOutput;
+        self.observed_schema_hash = crate::canonical_arrow_schema_hash(physical_schema)?;
+        self.physical_observation_schema = Some(CanonicalArrowSchema::from_arrow(physical_schema)?);
+        Ok(())
+    }
+
+    pub fn materialized_physical_schema(&self) -> Result<Schema> {
+        if self.observation_representation != PhysicalObservationRepresentation::MaterializedOutput
+        {
+            return Err(crate::CdfError::data(
+                "physical schema observation is only available for materialized output",
+            ));
+        }
+        self.physical_observation_schema
+            .as_ref()
+            .ok_or_else(|| {
+                crate::CdfError::data(
+                    "materialized output requires an exact typed physical schema observation",
+                )
+            })?
+            .to_arrow()
     }
 
     pub fn residual_candidates(&self) -> &[PreContractResidualCandidate] {

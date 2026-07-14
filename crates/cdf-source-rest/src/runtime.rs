@@ -398,7 +398,9 @@ fn execute_rest(
                 page.observed_schema_hash.clone(),
                 page.record_batch,
             )?;
-            batch.header.mark_materialized_output();
+            batch
+                .header
+                .mark_materialized_output(&page.physical_schema)?;
             batch.header.source_position = page.source_position;
             batch.header.pre_contract_quarantine = page.pre_contract_quarantine;
             batch
@@ -841,6 +843,7 @@ impl InferredRestKind {
 
 struct ReconciledRestPage {
     record_batch: RecordBatch,
+    physical_schema: Schema,
     observed_schema_hash: SchemaHash,
     source_position: Option<SourcePosition>,
     pre_contract_quarantine: Vec<cdf_kernel::PreContractQuarantineFact>,
@@ -917,11 +920,21 @@ fn reconcile_rest_page(
         fact.source_position = source_position.clone();
     }
 
+    let record_batch = format_batch
+        .record_batch()
+        .ok_or_else(|| CdfError::internal("REST format batch has no Arrow payload"))?
+        .clone();
+    let physical_schema = if format_batch.header.observation_representation
+        == cdf_kernel::PhysicalObservationRepresentation::MaterializedOutput
+    {
+        format_batch.header.materialized_physical_schema()?
+    } else {
+        record_batch.schema().as_ref().clone()
+    };
+
     Ok(ReconciledRestPage {
-        record_batch: format_batch
-            .record_batch()
-            .ok_or_else(|| CdfError::internal("REST format batch has no Arrow payload"))?
-            .clone(),
+        record_batch,
+        physical_schema,
         observed_schema_hash: format_batch.header.observed_schema_hash.clone(),
         source_position,
         pre_contract_quarantine,

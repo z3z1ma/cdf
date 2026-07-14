@@ -234,7 +234,7 @@ fn compiled_stream_admission_is_replay_verifiable_and_rejects_mismatched_evidenc
     let mut with_unused_catalog_entry = evidence.clone();
     let unused = crate::PhysicalObservationEvidence::materialized_output(
         resource.schema().as_ref(),
-        SchemaHash::new("decoder-observation-unused").unwrap(),
+        resource.schema().as_ref(),
         Vec::<String>::new(),
     )
     .unwrap();
@@ -338,7 +338,7 @@ fn materialized_stream_admission_rejects_noncanonical_provenance_and_nullable_cl
         .unwrap();
     let physical = crate::PhysicalObservationEvidence::materialized_output(
         output_schema.as_ref(),
-        SchemaHash::new("decoder-observation-v1").unwrap(),
+        output_schema.as_ref(),
         Vec::<String>::new(),
     )
     .unwrap();
@@ -365,12 +365,39 @@ fn materialized_stream_admission_rejects_noncanonical_provenance_and_nullable_cl
     let error = forged_reason
         .validate(&plan.compiled_schema_admission)
         .unwrap_err();
-    assert!(error.to_string().contains("noncanonical"), "{error}");
+    assert!(
+        error.to_string().contains("typed physical observation"),
+        "{error}"
+    );
+
+    let mut forged_relation = evidence.clone();
+    let forged_relation_schema = Schema::new(vec![
+        Field::new("id", DataType::Int64, false),
+        Field::new("name", DataType::Utf8, false),
+        Field::new("active", DataType::Boolean, false),
+    ]);
+    let forged_physical = crate::PhysicalObservationEvidence::materialized_output(
+        &forged_relation_schema,
+        output_schema.as_ref(),
+        Vec::<String>::new(),
+    )
+    .unwrap();
+    let forged_hash = forged_physical.identity_hash().unwrap();
+    forged_relation.physical_observation_catalog =
+        BTreeMap::from([(forged_hash.to_string(), forged_physical)]);
+    forged_relation.observations[0].physical_observation_hash = forged_hash.to_string();
+    let error = forged_relation
+        .validate(&plan.compiled_schema_admission)
+        .unwrap_err();
+    assert!(
+        error.to_string().contains("typed physical observation"),
+        "{error}"
+    );
 
     let mut forged_nullable = evidence;
     let forged_physical = crate::PhysicalObservationEvidence::materialized_output(
         output_schema.as_ref(),
-        SchemaHash::new("decoder-observation-v1").unwrap(),
+        output_schema.as_ref(),
         ["id".to_owned()],
     )
     .unwrap();
@@ -1794,7 +1821,7 @@ fn compiled_output_schema_strips_runtime_provenance_only_after_serializing_evide
     )
     .unwrap();
     batch.header.schema_coercion_plan = Some(serialized_plan);
-    batch.header.mark_materialized_output();
+    batch.header.mark_materialized_output(&observed).unwrap();
     let resource = MockResource::tier_a(vec![batch]).with_schema(constraint.clone());
     let input = plan_input_for_schema(constraint, vec![], None, None, PlanBoundedness::Bounded);
     let plan = Planner::new().plan_tier_a(&resource, input).unwrap();
@@ -1850,7 +1877,7 @@ fn package_artifacts_preserve_exact_embedded_lossy_and_extra_reconciliation_deci
     )
     .unwrap();
     batch.header.schema_coercion_plan = Some(serialized_plan);
-    batch.header.mark_materialized_output();
+    batch.header.mark_materialized_output(&observed).unwrap();
     batch.header.push_residual_candidate(
         PreContractResidualCandidate::new(
             1,
@@ -1981,7 +2008,10 @@ fn package_execution_rejects_malformed_trusted_coercion_header() {
     )
     .unwrap();
     batch.header.schema_coercion_plan = Some("{not-json".to_owned());
-    batch.header.mark_materialized_output();
+    batch
+        .header
+        .mark_materialized_output(schema.as_ref())
+        .unwrap();
     let resource = MockResource::tier_a(vec![batch]);
     let input = plan_input_for_schema(schema, vec![], None, None, PlanBoundedness::Bounded);
     let plan = Planner::new().plan_tier_a(&resource, input).unwrap();
@@ -2017,7 +2047,10 @@ fn package_execution_rejects_valid_header_only_coercion_injection() {
         })
         .to_string(),
     );
-    batch.header.mark_materialized_output();
+    batch
+        .header
+        .mark_materialized_output(schema.as_ref())
+        .unwrap();
     let resource = MockResource::tier_a(vec![batch]);
     let input = plan_input_for_schema(schema, vec![], None, None, PlanBoundedness::Bounded);
     let plan = Planner::new().plan_tier_a(&resource, input).unwrap();
@@ -2801,7 +2834,10 @@ fn residual_multi_partition_decisions_share_verified_effective_schema_and_keep_i
     .unwrap();
     captured_batch.header.observed_schema_hash = physical_hash.clone();
     captured_batch.header.schema_coercion_plan = Some(serialized_coercion.clone());
-    captured_batch.header.mark_materialized_output();
+    captured_batch
+        .header
+        .mark_materialized_output(physical_schema.as_ref())
+        .unwrap();
     captured_batch.header.source_position = Some(terminal_file_position());
     captured_batch.header.push_residual_candidate(
         PreContractResidualCandidate::new(
@@ -2834,7 +2870,10 @@ fn residual_multi_partition_decisions_share_verified_effective_schema_and_keep_i
     .unwrap();
     quarantined_batch.header.observed_schema_hash = physical_hash.clone();
     quarantined_batch.header.schema_coercion_plan = Some(serialized_coercion);
-    quarantined_batch.header.mark_materialized_output();
+    quarantined_batch
+        .header
+        .mark_materialized_output(physical_schema.as_ref())
+        .unwrap();
     quarantined_batch.header.source_position = Some(terminal_file_position());
     quarantined_batch.header.push_residual_candidate(
         PreContractResidualCandidate::new(
@@ -4630,7 +4669,12 @@ fn parquet_reconciled_batch() -> Batch {
                 record_batch.get_array_memory_size() as u64,
             );
             header.schema_coercion_plan = Some(serialized_plan);
-            header.mark_materialized_output();
+            header
+                .mark_materialized_output(&Schema::new(vec![
+                    Field::new("id", DataType::Int32, false),
+                    Field::new("name", DataType::Utf8, true),
+                ]))
+                .unwrap();
             header
         },
         payload: cdf_kernel::BatchPayload::in_memory(record_batch),
