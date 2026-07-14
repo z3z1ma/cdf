@@ -1,7 +1,7 @@
 use std::{
     collections::BTreeMap,
     fs::{self, OpenOptions},
-    io::Write,
+    io::{Read, Write},
     path::{Path, PathBuf},
     sync::{
         Arc, Mutex,
@@ -20,6 +20,28 @@ pub const DEFAULT_OBSERVATION_CACHE_MAX_BYTES: u64 = 64 * 1024 * 1024;
 pub const DEFAULT_OBSERVATION_CACHE_MAX_ENTRY_BYTES: u64 = 8 * 1024 * 1024;
 
 static TEMP_FILE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+
+enum BoundedCacheRead {
+    Complete(Vec<u8>),
+    Oversized,
+}
+
+fn read_cache_entry_bounded(
+    reader: &mut impl Read,
+    maximum_bytes: u64,
+) -> std::io::Result<BoundedCacheRead> {
+    let read_limit = maximum_bytes
+        .checked_add(1)
+        .ok_or_else(|| std::io::Error::other("observation cache read limit overflowed"))?;
+    let initial_capacity = usize::try_from(maximum_bytes.min(64 * 1024)).unwrap_or(64 * 1024);
+    let mut bytes = Vec::with_capacity(initial_capacity);
+    reader.take(read_limit).read_to_end(&mut bytes)?;
+    if u64::try_from(bytes.len()).map_or(true, |len| len > maximum_bytes) {
+        Ok(BoundedCacheRead::Oversized)
+    } else {
+        Ok(BoundedCacheRead::Complete(bytes))
+    }
+}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ObservationCachePolicy {
@@ -295,8 +317,8 @@ impl ObservationCacheStore {
         let Ok(path) = self.entry_path(key) else {
             return ObservationCacheLookup::Miss(ObservationCacheMissReason::CorruptOrUnsupported);
         };
-        let bytes = match fs::read(&path) {
-            Ok(bytes) => bytes,
+        let mut file = match fs::File::open(&path) {
+            Ok(file) => file,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
                 return ObservationCacheLookup::Miss(ObservationCacheMissReason::Absent);
             }
@@ -304,10 +326,23 @@ impl ObservationCacheStore {
                 return ObservationCacheLookup::Miss(ObservationCacheMissReason::Unavailable);
             }
         };
-        if u64::try_from(bytes.len()).map_or(true, |len| len > self.policy.max_entry_bytes) {
+        if file
+            .metadata()
+            .is_ok_and(|metadata| metadata.len() > self.policy.max_entry_bytes)
+        {
             let _ = fs::remove_file(path);
             return ObservationCacheLookup::Miss(ObservationCacheMissReason::Oversized);
         }
+        let bytes = match read_cache_entry_bounded(&mut file, self.policy.max_entry_bytes) {
+            Ok(BoundedCacheRead::Complete(bytes)) => bytes,
+            Ok(BoundedCacheRead::Oversized) => {
+                let _ = fs::remove_file(path);
+                return ObservationCacheLookup::Miss(ObservationCacheMissReason::Oversized);
+            }
+            Err(_) => {
+                return ObservationCacheLookup::Miss(ObservationCacheMissReason::Unavailable);
+            }
+        };
         let entry = serde_json::from_slice::<ObservationCacheEntry>(&bytes)
             .ok()
             .filter(|entry| entry.key == *key && entry.validate().is_ok());
@@ -430,6 +465,7 @@ impl ObservationCacheStore {
 mod tests {
     use super::*;
     use arrow_schema::{DataType, Field, Schema};
+    use std::io::Cursor;
 
     fn key(generation: &str) -> ObservationCacheKey {
         ObservationCacheKey::new(
@@ -514,6 +550,46 @@ mod tests {
         assert_eq!(
             store.lookup(&key),
             ObservationCacheLookup::Miss(ObservationCacheMissReason::CorruptOrUnsupported)
+        );
+        assert!(!path.exists());
+    }
+
+    #[test]
+    fn oversized_lookup_is_bounded_before_deserialization() {
+        struct CountingReader {
+            inner: Cursor<Vec<u8>>,
+            bytes_read: usize,
+        }
+
+        impl Read for CountingReader {
+            fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+                let read = self.inner.read(buffer)?;
+                self.bytes_read += read;
+                Ok(read)
+            }
+        }
+
+        let maximum_bytes = 32_u64;
+        let mut reader = CountingReader {
+            inner: Cursor::new(vec![0_u8; 1_024]),
+            bytes_read: 0,
+        };
+        assert!(matches!(
+            read_cache_entry_bounded(&mut reader, maximum_bytes).unwrap(),
+            BoundedCacheRead::Oversized
+        ));
+        assert_eq!(reader.bytes_read, maximum_bytes as usize + 1);
+
+        let temp = tempfile::tempdir().unwrap();
+        let policy = ObservationCachePolicy::new(4, 4_096, maximum_bytes).unwrap();
+        let store = ObservationCacheStore::with_policy(temp.path(), policy);
+        let key = key("oversized");
+        let path = store.entry_path(&key).unwrap();
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(&path, vec![0_u8; 1_024]).unwrap();
+        assert_eq!(
+            store.lookup(&key),
+            ObservationCacheLookup::Miss(ObservationCacheMissReason::Oversized)
         );
         assert!(!path.exists());
     }

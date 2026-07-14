@@ -12,10 +12,11 @@ use arrow_schema::{DataType, Field, Schema, SchemaRef, TimeUnit};
 use cdf_kernel::{
     BackpressureSupport, Batch, BatchId, BatchStream, BoxFuture, CapabilitySupport, CdfError,
     CursorPosition, CursorValue, DeliveryGuarantee, EstimateSupport, Expression, ExpressionLiteral,
-    FilterCapabilities, IncrementalShape, PartitionId, PartitionPlan, PartitioningCapabilities,
-    PlanId, PushdownFidelity, PushedPredicate, QueryableResource, ReplaySupport,
-    ResourceCapabilities, ResourceDescriptor, ResourceStream, Result, ScanPlan, ScanPredicate,
-    ScanRequest, SchemaHash, SchemaSource, ScopeKind, SortDirection, SourcePosition, source_name,
+    FilterCapabilities, IncrementalShape, OpenedPartitionStream, PartitionId, PartitionPlan,
+    PartitioningCapabilities, PlanId, PushdownFidelity, PushedPredicate, QueryableResource,
+    ReplaySupport, ResourceCapabilities, ResourceDescriptor, ResourceStream, Result, ScanPlan,
+    ScanPredicate, ScanRequest, SchemaHash, SchemaSource, ScopeKind, SortDirection, SourcePosition,
+    source_name,
 };
 use futures_util::stream;
 use postgres::{Client, NoTls, Row, types::ToSql};
@@ -113,7 +114,7 @@ impl ResourceStream for PostgresTableResource {
         self.type_policy_allowances
     }
 
-    fn open(&self, partition: PartitionPlan) -> BoxFuture<'_, Result<BatchStream>> {
+    fn open(&self, partition: PartitionPlan) -> BoxFuture<'_, Result<OpenedPartitionStream>> {
         let descriptor = self.descriptor.clone();
         let schema = Arc::clone(&self.schema);
         let target = self.target.clone();
@@ -129,7 +130,8 @@ impl ResourceStream for PostgresTableResource {
                     execute_postgres_table(&database_url, &descriptor, schema, &target, partition)?
                 }
             };
-            Ok(Box::pin(stream::iter(batches.into_iter().map(Ok))) as BatchStream)
+            let stream = Box::pin(stream::iter(batches.into_iter().map(Ok))) as BatchStream;
+            Ok(OpenedPartitionStream::without_completion(stream))
         })
     }
 }

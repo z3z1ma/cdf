@@ -96,7 +96,10 @@ impl ResourceStream for MemoryResource {
         Ok(vec![self.partition.clone()])
     }
 
-    fn open(&self, partition: PartitionPlan) -> cdf_kernel::BoxFuture<'_, CdfResult<BatchStream>> {
+    fn open(
+        &self,
+        partition: PartitionPlan,
+    ) -> cdf_kernel::BoxFuture<'_, CdfResult<cdf_kernel::OpenedPartitionStream>> {
         let expected = self.partition.clone();
         let batches = self.batches.clone();
         Box::pin(async move {
@@ -106,7 +109,10 @@ impl ResourceStream for MemoryResource {
                     "benchmark memory resource partition mismatch",
                 ));
             }
-            Ok(Box::pin(stream::iter(batches.into_iter().map(Ok))) as BatchStream)
+            let stream = Box::pin(stream::iter(batches.into_iter().map(Ok))) as BatchStream;
+            Ok(cdf_kernel::OpenedPartitionStream::without_completion(
+                stream,
+            ))
         })
     }
 }

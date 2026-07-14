@@ -11,7 +11,7 @@ use arrow_array::{
 };
 use cdf_kernel::{
     CdfError, CompositePosition, CursorPosition, CursorValue, FileManifest, FilePosition, Result,
-    SegmentId, SourcePosition,
+    SegmentId, SourcePosition, merge_file_position_evidence,
 };
 use cdf_memory::MemoryLease;
 use cdf_memory::MemorySnapshot;
@@ -788,13 +788,15 @@ fn join_file_manifests(left: &FileManifest, right: &FileManifest) -> Result<File
     let mut files = BTreeMap::<String, FilePosition>::new();
     for file in left.files.iter().chain(&right.files) {
         match files.get(&file.path) {
-            Some(existing) if existing != file => {
-                return Err(CdfError::contract(format!(
-                    "file-manifest position has conflicting identity for `{}`",
-                    file.path
-                )));
+            Some(existing) => {
+                let merged = merge_file_position_evidence(existing, file).map_err(|error| {
+                    CdfError::contract(format!(
+                        "file-manifest position has conflicting identity for `{}`: {error}",
+                        file.path
+                    ))
+                })?;
+                files.insert(file.path.clone(), merged);
             }
-            Some(_) => {}
             None => {
                 files.insert(file.path.clone(), file.clone());
             }

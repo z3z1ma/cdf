@@ -12,10 +12,10 @@ use cdf_declarative::parse_arrow_field_type;
 use cdf_kernel::{
     BackpressureSupport, BatchStream, BoxFuture, CapabilitySupport, CursorOrderingClaim,
     CursorPosition, CursorSpec, CursorValue, DeliveryGuarantee, EstimateSupport,
-    FilterCapabilities, ForeignState, IncrementalShape, PartitionId, PartitionPlan,
-    PartitioningCapabilities, PlanId, QueryableResource, ReplaySupport, ResourceCapabilities,
-    ResourceDescriptor, ResourceId, ResourceStream, Result, ScanPlan, ScanRequest, SchemaSource,
-    ScopeKey, SourcePosition, TrustLevel, WriteDisposition,
+    FilterCapabilities, ForeignState, IncrementalShape, OpenedPartitionStream, PartitionId,
+    PartitionPlan, PartitioningCapabilities, PlanId, QueryableResource, ReplaySupport,
+    ResourceCapabilities, ResourceDescriptor, ResourceId, ResourceStream, Result, ScanPlan,
+    ScanRequest, SchemaSource, ScopeKey, SourcePosition, TrustLevel, WriteDisposition,
 };
 use futures_util::stream;
 use pyo3::{
@@ -336,7 +336,7 @@ impl ResourceStream for PythonResource {
         Ok(vec![self.partition()?])
     }
 
-    fn open(&self, partition: PartitionPlan) -> BoxFuture<'_, Result<BatchStream>> {
+    fn open(&self, partition: PartitionPlan) -> BoxFuture<'_, Result<OpenedPartitionStream>> {
         let result = match (&self.execution, &self.blocking_lane) {
             (Some(execution), Some(lane)) => {
                 let resource = self.clone();
@@ -345,7 +345,7 @@ impl ResourceStream for PythonResource {
             }
             _ => self.execute_inline(partition),
         };
-        Box::pin(async move { result })
+        Box::pin(async move { result.map(OpenedPartitionStream::without_completion) })
     }
 }
 

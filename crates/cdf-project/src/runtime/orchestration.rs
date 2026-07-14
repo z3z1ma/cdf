@@ -519,15 +519,6 @@ fn file_positions_from_partitions(
         let source_generation = partition.metadata.get("source_generation").cloned();
         let etag = partition.metadata.get("etag").cloned();
         let object_version = partition.metadata.get("version").cloned();
-        if source_generation.is_none()
-            && sha256.is_none()
-            && etag.is_none()
-            && object_version.is_none()
-        {
-            return Err(CdfError::contract(format!(
-                "file partition `{path}` manifest comparison requires source generation, checksum, ETag, or object version metadata"
-            )));
-        }
         files.push(FilePosition {
             path,
             size_bytes,

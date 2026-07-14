@@ -2,25 +2,26 @@ use std::{
     collections::BTreeMap,
     fmt, fs,
     path::{Component, Path, PathBuf},
-    sync::Arc,
+    sync::{Arc, Mutex},
     time::UNIX_EPOCH,
 };
 
 use arrow_schema::SchemaRef;
 use cdf_kernel::{
     BatchStream, BoxFuture, CdfError, DeliveryGuarantee, EffectiveSchemaRuntime,
-    PLAN_PHYSICAL_SCHEMA_HASH_KEY, PLAN_SCHEMA_OBSERVATION_BINDING_KEY,
-    PLAN_SCHEMA_OBSERVATION_ID_KEY, PartitionId, PartitionPlan, PlanId, QueryableResource,
-    ResourceCapabilities, ResourceDescriptor, ResourceId, ResourceStream, Result, ScanPlan,
-    ScanRequest, SchemaHash, ScopeKey, SourcePosition, TypePolicyAllowances, WriteDisposition,
+    OpenedPartitionStream, PLAN_PHYSICAL_SCHEMA_HASH_KEY, PLAN_SCHEMA_OBSERVATION_BINDING_KEY,
+    PLAN_SCHEMA_OBSERVATION_ID_KEY, PartitionAttestation, PartitionId, PartitionPlan, PlanId,
+    QueryableResource, ResourceCapabilities, ResourceDescriptor, ResourceId, ResourceStream,
+    Result, ScanPlan, ScanRequest, SchemaHash, ScopeKey, SourcePosition, TypePolicyAllowances,
+    WriteDisposition,
 };
 use cdf_memory::{ConsumerKey, MemoryClass};
 use cdf_runtime::{
-    ByteExtent, ByteSource, ByteTransformId, ByteTransformRegistry, CompiledFormatBinding,
-    DecodePlanningRequest, ExecutionServices, FormatDetection, FormatDetectionConfidence,
-    FormatDiscoveryRequest, FormatDriver, FormatProbe, FormatRegistry, GenerationStrength,
-    PhysicalDecodeRequest, ReadOptions, SequentialReadRequest, TransformSourceConfig,
-    TransformedByteSource,
+    AccountedByteStream, ByteExtent, ByteSource, ByteTransformId, ByteTransformRegistry,
+    CompiledFormatBinding, DecodePlanningRequest, ExecutionServices, FormatDetection,
+    FormatDetectionConfidence, FormatDiscoveryRequest, FormatDriver, FormatProbe, FormatRegistry,
+    GenerationStrength, PhysicalDecodeRequest, ReadOptions, SequentialReadRequest,
+    TransformSourceConfig, TransformedByteSource,
 };
 #[cfg(test)]
 use futures_util::StreamExt;
@@ -223,12 +224,17 @@ pub fn discover_local_binary_schema_bounded(
                 &confirmation,
             )
             .await?;
+            let discovery_bytes = discovery_budget_after_confirmation(
+                maximum_bytes,
+                confirmation_bytes,
+                &confirmation,
+            )?;
             let observation = driver
                 .discover(
                     source,
                     FormatDiscoveryRequest {
                         options,
-                        maximum_bytes,
+                        maximum_bytes: discovery_bytes,
                         maximum_records,
                         memory: discovery_memory,
                         cancellation: cdf_runtime::RunCancellation::default(),
@@ -281,7 +287,9 @@ pub fn discover_transport_binary_schema_bounded(
     dependencies: &FileRuntimeDependencies,
     request: BoundedSchemaDiscoveryRequest<'_>,
 ) -> Result<BoundedBinarySchemaProbe> {
-    let metadata = dependencies.with_transport(|transport| transport.metadata(&resource))?;
+    let observation = dependencies.with_transport(|transport| transport.metadata(&resource))?;
+    let access_resource = observation.access_resource(&resource);
+    let metadata = observation.into_identity();
     let size_bytes = metadata.size_bytes.ok_or_else(|| {
         CdfError::data(format!(
             "remote binary discovery for `{}` did not receive byte-size metadata",
@@ -290,7 +298,11 @@ pub fn discover_transport_binary_schema_bounded(
     })?;
     let driver = dependencies.formats().resolve(request.format.as_str())?;
     let upstream = dependencies.with_transport(|transport| {
-        transport.open_byte_source(&resource, &metadata, dependencies.execution().memory())
+        transport.open_byte_source(
+            &access_resource,
+            &metadata,
+            dependencies.execution().memory(),
+        )
     })?;
     let transform_id = (request.transform_name != "none")
         .then(|| {
@@ -362,12 +374,17 @@ pub fn discover_transport_binary_schema_bounded(
                 &confirmation,
             )
             .await?;
+            let discovery_bytes = discovery_budget_after_confirmation(
+                maximum_bytes,
+                confirmation_bytes,
+                &confirmation,
+            )?;
             let observation = driver
                 .discover(
                     source,
                     FormatDiscoveryRequest {
                         options,
-                        maximum_bytes,
+                        maximum_bytes: discovery_bytes,
                         maximum_records,
                         memory,
                         cancellation: cdf_runtime::RunCancellation::default(),
@@ -431,6 +448,26 @@ struct FormatConfirmationContext {
     location: String,
     format_declared: bool,
     transform_name: String,
+}
+
+fn discovery_budget_after_confirmation(
+    maximum_bytes: u64,
+    confirmation_bytes: u64,
+    context: &FormatConfirmationContext,
+) -> Result<u64> {
+    let remaining = maximum_bytes.checked_sub(confirmation_bytes).ok_or_else(|| {
+        CdfError::data(format!(
+            "format confirmation for resource `{}`, file `{}` requires {confirmation_bytes} bytes, exceeding the configured {maximum_bytes}-byte discovery budget",
+            context.resource_id, context.location
+        ))
+    })?;
+    if remaining == 0 {
+        return Err(CdfError::data(format!(
+            "format confirmation for resource `{}`, file `{}` consumes the configured {maximum_bytes}-byte discovery budget; increase the discovery byte budget to leave room for schema observation",
+            context.resource_id, context.location
+        )));
+    }
+    Ok(remaining)
 }
 
 async fn confirm_registered_format(
@@ -675,7 +712,10 @@ impl FileResource {
         Ok(())
     }
 
-    pub fn open_preview(&self, partition: PartitionPlan) -> BoxFuture<'_, Result<BatchStream>> {
+    pub fn open_preview(
+        &self,
+        partition: PartitionPlan,
+    ) -> BoxFuture<'_, Result<OpenedPartitionStream>> {
         open_file_resource_with_dependencies(self.clone(), partition)
     }
 }
@@ -715,7 +755,7 @@ impl ResourceStream for FileResource {
         })
     }
 
-    fn open(&self, partition: PartitionPlan) -> BoxFuture<'_, Result<BatchStream>> {
+    fn open(&self, partition: PartitionPlan) -> BoxFuture<'_, Result<OpenedPartitionStream>> {
         open_file_resource_with_dependencies(self.clone(), partition)
     }
 
@@ -826,9 +866,101 @@ enum PreparedFileInput {
     },
 }
 
+struct PreparedInput {
+    input: PreparedFileInput,
+    extraction_content_hash: Option<ExtractionContentHash>,
+    hash_sweep_source: Option<Arc<dyn ByteSource>>,
+}
+
 struct AccountedSpool {
     file: tempfile::NamedTempFile,
     _reservation: cdf_runtime::SpillReservation,
+}
+
+#[derive(Clone, Debug, Default)]
+struct ExtractionContentHash {
+    digest: Arc<Mutex<Option<String>>>,
+}
+
+impl ExtractionContentHash {
+    fn record(&self, digest: String) -> Result<()> {
+        let mut stored = self
+            .digest
+            .lock()
+            .map_err(|_| CdfError::internal("extraction content-hash state was poisoned"))?;
+        if stored.as_ref().is_some_and(|existing| existing != &digest) {
+            return Err(CdfError::data(
+                "one extraction observed conflicting content hashes for the same file generation",
+            ));
+        }
+        *stored = Some(digest);
+        Ok(())
+    }
+
+    fn completed(&self) -> Result<String> {
+        self.digest
+            .lock()
+            .map_err(|_| CdfError::internal("extraction content-hash state was poisoned"))?
+            .clone()
+            .ok_or_else(|| {
+                CdfError::internal("fully consumed file extraction omitted its content hash")
+            })
+    }
+}
+
+#[derive(Clone)]
+struct HashingByteSource {
+    inner: Arc<dyn ByteSource>,
+    observation: ExtractionContentHash,
+}
+
+impl HashingByteSource {
+    fn new(inner: Arc<dyn ByteSource>, observation: ExtractionContentHash) -> Self {
+        Self { inner, observation }
+    }
+}
+
+impl ByteSource for HashingByteSource {
+    fn identity(&self) -> &cdf_runtime::ContentIdentity {
+        self.inner.identity()
+    }
+
+    fn capabilities(&self) -> &cdf_runtime::ByteSourceCapabilities {
+        self.inner.capabilities()
+    }
+
+    fn open_sequential(
+        &self,
+        request: SequentialReadRequest,
+    ) -> BoxFuture<'_, Result<AccountedByteStream>> {
+        Box::pin(async move {
+            let input = self.inner.open_sequential(request).await?;
+            let state = (input, Sha256::new(), self.observation.clone());
+            Ok(Box::pin(futures_util::stream::try_unfold(
+                state,
+                |(mut input, mut hasher, observation)| async move {
+                    match input.try_next().await? {
+                        Some(chunk) => {
+                            hasher.update(chunk.payload());
+                            Ok(Some((chunk, (input, hasher, observation))))
+                        }
+                        None => {
+                            observation.record(format!("sha256:{:x}", hasher.finalize()))?;
+                            Ok(None)
+                        }
+                    }
+                },
+            )) as AccountedByteStream)
+        })
+    }
+
+    fn read_exact_range(
+        &self,
+        extent: ByteExtent,
+        cancellation: cdf_runtime::RunCancellation,
+    ) -> BoxFuture<'_, Result<cdf_memory::AccountedBytes>> {
+        self.inner.read_exact_range(extent, cancellation)
+    }
 }
 
 impl AccountedSpool {
@@ -845,6 +977,8 @@ struct PreparedFilePartition {
     physical_schema_authority: PhysicalSchemaAuthority,
     canonical_format_options: serde_json::Value,
     driver: Arc<dyn FormatDriver>,
+    extraction_content_hash: Option<ExtractionContentHash>,
+    hash_sweep_source: Option<Arc<dyn ByteSource>>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -921,7 +1055,7 @@ pub(crate) fn file_partitions_for_plan_with_transport(
 fn open_file_resource_with_dependencies(
     resource: FileResource,
     partition: PartitionPlan,
-) -> BoxFuture<'static, Result<BatchStream>> {
+) -> BoxFuture<'static, Result<OpenedPartitionStream>> {
     let FileResource {
         descriptor,
         schema,
@@ -946,6 +1080,17 @@ fn open_file_resource_with_dependencies(
         Err(error) => return Box::pin(async move { Err(error) }),
     };
     let execution = dependencies.execution().clone();
+    let extraction_content_hash = prepared.extraction_content_hash.clone();
+    let hash_sweep_source = prepared.hash_sweep_source.clone();
+    let completed_position = cdf_kernel::FilePosition {
+        path: prepared.resolved.path_text.clone(),
+        size_bytes: prepared.resolved.size_bytes,
+        source_generation: prepared.resolved.source_generation.clone(),
+        etag: prepared.resolved.etag.clone(),
+        object_version: prepared.resolved.version.clone(),
+        sha256: prepared.resolved.sha256.clone(),
+    };
+    let (completion_sender, completion_receiver) = tokio::sync::oneshot::channel();
     let mut scope_hasher = Sha256::new();
     scope_hasher.update(descriptor.resource_id.as_str().as_bytes());
     scope_hasher.update([0]);
@@ -954,16 +1099,69 @@ fn open_file_resource_with_dependencies(
     let stream = execution.spawn_io_stream(
         &scope_id,
         NATIVE_STREAM_ITEMS,
-        move |mut sender, _cancellation| async move {
-            let mut batches =
-                stream_prepared_file_match(prepared, &dependencies, _cancellation).await?;
-            while let Some(batch) = batches.try_next().await? {
-                sender.send(batch).await?;
-            }
+        move |mut sender, cancellation| async move {
+            let decode = async {
+                let mut batches =
+                    stream_prepared_file_match(prepared, &dependencies, cancellation.clone())
+                        .await?;
+                while let Some(batch) = batches.try_next().await? {
+                    sender.send(batch).await?;
+                }
+                Ok::<_, CdfError>(())
+            };
+            let hash_sweep = complete_hash_sweep(hash_sweep_source, cancellation.clone());
+            tokio::try_join!(decode, hash_sweep)?;
+            let completion = if let Some(extraction_content_hash) = extraction_content_hash {
+                let mut completed_position = completed_position;
+                completed_position.sha256 = Some(extraction_content_hash.completed()?);
+                Some(PartitionAttestation::new(
+                    SourcePosition::FileManifest(cdf_kernel::FileManifest {
+                        version: 1,
+                        files: vec![completed_position],
+                    }),
+                    None,
+                ))
+            } else {
+                None
+            };
+            let _ = completion_sender.send(completion);
             Ok(())
         },
     );
-    Box::pin(async move { Ok(Box::pin(stream?) as BatchStream) })
+    Box::pin(async move {
+        let stream = Box::pin(stream?) as BatchStream;
+        let completion = Box::pin(async move {
+            completion_receiver.await.map_err(|_| {
+                CdfError::internal(
+                    "partition stream ended without publishing its invocation completion",
+                )
+            })
+        });
+        Ok(OpenedPartitionStream::with_completion(stream, completion))
+    })
+}
+
+async fn complete_hash_sweep(
+    source: Option<Arc<dyn ByteSource>>,
+    cancellation: cdf_runtime::RunCancellation,
+) -> Result<()> {
+    let Some(source) = source else {
+        return Ok(());
+    };
+    let preferred_chunk_bytes = (4 * 1024 * 1024_u64).clamp(
+        source.capabilities().minimum_chunk_bytes,
+        source.capabilities().maximum_chunk_bytes,
+    );
+    let mut stream = source
+        .open_sequential(SequentialReadRequest {
+            preferred_chunk_bytes,
+            cancellation: cancellation.clone(),
+        })
+        .await?;
+    while stream.try_next().await?.is_some() {
+        cancellation.check()?;
+    }
+    Ok(())
 }
 
 fn prepare_file_partition(
@@ -1001,10 +1199,10 @@ fn prepare_file_partition(
     );
     let driver = compiled_format.verify(dependencies.formats())?;
     let source_access = driver.descriptor().source_access;
-    let input = prepare_file_input(&resolved, source_access, dependencies)?;
+    let prepared_input = prepare_file_input(&resolved, source_access, dependencies)?;
     Ok(PreparedFilePartition {
         resolved,
-        input,
+        input: prepared_input.input,
         options,
         admission_schema,
         physical_schema_authority: PhysicalSchemaAuthority {
@@ -1013,6 +1211,8 @@ fn prepare_file_partition(
         },
         canonical_format_options: compiled_format.canonical_options.clone(),
         driver,
+        extraction_content_hash: prepared_input.extraction_content_hash,
+        hash_sweep_source: prepared_input.hash_sweep_source,
     })
 }
 
@@ -1020,57 +1220,135 @@ fn prepare_file_input(
     resolved: &ResolvedFileMatch,
     source_access: cdf_runtime::FormatSourceAccess,
     dependencies: &FileRuntimeDependencies,
-) -> Result<PreparedFileInput> {
+) -> Result<PreparedInput> {
     if resolved.compression.transform_id.is_none() {
         let expected = expected_file_identity(resolved);
-        let source: Arc<dyn ByteSource> = match &resolved.open {
-            ResolvedFileOpen::LocalPath(path) => Arc::new(LocalByteSource::open(
-                path,
-                dependencies.execution().memory(),
-            )?),
-            ResolvedFileOpen::Transport(resource) => dependencies.with_transport(|transport| {
-                transport.open_byte_source(resource, &expected, dependencies.execution().memory())
-            })?,
-        };
-        return Ok(
-            if matches!(resolved.open, ResolvedFileOpen::Transport(_))
-                && source_access == cdf_runtime::FormatSourceAccess::Adaptive
-            {
-                PreparedFileInput::SpoolSource {
-                    source,
-                    size_bytes: Some(resolved.size_bytes),
+        let (source, extraction_content_hash): (
+            Arc<dyn ByteSource>,
+            Option<ExtractionContentHash>,
+        ) = match &resolved.open {
+            ResolvedFileOpen::LocalPath(path) => {
+                let local: Arc<dyn ByteSource> = Arc::new(LocalByteSource::open(
+                    path,
+                    dependencies.execution().memory(),
+                )?);
+                verify_opened_local_generation(resolved, local.as_ref())?;
+                let observation = ExtractionContentHash::default();
+                (
+                    Arc::new(HashingByteSource::new(local, observation.clone())),
+                    Some(observation),
+                )
+            }
+            ResolvedFileOpen::Transport(resource) => {
+                let upstream = dependencies.with_transport(|transport| {
+                    transport.open_byte_source(
+                        resource,
+                        &expected,
+                        dependencies.execution().memory(),
+                    )
+                })?;
+                if resolved.identity_strength == GenerationStrength::Weak {
+                    let observation = ExtractionContentHash::default();
+                    (
+                        Arc::new(HashingByteSource::new(upstream, observation.clone())),
+                        Some(observation),
+                    )
+                } else {
+                    (upstream, None)
                 }
-            } else {
-                PreparedFileInput::Source(source)
-            },
-        );
+            }
+        };
+        let transport_spool = matches!(resolved.open, ResolvedFileOpen::Transport(_))
+            && source_access == cdf_runtime::FormatSourceAccess::Adaptive;
+        let hash_sweep_source = (extraction_content_hash.is_some()
+            && source_access != cdf_runtime::FormatSourceAccess::Sequential
+            && !transport_spool)
+            .then(|| Arc::clone(&source));
+        let input = if transport_spool {
+            PreparedFileInput::SpoolSource {
+                source,
+                size_bytes: Some(resolved.size_bytes),
+            }
+        } else {
+            PreparedFileInput::Source(source)
+        };
+        return Ok(PreparedInput {
+            input,
+            extraction_content_hash,
+            hash_sweep_source,
+        });
     }
     if let Some(transform_id) = &resolved.compression.transform_id {
         let expected = expected_file_identity(resolved);
-        let upstream: Arc<dyn ByteSource> = match &resolved.open {
-            ResolvedFileOpen::LocalPath(path) => Arc::new(LocalByteSource::open(
-                path,
-                dependencies.execution().memory(),
-            )?),
-            ResolvedFileOpen::Transport(resource) => dependencies.with_transport(|transport| {
-                transport.open_byte_source(resource, &expected, dependencies.execution().memory())
-            })?,
+        let (upstream, extraction_content_hash): (
+            Arc<dyn ByteSource>,
+            Option<ExtractionContentHash>,
+        ) = match &resolved.open {
+            ResolvedFileOpen::LocalPath(path) => {
+                let local: Arc<dyn ByteSource> = Arc::new(LocalByteSource::open(
+                    path,
+                    dependencies.execution().memory(),
+                )?);
+                verify_opened_local_generation(resolved, local.as_ref())?;
+                let observation = ExtractionContentHash::default();
+                (
+                    Arc::new(HashingByteSource::new(local, observation.clone())),
+                    Some(observation),
+                )
+            }
+            ResolvedFileOpen::Transport(resource) => {
+                let upstream = dependencies.with_transport(|transport| {
+                    transport.open_byte_source(
+                        resource,
+                        &expected,
+                        dependencies.execution().memory(),
+                    )
+                })?;
+                if resolved.identity_strength == GenerationStrength::Weak {
+                    let observation = ExtractionContentHash::default();
+                    (
+                        Arc::new(HashingByteSource::new(upstream, observation.clone())),
+                        Some(observation),
+                    )
+                } else {
+                    (upstream, None)
+                }
+            }
         };
         let transformed = transformed_byte_source(upstream, transform_id, dependencies)?;
-        return Ok(
-            if source_access != cdf_runtime::FormatSourceAccess::Sequential {
-                PreparedFileInput::SpoolSource {
-                    source: transformed,
-                    size_bytes: None,
-                }
-            } else {
-                PreparedFileInput::Source(transformed)
-            },
-        );
+        let input = if source_access != cdf_runtime::FormatSourceAccess::Sequential {
+            PreparedFileInput::SpoolSource {
+                source: transformed,
+                size_bytes: None,
+            }
+        } else {
+            PreparedFileInput::Source(transformed)
+        };
+        return Ok(PreparedInput {
+            input,
+            extraction_content_hash,
+            hash_sweep_source: None,
+        });
     }
     Err(CdfError::internal(
         "file preparation reached an unclassified compression state",
     ))
+}
+
+fn verify_opened_local_generation(
+    resolved: &ResolvedFileMatch,
+    source: &dyn ByteSource,
+) -> Result<()> {
+    let observed = source.identity();
+    if observed.size_bytes != Some(resolved.size_bytes)
+        || observed.generation.as_ref() != resolved.source_generation.as_ref()
+    {
+        return Err(CdfError::data(format!(
+            "local file `{}` changed between planning and open; re-plan before retrying",
+            resolved.path_text
+        )));
+    }
+    Ok(())
 }
 
 fn expected_file_identity(resolved: &ResolvedFileMatch) -> FileIdentityMetadata {
@@ -1083,7 +1361,7 @@ fn expected_file_identity(resolved: &ResolvedFileMatch) -> FileIdentityMetadata 
         }),
         etag: resolved.etag.clone(),
         version: resolved.version.clone(),
-        modified: resolved.modified_ms.clone(),
+        modified: resolved.source_generation.clone(),
     }
 }
 
@@ -1100,6 +1378,8 @@ async fn stream_prepared_file_match(
         physical_schema_authority,
         canonical_format_options,
         driver,
+        extraction_content_hash: _,
+        hash_sweep_source: _,
     } = prepared;
     let position = Some(SourcePosition::FileManifest(cdf_kernel::FileManifest {
         version: 1,
@@ -1153,14 +1433,18 @@ fn stream_file_match_blocking(
 ) -> Result<BatchStream> {
     let driver = dependencies.formats().resolve(declaration.as_str())?;
     let canonical_format_options = driver.canonical_options(serde_json::json!({}))?;
+    let prepared_input =
+        prepare_file_input(resolved, driver.descriptor().source_access, dependencies)?;
     let prepared = PreparedFilePartition {
         resolved: resolved.clone(),
-        input: prepare_file_input(resolved, driver.descriptor().source_access, dependencies)?,
+        input: prepared_input.input,
         options,
         admission_schema,
         physical_schema_authority,
         canonical_format_options,
         driver,
+        extraction_content_hash: prepared_input.extraction_content_hash,
+        hash_sweep_source: prepared_input.hash_sweep_source,
     };
     let dependencies = dependencies.clone();
     let execution = dependencies.execution().clone();
@@ -1511,9 +1795,18 @@ fn validate_partition(
             }
         }
         (None, None, None, None) => {
-            return Err(CdfError::contract(format!(
-                "declarative file partition `{path}` requires source generation, checksum, ETag, or object version metadata"
-            )));
+            if resolved.identity_strength != GenerationStrength::Weak {
+                return Err(CdfError::internal(format!(
+                    "declarative file partition `{path}` omitted generation evidence despite non-weak identity"
+                )));
+            }
+            for forbidden in ["sha256", "etag", "version", "source_generation"] {
+                if partition.metadata.contains_key(forbidden) {
+                    return Err(CdfError::data(format!(
+                        "declarative file partition `{path}` retained stale `{forbidden}` identity metadata"
+                    )));
+                }
+            }
         }
     }
     validate_partition_metadata_value(
@@ -1841,15 +2134,20 @@ fn resolve_http_file_match(
             auth: plan.auth.clone(),
             credentials: plan.credentials.clone(),
         };
-        let Some(metadata) = transport.metadata_if_exists(&resource)? else {
+        let Some(observation) = transport.metadata_if_exists(&resource)? else {
             continue;
         };
-        let compression = resolve_transport_compression(plan, &metadata.location, transforms)?;
+        let logical_location = match &resource.location {
+            FileTransportLocation::HttpUrl { url } => url.as_str(),
+            _ => unreachable!("HTTP resolver constructed an HTTP transport resource"),
+        };
+        let compression = resolve_transport_compression(plan, logical_location, transforms)?;
         let format =
-            resolve_transport_format(resource_id, plan, &metadata.location, &compression, formats)?;
+            resolve_transport_format(resource_id, plan, logical_location, &compression, formats)?;
+        let access_resource = observation.access_resource(&resource);
         matches.push(resolved_transport_file_match(
-            resource,
-            metadata,
+            access_resource,
+            observation.into_identity(),
             compression,
             format,
         )?);
@@ -2177,17 +2475,14 @@ fn resolved_transport_file_match(
     })?;
     let sha256 = metadata.sha256().map(str::to_owned);
     let identity_strength = metadata.generation_strength();
-    if sha256.is_none() && metadata.etag.is_none() && metadata.version.is_none() {
-        return Err(CdfError::data(format!(
-            "remote file metadata for `{}` must include an ETag, object version, or checksum for FileManifest identity",
-            metadata.location
-        )));
-    }
+    let source_generation = (identity_strength == GenerationStrength::Weak)
+        .then(|| metadata.modified.clone())
+        .flatten();
     Ok(ResolvedFileMatch {
         open: ResolvedFileOpen::Transport(resource),
         path_text: metadata.location,
         size_bytes,
-        source_generation: None,
+        source_generation,
         identity_strength,
         sha256,
         etag: metadata.etag,
@@ -2648,6 +2943,7 @@ mod tests {
     use arrow_schema::{DataType, Field, Schema};
     use flate2::{Compression, write::GzEncoder};
     use object_store::{ObjectStoreExt, PutPayload, memory::InMemory, path::Path as ObjectPath};
+    use tempfile::TempDir;
 
     use super::*;
 
@@ -2861,30 +3157,24 @@ mod tests {
         }
     }
 
-    struct RangeCountingTransport {
+    struct PayloadOpenCountingTransport {
         inner: FileTransportFacade,
-        range_reads: Arc<AtomicUsize>,
+        payload_opens: Arc<AtomicUsize>,
     }
 
-    impl FileTransport for RangeCountingTransport {
-        fn metadata(&self, resource: &FileTransportResource) -> Result<FileIdentityMetadata> {
+    impl FileTransport for PayloadOpenCountingTransport {
+        fn metadata(
+            &self,
+            resource: &FileTransportResource,
+        ) -> Result<crate::FileMetadataObservation> {
             self.inner.metadata(resource)
         }
 
         fn metadata_if_exists(
             &self,
             resource: &FileTransportResource,
-        ) -> Result<Option<FileIdentityMetadata>> {
+        ) -> Result<Option<crate::FileMetadataObservation>> {
             self.inner.metadata_if_exists(resource)
-        }
-
-        fn read_range(
-            &self,
-            resource: &FileTransportResource,
-            range: crate::ByteRange,
-        ) -> Result<Vec<u8>> {
-            self.range_reads.fetch_add(1, Ordering::Relaxed);
-            self.inner.read_range(resource, range)
         }
 
         fn list(&self, resource: &FileTransportResource) -> Result<Vec<FileIdentityMetadata>> {
@@ -2897,6 +3187,7 @@ mod tests {
             expected: &FileIdentityMetadata,
             memory: Arc<dyn cdf_memory::MemoryCoordinator>,
         ) -> Result<Arc<dyn cdf_runtime::ByteSource>> {
+            self.payload_opens.fetch_add(1, Ordering::Relaxed);
             self.inner.open_byte_source(resource, expected, memory)
         }
     }
@@ -3275,6 +3566,52 @@ mod tests {
     }
 
     #[test]
+    fn local_open_rejects_planned_generation_mismatch_before_hashing() {
+        let root = TempDir::new().unwrap();
+        let path = root.path().join("events.ndjson");
+        fs::write(&path, b"{\"id\":1}\n").unwrap();
+        let plan = FileResourcePlan {
+            source: "local".to_owned(),
+            root: root.path().to_string_lossy().into_owned(),
+            glob: "events.ndjson".to_owned(),
+            format: Some(FileFormatDeclaration::ndjson()),
+            format_declared: true,
+            format_options: serde_json::json!({}),
+            compression: FileCompressionDeclaration::none(),
+            auth: None,
+            credentials: None,
+            allowlist: cdf_http::EgressAllowlist::allow_any(),
+        };
+        let dependencies = FileRuntimeDependencies::new(
+            FileTransportFacade::new(),
+            crate::test_execution_services(),
+            crate::test_format_registry(),
+            crate::test_transform_registry(),
+        );
+        let mut resolved = resolved_file_match(
+            &ResourceId::new("local.events").unwrap(),
+            root.path(),
+            fs::canonicalize(&path).unwrap(),
+            &plan,
+            dependencies.formats(),
+            dependencies.transforms(),
+        )
+        .unwrap();
+        resolved.source_generation = Some("local-v1:stale-planned-generation".to_owned());
+
+        let error = prepare_file_input(
+            &resolved,
+            cdf_runtime::FormatSourceAccess::Sequential,
+            &dependencies,
+        )
+        .err()
+        .expect("stale local plan must fail before extraction hashing");
+
+        assert_eq!(error.kind, cdf_kernel::ErrorKind::Data);
+        assert!(error.message.contains("changed between planning and open"));
+    }
+
+    #[test]
     fn remote_parquet_full_scan_uses_verified_sequential_spool() {
         let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, false)]));
         let batch = RecordBatch::try_new(
@@ -3330,7 +3667,8 @@ mod tests {
                 cdf_runtime::FormatSourceAccess::Adaptive,
                 &dependencies,
             )
-            .unwrap(),
+            .unwrap()
+            .input,
             PreparedFileInput::SpoolSource { .. }
         ));
         let stream = stream_file_match_blocking(
@@ -3425,12 +3763,12 @@ mod tests {
             PutPayload::from_static(b"not payload CDF should inspect during inventory"),
         ))
         .unwrap();
-        let range_reads = Arc::new(AtomicUsize::new(0));
-        let transport = RangeCountingTransport {
+        let payload_opens = Arc::new(AtomicUsize::new(0));
+        let transport = PayloadOpenCountingTransport {
             inner: FileTransportFacade::new()
                 .with_object_store("s3://events", store)
                 .with_execution_services(crate::test_execution_services()),
-            range_reads: Arc::clone(&range_reads),
+            payload_opens: Arc::clone(&payload_opens),
         };
         let plan = FileResourcePlan {
             source: "events".to_owned(),
@@ -3461,7 +3799,7 @@ mod tests {
             matches[0].format.detection.confidence,
             FormatDetectionConfidence::None
         );
-        assert_eq!(range_reads.load(Ordering::Relaxed), 0);
+        assert_eq!(payload_opens.load(Ordering::Relaxed), 0);
     }
 
     #[test]
@@ -3760,5 +4098,21 @@ mod tests {
             dependencies.execution().memory().snapshot().current_bytes,
             0
         );
+    }
+}
+#[test]
+fn format_confirmation_shares_the_configured_discovery_byte_budget() {
+    let context = FormatConfirmationContext {
+        resource_id: ResourceId::new("events.raw").unwrap(),
+        location: "https://example.test/events.parquet".to_owned(),
+        format_declared: false,
+        transform_name: "none".to_owned(),
+    };
+    assert_eq!(
+        discovery_budget_after_confirmation(1_024, 24, &context).unwrap(),
+        1_000
+    );
+    for confirmation_bytes in [1_024, 1_025] {
+        assert!(discovery_budget_after_confirmation(1_024, confirmation_bytes, &context).is_err());
     }
 }

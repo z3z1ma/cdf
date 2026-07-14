@@ -27,20 +27,19 @@ use cdf_engine::{
 };
 use cdf_http::{HttpRequest, HttpResponse, HttpTransport, SecretProvider, SecretUri, SecretValue};
 use cdf_kernel::{
-    BackpressureSupport, BatchStream, CHECKPOINT_STATE_VERSION, CapabilitySupport, CdfError,
-    Checkpoint, CheckpointId, CheckpointStatus, CheckpointStore, CommitCounts, CommitPlan,
-    CommitSegment, CommitSession, CompositePosition, ConcurrencyLimit, CursorOrderingClaim,
-    CursorPosition, CursorSpec, CursorValue, DeliveryGuarantee, DestinationCommitRequest,
-    DestinationId, DestinationProtocol, DestinationSheet, EstimateSupport, FileManifest,
-    FilePosition, FilterCapabilities, IdempotencySupport, IdempotencyToken, IdentifierRules,
-    IncrementalShape, LogPosition, MigrationRecord, PackageHash, PageToken, PartitionId,
-    PipelineId, PlanId, ProcessedObservationOutcome, ProcessedObservationPosition,
-    PushdownFidelity, QueryableResource, Receipt, ReceiptId, ReceiptVerification, ReplaySupport,
-    ResourceCapabilities, ResourceDescriptor, ResourceId, ResourceStream, Result, RewindReport,
-    RewindRequest, RunEvent, RunEventSink, RunEventSinkResult, RunId, RunPhase, RunPhaseMetric,
-    RunPhaseStatus, ScanRequest, SchemaHash, SchemaSource, ScopeKey, SegmentAck, SegmentId,
-    SourcePosition, StateDelta, StateSegment, TargetName, TransactionSupport, TrustLevel,
-    VerifyClause, WriteDisposition,
+    BackpressureSupport, CHECKPOINT_STATE_VERSION, CapabilitySupport, CdfError, Checkpoint,
+    CheckpointId, CheckpointStatus, CheckpointStore, CommitCounts, CommitPlan, CommitSegment,
+    CommitSession, CompositePosition, ConcurrencyLimit, CursorOrderingClaim, CursorPosition,
+    CursorSpec, CursorValue, DeliveryGuarantee, DestinationCommitRequest, DestinationId,
+    DestinationProtocol, DestinationSheet, EstimateSupport, FileManifest, FilePosition,
+    FilterCapabilities, IdempotencySupport, IdempotencyToken, IdentifierRules, IncrementalShape,
+    LogPosition, MigrationRecord, PackageHash, PageToken, PartitionId, PipelineId, PlanId,
+    ProcessedObservationOutcome, ProcessedObservationPosition, PushdownFidelity, QueryableResource,
+    Receipt, ReceiptId, ReceiptVerification, ReplaySupport, ResourceCapabilities,
+    ResourceDescriptor, ResourceId, ResourceStream, Result, RewindReport, RewindRequest, RunEvent,
+    RunEventSink, RunEventSinkResult, RunId, RunPhase, RunPhaseMetric, RunPhaseStatus, ScanRequest,
+    SchemaHash, SchemaSource, ScopeKey, SegmentAck, SegmentId, SourcePosition, StateDelta,
+    StateSegment, TargetName, TransactionSupport, TrustLevel, VerifyClause, WriteDisposition,
 };
 use cdf_package::{PackageBuilder, PackageReader, canonical_json_bytes};
 use cdf_package_contract::{
@@ -622,7 +621,7 @@ impl ResourceStream for BackfillMockResource {
     fn open(
         &self,
         _partition: cdf_kernel::PartitionPlan,
-    ) -> cdf_kernel::BoxFuture<'_, Result<BatchStream>> {
+    ) -> cdf_kernel::BoxFuture<'_, Result<cdf_kernel::OpenedPartitionStream>> {
         self.open_count.fetch_add(1, Ordering::SeqCst);
         Box::pin(async {
             Err(CdfError::internal(
@@ -1198,7 +1197,7 @@ impl ResourceStream for ArtifactPlanResource {
     fn open(
         &self,
         _partition: cdf_kernel::PartitionPlan,
-    ) -> cdf_kernel::BoxFuture<'_, Result<BatchStream>> {
+    ) -> cdf_kernel::BoxFuture<'_, Result<cdf_kernel::OpenedPartitionStream>> {
         Box::pin(async { Err(CdfError::internal("artifact fixture has no payload")) })
     }
 }
@@ -2331,6 +2330,7 @@ fn engine_output_with_positions(
         .zip(positions)
         .map(|(segment, position)| EngineSegmentPosition {
             segment_id: segment.segment_id.clone(),
+            partition_ordinal: 0,
             output_position: Some(position),
         })
         .collect();
@@ -3227,6 +3227,7 @@ fn general_project_run_commits_multi_file_resource_manifest_checkpoint() {
         .map(|segment| match &segment.output_position {
             SourcePosition::FileManifest(manifest) => {
                 assert_eq!(manifest.files.len(), 1);
+                assert!(manifest.files[0].sha256.is_some());
                 manifest.files[0].path.clone()
             }
             other => panic!("state segment should retain file manifest evidence: {other:?}"),

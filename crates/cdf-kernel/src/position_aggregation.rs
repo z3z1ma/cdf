@@ -67,6 +67,128 @@ pub fn aggregate_position_set(
     Ok(first.clone())
 }
 
+/// Merges evidence about the same logical file without permitting its source
+/// generation to change. A cryptographic checksum may enrich metadata-only
+/// evidence after extraction has consumed the file.
+pub fn merge_file_position_evidence(
+    existing: &FilePosition,
+    observed: &FilePosition,
+) -> Result<FilePosition> {
+    if existing.path != observed.path
+        || existing.size_bytes != observed.size_bytes
+        || existing.source_generation != observed.source_generation
+        || existing.etag != observed.etag
+        || existing.object_version != observed.object_version
+    {
+        return Err(CdfError::data(format!(
+            "file manifest evidence changed generation for `{}`",
+            existing.path
+        )));
+    }
+    let sha256 = match (&existing.sha256, &observed.sha256) {
+        (Some(left), Some(right)) if left != right => {
+            return Err(CdfError::data(format!(
+                "file manifest evidence produced conflicting content hashes for `{}`",
+                existing.path
+            )));
+        }
+        (Some(value), _) | (_, Some(value)) => Some(value.clone()),
+        (None, None) => None,
+    };
+    Ok(FilePosition {
+        path: existing.path.clone(),
+        size_bytes: existing.size_bytes,
+        source_generation: existing.source_generation.clone(),
+        etag: existing.etag.clone(),
+        object_version: existing.object_version.clone(),
+        sha256,
+    })
+}
+
+/// Enriches a segment's source position with evidence available only after its source stream
+/// reached EOF. This is the sole source-position authority for terminal enrichment; orchestration
+/// must not branch on source kind.
+pub fn merge_terminal_position_evidence(
+    existing: &SourcePosition,
+    terminal: &SourcePosition,
+) -> Result<SourcePosition> {
+    match (existing, terminal) {
+        (SourcePosition::FileManifest(existing), SourcePosition::FileManifest(terminal)) => {
+            if existing.version != terminal.version {
+                return Err(CdfError::data(
+                    "terminal file evidence changed the manifest version",
+                ));
+            }
+            let mut terminal_by_path = BTreeMap::new();
+            for file in &terminal.files {
+                if terminal_by_path.insert(file.path.as_str(), file).is_some() {
+                    return Err(CdfError::data(format!(
+                        "terminal file evidence repeats path `{}`",
+                        file.path
+                    )));
+                }
+            }
+            let mut existing_paths = BTreeMap::new();
+            let mut files = Vec::with_capacity(existing.files.len());
+            for file in &existing.files {
+                if existing_paths.insert(file.path.as_str(), ()).is_some() {
+                    return Err(CdfError::data(format!(
+                        "segment file evidence repeats path `{}`",
+                        file.path
+                    )));
+                }
+                let terminal = terminal_by_path.remove(file.path.as_str()).ok_or_else(|| {
+                    CdfError::data(format!(
+                        "terminal file evidence omitted segment path `{}`",
+                        file.path
+                    ))
+                })?;
+                files.push(merge_file_position_evidence(file, terminal)?);
+            }
+            if let Some(extra) = terminal_by_path.into_values().next() {
+                return Err(CdfError::data(format!(
+                    "terminal file evidence introduced path `{}` absent from the segment",
+                    extra.path
+                )));
+            }
+            Ok(SourcePosition::FileManifest(FileManifest {
+                version: existing.version,
+                files,
+            }))
+        }
+        (SourcePosition::Composite(existing), SourcePosition::Composite(terminal)) => {
+            if existing.version != terminal.version
+                || existing.positions.keys().ne(terminal.positions.keys())
+            {
+                return Err(CdfError::data(
+                    "terminal composite evidence changed its version or position keys",
+                ));
+            }
+            let positions = existing
+                .positions
+                .iter()
+                .map(|(key, position)| {
+                    let terminal = terminal.positions.get(key).ok_or_else(|| {
+                        CdfError::internal("validated composite terminal key disappeared")
+                    })?;
+                    Ok((
+                        key.clone(),
+                        merge_terminal_position_evidence(position, terminal)?,
+                    ))
+                })
+                .collect::<Result<BTreeMap<_, _>>>()?;
+            Ok(SourcePosition::Composite(CompositePosition {
+                version: existing.version,
+                positions,
+            }))
+        }
+        _ if existing == terminal => Ok(existing.clone()),
+        _ => Err(CdfError::data(
+            "terminal source-position evidence changed position kind or value",
+        )),
+    }
+}
+
 fn aggregate_file_manifests(
     resource_id: &str,
     positions: &[SourcePosition],
@@ -85,13 +207,17 @@ fn aggregate_file_manifests(
         version = Some(manifest.version);
         for file in &manifest.files {
             match files.get(&file.path) {
-                Some(existing) if existing != file => {
-                    return Err(CdfError::data(format!(
-                        "resource `{resource_id}` produced conflicting file manifest evidence for `{}`",
-                        file.path
-                    )));
+                Some(existing) => {
+                    files.insert(
+                        file.path.clone(),
+                        merge_file_position_evidence(existing, file).map_err(|error| {
+                            CdfError::data(format!(
+                                "resource `{resource_id}` produced conflicting file manifest evidence for `{}`: {error}",
+                                file.path
+                            ))
+                        })?,
+                    );
                 }
-                Some(_) => {}
                 None => {
                     files.insert(file.path.clone(), file.clone());
                 }
@@ -353,5 +479,151 @@ fn close_cursor(
                 .ok_or_else(incompatible)
         }
         _ => Err(incompatible()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn file(sha256: Option<&str>) -> FilePosition {
+        FilePosition {
+            path: "events.ndjson".to_owned(),
+            size_bytes: 42,
+            source_generation: Some("local-v1:generation".to_owned()),
+            etag: None,
+            object_version: None,
+            sha256: sha256.map(str::to_owned),
+        }
+    }
+
+    #[test]
+    fn extraction_checksum_enriches_metadata_only_file_evidence() {
+        let merged =
+            merge_file_position_evidence(&file(None), &file(Some("sha256:content"))).unwrap();
+        assert_eq!(merged.sha256.as_deref(), Some("sha256:content"));
+    }
+
+    #[test]
+    fn conflicting_generation_or_checksum_cannot_be_merged() {
+        let mut changed_generation = file(Some("sha256:content"));
+        changed_generation.source_generation = Some("local-v1:changed".to_owned());
+        assert!(merge_file_position_evidence(&file(None), &changed_generation).is_err());
+        assert!(
+            merge_file_position_evidence(
+                &file(Some("sha256:first")),
+                &file(Some("sha256:second")),
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn terminal_position_merge_is_total_and_recurses_through_composites() {
+        let existing = SourcePosition::Composite(CompositePosition {
+            version: 1,
+            positions: BTreeMap::from([
+                (
+                    "file".to_owned(),
+                    SourcePosition::FileManifest(FileManifest {
+                        version: 1,
+                        files: vec![file(None)],
+                    }),
+                ),
+                (
+                    "cursor".to_owned(),
+                    SourcePosition::Cursor(CursorPosition {
+                        version: 1,
+                        field: "id".to_owned(),
+                        value: CursorValue::I64(42),
+                    }),
+                ),
+            ]),
+        });
+        let terminal = SourcePosition::Composite(CompositePosition {
+            version: 1,
+            positions: BTreeMap::from([
+                (
+                    "file".to_owned(),
+                    SourcePosition::FileManifest(FileManifest {
+                        version: 1,
+                        files: vec![file(Some("sha256:content"))],
+                    }),
+                ),
+                (
+                    "cursor".to_owned(),
+                    SourcePosition::Cursor(CursorPosition {
+                        version: 1,
+                        field: "id".to_owned(),
+                        value: CursorValue::I64(42),
+                    }),
+                ),
+            ]),
+        });
+
+        let merged = merge_terminal_position_evidence(&existing, &terminal).unwrap();
+        let SourcePosition::Composite(merged) = merged else {
+            panic!("expected composite terminal evidence");
+        };
+        let SourcePosition::FileManifest(manifest) = &merged.positions["file"] else {
+            panic!("expected nested file manifest");
+        };
+        assert_eq!(manifest.files[0].sha256.as_deref(), Some("sha256:content"));
+        assert_eq!(
+            merged.positions["cursor"],
+            terminal_position(&terminal, "cursor")
+        );
+    }
+
+    #[test]
+    fn terminal_position_merge_rejects_kind_value_and_path_changes() {
+        let existing = SourcePosition::FileManifest(FileManifest {
+            version: 1,
+            files: vec![file(None)],
+        });
+        let mut changed = file(Some("sha256:content"));
+        changed.path = "other.ndjson".to_owned();
+        assert!(
+            merge_terminal_position_evidence(
+                &existing,
+                &SourcePosition::FileManifest(FileManifest {
+                    version: 1,
+                    files: vec![changed],
+                }),
+            )
+            .is_err()
+        );
+        assert!(
+            merge_terminal_position_evidence(
+                &SourcePosition::Cursor(CursorPosition {
+                    version: 1,
+                    field: "id".to_owned(),
+                    value: CursorValue::I64(1),
+                }),
+                &SourcePosition::Cursor(CursorPosition {
+                    version: 1,
+                    field: "id".to_owned(),
+                    value: CursorValue::I64(2),
+                }),
+            )
+            .is_err()
+        );
+        assert!(
+            merge_terminal_position_evidence(
+                &existing,
+                &SourcePosition::FileManifest(FileManifest {
+                    version: 1,
+                    files: vec![file(None), file(Some("sha256:content"))],
+                }),
+            )
+            .is_err()
+        );
+    }
+
+    fn terminal_position<'a>(position: &'a SourcePosition, key: &str) -> SourcePosition {
+        let SourcePosition::Composite(composite) = position else {
+            panic!("expected composite position");
+        };
+        composite.positions[key].clone()
     }
 }

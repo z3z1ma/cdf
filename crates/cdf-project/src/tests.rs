@@ -48,6 +48,7 @@ use cdf_state_sqlite::InMemoryScopeLeaseStore;
 use flate2::{Compression, write::GzEncoder};
 use futures_util::stream;
 use object_store::{ObjectStoreExt, PutPayload, memory::InMemory, path::Path as ObjectPath};
+use sha2::{Digest, Sha256};
 
 #[test]
 fn project_normal_build_graph_has_no_concrete_destination_crates() {
@@ -110,9 +111,10 @@ fn file_dependencies(transport: FileTransportFacade) -> FileRuntimeDependencies 
             cdf_transform_gzip::GzipTransformDriver::new().unwrap(),
         ))
         .unwrap();
+    let execution = test_execution_services();
     FileRuntimeDependencies::new(
-        transport,
-        test_execution_services(),
+        transport.with_execution_services(execution.clone()),
+        execution,
         test_format_registry(),
         Arc::new(transforms),
     )
@@ -2133,6 +2135,90 @@ fn http_parquet_auto_pin_plan_preview_and_run_use_file_runtime() {
 }
 
 #[test]
+fn unversioned_http_parquet_runs_and_commits_terminal_content_identity() {
+    let temp = tempfile::tempdir().unwrap();
+    let parquet = vendor_parquet_bytes();
+    write_http_discover_project(temp.path(), "");
+    let resource = compile_single_project_resource(temp.path());
+    let transport = RecordingHttpFileTransport::new(parquet.clone());
+    transport.clear_etag();
+    let dependencies = http_file_dependencies(transport.clone());
+    let prepared = prepare_discover_resource_with_file_dependencies(
+        temp.path(),
+        &resource,
+        &EnvSecretProvider::from_map(std::iter::empty::<(&str, &str)>()),
+        dependencies.clone(),
+    )
+    .unwrap();
+    let file_resource = prepared
+        .resource
+        .to_file_resource(dependencies.clone())
+        .unwrap();
+    let plan = live_plan_for_stream(&file_resource, "pkg-http-unversioned");
+    let partition = &plan.scan.partitions[0];
+    assert_eq!(partition.metadata["identity_strength"], "weak");
+    assert!(!partition.metadata.contains_key("etag"));
+    assert!(!partition.metadata.contains_key("source_generation"));
+    assert!(!partition.metadata.contains_key("sha256"));
+    let request_count_before_run = transport.requests().len();
+
+    let report = futures_executor::block_on(run_project(ProjectRunRequest {
+        resource: ProjectRunSource::file(&file_resource),
+        plan,
+        package_root: temp.path().join(".cdf/packages"),
+        state_store_path: temp.path().join(".cdf/state.db"),
+        pipeline_id: PipelineId::new("pipeline-http-unversioned").unwrap(),
+        package_id: "pkg-http-unversioned".to_owned(),
+        checkpoint_id: CheckpointId::new("checkpoint-http-unversioned").unwrap(),
+        destination: ResolvedProjectDestination::duckdb(
+            temp.path().join(".cdf/dev.duckdb"),
+            TargetName::new("events").unwrap(),
+        )
+        .unwrap(),
+        run_id: Some(RunId::new("run-http-unversioned").unwrap()),
+        event_sink: None,
+        after_receipt_verified: None,
+    }))
+    .unwrap();
+
+    assert_eq!(report.row_count, 2);
+    let expected_sha256 = format!("sha256:{}", hex::encode(Sha256::digest(&parquet)));
+    let SourcePosition::FileManifest(manifest) = &report.checkpoint.delta.output_position else {
+        panic!("unversioned HTTP checkpoint must commit a file manifest");
+    };
+    assert_eq!(manifest.files.len(), 1);
+    assert_eq!(
+        manifest.files[0].sha256.as_deref(),
+        Some(expected_sha256.as_str())
+    );
+    assert_eq!(manifest.files[0].etag, None);
+    assert_eq!(manifest.files[0].source_generation, None);
+    assert_eq!(report.checkpoint.delta.segments.len(), 1);
+    let SourcePosition::FileManifest(segment_manifest) =
+        &report.checkpoint.delta.segments[0].output_position
+    else {
+        panic!("unversioned HTTP segment must retain a file manifest");
+    };
+    assert_eq!(segment_manifest.files.len(), 1);
+    assert_eq!(
+        segment_manifest.files[0].sha256.as_deref(),
+        Some(expected_sha256.as_str())
+    );
+    let sequential_gets = transport
+        .requests()
+        .into_iter()
+        .skip(request_count_before_run)
+        .filter(|request| {
+            request.method == HttpMethod::Get && !request.headers.contains_key("range")
+        })
+        .count();
+    assert_eq!(
+        sequential_gets, 1,
+        "execution must transfer the payload once"
+    );
+}
+
+#[test]
 fn http_file_discovery_egress_and_auth_fail_before_transport_use() {
     let temp = tempfile::tempdir().unwrap();
     let parquet = vendor_parquet_bytes();
@@ -3348,7 +3434,7 @@ struct RecordingHttpFileTransport {
 struct RecordingHttpFileTransportState {
     requests: Vec<HttpFileRequest>,
     body: Arc<Vec<u8>>,
-    etag: String,
+    etag: Option<String>,
     missing: BTreeSet<String>,
 }
 
@@ -3373,24 +3459,31 @@ impl RecordingHttpByteSource {
                 "recording HTTP byte source requires an HTTP(S) resource",
             ));
         };
+        let strong = expected.etag.is_some();
         let identity = ContentIdentity {
             stable_id: url.clone(),
             size_bytes: expected.size_bytes,
-            generation: expected.etag.clone(),
+            generation: expected.etag.clone().or_else(|| {
+                expected
+                    .size_bytes
+                    .map(|size| format!("unversioned-size:{size}"))
+            }),
             checksum: expected.sha256().map(str::to_owned),
             strength: if expected.sha256().is_some() {
                 GenerationStrength::ContentAddressed
-            } else {
+            } else if strong {
                 GenerationStrength::Strong
+            } else {
+                GenerationStrength::Weak
             },
         };
         identity.validate()?;
         let capabilities = ByteSourceCapabilities {
             known_length: true,
             reopenable: true,
-            seekable: true,
-            exact_ranges: true,
-            useful_range_concurrency: 4,
+            seekable: strong,
+            exact_ranges: strong,
+            useful_range_concurrency: if strong { 4 } else { 0 },
             minimum_chunk_bytes: 1,
             maximum_chunk_bytes: 32 * 1024 * 1024,
         };
@@ -3522,7 +3615,7 @@ impl RecordingHttpFileTransport {
             state: Arc::new(Mutex::new(RecordingHttpFileTransportState {
                 requests: Vec::new(),
                 body: Arc::new(body),
-                etag: "\"fixture-etag\"".to_owned(),
+                etag: Some("\"fixture-etag\"".to_owned()),
                 missing: BTreeSet::new(),
             })),
         }
@@ -3539,37 +3632,48 @@ impl RecordingHttpFileTransport {
     }
 
     fn set_etag(&self, etag: &str) {
-        self.state.lock().unwrap().etag = etag.to_owned();
+        self.state.lock().unwrap().etag = Some(etag.to_owned());
+    }
+
+    fn clear_etag(&self) {
+        self.state.lock().unwrap().etag = None;
     }
 }
 
 impl HttpFileTransport for RecordingHttpFileTransport {
-    fn send(&self, request: HttpFileRequest) -> Result<HttpFileResponse> {
-        let mut state = self.state.lock().unwrap();
-        state.requests.push(request.clone());
-        match request.method {
-            HttpMethod::Head if state.missing.contains(&request.url) => {
-                Ok(HttpFileResponse::new(404))
-            }
-            HttpMethod::Head => Ok(HttpFileResponse::new(200)
-                .with_header("Content-Length", state.body.len().to_string())
-                .with_header("ETag", state.etag.clone())
-                .with_header("Last-Modified", "Wed, 08 Jul 2026 12:00:00 GMT")),
-            HttpMethod::Get => {
-                let range = request.headers.get("range").ok_or_else(|| {
-                    CdfError::data("test HTTP file transport requires ranged GET")
-                })?;
-                let (start, end) = parse_http_fixture_range(range, state.body.len())?;
-                let bytes = state.body[start..=end].to_vec();
-                Ok(HttpFileResponse::new(206)
-                    .with_header(
+    fn send_headers(
+        &self,
+        request: HttpFileRequest,
+    ) -> BoxFuture<'static, Result<HttpFileResponse>> {
+        let state = Arc::clone(&self.state);
+        Box::pin(async move {
+            let mut state = state.lock().unwrap();
+            state.requests.push(request.clone());
+            match request.method {
+                HttpMethod::Head if state.missing.contains(&request.url) => {
+                    Ok(HttpFileResponse::new(404))
+                }
+                HttpMethod::Head => {
+                    let mut response = HttpFileResponse::new(200)
+                        .with_header("Content-Length", state.body.len().to_string());
+                    if let Some(etag) = &state.etag {
+                        response = response.with_header("ETag", etag.clone());
+                    }
+                    Ok(response)
+                }
+                HttpMethod::Get => {
+                    let range = request.headers.get("range").ok_or_else(|| {
+                        CdfError::data("test HTTP file transport requires ranged GET")
+                    })?;
+                    let (start, end) = parse_http_fixture_range(range, state.body.len())?;
+                    Ok(HttpFileResponse::new(206).with_header(
                         "Content-Range",
                         format!("bytes {start}-{end}/{}", state.body.len()),
-                    )
-                    .with_body(bytes))
+                    ))
+                }
+                _ => Ok(HttpFileResponse::new(405)),
             }
-            _ => Ok(HttpFileResponse::new(405)),
-        }
+        })
     }
 
     fn open_byte_source(

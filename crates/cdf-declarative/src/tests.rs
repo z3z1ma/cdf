@@ -4,7 +4,10 @@ use std::{
     fs,
     io::{Cursor, Write},
     path::Path,
-    sync::{Arc, Mutex},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicUsize, Ordering},
+    },
 };
 
 use arrow_array::{
@@ -2460,11 +2463,11 @@ trust = "governed"
 }
 
 #[test]
-fn inferred_https_parquet_inventory_reads_no_payload_ranges() {
+fn inferred_https_parquet_inventory_opens_no_payload_source() {
     let bytes =
         cdf_package::transcode_record_batches_to_parquet_bytes(&[test_id_batch(21)]).unwrap();
     assert!(bytes.len() > 12);
-    let transport = RecordingRangeFileTransport::new(bytes.clone());
+    let transport = MetadataOnlyHttpTransport::new(bytes.len() as u64);
     let input = r#"
 [source.public]
 kind = "files"
@@ -2490,7 +2493,7 @@ trust = "governed"
     assert_eq!(partitions[0].metadata["format"], "parquet");
     assert_eq!(partitions[0].metadata["format_declared"], "false");
     assert_eq!(partitions[0].metadata["format_detection"], "none");
-    assert!(transport.ranges().is_empty());
+    assert_eq!(transport.payload_opens(), 0);
 }
 
 #[test]
@@ -3376,7 +3379,10 @@ where
     ))
 }
 
-fn drain_batches(mut stream: cdf_kernel::BatchStream) -> Vec<cdf_kernel::Batch> {
+fn drain_batches<S>(mut stream: S) -> Vec<cdf_kernel::Batch>
+where
+    S: futures_util::Stream<Item = cdf_kernel::Result<cdf_kernel::Batch>> + Unpin,
+{
     futures_executor::block_on(async move {
         let mut batches = Vec::new();
         while let Some(batch) = stream.next().await {
@@ -3469,51 +3475,43 @@ trust = "governed"
 }
 
 #[derive(Clone)]
-struct RecordingRangeFileTransport {
-    bytes: Arc<Vec<u8>>,
-    ranges: Arc<Mutex<Vec<ByteRange>>>,
+struct MetadataOnlyHttpTransport {
+    size_bytes: u64,
+    payload_opens: Arc<AtomicUsize>,
 }
 
-impl RecordingRangeFileTransport {
-    fn new(bytes: Vec<u8>) -> Self {
+impl MetadataOnlyHttpTransport {
+    fn new(size_bytes: u64) -> Self {
         Self {
-            bytes: Arc::new(bytes),
-            ranges: Arc::new(Mutex::new(Vec::new())),
+            size_bytes,
+            payload_opens: Arc::new(AtomicUsize::new(0)),
         }
     }
 
-    fn ranges(&self) -> Vec<ByteRange> {
-        self.ranges.lock().unwrap().clone()
+    fn payload_opens(&self) -> usize {
+        self.payload_opens.load(Ordering::Relaxed)
     }
 }
 
-impl FileTransport for RecordingRangeFileTransport {
+impl FileTransport for MetadataOnlyHttpTransport {
     fn metadata(
         &self,
         resource: &FileTransportResource,
-    ) -> cdf_kernel::Result<FileIdentityMetadata> {
+    ) -> cdf_kernel::Result<cdf_source_files::FileMetadataObservation> {
         let FileTransportLocation::HttpUrl { url } = &resource.location else {
             panic!("test transport expects an HTTP URL");
         };
-        Ok(FileIdentityMetadata {
-            location: url.clone(),
-            size_bytes: Some(self.bytes.len() as u64),
-            checksum: None,
-            etag: Some("fixture-etag".to_owned()),
-            version: None,
-            modified: None,
-        })
-    }
-
-    fn read_range(
-        &self,
-        _resource: &FileTransportResource,
-        range: ByteRange,
-    ) -> cdf_kernel::Result<Vec<u8>> {
-        self.ranges.lock().unwrap().push(range);
-        let start = range.start as usize;
-        let end = start + range.length as usize;
-        Ok(self.bytes[start..end].to_vec())
+        Ok(cdf_source_files::FileMetadataObservation::direct(
+            resource,
+            FileIdentityMetadata {
+                location: url.clone(),
+                size_bytes: Some(self.size_bytes),
+                checksum: None,
+                etag: Some("fixture-etag".to_owned()),
+                version: None,
+                modified: None,
+            },
+        ))
     }
 
     fn list(
@@ -3531,8 +3529,9 @@ impl FileTransport for RecordingRangeFileTransport {
         _expected: &FileIdentityMetadata,
         _memory: Arc<dyn cdf_memory::MemoryCoordinator>,
     ) -> cdf_kernel::Result<Arc<dyn cdf_runtime::ByteSource>> {
+        self.payload_opens.fetch_add(1, Ordering::Relaxed);
         Err(CdfError::internal(
-            "bounded-range planning test double cannot be installed as a file runtime",
+            "metadata-only planning test double cannot be installed as a file runtime",
         ))
     }
 }
@@ -3620,14 +3619,16 @@ fn first_i64_value(batches: &[cdf_kernel::Batch]) -> i64 {
         .value(0)
 }
 
-fn expect_open_error(result: cdf_kernel::Result<cdf_kernel::BatchStream>) -> CdfError {
+fn expect_open_error(result: cdf_kernel::Result<cdf_kernel::OpenedPartitionStream>) -> CdfError {
     match result {
         Ok(_) => panic!("REST open unexpectedly succeeded"),
         Err(error) => error,
     }
 }
 
-fn expect_open_or_stream_error(result: cdf_kernel::Result<cdf_kernel::BatchStream>) -> CdfError {
+fn expect_open_or_stream_error(
+    result: cdf_kernel::Result<cdf_kernel::OpenedPartitionStream>,
+) -> CdfError {
     match result {
         Err(error) => error,
         Ok(mut stream) => match futures_executor::block_on(stream.next()) {

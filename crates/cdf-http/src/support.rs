@@ -135,6 +135,9 @@ pub(crate) fn host_matches(host: &str, allowed: &str) -> bool {
 
 pub(crate) fn is_sensitive_name(name: &str) -> bool {
     let name = name.to_ascii_lowercase();
+    if matches!(name.as_str(), "sig" | "key") {
+        return true;
+    }
     [
         "token",
         "secret",
@@ -142,6 +145,9 @@ pub(crate) fn is_sensitive_name(name: &str) -> bool {
         "authorization",
         "api_key",
         "apikey",
+        "credential",
+        "signature",
+        "signed",
     ]
     .iter()
     .any(|needle| name.contains(needle))

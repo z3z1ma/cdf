@@ -1,6 +1,9 @@
 #![doc = "Pooled HTTP transport provider for cdf."]
 
-use std::{pin::Pin, sync::Arc, thread};
+use std::{
+    pin::Pin,
+    sync::{Arc, Mutex},
+};
 
 use bytes::Bytes;
 use cdf_http::{HeaderMap, HttpMethod, HttpRequest, HttpResponse, HttpTransport};
@@ -23,36 +26,20 @@ const MINIMUM_CHUNK_BYTES: u64 = 8 * 1024;
 const MAXIMUM_CHUNK_BYTES: u64 = 32 * 1024 * 1024;
 
 pub struct ReqwestHttpTransport {
-    blocking: Option<reqwest::blocking::Client>,
+    blocking: Mutex<Option<reqwest::blocking::Client>>,
     asynchronous: reqwest::Client,
 }
 
 impl ReqwestHttpTransport {
     pub fn new() -> Result<Self> {
-        let blocking = thread::spawn(|| {
-            reqwest::blocking::Client::builder()
-                .redirect(reqwest::redirect::Policy::none())
-                .build()
-        })
-        .join()
-        .map_err(|_| CdfError::internal("blocking HTTP client builder panicked"))?
-        .map_err(|error| CdfError::internal(format!("build blocking HTTP client: {error}")))?;
         let asynchronous = reqwest::Client::builder()
             .redirect(reqwest::redirect::Policy::none())
             .build()
             .map_err(|error| CdfError::internal(format!("build async HTTP client: {error}")))?;
         Ok(Self {
-            blocking: Some(blocking),
+            blocking: Mutex::new(None),
             asynchronous,
         })
-    }
-}
-
-impl Drop for ReqwestHttpTransport {
-    fn drop(&mut self) {
-        if let Some(client) = self.blocking.take() {
-            let _ = thread::spawn(move || drop(client)).join();
-        }
     }
 }
 
@@ -68,18 +55,29 @@ impl HttpTransport for ReqwestHttpTransport {
 }
 
 impl HttpFileTransport for ReqwestHttpTransport {
-    fn send(&self, request: HttpFileRequest) -> Result<HttpFileResponse> {
-        let raw = self.send_raw(
-            &request.method,
-            &request.url,
-            &request.headers,
-            "file transport",
-        )?;
-        let mut response = HttpFileResponse::new(raw.status).with_body(raw.body);
-        for (name, value) in raw.headers {
-            response = response.with_header(name, value);
-        }
-        Ok(response)
+    fn send_headers(
+        &self,
+        request: HttpFileRequest,
+    ) -> BoxFuture<'static, Result<HttpFileResponse>> {
+        let client = self.asynchronous.clone();
+        Box::pin(async move {
+            let method = reqwest_method(&request.method)?;
+            let mut builder = client.request(method, &request.url);
+            for (name, value) in &request.headers {
+                builder = builder.header(name.as_str(), value.as_str());
+            }
+            let response = builder.send().await.map_err(|error| {
+                CdfError::transient(format!(
+                    "send file transport HTTP metadata request: {}",
+                    sanitized_reqwest_error(error)
+                ))
+            })?;
+            let mut observed = HttpFileResponse::new(response.status().as_u16());
+            for (name, value) in response_headers(response.headers()) {
+                observed = observed.with_header(name, value);
+            }
+            Ok(observed)
+        })
     }
 
     fn open_byte_source(
@@ -122,17 +120,24 @@ impl ReqwestHttpTransport {
         context: &str,
     ) -> Result<RawHttpResponse> {
         let method = reqwest_method(method)?;
-        let mut builder = self.blocking()?.request(method, url);
+        let client = self.blocking_client()?;
+        let mut builder = client.request(method, url);
         for (name, value) in headers {
             builder = builder.header(name.as_str(), value.as_str());
         }
         let response = builder.send().map_err(|error| {
-            CdfError::transient(format!("send {context} HTTP request: {error}"))
+            CdfError::transient(format!(
+                "send {context} HTTP request: {}",
+                sanitized_reqwest_error(error)
+            ))
         })?;
         let status = response.status().as_u16();
         let headers = response_headers(response.headers());
         let body = response.bytes().map_err(|error| {
-            CdfError::transient(format!("read {context} HTTP response body: {error}"))
+            CdfError::transient(format!(
+                "read {context} HTTP response body: {}",
+                sanitized_reqwest_error(error)
+            ))
         })?;
         Ok(RawHttpResponse {
             status,
@@ -141,10 +146,25 @@ impl ReqwestHttpTransport {
         })
     }
 
-    fn blocking(&self) -> Result<&reqwest::blocking::Client> {
-        self.blocking
+    fn blocking_client(&self) -> Result<reqwest::blocking::Client> {
+        let mut client = self
+            .blocking
+            .lock()
+            .map_err(|_| CdfError::internal("blocking HTTP client lock is poisoned"))?;
+        if client.is_none() {
+            *client = Some(
+                reqwest::blocking::Client::builder()
+                    .redirect(reqwest::redirect::Policy::none())
+                    .build()
+                    .map_err(|error| {
+                        CdfError::internal(format!("build blocking HTTP client: {error}"))
+                    })?,
+            );
+        }
+        client
             .as_ref()
-            .ok_or_else(|| CdfError::internal("blocking HTTP client unavailable during teardown"))
+            .cloned()
+            .ok_or_else(|| CdfError::internal("blocking HTTP client initialization failed"))
     }
 }
 
@@ -168,20 +188,19 @@ impl HttpByteSource {
             .size_bytes
             .ok_or_else(|| CdfError::data("HTTP byte source requires Content-Length"))?;
         let checksum = expected.sha256().map(str::to_owned);
-        let generation = expected.etag.clone().or_else(|| {
-            expected
-                .modified
-                .as_ref()
-                .map(|modified| format!("last-modified:{modified};size:{size_bytes}"))
-        });
-        if generation.is_none() && checksum.is_none() {
-            return Err(CdfError::data(
-                "HTTP byte source requires ETag, Last-Modified, or SHA-256 content identity",
-            ));
-        }
+        let generation = expected
+            .etag
+            .clone()
+            .or_else(|| {
+                expected
+                    .modified
+                    .as_ref()
+                    .map(|modified| format!("last-modified:{modified};size:{size_bytes}"))
+            })
+            .or_else(|| Some(format!("unversioned-size:{size_bytes}")));
         let exact_ranges = expected.etag.is_some();
         let identity = ContentIdentity {
-            stable_id: url.clone(),
+            stable_id: expected.location.clone(),
             size_bytes: Some(size_bytes),
             generation,
             checksum: checksum.clone(),
@@ -250,7 +269,7 @@ impl ByteSource for HttpByteSource {
                 maximum_chunk_bytes: request.preferred_chunk_bytes,
                 transferred_bytes: 0,
                 expected_checksum: self.expected.sha256().map(str::to_owned),
-                hasher: Sha256::new(),
+                hasher: self.expected.sha256().map(|_| Sha256::new()),
             };
             Ok(Box::pin(stream::try_unfold(state, http_sequential_next)) as AccountedByteStream)
         })
@@ -327,7 +346,7 @@ struct HttpSequentialState {
     maximum_chunk_bytes: u64,
     transferred_bytes: u64,
     expected_checksum: Option<String>,
-    hasher: Sha256,
+    hasher: Option<Sha256>,
 }
 
 async fn http_sequential_next(
@@ -353,7 +372,18 @@ async fn http_sequential_next(
                 )));
             }
             if let Some(expected) = &state.expected_checksum {
-                let observed = format!("{:x}", state.hasher.finalize());
+                let observed = format!(
+                    "{:x}",
+                    state
+                        .hasher
+                        .take()
+                        .ok_or_else(|| {
+                            CdfError::internal(
+                                "HTTP checksum expectation omitted its streaming hasher",
+                            )
+                        })?
+                        .finalize()
+                );
                 if observed
                     != expected
                         .strip_prefix("sha256:")
@@ -386,7 +416,9 @@ async fn http_sequential_next(
                 "HTTP sequential response exceeded planned generation length",
             ));
         }
-        state.hasher.update(&bytes);
+        if let Some(hasher) = &mut state.hasher {
+            hasher.update(&bytes);
+        }
         state.cancellation.check()?;
         return Ok(Some((AccountedBytes::new(bytes, lease)?, state)));
     }
@@ -488,11 +520,21 @@ fn reqwest_method(method: &HttpMethod) -> Result<reqwest::Method> {
 }
 
 fn http_send_error(error: reqwest::Error) -> CdfError {
-    CdfError::transient(format!("send HTTP byte-source request: {error}"))
+    CdfError::transient(format!(
+        "send HTTP byte-source request: {}",
+        sanitized_reqwest_error(error)
+    ))
 }
 
 fn http_body_error(error: reqwest::Error) -> CdfError {
-    CdfError::transient(format!("stream HTTP byte-source response: {error}"))
+    CdfError::transient(format!(
+        "stream HTTP byte-source response: {}",
+        sanitized_reqwest_error(error)
+    ))
+}
+
+fn sanitized_reqwest_error(error: reqwest::Error) -> String {
+    error.without_url().to_string()
 }
 
 #[cfg(test)]
@@ -501,8 +543,9 @@ mod tests {
         collections::BTreeMap,
         io::{Read, Write},
         net::TcpListener,
-        sync::Mutex,
+        sync::{Mutex, mpsc},
         thread,
+        time::Duration,
     };
 
     use cdf_memory::DeterministicMemoryCoordinator;
@@ -606,6 +649,67 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn metadata_get_returns_after_headers_without_draining_the_object_body() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let (release_sender, release_receiver) = mpsc::channel();
+        let server = thread::spawn(move || {
+            let (mut socket, _) = listener.accept().unwrap();
+            let mut request = Vec::new();
+            let mut buffer = [0_u8; 1024];
+            while !request.windows(4).any(|window| window == b"\r\n\r\n") {
+                let read = socket.read(&mut buffer).unwrap();
+                if read == 0 {
+                    break;
+                }
+                request.extend_from_slice(&buffer[..read]);
+            }
+            socket
+                .write_all(
+                    b"HTTP/1.1 206 Partial Content\r\nContent-Length: 1048576\r\nContent-Range: bytes 0-0/1048576\r\nConnection: close\r\n\r\n",
+                )
+                .unwrap();
+            socket.flush().unwrap();
+            let _ = release_receiver.recv_timeout(Duration::from_secs(3));
+        });
+        let transport = ReqwestHttpTransport::new().unwrap();
+        let response = tokio::time::timeout(
+            Duration::from_secs(2),
+            transport.send_headers(HttpFileRequest::new(
+                HttpMethod::Get,
+                format!("http://{address}/large.parquet"),
+            )),
+        )
+        .await
+        .expect("header-only metadata request tried to drain the object body")
+        .unwrap();
+        assert_eq!(response.status, 206);
+        assert!(response.headers.contains_key("content-length"));
+        release_sender.send(()).unwrap();
+        server.join().unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn reqwest_failures_remove_signed_urls_from_error_messages() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        drop(listener);
+        let transport = ReqwestHttpTransport::new().unwrap();
+        let secret = "must-not-leak";
+
+        let error = transport
+            .send_headers(HttpFileRequest::new(
+                HttpMethod::Get,
+                format!("http://{address}/file?X-Amz-Signature={secret}"),
+            ))
+            .await
+            .unwrap_err();
+
+        assert!(!error.to_string().contains(secret));
+        assert!(!error.to_string().contains("X-Amz-Signature"));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn http_sequential_source_skips_empty_transport_frames_under_one_lease() {
         const WINDOW_BYTES: u64 = 4 * 1024 * 1024;
         let coordinator =
@@ -624,7 +728,7 @@ mod tests {
             maximum_chunk_bytes: WINDOW_BYTES,
             transferred_bytes: 0,
             expected_checksum: None,
-            hasher: Sha256::new(),
+            hasher: None,
         };
 
         let (chunk, state) = http_sequential_next(state).await.unwrap().unwrap();
@@ -658,5 +762,33 @@ mod tests {
         assert!(!source.capabilities().exact_ranges);
         assert_eq!(source.capabilities().useful_range_concurrency, 0);
         assert_eq!(source.identity().strength, GenerationStrength::Weak);
+    }
+
+    #[test]
+    fn unversioned_http_identity_remains_sequential_and_attestable() {
+        let transport = ReqwestHttpTransport::new().unwrap();
+        let resource = FileTransportResource::http_url("https://example.test/events.bin");
+        let expected = FileIdentityMetadata {
+            location: "https://example.test/events.bin".to_owned(),
+            size_bytes: Some(16),
+            checksum: None,
+            etag: None,
+            version: None,
+            modified: None,
+        };
+        let memory: Arc<dyn MemoryCoordinator> =
+            Arc::new(DeterministicMemoryCoordinator::new(1024 * 1024, BTreeMap::new()).unwrap());
+
+        let source = transport
+            .open_byte_source(&resource, &expected, memory)
+            .unwrap();
+
+        assert_eq!(
+            source.identity().generation.as_deref(),
+            Some("unversioned-size:16")
+        );
+        assert_eq!(source.identity().strength, GenerationStrength::Weak);
+        assert!(!source.capabilities().seekable);
+        assert!(!source.capabilities().exact_ranges);
     }
 }

@@ -1,6 +1,11 @@
-use std::collections::BTreeMap;
+use std::{
+    collections::BTreeMap,
+    pin::Pin,
+    task::{Context, Poll},
+};
 
 use arrow_schema::SchemaRef;
+use futures_core::Stream;
 use serde::{Deserialize, Serialize};
 
 use crate::{
@@ -1158,7 +1163,7 @@ impl EffectiveSchemaRuntime {
     }
 }
 
-pub trait ResourceStream {
+pub trait ResourceStream: Send + Sync {
     fn descriptor(&self) -> &ResourceDescriptor;
     fn schema(&self) -> SchemaRef;
     /// Validates adapter-owned runtime dependencies before orchestration starts.
@@ -1167,7 +1172,7 @@ pub trait ResourceStream {
         Ok(())
     }
     fn plan_partitions(&self, request: &ScanRequest) -> Result<Vec<PartitionPlan>>;
-    fn open(&self, partition: PartitionPlan) -> BoxFuture<'_, Result<BatchStream>>;
+    fn open(&self, partition: PartitionPlan) -> BoxFuture<'_, Result<OpenedPartitionStream>>;
     /// Revalidates a planned observation without opening its payload and returns
     /// the exact source position safe to mark processed. Adapters with mutable
     /// external identity MUST override this method.
@@ -1182,6 +1187,57 @@ pub trait ResourceStream {
     }
     fn type_policy_allowances(&self) -> TypePolicyAllowances {
         TypePolicyAllowances::default()
+    }
+}
+
+/// One opened partition stream and its invocation-bound terminal evidence.
+///
+/// Completion may be consumed only after the batch stream reaches EOF. Binding the future to this
+/// value prevents evidence from one preview, retry, or concurrent open being observed by another.
+pub struct OpenedPartitionStream {
+    stream: BatchStream,
+    completion: Option<BoxFuture<'static, Result<Option<PartitionAttestation>>>>,
+    reached_eof: bool,
+}
+
+impl OpenedPartitionStream {
+    pub fn without_completion(stream: BatchStream) -> Self {
+        Self::with_completion(stream, Box::pin(async { Ok(None) }))
+    }
+
+    pub fn with_completion(
+        stream: BatchStream,
+        completion: BoxFuture<'static, Result<Option<PartitionAttestation>>>,
+    ) -> Self {
+        Self {
+            stream,
+            completion: Some(completion),
+            reached_eof: false,
+        }
+    }
+
+    pub async fn completion_attestation(&mut self) -> Result<Option<PartitionAttestation>> {
+        if !self.reached_eof {
+            return Err(CdfError::contract(
+                "partition completion attestation requires a fully consumed stream",
+            ));
+        }
+        let completion = self.completion.take().ok_or_else(|| {
+            CdfError::contract("partition completion attestation was already consumed")
+        })?;
+        completion.await
+    }
+}
+
+impl Stream for OpenedPartitionStream {
+    type Item = Result<crate::Batch>;
+
+    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        let next = self.stream.as_mut().poll_next(cx);
+        if matches!(next, Poll::Ready(None)) {
+            self.reached_eof = true;
+        }
+        next
     }
 }
 

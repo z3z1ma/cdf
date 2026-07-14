@@ -1,8 +1,6 @@
 use std::{
     collections::BTreeMap,
-    fmt,
-    fs::{self, File},
-    io::{Read, Seek, SeekFrom},
+    fmt, fs,
     path::{Path, PathBuf},
     sync::Arc,
     time::UNIX_EPOCH,
@@ -12,7 +10,7 @@ use cdf_http::{
     AuthScheme, EgressAllowlist, HeaderMap, HttpMethod, HttpRequest, Redactor, SecretProvider,
     SecretUri,
 };
-use cdf_kernel::{CdfError, ErrorKind, FilePosition, Result};
+use cdf_kernel::{BoxFuture, CdfError, ErrorKind, FilePosition, Result};
 use cdf_memory::MemoryCoordinator;
 use cdf_runtime::{ByteSource, GenerationStrength};
 use futures_util::TryStreamExt;
@@ -125,9 +123,9 @@ impl fmt::Debug for FileTransportLocation {
                 .debug_struct("FileUrl")
                 .field("url", &redacted_location_for_debug(url))
                 .finish(),
-            Self::HttpUrl { url } => formatter
+            Self::HttpUrl { .. } => formatter
                 .debug_struct("HttpUrl")
-                .field("url", &redacted_location_for_debug(url))
+                .field("url", &"<opaque HTTP URL>")
                 .finish(),
             Self::ObjectStoreUrl { url } => formatter
                 .debug_struct("ObjectStoreUrl")
@@ -199,66 +197,70 @@ impl fmt::Debug for FileIdentityMetadata {
     }
 }
 
+/// Metadata observed for a logical file together with the concrete location that may be used to
+/// read that observation. The access location is deliberately separate from identity: HTTP
+/// redirects commonly contain short-lived signed URLs which must never become package evidence.
+#[derive(Clone, PartialEq, Eq)]
+pub struct FileMetadataObservation {
+    identity: FileIdentityMetadata,
+    access_location: OpaqueAccessLocation,
+}
+
+#[derive(Clone, PartialEq, Eq)]
+struct OpaqueAccessLocation(FileTransportLocation);
+
+impl fmt::Debug for OpaqueAccessLocation {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("<opaque transport location>")
+    }
+}
+
+impl fmt::Debug for FileMetadataObservation {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("FileMetadataObservation")
+            .field("identity", &self.identity)
+            .field("access_location", &self.access_location)
+            .finish()
+    }
+}
+
+impl FileMetadataObservation {
+    pub fn direct(resource: &FileTransportResource, identity: FileIdentityMetadata) -> Self {
+        Self {
+            identity,
+            access_location: OpaqueAccessLocation(resource.location.clone()),
+        }
+    }
+
+    pub(crate) fn access_resource(&self, logical: &FileTransportResource) -> FileTransportResource {
+        let mut resource = logical.clone();
+        resource.location = self.access_location.0.clone();
+        resource
+    }
+
+    pub fn identity(&self) -> &FileIdentityMetadata {
+        &self.identity
+    }
+
+    pub fn into_identity(self) -> FileIdentityMetadata {
+        self.identity
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FileChecksum {
     pub algorithm: String,
     pub value: String,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct ByteRange {
-    pub start: u64,
-    pub length: u64,
-}
-
-impl ByteRange {
-    pub fn new(start: u64, length: u64) -> Result<Self> {
-        let range = Self { start, length };
-        range.validate()?;
-        Ok(range)
-    }
-
-    fn validate(&self) -> Result<()> {
-        if self.length == 0 {
-            return Err(CdfError::contract(
-                "file transport byte range length must be greater than zero",
-            ));
-        }
-        self.end_inclusive()?;
-        Ok(())
-    }
-
-    fn end_inclusive(&self) -> Result<u64> {
-        self.start
-            .checked_add(self.length - 1)
-            .ok_or_else(|| CdfError::contract("file transport byte range overflows u64"))
-    }
-}
-
 pub trait FileTransport: Send + Sync {
-    fn metadata(&self, resource: &FileTransportResource) -> Result<FileIdentityMetadata>;
+    fn metadata(&self, resource: &FileTransportResource) -> Result<FileMetadataObservation>;
     fn metadata_if_exists(
         &self,
         resource: &FileTransportResource,
-    ) -> Result<Option<FileIdentityMetadata>> {
+    ) -> Result<Option<FileMetadataObservation>> {
         self.metadata(resource).map(Some)
-    }
-    fn read_range(&self, resource: &FileTransportResource, range: ByteRange) -> Result<Vec<u8>>;
-    fn read_generation_range(
-        &self,
-        resource: &FileTransportResource,
-        expected: &FileIdentityMetadata,
-        range: ByteRange,
-    ) -> Result<Vec<u8>> {
-        let size_bytes = expected.size_bytes.ok_or_else(|| {
-            CdfError::data("generation-bound range requires a planned content length")
-        })?;
-        let before = self.metadata(resource)?;
-        verify_generation_identity(expected, &before, size_bytes)?;
-        let bytes = self.read_range(resource, range)?;
-        let after = self.metadata(resource)?;
-        verify_generation_identity(expected, &after, size_bytes)?;
-        Ok(bytes)
     }
     fn list(&self, resource: &FileTransportResource) -> Result<Vec<FileIdentityMetadata>>;
     fn open_byte_source(
@@ -270,7 +272,12 @@ pub trait FileTransport: Send + Sync {
 }
 
 pub trait HttpFileTransport: Send + Sync {
-    fn send(&self, request: HttpFileRequest) -> Result<HttpFileResponse>;
+    /// Sends a request and returns only its status and headers. Implementations MUST NOT buffer or
+    /// drain the response body; metadata fallback requests may be answered with the full object.
+    fn send_headers(
+        &self,
+        request: HttpFileRequest,
+    ) -> BoxFuture<'static, Result<HttpFileResponse>>;
     fn open_byte_source(
         &self,
         resource: &FileTransportResource,
@@ -302,7 +309,7 @@ impl fmt::Debug for HttpFileRequest {
         formatter
             .debug_struct("HttpFileRequest")
             .field("method", &self.method)
-            .field("url", &redactor.redact_url(&self.url))
+            .field("url", &"<opaque HTTP URL>")
             .field("headers", &redactor.redact_headers(&self.headers))
             .finish()
     }
@@ -312,7 +319,6 @@ impl fmt::Debug for HttpFileRequest {
 pub struct HttpFileResponse {
     pub status: u16,
     pub headers: HeaderMap,
-    pub body: Vec<u8>,
 }
 
 impl HttpFileResponse {
@@ -320,7 +326,6 @@ impl HttpFileResponse {
         Self {
             status,
             headers: HeaderMap::new(),
-            body: Vec::new(),
         }
     }
 
@@ -328,20 +333,21 @@ impl HttpFileResponse {
         set_header(&mut self.headers, name, value);
         self
     }
-
-    pub fn with_body(mut self, body: impl Into<Vec<u8>>) -> Self {
-        self.body = body.into();
-        self
-    }
 }
 
 impl fmt::Debug for HttpFileResponse {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let mut headers = Redactor::default().redact_headers(&self.headers);
+        if let Some((_, location)) = headers
+            .iter_mut()
+            .find(|(name, _)| name.eq_ignore_ascii_case("location"))
+        {
+            *location = "[REDACTED REDIRECT LOCATION]".to_owned();
+        }
         formatter
             .debug_struct("HttpFileResponse")
             .field("status", &self.status)
-            .field("headers", &self.headers)
-            .field("body_len", &self.body.len())
+            .field("headers", &headers)
             .finish()
     }
 }
@@ -408,36 +414,26 @@ impl fmt::Debug for FileTransportFacade {
 }
 
 impl FileTransport for FileTransportFacade {
-    fn metadata(&self, resource: &FileTransportResource) -> Result<FileIdentityMetadata> {
+    fn metadata(&self, resource: &FileTransportResource) -> Result<FileMetadataObservation> {
         match &resource.location {
-            FileTransportLocation::LocalPath { path } => local_metadata(Path::new(path)),
-            FileTransportLocation::FileUrl { url } => local_metadata(&file_url_path(url)?),
+            FileTransportLocation::LocalPath { path } => local_metadata(Path::new(path))
+                .map(|identity| FileMetadataObservation::direct(resource, identity)),
+            FileTransportLocation::FileUrl { url } => local_metadata(&file_url_path(url)?)
+                .map(|identity| FileMetadataObservation::direct(resource, identity)),
             FileTransportLocation::HttpUrl { url } => self.http_metadata(resource, url),
-            FileTransportLocation::ObjectStoreUrl { url } => {
-                self.object_store_metadata(resource, url)
-            }
+            FileTransportLocation::ObjectStoreUrl { url } => self
+                .object_store_metadata(resource, url)
+                .map(|identity| FileMetadataObservation::direct(resource, identity)),
         }
     }
 
     fn metadata_if_exists(
         &self,
         resource: &FileTransportResource,
-    ) -> Result<Option<FileIdentityMetadata>> {
+    ) -> Result<Option<FileMetadataObservation>> {
         match &resource.location {
             FileTransportLocation::HttpUrl { url } => self.http_metadata_if_exists(resource, url),
             _ => self.metadata(resource).map(Some),
-        }
-    }
-
-    fn read_range(&self, resource: &FileTransportResource, range: ByteRange) -> Result<Vec<u8>> {
-        range.validate()?;
-        match &resource.location {
-            FileTransportLocation::LocalPath { path } => read_local_range(Path::new(path), range),
-            FileTransportLocation::FileUrl { url } => read_local_range(&file_url_path(url)?, range),
-            FileTransportLocation::HttpUrl { url } => self.read_http_range(resource, url, range),
-            FileTransportLocation::ObjectStoreUrl { url } => {
-                self.read_object_store_range(resource, url, range)
-            }
         }
     }
 
@@ -487,17 +483,8 @@ impl FileTransportFacade {
         &self,
         resource: &FileTransportResource,
         url: &str,
-    ) -> Result<Option<FileIdentityMetadata>> {
-        validate_http_file_url(url)?;
-        self.reject_unimplemented_auth(resource)?;
-        let request = HttpFileRequest::new(HttpMethod::Head, url.to_owned());
-        resource.egress_allowlist.check(&policy_request(&request))?;
-        let response = self.http_transport()?.send(request)?;
-        if response.status == 404 {
-            return Ok(None);
-        }
-        ensure_http_success(HttpMethod::Head, &response)?;
-        Ok(Some(http_identity(url, &response)?))
+    ) -> Result<Option<FileMetadataObservation>> {
+        self.probe_http_metadata(resource, url, true)
     }
 
     fn object_store_metadata(
@@ -510,30 +497,6 @@ impl FileTransportFacade {
             .object_store_io(async move { Ok(store.head(&path).await) })?
             .map_err(|error| object_store_error("read object metadata", error))?;
         Ok(object_identity(url.to_owned(), metadata))
-    }
-
-    fn read_object_store_range(
-        &self,
-        resource: &FileTransportResource,
-        url: &str,
-        range: ByteRange,
-    ) -> Result<Vec<u8>> {
-        let (store, path, _) = self.resolve_object_store(resource, url)?;
-        let end = range
-            .start
-            .checked_add(range.length)
-            .ok_or_else(|| CdfError::contract("object-store byte range overflows u64"))?;
-        let bytes = self
-            .object_store_io(async move { Ok(store.get_range(&path, range.start..end).await) })?
-            .map_err(|error| object_store_error("read object byte range", error))?;
-        if bytes.len() as u64 != range.length {
-            return Err(CdfError::data(format!(
-                "object-store ranged read returned {} bytes for an exact {} byte request",
-                bytes.len(),
-                range.length
-            )));
-        }
-        Ok(bytes.to_vec())
     }
 
     fn list_object_store(
@@ -622,56 +585,105 @@ impl FileTransportFacade {
             .run_io(future)
     }
 
+    fn http_io<T, F>(&self, future: F) -> Result<T>
+    where
+        T: Send + 'static,
+        F: std::future::Future<Output = Result<T>> + Send + 'static,
+    {
+        self.execution
+            .as_ref()
+            .ok_or_else(|| {
+                CdfError::contract("HTTP file transport requires injected ExecutionServices")
+            })?
+            .run_io(future)
+    }
+
     fn http_metadata(
         &self,
         resource: &FileTransportResource,
         url: &str,
-    ) -> Result<FileIdentityMetadata> {
-        validate_http_file_url(url)?;
-        self.reject_unimplemented_auth(resource)?;
-        let request = HttpFileRequest::new(HttpMethod::Head, url.to_owned());
-        resource.egress_allowlist.check(&policy_request(&request))?;
-        let response = self.http_transport()?.send(request)?;
-        ensure_http_success(HttpMethod::Head, &response)?;
-        http_identity(url, &response)
+    ) -> Result<FileMetadataObservation> {
+        self.probe_http_metadata(resource, url, false)?
+            .ok_or_else(|| CdfError::data("HTTP file transport resource does not exist"))
     }
 
-    fn read_http_range(
+    fn probe_http_metadata(
         &self,
         resource: &FileTransportResource,
-        url: &str,
-        range: ByteRange,
-    ) -> Result<Vec<u8>> {
-        validate_http_file_url(url)?;
+        logical_url: &str,
+        missing_is_none: bool,
+    ) -> Result<Option<FileMetadataObservation>> {
+        const MAX_REDIRECTS: usize = 10;
+
+        validate_http_file_url(logical_url)?;
         self.reject_unimplemented_auth(resource)?;
-        let mut request = HttpFileRequest::new(HttpMethod::Get, url.to_owned());
-        set_header(
-            &mut request.headers,
-            "range",
-            format!("bytes={}-{}", range.start, range.end_inclusive()?),
-        );
-        resource.egress_allowlist.check(&policy_request(&request))?;
-        let response = self.http_transport()?.send(request)?;
-        if response.status == 200 {
-            return Err(CdfError::data(
-                "HTTP file transport refused a bounded ranged read because the server ignored the Range header",
-            ));
+        let head = HttpFileRequest::new(HttpMethod::Head, logical_url.to_owned());
+        let (mut access_url, mut response) =
+            self.send_headers_following_redirects(resource, head, MAX_REDIRECTS)?;
+        if response.status == 404 && missing_is_none {
+            return Ok(None);
         }
-        ensure_http_success(HttpMethod::Get, &response)?;
-        if response.status != 206 {
-            return Err(CdfError::data(format!(
-                "HTTP file transport expected 206 Partial Content for ranged read, got {}",
-                response.status
-            )));
+
+        // Some public object frontends reject HEAD or omit useful length metadata. Probe one byte
+        // without reading the body so even a server that ignores Range cannot make discovery
+        // download or buffer the object.
+        if matches!(response.status, 400 | 403 | 405 | 501)
+            || ((200..=299).contains(&response.status)
+                && optional_u64_header(&response.headers, "content-length")?.is_none())
+        {
+            let mut get = HttpFileRequest::new(HttpMethod::Get, logical_url.to_owned());
+            set_header(&mut get.headers, "range", "bytes=0-0");
+            set_header(&mut get.headers, "accept-encoding", "identity");
+            (access_url, response) =
+                self.send_headers_following_redirects(resource, get, MAX_REDIRECTS)?;
+            if response.status == 404 && missing_is_none {
+                return Ok(None);
+            }
+            ensure_http_success(HttpMethod::Get, &response)?;
+        } else {
+            ensure_http_success(HttpMethod::Head, &response)?;
         }
-        if response.body.len() as u64 > range.length {
-            return Err(CdfError::data(format!(
-                "HTTP ranged read returned {} bytes for a {} byte bound",
-                response.body.len(),
-                range.length
-            )));
+
+        let identity = http_identity(logical_url, &response)?;
+        Ok(Some(FileMetadataObservation {
+            identity,
+            access_location: OpaqueAccessLocation(FileTransportLocation::HttpUrl {
+                url: access_url,
+            }),
+        }))
+    }
+
+    fn send_headers_following_redirects(
+        &self,
+        resource: &FileTransportResource,
+        mut request: HttpFileRequest,
+        maximum_redirects: usize,
+    ) -> Result<(String, HttpFileResponse)> {
+        for redirect_count in 0..=maximum_redirects {
+            validate_http_file_url(&request.url)?;
+            resource.egress_allowlist.check(&policy_request(&request))?;
+            let response = self.http_io(self.http_transport()?.send_headers(request.clone()))?;
+            if !matches!(response.status, 301 | 302 | 303 | 307 | 308) {
+                return Ok((request.url, response));
+            }
+            if redirect_count == maximum_redirects {
+                return Err(CdfError::data(format!(
+                    "HTTP file transport exceeded {maximum_redirects} redirects"
+                )));
+            }
+            let location = header_value(&response.headers, "location").ok_or_else(|| {
+                CdfError::data("HTTP file transport redirect omitted the Location header")
+            })?;
+            let base = Url::parse(&request.url)
+                .map_err(|error| CdfError::contract(format!("invalid HTTP file URL: {error}")))?;
+            let target = base.join(location).map_err(|error| {
+                CdfError::data(format!("HTTP file transport redirect is invalid: {error}"))
+            })?;
+            request.url = target.into();
         }
-        Ok(response.body)
+        Err(CdfError::internal(
+            "HTTP file transport redirect loop exhausted unexpectedly",
+        ))
     }
 
     fn http_transport(&self) -> Result<&dyn HttpFileTransport> {
@@ -754,36 +766,16 @@ fn object_store_error(action: &str, error: object_store::Error) -> CdfError {
     CdfError::data(format!("{action}: {error}"))
 }
 
-fn read_local_range(path: &Path, range: ByteRange) -> Result<Vec<u8>> {
-    let mut file = File::open(path).map_err(|error| {
-        CdfError::data(format!(
-            "open local file source {}: {error}",
-            path.display()
-        ))
-    })?;
-    file.seek(SeekFrom::Start(range.start)).map_err(|error| {
-        CdfError::data(format!(
-            "seek local file source {}: {error}",
-            path.display()
-        ))
-    })?;
-    let mut buffer = Vec::new();
-    file.take(range.length)
-        .read_to_end(&mut buffer)
-        .map_err(|error| {
-            CdfError::data(format!(
-                "read local file source {}: {error}",
-                path.display()
-            ))
-        })?;
-    Ok(buffer)
-}
-
 pub(crate) fn verify_generation_identity(
     expected: &FileIdentityMetadata,
     observed: &FileIdentityMetadata,
     observed_size_bytes: u64,
 ) -> Result<()> {
+    if observed.size_bytes != Some(observed_size_bytes) {
+        return Err(CdfError::data(
+            "observed file metadata size does not match the transferred generation size",
+        ));
+    }
     if expected.size_bytes != Some(observed_size_bytes) {
         return Err(CdfError::data(format!(
             "observed file generation has {observed_size_bytes} bytes but the planned generation has {} bytes",
@@ -792,9 +784,7 @@ pub(crate) fn verify_generation_identity(
                 .map_or_else(|| "unknown".to_owned(), |size| size.to_string())
         )));
     }
-    if let (Some(expected_etag), Some(observed_etag)) = (&expected.etag, &observed.etag)
-        && observed_etag != expected_etag
-    {
+    if expected.etag != observed.etag {
         return Err(CdfError::data(
             "file generation changed during the generation-bound operation (ETag mismatch)",
         ));
@@ -805,9 +795,8 @@ pub(crate) fn verify_generation_identity(
         ));
     }
     if expected.etag.is_none()
-        && let (Some(expected_modified), Some(observed_modified)) =
-            (&expected.modified, &observed.modified)
-        && observed_modified != expected_modified
+        && expected.version.is_none()
+        && expected.modified != observed.modified
     {
         return Err(CdfError::data(
             "file generation changed during the generation-bound operation (modification identity mismatch)",
@@ -933,14 +922,79 @@ fn ensure_http_success(method: HttpMethod, response: &HttpFileResponse) -> Resul
 }
 
 fn http_identity(url: &str, response: &HttpFileResponse) -> Result<FileIdentityMetadata> {
+    let etag = header_value(&response.headers, "etag")
+        .filter(|etag| !is_weak_http_etag(etag))
+        .map(str::to_owned);
     Ok(FileIdentityMetadata {
         location: url.to_owned(),
-        size_bytes: optional_u64_header(&response.headers, "content-length")?,
+        size_bytes: http_response_object_size(response)?,
         checksum: None,
-        etag: header_value(&response.headers, "etag").map(str::to_owned),
+        etag,
         version: None,
         modified: header_value(&response.headers, "last-modified").map(str::to_owned),
     })
+}
+
+fn http_response_object_size(response: &HttpFileResponse) -> Result<Option<u64>> {
+    if response.status == 206 {
+        let content_range = header_value(&response.headers, "content-range")
+            .ok_or_else(|| CdfError::data("HTTP metadata range response omitted Content-Range"))?;
+        let (start, end, total) = parse_http_content_range(content_range)?;
+        if start != 0 || end != 0 {
+            return Err(CdfError::data(format!(
+                "HTTP metadata range response `{content_range}` does not attest requested bytes 0-0"
+            )));
+        }
+        if optional_u64_header(&response.headers, "content-length")? != Some(1) {
+            return Err(CdfError::data(
+                "HTTP metadata range response must declare Content-Length: 1",
+            ));
+        }
+        if total == 0 {
+            return Err(CdfError::data(
+                "HTTP metadata range response cannot attest bytes 0-0 for an empty object",
+            ));
+        }
+        return Ok(Some(total));
+    }
+    optional_u64_header(&response.headers, "content-length")
+}
+
+fn parse_http_content_range(value: &str) -> Result<(u64, u64, u64)> {
+    let raw = value.trim().strip_prefix("bytes ").ok_or_else(|| {
+        CdfError::data(format!("HTTP Content-Range `{value}` is not a byte range"))
+    })?;
+    let (extent, total) = raw
+        .split_once('/')
+        .ok_or_else(|| CdfError::data(format!("HTTP Content-Range `{value}` omitted its total")))?;
+    if total.contains('/') {
+        return Err(CdfError::data(format!(
+            "HTTP Content-Range `{value}` has multiple totals"
+        )));
+    }
+    let (start, end) = extent.split_once('-').ok_or_else(|| {
+        CdfError::data(format!("HTTP Content-Range `{value}` omitted its extent"))
+    })?;
+    let parse = |part: &str, label: &str| {
+        part.parse::<u64>().map_err(|error| {
+            CdfError::data(format!("HTTP Content-Range {label} is not u64: {error}"))
+        })
+    };
+    let start = parse(start, "start")?;
+    let end = parse(end, "end")?;
+    let total = parse(total, "total")?;
+    if start > end || end >= total {
+        return Err(CdfError::data(format!(
+            "HTTP Content-Range `{value}` is outside its declared total"
+        )));
+    }
+    Ok((start, end, total))
+}
+
+fn is_weak_http_etag(etag: &str) -> bool {
+    etag.trim_start()
+        .get(..2)
+        .is_some_and(|prefix| prefix.eq_ignore_ascii_case("w/"))
 }
 
 fn optional_u64_header(headers: &HeaderMap, name: &str) -> Result<Option<u64>> {
@@ -973,6 +1027,12 @@ fn set_header(headers: &mut HeaderMap, name: impl Into<String>, value: impl Into
 }
 
 fn redacted_location_for_debug(location: &str) -> String {
+    if Url::parse(location)
+        .ok()
+        .is_some_and(|url| matches!(url.scheme(), "http" | "https"))
+    {
+        return "<opaque HTTP location>".to_owned();
+    }
     Redactor::default().redact_url(location)
 }
 
@@ -995,7 +1055,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn object_store_transport_lists_heads_and_ranges_through_one_facade() {
+    fn object_store_transport_lists_and_heads_through_one_facade() {
         let store = Arc::new(InMemory::new());
         futures_executor::block_on(store.put(
             &ObjectPath::from("prod/2026/events.parquet"),
@@ -1015,13 +1075,7 @@ mod tests {
         assert_eq!(listed[0].size_bytes, Some(15));
         let object = FileTransportResource::object_store_url(&listed[0].location);
         let head = transport.metadata(&object).unwrap();
-        assert_eq!(head.size_bytes, Some(15));
-        assert_eq!(
-            transport
-                .read_range(&object, ByteRange::new(4, 7).unwrap())
-                .unwrap(),
-            b"payload"
-        );
+        assert_eq!(head.identity.size_bytes, Some(15));
     }
 
     #[test]
@@ -1064,7 +1118,7 @@ mod tests {
     }
 
     #[test]
-    fn file_transport_local_inventory_is_metadata_only_and_ranges_remain_bounded() {
+    fn file_transport_local_inventory_is_metadata_only() {
         let temp = TempDir::new().unwrap();
         let path = temp.path().join("sample.bin");
         fs::write(&path, b"\x00abcdef\xff").unwrap();
@@ -1072,7 +1126,8 @@ mod tests {
 
         let metadata = transport
             .metadata(&FileTransportResource::local_path(&path))
-            .unwrap();
+            .unwrap()
+            .identity;
         assert!(metadata.location.ends_with("sample.bin"));
         assert_eq!(metadata.size_bytes, Some(8));
         assert_eq!(metadata.etag, None);
@@ -1086,33 +1141,20 @@ mod tests {
         assert_eq!(position.etag, None);
         assert_eq!(position.sha256, None);
         assert_eq!(position.source_generation, metadata.modified);
-
-        let bytes = transport
-            .read_range(
-                &FileTransportResource::local_path(&path),
-                ByteRange::new(2, 4).unwrap(),
-            )
-            .unwrap();
-        assert_eq!(bytes, b"bcde");
     }
 
     #[test]
-    fn file_transport_http_metadata_and_bounded_range_use_http_client() {
-        let client = RecordingHttpFileTransport::new([
-            HttpFileResponse::new(200)
-                .with_header("Content-Length", "12345")
-                .with_header("ETag", "\"etag-1\"")
-                .with_header("Last-Modified", "Wed, 08 Jul 2026 12:00:00 GMT"),
-            HttpFileResponse::new(206)
-                .with_header("Content-Range", "bytes 100-103/12345")
-                .with_body(vec![0, 159, 146, 150]),
-        ]);
+    fn file_transport_http_metadata_uses_headers_only_client() {
+        let client = RecordingHttpFileTransport::new([HttpFileResponse::new(200)
+            .with_header("Content-Length", "12345")
+            .with_header("ETag", "\"etag-1\"")
+            .with_header("Last-Modified", "Wed, 08 Jul 2026 12:00:00 GMT")]);
         let recorder = client.clone();
         let resource = FileTransportResource::http_url("https://data.example.org/events.parquet")
             .with_egress_allowlist(EgressAllowlist::from_hosts(["data.example.org"]));
-        let transport = FileTransportFacade::new().with_http_transport(client);
+        let transport = http_facade(client);
 
-        let metadata = transport.metadata(&resource).unwrap();
+        let metadata = transport.metadata(&resource).unwrap().identity;
         assert_eq!(metadata.location, "https://data.example.org/events.parquet");
         assert_eq!(metadata.size_bytes, Some(12345));
         assert_eq!(metadata.etag.as_deref(), Some("\"etag-1\""));
@@ -1133,20 +1175,92 @@ mod tests {
             }
         );
 
-        let bytes = transport
-            .read_range(&resource, ByteRange::new(100, 4).unwrap())
-            .unwrap();
-        assert_eq!(bytes, vec![0, 159, 146, 150]);
-
         let requests = recorder.requests();
-        assert_eq!(requests.len(), 2);
+        assert_eq!(requests.len(), 1);
         assert_eq!(requests[0].method, HttpMethod::Head);
         assert!(!requests[0].headers.contains_key("range"));
-        assert_eq!(requests[1].method, HttpMethod::Get);
-        assert_eq!(
-            requests[1].headers.get("range").map(String::as_str),
-            Some("bytes=100-103")
-        );
+    }
+
+    #[test]
+    fn file_transport_http_metadata_falls_back_from_head_errors_and_keeps_access_ephemeral() {
+        for head_status in [400, 403] {
+            let client = RecordingHttpFileTransport::new([
+                HttpFileResponse::new(head_status),
+                HttpFileResponse::new(302).with_header(
+                    "Location",
+                    "https://objects.example.org/file.parquet?token=sensitive",
+                ),
+                HttpFileResponse::new(206)
+                    .with_header("Content-Length", "1")
+                    .with_header("Content-Range", "bytes 0-0/987654")
+                    .with_header("ETag", "\"generation-2\""),
+            ]);
+            let recorder = client.clone();
+            let logical = "https://catalog.example.org/file.parquet";
+            let resource = FileTransportResource::http_url(logical).with_egress_allowlist(
+                EgressAllowlist::from_hosts(["catalog.example.org", "objects.example.org"]),
+            );
+            let transport = http_facade(client);
+
+            let observation = transport.metadata(&resource).unwrap();
+
+            assert_eq!(observation.identity.location, logical);
+            assert_eq!(observation.identity.size_bytes, Some(987654));
+            assert_eq!(
+                observation.identity.etag.as_deref(),
+                Some("\"generation-2\"")
+            );
+            let access = observation.access_resource(&resource);
+            assert!(matches!(
+                access.location,
+                FileTransportLocation::HttpUrl { ref url }
+                    if url.starts_with("https://objects.example.org/file.parquet?")
+            ));
+            assert!(!format!("{observation:?}").contains("sensitive"));
+            assert!(!format!("{observation:?}").contains("objects.example.org"));
+
+            let requests = recorder.requests();
+            assert_eq!(requests.len(), 3);
+            assert_eq!(requests[0].method, HttpMethod::Head);
+            assert_eq!(requests[1].method, HttpMethod::Get);
+            assert_eq!(requests[2].method, HttpMethod::Get);
+            assert_eq!(
+                requests[1].headers.get("range").map(String::as_str),
+                Some("bytes=0-0")
+            );
+        }
+    }
+
+    #[test]
+    fn weak_http_etag_never_becomes_strong_generation_authority() {
+        let client = RecordingHttpFileTransport::new([HttpFileResponse::new(200)
+            .with_header("Content-Length", "12345")
+            .with_header("ETag", "W/\"cache-validator\"")]);
+        let resource = FileTransportResource::http_url("https://data.example.org/events.parquet")
+            .with_egress_allowlist(EgressAllowlist::from_hosts(["data.example.org"]));
+        let transport = http_facade(client);
+
+        let identity = transport.metadata(&resource).unwrap().identity;
+
+        assert_eq!(identity.etag, None);
+        assert_eq!(identity.generation_strength(), GenerationStrength::Weak);
+        assert_eq!(identity.file_position_evidence().unwrap().etag, None);
+    }
+
+    #[test]
+    fn file_transport_http_redirect_rechecks_egress_before_next_hop() {
+        let client = RecordingHttpFileTransport::new([HttpFileResponse::new(302)
+            .with_header("Location", "https://blocked.example.org/file.parquet")]);
+        let recorder = client.clone();
+        let resource = FileTransportResource::http_url("https://catalog.example.org/file.parquet")
+            .with_egress_allowlist(EgressAllowlist::from_hosts(["catalog.example.org"]));
+        let transport = http_facade(client);
+
+        let error = transport.metadata(&resource).unwrap_err();
+
+        assert_eq!(error.kind, ErrorKind::Auth);
+        assert!(error.message.contains("blocked.example.org"));
+        assert_eq!(recorder.requests().len(), 1);
     }
 
     #[test]
@@ -1154,10 +1268,11 @@ mod tests {
         let client = RecordingHttpFileTransport::new([
             HttpFileResponse::new(404),
             HttpFileResponse::new(403),
+            HttpFileResponse::new(403),
         ]);
         let resource = FileTransportResource::http_url("https://data.example.org/missing.parquet")
             .with_egress_allowlist(EgressAllowlist::from_hosts(["data.example.org"]));
-        let transport = FileTransportFacade::new().with_http_transport(client);
+        let transport = http_facade(client);
 
         assert_eq!(transport.metadata_if_exists(&resource).unwrap(), None);
         let forbidden = transport.metadata_if_exists(&resource).unwrap_err();
@@ -1165,37 +1280,11 @@ mod tests {
     }
 
     #[test]
-    fn file_transport_http_range_rejects_unbounded_or_ignored_range() {
-        let client =
-            RecordingHttpFileTransport::new([HttpFileResponse::new(200)
-                .with_body(b"this would be a full file download".to_vec())]);
-        let resource = FileTransportResource::http_url("https://data.example.org/events.parquet");
-        let transport = FileTransportFacade::new().with_http_transport(client);
-
-        let zero = transport
-            .read_range(
-                &resource,
-                ByteRange {
-                    start: 0,
-                    length: 0,
-                },
-            )
-            .unwrap_err();
-        assert_eq!(zero.kind, ErrorKind::Contract);
-
-        let ignored = transport
-            .read_range(&resource, ByteRange::new(0, 4).unwrap())
-            .unwrap_err();
-        assert_eq!(ignored.kind, ErrorKind::Data);
-        assert!(ignored.to_string().contains("ignored the Range header"));
-    }
-
-    #[test]
     fn file_transport_http_listing_is_explicitly_unsupported() {
         let client = RecordingHttpFileTransport::new([]);
         let recorder = client.clone();
         let resource = FileTransportResource::http_url("https://data.example.org/");
-        let transport = FileTransportFacade::new().with_http_transport(client);
+        let transport = http_facade(client);
 
         let error = transport.list(&resource).unwrap_err();
         assert_eq!(error.kind, ErrorKind::Contract);
@@ -1214,11 +1303,9 @@ mod tests {
         let blocked_resource =
             FileTransportResource::http_url("https://blocked.example.org/events.parquet")
                 .with_egress_allowlist(EgressAllowlist::from_hosts(["data.example.org"]));
-        let blocked_transport = FileTransportFacade::new().with_http_transport(blocked_client);
+        let blocked_transport = http_facade(blocked_client);
 
-        let error = blocked_transport
-            .read_range(&blocked_resource, ByteRange::new(0, 1).unwrap())
-            .unwrap_err();
+        let error = blocked_transport.metadata(&blocked_resource).unwrap_err();
         assert_eq!(error.kind, ErrorKind::Auth);
         assert_eq!(blocked_recorder.requests().len(), 0);
 
@@ -1234,16 +1321,11 @@ mod tests {
             auth_resource.secret_references()[0].as_str(),
             "secret://env/FILE_TOKEN"
         );
-        let auth_transport = FileTransportFacade::new()
-            .with_http_transport(auth_client)
-            .with_secret_provider(StaticSecretProvider::new([(
-                "secret://env/FILE_TOKEN",
-                "secret-value",
-            )]));
+        let auth_transport = http_facade(auth_client).with_secret_provider(
+            StaticSecretProvider::new([("secret://env/FILE_TOKEN", "secret-value")]),
+        );
 
-        let error = auth_transport
-            .read_range(&auth_resource, ByteRange::new(0, 1).unwrap())
-            .unwrap_err();
+        let error = auth_transport.metadata(&auth_resource).unwrap_err();
         assert_eq!(error.kind, ErrorKind::Auth);
         assert!(
             error
@@ -1266,10 +1348,53 @@ mod tests {
         let debug = format!("{request:?}");
 
         assert!(!debug.contains("secret-value"));
-        assert!(debug.contains("token=[REDACTED]"));
+        assert!(!debug.contains("data.example.org"));
+        assert!(debug.contains("<opaque HTTP URL>"));
         assert!(debug.contains("authorization"));
         assert!(debug.contains("[REDACTED]"));
         assert!(debug.contains("bytes=0-3"));
+    }
+
+    #[test]
+    fn http_debug_surfaces_never_expose_signed_redirect_material() {
+        let secrets = [
+            ("X-Amz-Credential", "aws-credential"),
+            ("X-Amz-Signature", "aws-signature"),
+            ("X-Goog-Signature", "gcs-signature"),
+            ("Policy", "cloudfront-policy"),
+            ("Key-Pair-Id", "cloudfront-key"),
+            ("sig", "azure-signature"),
+        ];
+        let query = secrets
+            .iter()
+            .map(|(name, value)| format!("{name}={value}"))
+            .collect::<Vec<_>>()
+            .join("&");
+        let location = format!("https://object.example.test/file.parquet?{query}");
+        let request = HttpFileRequest::new(HttpMethod::Get, location.clone());
+        let response = HttpFileResponse::new(302).with_header("Location", location.clone());
+        let observation = FileMetadataObservation {
+            identity: FileIdentityMetadata {
+                location: "https://catalog.example.test/file.parquet".to_owned(),
+                size_bytes: Some(1),
+                checksum: None,
+                etag: None,
+                version: None,
+                modified: None,
+            },
+            access_location: OpaqueAccessLocation(FileTransportLocation::HttpUrl { url: location }),
+        };
+
+        for debug in [
+            format!("{request:?}"),
+            format!("{response:?}"),
+            format!("{observation:?}"),
+        ] {
+            for (_, secret) in secrets {
+                assert!(!debug.contains(secret), "debug leaked `{secret}`: {debug}");
+            }
+        }
+        assert!(format!("{response:?}").contains("[REDACTED REDIRECT LOCATION]"));
     }
 
     #[test]
@@ -1291,10 +1416,10 @@ mod tests {
 
         assert!(!resource_debug.contains("sensitive"));
         assert!(!metadata_debug.contains("sensitive"));
-        assert!(resource_debug.contains("token=[REDACTED]"));
-        assert!(metadata_debug.contains("token=[REDACTED]"));
-        assert!(resource_debug.contains("plain=ok"));
-        assert!(metadata_debug.contains("plain=ok"));
+        assert!(!resource_debug.contains("data.example.org"));
+        assert!(!metadata_debug.contains("data.example.org"));
+        assert!(resource_debug.contains("<opaque HTTP URL>"));
+        assert!(metadata_debug.contains("<opaque HTTP location>"));
     }
 
     #[derive(Clone)]
@@ -1326,14 +1451,25 @@ mod tests {
         }
     }
 
+    fn http_facade(transport: impl HttpFileTransport + 'static) -> FileTransportFacade {
+        FileTransportFacade::new()
+            .with_http_transport(transport)
+            .with_execution_services(crate::test_execution_services())
+    }
+
     impl HttpFileTransport for RecordingHttpFileTransport {
-        fn send(&self, request: HttpFileRequest) -> Result<HttpFileResponse> {
-            let mut state = self.state.lock().unwrap();
-            state.requests.push(request);
-            state
-                .responses
-                .pop_front()
-                .ok_or_else(|| CdfError::internal("test HTTP file transport exhausted responses"))
+        fn send_headers(
+            &self,
+            request: HttpFileRequest,
+        ) -> BoxFuture<'static, Result<HttpFileResponse>> {
+            let state = Arc::clone(&self.state);
+            Box::pin(async move {
+                let mut state = state.lock().unwrap();
+                state.requests.push(request);
+                state.responses.pop_front().ok_or_else(|| {
+                    CdfError::internal("test HTTP file transport exhausted responses")
+                })
+            })
         }
 
         fn open_byte_source(

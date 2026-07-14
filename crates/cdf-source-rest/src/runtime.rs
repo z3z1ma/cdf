@@ -14,10 +14,11 @@ use cdf_http::{
 };
 use cdf_kernel::{
     Batch, BatchId, BatchStream, BoxFuture, CdfError, CursorPosition, CursorValue,
-    DeliveryGuarantee, Expression, ExpressionLiteral, PartitionId, PartitionPlan, PlanId,
-    PreContractResidualCandidate, PushdownFidelity, PushedPredicate, QueryableResource,
-    ResourceCapabilities, ResourceDescriptor, ResourceStream, Result, ScanPlan, ScanRequest,
-    SchemaHash, SchemaSource, SourcePosition, TypePolicyAllowances, WriteDisposition, source_name,
+    DeliveryGuarantee, Expression, ExpressionLiteral, OpenedPartitionStream, PartitionId,
+    PartitionPlan, PlanId, PreContractResidualCandidate, PushdownFidelity, PushedPredicate,
+    QueryableResource, ResourceCapabilities, ResourceDescriptor, ResourceStream, Result, ScanPlan,
+    ScanRequest, SchemaHash, SchemaSource, SourcePosition, TypePolicyAllowances, WriteDisposition,
+    source_name,
 };
 use cdf_runtime::ExecutionServices;
 use cdf_runtime::ReadOptions;
@@ -188,7 +189,7 @@ impl ResourceStream for RestResource {
         rest_partition(&self.descriptor, &self.plan, request).map(|partition| vec![partition])
     }
 
-    fn open(&self, partition: PartitionPlan) -> BoxFuture<'_, Result<BatchStream>> {
+    fn open(&self, partition: PartitionPlan) -> BoxFuture<'_, Result<OpenedPartitionStream>> {
         let descriptor = self.descriptor.clone();
         let schema = Arc::clone(&self.schema);
         let plan = self.plan.clone();
@@ -202,7 +203,8 @@ impl ResourceStream for RestResource {
                 })?,
                 None => execute_rest(&descriptor, schema, &plan, &partition, dependencies)?,
             };
-            Ok(Box::pin(stream::iter(batches.into_iter().map(Ok))) as BatchStream)
+            let stream = Box::pin(stream::iter(batches.into_iter().map(Ok))) as BatchStream;
+            Ok(OpenedPartitionStream::without_completion(stream))
         })
     }
 }

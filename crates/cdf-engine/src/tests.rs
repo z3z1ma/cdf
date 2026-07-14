@@ -147,7 +147,6 @@ fn engine_plan_requires_recorded_schema_authorities() {
             plan_input(vec![], None, None, PlanBoundedness::Bounded),
         )
         .unwrap();
-
     for required in [
         "schema_authority",
         "output_schema",
@@ -3398,6 +3397,134 @@ fn merge_dedup_keep_last_runs_after_contract_filtering_and_before_normalize() {
 }
 
 #[test]
+fn terminal_attestation_enriches_segments_after_package_dedup() {
+    let initial_file = FilePosition {
+        path: "/tmp/cdf/events.ndjson".to_owned(),
+        size_bytes: 42,
+        source_generation: Some("local-v1:generation".to_owned()),
+        etag: None,
+        object_version: None,
+        sha256: None,
+    };
+    let initial_position = SourcePosition::FileManifest(FileManifest {
+        version: 1,
+        files: vec![initial_file.clone()],
+    });
+    let mut terminal_file = initial_file;
+    terminal_file.sha256 = Some("sha256:terminal-content".to_owned());
+    let terminal_position = SourcePosition::FileManifest(FileManifest {
+        version: 1,
+        files: vec![terminal_file],
+    });
+    let mut batches = vec![
+        batch_for_partition(
+            "batch-terminal-0",
+            "part-0",
+            vec![1, 2],
+            vec!["one-first", "two"],
+            vec![true, true],
+        ),
+        batch_for_partition(
+            "batch-terminal-1",
+            "part-0",
+            vec![1, 3],
+            vec!["one-last", "three"],
+            vec![true, true],
+        ),
+    ];
+    for batch in &mut batches {
+        batch.header.source_position = Some(initial_position.clone());
+    }
+    let resource = MockResource::tier_a(batches)
+        .with_completion_attestation(PartitionAttestation::new(terminal_position.clone(), None));
+    let mut input = plan_input(vec![], None, None, PlanBoundedness::Bounded);
+    let mut policy = ContractPolicy::for_trust(TrustLevel::Governed);
+    policy.rows.rules = vec![RowRule::Dedup {
+        keys: vec!["id".to_owned()],
+        keep: DedupKeep::Last,
+    }];
+    input.validation_program = compile_validation_program(
+        &policy,
+        &ObservedSchema::from_arrow(sample_schema().as_ref()),
+    )
+    .unwrap();
+    let plan = Planner::new().plan_tier_a(&resource, input).unwrap();
+    let temp = TempDir::new().unwrap();
+
+    let output = block_on(execute_to_package_with_segment_positions(
+        &plan,
+        &resource,
+        temp.path(),
+    ))
+    .unwrap();
+
+    assert_eq!(output.output.profile.output_rows, 3);
+    assert_eq!(output.segment_positions.len(), 1);
+    assert_eq!(output.segment_positions[0].partition_ordinal, 0);
+    assert_eq!(
+        output.segment_positions[0].output_position.as_ref(),
+        Some(&terminal_position)
+    );
+}
+
+#[test]
+fn dynamic_schema_quarantine_drains_to_eof_and_commits_terminal_content_identity() {
+    let initial_file = FilePosition {
+        path: "https://data.example.test/events.ndjson".to_owned(),
+        size_bytes: 42,
+        source_generation: Some("weak:last-modified".to_owned()),
+        etag: None,
+        object_version: None,
+        sha256: None,
+    };
+    let initial_position = SourcePosition::FileManifest(FileManifest {
+        version: 1,
+        files: vec![initial_file.clone()],
+    });
+    let mut terminal_file = initial_file;
+    terminal_file.sha256 = Some("sha256:terminal-content".to_owned());
+    let terminal_position = SourcePosition::FileManifest(FileManifest {
+        version: 1,
+        files: vec![terminal_file],
+    });
+    let mut batches = vec![
+        missing_control_field_batch("schema-quarantine-0", "part-0", vec!["one"]),
+        missing_control_field_batch("schema-quarantine-1", "part-0", vec!["two", "three"]),
+    ];
+    for batch in &mut batches {
+        batch.header.source_position = Some(initial_position.clone());
+    }
+    let resource = MockResource::tier_a(batches)
+        .with_schema(sample_schema())
+        .with_completion_attestation(PartitionAttestation::new(terminal_position.clone(), None));
+    let plan = Planner::new()
+        .plan_tier_a(
+            &resource,
+            plan_input(Vec::new(), None, None, PlanBoundedness::Bounded),
+        )
+        .unwrap();
+    let temp = TempDir::new().unwrap();
+
+    let output = block_on(execute_to_package_with_segment_positions(
+        &plan,
+        &resource,
+        temp.path(),
+    ))
+    .unwrap();
+
+    assert!(output.output.segments.is_empty());
+    assert_eq!(output.output.lineage.input_rows, 3);
+    assert_eq!(output.output.terminal_schema_quarantines.len(), 1);
+    let processed = output.execution_evidence().processed_observations();
+    assert_eq!(processed.len(), 1);
+    assert_eq!(
+        processed[0].outcome,
+        cdf_kernel::ProcessedObservationOutcome::Quarantined
+    );
+    assert_eq!(processed[0].source_position, terminal_position);
+}
+
+#[test]
 fn merge_dedup_keep_first_uses_package_order() {
     let batches = vec![
         batch_for_partition(
@@ -3886,6 +4013,7 @@ fn parallel_segment_encoding_is_identical_to_inline_canonical_registration() {
             .map(|segment| {
                 EngineSegmentPosition {
                     segment_id: segment.segment_id.clone(),
+                    partition_ordinal: 0,
                     output_position: None,
                 }
             })
@@ -4060,6 +4188,7 @@ struct MockResource {
     open_count: Arc<AtomicUsize>,
     attest_count: Arc<AtomicUsize>,
     attestation: Option<PartitionAttestation>,
+    completion_attestation: Option<PartitionAttestation>,
     attestation_error: Option<String>,
     effective_schema_runtime: Option<EffectiveSchemaRuntime>,
     type_policy_allowances: cdf_kernel::TypePolicyAllowances,
@@ -4103,7 +4232,10 @@ impl ResourceStream for DataFusionMockResource {
         unreachable!("DataFusion adapter must use QueryableResource::negotiate")
     }
 
-    fn open(&self, partition: PartitionPlan) -> cdf_kernel::BoxFuture<'_, Result<BatchStream>> {
+    fn open(
+        &self,
+        partition: PartitionPlan,
+    ) -> cdf_kernel::BoxFuture<'_, Result<cdf_kernel::OpenedPartitionStream>> {
         self.open_count.fetch_add(1, Ordering::SeqCst);
         let exact_filters = partition
             .metadata
@@ -4116,9 +4248,12 @@ impl ResourceStream for DataFusionMockResource {
             .filter(|batch| batch.header.partition_id == partition.partition_id)
             .map(|batch| apply_mock_exact_filters(batch.clone(), &exact_filters))
             .collect::<Result<Vec<_>>>();
-        Box::pin(
-            async move { Ok(Box::pin(stream::iter(batches?.into_iter().map(Ok))) as BatchStream) },
-        )
+        Box::pin(async move {
+            let stream = Box::pin(stream::iter(batches?.into_iter().map(Ok))) as BatchStream;
+            Ok(cdf_kernel::OpenedPartitionStream::without_completion(
+                stream,
+            ))
+        })
     }
 }
 
@@ -4225,6 +4360,7 @@ impl MockResource {
             open_count: Arc::new(AtomicUsize::new(0)),
             attest_count: Arc::new(AtomicUsize::new(0)),
             attestation: None,
+            completion_attestation: None,
             attestation_error: None,
             effective_schema_runtime: None,
             type_policy_allowances: cdf_kernel::TypePolicyAllowances::default(),
@@ -4268,6 +4404,11 @@ impl MockResource {
 
     fn with_attestation(mut self, attestation: PartitionAttestation) -> Self {
         self.attestation = Some(attestation);
+        self
+    }
+
+    fn with_completion_attestation(mut self, attestation: PartitionAttestation) -> Self {
+        self.completion_attestation = Some(attestation);
         self
     }
 
@@ -4337,7 +4478,10 @@ impl ResourceStream for MockResource {
             .collect()
     }
 
-    fn open(&self, partition: PartitionPlan) -> cdf_kernel::BoxFuture<'_, Result<BatchStream>> {
+    fn open(
+        &self,
+        partition: PartitionPlan,
+    ) -> cdf_kernel::BoxFuture<'_, Result<cdf_kernel::OpenedPartitionStream>> {
         self.open_count.fetch_add(1, Ordering::SeqCst);
         let batches = self
             .batches
@@ -4347,9 +4491,19 @@ impl ResourceStream for MockResource {
             })
             .cloned()
             .collect::<Vec<_>>();
-        Box::pin(
-            async move { Ok(Box::pin(stream::iter(batches.into_iter().map(Ok))) as BatchStream) },
-        )
+        let completion_attestation = self.completion_attestation.clone();
+        Box::pin(async move {
+            let stream = Box::pin(stream::iter(batches.into_iter().map(Ok))) as BatchStream;
+            match completion_attestation {
+                Some(attestation) => Ok(cdf_kernel::OpenedPartitionStream::with_completion(
+                    stream,
+                    Box::pin(async move { Ok(Some(attestation)) }),
+                )),
+                None => Ok(cdf_kernel::OpenedPartitionStream::without_completion(
+                    stream,
+                )),
+            }
+        })
     }
 
     fn attest_partition(
@@ -4987,6 +5141,33 @@ fn batch_for_partition_with_schema(
     )
     .unwrap();
 
+    Batch {
+        header: BatchHeader::new(
+            BatchId::new(batch_id).unwrap(),
+            ResourceId::new("orders").unwrap(),
+            PartitionId::new(partition_id).unwrap(),
+            cdf_kernel::canonical_arrow_schema_hash(record_batch.schema().as_ref()).unwrap(),
+            record_batch.num_rows() as u64,
+            record_batch.get_array_memory_size() as u64,
+        ),
+        payload: cdf_kernel::BatchPayload::in_memory(record_batch),
+    }
+}
+
+fn missing_control_field_batch(batch_id: &str, partition_id: &str, names: Vec<&str>) -> Batch {
+    let row_count = names.len();
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("name", DataType::Utf8, false),
+        Field::new("active", DataType::Boolean, false),
+    ]));
+    let record_batch = RecordBatch::try_new(
+        schema,
+        vec![
+            Arc::new(StringArray::from(names)) as ArrayRef,
+            Arc::new(BooleanArray::from(vec![true; row_count])) as ArrayRef,
+        ],
+    )
+    .unwrap();
     Batch {
         header: BatchHeader::new(
             BatchId::new(batch_id).unwrap(),

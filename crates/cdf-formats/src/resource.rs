@@ -2,8 +2,8 @@ use std::collections::BTreeMap;
 
 use arrow_schema::SchemaRef;
 use cdf_kernel::{
-    BatchStream, BoxFuture, CdfError, PartitionPlan, ResourceDescriptor, ResourceStream, Result,
-    ScanRequest,
+    BatchStream, BoxFuture, CdfError, OpenedPartitionStream, PartitionPlan, ResourceDescriptor,
+    ResourceStream, Result, ScanRequest,
 };
 use futures_util::stream;
 
@@ -72,7 +72,7 @@ impl ResourceStream for FileResource {
         Ok(vec![self.partition.clone()])
     }
 
-    fn open(&self, partition: PartitionPlan) -> BoxFuture<'_, Result<BatchStream>> {
+    fn open(&self, partition: PartitionPlan) -> BoxFuture<'_, Result<OpenedPartitionStream>> {
         let source = self.source.clone();
         let expected_partition = self.partition.clone();
         Box::pin(async move {
@@ -83,7 +83,8 @@ impl ResourceStream for FileResource {
                 return Err(CdfError::contract("file resource partition scope mismatch"));
             }
             let read = read_file_source(&source)?;
-            Ok(Box::pin(stream::iter(read.batches.into_iter().map(Ok))) as BatchStream)
+            let stream = Box::pin(stream::iter(read.batches.into_iter().map(Ok))) as BatchStream;
+            Ok(OpenedPartitionStream::without_completion(stream))
         })
     }
 }

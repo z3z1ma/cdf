@@ -1,8 +1,8 @@
-Status: open
+Status: active
 Created: 2026-07-13
 Updated: 2026-07-13
 Parent: .10x/tickets/2026-07-13-p0-fixed-schema-discovery-stream-admission.md
-Depends-On: .10x/tickets/done/2026-07-13-p0-sa0-cold-discovery-final-plan-lifecycle.md, .10x/tickets/done/2026-07-13-p0-sa1-compiled-stream-admission-plan.md, .10x/tickets/2026-07-13-p0-sa2-metadata-inventory-observation-cache.md
+Depends-On: .10x/tickets/done/2026-07-13-p0-sa0-cold-discovery-final-plan-lifecycle.md, .10x/tickets/done/2026-07-13-p0-sa1-compiled-stream-admission-plan.md, .10x/tickets/done/2026-07-13-p0-sa2-metadata-inventory-observation-cache.md
 
 # P0 SA3: fused codec observation and extraction
 
@@ -33,11 +33,11 @@ SA1 owns verdict semantics; SA2 owns inventory/cache identity.
 
 ## Journal
 
-Pending.
+- 2026-07-14: Activated after SA2 closed. Source inspection confirms the governing defect remains exact and bounded: transformed/seekable local and remote discovery create `AccountedSpool`, discover from it, and immediately drop it; `PreparedDiscoveredResource` carries only compiled schema/discovery facts, so final execution cannot consume the already materialized generation. Row-oriented drivers already have incremental accounted streams, providing the retained-window seam without reintroducing format branches into project orchestration.
 
 ## Blockers
 
-Depends on SA0-SA2.
+None. SA0-SA2 are done.
 
 ## Evidence
 

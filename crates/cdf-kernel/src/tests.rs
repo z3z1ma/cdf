@@ -1,5 +1,13 @@
 use super::*;
-use std::{collections::BTreeMap, sync::Arc};
+use std::{
+    collections::BTreeMap,
+    future::Future,
+    pin::Pin,
+    sync::Arc,
+    task::{Context, Poll, Wake, Waker},
+};
+
+use futures_core::Stream;
 
 use arrow_array::{ArrayRef, Int64Array, RecordBatch};
 use arrow_schema::{DataType, Field, Schema};
@@ -1374,4 +1382,55 @@ fn run_phase_metric_preserves_the_current_scalar_event_value_shape() {
     let encoded = serde_json::to_vec(&details).unwrap();
     let decoded: RunEventDetails = serde_json::from_slice(&encoded).unwrap();
     assert_eq!(decoded, details);
+}
+
+#[test]
+fn partition_completion_evidence_is_eof_bound_and_single_use() {
+    struct EmptyBatchStream;
+    impl Stream for EmptyBatchStream {
+        type Item = Result<Batch>;
+
+        fn poll_next(self: Pin<&mut Self>, _context: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+            Poll::Ready(None)
+        }
+    }
+    struct NoopWake;
+    impl Wake for NoopWake {
+        fn wake(self: Arc<Self>) {}
+    }
+
+    let waker = Waker::from(Arc::new(NoopWake));
+    let mut context = Context::from_waker(&waker);
+    let stream: BatchStream = Box::pin(EmptyBatchStream);
+    let mut opened = OpenedPartitionStream::with_completion(stream, Box::pin(async { Ok(None) }));
+
+    let before_eof = {
+        let mut completion = Box::pin(opened.completion_attestation());
+        match completion.as_mut().poll(&mut context) {
+            Poll::Ready(result) => result,
+            Poll::Pending => panic!("pre-EOF completion check unexpectedly blocked"),
+        }
+    };
+    assert!(before_eof.is_err());
+    assert!(matches!(
+        Pin::new(&mut opened).poll_next(&mut context),
+        Poll::Ready(None)
+    ));
+
+    let after_eof = {
+        let mut completion = Box::pin(opened.completion_attestation());
+        match completion.as_mut().poll(&mut context) {
+            Poll::Ready(result) => result,
+            Poll::Pending => panic!("terminal completion evidence unexpectedly blocked"),
+        }
+    };
+    assert_eq!(after_eof.unwrap(), None);
+    let second = {
+        let mut completion = Box::pin(opened.completion_attestation());
+        match completion.as_mut().poll(&mut context) {
+            Poll::Ready(result) => result,
+            Poll::Pending => panic!("duplicate completion check unexpectedly blocked"),
+        }
+    };
+    assert!(second.is_err());
 }

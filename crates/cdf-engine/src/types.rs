@@ -1586,6 +1586,7 @@ impl<'a> EnginePackageDraft<'a> {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct EngineSegmentPosition {
     pub segment_id: SegmentId,
+    pub partition_ordinal: u32,
     pub output_position: Option<SourcePosition>,
 }
 

@@ -138,7 +138,9 @@ impl ByteSource for ObjectStoreByteSource {
             verify_generation_identity(
                 &self.expected,
                 &observed,
-                observed.size_bytes.unwrap_or_default(),
+                observed.size_bytes.ok_or_else(|| {
+                    CdfError::data("object stream metadata omitted content length")
+                })?,
             )?;
             let state = SequentialState {
                 stream: result.into_stream(),
@@ -204,7 +206,9 @@ impl ByteSource for ObjectStoreByteSource {
             verify_generation_identity(
                 &self.expected,
                 &observed,
-                self.expected.size_bytes.unwrap_or_default(),
+                observed.size_bytes.ok_or_else(|| {
+                    CdfError::data("object range metadata omitted content length")
+                })?,
             )?;
             let bytes = result
                 .bytes()

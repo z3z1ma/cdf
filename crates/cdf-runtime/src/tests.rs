@@ -984,10 +984,15 @@ impl ResourceStream for MockSourceResource {
         }])
     }
 
-    fn open(&self, _partition: PartitionPlan) -> BoxFuture<'_, Result<BatchStream>> {
+    fn open(
+        &self,
+        _partition: PartitionPlan,
+    ) -> BoxFuture<'_, Result<cdf_kernel::OpenedPartitionStream>> {
         Box::pin(async {
             let stream: BatchStream = Box::pin(futures_util::stream::empty());
-            Ok(stream)
+            Ok(cdf_kernel::OpenedPartitionStream::without_completion(
+                stream,
+            ))
         })
     }
 }

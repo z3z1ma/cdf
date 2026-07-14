@@ -636,11 +636,18 @@ mod tests {
                 .collect()
         }
 
-        fn open(&self, partition: PartitionPlan) -> BoxFuture<'_, Result<cdf_kernel::BatchStream>> {
+        fn open(
+            &self,
+            partition: PartitionPlan,
+        ) -> BoxFuture<'_, Result<cdf_kernel::OpenedPartitionStream>> {
             let fault = self.fault;
             Box::pin(async move {
                 let batches = batches_for_partition(&partition.partition_id, fault)?;
-                Ok(Box::pin(stream::iter(batches.into_iter().map(Ok))) as cdf_kernel::BatchStream)
+                let stream =
+                    Box::pin(stream::iter(batches.into_iter().map(Ok))) as cdf_kernel::BatchStream;
+                Ok(cdf_kernel::OpenedPartitionStream::without_completion(
+                    stream,
+                ))
             })
         }
     }

@@ -875,7 +875,10 @@ mod tests {
             Ok(vec![partition("p0")])
         }
 
-        fn open(&self, _partition: PartitionPlan) -> BoxFuture<'_, Result<BatchStream>> {
+        fn open(
+            &self,
+            _partition: PartitionPlan,
+        ) -> BoxFuture<'_, Result<cdf_kernel::OpenedPartitionStream>> {
             Box::pin(async {
                 Err(CdfError::internal(
                     "resource conformance self-tests must not call open",

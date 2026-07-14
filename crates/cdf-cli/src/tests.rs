@@ -15163,10 +15163,15 @@ impl ResourceStream for ReplayArtifactResource {
         Ok(Vec::new())
     }
 
-    fn open(&self, _partition: PartitionPlan) -> BoxFuture<'_, cdf_kernel::Result<BatchStream>> {
+    fn open(
+        &self,
+        _partition: PartitionPlan,
+    ) -> BoxFuture<'_, cdf_kernel::Result<cdf_kernel::OpenedPartitionStream>> {
         Box::pin(async {
             let stream: BatchStream = Box::pin(futures_util::stream::empty());
-            Ok(stream)
+            Ok(cdf_kernel::OpenedPartitionStream::without_completion(
+                stream,
+            ))
         })
     }
 }

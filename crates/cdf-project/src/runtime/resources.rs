@@ -115,7 +115,7 @@ impl ResourceStream for WindowScopedResource<'_> {
     fn open(
         &self,
         partition: PartitionPlan,
-    ) -> cdf_kernel::BoxFuture<'_, Result<cdf_kernel::BatchStream>> {
+    ) -> cdf_kernel::BoxFuture<'_, Result<cdf_kernel::OpenedPartitionStream>> {
         self.inner.open(self.inner_partition(partition))
     }
 

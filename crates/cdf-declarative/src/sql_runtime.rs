@@ -3,10 +3,10 @@ use std::{fmt, sync::Arc};
 use arrow_schema::SchemaRef;
 use cdf_http::SecretProvider;
 use cdf_kernel::{
-    BackpressureSupport, BatchStream, BoxFuture, CapabilitySupport, CdfError, EstimateSupport,
-    FilterCapabilities, IncrementalShape, PartitionId, PartitionPlan, PartitioningCapabilities,
-    PushdownFidelity, QueryableResource, ReplaySupport, ResourceCapabilities, ResourceDescriptor,
-    ResourceStream, Result, ScanPlan, ScanRequest,
+    BackpressureSupport, BoxFuture, CapabilitySupport, CdfError, EstimateSupport,
+    FilterCapabilities, IncrementalShape, OpenedPartitionStream, PartitionId, PartitionPlan,
+    PartitioningCapabilities, PushdownFidelity, QueryableResource, ReplaySupport,
+    ResourceCapabilities, ResourceDescriptor, ResourceStream, Result, ScanPlan, ScanRequest,
 };
 use cdf_source_postgres::{
     PostgresTableResource, PostgresTarget, plan_postgres_table_partition,
@@ -121,7 +121,7 @@ impl ResourceStream for SqlResource {
         self.compiled.plan_partitions(request)
     }
 
-    fn open(&self, partition: PartitionPlan) -> BoxFuture<'_, Result<BatchStream>> {
+    fn open(&self, partition: PartitionPlan) -> BoxFuture<'_, Result<OpenedPartitionStream>> {
         let descriptor = self.compiled.descriptor().clone();
         let schema = self.compiled.schema();
         let plan = match self.compiled.plan() {

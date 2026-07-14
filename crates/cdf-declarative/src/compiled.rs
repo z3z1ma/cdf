@@ -14,9 +14,9 @@ use cdf_http::{
     ResetHeaderSemantics, SecretUri,
 };
 use cdf_kernel::{
-    BackpressureSupport, BatchStream, BoxFuture, CapabilitySupport, CdfError, ContractRef,
-    CursorOrderingClaim, CursorSpec, DeduplicationSpec, DeliveryGuarantee, EffectiveSchemaRuntime,
-    EstimateSupport, FilterCapabilities, FreshnessSpec, IncrementalShape, PartitionId,
+    BackpressureSupport, BoxFuture, CapabilitySupport, CdfError, ContractRef, CursorOrderingClaim,
+    CursorSpec, DeduplicationSpec, DeliveryGuarantee, EffectiveSchemaRuntime, EstimateSupport,
+    FilterCapabilities, FreshnessSpec, IncrementalShape, OpenedPartitionStream, PartitionId,
     PartitionPlan, PartitioningCapabilities, PlanId, PushdownFidelity, PushedPredicate,
     QueryableResource, ReplaySupport, ResourceCapabilities, ResourceDescriptor, ResourceId,
     ResourceStream, Result, ScanPlan, ScanRequest, SchemaHash, SchemaSource, ScopeKey, ScopeKind,
@@ -80,7 +80,10 @@ impl CompiledResource {
         self.type_policy_allowances
     }
 
-    pub fn open_preview(&self, partition: PartitionPlan) -> BoxFuture<'_, Result<BatchStream>> {
+    pub fn open_preview(
+        &self,
+        partition: PartitionPlan,
+    ) -> BoxFuture<'_, Result<OpenedPartitionStream>> {
         let _ = partition;
         Box::pin(async {
             Err(CdfError::internal(
@@ -211,7 +214,7 @@ impl ResourceStream for CompiledResource {
         partitions_for_plan(&self.descriptor, &self.schema, &self.plan, Some(request))
     }
 
-    fn open(&self, partition: PartitionPlan) -> BoxFuture<'_, Result<BatchStream>> {
+    fn open(&self, partition: PartitionPlan) -> BoxFuture<'_, Result<OpenedPartitionStream>> {
         let _ = partition;
         Box::pin(async {
             Err(CdfError::internal(

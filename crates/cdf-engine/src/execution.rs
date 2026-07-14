@@ -22,12 +22,13 @@ use cdf_contract::{
 use cdf_kernel::{
     CdfError, PHYSICAL_TYPE_METADATA_KEY, PLAN_PHYSICAL_SCHEMA_HASH_KEY,
     PLAN_SCHEMA_OBSERVATION_BINDING_KEY, PLAN_SCHEMA_OBSERVATION_ID_KEY, PartitionAttestation,
-    PhysicalObservationRepresentation, PreContractObservedValue, PreContractQuarantineFact,
-    PreContractResidualCandidate, ProcessedObservationOutcome, ProcessedObservationPosition,
-    ResourceStream, Result, RunId, RunPhase, RunPhaseMetric, RunPhaseStatus,
-    SOURCE_NAME_METADATA_KEY, ScopeKey, SourcePosition, StratifiedHashBoundedIdentity,
-    StratifiedHashCandidate, StratifiedHashIdentityStrength, TerminalSchemaObservationQuarantine,
-    WriteDisposition, aggregate_resource_output_position, semantic, source_name,
+    PartitionPlan, PhysicalObservationRepresentation, PreContractObservedValue,
+    PreContractQuarantineFact, PreContractResidualCandidate, ProcessedObservationOutcome,
+    ProcessedObservationPosition, ResourceStream, Result, RunId, RunPhase, RunPhaseMetric,
+    RunPhaseStatus, SOURCE_NAME_METADATA_KEY, ScopeKey, SourcePosition,
+    StratifiedHashBoundedIdentity, StratifiedHashCandidate, StratifiedHashIdentityStrength,
+    TerminalSchemaObservationQuarantine, WriteDisposition, aggregate_resource_output_position,
+    merge_terminal_position_evidence, semantic, source_name,
 };
 use cdf_memory::{
     ConsumerKey, DEFAULT_PROCESS_BUDGET_BYTES, DeterministicMemoryCoordinator, MemoryClass,
@@ -1456,6 +1457,7 @@ struct SegmentOutputSink<'a, 'b> {
 struct SegmentEncodeWork {
     ordinal: u64,
     segment_id: cdf_kernel::SegmentId,
+    partition_ordinal: u32,
     output_position: Option<SourcePosition>,
     batches: Vec<RecordBatch>,
     normalization_output_bytes: u64,
@@ -1731,6 +1733,7 @@ impl SegmentEncodeQueue {
                 .push(completion.work.segment_id);
             state.segment_positions.push(EngineSegmentPosition {
                 segment_id: segment.segment_id.clone(),
+                partition_ordinal: completion.work.partition_ordinal,
                 output_position: completion.work.output_position,
             });
             state.segments.push(segment);
@@ -2099,7 +2102,7 @@ where
 type OpenedPartition = (
     usize,
     cdf_kernel::PartitionPlan,
-    Option<cdf_kernel::BatchStream>,
+    Option<cdf_kernel::OpenedPartitionStream>,
     u64,
 );
 
@@ -2115,10 +2118,12 @@ where
     if terminal_quarantine {
         return Box::pin(async move { Ok((ordinal, partition, None, 0)) });
     }
-    let started = Instant::now();
-    let future = resource.open(partition.clone());
     Box::pin(async move {
-        let stream = future.await?;
+        // Construct the source-owned stream only when this open future is polled. In particular,
+        // remote sources may resolve short-lived access capabilities while opening; creating them
+        // while merely filling the scheduler frontier can let them expire before transfer starts.
+        let started = Instant::now();
+        let stream = resource.open(partition.clone()).await?;
         Ok((
             ordinal,
             partition,
@@ -2278,6 +2283,7 @@ where
     let mut schema_admission_cache =
         BTreeMap::<cdf_kernel::SchemaHash, cdf_contract::SchemaCoercionPlan>::new();
     let mut processed_observations = Vec::new();
+    let mut completion_positions = Vec::<(u32, PartitionPlan, SourcePosition)>::new();
     let mut terminal_quarantines = Vec::new();
     let mut quarantine_physical_observations =
         BTreeMap::<String, PhysicalObservationEvidence>::new();
@@ -2456,6 +2462,7 @@ where
             dynamic_quarantine,
             partition_observation_id,
             partition_observed_rows,
+            completion_attestation,
         ) = async {
             phase_measurements.add(
                 RunPhase::Decode,
@@ -2565,12 +2572,60 @@ where
                                 partition.partition_id
                             )));
                         }
-                        let source_position = normalize_source_position_for_partition(
+                        if let Some(source_position) = normalize_source_position_for_partition(
                             batch.header.source_position.clone(),
                             &partition_scope,
-                        );
-                        dynamic_quarantine =
-                            Some((quarantine, source_position, physical_observation));
+                        ) {
+                            observed_positions.push(source_position);
+                        }
+                        partition_source_row_ordinal = partition_source_row_ordinal
+                            .saturating_add(batch.header.row_count);
+                        dynamic_quarantine = Some((quarantine, physical_observation));
+
+                        // Schema quarantine is a whole-partition verdict. Drain the invocation to
+                        // EOF so weak sources can finish their terminal content hash and the
+                        // checkpoint records only fully consumed input. No drained batch enters
+                        // validation or segment production after this verdict is fixed.
+                        loop {
+                            let decode_started = phase_measurements.start();
+                            let next_batch = stream.next().await;
+                            let decode_duration_ns =
+                                elapsed_ns(decode_started, "quarantined resource drain")?;
+                            let Some(drained) = next_batch else {
+                                phase_measurements.add(
+                                    RunPhase::Decode,
+                                    decode_duration_ns,
+                                    0,
+                                    0,
+                                );
+                                break;
+                            };
+                            let drained = drained?;
+                            validate_batch_partition_ownership(
+                                &drained,
+                                &plan.scan.request.resource_id,
+                                &partition,
+                            )?;
+                            let decoded_input_bytes = drained.header.byte_count;
+                            phase_measurements.add(
+                                RunPhase::Decode,
+                                decode_duration_ns,
+                                decoded_input_bytes,
+                                decoded_input_bytes,
+                            );
+                            lineage.input_rows =
+                                lineage.input_rows.saturating_add(drained.header.row_count);
+                            partition_source_row_ordinal = partition_source_row_ordinal
+                                .saturating_add(drained.header.row_count);
+                            if let Some(source_position) =
+                                normalize_source_position_for_partition(
+                                    drained.header.source_position.clone(),
+                                    &partition_scope,
+                                )
+                            {
+                                observed_positions.push(source_position);
+                            }
+                        }
                         break;
                     }
                 };
@@ -2816,30 +2871,51 @@ where
                     durable: &mut durable_segment_observer,
                 },
             )?;
+            let completion_attestation = if fully_processed {
+                stream.completion_attestation().await?
+            } else {
+                None
+            };
             Ok::<_, CdfError>((
                 fully_processed,
                 observed_positions,
                 dynamic_quarantine,
                 partition_observation_id,
                 partition_source_row_ordinal,
+                completion_attestation,
             ))
         }
         .instrument(partition_span)
         .await?;
-        if let Some((mut quarantine, source_position, physical_observation)) = dynamic_quarantine {
+        if let Some(attestation) = &completion_attestation {
+            completion_positions.push((
+                partition_ordinal,
+                partition.clone(),
+                attestation.processed_position().clone(),
+            ));
+        }
+        if let Some((mut quarantine, physical_observation)) = dynamic_quarantine {
             let observation_id = quarantine.observation_id().to_owned();
-            let source_position = match source_position {
-                Some(position) => position,
-                None => resource
-                    .attest_partition(&partition)
-                    .await?
-                    .map(PartitionAttestation::into_processed_position)
-                    .ok_or_else(|| {
-                        CdfError::data(format!(
-                            "stream-admission quarantine {observation_id:?} has no source position or partition attestation"
-                        ))
-                    })?,
+            let fallback_attestation = if observed_positions.is_empty()
+                && completion_attestation.is_none()
+            {
+                resource.attest_partition(&partition).await?
+            } else {
+                None
             };
+            let terminal_position = completion_attestation
+                .as_ref()
+                .map(|attestation| attestation.processed_position().clone())
+                .or_else(|| {
+                    fallback_attestation.map(PartitionAttestation::into_processed_position)
+                });
+            let source_position = aggregate_processed_partition_positions(
+                &observation_id,
+                resource.descriptor(),
+                resource_schema.as_ref(),
+                &observed_positions,
+                terminal_position,
+            )?;
             processed_observations.push(ProcessedObservationPosition::new(
                 observation_id,
                 ProcessedObservationOutcome::Quarantined,
@@ -2858,7 +2934,9 @@ where
                 .cloned()
                 .or(partition_observation_id)
         {
-            let fallback_attestation = if observed_positions.is_empty() {
+            let fallback_attestation = if observed_positions.is_empty()
+                && completion_attestation.is_none()
+            {
                 match observation_attestations.get(&observation_id) {
                     Some(attestation) => Some(attestation.clone()),
                     None => {
@@ -2907,8 +2985,11 @@ where
                     expected.coercion_plan.clone(),
                 )?;
             }
-            let fallback_position = fallback_attestation
-                .map(PartitionAttestation::into_processed_position);
+            let fallback_position = completion_attestation
+                .map(PartitionAttestation::into_processed_position)
+                .or_else(|| {
+                    fallback_attestation.map(PartitionAttestation::into_processed_position)
+                });
             let source_position = if observed_positions.is_empty() && fallback_position.is_none() {
                 None
             } else {
@@ -3020,6 +3101,14 @@ where
         },
         &mut durable_segment_observer,
     )?;
+    for (partition_ordinal, partition, completion) in &completion_positions {
+        enrich_segment_positions_with_completion(
+            &mut segment_positions,
+            *partition_ordinal,
+            partition,
+            completion,
+        )?;
+    }
     Ok(())
     }
     .await;
@@ -3427,6 +3516,31 @@ fn normalize_source_position_for_partition(
     }
 }
 
+fn enrich_segment_positions_with_completion(
+    positions: &mut [EngineSegmentPosition],
+    partition_ordinal: u32,
+    partition: &PartitionPlan,
+    completion: &SourcePosition,
+) -> Result<()> {
+    for position in positions
+        .iter_mut()
+        .filter(|position| position.partition_ordinal == partition_ordinal)
+    {
+        let Some(existing) = &mut position.output_position else {
+            return Err(CdfError::data(format!(
+                "segment {} for partition `{}` omitted source-position evidence required by terminal attestation",
+                position.segment_id.as_str(),
+                partition.partition_id.as_str()
+            )));
+        };
+        *existing = merge_terminal_position_evidence(existing, completion)?;
+    }
+    // A fully consumed partition may legitimately produce no output segment after filtering,
+    // quarantine, or package-wide dedup. Its processed/checkpoint evidence still retains the
+    // terminal content identity; there is simply no segment position to enrich.
+    Ok(())
+}
+
 fn aggregate_processed_partition_positions(
     observation_id: &str,
     descriptor: &cdf_kernel::ResourceDescriptor,
@@ -3434,20 +3548,33 @@ fn aggregate_processed_partition_positions(
     observed: &[SourcePosition],
     attested: Option<SourcePosition>,
 ) -> Result<SourcePosition> {
-    let mut positions = observed.to_vec();
-    if let Some(attested) = attested {
-        positions.push(attested);
-    }
-    if positions.is_empty() {
-        return Err(CdfError::data(format!(
+    let observed = if observed.is_empty() {
+        None
+    } else {
+        Some(
+            aggregate_resource_output_position(descriptor, schema, None, observed).map_err(
+                |error| {
+                    CdfError::data(format!(
+                        "processed observation {observation_id:?} has invalid source-position evidence: {error}"
+                    ))
+                },
+            )?,
+        )
+    };
+    match (observed, attested) {
+        (Some(observed), Some(attested)) => {
+            merge_terminal_position_evidence(&observed, &attested).map_err(|error| {
+                CdfError::data(format!(
+                    "processed observation {observation_id:?} has invalid terminal source-position evidence: {error}"
+                ))
+            })
+        }
+        (Some(observed), None) => Ok(observed),
+        (None, Some(attested)) => Ok(attested),
+        (None, None) => Err(CdfError::data(format!(
             "processed observation {observation_id:?} completed without source-position evidence"
-        )));
+        ))),
     }
-    aggregate_resource_output_position(descriptor, schema, None, &positions).map_err(|error| {
-        CdfError::data(format!(
-            "processed observation {observation_id:?} has invalid source-position evidence: {error}"
-        ))
-    })
 }
 
 fn merge_verdict_summary(total: &mut VerdictSummary, batch: VerdictSummary) {
@@ -3685,6 +3812,7 @@ fn persist_canonical_segments(
     for canonical in canonical_segments {
         let crate::CanonicalSegment {
             segment_id,
+            partition_ordinal,
             batches,
             output_position,
             retained_bytes,
@@ -3761,6 +3889,7 @@ fn persist_canonical_segments(
             SegmentEncodeWork {
                 ordinal: 0,
                 segment_id,
+                partition_ordinal,
                 output_position,
                 batches: output,
                 normalization_output_bytes,
