@@ -3,7 +3,7 @@ use std::{
     hash::BuildHasher,
     panic::{AssertUnwindSafe, catch_unwind},
     sync::{
-        Arc, Condvar, Mutex,
+        Arc, Condvar, Mutex, Weak,
         atomic::{AtomicU16, AtomicU64, Ordering},
         mpsc,
     },
@@ -33,12 +33,14 @@ enum WorkOutcome {
 }
 
 struct WorkItem {
+    id: u64,
     slot_cost: u16,
     enqueued: Instant,
     cancellation: RunCancellation,
     task: BlockingTask,
     completion: oneshot::Sender<WorkCompletion>,
     released: Option<mpsc::SyncSender<()>>,
+    after_release: Option<Box<dyn FnOnce() + Send>>,
     usage: Option<Arc<CpuUsageTracker>>,
 }
 
@@ -49,9 +51,18 @@ struct PoolState {
 
 struct CpuSlots {
     capacity: u16,
-    available: Mutex<u16>,
+    next_work_id: AtomicU64,
+    state: Mutex<CpuSlotState>,
     changed: Condvar,
 }
+
+struct CpuSlotState {
+    available: u16,
+    waiting: BTreeMap<u64, u16>,
+    reservation: Option<u64>,
+}
+
+const MAX_SLOT_BYPASSES: u16 = 8;
 
 #[derive(Default)]
 struct CpuUsageTracker {
@@ -79,7 +90,7 @@ struct FixedTaskPool {
 
 struct CpuFutureState {
     inner: Mutex<CpuFutureInner>,
-    pool: Arc<FixedTaskPool>,
+    pool: Weak<FixedTaskPool>,
     slot_cost: u16,
     cancellation: RunCancellation,
     runtime: tokio::runtime::Handle,
@@ -91,8 +102,10 @@ struct CpuFutureInner {
     completion: Option<oneshot::Sender<WorkCompletion>>,
     queued: bool,
     polling: bool,
+    release_pending: bool,
     notified: bool,
     terminal: bool,
+    terminal_outcome: Option<WorkOutcome>,
     enqueued: Option<Instant>,
     queue_wait_ns: u64,
 }
@@ -113,12 +126,14 @@ impl CpuFutureState {
                 completion: Some(completion),
                 queued: false,
                 polling: false,
+                release_pending: false,
                 notified: false,
                 terminal: false,
+                terminal_outcome: None,
                 enqueued: None,
                 queue_wait_ns: 0,
             }),
-            pool,
+            pool: Arc::downgrade(&pool),
             slot_cost,
             cancellation,
             runtime,
@@ -132,16 +147,26 @@ impl CpuFutureState {
             if inner.terminal || inner.queued {
                 return;
             }
-            if inner.polling {
+            if inner.polling || inner.release_pending {
                 inner.notified = true;
                 return;
             }
             inner.queued = true;
+            inner.release_pending = true;
             inner.enqueued = Some(Instant::now());
         }
 
+        let Some(pool) = self.pool.upgrade() else {
+            self.finish(WorkOutcome::Completed(Err(CdfError::internal(
+                "CPU executor stopped before the asynchronous task completed",
+            ))));
+            self.inner.lock().unwrap().release_pending = false;
+            self.publish_terminal();
+            return;
+        };
         let state = Arc::clone(self);
-        let submission = self.pool.submit(
+        let released_state = Arc::clone(self);
+        let submission = pool.submit_after_release(
             self.slot_cost,
             RunCancellation::default(),
             Box::new(move || {
@@ -149,9 +174,12 @@ impl CpuFutureState {
                 Ok(())
             }),
             Arc::clone(&self.usage),
+            Some(Box::new(move || released_state.after_poll_release())),
         );
         if let Err(error) = submission {
             self.finish(WorkOutcome::Completed(Err(error)));
+            self.inner.lock().unwrap().release_pending = false;
+            self.publish_terminal();
         }
     }
 
@@ -198,19 +226,13 @@ impl CpuFutureState {
                 queue_wait_ns,
             ),
             Ok(Poll::Pending) => {
-                let schedule = {
-                    let mut inner = self.inner.lock().unwrap();
-                    if inner.terminal {
-                        return;
-                    }
-                    inner.queue_wait_ns = inner.queue_wait_ns.saturating_add(queue_wait_ns);
-                    inner.polling = false;
-                    inner.task = Some(task);
-                    std::mem::take(&mut inner.notified)
-                };
-                if schedule {
-                    self.request_poll();
+                let mut inner = self.inner.lock().unwrap();
+                if inner.terminal {
+                    return;
                 }
+                inner.queue_wait_ns = inner.queue_wait_ns.saturating_add(queue_wait_ns);
+                inner.polling = false;
+                inner.task = Some(task);
             }
         }
     }
@@ -220,16 +242,33 @@ impl CpuFutureState {
     }
 
     fn finish_with_wait(&self, outcome: WorkOutcome, queue_wait_ns: u64) {
+        let mut inner = self.inner.lock().unwrap();
+        if inner.terminal {
+            return;
+        }
+        inner.queue_wait_ns = inner.queue_wait_ns.saturating_add(queue_wait_ns);
+        inner.terminal = true;
+        inner.queued = false;
+        inner.polling = false;
+        inner.task.take();
+        inner.terminal_outcome = Some(outcome);
+        // The completion remains in the state until the worker has released both
+        // its CPU slots and usage accounting. `publish_terminal` is invoked only
+        // from that release barrier (or when submission itself failed).
+        drop(inner);
+    }
+
+    fn publish_terminal(&self) {
         let completion = {
             let mut inner = self.inner.lock().unwrap();
-            if inner.terminal {
+            if !inner.terminal {
                 return;
             }
-            inner.queue_wait_ns = inner.queue_wait_ns.saturating_add(queue_wait_ns);
-            inner.terminal = true;
-            inner.queued = false;
-            inner.polling = false;
-            inner.task.take();
+            let outcome = inner.terminal_outcome.take().unwrap_or_else(|| {
+                WorkOutcome::Completed(Err(CdfError::internal(
+                    "asynchronous CPU task reached an invalid terminal state",
+                )))
+            });
             inner.completion.take().map(|completion| {
                 (
                     completion,
@@ -242,6 +281,21 @@ impl CpuFutureState {
         };
         if let Some((completion, result)) = completion {
             let _ = completion.send(result);
+        }
+    }
+
+    fn after_poll_release(self: &Arc<Self>) {
+        let (terminal, schedule) = {
+            let mut inner = self.inner.lock().unwrap();
+            inner.release_pending = false;
+            let terminal = inner.terminal;
+            let schedule = !terminal && std::mem::take(&mut inner.notified);
+            (terminal, schedule)
+        };
+        if terminal {
+            self.publish_terminal();
+        } else if schedule {
+            self.request_poll();
         }
     }
 }
@@ -295,6 +349,17 @@ impl FixedTaskPool {
         task: BlockingTask,
         usage: Arc<CpuUsageTracker>,
     ) -> Result<oneshot::Receiver<WorkCompletion>> {
+        self.submit_after_release(slot_cost, cancellation, task, usage, None)
+    }
+
+    fn submit_after_release(
+        &self,
+        slot_cost: u16,
+        cancellation: RunCancellation,
+        task: BlockingTask,
+        usage: Arc<CpuUsageTracker>,
+        after_release: Option<Box<dyn FnOnce() + Send>>,
+    ) -> Result<oneshot::Receiver<WorkCompletion>> {
         if slot_cost == 0 || slot_cost > self.capacity {
             return Err(CdfError::contract(format!(
                 "task slot cost {slot_cost} exceeds pool capacity {}",
@@ -308,15 +373,17 @@ impl FixedTaskPool {
             return Err(CdfError::internal("task pool is shutting down"));
         }
         state.queue.push_back(WorkItem {
+            id: self.slots.next_work_id.fetch_add(1, Ordering::Relaxed),
             slot_cost,
             enqueued: Instant::now(),
             cancellation,
             task,
             completion: sender,
             released: None,
+            after_release,
             usage: Some(usage),
         });
-        let _available = self.slots.available.lock().unwrap();
+        let _slots = self.slots.state.lock().unwrap();
         self.slots.changed.notify_all();
         Ok(receiver)
     }
@@ -341,15 +408,17 @@ impl FixedTaskPool {
             return Err(CdfError::internal("task pool is shutting down"));
         }
         state.queue.push_back(WorkItem {
+            id: self.slots.next_work_id.fetch_add(1, Ordering::Relaxed),
             slot_cost,
             enqueued: Instant::now(),
             cancellation,
             task,
             completion,
             released: Some(released),
+            after_release: None,
             usage: None,
         });
-        let _available = self.slots.available.lock().unwrap();
+        let _slots = self.slots.state.lock().unwrap();
         self.slots.changed.notify_all();
         Ok(release_receiver)
     }
@@ -359,7 +428,7 @@ impl Drop for FixedTaskPool {
     fn drop(&mut self) {
         if let Ok(mut state) = self.state.lock() {
             state.shutdown = true;
-            if let Ok(_available) = self.slots.available.lock() {
+            if let Ok(_slots) = self.slots.state.lock() {
                 self.slots.changed.notify_all();
             }
         }
@@ -376,24 +445,25 @@ fn worker_loop(state: Arc<Mutex<PoolState>>, slots: Arc<CpuSlots>) {
         let item = {
             loop {
                 let mut state = state.lock().unwrap();
-                let mut available = slots.available.lock().unwrap();
+                let mut slot_state = slots.state.lock().unwrap();
                 if state.shutdown && state.queue.is_empty() {
                     return;
                 }
-                if let Some(index) = state
-                    .queue
-                    .iter()
-                    .position(|item| item.slot_cost <= *available)
-                {
+                let selected = select_work_item(&mut state.queue, &mut slot_state);
+                if let Some(index) = selected {
                     let item = state
                         .queue
                         .remove(index)
                         .expect("eligible work item index remains present");
-                    *available -= item.slot_cost;
+                    slot_state.available -= item.slot_cost;
+                    slot_state.waiting.remove(&item.id);
+                    if slot_state.reservation == Some(item.id) {
+                        slot_state.reservation = None;
+                    }
                     break item;
                 }
                 drop(state);
-                drop(slots.changed.wait(available).unwrap());
+                drop(slots.changed.wait(slot_state).unwrap());
             }
         };
         if let Some(usage) = &item.usage {
@@ -409,12 +479,15 @@ fn worker_loop(state: Arc<Mutex<PoolState>>, slots: Arc<CpuSlots>) {
             )
         };
         let slot_cost = item.slot_cost;
-        let mut available = slots.available.lock().unwrap();
-        *available = available.saturating_add(slot_cost);
-        slots.changed.notify_all();
-        drop(available);
         if let Some(usage) = &item.usage {
             usage.release(slot_cost);
+        }
+        let mut slot_state = slots.state.lock().unwrap();
+        slot_state.available = slot_state.available.saturating_add(slot_cost);
+        slots.changed.notify_all();
+        drop(slot_state);
+        if let Some(after_release) = item.after_release {
+            let _ = catch_unwind(AssertUnwindSafe(after_release));
         }
         let _ = item.completion.send(WorkCompletion {
             outcome,
@@ -424,6 +497,48 @@ fn worker_loop(state: Arc<Mutex<PoolState>>, slots: Arc<CpuSlots>) {
             let _ = released.send(());
         }
     }
+}
+
+fn select_work_item(queue: &mut VecDeque<WorkItem>, slots: &mut CpuSlotState) -> Option<usize> {
+    if let Some(reserved) = slots.reservation {
+        return queue
+            .iter()
+            .position(|item| item.id == reserved && item.slot_cost <= slots.available);
+    }
+
+    let head = queue.front()?;
+    let selected = if head.slot_cost <= slots.available {
+        Some(0)
+    } else {
+        slots.waiting.entry(head.id).or_default();
+        queue
+            .iter()
+            .enumerate()
+            .skip(1)
+            .find_map(|(index, item)| (item.slot_cost <= slots.available).then_some(index))
+    }?;
+
+    let selected_id = queue[selected].id;
+    if let Some((oldest_waiter, bypasses)) = slots
+        .waiting
+        .first_key_value()
+        .map(|(waiter, bypasses)| (*waiter, *bypasses))
+        && oldest_waiter < selected_id
+    {
+        if bypasses >= MAX_SLOT_BYPASSES {
+            // A reservation intentionally allows slots to accumulate. That is
+            // the bounded-fairness boundary: work remains conserving for a
+            // finite number of global bypasses, after which the oldest observed
+            // blocked item wins across the CPU pool and every FFI lane.
+            slots.reservation = Some(oldest_waiter);
+            return None;
+        }
+        *slots
+            .waiting
+            .get_mut(&oldest_waiter)
+            .expect("oldest waiting work remains registered") += 1;
+    }
+    Some(selected)
 }
 
 pub struct StandaloneExecutionHost {
@@ -514,7 +629,12 @@ impl StandaloneExecutionHost {
             .map_err(|error| CdfError::internal(format!("I/O runtime creation failed: {error}")))?;
         let slots = Arc::new(CpuSlots {
             capacity: capabilities.logical_cpu_slots,
-            available: Mutex::new(capabilities.logical_cpu_slots),
+            next_work_id: AtomicU64::new(0),
+            state: Mutex::new(CpuSlotState {
+                available: capabilities.logical_cpu_slots,
+                waiting: BTreeMap::new(),
+                reservation: None,
+            }),
             changed: Condvar::new(),
         });
         let cpu = FixedTaskPool::new("cpu", capabilities.logical_cpu_slots, Arc::clone(&slots))?;
@@ -876,6 +996,14 @@ impl ExecutionTaskScope for StandaloneTaskScope {
                     }
                 }
             }
+            let unreleased_cpu_slots = self.usage.current.load(Ordering::Acquire);
+            if unreleased_cpu_slots != 0 {
+                first_error.get_or_insert_with(|| {
+                    CdfError::internal(format!(
+                        "execution scope completed before {unreleased_cpu_slots} CPU slots were released"
+                    ))
+                });
+            }
             match first_error {
                 Some(error) => Err(error),
                 None => {
@@ -1117,6 +1245,231 @@ mod tests {
         let report = host.block_on_root(scope.join()).unwrap();
         assert_eq!(report.completed, 3);
         assert_eq!(report.peak_cpu_slots, 2);
+    }
+
+    #[test]
+    fn mixed_cost_queue_bounds_bypasses_before_reserving_the_expensive_head() {
+        let host = host();
+        let mut scope = host.open_scope("mixed-slot-bounded-fairness").unwrap();
+        let (long_started_sender, long_started_receiver) = mpsc::sync_channel(1);
+        let (release_long_sender, release_long_receiver) = mpsc::sync_channel(1);
+        scope
+            .spawn_cpu(
+                CpuTaskSpec {
+                    task_kind: "long-one-slot".to_owned(),
+                    cpu_slot_cost: 1,
+                    native_internal_parallelism: 1,
+                },
+                Box::new(move || {
+                    long_started_sender.send(()).unwrap();
+                    release_long_receiver.recv().unwrap();
+                    Ok(())
+                }),
+            )
+            .unwrap();
+        long_started_receiver.recv().unwrap();
+
+        let (event_sender, event_receiver) = mpsc::channel();
+        let expensive_sender = event_sender.clone();
+        scope
+            .spawn_cpu(
+                CpuTaskSpec {
+                    task_kind: "waiting-two-slots".to_owned(),
+                    cpu_slot_cost: 2,
+                    native_internal_parallelism: 1,
+                },
+                Box::new(move || {
+                    expensive_sender.send("expensive").unwrap();
+                    Ok(())
+                }),
+            )
+            .unwrap();
+        for index in 0..usize::from(MAX_SLOT_BYPASSES + 2) {
+            let event_sender = event_sender.clone();
+            scope
+                .spawn_cpu(
+                    CpuTaskSpec {
+                        task_kind: format!("small-{index}"),
+                        cpu_slot_cost: 1,
+                        native_internal_parallelism: 1,
+                    },
+                    Box::new(move || {
+                        event_sender.send("small").unwrap();
+                        Ok(())
+                    }),
+                )
+                .unwrap();
+        }
+        drop(event_sender);
+
+        for _ in 0..MAX_SLOT_BYPASSES {
+            assert_eq!(
+                event_receiver.recv_timeout(Duration::from_secs(1)).unwrap(),
+                "small"
+            );
+        }
+        assert!(
+            event_receiver
+                .recv_timeout(Duration::from_millis(50))
+                .is_err(),
+            "the expensive head must reserve the shared slots after the bypass bound"
+        );
+
+        release_long_sender.send(()).unwrap();
+        assert_eq!(
+            event_receiver.recv_timeout(Duration::from_secs(1)).unwrap(),
+            "expensive"
+        );
+        let report = host.block_on_root(scope.join()).unwrap();
+        assert_eq!(report.completed, u64::from(MAX_SLOT_BYPASSES) + 4);
+        assert_eq!(report.peak_cpu_slots, 2);
+    }
+
+    #[test]
+    fn shared_slot_reservation_prevents_cross_lane_starvation() {
+        let memory: Arc<dyn MemoryCoordinator> =
+            Arc::new(DeterministicMemoryCoordinator::new(1024, BTreeMap::new()).unwrap());
+        let host = StandaloneExecutionHost::new(
+            ExecutionHostCapabilities {
+                logical_cpu_slots: 2,
+                io_workers: 2,
+                blocking_lanes: vec![BlockingLaneSpec {
+                    lane_id: "wide-native".to_owned(),
+                    maximum_concurrency: 1,
+                    cpu_slot_cost: 2,
+                    native_internal_parallelism: 1,
+                    affinity: LaneAffinity::Pinned,
+                    interruption: InterruptionSafety::CooperativeOnly,
+                }],
+            },
+            memory,
+        )
+        .unwrap();
+        let mut scope = host.open_scope("cross-lane-bounded-fairness").unwrap();
+        let (long_started_sender, long_started_receiver) = mpsc::sync_channel(1);
+        let (release_long_sender, release_long_receiver) = mpsc::sync_channel(1);
+        scope
+            .spawn_cpu(
+                CpuTaskSpec {
+                    task_kind: "long-one-slot".to_owned(),
+                    cpu_slot_cost: 1,
+                    native_internal_parallelism: 1,
+                },
+                Box::new(move || {
+                    long_started_sender.send(()).unwrap();
+                    release_long_receiver.recv().unwrap();
+                    Ok(())
+                }),
+            )
+            .unwrap();
+        long_started_receiver.recv().unwrap();
+
+        let (lane_sender, lane_receiver) = mpsc::sync_channel(1);
+        scope
+            .spawn_blocking(
+                "wide-native",
+                Box::new(move || {
+                    lane_sender.send(()).unwrap();
+                    Ok(())
+                }),
+            )
+            .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(1);
+        while host.slots.state.lock().unwrap().waiting.is_empty() {
+            assert!(
+                Instant::now() < deadline,
+                "wide lane never registered its wait"
+            );
+            std::thread::yield_now();
+        }
+
+        let (tail_sender, tail_receiver) = mpsc::channel();
+        for index in 0..usize::from(MAX_SLOT_BYPASSES + 1) {
+            let tail_sender = tail_sender.clone();
+            scope
+                .spawn_cpu(
+                    CpuTaskSpec {
+                        task_kind: format!("cpu-tail-{index}"),
+                        cpu_slot_cost: 1,
+                        native_internal_parallelism: 1,
+                    },
+                    Box::new(move || {
+                        tail_sender.send(()).unwrap();
+                        Ok(())
+                    }),
+                )
+                .unwrap();
+        }
+        drop(tail_sender);
+        for _ in 0..MAX_SLOT_BYPASSES {
+            tail_receiver
+                .recv_timeout(Duration::from_secs(1))
+                .expect("bounded bypasses must remain work-conserving across lanes");
+        }
+        assert!(
+            tail_receiver
+                .recv_timeout(Duration::from_millis(50))
+                .is_err()
+        );
+
+        release_long_sender.send(()).unwrap();
+        lane_receiver
+            .recv_timeout(Duration::from_secs(1))
+            .expect("the reserved wide lane must run before later CPU work");
+        tail_receiver
+            .recv_timeout(Duration::from_secs(1))
+            .expect("CPU work must resume after the reserved lane releases");
+        let report = host.block_on_root(scope.join()).unwrap();
+        assert_eq!(report.completed, u64::from(MAX_SLOT_BYPASSES) + 3);
+        assert_eq!(report.peak_cpu_slots, 2);
+    }
+
+    #[test]
+    fn self_waking_cpu_future_repolls_only_after_release_and_publishes_last() {
+        struct SelfWakingFuture {
+            remaining_yields: u8,
+        }
+
+        impl std::future::Future for SelfWakingFuture {
+            type Output = Result<()>;
+
+            fn poll(
+                mut self: std::pin::Pin<&mut Self>,
+                context: &mut Context<'_>,
+            ) -> Poll<Self::Output> {
+                if self.remaining_yields == 0 {
+                    return Poll::Ready(Ok(()));
+                }
+                self.remaining_yields -= 1;
+                context.waker().wake_by_ref();
+                Poll::Pending
+            }
+        }
+
+        let host = host();
+        let mut scope = host.open_scope("cpu-future-release-barrier").unwrap();
+        scope
+            .spawn_cpu_future(
+                CpuTaskSpec {
+                    task_kind: "self-waking".to_owned(),
+                    cpu_slot_cost: 1,
+                    native_internal_parallelism: 1,
+                },
+                Box::pin(SelfWakingFuture {
+                    remaining_yields: 64,
+                }),
+            )
+            .unwrap();
+
+        let report = host.block_on_root(scope.join()).unwrap();
+        assert_eq!(report.completed, 1);
+        assert_eq!(report.peak_cpu_slots, 1);
+        let slots = host.slots.state.lock().unwrap();
+        assert_eq!(slots.available, host.slots.capacity);
+        assert!(slots.waiting.is_empty());
+        assert!(slots.reservation.is_none());
+        drop(slots);
+        drop(host);
     }
 
     #[test]

@@ -5,7 +5,7 @@ use std::{
     pin::Pin,
     sync::{
         Arc, Mutex,
-        atomic::{AtomicBool, AtomicU64, Ordering},
+        atomic::{AtomicBool, Ordering},
     },
     task::{Context, Poll, Waker},
     time::Duration,
@@ -152,8 +152,52 @@ impl<T> Drop for ScopedTaskStream<T> {
 #[derive(Debug, Default)]
 struct CancellationState {
     cancelled: AtomicBool,
-    next_waiter_id: AtomicU64,
-    waiters: Mutex<BTreeMap<u64, Waker>>,
+    waiters: Mutex<WakerRegistry>,
+}
+
+#[derive(Debug, Default)]
+struct WakerRegistry {
+    next_id: u64,
+    waiters: BTreeMap<u64, Waker>,
+}
+
+impl WakerRegistry {
+    fn register(&mut self, waiter_id: Option<u64>, waker: &Waker) -> u64 {
+        let waiter_id = waiter_id.unwrap_or_else(|| {
+            let mut candidate = self.next_id;
+            while self.waiters.contains_key(&candidate) {
+                candidate = candidate.wrapping_add(1);
+            }
+            self.next_id = candidate.wrapping_add(1);
+            candidate
+        });
+        match self.waiters.get_mut(&waiter_id) {
+            Some(waiter) if waiter.will_wake(waker) => {}
+            Some(waiter) => waiter.clone_from(waker),
+            None => {
+                self.waiters.insert(waiter_id, waker.clone());
+            }
+        }
+        waiter_id
+    }
+
+    fn unregister(&mut self, waiter_id: u64) {
+        self.waiters.remove(&waiter_id);
+    }
+
+    fn take_all(&mut self) -> Vec<Waker> {
+        std::mem::take(&mut self.waiters).into_values().collect()
+    }
+
+    #[cfg(test)]
+    fn len(&self) -> usize {
+        self.waiters.len()
+    }
+
+    #[cfg(test)]
+    fn is_empty(&self) -> bool {
+        self.waiters.is_empty()
+    }
 }
 
 #[derive(Clone, Debug, Default)]
@@ -164,8 +208,8 @@ impl RunCancellation {
         if self.0.cancelled.swap(true, Ordering::AcqRel) {
             return;
         }
-        let waiters = std::mem::take(&mut *self.0.waiters.lock().unwrap());
-        for waiter in waiters.into_values() {
+        let waiters = self.0.waiters.lock().unwrap().take_all();
+        for waiter in waiters {
             waiter.wake();
         }
     }
@@ -231,20 +275,8 @@ impl Future for CancellationFuture {
         if future.cancellation.is_cancelled() {
             return Poll::Ready(());
         }
-        let waiter_id = *future.waiter_id.get_or_insert_with(|| {
-            future
-                .cancellation
-                .0
-                .next_waiter_id
-                .fetch_add(1, Ordering::Relaxed)
-        });
-        match waiters.get_mut(&waiter_id) {
-            Some(waiter) if waiter.will_wake(context.waker()) => {}
-            Some(waiter) => waiter.clone_from(context.waker()),
-            None => {
-                waiters.insert(waiter_id, context.waker().clone());
-            }
-        }
+        let waiter_id = waiters.register(future.waiter_id, context.waker());
+        future.waiter_id = Some(waiter_id);
         Poll::Pending
     }
 }
@@ -254,7 +286,7 @@ impl Drop for CancellationFuture {
         if let Some(waiter_id) = self.waiter_id.take()
             && let Ok(mut waiters) = self.cancellation.0.waiters.lock()
         {
-            waiters.remove(&waiter_id);
+            waiters.unregister(waiter_id);
         }
     }
 }
@@ -438,7 +470,53 @@ struct RunWorkAdmission {
 struct RunWorkAdmissionState {
     ceiling: u16,
     active: u16,
-    waiters: Vec<Waker>,
+    waiters: WakerRegistry,
+}
+
+struct RunWorkAcquisition {
+    admission: Arc<RunWorkAdmission>,
+    waiter_id: Option<u64>,
+}
+
+impl Future for RunWorkAcquisition {
+    type Output = Result<RunWorkPermit>;
+
+    fn poll(self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<Self::Output> {
+        let acquisition = self.get_mut();
+        let mut state = match acquisition.admission.state.lock() {
+            Ok(state) => state,
+            Err(_) => {
+                return Poll::Ready(Err(CdfError::internal(
+                    "run work admission lock is poisoned",
+                )));
+            }
+        };
+        if state.active < state.ceiling {
+            state.active += 1;
+            if let Some(waiter_id) = acquisition.waiter_id.take() {
+                state.waiters.unregister(waiter_id);
+            }
+            drop(state);
+            return Poll::Ready(Ok(RunWorkPermit {
+                admission: Some(Arc::clone(&acquisition.admission)),
+            }));
+        }
+        let waiter_id = state
+            .waiters
+            .register(acquisition.waiter_id, context.waker());
+        acquisition.waiter_id = Some(waiter_id);
+        Poll::Pending
+    }
+}
+
+impl Drop for RunWorkAcquisition {
+    fn drop(&mut self) {
+        if let Some(waiter_id) = self.waiter_id.take()
+            && let Ok(mut state) = self.admission.state.lock()
+        {
+            state.waiters.unregister(waiter_id);
+        }
+    }
 }
 
 /// One run-scoped leaf-work permit. Parent orchestration does not retain a
@@ -457,7 +535,7 @@ impl Drop for RunWorkPermit {
             let mut state = admission.state.lock().unwrap();
             debug_assert!(state.active > 0);
             state.active = state.active.saturating_sub(1);
-            std::mem::take(&mut state.waiters)
+            state.waiters.take_all()
         };
         for waiter in waiters {
             waiter.wake();
@@ -496,7 +574,7 @@ impl ExecutionServices {
                 state: Mutex::new(RunWorkAdmissionState {
                     ceiling: jobs,
                     active: 0,
-                    waiters: Vec::new(),
+                    waiters: WakerRegistry::default(),
                 }),
             })),
         })
@@ -552,31 +630,10 @@ impl ExecutionServices {
         };
         Box::pin(async move {
             cancellation
-                .await_or_cancel(futures_util::future::poll_fn(move |context| {
-                    let mut state = match admission.state.lock() {
-                        Ok(state) => state,
-                        Err(_) => {
-                            return Poll::Ready(Err(CdfError::internal(
-                                "run work admission lock is poisoned",
-                            )));
-                        }
-                    };
-                    if state.active < state.ceiling {
-                        state.active += 1;
-                        drop(state);
-                        return Poll::Ready(Ok(RunWorkPermit {
-                            admission: Some(Arc::clone(&admission)),
-                        }));
-                    }
-                    if !state
-                        .waiters
-                        .iter()
-                        .any(|waiter| waiter.will_wake(context.waker()))
-                    {
-                        state.waiters.push(context.waker().clone());
-                    }
-                    Poll::Pending
-                }))
+                .await_or_cancel(RunWorkAcquisition {
+                    admission,
+                    waiter_id: None,
+                })
                 .await
         })
     }
@@ -883,7 +940,7 @@ mod tests {
                 state: Mutex::new(RunWorkAdmissionState {
                     ceiling: 3,
                     active: 0,
-                    waiters: Vec::new(),
+                    waiters: WakerRegistry::default(),
                 }),
             });
             let services = ExecutionServices {
@@ -918,6 +975,7 @@ mod tests {
             ));
             cancellation.cancel();
             assert!(cancelled.await.is_err());
+            assert!(admission.state.lock().unwrap().waiters.is_empty());
             drop(second);
             drop(third);
             services.tighten_run_job_ceiling(1).unwrap();
