@@ -9,7 +9,7 @@ use cdf_kernel::{
 use cdf_package_contract::{SegmentEntry, VerifiedPackageAccess};
 use serde::{Deserialize, Serialize};
 
-use crate::StagingLease;
+use crate::{StagingLease, StagingMutationGuard};
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(transparent)]
@@ -100,6 +100,7 @@ pub struct StagedIngressRequest {
     attempt_id: LoadAttemptId,
     binding: StagingAttemptBinding,
     staging_lease: StagingLease,
+    mutation_guard: StagingMutationGuard,
     bulk_path: crate::PreparedBulkPath,
     scheduling: StagingSchedulingContext,
     output_schema: Schema,
@@ -110,6 +111,7 @@ impl StagedIngressRequest {
         attempt_id: LoadAttemptId,
         binding: StagingAttemptBinding,
         staging_lease: StagingLease,
+        mutation_guard: StagingMutationGuard,
         bulk_path: crate::PreparedBulkPath,
         scheduling: StagingSchedulingContext,
         output_schema: Schema,
@@ -129,10 +131,17 @@ impl StagedIngressRequest {
                 "staged ingress request does not match its staging lease identity",
             ));
         }
+        let guarded_lease = mutation_guard.assert_current()?;
+        if guarded_lease != staging_lease {
+            return Err(CdfError::contract(
+                "staged ingress mutation guard does not bind its staging lease generation",
+            ));
+        }
         Ok(Self {
             attempt_id,
             binding,
             staging_lease,
+            mutation_guard,
             bulk_path,
             scheduling,
             output_schema,
@@ -149,6 +158,10 @@ impl StagedIngressRequest {
 
     pub fn staging_lease(&self) -> &StagingLease {
         &self.staging_lease
+    }
+
+    pub fn mutation_guard(&self) -> &StagingMutationGuard {
+        &self.mutation_guard
     }
 
     pub fn bulk_path(&self) -> &crate::PreparedBulkPath {

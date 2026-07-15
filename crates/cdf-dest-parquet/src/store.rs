@@ -697,6 +697,56 @@ impl StoreClient {
         })
     }
 
+    pub(crate) fn delete_prefix_marker_last(
+        &self,
+        execution: &cdf_runtime::ExecutionServices,
+        prefix: &str,
+        marker: &str,
+    ) -> Result<u64> {
+        let prefix = self.path(prefix)?;
+        let marker = self.path(marker)?;
+        if !marker.as_ref().starts_with(prefix.as_ref()) {
+            return Err(CdfError::contract(
+                "staging cleanup marker must be inside its exact prefix",
+            ));
+        }
+        let store = Arc::clone(&self.store);
+        let operation = format!("delete prefix {prefix} with marker last");
+        execution.run_io(async move {
+            let mut objects = store
+                .list(Some(&prefix))
+                .try_collect::<Vec<_>>()
+                .await
+                .map_err(|error| store_error(&operation, error))?;
+            objects.sort_by(|left, right| left.location.cmp(&right.location));
+            let marker_present = objects.iter().any(|object| object.location == marker);
+            if !marker_present {
+                return Err(CdfError::data(format!(
+                    "staging cleanup marker {marker} disappeared before payload deletion"
+                )));
+            }
+            let mut removed = 0_u64;
+            for object in objects
+                .into_iter()
+                .filter(|object| object.location != marker)
+            {
+                match store.delete(&object.location).await {
+                    Ok(()) | Err(object_store::Error::NotFound { .. }) => {
+                        removed = removed.saturating_add(1);
+                    }
+                    Err(error) => return Err(store_error(&operation, error)),
+                }
+            }
+            match store.delete(&marker).await {
+                Ok(()) | Err(object_store::Error::NotFound { .. }) => {
+                    removed = removed.saturating_add(1);
+                }
+                Err(error) => return Err(store_error(&operation, error)),
+            }
+            Ok(removed)
+        })
+    }
+
     pub(crate) fn list_prefix(
         &self,
         execution: &cdf_runtime::ExecutionServices,

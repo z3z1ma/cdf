@@ -1354,6 +1354,7 @@ fn source_registry_compiles_hashes_and_resolves_mock_without_order_authority() {
 fn staged_ingress_types_cannot_claim_package_commit_authority() {
     let attempt_id = LoadAttemptId::new("attempt_01").unwrap();
     let schema_hash = SchemaHash::new("schema-v1").unwrap();
+    let (lease, guard) = supervised_test_staging_lease(&attempt_id, "mock", "events");
     let request = StagedIngressRequest::new(
         attempt_id.clone(),
         StagingAttemptBinding {
@@ -1368,7 +1369,8 @@ fn staged_ingress_types_cannot_claim_package_commit_authority() {
             merge_keys: Vec::new(),
             execution_plan_id: PlanId::new("plan-staging").unwrap(),
         },
-        test_staging_lease(&attempt_id, "mock", "events"),
+        lease,
+        guard,
         test_prepared_bulk_path(),
         StagingSchedulingContext::new(2, 1024).unwrap(),
         arrow_schema::Schema::empty(),
@@ -1391,6 +1393,7 @@ fn staged_ingress_types_cannot_claim_package_commit_authority() {
 #[test]
 fn staged_ingress_request_rejects_schema_payload_outside_binding_authority() {
     let attempt_id = LoadAttemptId::new("attempt_schema_mismatch").unwrap();
+    let (lease, guard) = supervised_test_staging_lease(&attempt_id, "mock_staged", "events");
     let error = StagedIngressRequest::new(
         attempt_id.clone(),
         StagingAttemptBinding {
@@ -1402,7 +1405,8 @@ fn staged_ingress_request_rejects_schema_payload_outside_binding_authority() {
             merge_keys: Vec::new(),
             execution_plan_id: PlanId::new("plan-staged").unwrap(),
         },
-        test_staging_lease(&attempt_id, "mock_staged", "events"),
+        lease,
+        guard,
         test_prepared_bulk_path(),
         StagingSchedulingContext::new(2, 1024).unwrap(),
         arrow_schema::Schema::empty(),
@@ -1655,7 +1659,7 @@ fn staged_request_for_target(
     schema_hash: SchemaHash,
     target: &str,
 ) -> StagedIngressRequest {
-    let lease = test_staging_lease(&attempt_id, "mock_staged", target);
+    let (lease, guard) = supervised_test_staging_lease(&attempt_id, "mock_staged", target);
     StagedIngressRequest::new(
         attempt_id,
         StagingAttemptBinding {
@@ -1671,6 +1675,7 @@ fn staged_request_for_target(
             execution_plan_id: PlanId::new("plan-staged").unwrap(),
         },
         lease,
+        guard,
         test_prepared_bulk_path(),
         StagingSchedulingContext::new(2, 1024).unwrap(),
         arrow_schema::Schema::empty(),
@@ -1708,9 +1713,158 @@ fn test_staging_lease(attempt_id: &LoadAttemptId, destination: &str, target: &st
     }
 }
 
+struct LeaseTestHost;
+
+struct LeaseTestScope {
+    cancellation: RunCancellation,
+    tasks: Vec<std::thread::JoinHandle<Result<()>>>,
+}
+
+impl ExecutionTaskScope for LeaseTestScope {
+    fn cancellation(&self) -> RunCancellation {
+        self.cancellation.clone()
+    }
+
+    fn spawn_io(&mut self, task: IoTask) -> Result<()> {
+        self.tasks
+            .push(std::thread::spawn(move || futures_executor::block_on(task)));
+        Ok(())
+    }
+
+    fn spawn_cpu(&mut self, _spec: CpuTaskSpec, _task: BlockingTask) -> Result<()> {
+        Err(CdfError::internal("lease test host does not run CPU work"))
+    }
+
+    fn spawn_cpu_future(&mut self, _spec: CpuTaskSpec, _task: CpuFutureTask) -> Result<()> {
+        Err(CdfError::internal(
+            "lease test host does not run CPU futures",
+        ))
+    }
+
+    fn spawn_blocking(&mut self, _lane: &str, _task: BlockingTask) -> Result<()> {
+        Err(CdfError::internal(
+            "lease test host does not run blocking lanes",
+        ))
+    }
+
+    fn cancel(&self) {
+        self.cancellation.cancel();
+    }
+
+    fn join(self: Box<Self>) -> cdf_kernel::BoxFuture<'static, Result<TaskScopeReport>> {
+        Box::pin(async move {
+            let mut report = TaskScopeReport {
+                submitted_io: u64::try_from(self.tasks.len()).unwrap(),
+                ..TaskScopeReport::default()
+            };
+            for task in self.tasks {
+                match task.join() {
+                    Ok(Ok(())) => report.completed += 1,
+                    Ok(Err(error)) => return Err(error),
+                    Err(_) => return Err(CdfError::internal("lease test I/O task panicked")),
+                }
+            }
+            Ok(report)
+        })
+    }
+}
+
+impl ExecutionHost for LeaseTestHost {
+    fn capabilities(&self) -> ExecutionHostCapabilities {
+        ExecutionHostCapabilities {
+            logical_cpu_slots: 1,
+            io_workers: 1,
+            blocking_lanes: Vec::new(),
+        }
+    }
+
+    fn memory(&self) -> Arc<dyn cdf_memory::MemoryCoordinator> {
+        panic!("lease test host does not use memory")
+    }
+
+    fn spill(&self) -> Arc<dyn SpillBudgetCoordinator> {
+        panic!("lease test host does not use spill")
+    }
+
+    fn open_scope(&self, _run_id: &str) -> Result<Box<dyn ExecutionTaskScope>> {
+        Ok(Box::new(LeaseTestScope {
+            cancellation: RunCancellation::default(),
+            tasks: Vec::new(),
+        }))
+    }
+
+    fn run_io_blocking(&self, task: IoValueTask) -> Result<IoValue> {
+        futures_executor::block_on(task)
+    }
+
+    fn delay(
+        &self,
+        duration: std::time::Duration,
+        cancellation: RunCancellation,
+    ) -> cdf_kernel::BoxFuture<'static, Result<()>> {
+        Box::pin(async move {
+            let deadline = std::time::Instant::now() + duration;
+            while std::time::Instant::now() < deadline {
+                cancellation.check()?;
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+            cancellation.check()
+        })
+    }
+
+    fn monotonic_now(&self) -> std::time::Duration {
+        std::time::Duration::ZERO
+    }
+
+    fn entropy_u64(&self) -> u64 {
+        1
+    }
+
+    fn ensure_blocking_lanes(&self, _lanes: &[BlockingLaneSpec]) -> Result<()> {
+        Ok(())
+    }
+
+    fn run_blocking_value(&self, _lane: &str, _task: BlockingValueTask) -> Result<IoValue> {
+        Err(CdfError::internal(
+            "lease test host does not run blocking work",
+        ))
+    }
+}
+
+fn supervised_test_staging_lease(
+    attempt_id: &LoadAttemptId,
+    destination: &str,
+    target: &str,
+) -> (StagingLease, StagingMutationGuard) {
+    let supervisor = StagingLeaseSupervisor::new(
+        Arc::new(RecordingStagingLeaseAuthority {
+            renewals: AtomicUsize::new(0),
+            released: AtomicBool::new(false),
+            fail_renewal: AtomicBool::new(false),
+        }),
+        Arc::new(LeaseTestHost),
+    )
+    .unwrap();
+    let managed = supervisor
+        .acquire(
+            StagingLeaseIdentity::new(
+                DestinationId::new(destination).unwrap(),
+                TargetName::new(target).unwrap(),
+                attempt_id.clone(),
+            ),
+            cdf_kernel::LeaseOwnerId::new("runtime-request-test-owner").unwrap(),
+        )
+        .unwrap();
+    let lease = managed.snapshot().unwrap();
+    let guard = managed.mutation_guard().unwrap();
+    drop(managed);
+    (lease, guard)
+}
+
 struct RecordingStagingLeaseAuthority {
     renewals: AtomicUsize,
     released: AtomicBool,
+    fail_renewal: AtomicBool,
 }
 
 impl StagingLeaseAuthority for RecordingStagingLeaseAuthority {
@@ -1736,6 +1890,9 @@ impl StagingLeaseAuthority for RecordingStagingLeaseAuthority {
 
     fn renew(&self, lease: &StagingLease, lease_duration_ms: u64) -> Result<StagingLease> {
         self.renewals.fetch_add(1, Ordering::SeqCst);
+        if self.fail_renewal.load(Ordering::SeqCst) {
+            return Err(CdfError::transient("injected staging renewal failure"));
+        }
         let mut renewed = lease.clone();
         renewed.scope_lease.expires_at_ms = renewed
             .scope_lease
@@ -1768,9 +1925,11 @@ fn staging_lease_supervisor_renews_independently_and_releases_structurally() {
     let authority = Arc::new(RecordingStagingLeaseAuthority {
         renewals: AtomicUsize::new(0),
         released: AtomicBool::new(false),
+        fail_renewal: AtomicBool::new(false),
     });
     let supervisor = StagingLeaseSupervisor::with_timing(
         authority.clone(),
+        Arc::new(LeaseTestHost),
         StagingLeaseTiming {
             lease_duration: std::time::Duration::from_millis(100),
             renew_interval: std::time::Duration::from_millis(10),
@@ -1809,6 +1968,48 @@ fn staging_lease_supervisor_renews_independently_and_releases_structurally() {
     assert!(lease.snapshot().unwrap().scope_lease.expires_at_ms > initial_expiry);
     lease.finish().unwrap();
     assert!(authority.released.load(Ordering::SeqCst));
+}
+
+#[test]
+fn staging_lease_renewal_failure_cancels_mutation_guard_before_more_work() {
+    let authority = Arc::new(RecordingStagingLeaseAuthority {
+        renewals: AtomicUsize::new(0),
+        released: AtomicBool::new(false),
+        fail_renewal: AtomicBool::new(false),
+    });
+    let supervisor = StagingLeaseSupervisor::with_timing(
+        authority.clone(),
+        Arc::new(LeaseTestHost),
+        StagingLeaseTiming {
+            lease_duration: std::time::Duration::from_millis(100),
+            renew_interval: std::time::Duration::from_millis(5),
+        },
+    )
+    .unwrap();
+    let lease = supervisor
+        .acquire(
+            StagingLeaseIdentity::new(
+                DestinationId::new("mock_staged").unwrap(),
+                TargetName::new("events").unwrap(),
+                LoadAttemptId::new("renewal-failure").unwrap(),
+            ),
+            cdf_kernel::LeaseOwnerId::new("runtime-owner").unwrap(),
+        )
+        .unwrap();
+    let guard = lease.mutation_guard().unwrap();
+    guard.assert_current().unwrap();
+    authority.fail_renewal.store(true, Ordering::SeqCst);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_millis(100);
+    while guard.assert_current().is_ok() && std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+    let error = guard.assert_current().unwrap_err();
+    assert!(
+        error.message.contains("cancelled") || error.message.contains("renewal failure"),
+        "unexpected mutation guard error: {error}"
+    );
+    drop(guard);
+    assert!(lease.finish().is_err());
 }
 
 fn test_prepared_bulk_path() -> PreparedBulkPath {

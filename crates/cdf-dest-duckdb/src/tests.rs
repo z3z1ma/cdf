@@ -511,27 +511,10 @@ fn try_commit_current(
         request.commit.target.clone(),
         attempt_id.clone(),
     );
-    let staging_lease = cdf_runtime::StagingLease {
-        authority_domain_id: cdf_kernel::LeaseAuthorityDomainId::new("duckdb-test-domain")?,
-        scope_lease: cdf_kernel::ScopeLease {
-            scope: ScopeKey::Composite {
-                parts: vec![
-                    ScopeKey::DestinationLoad {
-                        destination: destination_id.clone(),
-                        target: request.commit.target.clone(),
-                    },
-                    ScopeKey::Stream {
-                        name: format!("staging:{attempt_id}"),
-                    },
-                ],
-            },
-            owner: cdf_kernel::LeaseOwnerId::new("duckdb-test-owner")?,
-            fencing_token: cdf_kernel::FencingToken::new(1)?,
-            acquired_at_ms: 1,
-            expires_at_ms: i64::MAX,
-        },
-        identity: staging_identity,
-    };
+    let services = cdf_conformance::test_execution_services();
+    let managed_lease = services.acquire_staging_lease(staging_identity)?;
+    let staging_lease = managed_lease.snapshot()?;
+    let mutation_guard = managed_lease.mutation_guard()?;
     let mut session = runtime.begin_staged_ingress(cdf_runtime::StagedIngressRequest::new(
         attempt_id.clone(),
         cdf_runtime::StagingAttemptBinding {
@@ -546,6 +529,7 @@ fn try_commit_current(
             execution_plan_id: reader.recorded_scan_plan_verified(verified)?.plan_id,
         },
         staging_lease,
+        mutation_guard,
         bulk_path,
         cdf_runtime::StagingSchedulingContext::new(
             capabilities
@@ -584,9 +568,9 @@ fn try_commit_current(
     session.stage_stream(&mut stream)?;
     let binding =
         cdf_runtime::VerifiedFinalBinding::from_verified_package(attempt_id, &package, plan)?;
-    Ok(CurrentCommitOutcome {
-        receipt: session.bind_final(binding)?.receipt,
-    })
+    let receipt = session.bind_final(binding)?.receipt;
+    managed_lease.finish()?;
+    Ok(CurrentCommitOutcome { receipt })
 }
 
 fn plan_current_package_commit(

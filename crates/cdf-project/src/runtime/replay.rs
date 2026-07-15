@@ -261,7 +261,11 @@ impl ActiveStagedIngress {
         };
         for candidate in staged_runtime.staging_cleanup_candidates(&plan.target)? {
             if let Some(proof) = services.prove_expired_staging_lease(candidate.lease())? {
-                staged_runtime.cleanup_expired_staging(&candidate, proof.proof())?;
+                staged_runtime.cleanup_expired_staging(
+                    &candidate,
+                    proof.proof(),
+                    &proof.mutation_guard()?,
+                )?;
                 proof.finish()?;
             }
         }
@@ -286,6 +290,7 @@ impl ActiveStagedIngress {
                     execution_plan_id: plan.execution_plan_id.clone(),
                 },
                 staging_lease.snapshot()?,
+                staging_lease.mutation_guard()?,
                 bulk_path.clone(),
                 scheduling.clone(),
                 plan.output_schema,
@@ -359,8 +364,10 @@ impl ActiveStagedIngress {
                     receive_wait: Duration::ZERO,
                 };
                 let started = Instant::now();
-                if let Err(error) = session.stage_stream(&mut stream) {
-                    let _ = session.abort();
+                if let Err(mut error) = session.stage_stream(&mut stream) {
+                    if let Err(cleanup) = session.abort() {
+                        error = attach_cleanup_failure(error, "staged worker abort", cleanup);
+                    }
                     if let Ok(mut output) = completed_worker.lock() {
                         output.error = Some(error.clone());
                     }
@@ -369,8 +376,10 @@ impl ActiveStagedIngress {
                 let elapsed = started.elapsed();
                 let (staged, receive_wait) = match stream.finish() {
                     Ok(finished) => finished,
-                    Err(error) => {
-                        let _ = session.abort();
+                    Err(mut error) => {
+                        if let Err(cleanup) = session.abort() {
+                            error = attach_cleanup_failure(error, "staged worker abort", cleanup);
+                        }
                         if let Ok(mut output) = completed_worker.lock() {
                             output.error = Some(error.clone());
                         }
@@ -569,31 +578,71 @@ impl ActiveStagedIngress {
         Ok(outcome)
     }
 
-    pub(crate) fn abort(mut self) {
+    pub(crate) fn abort(mut self) -> Result<()> {
+        let mut failure = None;
         if let Some(mut background) = self.background.take() {
             drop(background.sender.take());
-            if let Some(scope) = background.scope.take() {
-                let _ = background.services.run_io(scope.join());
+            if let Some(scope) = background.scope.take()
+                && let Err(error) = background.services.run_io(scope.join())
+            {
+                record_cleanup_failure(&mut failure, "join staged ingress worker", error);
             }
             if let Ok(mut completed) = background.completed.lock() {
                 self.session = completed.session.take();
+            } else {
+                record_cleanup_failure(
+                    &mut failure,
+                    "recover staged ingress session",
+                    CdfError::internal("background staging completion lock is poisoned"),
+                );
             }
         }
         if let Some(session) = self.session.take() {
-            match (&self.execution, &self.final_binding_lane) {
+            let aborted = match (&self.execution, &self.final_binding_lane) {
                 (Some(execution), Some(lane)) => {
                     let lane = lane.clone();
-                    let _ = execution.run_blocking(&lane, move || session.abort());
+                    execution.run_blocking(&lane, move || session.abort())
                 }
-                _ => {
-                    let _ = session.abort();
-                }
+                _ => session.abort(),
+            };
+            if let Err(error) = aborted {
+                record_cleanup_failure(&mut failure, "abort staged ingress session", error);
             }
         }
-        if let Some(lease) = self.staging_lease.take() {
-            let _ = lease.finish();
+        if let Some(lease) = self.staging_lease.take()
+            && let Err(error) = lease.finish()
+        {
+            record_cleanup_failure(&mut failure, "release staging lease", error);
+        }
+        match failure {
+            Some(error) => Err(error),
+            None => Ok(()),
         }
     }
+}
+
+fn record_cleanup_failure(failure: &mut Option<CdfError>, context: &str, error: CdfError) {
+    match failure {
+        Some(primary) => {
+            primary.message = format!(
+                "{}; {context} also failed: {}",
+                primary.message, error.message
+            );
+        }
+        None => {
+            let mut error = error;
+            error.message = format!("{context}: {}", error.message);
+            *failure = Some(error);
+        }
+    }
+}
+
+fn attach_cleanup_failure(mut primary: CdfError, context: &str, cleanup: CdfError) -> CdfError {
+    primary.message = format!(
+        "{}; {context} also failed: {}",
+        primary.message, cleanup.message
+    );
+    primary
 }
 
 struct LiveStagedSegmentReader {
@@ -1605,7 +1654,11 @@ fn commit_package_through_staged_ingress(
         cdf_runtime::DestinationIngress::StagedSegments(staged) => {
             for candidate in staged.staging_cleanup_candidates(&inputs.destination_commit.target)? {
                 if let Some(proof) = services.prove_expired_staging_lease(candidate.lease())? {
-                    staged.cleanup_expired_staging(&candidate, proof.proof())?;
+                    staged.cleanup_expired_staging(
+                        &candidate,
+                        proof.proof(),
+                        &proof.mutation_guard()?,
+                    )?;
                     proof.finish()?;
                 }
             }
@@ -1635,6 +1688,7 @@ fn commit_package_through_staged_ingress(
             execution_plan_id: reader.recorded_scan_plan_verified(verified)?.plan_id,
         },
         staging_lease.snapshot()?,
+        staging_lease.mutation_guard()?,
         bulk_path.clone(),
         cdf_runtime::StagingSchedulingContext::new(
             capabilities
@@ -1720,18 +1774,20 @@ fn commit_package_through_staged_ingress(
             .bind_final(binding)?;
         Ok(outcome)
     })();
-    if result.is_err()
-        && let Some(session) = session
-    {
-        let _ = session.abort();
-    }
     match result {
         Ok(outcome) => {
             staging_lease.finish()?;
             Ok(outcome)
         }
-        Err(error) => {
-            let _ = staging_lease.finish();
+        Err(mut error) => {
+            if let Some(session) = session
+                && let Err(cleanup) = session.abort()
+            {
+                error = attach_cleanup_failure(error, "staged session abort", cleanup);
+            }
+            if let Err(cleanup) = staging_lease.finish() {
+                error = attach_cleanup_failure(error, "staging lease release", cleanup);
+            }
             Err(error)
         }
     }
@@ -1789,10 +1845,17 @@ fn finalize_active_staged_ingress(
         binding.validate_staged_identities(&active.staged)?;
         active.bind_final(binding)
     })();
-    if result.is_err() {
-        active.abort();
+    match result {
+        Ok(outcome) => Ok(outcome),
+        Err(error) => match active.abort() {
+            Ok(()) => Err(error),
+            Err(cleanup) => Err(attach_cleanup_failure(
+                error,
+                "staged ingress cleanup",
+                cleanup,
+            )),
+        },
     }
-    result
 }
 
 pub(crate) fn staging_attempt_id(

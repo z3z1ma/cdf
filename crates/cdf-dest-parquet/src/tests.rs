@@ -243,6 +243,12 @@ fn test_execution() -> cdf_runtime::ExecutionServices {
             cdf_engine::StandaloneExecutionHost::default_services(2 * 1024 * 1024 * 1024)
                 .unwrap()
                 .1
+                .with_staging_lease_authority(Arc::new(
+                    cdf_runtime::ScopeStagingLeaseAuthority::new(Arc::new(
+                        cdf_state_sqlite::InMemoryScopeLeaseStore::new(),
+                    )),
+                ))
+                .unwrap()
         })
         .clone()
 }
@@ -718,7 +724,7 @@ fn commit_through_ingress(
 }
 
 fn bind_staged_test_commit(
-    staged_commit: StagedTestCommit,
+    mut staged_commit: StagedTestCommit,
 ) -> Result<(cdf_runtime::DestinationCommitOutcome, ParquetCommitPlan)> {
     let binding =
         cdf_runtime::VerifiedFinalBinding::from_verified_package_with_execution_authority(
@@ -729,6 +735,9 @@ fn bind_staged_test_commit(
         )?;
     binding.validate_staged_identities(&staged_commit.staged)?;
     let outcome = staged_commit.session.bind_final(binding)?;
+    if let Some(lease) = staged_commit.managed_lease.take() {
+        lease.finish()?;
+    }
     Ok((outcome, staged_commit.plan))
 }
 
@@ -737,6 +746,7 @@ struct StagedTestCommit {
     staged: Vec<cdf_runtime::StagedSegmentIdentity>,
     attempt_id: cdf_runtime::LoadAttemptId,
     staging_lease: cdf_runtime::StagingLease,
+    managed_lease: Option<cdf_runtime::ManagedStagingLease>,
     execution_plan_id: PlanId,
     plan: ParquetCommitPlan,
     package: TestVerifiedPackage,
@@ -760,13 +770,24 @@ fn stage_through_ingress_with_attempt(
     commit: ParquetCommitRequest,
     attempt_id: cdf_runtime::LoadAttemptId,
 ) -> Result<StagedTestCommit> {
-    let staging_lease = test_staging_lease(
-        dest.sheet().destination.clone(),
-        commit.commit.target.clone(),
-        attempt_id.clone(),
-        1,
-    );
-    stage_through_ingress_with_lease(dest, package_dir, commit, attempt_id, staging_lease)
+    let managed_lease =
+        dest.execution()
+            .acquire_staging_lease(cdf_runtime::StagingLeaseIdentity::new(
+                dest.sheet().destination.clone(),
+                commit.commit.target.clone(),
+                attempt_id.clone(),
+            ))?;
+    let staging_lease = managed_lease.snapshot()?;
+    let mutation_guard = managed_lease.mutation_guard()?;
+    stage_through_ingress_with_lease(
+        dest,
+        package_dir,
+        commit,
+        attempt_id,
+        staging_lease,
+        mutation_guard,
+        Some(managed_lease),
+    )
 }
 
 fn stage_through_ingress_with_lease(
@@ -775,6 +796,8 @@ fn stage_through_ingress_with_lease(
     commit: ParquetCommitRequest,
     attempt_id: cdf_runtime::LoadAttemptId,
     staging_lease: cdf_runtime::StagingLease,
+    mutation_guard: cdf_runtime::StagingMutationGuard,
+    managed_lease: Option<cdf_runtime::ManagedStagingLease>,
 ) -> Result<StagedTestCommit> {
     let reader = PackageReader::open(package_dir)?;
     let commit_segments = reader.read_commit_segments(&commit.commit.segments)?;
@@ -808,6 +831,7 @@ fn stage_through_ingress_with_lease(
             execution_plan_id: execution_plan_id.clone(),
         },
         staging_lease.clone(),
+        mutation_guard,
         bulk_path,
         cdf_runtime::StagingSchedulingContext::new(
             capabilities.max_in_flight_segments.unwrap(),
@@ -886,6 +910,7 @@ fn stage_through_ingress_with_lease(
         staged,
         attempt_id,
         staging_lease,
+        managed_lease,
         execution_plan_id,
         plan,
         package,
@@ -945,41 +970,6 @@ fn assert_staged_abort_cleans_destination(
             .exists(dest.execution(), &staged.plan.manifest_key)
             .unwrap()
     );
-}
-
-fn test_staging_lease(
-    destination_id: DestinationId,
-    target: TargetName,
-    attempt_id: cdf_runtime::LoadAttemptId,
-    fencing_token: u64,
-) -> cdf_runtime::StagingLease {
-    let identity = cdf_runtime::StagingLeaseIdentity::new(
-        destination_id.clone(),
-        target.clone(),
-        attempt_id.clone(),
-    );
-    cdf_runtime::StagingLease {
-        authority_domain_id: cdf_kernel::LeaseAuthorityDomainId::new("parquet-test-domain")
-            .unwrap(),
-        identity,
-        scope_lease: cdf_kernel::ScopeLease {
-            scope: ScopeKey::Composite {
-                parts: vec![
-                    ScopeKey::DestinationLoad {
-                        destination: destination_id,
-                        target,
-                    },
-                    ScopeKey::Stream {
-                        name: format!("staging:{attempt_id}"),
-                    },
-                ],
-            },
-            owner: cdf_kernel::LeaseOwnerId::new("parquet-test-owner").unwrap(),
-            fencing_token: cdf_kernel::FencingToken::new(fencing_token).unwrap(),
-            acquired_at_ms: 1,
-            expires_at_ms: i64::MAX,
-        },
-    }
 }
 
 #[test]
@@ -1899,42 +1889,63 @@ fn abandoned_attempt_cleanup_requires_exact_expiry_proof() {
             vec![sample_batch(vec![1, 2], vec![Some("left"), Some("right")])],
         )],
     );
-    let mut destination = test_object_store(Arc::new(InMemory::default()), "lake").unwrap();
+    let destination = test_object_store(Arc::new(InMemory::default()), "lake").unwrap();
     let commit = request(&package_dir, &built, WriteDisposition::Append);
     let scopes = Arc::new(cdf_state_sqlite::InMemoryScopeLeaseStore::new());
-    let supervisor = cdf_runtime::StagingLeaseSupervisor::new(Arc::new(
-        cdf_runtime::ScopeStagingLeaseAuthority::new(scopes),
-    ))
-    .unwrap();
+    let services = destination
+        .execution()
+        .with_staging_lease_authority(Arc::new(cdf_runtime::ScopeStagingLeaseAuthority::new(
+            scopes,
+        )))
+        .unwrap();
     let attempt_id = cdf_runtime::LoadAttemptId::new("proof-gated-cleanup").unwrap();
-    let managed_lease = supervisor
-        .acquire(
-            cdf_runtime::StagingLeaseIdentity::new(
-                destination.sheet().destination.clone(),
-                commit.commit.target.clone(),
-                attempt_id.clone(),
-            ),
-            cdf_kernel::LeaseOwnerId::new("writer").unwrap(),
-        )
+    let managed_lease = services
+        .acquire_staging_lease(cdf_runtime::StagingLeaseIdentity::new(
+            destination.sheet().destination.clone(),
+            commit.commit.target.clone(),
+            attempt_id.clone(),
+        ))
         .unwrap();
     let staging_lease = managed_lease.snapshot().unwrap();
-    let crashed = stage_through_ingress_with_lease(
-        &mut destination,
-        &package_dir,
-        commit.clone(),
-        attempt_id,
-        staging_lease,
-    )
-    .unwrap();
+    let metadata_key = crate::store::staged_attempt_metadata_key(
+        destination.object_key_encoder(),
+        &commit.commit.target,
+        staging_lease.authority_domain_id(),
+        &attempt_id,
+        staging_lease.fencing_token(),
+    );
     let staging_key = staged_segment_object_key(
         destination.object_key_encoder(),
         &commit.commit.target,
-        crashed.staging_lease.authority_domain_id(),
-        &crashed.attempt_id,
-        crashed.staging_lease.fencing_token(),
-        &crashed.staged[0].segment_id,
+        staging_lease.authority_domain_id(),
+        &attempt_id,
+        staging_lease.fencing_token(),
+        &SegmentId::new("seg-000001").unwrap(),
     );
-    std::mem::forget(crashed.session);
+    destination
+        .store()
+        .put(
+            destination.execution(),
+            &metadata_key,
+            serde_json::to_vec(&serde_json::json!({
+                "version": 1,
+                "target": commit.commit.target.as_str(),
+                "attempt_id": attempt_id.as_str(),
+                "physical_plan_path": "arrow_ipc_to_parquet",
+                "physical_plan_version": 2,
+                "writers": 1,
+                "rows_per_batch": 65_536,
+                "bytes_per_batch": 16_777_216,
+                "started_at_ms": 1,
+                "staging_lease": staging_lease.clone(),
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+    destination
+        .store()
+        .put(destination.execution(), &staging_key, vec![1, 2, 3])
+        .unwrap();
     managed_lease.finish().unwrap();
 
     let candidates = destination
@@ -1942,30 +1953,28 @@ fn abandoned_attempt_cleanup_requires_exact_expiry_proof() {
         .unwrap();
     let candidate = candidates
         .iter()
-        .find(|candidate| candidate.lease() == &crashed.staging_lease)
+        .find(|candidate| candidate.lease() == &staging_lease)
         .unwrap();
-    let wrong_managed = supervisor
-        .acquire(
-            cdf_runtime::StagingLeaseIdentity::new(
-                candidate.lease().identity.destination_id.clone(),
-                candidate.lease().identity.target.clone(),
-                cdf_runtime::LoadAttemptId::new("different-attempt").unwrap(),
-            ),
-            cdf_kernel::LeaseOwnerId::new("other-writer").unwrap(),
-        )
+    let wrong_managed = services
+        .acquire_staging_lease(cdf_runtime::StagingLeaseIdentity::new(
+            candidate.lease().identity.destination_id.clone(),
+            candidate.lease().identity.target.clone(),
+            cdf_runtime::LoadAttemptId::new("different-attempt").unwrap(),
+        ))
         .unwrap();
     let wrong_lease = wrong_managed.snapshot().unwrap();
     wrong_managed.finish().unwrap();
-    let wrong_proof = supervisor
-        .prove_expired(
-            &wrong_lease,
-            cdf_kernel::LeaseOwnerId::new("wrong-collector").unwrap(),
-        )
+    let wrong_proof = services
+        .prove_expired_staging_lease(&wrong_lease)
         .unwrap()
         .unwrap();
     assert!(
         destination
-            .cleanup_expired_staging_candidate(candidate, wrong_proof.proof())
+            .cleanup_expired_staging_candidate(
+                candidate,
+                wrong_proof.proof(),
+                &wrong_proof.mutation_guard().unwrap(),
+            )
             .is_err()
     );
     wrong_proof.finish().unwrap();
@@ -1976,16 +1985,17 @@ fn abandoned_attempt_cleanup_requires_exact_expiry_proof() {
             .unwrap()
     );
 
-    let proof = supervisor
-        .prove_expired(
-            candidate.lease(),
-            cdf_kernel::LeaseOwnerId::new("collector").unwrap(),
-        )
+    let proof = services
+        .prove_expired_staging_lease(candidate.lease())
         .unwrap()
         .unwrap();
     assert!(
         destination
-            .cleanup_expired_staging_candidate(candidate, proof.proof())
+            .cleanup_expired_staging_candidate(
+                candidate,
+                proof.proof(),
+                &proof.mutation_guard().unwrap(),
+            )
             .unwrap()
             >= 2
     );
@@ -2011,50 +2021,75 @@ fn independent_lease_domains_cannot_collide_or_collect_each_others_staging() {
         )],
     );
     let store = Arc::new(InMemory::default());
-    let mut destination = test_object_store(store, "lake").unwrap();
+    let destination = test_object_store(store, "lake").unwrap();
     let commit = request(&package_dir, &built, WriteDisposition::Append);
     let attempt_id = cdf_runtime::LoadAttemptId::new("shared-attempt").unwrap();
-    let supervisors = ["authority-a.db", "authority-b.db"].map(|name| {
+    let services = ["authority-a.db", "authority-b.db"].map(|name| {
         let scopes = Arc::new(
             cdf_state_sqlite::SqliteScopeLeaseStore::open(temp.path().join(name)).unwrap(),
         );
-        cdf_runtime::StagingLeaseSupervisor::new(Arc::new(
-            cdf_runtime::ScopeStagingLeaseAuthority::new(scopes),
-        ))
-        .unwrap()
+        destination
+            .execution()
+            .with_staging_lease_authority(Arc::new(cdf_runtime::ScopeStagingLeaseAuthority::new(
+                scopes,
+            )))
+            .unwrap()
     });
 
     let mut staged_attempts = Vec::new();
-    for (index, supervisor) in supervisors.iter().enumerate() {
-        let managed = supervisor
-            .acquire(
-                cdf_runtime::StagingLeaseIdentity::new(
-                    destination.sheet().destination.clone(),
-                    commit.commit.target.clone(),
-                    attempt_id.clone(),
-                ),
-                cdf_kernel::LeaseOwnerId::new(format!("writer-{index}")).unwrap(),
-            )
+    for (index, services) in services.iter().enumerate() {
+        let managed = services
+            .acquire_staging_lease(cdf_runtime::StagingLeaseIdentity::new(
+                destination.sheet().destination.clone(),
+                commit.commit.target.clone(),
+                attempt_id.clone(),
+            ))
             .unwrap();
         let lease = managed.snapshot().unwrap();
         assert_eq!(lease.fencing_token(), 1);
-        let staged = stage_through_ingress_with_lease(
-            &mut destination,
-            &package_dir,
-            commit.clone(),
-            attempt_id.clone(),
-            lease.clone(),
-        )
-        .unwrap();
         let key = staged_segment_object_key(
             destination.object_key_encoder(),
             &commit.commit.target,
             lease.authority_domain_id(),
             &attempt_id,
             lease.fencing_token(),
-            &staged.staged[0].segment_id,
+            &SegmentId::new("seg-000001").unwrap(),
         );
-        std::mem::forget(staged.session);
+        let metadata_key = crate::store::staged_attempt_metadata_key(
+            destination.object_key_encoder(),
+            &commit.commit.target,
+            lease.authority_domain_id(),
+            &attempt_id,
+            lease.fencing_token(),
+        );
+        destination
+            .store()
+            .put(
+                destination.execution(),
+                &metadata_key,
+                serde_json::to_vec(&serde_json::json!({
+                    "version": 1,
+                    "target": commit.commit.target.as_str(),
+                    "attempt_id": attempt_id.as_str(),
+                    "physical_plan_path": "arrow_ipc_to_parquet",
+                    "physical_plan_version": 2,
+                    "writers": 1,
+                    "rows_per_batch": 65_536,
+                    "bytes_per_batch": 16_777_216,
+                    "started_at_ms": index,
+                    "staging_lease": lease.clone(),
+                }))
+                .unwrap(),
+            )
+            .unwrap();
+        destination
+            .store()
+            .put(
+                destination.execution(),
+                &key,
+                vec![u8::try_from(index).unwrap()],
+            )
+            .unwrap();
         managed.finish().unwrap();
         staged_attempts.push((lease, key));
     }
@@ -2073,11 +2108,8 @@ fn independent_lease_domains_cannot_collide_or_collect_each_others_staging() {
         .find(|candidate| candidate.lease() == &staged_attempts[0].0)
         .unwrap();
     assert!(
-        supervisors[1]
-            .prove_expired(
-                first.lease(),
-                cdf_kernel::LeaseOwnerId::new("foreign-collector").unwrap(),
-            )
+        services[1]
+            .prove_expired_staging_lease(first.lease())
             .unwrap()
             .is_none()
     );
@@ -2088,23 +2120,126 @@ fn independent_lease_domains_cannot_collide_or_collect_each_others_staging() {
             .unwrap()
     );
 
-    for (index, supervisor) in supervisors.iter().enumerate() {
+    for (index, services) in services.iter().enumerate() {
         let candidate = candidates
             .iter()
             .find(|candidate| candidate.lease() == &staged_attempts[index].0)
             .unwrap();
-        let proof = supervisor
-            .prove_expired(
-                candidate.lease(),
-                cdf_kernel::LeaseOwnerId::new(format!("collector-{index}")).unwrap(),
-            )
+        let proof = services
+            .prove_expired_staging_lease(candidate.lease())
             .unwrap()
             .unwrap();
         destination
-            .cleanup_expired_staging_candidate(candidate, proof.proof())
+            .cleanup_expired_staging_candidate(
+                candidate,
+                proof.proof(),
+                &proof.mutation_guard().unwrap(),
+            )
             .unwrap();
         proof.finish().unwrap();
     }
+}
+
+#[cfg(unix)]
+#[test]
+fn failed_staging_cleanup_retains_attempt_marker_until_payload_deletion_completes() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join("lake");
+    let destination = test_filesystem(&root).unwrap();
+    let target = TargetName::new("orders").unwrap();
+    let attempt_id = cdf_runtime::LoadAttemptId::new("marker-last-cleanup").unwrap();
+    let managed = destination
+        .execution()
+        .acquire_staging_lease(cdf_runtime::StagingLeaseIdentity::new(
+            destination.sheet().destination.clone(),
+            target.clone(),
+            attempt_id.clone(),
+        ))
+        .unwrap();
+    let lease = managed.snapshot().unwrap();
+    let prefix = crate::store::staged_attempt_prefix(
+        destination.object_key_encoder(),
+        &target,
+        lease.authority_domain_id(),
+        &attempt_id,
+        lease.fencing_token(),
+    );
+    let marker = format!("{prefix}attempt.json");
+    destination
+        .store()
+        .put(
+            destination.execution(),
+            &marker,
+            serde_json::to_vec(&serde_json::json!({
+                "version": 1,
+                "target": target.as_str(),
+                "attempt_id": attempt_id.as_str(),
+                "physical_plan_path": "arrow_ipc_to_parquet",
+                "physical_plan_version": 2,
+                "writers": 1,
+                "rows_per_batch": 65_536,
+                "bytes_per_batch": 16_777_216,
+                "started_at_ms": 1,
+                "staging_lease": lease.clone(),
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+    let blocked_key = format!("{prefix}blocked/payload.parquet");
+    destination
+        .store()
+        .put(destination.execution(), &blocked_key, vec![1, 2, 3])
+        .unwrap();
+    managed.finish().unwrap();
+
+    let candidate = destination
+        .staging_cleanup_candidates(&target)
+        .unwrap()
+        .into_iter()
+        .find(|candidate| candidate.lease() == &lease)
+        .unwrap();
+    let proof = destination
+        .execution()
+        .prove_expired_staging_lease(candidate.lease())
+        .unwrap()
+        .unwrap();
+    let blocked_dir = root.join(format!("{prefix}blocked"));
+    let original = std::fs::metadata(&blocked_dir).unwrap().permissions();
+    std::fs::set_permissions(&blocked_dir, std::fs::Permissions::from_mode(0o500)).unwrap();
+    assert!(
+        destination
+            .cleanup_expired_staging_candidate(
+                &candidate,
+                proof.proof(),
+                &proof.mutation_guard().unwrap(),
+            )
+            .is_err()
+    );
+    assert!(
+        destination
+            .store()
+            .exists(destination.execution(), &marker)
+            .unwrap(),
+        "enumerable attempt marker must survive partial cleanup"
+    );
+
+    std::fs::set_permissions(&blocked_dir, original).unwrap();
+    destination
+        .cleanup_expired_staging_candidate(
+            &candidate,
+            proof.proof(),
+            &proof.mutation_guard().unwrap(),
+        )
+        .unwrap();
+    proof.finish().unwrap();
+    assert!(
+        !destination
+            .store()
+            .exists(destination.execution(), &marker)
+            .unwrap()
+    );
 }
 
 #[test]

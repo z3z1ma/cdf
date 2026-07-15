@@ -590,7 +590,10 @@ impl ExecutionServices {
         Ok(Self {
             host: Arc::clone(&self.host),
             run_work: self.run_work.clone(),
-            staging_leases: Some(crate::StagingLeaseSupervisor::new(authority)?),
+            staging_leases: Some(crate::StagingLeaseSupervisor::new(
+                authority,
+                Arc::clone(&self.host),
+            )?),
         })
     }
 

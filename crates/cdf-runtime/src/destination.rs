@@ -225,6 +225,7 @@ pub trait StagedSegmentIngress {
         &mut self,
         _candidate: &StagingCleanupCandidate,
         _proof: &ExpiredStagingLeaseProof,
+        _mutation_guard: &crate::StagingMutationGuard,
     ) -> Result<u64> {
         Err(CdfError::contract(
             "destination returned a staging cleanup candidate without implementing proof-gated cleanup",

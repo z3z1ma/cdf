@@ -265,14 +265,20 @@ impl ParquetDestination {
         &self,
         candidate: &cdf_runtime::StagingCleanupCandidate,
         proof: &cdf_runtime::ExpiredStagingLeaseProof,
+        mutation_guard: &cdf_runtime::StagingMutationGuard,
     ) -> Result<u64> {
         if !proof.proves(candidate.lease()) {
             return Err(CdfError::contract(
                 "Parquet staging cleanup proof does not bind the candidate lease generation",
             ));
         }
+        proof.assert_cleanup_guard(mutation_guard)?;
         if let Some(prefix) = candidate.namespace().strip_prefix("parquet-staging:") {
-            return self.store.delete_prefix(self.execution(), prefix);
+            return self.store.delete_prefix_marker_last(
+                self.execution(),
+                prefix,
+                &format!("{prefix}attempt.json"),
+            );
         }
         let marker = candidate
             .namespace()
@@ -291,6 +297,7 @@ impl ParquetDestination {
                 "Parquet publication marker changed after cleanup candidacy",
             ));
         }
+        proof.assert_cleanup_guard(mutation_guard)?;
         self.store.delete(self.execution(), marker)?;
         Ok(1)
     }
@@ -375,19 +382,22 @@ impl ParquetDestination {
         &self,
         request: &ParquetCommitRequest,
         plan: &ParquetCommitPlan,
+        mutation_guard: &cdf_runtime::StagingMutationGuard,
     ) -> Result<Option<LoadedManifest>> {
         let Some(mut loaded) = self.load_manifest_with_etag(&plan.manifest_key)? else {
             return Ok(None);
         };
-        let provenance = ensure_provenance_manifest(self, request, &loaded.manifest)?;
+        let provenance =
+            ensure_provenance_manifest(self, request, &loaded.manifest, mutation_guard)?;
         if provenance != loaded.manifest {
             return Err(CdfError::destination(format!(
                 "Parquet package-token manifest {} differs from its immutable provenance authority",
                 plan.manifest_key
             )));
         }
-        let replace_pointer = self.load_replace_pointer_receipt(request, plan, &loaded.manifest)?;
-        self.ensure_current_replace_pointer(request, plan, &loaded.manifest)?;
+        let replace_pointer =
+            self.load_replace_pointer_receipt(request, plan, &loaded.manifest, mutation_guard)?;
+        self.ensure_current_replace_pointer(request, plan, &loaded.manifest, mutation_guard)?;
         let receipt = build_receipt(
             request,
             plan,
@@ -410,12 +420,14 @@ impl ParquetDestination {
         request: &ParquetCommitRequest,
         plan: &ParquetCommitPlan,
         manifest: &ParquetObjectManifest,
+        mutation_guard: &cdf_runtime::StagingMutationGuard,
     ) -> Result<Option<ParquetReplacePointerReceipt>> {
         let Some(pointer_key) = &plan.replace_pointer_key else {
             return Ok(None);
         };
         let pointer = replace_pointer(request, plan, manifest)?;
         let expected = canonical_json_bytes(&pointer)?;
+        mutation_guard.assert_current()?;
         let stored =
             self.store
                 .put_create_or_verify(self.execution(), pointer_key, expected.clone())?;
@@ -452,6 +464,7 @@ impl ParquetDestination {
         request: &ParquetCommitRequest,
         plan: &ParquetCommitPlan,
         manifest: &ParquetObjectManifest,
+        mutation_guard: &cdf_runtime::StagingMutationGuard,
     ) -> Result<()> {
         let Some(current_key) = &plan.current_pointer_key else {
             return Ok(());
@@ -459,6 +472,7 @@ impl ParquetDestination {
         let pointer = replace_pointer(request, plan, manifest)?;
         let expected = canonical_json_bytes(&pointer)?;
         for _ in 0..32 {
+            mutation_guard.assert_current()?;
             let current = self
                 .store
                 .get_optional_versioned(self.execution(), current_key)?;
@@ -588,7 +602,9 @@ pub(crate) fn finalize_parquet_objects(
     request: ParquetCommitRequest,
     plan: ParquetCommitPlan,
     object_entries: Vec<ParquetObjectEntry>,
+    mutation_guard: &cdf_runtime::StagingMutationGuard,
 ) -> Result<CommittedParquetPublication> {
+    mutation_guard.assert_current()?;
     let committed_at_ms = now_ms()?;
     let object_manifest = ParquetObjectManifest {
         manifest_version: MANIFEST_VERSION,
@@ -605,8 +621,10 @@ pub(crate) fn finalize_parquet_objects(
     // The provenance key is create-only and selects the authoritative bytes when same-token
     // writers race. This makes the later package manifest byte-identical for every contender,
     // including its recorded commit time.
-    let object_manifest = ensure_provenance_manifest(destination, &request, &object_manifest)?;
+    let object_manifest =
+        ensure_provenance_manifest(destination, &request, &object_manifest, mutation_guard)?;
     let manifest_bytes = canonical_json_bytes(&object_manifest)?;
+    mutation_guard.assert_current()?;
     let manifest_put = destination.store.put_create_or_verify(
         &destination.execution,
         &plan.manifest_key,
@@ -616,6 +634,7 @@ pub(crate) fn finalize_parquet_objects(
         let pointer = replace_pointer(&request, &plan, &object_manifest)?;
         let pointer_bytes = canonical_json_bytes(&pointer)?;
         let pointer_sha256 = sha256_hex(&pointer_bytes);
+        mutation_guard.assert_current()?;
         let put = destination.store.put_create_or_verify(
             &destination.execution,
             pointer_key,
@@ -629,7 +648,12 @@ pub(crate) fn finalize_parquet_objects(
     } else {
         None
     };
-    destination.ensure_current_replace_pointer(&request, &plan, &object_manifest)?;
+    destination.ensure_current_replace_pointer(
+        &request,
+        &plan,
+        &object_manifest,
+        mutation_guard,
+    )?;
     let receipt = build_receipt(
         &request,
         &plan,
@@ -670,6 +694,7 @@ fn ensure_provenance_manifest(
     destination: &ParquetDestination,
     request: &ParquetCommitRequest,
     manifest: &ParquetObjectManifest,
+    mutation_guard: &cdf_runtime::StagingMutationGuard,
 ) -> Result<ParquetObjectManifest> {
     if manifest.target != request.commit.target.as_str()
         || manifest.package_hash != request.commit.package_hash.as_str()
@@ -684,6 +709,7 @@ fn ensure_provenance_manifest(
         &request.commit.package_hash,
     );
     let bytes = canonical_json_bytes(manifest)?;
+    mutation_guard.assert_current()?;
     match destination
         .store
         .put_create(destination.execution(), &key, bytes)?

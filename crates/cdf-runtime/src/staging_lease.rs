@@ -1,7 +1,6 @@
 use std::{
     collections::BTreeMap,
-    sync::{Arc, Condvar, Mutex},
-    thread::JoinHandle,
+    sync::{Arc, Mutex},
     time::Duration,
 };
 
@@ -12,6 +11,7 @@ use cdf_kernel::{
 use serde::{Deserialize, Serialize};
 
 use crate::LoadAttemptId;
+use crate::{ExecutionHost, RunCancellation};
 
 const DEFAULT_LEASE_DURATION: Duration = Duration::from_secs(120);
 const DEFAULT_RENEW_INTERVAL: Duration = Duration::from_secs(30);
@@ -104,6 +104,16 @@ impl ExpiredStagingLeaseProof {
 
     pub fn proves(&self, lease: &StagingLease) -> bool {
         &self.expired_lease == lease
+    }
+
+    pub fn assert_cleanup_guard(&self, guard: &StagingMutationGuard) -> Result<()> {
+        let guarded = guard.assert_current()?;
+        if guarded != self.cleanup_lease {
+            return Err(CdfError::contract(
+                "staging cleanup mutation guard does not bind the proof's cleanup generation",
+            ));
+        }
+        Ok(())
     }
 
     fn validate(&self) -> Result<()> {
@@ -286,62 +296,74 @@ impl Default for StagingLeaseTiming {
 struct LeaseEntry {
     lease: StagingLease,
     failure: Option<CdfError>,
+    cancellation: RunCancellation,
+    guard_count: u64,
+    release_pending: bool,
 }
 
 struct LeaseSupervisorState {
-    shutdown: bool,
     next_registration: u64,
     leases: BTreeMap<u64, LeaseEntry>,
 }
 
 struct LeaseSupervisorShared {
     state: Mutex<LeaseSupervisorState>,
-    wake: Condvar,
 }
 
 pub struct StagingLeaseSupervisor {
     authority: Arc<dyn StagingLeaseAuthority>,
     timing: StagingLeaseTiming,
     shared: Arc<LeaseSupervisorShared>,
-    worker: Mutex<Option<JoinHandle<()>>>,
+    termination: cdf_kernel::InvocationTermination,
 }
 
 impl StagingLeaseSupervisor {
-    pub fn new(authority: Arc<dyn StagingLeaseAuthority>) -> Result<Arc<Self>> {
-        Self::with_timing(authority, StagingLeaseTiming::default())
+    pub fn new(
+        authority: Arc<dyn StagingLeaseAuthority>,
+        host: Arc<dyn ExecutionHost>,
+    ) -> Result<Arc<Self>> {
+        Self::with_timing(authority, host, StagingLeaseTiming::default())
     }
 
     pub fn with_timing(
         authority: Arc<dyn StagingLeaseAuthority>,
+        host: Arc<dyn ExecutionHost>,
         timing: StagingLeaseTiming,
     ) -> Result<Arc<Self>> {
         let timing = timing.validate()?;
         let shared = Arc::new(LeaseSupervisorShared {
             state: Mutex::new(LeaseSupervisorState {
-                shutdown: false,
                 next_registration: 1,
                 leases: BTreeMap::new(),
             }),
-            wake: Condvar::new(),
         });
-        let supervisor = Arc::new(Self {
-            authority: Arc::clone(&authority),
+        let mut scope = host.open_scope("cdf-staging-leases")?;
+        let cancellation = scope.cancellation();
+        let task_cancellation = cancellation.clone();
+        let task_host = Arc::clone(&host);
+        let task_authority = Arc::clone(&authority);
+        let task_shared = Arc::clone(&shared);
+        scope.spawn_io(Box::pin(async move {
+            lease_supervisor_loop(
+                task_authority,
+                task_host,
+                timing,
+                task_shared,
+                task_cancellation,
+            )
+            .await
+        }))?;
+        let joined = scope.join();
+        let termination = cdf_kernel::InvocationTermination::new(
+            move || cancellation.cancel(),
+            Box::pin(async move { joined.await.map(|_| ()) }),
+        );
+        Ok(Arc::new(Self {
+            authority,
             timing,
-            shared: Arc::clone(&shared),
-            worker: Mutex::new(None),
-        });
-        let worker = std::thread::Builder::new()
-            .name("cdf-staging-leases".to_owned())
-            .spawn(move || lease_supervisor_loop(authority, timing, shared))
-            .map_err(|error| {
-                CdfError::internal(format!("start staging lease supervisor: {error}"))
-            })?;
-        *supervisor
-            .worker
-            .lock()
-            .map_err(|_| CdfError::internal("staging lease worker lock is poisoned"))? =
-            Some(worker);
-        Ok(supervisor)
+            shared,
+            termination,
+        }))
     }
 
     pub fn acquire(
@@ -353,7 +375,12 @@ impl StagingLeaseSupervisor {
         let lease = self
             .authority
             .acquire(identity.clone(), owner.clone(), duration_ms)?;
-        if let Err(error) = validate_acquired_lease(&lease, &identity, &owner) {
+        if let Err(error) = validate_acquired_lease(
+            &lease,
+            &self.authority.authority_domain_id(),
+            &identity,
+            &owner,
+        ) {
             let _ = self.authority.release(&lease);
             return Err(error);
         }
@@ -383,6 +410,9 @@ impl StagingLeaseSupervisor {
             LeaseEntry {
                 lease,
                 failure: None,
+                cancellation: RunCancellation::default(),
+                guard_count: 0,
+                release_pending: false,
             },
         );
         Ok(ManagedStagingLease {
@@ -443,34 +473,100 @@ impl StagingLeaseSupervisor {
         Ok(lease)
     }
 
-    fn release(&self, registration: u64) -> Result<()> {
-        let entry = self
+    fn mutation_guard(self: &Arc<Self>, registration: u64) -> Result<StagingMutationGuard> {
+        let mut state = self
             .shared
             .state
             .lock()
-            .map_err(|_| CdfError::internal("staging lease supervisor lock is poisoned"))?
+            .map_err(|_| CdfError::internal("staging lease supervisor lock is poisoned"))?;
+        let entry = state
             .leases
-            .remove(&registration)
+            .get_mut(&registration)
             .ok_or_else(|| CdfError::internal("staging lease registration is absent"))?;
+        entry.guard_count = entry
+            .guard_count
+            .checked_add(1)
+            .ok_or_else(|| CdfError::internal("staging mutation guard count overflow"))?;
+        let cancellation = entry.cancellation.clone();
+        Ok(StagingMutationGuard {
+            supervisor: Arc::clone(self),
+            registration,
+            cancellation,
+        })
+    }
+
+    fn release(&self, registration: u64, explicit: bool) -> Result<()> {
+        let entry = {
+            let mut state = self
+                .shared
+                .state
+                .lock()
+                .map_err(|_| CdfError::internal("staging lease supervisor lock is poisoned"))?;
+            let guarded = state
+                .leases
+                .get_mut(&registration)
+                .ok_or_else(|| CdfError::internal("staging lease registration is absent"))?;
+            if guarded.guard_count != 0 {
+                guarded.release_pending = true;
+                if explicit {
+                    return Err(CdfError::internal(
+                        "staging lease cannot finish while mutation guards remain live",
+                    ));
+                }
+                return Ok(());
+            }
+            state
+                .leases
+                .remove(&registration)
+                .expect("staging lease registration was just observed")
+        };
         let release = self.authority.release(&entry.lease);
         match (entry.failure, release) {
             (Some(error), _) => Err(error),
             (None, result) => result,
         }
     }
+
+    fn clone_guard(&self, registration: u64) -> Result<()> {
+        let mut state = self
+            .shared
+            .state
+            .lock()
+            .map_err(|_| CdfError::internal("staging lease supervisor lock is poisoned"))?;
+        let entry = state
+            .leases
+            .get_mut(&registration)
+            .ok_or_else(|| CdfError::internal("staging lease registration is absent"))?;
+        entry.guard_count = entry
+            .guard_count
+            .checked_add(1)
+            .ok_or_else(|| CdfError::internal("staging mutation guard count overflow"))?;
+        Ok(())
+    }
+
+    fn drop_guard(&self, registration: u64) {
+        let entry = {
+            let Ok(mut state) = self.shared.state.lock() else {
+                return;
+            };
+            let Some(entry) = state.leases.get_mut(&registration) else {
+                return;
+            };
+            entry.guard_count = entry.guard_count.saturating_sub(1);
+            if entry.guard_count != 0 || !entry.release_pending {
+                return;
+            }
+            state.leases.remove(&registration)
+        };
+        if let Some(entry) = entry {
+            let _ = self.authority.release(&entry.lease);
+        }
+    }
 }
 
 impl Drop for StagingLeaseSupervisor {
     fn drop(&mut self) {
-        if let Ok(mut state) = self.shared.state.lock() {
-            state.shutdown = true;
-            self.shared.wake.notify_all();
-        }
-        if let Ok(worker) = self.worker.get_mut()
-            && let Some(worker) = worker.take()
-        {
-            let _ = worker.join();
-        }
+        self.termination.cancel();
     }
 }
 
@@ -487,19 +583,83 @@ impl ManagedStagingLease {
         )
     }
 
+    pub fn mutation_guard(&self) -> Result<StagingMutationGuard> {
+        self.supervisor.mutation_guard(
+            self.registration
+                .ok_or_else(|| CdfError::internal("staging lease was already released"))?,
+        )
+    }
+
     pub fn finish(mut self) -> Result<()> {
         let registration = self
             .registration
             .take()
             .ok_or_else(|| CdfError::internal("staging lease was already released"))?;
-        self.supervisor.release(registration)
+        self.supervisor.release(registration, true)
+    }
+}
+
+/// Cloneable runtime-owned authority that must be checked immediately before each externally
+/// durable staging mutation. Renewal failure cancels the guard before the next mutation can
+/// publish or acknowledge work.
+pub struct StagingMutationGuard {
+    supervisor: Arc<StagingLeaseSupervisor>,
+    registration: u64,
+    cancellation: RunCancellation,
+}
+
+impl Clone for StagingMutationGuard {
+    fn clone(&self) -> Self {
+        self.supervisor
+            .clone_guard(self.registration)
+            .expect("live staging mutation guard retains its lease registration");
+        Self {
+            supervisor: Arc::clone(&self.supervisor),
+            registration: self.registration,
+            cancellation: self.cancellation.clone(),
+        }
+    }
+}
+
+impl StagingMutationGuard {
+    pub fn assert_current(&self) -> Result<StagingLease> {
+        let lease = self.supervisor.snapshot(self.registration)?;
+        self.cancellation.check()?;
+        Ok(lease)
+    }
+
+    pub fn cancellation(&self) -> RunCancellation {
+        self.cancellation.clone()
+    }
+}
+
+impl std::fmt::Debug for StagingMutationGuard {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("StagingMutationGuard")
+            .field("registration", &self.registration)
+            .finish_non_exhaustive()
+    }
+}
+
+impl PartialEq for StagingMutationGuard {
+    fn eq(&self, other: &Self) -> bool {
+        self.registration == other.registration && Arc::ptr_eq(&self.supervisor, &other.supervisor)
+    }
+}
+
+impl Eq for StagingMutationGuard {}
+
+impl Drop for StagingMutationGuard {
+    fn drop(&mut self) {
+        self.supervisor.drop_guard(self.registration);
     }
 }
 
 impl Drop for ManagedStagingLease {
     fn drop(&mut self) {
         if let Some(registration) = self.registration.take() {
-            let _ = self.supervisor.release(registration);
+            let _ = self.supervisor.release(registration, false);
         }
     }
 }
@@ -515,6 +675,13 @@ impl ManagedExpiredStagingLeaseProof {
         &self.proof
     }
 
+    pub fn mutation_guard(&self) -> Result<StagingMutationGuard> {
+        self.cleanup_lease
+            .as_ref()
+            .ok_or_else(|| CdfError::internal("staging cleanup lease was already released"))?
+            .mutation_guard()
+    }
+
     pub fn finish(mut self) -> Result<()> {
         self.cleanup_lease
             .take()
@@ -523,31 +690,29 @@ impl ManagedExpiredStagingLeaseProof {
     }
 }
 
-fn lease_supervisor_loop(
+async fn lease_supervisor_loop(
     authority: Arc<dyn StagingLeaseAuthority>,
+    host: Arc<dyn ExecutionHost>,
     timing: StagingLeaseTiming,
     shared: Arc<LeaseSupervisorShared>,
-) {
+    cancellation: RunCancellation,
+) -> Result<()> {
     loop {
-        let state = match shared.state.lock() {
-            Ok(state) => state,
-            Err(_) => return,
-        };
-        if state.shutdown {
-            return;
+        if let Err(error) = host
+            .delay(timing.renew_interval, cancellation.clone())
+            .await
+        {
+            return if cancellation.is_cancelled() {
+                Ok(())
+            } else {
+                Err(error)
+            };
         }
-        let wait = shared
-            .wake
-            .wait_timeout_while(state, timing.renew_interval, |state| !state.shutdown);
-        let Ok((state, timeout)) = wait else {
-            return;
-        };
-        if state.shutdown {
-            return;
-        }
-        if !timeout.timed_out() {
-            continue;
-        }
+        cancellation.check()?;
+        let state = shared
+            .state
+            .lock()
+            .map_err(|_| CdfError::internal("staging lease supervisor lock is poisoned"))?;
         let leases = state
             .leases
             .iter()
@@ -558,15 +723,16 @@ fn lease_supervisor_loop(
 
         let duration_ms = match duration_ms(timing.lease_duration) {
             Ok(duration) => duration,
-            Err(_) => return,
+            Err(error) => return Err(error),
         };
         for (registration, lease) in leases {
             let renewed = authority
                 .renew(&lease, duration_ms)
                 .and_then(|renewed| validate_renewed_lease(renewed, &lease));
-            let Ok(mut state) = shared.state.lock() else {
-                return;
-            };
+            let mut state = shared
+                .state
+                .lock()
+                .map_err(|_| CdfError::internal("staging lease supervisor lock is poisoned"))?;
             let Some(entry) = state.leases.get_mut(&registration) else {
                 continue;
             };
@@ -575,7 +741,10 @@ fn lease_supervisor_loop(
             }
             match renewed {
                 Ok(renewed) => entry.lease = renewed,
-                Err(error) => entry.failure = Some(error),
+                Err(error) => {
+                    entry.failure = Some(error);
+                    entry.cancellation.cancel();
+                }
             }
         }
     }
@@ -588,11 +757,15 @@ fn duration_ms(duration: Duration) -> Result<u64> {
 
 fn validate_acquired_lease(
     lease: &StagingLease,
+    authority_domain_id: &LeaseAuthorityDomainId,
     identity: &StagingLeaseIdentity,
     owner: &LeaseOwnerId,
 ) -> Result<()> {
     lease.validate()?;
-    if &lease.identity != identity || &lease.scope_lease.owner != owner {
+    if &lease.authority_domain_id != authority_domain_id
+        || &lease.identity != identity
+        || &lease.scope_lease.owner != owner
+    {
         return Err(CdfError::contract(
             "staging lease authority returned an acquisition outside the requested identity or owner",
         ));
@@ -602,7 +775,8 @@ fn validate_acquired_lease(
 
 fn validate_renewed_lease(renewed: StagingLease, previous: &StagingLease) -> Result<StagingLease> {
     renewed.validate()?;
-    if renewed.identity != previous.identity
+    if renewed.authority_domain_id != previous.authority_domain_id
+        || renewed.identity != previous.identity
         || renewed.scope_lease.owner != previous.scope_lease.owner
         || renewed.scope_lease.fencing_token != previous.scope_lease.fencing_token
         || renewed.scope_lease.acquired_at_ms != previous.scope_lease.acquired_at_ms

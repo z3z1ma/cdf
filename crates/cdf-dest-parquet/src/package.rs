@@ -42,11 +42,22 @@ pub(crate) struct EncodedParquetObject {
     pub(crate) _spill: SpillReservation,
 }
 
+pub(crate) struct StagedParquetEncodeContext<'a> {
+    pub(crate) expected_schema: &'a arrow_schema::Schema,
+    pub(crate) writer_memory: Arc<dyn MemoryCoordinator>,
+    pub(crate) spill: Arc<dyn SpillBudgetCoordinator>,
+    pub(crate) file: NamedTempFile,
+    pub(crate) cancellation: &'a cdf_runtime::RunCancellation,
+    pub(crate) mutation_guard: &'a cdf_runtime::StagingMutationGuard,
+    pub(crate) settings: ParquetWriterSettings,
+}
+
 struct ParquetBatchWritePlan<'a> {
     retained_bytes: u64,
     expected_rows: u64,
     expected_schema: Option<&'a arrow_schema::Schema>,
     cancellation: Option<&'a cdf_runtime::RunCancellation>,
+    mutation_guard: Option<&'a cdf_runtime::StagingMutationGuard>,
     settings: ParquetWriterSettings,
 }
 
@@ -69,6 +80,7 @@ pub(crate) fn write_parquet_segment(
             expected_rows,
             expected_schema: None,
             cancellation: None,
+            mutation_guard: None,
             settings,
         },
         writer_memory,
@@ -81,25 +93,21 @@ pub(crate) fn write_parquet_segment(
 
 pub(crate) fn write_parquet_staged_segment(
     mut segment: cdf_runtime::StagedSegmentRequest,
-    expected_schema: &arrow_schema::Schema,
-    writer_memory: Arc<dyn MemoryCoordinator>,
-    spill: Arc<dyn SpillBudgetCoordinator>,
-    file: NamedTempFile,
-    cancellation: &cdf_runtime::RunCancellation,
-    settings: ParquetWriterSettings,
+    context: StagedParquetEncodeContext<'_>,
 ) -> Result<(cdf_runtime::StagedSegmentIdentity, EncodedParquetObject)> {
     let identity = segment.identity.clone();
     let encoded = write_parquet_batches(
         ParquetBatchWritePlan {
             retained_bytes: identity.byte_count.max(1),
             expected_rows: identity.row_count,
-            expected_schema: Some(expected_schema),
-            cancellation: Some(cancellation),
-            settings,
+            expected_schema: Some(context.expected_schema),
+            cancellation: Some(context.cancellation),
+            mutation_guard: Some(context.mutation_guard),
+            settings: context.settings,
         },
-        writer_memory,
-        spill,
-        file,
+        context.writer_memory,
+        context.spill,
+        context.file,
         || segment.reader_mut().next_batch(),
     )?;
     Ok((identity, encoded))
@@ -117,6 +125,7 @@ fn write_parquet_batches(
         expected_rows,
         expected_schema,
         cancellation,
+        mutation_guard,
         settings,
     } = plan;
     let settings = settings.validate()?;
@@ -155,6 +164,9 @@ fn write_parquet_batches(
     if let Some(cancellation) = cancellation {
         cancellation.check()?;
     }
+    if let Some(mutation_guard) = mutation_guard {
+        mutation_guard.assert_current()?;
+    }
     let schema = first.schema();
     cdf_package::validate_parquet_schema(schema.as_ref())?;
     if expected_schema.is_some_and(|expected| expected != schema.as_ref()) {
@@ -191,6 +203,9 @@ fn write_parquet_batches(
             if let Some(cancellation) = cancellation {
                 cancellation.check()?;
             }
+            if let Some(mutation_guard) = mutation_guard {
+                mutation_guard.assert_current()?;
+            }
             if batch.schema().as_ref() != schema.as_ref() {
                 return Err(CdfError::data(
                     "Parquet destination segment contains mixed Arrow schemas",
@@ -208,6 +223,9 @@ fn write_parquet_batches(
         }
         if let Some(cancellation) = cancellation {
             cancellation.check()?;
+        }
+        if let Some(mutation_guard) = mutation_guard {
+            mutation_guard.assert_current()?;
         }
         if rows != expected_rows {
             return Err(CdfError::data(format!(

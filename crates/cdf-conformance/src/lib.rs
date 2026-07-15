@@ -16,7 +16,8 @@ pub mod runtime_chaos;
 pub mod scope_lease;
 mod source_fixture;
 
-pub(crate) fn test_execution_services() -> cdf_runtime::ExecutionServices {
+#[doc(hidden)]
+pub fn test_execution_services() -> cdf_runtime::ExecutionServices {
     static SERVICES: std::sync::OnceLock<cdf_runtime::ExecutionServices> =
         std::sync::OnceLock::new();
     SERVICES
@@ -24,6 +25,12 @@ pub(crate) fn test_execution_services() -> cdf_runtime::ExecutionServices {
             cdf_engine::StandaloneExecutionHost::default_services(128 * 1024 * 1024)
                 .expect("conformance execution host")
                 .1
+                .with_staging_lease_authority(std::sync::Arc::new(
+                    cdf_runtime::ScopeStagingLeaseAuthority::new(std::sync::Arc::new(
+                        cdf_state_sqlite::InMemoryScopeLeaseStore::new(),
+                    )),
+                ))
+                .expect("conformance staging lease authority")
         })
         .clone()
 }

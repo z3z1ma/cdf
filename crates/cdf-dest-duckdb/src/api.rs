@@ -511,46 +511,6 @@ fn bounded_connection_config(resources: &DuckDbNativeResources, read_only: bool)
     Ok(config)
 }
 
-#[cfg(test)]
-mod native_resource_tests {
-    use super::*;
-    use cdf_runtime::SpillBudgetCoordinator as _;
-
-    #[test]
-    fn execution_resources_reserve_and_release_bounded_scratch_capacity() {
-        let spill = Arc::new(cdf_runtime::FixedSpillBudget::new(2 * 1024 * 1024 * 1024).unwrap());
-        let coordinator: Arc<dyn cdf_runtime::SpillBudgetCoordinator> = spill.clone();
-        let resources =
-            DuckDbNativeResources::for_budgets(4 * 1024 * 1024 * 1024, coordinator).unwrap();
-        assert_eq!(resources.memory_limit_bytes, 1024 * 1024 * 1024);
-        assert_eq!(resources.maximum_temp_directory_bytes, 1024 * 1024 * 1024);
-        assert_eq!(spill.snapshot().current_bytes, 1024 * 1024 * 1024);
-
-        let clone = resources.clone();
-        drop(resources);
-        assert_eq!(spill.snapshot().current_bytes, 1024 * 1024 * 1024);
-        drop(clone);
-        assert_eq!(spill.snapshot().current_bytes, 0);
-    }
-
-    #[test]
-    fn execution_resources_fail_before_use_when_scratch_is_unavailable() {
-        let spill = Arc::new(cdf_runtime::FixedSpillBudget::new(1024).unwrap());
-        let held = spill.try_reserve(1024).unwrap().unwrap();
-        let coordinator: Arc<dyn cdf_runtime::SpillBudgetCoordinator> = spill.clone();
-        let error =
-            DuckDbNativeResources::for_budgets(DUCKDB_MINIMUM_NATIVE_MEMORY_BYTES, coordinator)
-                .unwrap_err();
-        assert!(
-            error
-                .message
-                .contains("shared spill budget is already committed")
-        );
-        drop(held);
-        assert_eq!(spill.snapshot().current_bytes, 0);
-    }
-}
-
 impl DuckDbStagedIngressSession {
     fn validate_final_binding(&self, binding: &cdf_runtime::VerifiedFinalBinding) -> Result<()> {
         if binding.attempt_id() != self.request.attempt_id()
@@ -578,6 +538,7 @@ impl DuckDbStagedIngressSession {
                 "DuckDB staged empty binding received data segments",
             ));
         }
+        self.request.mutation_guard().assert_current()?;
         let lock = self.destination.acquire_writer_lock()?;
         let conn = self.destination.open_connection()?;
         ensure_mirror_tables(&conn)?;
@@ -649,6 +610,7 @@ impl cdf_runtime::StagedIngressSession for DuckDbStagedIngressSession {
         let mut buffered_bytes = 0_u64;
         let mut current = Some(first_segment);
         while let Some(mut segment) = current {
+            self.request.mutation_guard().assert_current()?;
             let identity = segment.identity.clone();
             if identity.schema_hash != self.request.binding().schema_hash {
                 return Err(CdfError::data(
@@ -689,6 +651,7 @@ impl cdf_runtime::StagedIngressSession for DuckDbStagedIngressSession {
                     persistence_batch(batch, next_row_key, merge.then_some(writer.rows_received))?;
                 let batch_bytes = u64::try_from(persisted.get_array_memory_size())
                     .map_err(|_| CdfError::data("DuckDB staged batch bytes exceed u64"))?;
+                self.request.mutation_guard().assert_current()?;
                 append_arrow_batch(&mut appender, &write_target, persisted)?;
                 buffered_bytes = buffered_bytes.saturating_add(batch_bytes);
                 if buffered_bytes >= flush_threshold_bytes {
@@ -739,6 +702,7 @@ impl cdf_runtime::StagedIngressSession for DuckDbStagedIngressSession {
         binding: cdf_runtime::VerifiedFinalBinding,
     ) -> Result<cdf_runtime::DestinationCommitOutcome> {
         self.validate_final_binding(&binding)?;
+        self.request.mutation_guard().assert_current()?;
         let Some(writer) = self.writer.take() else {
             return (*self).bind_empty(binding);
         };
@@ -814,6 +778,7 @@ impl cdf_runtime::StagedIngressSession for DuckDbStagedIngressSession {
             &receipt,
             writer.first_row_key,
         )?;
+        self.request.mutation_guard().assert_current()?;
         writer
             .conn
             .execute_batch("COMMIT")
@@ -910,5 +875,45 @@ impl DestinationProtocol for DuckDbDestination {
         original_row: &RowProvenanceAddress,
     ) -> Result<Option<DestinationResidualReadback>> {
         read_addressed_residual(self, target, original_row)
+    }
+}
+
+#[cfg(test)]
+mod native_resource_tests {
+    use super::*;
+    use cdf_runtime::SpillBudgetCoordinator as _;
+
+    #[test]
+    fn execution_resources_reserve_and_release_bounded_scratch_capacity() {
+        let spill = Arc::new(cdf_runtime::FixedSpillBudget::new(2 * 1024 * 1024 * 1024).unwrap());
+        let coordinator: Arc<dyn cdf_runtime::SpillBudgetCoordinator> = spill.clone();
+        let resources =
+            DuckDbNativeResources::for_budgets(4 * 1024 * 1024 * 1024, coordinator).unwrap();
+        assert_eq!(resources.memory_limit_bytes, 1024 * 1024 * 1024);
+        assert_eq!(resources.maximum_temp_directory_bytes, 1024 * 1024 * 1024);
+        assert_eq!(spill.snapshot().current_bytes, 1024 * 1024 * 1024);
+
+        let clone = resources.clone();
+        drop(resources);
+        assert_eq!(spill.snapshot().current_bytes, 1024 * 1024 * 1024);
+        drop(clone);
+        assert_eq!(spill.snapshot().current_bytes, 0);
+    }
+
+    #[test]
+    fn execution_resources_fail_before_use_when_scratch_is_unavailable() {
+        let spill = Arc::new(cdf_runtime::FixedSpillBudget::new(1024).unwrap());
+        let held = spill.try_reserve(1024).unwrap().unwrap();
+        let coordinator: Arc<dyn cdf_runtime::SpillBudgetCoordinator> = spill.clone();
+        let error =
+            DuckDbNativeResources::for_budgets(DUCKDB_MINIMUM_NATIVE_MEMORY_BYTES, coordinator)
+                .unwrap_err();
+        assert!(
+            error
+                .message
+                .contains("shared spill budget is already committed")
+        );
+        drop(held);
+        assert_eq!(spill.snapshot().current_bytes, 0);
     }
 }

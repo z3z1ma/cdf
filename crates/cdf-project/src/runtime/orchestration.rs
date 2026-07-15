@@ -313,8 +313,13 @@ async fn run_project_inner(execution: ProjectRunExecution<'_>) -> Result<Project
     let output = match output_result {
         Ok(output) => output,
         Err(mut error) => {
-            if let Some(staged) = active_staged.take() {
-                staged.abort();
+            if let Some(staged) = active_staged.take()
+                && let Err(cleanup) = staged.abort()
+            {
+                error.message = format!(
+                    "{}; staged ingress cleanup also failed: {}",
+                    error.message, cleanup.message
+                );
             }
             if let Err(evidence_error) = retry_history {
                 error.message = format!(

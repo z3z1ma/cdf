@@ -139,8 +139,9 @@ impl cdf_runtime::StagedSegmentIngress for ParquetDestination {
         &mut self,
         candidate: &cdf_runtime::StagingCleanupCandidate,
         proof: &cdf_runtime::ExpiredStagingLeaseProof,
+        mutation_guard: &cdf_runtime::StagingMutationGuard,
     ) -> Result<u64> {
-        self.cleanup_expired_staging_candidate(candidate, proof)
+        self.cleanup_expired_staging_candidate(candidate, proof, mutation_guard)
     }
 }
 
@@ -269,9 +270,10 @@ impl cdf_runtime::StagedSegmentIngress for FilesystemParquetRuntime {
         &mut self,
         candidate: &cdf_runtime::StagingCleanupCandidate,
         proof: &cdf_runtime::ExpiredStagingLeaseProof,
+        mutation_guard: &cdf_runtime::StagingMutationGuard,
     ) -> Result<u64> {
         self.destination()?
-            .cleanup_expired_staging_candidate(candidate, proof)
+            .cleanup_expired_staging_candidate(candidate, proof, mutation_guard)
     }
 }
 
