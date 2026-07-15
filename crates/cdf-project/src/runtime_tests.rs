@@ -1880,38 +1880,39 @@ struct MockProjectStagedSession {
 }
 
 impl cdf_runtime::StagedIngressSession for MockProjectStagedSession {
-    fn stage_segment(
-        &mut self,
-        mut segment: cdf_runtime::StagedSegmentRequest,
-    ) -> Result<cdf_runtime::StagedSegmentAck> {
-        self.destination
-            .stage_threads
-            .lock()
-            .unwrap()
-            .push(std::thread::current().id());
-        if self
-            .fail_stage_after
-            .is_some_and(|limit| self.accepted.len() >= limit)
-        {
-            return Err(CdfError::destination("injected staged write failure"));
+    fn stage_stream(&mut self, stream: &mut dyn cdf_runtime::StagedSegmentStream) -> Result<()> {
+        while let Some(mut segment) = stream.next_segment()? {
+            self.destination
+                .stage_threads
+                .lock()
+                .unwrap()
+                .push(std::thread::current().id());
+            if self
+                .fail_stage_after
+                .is_some_and(|limit| self.accepted.len() >= limit)
+            {
+                return Err(CdfError::destination("injected staged write failure"));
+            }
+            while segment.reader_mut().next_batch()?.is_some() {}
+            let identity = segment.identity;
+            if identity.ordinal != u32::try_from(self.accepted.len()).unwrap() {
+                return Err(CdfError::destination(
+                    "mock staged integration received noncanonical segment order",
+                ));
+            }
+            self.destination
+                .writes
+                .lock()
+                .unwrap()
+                .push(identity.segment_id.clone());
+            self.accepted.push(identity.clone());
+            stream.acknowledge(cdf_runtime::StagedSegmentAck {
+                attempt_id: self.request.attempt_id().clone(),
+                identity,
+                external_durable: true,
+            })?;
         }
-        while segment.reader_mut().next_batch()?.is_some() {}
-        if segment.identity.ordinal != u32::try_from(self.accepted.len()).unwrap() {
-            return Err(CdfError::destination(
-                "mock staged integration received noncanonical segment order",
-            ));
-        }
-        self.destination
-            .writes
-            .lock()
-            .unwrap()
-            .push(segment.identity.segment_id.clone());
-        self.accepted.push(segment.identity.clone());
-        Ok(cdf_runtime::StagedSegmentAck {
-            attempt_id: self.request.attempt_id().clone(),
-            identity: segment.identity,
-            external_durable: true,
-        })
+        Ok(())
     }
 
     fn snapshot(&self) -> Result<cdf_runtime::StagingSnapshot> {
@@ -3171,6 +3172,7 @@ fn general_project_run_records_bounded_complete_phase_telemetry() {
         RunPhase::SegmentEncode,
         RunPhase::PersistHash,
         RunPhase::PackageFinalize,
+        RunPhase::DestinationIngress,
         RunPhase::DestinationWriteReceipt,
         RunPhase::CheckpointGate,
     ] {

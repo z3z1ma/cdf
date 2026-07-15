@@ -452,6 +452,22 @@ struct TestDurableSegmentReader {
     batches: std::vec::IntoIter<RecordBatch>,
 }
 
+struct TestStagedSegmentStream {
+    requests: std::vec::IntoIter<cdf_runtime::StagedSegmentRequest>,
+    acknowledgements: Vec<cdf_runtime::StagedSegmentAck>,
+}
+
+impl cdf_runtime::StagedSegmentStream for TestStagedSegmentStream {
+    fn next_segment(&mut self) -> Result<Option<cdf_runtime::StagedSegmentRequest>> {
+        Ok(self.requests.next())
+    }
+
+    fn acknowledge(&mut self, acknowledgement: cdf_runtime::StagedSegmentAck) -> Result<()> {
+        self.acknowledgements.push(acknowledgement);
+        Ok(())
+    }
+}
+
 impl DurableSegmentReader for TestDurableSegmentReader {
     fn identity(&self) -> &cdf_runtime::StagedSegmentIdentity {
         &self.identity
@@ -514,19 +530,31 @@ fn try_commit_current(
         )?,
         output_schema.as_ref().clone(),
     )?)?;
-    for (ordinal, entry) in reader.manifest().identity.segments.iter().enumerate() {
-        let identity = cdf_runtime::StagedSegmentIdentity::from_manifest_entry(
-            entry,
-            request.schema_hash.clone(),
-            u32::try_from(ordinal)
-                .map_err(|_| CdfError::data("test package has too many segments"))?,
-        )?;
-        let batches = reader.read_segment(&entry.segment_id)?.into_iter();
-        session.stage_segment(cdf_runtime::StagedSegmentRequest::new(
-            identity.clone(),
-            Box::new(TestDurableSegmentReader { identity, batches }),
-        )?)?;
-    }
+    let requests = reader
+        .manifest()
+        .identity
+        .segments
+        .iter()
+        .enumerate()
+        .map(|(ordinal, entry)| {
+            let identity = cdf_runtime::StagedSegmentIdentity::from_manifest_entry(
+                entry,
+                request.schema_hash.clone(),
+                u32::try_from(ordinal)
+                    .map_err(|_| CdfError::data("test package has too many segments"))?,
+            )?;
+            let batches = reader.read_segment(&entry.segment_id)?.into_iter();
+            cdf_runtime::StagedSegmentRequest::new(
+                identity.clone(),
+                Box::new(TestDurableSegmentReader { identity, batches }),
+            )
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let mut stream = TestStagedSegmentStream {
+        requests: requests.into_iter(),
+        acknowledgements: Vec::new(),
+    };
+    session.stage_stream(&mut stream)?;
     let binding =
         cdf_runtime::VerifiedFinalBinding::from_verified_package(attempt_id, &package, plan)?;
     Ok(CurrentCommitOutcome {
@@ -759,6 +787,7 @@ fn staged_duplicate_returns_existing_receipt_without_extra_rows() {
         .query_row("SELECT count(*) FROM orders", [], |row| row.get(0))
         .unwrap();
     assert_eq!(target_rows, 3);
+    assert_eq!(crate::mirrors::next_row_key(&conn).unwrap(), 4);
 
     let mirror = dest.read_mirror_snapshot_read_only().unwrap();
     assert_eq!(mirror.loads.len(), 1);

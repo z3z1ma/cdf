@@ -194,6 +194,15 @@ pub struct StagedSegmentRequest {
     reader: Box<dyn DurableSegmentReader>,
 }
 
+/// A bounded, acknowledgement-bearing stream of durable segments.
+///
+/// The destination drives the stream for one native ingress lifetime. It must acknowledge each
+/// segment only after consuming it successfully and before requesting the next segment.
+pub trait StagedSegmentStream {
+    fn next_segment(&mut self) -> Result<Option<StagedSegmentRequest>>;
+    fn acknowledge(&mut self, acknowledgement: StagedSegmentAck) -> Result<()>;
+}
+
 impl StagedSegmentRequest {
     pub fn new(
         identity: StagedSegmentIdentity,
@@ -373,7 +382,7 @@ impl VerifiedFinalBinding {
 }
 
 pub trait StagedIngressSession: Send {
-    fn stage_segment(&mut self, segment: StagedSegmentRequest) -> Result<StagedSegmentAck>;
+    fn stage_stream(&mut self, stream: &mut dyn StagedSegmentStream) -> Result<()>;
     fn snapshot(&self) -> Result<StagingSnapshot>;
     fn bind_final(
         self: Box<Self>,

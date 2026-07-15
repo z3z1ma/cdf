@@ -299,6 +299,7 @@ impl DuckDbDestination {
         } else {
             table_plan.target.clone()
         };
+        let first_row_key = next_row_key(&conn)?;
         let duckdb_version = duckdb_version(&conn).unwrap_or_else(|_| "unknown".to_owned());
         Ok((
             DuckDbArrowWriter {
@@ -306,8 +307,8 @@ impl DuckDbDestination {
                 _lock: lock,
                 target: table_plan.target,
                 write_target,
-                first_row_key: None,
-                next_row_key: None,
+                first_row_key: Some(first_row_key),
+                next_row_key: Some(first_row_key),
                 persisted_fields,
                 user_field_count: user_fields.len(),
                 rows_received: 0,
@@ -484,6 +485,13 @@ impl DuckDbNativeResources {
             scratch_reservation: Some(Arc::new(scratch_reservation)),
         })
     }
+
+    fn appender_flush_threshold_bytes(&self) -> u64 {
+        const MINIMUM_FLUSH_BYTES: u64 = 64 * 1024 * 1024;
+        const MAXIMUM_FLUSH_BYTES: u64 = 256 * 1024 * 1024;
+
+        (self.memory_limit_bytes / 4).clamp(MINIMUM_FLUSH_BYTES, MAXIMUM_FLUSH_BYTES)
+    }
 }
 
 fn bounded_connection_config(resources: &DuckDbNativeResources, read_only: bool) -> Result<Config> {
@@ -610,28 +618,14 @@ impl DuckDbStagedIngressSession {
 }
 
 impl cdf_runtime::StagedIngressSession for DuckDbStagedIngressSession {
-    fn stage_segment(
-        &mut self,
-        mut segment: cdf_runtime::StagedSegmentRequest,
-    ) -> Result<cdf_runtime::StagedSegmentAck> {
-        let identity = segment.identity.clone();
-        if identity.schema_hash != self.request.binding().schema_hash {
-            return Err(CdfError::data(
-                "DuckDB staged segment schema hash differs from its attempt",
-            ));
-        }
-        let expected_ordinal = u32::try_from(self.accepted.len())
-            .map_err(|_| CdfError::data("DuckDB staged segment count exceeds u32"))?;
-        if identity.ordinal != expected_ordinal
-            || self
-                .accepted
-                .iter()
-                .any(|accepted| accepted.segment_id == identity.segment_id)
-        {
-            return Err(CdfError::data(
-                "DuckDB staged segments must be unique and arrive in canonical order",
-            ));
-        }
+    fn stage_stream(&mut self, stream: &mut dyn cdf_runtime::StagedSegmentStream) -> Result<()> {
+        let Some(first_segment) = stream.next_segment()? else {
+            return Ok(());
+        };
+        let flush_threshold_bytes = self
+            .destination
+            .native_resources
+            .appender_flush_threshold_bytes();
         if self.writer.is_none() {
             let (writer, migrations) = self.destination.start_staged_writer(&self.request)?;
             self.writer = Some(writer);
@@ -641,54 +635,94 @@ impl cdf_runtime::StagedIngressSession for DuckDbStagedIngressSession {
             .writer
             .as_mut()
             .ok_or_else(|| CdfError::internal("DuckDB staged writer is not initialized"))?;
-        let segment_start =
-            allocate_row_keys(&writer.conn, identity.row_count)?.ok_or_else(|| {
-                CdfError::data("DuckDB staged data segment must contain at least one row")
-            })?;
-        if let Some(next) = writer.next_row_key
-            && next != segment_start
-        {
-            return Err(CdfError::internal(
-                "DuckDB staged row-key allocation is not contiguous",
-            ));
+        let merge = self.request.binding().disposition == WriteDisposition::Merge;
+        let mut column_names = writer
+            .persisted_fields
+            .iter()
+            .map(|field| field.name.clone())
+            .collect::<Vec<_>>();
+        if merge {
+            column_names.push(CDF_STAGE_ORDER_COLUMN.to_owned());
         }
-        writer.first_row_key.get_or_insert(segment_start);
-        let mut next_row_key = segment_start;
-        let segment_rows_before = writer.rows_received;
-        while let Some(batch) = segment.reader_mut().next_batch()? {
-            if batch.schema().as_ref() != self.request.output_schema() {
+        let write_target = writer.write_target.clone();
+        let mut appender = open_arrow_appender(&writer.conn, &write_target, &column_names)?;
+        let mut buffered_bytes = 0_u64;
+        let mut current = Some(first_segment);
+        while let Some(mut segment) = current {
+            let identity = segment.identity.clone();
+            if identity.schema_hash != self.request.binding().schema_hash {
+                return Err(CdfError::data(
+                    "DuckDB staged segment schema hash differs from its attempt",
+                ));
+            }
+            let expected_ordinal = u32::try_from(self.accepted.len())
+                .map_err(|_| CdfError::data("DuckDB staged segment count exceeds u32"))?;
+            if identity.ordinal != expected_ordinal
+                || self
+                    .accepted
+                    .iter()
+                    .any(|accepted| accepted.segment_id == identity.segment_id)
+            {
+                return Err(CdfError::data(
+                    "DuckDB staged segments must be unique and arrive in canonical order",
+                ));
+            }
+            if identity.row_count == 0 {
+                return Err(CdfError::data(
+                    "DuckDB staged data segment must contain at least one row",
+                ));
+            }
+            let mut next_row_key = writer.next_row_key.ok_or_else(|| {
+                CdfError::internal("DuckDB staged row-key allocator is not initialized")
+            })?;
+            let segment_rows_before = writer.rows_received;
+            while let Some(batch) = segment.reader_mut().next_batch()? {
+                if batch.schema().as_ref() != self.request.output_schema() {
+                    return Err(CdfError::data(format!(
+                        "DuckDB staged segment {} schema differs from the planned output schema",
+                        identity.segment_id
+                    )));
+                }
+                let batch_rows = u64::try_from(batch.num_rows())
+                    .map_err(|_| CdfError::data("DuckDB staged batch rows exceed u64"))?;
+                let persisted =
+                    persistence_batch(batch, next_row_key, merge.then_some(writer.rows_received))?;
+                let batch_bytes = u64::try_from(persisted.get_array_memory_size())
+                    .map_err(|_| CdfError::data("DuckDB staged batch bytes exceed u64"))?;
+                append_arrow_batch(&mut appender, &write_target, persisted)?;
+                buffered_bytes = buffered_bytes.saturating_add(batch_bytes);
+                if buffered_bytes >= flush_threshold_bytes {
+                    flush_arrow_appender(&mut appender, &write_target)?;
+                    buffered_bytes = 0;
+                }
+                next_row_key = next_row_key
+                    .checked_add(batch_rows)
+                    .ok_or_else(|| CdfError::data("DuckDB staged row key overflowed"))?;
+                writer.rows_received = writer
+                    .rows_received
+                    .checked_add(batch_rows)
+                    .ok_or_else(|| CdfError::data("DuckDB staged row count overflowed"))?;
+            }
+            if writer.rows_received.saturating_sub(segment_rows_before) != identity.row_count {
                 return Err(CdfError::data(format!(
-                    "DuckDB staged segment {} schema differs from the planned output schema",
+                    "DuckDB staged segment {} row count differs from durable identity",
                     identity.segment_id
                 )));
             }
-            let batch_rows = u64::try_from(batch.num_rows())
-                .map_err(|_| CdfError::data("DuckDB staged batch rows exceed u64"))?;
-            let merge = self.request.binding().disposition == WriteDisposition::Merge;
-            let persisted =
-                persistence_batch(batch, next_row_key, merge.then_some(writer.rows_received))?;
-            append_arrow_batch_to_table(&writer.conn, &writer.write_target, persisted)?;
-            next_row_key = next_row_key
-                .checked_add(batch_rows)
-                .ok_or_else(|| CdfError::data("DuckDB staged row key overflowed"))?;
-            writer.rows_received = writer
-                .rows_received
-                .checked_add(batch_rows)
-                .ok_or_else(|| CdfError::data("DuckDB staged row count overflowed"))?;
+            writer.next_row_key = Some(next_row_key);
+            stream.acknowledge(cdf_runtime::StagedSegmentAck {
+                attempt_id: self.request.attempt_id().clone(),
+                identity: identity.clone(),
+                external_durable: false,
+            })?;
+            self.accepted.push(identity);
+            drop(segment);
+            current = stream.next_segment()?;
         }
-        if writer.rows_received.saturating_sub(segment_rows_before) != identity.row_count {
-            return Err(CdfError::data(format!(
-                "DuckDB staged segment {} row count differs from durable identity",
-                identity.segment_id
-            )));
+        if buffered_bytes != 0 {
+            flush_arrow_appender(&mut appender, &write_target)?;
         }
-        writer.next_row_key = Some(next_row_key);
-        self.accepted.push(identity.clone());
-        Ok(cdf_runtime::StagedSegmentAck {
-            attempt_id: self.request.attempt_id().clone(),
-            identity,
-            external_durable: false,
-        })
+        Ok(())
     }
 
     fn snapshot(&self) -> Result<cdf_runtime::StagingSnapshot> {
@@ -763,6 +797,15 @@ impl cdf_runtime::StagedIngressSession for DuckDbStagedIngressSession {
                 database_path: &self.destination.database_path,
                 lock_path: &self.destination.lock_path(),
             },
+        )?;
+        advance_row_key_allocator(
+            &writer.conn,
+            writer
+                .first_row_key
+                .ok_or_else(|| CdfError::internal("DuckDB staged first row key is absent"))?,
+            writer
+                .next_row_key
+                .ok_or_else(|| CdfError::internal("DuckDB staged next row key is absent"))?,
         )?;
         insert_mirrors(
             &writer.conn,

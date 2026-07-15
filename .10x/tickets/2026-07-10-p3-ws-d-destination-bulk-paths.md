@@ -19,6 +19,7 @@ Split by destination; no shared generic branch may name a concrete destination.
 - `.10x/tickets/done/2026-07-11-p3-d3-postgres-binary-copy.md`
 - `.10x/tickets/done/2026-07-11-p3-d4-parquet-streaming-writer.md`
 - `.10x/tickets/done/2026-07-11-p3-d5-bulk-path-matrix.md`
+- `.10x/tickets/2026-07-14-p3-d7-persistent-staged-ingress-stream.md`
 
 ## Acceptance criteria
 
@@ -28,7 +29,7 @@ Split by destination; no shared generic branch may name a concrete destination.
 
 ## Blockers
 
-The D1-D5 implementation and matrix are terminal. Parent closure still waits on reconciliation of its historical triage dependencies and program-level accounting.
+The D1-D5 implementation and matrix are terminal. D7 reopens the production wide-string ingress envelope after profiling falsified D2's per-segment appender lifetime. Parent closure also waits on reconciliation of its historical triage dependencies and program-level accounting.
 
 ## References
 

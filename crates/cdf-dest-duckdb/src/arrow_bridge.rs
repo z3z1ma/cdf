@@ -284,12 +284,20 @@ mod tests {
         };
         vector_conn.execute_batch("BEGIN TRANSACTION").unwrap();
         let started = Instant::now();
+        let column_names = persisted_fields
+            .iter()
+            .map(|field| field.name.clone())
+            .collect::<Vec<_>>();
+        let mut appender =
+            crate::commit::open_arrow_appender(&vector_conn, &target, &column_names).unwrap();
         for ordinal in 0..BATCHES {
             let row_key_start = u64::try_from(ordinal * BATCH_ROWS).unwrap() + 1;
             let persisted =
                 crate::package::persistence_batch(batch.clone(), row_key_start, None).unwrap();
-            crate::commit::append_arrow_batch_to_table(&vector_conn, &target, persisted).unwrap();
+            crate::commit::append_arrow_batch(&mut appender, &target, persisted).unwrap();
         }
+        crate::commit::flush_arrow_appender(&mut appender, &target).unwrap();
+        drop(appender);
         vector_conn.execute_batch("COMMIT").unwrap();
         let vector_elapsed = started.elapsed();
         let vector_rows = (BATCH_ROWS * BATCHES) as f64;

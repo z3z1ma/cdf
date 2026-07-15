@@ -1,23 +1,26 @@
 use crate::*;
 use crate::{api::*, arrow_bridge::into_duckdb_batch, sql::*};
 
-pub(crate) fn append_arrow_batch_to_table(
-    conn: &Connection,
+pub(crate) fn open_arrow_appender<'a>(
+    conn: &'a Connection,
     target: &TargetRef,
-    batch: RecordBatch,
-) -> Result<()> {
-    let schema = batch.schema();
-    let column_names = schema
-        .fields()
-        .iter()
-        .map(|field| field.name().as_str())
-        .collect::<Vec<_>>();
-    let mut appender = if target.schema == MAIN_SCHEMA {
+    column_names: &[String],
+) -> Result<duckdb::Appender<'a>> {
+    let column_names = column_names.iter().map(String::as_str).collect::<Vec<_>>();
+    let appender = if target.schema == MAIN_SCHEMA {
         conn.appender_with_columns(&target.table, &column_names)
     } else {
         conn.appender_with_columns_to_db(&target.table, &target.schema, &column_names)
     }
     .map_err(|error| duckdb_error(format!("open appender for {}", target.sql_name()), error))?;
+    Ok(appender)
+}
+
+pub(crate) fn append_arrow_batch(
+    appender: &mut duckdb::Appender<'_>,
+    target: &TargetRef,
+    batch: RecordBatch,
+) -> Result<()> {
     appender
         .append_record_batch(into_duckdb_batch(batch)?)
         .map_err(|error| {
@@ -25,7 +28,13 @@ pub(crate) fn append_arrow_batch_to_table(
                 format!("append Arrow batch into {}", target.sql_name()),
                 error,
             )
-        })?;
+        })
+}
+
+pub(crate) fn flush_arrow_appender(
+    appender: &mut duckdb::Appender<'_>,
+    target: &TargetRef,
+) -> Result<()> {
     appender
         .flush()
         .map_err(|error| duckdb_error(format!("flush appender for {}", target.sql_name()), error))

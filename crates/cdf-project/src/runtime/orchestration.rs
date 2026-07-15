@@ -316,6 +316,14 @@ async fn run_project_inner(execution: ProjectRunExecution<'_>) -> Result<Project
     for metric in output.phase_metrics.iter().cloned() {
         execution.recorder.append_phase_metric(metric)?;
     }
+    if let Some(metric) = active_staged
+        .as_ref()
+        .map(ActiveStagedIngress::ingress_metric)
+        .transpose()?
+        .flatten()
+    {
+        execution.recorder.append_phase_metric(metric)?;
+    }
     execution.recorder.complete_phase(
         RunPhase::PackageExecution,
         output.output.profile.output_bytes,

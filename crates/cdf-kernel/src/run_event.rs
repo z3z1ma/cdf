@@ -263,6 +263,7 @@ pub enum RunPhase {
     SegmentEncode,
     PersistHash,
     PackageFinalize,
+    DestinationIngress,
     DestinationWriteReceipt,
     CheckpointGate,
 }
@@ -276,6 +277,7 @@ impl RunPhase {
             Self::SegmentEncode => "segment_encode",
             Self::PersistHash => "persist_hash",
             Self::PackageFinalize => "package_finalize",
+            Self::DestinationIngress => "destination_ingress",
             Self::DestinationWriteReceipt => "destination_write_receipt",
             Self::CheckpointGate => "checkpoint_gate",
         }

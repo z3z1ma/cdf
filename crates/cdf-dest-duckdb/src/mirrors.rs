@@ -51,26 +51,35 @@ pub(crate) fn ensure_mirror_tables(conn: &Connection) -> Result<()> {
     .map_err(|error| duckdb_error("create DuckDB cdf mirror tables", error))
 }
 
-pub(crate) fn allocate_row_keys(conn: &Connection, row_count: u64) -> Result<Option<u64>> {
-    if row_count == 0 {
-        return Ok(None);
-    }
-    let start: u64 = conn
-        .query_row(
-            "SELECT next_key FROM _cdf_row_key_allocator WHERE singleton",
-            [],
-            |row| row.get(0),
-        )
-        .map_err(|error| duckdb_error("read DuckDB row-key allocator", error))?;
-    let end = start
-        .checked_add(row_count)
-        .ok_or_else(|| CdfError::data("DuckDB row-key allocator overflowed u64"))?;
-    conn.execute(
-        "UPDATE _cdf_row_key_allocator SET next_key = ? WHERE singleton",
-        params![end],
+pub(crate) fn next_row_key(conn: &Connection) -> Result<u64> {
+    conn.query_row(
+        "SELECT next_key FROM _cdf_row_key_allocator WHERE singleton",
+        [],
+        |row| row.get(0),
     )
-    .map_err(|error| duckdb_error("advance DuckDB row-key allocator", error))?;
-    Ok(Some(start))
+    .map_err(|error| duckdb_error("read DuckDB row-key allocator", error))
+}
+
+pub(crate) fn advance_row_key_allocator(
+    conn: &Connection,
+    expected_start: u64,
+    next_key: u64,
+) -> Result<()> {
+    if next_key < expected_start {
+        return Err(CdfError::data("DuckDB row-key allocator moved backwards"));
+    }
+    let changed = conn
+        .execute(
+            "UPDATE _cdf_row_key_allocator SET next_key = ? WHERE singleton AND next_key = ?",
+            params![next_key, expected_start],
+        )
+        .map_err(|error| duckdb_error("advance DuckDB row-key allocator", error))?;
+    if changed != 1 {
+        return Err(CdfError::destination(
+            "DuckDB row-key allocator changed during an exclusive staged transaction",
+        ));
+    }
+    Ok(())
 }
 
 pub(crate) fn find_duplicate_receipt(

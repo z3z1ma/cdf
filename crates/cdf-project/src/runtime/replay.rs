@@ -8,6 +8,7 @@ use super::{
     types::*,
 };
 use std::sync::{Arc, Condvar, Mutex, mpsc};
+use std::time::{Duration, Instant};
 
 use cdf_kernel::PushdownFidelity;
 use cdf_memory::{DEFAULT_PROCESS_BUDGET_BYTES, DeterministicMemoryCoordinator, MemoryCoordinator};
@@ -27,6 +28,9 @@ pub(crate) struct ActiveStagedIngress {
     execution: Option<ExecutionServices>,
     final_binding_lane: Option<String>,
     bulk_path: cdf_runtime::PreparedBulkPath,
+    ingress_duration: Duration,
+    ingress_input_bytes: u64,
+    ingress_operations: u64,
 }
 
 pub(crate) struct StagedIngressPlan {
@@ -50,8 +54,107 @@ struct BackgroundStaging {
 struct BackgroundStagedSegment {
     request: cdf_runtime::StagedSegmentRequest,
     identity: cdf_runtime::StagedSegmentIdentity,
+    memory_leases: Vec<cdf_memory::MemoryLease>,
+    bytes: InFlightBytePermit,
+}
+
+struct BackgroundStagingGuard {
+    identity: cdf_runtime::StagedSegmentIdentity,
     _memory_leases: Vec<cdf_memory::MemoryLease>,
     _bytes: InFlightBytePermit,
+}
+
+struct BackgroundStagingStream {
+    receiver: mpsc::Receiver<BackgroundStagedSegment>,
+    attempt_id: cdf_runtime::LoadAttemptId,
+    in_progress: Option<BackgroundStagingGuard>,
+    staged: Vec<cdf_runtime::StagedSegmentIdentity>,
+    receive_wait: Duration,
+}
+
+impl BackgroundStagingStream {
+    fn finish(self) -> Result<(Vec<cdf_runtime::StagedSegmentIdentity>, Duration)> {
+        if self.in_progress.is_some() {
+            return Err(CdfError::destination(
+                "staged destination returned without acknowledging its current segment",
+            ));
+        }
+        Ok((self.staged, self.receive_wait))
+    }
+}
+
+impl cdf_runtime::StagedSegmentStream for BackgroundStagingStream {
+    fn next_segment(&mut self) -> Result<Option<cdf_runtime::StagedSegmentRequest>> {
+        if self.in_progress.is_some() {
+            return Err(CdfError::destination(
+                "staged destination requested another segment before acknowledging the current segment",
+            ));
+        }
+        let waiting = Instant::now();
+        let work = self.receiver.recv().ok();
+        self.receive_wait = self.receive_wait.saturating_add(waiting.elapsed());
+        let Some(work) = work else {
+            return Ok(None);
+        };
+        let BackgroundStagedSegment {
+            request,
+            identity,
+            memory_leases,
+            bytes,
+        } = work;
+        self.in_progress = Some(BackgroundStagingGuard {
+            identity,
+            _memory_leases: memory_leases,
+            _bytes: bytes,
+        });
+        Ok(Some(request))
+    }
+
+    fn acknowledge(&mut self, acknowledgement: cdf_runtime::StagedSegmentAck) -> Result<()> {
+        let guard = self.in_progress.take().ok_or_else(|| {
+            CdfError::destination("staged destination acknowledged without a current segment")
+        })?;
+        if acknowledgement.attempt_id != self.attempt_id
+            || acknowledgement.identity != guard.identity
+        {
+            return Err(CdfError::destination(
+                "staged ingress acknowledgement did not bind the exact durable segment",
+            ));
+        }
+        self.staged.push(guard.identity);
+        Ok(())
+    }
+}
+
+struct OneStagedSegmentStream {
+    request: Option<cdf_runtime::StagedSegmentRequest>,
+    attempt_id: cdf_runtime::LoadAttemptId,
+    identity: cdf_runtime::StagedSegmentIdentity,
+    acknowledged: bool,
+}
+
+impl cdf_runtime::StagedSegmentStream for OneStagedSegmentStream {
+    fn next_segment(&mut self) -> Result<Option<cdf_runtime::StagedSegmentRequest>> {
+        if self.request.is_none() && !self.acknowledged {
+            return Err(CdfError::destination(
+                "staged destination requested another segment before acknowledging the current segment",
+            ));
+        }
+        Ok(self.request.take())
+    }
+
+    fn acknowledge(&mut self, acknowledgement: cdf_runtime::StagedSegmentAck) -> Result<()> {
+        if self.acknowledged
+            || acknowledgement.attempt_id != self.attempt_id
+            || acknowledgement.identity != self.identity
+        {
+            return Err(CdfError::destination(
+                "staged ingress acknowledgement did not bind the exact durable segment",
+            ));
+        }
+        self.acknowledged = true;
+        Ok(())
+    }
 }
 
 struct InFlightByteBudget {
@@ -104,6 +207,9 @@ impl Drop for InFlightBytePermit {
 struct CompletedBackgroundStaging {
     session: Option<Box<dyn cdf_runtime::StagedIngressSession>>,
     staged: Vec<cdf_runtime::StagedSegmentIdentity>,
+    ingress_duration: Duration,
+    ingress_input_bytes: u64,
+    ingress_operations: u64,
 }
 
 impl ActiveStagedIngress {
@@ -184,6 +290,9 @@ impl ActiveStagedIngress {
             execution,
             final_binding_lane: capabilities.final_binding_lane.clone(),
             bulk_path,
+            ingress_duration: Duration::ZERO,
+            ingress_input_bytes: 0,
+            ingress_operations: 0,
         };
         if let Some(lane) = capabilities.staged_ingress_lane.as_deref() {
             active.start_background(lane, &capabilities, scheduling.max_in_flight_segments)?;
@@ -221,26 +330,35 @@ impl ActiveStagedIngress {
         scope.spawn_blocking(
             lane,
             Box::new(move || {
-                let mut staged = Vec::new();
-                for work in receiver {
-                    let ack = match session.stage_segment(work.request) {
-                        Ok(ack) => ack,
-                        Err(error) => {
-                            let _ = session.abort();
-                            return Err(error);
-                        }
-                    };
-                    if ack.attempt_id != attempt_id || ack.identity != work.identity {
-                        let _ = session.abort();
-                        return Err(CdfError::destination(
-                            "staged ingress acknowledgement did not bind the exact durable segment",
-                        ));
-                    }
-                    staged.push(work.identity);
+                let mut stream = BackgroundStagingStream {
+                    receiver,
+                    attempt_id,
+                    in_progress: None,
+                    staged: Vec::new(),
+                    receive_wait: Duration::ZERO,
+                };
+                let started = Instant::now();
+                if let Err(error) = session.stage_stream(&mut stream) {
+                    let _ = session.abort();
+                    return Err(error);
                 }
+                let elapsed = started.elapsed();
+                let (staged, receive_wait) = match stream.finish() {
+                    Ok(finished) => finished,
+                    Err(error) => {
+                        let _ = session.abort();
+                        return Err(error);
+                    }
+                };
                 let mut output = completed_worker.lock().map_err(|_| {
                     CdfError::internal("background staging completion lock is poisoned")
                 })?;
+                output.ingress_duration = elapsed.saturating_sub(receive_wait);
+                output.ingress_input_bytes = staged.iter().fold(0_u64, |total, identity| {
+                    total.saturating_add(identity.byte_count)
+                });
+                output.ingress_operations = u64::try_from(staged.len())
+                    .map_err(|_| CdfError::data("staged segment count exceeds u64"))?;
                 output.session = Some(session);
                 output.staged = staged;
                 Ok(())
@@ -302,24 +420,33 @@ impl ActiveStagedIngress {
                 .send(BackgroundStagedSegment {
                     request,
                     identity,
-                    _memory_leases: memory_leases,
-                    _bytes: bytes,
+                    memory_leases,
+                    bytes,
                 })
                 .map_err(|_| CdfError::destination("staged ingress worker stopped"))?;
             return Ok(());
         }
-        let ack = self
-            .session
+        let mut stream = OneStagedSegmentStream {
+            request: Some(request),
+            attempt_id: self.attempt_id.clone(),
+            identity: identity.clone(),
+            acknowledged: false,
+        };
+        let started = Instant::now();
+        self.session
             .as_mut()
             .ok_or_else(|| CdfError::internal("staged session is no longer active"))?
-            .stage_segment(request)?;
+            .stage_stream(&mut stream)?;
+        self.ingress_duration = self.ingress_duration.saturating_add(started.elapsed());
         drop(memory_leases);
-        if ack.attempt_id != self.attempt_id || ack.identity != identity {
+        if !stream.acknowledged {
             return Err(CdfError::destination(
-                "staged ingress acknowledgement did not bind the exact durable segment",
+                "staged destination returned without acknowledging its current segment",
             ));
         }
         self.staged.push(identity);
+        self.ingress_input_bytes = self.ingress_input_bytes.saturating_add(entry.byte_count);
+        self.ingress_operations = self.ingress_operations.saturating_add(1);
         Ok(())
     }
 
@@ -346,7 +473,28 @@ impl ActiveStagedIngress {
             .map_err(|_| CdfError::internal("background staging completion lock is poisoned"))?;
         self.session = completed.session.take();
         self.staged = std::mem::take(&mut completed.staged);
+        self.ingress_duration = completed.ingress_duration;
+        self.ingress_input_bytes = completed.ingress_input_bytes;
+        self.ingress_operations = completed.ingress_operations;
         Ok(())
+    }
+
+    pub(crate) fn ingress_metric(&self) -> Result<Option<RunPhaseMetric>> {
+        if self.ingress_operations == 0 {
+            return Ok(None);
+        }
+        Ok(Some(RunPhaseMetric {
+            phase: RunPhase::DestinationIngress,
+            status: RunPhaseStatus::Completed,
+            duration_ns: u64::try_from(self.ingress_duration.as_nanos()).map_err(|error| {
+                CdfError::internal(format!(
+                    "destination ingress duration does not fit in u64: {error}"
+                ))
+            })?,
+            input_bytes: self.ingress_input_bytes,
+            output_bytes: self.ingress_input_bytes,
+            operations: self.ingress_operations,
+        }))
     }
 
     fn bind_final(
@@ -1258,6 +1406,77 @@ struct PackageStagedSegmentReader {
     next_batch: usize,
 }
 
+struct PackageStagingStream<'a> {
+    segments: cdf_package::VerifiedSegmentStream<()>,
+    schema_hash: SchemaHash,
+    attempt_id: cdf_runtime::LoadAttemptId,
+    next_ordinal: u32,
+    in_progress: Option<cdf_runtime::StagedSegmentIdentity>,
+    staged: Vec<cdf_runtime::StagedSegmentIdentity>,
+    acknowledge_hook: &'a mut dyn FnMut(&cdf_runtime::StagedSegmentIdentity) -> Result<()>,
+}
+
+impl PackageStagingStream<'_> {
+    fn finish(self) -> Result<Vec<cdf_runtime::StagedSegmentIdentity>> {
+        if self.in_progress.is_some() {
+            return Err(CdfError::destination(
+                "staged destination returned without acknowledging its current package segment",
+            ));
+        }
+        Ok(self.staged)
+    }
+}
+
+impl cdf_runtime::StagedSegmentStream for PackageStagingStream<'_> {
+    fn next_segment(&mut self) -> Result<Option<cdf_runtime::StagedSegmentRequest>> {
+        if self.in_progress.is_some() {
+            return Err(CdfError::destination(
+                "staged destination requested another package segment before acknowledging the current segment",
+            ));
+        }
+        let Some(segment) = self.segments.next() else {
+            return Ok(None);
+        };
+        let segment = segment?;
+        let ordinal = self.next_ordinal;
+        self.next_ordinal = self
+            .next_ordinal
+            .checked_add(1)
+            .ok_or_else(|| CdfError::data("staged package has too many segments"))?;
+        let identity = cdf_runtime::StagedSegmentIdentity::from_manifest_entry(
+            &segment.entry,
+            self.schema_hash.clone(),
+            ordinal,
+        )?;
+        self.in_progress = Some(identity.clone());
+        cdf_runtime::StagedSegmentRequest::new(
+            identity.clone(),
+            Box::new(PackageStagedSegmentReader {
+                identity,
+                segment,
+                next_batch: 0,
+            }),
+        )
+        .map(Some)
+    }
+
+    fn acknowledge(&mut self, acknowledgement: cdf_runtime::StagedSegmentAck) -> Result<()> {
+        let expected = self.in_progress.take().ok_or_else(|| {
+            CdfError::destination(
+                "staged destination acknowledged without a current package segment",
+            )
+        })?;
+        if acknowledgement.attempt_id != self.attempt_id || acknowledgement.identity != expected {
+            return Err(CdfError::destination(
+                "staged ingress acknowledgement did not bind the exact durable segment",
+            ));
+        }
+        (self.acknowledge_hook)(&expected)?;
+        self.staged.push(expected);
+        Ok(())
+    }
+}
+
 impl cdf_runtime::DurableSegmentReader for PackageStagedSegmentReader {
     fn identity(&self) -> &cdf_runtime::StagedSegmentIdentity {
         &self.identity
@@ -1334,38 +1553,12 @@ fn commit_package_through_staged_ingress(
             .max_in_flight_bytes
             .expect("validated staged byte bound")
             .min(memory.snapshot().budget_bytes);
-        let stream = reader.verified_canonical_segment_stream_with(
+        let segments = reader.verified_canonical_segment_stream_with(
             verified,
             memory,
             maximum_segment_bytes,
         )?;
-        let mut staged = Vec::with_capacity(reader.manifest().identity.segments.len());
-        for (ordinal, segment) in stream.enumerate() {
-            let segment = segment?;
-            let ordinal = u32::try_from(ordinal)
-                .map_err(|_| CdfError::data("staged package has too many segments"))?;
-            let identity = cdf_runtime::StagedSegmentIdentity::from_manifest_entry(
-                &segment.entry,
-                inputs.schema_hash.clone(),
-                ordinal,
-            )?;
-            let request = cdf_runtime::StagedSegmentRequest::new(
-                identity.clone(),
-                Box::new(PackageStagedSegmentReader {
-                    identity: identity.clone(),
-                    segment,
-                    next_batch: 0,
-                }),
-            )?;
-            let ack = session
-                .as_mut()
-                .expect("staged session remains owned until final binding")
-                .stage_segment(request)?;
-            if ack.attempt_id != attempt_id || ack.identity != identity {
-                return Err(CdfError::destination(
-                    "staged ingress acknowledgement did not bind the exact durable segment",
-                ));
-            }
+        let mut acknowledge = |identity: &cdf_runtime::StagedSegmentIdentity| {
             let segment_ack = SegmentAck {
                 segment_id: identity.segment_id.clone(),
                 row_count: identity.row_count,
@@ -1374,9 +1567,22 @@ fn commit_package_through_staged_ingress(
             notify_destination_replay_stage(
                 hooks,
                 PackageReplayStage::DestinationSegmentAcknowledged { ack: &segment_ack },
-            )?;
-            staged.push(identity);
-        }
+            )
+        };
+        let mut stream = PackageStagingStream {
+            segments,
+            schema_hash: inputs.schema_hash.clone(),
+            attempt_id: attempt_id.clone(),
+            next_ordinal: 0,
+            in_progress: None,
+            staged: Vec::with_capacity(reader.manifest().identity.segments.len()),
+            acknowledge_hook: &mut acknowledge,
+        };
+        session
+            .as_mut()
+            .expect("staged session remains owned until final binding")
+            .stage_stream(&mut stream)?;
+        let staged = stream.finish()?;
         let snapshot = session
             .as_ref()
             .expect("staged session remains owned until final binding")

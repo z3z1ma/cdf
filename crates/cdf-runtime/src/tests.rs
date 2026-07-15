@@ -330,23 +330,28 @@ struct MockStagedSession {
 }
 
 impl StagedIngressSession for MockStagedSession {
-    fn stage_segment(&mut self, mut segment: StagedSegmentRequest) -> Result<StagedSegmentAck> {
-        while segment.reader_mut().next_batch()?.is_some() {}
-        let mut attempts = self.attempts.lock().unwrap();
-        let accepted = attempts
-            .get_mut(self.request.attempt_id())
-            .ok_or_else(|| CdfError::destination("mock staging attempt is not attached"))?;
-        if segment.identity.ordinal != u32::try_from(accepted.accepted_segments.len()).unwrap() {
-            return Err(CdfError::destination(
-                "mock staging received a noncanonical ordinal",
-            ));
+    fn stage_stream(&mut self, stream: &mut dyn StagedSegmentStream) -> Result<()> {
+        while let Some(mut segment) = stream.next_segment()? {
+            while segment.reader_mut().next_batch()?.is_some() {}
+            let identity = segment.identity;
+            let mut attempts = self.attempts.lock().unwrap();
+            let accepted = attempts
+                .get_mut(self.request.attempt_id())
+                .ok_or_else(|| CdfError::destination("mock staging attempt is not attached"))?;
+            if identity.ordinal != u32::try_from(accepted.accepted_segments.len()).unwrap() {
+                return Err(CdfError::destination(
+                    "mock staging received a noncanonical ordinal",
+                ));
+            }
+            accepted.accepted_segments.push(identity.clone());
+            drop(attempts);
+            stream.acknowledge(StagedSegmentAck {
+                attempt_id: self.request.attempt_id().clone(),
+                identity,
+                external_durable: true,
+            })?;
         }
-        accepted.accepted_segments.push(segment.identity.clone());
-        Ok(StagedSegmentAck {
-            attempt_id: self.request.attempt_id().clone(),
-            identity: segment.identity,
-            external_durable: true,
-        })
+        Ok(())
     }
 
     fn snapshot(&self) -> Result<StagingSnapshot> {
@@ -483,6 +488,42 @@ impl DurableSegmentReader for EmptySegmentReader {
     fn next_batch(&mut self) -> Result<Option<arrow_array::RecordBatch>> {
         Ok(None)
     }
+}
+
+struct TestStagedSegmentStream {
+    requests: std::vec::IntoIter<StagedSegmentRequest>,
+    acknowledgements: Vec<StagedSegmentAck>,
+}
+
+impl StagedSegmentStream for TestStagedSegmentStream {
+    fn next_segment(&mut self) -> Result<Option<StagedSegmentRequest>> {
+        Ok(self.requests.next())
+    }
+
+    fn acknowledge(&mut self, acknowledgement: StagedSegmentAck) -> Result<()> {
+        self.acknowledgements.push(acknowledgement);
+        Ok(())
+    }
+}
+
+fn stage_test_identities(
+    session: &mut dyn StagedIngressSession,
+    identities: impl IntoIterator<Item = StagedSegmentIdentity>,
+) -> Vec<StagedSegmentAck> {
+    let requests = identities
+        .into_iter()
+        .map(|identity| {
+            StagedSegmentRequest::new(identity.clone(), Box::new(EmptySegmentReader { identity }))
+                .unwrap()
+        })
+        .collect::<Vec<_>>()
+        .into_iter();
+    let mut stream = TestStagedSegmentStream {
+        requests,
+        acknowledgements: Vec::new(),
+    };
+    session.stage_stream(&mut stream).unwrap();
+    stream.acknowledgements
 }
 
 struct MockDriver {
@@ -1378,16 +1419,7 @@ fn staged_session_reattaches_rejects_mismatch_and_binds_receipt_only_at_finaliza
     let mut session = runtime
         .begin_staged_ingress(staged_request(attempt.clone(), schema_hash.clone()))
         .unwrap();
-    for identity in [first.clone(), second.clone()] {
-        let ack = session
-            .stage_segment(
-                StagedSegmentRequest::new(
-                    identity.clone(),
-                    Box::new(EmptySegmentReader { identity }),
-                )
-                .unwrap(),
-            )
-            .unwrap();
+    for ack in stage_test_identities(session.as_mut(), [first.clone(), second.clone()]) {
         assert_eq!(ack.attempt_id, attempt);
     }
     assert!(runtime.committed.lock().unwrap().is_empty());
@@ -1458,17 +1490,7 @@ fn staged_session_reattaches_rejects_mismatch_and_binds_receipt_only_at_finaliza
             schema_hash.clone(),
         ))
         .unwrap();
-    for identity in [first.clone(), second.clone()] {
-        duplicate_session
-            .stage_segment(
-                StagedSegmentRequest::new(
-                    identity.clone(),
-                    Box::new(EmptySegmentReader { identity }),
-                )
-                .unwrap(),
-            )
-            .unwrap();
-    }
+    stage_test_identities(duplicate_session.as_mut(), [first.clone(), second.clone()]);
     let duplicate = duplicate_session
         .bind_final(test_final_binding(
             duplicate_attempt,
