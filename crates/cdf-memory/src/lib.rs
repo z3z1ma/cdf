@@ -462,6 +462,7 @@ impl OperatorMemoryProfile {
 pub trait MemoryCoordinator: Send + Sync {
     fn try_reserve(&self, request: &ReservationRequest) -> Result<Option<MemoryLease>>;
     fn register_waiter(&self, waker: &Waker);
+    fn unregister_waiter(&self, waker: &Waker);
     fn snapshot(&self) -> MemorySnapshot;
     fn record_event(&self, event: MemoryEvent);
 }
@@ -469,20 +470,68 @@ pub trait MemoryCoordinator: Send + Sync {
 pub struct ReserveFuture {
     coordinator: Arc<dyn MemoryCoordinator>,
     request: ReservationRequest,
+    registered_waker: Option<Waker>,
+}
+
+impl ReserveFuture {
+    fn register_waiter(&mut self, waker: &Waker) {
+        if self
+            .registered_waker
+            .as_ref()
+            .is_some_and(|registered| registered.will_wake(waker))
+        {
+            return;
+        }
+        self.clear_waiter();
+        self.coordinator.register_waiter(waker);
+        self.registered_waker = Some(waker.clone());
+    }
+
+    fn clear_waiter(&mut self) {
+        if let Some(waker) = self.registered_waker.take() {
+            self.coordinator.unregister_waiter(&waker);
+        }
+    }
 }
 
 impl Future for ReserveFuture {
     type Output = Result<MemoryLease>;
 
-    fn poll(self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<Self::Output> {
-        match self.coordinator.try_reserve(&self.request) {
-            Ok(Some(lease)) => Poll::Ready(Ok(lease)),
-            Ok(None) => {
-                self.coordinator.register_waiter(context.waker());
-                Poll::Pending
+    fn poll(mut self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<Self::Output> {
+        let this = self.as_mut().get_mut();
+        match this.coordinator.try_reserve(&this.request) {
+            Ok(Some(lease)) => {
+                this.clear_waiter();
+                Poll::Ready(Ok(lease))
             }
-            Err(error) => Poll::Ready(Err(error)),
+            Ok(None) => {
+                this.register_waiter(context.waker());
+                // Close the check/register race: capacity can be released after the first
+                // attempt but before this waker is visible to the coordinator. Once registered,
+                // a second attempt either acquires that capacity or is guaranteed a later wake.
+                match this.coordinator.try_reserve(&this.request) {
+                    Ok(Some(lease)) => {
+                        this.clear_waiter();
+                        Poll::Ready(Ok(lease))
+                    }
+                    Ok(None) => Poll::Pending,
+                    Err(error) => {
+                        this.clear_waiter();
+                        Poll::Ready(Err(error))
+                    }
+                }
+            }
+            Err(error) => {
+                this.clear_waiter();
+                Poll::Ready(Err(error))
+            }
         }
+    }
+}
+
+impl Drop for ReserveFuture {
+    fn drop(&mut self) {
+        self.clear_waiter();
     }
 }
 
@@ -493,6 +542,7 @@ pub fn reserve(
     ReserveFuture {
         coordinator,
         request,
+        registered_waker: None,
     }
 }
 
@@ -515,10 +565,12 @@ pub fn reserve_blocking(
     let waker = Waker::from(Arc::new(ThreadWake(std::thread::current())));
     loop {
         if let Some(lease) = coordinator.try_reserve(request)? {
+            coordinator.unregister_waiter(&waker);
             return Ok(lease);
         }
         coordinator.register_waiter(&waker);
         if let Some(lease) = coordinator.try_reserve(request)? {
+            coordinator.unregister_waiter(&waker);
             return Ok(lease);
         }
         std::thread::park();
@@ -632,6 +684,15 @@ impl MemoryCoordinator for DeterministicMemoryCoordinator {
         {
             state.waiters.push(waker.clone());
         }
+    }
+
+    fn unregister_waiter(&self, waker: &Waker) {
+        self.inner
+            .state
+            .lock()
+            .unwrap()
+            .waiters
+            .retain(|existing| !existing.will_wake(waker));
     }
 
     fn snapshot(&self) -> MemorySnapshot {

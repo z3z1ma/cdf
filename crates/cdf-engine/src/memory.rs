@@ -221,6 +221,15 @@ impl MemoryCoordinator for DataFusionMemoryCoordinator {
         }
     }
 
+    fn unregister_waiter(&self, waker: &Waker) {
+        self.inner
+            .state
+            .lock()
+            .unwrap()
+            .waiters
+            .retain(|existing| !existing.will_wake(waker));
+    }
+
     fn snapshot(&self) -> MemorySnapshot {
         self.inner.state.lock().unwrap().snapshot.clone()
     }

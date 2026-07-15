@@ -1,7 +1,10 @@
 use std::{
     collections::BTreeMap,
     pin::Pin,
-    sync::Arc,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
     task::{Context, Poll, Waker},
 };
 
@@ -130,6 +133,109 @@ fn weighted_subcap_and_async_release_enforce_admission() {
 
 fn futures_poll<F: Future>(future: Pin<&mut F>) -> Poll<F::Output> {
     future.poll(&mut Context::from_waker(Waker::noop()))
+}
+
+#[derive(Default)]
+struct RegistrationRaceCoordinator {
+    available: AtomicBool,
+    registered: AtomicBool,
+    unregistered: AtomicBool,
+}
+
+struct NoopLeaseAccount;
+
+impl LeaseAccount for NoopLeaseAccount {
+    fn resize(&self, _current_bytes: u64, _new_bytes: u64) -> Result<()> {
+        Ok(())
+    }
+
+    fn release(&self, _bytes: u64) {}
+}
+
+impl MemoryCoordinator for RegistrationRaceCoordinator {
+    fn try_reserve(&self, request: &ReservationRequest) -> Result<Option<MemoryLease>> {
+        if self.available.swap(false, Ordering::SeqCst) {
+            return Ok(Some(MemoryLease::from_account(
+                request.bytes,
+                Arc::new(NoopLeaseAccount),
+            )?));
+        }
+        Ok(None)
+    }
+
+    fn register_waiter(&self, _waker: &Waker) {
+        self.registered.store(true, Ordering::SeqCst);
+        // Simulate capacity becoming available after the first reservation attempt but
+        // before the waiter is visible. No release remains to issue another wake.
+        self.available.store(true, Ordering::SeqCst);
+    }
+
+    fn unregister_waiter(&self, _waker: &Waker) {
+        self.unregistered.store(true, Ordering::SeqCst);
+    }
+
+    fn snapshot(&self) -> MemorySnapshot {
+        MemorySnapshot::default()
+    }
+
+    fn record_event(&self, _event: MemoryEvent) {}
+}
+
+#[test]
+fn async_reservation_closes_release_before_registration_race() {
+    let coordinator = Arc::new(RegistrationRaceCoordinator::default());
+    let coordinator_trait: Arc<dyn MemoryCoordinator> = coordinator.clone();
+    let mut future = Box::pin(reserve(
+        coordinator_trait,
+        ReservationRequest::new(consumer("race", MemoryClass::Queue), 64).unwrap(),
+    ));
+
+    let result = futures_poll(future.as_mut());
+    assert!(matches!(result, Poll::Ready(Ok(_))));
+    assert!(coordinator.registered.load(Ordering::SeqCst));
+    assert!(coordinator.unregistered.load(Ordering::SeqCst));
+}
+
+#[derive(Default)]
+struct CancellationCoordinator {
+    registered: AtomicBool,
+    unregistered: AtomicBool,
+}
+
+impl MemoryCoordinator for CancellationCoordinator {
+    fn try_reserve(&self, _request: &ReservationRequest) -> Result<Option<MemoryLease>> {
+        Ok(None)
+    }
+
+    fn register_waiter(&self, _waker: &Waker) {
+        self.registered.store(true, Ordering::SeqCst);
+    }
+
+    fn unregister_waiter(&self, _waker: &Waker) {
+        self.unregistered.store(true, Ordering::SeqCst);
+    }
+
+    fn snapshot(&self) -> MemorySnapshot {
+        MemorySnapshot::default()
+    }
+
+    fn record_event(&self, _event: MemoryEvent) {}
+}
+
+#[test]
+fn cancelling_pending_reservation_unregisters_its_waker() {
+    let coordinator = Arc::new(CancellationCoordinator::default());
+    let coordinator_trait: Arc<dyn MemoryCoordinator> = coordinator.clone();
+    let mut future = Box::pin(reserve(
+        coordinator_trait,
+        ReservationRequest::new(consumer("cancel", MemoryClass::Queue), 64).unwrap(),
+    ));
+    assert!(matches!(futures_poll(future.as_mut()), Poll::Pending));
+    assert!(coordinator.registered.load(Ordering::SeqCst));
+    assert!(!coordinator.unregistered.load(Ordering::SeqCst));
+
+    drop(future);
+    assert!(coordinator.unregistered.load(Ordering::SeqCst));
 }
 
 #[test]
