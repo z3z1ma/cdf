@@ -66,18 +66,38 @@ use crate::{
 
 pub type PackagePreFinalizeHook<'a> =
     dyn Fn(&PackageBuilder, EnginePackageDraft<'_>) -> Result<()> + 'a;
-pub type DurableSegmentHook<'a> = dyn FnMut(&SegmentEntry, &[RecordBatch]) -> Result<()> + 'a;
+pub type DurableSegmentHook<'a> =
+    dyn FnMut(&SegmentEntry, DurableSegmentPayload) -> Result<()> + 'a;
 pub type StreamingFinalizeHook<'a> = dyn FnMut() -> Result<()> + 'a;
 const SOURCE_ROW_FIELD: &str = "_cdf_internal_source_row";
+
+/// An owned, accounted handoff from durable package publication to staged ingress.
+///
+/// The record batches and their existing memory leases move together so a destination queue does
+/// not reserve the same Arrow allocations a second time. Dropping the payload releases ownership.
+pub struct DurableSegmentPayload {
+    batches: Vec<RecordBatch>,
+    memory_leases: Vec<MemoryLease>,
+}
+
+impl DurableSegmentPayload {
+    pub fn batches(&self) -> &[RecordBatch] {
+        &self.batches
+    }
+
+    pub fn into_parts(self) -> (Vec<RecordBatch>, Vec<MemoryLease>) {
+        (self.batches, self.memory_leases)
+    }
+}
 
 struct DurableSegmentObserver<'a> {
     hook: Option<&'a mut DurableSegmentHook<'a>>,
 }
 
 impl DurableSegmentObserver<'_> {
-    fn observe(&mut self, segment: &SegmentEntry, batches: &[RecordBatch]) -> Result<()> {
+    fn observe(&mut self, segment: &SegmentEntry, payload: DurableSegmentPayload) -> Result<()> {
         match self.hook.as_deref_mut() {
-            Some(hook) => hook(segment, batches),
+            Some(hook) => hook(segment, payload),
             None => Ok(()),
         }
     }
@@ -1553,9 +1573,8 @@ impl SegmentEncodeQueue {
                     .checked_div(conservative_segment_working_set)
                     .unwrap_or(0)
                     .max(1);
-                let maximum_in_flight =
-                    usize::try_from(cpu_parallelism.min(memory_parallelism).min(4))
-                        .map_err(|_| CdfError::data("segment encode parallelism exceeds usize"))?;
+                let maximum_in_flight = usize::try_from(cpu_parallelism.min(memory_parallelism))
+                    .map_err(|_| CdfError::data("segment encode parallelism exceeds usize"))?;
                 let (sender, receiver) = mpsc::channel();
                 SegmentEncodeMode::Parallel {
                     services: services.clone(),
@@ -1698,6 +1717,25 @@ impl SegmentEncodeQueue {
         Ok(())
     }
 
+    fn relieve_memory_pressure(
+        &mut self,
+        builder: &PackageBuilder,
+        state: &mut OutputWriteState<'_>,
+        durable_segment: &mut DurableSegmentObserver<'_>,
+    ) -> Result<bool> {
+        self.register_ready(builder, state, durable_segment)?;
+        let in_flight = match &self.mode {
+            SegmentEncodeMode::Inline => 0,
+            SegmentEncodeMode::Parallel { in_flight, .. } => *in_flight,
+        };
+        if in_flight == 0 {
+            return Ok(false);
+        }
+        self.receive_one(true)?;
+        self.register_ready(builder, state, durable_segment)?;
+        Ok(true)
+    }
+
     fn register_ready(
         &mut self,
         builder: &PackageBuilder,
@@ -1707,10 +1745,20 @@ impl SegmentEncodeQueue {
         while let Some(completion) = self.pending.remove(&self.next_registration) {
             let write = completion.encoded?;
             let write = builder.register_encoded_segment(write)?;
+            let SegmentEncodeWork {
+                ordinal: _,
+                segment_id,
+                partition_ordinal,
+                output_position,
+                batches,
+                normalization_output_bytes,
+                mut _transform_memory_leases,
+                _scratch_memory_lease,
+            } = completion.work;
             state.phase_measurements.add(
                 RunPhase::SegmentEncode,
                 write.encode_duration_ns,
-                completion.work.normalization_output_bytes,
+                normalization_output_bytes,
                 write.segment.byte_count,
             );
             state.phase_measurements.add(
@@ -1720,21 +1768,27 @@ impl SegmentEncodeQueue {
                 write.segment.byte_count,
             );
             let segment = write.segment;
-            durable_segment.observe(&segment, &completion.work.batches)?;
+            if let Some(lease) = _scratch_memory_lease {
+                _transform_memory_leases.push(lease);
+            }
+            durable_segment.observe(
+                &segment,
+                DurableSegmentPayload {
+                    batches,
+                    memory_leases: _transform_memory_leases,
+                },
+            )?;
             state.profile.output_rows = state.profile.output_rows.saturating_add(segment.row_count);
             state.profile.output_bytes = state
                 .profile
                 .output_bytes
                 .saturating_add(segment.byte_count);
             state.profile.output_batches = state.profile.output_batches.saturating_add(1);
-            state
-                .lineage
-                .output_segments
-                .push(completion.work.segment_id);
+            state.lineage.output_segments.push(segment_id);
             state.segment_positions.push(EngineSegmentPosition {
                 segment_id: segment.segment_id.clone(),
-                partition_ordinal: completion.work.partition_ordinal,
-                output_position: completion.work.output_position,
+                partition_ordinal,
+                output_position,
             });
             state.segments.push(segment);
             self.next_registration = self
@@ -3821,7 +3875,7 @@ fn persist_canonical_segments(
             memory_leases: _transform_memory_leases,
             ..
         } = canonical;
-        let _memory_lease = match state.memory {
+        let _memory_lease = match state.memory.map(Arc::clone) {
             Some(memory) => {
                 let bytes = retained_bytes
                     .max(1)
@@ -3832,11 +3886,15 @@ fn persist_canonical_segments(
                     bytes,
                 )?
                 .as_minimum_working_set();
-                Some(memory.try_reserve(&request)?.ok_or_else(|| {
-                    CdfError::data(format!(
-                        "canonical segment requires {bytes} bytes for retained input and concat output but the shared memory budget is exhausted; reduce jobs or raise the memory budget"
-                    ))
-                })?)
+                Some(reserve_with_encode_backpressure(
+                    memory,
+                    &request,
+                    state,
+                    sink,
+                    &format!(
+                        "canonical segment requires {bytes} bytes for retained input and concat output"
+                    ),
+                )?)
             }
             None => None,
         };
@@ -3865,17 +3923,16 @@ fn persist_canonical_segments(
             statistics_reservation_bytes.max(1),
         )?
         .as_minimum_working_set();
-        let _statistics_memory_lease = Some(
-            state
-                .statistics_memory
-                .try_reserve(&request)?
-                .ok_or_else(|| {
-                    CdfError::data(format!(
-                        "segment statistics require {} bytes but the shared memory budget is exhausted; reduce jobs or raise the memory budget",
-                        statistics_reservation_bytes.max(1)
-                    ))
-                })?,
-        );
+        let _statistics_memory_lease = Some(reserve_with_encode_backpressure(
+            Arc::clone(state.statistics_memory),
+            &request,
+            state,
+            sink,
+            &format!(
+                "segment statistics require {} bytes",
+                statistics_reservation_bytes.max(1)
+            ),
+        )?);
         let mut statistics = cdf_kernel::BatchStats::default();
         for batch in &output {
             statistics.merge_owned(cdf_kernel::BatchStats::compute(batch)?)?;
@@ -3902,6 +3959,30 @@ fn persist_canonical_segments(
         )?;
     }
     Ok(())
+}
+
+fn reserve_with_encode_backpressure(
+    memory: Arc<dyn MemoryCoordinator>,
+    request: &ReservationRequest,
+    state: &mut OutputWriteState<'_>,
+    sink: &mut SegmentOutputSink<'_, '_>,
+    operation: &str,
+) -> Result<MemoryLease> {
+    loop {
+        if let Some(lease) = memory.try_reserve(request)? {
+            return Ok(lease);
+        }
+        let SegmentOutputSink {
+            builder,
+            queue,
+            durable,
+        } = sink;
+        if !queue.relieve_memory_pressure(builder, state, durable)? {
+            return Err(CdfError::data(format!(
+                "{operation} but the shared memory budget is exhausted with no completed encode work available to release; reduce jobs or raise the memory budget"
+            )));
+        }
+    }
 }
 
 fn retain_package_statistics(

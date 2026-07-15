@@ -50,7 +50,7 @@ struct BackgroundStaging {
 struct BackgroundStagedSegment {
     request: cdf_runtime::StagedSegmentRequest,
     identity: cdf_runtime::StagedSegmentIdentity,
-    _lease: cdf_memory::MemoryLease,
+    _memory_leases: Vec<cdf_memory::MemoryLease>,
     _bytes: InFlightBytePermit,
 }
 
@@ -259,7 +259,7 @@ impl ActiveStagedIngress {
     pub(crate) fn stage_segment(
         &mut self,
         entry: &SegmentEntry,
-        batches: &[arrow_array::RecordBatch],
+        payload: cdf_engine::DurableSegmentPayload,
     ) -> Result<()> {
         let ordinal = self.next_ordinal;
         self.next_ordinal = self
@@ -271,22 +271,23 @@ impl ActiveStagedIngress {
             self.schema_hash.clone(),
             ordinal,
         )?;
+        let (batches, memory_leases) = payload.into_parts();
+        let retained_bytes = batches
+            .iter()
+            .try_fold(0_u64, |total, batch| {
+                total
+                    .checked_add(cdf_memory::record_batch_retained_bytes(batch)?)
+                    .ok_or_else(|| CdfError::data("staged segment retained bytes overflow"))
+            })?
+            .max(1);
         let request = cdf_runtime::StagedSegmentRequest::new(
             identity.clone(),
             Box::new(LiveStagedSegmentReader {
                 identity: identity.clone(),
-                batches: owned_batch_iter(batches),
+                batches: batches.into_iter(),
             }),
         )?;
         if let Some(background) = &mut self.background {
-            let retained_bytes = batches
-                .iter()
-                .try_fold(0_u64, |total, batch| {
-                    total
-                        .checked_add(cdf_memory::record_batch_retained_bytes(batch)?)
-                        .ok_or_else(|| CdfError::data("staged segment retained bytes overflow"))
-                })?
-                .max(1);
             let maximum_bytes = background.services.memory().snapshot().budget_bytes;
             if retained_bytes > maximum_bytes {
                 return Err(CdfError::data(format!(
@@ -294,23 +295,6 @@ impl ActiveStagedIngress {
                 )));
             }
             let bytes = background.bytes.acquire(retained_bytes)?;
-            let request_memory = cdf_memory::ReservationRequest::new(
-                cdf_memory::ConsumerKey::new(
-                    "staged-ingress-edge",
-                    cdf_memory::MemoryClass::Queue,
-                )?,
-                retained_bytes,
-            )?;
-            let lease = background
-                .services
-                .memory()
-                .try_reserve(&request_memory)?
-                .ok_or_else(|| {
-                    CdfError::data(format!(
-                        "staged ingress requires {retained_bytes} queue bytes but the managed memory budget is exhausted; reduce jobs or raise the memory budget"
-                    ))
-                })?;
-            lease.reconcile(retained_bytes)?;
             background
                 .sender
                 .as_ref()
@@ -318,7 +302,7 @@ impl ActiveStagedIngress {
                 .send(BackgroundStagedSegment {
                     request,
                     identity,
-                    _lease: lease,
+                    _memory_leases: memory_leases,
                     _bytes: bytes,
                 })
                 .map_err(|_| CdfError::destination("staged ingress worker stopped"))?;
@@ -329,6 +313,7 @@ impl ActiveStagedIngress {
             .as_mut()
             .ok_or_else(|| CdfError::internal("staged session is no longer active"))?
             .stage_segment(request)?;
+        drop(memory_leases);
         if ack.attempt_id != self.attempt_id || ack.identity != identity {
             return Err(CdfError::destination(
                 "staged ingress acknowledgement did not bind the exact durable segment",
@@ -411,12 +396,6 @@ impl ActiveStagedIngress {
 struct LiveStagedSegmentReader {
     identity: cdf_runtime::StagedSegmentIdentity,
     batches: std::vec::IntoIter<arrow_array::RecordBatch>,
-}
-
-fn owned_batch_iter(
-    batches: &[arrow_array::RecordBatch],
-) -> std::vec::IntoIter<arrow_array::RecordBatch> {
-    Vec::from(batches).into_iter()
 }
 
 impl cdf_runtime::DurableSegmentReader for LiveStagedSegmentReader {

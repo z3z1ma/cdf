@@ -277,8 +277,8 @@ async fn run_project_inner(execution: ProjectRunExecution<'_>) -> Result<Project
         Some(staged) => {
             let staged = std::cell::RefCell::new(staged);
             let mut durable_segment =
-                |entry: &SegmentEntry, batches: &[arrow_array::RecordBatch]| {
-                    staged.borrow_mut().stage_segment(entry, batches)
+                |entry: &SegmentEntry, payload: cdf_engine::DurableSegmentPayload| {
+                    staged.borrow_mut().stage_segment(entry, payload)
                 };
             let mut stream_finalize = || staged.borrow_mut().finish_background();
             execute_to_package_with_streaming_hooks(

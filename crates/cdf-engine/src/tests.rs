@@ -549,7 +549,7 @@ fn execution_rejects_duplicate_planned_observations_before_staged_ingress() {
     let package_dir = TempDir::new().unwrap();
     let durable_calls = Arc::new(AtomicUsize::new(0));
     let hook_calls = Arc::clone(&durable_calls);
-    let mut durable_segment = move |_entry: &SegmentEntry, _batches: &[RecordBatch]| {
+    let mut durable_segment = move |_entry: &SegmentEntry, _payload: DurableSegmentPayload| {
         hook_calls.fetch_add(1, Ordering::SeqCst);
         Ok(())
     };
@@ -1560,17 +1560,21 @@ fn durable_segment_hook_runs_after_publish_with_exact_entry_and_batch() {
     let durable_root = package_dir.path().to_path_buf();
     let observed = Arc::new(Mutex::new(Vec::new()));
     let hook_observed = Arc::clone(&observed);
-    let mut durable_segment = move |entry: &SegmentEntry, batches: &[RecordBatch]| {
+    let retained_payloads = Arc::new(Mutex::new(Vec::new()));
+    let hook_payloads = Arc::clone(&retained_payloads);
+    let mut durable_segment = move |entry: &SegmentEntry, payload: DurableSegmentPayload| {
         assert!(durable_root.join(&entry.path).is_file());
         hook_observed.lock().unwrap().push((
             entry.segment_id.clone(),
             entry.sha256.clone(),
             entry.row_count,
-            batches
+            payload
+                .batches()
                 .iter()
                 .map(|batch| batch.num_rows() as u64)
                 .sum::<u64>(),
         ));
+        hook_payloads.lock().unwrap().push(payload);
         Ok(())
     };
     fn pre_finalize(
@@ -1581,6 +1585,7 @@ fn durable_segment_hook_runs_after_publish_with_exact_entry_and_batch() {
     }
     let mut stream_finalize = || Ok(());
 
+    let (_, services) = StandaloneExecutionHost::default_services(512 * 1024 * 1024).unwrap();
     let output = block_on(execute_to_package_with_streaming_hooks(
         &plan,
         &resource,
@@ -1588,7 +1593,7 @@ fn durable_segment_hook_runs_after_publish_with_exact_entry_and_batch() {
         &pre_finalize,
         &mut durable_segment,
         &mut stream_finalize,
-        EngineExecutionOptions::default(),
+        EngineExecutionOptions::default().with_execution_services(services.clone()),
     ))
     .unwrap();
 
@@ -1600,6 +1605,9 @@ fn durable_segment_hook_runs_after_publish_with_exact_entry_and_batch() {
         assert_eq!(actual.2, actual.3);
         assert_eq!(actual.2, expected.row_count);
     }
+    assert!(services.memory().snapshot().current_bytes > 0);
+    retained_payloads.lock().unwrap().clear();
+    assert_eq!(services.memory().snapshot().current_bytes, 0);
 }
 
 #[test]
@@ -4043,11 +4051,12 @@ fn parallel_segment_frontier_failure_joins_workers_and_prevents_finalization() {
     let (_, services) = StandaloneExecutionHost::default_services(64 * 1024 * 1024).unwrap();
     let pre_finalize =
         |_builder: &cdf_package::PackageBuilder, _draft: EnginePackageDraft<'_>| Ok(());
-    let mut durable_segment = |_entry: &SegmentEntry, _batches: &[RecordBatch]| -> Result<()> {
-        Err(cdf_kernel::CdfError::internal(
-            "stop at canonical segment frontier",
-        ))
-    };
+    let mut durable_segment =
+        |_entry: &SegmentEntry, _payload: DurableSegmentPayload| -> Result<()> {
+            Err(cdf_kernel::CdfError::internal(
+                "stop at canonical segment frontier",
+            ))
+        };
     let mut stream_finalize =
         || -> Result<()> { panic!("failed segment frontier must not reach stream finalization") };
 
