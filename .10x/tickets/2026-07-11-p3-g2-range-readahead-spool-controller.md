@@ -1,6 +1,6 @@
 Status: open
 Created: 2026-07-11
-Updated: 2026-07-12
+Updated: 2026-07-14
 Parent: .10x/tickets/2026-07-10-p3-ws-g-remote-io-overlap.md
 Depends-On: .10x/tickets/2026-07-11-p3-g1-streaming-transport-byte-sources.md, .10x/tickets/done/2026-07-11-p3-c1-scheduler-admission-contract.md, .10x/tickets/done/2026-07-11-p3-a2-unified-memory-ledger.md
 
@@ -44,3 +44,4 @@ Depends on G1, C1, and memory ledger.
 - 2026-07-12: Removed provider-input plus transformed-output double spooling for injected sources. Unknown transformed lengths now grow the shared spill reservation before disk writes; sequential transformed codecs avoid the spool entirely, while adaptive codecs retain one bounded transformed-output spool. Growing-spool decode overlap remains open. Evidence/review: `.10x/evidence/2026-07-12-p3-b1-streaming-transform-product-composition.md`, `.10x/reviews/2026-07-12-p3-b1-streaming-transform-product-composition-review.md`.
 - 2026-07-13: The fixed-schema discovery/stream-admission model makes G2's cache/spool controller the payload-reuse owner, not schema discovery. A materially downloaded schema observation must continue through the same live stream or exact spool; a small unspooled bounded probe may be reread within its recorded budget. Cache keys include source generation plus codec/options/normalizer/contract identity. G2 must expose this reusable source session without embedding schema or format policy.
 - 2026-07-13: The corrected lifecycle permits rereading a small unspooled bounded probe but requires same-command reuse of any fully downloaded/decompressed payload spool. G2 owns the neutral reusable spool/session handoff; schema discovery owns neither transport caching nor format-specific extraction.
+- 2026-07-14: Live FineWeb execution followed Hugging Face's allowlisted CAS redirect and completed one 2,147,509,487-byte full scan without returning to range fan-out. End-to-end debug time was 92.58 seconds; extraction/package took about 90.8 seconds, DuckDB/final gate about one second, and an in-flight sample showed 2.0 GiB RSS while the package had reached 1.1 GiB. Raw sequential `curl` of the exact URL completed in 19.116 seconds at 112,341,173 bytes/s, so CDF's 4.84x wall ratio is not a network roofline. G2 still owns growing-spool decode overlap and transfer progress telemetry; B2 owns separating local decode/package cost from the now-measured download floor.
