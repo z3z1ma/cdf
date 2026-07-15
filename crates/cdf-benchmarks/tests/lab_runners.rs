@@ -6,8 +6,9 @@ use cdf_benchmarks::{
     HostProbeConfig, IoMode, MacroRunRequest, ObservationStatus, PreoptimizationBaselineConfig,
     PreparedFileFormat, PreparedFilePackageWorkload, ProfileTool, ReferenceIdentity,
     ReferenceWorkload, SystemHostProvider, ToolIdentity, discover_polars, fixture_spec, host_class,
-    plan_profile, polars_scan_command, run_macro_cell, run_preoptimization_baseline, run_reference,
-    unavailable_reference_cell, validate_report, write_all_local_fixture_formats,
+    plan_profile, polars_scan_command, run_macro_cell, run_preoptimization_baseline,
+    run_prepared_file_to_package, run_reference, unavailable_reference_cell, validate_report,
+    write_all_local_fixture_formats,
 };
 
 fn provider() -> SystemHostProvider {
@@ -260,7 +261,8 @@ fn prepared_cdf_worker_emits_real_phase_breakdown_without_timing_fixture_setup()
         &request_path,
         serde_json::to_vec(&PreparedFilePackageWorkload {
             fixture_name: "medium".to_owned(),
-            source_path: temp.path().join("orders.ndjson"),
+            source_root: temp.path().to_path_buf(),
+            glob: "orders.ndjson".to_owned(),
             package_dir: temp.path().join("packages"),
             format: PreparedFileFormat::Ndjson,
             jobs: None,
@@ -300,6 +302,71 @@ fn prepared_cdf_worker_emits_real_phase_breakdown_without_timing_fixture_setup()
                 .iter()
                 .any(|phase| phase.phase == "package_finalize")
     }));
+}
+
+#[test]
+fn prepared_multi_file_jobs_matrix_preserves_canonical_package_identity() {
+    let temp = tempfile::tempdir().unwrap();
+    let spec = fixture_spec("medium").unwrap();
+    write_all_local_fixture_formats(temp.path(), &spec).unwrap();
+    let source = fs::read(temp.path().join("orders.ndjson")).unwrap();
+    for ordinal in 0..4 {
+        fs::write(
+            temp.path().join(format!("part-{ordinal:02}.ndjson")),
+            &source,
+        )
+        .unwrap();
+    }
+
+    let mut runs = Vec::new();
+    for (label, jobs) in [
+        ("one", Some(1)),
+        ("two", Some(2)),
+        ("auto", None),
+        ("n", Some(4)),
+    ] {
+        let run = run_prepared_file_to_package(&PreparedFilePackageWorkload {
+            fixture_name: "medium".to_owned(),
+            source_root: temp.path().to_path_buf(),
+            glob: "part-*.ndjson".to_owned(),
+            package_dir: temp.path().join(format!("package-{label}")),
+            format: PreparedFileFormat::Ndjson,
+            jobs,
+        })
+        .unwrap();
+        assert_eq!(run.configured_jobs, jobs);
+        assert_eq!(run.partition_count, 4);
+        assert_eq!(run.measurement.rows, (spec.rows * 4) as u64);
+        runs.push(run);
+    }
+
+    assert_eq!(runs[0].effective_jobs, 1);
+    assert_eq!(runs[1].effective_jobs, 2);
+    assert_eq!(runs[2].effective_jobs, 4);
+    assert_eq!(runs[3].effective_jobs, 4);
+    for run in &runs[1..] {
+        assert_eq!(run.package_hash, runs[0].package_hash);
+        assert_eq!(run.segments, runs[0].segments);
+    }
+}
+
+#[test]
+fn prepared_jobs_zero_is_rejected_before_source_contact() {
+    let error = run_prepared_file_to_package(&PreparedFilePackageWorkload {
+        fixture_name: "medium".to_owned(),
+        source_root: PathBuf::from("does-not-exist"),
+        glob: "*.ndjson".to_owned(),
+        package_dir: PathBuf::from("must-not-be-created"),
+        format: PreparedFileFormat::Ndjson,
+        jobs: Some(0),
+    })
+    .unwrap_err();
+
+    assert!(
+        error.to_string().contains("jobs must be nonzero"),
+        "{error}"
+    );
+    assert!(!PathBuf::from("must-not-be-created").exists());
 }
 
 #[test]

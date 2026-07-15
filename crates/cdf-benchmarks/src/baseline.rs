@@ -82,7 +82,8 @@ pub fn run_preoptimization_baseline(
         &cdf_request,
         canonical_json_bytes(&PreparedFilePackageWorkload {
             fixture_name: "medium".to_owned(),
-            source_path: fixture_root.join("orders.ndjson"),
+            source_root: fixture_root.clone(),
+            glob: "orders.ndjson".to_owned(),
             package_dir: config.output_root.join("cdf-packages"),
             format: PreparedFileFormat::Ndjson,
             jobs: None,

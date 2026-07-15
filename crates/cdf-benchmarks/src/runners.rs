@@ -53,7 +53,7 @@ use crate::{
 };
 
 const POSTGRES_URL_ENV: &str = "CDF_BENCH_POSTGRES_URL";
-const BENCHMARK_MANAGED_MEMORY_BYTES: u64 = 512 * 1024 * 1024;
+const BENCHMARK_MANAGED_MEMORY_BYTES: u64 = 4 * 1024 * 1024 * 1024;
 static POSTGRES_PACKAGE_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Clone, Copy, Debug)]
@@ -83,7 +83,8 @@ pub enum PreparedFileFormat {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PreparedFilePackageWorkload {
     pub fixture_name: String,
-    pub source_path: PathBuf,
+    pub source_root: PathBuf,
+    pub glob: String,
     pub package_dir: PathBuf,
     pub format: PreparedFileFormat,
     pub jobs: Option<u16>,
@@ -96,6 +97,7 @@ pub struct PreparedFilePackageRun {
     pub configured_jobs: Option<u16>,
     pub effective_jobs: u16,
     pub limiting_factors: Vec<String>,
+    pub partition_count: usize,
     pub package_hash: String,
     pub segments: Vec<cdf_package_contract::SegmentEntry>,
 }
@@ -107,18 +109,12 @@ pub struct LegacyCaseWorkload {
 }
 
 fn benchmark_file_resource(
-    source_path: &Path,
+    source_root: &Path,
+    glob: &str,
     format_id: &str,
     spec: &FixtureSpec,
     execution: &cdf_runtime::ExecutionServices,
 ) -> BenchResult<BenchmarkFileSource> {
-    let project_root = source_path
-        .parent()
-        .ok_or_else(|| bench_error("benchmark source path must have a parent directory"))?;
-    let file_name = source_path
-        .file_name()
-        .and_then(|value| value.to_str())
-        .ok_or_else(|| bench_error("benchmark source file name must be valid UTF-8"))?;
     let fields = benchmark_schema_fields(spec);
     let document = parse_toml(&format!(
         r#"
@@ -135,15 +131,15 @@ schema = {{ fields = [
 {}
 ] }}
 "#,
-        serde_json::to_string(file_name)?,
+        serde_json::to_string(glob)?,
         serde_json::to_string(format_id)?,
         fields.join(",\n")
     ))?;
-    let compiled = compile_document_with_project_root(&document, project_root)?
+    let compiled = compile_document_with_project_root(&document, source_root)?
         .into_iter()
         .next()
         .ok_or_else(|| bench_error("benchmark file declaration compiled no resource"))?;
-    resolve_benchmark_file_resource(compiled, project_root, execution)
+    resolve_benchmark_file_resource(compiled, source_root, execution)
 }
 
 fn resolve_benchmark_file_resource(
@@ -277,7 +273,13 @@ pub fn run_prepared_file_to_package(
     let execution = benchmark_execution_services()?;
     let host_jobs = execution.capabilities().logical_cpu_slots;
     let execution = execution.with_run_job_ceiling(request.jobs.unwrap_or(host_jobs))?;
-    let source = benchmark_file_resource(&request.source_path, format_id, &spec, &execution)?;
+    let source = benchmark_file_resource(
+        &request.source_root,
+        &request.glob,
+        format_id,
+        &spec,
+        &execution,
+    )?;
     let plan = identity_engine_plan(source.resource.as_ref(), "pkg-p3-prepared")?
         .bind_compiled_source(&source.source_plan)?
         .bind_operator_graph(
@@ -295,6 +297,23 @@ pub fn run_prepared_file_to_package(
         request.jobs,
     )?;
     execution.tighten_run_job_ceiling(scheduler.effective_jobs.jobs)?;
+    let physical_bytes = plan
+        .scan
+        .partitions
+        .iter()
+        .try_fold(0_u64, |total, partition| {
+            let bytes = partition
+                .metadata
+                .get("bytes")
+                .ok_or_else(|| {
+                    bench_error("prepared file partition omitted its physical byte count")
+                })?
+                .parse::<u64>()?;
+            total
+                .checked_add(bytes)
+                .ok_or_else(|| bench_error("prepared file physical byte count overflowed"))
+        })?;
+    let partition_count = plan.scan.partitions.len();
     let pre_finalize = |_builder: &PackageBuilder, _draft: EnginePackageDraft<'_>| Ok(());
     let output = block_on(execute_to_package_with_segment_positions_and_pre_finalize(
         &plan,
@@ -311,7 +330,7 @@ pub fn run_prepared_file_to_package(
             timed_wall_time_ns: None,
             rows: output.output.profile.output_rows,
             logical_bytes: output.output.profile.output_bytes,
-            physical_bytes: fs::metadata(&request.source_path)?.len(),
+            physical_bytes,
             spill_bytes: 0,
             phases: output
                 .phase_metrics
@@ -326,6 +345,7 @@ pub fn run_prepared_file_to_package(
         configured_jobs: request.jobs,
         effective_jobs: scheduler.effective_jobs.jobs,
         limiting_factors: scheduler.effective_jobs.limiting_factors,
+        partition_count,
         package_hash: output.output.manifest.package_hash,
         segments: output.output.segments,
     })
@@ -433,7 +453,14 @@ fn run_file_to_package(
     let data_root = root.join("data");
     let path = write_local_fixture_file(&data_root, spec, format)?;
     let execution = benchmark_execution_services()?;
-    let source = benchmark_file_resource(&path, format.format_id(), spec, &execution)?;
+    let source_root = path
+        .parent()
+        .ok_or_else(|| bench_error("benchmark source path must have a parent directory"))?;
+    let glob = path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .ok_or_else(|| bench_error("benchmark source file name must be valid UTF-8"))?;
+    let source = benchmark_file_resource(source_root, glob, format.format_id(), spec, &execution)?;
     let pre_finalize = |_builder: &PackageBuilder, _draft: EnginePackageDraft<'_>| Ok(());
     let plan = engine_plan(source.resource.as_ref(), "pkg-file-benchmark")?
         .bind_compiled_source(&source.source_plan)?
