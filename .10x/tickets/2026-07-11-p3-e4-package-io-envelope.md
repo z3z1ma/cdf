@@ -31,7 +31,7 @@ Depends on E1-E3.
 
 ## References
 
-- `.10x/tickets/2026-07-07-package-io-hashing-overhead-triage.md`
+- `.10x/tickets/done/2026-07-07-package-io-hashing-overhead-triage.md`
 - `.10x/specs/package-io-hashing-durability.md`
 
 ## Journal

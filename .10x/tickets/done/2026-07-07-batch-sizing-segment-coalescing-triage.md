@@ -1,7 +1,7 @@
 Status: done
 Created: 2026-07-07
 Updated: 2026-07-11
-Parent: .10x/tickets/2026-07-07-performance-investigation-backlog.md
+Parent: .10x/tickets/done/2026-07-07-performance-investigation-backlog.md
 
 # Triage batch sizing and segment coalescing
 
@@ -44,7 +44,7 @@ CDF's performance will depend heavily on the size and count of `RecordBatch` pay
 
 - Source inspection of `Batch`, `ResourceStream`, engine execution, package builder, and implemented resource runtimes.
 - Package fixture inspection to count segments and sizes for existing golden/local runs if available.
-- Optional measurement of many-small-segment overhead under `.10x/tickets/2026-07-07-package-io-hashing-overhead-triage.md`.
+- Optional measurement of many-small-segment overhead under `.10x/tickets/done/2026-07-07-package-io-hashing-overhead-triage.md`.
 
 ## Explicit exclusions
 
@@ -52,7 +52,7 @@ No batch-size configuration surface, no engine coalescing implementation, no pac
 
 ## References
 
-- `.10x/tickets/2026-07-07-performance-investigation-backlog.md`
+- `.10x/tickets/done/2026-07-07-performance-investigation-backlog.md`
 - `.10x/specs/resource-authoring-planning-batches.md`
 - `.10x/specs/package-lifecycle-determinism.md`
 - `crates/cdf-kernel/src/batch.rs`

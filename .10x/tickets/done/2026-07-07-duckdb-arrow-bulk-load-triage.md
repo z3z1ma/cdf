@@ -1,7 +1,7 @@
 Status: done
 Created: 2026-07-07
 Updated: 2026-07-13
-Parent: .10x/tickets/2026-07-07-performance-investigation-backlog.md
+Parent: .10x/tickets/done/2026-07-07-performance-investigation-backlog.md
 
 # Triage DuckDB Arrow bulk-load path
 
@@ -51,7 +51,7 @@ No DuckDB destination rewrite, no unsafe FFI, no type mapping change, no ICU pol
 
 ## References
 
-- `.10x/tickets/2026-07-07-performance-investigation-backlog.md`
+- `.10x/tickets/done/2026-07-07-performance-investigation-backlog.md`
 - `.10x/specs/destination-receipts-guarantees.md`
 - `.10x/specs/package-lifecycle-determinism.md`
 - `.10x/tickets/done/2026-07-05-duckdb-destination.md`

@@ -1,7 +1,7 @@
-Status: open
+Status: done
 Created: 2026-07-07
-Updated: 2026-07-07
-Parent: .10x/tickets/2026-07-07-performance-investigation-backlog.md
+Updated: 2026-07-14
+Parent: .10x/tickets/done/2026-07-07-performance-investigation-backlog.md
 
 # Triage streaming package-to-destination commit paths
 
@@ -52,7 +52,7 @@ No destination API change, no streaming reader implementation, no receipt schema
 
 ## References
 
-- `.10x/tickets/2026-07-07-performance-investigation-backlog.md`
+- `.10x/tickets/done/2026-07-07-performance-investigation-backlog.md`
 - `.10x/specs/package-lifecycle-determinism.md`
 - `.10x/specs/destination-receipts-guarantees.md`
 - `crates/cdf-package/src/reader.rs`
@@ -65,7 +65,22 @@ No destination API change, no streaming reader implementation, no receipt schema
 - 2026-07-07: Opened from performance discussion. The expected risk is peak memory and duplicate IPC readback when packages are immediately committed after being written.
 - 2026-07-11: P3 source/architecture audit confirmed whole-package destination materialization. A1/A5 establish durable-segment streaming and final binding; D1–D5 implement/verify bulk destination consumers; F2 audits residual collections. This triage owns no implementation and remains open only until those children attach before/after memory/receipt/crash evidence and the P3 closeout moves it terminal.
 - 2026-07-11: WS-L separately measured materialized package build, DuckDB commit, and Parquet commit and preserved their tiny-fixture/setup bias in `.10x/evidence/2026-07-11-p3-l5-preoptimization-baseline.md`. A1/A5/D1-D5/F2 own bounded streaming and receipt/crash before/after proof.
+- 2026-07-14: Closed the investigation after the materialization audit and destination contract work established staged durable-segment versus finalized-package ingress without destination identity branches. A1/A5 and D1–D5 own implementations; F2 retains the cross-codebase materialization audit.
 
 ## Blockers
 
-None for investigation. Any shared API change is blocked on a spec/API recommendation and separate implementation ticket.
+None. Investigation and bounded implementation handoff are complete.
+
+## Evidence
+
+- `.10x/research/2026-07-11-p3-materialization-streaming-binding-audit.md`
+- `.10x/evidence/2026-07-11-p3-l5-preoptimization-baseline.md`
+- `.10x/tickets/done/2026-07-11-p3-a1-staged-ingress-final-binding.md`, `.10x/tickets/done/2026-07-11-p3-a5-streaming-operator-graph.md`, and `.10x/tickets/done/2026-07-11-p3-d1-bulk-path-contract.md`.
+
+## Review
+
+Closure review found the receipt/crash invariants and extension boundary recorded and the residual destination/materialization proofs separately owned. Verdict: **pass for triage**; no claim is made that every destination is constant-memory yet.
+
+## Retrospective
+
+The key outcome was a capability sum type, not a destination-specific streaming API. That architecture now belongs to executable destination/runtime tickets.

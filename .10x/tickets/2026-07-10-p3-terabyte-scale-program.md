@@ -24,7 +24,7 @@ This parent is an aggregate plan. Workstream records own sequencing and integrat
 - `.10x/specs/data-onramp-file-sources-transports.md`.
 - `.10x/knowledge/runtime-conformance-throughput-rule.md`.
 - `.10x/knowledge/source-destination-extension-invariant.md`.
-- `.10x/tickets/2026-07-07-performance-investigation-backlog.md` and its open triage children, which this program absorbs rather than duplicates.
+- `.10x/tickets/done/2026-07-07-performance-investigation-backlog.md` and its open triage children, which this program absorbs rather than duplicates.
 
 ## Hard guardrails
 

@@ -1,7 +1,7 @@
-Status: open
+Status: done
 Created: 2026-07-07
-Updated: 2026-07-07
-Parent: .10x/tickets/2026-07-07-performance-investigation-backlog.md
+Updated: 2026-07-14
+Parent: .10x/tickets/done/2026-07-07-performance-investigation-backlog.md
 
 # Triage package IO, hashing, and manifest overhead
 
@@ -53,7 +53,7 @@ No package format change, no hash weakening, no removal of atomic writes, no rem
 
 ## References
 
-- `.10x/tickets/2026-07-07-performance-investigation-backlog.md`
+- `.10x/tickets/done/2026-07-07-performance-investigation-backlog.md`
 - `.10x/specs/package-lifecycle-determinism.md`
 - `.10x/decisions/package-state-commit-preimage-artifacts.md`
 - `crates/cdf-package/**`
@@ -64,7 +64,22 @@ No package format change, no hash weakening, no removal of atomic writes, no rem
 - 2026-07-07: Opened from performance discussion. The package boundary is likely CDF's most intentional overhead versus raw DataFusion/DuckDB/Polars, so it needs quantified tradeoff notes before optimization work.
 - 2026-07-11: P3 audit confirmed immediate segment rereads plus final rereads and high-frequency durability work. E1–E4 own hash-while-write receipts, streaming manifest/durability, verification/replay I/O, and the ≤5%/roofline closeout. This triage owns no implementation and remains open until E4 records the measured disposition.
 - 2026-07-11: WS-L measured package build at 0.235 MiB/s median and retained a real sample profile whose dominant captured subtree is segment persistence with file/directory synchronization. See `.10x/evidence/2026-07-11-p3-l5-preoptimization-baseline.md`; E1-E4 own the isolated before/after and ≤5% closeout.
+- 2026-07-14: Closed the investigation after the durability audit and L5 baseline identified reread hashing, sync cadence, verification, and file-count costs and split them into E1–E4. E3/E4 remain active for replay I/O and the final roofline; this triage owns no implementation.
 
 ## Blockers
 
-None for investigation. Any change to package identity, lifecycle semantics, or crash safety is blocked on explicit spec/decision work.
+None. Investigation and implementation handoff are complete.
+
+## Evidence
+
+- `.10x/research/2026-07-11-package-io-durability-audit.md`
+- `.10x/evidence/2026-07-11-p3-l5-preoptimization-baseline.md`
+- `.10x/tickets/done/2026-07-11-p3-e1-hashing-artifact-sink.md` and `.10x/tickets/done/2026-07-11-p3-e2-streaming-manifest-durability.md`; active E3/E4 own residual verification and envelope work.
+
+## Review
+
+Closure review found the cost centers classified and every safe/spec-sensitive action durably owned. Verdict: **pass for triage**; the ≤5% hashing and package roofline targets remain open in E4.
+
+## Retrospective
+
+Triage should terminate when measurement and ownership are complete. Waiting for downstream optimization made the same work appear active twice.

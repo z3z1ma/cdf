@@ -1,7 +1,7 @@
 Status: done
 Created: 2026-07-07
 Updated: 2026-07-07
-Parent: .10x/tickets/2026-07-07-performance-investigation-backlog.md
+Parent: .10x/tickets/done/2026-07-07-performance-investigation-backlog.md
 
 # Triage DataFusion delegation and pushdown performance
 
@@ -53,7 +53,7 @@ No query planner rewrite, no broad predicate parser, no join/SQL transformation 
 
 ## References
 
-- `.10x/tickets/2026-07-07-performance-investigation-backlog.md`
+- `.10x/tickets/done/2026-07-07-performance-investigation-backlog.md`
 - `.10x/specs/resource-authoring-planning-batches.md`
 - `.10x/decisions/native-arrow-datafusion-parquet-policy.md`
 - `.10x/tickets/done/2026-07-05-datafusion-engine-planner.md`

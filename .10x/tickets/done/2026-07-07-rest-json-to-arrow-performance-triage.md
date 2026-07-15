@@ -1,7 +1,7 @@
-Status: open
+Status: done
 Created: 2026-07-07
-Updated: 2026-07-07
-Parent: .10x/tickets/2026-07-07-performance-investigation-backlog.md
+Updated: 2026-07-14
+Parent: .10x/tickets/done/2026-07-07-performance-investigation-backlog.md
 
 # Triage REST JSON-to-Arrow performance
 
@@ -52,7 +52,7 @@ No live API benchmark, no selector-language expansion, no streaming parser imple
 
 ## References
 
-- `.10x/tickets/2026-07-07-performance-investigation-backlog.md`
+- `.10x/tickets/done/2026-07-07-performance-investigation-backlog.md`
 - `.10x/tickets/done/2026-07-07-declarative-rest-resource-execution.md`
 - `.10x/specs/resource-authoring-planning-batches.md`
 - `crates/cdf-declarative/**`
@@ -63,7 +63,22 @@ No live API benchmark, no selector-language expansion, no streaming parser imple
 - 2026-07-07: Opened from performance discussion. Expected default: REST is usually API-bound, but high-volume deterministic JSON fixtures should prove whether `serde_json::Value` plus cloning is good enough.
 - 2026-07-11: P3 audit confirmed DOM/value materialization in JSON/REST hot paths. B5 owns tape/streaming JSON codecs and REST CPU-pool decode, G3 owns download/decode overlap, and B13/F2 own cross-format and materialization closure. This triage owns no implementation and remains open until those children record ≥3x/current and aggregate-throughput evidence with fail-closed parity.
 - 2026-07-11: WS-L measured CDF NDJSON-to-package at 0.750 MiB/s versus 80.06 MiB/s for raw arrow-rs on identical rows and physical bytes (`0.009x`), recorded in `.10x/evidence/2026-07-11-p3-l5-preoptimization-baseline.md`. B5/G3/B13 own decode isolation and the required before/after evidence.
+- 2026-07-14: Closed the investigation after the format audit and L5 baseline proved DOM/materialization overhead material and split streaming JSON/NDJSON, overlap, cross-format, and materialization closeout into B5, G3, B13, and F2.
 
 ## Blockers
 
-None for investigation. Implementation is blocked on measured or clearly demonstrated REST decode overhead.
+None. Investigation and implementation handoff are complete.
+
+## Evidence
+
+- `.10x/research/2026-07-11-format-extension-streaming-audit.md`
+- `.10x/evidence/2026-07-11-p3-l5-preoptimization-baseline.md`
+- `.10x/evidence/2026-07-12-p3-b5-streaming-json-document-driver.md` and `.10x/evidence/2026-07-12-p3-b5-streaming-ndjson-driver.md` record implementation milestones; B5/G3/B13/F2 retain final targets.
+
+## Review
+
+Closure review found the bottleneck classified, fail-closed requirements preserved, cheap versus structural actions separated, and every residual assigned. Verdict: **pass for triage**; the aggregate ≥3x/envelope claim remains open.
+
+## Retrospective
+
+The baseline falsified the “REST is probably network-bound” shortcut. Once that fact and the implementation graph were durable, keeping the investigation open added no authority.

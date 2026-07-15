@@ -31,5 +31,5 @@ Depends on C1-C3.
 
 ## References
 
-- `.10x/tickets/2026-07-07-local-partition-parallelism-triage.md`
+- `.10x/tickets/done/2026-07-07-local-partition-parallelism-triage.md`
 - `.10x/specs/deterministic-parallel-scheduler.md`

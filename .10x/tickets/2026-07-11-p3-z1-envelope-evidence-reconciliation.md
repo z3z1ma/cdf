@@ -55,5 +55,5 @@ Blocked on all P3 workstream closures.
 
 - `.10x/decisions/terabyte-scale-performance-envelope.md`
 - `.10x/specs/performance-lab-and-envelope.md`
-- `.10x/tickets/2026-07-07-performance-investigation-backlog.md`
+- `.10x/tickets/done/2026-07-07-performance-investigation-backlog.md`
 - `.10x/knowledge/vision-coverage-matrix.md`

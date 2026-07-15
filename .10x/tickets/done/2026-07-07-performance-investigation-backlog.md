@@ -1,4 +1,4 @@
-Status: open
+Status: done
 Created: 2026-07-07
 Updated: 2026-07-13
 
@@ -13,15 +13,15 @@ This is a parent planning ticket. It is not executable implementation scope and 
 ## Child tickets
 
 - `.10x/tickets/done/2026-07-07-p0-workstream-f-benchmark-gate.md`
-- `.10x/tickets/2026-07-07-local-partition-parallelism-triage.md`
-- `.10x/tickets/2026-07-07-package-io-hashing-overhead-triage.md`
-- `.10x/tickets/2026-07-07-streaming-package-to-destination-commit-triage.md`
+- `.10x/tickets/done/2026-07-07-local-partition-parallelism-triage.md`
+- `.10x/tickets/done/2026-07-07-package-io-hashing-overhead-triage.md`
+- `.10x/tickets/done/2026-07-07-streaming-package-to-destination-commit-triage.md`
 - `.10x/tickets/done/2026-07-07-duckdb-arrow-bulk-load-triage.md`
-- `.10x/tickets/2026-07-07-native-parquet-streaming-write-triage.md`
+- `.10x/tickets/done/2026-07-07-native-parquet-streaming-write-triage.md`
 - `.10x/tickets/done/2026-07-07-datafusion-delegation-pushdown-triage.md`
-- `.10x/tickets/2026-07-07-rest-json-to-arrow-performance-triage.md`
+- `.10x/tickets/done/2026-07-07-rest-json-to-arrow-performance-triage.md`
 - `.10x/tickets/done/2026-07-07-batch-sizing-segment-coalescing-triage.md`
-- `.10x/tickets/2026-07-07-interop-boundary-overhead-triage.md`
+- `.10x/tickets/done/2026-07-07-interop-boundary-overhead-triage.md`
 
 ## Triage principles
 
@@ -68,7 +68,22 @@ No source edits, dependency changes, benchmark harness implementation, CI change
 - 2026-07-10: P2 exact-row append dedup makes the pre-existing package-order identity-state cost applicable beyond merge. P3's memory-ledger/spill lane MUST bound or spill this state while preserving `.10x/decisions/keyless-exact-row-deduplication.md`; this parent owns the concern until the P3 graph absorbs it.
 - 2026-07-11: Every remaining performance triage now names its P3 absorber and evidence closeout: streaming commit A/D/F2; DuckDB D2/D5; Parquet D4/D5/F4; REST/JSON B5/G3/B13; batching A3; hashing E1–E4; local parallelism C1–C5; interop IX1/H1–H5; dedup A6/F2. Triage tickets remain open as evidence checklists and own no duplicate implementation. The parent closes after P3 closeout moves each terminal with measured evidence/no-action rationale.
 - 2026-07-13: Moved the DuckDB Arrow triage terminal after D2/D5 supplied the selected API, semantic matrix, and 9.27M rows/s / 23.77x measured closeout. Remaining triage records stay open only where their named absorber evidence is still incomplete.
+- 2026-07-14: Closed the parent after all children completed investigation and moved terminal. `.10x/evidence/2026-07-14-performance-triage-absorption-rollup.md` records the workload conclusions and P3 absorbers. No downstream implementation was closed by this bookkeeping correction.
 
 ## Blockers
 
-None for opening the investigation backlog. Individual child tickets must validate their own workload relevance before any implementation recommendation.
+None. Every investigation is terminal and every implementation residual has one P3 owner.
+
+## Evidence
+
+- `.10x/evidence/2026-07-14-performance-triage-absorption-rollup.md`
+- `.10x/evidence/2026-07-11-p3-l5-preoptimization-baseline.md`
+- The child tickets listed above map their criteria to research, evidence, and executable owners.
+
+## Review
+
+Closure review checked that all ten children are terminal and that no unfinished implementation was hidden: residual work remains active in P3 A/B/C/D/E/F/G/H. Verdict: **pass**.
+
+## Retrospective
+
+An investigation backlog should measure uncertainty, not downstream schedule length. Once questions become executable tickets, leaving both records active obscures rather than preserves work.

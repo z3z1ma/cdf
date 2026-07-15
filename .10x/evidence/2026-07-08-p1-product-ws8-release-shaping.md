@@ -39,7 +39,7 @@ Updated:
 
 Checks:
 
-- `git diff --check -- .10x/specs/versioning-lts-release-policy.md .10x/tickets/2026-07-08-p1-product-ws8-release-engineering.md .10x/tickets/2026-07-08-p1-product-ws8a-ci-quality-workflows.md .10x/tickets/2026-07-08-p1-product-ws8b-release-artifact-workflow.md .10x/tickets/2026-07-08-p1-product-ws8c-changelog-installer-channel.md` passed.
+- `git diff --check -- .10x/specs/versioning-lts-release-policy.md .10x/tickets/2026-07-08-p1-product-ws8-release-engineering.md .10x/tickets/done/2026-07-08-p1-product-ws8a-ci-quality-workflows.md .10x/tickets/done/2026-07-08-p1-product-ws8b-release-artifact-workflow.md .10x/tickets/done/2026-07-08-p1-product-ws8c-changelog-installer-channel.md` passed.
 - `rg -n "[Kk]iller[ _-]?[Dd]emo" . --hidden` found no matches.
 
 ## What this supports or challenges

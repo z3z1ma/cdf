@@ -1,7 +1,7 @@
 Status: cancelled
 Created: 2026-07-07
 Updated: 2026-07-07
-Parent: .10x/tickets/2026-07-07-performance-investigation-backlog.md
+Parent: .10x/tickets/done/2026-07-07-performance-investigation-backlog.md
 
 # Triage baseline performance benchmark suite
 
@@ -59,7 +59,7 @@ No benchmark harness implementation, no generated benchmark fixtures committed t
 
 ## References
 
-- `.10x/tickets/2026-07-07-performance-investigation-backlog.md`
+- `.10x/tickets/done/2026-07-07-performance-investigation-backlog.md`
 - `.10x/specs/resource-authoring-planning-batches.md`
 - `.10x/specs/package-lifecycle-determinism.md`
 - `.10x/specs/destination-receipts-guarantees.md`

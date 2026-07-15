@@ -2,7 +2,7 @@ Status: open
 Created: 2026-07-11
 Updated: 2026-07-11
 Parent: .10x/tickets/2026-07-11-p1-ws9-cli-experience-excellence.md
-Depends-On: .10x/tickets/2026-07-11-p1-cx3-live-progress-activity.md, .10x/tickets/2026-07-10-p3-ws-l2-phase-telemetry.md
+Depends-On: .10x/tickets/2026-07-11-p1-cx3-live-progress-activity.md, .10x/tickets/done/2026-07-10-p3-ws-l2-phase-telemetry.md
 
 # P1 CX4: CLI conformance, performance, and demo
 

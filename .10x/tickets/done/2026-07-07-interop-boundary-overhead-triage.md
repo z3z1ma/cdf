@@ -1,7 +1,7 @@
-Status: open
+Status: done
 Created: 2026-07-07
-Updated: 2026-07-07
-Parent: .10x/tickets/2026-07-07-performance-investigation-backlog.md
+Updated: 2026-07-14
+Parent: .10x/tickets/done/2026-07-07-performance-investigation-backlog.md
 
 # Triage Python, WASM, and subprocess interop overhead
 
@@ -52,7 +52,7 @@ No Python API change, no WASM implementation, no subprocess protocol change, no 
 
 ## References
 
-- `.10x/tickets/2026-07-07-performance-investigation-backlog.md`
+- `.10x/tickets/done/2026-07-07-performance-investigation-backlog.md`
 - `.10x/specs/resource-authoring-planning-batches.md`
 - `.10x/tickets/done/2026-07-05-python-sdk-bridge.md`
 - `.10x/tickets/done/2026-07-05-formats-and-subprocess.md`
@@ -66,7 +66,22 @@ No Python API change, no WASM implementation, no subprocess protocol change, no 
 - 2026-07-07: Opened from performance discussion. CDF should be able to say clearly where it is Arrow-native fast and where compatibility boundaries impose overhead.
 - 2026-07-11: Source audit completed in `.10x/research/2026-07-11-foreign-interop-boundary-audit.md`. Python and subprocess are eager/materialized despite partial Arrow/bounded primitives; WASM is unimplemented. IX1 and P3 H1–H5 now absorb contract, measurement, Python, subprocess, prospective WASM, and closeout work. This triage remains open until H5 records final evidence and moves it terminal; it owns no implementation.
 - 2026-07-11: WS-L has no foreign-boundary copy-proof cell; the absence is explicit in `.10x/evidence/2026-07-11-p3-l5-preoptimization-baseline.md` and makes H1-H5 measurement work mandatory. No zero-copy or throughput claim is inferred.
+- 2026-07-14: Closed the investigation after the foreign-boundary audit classified every implemented/unimplemented path and split neutral contract, measurement, Python, subprocess, WASM, and closeout work into IX1 and H1–H5. Those implementation tickets remain active.
 
 ## Blockers
 
-None for investigation. Any protocol or implementation change is blocked on boundary-specific triage evidence.
+None. Investigation and implementation handoff are complete.
+
+## Evidence
+
+- `.10x/research/2026-07-11-foreign-interop-boundary-audit.md`
+- `.10x/evidence/2026-07-11-foreign-interop-shaping.md`
+- P0 IX1 and P3 H1–H5 are the executable owners.
+
+## Review
+
+Closure review found every implemented boundary classified and startup/batch/row risks assigned to a bounded owner. Verdict: **pass for triage**; no zero-copy or WASM throughput claim is made.
+
+## Retrospective
+
+“Interop overhead” was too broad for execution but appropriate for one audit. The useful result is the split by boundary and copy authority.

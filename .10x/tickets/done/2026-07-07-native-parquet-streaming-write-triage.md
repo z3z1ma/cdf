@@ -1,7 +1,7 @@
-Status: open
+Status: done
 Created: 2026-07-07
-Updated: 2026-07-07
-Parent: .10x/tickets/2026-07-07-performance-investigation-backlog.md
+Updated: 2026-07-14
+Parent: .10x/tickets/done/2026-07-07-performance-investigation-backlog.md
 
 # Triage native Parquet streaming writes
 
@@ -44,7 +44,7 @@ No canonical package format change, no Parquet-only replay, no archive lifecycle
 
 ## References
 
-- `.10x/tickets/2026-07-07-performance-investigation-backlog.md`
+- `.10x/tickets/done/2026-07-07-performance-investigation-backlog.md`
 - `.10x/decisions/native-arrow-datafusion-parquet-policy.md`
 - `.10x/specs/package-lifecycle-determinism.md`
 - `.10x/specs/destination-receipts-guarantees.md`
@@ -57,7 +57,22 @@ No canonical package format change, no Parquet-only replay, no archive lifecycle
 - 2026-07-07: Opened from performance discussion. The target architecture is native Arrow/DataFusion Parquet; this ticket asks whether the current native paths are streaming enough to preserve that advantage.
 - 2026-07-11: P3 audit confirmed full-batch/package buffering. D1 defines the bounded destination path, D4 owns streaming row-group/multipart Parquet output, and D5/F4 own semantic/throughput/1 TB closeout. This triage owns no implementation and remains open until D4/D5 attach memory and ≥60%-roofline evidence.
 - 2026-07-11: WS-L measured the prepared tiny-package Parquet destination at 0.210 MiB/s median with setup bias, recorded in `.10x/evidence/2026-07-11-p3-l5-preoptimization-baseline.md`. D4/D5/F4 own the large-file streaming, roofline, and constant-memory proof.
+- 2026-07-14: Closed the investigation after the destination audit selected incremental native row-group writing and split implementation/semantic/envelope ownership into D4, D5, and F4. D4/D5 are terminal; F4 retains the one-terabyte constant-memory closeout.
 
 ## Blockers
 
-None for investigation. Implementation is blocked on path inventory and compatibility constraints.
+None. Investigation and implementation handoff are complete.
+
+## Evidence
+
+- `.10x/research/2026-07-11-destination-bulk-path-audit.md`
+- `.10x/evidence/2026-07-11-p3-l5-preoptimization-baseline.md`
+- `.10x/tickets/done/2026-07-11-p3-d4-parquet-streaming-writer.md` and `.10x/tickets/done/2026-07-11-p3-d5-bulk-path-matrix.md`.
+
+## Review
+
+Closure review found path inventory, writer semantics, implementation split, and compatibility constraints complete. Verdict: **pass for triage**; F4 still owns the full 1 TB/RSS proof.
+
+## Retrospective
+
+Separating investigation from the long-horizon stress proof keeps the backlog honest: the chosen architecture can be terminal while scale acceptance remains active elsewhere.
