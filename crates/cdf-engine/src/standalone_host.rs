@@ -7,6 +7,7 @@ use std::{
         atomic::{AtomicU16, AtomicU64, Ordering},
         mpsc,
     },
+    task::{Context, Poll, Wake, Waker},
     thread::JoinHandle,
     time::{Duration, Instant},
 };
@@ -74,6 +75,185 @@ struct FixedTaskPool {
     state: Arc<(Mutex<PoolState>, Condvar)>,
     slots: Arc<CpuSlots>,
     workers: Mutex<Vec<JoinHandle<()>>>,
+}
+
+struct CpuFutureState {
+    inner: Mutex<CpuFutureInner>,
+    pool: Arc<FixedTaskPool>,
+    slot_cost: u16,
+    cancellation: RunCancellation,
+    runtime: tokio::runtime::Handle,
+    usage: Arc<CpuUsageTracker>,
+}
+
+struct CpuFutureInner {
+    task: Option<CpuFutureTask>,
+    completion: Option<oneshot::Sender<WorkCompletion>>,
+    queued: bool,
+    polling: bool,
+    notified: bool,
+    terminal: bool,
+    enqueued: Option<Instant>,
+    queue_wait_ns: u64,
+}
+
+impl CpuFutureState {
+    fn new(
+        task: CpuFutureTask,
+        pool: Arc<FixedTaskPool>,
+        slot_cost: u16,
+        cancellation: RunCancellation,
+        runtime: tokio::runtime::Handle,
+        usage: Arc<CpuUsageTracker>,
+        completion: oneshot::Sender<WorkCompletion>,
+    ) -> Arc<Self> {
+        Arc::new(Self {
+            inner: Mutex::new(CpuFutureInner {
+                task: Some(task),
+                completion: Some(completion),
+                queued: false,
+                polling: false,
+                notified: false,
+                terminal: false,
+                enqueued: None,
+                queue_wait_ns: 0,
+            }),
+            pool,
+            slot_cost,
+            cancellation,
+            runtime,
+            usage,
+        })
+    }
+
+    fn request_poll(self: &Arc<Self>) {
+        {
+            let mut inner = self.inner.lock().unwrap();
+            if inner.terminal || inner.queued {
+                return;
+            }
+            if inner.polling {
+                inner.notified = true;
+                return;
+            }
+            inner.queued = true;
+            inner.enqueued = Some(Instant::now());
+        }
+
+        let state = Arc::clone(self);
+        let submission = self.pool.submit(
+            self.slot_cost,
+            RunCancellation::default(),
+            Box::new(move || {
+                state.poll_once();
+                Ok(())
+            }),
+            Arc::clone(&self.usage),
+        );
+        if let Err(error) = submission {
+            self.finish(WorkOutcome::Completed(Err(error)));
+        }
+    }
+
+    fn poll_once(self: &Arc<Self>) {
+        let (mut task, queue_wait_ns) = {
+            let mut inner = self.inner.lock().unwrap();
+            if inner.terminal {
+                return;
+            }
+            inner.queued = false;
+            inner.polling = true;
+            let queue_wait_ns = inner
+                .enqueued
+                .take()
+                .map(|enqueued| u64::try_from(enqueued.elapsed().as_nanos()).unwrap_or(u64::MAX))
+                .unwrap_or_default();
+            (
+                inner
+                    .task
+                    .take()
+                    .expect("nonterminal CPU future retains its task"),
+                queue_wait_ns,
+            )
+        };
+
+        if self.cancellation.is_cancelled() {
+            self.finish_with_wait(WorkOutcome::CancelledBeforeAdmission, queue_wait_ns);
+            return;
+        }
+
+        let waker = Waker::from(Arc::clone(self));
+        let mut context = Context::from_waker(&waker);
+        let poll = catch_unwind(AssertUnwindSafe(|| {
+            let _runtime_context = self.runtime.enter();
+            task.as_mut().poll(&mut context)
+        }));
+
+        match poll {
+            Ok(Poll::Ready(result)) => {
+                self.finish_with_wait(WorkOutcome::Completed(result), queue_wait_ns);
+            }
+            Err(_) => self.finish_with_wait(
+                WorkOutcome::Completed(Err(CdfError::internal("asynchronous CPU worker panicked"))),
+                queue_wait_ns,
+            ),
+            Ok(Poll::Pending) => {
+                let schedule = {
+                    let mut inner = self.inner.lock().unwrap();
+                    if inner.terminal {
+                        return;
+                    }
+                    inner.queue_wait_ns = inner.queue_wait_ns.saturating_add(queue_wait_ns);
+                    inner.polling = false;
+                    inner.task = Some(task);
+                    std::mem::take(&mut inner.notified)
+                };
+                if schedule {
+                    self.request_poll();
+                }
+            }
+        }
+    }
+
+    fn finish(&self, outcome: WorkOutcome) {
+        self.finish_with_wait(outcome, 0);
+    }
+
+    fn finish_with_wait(&self, outcome: WorkOutcome, queue_wait_ns: u64) {
+        let completion = {
+            let mut inner = self.inner.lock().unwrap();
+            if inner.terminal {
+                return;
+            }
+            inner.queue_wait_ns = inner.queue_wait_ns.saturating_add(queue_wait_ns);
+            inner.terminal = true;
+            inner.queued = false;
+            inner.polling = false;
+            inner.task.take();
+            inner.completion.take().map(|completion| {
+                (
+                    completion,
+                    WorkCompletion {
+                        outcome,
+                        queue_wait_ns: inner.queue_wait_ns,
+                    },
+                )
+            })
+        };
+        if let Some((completion, result)) = completion {
+            let _ = completion.send(result);
+        }
+    }
+}
+
+impl Wake for CpuFutureState {
+    fn wake(self: Arc<Self>) {
+        self.request_poll();
+    }
+
+    fn wake_by_ref(self: &Arc<Self>) {
+        self.request_poll();
+    }
 }
 
 impl FixedTaskPool {
@@ -572,16 +752,29 @@ impl ExecutionTaskScope for StandaloneTaskScope {
     fn spawn_cpu_future(&mut self, spec: CpuTaskSpec, task: CpuFutureTask) -> Result<()> {
         spec.validate()?;
         let cost = spec.claimed_cpu_slots();
-        let runtime = self.handle.clone();
-        self.cpu_tasks.push(self.cpu.submit(
+        self.cancellation.check()?;
+        let cancellation = self.cancellation.clone();
+        let task_cancellation = cancellation.clone();
+        let task = Box::pin(async move {
+            let cancelled = task_cancellation.cancelled();
+            futures_util::pin_mut!(task, cancelled);
+            match futures_util::future::select(task, cancelled).await {
+                Either::Left((result, _)) => result,
+                Either::Right(((), _)) => task_cancellation.check(),
+            }
+        });
+        let (completion, receiver) = oneshot::channel();
+        let state = CpuFutureState::new(
+            task,
+            Arc::clone(&self.cpu),
             cost,
-            self.cancellation.clone(),
-            Box::new(move || {
-                let _runtime_context = runtime.enter();
-                futures_executor::block_on(task)
-            }),
+            cancellation,
+            self.handle.clone(),
             Arc::clone(&self.usage),
-        )?);
+            completion,
+        );
+        state.request_poll();
+        self.cpu_tasks.push(receiver);
         self.report.submitted_cpu += 1;
         Ok(())
     }
@@ -806,6 +999,59 @@ mod tests {
         assert_eq!(threads.len(), 2);
         assert!(threads.iter().all(|name| name.starts_with("cdf-cpu-")));
         assert_eq!(report.submitted_cpu, 1);
+        assert_eq!(report.peak_cpu_slots, 2);
+    }
+
+    #[test]
+    fn pending_cpu_futures_release_workers_and_slots_for_runnable_work() {
+        let host = host();
+        let mut scope = host.open_scope("async-cpu-work-conservation").unwrap();
+        let mut gates = Vec::new();
+        for index in 0..2 {
+            let (release, wait) = oneshot::channel::<()>();
+            gates.push(release);
+            scope
+                .spawn_cpu_future(
+                    CpuTaskSpec {
+                        task_kind: format!("pending-{index}"),
+                        cpu_slot_cost: 1,
+                        native_internal_parallelism: 1,
+                    },
+                    Box::pin(async move {
+                        wait.await.map_err(|_| {
+                            CdfError::internal("pending CPU future release was dropped")
+                        })?;
+                        Ok(())
+                    }),
+                )
+                .unwrap();
+        }
+
+        let (ran_sender, ran_receiver) = mpsc::sync_channel(1);
+        scope
+            .spawn_cpu(
+                CpuTaskSpec {
+                    task_kind: "runnable".to_owned(),
+                    cpu_slot_cost: 2,
+                    native_internal_parallelism: 1,
+                },
+                Box::new(move || {
+                    ran_sender.send(()).unwrap();
+                    Ok(())
+                }),
+            )
+            .unwrap();
+
+        ran_receiver
+            .recv_timeout(Duration::from_secs(1))
+            .expect("pending futures must not occupy fixed CPU workers or slots");
+        for gate in gates {
+            gate.send(()).unwrap();
+        }
+        let report = host.block_on_root(scope.join()).unwrap();
+
+        assert_eq!(report.submitted_cpu, 3);
+        assert_eq!(report.completed, 3);
         assert_eq!(report.peak_cpu_slots, 2);
     }
 

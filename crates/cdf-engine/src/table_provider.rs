@@ -6,6 +6,7 @@ use cdf_kernel::{
     Batch, CdfError, OpenedPartitionStream, PartitionPlan, PredicateId, PushdownFidelity,
     QueryableResource, ScanPlan, ScanPredicate, ScanRequest, ScopeKey,
 };
+use cdf_runtime::{CpuTaskSpec, ExecutionServices};
 use datafusion::{
     catalog::{Session, TableProvider},
     common::{DataFusionError, Result as DataFusionResult, internal_err},
@@ -32,11 +33,20 @@ type SharedQueryableResource = Arc<dyn QueryableResource + Send + Sync>;
 pub struct QueryableResourceTableProvider {
     resource: SharedQueryableResource,
     scope: ScopeKey,
+    execution: ExecutionServices,
 }
 
 impl QueryableResourceTableProvider {
-    pub fn new(resource: SharedQueryableResource, scope: ScopeKey) -> Self {
-        Self { resource, scope }
+    pub fn new(
+        resource: SharedQueryableResource,
+        scope: ScopeKey,
+        execution: ExecutionServices,
+    ) -> Self {
+        Self {
+            resource,
+            scope,
+            execution,
+        }
     }
 
     fn request(
@@ -80,8 +90,11 @@ impl fmt::Debug for QueryableResourceTableProvider {
 pub fn queryable_resource_table_provider(
     resource: SharedQueryableResource,
     scope: ScopeKey,
+    execution: ExecutionServices,
 ) -> Arc<dyn TableProvider> {
-    Arc::new(QueryableResourceTableProvider::new(resource, scope))
+    Arc::new(QueryableResourceTableProvider::new(
+        resource, scope, execution,
+    ))
 }
 
 impl TableProvider for QueryableResourceTableProvider {
@@ -128,6 +141,7 @@ impl TableProvider for QueryableResourceTableProvider {
                 self.schema(),
                 projection.cloned(),
                 effective_limit,
+                self.execution.clone(),
             ));
             Ok(plan)
         })
@@ -170,6 +184,7 @@ struct QueryableResourceExec {
     scan: ScanPlan,
     projection: Option<Vec<usize>>,
     fetch: Option<usize>,
+    execution: ExecutionServices,
     properties: Arc<PlanProperties>,
 }
 
@@ -180,6 +195,7 @@ impl QueryableResourceExec {
         input_schema: SchemaRef,
         projection: Option<Vec<usize>>,
         fetch: Option<usize>,
+        execution: ExecutionServices,
     ) -> Self {
         let output_schema = projected_schema(&input_schema, projection.as_ref())
             .expect("projection indexes are built from the provider schema");
@@ -194,6 +210,7 @@ impl QueryableResourceExec {
             scan,
             projection,
             fetch,
+            execution,
             properties,
         }
     }
@@ -252,7 +269,7 @@ impl ExecutionPlan for QueryableResourceExec {
     fn execute(
         &self,
         partition: usize,
-        _context: Arc<datafusion::execution::TaskContext>,
+        context: Arc<datafusion::execution::TaskContext>,
     ) -> DataFusionResult<SendableRecordBatchStream> {
         let Some(partition_plan) = self.scan.partitions.get(partition).cloned() else {
             return internal_err!(
@@ -265,7 +282,7 @@ impl ExecutionPlan for QueryableResourceExec {
             let stream = stream::empty::<DataFusionResult<RecordBatch>>();
             return Ok(Box::pin(RecordBatchStreamAdapter::new(schema, stream)));
         }
-        let stream = stream::try_unfold(
+        let resource_stream = stream::try_unfold(
             ResourceExecutionState::Opening {
                 resource: Arc::clone(&self.resource),
                 partition: Box::new(partition_plan),
@@ -380,6 +397,36 @@ impl ExecutionPlan for QueryableResourceExec {
                 }
             },
         );
+        let session_id = context.session_id();
+        let task_id = context.task_id().unwrap_or_else(|| "anonymous".to_owned());
+        let run_id = format!("datafusion/{session_id}/{task_id}/{partition}");
+        let stream = self
+            .execution
+            .spawn_cpu_stream(
+                &run_id,
+                CpuTaskSpec {
+                    task_kind: "datafusion.resource_adapter".to_owned(),
+                    cpu_slot_cost: 1,
+                    native_internal_parallelism: 1,
+                },
+                2,
+                move |mut sender, cancellation| async move {
+                    futures_util::pin_mut!(resource_stream);
+                    while let Some(result) = resource_stream.next().await {
+                        cancellation.check()?;
+                        match result {
+                            Ok(batch) => sender.send(Ok(batch)).await?,
+                            Err(error) => {
+                                sender.send(Err(error)).await?;
+                                return Ok(());
+                            }
+                        }
+                    }
+                    Ok(())
+                },
+            )
+            .map_err(cdf_to_datafusion)?
+            .map(|result| result.map_err(cdf_to_datafusion).and_then(|result| result));
         Ok(Box::pin(RecordBatchStreamAdapter::new(schema, stream)))
     }
 
@@ -394,6 +441,7 @@ impl ExecutionPlan for QueryableResourceExec {
             self.resource.schema(),
             self.projection.clone(),
             limit,
+            self.execution.clone(),
         )))
     }
 

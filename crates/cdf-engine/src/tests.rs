@@ -5,6 +5,7 @@ use std::{
         Arc, Mutex, OnceLock,
         atomic::{AtomicU64, AtomicUsize, Ordering},
     },
+    task::Poll,
 };
 
 use arrow_array::{
@@ -76,6 +77,12 @@ fn executable_mock_options(options: EngineExecutionOptions) -> Result<EngineExec
     let (_, services) =
         StandaloneExecutionHost::default_services(cdf_memory::DEFAULT_PROCESS_BUDGET_BYTES)?;
     Ok(options.with_execution_services(services))
+}
+
+fn datafusion_test_services() -> cdf_runtime::ExecutionServices {
+    StandaloneExecutionHost::default_services(64 * 1024 * 1024)
+        .unwrap()
+        .1
 }
 
 async fn execute_to_package(
@@ -5004,7 +5011,11 @@ fn parallel_segment_frontier_failure_joins_workers_and_prevents_finalization() {
 #[test]
 fn datafusion_table_provider_pushdown_classification_delegates_to_resource() {
     let resource = Arc::new(DataFusionMockResource::new());
-    let provider = QueryableResourceTableProvider::new(resource.clone(), ScopeKey::Resource);
+    let provider = QueryableResourceTableProvider::new(
+        resource.clone(),
+        ScopeKey::Resource,
+        datafusion_test_services(),
+    );
     let filters = [
         col("id").gt(lit(1_i32)),
         col("active").eq(lit(true)),
@@ -5035,7 +5046,11 @@ fn datafusion_table_provider_pushdown_classification_delegates_to_resource() {
 #[test]
 fn datafusion_registered_table_executes_with_residuals_and_projection() {
     let resource = Arc::new(DataFusionMockResource::new());
-    let provider = queryable_resource_table_provider(resource.clone(), ScopeKey::Resource);
+    let provider = queryable_resource_table_provider(
+        resource.clone(),
+        ScopeKey::Resource,
+        datafusion_test_services(),
+    );
     let ctx = SessionContext::new();
     ctx.register_table("orders", provider).unwrap();
 
@@ -5057,12 +5072,24 @@ fn datafusion_registered_table_executes_with_residuals_and_projection() {
     );
     assert_eq!(batches[0].schema().fields().len(), 1);
     assert_eq!(batches[0].schema().field(0).name(), "name");
+    let poll_threads = resource.poll_threads.lock().unwrap();
+    assert!(!poll_threads.is_empty());
+    assert!(
+        poll_threads
+            .iter()
+            .all(|thread| thread.starts_with("cdf-cpu-")),
+        "CDF source polling and adaptation bypassed CPU admission: {poll_threads:?}"
+    );
 }
 
 #[test]
 fn datafusion_unsupported_expression_stays_residual() {
     let resource = Arc::new(DataFusionMockResource::new());
-    let provider = QueryableResourceTableProvider::new(resource.clone(), ScopeKey::Resource);
+    let provider = QueryableResourceTableProvider::new(
+        resource.clone(),
+        ScopeKey::Resource,
+        datafusion_test_services(),
+    );
     let unsupported = col("id").add(lit(1_i32)).gt(lit(2_i32));
     let filter_refs = vec![&unsupported];
     let pushdown = provider.supports_filters_pushdown(&filter_refs).unwrap();
@@ -5078,7 +5105,11 @@ fn datafusion_unsupported_expression_stays_residual() {
 #[test]
 fn datafusion_limit_pushdown_is_disabled_for_inexact_filters() {
     let resource = Arc::new(DataFusionMockResource::new());
-    let provider = QueryableResourceTableProvider::new(resource.clone(), ScopeKey::Resource);
+    let provider = QueryableResourceTableProvider::new(
+        resource.clone(),
+        ScopeKey::Resource,
+        datafusion_test_services(),
+    );
     let ctx = SessionContext::new();
     let filters = vec![col("active").eq(lit(true))];
 
@@ -5093,7 +5124,11 @@ fn datafusion_limit_pushdown_is_disabled_for_inexact_filters() {
 #[test]
 fn datafusion_limit_pushdown_remains_enabled_for_exact_filters() {
     let resource = Arc::new(DataFusionMockResource::new());
-    let provider = QueryableResourceTableProvider::new(resource.clone(), ScopeKey::Resource);
+    let provider = QueryableResourceTableProvider::new(
+        resource.clone(),
+        ScopeKey::Resource,
+        datafusion_test_services(),
+    );
     let ctx = SessionContext::new();
     let filters = vec![col("id").gt(lit(1_i32))];
 
@@ -5108,7 +5143,11 @@ fn datafusion_limit_pushdown_remains_enabled_for_exact_filters() {
 #[test]
 fn datafusion_zero_fetch_never_opens_a_source_partition() {
     let resource = Arc::new(DataFusionMockResource::new());
-    let provider = QueryableResourceTableProvider::new(resource.clone(), ScopeKey::Resource);
+    let provider = QueryableResourceTableProvider::new(
+        resource.clone(),
+        ScopeKey::Resource,
+        datafusion_test_services(),
+    );
     let ctx = SessionContext::new();
 
     let batches = block_on(async {
@@ -5163,6 +5202,7 @@ struct DataFusionMockResource {
     negotiate_count: Arc<AtomicUsize>,
     open_count: Arc<AtomicUsize>,
     requests: Arc<Mutex<Vec<ScanRequest>>>,
+    poll_threads: Arc<Mutex<Vec<String>>>,
 }
 
 impl DataFusionMockResource {
@@ -5174,6 +5214,7 @@ impl DataFusionMockResource {
             negotiate_count: Arc::new(AtomicUsize::new(0)),
             open_count: Arc::new(AtomicUsize::new(0)),
             requests: Arc::new(Mutex::new(Vec::new())),
+            poll_threads: Arc::new(Mutex::new(Vec::new())),
         }
     }
 }
@@ -5204,8 +5245,16 @@ impl ResourceStream for DataFusionMockResource {
             .filter(|batch| batch.header.partition_id == partition.partition_id)
             .map(|batch| apply_mock_exact_filters(batch.clone(), &exact_filters))
             .collect::<Result<Vec<_>>>();
+        let poll_threads = Arc::clone(&self.poll_threads);
         cdf_kernel::PartitionOpenAttempt::materialized(Box::pin(async move {
-            let stream = Box::pin(stream::iter(batches?.into_iter().map(Ok))) as BatchStream;
+            let mut batches = batches?.into_iter();
+            let stream = Box::pin(stream::poll_fn(move |_| {
+                poll_threads
+                    .lock()
+                    .unwrap()
+                    .push(std::thread::current().name().unwrap_or_default().to_owned());
+                Poll::Ready(batches.next().map(Ok))
+            })) as BatchStream;
             Ok(cdf_kernel::PartitionStreamPayload::batches(stream))
         }))
     }
