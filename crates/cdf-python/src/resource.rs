@@ -150,21 +150,7 @@ impl PythonResource {
             self.capabilities.partitioning.parallel_partitions,
             usize::from(host.logical_cpu_slots),
         );
-        let (lane_id, maximum_concurrency) = match semantics.mode {
-            crate::PythonConcurrencyMode::FreeThreadedParallel => {
-                ("python.free_threaded", host.logical_cpu_slots)
-            }
-            crate::PythonConcurrencyMode::GilSerialized
-            | crate::PythonConcurrencyMode::ParallelDisabled => ("python.gil", 1),
-        };
-        let lane = cdf_runtime::BlockingLaneSpec {
-            lane_id: lane_id.to_owned(),
-            maximum_concurrency,
-            cpu_slot_cost: 1,
-            native_internal_parallelism: 1,
-            affinity: cdf_runtime::LaneAffinity::Shared,
-            interruption: cdf_runtime::InterruptionSafety::CooperativeOnly,
-        };
+        let lane = crate::python_execution_lane_spec(&semantics);
         execution.ensure_blocking_lanes(std::slice::from_ref(&lane))?;
         self.execution = Some(execution);
         self.blocking_lane = Some(lane.lane_id);

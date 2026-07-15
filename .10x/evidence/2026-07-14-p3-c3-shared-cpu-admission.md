@@ -18,9 +18,11 @@ Focused conformance:
 - `cargo test -p cdf-engine asynchronous_cpu_work_stays_on_the_bounded_cpu_executor_across_awaits --locked -- --nocapture` passed. It records the thread name before and after an awaited host timer, requires both to be `cdf-cpu-*`, and observes two claimed slots for `cpu_slot_cost=1, native_internal_parallelism=2`.
 - `cargo test -p cdf-engine pending_cpu_futures_release_workers_and_slots_for_runnable_work -- --nocapture` passed. Two async futures occupy the complete logical frontier while pending on gates; a later runnable task claiming every CPU slot completes before either gate is released. This specifically guards against fixed-worker/slot retention across `Pending`.
 - `cargo test -p cdf-engine datafusion_ -- --nocapture` passed nine runnable tests with one intentional release-only ignore. The registered-table test records every CDF resource-stream poll and requires `cdf-cpu-*`, proving DataFusion polling cannot move CDF opening/conversion/projection work outside shared admission.
+- `cargo test -p cdf-engine pending_cpu_future_cancellation_wakes_and_joins_without_leaking_slots -- --nocapture` and `asynchronous_cpu_future_panic_is_reported_and_releases_slots` passed. They prove a pending task is awakened by scope cancellation and a panicking poll releases its slots for a subsequent full-capacity task.
 - `cargo test -p cdf-runtime decode_unit_concurrency_joins_unit_cpu_io_source_and_memory_bounds --locked -- --nocapture` passed. A 12-slot/four-I/O-worker host admits six two-slot decode units when CPU is limiting, proving I/O-worker count is no longer a codec-CPU ceiling.
 - `cargo test -p cdf-runtime -p cdf-engine -p cdf-source-files -p cdf-project -p cdf-format-parquet -p cdf-format-json -p cdf-format-delimited -p cdf-format-arrow-ipc --lib --locked` passed 478 tests with seven intentional release/slow ignores.
 - Affected all-target `cargo check`, strict `cargo clippy ... --all-targets --locked -- -D warnings`, formatting, and diff hygiene passed with `CARGO_BUILD_JOBS=12`.
+- After the review repairs, `cargo test -p cdf-runtime -p cdf-engine -p cdf-python --lib --locked` passed 239 tests with seven intentional release/slow ignores (151 engine, 21 Python, 67 runtime). `cargo check --workspace --all-targets --locked` also passed.
 
 Release executor comparison:
 
@@ -50,15 +52,24 @@ Production before/after smoke used the exact 2,147,509,487-byte local FineWeb Pa
 
 Both runs produced 115 canonical segments and a verified DuckDB receipt/checkpoint. Segment encode and single-writer destination ingress dominate the remaining wall time; C4 and the destination/package workstreams own their scaling envelope.
 
+Managed Python admission was executed against two separately linked CPython builds with the same two computations and Arrow fixture:
+
+| Interpreter | Declared lane | Observed peak | Combined fixture/work hash |
+|---|---|---:|---|
+| CPython 3.14.6, GIL enabled | `python.gil` | 1 | `sha256:2531d1b7e36c1752d42882279bf23d157c4cc9a64e5234eace480951b7c993b3` |
+| CPython 3.14.6t, GIL disabled | `python.free_threaded` | 2 | `sha256:2531d1b7e36c1752d42882279bf23d157c4cc9a64e5234eace480951b7c993b3` |
+
+The GIL command used the default target and Homebrew interpreter. The free-threaded command used `uv python install 3.14t`, `PYO3_PYTHON=$(uv python find 3.14t)`, and an isolated `CARGO_TARGET_DIR=target/c3-python314t`, preventing PyO3 link-state reuse. `cmp` over the emitted files passed byte-for-byte.
+
 ## Architecture boundaries
 
 - DataFusion may analyze/query/schedule but does not produce CDF identity-bearing package bytes. Its CDF table-provider adapter now requires injected `ExecutionServices`; CDF resource opening, polling, conversion, projection, and limit work run on the shared CPU executor while the DataFusion `TaskContext` remains the query-scheduling context. J5 owns future package-pipeline `ExecutionPlan` marshaling and unified metrics.
-- Managed Python already declares either a one-worker `python.gil` lane or a `python.free_threaded` lane bounded by host CPU slots. P1 WS7C owns identical deterministic fixture hashes across the 3.14/3.14t matrix; H2 owns the remaining incremental boundary and its throughput measurements.
+- Managed Python declares either a one-worker `python.gil` lane or a `python.free_threaded` lane bounded by host CPU slots through one production helper, and actual work now proves both modes plus identical evidence. H2 owns the remaining incremental boundary and its throughput measurements.
 - DuckDB/Postgres/native adapter work remains on capability-declared lanes. No source/destination identity branch or new dependency was introduced.
 
 ## What this supports
 
-The evidence supports the native-codec and DataFusion portions of C3. It proves removal of a generic four-core codec ceiling, consistent nested-native accounting, work-conserving bounded async CPU execution across waits, explicit DataFusion adapter confinement, no regression in the measured production path, and the absence of a new runtime/dependency island. C3 remains active until actual managed-Python concurrent work is observed in both interpreter modes rather than inferred only from metadata and a precomputed fixture hash.
+The evidence supports C3's native-codec, DataFusion, and managed-Python admission criteria. It proves removal of a generic four-core codec ceiling, consistent nested-native accounting, work-conserving bounded async CPU execution across waits, cancellation/panic recovery, explicit DataFusion adapter confinement, GIL serialization, real free-threaded parallelism with identical output evidence, no regression in the measured production path, and the absence of a new runtime island.
 
 ## Limits
 

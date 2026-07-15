@@ -7,6 +7,7 @@ on:
       - "Cargo.lock"
       - "Cargo.toml"
       - "crates/cdf-cli/**"
+      - "crates/cdf-engine/src/standalone_host.rs"
       - "crates/cdf-python/**"
       - "python/**"
   push:
@@ -16,6 +17,7 @@ on:
       - "Cargo.lock"
       - "Cargo.toml"
       - "crates/cdf-cli/**"
+      - "crates/cdf-engine/src/standalone_host.rs"
       - "crates/cdf-python/**"
       - "python/**"
   workflow_dispatch:
@@ -78,7 +80,7 @@ jobs:
           PYO3_PYTHON: python
           CDF_PYTHON_FIXTURE_HASH_OUTPUT: ${{ github.workspace }}/target/python-fixture-hash-${{ matrix.kind }}.txt
         run: |
-          cargo test -p cdf-python --locked concurrency_semantics_are_identical_for_fixture_hashes
+          cargo test -p cdf-python --locked admitted_python_work_is_mode_correct_and_fixture_hash_stable
           cargo test -p cdf-python --locked imported_dlt_decorators_map_selected_resources_and_skip_the_rest
           cargo test -p cdf-cli --locked python_resource_plan_preview_run_and_replay_use_the_product_spine
           cargo test -p cdf-cli --locked doctor_passes_when_free_threaded_required_and_gil_disabled

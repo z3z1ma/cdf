@@ -1056,6 +1056,66 @@ mod tests {
     }
 
     #[test]
+    fn pending_cpu_future_cancellation_wakes_and_joins_without_leaking_slots() {
+        let host = host();
+        let mut scope = host.open_scope("async-cpu-cancellation").unwrap();
+        scope
+            .spawn_cpu_future(
+                CpuTaskSpec {
+                    task_kind: "pending-cancellation".to_owned(),
+                    cpu_slot_cost: 2,
+                    native_internal_parallelism: 1,
+                },
+                Box::pin(async move {
+                    std::future::pending::<()>().await;
+                    Ok(())
+                }),
+            )
+            .unwrap();
+        scope.cancel();
+
+        let report = host.block_on_root(scope.join()).unwrap();
+
+        assert_eq!(report.submitted_cpu, 1);
+        assert_eq!(report.cancelled, 1);
+        assert_eq!(report.peak_cpu_slots, 2);
+    }
+
+    #[test]
+    fn asynchronous_cpu_future_panic_is_reported_and_releases_slots() {
+        let host = host();
+        let mut scope = host.open_scope("async-cpu-panic").unwrap();
+        scope
+            .spawn_cpu_future(
+                CpuTaskSpec {
+                    task_kind: "panic".to_owned(),
+                    cpu_slot_cost: 2,
+                    native_internal_parallelism: 1,
+                },
+                Box::pin(async move { panic!("intentional async CPU panic") }),
+            )
+            .unwrap();
+
+        let error = host.block_on_root(scope.join()).unwrap_err();
+        assert!(error.message.contains("asynchronous CPU worker panicked"));
+
+        let mut recovery = host.open_scope("async-cpu-panic-recovery").unwrap();
+        recovery
+            .spawn_cpu(
+                CpuTaskSpec {
+                    task_kind: "recovery".to_owned(),
+                    cpu_slot_cost: 2,
+                    native_internal_parallelism: 1,
+                },
+                Box::new(|| Ok(())),
+            )
+            .unwrap();
+        let report = host.block_on_root(recovery.join()).unwrap();
+        assert_eq!(report.completed, 1);
+        assert_eq!(report.peak_cpu_slots, 2);
+    }
+
+    #[test]
     fn scoped_io_stream_bridges_tokio_without_materializing_and_joins_errors() {
         let services = ExecutionServices::new(Arc::new(host())).unwrap();
         let stream = services

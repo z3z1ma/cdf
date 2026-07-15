@@ -5,6 +5,11 @@ use std::{
     ffi::CString,
     io::Cursor,
     path::PathBuf,
+    sync::{
+        Arc, Barrier,
+        atomic::{AtomicUsize, Ordering},
+        mpsc,
+    },
 };
 
 use arrow_array::{ArrayRef, Int64Array, StringArray};
@@ -17,6 +22,8 @@ use cdf_kernel::{
     RewindReport, RewindRequest, SchemaHash, SegmentId, StateDelta, StateSegment,
 };
 use pyo3::types::PyList;
+
+use crate::internal::py_error;
 
 fn bridge() -> PythonResourceBridge {
     PythonResourceBridge::new(
@@ -186,34 +193,93 @@ fn interpreter_report_checks_version_path_and_gil_state() {
 }
 
 #[test]
-fn concurrency_semantics_are_identical_for_fixture_hashes() {
+fn admitted_python_work_is_mode_correct_and_fixture_hash_stable() {
     let read = bridge()
         .batches_from_json_dict_rows(vec![
             serde_json::json!({"id": 1, "name": "ada"}),
             serde_json::json!({"id": 2, "name": "grace"}),
         ])
         .unwrap();
-    let gil_report = InterpreterReport {
-        executable: PathBuf::from("/usr/bin/python"),
-        major: 3,
-        minor: 14,
-        micro: 0,
-        implementation: "CPython".to_owned(),
-        gil_enabled: true,
-        free_threaded_build: false,
-    };
-    let free_threaded_report = InterpreterReport {
-        gil_enabled: false,
-        free_threaded_build: true,
-        ..gil_report.clone()
-    };
+    let report = attached_interpreter_report().unwrap();
+    let (host, execution) =
+        cdf_engine::StandaloneExecutionHost::default_services(64 * 1024 * 1024).unwrap();
+    let requested_parallelism = usize::from(execution.capabilities().logical_cpu_slots.min(2));
+    let semantics = execution_semantics(&report, true, requested_parallelism);
+    let lane = python_execution_lane_spec(&semantics);
+    execution
+        .ensure_blocking_lanes(std::slice::from_ref(&lane))
+        .unwrap();
 
-    let gil_semantics = execution_semantics(&gil_report, true, 4);
-    let free_threaded_semantics = execution_semantics(&free_threaded_report, true, 4);
-    assert_eq!(gil_semantics.effective_parallelism, 1);
-    assert_eq!(free_threaded_semantics.effective_parallelism, 4);
-    let hash = deterministic_fixture_hash(&read).unwrap();
-    assert_eq!(hash, deterministic_fixture_hash(&read).unwrap());
+    let task_count = 2_usize;
+    let active = Arc::new(AtomicUsize::new(0));
+    let peak = Arc::new(AtomicUsize::new(0));
+    let synchronize = matches!(semantics.mode, PythonConcurrencyMode::FreeThreadedParallel)
+        && semantics.effective_parallelism >= task_count;
+    let barrier = synchronize.then(|| Arc::new(Barrier::new(task_count)));
+    let (result_sender, result_receiver) = mpsc::sync_channel(task_count);
+    let mut scope = execution.open_scope("python-concurrency-matrix").unwrap();
+    for index in 0..task_count {
+        let active = Arc::clone(&active);
+        let peak = Arc::clone(&peak);
+        let barrier = barrier.clone();
+        let result_sender = result_sender.clone();
+        let expression = CString::new("sum(i * i for i in range(10000))").unwrap();
+        scope
+            .spawn_blocking(
+                &lane.lane_id,
+                Box::new(move || {
+                    let value = Python::attach(|py| -> Result<u64> {
+                        let current = active.fetch_add(1, Ordering::SeqCst) + 1;
+                        peak.fetch_max(current, Ordering::SeqCst);
+                        if let Some(barrier) = barrier {
+                            barrier.wait();
+                        }
+                        let value = py
+                            .eval(expression.as_c_str(), None, None)
+                            .and_then(|value| value.extract::<u64>())
+                            .map_err(py_error);
+                        active.fetch_sub(1, Ordering::SeqCst);
+                        value
+                    })?;
+                    result_sender.send((index, value)).unwrap();
+                    Ok(())
+                }),
+            )
+            .unwrap();
+    }
+    drop(result_sender);
+    let task_report = host.block_on_root(scope.join()).unwrap();
+    let mut results = result_receiver.into_iter().collect::<Vec<_>>();
+    results.sort_unstable();
+
+    assert_eq!(task_report.completed, task_count as u64);
+    assert_eq!(results.len(), task_count);
+    match semantics.mode {
+        PythonConcurrencyMode::FreeThreadedParallel if synchronize => {
+            assert_eq!(peak.load(Ordering::SeqCst), task_count);
+        }
+        PythonConcurrencyMode::GilSerialized | PythonConcurrencyMode::ParallelDisabled => {
+            assert_eq!(peak.load(Ordering::SeqCst), 1);
+        }
+        PythonConcurrencyMode::FreeThreadedParallel => {}
+    }
+
+    let fixture_hash = deterministic_fixture_hash(&read).unwrap();
+    let mut hasher = Sha256::new();
+    hasher.update(b"cdf-python-admitted-concurrency-v1");
+    hasher.update(fixture_hash.as_bytes());
+    for (index, value) in results {
+        hasher.update(index.to_le_bytes());
+        hasher.update(value.to_le_bytes());
+    }
+    let hash = format!("sha256:{}", hex::encode(hasher.finalize()));
+    eprintln!(
+        "python mode={:?} requested={} effective={} observed_peak={} fixture_hash={hash}",
+        semantics.mode,
+        semantics.requested_parallelism,
+        semantics.effective_parallelism,
+        peak.load(Ordering::SeqCst),
+    );
     if let Ok(path) = std::env::var("CDF_PYTHON_FIXTURE_HASH_OUTPUT") {
         let path = PathBuf::from(path);
         if let Some(parent) = path.parent() {
