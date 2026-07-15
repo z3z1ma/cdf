@@ -894,13 +894,15 @@ pub(crate) fn segment_object_key(
 pub(crate) fn staged_segment_object_key(
     encoder: ObjectKeyEncoder,
     target: &TargetName,
+    authority_domain_id: &cdf_kernel::LeaseAuthorityDomainId,
     attempt_id: &cdf_runtime::LoadAttemptId,
     fencing_token: u64,
     segment_id: &cdf_kernel::SegmentId,
 ) -> String {
     format!(
-        "targets/{}/staging/{}/{}/{}.parquet",
+        "targets/{}/staging/{}/{}/{}/{}.parquet",
         encoder.encode(target.as_str()),
+        encoder.encode(authority_domain_id.as_str()),
         encoder.encode(attempt_id.as_str()),
         fencing_token,
         encoder.encode(segment_id.as_str())
@@ -910,12 +912,14 @@ pub(crate) fn staged_segment_object_key(
 pub(crate) fn staged_attempt_prefix(
     encoder: ObjectKeyEncoder,
     target: &TargetName,
+    authority_domain_id: &cdf_kernel::LeaseAuthorityDomainId,
     attempt_id: &cdf_runtime::LoadAttemptId,
     fencing_token: u64,
 ) -> String {
     format!(
-        "targets/{}/staging/{}/{}/",
+        "targets/{}/staging/{}/{}/{}/",
         encoder.encode(target.as_str()),
+        encoder.encode(authority_domain_id.as_str()),
         encoder.encode(attempt_id.as_str()),
         fencing_token
     )
@@ -928,12 +932,19 @@ pub(crate) fn staged_target_prefix(encoder: ObjectKeyEncoder, target: &TargetNam
 pub(crate) fn staged_attempt_metadata_key(
     encoder: ObjectKeyEncoder,
     target: &TargetName,
+    authority_domain_id: &cdf_kernel::LeaseAuthorityDomainId,
     attempt_id: &cdf_runtime::LoadAttemptId,
     fencing_token: u64,
 ) -> String {
     format!(
         "{}attempt.json",
-        staged_attempt_prefix(encoder, target, attempt_id, fencing_token)
+        staged_attempt_prefix(
+            encoder,
+            target,
+            authority_domain_id,
+            attempt_id,
+            fencing_token,
+        )
     )
 }
 
@@ -968,13 +979,15 @@ pub(crate) fn replace_settlement_key(
 pub(crate) fn package_publication_metadata_key(
     encoder: ObjectKeyEncoder,
     target: &TargetName,
+    authority_domain_id: &cdf_kernel::LeaseAuthorityDomainId,
     attempt_id: &cdf_runtime::LoadAttemptId,
     fencing_token: u64,
     token: &cdf_kernel::IdempotencyToken,
 ) -> String {
     format!(
-        "targets/{}/publication-attempts/{}/{}/{}.json",
+        "targets/{}/publication-attempts/{}/{}/{}/{}.json",
         encoder.encode(target.as_str()),
+        encoder.encode(authority_domain_id.as_str()),
         encoder.encode(attempt_id.as_str()),
         fencing_token,
         encoder.encode(token.as_str())

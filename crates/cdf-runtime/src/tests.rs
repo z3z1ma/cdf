@@ -1685,6 +1685,8 @@ fn test_staging_lease(attempt_id: &LoadAttemptId, destination: &str, target: &st
         attempt_id.clone(),
     );
     StagingLease {
+        authority_domain_id: cdf_kernel::LeaseAuthorityDomainId::new("runtime-test-domain")
+            .unwrap(),
         scope_lease: cdf_kernel::ScopeLease {
             scope: ScopeKey::Composite {
                 parts: vec![
@@ -1712,6 +1714,10 @@ struct RecordingStagingLeaseAuthority {
 }
 
 impl StagingLeaseAuthority for RecordingStagingLeaseAuthority {
+    fn authority_domain_id(&self) -> cdf_kernel::LeaseAuthorityDomainId {
+        cdf_kernel::LeaseAuthorityDomainId::new("runtime-test-domain").unwrap()
+    }
+
     fn acquire(
         &self,
         identity: StagingLeaseIdentity,

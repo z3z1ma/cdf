@@ -6,8 +6,8 @@ use std::{
 };
 
 use cdf_kernel::{
-    CdfError, ExpiredScopeLeaseProof, FencingToken, LeaseOwnerId, Result, ScopeKey, ScopeLease,
-    ScopeLeaseClock, ScopeLeaseStore,
+    CdfError, ExpiredScopeLeaseProof, FencingToken, LeaseAuthorityDomainId, LeaseOwnerId, Result,
+    ScopeKey, ScopeLease, ScopeLeaseClock, ScopeLeaseStore,
 };
 use rusqlite::{Connection, OpenFlags, OptionalExtension, Row, params};
 
@@ -23,6 +23,7 @@ pub(crate) const SCOPE_LEASE_SCHEMA_VERSION: i64 = 1;
 pub struct InMemoryScopeLeaseStore {
     leases: Mutex<BTreeMap<String, LeaseRecord>>,
     clock: Arc<dyn ScopeLeaseClock>,
+    authority_domain_id: LeaseAuthorityDomainId,
 }
 
 #[derive(Clone)]
@@ -37,9 +38,27 @@ impl InMemoryScopeLeaseStore {
     }
 
     pub fn with_clock(clock: Arc<dyn ScopeLeaseClock>) -> Self {
+        static NEXT_DOMAIN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+        let sequence = NEXT_DOMAIN.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         Self {
             leases: Mutex::new(BTreeMap::new()),
             clock,
+            authority_domain_id: LeaseAuthorityDomainId::new(format!(
+                "memory-{}-{sequence}",
+                std::process::id()
+            ))
+            .expect("in-memory lease domain is nonempty"),
+        }
+    }
+
+    pub fn with_clock_and_domain(
+        clock: Arc<dyn ScopeLeaseClock>,
+        authority_domain_id: LeaseAuthorityDomainId,
+    ) -> Self {
+        Self {
+            leases: Mutex::new(BTreeMap::new()),
+            clock,
+            authority_domain_id,
         }
     }
 
@@ -55,6 +74,10 @@ impl Default for InMemoryScopeLeaseStore {
 }
 
 impl ScopeLeaseStore for InMemoryScopeLeaseStore {
+    fn authority_domain_id(&self) -> LeaseAuthorityDomainId {
+        self.authority_domain_id.clone()
+    }
+
     fn acquire(
         &self,
         scope: ScopeKey,
@@ -147,6 +170,7 @@ impl ScopeLeaseStore for InMemoryScopeLeaseStore {
 pub struct SqliteScopeLeaseStore {
     conn: Mutex<Connection>,
     clock: Arc<dyn ScopeLeaseClock>,
+    authority_domain_id: LeaseAuthorityDomainId,
 }
 
 impl SqliteScopeLeaseStore {
@@ -160,9 +184,11 @@ impl SqliteScopeLeaseStore {
     ) -> Result<Self> {
         let conn = Connection::open(path.as_ref()).map_err(sqlite_error)?;
         initialize_schema(&conn)?;
+        let authority_domain_id = read_authority_domain_id(&conn)?;
         Ok(Self {
             conn: Mutex::new(conn),
             clock,
+            authority_domain_id,
         })
     }
 
@@ -170,9 +196,11 @@ impl SqliteScopeLeaseStore {
         let conn = Connection::open_with_flags(path.as_ref(), OpenFlags::SQLITE_OPEN_READ_ONLY)
             .map_err(sqlite_error)?;
         validate_schema_version(&conn)?;
+        let authority_domain_id = read_authority_domain_id(&conn)?;
         Ok(Self {
             conn: Mutex::new(conn),
             clock: Arc::new(SystemScopeLeaseClock),
+            authority_domain_id,
         })
     }
 
@@ -183,9 +211,11 @@ impl SqliteScopeLeaseStore {
     pub fn open_in_memory_with_clock(clock: Arc<dyn ScopeLeaseClock>) -> Result<Self> {
         let conn = Connection::open_in_memory().map_err(sqlite_error)?;
         initialize_schema(&conn)?;
+        let authority_domain_id = read_authority_domain_id(&conn)?;
         Ok(Self {
             conn: Mutex::new(conn),
             clock,
+            authority_domain_id,
         })
     }
 
@@ -195,6 +225,10 @@ impl SqliteScopeLeaseStore {
 }
 
 impl ScopeLeaseStore for SqliteScopeLeaseStore {
+    fn authority_domain_id(&self) -> LeaseAuthorityDomainId {
+        self.authority_domain_id.clone()
+    }
+
     fn acquire(
         &self,
         scope: ScopeKey,
@@ -352,6 +386,12 @@ pub(crate) fn initialize_schema(conn: &Connection) -> Result<()> {
             released INTEGER NOT NULL CHECK (released IN (0, 1)),
             CHECK (expires_at_ms > acquired_at_ms)
         );
+        CREATE TABLE IF NOT EXISTS cdf_scope_lease_authority (
+            singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+            domain_id TEXT NOT NULL UNIQUE
+        );
+        INSERT OR IGNORE INTO cdf_scope_lease_authority (singleton, domain_id)
+        VALUES (1, 'lease-' || lower(hex(randomblob(16))));
         ",
     )
     .map_err(sqlite_error)?;
@@ -360,9 +400,11 @@ pub(crate) fn initialize_schema(conn: &Connection) -> Result<()> {
 
 fn validate_schema_version(conn: &Connection) -> Result<()> {
     match read_component_schema_version(conn, SCOPE_LEASE_COMPONENT)? {
-        Some(SCOPE_LEASE_SCHEMA_VERSION) => {
-            require_sqlite_tables(conn, "scope lease store", &["cdf_scope_leases"])
-        }
+        Some(SCOPE_LEASE_SCHEMA_VERSION) => require_sqlite_tables(
+            conn,
+            "scope lease store",
+            &["cdf_scope_leases", "cdf_scope_lease_authority"],
+        ),
         Some(version) => Err(CdfError::internal(format!(
             "unsupported scope lease store SQLite schema version {version}"
         ))),
@@ -371,6 +413,19 @@ fn validate_schema_version(conn: &Connection) -> Result<()> {
         ))),
         None => Ok(()),
     }
+}
+
+fn read_authority_domain_id(conn: &Connection) -> Result<LeaseAuthorityDomainId> {
+    let value = conn
+        .query_row(
+            "SELECT domain_id FROM cdf_scope_lease_authority WHERE singleton = 1",
+            [],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()
+        .map_err(sqlite_error)?
+        .ok_or_else(|| CdfError::internal("scope lease authority domain is absent"))?;
+    LeaseAuthorityDomainId::new(value)
 }
 
 fn row_to_lease(row: &Row<'_>) -> rusqlite::Result<ScopeLease> {

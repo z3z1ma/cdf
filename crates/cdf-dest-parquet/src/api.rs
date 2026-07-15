@@ -193,6 +193,7 @@ impl ParquetDestination {
             let expected = crate::store::staged_attempt_metadata_key(
                 self.object_key_encoder,
                 target,
+                metadata.staging_lease.authority_domain_id(),
                 &metadata.staging_lease.identity.attempt_id,
                 metadata.staging_lease.fencing_token(),
             );
@@ -234,8 +235,10 @@ impl ParquetDestination {
                         ))
                     })?;
             let expected_marker_prefix = format!(
-                "{}{}/{}/",
+                "{}{}/{}/{}/",
                 publication_prefix,
+                self.object_key_encoder
+                    .encode(metadata.staging_lease.authority_domain_id().as_str()),
                 self.object_key_encoder
                     .encode(metadata.staging_lease.identity.attempt_id.as_str()),
                 metadata.staging_lease.fencing_token()

@@ -806,6 +806,28 @@ fn scope_lease_stores_pass_shared_conformance() {
 }
 
 #[test]
+fn sqlite_scope_lease_authority_domain_is_stable_per_store_and_distinct_between_stores() {
+    let dir = tempdir().unwrap();
+    let first_path = dir.path().join("first.db");
+    let second_path = dir.path().join("second.db");
+
+    let first = SqliteScopeLeaseStore::open(&first_path).unwrap();
+    let first_domain = first.authority_domain_id();
+    assert_eq!(
+        SqliteScopeLeaseStore::open(&first_path)
+            .unwrap()
+            .authority_domain_id(),
+        first_domain
+    );
+    assert_ne!(
+        SqliteScopeLeaseStore::open(&second_path)
+            .unwrap()
+            .authority_domain_id(),
+        first_domain
+    );
+}
+
+#[test]
 fn scope_lease_acquire_is_exclusive_under_concurrent_contention() {
     let clock = Arc::new(ManualScopeLeaseClock::new(10_000));
     assert_concurrent_lease_contention(Arc::new(InMemoryScopeLeaseStore::with_clock(clock)));

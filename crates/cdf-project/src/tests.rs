@@ -866,6 +866,10 @@ struct StaleAtPublicationStore {
 }
 
 impl ScopeLeaseStore for StaleAtPublicationStore {
+    fn authority_domain_id(&self) -> cdf_kernel::LeaseAuthorityDomainId {
+        cdf_kernel::LeaseAuthorityDomainId::new("stale-publication-test").unwrap()
+    }
+
     fn acquire(
         &self,
         _scope: ScopeKey,

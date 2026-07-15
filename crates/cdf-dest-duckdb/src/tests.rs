@@ -512,6 +512,7 @@ fn try_commit_current(
         attempt_id.clone(),
     );
     let staging_lease = cdf_runtime::StagingLease {
+        authority_domain_id: cdf_kernel::LeaseAuthorityDomainId::new("duckdb-test-domain")?,
         scope_lease: cdf_kernel::ScopeLease {
             scope: ScopeKey::Composite {
                 parts: vec![

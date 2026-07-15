@@ -36,6 +36,7 @@ struct ParquetPhysicalWritePlan {
     encoder: ObjectKeyEncoder,
     target: cdf_kernel::TargetName,
     attempt_id: cdf_runtime::LoadAttemptId,
+    authority_domain_id: cdf_kernel::LeaseAuthorityDomainId,
     fencing_token: u64,
     writers: u16,
     rows_per_batch: u64,
@@ -62,6 +63,7 @@ impl ParquetPhysicalWritePlan {
             encoder: destination.object_key_encoder(),
             target: request.binding().target.clone(),
             attempt_id: request.attempt_id().clone(),
+            authority_domain_id: request.staging_lease().authority_domain_id().clone(),
             fencing_token: request.staging_lease().fencing_token(),
             writers: request.bulk_path().writers,
             rows_per_batch: request.bulk_path().rows_per_batch,
@@ -73,6 +75,7 @@ impl ParquetPhysicalWritePlan {
         staged_segment_object_key(
             self.encoder,
             &self.target,
+            &self.authority_domain_id,
             &self.attempt_id,
             self.fencing_token,
             segment_id,
@@ -150,6 +153,7 @@ impl ParquetStagedIngressSession {
         let metadata_key = staged_attempt_metadata_key(
             destination.object_key_encoder(),
             &request.binding().target,
+            request.staging_lease().authority_domain_id(),
             request.attempt_id(),
             request.staging_lease().fencing_token(),
         );
@@ -334,6 +338,7 @@ impl ParquetStagedIngressSession {
         let prefix = crate::store::staged_attempt_prefix(
             self.destination.object_key_encoder(),
             &self.request.binding().target,
+            self.request.staging_lease().authority_domain_id(),
             self.request.attempt_id(),
             self.request.staging_lease().fencing_token(),
         );
@@ -504,6 +509,7 @@ impl StagedIngressSession for ParquetStagedIngressSession {
         let publication_key = package_publication_metadata_key(
             self.destination.object_key_encoder(),
             &request.commit.target,
+            self.request.staging_lease().authority_domain_id(),
             self.request.attempt_id(),
             self.request.staging_lease().fencing_token(),
             &request.commit.idempotency_token,

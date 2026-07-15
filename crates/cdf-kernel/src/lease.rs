@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    Checkpoint, CheckpointId, CheckpointStore, LeaseOwnerId, PromotionId,
+    Checkpoint, CheckpointId, CheckpointStore, LeaseAuthorityDomainId, LeaseOwnerId, PromotionId,
     PromotionPublicationEvent, Receipt, Result, ScopeKey,
 };
 
@@ -45,6 +45,13 @@ impl ScopeLease {
 }
 
 pub trait ScopeLeaseStore: Send + Sync {
+    /// Stable identity of the consistency domain issuing fencing generations.
+    ///
+    /// Tokens from different domains are never comparable. Implementations backed by durable
+    /// state must persist this identity so every process opening the same store observes the same
+    /// domain.
+    fn authority_domain_id(&self) -> LeaseAuthorityDomainId;
+
     fn acquire(
         &self,
         scope: ScopeKey,

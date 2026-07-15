@@ -90,6 +90,10 @@ impl CheckpointStore for SqlitePromotionSettlementStore {
 }
 
 impl ScopeLeaseStore for SqlitePromotionSettlementStore {
+    fn authority_domain_id(&self) -> cdf_kernel::LeaseAuthorityDomainId {
+        self.leases.authority_domain_id()
+    }
+
     fn acquire(
         &self,
         scope: ScopeKey,

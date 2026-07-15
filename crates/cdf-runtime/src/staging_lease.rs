@@ -6,8 +6,8 @@ use std::{
 };
 
 use cdf_kernel::{
-    CdfError, DestinationId, ExpiredScopeLeaseProof, LeaseOwnerId, Result, ScopeKey, ScopeLease,
-    ScopeLeaseStore, TargetName,
+    CdfError, DestinationId, ExpiredScopeLeaseProof, LeaseAuthorityDomainId, LeaseOwnerId, Result,
+    ScopeKey, ScopeLease, ScopeLeaseStore, TargetName,
 };
 use serde::{Deserialize, Serialize};
 
@@ -53,6 +53,7 @@ impl StagingLeaseIdentity {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StagingLease {
+    pub authority_domain_id: LeaseAuthorityDomainId,
     pub identity: StagingLeaseIdentity,
     pub scope_lease: ScopeLease,
 }
@@ -60,6 +61,10 @@ pub struct StagingLease {
 impl StagingLease {
     pub fn fencing_token(&self) -> u64 {
         self.scope_lease.fencing_token.get()
+    }
+
+    pub fn authority_domain_id(&self) -> &LeaseAuthorityDomainId {
+        &self.authority_domain_id
     }
 
     pub(crate) fn validate(&self) -> Result<()> {
@@ -104,7 +109,8 @@ impl ExpiredStagingLeaseProof {
     fn validate(&self) -> Result<()> {
         self.expired_lease.validate()?;
         self.cleanup_lease.validate()?;
-        if self.expired_lease.identity != self.cleanup_lease.identity
+        if self.expired_lease.authority_domain_id != self.cleanup_lease.authority_domain_id
+            || self.expired_lease.identity != self.cleanup_lease.identity
             || self.cleanup_lease.fencing_token() <= self.expired_lease.fencing_token()
         {
             return Err(CdfError::contract(
@@ -116,6 +122,8 @@ impl ExpiredStagingLeaseProof {
 }
 
 pub trait StagingLeaseAuthority: Send + Sync {
+    fn authority_domain_id(&self) -> LeaseAuthorityDomainId;
+
     fn acquire(
         &self,
         identity: StagingLeaseIdentity,
@@ -153,6 +161,10 @@ impl ScopeStagingLeaseAuthority {
 }
 
 impl StagingLeaseAuthority for ScopeStagingLeaseAuthority {
+    fn authority_domain_id(&self) -> LeaseAuthorityDomainId {
+        self.scopes.authority_domain_id()
+    }
+
     fn acquire(
         &self,
         identity: StagingLeaseIdentity,
@@ -163,6 +175,7 @@ impl StagingLeaseAuthority for ScopeStagingLeaseAuthority {
             .scopes
             .acquire(identity.scope(), owner, lease_duration_ms)?;
         let lease = StagingLease {
+            authority_domain_id: self.authority_domain_id(),
             identity,
             scope_lease,
         };
@@ -172,7 +185,13 @@ impl StagingLeaseAuthority for ScopeStagingLeaseAuthority {
 
     fn renew(&self, lease: &StagingLease, lease_duration_ms: u64) -> Result<StagingLease> {
         lease.validate()?;
+        if lease.authority_domain_id != self.authority_domain_id() {
+            return Err(CdfError::contract(
+                "staging lease belongs to a different authority domain",
+            ));
+        }
         let renewed = StagingLease {
+            authority_domain_id: lease.authority_domain_id.clone(),
             identity: lease.identity.clone(),
             scope_lease: self.scopes.renew(&lease.scope_lease, lease_duration_ms)?,
         };
@@ -182,11 +201,21 @@ impl StagingLeaseAuthority for ScopeStagingLeaseAuthority {
 
     fn release(&self, lease: &StagingLease) -> Result<()> {
         lease.validate()?;
+        if lease.authority_domain_id != self.authority_domain_id() {
+            return Err(CdfError::contract(
+                "staging lease belongs to a different authority domain",
+            ));
+        }
         self.scopes.release(&lease.scope_lease)
     }
 
     fn assert_current(&self, lease: &StagingLease) -> Result<()> {
         lease.validate()?;
+        if lease.authority_domain_id != self.authority_domain_id() {
+            return Err(CdfError::contract(
+                "staging lease belongs to a different authority domain",
+            ));
+        }
         self.scopes.assert_current(&lease.scope_lease)
     }
 
@@ -197,15 +226,22 @@ impl StagingLeaseAuthority for ScopeStagingLeaseAuthority {
         cleanup_lease_duration_ms: u64,
     ) -> Result<Option<ExpiredStagingLeaseProof>> {
         lease.validate()?;
+        if lease.authority_domain_id != self.authority_domain_id() {
+            return Err(CdfError::contract(
+                "staging cleanup candidate belongs to a different authority domain",
+            ));
+        }
         self.scopes
             .prove_expired(&lease.scope_lease, collector, cleanup_lease_duration_ms)?
             .map(|proof: ExpiredScopeLeaseProof| {
                 let proof = ExpiredStagingLeaseProof {
                     expired_lease: StagingLease {
+                        authority_domain_id: lease.authority_domain_id.clone(),
                         identity: lease.identity.clone(),
                         scope_lease: proof.expired_lease,
                     },
                     cleanup_lease: StagingLease {
+                        authority_domain_id: lease.authority_domain_id.clone(),
                         identity: lease.identity.clone(),
                         scope_lease: proof.cleanup_lease,
                     },
@@ -360,6 +396,9 @@ impl StagingLeaseSupervisor {
         lease: &StagingLease,
         collector: LeaseOwnerId,
     ) -> Result<Option<ManagedExpiredStagingLeaseProof>> {
+        if lease.authority_domain_id != self.authority.authority_domain_id() {
+            return Ok(None);
+        }
         let duration_ms = duration_ms(self.timing.lease_duration)?;
         let Some(proof) = self
             .authority
