@@ -88,6 +88,7 @@ None. D4 supplies the bounded streaming writer, D7 supplies the generic persiste
 - 2026-07-15 structural ownership repair: acknowledgement now asserts the exact lease both before and after the generic stream accepts it. Cleanup-proof guard acquisition always explicitly finishes the cleanup lease and combines both failures. Ordinary run and artifact replay now perform every fallible plan/hash/lane step before acquisition where possible; after acquisition, snapshot, guard, request, session, and background-worker construction each transfer into an explicit owner or synchronously abort/release while preserving compound errors. The active D8 acceptance boundary now truthfully covers attempt-owned storage; D9 remains the generic committed-root/live-claim authority for immutable unmanifested content and therefore keeps WS-D open without blocking C4.
 - 2026-07-15 jobs-invariance evidence: the permanent `destination_ingress_categories_preserve_jobs_identity` matrix ran the ordinary four-partition Parquet source through the current staged Parquet destination at jobs 1/2/auto/4 on an explicit four-slot host. Effective jobs were exactly 1/2/4/4; all four cells retained package hash, receipt package/segment identity, state segment identity, partition count, and row count. This is the actual adapter/project receipt gate, not the pure layout test.
 - 2026-07-15 v5 focused verification: 35 runnable Parquet and 72 runnable runtime tests pass; all 195 project library tests pass; the focused real destination jobs matrix passes. Strict all-target no-deps Clippy passes for runtime, project, Parquet, and benchmarks. Repository scans find no production multipart handle/API in the Parquet adapter and no unowned `snapshot()?`/`mutation_guard()?` escape between lease acquisition and session ownership.
+- 2026-07-15 v5 FineWeb closure measurement: release commit `23027d3e` completed the fresh 8.59 GB cell in 18.36 seconds, wrote 14.371 GB into 58 objects with 460 exact acknowledgements, held RSS to 1.463 GB, overlapped destination ingress for 16.762 seconds, and completed final binding/receipt in 71.4 milliseconds. Staging contained zero files after success. Complete-wall output was 746.5 MiB/s or 0.779x the favorable 958.4 MiB/s same-data/two-writer reference. V5 is 4.1% faster than v4 and 54.9% faster than the original 40.67-second control. Evidence: `.10x/evidence/2026-07-15-p3-d8-parquet-staged-ingress.md`.
 
 ## Evidence
 
@@ -101,10 +102,11 @@ None. D4 supplies the bounded streaming writer, D7 supplies the generic persiste
 - Current-path scale: the fresh `arrow_ipc_to_parquet@4` FineWeb run reaches 0.747x its favorable same-data reference on the complete command wall, leaves zero staging files, verifies the receipt, and commits the checkpoint.
 - Jobs authority: `CARGO_BUILD_JOBS=12 cargo test -p cdf-benchmarks --test lab_runners destination_ingress_categories_preserve_jobs_identity -j12 -- --exact` passes and proves jobs 1/2/auto/4 semantic identity through the actual current Parquet staged destination.
 - V5 focused slice: 35 runnable `cdf-dest-parquet`, 72 runnable `cdf-runtime`, and 195 `cdf-project` tests pass; strict affected all-target Clippy passes. A v5 FineWeb replacement measurement remains before closure.
+- Current v5 scale: the complete FineWeb command reaches 0.779x the favorable same-data reference, leaves zero staging files, verifies the receipt, and commits the checkpoint.
 
 ## Review
 
-Latest fresh adversarial review verdict: **fail** with the five significant v4 gaps journaled above. The implementation and focused evidence repair all five without reintroducing a destination-specific lifecycle mechanism. A v5 FineWeb replacement measurement is still required before closure.
+Latest fresh adversarial review verdict: **fail** with the five significant v4 gaps journaled above. The implementation, conformance, and v5 scale evidence repair all five without reintroducing a destination-specific lifecycle mechanism. One fresh critical/significant-only closure review remains.
 
 ## Retrospective
 
