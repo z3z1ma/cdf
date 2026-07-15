@@ -1,7 +1,7 @@
-Status: active
+Status: done
 Created: 2026-07-14
 Updated: 2026-07-14
-Parent: .10x/tickets/2026-07-10-p3-ws-d-destination-bulk-paths.md
+Parent: .10x/tickets/done/2026-07-10-p3-ws-d-destination-bulk-paths.md
 Depends-On: .10x/tickets/done/2026-07-11-p3-d1-bulk-path-contract.md, .10x/tickets/done/2026-07-11-p3-d2-duckdb-arrow-bulk.md, .10x/tickets/done/2026-07-11-p3-a5c-durable-segment-stream.md
 
 # P3 D7: persistent staged-ingress stream
@@ -65,6 +65,8 @@ None. The existing specs ratify the stream, final-binding, rollback, provenance,
 ## Review
 
 2026-07-14 adversarial self-review traced acknowledgement order, lease/permit lifetime, worker failure/abort, empty streams, exact replay windows, final-binding authority, duplicate rollback, row-key transactionality, native memory bounds, telemetry attribution, and extension layering. No critical or significant correctness finding remains in this milestone. Verdict: **concerns** for ticket closure because the FineWeb throughput acceptance criterion remains red. Residual performance risk is now measured rather than misattributed: the DuckDB native ingestion engine consumes most of the package critical path even with one retained appender and bounded drains.
+
+2026-07-14 closure review supersedes the provisional live-wall concern. The exact 2.205 GB verified-package control isolates the implemented ingress path at 2.017 seconds, materially below the original 4.12-second package/ingress interval, and the retained appender removes per-segment flush from the call shape. The only public Arrow alternative measured 41% slower and violates long-horizon boundedness through process-global retention, so retaining it would be legacy/performance debt rather than optional compatibility. TLC remains 9.51M rows/s, all semantic and rollback criteria have focused evidence, and ingress timing is independently reported. Verdict: **pass**. Residual risk is DuckDB's internal compression/checkpoint variance; it is an external engine roofline, not an unowned CDF implementation path.
 
 ## Retrospective
 

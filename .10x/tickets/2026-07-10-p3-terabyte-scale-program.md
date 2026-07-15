@@ -43,7 +43,7 @@ This parent is an aggregate plan. Workstream records own sequencing and integrat
 - `.10x/tickets/2026-07-10-p3-ws-a-streaming-runtime-pipeline.md`
 - `.10x/tickets/2026-07-10-p3-ws-b-format-decode-engines.md`
 - `.10x/tickets/2026-07-10-p3-ws-c-deterministic-parallelism.md`
-- `.10x/tickets/2026-07-10-p3-ws-d-destination-bulk-paths.md`
+- `.10x/tickets/done/2026-07-10-p3-ws-d-destination-bulk-paths.md`
 - `.10x/tickets/2026-07-10-p3-ws-e-hashing-package-io.md`
 - `.10x/tickets/2026-07-10-p3-ws-f-constant-memory-guarantee.md`
 - `.10x/tickets/2026-07-10-p3-ws-g-remote-io-overlap.md`
@@ -94,6 +94,7 @@ P3 does not implement a distributed scheduler, remote worker leases, resident st
 - 2026-07-11: WS-L completed before any P3 data-plane optimization. The immutable report and honest failing envelope are recorded at `.10x/evidence/2026-07-11-p3-l5-preoptimization-baseline.md`; WS-A now owns the exclusive runtime-spine migration window, while crate-bounded WS-B/WS-D/WS-E work remains eligible only where it does not cross that frozen surface.
 - 2026-07-12: Added WS-J under `.10x/decisions/datafusion-analysis-scheduling-identity-boundary.md` and `.10x/specs/datafusion-currency-bridges.md`. DataFusion is the standard currency for pruning, expressions, catalogs, memory/object-store sessions, plans, and metrics, while deterministic native CDF operators exclusively produce identity-bearing bytes and verdicts. The sequence reuses completed A2 memory authority, open FX1/WX1/G1 seams, and prevents P3 APIs from hardening private substitutes.
 - 2026-07-13: Added the P0 fixed-schema discovery and stream-admission program after the 100-remote-JSON-file counterexample exposed runtime pre-observation as a second source execution. The corrected authority requires a fixed schema before final planning, removes current-schema pre-scans from pinned execution, represents file and within-file discovery coverage independently, and reuses materially downloaded payloads during the same command. SA0-SA5 join FX1, G1/G2/G3, B4/B5, and H2/H4 without adding source-format branches.
+- 2026-07-14: Closed WS-D after D7 replaced the superseded per-segment staged-ingress API with one generic bounded acknowledgement stream and completed the reopened wide-string investigation. The exact 2.205 GB package path measures 2.017 seconds; the only public Arrow alternative is 41% slower and unbounded by upstream contract, while TLC remains 9.51M rows/s. All destination-specific behavior remains behind adapter ingress capabilities. Active backlog moved from 89 to 87 in this closure audit; C2 is the next high-impact executable frontier because it unlocks C3/C4, G4, V3, and F4.
 
 ## Blockers
 
