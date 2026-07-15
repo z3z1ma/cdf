@@ -73,6 +73,10 @@ fn on_managed_execution_worker() -> bool {
     CDF_MANAGED_EXECUTION_WORKER.get()
 }
 
+fn requires_nonblocking_teardown() -> bool {
+    on_managed_execution_worker() || tokio::runtime::Handle::try_current().is_ok()
+}
+
 struct ManagedExecutionWorkerGuard;
 
 impl ManagedExecutionWorkerGuard {
@@ -458,7 +462,7 @@ impl Drop for FixedTaskPool {
         }
         if let Ok(workers) = self.workers.get_mut() {
             let workers = std::mem::take(workers);
-            if on_managed_execution_worker() {
+            if requires_nonblocking_teardown() {
                 // A legal CPU, I/O, or FFI task may own the final host
                 // reference. No managed worker may synchronously join any
                 // managed pool: a peer can be waiting for work performed after
@@ -731,7 +735,7 @@ impl Drop for StandaloneExecutionHost {
         let Some(runtime) = self.runtime.take() else {
             return;
         };
-        if on_managed_execution_worker() {
+        if requires_nonblocking_teardown() {
             // Tokio's ordinary Runtime drop blocks and is forbidden from one
             // of its own async workers. Nonblocking shutdown lets the current
             // task return; fixed pools below use the same managed-worker rule.
@@ -1631,6 +1635,24 @@ mod tests {
         finished_receiver
             .recv_timeout(Duration::from_secs(1))
             .expect("I/O worker attempted to synchronously drop its own Tokio runtime");
+    }
+
+    #[test]
+    fn external_tokio_task_can_release_the_last_host_owner_without_blocking_drop() {
+        let external_runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        external_runtime.block_on(async {
+            let host = Arc::new(host());
+            let final_owner = Arc::clone(&host);
+            drop(host);
+            tokio::spawn(async move {
+                drop(final_owner);
+            })
+            .await
+            .expect("external Tokio task panicked while dropping the CDF host");
+        });
     }
 
     #[test]
