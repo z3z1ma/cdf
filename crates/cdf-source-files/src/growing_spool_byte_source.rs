@@ -65,7 +65,7 @@ pub(crate) fn start_growing_spool(
     spill: Arc<dyn SpillBudgetCoordinator>,
     memory: Arc<dyn MemoryCoordinator>,
     cancellation: RunCancellation,
-) -> Result<GrowingSpoolSession> {
+) -> Result<Option<GrowingSpoolSession>> {
     start_growing_spool_with_tail_bytes(
         upstream,
         size_bytes,
@@ -85,7 +85,7 @@ fn start_growing_spool_with_tail_bytes(
     memory: Arc<dyn MemoryCoordinator>,
     tail_range_bytes: u64,
     cancellation: RunCancellation,
-) -> Result<GrowingSpoolSession> {
+) -> Result<Option<GrowingSpoolSession>> {
     if size_bytes == 0 {
         return Err(CdfError::contract(
             "growing spool requires a nonempty known-length source",
@@ -95,11 +95,6 @@ fn start_growing_spool_with_tail_bytes(
         return Err(CdfError::contract(
             "growing spool requires a nonzero bounded tail-range window",
         ));
-    }
-    if size_bytes > maximum_spool_bytes {
-        return Err(CdfError::data(format!(
-            "file requires {size_bytes} spool bytes, exceeding the configured {maximum_spool_bytes}-byte disk budget; increase the spool budget or use a streaming format runtime"
-        )));
     }
     let identity = upstream.identity().clone();
     identity.validate()?;
@@ -113,13 +108,12 @@ fn start_growing_spool_with_tail_bytes(
             "growing spool overlap requires one strong, known-length generation with enforceable exact ranges",
         ));
     }
-    let reservation = spill.try_reserve(size_bytes)?.ok_or_else(|| {
-        let snapshot = spill.snapshot();
-        CdfError::data(format!(
-            "file spool requires {size_bytes} bytes but the shared spill budget has {} of {} bytes in use; increase the spill budget or reduce concurrent files",
-            snapshot.current_bytes, snapshot.budget_bytes
-        ))
-    })?;
+    if size_bytes > maximum_spool_bytes {
+        return Ok(None);
+    }
+    let Some(reservation) = spill.try_reserve(size_bytes)? else {
+        return Ok(None);
+    };
     let file = tempfile::NamedTempFile::new()
         .map_err(|error| CdfError::data(format!("create growing file spool: {error}")))?;
     let storage = Arc::new(GrowingSpoolStorage {
@@ -169,11 +163,11 @@ fn start_growing_spool_with_tail_bytes(
         }
         result
     });
-    Ok(GrowingSpoolSession {
+    Ok(Some(GrowingSpoolSession {
         source,
         retention,
         completion,
-    })
+    }))
 }
 
 async fn download_into_growing_spool(
@@ -624,7 +618,10 @@ mod tests {
                         memory,
                         16,
                         RunCancellation::default(),
-                    )?;
+                    )?
+                    .ok_or_else(|| {
+                        CdfError::internal("test growing spool unexpectedly declined admission")
+                    })?;
                     let completion = tokio::spawn(session.completion);
                     let prefix = session
                         .source
@@ -701,7 +698,7 @@ mod tests {
         let error = start_growing_spool_with_tail_bytes(
             source,
             96,
-            1024,
+            1,
             Arc::clone(&spill),
             Arc::clone(&memory),
             16,

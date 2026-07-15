@@ -1,6 +1,6 @@
-Status: open
+Status: active
 Created: 2026-07-10
-Updated: 2026-07-11
+Updated: 2026-07-14
 Parent: .10x/tickets/2026-07-10-p3-terabyte-scale-program.md
 Depends-On: .10x/tickets/2026-07-11-p0-sx1-source-extension-boundary.md, .10x/tickets/2026-07-10-p3-ws-a-streaming-runtime-pipeline.md, .10x/tickets/2026-07-10-p3-ws-b-format-decode-engines.md, .10x/specs/data-onramp-file-sources-transports.md
 
@@ -26,9 +26,13 @@ Build on the P2 transport facade with parallel ranged Parquet GETs, bounded read
 
 ## Blockers
 
-Blocked on SX1/FX1, WS-A pipeline, relevant WS-B codecs, deterministic scheduling, and WS-L baseline.
+No immediate execution blocker. The active G1/G2/G3 slices build on the completed lab, execution-host, operator-graph, scheduler-admission, and memory-ledger foundations. Program closure still depends on completing the source/format boundaries, remaining codec/controller work, deterministic scaling matrix, and G4 envelope.
 
 ## References
 
 - `.10x/decisions/generation-bound-overlapped-io.md`
 - `.10x/specs/remote-local-io-overlap.md`
+
+## Progress and notes
+
+- 2026-07-14: Remote Parquet full scans now overlap one sequential transfer with local decode through a generation-bound growing spool when the complete finite object fits the atomically reserved spill budget. Strong exact-range sources that do not fit no longer require object-sized local disk: they fall back to the registered codec's generation-bound range access with zero spool consumption. Weak/unversioned sources retain verified sequential staging, and unbounded row streams remain direct bounded decode paths. Evidence: `.10x/evidence/2026-07-14-p3-g2-fineweb-growing-spool-overlap.md`, `.10x/evidence/2026-07-14-p3-g2-large-object-range-fallback.md`.

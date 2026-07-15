@@ -1948,17 +1948,25 @@ async fn stream_prepared_file_match(
                 && source.capabilities().exact_ranges
             {
                 let growing = start_growing_spool(
-                    source,
+                    Arc::clone(&source),
                     size_bytes,
                     dependencies.max_spool_bytes(),
                     dependencies.execution().spill(),
                     dependencies.execution().memory(),
                     cancellation.clone(),
                 )?;
-                ReadyFileInput {
-                    source: growing.source,
-                    payload_retention: Some(growing.retention),
-                    source_completion: Some(growing.completion),
+                if let Some(growing) = growing {
+                    ReadyFileInput {
+                        source: growing.source,
+                        payload_retention: Some(growing.retention),
+                        source_completion: Some(growing.completion),
+                    }
+                } else {
+                    ReadyFileInput {
+                        source,
+                        payload_retention: None,
+                        source_completion: None,
+                    }
                 }
             } else {
                 let spool = Arc::new(
@@ -4250,7 +4258,7 @@ mod tests {
     }
 
     #[test]
-    fn remote_parquet_full_scan_uses_verified_sequential_spool() {
+    fn remote_parquet_uses_admitted_spool_or_generation_bound_ranges() {
         let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, false)]));
         let batch = RecordBatch::try_new(
             Arc::clone(&schema),
@@ -4258,14 +4266,14 @@ mod tests {
         )
         .unwrap();
         let bytes = cdf_package::transcode_record_batches_to_parquet_bytes(&[batch]).unwrap();
-        let store = Arc::new(InMemory::new());
+        let store: Arc<dyn object_store::ObjectStore> = Arc::new(InMemory::new());
         futures_executor::block_on(store.put(
             &ObjectPath::from("prod/events.parquet"),
             PutPayload::from(bytes.clone()),
         ))
         .unwrap();
         let facade = FileTransportFacade::new()
-            .with_object_store("s3://parquet", store)
+            .with_object_store("s3://parquet", Arc::clone(&store))
             .with_execution_services(crate::test_execution_services());
         let dependencies = FileRuntimeDependencies::new(
             facade,
@@ -4317,7 +4325,10 @@ mod tests {
         let stream = stream_file_match_blocking(
             &resolved[0],
             plan.resolved_format().unwrap(),
-            ReadOptions::new(resource_id, PartitionId::new("file-parquet").unwrap()),
+            ReadOptions::new(
+                resource_id.clone(),
+                PartitionId::new("file-parquet").unwrap(),
+            ),
             &dependencies,
             Arc::clone(&schema),
             PhysicalSchemaAuthority::default(),
@@ -4343,6 +4354,123 @@ mod tests {
         let spill = dependencies.execution().spill().snapshot();
         assert!(spill.peak_bytes >= bytes.len() as u64);
         assert_eq!(spill.current_bytes, 0);
+
+        let constrained = FileRuntimeDependencies::new(
+            FileTransportFacade::new()
+                .with_object_store("s3://parquet", Arc::clone(&store))
+                .with_execution_services(crate::test_execution_services()),
+            crate::test_execution_services(),
+            crate::test_format_registry(),
+            crate::test_transform_registry(),
+        )
+        .with_max_spool_bytes(1)
+        .unwrap();
+        let constrained_matches = constrained
+            .with_transport(|transport| {
+                resolve_object_store_matches(
+                    &resource_id,
+                    &plan,
+                    transport,
+                    constrained.formats(),
+                    constrained.transforms(),
+                )
+            })
+            .unwrap();
+        let driver = constrained.formats().resolve("parquet").unwrap();
+        let canonical_options = driver.canonical_options(serde_json::json!({})).unwrap();
+        assert!(matches!(
+            prepare_file_input(
+                &resource_id,
+                &constrained_matches[0],
+                cdf_runtime::FormatSourceAccess::Adaptive,
+                driver.as_ref(),
+                &canonical_options,
+                &constrained,
+            )
+            .unwrap()
+            .input,
+            PreparedFileInput::SpoolSource { .. }
+        ));
+        let stream = stream_file_match_blocking(
+            &constrained_matches[0],
+            plan.resolved_format().unwrap(),
+            ReadOptions::new(resource_id, PartitionId::new("file-parquet-range").unwrap()),
+            &constrained,
+            schema,
+            PhysicalSchemaAuthority::default(),
+        )
+        .unwrap();
+        let batches = futures_executor::block_on(stream.collect::<Vec<_>>())
+            .into_iter()
+            .collect::<Result<Vec<_>>>()
+            .unwrap();
+        assert_eq!(
+            batches
+                .iter()
+                .map(|batch| batch.header.row_count)
+                .sum::<u64>(),
+            100_000
+        );
+        drop(batches);
+        let spill = constrained.execution().spill().snapshot();
+        assert_eq!(spill.current_bytes, 0);
+        assert_eq!(spill.peak_bytes, 0);
+
+        let contended = FileRuntimeDependencies::new(
+            FileTransportFacade::new()
+                .with_object_store("s3://parquet", store)
+                .with_execution_services(crate::test_execution_services()),
+            crate::test_execution_services(),
+            crate::test_format_registry(),
+            crate::test_transform_registry(),
+        )
+        .with_max_spool_bytes(bytes.len() as u64)
+        .unwrap();
+        let contended_matches = contended
+            .with_transport(|transport| {
+                resolve_object_store_matches(
+                    &ResourceId::new("parquet.contended").unwrap(),
+                    &plan,
+                    transport,
+                    contended.formats(),
+                    contended.transforms(),
+                )
+            })
+            .unwrap();
+        let spill = contended.execution().spill();
+        let budget = spill.snapshot().budget_bytes;
+        let remaining = u64::try_from(bytes.len()).unwrap().saturating_sub(1);
+        let held = spill
+            .try_reserve(budget.saturating_sub(remaining))
+            .unwrap()
+            .unwrap();
+        let stream = stream_file_match_blocking(
+            &contended_matches[0],
+            plan.resolved_format().unwrap(),
+            ReadOptions::new(
+                ResourceId::new("parquet.contended").unwrap(),
+                PartitionId::new("file-parquet-contended").unwrap(),
+            ),
+            &contended,
+            Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, false)])),
+            PhysicalSchemaAuthority::default(),
+        )
+        .unwrap();
+        let batches = futures_executor::block_on(stream.collect::<Vec<_>>())
+            .into_iter()
+            .collect::<Result<Vec<_>>>()
+            .unwrap();
+        assert_eq!(
+            batches
+                .iter()
+                .map(|batch| batch.header.row_count)
+                .sum::<u64>(),
+            100_000
+        );
+        drop(batches);
+        assert_eq!(spill.snapshot().current_bytes, held.bytes());
+        drop(held);
+        assert_eq!(spill.snapshot().current_bytes, 0);
     }
 
     #[test]
