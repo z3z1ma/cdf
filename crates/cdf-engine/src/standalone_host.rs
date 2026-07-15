@@ -1,4 +1,5 @@
 use std::{
+    cell::Cell,
     collections::{BTreeMap, VecDeque},
     hash::BuildHasher,
     panic::{AssertUnwindSafe, catch_unwind},
@@ -63,6 +64,29 @@ struct CpuSlotState {
 }
 
 const MAX_SLOT_BYPASSES: u16 = 8;
+
+thread_local! {
+    static CDF_MANAGED_EXECUTION_WORKER: Cell<bool> = const { Cell::new(false) };
+}
+
+fn on_managed_execution_worker() -> bool {
+    CDF_MANAGED_EXECUTION_WORKER.get()
+}
+
+struct ManagedExecutionWorkerGuard;
+
+impl ManagedExecutionWorkerGuard {
+    fn enter() -> Self {
+        CDF_MANAGED_EXECUTION_WORKER.set(true);
+        Self
+    }
+}
+
+impl Drop for ManagedExecutionWorkerGuard {
+    fn drop(&mut self) {
+        CDF_MANAGED_EXECUTION_WORKER.set(false);
+    }
+}
 
 #[derive(Default)]
 struct CpuUsageTracker {
@@ -433,15 +457,22 @@ impl Drop for FixedTaskPool {
             }
         }
         if let Ok(workers) = self.workers.get_mut() {
-            let current_thread = std::thread::current().id();
-            for worker in workers.drain(..) {
-                if worker.thread().id() == current_thread {
-                    // A legal task may own the final host reference. In that
-                    // case pool destruction runs on this worker: detaching its
-                    // own handle lets it finish the current item and observe
-                    // shutdown, while every other worker remains joined here.
-                    drop(worker);
-                } else {
+            let workers = std::mem::take(workers);
+            if on_managed_execution_worker() {
+                // A legal CPU, I/O, or FFI task may own the final host
+                // reference. No managed worker may synchronously join any
+                // managed pool: a peer can be waiting for work performed after
+                // this Drop returns. An external reaper owns every handle and
+                // joins them once the current worker releases its resources.
+                let _ = std::thread::Builder::new()
+                    .name("cdf-worker-reaper".to_owned())
+                    .spawn(move || {
+                        for worker in workers {
+                            let _ = worker.join();
+                        }
+                    });
+            } else {
+                for worker in workers {
                     let _ = worker.join();
                 }
             }
@@ -450,6 +481,7 @@ impl Drop for FixedTaskPool {
 }
 
 fn worker_loop(state: Arc<Mutex<PoolState>>, slots: Arc<CpuSlots>) {
+    let _worker_guard = ManagedExecutionWorkerGuard::enter();
     loop {
         let item = {
             loop {
@@ -552,7 +584,7 @@ fn select_work_item(queue: &mut VecDeque<WorkItem>, slots: &mut CpuSlotState) ->
 
 pub struct StandaloneExecutionHost {
     capabilities: Mutex<ExecutionHostCapabilities>,
-    runtime: Runtime,
+    runtime: Option<Runtime>,
     memory: Arc<dyn MemoryCoordinator>,
     spill: Arc<dyn cdf_runtime::SpillBudgetCoordinator>,
     slots: Arc<CpuSlots>,
@@ -630,10 +662,14 @@ impl StandaloneExecutionHost {
         spill: Arc<dyn cdf_runtime::SpillBudgetCoordinator>,
     ) -> Result<Self> {
         capabilities.validate()?;
-        let runtime = tokio::runtime::Builder::new_multi_thread()
+        let mut runtime_builder = tokio::runtime::Builder::new_multi_thread();
+        runtime_builder
             .worker_threads(usize::from(capabilities.io_workers))
             .thread_name("cdf-io")
-            .enable_all()
+            .on_thread_start(|| CDF_MANAGED_EXECUTION_WORKER.set(true))
+            .on_thread_stop(|| CDF_MANAGED_EXECUTION_WORKER.set(false))
+            .enable_all();
+        let runtime = runtime_builder
             .build()
             .map_err(|error| CdfError::internal(format!("I/O runtime creation failed: {error}")))?;
         let slots = Arc::new(CpuSlots {
@@ -672,7 +708,7 @@ impl StandaloneExecutionHost {
             .collect::<Result<BTreeMap<_, _>>>()?;
         Ok(Self {
             capabilities: Mutex::new(capabilities),
-            runtime,
+            runtime: Some(runtime),
             memory,
             spill,
             slots,
@@ -681,6 +717,28 @@ impl StandaloneExecutionHost {
             monotonic_origin: Instant::now(),
             entropy_counter: AtomicU64::new(0),
         })
+    }
+
+    fn runtime(&self) -> &Runtime {
+        self.runtime
+            .as_ref()
+            .expect("standalone execution runtime is present until host teardown")
+    }
+}
+
+impl Drop for StandaloneExecutionHost {
+    fn drop(&mut self) {
+        let Some(runtime) = self.runtime.take() else {
+            return;
+        };
+        if on_managed_execution_worker() {
+            // Tokio's ordinary Runtime drop blocks and is forbidden from one
+            // of its own async workers. Nonblocking shutdown lets the current
+            // task return; fixed pools below use the same managed-worker rule.
+            runtime.shutdown_background();
+        } else {
+            drop(runtime);
+        }
     }
 }
 
@@ -699,7 +757,7 @@ impl ExecutionHost for StandaloneExecutionHost {
 
     fn open_scope(&self, _run_id: &str) -> Result<Box<dyn ExecutionTaskScope>> {
         Ok(Box::new(StandaloneTaskScope {
-            handle: self.runtime.handle().clone(),
+            handle: self.runtime().handle().clone(),
             cancellation: RunCancellation::default(),
             cpu: Arc::clone(&self.cpu),
             lanes: self.lanes.lock().unwrap().clone(),
@@ -713,7 +771,7 @@ impl ExecutionHost for StandaloneExecutionHost {
 
     fn run_io_blocking(&self, task: IoValueTask) -> Result<IoValue> {
         let (sender, receiver) = mpsc::sync_channel(1);
-        self.runtime.handle().spawn(async move {
+        self.runtime().handle().spawn(async move {
             let result = AssertUnwindSafe(task)
                 .catch_unwind()
                 .await
@@ -730,7 +788,7 @@ impl ExecutionHost for StandaloneExecutionHost {
         duration: Duration,
         cancellation: RunCancellation,
     ) -> cdf_kernel::BoxFuture<'static, Result<()>> {
-        let runtime_handle = self.runtime.handle().clone();
+        let runtime_handle = self.runtime().handle().clone();
         Box::pin(async move {
             struct AbortOnDrop(tokio::task::AbortHandle);
 
@@ -1101,7 +1159,7 @@ mod tests {
                 }),
             )
             .unwrap();
-        let report = host.runtime.block_on(scope.join()).unwrap();
+        let report = host.runtime().block_on(scope.join()).unwrap();
         assert_eq!(report.completed, 4);
         assert_eq!(report.peak_cpu_slots, 2);
         assert_eq!(peak.load(Ordering::SeqCst), 1);
@@ -1482,47 +1540,97 @@ mod tests {
     }
 
     #[test]
-    fn fixed_pool_teardown_is_safe_when_worker_releases_the_last_owner() {
+    fn managed_worker_teardown_reaps_cross_pool_peers_without_joining_inline() {
+        struct PoolOwner {
+            cpu: Arc<FixedTaskPool>,
+            lane: Arc<FixedTaskPool>,
+        }
+
         let (test_finished_sender, test_finished_receiver) = mpsc::sync_channel(1);
         std::thread::spawn(move || {
             let slots = Arc::new(CpuSlots {
-                capacity: 1,
+                capacity: 2,
                 next_work_id: AtomicU64::new(0),
                 state: Mutex::new(CpuSlotState {
-                    available: 1,
+                    available: 2,
                     waiting: BTreeMap::new(),
                     reservation: None,
                 }),
                 changed: Condvar::new(),
             });
-            let pool = FixedTaskPool::new("self-drop", 1, slots).unwrap();
-            let final_worker_owner = Arc::clone(&pool);
-            let (started_sender, started_receiver) = mpsc::sync_channel(1);
+            let owner = Arc::new(PoolOwner {
+                cpu: FixedTaskPool::new("self-drop-cpu", 1, Arc::clone(&slots)).unwrap(),
+                lane: FixedTaskPool::new("self-drop-lane", 1, slots).unwrap(),
+            });
+            let final_worker_owner = Arc::clone(&owner);
+            let (cpu_started_sender, cpu_started_receiver) = mpsc::sync_channel(1);
+            let (lane_started_sender, lane_started_receiver) = mpsc::sync_channel(1);
             let (release_sender, release_receiver) = mpsc::sync_channel(1);
-            let completion = pool
+            let (post_drop_sender, post_drop_receiver) = mpsc::sync_channel(1);
+            let cpu_completion = owner
+                .cpu
                 .submit(
                     1,
                     RunCancellation::default(),
                     Box::new(move || {
-                        started_sender.send(()).unwrap();
+                        cpu_started_sender.send(()).unwrap();
                         release_receiver.recv().unwrap();
                         drop(final_worker_owner);
+                        post_drop_sender.send(()).unwrap();
                         Ok(())
                     }),
                     Arc::new(CpuUsageTracker::default()),
                 )
                 .unwrap();
-            started_receiver.recv().unwrap();
-            drop(pool);
+            let lane_completion = owner
+                .lane
+                .submit(
+                    1,
+                    RunCancellation::default(),
+                    Box::new(move || {
+                        lane_started_sender.send(()).unwrap();
+                        post_drop_receiver.recv().unwrap();
+                        Ok(())
+                    }),
+                    Arc::new(CpuUsageTracker::default()),
+                )
+                .unwrap();
+            cpu_started_receiver.recv().unwrap();
+            lane_started_receiver.recv().unwrap();
+            drop(owner);
             release_sender.send(()).unwrap();
-            let outcome = futures_executor::block_on(completion).unwrap();
-            assert!(matches!(outcome.outcome, WorkOutcome::Completed(Ok(()))));
+            for completion in [cpu_completion, lane_completion] {
+                let outcome = futures_executor::block_on(completion).unwrap();
+                assert!(matches!(outcome.outcome, WorkOutcome::Completed(Ok(()))));
+            }
             test_finished_sender.send(()).unwrap();
         });
 
         test_finished_receiver
             .recv_timeout(Duration::from_secs(1))
-            .expect("pool teardown attempted to join its own worker");
+            .expect("managed-worker host teardown synchronously joined a dependent pool");
+    }
+
+    #[test]
+    fn io_worker_can_release_the_last_host_owner_without_dropping_runtime_inline() {
+        let host = Arc::new(host());
+        let final_io_owner = Arc::clone(&host);
+        let (started_sender, started_receiver) = mpsc::sync_channel(1);
+        let (release_sender, release_receiver) = mpsc::sync_channel(1);
+        let (finished_sender, finished_receiver) = mpsc::sync_channel(1);
+        host.runtime().handle().spawn(async move {
+            started_sender.send(()).unwrap();
+            release_receiver.recv().unwrap();
+            drop(final_io_owner);
+            finished_sender.send(()).unwrap();
+        });
+        started_receiver.recv().unwrap();
+        drop(host);
+        release_sender.send(()).unwrap();
+
+        finished_receiver
+            .recv_timeout(Duration::from_secs(1))
+            .expect("I/O worker attempted to synchronously drop its own Tokio runtime");
     }
 
     #[test]
@@ -1730,7 +1838,7 @@ mod tests {
             }))
             .unwrap();
 
-        let error = host.runtime.block_on(scope.join()).unwrap_err();
+        let error = host.runtime().block_on(scope.join()).unwrap_err();
 
         assert!(error.message.contains("intentional graph stage failure"));
         assert_eq!(memory.snapshot().current_bytes, 0);
@@ -1770,7 +1878,7 @@ mod tests {
 
         scope.cancel();
         release_sender.send(()).unwrap();
-        let report = host.runtime.block_on(scope.join()).unwrap();
+        let report = host.runtime().block_on(scope.join()).unwrap();
 
         assert_eq!(report.completed, 1);
         assert_eq!(report.cancelled, 1);
