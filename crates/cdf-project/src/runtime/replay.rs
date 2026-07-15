@@ -355,7 +355,14 @@ impl ActiveStagedIngress {
         // The staged session owns the in-flight window by pulling exact segments. A rendezvous
         // channel prevents orchestration from retaining a second hidden queue beyond that bound.
         let (sender, receiver) = mpsc::sync_channel::<BackgroundStagedSegment>(0);
-        let completed = Arc::new(Mutex::new(CompletedBackgroundStaging::default()));
+        let session = self
+            .session
+            .take()
+            .ok_or_else(|| CdfError::internal("staged session is absent before worker start"))?;
+        let completed = Arc::new(Mutex::new(CompletedBackgroundStaging {
+            session: Some(session),
+            ..CompletedBackgroundStaging::default()
+        }));
         let bytes = Arc::new(InFlightByteBudget {
             maximum: capabilities
                 .max_in_flight_bytes
@@ -365,13 +372,21 @@ impl ActiveStagedIngress {
         });
         let completed_worker = Arc::clone(&completed);
         let attempt_id = self.attempt_id.clone();
-        let mut session = self
-            .session
-            .take()
-            .ok_or_else(|| CdfError::internal("staged session is absent before worker start"))?;
-        scope.spawn_blocking(
+        let submission = scope.spawn_blocking(
             lane,
             Box::new(move || {
+                // Keep ownership in the shared completion cell until this task actually begins.
+                // A host that rejects submission therefore cannot strand the adapter session.
+                let mut session = completed_worker
+                    .lock()
+                    .map_err(|_| {
+                        CdfError::internal("background staging completion lock is poisoned")
+                    })?
+                    .session
+                    .take()
+                    .ok_or_else(|| {
+                        CdfError::internal("background staging session was already consumed")
+                    })?;
                 let mut stream = BackgroundStagingStream {
                     receiver,
                     attempt_id,
@@ -415,7 +430,25 @@ impl ActiveStagedIngress {
                 output.staged = staged;
                 Ok(())
             }),
-        )?;
+        );
+        if let Err(error) = submission {
+            // Submission failure means the task did not start. Recover the session so the
+            // caller's ordinary abort path can clean adapter-owned staging and release its lease.
+            let mut output = completed
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            self.session = output.session.take();
+            if self.session.is_none() {
+                return Err(attach_cleanup_failure(
+                    error,
+                    "staged worker submission",
+                    CdfError::internal(
+                        "rejected background staging task consumed its session before starting",
+                    ),
+                ));
+            }
+            return Err(error);
+        }
         self.background = Some(BackgroundStaging {
             sender: Some(sender),
             scope: Some(scope),

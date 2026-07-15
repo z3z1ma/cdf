@@ -90,6 +90,126 @@ fn test_execution_services() -> cdf_runtime::ExecutionServices {
         .unwrap()
 }
 
+struct RejectMockStagingSubmissionHost {
+    inner: Arc<dyn cdf_runtime::ExecutionHost>,
+}
+
+struct RejectMockStagingSubmissionScope {
+    inner: Box<dyn cdf_runtime::ExecutionTaskScope>,
+}
+
+impl cdf_runtime::ExecutionTaskScope for RejectMockStagingSubmissionScope {
+    fn cancellation(&self) -> cdf_runtime::RunCancellation {
+        self.inner.cancellation()
+    }
+
+    fn spawn_io(&mut self, task: cdf_runtime::IoTask) -> Result<()> {
+        self.inner.spawn_io(task)
+    }
+
+    fn spawn_cpu(
+        &mut self,
+        spec: cdf_runtime::CpuTaskSpec,
+        task: cdf_runtime::BlockingTask,
+    ) -> Result<()> {
+        self.inner.spawn_cpu(spec, task)
+    }
+
+    fn spawn_cpu_future(
+        &mut self,
+        spec: cdf_runtime::CpuTaskSpec,
+        task: cdf_runtime::CpuFutureTask,
+    ) -> Result<()> {
+        self.inner.spawn_cpu_future(spec, task)
+    }
+
+    fn spawn_blocking(&mut self, lane: &str, task: cdf_runtime::BlockingTask) -> Result<()> {
+        if lane == "mock.staged" {
+            drop(task);
+            return Err(CdfError::internal(
+                "injected mock staging task submission failure",
+            ));
+        }
+        self.inner.spawn_blocking(lane, task)
+    }
+
+    fn cancel(&self) {
+        self.inner.cancel();
+    }
+
+    fn join(
+        self: Box<Self>,
+    ) -> cdf_kernel::BoxFuture<'static, Result<cdf_runtime::TaskScopeReport>> {
+        self.inner.join()
+    }
+}
+
+impl cdf_runtime::ExecutionHost for RejectMockStagingSubmissionHost {
+    fn capabilities(&self) -> cdf_runtime::ExecutionHostCapabilities {
+        self.inner.capabilities()
+    }
+
+    fn memory(&self) -> Arc<dyn cdf_memory::MemoryCoordinator> {
+        self.inner.memory()
+    }
+
+    fn spill(&self) -> Arc<dyn cdf_runtime::SpillBudgetCoordinator> {
+        self.inner.spill()
+    }
+
+    fn open_scope(&self, run_id: &str) -> Result<Box<dyn cdf_runtime::ExecutionTaskScope>> {
+        Ok(Box::new(RejectMockStagingSubmissionScope {
+            inner: self.inner.open_scope(run_id)?,
+        }))
+    }
+
+    fn run_io_blocking(&self, task: cdf_runtime::IoValueTask) -> Result<cdf_runtime::IoValue> {
+        self.inner.run_io_blocking(task)
+    }
+
+    fn delay(
+        &self,
+        duration: std::time::Duration,
+        cancellation: cdf_runtime::RunCancellation,
+    ) -> cdf_kernel::BoxFuture<'static, Result<()>> {
+        self.inner.delay(duration, cancellation)
+    }
+
+    fn monotonic_now(&self) -> std::time::Duration {
+        self.inner.monotonic_now()
+    }
+
+    fn entropy_u64(&self) -> u64 {
+        self.inner.entropy_u64()
+    }
+
+    fn ensure_blocking_lanes(&self, lanes: &[cdf_runtime::BlockingLaneSpec]) -> Result<()> {
+        self.inner.ensure_blocking_lanes(lanes)
+    }
+
+    fn run_blocking_value(
+        &self,
+        lane: &str,
+        task: cdf_runtime::BlockingValueTask,
+    ) -> Result<cdf_runtime::IoValue> {
+        self.inner.run_blocking_value(lane, task)
+    }
+}
+
+fn rejecting_mock_staging_submission_services() -> cdf_runtime::ExecutionServices {
+    let base = test_execution_services();
+    let host: Arc<dyn cdf_runtime::ExecutionHost> = Arc::new(RejectMockStagingSubmissionHost {
+        inner: Arc::clone(base.host()),
+    });
+    let scopes: Arc<dyn cdf_kernel::ScopeLeaseStore> = Arc::new(InMemoryScopeLeaseStore::new());
+    cdf_runtime::ExecutionServices::new(host)
+        .unwrap()
+        .with_staging_lease_authority(Arc::new(cdf_runtime::ScopeStagingLeaseAuthority::new(
+            scopes,
+        )))
+        .unwrap()
+}
+
 async fn run_project(request: ProjectRunRequest<'_>) -> Result<ProjectRunReport> {
     let services = test_execution_services();
     run_project_fixture(request, &services, RunTelemetryConfig::disabled()).await
@@ -7086,6 +7206,54 @@ fn ordinary_run_stages_each_segment_at_durable_publish_before_final_binding() {
             package_receipt_recorded: true
         }
     );
+}
+
+#[test]
+fn rejected_background_submission_aborts_staged_session_before_lease_release() {
+    let temp = tempfile::tempdir().unwrap();
+    let resource = multi_file_resource(temp.path());
+    let package_id = "pkg-live-staged-rejected-submission";
+    let package_root = temp.path().join(".cdf/packages");
+    let destination = MockDestination::new();
+    let plan =
+        live_plan_for_identifier_rules(&resource, package_id, &destination.sheet.identifier_rules);
+    let request = ProjectRunRequest {
+        resource: ProjectRunSource::file(&resource),
+        plan,
+        package_root: package_root.clone(),
+        state_store_path: temp.path().join(".cdf/state.db"),
+        pipeline_id: PipelineId::new("pipeline-live-staged-rejected-submission").unwrap(),
+        package_id: package_id.to_owned(),
+        checkpoint_id: CheckpointId::new("checkpoint-live-staged-rejected-submission").unwrap(),
+        destination: ResolvedProjectDestination::new(
+            Box::new(MockStagedProjectRuntime {
+                destination: destination.clone(),
+                fail_stage_after: None,
+                max_in_flight_bytes: 64 * 1024 * 1024,
+            }),
+            TargetName::new("events").unwrap(),
+        ),
+        run_id: Some(RunId::new("run-live-staged-rejected-submission").unwrap()),
+        event_sink: None,
+        after_receipt_verified: None,
+    };
+    let services = rejecting_mock_staging_submission_services();
+
+    let error = futures_executor::block_on(run_project_fixture(
+        request,
+        &services,
+        RunTelemetryConfig::disabled(),
+    ))
+    .unwrap_err();
+
+    assert!(
+        error
+            .to_string()
+            .contains("injected mock staging task submission failure")
+    );
+    assert_eq!(destination.write_count(), 0);
+    assert_eq!(destination.abort_count(), 1);
+    assert!(!package_root.join(package_id).exists());
 }
 
 #[test]

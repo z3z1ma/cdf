@@ -41,6 +41,7 @@ use duckdb::{Connection, appender_params_from_iter, types::Value};
 use futures_executor::block_on;
 use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
 use crate::{
     BenchResult, PhaseMetric, WorkerMeasurement, bench_error,
@@ -138,7 +139,136 @@ pub struct PreparedFileDestinationRun {
     pub receipt_package_hash: String,
     pub receipt_segment_ids: Vec<String>,
     pub state_segment_ids: Vec<String>,
+    /// Destination-neutral receipt semantics with wall-clock and transport-generation fields
+    /// removed. This is the identity-bearing projection expected to survive scheduler changes.
+    pub logical_receipt: serde_json::Value,
+    /// Canonical digest of the logical Parquet manifest, when the destination publishes one.
+    pub logical_manifest_sha256: Option<String>,
+    /// The full logical manifest projection keeps object keys, content hashes, segment offsets,
+    /// schema, disposition, and counts available to determinism assertions.
+    pub logical_manifest: Option<serde_json::Value>,
     pub row_count: u64,
+}
+
+fn logical_destination_evidence(
+    receipt: &cdf_kernel::Receipt,
+    destination: &PreparedDestinationKind,
+    output_root: &Path,
+) -> BenchResult<(serde_json::Value, Option<String>, Option<serde_json::Value>)> {
+    let mut logical_receipt = serde_json::to_value(receipt)?;
+    let receipt_object = logical_receipt
+        .as_object_mut()
+        .ok_or_else(|| bench_error("destination receipt did not serialize as an object"))?;
+    receipt_object.remove("committed_at_ms");
+    if let Some(values) = receipt_object
+        .get_mut("transaction")
+        .and_then(serde_json::Value::as_object_mut)
+        .and_then(|transaction| transaction.get_mut("values"))
+        .and_then(serde_json::Value::as_object_mut)
+    {
+        values.remove("manifest_etag");
+        values.remove("manifest_sha256");
+        values.remove("replace_pointer_etag");
+        values.remove("replace_pointer_sha256");
+        values.remove("database_path");
+        values.remove("writer_lock");
+    }
+    if let Some(parameters) = receipt_object
+        .get_mut("verify")
+        .and_then(serde_json::Value::as_object_mut)
+        .and_then(|verify| verify.get_mut("parameters"))
+        .and_then(serde_json::Value::as_object_mut)
+    {
+        parameters.remove("manifest_sha256");
+    }
+
+    let PreparedDestinationKind::Parquet = destination else {
+        return Ok((logical_receipt, None, None));
+    };
+    let manifest_key = receipt
+        .verify
+        .parameters
+        .get("manifest_key")
+        .ok_or_else(|| bench_error("Parquet receipt omitted manifest_key"))?;
+    let destination_root = output_root.join("parquet");
+    let manifest_path = destination_root.join(manifest_key);
+    let manifest_bytes = match fs::read(&manifest_path) {
+        Ok(bytes) => bytes,
+        Err(direct_error) => {
+            // Local object stores are free to encode key components in their filesystem view.
+            // The benchmark inspects the published artifact, not that private mapping.
+            let mut candidates = Vec::new();
+            collect_named_files(&destination_root, "manifest.json", &mut candidates)?;
+            candidates.sort();
+            let mut matching = Vec::new();
+            for candidate in candidates {
+                let bytes = fs::read(&candidate)?;
+                let value: serde_json::Value = serde_json::from_slice(&bytes)?;
+                if value
+                    .get("package_hash")
+                    .and_then(serde_json::Value::as_str)
+                    == Some(receipt.package_hash.as_str())
+                {
+                    matching.push((candidate, bytes));
+                }
+            }
+            if matching.is_empty() {
+                return Err(bench_error(format!(
+                    "read Parquet manifest {}: {direct_error}; found no matching published manifest under {}",
+                    manifest_path.display(),
+                    destination_root.display()
+                )));
+            }
+            let canonical = &matching[0].1;
+            if matching.iter().any(|(_, bytes)| bytes != canonical) {
+                return Err(bench_error(format!(
+                    "Parquet package and provenance manifests disagree under {}",
+                    destination_root.display()
+                )));
+            }
+            matching.remove(0).1
+        }
+    };
+    let mut logical_manifest: serde_json::Value = serde_json::from_slice(&manifest_bytes)?;
+    let manifest_object = logical_manifest
+        .as_object_mut()
+        .ok_or_else(|| bench_error("Parquet manifest did not serialize as an object"))?;
+    manifest_object.remove("committed_at_ms");
+    let objects = manifest_object
+        .get_mut("objects")
+        .and_then(serde_json::Value::as_array_mut)
+        .ok_or_else(|| bench_error("Parquet manifest omitted its object list"))?;
+    for object in objects {
+        object
+            .as_object_mut()
+            .ok_or_else(|| bench_error("Parquet manifest object was not an object"))?
+            .remove("etag");
+    }
+    let logical_manifest_sha256 = format!(
+        "sha256:{:x}",
+        Sha256::digest(cdf_package::canonical_json_bytes(&logical_manifest)?)
+    );
+    Ok((
+        logical_receipt,
+        Some(logical_manifest_sha256),
+        Some(logical_manifest),
+    ))
+}
+
+fn collect_named_files(root: &Path, name: &str, output: &mut Vec<PathBuf>) -> BenchResult<()> {
+    if !root.exists() {
+        return Ok(());
+    }
+    for entry in fs::read_dir(root)? {
+        let entry = entry?;
+        let path = entry.path();
+        if entry.file_type()?.is_dir() {
+            collect_named_files(&path, name, output)?;
+        } else if entry.file_name() == name {
+            output.push(path);
+        }
+    }
+    Ok(())
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -519,6 +649,8 @@ pub fn run_prepared_file_to_destination(
         Some(scheduler.clone()),
         RunTelemetryConfig::disabled(),
     ))?;
+    let (logical_receipt, logical_manifest_sha256, logical_manifest) =
+        logical_destination_evidence(&report.receipt, &request.destination, &request.output_root)?;
     Ok(PreparedFileDestinationRun {
         configured_jobs: request.jobs,
         effective_jobs: scheduler.effective_jobs.jobs,
@@ -539,6 +671,9 @@ pub fn run_prepared_file_to_destination(
             .iter()
             .map(|segment| segment.segment_id.to_string())
             .collect(),
+        logical_receipt,
+        logical_manifest_sha256,
+        logical_manifest,
         row_count: report.row_count,
     })
 }

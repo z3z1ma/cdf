@@ -1,4 +1,4 @@
-Status: active
+Status: done
 Created: 2026-07-14
 Updated: 2026-07-15
 Parent: .10x/tickets/2026-07-10-p3-ws-d-destination-bulk-paths.md
@@ -89,6 +89,8 @@ None. D4 supplies the bounded streaming writer, D7 supplies the generic persiste
 - 2026-07-15 jobs-invariance evidence: the permanent `destination_ingress_categories_preserve_jobs_identity` matrix ran the ordinary four-partition Parquet source through the current staged Parquet destination at jobs 1/2/auto/4 on an explicit four-slot host. Effective jobs were exactly 1/2/4/4; all four cells retained package hash, receipt package/segment identity, state segment identity, partition count, and row count. This is the actual adapter/project receipt gate, not the pure layout test.
 - 2026-07-15 v5 focused verification: 35 runnable Parquet and 72 runnable runtime tests pass; all 195 project library tests pass; the focused real destination jobs matrix passes. Strict all-target no-deps Clippy passes for runtime, project, Parquet, and benchmarks. Repository scans find no production multipart handle/API in the Parquet adapter and no unowned `snapshot()?`/`mutation_guard()?` escape between lease acquisition and session ownership.
 - 2026-07-15 v5 FineWeb closure measurement: release commit `23027d3e` completed the fresh 8.59 GB cell in 18.36 seconds, wrote 14.371 GB into 58 objects with 460 exact acknowledgements, held RSS to 1.463 GB, overlapped destination ingress for 16.762 seconds, and completed final binding/receipt in 71.4 milliseconds. Staging contained zero files after success. Complete-wall output was 746.5 MiB/s or 0.779x the favorable 958.4 MiB/s same-data/two-writer reference. V5 is 4.1% faster than v4 and 54.9% faster than the original 40.67-second control. Evidence: `.10x/evidence/2026-07-15-p3-d8-parquet-staged-ingress.md`.
+- 2026-07-15 final review findings and repair: the last fresh review found no critical issue and exactly two significant gaps. First, a rejected background-task submission could drop the staged session before adapter abort. Session ownership now remains in the shared completion cell until the worker actually starts; rejected submission returns it to `ActiveStagedIngress`, whose existing compound cleanup path aborts the adapter and releases the lease. The injected-host regression proves zero writes, one abort, and no package publication. Second, the jobs law compared package/segment identities but not destination publication semantics. The benchmark now records a destination-neutral logical receipt and, for Parquet, the canonical logical manifest and digest retaining object keys, content hashes, segment offsets, schema, disposition, and counts while excluding only wall-clock and physical transport-generation fields. Jobs 1/2/auto/4 preserve all three exactly.
+- 2026-07-15 terminal verification: `cargo test -p cdf-project --lib` passes all 195 tests; the focused rejected-submission regression passes; the focused destination jobs matrix passes; and strict all-target no-deps Clippy passes for `cdf-project` and `cdf-benchmarks`. `git diff --check` passes. Per the user's explicit direction, no further D8 review cycle was commissioned after repairing the exact final findings.
 
 ## Evidence
 
@@ -103,11 +105,13 @@ None. D4 supplies the bounded streaming writer, D7 supplies the generic persiste
 - Jobs authority: `CARGO_BUILD_JOBS=12 cargo test -p cdf-benchmarks --test lab_runners destination_ingress_categories_preserve_jobs_identity -j12 -- --exact` passes and proves jobs 1/2/auto/4 semantic identity through the actual current Parquet staged destination.
 - V5 focused slice: 35 runnable `cdf-dest-parquet`, 72 runnable `cdf-runtime`, and 195 `cdf-project` tests pass; strict affected all-target Clippy passes. A v5 FineWeb replacement measurement remains before closure.
 - Current v5 scale: the complete FineWeb command reaches 0.779x the favorable same-data reference, leaves zero staging files, verifies the receipt, and commits the checkpoint.
+- Terminal lifecycle failure law: `rejected_background_submission_aborts_staged_session_before_lease_release` injects executor rejection before worker start and proves session recovery, adapter abort, lease cleanup, zero destination writes, and no package publication.
+- Terminal logical jobs law: `destination_ingress_categories_preserve_jobs_identity` compares package/state identity plus canonical logical receipt and Parquet manifest/digest at exact effective jobs 1/2/4/4.
 
 ## Review
 
-Latest fresh adversarial review verdict: **fail** with the five significant v4 gaps journaled above. The implementation, conformance, and v5 scale evidence repair all five without reintroducing a destination-specific lifecycle mechanism. One fresh critical/significant-only closure review remains.
+The final fresh adversarial review found **no critical issue** and two significant findings: rejected worker submission could lose adapter cleanup, and the jobs law did not compare the logical destination manifest. Both exact findings are repaired and permanently regressed as journaled above. The user explicitly accepted closure without another review iteration; the remaining immutable-orphan reachability boundary is not hidden here and is owned by D9.
 
 ## Retrospective
 
-Pending execution.
+D8 took too long because several apparently local Parquet concerns were actually generic ownership problems: staged liveness, cleanup fencing, task/session transfer, memory authority, and durable publication. The durable result is a smaller architecture: one generic staged-ingress lifecycle, one injected lease authority, no adapter heartbeat, no provider multipart shim without recoverable identity, no finalized-package compatibility path, and one atomic immutable publication operation. Full-path measurement also prevented optimizing the isolated writer while composition dominated wall time. Future destination work must start from the generic ingress capability and prove logical receipt identity across jobs before measuring throughput; immutable content reclamation remains a separate generic reachability problem rather than destination cleanup.

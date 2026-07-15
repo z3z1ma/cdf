@@ -1,8 +1,8 @@
-Status: blocked
+Status: active
 Created: 2026-07-11
 Updated: 2026-07-15
 Parent: .10x/tickets/2026-07-10-p3-ws-c-deterministic-parallelism.md
-Depends-On: .10x/tickets/done/2026-07-11-p3-c3-engine-ffi-parallel-integration.md, .10x/tickets/2026-07-14-p3-d8-parquet-staged-parallel-ingress.md
+Depends-On: .10x/tickets/done/2026-07-11-p3-c3-engine-ffi-parallel-integration.md, .10x/tickets/done/2026-07-14-p3-d8-parquet-staged-parallel-ingress.md
 
 # P3 C4: jobs-invariance and scaling matrix
 
@@ -27,7 +27,7 @@ No distributed scheduler.
 
 ## Blockers
 
-D8 must remove the measured Parquet staged-ingress deficit before C4 can honestly claim scaling to the full-path roofline. Exact effective-jobs assertions and actual PostgreSQL destination coverage are complete; the remaining scheduler telemetry must land after D8 exposes the corrected full-path scaling boundary.
+None. D8 closed with the corrected full-path scaling boundary, exact logical destination-manifest invariance, and current throughput evidence. C4 now owns terminal graph reconciliation and closure.
 
 ## Assumptions
 
@@ -51,6 +51,7 @@ D8 must remove the measured Parquet staged-ingress deficit before C4 can honestl
 - 2026-07-15 repetition and clean-build stress: after the waiter repairs, five full finalized-Parquet repetitions and ten full package-to-DuckDB repetitions completed the 8.59 GB/460-segment workload at jobs=4. A generated four-partition fixture with 517 Parquet row groups per file, 4.2 million rows, about 8 GiB of repeated decoded strings, and 296 canonical segments then completed 35/35 jobs=4 package-to-DuckDB runs under a 15-second timeout; the final five used a clean release rebuild with all diagnostic-only code removed. Each completed in 5–7 seconds. One same-build 230-segment park observed before this run remains explicitly recorded as residual risk rather than rewritten as fixed. The exact results, OS counters, measured Parquet writer ratio, and evidence boundary are in `.10x/evidence/2026-07-14-p3-c4-fineweb-local-scaling.md`.
 - 2026-07-15 fresh closure review failed on three significant gaps: the unexplained production park plus a concrete re-entrant-waker lock hazard; jobs matrices that did not require effective parallelism and omitted an actual PostgreSQL destination; and full-path scaling/telemetry that stopped below the D8-owned Parquet roofline. Commit `b4e7ec6d` removes the lock hazard by draining wakers under the coordinator mutex and invoking them only after unlock, with a permanent re-entrant snapshot-on-wake regression. C4 remains blocked rather than laundering repeated successes into proof; D8 is now the critical-path dependency, and the matrix/telemetry gaps remain owned here.
 - 2026-07-15 exact-host and PostgreSQL repair: prepared package/destination workloads now receive one explicit host-slot authority instead of inheriting ambient hardware. Every four-partition CSV/JSON/NDJSON/Parquet and DuckDB/Parquet destination cell asserts exact effective jobs `1/2/4/4`; a collapse to serial can no longer pass. `PreparedDestinationKind` now includes real PostgreSQL destination composition, and an opt-in live law ran all four jobs modes against an ephemeral local PostgreSQL server while resetting the exact target/mirror tables between cells. Package hash, receipt package/segments, state segments, rows, and four-way effective execution were invariant. The normal lab runner passed 11 tests with the live cell intentionally ignored; the explicit live cell passed separately. No production destination dispatch was added.
+- 2026-07-15 D8 unblocked closure: the current Parquet staged path reduced the complete FineWeb command from 40.67 to 18.36 seconds, reached 0.779x the favorable same-data reference, and retained bounded memory. The permanent destination jobs matrix now compares not only package/state/segment identities but also a destination-neutral logical receipt and the canonical logical Parquet manifest/digest with object keys, content hashes, segment offsets, schema, disposition, and counts. Exact effective jobs remain 1/2/4/4. C4 is active for terminal evidence reconciliation.
 
 ## Evidence
 

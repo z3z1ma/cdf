@@ -455,6 +455,12 @@ fn destination_ingress_categories_preserve_jobs_identity() {
                 "{label}"
             );
             assert_eq!(run.state_segment_ids, runs[0].state_segment_ids, "{label}");
+            assert_eq!(run.logical_receipt, runs[0].logical_receipt, "{label}");
+            assert_eq!(
+                run.logical_manifest_sha256, runs[0].logical_manifest_sha256,
+                "{label}"
+            );
+            assert_eq!(run.logical_manifest, runs[0].logical_manifest, "{label}");
         }
     }
 }

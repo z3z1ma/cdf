@@ -8,7 +8,7 @@ Updated: 2026-07-14
 
 On the named Apple M5 Pro host, a four-partition FineWeb Parquet run scales from 52.86 seconds at jobs=1 to 43.32 seconds at jobs=2 and 40.67 seconds at jobs=4. Jobs=4 is the observed full-path knee: package execution completes in 7.329 seconds, while the finalized-package Parquet destination consumes 33.069 seconds, so additional upstream partition concurrency cannot materially reduce end-to-end wall time without changing the destination ingress boundary.
 
-The destination writer itself is not at its roofline. Its release benchmark writes Parquet at 1,716.5 MiB/s against a 2,184.7 MiB/s raw sequential-write roofline on this host, a 0.786 ratio. The 33.069-second finalized-package phase is therefore an ingress/orchestration deficit, not a device or codec ceiling; `.10x/tickets/2026-07-14-p3-d8-parquet-staged-parallel-ingress.md` owns it.
+The destination writer itself is not at its roofline. Its release benchmark writes Parquet at 1,716.5 MiB/s against a 2,184.7 MiB/s raw sequential-write roofline on this host, a 0.786 ratio. The 33.069-second finalized-package phase was therefore an ingress/orchestration deficit, not a device or codec ceiling; `.10x/tickets/done/2026-07-14-p3-d8-parquet-staged-parallel-ingress.md` closed that deficit with the generic staged path.
 
 Peak RSS remains below the configured 4 GiB run budget: 664,600,576 bytes at jobs=1, 999,538,688 bytes at jobs=2, and 1,534,377,984 bytes at jobs=4.
 

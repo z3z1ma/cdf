@@ -2,7 +2,7 @@ Status: open
 Created: 2026-07-15
 Updated: 2026-07-15
 Parent: .10x/tickets/2026-07-10-p3-ws-d-destination-bulk-paths.md
-Depends-On: .10x/tickets/2026-07-14-p3-d8-parquet-staged-parallel-ingress.md
+Depends-On: .10x/tickets/done/2026-07-14-p3-d8-parquet-staged-parallel-ingress.md
 
 # P3 D9: Generic immutable-content reachability authority
 
@@ -29,7 +29,7 @@ Specify and implement one destination-neutral authority for reclaiming immutable
 
 - `.10x/specs/streaming-destination-ingress.md`
 - `.10x/decisions/destination-staged-ingress-final-package-binding.md`
-- `.10x/tickets/2026-07-14-p3-d8-parquet-staged-parallel-ingress.md`
+- `.10x/tickets/done/2026-07-14-p3-d8-parquet-staged-parallel-ingress.md`
 
 ## Assumptions
 

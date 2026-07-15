@@ -28,13 +28,14 @@ Execute logical file, row-group, window, and other safe partitions concurrently 
 
 ## Blockers
 
-C1–C3, the injected execution host, memory ledger, and WS-L baseline are complete. C4 is blocked on D8's measured Parquet ingress deficit plus exact effective-jobs/PostgreSQL-destination/telemetry gaps; it continues to gate C5, F4, G4, and V3.
+C1–C3, the injected execution host, memory ledger, WS-L baseline, and D8 full-path repair are complete. C4 is active for terminal evidence reconciliation and continues to gate C5, F4, G4, and V3.
 
 ## Progress and notes
 
 - 2026-07-14: Closed C2 after the source-neutral canonical frontier passed a fresh significant-only review and 537 affected-graph tests. The active-ticket directory fell from 85 to 84 records (15 active, 63 open, 6 blocked), with 299 tickets now done. C3 is activated next because it is the only remaining dependency before C4 can exercise the system-wide jobs-invariance/scaling matrix.
 - 2026-07-14: Closed C3 after 247 affected-graph tests and fresh adversarial pass. Codec, DataFusion, Python, and native/FFI work now share bounded CPU authority with post-release completion, global mixed-cost fairness, and worker-safe teardown. The active-ticket directory fell from 84 to 83 records and done tickets rose from 299 to 300. C4 is activated because it has the highest immediate dependency fanout in P3.
 - 2026-07-15: Fresh C4 review rejected closure. The concrete re-entrant memory-waker hazard is fixed in `b4e7ec6d`; C4 remains blocked on D8 and its own missing exact matrix/telemetry evidence. D8 now depends only on the completed C3 substrate, eliminating the prior dependency cycle.
+- 2026-07-15: D8 closed with full-path FineWeb throughput above its required reference ratio and exact logical destination receipt/manifest identity at jobs 1/2/auto/4. C4 is reactivated as the highest-fanout P3 closure ticket.
 
 ## References
 
