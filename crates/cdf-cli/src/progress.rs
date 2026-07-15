@@ -620,6 +620,7 @@ fn push_metric_fields(fields: &mut Vec<(String, String)>, event: &RunEvent) {
         "from_depth",
         "to_depth",
         "trigger",
+        "metric",
     ] {
         if let Some(value) = event.details.attributes.get(key) {
             fields.push((key.to_owned(), display_event_value(key, value)));
@@ -778,23 +779,29 @@ mod tests {
 
     #[test]
     fn source_read_metric_names_physical_useful_waste_and_requests() {
-        let rendered = display_event_value(
-            "metric",
-            &RunEventValue::PhaseMetric(RunPhaseMetric {
-                phase: RunPhase::SourceRead,
-                context: Some(cdf_kernel::RunPhaseContext::SourceRead {
-                    mode: cdf_kernel::SourceReadMode::GrowingSpool,
-                }),
-                status: RunPhaseStatus::Completed,
-                duration_ns: 2_000_000,
-                input_bytes: 10 * 1024 * 1024,
-                output_bytes: 8 * 1024 * 1024,
-                operations: 3,
+        let metric = RunEventValue::PhaseMetric(RunPhaseMetric {
+            phase: RunPhase::SourceRead,
+            context: Some(cdf_kernel::RunPhaseContext::SourceRead {
+                mode: cdf_kernel::SourceReadMode::GrowingSpool,
             }),
-        );
+            status: RunPhaseStatus::Completed,
+            duration_ns: 2_000_000,
+            input_bytes: 10 * 1024 * 1024,
+            output_bytes: 8 * 1024 * 1024,
+            operations: 3,
+        });
+        let rendered = display_event_value("metric", &metric);
         assert_eq!(
             rendered,
             "source_read growing_spool Completed 10 MiB physical / 8 MiB useful / 2 MiB waste across 3 requests in 2ms"
+        );
+
+        let mut event = event(1, RunEventKind::PhaseMeasured);
+        event.details.attributes.insert("metric".to_owned(), metric);
+        assert!(
+            milestone_fields(&event, DisplayVerbosity::Normal)
+                .iter()
+                .any(|(key, value)| key == "metric" && value == &rendered)
         );
     }
 

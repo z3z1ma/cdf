@@ -14,8 +14,8 @@ use crate::{
     ExactRangeReadBatch, RunCancellation, SequentialReadRequest,
 };
 
-#[derive(Default)]
 struct SourceIoCounters {
+    source_length: Option<u64>,
     explicit_mode: AtomicU8,
     observed_mode: AtomicU8,
     duration_ns: AtomicU64,
@@ -39,12 +39,27 @@ fn elapsed_ns(started: Instant) -> u64 {
 ///
 /// The snapshot is operational telemetry and is deliberately detached from all
 /// identity-bearing source and package structures.
-#[derive(Clone, Default)]
+#[derive(Clone)]
 pub struct SourceIoObserver {
     counters: Arc<SourceIoCounters>,
 }
 
 impl SourceIoObserver {
+    fn new(source_length: Option<u64>) -> Self {
+        Self {
+            counters: Arc::new(SourceIoCounters {
+                source_length,
+                explicit_mode: AtomicU8::new(0),
+                observed_mode: AtomicU8::new(0),
+                duration_ns: AtomicU64::new(0),
+                logical_bytes: AtomicU64::new(0),
+                useful_bytes: AtomicU64::new(0),
+                physical_bytes: AtomicU64::new(0),
+                requests: AtomicU64::new(0),
+            }),
+        }
+    }
+
     pub fn set_mode(&self, mode: SourceReadMode) -> Result<()> {
         let encoded = encode_mode(mode);
         match self.counters.explicit_mode.compare_exchange(
@@ -94,11 +109,25 @@ impl SourceIoObserver {
     pub fn snapshot(&self) -> SourceIoMetrics {
         let explicit = self.counters.explicit_mode.load(Ordering::Acquire);
         let observed = self.counters.observed_mode.load(Ordering::Acquire);
+        let mode = decode_mode(if explicit == 0 { observed } else { explicit });
+        let measured_useful = self.counters.useful_bytes.load(Ordering::Relaxed);
+        let useful_bytes = match (mode, self.counters.source_length) {
+            (
+                Some(
+                    SourceReadMode::DirectStream
+                    | SourceReadMode::FullSpool
+                    | SourceReadMode::GrowingSpool
+                    | SourceReadMode::MixedAccess,
+                ),
+                Some(source_length),
+            ) => measured_useful.min(source_length),
+            _ => measured_useful,
+        };
         SourceIoMetrics {
-            mode: decode_mode(if explicit == 0 { observed } else { explicit }),
+            mode,
             duration_ns: self.counters.duration_ns.load(Ordering::Relaxed),
             logical_bytes: self.counters.logical_bytes.load(Ordering::Relaxed),
-            useful_bytes: self.counters.useful_bytes.load(Ordering::Relaxed),
+            useful_bytes,
             physical_bytes: self.counters.physical_bytes.load(Ordering::Relaxed),
             requests: self.counters.requests.load(Ordering::Relaxed),
         }
@@ -117,9 +146,10 @@ pub struct ObservedByteSource {
 
 impl ObservedByteSource {
     pub fn new(inner: Arc<dyn ByteSource>) -> Self {
+        let source_length = inner.identity().size_bytes;
         Self {
             inner,
-            observer: SourceIoObserver::default(),
+            observer: SourceIoObserver::new(source_length),
         }
     }
 
@@ -381,11 +411,11 @@ mod tests {
         let snapshot = observer.snapshot();
         assert_eq!(snapshot.mode, Some(SourceReadMode::MixedAccess));
         assert_eq!(snapshot.logical_bytes, 18);
-        assert_eq!(snapshot.useful_bytes, 16);
+        assert_eq!(snapshot.useful_bytes, 10);
         assert_eq!(snapshot.physical_bytes, 16);
         assert_eq!(snapshot.requests, 2);
-        assert_eq!(snapshot.prefetch_waste_bytes(), 0);
-        assert_eq!(snapshot.reused_bytes(), 2);
+        assert_eq!(snapshot.prefetch_waste_bytes(), 6);
+        assert_eq!(snapshot.reused_bytes(), 8);
         assert!(snapshot.duration_ns > 0);
 
         observer.set_mode(SourceReadMode::GrowingSpool).unwrap();
