@@ -6,7 +6,9 @@ Updated: 2026-07-14
 
 ## Observation
 
-On the named Apple M5 Pro host, a four-partition FineWeb Parquet run scales from 52.86 seconds at jobs=1 to 43.32 seconds at jobs=2 and 40.67 seconds at jobs=4. Jobs=4 is the observed knee: package execution completes in 7.329 seconds, while the finalized-package Parquet destination consumes 33.069 seconds, so additional upstream partition concurrency cannot materially reduce end-to-end wall time without changing the destination ingress boundary.
+On the named Apple M5 Pro host, a four-partition FineWeb Parquet run scales from 52.86 seconds at jobs=1 to 43.32 seconds at jobs=2 and 40.67 seconds at jobs=4. Jobs=4 is the observed full-path knee: package execution completes in 7.329 seconds, while the finalized-package Parquet destination consumes 33.069 seconds, so additional upstream partition concurrency cannot materially reduce end-to-end wall time without changing the destination ingress boundary.
+
+The destination writer itself is not at its roofline. Its release benchmark writes Parquet at 1,716.5 MiB/s against a 2,184.7 MiB/s raw sequential-write roofline on this host, a 0.786 ratio. The 33.069-second finalized-package phase is therefore an ingress/orchestration deficit, not a device or codec ceiling; `.10x/tickets/2026-07-14-p3-d8-parquet-staged-parallel-ingress.md` owns it.
 
 Peak RSS remains below the configured 4 GiB run budget: 664,600,576 bytes at jobs=1, 999,538,688 bytes at jobs=2, and 1,534,377,984 bytes at jobs=4.
 
@@ -41,13 +43,35 @@ The jobs=4 run wrote 8,821,479,960 package bytes and 14,371,954,410 destination 
 
 `segment_encode` and `persist_hash` operation durations are additive concurrent work telemetry rather than wall-clock stages; they were 48.586 and 16.648 seconds respectively.
 
+Two fresh same-input controls added host scheduler counters:
+
+| Jobs | Wall | User | System | Mean CPU cores | Peak RSS | Voluntary switches | Involuntary switches | Instructions | Cycles |
+|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| 2 | 40.67 s | 58.06 s | 38.68 s | 2.378 | 1,201,782,784 B | 12,495 | 2,350,140 | 757,662,709,846 | 405,530,147,805 |
+| 4 | 41.54 s | 59.22 s | 29.00 s | 2.123 | 1,469,071,360 B | 19,441 | 1,427,699 | 746,516,897,433 | 372,247,580,608 |
+| 4 | 39.39 s | 58.56 s | 27.34 s | 2.181 | 1,421,279,232 B | 19,753 | 1,407,271 | 740,193,249,139 | 361,577,435,039 |
+
+Mean CPU cores is `(user + system) / wall`; the flat jobs=2/4 utilization and full-path wall time agree with the phase attribution. The source/package phase has stopped dominating, while finalized Parquet ingress is serial.
+
+## Concurrency falsification and repetition
+
+Live repetition caught two nondeterministic parked runs: one after 230 durable segments and one after 23. Every CDF CPU worker, file-source control worker, and Parquet encode worker was parked; process CPU was 0%. The generic memory reservation future had a real check/register lost-wake and shared-waker removal defect. Commits `6f7e8d3e` and `0b088671` close those interleavings with a post-registration retry, cancellation removal, and a ref-counted neutral waiter set shared by the deterministic and DataFusion coordinators.
+
+One subsequent same-build large run again parked after 230 segments, so this evidence does not erase or over-attribute that observation. After rebuilding from the ref-counted implementation, the following completed without another park:
+
+- Five 460-segment full finalized-Parquet repetitions, including two with diagnostic instrumentation disabled.
+- Ten 460-segment full package-to-DuckDB repetitions at jobs=4, each processing the same 8.59 GB logical input in 16–19 seconds.
+- Thirty-five 296-segment jobs=4 package-to-DuckDB repetitions over a generated four-partition, 517-row-group-per-file, 4.2-million-row wide-string fixture. Each completed in 5–7 seconds under a 15-second timeout; the final five used a clean release rebuild after all diagnostic-only code was removed.
+
+The generated fixture preserves the high-cardinality scheduling shape while Zstd makes its four hard-linked source files only 5.2 MiB on disk. Its repeated decoded payload is about 8 GiB logical, so this is a scheduler/memory interleaving stressor rather than a storage-throughput benchmark. The earlier parked run remains residual risk for fresh review; closure must not claim a root cause beyond the two proven waiter defects unless another failure is reproduced with scheduler state telemetry.
+
 ## What it supports or challenges
 
 - It supports production partition fan-out: jobs=2 and jobs=4 both improve the same large governed run, and the jobs=4 package phase is only 18% of wall time.
-- It names the current roofline for this cell: finalized-package Parquet destination work is 81% of jobs=4 wall time. The source scheduler is no longer the limiting stage at the knee.
+- It names the current scaling limit for this cell: finalized-package Parquet destination work is 81% of jobs=4 wall time. The source scheduler is no longer the limiting stage at the knee, but the destination phase remains far below the measured writer/device roofline.
 - It supports bounded memory for this 8 GiB input and jobs range, but does not by itself prove the 100 GiB/1 TiB constant-memory law.
 - The permanent fixed-package-id matrix in `.10x/tickets/2026-07-11-p3-c4-jobs-invariance-scaling-matrix.md` proves package/segment/receipt/state identity across jobs. Timed CLI package hashes intentionally differ because normal CLI package ids include run identity.
 
 ## Limits
 
-This is one warm local APFS host, one repeated-content FineWeb object, four file partitions, and one finalized-package filesystem Parquet destination. Hard links mean source pages can share the OS cache; the 23.2 GB of package and destination output is real. The result does not claim network, PostgreSQL, DuckDB, cold-cache, or more-than-four-partition scaling. A single sample per jobs value locates the large-workload knee but is not a variance-aware regression baseline.
+This is one warm local APFS host, one repeated-content FineWeb object, four file partitions, and one finalized-package filesystem Parquet destination. Hard links mean source pages can share the OS cache; the 23.2 GB of package and destination output is real. The result does not claim network, cold-cache, or more-than-four-partition scaling. The initial jobs curve is not a variance-aware baseline; later repetitions test liveness but do not replace the lab's median-of-N throughput baselines. Exact runnable/blocked and frontier-wait durations are not yet exported as durable run telemetry; CPU time, phase attribution, memory snapshots, and OS context-switch/counter observations are the present evidence boundary.
