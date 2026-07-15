@@ -36,8 +36,8 @@ use tokio::io::AsyncWriteExt;
 use crate::{
     FileCompressionDeclaration, FileFormatDeclaration, FileIdentityMetadata, FileResourcePlan,
     FileTransport, FileTransportFacade, FileTransportLocation, FileTransportResource,
-    LocalByteSource, growing_spool_byte_source::start_growing_spool,
-    local_byte_source::local_source_generation,
+    LocalByteSource, evicting_spool_byte_source::start_evicting_spool,
+    growing_spool_byte_source::start_growing_spool, local_byte_source::local_source_generation,
 };
 
 const NATIVE_TARGET_BATCH_ROWS: usize = 64 * 1024;
@@ -1963,11 +1963,28 @@ async fn stream_prepared_file_match(
                         source_completion: Some(growing.completion),
                     }
                 } else {
-                    source_io.set_mode(SourceReadMode::ExactRanges)?;
-                    ReadyFileInput {
-                        source,
-                        payload_retention: None,
-                        source_completion: None,
+                    let evicting = start_evicting_spool(
+                        Arc::clone(&source),
+                        size_bytes,
+                        dependencies.max_spool_bytes(),
+                        dependencies.execution().spill(),
+                        dependencies.execution().memory(),
+                        cancellation.clone(),
+                    )?;
+                    if let Some(evicting) = evicting {
+                        source_io.set_mode(SourceReadMode::EvictingSpool)?;
+                        ReadyFileInput {
+                            source: evicting.source,
+                            payload_retention: Some(evicting.retention),
+                            source_completion: Some(evicting.completion),
+                        }
+                    } else {
+                        source_io.set_mode(SourceReadMode::ExactRanges)?;
+                        ReadyFileInput {
+                            source,
+                            payload_retention: None,
+                            source_completion: None,
+                        }
                     }
                 }
             } else {
@@ -2340,6 +2357,9 @@ fn stream_registered_format(
                         source.release_before(frontiers[ordinal])?;
                     }
                 }
+                if let Some(size_bytes) = source.identity().size_bytes {
+                    source.release_before(size_bytes)?;
+                }
                 return Ok(());
             }
 
@@ -2410,6 +2430,9 @@ fn stream_registered_format(
             while let Some(batch) = decoded.try_next().await? {
                 cancellation.check()?;
                 sender.send(batch).await?;
+            }
+            if let Some(size_bytes) = source.identity().size_bytes {
+                source.release_before(size_bytes)?;
             }
             Ok(())
         },

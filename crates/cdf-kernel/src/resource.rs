@@ -523,6 +523,9 @@ pub enum SourceReadMode {
     FullSpool,
     /// Decode tails already-published extents while a finite, fully reserved spool grows.
     GrowingSpool,
+    /// One finite generation streams through fixed disk residency reclaimed by
+    /// codec-proven no-lookback frontiers.
+    EvictingSpool,
     /// One invocation intentionally combines direct verification and exact-range decode.
     MixedAccess,
 }
@@ -534,6 +537,7 @@ impl SourceReadMode {
             Self::ExactRanges => "exact_ranges",
             Self::FullSpool => "full_spool",
             Self::GrowingSpool => "growing_spool",
+            Self::EvictingSpool => "evicting_spool",
             Self::MixedAccess => "mixed_access",
         }
     }

@@ -117,6 +117,7 @@ impl SourceIoObserver {
                     SourceReadMode::DirectStream
                     | SourceReadMode::FullSpool
                     | SourceReadMode::GrowingSpool
+                    | SourceReadMode::EvictingSpool
                     | SourceReadMode::MixedAccess,
                 ),
                 Some(source_length),
@@ -275,7 +276,8 @@ fn encode_mode(mode: SourceReadMode) -> u8 {
         SourceReadMode::ExactRanges => 2,
         SourceReadMode::FullSpool => 3,
         SourceReadMode::GrowingSpool => 4,
-        SourceReadMode::MixedAccess => 5,
+        SourceReadMode::EvictingSpool => 5,
+        SourceReadMode::MixedAccess => 6,
     }
 }
 
@@ -286,7 +288,8 @@ fn decode_mode(encoded: u8) -> Option<SourceReadMode> {
         2 => Some(SourceReadMode::ExactRanges),
         3 => Some(SourceReadMode::FullSpool),
         4 => Some(SourceReadMode::GrowingSpool),
-        5 => Some(SourceReadMode::MixedAccess),
+        5 => Some(SourceReadMode::EvictingSpool),
+        6 => Some(SourceReadMode::MixedAccess),
         _ => None,
     }
 }

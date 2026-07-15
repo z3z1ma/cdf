@@ -5,6 +5,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 mod driver;
+mod evicting_spool_byte_source;
 mod growing_spool_byte_source;
 mod local_byte_source;
 mod object_store_byte_source;
