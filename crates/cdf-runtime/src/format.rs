@@ -953,6 +953,9 @@ pub struct PhysicalSchemaObservation {
 pub struct DecodeUnitPlan {
     pub unit_id: String,
     pub ordinal: u32,
+    /// Complete source-byte envelope for this unit. When present, decoding the
+    /// unit MUST NOT request bytes outside this extent. `None` makes no release
+    /// or locality claim.
     pub extent: Option<ByteExtent>,
     pub estimated_working_set_bytes: u64,
     pub independently_retryable: bool,
@@ -960,13 +963,63 @@ pub struct DecodeUnitPlan {
 
 impl DecodeUnitPlan {
     pub fn validate(&self) -> Result<()> {
-        if self.unit_id.is_empty() || self.estimated_working_set_bytes == 0 {
+        if self.unit_id.is_empty()
+            || self.estimated_working_set_bytes == 0
+            || self.extent.is_some_and(|extent| {
+                extent.length == 0 || extent.start.checked_add(extent.length).is_none()
+            })
+        {
             return Err(CdfError::contract(
-                "decode unit requires an id and nonzero working-set estimate",
+                "decode unit requires an id, nonzero working-set estimate, and valid optional byte extent",
             ));
         }
         Ok(())
     }
+}
+
+/// Derives the byte offset below which a prepared session can never look again
+/// after each unit completes in canonical order.
+///
+/// A proof exists only when every unit publishes its complete source-read
+/// envelope. Overlapping or physically out-of-order units remain safe: the
+/// frontier advances to the minimum start of every still-unfinished envelope.
+pub fn decode_unit_no_lookback_frontiers(units: &[DecodeUnitPlan]) -> Result<Option<Vec<u64>>> {
+    if units.is_empty() {
+        return Err(CdfError::contract(
+            "no-lookback proof requires at least one decode unit",
+        ));
+    }
+    let mut extents = Vec::with_capacity(units.len());
+    let mut maximum_end = 0_u64;
+    for (index, unit) in units.iter().enumerate() {
+        unit.validate()?;
+        if usize::try_from(unit.ordinal).ok() != Some(index) {
+            return Err(CdfError::contract(
+                "no-lookback proof requires contiguous canonical unit ordinals",
+            ));
+        }
+        let Some(extent) = unit.extent else {
+            return Ok(None);
+        };
+        maximum_end = maximum_end.max(
+            extent
+                .start
+                .checked_add(extent.length)
+                .ok_or_else(|| CdfError::contract("decode-unit extent overflowed"))?,
+        );
+        extents.push(extent);
+    }
+
+    let mut frontiers = vec![0_u64; extents.len()];
+    let mut future_minimum_start = None::<u64>;
+    for index in (0..extents.len()).rev() {
+        frontiers[index] = future_minimum_start.unwrap_or(maximum_end);
+        future_minimum_start = Some(future_minimum_start.map_or(extents[index].start, |start| {
+            start.min(extents[index].start)
+        }));
+    }
+    debug_assert!(frontiers.windows(2).all(|pair| pair[0] <= pair[1]));
+    Ok(Some(frontiers))
 }
 
 #[derive(Clone, Debug)]
@@ -1944,6 +1997,45 @@ mod tests {
             .validate()
             .is_err()
         );
+    }
+
+    #[test]
+    fn decode_unit_no_lookback_proof_is_monotone_and_fail_closed() {
+        let units = vec![
+            DecodeUnitPlan {
+                unit_id: "unit-0".to_owned(),
+                ordinal: 0,
+                extent: Some(ByteExtent::new(0, 100).unwrap()),
+                estimated_working_set_bytes: 1,
+                independently_retryable: true,
+            },
+            DecodeUnitPlan {
+                unit_id: "unit-1".to_owned(),
+                ordinal: 1,
+                extent: Some(ByteExtent::new(50, 100).unwrap()),
+                estimated_working_set_bytes: 1,
+                independently_retryable: true,
+            },
+            DecodeUnitPlan {
+                unit_id: "unit-2".to_owned(),
+                ordinal: 2,
+                extent: Some(ByteExtent::new(200, 25).unwrap()),
+                estimated_working_set_bytes: 1,
+                independently_retryable: true,
+            },
+        ];
+        assert_eq!(
+            decode_unit_no_lookback_frontiers(&units).unwrap(),
+            Some(vec![50, 200, 225])
+        );
+
+        let mut unproven = units.clone();
+        unproven[1].extent = None;
+        assert_eq!(decode_unit_no_lookback_frontiers(&unproven).unwrap(), None);
+
+        let mut noncanonical = units;
+        noncanonical[1].ordinal = 7;
+        assert!(decode_unit_no_lookback_frontiers(&noncanonical).is_err());
     }
 
     #[test]

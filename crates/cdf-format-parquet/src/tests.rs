@@ -1,7 +1,7 @@
 use std::{
     collections::{BTreeMap, HashMap},
     sync::{
-        Arc,
+        Arc, Mutex,
         atomic::{AtomicU64, Ordering},
     },
 };
@@ -28,6 +28,7 @@ struct MemoryByteSource {
     bytes: Bytes,
     memory: Arc<dyn MemoryCoordinator>,
     suffix_reads: AtomicU64,
+    range_reads: Mutex<Vec<ByteExtent>>,
 }
 
 impl MemoryByteSource {
@@ -52,6 +53,7 @@ impl MemoryByteSource {
             bytes: Bytes::from(bytes),
             memory,
             suffix_reads: AtomicU64::new(0),
+            range_reads: Mutex::new(Vec::new()),
         })
     }
 
@@ -94,6 +96,7 @@ impl ByteSource for MemoryByteSource {
     ) -> BoxFuture<'_, Result<AccountedBytes>> {
         Box::pin(async move {
             cancellation.check()?;
+            self.range_reads.lock().unwrap().push(extent);
             let start = usize::try_from(extent.start)
                 .map_err(|_| CdfError::data("test range start exceeds usize"))?;
             let end = usize::try_from(
@@ -180,10 +183,17 @@ fn prepared_session_loads_footer_once_across_many_row_groups() {
     ))
     .unwrap();
     assert_eq!(session.units().len(), 8);
+    let frontiers = cdf_runtime::decode_unit_no_lookback_frontiers(session.units())
+        .unwrap()
+        .expect("Parquet row groups publish complete byte envelopes");
+    assert!(frontiers.windows(2).all(|pair| pair[0] <= pair[1]));
     let suffix_reads = source.suffix_reads.load(Ordering::Relaxed);
     assert!(suffix_reads > 0);
+    source.range_reads.lock().unwrap().clear();
 
     for unit in session.units().iter().cloned() {
+        let planned_extent = unit.extent.expect("Parquet row group byte envelope");
+        let first_request = source.range_reads.lock().unwrap().len();
         let stream = futures_executor::block_on(session.decode(PhysicalDecodeRequest {
             unit,
             resource_id: ResourceId::new("fixture.parquet").unwrap(),
@@ -202,6 +212,12 @@ fn prepared_session_loads_footer_once_across_many_row_groups() {
         let batches = futures_executor::block_on(stream.try_collect::<Vec<_>>()).unwrap();
         assert_eq!(batches.len(), 1);
         drop(batches);
+        let requests = source.range_reads.lock().unwrap();
+        assert!(requests.len() > first_request);
+        let planned_end = planned_extent.start + planned_extent.length;
+        assert!(requests[first_request..].iter().all(|request| {
+            request.start >= planned_extent.start && request.start + request.length <= planned_end
+        }));
     }
 
     assert_eq!(source.suffix_reads.load(Ordering::Relaxed), suffix_reads);

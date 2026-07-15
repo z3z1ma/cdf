@@ -27,7 +27,7 @@ use parquet::{
         async_reader::{AsyncFileReader, MetadataSuffixFetch, ParquetRecordBatchStreamBuilder},
     },
     errors::ParquetError,
-    file::metadata::{ParquetMetaData, ParquetMetaDataReader},
+    file::metadata::{ParquetMetaData, ParquetMetaDataReader, RowGroupMetaData},
 };
 use sha2::{Digest, Sha256};
 
@@ -159,6 +159,10 @@ impl FormatDriver for ParquetFormatDriver {
             ))
             .await
             .map_err(parquet_error)?;
+            let source_size = source
+                .identity()
+                .size_bytes
+                .expect("validated Parquet source length");
             let units = if builder.metadata().row_groups().is_empty() {
                 let unit = DecodeUnitPlan {
                     unit_id: "parquet-schema-only".to_owned(),
@@ -188,7 +192,7 @@ impl FormatDriver for ParquetFormatDriver {
                         let unit = DecodeUnitPlan {
                             unit_id: format!("row-group-{ordinal:08}"),
                             ordinal,
-                            extent: None,
+                            extent: parquet_row_group_extent(row_group, source_size)?,
                             estimated_working_set_bytes,
                             independently_retryable: true,
                         };
@@ -209,6 +213,39 @@ impl FormatDriver for ParquetFormatDriver {
             }) as Arc<dyn FormatDecodeSession>)
         })
     }
+}
+
+fn parquet_row_group_extent(
+    row_group: &RowGroupMetaData,
+    source_size: u64,
+) -> Result<Option<ByteExtent>> {
+    let mut start = None::<u64>;
+    let mut end = 0_u64;
+    for column in row_group.columns() {
+        let column_start = column
+            .dictionary_page_offset()
+            .unwrap_or_else(|| column.data_page_offset());
+        let column_start = u64::try_from(column_start)
+            .map_err(|_| CdfError::data("Parquet column starts before the source generation"))?;
+        let column_length = u64::try_from(column.compressed_size())
+            .map_err(|_| CdfError::data("Parquet column has a negative compressed size"))?;
+        if column_length == 0 {
+            continue;
+        }
+        let column_end = column_start
+            .checked_add(column_length)
+            .ok_or_else(|| CdfError::data("Parquet column byte extent overflowed"))?;
+        if column_end > source_size {
+            return Err(CdfError::data(
+                "Parquet row-group byte extent exceeds the source generation",
+            ));
+        }
+        start = Some(start.map_or(column_start, |value| value.min(column_start)));
+        end = end.max(column_end);
+    }
+    start
+        .map(|start| ByteExtent::new(start, end - start))
+        .transpose()
 }
 
 struct ParquetDecodeSession {
