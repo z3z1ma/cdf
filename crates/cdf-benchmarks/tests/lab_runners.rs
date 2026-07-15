@@ -309,44 +309,60 @@ fn prepared_multi_file_jobs_matrix_preserves_canonical_package_identity() {
     let temp = tempfile::tempdir().unwrap();
     let spec = fixture_spec("medium").unwrap();
     write_all_local_fixture_formats(temp.path(), &spec).unwrap();
-    let source = fs::read(temp.path().join("orders.ndjson")).unwrap();
-    for ordinal in 0..4 {
-        fs::write(
-            temp.path().join(format!("part-{ordinal:02}.ndjson")),
-            &source,
-        )
-        .unwrap();
-    }
-
-    let mut runs = Vec::new();
-    for (label, jobs) in [
-        ("one", Some(1)),
-        ("two", Some(2)),
-        ("auto", None),
-        ("n", Some(4)),
+    for (format_label, format, extension) in [
+        ("csv", PreparedFileFormat::Csv, "csv"),
+        ("json", PreparedFileFormat::Json, "json"),
+        ("ndjson", PreparedFileFormat::Ndjson, "ndjson"),
+        ("parquet", PreparedFileFormat::Parquet, "parquet"),
     ] {
-        let run = run_prepared_file_to_package(&PreparedFilePackageWorkload {
-            fixture_name: "medium".to_owned(),
-            source_root: temp.path().to_path_buf(),
-            glob: "part-*.ndjson".to_owned(),
-            package_dir: temp.path().join(format!("package-{label}")),
-            format: PreparedFileFormat::Ndjson,
-            jobs,
-        })
-        .unwrap();
-        assert_eq!(run.configured_jobs, jobs);
-        assert_eq!(run.partition_count, 4);
-        assert_eq!(run.measurement.rows, (spec.rows * 4) as u64);
-        runs.push(run);
-    }
+        let source = fs::read(temp.path().join(format!("orders.{extension}"))).unwrap();
+        for ordinal in 0..4 {
+            fs::write(
+                temp.path()
+                    .join(format!("{format_label}-part-{ordinal:02}.{extension}")),
+                &source,
+            )
+            .unwrap();
+        }
 
-    assert_eq!(runs[0].effective_jobs, 1);
-    assert_eq!(runs[1].effective_jobs, 2);
-    assert_eq!(runs[2].effective_jobs, 4);
-    assert_eq!(runs[3].effective_jobs, 4);
-    for run in &runs[1..] {
-        assert_eq!(run.package_hash, runs[0].package_hash);
-        assert_eq!(run.segments, runs[0].segments);
+        let mut runs = Vec::new();
+        for (jobs_label, jobs) in [
+            ("one", Some(1)),
+            ("two", Some(2)),
+            ("auto", None),
+            ("n", Some(4)),
+        ] {
+            let run = run_prepared_file_to_package(&PreparedFilePackageWorkload {
+                fixture_name: "medium".to_owned(),
+                source_root: temp.path().to_path_buf(),
+                glob: format!("{format_label}-part-*.{extension}"),
+                package_dir: temp
+                    .path()
+                    .join(format!("package-{format_label}-{jobs_label}")),
+                format,
+                jobs,
+            })
+            .unwrap();
+            assert_eq!(run.configured_jobs, jobs);
+            assert_eq!(run.partition_count, 4);
+            assert_eq!(run.measurement.rows, (spec.rows * 4) as u64);
+            runs.push(run);
+        }
+
+        assert_eq!(runs[0].effective_jobs, 1);
+        assert_eq!(runs[1].effective_jobs, 2);
+        assert_eq!(runs[2].effective_jobs, 4);
+        assert_eq!(runs[3].effective_jobs, 4);
+        for run in &runs[1..] {
+            assert_eq!(
+                run.package_hash, runs[0].package_hash,
+                "{format_label} package identity changed with jobs"
+            );
+            assert_eq!(
+                run.segments, runs[0].segments,
+                "{format_label} canonical segments changed with jobs"
+            );
+        }
     }
 }
 
