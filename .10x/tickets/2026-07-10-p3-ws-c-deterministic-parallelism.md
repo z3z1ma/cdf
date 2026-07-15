@@ -14,7 +14,7 @@ Execute logical file, row-group, window, and other safe partitions concurrently 
 
 - `.10x/tickets/done/2026-07-11-p3-c1-scheduler-admission-contract.md`
 - `.10x/tickets/done/2026-07-11-p3-c2-parallel-frontier-execution.md`
-- `.10x/tickets/2026-07-11-p3-c3-engine-ffi-parallel-integration.md`
+- `.10x/tickets/done/2026-07-11-p3-c3-engine-ffi-parallel-integration.md`
 - `.10x/tickets/2026-07-11-p3-c4-jobs-invariance-scaling-matrix.md`
 - `.10x/tickets/2026-07-11-p3-c5-isolated-worker-equivalence.md`
 
@@ -28,11 +28,12 @@ Execute logical file, row-group, window, and other safe partitions concurrently 
 
 ## Blockers
 
-C1 admission, the injected execution host, memory ledger, WS-L baseline, and C2 production frontier are complete. C3's shared CPU/FFI admission integration is the next dependency-critical leaf; its completion unlocks C4's permanent jobs-invariance and scaling matrix.
+C1–C3, the injected execution host, memory ledger, and WS-L baseline are complete. C4's permanent jobs-invariance and scaling matrix is active next; it gates C5, F4, G4, and V3.
 
 ## Progress and notes
 
 - 2026-07-14: Closed C2 after the source-neutral canonical frontier passed a fresh significant-only review and 537 affected-graph tests. The active-ticket directory fell from 85 to 84 records (15 active, 63 open, 6 blocked), with 299 tickets now done. C3 is activated next because it is the only remaining dependency before C4 can exercise the system-wide jobs-invariance/scaling matrix.
+- 2026-07-14: Closed C3 after 247 affected-graph tests and fresh adversarial pass. Codec, DataFusion, Python, and native/FFI work now share bounded CPU authority with post-release completion, global mixed-cost fairness, and worker-safe teardown. The active-ticket directory fell from 84 to 83 records and done tickets rose from 299 to 300. C4 is activated because it has the highest immediate dependency fanout in P3.
 
 ## References
 

@@ -1,8 +1,8 @@
-Status: open
+Status: active
 Created: 2026-07-11
-Updated: 2026-07-11
+Updated: 2026-07-14
 Parent: .10x/tickets/2026-07-10-p3-ws-c-deterministic-parallelism.md
-Depends-On: .10x/tickets/2026-07-11-p3-c3-engine-ffi-parallel-integration.md
+Depends-On: .10x/tickets/done/2026-07-11-p3-c3-engine-ffi-parallel-integration.md
 
 # P3 C4: jobs-invariance and scaling matrix
 
@@ -27,7 +27,18 @@ No distributed scheduler.
 
 ## Blockers
 
-Depends on C1-C3.
+None. C1–C3 are complete.
+
+## Assumptions
+
+- Record-backed: jobs may change scheduling, queue timing, and runtime metrics, but package identity, canonical segments, rows, positions, verdicts, quarantine, lineage, state preimages, and receipt package/segment identities must remain equal to jobs=1.
+- Record-backed: one benchmark/run must use one shared `ExecutionServices` authority across transport, format, engine, and destination. A harness that constructs separate hosts cannot support scaling or oversubscription claims.
+- Record-backed: C4 owns the permanent invariance matrix and measured scaling boundaries. It does not duplicate format/destination roofline optimization owned by B/D/G/V; a named downstream bottleneck becomes evidence and owner input, not an in-ticket rewrite.
+
+## Journal
+
+- 2026-07-14 activation: C3 closed with a fresh pass and the active backlog fell to 83 tickets. C4 is selected over continuing a single format thread because it is the immediate dependency for C5 isolated-worker equivalence, F4 one-terabyte closure, G4 TLC remote-I/O closure, and V3 validation-envelope closure.
+- 2026-07-14 harness audit: the current prepared-file benchmark constructs `ExecutionServices` privately inside `benchmark_file_dependencies()` while engine execution falls back to a second default host and exposes no jobs dimension. This makes its scaling measurements structurally invalid. First implementation step is one injected run authority plus jobs 1/2/auto/N and canonical artifact fingerprints; the existing run matrix supplies source/destination coverage but its two-row, usually single-partition fixtures cannot by themselves prove parallel scaling.
 
 ## References
 

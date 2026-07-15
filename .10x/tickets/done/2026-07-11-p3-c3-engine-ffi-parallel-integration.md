@@ -1,4 +1,4 @@
-Status: active
+Status: done
 Created: 2026-07-11
 Updated: 2026-07-14
 Parent: .10x/tickets/2026-07-10-p3-ws-c-deterministic-parallelism.md
@@ -57,6 +57,7 @@ None. C2 and A4 are complete.
 - 2026-07-14 host-global teardown correction: final review found a broader ownership path than the repaired internal future cycle: legal CPU, I/O, or FFI work can capture the final `Arc<StandaloneExecutionHost>` or services. Synchronously joining even a different pool from any managed worker can deadlock on cross-pool dependencies, and Tokio forbids blocking `Runtime::drop` on its own async worker. All CDF CPU/lane/Tokio workers now share one thread-local managed-worker marker. Pool teardown on any managed worker transfers every join handle to an external reaper; genuinely external teardown still joins inline. Host teardown uses Tokio's nonblocking shutdown only on a managed worker and ordinary joined drop externally. Cross-pool and I/O-last-owner regressions both require the releasing task to continue after host destruction.
 - 2026-07-14 teardown stress: the complete 23-test standalone-host set, including CPU→lane post-drop dependency and I/O-runtime self-release, passed 20 consecutive runs. Strict engine Clippy and formatting passed after the final implementation cleanup.
 - 2026-07-14 embedded-runtime correction: review identified that CDF's worker marker alone did not cover an embedded caller releasing the final host owner from an unrelated Tokio task; Tokio forbids blocking runtime destruction from any async runtime context. The nonblocking teardown predicate now joins the managed-worker marker with `Handle::try_current()`. A current-thread external Tokio regression constructs and drops a CDF host inside a spawned async task without panic; it passed 20 consecutive runs, the 24-test host set passed, and strict Clippy remained clean.
+- 2026-07-14 closure verification: the final runtime/engine/Python graph passed 247 runnable tests with seven intentional slow/release ignores (158 engine, 21 Python, 68 runtime). Strict affected all-target Clippy, formatting, lockfile use, and diff hygiene passed. Fresh adversarial review of `6a08b81d..11364ced` found no remaining critical/significant issue and returned **pass**; C3 is closed and C4 is activated.
 
 ## References
 
@@ -76,3 +77,15 @@ None. C2 and A4 are complete.
 - 2026-07-14 third closure review — **fail**. The reviewer found terminal completion preceding the pool release barrier and unbounded mixed-cost/cross-lane bypass. Both significant findings are repaired with explicit lifecycle and sustained-load regressions; the uncommitted adjacent run-work registry repair also awaits review in the final exact diff.
 - 2026-07-14 final-review interim findings — **significant**. The initial one-pool self-join repair was insufficient: synchronous peer joins, cross-pool joins, and Tokio runtime destruction could still deadlock or panic when user work owned the final host reference. The host-global managed-worker/reaper policy and CPU↔lane plus I/O-last-owner regressions now repair all named paths; the reviewer is continuing against the amended range.
 - 2026-07-14 final-review embedded finding — **significant**. External Tokio tasks were also nonblocking teardown contexts even though they were not CDF workers. The shared predicate and direct external-runtime regression repair this path; final verdict remains pending.
+- 2026-07-14 final closure review — **pass**. No critical or significant finding remains. The reviewer confirmed post-release terminal publication, bounded global CPU/FFI fairness, cancellation/run-work waiter deregistration without lost wakes or retained cycles, and nonblocking teardown from CDF workers plus embedded Tokio contexts. Residual risk: noncooperative tasks can delay asynchronous reapers after abnormal last-owner teardown; ordinary structured scopes still join before reporting success.
+
+## Evidence
+
+- Acceptance 1: `.10x/evidence/2026-07-14-p3-c3-shared-cpu-admission.md` records registered codec execution on `cdf-cpu-*`, removal of the I/O-worker ceiling, one shared claimed-slot algebra, and DataFusion resource polling confined through injected `ExecutionServices`.
+- Acceptance 2: the same evidence records actual CPython 3.14.6 GIL peak one and CPython 3.14.6t peak two with identical Arrow/work hash `sha256:2531d1b7e36c1752d42882279bf23d157c4cc9a64e5234eace480951b7c993b3`.
+- Acceptance 3: capability-declared CPU costs and blocking-lane affinity drive admission without source/destination identity branches; sustained mixed-cost and CPU↔FFI regressions prove one global bounded-fair authority.
+- Acceptance 4: the release executor comparison remained bounded to 18 workers/slots, the controlled FineWeb production path improved 6.12 s → 6.04 s without semantic drift, cancellation/panic/teardown tests recover all resources, and the final affected graph plus strict Clippy are green. C4 owns the broad jobs/scaling roofline rather than C3 claiming it from one workload.
+
+## Retrospective
+
+The original integration looked complete because work entered the right pool, but adversarial lifecycle review exposed the harder invariant: an admitted future must release authority at every `Pending`, publish completion only after final release, remain boundedly fair against differently sized claims, and tear down safely regardless of who owns the final host reference. The durable technique is to test ownership and scheduling, not only output: self-waking futures, sustained mixed-cost queues, cross-pool dependencies, final-owner destruction on every worker class, and embedded-runtime teardown. C4 can now measure scaling against one trustworthy execution authority instead of compensating for hidden runtime islands.

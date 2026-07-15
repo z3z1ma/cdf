@@ -1,7 +1,7 @@
 Status: recorded
 Created: 2026-07-14
 Updated: 2026-07-14
-Relates-To: .10x/tickets/2026-07-11-p3-c3-engine-ffi-parallel-integration.md, .10x/decisions/standalone-cpu-executor-v1.md
+Relates-To: .10x/tickets/done/2026-07-11-p3-c3-engine-ffi-parallel-integration.md, .10x/decisions/standalone-cpu-executor-v1.md
 
 # P3 C3 shared CPU admission
 
@@ -28,6 +28,7 @@ Focused conformance:
 - The consolidated post-repair command `CARGO_BUILD_JOBS=12 cargo test -p cdf-runtime -p cdf-engine -p cdf-python --lib --locked` passed 244 runnable tests with seven intentional ignores (155 engine, 21 Python, 68 runtime). Strict affected all-target Clippy and formatting passed immediately afterward.
 - `managed_worker_teardown_reaps_cross_pool_peers_without_joining_inline` runs one CPU task and one lane task with a deliberate dependency on CPU work *after* the CPU task releases the final two-pool owner. It completes only if managed-worker teardown transfers both pools' handles to external reapers rather than synchronously joining either pool. `io_worker_can_release_the_last_host_owner_without_dropping_runtime_inline` releases the final host owner from `cdf-io` and then performs a post-drop signal, proving Tokio runtime destruction is nonblocking on its own worker. The complete 23-test host set passed 20 consecutive runs; strict engine all-target Clippy and formatting passed.
 - `external_tokio_task_can_release_the_last_host_owner_without_blocking_drop` constructs a CDF host inside an independent current-thread Tokio runtime, transfers its final owner into a spawned external async task, and drops it there. It passed 20 consecutive runs without Tokio's forbidden blocking-runtime-drop panic; the complete 24-test host set and strict Clippy passed.
+- Final closure verification passed 247 runnable affected-graph tests with seven intentional slow/release ignores (158 engine, 21 Python, 68 runtime). Fresh adversarial review of `6a08b81d..11364ced` returned **pass** with no remaining critical/significant finding.
 
 Release executor comparison:
 
