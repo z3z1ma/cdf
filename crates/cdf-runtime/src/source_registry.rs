@@ -3,8 +3,9 @@ use std::{collections::BTreeMap, sync::Arc};
 use cdf_kernel::{CdfError, QueryableResource, Result};
 
 use crate::{
-    CompiledSourcePlan, SourceCompileRequest, SourceDriver, SourceDriverDescriptor, SourceDriverId,
-    SourceResolutionContext, artifact_hash,
+    CompiledSourcePlan, SourceCompileRequest, SourceDiscoveryCandidate, SourceDiscoveryKind,
+    SourceDiscoveryRequest, SourceDiscoverySession, SourceDriver, SourceDriverDescriptor,
+    SourceDriverId, SourceResolutionContext, SourceSchemaObservation, artifact_hash,
 };
 
 #[derive(Default)]
@@ -82,20 +83,29 @@ impl SourceRegistry {
         plan: &CompiledSourcePlan,
         context: &SourceResolutionContext<'_>,
     ) -> Result<Arc<dyn QueryableResource>> {
-        plan.validate()?;
-        let driver = self.drivers.get(&plan.driver.driver_id).ok_or_else(|| {
-            CdfError::contract(format!(
-                "compiled source plan requires unregistered driver `{}`",
-                plan.driver.driver_id.as_str()
-            ))
-        })?;
-        self.verify_plan_driver(plan, driver.descriptor())?;
+        let driver = self.driver_for_plan(plan)?;
         if let Some(lane) = &plan.execution_capabilities.blocking_lane {
             context
                 .execution()
                 .ensure_blocking_lanes(std::slice::from_ref(lane))?;
         }
         driver.resolve(plan, context)
+    }
+
+    pub fn discovery_session(
+        &self,
+        plan: &CompiledSourcePlan,
+        context: &SourceResolutionContext<'_>,
+    ) -> Result<Box<dyn SourceDiscoverySession>> {
+        let driver = self.driver_for_plan(plan)?;
+        if let Some(lane) = &plan.execution_capabilities.blocking_lane {
+            context
+                .execution()
+                .ensure_blocking_lanes(std::slice::from_ref(lane))?;
+        }
+        Ok(Box::new(VerifiedSourceDiscoverySession {
+            inner: driver.discovery_session(plan, context)?,
+        }))
     }
 
     pub fn driver_for_uri(&self, uri: &str) -> Result<&Arc<dyn SourceDriver>> {
@@ -141,6 +151,18 @@ impl SourceRegistry {
             .expect("source kind index references registered driver"))
     }
 
+    fn driver_for_plan(&self, plan: &CompiledSourcePlan) -> Result<&Arc<dyn SourceDriver>> {
+        plan.validate()?;
+        let driver = self.drivers.get(&plan.driver.driver_id).ok_or_else(|| {
+            CdfError::contract(format!(
+                "compiled source plan requires unregistered driver `{}`",
+                plan.driver.driver_id.as_str()
+            ))
+        })?;
+        self.verify_plan_driver(plan, driver.descriptor())?;
+        Ok(driver)
+    }
+
     fn verify_plan_driver(
         &self,
         plan: &CompiledSourcePlan,
@@ -153,6 +175,68 @@ impl SourceRegistry {
             )));
         }
         Ok(())
+    }
+}
+
+struct VerifiedSourceDiscoverySession {
+    inner: Box<dyn SourceDiscoverySession>,
+}
+
+impl SourceDiscoverySession for VerifiedSourceDiscoverySession {
+    fn kind(&self) -> SourceDiscoveryKind {
+        self.inner.kind()
+    }
+
+    fn candidates(&self) -> Result<Vec<SourceDiscoveryCandidate>> {
+        let mut candidates = self.inner.candidates()?;
+        for candidate in &candidates {
+            candidate.validate()?;
+        }
+        candidates.sort_by(|left, right| {
+            left.canonical_location
+                .cmp(&right.canonical_location)
+                .then_with(|| left.identity.cmp(&right.identity))
+        });
+        if let Some(duplicates) = candidates
+            .windows(2)
+            .find(|pair| pair[0].canonical_location == pair[1].canonical_location)
+        {
+            return Err(CdfError::contract(format!(
+                "source discovery returned duplicate canonical candidate `{}`",
+                duplicates[0].canonical_location
+            )));
+        }
+        Ok(candidates)
+    }
+
+    fn observe(
+        &self,
+        candidate: &SourceDiscoveryCandidate,
+        request: &SourceDiscoveryRequest,
+    ) -> Result<SourceSchemaObservation> {
+        candidate.validate()?;
+        request.validate()?;
+        let observation = self.inner.observe(candidate, request)?;
+        observation.validate()?;
+        if observation.canonical_location != candidate.canonical_location {
+            return Err(CdfError::contract(format!(
+                "source discovery observation location `{}` does not match candidate `{}`",
+                observation.canonical_location, candidate.canonical_location
+            )));
+        }
+        if observation.bytes_read > request.maximum_bytes
+            || observation.records_read > request.maximum_records
+        {
+            return Err(CdfError::data(format!(
+                "source discovery observation for `{}` exceeded its compiler budget: read {} of {} bytes and {} of {} records",
+                candidate.canonical_location,
+                observation.bytes_read,
+                request.maximum_bytes,
+                observation.records_read,
+                request.maximum_records
+            )));
+        }
+        Ok(observation)
     }
 }
 
@@ -194,4 +278,124 @@ fn validate_option_schema(schema: &serde_json::Value) -> Result<()> {
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use arrow_schema::Schema;
+
+    use super::*;
+
+    struct BoundaryProbeSession {
+        candidates: Vec<SourceDiscoveryCandidate>,
+        bytes_read: u64,
+        records_read: u64,
+        replace_location: Option<String>,
+    }
+
+    impl SourceDiscoverySession for BoundaryProbeSession {
+        fn kind(&self) -> SourceDiscoveryKind {
+            SourceDiscoveryKind::BoundedContent
+        }
+
+        fn candidates(&self) -> Result<Vec<SourceDiscoveryCandidate>> {
+            Ok(self.candidates.clone())
+        }
+
+        fn observe(
+            &self,
+            candidate: &SourceDiscoveryCandidate,
+            _request: &SourceDiscoveryRequest,
+        ) -> Result<SourceSchemaObservation> {
+            let mut observation = SourceSchemaObservation::new(
+                candidate,
+                Schema::empty(),
+                BTreeMap::new(),
+                self.bytes_read,
+                self.records_read,
+            )?;
+            if let Some(location) = &self.replace_location {
+                observation.canonical_location = location.clone();
+            }
+            Ok(observation)
+        }
+    }
+
+    fn candidate(location: &str) -> SourceDiscoveryCandidate {
+        SourceDiscoveryCandidate::new(location, Some(1), None, BTreeMap::new()).unwrap()
+    }
+
+    #[test]
+    fn discovery_boundary_orders_candidates_and_rejects_duplicate_locations() {
+        let verified = VerifiedSourceDiscoverySession {
+            inner: Box::new(BoundaryProbeSession {
+                candidates: vec![candidate("mock://z"), candidate("mock://a")],
+                bytes_read: 1,
+                records_read: 1,
+                replace_location: None,
+            }),
+        };
+        assert_eq!(
+            verified
+                .candidates()
+                .unwrap()
+                .into_iter()
+                .map(|candidate| candidate.canonical_location)
+                .collect::<Vec<_>>(),
+            vec!["mock://a", "mock://z"]
+        );
+
+        let duplicate = VerifiedSourceDiscoverySession {
+            inner: Box::new(BoundaryProbeSession {
+                candidates: vec![candidate("mock://same"), candidate("mock://same")],
+                bytes_read: 1,
+                records_read: 1,
+                replace_location: None,
+            }),
+        };
+        assert!(
+            duplicate
+                .candidates()
+                .unwrap_err()
+                .message
+                .contains("duplicate canonical candidate")
+        );
+    }
+
+    #[test]
+    fn discovery_boundary_rejects_budget_and_candidate_identity_drift() {
+        let candidate = candidate("mock://events");
+        let over_budget = VerifiedSourceDiscoverySession {
+            inner: Box::new(BoundaryProbeSession {
+                candidates: vec![candidate.clone()],
+                bytes_read: 11,
+                records_read: 3,
+                replace_location: None,
+            }),
+        };
+        let request = SourceDiscoveryRequest::new(10, 2).unwrap();
+        assert!(
+            over_budget
+                .observe(&candidate, &request)
+                .unwrap_err()
+                .message
+                .contains("exceeded its compiler budget")
+        );
+
+        let drifted = VerifiedSourceDiscoverySession {
+            inner: Box::new(BoundaryProbeSession {
+                candidates: vec![candidate.clone()],
+                bytes_read: 1,
+                records_read: 1,
+                replace_location: Some("mock://other".to_owned()),
+            }),
+        };
+        assert!(
+            drifted
+                .observe(&candidate, &request)
+                .unwrap_err()
+                .message
+                .contains("does not match candidate")
+        );
+    }
 }

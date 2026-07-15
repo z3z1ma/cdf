@@ -952,6 +952,14 @@ impl SourceDriver for MockSourceDriver {
         )
     }
 
+    fn discovery_session(
+        &self,
+        _plan: &CompiledSourcePlan,
+        _context: &SourceResolutionContext<'_>,
+    ) -> Result<Box<dyn SourceDiscoverySession>> {
+        Ok(Box::new(MockSourceDiscoverySession))
+    }
+
     fn resolve(
         &self,
         plan: &CompiledSourcePlan,
@@ -962,6 +970,38 @@ impl SourceDriver for MockSourceDriver {
             schema: Arc::new(plan.schema.clone()),
             capabilities: plan.resource_capabilities.clone(),
         }))
+    }
+}
+
+struct MockSourceDiscoverySession;
+
+impl SourceDiscoverySession for MockSourceDiscoverySession {
+    fn kind(&self) -> SourceDiscoveryKind {
+        SourceDiscoveryKind::BoundedContent
+    }
+
+    fn candidates(&self) -> Result<Vec<SourceDiscoveryCandidate>> {
+        Ok(vec![SourceDiscoveryCandidate::new(
+            "mock://events",
+            Some(1),
+            None,
+            BTreeMap::new(),
+        )?])
+    }
+
+    fn observe(
+        &self,
+        candidate: &SourceDiscoveryCandidate,
+        request: &SourceDiscoveryRequest,
+    ) -> Result<SourceSchemaObservation> {
+        request.validate()?;
+        SourceSchemaObservation::new(
+            candidate,
+            Schema::empty(),
+            BTreeMap::from([("source_kind".to_owned(), "mock".to_owned())]),
+            1,
+            0,
+        )
     }
 }
 
@@ -1151,6 +1191,18 @@ fn source_registry_compiles_hashes_and_resolves_mock_without_order_authority() {
     let secrets: Arc<dyn cdf_http::SecretProvider + Send + Sync> = Arc::new(NoopSecretProvider);
     let root = tempfile::tempdir().unwrap();
     let context = SourceResolutionContext::new(root.path(), secrets, &services);
+    let discovery = registry.discovery_session(&plan, &context).unwrap();
+    assert_eq!(discovery.kind(), SourceDiscoveryKind::BoundedContent);
+    let candidates = discovery.candidates().unwrap();
+    assert_eq!(candidates.len(), 1);
+    let observation = discovery
+        .observe(
+            &candidates[0],
+            &SourceDiscoveryRequest::new(1024, 10).unwrap(),
+        )
+        .unwrap();
+    observation.validate().unwrap();
+    assert_eq!(observation.canonical_location, "mock://events");
     let resource = registry.resolve(&plan, &context).unwrap();
     assert_eq!(resource.descriptor().resource_id.as_str(), "mock.events");
 

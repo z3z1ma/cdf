@@ -4,19 +4,22 @@ use cdf_http::{AuthScheme, EgressAllowlist, SecretProvider, SecretUri};
 use cdf_kernel::{
     BackpressureSupport, CapabilitySupport, CdfError, EstimateSupport, FilterCapabilities,
     IncrementalShape, PartitioningCapabilities, QueryableResource, ReplaySupport,
-    ResourceCapabilities, Result, ScopeKind,
+    ResourceCapabilities, ResourceStream, Result, ScanRequest, ScopeKind,
 };
 use cdf_runtime::{
-    CompiledFormatBinding, CompiledSourcePlan, ExecutionServices, FormatRegistry,
-    SourceAttestationStrength, SourceCompileRequest, SourceDriver, SourceDriverDescriptor,
-    SourceDriverId, SourceExecutionCapabilities, SourceExecutorClass, SourceResolutionContext,
-    SourceRetryGranularity, artifact_hash,
+    CompiledFormatBinding, CompiledSourcePlan, ExecutionServices, FormatDiscoveryKind,
+    FormatRegistry, SourceAttestationStrength, SourceCompileRequest, SourceDiscoveryCandidate,
+    SourceDiscoveryKind, SourceDiscoveryRequest, SourceDiscoverySession, SourceDriver,
+    SourceDriverDescriptor, SourceDriverId, SourceExecutionCapabilities, SourceExecutorClass,
+    SourceResolutionContext, SourceRetryGranularity, SourceSchemaObservation, artifact_hash,
 };
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    FileCompressionDeclaration, FileFormatDeclaration, FileResource, FileResourceDefinition,
-    FileResourcePlan, FileRuntimeDependencies,
+    BoundedSchemaDiscoveryRequest, FileCompressionDeclaration, FileFormatDeclaration, FileResource,
+    FileResourceDefinition, FileResourcePlan, FileRuntimeDependencies, FileTransportLocation,
+    FileTransportResource, discover_local_binary_schema_bounded,
+    discover_transport_binary_schema_bounded, local_file_discovery_candidates,
 };
 
 type RuntimeFactory = dyn Fn(Arc<dyn SecretProvider + Send + Sync>, ExecutionServices) -> Result<FileRuntimeDependencies>
@@ -145,6 +148,36 @@ impl SourceDriver for FileSourceDriver {
         )
     }
 
+    fn discovery_session(
+        &self,
+        plan: &CompiledSourcePlan,
+        context: &SourceResolutionContext<'_>,
+    ) -> Result<Box<dyn SourceDiscoverySession>> {
+        plan.validate()?;
+        let physical: FilePhysicalPlan = serde_json::from_value(plan.physical_plan.clone())
+            .map_err(|error| CdfError::contract(format!("invalid file source plan: {error}")))?;
+        let dependencies = (self.runtime_factory)(
+            Arc::clone(context.secret_provider()),
+            context.execution().clone(),
+        )?
+        .with_prepared_payloads(context.prepared_payloads().clone());
+        physical.compiled_format.verify(dependencies.formats())?;
+        let runtime_plan = physical.to_runtime_plan()?;
+        let entries = file_discovery_entries(
+            plan,
+            &runtime_plan,
+            &physical.compiled_format,
+            &dependencies,
+        )?;
+        Ok(Box::new(FileDriverDiscoverySession {
+            resource_id: plan.descriptor.resource_id.clone(),
+            plan: runtime_plan,
+            compiled_format: physical.compiled_format,
+            dependencies,
+            entries,
+        }))
+    }
+
     fn resolve(
         &self,
         plan: &CompiledSourcePlan,
@@ -171,6 +204,233 @@ impl SourceDriver for FileSourceDriver {
             dependencies,
         )?))
     }
+}
+
+#[derive(Clone)]
+struct FileDriverDiscoveryEntry {
+    candidate: SourceDiscoveryCandidate,
+    compression: String,
+    source: FileDriverDiscoverySource,
+}
+
+#[derive(Clone)]
+enum FileDriverDiscoverySource {
+    Local {
+        path: std::path::PathBuf,
+        selection_bytes_read: u64,
+    },
+    Transport(FileTransportResource),
+}
+
+struct FileDriverDiscoverySession {
+    resource_id: cdf_kernel::ResourceId,
+    plan: FileResourcePlan,
+    compiled_format: CompiledFormatBinding,
+    dependencies: FileRuntimeDependencies,
+    entries: Vec<FileDriverDiscoveryEntry>,
+}
+
+impl SourceDiscoverySession for FileDriverDiscoverySession {
+    fn kind(&self) -> SourceDiscoveryKind {
+        match self.compiled_format.descriptor.discovery_kind {
+            FormatDiscoveryKind::FormatMetadata => SourceDiscoveryKind::SchemaMetadata,
+            FormatDiscoveryKind::BoundedContent => SourceDiscoveryKind::BoundedContent,
+            FormatDiscoveryKind::FullContent => SourceDiscoveryKind::FullContent,
+        }
+    }
+
+    fn candidates(&self) -> Result<Vec<SourceDiscoveryCandidate>> {
+        Ok(self
+            .entries
+            .iter()
+            .map(|entry| entry.candidate.clone())
+            .collect())
+    }
+
+    fn observe(
+        &self,
+        candidate: &SourceDiscoveryCandidate,
+        request: &SourceDiscoveryRequest,
+    ) -> Result<SourceSchemaObservation> {
+        request.validate()?;
+        let entry = self
+            .entries
+            .iter()
+            .find(|entry| entry.candidate == *candidate)
+            .ok_or_else(|| {
+                CdfError::contract(format!(
+                    "file discovery candidate `{}` was not produced by the compiled inventory",
+                    candidate.canonical_location
+                ))
+            })?;
+        let format = self.plan.resolved_format()?;
+        let probe_request = BoundedSchemaDiscoveryRequest {
+            resource_id: &self.resource_id,
+            format,
+            format_declared: self.plan.format_declared,
+            format_options: &self.compiled_format.canonical_options,
+            transform_name: &entry.compression,
+            maximum_bytes: request.maximum_bytes,
+            maximum_records: request.maximum_records,
+        };
+        let probe = match &entry.source {
+            FileDriverDiscoverySource::Local {
+                path,
+                selection_bytes_read,
+            } => discover_local_binary_schema_bounded(
+                path,
+                &candidate.canonical_location,
+                &self.dependencies,
+                *selection_bytes_read,
+                probe_request,
+            )?,
+            FileDriverDiscoverySource::Transport(resource) => {
+                discover_transport_binary_schema_bounded(
+                    resource.clone(),
+                    &self.dependencies,
+                    probe_request,
+                )?
+            }
+        };
+        SourceSchemaObservation::new(
+            candidate,
+            probe.schema.as_ref().clone(),
+            probe.source_identity,
+            probe.probe_bytes_read,
+            probe.probe_records_read,
+        )
+    }
+}
+
+fn file_discovery_entries(
+    source_plan: &CompiledSourcePlan,
+    plan: &FileResourcePlan,
+    compiled_format: &CompiledFormatBinding,
+    dependencies: &FileRuntimeDependencies,
+) -> Result<Vec<FileDriverDiscoveryEntry>> {
+    if !uses_transport_inventory(&plan.root) {
+        return local_file_discovery_candidates(
+            &source_plan.descriptor.resource_id,
+            plan,
+            dependencies.formats(),
+            dependencies.transforms(),
+        )?
+        .into_iter()
+        .map(|candidate| {
+            let modified_at_ms = candidate.modified_at_ms();
+            let mut identity =
+                BTreeMap::from([("compression".to_owned(), candidate.compression.clone())]);
+            identity.insert(
+                "selection_bytes_read".to_owned(),
+                candidate.selection_bytes_read.to_string(),
+            );
+            Ok(FileDriverDiscoveryEntry {
+                candidate: SourceDiscoveryCandidate::new(
+                    candidate.relative_path,
+                    Some(candidate.size_bytes),
+                    modified_at_ms,
+                    identity,
+                )?,
+                compression: candidate.compression,
+                source: FileDriverDiscoverySource::Local {
+                    path: candidate.path,
+                    selection_bytes_read: candidate.selection_bytes_read,
+                },
+            })
+        })
+        .collect();
+    }
+
+    let runtime = FileResource::new(
+        FileResourceDefinition {
+            descriptor: source_plan.descriptor.clone(),
+            schema: Arc::new(source_plan.schema.clone()),
+            capabilities: source_plan.resource_capabilities.clone(),
+            plan: plan.clone(),
+            type_policy_allowances: source_plan.type_policy_allowances,
+            effective_schema_runtime: source_plan.effective_schema_runtime.clone(),
+            compiled_format: compiled_format.clone(),
+        },
+        dependencies.clone(),
+    )?;
+    let partitions = runtime.plan_partitions(&ScanRequest {
+        resource_id: source_plan.descriptor.resource_id.clone(),
+        projection: None,
+        filters: Vec::new(),
+        limit: None,
+        order_by: Vec::new(),
+        scope: source_plan.descriptor.state_scope.clone(),
+    })?;
+    partitions
+        .into_iter()
+        .map(|partition| {
+            let location = partition.metadata.get("path").cloned().ok_or_else(|| {
+                CdfError::internal("file discovery partition omitted path metadata")
+            })?;
+            let size_bytes = partition
+                .metadata
+                .get("bytes")
+                .ok_or_else(|| CdfError::internal("file discovery partition omitted bytes"))?
+                .parse::<u64>()
+                .map_err(|error| CdfError::data(format!("invalid file size: {error}")))?;
+            let modified_at_ms = partition
+                .metadata
+                .get("modified_ms")
+                .map(|value| {
+                    value.parse::<i64>().map_err(|error| {
+                        CdfError::data(format!("invalid file modification time: {error}"))
+                    })
+                })
+                .transpose()?;
+            let compression = partition
+                .metadata
+                .get("compression")
+                .cloned()
+                .unwrap_or_else(|| "none".to_owned());
+            let resource = transport_resource_for_location(&location, plan)?;
+            Ok(FileDriverDiscoveryEntry {
+                candidate: SourceDiscoveryCandidate::new(
+                    location,
+                    Some(size_bytes),
+                    modified_at_ms,
+                    partition.metadata,
+                )?,
+                compression,
+                source: FileDriverDiscoverySource::Transport(resource),
+            })
+        })
+        .collect()
+}
+
+fn uses_transport_inventory(root: &str) -> bool {
+    ["file://", "http://", "https://", "s3://", "gs://", "az://"]
+        .iter()
+        .any(|prefix| root.starts_with(prefix))
+}
+
+fn transport_resource_for_location(
+    location: &str,
+    plan: &FileResourcePlan,
+) -> Result<FileTransportResource> {
+    let mut resource = if location.starts_with("http://") || location.starts_with("https://") {
+        FileTransportResource {
+            location: FileTransportLocation::HttpUrl {
+                url: location.to_owned(),
+            },
+            egress_allowlist: plan.allowlist.clone(),
+            auth: plan.auth.clone(),
+            credentials: plan.credentials.clone(),
+        }
+    } else if location.starts_with("file://") {
+        FileTransportResource::file_url(location)
+    } else {
+        FileTransportResource::object_store_url(location)
+            .with_egress_allowlist(plan.allowlist.clone())
+    };
+    if let Some(credentials) = &plan.credentials {
+        resource = resource.with_credentials(credentials.clone());
+    }
+    Ok(resource)
 }
 
 fn option_schema() -> serde_json::Value {
@@ -440,11 +700,23 @@ fn execution_capabilities() -> SourceExecutionCapabilities {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::FileTransportFacade;
     use arrow_schema::Schema;
+    use cdf_http::{SecretProvider, SecretUri, SecretValue};
     use cdf_kernel::{
         ResourceDescriptor, ResourceId, SchemaHash, SchemaSource, ScopeKey, TrustLevel,
         WriteDisposition,
     };
+
+    struct NoopSecretProvider;
+
+    impl SecretProvider for NoopSecretProvider {
+        fn resolve(&self, _uri: &SecretUri) -> Result<SecretValue> {
+            Err(CdfError::auth(
+                "file discovery test does not resolve secrets",
+            ))
+        }
+    }
 
     fn compile_request() -> SourceCompileRequest {
         SourceCompileRequest {
@@ -608,5 +880,58 @@ mod tests {
 
         assert_eq!(recompiled.resolved_format().unwrap().as_str(), "parquet");
         assert!(!recompiled.format_declared);
+    }
+
+    #[test]
+    fn driver_discovery_session_inventories_and_observes_local_ndjson() {
+        let root = tempfile::tempdir().unwrap();
+        let payload = b"{\"id\":1}\n{\"id\":2}\n";
+        std::fs::write(root.path().join("events.ndjson"), payload).unwrap();
+        let formats = crate::test_format_registry();
+        let runtime_formats = Arc::clone(&formats);
+        let transforms = crate::test_transform_registry();
+        let driver = FileSourceDriver::new(Arc::clone(&formats), move |_, execution| {
+            Ok(FileRuntimeDependencies::new(
+                FileTransportFacade::new().with_execution_services(execution.clone()),
+                execution,
+                Arc::clone(&runtime_formats),
+                Arc::clone(&transforms),
+            ))
+        })
+        .unwrap();
+        let mut request = compile_request();
+        request.source_options.insert(
+            "root".to_owned(),
+            serde_json::json!(root.path().display().to_string()),
+        );
+        request
+            .resource_options
+            .insert("glob".to_owned(), serde_json::json!("events.ndjson"));
+        request
+            .resource_options
+            .insert("format".to_owned(), serde_json::json!("ndjson"));
+        request
+            .resource_options
+            .insert("compression".to_owned(), serde_json::json!("none"));
+        let plan = driver.compile(request).unwrap();
+        let execution = crate::test_execution_services();
+        let context =
+            SourceResolutionContext::new(root.path(), Arc::new(NoopSecretProvider), &execution);
+        let session = driver.discovery_session(&plan, &context).unwrap();
+
+        assert_eq!(session.kind(), SourceDiscoveryKind::BoundedContent);
+        let candidates = session.candidates().unwrap();
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].canonical_location, "events.ndjson");
+        let observation = session
+            .observe(
+                &candidates[0],
+                &SourceDiscoveryRequest::new(1024 * 1024, 10).unwrap(),
+            )
+            .unwrap();
+        observation.validate().unwrap();
+        assert_eq!(observation.bytes_read, payload.len() as u64);
+        assert_eq!(observation.records_read, 2);
+        assert_eq!(observation.schema.fields()[0].name(), "id");
     }
 }

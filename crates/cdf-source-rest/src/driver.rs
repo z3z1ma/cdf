@@ -7,17 +7,22 @@ use cdf_http::{
 use cdf_kernel::{
     BackpressureSupport, CapabilitySupport, CdfError, EstimateSupport, FilterCapabilities,
     IncrementalShape, PartitioningCapabilities, PushdownFidelity, QueryableResource, ReplaySupport,
-    ResourceCapabilities, Result, ScopeKind,
+    ResourceCapabilities, Result, ScanRequest, ScopeKind,
 };
 use cdf_runtime::{
     BlockingLaneSpec, CompiledSourcePlan, InterruptionSafety, LaneAffinity,
-    SourceAttestationStrength, SourceCompileRequest, SourceCursorPushdown, SourceDriver,
-    SourceDriverDescriptor, SourceDriverId, SourceExecutionCapabilities, SourceExecutorClass,
-    SourceResolutionContext, SourceRetryGranularity, artifact_hash,
+    SourceAttestationStrength, SourceCompileRequest, SourceCursorPushdown,
+    SourceDiscoveryCandidate, SourceDiscoveryKind, SourceDiscoveryRequest, SourceDiscoverySession,
+    SourceDriver, SourceDriverDescriptor, SourceDriverId, SourceExecutionCapabilities,
+    SourceExecutorClass, SourceResolutionContext, SourceRetryGranularity, SourceSchemaObservation,
+    artifact_hash,
 };
 use serde::{Deserialize, Serialize};
 
-use crate::{RestResource, RestResourcePlan, RestRuntimeDependencies};
+use crate::{
+    RestDiscoveryDependencies, RestResource, RestResourcePlan, RestRuntimeDependencies,
+    discover_rest_sample_schema, rest_partition,
+};
 
 type TransportFactory = dyn Fn() -> Result<Box<dyn HttpTransport>> + Send + Sync + 'static;
 
@@ -95,6 +100,25 @@ impl SourceDriver for RestSourceDriver {
         )
     }
 
+    fn discovery_session(
+        &self,
+        plan: &CompiledSourcePlan,
+        context: &SourceResolutionContext<'_>,
+    ) -> Result<Box<dyn SourceDiscoverySession>> {
+        plan.validate()?;
+        let physical: RestPhysicalPlan = serde_json::from_value(plan.physical_plan.clone())
+            .map_err(|error| CdfError::contract(format!("invalid REST source plan: {error}")))?;
+        Ok(Box::new(RestDriverDiscoverySession {
+            descriptor: plan.descriptor.clone(),
+            plan: physical.to_runtime_plan()?,
+            transport: Arc::from((self.transport_factory)()?),
+            secret_provider: Arc::clone(context.secret_provider()),
+            memory: context.execution().memory(),
+            prepared_payloads: context.prepared_payloads().clone(),
+            execution: context.execution().clone(),
+        }))
+    }
+
     fn resolve(
         &self,
         plan: &CompiledSourcePlan,
@@ -116,6 +140,89 @@ impl SourceDriver for RestSourceDriver {
             plan.type_policy_allowances,
             dependencies,
         )?))
+    }
+}
+
+struct RestDriverDiscoverySession {
+    descriptor: cdf_kernel::ResourceDescriptor,
+    plan: RestResourcePlan,
+    transport: Arc<dyn HttpTransport>,
+    secret_provider: Arc<dyn cdf_http::SecretProvider + Send + Sync>,
+    memory: Arc<dyn cdf_memory::MemoryCoordinator>,
+    prepared_payloads: cdf_runtime::PreparedSourcePayloads,
+    execution: cdf_runtime::ExecutionServices,
+}
+
+impl SourceDiscoverySession for RestDriverDiscoverySession {
+    fn kind(&self) -> SourceDiscoveryKind {
+        SourceDiscoveryKind::BoundedContent
+    }
+
+    fn candidates(&self) -> Result<Vec<SourceDiscoveryCandidate>> {
+        Ok(vec![SourceDiscoveryCandidate::new(
+            self.descriptor.resource_id.as_str(),
+            None,
+            None,
+            BTreeMap::from([
+                ("source_kind".to_owned(), "rest".to_owned()),
+                ("path".to_owned(), self.plan.path.clone()),
+            ]),
+        )?])
+    }
+
+    fn observe(
+        &self,
+        candidate: &SourceDiscoveryCandidate,
+        request: &SourceDiscoveryRequest,
+    ) -> Result<SourceSchemaObservation> {
+        let descriptor = self.descriptor.clone();
+        let plan = self.plan.clone();
+        let transport = Arc::clone(&self.transport);
+        let secret_provider = Arc::clone(&self.secret_provider);
+        let memory = Arc::clone(&self.memory);
+        let prepared_payloads = self.prepared_payloads.clone();
+        let candidate = candidate.clone();
+        let request = request.clone();
+        self.execution.run_blocking("rest-source.sync", move || {
+            if candidate.canonical_location != descriptor.resource_id.as_str() {
+                return Err(CdfError::contract(format!(
+                    "REST discovery candidate `{}` does not match compiled resource `{}`",
+                    candidate.canonical_location, descriptor.resource_id
+                )));
+            }
+            let partition = rest_partition(
+                &descriptor,
+                &plan,
+                &ScanRequest {
+                    resource_id: descriptor.resource_id.clone(),
+                    projection: None,
+                    filters: Vec::new(),
+                    limit: None,
+                    order_by: Vec::new(),
+                    scope: descriptor.state_scope.clone(),
+                },
+            )?;
+            let dependencies = RestDiscoveryDependencies::new(
+                transport.as_ref(),
+                secret_provider.as_ref(),
+                memory,
+            )
+            .with_prepared_payloads(prepared_payloads);
+            let discovery = discover_rest_sample_schema(
+                &descriptor,
+                &plan,
+                &partition,
+                &dependencies,
+                &request,
+            )?;
+            SourceSchemaObservation::new(
+                &candidate,
+                discovery.schema.as_ref().clone(),
+                discovery.source_identity,
+                discovery.bytes_read,
+                discovery.records_read,
+            )
+        })
     }
 }
 
@@ -548,11 +655,77 @@ fn execution_capabilities() -> SourceExecutionCapabilities {
 mod tests {
     use super::*;
     use arrow_schema::Schema;
+    use cdf_http::{HttpRequest, HttpResponse, SecretProvider, SecretUri, SecretValue};
     use cdf_kernel::{
         CursorOrderingClaim, CursorSpec, ResourceDescriptor, ResourceId, SchemaHash, SchemaSource,
         ScopeKey, TrustLevel, WriteDisposition,
     };
-    use cdf_runtime::{SourceCompileContext, SourceCursorPushdown};
+    use cdf_runtime::{
+        BlockingLaneSpec, BlockingValueTask, ExecutionHost, ExecutionHostCapabilities,
+        ExecutionServices, ExecutionTaskScope, FixedSpillBudget, IoValue, IoValueTask,
+        SourceCompileContext, SourceCursorPushdown, SourceRegistry, SpillBudgetCoordinator,
+    };
+
+    struct StaticDiscoveryTransport;
+
+    impl HttpTransport for StaticDiscoveryTransport {
+        fn send(&self, _request: HttpRequest) -> Result<HttpResponse> {
+            Ok(HttpResponse::new(200).with_body(br#"{"items":[{"id":1},{"id":2}]}"#))
+        }
+    }
+
+    struct NoopSecretProvider;
+
+    impl SecretProvider for NoopSecretProvider {
+        fn resolve(&self, _uri: &SecretUri) -> Result<SecretValue> {
+            Err(CdfError::auth(
+                "REST discovery test does not resolve secrets",
+            ))
+        }
+    }
+
+    struct ImmediateBlockingHost {
+        memory: Arc<dyn cdf_memory::MemoryCoordinator>,
+        spill: Arc<dyn SpillBudgetCoordinator>,
+    }
+
+    impl ExecutionHost for ImmediateBlockingHost {
+        fn capabilities(&self) -> ExecutionHostCapabilities {
+            ExecutionHostCapabilities {
+                logical_cpu_slots: 1,
+                io_workers: 1,
+                blocking_lanes: Vec::new(),
+            }
+        }
+
+        fn memory(&self) -> Arc<dyn cdf_memory::MemoryCoordinator> {
+            Arc::clone(&self.memory)
+        }
+
+        fn spill(&self) -> Arc<dyn SpillBudgetCoordinator> {
+            Arc::clone(&self.spill)
+        }
+
+        fn open_scope(&self, _run_id: &str) -> Result<Box<dyn ExecutionTaskScope>> {
+            Err(CdfError::internal(
+                "REST discovery test does not open execution scopes",
+            ))
+        }
+
+        fn run_io_blocking(&self, _task: IoValueTask) -> Result<IoValue> {
+            Err(CdfError::internal(
+                "REST discovery test does not execute I/O futures",
+            ))
+        }
+
+        fn ensure_blocking_lanes(&self, _lanes: &[BlockingLaneSpec]) -> Result<()> {
+            Ok(())
+        }
+
+        fn run_blocking_value(&self, _lane: &str, task: BlockingValueTask) -> Result<IoValue> {
+            task()
+        }
+    }
 
     #[test]
     fn common_context_owns_source_name_and_cursor_pushdown() {
@@ -623,5 +796,83 @@ mod tests {
         assert_eq!(runtime.source, "api");
         assert_eq!(runtime.cursor_param.as_deref(), Some("since"));
         assert_eq!(runtime.cursor_filter_fidelity, PushdownFidelity::Exact);
+    }
+
+    #[test]
+    fn registry_discovery_session_observes_and_retains_one_rest_sample() {
+        let driver = RestSourceDriver::new(|| {
+            Ok(Box::new(StaticDiscoveryTransport) as Box<dyn HttpTransport>)
+        })
+        .unwrap();
+        let mut registry = SourceRegistry::new();
+        registry.register(driver).unwrap();
+        let descriptor = ResourceDescriptor {
+            resource_id: ResourceId::new("api.items").unwrap(),
+            schema_source: SchemaSource::Declared {
+                schema_hash: SchemaHash::new("schema-rest-discovery").unwrap(),
+                source: "test".to_owned(),
+            },
+            primary_key: Vec::new(),
+            merge_key: Vec::new(),
+            cursor: None,
+            write_disposition: WriteDisposition::Append,
+            deduplication: None,
+            contract: None,
+            state_scope: ScopeKey::Resource,
+            freshness: None,
+            trust_level: TrustLevel::Governed,
+        };
+        let plan = registry
+            .compile(SourceCompileRequest {
+                source_kind: "rest".to_owned(),
+                context: SourceCompileContext {
+                    source_name: "api".to_owned(),
+                    project_root: None,
+                    cursor_pushdown: None,
+                },
+                source_options: BTreeMap::from([
+                    (
+                        "base_url".to_owned(),
+                        serde_json::json!("https://api.example.com"),
+                    ),
+                    ("egress_allowlist".to_owned(), serde_json::json!([])),
+                ]),
+                resource_options: BTreeMap::from([
+                    ("path".to_owned(), serde_json::json!("/items")),
+                    ("params".to_owned(), serde_json::json!({})),
+                    ("records".to_owned(), serde_json::json!("$.items")),
+                ]),
+                descriptor,
+                schema: Schema::empty(),
+                type_policy_allowances: Default::default(),
+                effective_schema_runtime: None,
+            })
+            .unwrap();
+        let memory: Arc<dyn cdf_memory::MemoryCoordinator> = Arc::new(
+            cdf_memory::DeterministicMemoryCoordinator::new(64 * 1024 * 1024, BTreeMap::new())
+                .unwrap(),
+        );
+        let spill: Arc<dyn SpillBudgetCoordinator> =
+            Arc::new(FixedSpillBudget::new(64 * 1024 * 1024).unwrap());
+        let execution =
+            ExecutionServices::new(Arc::new(ImmediateBlockingHost { memory, spill })).unwrap();
+        let context = SourceResolutionContext::new(
+            std::path::Path::new("."),
+            Arc::new(NoopSecretProvider),
+            &execution,
+        );
+        let session = registry.discovery_session(&plan, &context).unwrap();
+
+        assert_eq!(session.kind(), SourceDiscoveryKind::BoundedContent);
+        let candidates = session.candidates().unwrap();
+        let observation = session
+            .observe(
+                &candidates[0],
+                &SourceDiscoveryRequest::new(1024 * 1024, 10).unwrap(),
+            )
+            .unwrap();
+        assert_eq!(observation.records_read, 2);
+        assert_eq!(observation.schema.fields()[0].name(), "id");
+        assert_eq!(context.prepared_payloads().pending_count().unwrap(), 1);
     }
 }

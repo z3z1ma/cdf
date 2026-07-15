@@ -25,7 +25,7 @@ use cdf_memory::{
 };
 use cdf_runtime::{
     ExecutionServices, PreparedSourcePayload, PreparedSourcePayloadKey, PreparedSourcePayloads,
-    ReadOptions, SourceDriverId, artifact_hash,
+    ReadOptions, SourceDiscoveryRequest, SourceDriverId, artifact_hash,
 };
 use futures_util::stream;
 use serde_json::{Map, Value};
@@ -173,6 +173,8 @@ pub struct RestResource {
 pub struct RestSampleSchemaDiscovery {
     pub schema: SchemaRef,
     pub source_identity: BTreeMap<String, String>,
+    pub bytes_read: u64,
+    pub records_read: u64,
 }
 
 struct PreparedRestPage {
@@ -521,7 +523,9 @@ pub fn discover_rest_sample_schema(
     plan: &RestResourcePlan,
     partition: &PartitionPlan,
     dependencies: &RestDiscoveryDependencies<'_>,
+    request: &SourceDiscoveryRequest,
 ) -> Result<RestSampleSchemaDiscovery> {
+    request.validate()?;
     validate_partition(descriptor, plan, partition)?;
 
     let mut auth_session = plan.auth.clone().map(AuthSession::new);
@@ -549,10 +553,23 @@ pub fn discover_rest_sample_schema(
     let body = response
         .body()
         .ok_or_else(|| CdfError::data("REST HTTP response did not include a JSON body"))?;
-    let decoded = decode_response_page(body, &plan.record_selector)?;
-    let schema = Arc::new(infer_rest_sample_schema(&decoded.records)?);
-    let retained_bytes = u64::try_from(body.len())
+    let body_bytes = u64::try_from(body.len())
         .map_err(|_| CdfError::data("REST discovery response exceeds u64"))?;
+    if body_bytes > request.maximum_bytes {
+        return Err(CdfError::data(format!(
+            "REST discovery response contains {body_bytes} bytes, exceeding the configured {}-byte discovery limit",
+            request.maximum_bytes
+        )));
+    }
+    let decoded = decode_response_page(body, &plan.record_selector)?;
+    let sampled_records = decoded.records.len().min(
+        usize::try_from(request.maximum_records)
+            .map_err(|_| CdfError::data("REST discovery record limit exceeds usize"))?,
+    );
+    let schema = Arc::new(infer_rest_sample_schema(
+        &decoded.records[..sampled_records],
+    )?);
+    let retained_bytes = body_bytes;
     let lease = reserve_blocking(
         Arc::clone(&dependencies.memory),
         &ReservationRequest::new(
@@ -577,14 +594,14 @@ pub fn discover_rest_sample_schema(
         ("path".to_owned(), plan.path.clone()),
         ("record_selector".to_owned(), plan.record_selector.clone()),
         ("sample_pages".to_owned(), "1".to_owned()),
-        (
-            "sample_records".to_owned(),
-            decoded.records.len().to_string(),
-        ),
+        ("sample_records".to_owned(), sampled_records.to_string()),
     ]);
     Ok(RestSampleSchemaDiscovery {
         schema,
         source_identity,
+        bytes_read: body_bytes,
+        records_read: u64::try_from(sampled_records)
+            .map_err(|_| CdfError::data("REST discovery sample record count exceeds u64"))?,
     })
 }
 

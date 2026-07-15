@@ -1,4 +1,5 @@
 use cdf_kernel::{CdfError, ResourceStream, Result, ScanRequest};
+use cdf_runtime::SourceDiscoveryRequest;
 use cdf_source_rest::{
     RestDiscoveryDependencies, RestResource, RestRuntimeDependencies, RestSampleSchemaDiscovery,
     discover_rest_sample_schema as discover_source_rest_sample_schema,
@@ -61,5 +62,11 @@ pub fn discover_rest_sample_schema(
                 resource.descriptor().resource_id
             ))
         })?;
-    discover_source_rest_sample_schema(resource.descriptor(), plan, &partition, dependencies)
+    discover_source_rest_sample_schema(
+        resource.descriptor(),
+        plan,
+        &partition,
+        dependencies,
+        &SourceDiscoveryRequest::new(64 * 1024 * 1024, 1_000)?,
+    )
 }

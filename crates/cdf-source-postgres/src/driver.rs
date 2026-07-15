@@ -1,16 +1,20 @@
-use std::sync::Arc;
+use std::{collections::BTreeMap, sync::Arc};
 
 use cdf_http::SecretUri;
 use cdf_kernel::{CdfError, QueryableResource, Result};
 use cdf_runtime::{
     BlockingLaneSpec, CompiledSourcePlan, InterruptionSafety, LaneAffinity,
-    SourceAttestationStrength, SourceCompileRequest, SourceDriver, SourceDriverDescriptor,
+    SourceAttestationStrength, SourceCompileRequest, SourceDiscoveryCandidate, SourceDiscoveryKind,
+    SourceDiscoveryRequest, SourceDiscoverySession, SourceDriver, SourceDriverDescriptor,
     SourceDriverId, SourceExecutionCapabilities, SourceExecutorClass, SourceResolutionContext,
-    SourceRetryGranularity, artifact_hash,
+    SourceRetryGranularity, SourceSchemaObservation, artifact_hash,
 };
 use serde::{Deserialize, Serialize};
 
-use crate::{PostgresTableResource, PostgresTarget, postgres_table_capabilities};
+use crate::{
+    PostgresTableResource, PostgresTarget, discover_postgres_table_catalog_schema,
+    postgres_table_capabilities,
+};
 
 #[derive(Clone, Debug)]
 pub struct PostgresSourceDriver {
@@ -105,6 +109,26 @@ impl SourceDriver for PostgresSourceDriver {
         )
     }
 
+    fn discovery_session(
+        &self,
+        plan: &CompiledSourcePlan,
+        context: &SourceResolutionContext<'_>,
+    ) -> Result<Box<dyn SourceDiscoverySession>> {
+        plan.validate()?;
+        let physical: PostgresPhysicalPlan = serde_json::from_value(plan.physical_plan.clone())
+            .map_err(|error| {
+                CdfError::contract(format!("invalid Postgres source plan: {error}"))
+            })?;
+        let connection = SecretUri::new(physical.connection)?;
+        let database_url = context.secret_provider().resolve(&connection)?;
+        Ok(Box::new(PostgresDiscoverySession {
+            database_url: database_url.as_str()?.to_owned(),
+            resource_id: plan.descriptor.resource_id.clone(),
+            target: PostgresTarget::parse(&physical.target)?,
+            execution: context.execution().clone(),
+        }))
+    }
+
     fn resolve(
         &self,
         plan: &CompiledSourcePlan,
@@ -126,6 +150,59 @@ impl SourceDriver for PostgresSourceDriver {
         .with_type_policy(plan.type_policy_allowances)
         .with_execution(context.execution().clone());
         Ok(Arc::new(resource))
+    }
+}
+
+struct PostgresDiscoverySession {
+    database_url: String,
+    resource_id: cdf_kernel::ResourceId,
+    target: PostgresTarget,
+    execution: cdf_runtime::ExecutionServices,
+}
+
+impl SourceDiscoverySession for PostgresDiscoverySession {
+    fn kind(&self) -> SourceDiscoveryKind {
+        SourceDiscoveryKind::SchemaMetadata
+    }
+
+    fn candidates(&self) -> Result<Vec<SourceDiscoveryCandidate>> {
+        Ok(vec![SourceDiscoveryCandidate::new(
+            self.target.display_name(),
+            None,
+            None,
+            BTreeMap::from([
+                ("source_kind".to_owned(), "sql".to_owned()),
+                ("dialect".to_owned(), "postgres".to_owned()),
+            ]),
+        )?])
+    }
+
+    fn observe(
+        &self,
+        candidate: &SourceDiscoveryCandidate,
+        request: &SourceDiscoveryRequest,
+    ) -> Result<SourceSchemaObservation> {
+        request.validate()?;
+        if candidate.canonical_location != self.target.display_name() {
+            return Err(CdfError::contract(format!(
+                "Postgres discovery candidate `{}` does not match compiled target `{}`",
+                candidate.canonical_location,
+                self.target.display_name()
+            )));
+        }
+        let database_url = self.database_url.clone();
+        let resource_id = self.resource_id.clone();
+        let target = self.target.clone();
+        let discovery = self
+            .execution
+            .run_blocking("postgres-source.sync", move || {
+                discover_postgres_table_catalog_schema(&database_url, &resource_id, &target)
+            })?;
+        let column_count = u64::try_from(discovery.schema.fields().len())
+            .map_err(|_| CdfError::data("Postgres discovery column count exceeds u64"))?;
+        let mut source_identity = discovery.source_identity;
+        source_identity.insert("catalog_column_count".to_owned(), column_count.to_string());
+        SourceSchemaObservation::new(candidate, discovery.schema, source_identity, 0, 0)
     }
 }
 

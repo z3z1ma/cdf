@@ -443,6 +443,143 @@ impl CompiledSourcePlan {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SourceDiscoveryKind {
+    SchemaMetadata,
+    BoundedContent,
+    FullContent,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SourceDiscoveryRequest {
+    pub maximum_bytes: u64,
+    pub maximum_records: u64,
+}
+
+impl SourceDiscoveryRequest {
+    pub fn new(maximum_bytes: u64, maximum_records: u64) -> Result<Self> {
+        let request = Self {
+            maximum_bytes,
+            maximum_records,
+        };
+        request.validate()?;
+        Ok(request)
+    }
+
+    pub fn validate(&self) -> Result<()> {
+        if self.maximum_bytes == 0 || self.maximum_records == 0 {
+            return Err(CdfError::contract(
+                "source discovery byte and record limits must be greater than zero",
+            ));
+        }
+        Ok(())
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SourceDiscoveryCandidate {
+    pub canonical_location: String,
+    pub size_bytes: Option<u64>,
+    pub modified_at_ms: Option<i64>,
+    pub identity: BTreeMap<String, String>,
+}
+
+impl SourceDiscoveryCandidate {
+    pub fn new(
+        canonical_location: impl Into<String>,
+        size_bytes: Option<u64>,
+        modified_at_ms: Option<i64>,
+        identity: BTreeMap<String, String>,
+    ) -> Result<Self> {
+        let candidate = Self {
+            canonical_location: canonical_location.into(),
+            size_bytes,
+            modified_at_ms,
+            identity,
+        };
+        candidate.validate()?;
+        Ok(candidate)
+    }
+
+    pub fn validate(&self) -> Result<()> {
+        if self.canonical_location.is_empty()
+            || self.canonical_location.chars().any(char::is_control)
+        {
+            return Err(CdfError::contract(
+                "source discovery candidate requires a nonempty control-free canonical location",
+            ));
+        }
+        if self
+            .identity
+            .keys()
+            .any(|key| key.is_empty() || key.chars().any(char::is_control))
+        {
+            return Err(CdfError::contract(
+                "source discovery candidate identity keys must be nonempty and control-free",
+            ));
+        }
+        Ok(())
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct SourceSchemaObservation {
+    pub canonical_location: String,
+    pub schema: Schema,
+    pub physical_schema_hash: cdf_kernel::SchemaHash,
+    pub source_identity: BTreeMap<String, String>,
+    pub bytes_read: u64,
+    pub records_read: u64,
+}
+
+impl SourceSchemaObservation {
+    pub fn new(
+        candidate: &SourceDiscoveryCandidate,
+        schema: Schema,
+        source_identity: BTreeMap<String, String>,
+        bytes_read: u64,
+        records_read: u64,
+    ) -> Result<Self> {
+        candidate.validate()?;
+        let physical_schema_hash = cdf_kernel::canonical_arrow_schema_hash(&schema)?;
+        Ok(Self {
+            canonical_location: candidate.canonical_location.clone(),
+            schema,
+            physical_schema_hash,
+            source_identity,
+            bytes_read,
+            records_read,
+        })
+    }
+
+    pub fn validate(&self) -> Result<()> {
+        if self.canonical_location.is_empty()
+            || self.canonical_location.chars().any(char::is_control)
+            || self
+                .source_identity
+                .keys()
+                .any(|key| key.is_empty() || key.chars().any(char::is_control))
+            || cdf_kernel::canonical_arrow_schema_hash(&self.schema)? != self.physical_schema_hash
+        {
+            return Err(CdfError::contract(
+                "source schema observation has invalid canonical identity or does not match its physical schema hash",
+            ));
+        }
+        Ok(())
+    }
+}
+
+pub trait SourceDiscoverySession: Send + Sync {
+    fn kind(&self) -> SourceDiscoveryKind;
+    fn candidates(&self) -> Result<Vec<SourceDiscoveryCandidate>>;
+    fn observe(
+        &self,
+        candidate: &SourceDiscoveryCandidate,
+        request: &SourceDiscoveryRequest,
+    ) -> Result<SourceSchemaObservation>;
+}
+
 #[derive(Clone)]
 pub struct SourceResolutionContext<'a> {
     project_root: &'a Path,
@@ -491,6 +628,11 @@ pub trait SourceDriver: Send + Sync {
     fn descriptor(&self) -> &SourceDriverDescriptor;
     fn option_schema(&self) -> &serde_json::Value;
     fn compile(&self, request: SourceCompileRequest) -> Result<CompiledSourcePlan>;
+    fn discovery_session(
+        &self,
+        plan: &CompiledSourcePlan,
+        context: &SourceResolutionContext<'_>,
+    ) -> Result<Box<dyn SourceDiscoverySession>>;
     fn resolve(
         &self,
         plan: &CompiledSourcePlan,
