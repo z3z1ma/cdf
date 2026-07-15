@@ -1,6 +1,6 @@
 Status: active
 Created: 2026-07-11
-Updated: 2026-07-11
+Updated: 2026-07-14
 
 # Deterministic parallel scheduler
 
@@ -17,6 +17,8 @@ Drivers MAY expose lower useful concurrency than partition count. Source rate/qu
 ## Admission and execution
 
 The scheduler MUST enforce global configured jobs, CPU slots, memory minimums, I/O/connection permits, shared source rate/quota, blocking lanes, destination limits, and checkpoint-scope leases. It MUST NOT create parallelism outside the injected host or memory ledger.
+
+Configured jobs counts concurrently active leaf work across nested partition/unit execution. Parent orchestration MUST NOT retain a jobs permit while awaiting children that require the same pool. A run MAY provision the host/container ceiling before source resolution, but it MUST tighten that same shared run-scoped admission object to the final joined source/destination/memory resolution before payload execution begins; the ceiling cannot increase or change after leaf work starts. Format/source/destination implementations consume this neutral permit and MUST NOT create private jobs semaphores.
 
 Auto defaults MUST use effective container CPU/memory rather than physical-host totals. Internal native-library threads consume declared CPU slots or are configured down. Admission must remain work-conserving among eligible independent work and boundedly fair across resource transitions so one large glob cannot starve all others.
 

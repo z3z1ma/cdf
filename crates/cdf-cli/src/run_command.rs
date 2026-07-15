@@ -70,12 +70,15 @@ pub(crate) fn run(
         None
     };
     let explicit = resolved_run_args(args)?;
+    let host_jobs = services.capabilities().logical_cpu_slots;
+    let provisional_jobs = explicit.jobs.unwrap_or(host_jobs).min(host_jobs);
+    let run_services = services.with_run_job_ceiling(provisional_jobs)?;
     let prepared = prepare_runtime_resource_for_cli(
         destinations,
         &context,
         &explicit.resource_id,
         false,
-        Some(services),
+        Some(&run_services),
     )?;
     let state_store_path = context.state_store_path()?;
     let resolved = resolve_selected_destination_with_services(
@@ -83,7 +86,7 @@ pub(crate) fn run(
         &context,
         &explicit.target,
         explicit.destination_uri.as_deref(),
-        Some(services),
+        Some(&run_services),
     )
     .map_err(|error| {
         run_destination_resolution_error(&context, explicit.destination_uri.as_deref(), error)
@@ -113,11 +116,14 @@ pub(crate) fn run(
                 plan.scan.partitions.len(),
                 &source.execution_capabilities,
                 &destination.runtime_capabilities(),
-                services,
+                &run_services,
                 explicit.jobs,
             )
         })
         .transpose()?;
+    if let Some(scheduler) = &scheduler {
+        run_services.tighten_run_job_ceiling(scheduler.effective_jobs.jobs)?;
+    }
     let destination_report =
         RunDestinationReport::from_project(&destination.describe(), destination.target());
     let progress = human_progress_sink(cli.json, &cli.terminal);
@@ -137,7 +143,7 @@ pub(crate) fn run(
                 event_sink,
                 after_receipt_verified: None,
             },
-            services,
+            &run_services,
             scheduler,
             RunTelemetryConfig::phase_metrics(),
         ))

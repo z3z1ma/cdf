@@ -316,6 +316,41 @@ pub trait ExecutionHost: Send + Sync {
 #[derive(Clone)]
 pub struct ExecutionServices {
     host: Arc<dyn ExecutionHost>,
+    run_work: Option<Arc<RunWorkAdmission>>,
+}
+
+struct RunWorkAdmission {
+    state: Mutex<RunWorkAdmissionState>,
+}
+
+struct RunWorkAdmissionState {
+    ceiling: u16,
+    active: u16,
+    waiters: Vec<Waker>,
+}
+
+/// One run-scoped leaf-work permit. Parent orchestration does not retain a
+/// permit while opening nested work, so a configured jobs ceiling cannot
+/// deadlock a codec whose units are the actual admitted leaves.
+pub struct RunWorkPermit {
+    admission: Option<Arc<RunWorkAdmission>>,
+}
+
+impl Drop for RunWorkPermit {
+    fn drop(&mut self) {
+        let Some(admission) = self.admission.take() else {
+            return;
+        };
+        let waiters = {
+            let mut state = admission.state.lock().unwrap();
+            debug_assert!(state.active > 0);
+            state.active = state.active.saturating_sub(1);
+            std::mem::take(&mut state.waiters)
+        };
+        for waiter in waiters {
+            waiter.wake();
+        }
+    }
 }
 
 impl std::fmt::Debug for ExecutionServices {
@@ -323,6 +358,7 @@ impl std::fmt::Debug for ExecutionServices {
         formatter
             .debug_struct("ExecutionServices")
             .field("capabilities", &self.host.capabilities())
+            .field("run_job_ceiling", &self.run_job_ceiling().ok().flatten())
             .finish_non_exhaustive()
     }
 }
@@ -330,7 +366,107 @@ impl std::fmt::Debug for ExecutionServices {
 impl ExecutionServices {
     pub fn new(host: Arc<dyn ExecutionHost>) -> Result<Self> {
         host.capabilities().validate()?;
-        Ok(Self { host })
+        Ok(Self {
+            host,
+            run_work: None,
+        })
+    }
+
+    /// Creates invocation-local services whose nested leaf work shares one jobs
+    /// ceiling. The host, memory, spill, and adapter lanes remain shared.
+    pub fn with_run_job_ceiling(&self, jobs: u16) -> Result<Self> {
+        if jobs == 0 {
+            return Err(CdfError::contract("run jobs ceiling must be nonzero"));
+        }
+        Ok(Self {
+            host: Arc::clone(&self.host),
+            run_work: Some(Arc::new(RunWorkAdmission {
+                state: Mutex::new(RunWorkAdmissionState {
+                    ceiling: jobs,
+                    active: 0,
+                    waiters: Vec::new(),
+                }),
+            })),
+        })
+    }
+
+    /// Tightens the provisional run ceiling after source/destination/memory
+    /// capabilities have been joined and before execution begins.
+    pub fn tighten_run_job_ceiling(&self, jobs: u16) -> Result<()> {
+        if jobs == 0 {
+            return Err(CdfError::contract("run jobs ceiling must be nonzero"));
+        }
+        let admission = self.run_work.as_ref().ok_or_else(|| {
+            CdfError::internal("run jobs ceiling cannot be tightened before it is configured")
+        })?;
+        let mut state = admission
+            .state
+            .lock()
+            .map_err(|_| CdfError::internal("run work admission lock is poisoned"))?;
+        if state.active != 0 {
+            return Err(CdfError::internal(
+                "run jobs ceiling cannot change after leaf work begins",
+            ));
+        }
+        if jobs > state.ceiling {
+            return Err(CdfError::contract(format!(
+                "run jobs ceiling cannot increase from {} to {jobs}",
+                state.ceiling
+            )));
+        }
+        state.ceiling = jobs;
+        Ok(())
+    }
+
+    pub fn run_job_ceiling(&self) -> Result<Option<u16>> {
+        self.run_work
+            .as_ref()
+            .map(|admission| {
+                admission
+                    .state
+                    .lock()
+                    .map(|state| state.ceiling)
+                    .map_err(|_| CdfError::internal("run work admission lock is poisoned"))
+            })
+            .transpose()
+    }
+
+    pub fn acquire_run_work(
+        &self,
+        cancellation: RunCancellation,
+    ) -> BoxFuture<'static, Result<RunWorkPermit>> {
+        let Some(admission) = self.run_work.clone() else {
+            return Box::pin(async { Ok(RunWorkPermit { admission: None }) });
+        };
+        Box::pin(async move {
+            cancellation
+                .await_or_cancel(futures_util::future::poll_fn(move |context| {
+                    let mut state = match admission.state.lock() {
+                        Ok(state) => state,
+                        Err(_) => {
+                            return Poll::Ready(Err(CdfError::internal(
+                                "run work admission lock is poisoned",
+                            )));
+                        }
+                    };
+                    if state.active < state.ceiling {
+                        state.active += 1;
+                        drop(state);
+                        return Poll::Ready(Ok(RunWorkPermit {
+                            admission: Some(Arc::clone(&admission)),
+                        }));
+                    }
+                    if !state
+                        .waiters
+                        .iter()
+                        .any(|waiter| waiter.will_wake(context.waker()))
+                    {
+                        state.waiters.push(context.waker().clone());
+                    }
+                    Poll::Pending
+                }))
+                .await
+        })
     }
 
     pub fn host(&self) -> &Arc<dyn ExecutionHost> {
@@ -433,5 +569,104 @@ impl ExecutionServices {
         value.downcast::<T>().map(|value| *value).map_err(|_| {
             CdfError::internal("execution host returned an unexpected blocking result type")
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::task::Poll;
+
+    use super::*;
+
+    #[test]
+    fn run_work_admission_is_shared_tightenable_and_cancellable() {
+        futures_executor::block_on(async {
+            let admission = Arc::new(RunWorkAdmission {
+                state: Mutex::new(RunWorkAdmissionState {
+                    ceiling: 3,
+                    active: 0,
+                    waiters: Vec::new(),
+                }),
+            });
+            let services = ExecutionServices {
+                host: Arc::new(TestHost),
+                run_work: Some(Arc::clone(&admission)),
+            };
+            services.tighten_run_job_ceiling(2).unwrap();
+            assert_eq!(services.run_job_ceiling().unwrap(), Some(2));
+
+            let first = services
+                .acquire_run_work(RunCancellation::default())
+                .await
+                .unwrap();
+            let second = services
+                .acquire_run_work(RunCancellation::default())
+                .await
+                .unwrap();
+            assert!(services.tighten_run_job_ceiling(1).is_err());
+
+            let third = services.acquire_run_work(RunCancellation::default());
+            futures_util::pin_mut!(third);
+            assert!(matches!(futures_util::poll!(third.as_mut()), Poll::Pending));
+            drop(first);
+            let third = third.await.unwrap();
+
+            let cancellation = RunCancellation::default();
+            let cancelled = services.acquire_run_work(cancellation.clone());
+            futures_util::pin_mut!(cancelled);
+            assert!(matches!(
+                futures_util::poll!(cancelled.as_mut()),
+                Poll::Pending
+            ));
+            cancellation.cancel();
+            assert!(cancelled.await.is_err());
+            drop(second);
+            drop(third);
+            services.tighten_run_job_ceiling(1).unwrap();
+        });
+    }
+
+    struct TestHost;
+
+    impl ExecutionHost for TestHost {
+        fn capabilities(&self) -> ExecutionHostCapabilities {
+            ExecutionHostCapabilities {
+                logical_cpu_slots: 4,
+                io_workers: 2,
+                blocking_lanes: Vec::new(),
+            }
+        }
+
+        fn memory(&self) -> Arc<dyn MemoryCoordinator> {
+            panic!("test does not use memory")
+        }
+
+        fn spill(&self) -> Arc<dyn crate::SpillBudgetCoordinator> {
+            panic!("test does not use spill")
+        }
+
+        fn open_scope(&self, _run_id: &str) -> Result<Box<dyn ExecutionTaskScope>> {
+            panic!("test does not open scopes")
+        }
+
+        fn run_io_blocking(&self, _task: IoValueTask) -> Result<IoValue> {
+            panic!("test does not run I/O")
+        }
+
+        fn delay(
+            &self,
+            _duration: Duration,
+            _cancellation: RunCancellation,
+        ) -> BoxFuture<'static, Result<()>> {
+            panic!("test does not delay")
+        }
+
+        fn ensure_blocking_lanes(&self, _lanes: &[BlockingLaneSpec]) -> Result<()> {
+            panic!("test does not configure lanes")
+        }
+
+        fn run_blocking_value(&self, _lane: &str, _task: BlockingValueTask) -> Result<IoValue> {
+            panic!("test does not run blocking work")
+        }
     }
 }

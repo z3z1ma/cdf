@@ -2334,6 +2334,9 @@ fn stream_registered_format(
             };
             if unit_jobs == 1 {
                 for (ordinal, unit) in units.into_iter().enumerate() {
+                    let _work = unit_execution
+                        .acquire_run_work(cancellation.clone())
+                        .await?;
                     let mut decoded = session
                         .decode(PhysicalDecodeRequest {
                             unit,
@@ -2382,10 +2385,14 @@ fn stream_registered_format(
                 let options = opener_options.clone();
                 let schema = opener_schema.clone();
                 let source_position = opener_position.clone();
+                let work_execution = opener_execution.clone();
                 let unit_stream = opener_execution.spawn_io_stream(
                     &format!("{opener_scope_prefix}-unit-{ordinal:08}"),
                     NATIVE_UNIT_STREAM_ITEMS,
                     move |mut unit_sender, unit_cancellation| async move {
+                        let _work = work_execution
+                            .acquire_run_work(unit_cancellation.clone())
+                            .await?;
                         let mut decoded = session
                             .decode(PhysicalDecodeRequest {
                                 unit,
