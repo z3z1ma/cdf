@@ -8,7 +8,7 @@ Updated: 2026-07-15
 
 The deterministic object-layout and generic lease repair at commit `b2cbb88b` supersedes the earlier open throughput result below. A fresh isolated copy of the same four-file FineWeb project completed in 17.95 seconds, with 16.577 seconds of overlapped package execution, 16.209 seconds of destination ingress, 0.318 seconds of final binding/receipt publication, 1,389,346,816 bytes maximum RSS, and no staging residue. It wrote the same 14,370,730,688 destination bytes, but `arrow_ipc_to_parquet@3` reduced the physical object count from 460 to 58 while preserving all 460 segment acknowledgements and provenance offsets. Output over the complete overlapped destination interval is 845.5 MiB/s, 10.5% above the prior 765.4 MiB/s cell; end-to-end wall is 5.7% lower than the prior staged path and 55.9% lower than the 40.67-second finalized-package control.
 
-The former narrow-numeric direct-writer comparator was not semantically comparable to wide-text FineWeb. The performance lab now has a durable `arrow_parquet_rewrite` reference that reads the exact FineWeb object and writes it with the destination's 64k-row/16 MiB, no-dictionary, no-statistics policy. One direct writer produced 3,592,546,468 bytes in a 6.136-second timed region (558.5 MiB/s). Two isolated workers on the same APFS volume produced 7,185,092,936 bytes in 7.15 seconds including process startup, a conservative 958.5 MiB/s two-writer roofline. CDF's 845.5 MiB/s is 0.882x that same-data/same-policy concurrent codec-and-device reference, clearing the ticket's 0.60 threshold without mixed source/package byte accounting. The reference intentionally omits CDF's package, evidence, fencing, publication, receipt, and checkpoint work.
+The former narrow-numeric direct-writer comparator was not semantically comparable to wide-text FineWeb. The performance lab now has a durable `arrow_parquet_rewrite` reference that reads the exact FineWeb object and writes it with the destination's 64k-row/16 MiB, no-dictionary, no-statistics policy. One direct writer produced 3,592,546,468 bytes in a 6.136-second timed region (558.5 MiB/s). Two isolated workers on the same APFS volume produced 7,185,092,936 bytes in 7.15 seconds including process startup, a conservative 958.4 MiB/s two-writer roofline. For closure, CDF is charged its entire 17.95-second command wall—not merely destination ingress—yielding 763.5 MiB/s of final output and 0.797x that favorable same-data/same-policy source-to-destination reference. This clears the ticket's 0.60 threshold without mixed source/package byte accounting even though the reference intentionally omits CDF's package, evidence, fencing, publication, receipt, and checkpoint work. The narrower overlapped-ingress observation is 845.5 MiB/s or 0.882x and is diagnostic only.
 
 A measured four-writer CDF falsification completed in 18.71 seconds, raised destination ingress to 16.937 seconds, and added system time without increasing useful CPU work. The four-writer trial was removed; the recorded useful bound remains two on this host and workload.
 
@@ -39,8 +39,9 @@ Superseding closure procedure:
 | final binding + receipt | 0.318 s |
 | destination objects / segment acks | 58 / 460 |
 | destination output / ingress wall | 845.5 MiB/s |
-| two-writer same-FineWeb reference | 958.5 MiB/s |
-| CDF / same-data concurrent reference | 0.882x |
+| two-writer same-FineWeb reference | 958.4 MiB/s |
+| CDF final output / complete command wall | 763.5 MiB/s |
+| complete CDF command / favorable same-data reference | 0.797x |
 
 1. Built the release CLI from the D8 staged-ingress worktree with `CARGO_BUILD_JOBS=12 cargo build --release -p cdf-cli --locked -j12`.
 2. Used the existing pinned project `/Users/alexanderbut/code_projects/tmp/cdf-c4-scale`, whose four paths are hard links to the 2,147,509,487-byte FineWeb Parquet fixture. The destination remained `parquet://.cdf/destination`.
@@ -73,7 +74,7 @@ The selected `arrow_ipc_to_parquet@2` physical plan now records its exact two-wr
 ## What it supports or challenges
 
 - It supports D8's architectural claim: Parquet is a generic staged destination, the expensive phase overlaps package production, final binding is subsecond, memory remains bounded, and the old serialized 33.069-second post-package phase is gone.
-- It falsifies the earlier throughput closure claim and then supersedes it with a comparable one. The complete staged destination path reaches 0.882x the same-FineWeb, same-writer-policy, two-writer reference after object coalescing. The former 0.481x comparison used a much easier narrow numeric schema and is retained above only as investigation history.
+- It falsifies the earlier throughput closure claim and then supersedes it with a comparable one. The complete CDF command reaches 0.797x the same-FineWeb, same-writer-policy, two-writer source-to-destination reference after object coalescing, while also building/verifying the canonical package and committing the receipt/checkpoint. The former 0.481x comparison used a much easier narrow numeric schema and is retained above only as investigation history.
 - Adapter tests prove new commits carry exact commit-bound verification while duplicates require independent verification. Local and in-memory object-store abort tests prove attempt staging and unpublished final objects are removed; successful tests cover duplicate replay, deterministic multi-segment order, replace, tamper detection, and correction behavior.
 - Full `cdf-project` and `cdf-runtime` library suites preserve checkpoint-gate and recovery semantics, including independent receipt verification after source loss.
 - It challenges compression-as-an-automatic-speedup for wide text: Snappy reduced bytes but was CPU-negative on this host and workload.
