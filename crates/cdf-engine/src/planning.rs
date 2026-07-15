@@ -284,6 +284,7 @@ impl Planner {
 
         Ok(EnginePlan {
             scan,
+            compiled_source_execution: None,
             partition_schedule: None,
             operator_graph: None,
             effective_schema_evidence: None,

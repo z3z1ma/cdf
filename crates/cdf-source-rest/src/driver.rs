@@ -133,14 +133,17 @@ impl SourceDriver for RestSourceDriver {
             RestRuntimeDependencies::from_boxed_transport(transport, context.execution().clone())
                 .with_shared_secret_provider(Arc::clone(context.secret_provider()))
                 .with_prepared_payloads(context.prepared_payloads().clone());
-        Ok(Arc::new(RestResource::new(
-            plan.descriptor.clone(),
-            Arc::new(plan.schema.clone()),
-            plan.resource_capabilities.clone(),
-            runtime_plan,
-            plan.type_policy_allowances,
-            dependencies,
-        )?))
+        Ok(Arc::new(
+            RestResource::new(
+                plan.descriptor.clone(),
+                Arc::new(plan.schema.clone()),
+                plan.resource_capabilities.clone(),
+                runtime_plan,
+                plan.type_policy_allowances,
+                dependencies,
+            )?
+            .with_compiled_source_plan_hash(cdf_runtime::artifact_hash(plan)?),
+        ))
     }
 }
 
@@ -615,12 +618,10 @@ fn execution_capabilities() -> SourceExecutionCapabilities {
         reopenable: true,
         resumable: true,
         speculative_safe: false,
-        retry_granularity: SourceRetryGranularity::Unit,
-        retryable_errors: vec![
-            cdf_kernel::ErrorKind::Transient,
-            cdf_kernel::ErrorKind::RateLimited,
-        ],
-        attestation: SourceAttestationStrength::Metadata,
+        retry_granularity: SourceRetryGranularity::None,
+        retryable_errors: Vec::new(),
+        retry_policy: None,
+        attestation: SourceAttestationStrength::None,
         rate_limit_per_second: None,
         quota_authority: Some("origin".to_owned()),
         canonical_order: true,
@@ -702,6 +703,14 @@ mod tests {
             cancellation: cdf_runtime::RunCancellation,
         ) -> cdf_kernel::BoxFuture<'static, Result<()>> {
             Box::pin(async move { cancellation.check() })
+        }
+
+        fn monotonic_now(&self) -> std::time::Duration {
+            std::time::Duration::ZERO
+        }
+
+        fn entropy_u64(&self) -> u64 {
+            0
         }
 
         fn ensure_blocking_lanes(&self, _lanes: &[BlockingLaneSpec]) -> Result<()> {

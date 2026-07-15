@@ -70,6 +70,7 @@ impl MemoryResource {
             scope: ScopeKey::Resource,
             start_position: None,
             scan_intent: cdf_kernel::CompiledScanIntent::full_scan(),
+            retry_safety: cdf_kernel::PartitionRetrySafety::Forbidden,
             metadata: BTreeMap::from([("kind".to_owned(), "memory".to_owned())]),
         };
         Ok(Self {
@@ -97,13 +98,10 @@ impl ResourceStream for MemoryResource {
         Ok(vec![self.partition.clone()])
     }
 
-    fn open(
-        &self,
-        partition: PartitionPlan,
-    ) -> cdf_kernel::BoxFuture<'_, CdfResult<cdf_kernel::OpenedPartitionStream>> {
+    fn open(&self, partition: PartitionPlan) -> cdf_kernel::PartitionOpenAttempt<'_> {
         let expected = self.partition.clone();
         let batches = self.batches.clone();
-        Box::pin(async move {
+        cdf_kernel::PartitionOpenAttempt::materialized(Box::pin(async move {
             if partition.partition_id != expected.partition_id || partition.scope != expected.scope
             {
                 return Err(CdfError::contract(
@@ -111,10 +109,8 @@ impl ResourceStream for MemoryResource {
                 ));
             }
             let stream = Box::pin(stream::iter(batches.into_iter().map(Ok))) as BatchStream;
-            Ok(cdf_kernel::OpenedPartitionStream::without_completion(
-                stream,
-            ))
-        })
+            Ok(cdf_kernel::PartitionStreamPayload::batches(stream))
+        }))
     }
 }
 

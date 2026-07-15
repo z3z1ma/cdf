@@ -57,6 +57,8 @@ fn validate_run_plan(
     package_id: &str,
 ) -> Result<()> {
     plan.validate_compiled_expression_plan()?;
+    plan.validate_partition_schedule()?;
+    plan.validate_compiled_source_resource(resource)?;
     let descriptor = resource.descriptor();
     if plan.scan.request.resource_id != descriptor.resource_id {
         return Err(CdfError::contract(format!(

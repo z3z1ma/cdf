@@ -28,7 +28,7 @@ use cdf_engine::{
 };
 use cdf_kernel::ExecutionExtent;
 use cdf_kernel::{
-    BatchStream, BoxFuture, CHECKPOINT_STATE_VERSION, CdfError, CheckpointId, CheckpointStatus,
+    BatchStream, CHECKPOINT_STATE_VERSION, CdfError, CheckpointId, CheckpointStatus,
     CheckpointStore, CommitCounts, CursorPosition, CursorValue, DestinationId, FileManifest,
     FilePosition, IdempotencyToken, LeaseOwnerId, PackageHash, PartitionId, PartitionPlan,
     PipelineId, PromotionSettlementStore, Receipt, ReceiptId, ResourceDescriptor, ResourceId,
@@ -15216,16 +15216,11 @@ impl ResourceStream for ReplayArtifactResource {
         Ok(Vec::new())
     }
 
-    fn open(
-        &self,
-        _partition: PartitionPlan,
-    ) -> BoxFuture<'_, cdf_kernel::Result<cdf_kernel::OpenedPartitionStream>> {
-        Box::pin(async {
+    fn open(&self, _partition: PartitionPlan) -> cdf_kernel::PartitionOpenAttempt<'_> {
+        cdf_kernel::PartitionOpenAttempt::materialized(Box::pin(async {
             let stream: BatchStream = Box::pin(futures_util::stream::empty());
-            Ok(cdf_kernel::OpenedPartitionStream::without_completion(
-                stream,
-            ))
-        })
+            Ok(cdf_kernel::PartitionStreamPayload::batches(stream))
+        }))
     }
 }
 

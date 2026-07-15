@@ -46,6 +46,12 @@ use crate::{
     identifiers::quote_identifier_unchecked,
 };
 
+fn source_execution_services() -> cdf_runtime::ExecutionServices {
+    cdf_engine::StandaloneExecutionHost::default_services(64 * 1024 * 1024)
+        .expect("Postgres source live-test execution host")
+        .1
+}
+
 #[test]
 #[ignore = "release-mode local PostgreSQL binary-vs-CSV COPY benchmark"]
 fn live_binary_copy_is_at_least_twice_csv() {
@@ -925,6 +931,8 @@ fn live_postgres_table_resource_executes_scan_and_cursor_conformance() {
     let schema = postgres_source_schema();
     let resource =
         PostgresTableResource::new(env.url.clone(), descriptor.clone(), schema.clone(), target)
+            .unwrap()
+            .with_execution(source_execution_services())
             .unwrap();
     let predicate_id = PredicateId::new("updated-at").unwrap();
     let request = ScanRequest {
@@ -957,9 +965,9 @@ fn live_postgres_table_resource_executes_scan_and_cursor_conformance() {
         request.clone(),
         postgres_source_schema_hash(),
         [partition.clone()],
-        2,
+        3,
     )
-    .with_expected_partition_rows([(partition, 2)]);
+    .with_expected_partition_rows([(partition, 3)]);
     futures_executor::block_on(assert_resource_stream_execution_conformance(
         &resource,
         [execution_case],
@@ -1071,8 +1079,11 @@ fn live_postgres_table_resource_reads_source_name_physical_columns() {
         with_source_name(Field::new("vendor_id", DataType::Int64, false), "VendorID"),
         Field::new("updated_at", DataType::Int64, false),
     ]));
-    let resource =
-        PostgresTableResource::new(env.url.clone(), descriptor.clone(), schema, target).unwrap();
+    let expected_schema_hash = cdf_kernel::canonical_arrow_schema_hash(schema.as_ref()).unwrap();
+    let resource = PostgresTableResource::new(env.url.clone(), descriptor.clone(), schema, target)
+        .unwrap()
+        .with_execution(source_execution_services())
+        .unwrap();
     let request = ScanRequest {
         resource_id: descriptor.resource_id.clone(),
         projection: Some(vec!["vendor_id".to_owned(), "updated_at".to_owned()]),
@@ -1093,10 +1104,7 @@ fn live_postgres_table_resource_reads_source_name_physical_columns() {
     );
 
     assert_eq!(batches.len(), 1);
-    assert_eq!(
-        batches[0].header.observed_schema_hash,
-        SchemaHash::new("sha256:postgres-source-name-discovered").unwrap()
-    );
+    assert_eq!(batches[0].header.observed_schema_hash, expected_schema_hash);
     let batch = batches[0].record_batch().unwrap();
     assert_eq!(
         batch
@@ -1270,7 +1278,7 @@ fn postgres_source_schema() -> std::sync::Arc<Schema> {
 }
 
 fn postgres_source_schema_hash() -> SchemaHash {
-    SchemaHash::new("sha256:postgres-source-live-schema").unwrap()
+    cdf_kernel::canonical_arrow_schema_hash(postgres_source_schema().as_ref()).unwrap()
 }
 
 fn drain_source_batches(mut stream: cdf_kernel::OpenedPartitionStream) -> Vec<cdf_kernel::Batch> {
@@ -1279,6 +1287,7 @@ fn drain_source_batches(mut stream: cdf_kernel::OpenedPartitionStream) -> Vec<cd
         while let Some(batch) = stream.next().await {
             batches.push(batch.unwrap());
         }
+        stream.completion().await.unwrap();
         batches
     })
 }

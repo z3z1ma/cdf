@@ -20,7 +20,7 @@ use cdf_contract::{
     reject_untrusted_schema_coercion_metadata, schema_coercion_plan_from_trusted_json,
 };
 use cdf_kernel::{
-    CdfError, PHYSICAL_TYPE_METADATA_KEY, PLAN_PHYSICAL_SCHEMA_HASH_KEY,
+    Batch, CdfError, PHYSICAL_TYPE_METADATA_KEY, PLAN_PHYSICAL_SCHEMA_HASH_KEY,
     PLAN_SCHEMA_OBSERVATION_BINDING_KEY, PLAN_SCHEMA_OBSERVATION_ID_KEY, PartitionAttestation,
     PartitionPlan, PhysicalObservationRepresentation, PreContractObservedValue,
     PreContractQuarantineFact, PreContractResidualCandidate, ProcessedObservationOutcome,
@@ -225,6 +225,8 @@ where
 {
     plan.validate_execution_extent_for_execution()?;
     plan.validate_compiled_expression_plan()?;
+    plan.validate_partition_schedule()?;
+    plan.validate_compiled_source_resource(resource)?;
     validate_program(&plan.validation_program)?;
     cdf_kernel::validate_scan_partition_observation_identities(&plan.scan)?;
     cdf_kernel::validate_compiled_scan_intents(&plan.scan)?;
@@ -395,178 +397,210 @@ where
             let mut admitted = 0_u64;
             let mut complete = false;
             if remaining_rows > 0 && remaining_bytes > 0 && remaining_batches > 0 {
-                let mut stream = resource.open(candidate.partition.clone()).await?;
-                payload_opened_partition_count += 1;
-                while admitted < quota
-                    && remaining_rows > 0
-                    && remaining_bytes > 0
-                    && remaining_batches > 0
-                {
-                    let Some(batch) = stream.next().await else {
-                        complete = true;
-                        break;
-                    };
-                    let mut batch = batch?;
-                    validate_batch_partition_ownership(
-                        &batch,
-                        &plan.scan.request.resource_id,
-                        &candidate.partition,
-                    )?;
-                    let record_batch = batch.record_batch().cloned().ok_or_else(|| {
-                        CdfError::data("resource preview requires in-memory Arrow record batches")
-                    })?;
-                    let decoded_bytes = u64::try_from(record_batch.get_array_memory_size())
-                        .map_err(|error| CdfError::internal(error.to_string()))?;
-                    if decoded_bytes > remaining_bytes {
-                        truncated = true;
-                        break;
+                let mut opening = resource.open(candidate.partition.clone());
+                let mut stream = match (&mut opening).await {
+                    Ok(stream) => stream,
+                    Err(error) => {
+                        return match opening.terminate_and_join().await {
+                            Ok(()) => Err(error),
+                            Err(cleanup) => Err(with_cleanup_failure(
+                                error,
+                                "preview source opening termination",
+                                cleanup,
+                            )),
+                        };
                     }
-                    let reconciled = materialize_batch_schema_evidence(
-                        &batch,
-                        &record_batch,
-                        BatchSchemaAdmissionContext {
-                            planned_observation_id: cdf_kernel::partition_schema_observation_id(
-                                &candidate.partition,
-                            ),
-                            expected: candidate.expected.as_ref(),
-                            expected_physical_observation: preobserved_physical_observation(
-                                plan.effective_schema_evidence.as_ref(),
-                                candidate.expected.as_ref(),
-                            )?,
-                            effective_schema: &expression_schema,
-                        },
-                        &plan.compiled_schema_admission,
-                        &mut schema_admission_cache,
-                    )?;
-                    let reconciled = match reconciled {
-                        BatchSchemaDisposition::Admitted(reconciled) => reconciled,
-                        BatchSchemaDisposition::Quarantined { quarantine, .. } => {
-                            terminal_quarantines.insert(quarantine.observation_id().to_owned());
-                            admitted = admitted.saturating_add(1);
-                            inspected_batch_count = inspected_batch_count.saturating_add(1);
-                            remaining_batches = remaining_batches.saturating_sub(1);
-                            remaining_bytes = remaining_bytes.saturating_sub(decoded_bytes);
-                            byte_count = byte_count.saturating_add(decoded_bytes);
-                            quarantined_row_count =
-                                quarantined_row_count.saturating_add(batch.header.row_count);
+                };
+                payload_opened_partition_count += 1;
+                let inspection = async {
+                    while admitted < quota
+                        && remaining_rows > 0
+                        && remaining_bytes > 0
+                        && remaining_batches > 0
+                    {
+                        let Some(batch) = stream.next().await else {
                             complete = true;
                             break;
-                        }
-                    };
-                    if let Some(coercion_plan) = reconciled.coercion_plan.as_ref()
-                        && plan.compiled_schema_admission.captures_unknown_fields()?
-                    {
-                        let candidates = stream_admission_residual_candidates(
-                            &record_batch,
-                            coercion_plan,
-                            batch.header.residual_candidates(),
-                            matches!(
-                                reconciled.extra_field_evidence,
-                                ExtraFieldEvidence::AlreadyCaptured
-                            ) && batch.header.materialized_residuals_complete(),
-                            0,
+                        };
+                        let mut batch = batch?;
+                        validate_batch_partition_ownership(
+                            &batch,
+                            &plan.scan.request.resource_id,
+                            &candidate.partition,
                         )?;
-                        batch.header.extend_residual_candidates(candidates);
-                    }
-                    let record_batch = reconciled.record_batch;
-                    let pre_contract_quarantined_rows =
-                        pre_contract_quarantine_summary(&batch.header.pre_contract_quarantine)
-                            .quarantined_rows;
-                    let residual_candidates = batch.header.take_residual_candidates();
-                    let cdc_operation_field = batch
-                        .header
-                        .cdc
-                        .as_ref()
-                        .map(|metadata| metadata.operation_field.clone());
-                    let track_source_rows =
-                        pre_contract_may_filter || !residual_candidates.is_empty();
-                    let mut no_row_limit = None;
-                    let executed =
-                        execute_batch(&record_batch, &bound_residuals, track_source_rows)?;
-                    let ExecutedBatch {
-                        batch: output,
-                        source_rows,
-                    } = apply_pre_contract_expressions(
-                        executed.batch,
-                        if track_source_rows {
-                            &bound_tracked_transforms
+                        let record_batch = batch.record_batch().cloned().ok_or_else(|| {
+                            CdfError::data(
+                                "resource preview requires in-memory Arrow record batches",
+                            )
+                        })?;
+                        let decoded_bytes = u64::try_from(record_batch.get_array_memory_size())
+                            .map_err(|error| CdfError::internal(error.to_string()))?;
+                        if decoded_bytes > remaining_bytes {
+                            truncated = true;
+                            break;
+                        }
+                        let reconciled = materialize_batch_schema_evidence(
+                            &batch,
+                            &record_batch,
+                            BatchSchemaAdmissionContext {
+                                planned_observation_id: cdf_kernel::partition_schema_observation_id(
+                                    &candidate.partition,
+                                ),
+                                expected: candidate.expected.as_ref(),
+                                expected_physical_observation: preobserved_physical_observation(
+                                    plan.effective_schema_evidence.as_ref(),
+                                    candidate.expected.as_ref(),
+                                )?,
+                                effective_schema: &expression_schema,
+                            },
+                            &plan.compiled_schema_admission,
+                            &mut schema_admission_cache,
+                        )?;
+                        let reconciled = match reconciled {
+                            BatchSchemaDisposition::Admitted(reconciled) => reconciled,
+                            BatchSchemaDisposition::Quarantined { quarantine, .. } => {
+                                terminal_quarantines.insert(quarantine.observation_id().to_owned());
+                                admitted = admitted.saturating_add(1);
+                                inspected_batch_count = inspected_batch_count.saturating_add(1);
+                                remaining_batches = remaining_batches.saturating_sub(1);
+                                remaining_bytes = remaining_bytes.saturating_sub(decoded_bytes);
+                                byte_count = byte_count.saturating_add(decoded_bytes);
+                                quarantined_row_count =
+                                    quarantined_row_count.saturating_add(batch.header.row_count);
+                                complete = true;
+                                break;
+                            }
+                        };
+                        if let Some(coercion_plan) = reconciled.coercion_plan.as_ref()
+                            && plan.compiled_schema_admission.captures_unknown_fields()?
+                        {
+                            let candidates = stream_admission_residual_candidates(
+                                &record_batch,
+                                coercion_plan,
+                                batch.header.residual_candidates(),
+                                matches!(
+                                    reconciled.extra_field_evidence,
+                                    ExtraFieldEvidence::AlreadyCaptured
+                                ) && batch.header.materialized_residuals_complete(),
+                                0,
+                            )?;
+                            batch.header.extend_residual_candidates(candidates);
+                        }
+                        let record_batch = reconciled.record_batch;
+                        let pre_contract_quarantined_rows =
+                            pre_contract_quarantine_summary(&batch.header.pre_contract_quarantine)
+                                .quarantined_rows;
+                        let residual_candidates = batch.header.take_residual_candidates();
+                        let cdc_operation_field = batch
+                            .header
+                            .cdc
+                            .as_ref()
+                            .map(|metadata| metadata.operation_field.clone());
+                        let track_source_rows =
+                            pre_contract_may_filter || !residual_candidates.is_empty();
+                        let mut no_row_limit = None;
+                        let executed =
+                            execute_batch(&record_batch, &bound_residuals, track_source_rows)?;
+                        let ExecutedBatch {
+                            batch: output,
+                            source_rows,
+                        } = apply_pre_contract_expressions(
+                            executed.batch,
+                            if track_source_rows {
+                                &bound_tracked_transforms
+                            } else {
+                                &bound_transforms
+                            },
+                            &mut no_row_limit,
+                            track_source_rows,
+                        )?;
+                        let mut discard_quarantine = |_record: QuarantineRecord| Ok(());
+                        let contract = apply_contract_exec(
+                            output,
+                            &mut contract_evaluator,
+                            &mut discard_quarantine,
+                            residual_candidates,
+                            &ResidualBatchContext {
+                                evaluation: &evaluation_context,
+                                source_rows: source_rows.as_deref(),
+                                cdc_operation_field: cdc_operation_field.as_deref(),
+                                batch_id: &batch.header.batch_id,
+                                observation_id: candidate
+                                    .expected
+                                    .as_ref()
+                                    .map(|evidence| evidence.observation_id.as_str()),
+                            },
+                            TransformKernelMode::Fused,
+                            None,
+                        )?;
+                        let projected =
+                            apply_projection(&contract.accepted, plan.final_projection.as_deref())?;
+                        let normalized = append_residual_variant(
+                            projected,
+                            &plan.validation_program,
+                            contract.variant_values,
+                        )?;
+                        let normalized = normalize_record_batch_after_expressions(
+                            normalized,
+                            &plan.validation_program,
+                        )?;
+                        let normalized = if effective_schema_evidence.is_some() {
+                            canonicalize_effective_output_schema(normalized)?
                         } else {
-                            &bound_transforms
-                        },
-                        &mut no_row_limit,
-                        track_source_rows,
-                    )?;
-                    let mut discard_quarantine = |_record: QuarantineRecord| Ok(());
-                    let contract = apply_contract_exec(
-                        output,
-                        &mut contract_evaluator,
-                        &mut discard_quarantine,
-                        residual_candidates,
-                        &ResidualBatchContext {
-                            evaluation: &evaluation_context,
-                            source_rows: source_rows.as_deref(),
-                            cdc_operation_field: cdc_operation_field.as_deref(),
-                            batch_id: &batch.header.batch_id,
-                            observation_id: candidate
-                                .expected
-                                .as_ref()
-                                .map(|evidence| evidence.observation_id.as_str()),
-                        },
-                        TransformKernelMode::Fused,
-                        None,
-                    )?;
-                    let projected =
-                        apply_projection(&contract.accepted, plan.final_projection.as_deref())?;
-                    let normalized = append_residual_variant(
-                        projected,
-                        &plan.validation_program,
-                        contract.variant_values,
-                    )?;
-                    let normalized = normalize_record_batch_after_expressions(
-                        normalized,
-                        &plan.validation_program,
-                    )?;
-                    let normalized = if effective_schema_evidence.is_some() {
-                        canonicalize_effective_output_schema(normalized)?
-                    } else {
-                        normalized
-                    };
-                    let normalized = conform_to_compiled_output_schema(
-                        normalized,
-                        runtime_output_schema.as_ref(),
-                    )?;
-                    let render_rows = normalized
-                        .num_rows()
-                        .min(usize::try_from(remaining_rows).unwrap_or(usize::MAX));
-                    let rendered = compact_record_batch_prefix(&normalized, render_rows)?;
-                    let rendered_bytes = u64::try_from(rendered.get_array_memory_size())
-                        .map_err(|error| CdfError::internal(error.to_string()))?;
-                    if first_partition_id.is_none() {
-                        first_partition_id = Some(batch.header.partition_id.to_string());
-                        first_batch_id = Some(batch.header.batch_id.to_string());
+                            normalized
+                        };
+                        let normalized = conform_to_compiled_output_schema(
+                            normalized,
+                            runtime_output_schema.as_ref(),
+                        )?;
+                        let render_rows = normalized
+                            .num_rows()
+                            .min(usize::try_from(remaining_rows).unwrap_or(usize::MAX));
+                        let rendered = compact_record_batch_prefix(&normalized, render_rows)?;
+                        let rendered_bytes = u64::try_from(rendered.get_array_memory_size())
+                            .map_err(|error| CdfError::internal(error.to_string()))?;
+                        if first_partition_id.is_none() {
+                            first_partition_id = Some(batch.header.partition_id.to_string());
+                            first_batch_id = Some(batch.header.batch_id.to_string());
+                        }
+                        fields = rendered
+                            .schema()
+                            .fields()
+                            .iter()
+                            .map(|field| field.name().clone())
+                            .collect();
+                        admitted += 1;
+                        inspected_batch_count += 1;
+                        remaining_batches -= 1;
+                        remaining_bytes -= decoded_bytes;
+                        remaining_rows -= u64::try_from(render_rows)
+                            .map_err(|error| CdfError::internal(error.to_string()))?;
+                        row_count += u64::try_from(render_rows)
+                            .map_err(|error| CdfError::internal(error.to_string()))?;
+                        byte_count += decoded_bytes;
+                        output_byte_count += rendered_bytes;
+                        quarantined_row_count +=
+                            contract.summary.quarantined_rows + pre_contract_quarantined_rows;
+                        if let Some(variant) = rendered.column_by_name(VARIANT_COLUMN_NAME) {
+                            residual_row_count +=
+                                u64::try_from(variant.len() - variant.null_count())
+                                    .map_err(|error| CdfError::internal(error.to_string()))?;
+                        }
                     }
-                    fields = rendered
-                        .schema()
-                        .fields()
-                        .iter()
-                        .map(|field| field.name().clone())
-                        .collect();
-                    admitted += 1;
-                    inspected_batch_count += 1;
-                    remaining_batches -= 1;
-                    remaining_bytes -= decoded_bytes;
-                    remaining_rows -= u64::try_from(render_rows)
-                        .map_err(|error| CdfError::internal(error.to_string()))?;
-                    row_count += u64::try_from(render_rows)
-                        .map_err(|error| CdfError::internal(error.to_string()))?;
-                    byte_count += decoded_bytes;
-                    output_byte_count += rendered_bytes;
-                    quarantined_row_count +=
-                        contract.summary.quarantined_rows + pre_contract_quarantined_rows;
-                    if let Some(variant) = rendered.column_by_name(VARIANT_COLUMN_NAME) {
-                        residual_row_count +=
-                            u64::try_from(variant.len() - variant.null_count())
-                                .map_err(|error| CdfError::internal(error.to_string()))?;
+                    Ok::<(), CdfError>(())
+                }
+                .await;
+                let cleanup = stream.terminate_and_join().await;
+                match (inspection, cleanup) {
+                    (Ok(()), Ok(())) => {}
+                    (Err(error), Ok(())) => return Err(error),
+                    (Ok(()), Err(cleanup)) => return Err(cleanup),
+                    (Err(error), Err(cleanup)) => {
+                        return Err(with_cleanup_failure(
+                            error,
+                            "preview source termination",
+                            cleanup,
+                        ));
                     }
                 }
             }
@@ -769,7 +803,10 @@ where
     let attestation = match cache.get(observation_id) {
         Some(attestation) => attestation.clone(),
         None => {
-            let attestation = resource.attest_partition(partition).await?.ok_or_else(|| {
+            let attestation = resource
+                .attest_partition(partition.clone())
+                .await?
+                .ok_or_else(|| {
                 CdfError::data(format!(
                     "terminal schema observation {observation_id:?} has no execution-time attestation"
                 ))
@@ -800,7 +837,7 @@ where
     let cached = observation_id.and_then(|id| cache.get(id)).cloned();
     let attestation = match cached {
         Some(attestation) => Some(attestation),
-        None => resource.attest_partition(partition).await?,
+        None => resource.attest_partition(partition.clone()).await?,
     };
     let Some(attestation) = attestation else {
         return Ok(false);
@@ -2182,38 +2219,441 @@ where
     .await
 }
 
+struct PartitionOpenEvidence {
+    duration_ns: u64,
+    retry_pre_attestation: Option<PartitionAttestation>,
+    first_batch: Option<Batch>,
+}
+
 type OpenedPartition = (
     usize,
     cdf_kernel::PartitionPlan,
     Option<cdf_kernel::OpenedPartitionStream>,
-    u64,
+    PartitionOpenEvidence,
 );
+
+#[derive(Clone)]
+struct PartitionOpenRuntime {
+    services: Option<cdf_runtime::ExecutionServices>,
+    cancellation: cdf_runtime::RunCancellation,
+    retry_journal: cdf_runtime::SourceRetryJournal,
+}
 
 fn open_partition<'a, R>(
     resource: &'a R,
     ordinal: usize,
     partition: cdf_kernel::PartitionPlan,
     terminal_quarantine: bool,
+    plan_id: String,
+    scheduled: Option<cdf_runtime::ScheduledPartition>,
+    runtime: PartitionOpenRuntime,
 ) -> cdf_kernel::BoxFuture<'a, Result<OpenedPartition>>
 where
     R: ResourceStream + ?Sized,
 {
     if terminal_quarantine {
-        return Box::pin(async move { Ok((ordinal, partition, None, 0)) });
+        return Box::pin(async move {
+            Ok((
+                ordinal,
+                partition,
+                None,
+                PartitionOpenEvidence {
+                    duration_ns: 0,
+                    retry_pre_attestation: None,
+                    first_batch: None,
+                },
+            ))
+        });
     }
     Box::pin(async move {
+        let PartitionOpenRuntime {
+            services,
+            cancellation,
+            retry_journal,
+        } = runtime;
         // Construct the source-owned stream only when this open future is polled. In particular,
         // remote sources may resolve short-lived access capabilities while opening; creating them
         // while merely filling the scheduler frontier can let them expire before transfer starts.
         let started = Instant::now();
-        let stream = resource.open(partition.clone()).await?;
-        Ok((
-            ordinal,
-            partition,
-            Some(stream),
-            elapsed_ns(Some(started), "resource open")?,
-        ))
+        let retry = scheduled
+            .as_ref()
+            .and_then(|partition| partition.retry.clone());
+        let mut retry_state = match (retry, services) {
+            (Some(retry), Some(services)) => {
+                Some(cdf_runtime::SourceRetryState::new(&retry, None, services)?)
+            }
+            (Some(_), None) => {
+                return Err(CdfError::contract(
+                    "retryable partition execution requires injected execution services",
+                ));
+            }
+            (None, _) => None,
+        };
+        loop {
+            let retry_pre_attestation = if retry_state
+                .as_ref()
+                .is_some_and(|state| state.current_attempt() > 1)
+            {
+                match attest_partition_with_terminal_join(resource, &partition, &cancellation).await
+                {
+                    Ok(Some(attestation)) => Some(attestation),
+                    Ok(None) => {
+                        let error = CdfError::data(format!(
+                            "retry of partition `{}` requires source reattestation before reopen",
+                            partition.partition_id
+                        ));
+                        schedule_partition_retry(
+                            retry_state.as_mut().expect("retry state exists"),
+                            &error,
+                            cancellation.clone(),
+                            &plan_id,
+                            scheduled.as_ref().expect("retry schedule exists"),
+                            &retry_journal,
+                        )
+                        .await?;
+                        continue;
+                    }
+                    Err(error) => {
+                        schedule_partition_retry(
+                            retry_state.as_mut().expect("retry state exists"),
+                            &error,
+                            cancellation.clone(),
+                            &plan_id,
+                            scheduled.as_ref().expect("retry schedule exists"),
+                            &retry_journal,
+                        )
+                        .await?;
+                        continue;
+                    }
+                }
+            } else {
+                None
+            };
+            let mut opening = resource.open(partition.clone());
+            match cancellation.await_or_cancel(&mut opening).await {
+                Ok(mut stream) => {
+                    let first_batch = if let Some(retry_state) = retry_state.as_mut() {
+                        match next_source_batch(&mut stream, &cancellation).await {
+                            Ok(batch) => batch,
+                            Err(error) => {
+                                let cancelled = cancellation.is_cancelled();
+                                let decision = if cancelled {
+                                    Ok(None)
+                                } else {
+                                    decide_partition_retry(
+                                        retry_state,
+                                        &error,
+                                        &plan_id,
+                                        scheduled.as_ref().expect("retry schedule exists"),
+                                        &retry_journal,
+                                    )
+                                    .map(Some)
+                                    .map_err(
+                                        |decision_error| {
+                                            with_cleanup_failure(
+                                                error.clone(),
+                                                "source retry decision recording",
+                                                decision_error,
+                                            )
+                                        },
+                                    )
+                                };
+                                let cleanup = if cancelled {
+                                    stream.terminate_and_join().await
+                                } else {
+                                    stream.join_failed_attempt().await
+                                };
+                                let decision = match (decision, cleanup) {
+                                    (Ok(decision), Ok(())) => decision,
+                                    (Err(error), Ok(())) => return Err(error),
+                                    (Ok(_), Err(cleanup)) => {
+                                        return Err(with_cleanup_failure(
+                                            error,
+                                            "failed source attempt termination",
+                                            cleanup,
+                                        ));
+                                    }
+                                    (Err(error), Err(cleanup)) => {
+                                        return Err(with_cleanup_failure(
+                                            error,
+                                            "failed source attempt termination",
+                                            cleanup,
+                                        ));
+                                    }
+                                };
+                                let Some(decision) = decision else {
+                                    return Err(error);
+                                };
+                                await_partition_retry(
+                                    retry_state,
+                                    decision,
+                                    &error,
+                                    cancellation.clone(),
+                                    &plan_id,
+                                    scheduled.as_ref().expect("retry schedule exists"),
+                                    &retry_journal,
+                                )
+                                .await?;
+                                continue;
+                            }
+                        }
+                    } else {
+                        None
+                    };
+                    return Ok((
+                        ordinal,
+                        partition,
+                        Some(stream),
+                        PartitionOpenEvidence {
+                            duration_ns: elapsed_ns(Some(started), "resource open")?,
+                            retry_pre_attestation,
+                            first_batch,
+                        },
+                    ));
+                }
+                Err(error) => {
+                    if cancellation.is_cancelled() {
+                        return match opening.terminate_and_join().await {
+                            Ok(()) => Err(error),
+                            Err(cleanup) => Err(with_cleanup_failure(
+                                error,
+                                "cancelled source opening termination",
+                                cleanup,
+                            )),
+                        };
+                    }
+                    let decision = retry_state
+                        .as_mut()
+                        .map(|state| {
+                            decide_partition_retry(
+                                state,
+                                &error,
+                                &plan_id,
+                                scheduled.as_ref().expect("retry schedule exists"),
+                                &retry_journal,
+                            )
+                        })
+                        .transpose()
+                        .map_err(|decision_error| {
+                            with_cleanup_failure(
+                                error.clone(),
+                                "source retry decision recording",
+                                decision_error,
+                            )
+                        });
+                    let cleanup = opening.terminate_and_join().await;
+                    let decision = match (decision, cleanup) {
+                        (Ok(decision), Ok(())) => decision,
+                        (Err(error), Ok(())) => return Err(error),
+                        (Ok(_), Err(cleanup)) => {
+                            return Err(with_cleanup_failure(
+                                error,
+                                "opening source invocation termination",
+                                cleanup,
+                            ));
+                        }
+                        (Err(error), Err(cleanup)) => {
+                            return Err(with_cleanup_failure(
+                                error,
+                                "opening source invocation termination",
+                                cleanup,
+                            ));
+                        }
+                    };
+                    let Some(state) = retry_state.as_mut() else {
+                        return Err(error);
+                    };
+                    await_partition_retry(
+                        state,
+                        decision.expect("retry state produced a decision"),
+                        &error,
+                        cancellation.clone(),
+                        &plan_id,
+                        scheduled.as_ref().expect("retry schedule exists"),
+                        &retry_journal,
+                    )
+                    .await?;
+                }
+            }
+        }
     })
+}
+
+async fn attest_partition_with_terminal_join<R>(
+    resource: &R,
+    partition: &cdf_kernel::PartitionPlan,
+    cancellation: &cdf_runtime::RunCancellation,
+) -> Result<Option<cdf_kernel::PartitionAttestation>>
+where
+    R: ResourceStream + ?Sized,
+{
+    let mut attempt = resource.attest_partition(partition.clone());
+    match cancellation.await_or_cancel(&mut attempt).await {
+        Ok(attestation) => Ok(attestation),
+        Err(error) if cancellation.is_cancelled() => match attempt.terminate_and_join().await {
+            Ok(()) => Err(error),
+            Err(cleanup) => Err(with_cleanup_failure(
+                error,
+                "cancelled source attestation termination",
+                cleanup,
+            )),
+        },
+        Err(error) => Err(error),
+    }
+}
+
+async fn next_source_batch(
+    stream: &mut cdf_kernel::OpenedPartitionStream,
+    cancellation: &cdf_runtime::RunCancellation,
+) -> Result<Option<Batch>> {
+    cancellation
+        .await_or_cancel(async {
+            match stream.next().await {
+                Some(batch) => batch.map(Some),
+                None => Ok(None),
+            }
+        })
+        .await
+}
+
+async fn next_source_batch_with_terminal_join(
+    stream: &mut cdf_kernel::OpenedPartitionStream,
+    cancellation: &cdf_runtime::RunCancellation,
+) -> Result<Option<Batch>> {
+    match next_source_batch(stream, cancellation).await {
+        Ok(batch) => Ok(batch),
+        Err(error) => {
+            let cleanup = if cancellation.is_cancelled() {
+                stream.terminate_and_join().await
+            } else {
+                stream.join_failed_attempt().await
+            };
+            if let Err(cleanup) = cleanup {
+                return Err(with_cleanup_failure(
+                    error,
+                    "source stream termination",
+                    cleanup,
+                ));
+            }
+            Err(error)
+        }
+    }
+}
+
+fn decide_partition_retry(
+    state: &mut cdf_runtime::SourceRetryState,
+    error: &CdfError,
+    plan_id: &str,
+    partition: &cdf_runtime::ScheduledPartition,
+    journal: &cdf_runtime::SourceRetryJournal,
+) -> Result<cdf_runtime::SourceRetryDecision> {
+    let decision = state.decide_after_failure(error)?;
+    journal.record(plan_id, partition, state.history())?;
+    Ok(decision)
+}
+
+async fn await_partition_retry(
+    state: &mut cdf_runtime::SourceRetryState,
+    decision: cdf_runtime::SourceRetryDecision,
+    error: &CdfError,
+    cancellation: cdf_runtime::RunCancellation,
+    plan_id: &str,
+    partition: &cdf_runtime::ScheduledPartition,
+    journal: &cdf_runtime::SourceRetryJournal,
+) -> Result<()> {
+    if matches!(
+        decision,
+        cdf_runtime::SourceRetryDecision::GiveUp {
+            reason: cdf_runtime::SourceRetryExhaustion::Ineligible
+        }
+    ) {
+        return Err(error.clone());
+    }
+    let retry = state.wait_for_retry(decision, cancellation).await;
+    journal.record(plan_id, partition, state.history())?;
+    let retry = retry?;
+    if !retry {
+        return Err(retry_exhausted_error(error, state.history()));
+    }
+    Ok(())
+}
+
+async fn schedule_partition_retry(
+    state: &mut cdf_runtime::SourceRetryState,
+    error: &CdfError,
+    cancellation: cdf_runtime::RunCancellation,
+    plan_id: &str,
+    partition: &cdf_runtime::ScheduledPartition,
+    journal: &cdf_runtime::SourceRetryJournal,
+) -> Result<()> {
+    let decision = decide_partition_retry(state, error, plan_id, partition, journal)?;
+    await_partition_retry(
+        state,
+        decision,
+        error,
+        cancellation,
+        plan_id,
+        partition,
+        journal,
+    )
+    .await
+}
+
+fn with_cleanup_failure(mut primary: CdfError, context: &str, cleanup: CdfError) -> CdfError {
+    primary.message = format!(
+        "{}; {context} also failed: {}",
+        primary.message, cleanup.message
+    );
+    primary
+}
+
+fn retry_exhausted_error(
+    error: &CdfError,
+    history: &[cdf_runtime::SourceRetryHistoryEntry],
+) -> CdfError {
+    let attempts = history
+        .last()
+        .map_or(1, |entry| entry.failed_attempt.max(1));
+    CdfError::new(
+        error.kind.clone(),
+        format!(
+            "{}; source retry stopped after {attempts} attempt(s) ({})",
+            error.message,
+            history.last().and_then(|entry| entry.exhaustion).map_or(
+                "retry unavailable",
+                |reason| match reason {
+                    cdf_runtime::SourceRetryExhaustion::Ineligible => "error is not retryable",
+                    cdf_runtime::SourceRetryExhaustion::AttemptLimit => {
+                        "attempt limit exhausted"
+                    }
+                    cdf_runtime::SourceRetryExhaustion::ElapsedDeadline => {
+                        "elapsed deadline exhausted"
+                    }
+                }
+            )
+        ),
+    )
+}
+
+fn scheduled_partition(
+    schedule: Option<&cdf_runtime::CanonicalPartitionSchedule>,
+    ordinal: usize,
+    partition: &PartitionPlan,
+) -> Result<Option<cdf_runtime::ScheduledPartition>> {
+    let Some(schedule) = schedule else {
+        return Ok(None);
+    };
+    let scheduled = schedule.partitions.get(ordinal).ok_or_else(|| {
+        CdfError::contract("partition schedule does not cover every scan partition")
+    })?;
+    if usize::try_from(scheduled.ordinal.get()).ok() != Some(ordinal)
+        || &scheduled.partition != partition
+    {
+        return Err(CdfError::contract(
+            "partition schedule ordinal or plan differs from the executable scan partition",
+        ));
+    }
+    Ok(Some(scheduled.clone()))
 }
 
 fn enqueue_next_partition<'a, R, I>(
@@ -2221,6 +2661,8 @@ fn enqueue_next_partition<'a, R, I>(
     partitions: &mut I,
     frontier: &mut FuturesOrdered<cdf_kernel::BoxFuture<'a, Result<OpenedPartition>>>,
     effective_schema_evidence: Option<&EffectiveSchemaPlanEvidence>,
+    schedule: Option<&cdf_runtime::CanonicalPartitionSchedule>,
+    open_runtime: &PartitionOpenRuntime,
 ) -> Result<bool>
 where
     R: ResourceStream + ?Sized,
@@ -2235,7 +2677,16 @@ where
         .is_some_and(|disposition| {
             matches!(disposition, PartitionSchemaDisposition::Quarantined(_))
         });
-    frontier.push_back(open_partition(resource, ordinal, partition, terminal));
+    let scheduled = scheduled_partition(schedule, ordinal, &partition)?;
+    frontier.push_back(open_partition(
+        resource,
+        ordinal,
+        partition,
+        terminal,
+        schedule.map_or_else(String::new, |schedule| schedule.plan_id.clone()),
+        scheduled,
+        open_runtime.clone(),
+    ));
     Ok(true)
 }
 
@@ -2277,6 +2728,8 @@ where
 {
     plan.validate_execution_extent_for_execution()?;
     plan.validate_compiled_expression_plan()?;
+    plan.validate_partition_schedule()?;
+    plan.validate_compiled_source_resource(resource)?;
     let validation_program = plan.validation_program.clone();
     validate_program(&validation_program)?;
     cdf_kernel::validate_scan_partition_observation_identities(&plan.scan)?;
@@ -2427,7 +2880,17 @@ where
         segmentation_policy.maximum_bytes,
     )?;
 
-    let partition_jobs = partition_open_jobs(plan, &options);
+    let partition_jobs = if remaining_limit == Some(0) {
+        0
+    } else {
+        partition_open_jobs(plan, &options)
+    };
+    let run_cancellation = options.cancellation.clone();
+    let partition_open_runtime = PartitionOpenRuntime {
+        services: options.services.clone(),
+        cancellation: run_cancellation.clone(),
+        retry_journal: options.retry_journal.clone(),
+    };
     let mut partition_iter = plan.scan.partitions.clone().into_iter().enumerate();
     let mut open_frontier: FuturesOrdered<cdf_kernel::BoxFuture<'_, Result<OpenedPartition>>> =
         FuturesOrdered::new();
@@ -2437,6 +2900,8 @@ where
             &mut partition_iter,
             &mut open_frontier,
             effective_schema_evidence,
+            plan.partition_schedule.as_ref(),
+            &partition_open_runtime,
         )? {
             break;
         }
@@ -2450,9 +2915,11 @@ where
                 &mut partition_iter,
                 &mut open_frontier,
                 effective_schema_evidence,
+                plan.partition_schedule.as_ref(),
+                &partition_open_runtime,
             )?;
         }
-        let (partition_ordinal, partition, opened_stream, open_duration_ns) = opened?;
+        let (partition_ordinal, partition, opened_stream, open_evidence) = opened?;
         let partition_ordinal = u32::try_from(partition_ordinal)
             .map_err(|_| CdfError::data("partition ordinal exceeds u32"))?;
         if remaining_limit == Some(0) {
@@ -2468,9 +2935,12 @@ where
             let attestation = match observation_attestations.get(quarantine.observation_id()) {
                 Some(attestation) => attestation.clone(),
                 None => {
-                    let attestation = resource
-                        .attest_partition(&partition)
-                        .await?
+                    let attestation = attest_partition_with_terminal_join(
+                        resource,
+                        &partition,
+                        &run_cancellation,
+                    )
+                    .await?
                         .ok_or_else(|| {
                             CdfError::data(format!(
                                 "terminal schema observation {:?} has no execution-time attestation",
@@ -2523,6 +2993,8 @@ where
                     &mut partition_iter,
                     &mut open_frontier,
                     effective_schema_evidence,
+                    plan.partition_schedule.as_ref(),
+                    &partition_open_runtime,
                 )?;
             }
             continue;
@@ -2541,32 +3013,43 @@ where
 
         let mut segment_assembler =
             crate::CanonicalSegmentAssembler::new(segmentation_policy.clone(), partition_ordinal)?;
-        let (
-            fully_processed,
-            observed_positions,
-            dynamic_quarantine,
-            partition_observation_id,
-            partition_observed_rows,
-            completion_attestation,
-        ) = async {
+        let mut stream = opened_stream.ok_or_else(|| {
+            CdfError::internal("admitted partition reached execution without an open stream")
+        })?;
+        let partition_result = async {
             phase_measurements.add(
                 RunPhase::Decode,
-                open_duration_ns,
+                open_evidence.duration_ns,
                 0,
                 0,
             );
-            let mut stream = opened_stream.ok_or_else(|| {
-                CdfError::internal("admitted partition reached execution without an open stream")
-            })?;
             let mut fully_processed = true;
             let mut observed_positions = Vec::new();
             let mut dynamic_quarantine = None;
             let mut partition_observation_id = None::<String>;
             let mut admitted_batch_count = 0_u64;
             let mut partition_source_row_ordinal = 0_u64;
+            let mut first_batch = open_evidence.first_batch;
             loop {
                 let decode_started = phase_measurements.start();
-                let next_batch = stream.next().await;
+                let next_batch = match first_batch.take() {
+                    Some(batch) => {
+                        if let Err(error) = run_cancellation.check() {
+                            return match stream.terminate_and_join().await {
+                                Ok(()) => Err(error),
+                                Err(cleanup) => Err(with_cleanup_failure(
+                                    error,
+                                    "cancelled prefetched source termination",
+                                    cleanup,
+                                )),
+                            };
+                        }
+                        Some(batch)
+                    }
+                    None => {
+                        next_source_batch_with_terminal_join(&mut stream, &run_cancellation).await?
+                    }
+                };
                 let decode_duration_ns = elapsed_ns(decode_started, "resource decode")?;
                 let Some(batch) = next_batch else {
                     phase_measurements.add(RunPhase::Decode, decode_duration_ns, 0, 0);
@@ -2577,7 +3060,7 @@ where
                     break;
                 }
 
-                let mut batch = batch?;
+                let mut batch = batch;
                 validate_batch_partition_ownership(
                     &batch,
                     &plan.scan.request.resource_id,
@@ -2669,7 +3152,11 @@ where
                         // validation or segment production after this verdict is fixed.
                         loop {
                             let decode_started = phase_measurements.start();
-                            let next_batch = stream.next().await;
+                            let next_batch = next_source_batch_with_terminal_join(
+                                &mut stream,
+                                &run_cancellation,
+                            )
+                            .await?;
                             let decode_duration_ns =
                                 elapsed_ns(decode_started, "quarantined resource drain")?;
                             let Some(drained) = next_batch else {
@@ -2681,7 +3168,7 @@ where
                                 );
                                 break;
                             };
-                            let drained = drained?;
+                            let drained = drained;
                             validate_batch_partition_ownership(
                                 &drained,
                                 &plan.scan.request.resource_id,
@@ -2953,8 +3440,24 @@ where
                 },
             )?;
             let completion = if fully_processed {
-                Some(stream.completion().await?)
+                match run_cancellation
+                    .await_or_cancel(stream.completion())
+                    .await
+                {
+                    Ok(completion) => Some(completion),
+                    Err(error) => {
+                        return match stream.terminate_and_join().await {
+                            Ok(()) => Err(error),
+                            Err(cleanup) => Err(with_cleanup_failure(
+                                error,
+                                "partition completion termination",
+                                cleanup,
+                            )),
+                        };
+                    }
+                }
             } else {
+                stream.terminate_and_join().await?;
                 None
             };
             if let Some(source_io) = completion
@@ -2984,7 +3487,59 @@ where
             ))
         }
         .instrument(partition_span)
-        .await?;
+        .await;
+        let (
+            fully_processed,
+            observed_positions,
+            dynamic_quarantine,
+            partition_observation_id,
+            partition_observed_rows,
+            completion_attestation,
+        ) = match partition_result {
+            Ok(result) => result,
+            Err(mut error) => {
+                if let Err(termination_error) = stream.terminate_and_join().await {
+                    error.message = format!(
+                        "{}; partition producer termination also failed: {}",
+                        error.message, termination_error.message
+                    );
+                }
+                return Err(error);
+            }
+        };
+        let partial_retry_attestation = if open_evidence.retry_pre_attestation.is_some()
+            && completion_attestation.is_none()
+        {
+            Some(
+                attest_partition_with_terminal_join(resource, &partition, &run_cancellation)
+                    .await?
+                    .ok_or_else(|| {
+                        CdfError::data(format!(
+                            "retried partial partition `{}` has no post-consumption reattestation; re-plan before retrying",
+                            partition.partition_id
+                        ))
+                    })?,
+            )
+        } else {
+            None
+        };
+        if let Some(expected) = &open_evidence.retry_pre_attestation {
+            let observed = completion_attestation
+                .as_ref()
+                .or(partial_retry_attestation.as_ref())
+                .ok_or_else(|| {
+                    CdfError::data(format!(
+                        "retried partition `{}` has no terminal reattestation; re-plan before retrying",
+                        partition.partition_id
+                    ))
+                })?;
+            if !observed.is_monotonic_refinement_of(expected) {
+                return Err(CdfError::data(format!(
+                    "retried partition `{}` changed source generation or schema between reopen and EOF; re-plan before retrying",
+                    partition.partition_id
+                )));
+            }
+        }
         if let Some(attestation) = &completion_attestation {
             completion_positions.push((
                 partition_ordinal,
@@ -2997,7 +3552,8 @@ where
             let fallback_attestation = if observed_positions.is_empty()
                 && completion_attestation.is_none()
             {
-                resource.attest_partition(&partition).await?
+                attest_partition_with_terminal_join(resource, &partition, &run_cancellation)
+                    .await?
             } else {
                 None
             };
@@ -3038,7 +3594,12 @@ where
                 match observation_attestations.get(&observation_id) {
                     Some(attestation) => Some(attestation.clone()),
                     None => {
-                        let attestation = resource.attest_partition(&partition).await?;
+                        let attestation = attest_partition_with_terminal_join(
+                            resource,
+                            &partition,
+                            &run_cancellation,
+                        )
+                        .await?;
                         if let Some(attestation) = &attestation {
                             observation_attestations
                                 .insert(observation_id.clone(), attestation.clone());
@@ -3152,6 +3713,8 @@ where
                 &mut partition_iter,
                 &mut open_frontier,
                 effective_schema_evidence,
+                plan.partition_schedule.as_ref(),
+                &partition_open_runtime,
             )?;
         }
     }
@@ -3210,12 +3773,25 @@ where
     Ok(())
     }
     .await;
-    if let Err(error) = segment_result {
+    if let Err(mut error) = segment_result {
+        run_cancellation.cancel();
+        while let Some(opened) = open_frontier.next().await {
+            if let Ok((_, _, Some(mut stream), _)) = opened
+                && let Err(cleanup_error) = stream.terminate_and_join().await
+            {
+                error.message = format!(
+                    "{}; speculative partition producer termination also failed: {}",
+                    error.message, cleanup_error.message
+                );
+            }
+        }
         return match segment_queue.abort_and_cleanup() {
             Ok(()) => Err(error),
-            Err(cleanup_error) => Err(CdfError::internal(format!(
-                "{error}; segment encode cleanup also failed: {cleanup_error}"
-            ))),
+            Err(cleanup_error) => Err(with_cleanup_failure(
+                error,
+                "segment encode cleanup",
+                cleanup_error,
+            )),
         };
     }
 
@@ -3358,7 +3934,11 @@ where
         "lineage.json",
         &cdf_package::canonical_json_bytes(&lineage)?,
     )?;
-    let execution_evidence = EngineExecutionEvidence::new(processed_observations)?;
+    let execution_evidence = EngineExecutionEvidence::new(
+        processed_observations,
+        options.retry_journal.snapshot()?,
+        plan.partition_schedule.as_ref(),
+    )?;
     if let Some(stream_finalize) = stream_finalize {
         stream_finalize()?;
     }

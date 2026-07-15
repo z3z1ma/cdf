@@ -3,8 +3,8 @@ use std::{fmt, future::Future, pin::Pin, sync::Arc};
 use arrow_array::RecordBatch;
 use arrow_schema::SchemaRef;
 use cdf_kernel::{
-    Batch, CdfError, PredicateId, PushdownFidelity, QueryableResource, ScanPlan, ScanPredicate,
-    ScanRequest, ScopeKey,
+    Batch, CdfError, OpenedPartitionStream, PartitionPlan, PredicateId, PushdownFidelity,
+    QueryableResource, ScanPlan, ScanPredicate, ScanRequest, ScopeKey,
 };
 use datafusion::{
     catalog::{Session, TableProvider},
@@ -22,7 +22,7 @@ use datafusion::{
         stream::RecordBatchStreamAdapter,
     },
 };
-use futures_util::{StreamExt, TryStreamExt, stream};
+use futures_util::{StreamExt, stream};
 
 use crate::planning::datafusion_filter_pushdown;
 
@@ -260,35 +260,126 @@ impl ExecutionPlan for QueryableResourceExec {
                 self.scan.partitions.len()
             );
         };
-        let resource = Arc::clone(&self.resource);
-        let projection = self.projection.clone();
-        let mut remaining = self.fetch;
         let schema = self.schema();
-        let stream = stream::once(async move { resource.open(partition_plan).await })
-            .try_flatten()
-            .map(move |batch| {
-                let projection = projection.clone();
-                let output = (|| {
-                    if remaining == Some(0) {
-                        return Ok(None);
-                    }
-                    let batch = cdf_batch_to_record_batch(batch.map_err(cdf_to_datafusion)?)?;
-                    let projected = project_batch(batch, projection.as_ref())?;
-                    Ok(Some(match remaining {
-                        Some(left) if projected.num_rows() > left => {
-                            remaining = Some(0);
-                            projected.slice(0, left)
+        if self.fetch == Some(0) {
+            let stream = stream::empty::<DataFusionResult<RecordBatch>>();
+            return Ok(Box::pin(RecordBatchStreamAdapter::new(schema, stream)));
+        }
+        let stream = stream::try_unfold(
+            ResourceExecutionState::Opening {
+                resource: Arc::clone(&self.resource),
+                partition: Box::new(partition_plan),
+                projection: self.projection.clone(),
+                remaining: self.fetch,
+            },
+            |mut state| async move {
+                loop {
+                    state = match state {
+                        ResourceExecutionState::Opening {
+                            resource,
+                            partition,
+                            projection,
+                            remaining,
+                        } => {
+                            let mut opening = resource.open(*partition);
+                            let opened = match (&mut opening).await {
+                                Ok(opened) => opened,
+                                Err(error) => {
+                                    return match opening.terminate_and_join().await {
+                                        Ok(()) => Err(cdf_to_datafusion(error)),
+                                        Err(cleanup) => Err(cdf_to_datafusion(append_cleanup(
+                                            error,
+                                            "source opening",
+                                            cleanup,
+                                        ))),
+                                    };
+                                }
+                            };
+                            ResourceExecutionState::Opened {
+                                stream: opened,
+                                projection,
+                                remaining,
+                            }
                         }
-                        Some(left) => {
-                            remaining = Some(left - projected.num_rows());
-                            projected
+                        ResourceExecutionState::Opened {
+                            mut stream,
+                            projection,
+                            mut remaining,
+                        } => {
+                            if remaining == Some(0) {
+                                stream
+                                    .terminate_and_join()
+                                    .await
+                                    .map_err(cdf_to_datafusion)?;
+                                return Ok(None);
+                            }
+                            let batch = match stream.next().await {
+                                Some(Ok(batch)) => batch,
+                                Some(Err(error)) => {
+                                    return match stream.join_failed_attempt().await {
+                                        Ok(()) => Err(cdf_to_datafusion(error)),
+                                        Err(cleanup) => Err(cdf_to_datafusion(append_cleanup(
+                                            error,
+                                            "source stream",
+                                            cleanup,
+                                        ))),
+                                    };
+                                }
+                                None => {
+                                    stream.completion().await.map_err(cdf_to_datafusion)?;
+                                    return Ok(None);
+                                }
+                            };
+                            let batch = match cdf_batch_to_record_batch(batch) {
+                                Ok(batch) => batch,
+                                Err(error) => {
+                                    return match stream.terminate_and_join().await {
+                                        Ok(()) => Err(error),
+                                        Err(cleanup) => Err(append_datafusion_cleanup(
+                                            error,
+                                            "source batch conversion",
+                                            cleanup,
+                                        )),
+                                    };
+                                }
+                            };
+                            let projected = match project_batch(batch, projection.as_ref()) {
+                                Ok(projected) => projected,
+                                Err(error) => {
+                                    return match stream.terminate_and_join().await {
+                                        Ok(()) => Err(error),
+                                        Err(cleanup) => Err(append_datafusion_cleanup(
+                                            error,
+                                            "source projection",
+                                            cleanup,
+                                        )),
+                                    };
+                                }
+                            };
+                            let output = match remaining {
+                                Some(left) if projected.num_rows() > left => {
+                                    remaining = Some(0);
+                                    projected.slice(0, left)
+                                }
+                                Some(left) => {
+                                    remaining = Some(left - projected.num_rows());
+                                    projected
+                                }
+                                None => projected,
+                            };
+                            return Ok(Some((
+                                output,
+                                ResourceExecutionState::Opened {
+                                    stream,
+                                    projection,
+                                    remaining,
+                                },
+                            )));
                         }
-                        None => projected,
-                    }))
-                })();
-                output.transpose()
-            })
-            .filter_map(|batch| async move { batch });
+                    };
+                }
+            },
+        );
         Ok(Box::pin(RecordBatchStreamAdapter::new(schema, stream)))
     }
 
@@ -309,6 +400,39 @@ impl ExecutionPlan for QueryableResourceExec {
     fn fetch(&self) -> Option<usize> {
         self.fetch
     }
+}
+
+enum ResourceExecutionState {
+    Opening {
+        resource: SharedQueryableResource,
+        partition: Box<PartitionPlan>,
+        projection: Option<Vec<usize>>,
+        remaining: Option<usize>,
+    },
+    Opened {
+        stream: OpenedPartitionStream,
+        projection: Option<Vec<usize>>,
+        remaining: Option<usize>,
+    },
+}
+
+fn append_cleanup(mut primary: CdfError, context: &str, cleanup: CdfError) -> CdfError {
+    primary.message = format!(
+        "{}; {context} termination also failed: {}",
+        primary.message, cleanup.message
+    );
+    primary
+}
+
+fn append_datafusion_cleanup(
+    primary: DataFusionError,
+    context: &str,
+    cleanup: CdfError,
+) -> DataFusionError {
+    DataFusionError::Execution(format!(
+        "{primary}; {context} termination also failed: {}",
+        cleanup.message
+    ))
 }
 
 fn projection_fields(schema: &SchemaRef, projection: &[usize]) -> DataFusionResult<Vec<String>> {

@@ -141,19 +141,23 @@ pub(super) fn run_scenario(
         Ok(())
     };
 
-    let report = futures_executor::block_on(run_project(ProjectRunRequest {
-        resource: ProjectRunSource::new(resource.as_ref()),
-        plan,
-        package_root: spec.package_root.clone(),
-        state_store_path: spec.state_store_path.clone(),
-        pipeline_id: spec.pipeline_id.clone(),
-        destination,
-        package_id,
-        checkpoint_id: checkpoint_id.clone(),
-        run_id: Some(run_id),
-        event_sink: None,
-        after_receipt_verified: Some(&gate),
-    }))?;
+    let services = crate::test_execution_services();
+    let report = futures_executor::block_on(run_project(
+        ProjectRunRequest {
+            resource: ProjectRunSource::new(resource.as_ref()),
+            plan,
+            package_root: spec.package_root.clone(),
+            state_store_path: spec.state_store_path.clone(),
+            pipeline_id: spec.pipeline_id.clone(),
+            destination,
+            package_id,
+            checkpoint_id: checkpoint_id.clone(),
+            run_id: Some(run_id),
+            event_sink: None,
+            after_receipt_verified: Some(&gate),
+        },
+        &services,
+    ))?;
     assert!(
         gate_observed.get(),
         "receipt verification gate must be observed before checkpoint commit"

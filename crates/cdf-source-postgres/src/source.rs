@@ -10,32 +10,51 @@ use arrow_array::{
 };
 use arrow_schema::{DataType, Field, Schema, SchemaRef, TimeUnit};
 use cdf_kernel::{
-    BackpressureSupport, Batch, BatchId, BatchStream, BoxFuture, CapabilitySupport, CdfError,
+    BackpressureSupport, Batch, BatchId, BatchStream, CapabilitySupport, CdfError,
     CompiledScanIntent, CursorPosition, CursorValue, DeliveryGuarantee, EstimateSupport,
-    Expression, ExpressionLiteral, FilterCapabilities, IncrementalShape, OpenedPartitionStream,
-    PartitionId, PartitionPlan, PartitioningCapabilities, PlanId, PushdownFidelity,
-    PushedPredicate, QueryableResource, ReplaySupport, ResourceCapabilities, ResourceDescriptor,
-    ResourceStream, Result, ScanPlan, ScanPredicate, ScanRequest, SchemaHash, SchemaSource,
-    ScopeKind, SortDirection, SourcePosition, source_name,
+    Expression, ExpressionLiteral, FilterCapabilities, IncrementalShape, PartitionId,
+    PartitionPlan, PartitioningCapabilities, PlanId, PushdownFidelity, PushedPredicate,
+    QueryableResource, ReplaySupport, ResourceCapabilities, ResourceDescriptor, ResourceStream,
+    Result, ScanPlan, ScanPredicate, ScanRequest, SchemaHash, SchemaSource, ScopeKind,
+    SortDirection, SourcePosition, source_name,
 };
 use futures_util::stream;
 use postgres::{Client, NoTls, Row, types::ToSql};
 
 use cdf_postgres::{PostgresIdentifier, PostgresTarget};
-use cdf_runtime::ExecutionServices;
+use cdf_runtime::{BlockingLaneSpec, ExecutionServices, InterruptionSafety, LaneAffinity};
 
 const POSTGRES_SQL_KIND: &str = "sql";
 const POSTGRES_SQL_DIALECT: &str = "postgres";
+pub const POSTGRES_SOURCE_BLOCKING_LANE_ID: &str = "postgres-source.sync";
+
+pub fn postgres_source_blocking_lane() -> BlockingLaneSpec {
+    BlockingLaneSpec {
+        lane_id: POSTGRES_SOURCE_BLOCKING_LANE_ID.to_owned(),
+        maximum_concurrency: 4,
+        cpu_slot_cost: 1,
+        native_internal_parallelism: 1,
+        affinity: LaneAffinity::Shared,
+        interruption: InterruptionSafety::CooperativeOnly,
+    }
+}
 
 #[derive(Clone)]
 pub struct PostgresTableResource {
     descriptor: ResourceDescriptor,
     schema: SchemaRef,
     target: PostgresTarget,
-    database_url: String,
+    connection: PostgresConnection,
     capabilities: ResourceCapabilities,
     execution: Option<ExecutionServices>,
     type_policy_allowances: cdf_kernel::TypePolicyAllowances,
+    compiled_source_plan_hash: Option<String>,
+}
+
+#[derive(Clone)]
+enum PostgresConnection {
+    Resolved(String),
+    Deferred(Arc<dyn Fn(cdf_runtime::RunCancellation) -> Result<String> + Send + Sync + 'static>),
 }
 
 impl PostgresTableResource {
@@ -57,22 +76,140 @@ impl PostgresTableResource {
             descriptor,
             schema,
             target,
-            database_url,
+            connection: PostgresConnection::Resolved(database_url),
             capabilities,
             execution: None,
             type_policy_allowances: Default::default(),
+            compiled_source_plan_hash: None,
         })
     }
 
-    pub fn with_execution(mut self, execution: ExecutionServices) -> Self {
+    pub fn new_with_connection_resolver<F>(
+        descriptor: ResourceDescriptor,
+        schema: SchemaRef,
+        target: PostgresTarget,
+        resolver: F,
+    ) -> Result<Self>
+    where
+        F: Fn(cdf_runtime::RunCancellation) -> Result<String> + Send + Sync + 'static,
+    {
+        validate_postgres_table_resource_shape(&descriptor, &schema, &target)?;
+        let capabilities = postgres_table_capabilities(&descriptor);
+        Ok(Self {
+            descriptor,
+            schema,
+            target,
+            connection: PostgresConnection::Deferred(Arc::new(resolver)),
+            capabilities,
+            execution: None,
+            type_policy_allowances: Default::default(),
+            compiled_source_plan_hash: None,
+        })
+    }
+
+    pub fn with_execution(mut self, execution: ExecutionServices) -> Result<Self> {
+        execution.ensure_blocking_lanes(&[postgres_source_blocking_lane()])?;
         self.execution = Some(execution);
-        self
+        Ok(self)
     }
 
     pub fn with_type_policy(mut self, allowances: cdf_kernel::TypePolicyAllowances) -> Self {
         self.type_policy_allowances = allowances;
         self
     }
+
+    pub fn with_compiled_source_plan_hash(mut self, hash: String) -> Self {
+        self.compiled_source_plan_hash = Some(hash);
+        self
+    }
+
+    /// Opens an owned invocation so source wrappers preserve the same structural termination
+    /// handle instead of hiding Postgres work behind a same-task future.
+    pub fn open_owned(self, partition: PartitionPlan) -> cdf_kernel::PartitionOpenAttempt<'static> {
+        let descriptor = self.descriptor;
+        let schema = self.schema;
+        let target = self.target;
+        let connection = self.connection;
+        let Some(execution) = self.execution else {
+            return cdf_kernel::PartitionOpenAttempt::materialized(Box::pin(async {
+                Err(CdfError::contract(
+                    "Postgres source execution requires injected execution services",
+                ))
+            }));
+        };
+        open_postgres_table_with_connection(
+            descriptor,
+            schema,
+            target,
+            partition,
+            execution,
+            move |cancellation| match connection {
+                PostgresConnection::Resolved(database_url) => Ok(database_url),
+                PostgresConnection::Deferred(resolver) => resolver(cancellation),
+            },
+        )
+    }
+}
+
+/// Opens one Postgres partition while resolving its connection inside the same blocking lifecycle.
+///
+/// Declarative secret providers use this seam so secret resolution and database work share one
+/// cancellation and join authority. The source adapter remains the sole owner of Postgres-specific
+/// execution; generic orchestration never branches on destination or source identity.
+pub fn open_postgres_table_with_connection<F>(
+    descriptor: ResourceDescriptor,
+    schema: SchemaRef,
+    target: PostgresTarget,
+    partition: PartitionPlan,
+    execution: ExecutionServices,
+    resolve_connection: F,
+) -> cdf_kernel::PartitionOpenAttempt<'static>
+where
+    F: FnOnce(cdf_runtime::RunCancellation) -> Result<String> + Send + 'static,
+{
+    if let Err(error) = validate_postgres_table_resource_shape(&descriptor, &schema, &target)
+        .and_then(|()| scan_from_partition(&descriptor, &schema, &target, &partition).map(|_| ()))
+    {
+        return cdf_kernel::PartitionOpenAttempt::materialized(Box::pin(async move { Err(error) }));
+    }
+    if let Err(error) = execution.ensure_blocking_lanes(&[postgres_source_blocking_lane()]) {
+        return cdf_kernel::PartitionOpenAttempt::materialized(Box::pin(async move { Err(error) }));
+    }
+    let task = match execution.spawn_blocking_value(
+        "postgres-source-open",
+        POSTGRES_SOURCE_BLOCKING_LANE_ID,
+        move |cancellation| {
+            cancellation.check()?;
+            let database_url = resolve_connection(cancellation.clone())?;
+            if database_url.trim().is_empty() {
+                return Err(CdfError::auth(
+                    "Postgres source connection string resolved to an empty value",
+                ));
+            }
+            cancellation.check()?;
+            let batches =
+                execute_postgres_table(&database_url, &descriptor, schema, &target, partition)?;
+            cancellation.check()?;
+            Ok(batches)
+        },
+    ) {
+        Ok(task) => task,
+        Err(error) => {
+            return cdf_kernel::PartitionOpenAttempt::materialized(Box::pin(
+                async move { Err(error) },
+            ));
+        }
+    };
+    let termination = task.termination();
+    let opening = Box::pin(async move {
+        let batches = task.await?;
+        let stream = Box::pin(stream::iter(batches.into_iter().map(Ok))) as BatchStream;
+        Ok(cdf_kernel::PartitionStreamPayload::new(
+            stream,
+            Box::pin(async { Ok(cdf_kernel::PartitionCompletion::default()) }),
+        ))
+    });
+    cdf_kernel::PartitionOpenAttempt::with_termination(opening, termination)
 }
 
 impl fmt::Debug for PostgresTableResource {
@@ -82,7 +219,7 @@ impl fmt::Debug for PostgresTableResource {
             .field("descriptor", &self.descriptor)
             .field("schema", &self.schema)
             .field("target", &self.target)
-            .field("database_url", &"<redacted>")
+            .field("connection", &"<redacted>")
             .field("capabilities", &self.capabilities)
             .field("managed_execution", &self.execution.is_some())
             .finish()
@@ -98,6 +235,10 @@ impl ResourceStream for PostgresTableResource {
         Arc::clone(&self.schema)
     }
 
+    fn compiled_source_plan_hash(&self) -> Option<&str> {
+        self.compiled_source_plan_hash.as_deref()
+    }
+
     fn plan_partitions(&self, request: &ScanRequest) -> Result<Vec<PartitionPlan>> {
         let mut partition =
             plan_postgres_table_partition(&self.descriptor, &self.schema, &self.target, request)?;
@@ -109,25 +250,8 @@ impl ResourceStream for PostgresTableResource {
         self.type_policy_allowances
     }
 
-    fn open(&self, partition: PartitionPlan) -> BoxFuture<'_, Result<OpenedPartitionStream>> {
-        let descriptor = self.descriptor.clone();
-        let schema = Arc::clone(&self.schema);
-        let target = self.target.clone();
-        let database_url = self.database_url.clone();
-        let execution = self.execution.clone();
-
-        Box::pin(async move {
-            let batches = match execution {
-                Some(execution) => execution.run_blocking("postgres-source.sync", move || {
-                    execute_postgres_table(&database_url, &descriptor, schema, &target, partition)
-                })?,
-                None => {
-                    execute_postgres_table(&database_url, &descriptor, schema, &target, partition)?
-                }
-            };
-            let stream = Box::pin(stream::iter(batches.into_iter().map(Ok))) as BatchStream;
-            Ok(OpenedPartitionStream::without_completion(stream))
-        })
+    fn open(&self, partition: PartitionPlan) -> cdf_kernel::PartitionOpenAttempt<'_> {
+        self.clone().open_owned(partition)
     }
 }
 
@@ -309,6 +433,7 @@ pub fn plan_postgres_table_partition(
         scope: descriptor.state_scope.clone(),
         start_position: None,
         scan_intent,
+        retry_safety: cdf_kernel::PartitionRetrySafety::Forbidden,
         metadata,
     })
 }
@@ -1500,7 +1625,7 @@ mod tests {
     }
 
     #[test]
-    fn tampered_partition_metadata_fails_before_connecting() {
+    fn tampered_partition_metadata_is_rejected_by_adapter_validation() {
         let descriptor = descriptor(None);
         let schema = schema();
         let target = PostgresTarget::parse("raw.orders").unwrap();
@@ -1508,7 +1633,7 @@ mod tests {
             "postgresql://127.0.0.1:1/not-used",
             descriptor.clone(),
             Arc::clone(&schema),
-            target,
+            target.clone(),
         )
         .unwrap();
         let request = ScanRequest {
@@ -1523,11 +1648,8 @@ mod tests {
         partition
             .metadata
             .insert("table".to_owned(), "raw.other".to_owned());
-        let error = match futures_executor::block_on(resource.open(partition)) {
-            Ok(_) => panic!("tampered partition unexpectedly opened"),
-            Err(error) => error,
-        };
-        assert!(error.to_string().contains("partition table"));
+        let error = scan_from_partition(&descriptor, &schema, &target, &partition).unwrap_err();
+        assert!(error.to_string().contains("partition table"), "{error}");
     }
 
     fn descriptor(cursor: Option<CursorSpec>) -> ResourceDescriptor {

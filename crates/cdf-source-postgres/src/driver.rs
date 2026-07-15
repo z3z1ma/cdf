@@ -3,17 +3,16 @@ use std::{collections::BTreeMap, sync::Arc};
 use cdf_http::SecretUri;
 use cdf_kernel::{CdfError, QueryableResource, Result};
 use cdf_runtime::{
-    BlockingLaneSpec, CompiledSourcePlan, InterruptionSafety, LaneAffinity,
-    SourceAttestationStrength, SourceCompileRequest, SourceDiscoveryCandidate, SourceDiscoveryKind,
-    SourceDiscoveryRequest, SourceDiscoverySession, SourceDriver, SourceDriverDescriptor,
-    SourceDriverId, SourceExecutionCapabilities, SourceExecutorClass, SourceResolutionContext,
-    SourceRetryGranularity, SourceSchemaObservation, artifact_hash,
+    CompiledSourcePlan, SourceAttestationStrength, SourceCompileRequest, SourceDiscoveryCandidate,
+    SourceDiscoveryKind, SourceDiscoveryRequest, SourceDiscoverySession, SourceDriver,
+    SourceDriverDescriptor, SourceDriverId, SourceExecutionCapabilities, SourceExecutorClass,
+    SourceResolutionContext, SourceRetryGranularity, SourceSchemaObservation, artifact_hash,
 };
 use serde::{Deserialize, Serialize};
 
 use crate::{
     PostgresTableResource, PostgresTarget, discover_postgres_table_catalog_schema,
-    postgres_table_capabilities,
+    postgres_source_blocking_lane, postgres_table_capabilities,
 };
 
 #[derive(Clone, Debug)]
@@ -139,16 +138,23 @@ impl SourceDriver for PostgresSourceDriver {
                 CdfError::contract(format!("invalid Postgres source plan: {error}"))
             })?;
         let connection = SecretUri::new(physical.connection)?;
-        let database_url = context.secret_provider().resolve(&connection)?;
         let target = PostgresTarget::parse(&physical.target)?;
-        let resource = PostgresTableResource::new(
-            database_url.as_str()?.to_owned(),
+        let secret_provider = Arc::clone(context.secret_provider());
+        let resource = PostgresTableResource::new_with_connection_resolver(
             plan.descriptor.clone(),
             Arc::new(plan.schema.clone()),
             target,
+            move |cancellation| {
+                cancellation.check()?;
+                let secret = secret_provider.resolve(&connection)?;
+                let database_url = secret.as_str()?.to_owned();
+                cancellation.check()?;
+                Ok(database_url)
+            },
         )?
         .with_type_policy(plan.type_policy_allowances)
-        .with_execution(context.execution().clone());
+        .with_compiled_source_plan_hash(cdf_runtime::artifact_hash(plan)?)
+        .with_execution(context.execution().clone())?;
         Ok(Arc::new(resource))
     }
 }
@@ -244,23 +250,17 @@ fn execution_capabilities() -> SourceExecutionCapabilities {
         maximum_concurrency: 4,
         useful_concurrency: 4,
         executor_class: SourceExecutorClass::BlockingLane,
-        blocking_lane: Some(BlockingLaneSpec {
-            lane_id: "postgres-source.sync".to_owned(),
-            maximum_concurrency: 4,
-            cpu_slot_cost: 1,
-            native_internal_parallelism: 1,
-            affinity: LaneAffinity::Shared,
-            interruption: InterruptionSafety::CooperativeOnly,
-        }),
+        blocking_lane: Some(postgres_source_blocking_lane()),
         pausable: false,
         spillable: false,
         idempotent_reads: true,
         reopenable: true,
         resumable: false,
         speculative_safe: false,
-        retry_granularity: SourceRetryGranularity::Partition,
-        retryable_errors: vec![cdf_kernel::ErrorKind::Transient],
-        attestation: SourceAttestationStrength::Metadata,
+        retry_granularity: SourceRetryGranularity::None,
+        retryable_errors: Vec::new(),
+        retry_policy: None,
+        attestation: SourceAttestationStrength::None,
         rate_limit_per_second: None,
         quota_authority: None,
         canonical_order: false,

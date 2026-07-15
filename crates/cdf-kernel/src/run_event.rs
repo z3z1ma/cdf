@@ -141,11 +141,12 @@ pub enum RunEventKind {
     RunResumed,
     ReplayRecorded,
     ValidationDepthTransitionRecorded,
+    SourceRetryRecorded,
     PhaseMeasured,
 }
 
 impl RunEventKind {
-    pub const ALL: [Self; 17] = [
+    pub const ALL: [Self; 18] = [
         Self::RunStarted,
         Self::PlanRecorded,
         Self::PackageStarted,
@@ -162,6 +163,7 @@ impl RunEventKind {
         Self::RunResumed,
         Self::ReplayRecorded,
         Self::ValidationDepthTransitionRecorded,
+        Self::SourceRetryRecorded,
         Self::PhaseMeasured,
     ];
 
@@ -183,6 +185,7 @@ impl RunEventKind {
             Self::RunResumed => "run_resumed",
             Self::ReplayRecorded => "replay_recorded",
             Self::ValidationDepthTransitionRecorded => "validation_depth_transition_recorded",
+            Self::SourceRetryRecorded => "source_retry_recorded",
             Self::PhaseMeasured => "phase_measured",
         }
     }
@@ -205,6 +208,7 @@ impl RunEventKind {
             "run_resumed" => Ok(Self::RunResumed),
             "replay_recorded" => Ok(Self::ReplayRecorded),
             "validation_depth_transition_recorded" => Ok(Self::ValidationDepthTransitionRecorded),
+            "source_retry_recorded" => Ok(Self::SourceRetryRecorded),
             "phase_measured" => Ok(Self::PhaseMeasured),
             other => Err(CdfError::data(format!("unknown run event kind {other:?}"))),
         }

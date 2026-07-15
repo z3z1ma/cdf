@@ -10,9 +10,9 @@ use std::{
     time::Duration,
 };
 
-use cdf_kernel::{BoxFuture, CdfError, Result};
+use cdf_kernel::{BoxFuture, CdfError, InvocationTermination, Result};
 use cdf_memory::MemoryCoordinator;
-use futures_channel::mpsc;
+use futures_channel::{mpsc, oneshot};
 use futures_util::{SinkExt, Stream, future::Either};
 use serde::{Deserialize, Serialize};
 
@@ -25,6 +25,50 @@ pub type BlockingValueTask = Box<dyn FnOnce() -> Result<IoValue> + Send + 'stati
 pub struct IoStreamSender<T> {
     sender: mpsc::Sender<T>,
     cancellation: RunCancellation,
+}
+
+/// One blocking-lane result plus invocation-wide cancellation and join ownership.
+pub struct ScopedBlockingTask<T> {
+    receiver: oneshot::Receiver<Result<T>>,
+    termination: InvocationTermination,
+    terminal: bool,
+}
+
+impl<T> ScopedBlockingTask<T> {
+    pub fn termination(&self) -> InvocationTermination {
+        self.termination.clone()
+    }
+}
+
+impl<T> Unpin for ScopedBlockingTask<T> {}
+
+impl<T> Future for ScopedBlockingTask<T> {
+    type Output = Result<T>;
+
+    fn poll(self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<Self::Output> {
+        let task = self.get_mut();
+        match Pin::new(&mut task.receiver).poll(context) {
+            Poll::Pending => Poll::Pending,
+            Poll::Ready(Ok(result)) => {
+                task.terminal = true;
+                Poll::Ready(result)
+            }
+            Poll::Ready(Err(_)) => {
+                task.terminal = true;
+                Poll::Ready(Err(CdfError::internal(
+                    "blocking task scope ended before publishing its result",
+                )))
+            }
+        }
+    }
+}
+
+impl<T> Drop for ScopedBlockingTask<T> {
+    fn drop(&mut self) {
+        if !self.terminal {
+            self.termination.cancel();
+        }
+    }
 }
 
 impl<T> IoStreamSender<T> {
@@ -40,10 +84,20 @@ impl<T> IoStreamSender<T> {
 
 pub struct ScopedIoStream<T> {
     receiver: mpsc::Receiver<T>,
-    scope: Option<Box<dyn ExecutionTaskScope>>,
-    join: Option<BoxFuture<'static, Result<TaskScopeReport>>>,
+    termination: InvocationTermination,
+    join: Option<BoxFuture<'static, Result<()>>>,
     cancellation: RunCancellation,
     terminal: bool,
+}
+
+impl<T> ScopedIoStream<T> {
+    /// Returns the invocation-wide task-scope termination barrier.
+    ///
+    /// The barrier remains valid after this stream is dropped. Callers that may stop before EOF
+    /// must retain and await it before reopening the same logical invocation.
+    pub fn termination(&self) -> InvocationTermination {
+        self.termination.clone()
+    }
 }
 
 impl<T> Unpin for ScopedIoStream<T> {}
@@ -62,11 +116,8 @@ impl<T> Stream for ScopedIoStream<T> {
             Poll::Ready(None) => {}
         }
         if stream.join.is_none() {
-            let scope = stream
-                .scope
-                .take()
-                .expect("I/O stream scope exists until its receiver closes");
-            stream.join = Some(scope.join());
+            let termination = stream.termination.clone();
+            stream.join = Some(Box::pin(async move { termination.join().await }));
         }
         match stream
             .join
@@ -295,6 +346,11 @@ pub trait ExecutionTaskScope: Send {
     fn spawn_cpu(&mut self, spec: CpuTaskSpec, task: BlockingTask) -> Result<()>;
     fn spawn_blocking(&mut self, lane: &str, task: BlockingTask) -> Result<()>;
     fn cancel(&self);
+    /// Starts joining every task owned by this scope and returns its completion future.
+    ///
+    /// Joining MUST remain active if the returned future is dropped. This makes nested scoped
+    /// streams structurally safe: dropping a parent cancels child streams, while the child scope
+    /// continues draining its task handles without requiring a detached caller-owned future.
     fn join(self: Box<Self>) -> BoxFuture<'static, Result<TaskScopeReport>>;
 }
 
@@ -309,6 +365,10 @@ pub trait ExecutionHost: Send + Sync {
         duration: Duration,
         cancellation: RunCancellation,
     ) -> BoxFuture<'static, Result<()>>;
+    /// Monotonic process-local time used only for runtime deadlines and telemetry.
+    fn monotonic_now(&self) -> Duration;
+    /// Runtime entropy used for nonidentity scheduling choices such as retry jitter.
+    fn entropy_u64(&self) -> u64;
     fn ensure_blocking_lanes(&self, lanes: &[BlockingLaneSpec]) -> Result<()>;
     fn run_blocking_value(&self, lane: &str, task: BlockingValueTask) -> Result<IoValue>;
 }
@@ -495,6 +555,14 @@ impl ExecutionServices {
         self.host.delay(duration, cancellation)
     }
 
+    pub fn monotonic_now(&self) -> Duration {
+        self.host.monotonic_now()
+    }
+
+    pub fn entropy_u64(&self) -> u64 {
+        self.host.entropy_u64()
+    }
+
     pub fn open_scope(&self, run_id: &str) -> Result<Box<dyn ExecutionTaskScope>> {
         if run_id.is_empty() || run_id.len() > 256 || run_id.chars().any(char::is_control) {
             return Err(CdfError::contract(
@@ -531,11 +599,119 @@ impl ExecutionServices {
         scope.spawn_io(Box::pin(async move {
             producer(stream_sender, task_cancellation).await
         }))?;
+        let scope_join = scope.join();
+        let cancel = cancellation.clone();
+        let termination = InvocationTermination::new(
+            move || cancel.cancel(),
+            Box::pin(async move { scope_join.await.map(|_| ()) }),
+        );
         Ok(ScopedIoStream {
             receiver,
-            scope: Some(scope),
+            termination,
             join: None,
             cancellation,
+            terminal: false,
+        })
+    }
+
+    /// Runs blocking preparation and asynchronous streaming under one invocation scope.
+    ///
+    /// This is the neutral source seam for adapters whose control plane is currently synchronous
+    /// while payload transport is asynchronous. One cancellation and join barrier covers both
+    /// phases; adapters never expose a prepared payload before the blocking task has joined the
+    /// same scope.
+    pub fn spawn_blocking_prepared_io_stream<T, P, Prepare, Produce, Fut>(
+        &self,
+        run_id: &str,
+        lane: &str,
+        maximum_items: usize,
+        prepare: Prepare,
+        produce: Produce,
+    ) -> Result<ScopedIoStream<T>>
+    where
+        T: Send + 'static,
+        P: Send + 'static,
+        Prepare: FnOnce(RunCancellation) -> Result<P> + Send + 'static,
+        Produce: FnOnce(P, IoStreamSender<T>, RunCancellation) -> Fut + Send + 'static,
+        Fut: Future<Output = Result<()>> + Send + 'static,
+    {
+        if maximum_items == 0 {
+            return Err(CdfError::contract(
+                "prepared I/O stream requires a nonzero item bound",
+            ));
+        }
+        let mut scope = self.open_scope(run_id)?;
+        let cancellation = scope.cancellation();
+        let (sender, receiver) = mpsc::channel(maximum_items);
+        let stream_sender = IoStreamSender {
+            sender,
+            cancellation: cancellation.clone(),
+        };
+        let (prepared_sender, prepared_receiver) = oneshot::channel();
+        let preparation_cancellation = cancellation.clone();
+        scope.spawn_blocking(
+            lane,
+            Box::new(move || {
+                let result = prepare(preparation_cancellation);
+                let _ = prepared_sender.send(result);
+                Ok(())
+            }),
+        )?;
+        let producer_cancellation = cancellation.clone();
+        scope.spawn_io(Box::pin(async move {
+            let prepared = prepared_receiver.await.map_err(|_| {
+                CdfError::internal("blocking preparation ended without publishing its result")
+            })??;
+            produce(prepared, stream_sender, producer_cancellation).await
+        }))?;
+        let scope_join = scope.join();
+        let cancel = cancellation.clone();
+        let termination = InvocationTermination::new(
+            move || cancel.cancel(),
+            Box::pin(async move { scope_join.await.map(|_| ()) }),
+        );
+        Ok(ScopedIoStream {
+            receiver,
+            termination,
+            join: None,
+            cancellation,
+            terminal: false,
+        })
+    }
+
+    /// Runs one source/destination invocation on a declared blocking lane without blocking the
+    /// caller and returns structural cancel-and-join ownership with its value.
+    pub fn spawn_blocking_value<T, F>(
+        &self,
+        run_id: &str,
+        lane: &str,
+        task: F,
+    ) -> Result<ScopedBlockingTask<T>>
+    where
+        T: Send + 'static,
+        F: FnOnce(RunCancellation) -> Result<T> + Send + 'static,
+    {
+        let mut scope = self.open_scope(run_id)?;
+        let cancellation = scope.cancellation();
+        let task_cancellation = cancellation.clone();
+        let (sender, receiver) = oneshot::channel();
+        scope.spawn_blocking(
+            lane,
+            Box::new(move || {
+                let result = task(task_cancellation);
+                let _ = sender.send(result);
+                Ok(())
+            }),
+        )?;
+        let scope_join = scope.join();
+        let cancel = cancellation;
+        let termination = InvocationTermination::new(
+            move || cancel.cancel(),
+            Box::pin(async move { scope_join.await.map(|_| ()) }),
+        );
+        Ok(ScopedBlockingTask {
+            receiver,
+            termination,
             terminal: false,
         })
     }
@@ -659,6 +835,14 @@ mod tests {
             _cancellation: RunCancellation,
         ) -> BoxFuture<'static, Result<()>> {
             panic!("test does not delay")
+        }
+
+        fn monotonic_now(&self) -> Duration {
+            Duration::ZERO
+        }
+
+        fn entropy_u64(&self) -> u64 {
+            0
         }
 
         fn ensure_blocking_lanes(&self, _lanes: &[BlockingLaneSpec]) -> Result<()> {

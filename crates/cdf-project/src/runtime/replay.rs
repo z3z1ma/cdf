@@ -216,7 +216,7 @@ impl ActiveStagedIngress {
     pub(crate) fn begin(
         runtime: &mut dyn ProjectDestinationRuntime,
         plan: StagedIngressPlan,
-        services: Option<&ExecutionServices>,
+        services: &ExecutionServices,
     ) -> Result<Option<Self>> {
         let capabilities = runtime.runtime_capabilities();
         capabilities.validate()?;
@@ -224,9 +224,7 @@ impl ActiveStagedIngress {
             return Ok(None);
         }
         let mut preparation = cdf_runtime::BulkPathPreparationInput::new(&plan.output_schema);
-        if let Some(services) = services {
-            preparation = preparation.with_execution(services.capabilities());
-        }
+        preparation = preparation.with_execution(services.capabilities());
         let bulk_path = runtime.prepare_selected_bulk_path(&preparation)?;
         let destination_id = runtime.describe().destination_id;
         let attempt_id = staging_attempt_id(&plan.checkpoint_id, &destination_id)?;
@@ -265,15 +263,7 @@ impl ActiveStagedIngress {
         let execution = if capabilities.staged_ingress_lane.is_some()
             || capabilities.final_binding_lane.is_some()
         {
-            let execution = match services {
-                Some(services) => services.clone(),
-                None => {
-                    cdf_engine::StandaloneExecutionHost::default_services(
-                        cdf_memory::DEFAULT_PROCESS_BUDGET_BYTES,
-                    )?
-                    .1
-                }
-            };
+            let execution = services.clone();
             execution.ensure_blocking_lanes(&capabilities.blocking_lanes)?;
             Some(execution)
         } else {
@@ -2129,6 +2119,7 @@ mod stream_admission_replay_tests {
             },
             start_position: None,
             scan_intent: cdf_kernel::CompiledScanIntent::full_scan(),
+            retry_safety: cdf_kernel::PartitionRetrySafety::ImmutableContent,
             metadata: BTreeMap::from([
                 ("bytes".to_owned(), "12".to_owned()),
                 ("etag".to_owned(), "etag-1".to_owned()),
@@ -2165,6 +2156,7 @@ mod stream_admission_replay_tests {
             },
             start_position: None,
             scan_intent: cdf_kernel::CompiledScanIntent::full_scan(),
+            retry_safety: cdf_kernel::PartitionRetrySafety::Forbidden,
             metadata: BTreeMap::from([("cursor_field".to_owned(), "updated_at".to_owned())]),
         };
         let cursor_position = |field: &str| {

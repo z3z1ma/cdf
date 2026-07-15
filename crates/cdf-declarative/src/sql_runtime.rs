@@ -3,13 +3,13 @@ use std::{fmt, sync::Arc};
 use arrow_schema::SchemaRef;
 use cdf_http::SecretProvider;
 use cdf_kernel::{
-    BackpressureSupport, BoxFuture, CapabilitySupport, CdfError, EstimateSupport,
-    FilterCapabilities, IncrementalShape, OpenedPartitionStream, PartitionId, PartitionPlan,
-    PartitioningCapabilities, PushdownFidelity, QueryableResource, ReplaySupport,
-    ResourceCapabilities, ResourceDescriptor, ResourceStream, Result, ScanPlan, ScanRequest,
+    BackpressureSupport, CapabilitySupport, CdfError, EstimateSupport, FilterCapabilities,
+    IncrementalShape, PartitionId, PartitionPlan, PartitioningCapabilities, PushdownFidelity,
+    QueryableResource, ReplaySupport, ResourceCapabilities, ResourceDescriptor, ResourceStream,
+    Result, ScanPlan, ScanRequest,
 };
 use cdf_source_postgres::{
-    PostgresTableResource, PostgresTarget, plan_postgres_table_partition,
+    PostgresTarget, open_postgres_table_with_connection, plan_postgres_table_partition,
     postgres_table_capabilities, postgres_table_predicate_fidelity,
     validate_postgres_table_resource_shape,
 };
@@ -19,6 +19,7 @@ use crate::{CompiledResource, CompiledResourcePlan, SqlResourcePlan};
 #[derive(Clone, Default)]
 pub struct SqlRuntimeDependencies {
     secret_provider: Option<Arc<dyn SecretProvider + Send + Sync>>,
+    execution: Option<cdf_runtime::ExecutionServices>,
 }
 
 impl SqlRuntimeDependencies {
@@ -33,6 +34,11 @@ impl SqlRuntimeDependencies {
         self.secret_provider = Some(Arc::new(provider));
         self
     }
+
+    pub fn with_execution(mut self, execution: cdf_runtime::ExecutionServices) -> Self {
+        self.execution = Some(execution);
+        self
+    }
 }
 
 impl fmt::Debug for SqlRuntimeDependencies {
@@ -40,6 +46,7 @@ impl fmt::Debug for SqlRuntimeDependencies {
         formatter
             .debug_struct("SqlRuntimeDependencies")
             .field("secret_provider", &self.secret_provider.is_some())
+            .field("execution", &self.execution.is_some())
             .finish()
     }
 }
@@ -70,20 +77,19 @@ impl SqlResource {
     }
 
     pub fn validate_runtime_dependencies(&self) -> Result<()> {
-        let CompiledResourcePlan::Sql(plan) = self.compiled.plan() else {
+        let CompiledResourcePlan::Sql(_plan) = self.compiled.plan() else {
             return Err(CdfError::contract(
                 "only compiled SQL resources can be opened by SqlResource",
             ));
         };
-        let provider = self.dependencies.secret_provider.as_deref().ok_or_else(|| {
+        self.dependencies.secret_provider.as_deref().ok_or_else(|| {
             CdfError::auth(
                 "Postgres SQL resource connection requires an explicit SecretProvider runtime dependency",
             )
         })?;
-        let secret = provider.resolve(&plan.connection)?;
-        if secret.as_str()?.trim().is_empty() {
-            return Err(CdfError::auth(
-                "Postgres source connection string resolved to an empty value",
+        if self.dependencies.execution.is_none() {
+            return Err(CdfError::contract(
+                "Postgres SQL resource execution requires injected execution services",
             ));
         }
         Ok(())
@@ -121,33 +127,62 @@ impl ResourceStream for SqlResource {
         self.compiled.plan_partitions(request)
     }
 
-    fn open(&self, partition: PartitionPlan) -> BoxFuture<'_, Result<OpenedPartitionStream>> {
+    fn open(&self, partition: PartitionPlan) -> cdf_kernel::PartitionOpenAttempt<'_> {
         let descriptor = self.compiled.descriptor().clone();
         let schema = self.compiled.schema();
         let plan = match self.compiled.plan() {
             CompiledResourcePlan::Sql(plan) => plan.clone(),
             CompiledResourcePlan::Rest(_) | CompiledResourcePlan::Files(_) => {
-                return Box::pin(async {
+                return cdf_kernel::PartitionOpenAttempt::materialized(Box::pin(async {
                     Err(CdfError::contract(
                         "only compiled SQL resources can be opened by SqlResource",
                     ))
-                });
+                }));
             }
         };
-        let dependencies = self.dependencies.clone();
-
-        Box::pin(async move {
-            let target = postgres_table_target_for_runtime(&plan)?;
-            let provider = dependencies.secret_provider.as_deref().ok_or_else(|| {
-                CdfError::auth(
-                    "Postgres SQL resource connection requires an explicit SecretProvider runtime dependency",
-                )
-            })?;
-            let secret = provider.resolve(&plan.connection)?;
-            let database_url = secret.as_str()?.to_owned();
-            let resource = PostgresTableResource::new(database_url, descriptor, schema, target)?;
-            resource.open(partition).await
-        })
+        let provider = match self.dependencies.secret_provider.clone() {
+            Some(provider) => provider,
+            None => {
+                return cdf_kernel::PartitionOpenAttempt::materialized(Box::pin(async {
+                    Err(CdfError::auth(
+                        "Postgres SQL resource connection requires an explicit SecretProvider runtime dependency",
+                    ))
+                }));
+            }
+        };
+        let execution = match self.dependencies.execution.clone() {
+            Some(execution) => execution,
+            None => {
+                return cdf_kernel::PartitionOpenAttempt::materialized(Box::pin(async {
+                    Err(CdfError::contract(
+                        "Postgres SQL resource execution requires injected execution services",
+                    ))
+                }));
+            }
+        };
+        let target = match postgres_table_target_for_runtime(&plan) {
+            Ok(target) => target,
+            Err(error) => {
+                return cdf_kernel::PartitionOpenAttempt::materialized(Box::pin(async move {
+                    Err(error)
+                }));
+            }
+        };
+        let connection = plan.connection.clone();
+        open_postgres_table_with_connection(
+            descriptor,
+            schema,
+            target,
+            partition,
+            execution,
+            move |cancellation| {
+                cancellation.check()?;
+                let secret = provider.resolve(&connection)?;
+                let database_url = secret.as_str()?.to_owned();
+                cancellation.check()?;
+                Ok(database_url)
+            },
+        )
     }
 }
 
@@ -219,6 +254,7 @@ pub(crate) fn sql_partition_for_plan(
         scope: descriptor.state_scope.clone(),
         start_position: None,
         scan_intent: cdf_kernel::CompiledScanIntent::full_scan(),
+        retry_safety: cdf_kernel::PartitionRetrySafety::Forbidden,
         metadata,
     })
 }

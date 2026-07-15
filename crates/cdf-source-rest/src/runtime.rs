@@ -9,14 +9,13 @@ use arrow_schema::{DataType, Field, Schema, SchemaRef, TimeUnit};
 use cdf_contract::{ContractPolicy, TypePolicy, reconcile_schema};
 use cdf_http::{
     AuthRefreshHook, AuthScheme, AuthSession, HttpMethod, HttpRequest, HttpResponse, HttpTransport,
-    Paginator, RateLimiter, RetryBudget, RetryDecision, RetryPolicy, RetryUnit, SecretProvider,
-    SecretUri, send_with_policy,
+    Paginator, RateLimiter, SecretProvider, SecretUri, classify_response, send_with_policy,
 };
 use cdf_kernel::{
-    BackpressureSupport, Batch, BatchId, BatchStream, BoxFuture, CapabilitySupport, CdfError,
+    BackpressureSupport, Batch, BatchId, BatchStream, CapabilitySupport, CdfError,
     CompiledScanIntent, CursorPosition, CursorValue, DeliveryGuarantee, EstimateSupport,
-    Expression, ExpressionLiteral, FilterCapabilities, IncrementalShape, OpenedPartitionStream,
-    PartitionId, PartitionPlan, PartitioningCapabilities, PayloadRetention, PlanId,
+    Expression, ExpressionLiteral, FilterCapabilities, IncrementalShape, PartitionId,
+    PartitionPlan, PartitioningCapabilities, PayloadRetention, PlanId,
     PreContractResidualCandidate, PushdownFidelity, PushedPredicate, QueryableResource,
     ReplaySupport, ResourceCapabilities, ResourceDescriptor, ResourceStream, Result, ScanPlan,
     ScanRequest, SchemaHash, SchemaSource, ScopeKind, SourcePosition, TypePolicyAllowances,
@@ -40,7 +39,6 @@ pub struct RestRuntimeDependencies {
     transport: Arc<dyn HttpTransport>,
     secret_provider: Option<Arc<dyn SecretProvider + Send + Sync>>,
     auth_refresh: Option<Arc<Mutex<Box<dyn AuthRefreshHook + Send>>>>,
-    retry_policy: RetryPolicy,
     execution: ExecutionServices,
     prepared_payloads: PreparedSourcePayloads,
 }
@@ -58,7 +56,6 @@ impl RestRuntimeDependencies {
             transport: Arc::from(transport),
             secret_provider: None,
             auth_refresh: None,
-            retry_policy: RetryPolicy::default(),
             execution,
             prepared_payloads: PreparedSourcePayloads::default(),
         }
@@ -93,11 +90,6 @@ impl RestRuntimeDependencies {
         self.auth_refresh = Some(Arc::new(Mutex::new(Box::new(hook))));
         self
     }
-
-    pub fn with_retry_policy(mut self, retry_policy: RetryPolicy) -> Self {
-        self.retry_policy = retry_policy;
-        self
-    }
 }
 
 impl fmt::Debug for RestRuntimeDependencies {
@@ -107,7 +99,6 @@ impl fmt::Debug for RestRuntimeDependencies {
             .field("transport", &"<explicit>")
             .field("secret_provider", &self.secret_provider.is_some())
             .field("auth_refresh", &self.auth_refresh.is_some())
-            .field("retry_policy", &self.retry_policy)
             .field("managed_execution", &true)
             .field("prepared_payloads", &self.prepared_payloads)
             .finish()
@@ -165,6 +156,7 @@ pub struct RestResource {
     plan: RestResourcePlan,
     type_policy_allowances: TypePolicyAllowances,
     dependencies: RestRuntimeDependencies,
+    compiled_source_plan_hash: Option<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -200,7 +192,13 @@ impl RestResource {
             plan,
             type_policy_allowances,
             dependencies,
+            compiled_source_plan_hash: None,
         })
+    }
+
+    pub fn with_compiled_source_plan_hash(mut self, hash: String) -> Self {
+        self.compiled_source_plan_hash = Some(hash);
+        self
     }
 
     pub fn validate_runtime_dependencies(&self) -> Result<()> {
@@ -242,6 +240,10 @@ impl ResourceStream for RestResource {
         &self.descriptor
     }
 
+    fn compiled_source_plan_hash(&self) -> Option<&str> {
+        self.compiled_source_plan_hash.as_deref()
+    }
+
     fn schema(&self) -> SchemaRef {
         Arc::clone(&self.schema)
     }
@@ -261,28 +263,48 @@ impl ResourceStream for RestResource {
         })
     }
 
-    fn open(&self, partition: PartitionPlan) -> BoxFuture<'_, Result<OpenedPartitionStream>> {
+    fn open(&self, partition: PartitionPlan) -> cdf_kernel::PartitionOpenAttempt<'_> {
         let descriptor = self.descriptor.clone();
         let schema = Arc::clone(&self.schema);
         let plan = self.plan.clone();
         let type_policy_allowances = self.type_policy_allowances;
         let dependencies = self.dependencies.clone();
-
-        Box::pin(async move {
-            let execution = dependencies.execution.clone();
-            let batches = execution.run_blocking("rest-source.sync", move || {
-                execute_rest(
+        let execution = dependencies.execution.clone();
+        let task = execution.spawn_blocking_value(
+            "rest-source-open",
+            "rest-source.sync",
+            move |cancellation| {
+                cancellation.check()?;
+                let batches = execute_rest(
                     &descriptor,
                     schema,
                     &plan,
                     &partition,
                     type_policy_allowances,
                     dependencies,
-                )
-            })?;
+                )?;
+                cancellation.check()?;
+                Ok(batches)
+            },
+        );
+        let task = match task {
+            Ok(task) => task,
+            Err(error) => {
+                return cdf_kernel::PartitionOpenAttempt::materialized(Box::pin(async move {
+                    Err(error)
+                }));
+            }
+        };
+        let termination = task.termination();
+        let opening = Box::pin(async move {
+            let batches = task.await?;
             let stream = Box::pin(stream::iter(batches.into_iter().map(Ok))) as BatchStream;
-            Ok(OpenedPartitionStream::without_completion(stream))
-        })
+            Ok(cdf_kernel::PartitionStreamPayload::new(
+                stream,
+                Box::pin(async { Ok(cdf_kernel::PartitionCompletion::default()) }),
+            ))
+        });
+        cdf_kernel::PartitionOpenAttempt::with_termination(opening, termination)
     }
 }
 
@@ -388,6 +410,7 @@ pub fn rest_partition(
         scope: descriptor.state_scope.clone(),
         start_position: None,
         scan_intent,
+        retry_safety: cdf_kernel::PartitionRetrySafety::Forbidden,
         metadata,
     })
 }
@@ -483,7 +506,6 @@ fn execute_rest(
 
     let mut limiter = RateLimiter::new(plan.rate_limit.clone(), 0);
     let mut auth_session = plan.auth.clone().map(AuthSession::new);
-    let mut retry_budget = RetryBudget::new(dependencies.retry_policy.clone());
     let mut paginator = plan.pagination.clone().map(Paginator::new);
     let base_request_url = build_request_url(descriptor, plan, partition)?;
     let mut next_url = Some(match &paginator {
@@ -513,14 +535,7 @@ fn execute_rest(
                 (response, Some(retention))
             }
             None => (
-                send_page(
-                    &dependencies,
-                    plan,
-                    &url,
-                    &mut auth_session,
-                    &mut retry_budget,
-                    &mut limiter,
-                )?,
+                send_page(&dependencies, plan, &url, &mut auth_session, &mut limiter)?,
                 None,
             ),
         };
@@ -599,7 +614,6 @@ pub fn discover_rest_sample_schema(
     validate_partition(descriptor, plan, partition)?;
 
     let mut auth_session = plan.auth.clone().map(AuthSession::new);
-    let mut retry_budget = RetryBudget::new(RetryPolicy::default());
     let mut limiter = RateLimiter::new(plan.rate_limit.clone(), 0);
     let base_request_url = build_request_url(descriptor, plan, partition)?;
     let paginator = plan.pagination.clone().map(Paginator::new);
@@ -617,7 +631,6 @@ pub fn discover_rest_sample_schema(
         plan,
         &url,
         &mut auth_session,
-        &mut retry_budget,
         &mut limiter,
     )?;
     let body = response
@@ -759,7 +772,6 @@ fn send_page(
     plan: &RestResourcePlan,
     url: &str,
     auth_session: &mut Option<AuthSession>,
-    retry_budget: &mut RetryBudget,
     limiter: &mut RateLimiter,
 ) -> Result<HttpResponse> {
     let mut send_context = RestSendContext {
@@ -770,14 +782,7 @@ fn send_page(
             .map(|provider| provider as &dyn SecretProvider),
         auth_refresh: dependencies.auth_refresh.as_ref(),
     };
-    send_page_with_transport(
-        &mut send_context,
-        plan,
-        url,
-        auth_session,
-        retry_budget,
-        limiter,
-    )
+    send_page_with_transport(&mut send_context, plan, url, auth_session, limiter)
 }
 
 fn send_page_with_transport(
@@ -785,10 +790,15 @@ fn send_page_with_transport(
     plan: &RestResourcePlan,
     url: &str,
     auth_session: &mut Option<AuthSession>,
-    retry_budget: &mut RetryBudget,
     limiter: &mut RateLimiter,
 ) -> Result<HttpResponse> {
-    loop {
+    fn send_once_with_rate_limit(
+        context: &RestSendContext<'_>,
+        plan: &RestResourcePlan,
+        url: &str,
+        auth_session: &mut Option<AuthSession>,
+        limiter: &mut RateLimiter,
+    ) -> Result<HttpResponse> {
         let decision = limiter.before_request(0);
         if !decision.allowed {
             return Err(CdfError::rate_limited(
@@ -798,63 +808,42 @@ fn send_page_with_transport(
                 Some(decision.wait_ms),
             ));
         }
-
         let response = send_page_once(
             context.transport,
             context.secret_provider,
             plan,
             url,
             auth_session,
-        );
-        let response = match response {
-            Ok(response) => response,
-            Err(error) => match retry_budget.next_retry(
-                &error,
-                &RetryUnit::Request {
-                    method: HttpMethod::Get,
-                    idempotency_key: false,
-                },
-            ) {
-                RetryDecision::Retry { .. } => continue,
-                RetryDecision::GiveUp { error } => return Err(error),
-            },
-        };
+        )?;
         limiter.observe_response(&response, 0);
-
-        if matches!(response.status, 401 | 403)
-            && auth_session.is_some()
-            && let Some(hook) = context.auth_refresh
-        {
-            let provider = context.secret_provider.ok_or_else(|| {
-                CdfError::auth(
-                    "REST auth refresh requires an explicit SecretProvider runtime dependency",
-                )
-            })?;
-            let mut hook = hook.lock().map_err(|_| {
-                CdfError::internal("REST auth refresh hook mutex was poisoned during refresh")
-            })?;
-            auth_session
-                .as_mut()
-                .expect("checked auth session availability")
-                .refresh_once(provider, &mut **hook)?;
-            continue;
-        }
-
-        if let Some(error) = RetryBudget::classify_response(&response) {
-            match retry_budget.next_retry(
-                &error,
-                &RetryUnit::Request {
-                    method: HttpMethod::Get,
-                    idempotency_key: false,
-                },
-            ) {
-                RetryDecision::Retry { .. } => continue,
-                RetryDecision::GiveUp { error } => return Err(error),
-            }
-        }
-
-        return Ok(response);
+        Ok(response)
     }
+
+    let mut response = send_once_with_rate_limit(context, plan, url, auth_session, limiter)?;
+    if matches!(response.status, 401 | 403)
+        && auth_session.is_some()
+        && let Some(hook) = context.auth_refresh
+    {
+        let provider = context.secret_provider.ok_or_else(|| {
+            CdfError::auth(
+                "REST auth refresh requires an explicit SecretProvider runtime dependency",
+            )
+        })?;
+        let mut hook = hook.lock().map_err(|_| {
+            CdfError::internal("REST auth refresh hook mutex was poisoned during refresh")
+        })?;
+        auth_session
+            .as_mut()
+            .expect("checked auth session availability")
+            .refresh_once(provider, &mut **hook)?;
+        drop(hook);
+        response = send_once_with_rate_limit(context, plan, url, auth_session, limiter)?;
+    }
+
+    if let Some(error) = classify_response(&response) {
+        return Err(error);
+    }
+    Ok(response)
 }
 
 fn send_page_once(

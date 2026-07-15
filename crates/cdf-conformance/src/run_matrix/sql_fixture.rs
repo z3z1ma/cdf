@@ -19,9 +19,14 @@ pub(crate) fn resource(cell: RunMatrixCell, postgres: &LivePostgres) -> Result<S
     let source_table = postgres.create_source_events_table(&table)?;
     let document = cdf_declarative::parse_toml(&resource_toml(cell.disposition, &source_table))?;
     let compiled = one_resource(cdf_declarative::compile_document(&document)?)?;
-    compiled.to_sql_resource(SqlRuntimeDependencies::new().with_secret_provider(
-        StaticSecretProvider::new([(SECRET_REF, postgres.url().to_owned())]),
-    ))
+    compiled.to_sql_resource(
+        SqlRuntimeDependencies::new()
+            .with_secret_provider(StaticSecretProvider::new([(
+                SECRET_REF,
+                postgres.url().to_owned(),
+            )]))
+            .with_execution(crate::test_execution_services()),
+    )
 }
 
 pub(crate) fn assert_source_position(report: &ProjectRunReport) {

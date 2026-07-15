@@ -56,7 +56,7 @@ impl PreparedSchemaForCli {
                 &snapshot.metadata,
                 source_plan.driver.driver_id.as_str(),
                 &source_plan.driver.driver_version,
-                &source_plan.schema_binding_stable_hash()?,
+                &source_plan.discovery_binding_hash()?,
             )?;
         }
         let source_plan = source_plan.bind_schema_authority(
@@ -375,8 +375,7 @@ pub(crate) fn build_engine_plan_for_resource(
         .map_err(CliError::from)?;
     match source.source_plan() {
         Some(source_plan) => plan
-            .bind_schema_admission_source(source_plan)
-            .and_then(|plan| plan.bind_partition_schedule(source_plan))
+            .bind_compiled_source(source_plan)
             .and_then(|plan| plan.bind_operator_graph(source_plan, destination_capabilities))
             .map_err(CliError::from),
         None => Ok(plan),

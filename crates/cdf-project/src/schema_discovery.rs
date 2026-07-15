@@ -869,7 +869,7 @@ impl SchemaDiscoveryAdapter for RegisteredSourceDiscoveryAdapter<'_> {
             ),
             (
                 "source_plan_hash".to_owned(),
-                self.plan.schema_binding_stable_hash()?,
+                self.plan.discovery_binding_hash()?,
             ),
             (
                 "cdf:normalizer".to_owned(),

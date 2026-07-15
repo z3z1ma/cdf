@@ -71,6 +71,7 @@ pub enum ProjectReceiptSource {
 #[cfg(test)]
 pub struct LocalFileDuckDbRunRequest<'a> {
     pub resource: &'a dyn QueryableResource,
+    pub services: cdf_runtime::ExecutionServices,
     pub plan: EnginePlan,
     pub package_root: PathBuf,
     pub destination_path: PathBuf,

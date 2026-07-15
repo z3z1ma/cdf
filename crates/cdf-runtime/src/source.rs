@@ -235,6 +235,61 @@ pub enum SourceRetryGranularity {
     Unit,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SourceRetryPolicy {
+    pub max_total_attempts: u16,
+    pub max_elapsed_ms: u64,
+    pub base_delay_ms: u64,
+    pub max_delay_ms: u64,
+}
+
+impl Default for SourceRetryPolicy {
+    fn default() -> Self {
+        Self {
+            max_total_attempts: 3,
+            max_elapsed_ms: 30_000,
+            base_delay_ms: 100,
+            max_delay_ms: 5_000,
+        }
+    }
+}
+
+impl SourceRetryPolicy {
+    pub fn validate(&self) -> Result<()> {
+        if self.max_total_attempts == 0
+            || self.max_elapsed_ms == 0
+            || self.base_delay_ms == 0
+            || self.max_delay_ms < self.base_delay_ms
+        {
+            return Err(CdfError::contract(
+                "source retry policy requires nonzero attempts/deadline/backoff and a maximum delay at least as large as its base",
+            ));
+        }
+        Ok(())
+    }
+
+    /// Narrows a source-owned hard ceiling while retaining its backoff shape.
+    pub fn narrow(
+        &self,
+        max_total_attempts: Option<u16>,
+        max_elapsed_ms: Option<u64>,
+    ) -> Result<Self> {
+        self.validate()?;
+        let narrowed = Self {
+            max_total_attempts: max_total_attempts
+                .unwrap_or(self.max_total_attempts)
+                .min(self.max_total_attempts),
+            max_elapsed_ms: max_elapsed_ms
+                .unwrap_or(self.max_elapsed_ms)
+                .min(self.max_elapsed_ms),
+            base_delay_ms: self.base_delay_ms,
+            max_delay_ms: self.max_delay_ms,
+        };
+        narrowed.validate()?;
+        Ok(narrowed)
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SourceAttestationStrength {
@@ -262,6 +317,7 @@ pub struct SourceExecutionCapabilities {
     pub speculative_safe: bool,
     pub retry_granularity: SourceRetryGranularity,
     pub retryable_errors: Vec<ErrorKind>,
+    pub retry_policy: Option<SourceRetryPolicy>,
     pub attestation: SourceAttestationStrength,
     pub rate_limit_per_second: Option<u64>,
     pub quota_authority: Option<String>,
@@ -305,6 +361,63 @@ impl SourceExecutionCapabilities {
                 "source retry requires idempotent and reopenable reads",
             ));
         }
+        if self.retry_granularity != SourceRetryGranularity::None
+            && !matches!(
+                self.attestation,
+                SourceAttestationStrength::ImmutableContent | SourceAttestationStrength::Snapshot
+            )
+        {
+            return Err(CdfError::contract(
+                "source retry requires immutable-content or snapshot attestation",
+            ));
+        }
+        match (self.retry_granularity, &self.retry_policy) {
+            (SourceRetryGranularity::None, None) if self.retryable_errors.is_empty() => {}
+            (SourceRetryGranularity::None, _) => {
+                return Err(CdfError::contract(
+                    "source with no retry granularity cannot declare retry errors or policy",
+                ));
+            }
+            (_, Some(policy)) if !self.retryable_errors.is_empty() => policy.validate()?,
+            (_, _) => {
+                return Err(CdfError::contract(
+                    "retryable source requires typed retry errors and a bounded retry policy",
+                ));
+            }
+        }
+        if self
+            .retryable_errors
+            .iter()
+            .any(|kind| !matches!(kind, ErrorKind::Transient | ErrorKind::RateLimited))
+        {
+            return Err(CdfError::contract(
+                "source execution retry may declare only transient or rate-limited errors",
+            ));
+        }
+        let transient_count = self
+            .retryable_errors
+            .iter()
+            .filter(|kind| matches!(kind, ErrorKind::Transient))
+            .count();
+        let rate_limited_count = self
+            .retryable_errors
+            .iter()
+            .filter(|kind| matches!(kind, ErrorKind::RateLimited))
+            .count();
+        if transient_count > 1 || rate_limited_count > 1 {
+            return Err(CdfError::contract(
+                "source retry error declarations must be unique",
+            ));
+        }
+        if self
+            .retryable_errors
+            .windows(2)
+            .any(|pair| retry_error_rank(&pair[0]) >= retry_error_rank(&pair[1]))
+        {
+            return Err(CdfError::contract(
+                "source retry error declarations must use canonical transient, rate_limited order",
+            ));
+        }
         if self.speculative_safe
             && (!self.idempotent_reads
                 || !self.reopenable
@@ -325,6 +438,18 @@ impl SourceExecutionCapabilities {
             ));
         }
         validate_version(&self.telemetry_version)
+    }
+}
+
+fn retry_error_rank(kind: &ErrorKind) -> u8 {
+    match kind {
+        ErrorKind::Transient => 0,
+        ErrorKind::RateLimited => 1,
+        ErrorKind::Auth
+        | ErrorKind::Contract
+        | ErrorKind::Data
+        | ErrorKind::Destination
+        | ErrorKind::Internal => u8::MAX,
     }
 }
 
@@ -391,6 +516,138 @@ pub struct CompiledSourcePlan {
     pub redacted_options_hash: String,
     pub physical_plan: serde_json::Value,
     pub physical_plan_hash: String,
+}
+
+/// Source-neutral execution ceiling recorded in the engine plan.
+///
+/// Partition schedules are derived from and revalidated against this compiled plan; explain data
+/// is descriptive and cannot widen the source's retry, concurrency, or attestation declarations.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CompiledSourceCompilerBinding {
+    pub driver_id: String,
+    pub driver_version: String,
+    pub option_schema_hash: String,
+    pub physical_plan_hash: String,
+    pub compiled_source_plan_hash: String,
+    pub source_semantics_hash: String,
+    pub execution_capabilities_hash: String,
+}
+
+impl CompiledSourceCompilerBinding {
+    pub fn compile(source: &CompiledSourcePlan) -> Result<Self> {
+        source.validate()?;
+        let binding = Self {
+            driver_id: source.driver.driver_id.as_str().to_owned(),
+            driver_version: source.driver.driver_version.clone(),
+            option_schema_hash: source.driver.option_schema_hash.clone(),
+            physical_plan_hash: source.physical_plan_hash.clone(),
+            compiled_source_plan_hash: artifact_hash(source)?,
+            source_semantics_hash: source.schema_binding_stable_hash()?,
+            execution_capabilities_hash: artifact_hash(&source.execution_capabilities)?,
+        };
+        binding.validate()?;
+        Ok(binding)
+    }
+
+    pub fn validate(&self) -> Result<()> {
+        if self.driver_id.is_empty()
+            || self.driver_version.is_empty()
+            || self.option_schema_hash.is_empty()
+            || self.physical_plan_hash.is_empty()
+            || self.compiled_source_plan_hash.is_empty()
+            || self.source_semantics_hash.is_empty()
+            || self.execution_capabilities_hash.is_empty()
+        {
+            return Err(CdfError::data(
+                "compiled source compiler binding is incomplete",
+            ));
+        }
+        Ok(())
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CompiledSourceExecutionPlan {
+    pub(crate) resource_id: ResourceId,
+    pub(crate) driver: SourceDriverDescriptor,
+    pub(crate) physical_plan_hash: String,
+    pub(crate) execution_capabilities: SourceExecutionCapabilities,
+    compiled_source_plan_hash: String,
+    source_semantics_hash: String,
+    execution_binding_hash: String,
+}
+
+impl CompiledSourceExecutionPlan {
+    pub fn compile(source: &CompiledSourcePlan) -> Result<Self> {
+        source.validate()?;
+        let compiled_source_plan_hash = artifact_hash(source)?;
+        let source_semantics_hash = source.schema_binding_stable_hash()?;
+        let mut plan = Self {
+            resource_id: source.descriptor.resource_id.clone(),
+            driver: source.driver.clone(),
+            physical_plan_hash: source.physical_plan_hash.clone(),
+            execution_capabilities: source.execution_capabilities.clone(),
+            compiled_source_plan_hash,
+            source_semantics_hash,
+            execution_binding_hash: String::new(),
+        };
+        plan.execution_binding_hash = plan.canonical_binding_hash()?;
+        plan.validate()?;
+        Ok(plan)
+    }
+
+    pub fn validate(&self) -> Result<()> {
+        self.driver.validate()?;
+        self.execution_capabilities.validate()?;
+        if self.physical_plan_hash.is_empty() {
+            return Err(CdfError::contract(
+                "compiled source execution plan requires a physical plan hash",
+            ));
+        }
+        if self.compiled_source_plan_hash.is_empty()
+            || self.source_semantics_hash.is_empty()
+            || self.execution_binding_hash != self.canonical_binding_hash()?
+        {
+            return Err(CdfError::contract(
+                "compiled source execution binding does not match its compiler-owned semantics",
+            ));
+        }
+        Ok(())
+    }
+
+    pub fn validate_compiler_binding(&self, binding: &CompiledSourceCompilerBinding) -> Result<()> {
+        self.validate()?;
+        binding.validate()?;
+        if self.driver.driver_id.as_str() != binding.driver_id
+            || self.driver.driver_version != binding.driver_version
+            || self.driver.option_schema_hash != binding.option_schema_hash
+            || self.physical_plan_hash != binding.physical_plan_hash
+            || self.compiled_source_plan_hash != binding.compiled_source_plan_hash
+            || self.source_semantics_hash != binding.source_semantics_hash
+            || artifact_hash(&self.execution_capabilities)? != binding.execution_capabilities_hash
+        {
+            return Err(CdfError::data(
+                "compiled source execution ceiling does not match its compiler source binding",
+            ));
+        }
+        Ok(())
+    }
+
+    /// Recomputes the canonical self-binding used to validate serialized execution ceilings.
+    pub fn canonical_binding_hash(&self) -> Result<String> {
+        artifact_hash(&serde_json::json!({
+            "resource_id": self.resource_id,
+            "driver": self.driver,
+            "physical_plan_hash": self.physical_plan_hash,
+            "compiled_source_plan_hash": self.compiled_source_plan_hash,
+            "execution_capabilities": self.execution_capabilities,
+            "source_semantics_hash": self.source_semantics_hash,
+        }))
+    }
+
+    pub fn compiled_source_plan_hash(&self) -> &str {
+        &self.compiled_source_plan_hash
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -496,6 +753,24 @@ impl CompiledSourcePlan {
             "descriptor": descriptor,
             "resource_capabilities": self.resource_capabilities,
             "execution_capabilities": self.execution_capabilities,
+            "type_policy_allowances": self.type_policy_allowances,
+            "redacted_options": self.redacted_options,
+            "redacted_options_hash": self.redacted_options_hash,
+            "physical_plan": self.physical_plan,
+            "physical_plan_hash": self.physical_plan_hash,
+        }))
+    }
+
+    /// Hashes only the source interpretation that can change discovery observations.
+    ///
+    /// Cursor, disposition, keys, and other post-discovery resource semantics belong to the
+    /// execution compiler binding, not the schema snapshot. Keeping the two identities separate
+    /// allows discovery to propose those semantics without invalidating the snapshot it produced.
+    pub fn discovery_binding_hash(&self) -> Result<String> {
+        self.validate()?;
+        artifact_hash(&serde_json::json!({
+            "driver": self.driver,
+            "resource_id": self.descriptor.resource_id,
             "type_policy_allowances": self.type_policy_allowances,
             "redacted_options": self.redacted_options,
             "redacted_options_hash": self.redacted_options_hash,

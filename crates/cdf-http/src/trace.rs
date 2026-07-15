@@ -1,9 +1,9 @@
 use cdf_kernel::ErrorKind;
 
 use crate::{
+    classify_response,
     message::{HeaderMap, HttpRequest, HttpResponse},
     redaction::Redactor,
-    retry::RetryBudget,
 };
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -34,7 +34,7 @@ impl TraceEvent {
         redactor: &Redactor,
         note: Option<String>,
     ) -> Self {
-        let error_kind = RetryBudget::classify_response(response).map(|error| error.kind);
+        let error_kind = classify_response(response).map(|error| error.kind);
         Self {
             method: request.method.to_string(),
             url: redactor.redact_url(&request.url),

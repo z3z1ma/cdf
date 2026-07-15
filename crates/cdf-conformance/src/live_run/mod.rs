@@ -317,19 +317,23 @@ pub async fn run_live_local_file_fixture_with_destination(
     )?;
     stabilize_live_fixture_plan(&mut plan);
 
-    run_project(ProjectRunRequest {
-        resource: ProjectRunSource::new(runtime_resource.as_ref()),
-        plan,
-        package_root: spec.package_root,
-        state_store_path: spec.state_store_path,
-        pipeline_id: spec.pipeline_id,
-        destination,
-        package_id: spec.package_id,
-        checkpoint_id: spec.checkpoint_id,
-        run_id: None,
-        event_sink: None,
-        after_receipt_verified,
-    })
+    let services = crate::test_execution_services();
+    run_project(
+        ProjectRunRequest {
+            resource: ProjectRunSource::new(runtime_resource.as_ref()),
+            plan,
+            package_root: spec.package_root,
+            state_store_path: spec.state_store_path,
+            pipeline_id: spec.pipeline_id,
+            destination,
+            package_id: spec.package_id,
+            checkpoint_id: spec.checkpoint_id,
+            run_id: None,
+            event_sink: None,
+            after_receipt_verified,
+        },
+        &services,
+    )
     .await
 }
 

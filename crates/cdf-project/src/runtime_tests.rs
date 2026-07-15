@@ -72,8 +72,9 @@ use crate::{
     backfill_pipeline_id, generate_lockfile_with_destination_artifacts, parse_cdf_toml,
     plan_backfill, recover_package_from_artifacts, replay_package_from_artifacts,
     replay_package_from_artifacts_with_stage_hook, replay_package_with_runtime,
-    resolve_project_run_destination, run_local_file_to_duckdb_checkpoint, run_project,
-    run_project_with_telemetry,
+    resolve_project_run_destination, run_local_file_to_duckdb_checkpoint,
+    run_project as run_project_with_execution_services,
+    run_project_with_telemetry as run_project_with_execution_services_and_telemetry,
     runtime::{record_package_receipt_once, state_delta_from_run},
 };
 
@@ -81,6 +82,19 @@ fn test_execution_services() -> cdf_runtime::ExecutionServices {
     cdf_engine::StandaloneExecutionHost::default_services(64 * 1024 * 1024)
         .unwrap()
         .1
+}
+
+async fn run_project(request: ProjectRunRequest<'_>) -> Result<ProjectRunReport> {
+    let services = test_execution_services();
+    run_project_with_execution_services(request, &services).await
+}
+
+async fn run_project_with_telemetry(
+    request: ProjectRunRequest<'_>,
+    telemetry: RunTelemetryConfig,
+) -> Result<ProjectRunReport> {
+    let services = test_execution_services();
+    run_project_with_execution_services_and_telemetry(request, &services, telemetry).await
 }
 
 fn test_rest_runtime_dependencies(
@@ -463,6 +477,7 @@ fn backfill_planner_splits_numeric_windows_with_window_scopes_and_ids() {
 
     let plan = plan_backfill(
         &resource,
+        None,
         BackfillPlanRequest {
             target: TargetName::new("events").unwrap(),
             from: "0".to_owned(),
@@ -516,11 +531,96 @@ fn backfill_planner_splits_numeric_windows_with_window_scopes_and_ids() {
 }
 
 #[test]
+fn backfill_planner_binds_every_slice_to_the_compiled_source_artifact() {
+    let resource = BackfillMockResource::cursor();
+    let source = cdf_runtime::CompiledSourcePlan::new(
+        cdf_runtime::SourceDriverDescriptor {
+            driver_id: cdf_runtime::SourceDriverId::new("backfill_mock").unwrap(),
+            driver_version: "1.0.0".to_owned(),
+            option_schema_hash: cdf_runtime::artifact_hash(&serde_json::json!({})).unwrap(),
+            kinds: vec!["mock".to_owned()],
+            schemes: Vec::new(),
+        },
+        resource.capabilities.clone(),
+        cdf_runtime::SourceExecutionCapabilities {
+            minimum_poll_bytes: 1,
+            maximum_poll_bytes: 1024,
+            minimum_decode_bytes: 1,
+            maximum_decode_bytes: 4096,
+            maximum_concurrency: 2,
+            useful_concurrency: 2,
+            executor_class: cdf_runtime::SourceExecutorClass::Io,
+            blocking_lane: None,
+            pausable: true,
+            spillable: false,
+            idempotent_reads: true,
+            reopenable: true,
+            resumable: false,
+            speculative_safe: false,
+            retry_granularity: cdf_runtime::SourceRetryGranularity::None,
+            retryable_errors: Vec::new(),
+            retry_policy: None,
+            attestation: cdf_runtime::SourceAttestationStrength::None,
+            rate_limit_per_second: None,
+            quota_authority: None,
+            canonical_order: true,
+            bounded: true,
+            telemetry_version: "backfill-mock-v1".to_owned(),
+        },
+        cdf_runtime::CompiledSourcePlanInput {
+            descriptor: resource.descriptor.clone(),
+            schema: resource.schema.as_ref().clone(),
+            type_policy_allowances: Default::default(),
+            effective_schema_runtime: None,
+            redacted_options: serde_json::json!({}),
+            physical_plan: serde_json::json!({"partitions": 1}),
+        },
+    )
+    .unwrap();
+    let expected_hash = cdf_runtime::artifact_hash(&source).unwrap();
+
+    let plan = plan_backfill(
+        &resource,
+        Some(&source),
+        BackfillPlanRequest {
+            target: TargetName::new("events").unwrap(),
+            from: "0".to_owned(),
+            to: "20".to_owned(),
+            slice_size: Some(10),
+        },
+    )
+    .unwrap();
+
+    assert_eq!(plan.slices.len(), 2);
+    for slice in &plan.slices {
+        let execution = slice
+            .engine_plan
+            .compiled_source_execution
+            .as_ref()
+            .expect("every executable backfill slice retains compiler source authority");
+        assert_eq!(execution.compiled_source_plan_hash(), expected_hash);
+        assert_eq!(
+            slice
+                .engine_plan
+                .partition_schedule
+                .as_ref()
+                .expect("source-bound backfill slice has a canonical schedule")
+                .partitions[0]
+                .partition
+                .scope,
+            slice.scope
+        );
+    }
+    assert_eq!(resource.open_count.load(Ordering::SeqCst), 0);
+}
+
+#[test]
 fn backfill_planner_rejects_file_incremental_resource_without_opening_source() {
     let resource = BackfillMockResource::file_incremental();
 
     let error = plan_backfill(
         &resource,
+        None,
         BackfillPlanRequest {
             target: TargetName::new("events").unwrap(),
             from: "0".to_owned(),
@@ -540,6 +640,7 @@ fn backfill_planner_rejects_inverted_numeric_bounds_without_opening_source() {
 
     let error = plan_backfill(
         &resource,
+        None,
         BackfillPlanRequest {
             target: TargetName::new("events").unwrap(),
             from: "10".to_owned(),
@@ -633,20 +734,18 @@ impl ResourceStream for BackfillMockResource {
             scope: request.scope.clone(),
             start_position: None,
             scan_intent: cdf_kernel::CompiledScanIntent::full_scan(),
+            retry_safety: cdf_kernel::PartitionRetrySafety::Forbidden,
             metadata,
         }])
     }
 
-    fn open(
-        &self,
-        _partition: cdf_kernel::PartitionPlan,
-    ) -> cdf_kernel::BoxFuture<'_, Result<cdf_kernel::OpenedPartitionStream>> {
+    fn open(&self, _partition: cdf_kernel::PartitionPlan) -> cdf_kernel::PartitionOpenAttempt<'_> {
         self.open_count.fetch_add(1, Ordering::SeqCst);
-        Box::pin(async {
+        cdf_kernel::PartitionOpenAttempt::materialized(Box::pin(async {
             Err(CdfError::internal(
                 "mock backfill source should not be opened",
             ))
-        })
+        }))
     }
 }
 
@@ -1210,15 +1309,15 @@ impl ResourceStream for ArtifactPlanResource {
             scope: ScopeKey::Partition { partition_id },
             start_position: None,
             scan_intent: cdf_kernel::CompiledScanIntent::full_scan(),
+            retry_safety: cdf_kernel::PartitionRetrySafety::Forbidden,
             metadata: BTreeMap::new(),
         }])
     }
 
-    fn open(
-        &self,
-        _partition: cdf_kernel::PartitionPlan,
-    ) -> cdf_kernel::BoxFuture<'_, Result<cdf_kernel::OpenedPartitionStream>> {
-        Box::pin(async { Err(CdfError::internal("artifact fixture has no payload")) })
+    fn open(&self, _partition: cdf_kernel::PartitionPlan) -> cdf_kernel::PartitionOpenAttempt<'_> {
+        cdf_kernel::PartitionOpenAttempt::materialized(Box::pin(async {
+            Err(CdfError::internal("artifact fixture has no payload"))
+        }))
     }
 }
 
@@ -2114,6 +2213,53 @@ fn multi_file_resource(root: &Path) -> cdf_declarative::FileResource {
     multi_file_resource_with_document(root, MULTI_FILE_RESOURCE_APPEND)
 }
 
+fn compiled_test_source_plan(resource: &dyn QueryableResource) -> cdf_runtime::CompiledSourcePlan {
+    cdf_runtime::CompiledSourcePlan::new(
+        cdf_runtime::SourceDriverDescriptor {
+            driver_id: cdf_runtime::SourceDriverId::new("project_test").unwrap(),
+            driver_version: "1.0.0".to_owned(),
+            option_schema_hash: cdf_runtime::artifact_hash(&serde_json::json!({})).unwrap(),
+            kinds: vec!["project_test".to_owned()],
+            schemes: Vec::new(),
+        },
+        resource.capabilities().clone(),
+        cdf_runtime::SourceExecutionCapabilities {
+            minimum_poll_bytes: 1,
+            maximum_poll_bytes: 1024,
+            minimum_decode_bytes: 1,
+            maximum_decode_bytes: 4096,
+            maximum_concurrency: 2,
+            useful_concurrency: 2,
+            executor_class: cdf_runtime::SourceExecutorClass::Io,
+            blocking_lane: None,
+            pausable: true,
+            spillable: false,
+            idempotent_reads: true,
+            reopenable: true,
+            resumable: false,
+            speculative_safe: false,
+            retry_granularity: cdf_runtime::SourceRetryGranularity::None,
+            retryable_errors: Vec::new(),
+            retry_policy: None,
+            attestation: cdf_runtime::SourceAttestationStrength::None,
+            rate_limit_per_second: None,
+            quota_authority: None,
+            canonical_order: true,
+            bounded: true,
+            telemetry_version: "project-test-v1".to_owned(),
+        },
+        cdf_runtime::CompiledSourcePlanInput {
+            descriptor: resource.descriptor().clone(),
+            schema: resource.schema().as_ref().clone(),
+            type_policy_allowances: Default::default(),
+            effective_schema_runtime: None,
+            redacted_options: serde_json::json!({}),
+            physical_plan: serde_json::json!({"partitions": 2}),
+        },
+    )
+    .unwrap()
+}
+
 fn replace_multi_file_resource(root: &Path) -> cdf_declarative::FileResource {
     multi_file_resource_with_document(root, MULTI_FILE_RESOURCE_REPLACE)
 }
@@ -2310,6 +2456,7 @@ fn state_delta_request<'a>(
     root: &Path,
 ) -> LocalFileDuckDbRunRequest<'a> {
     LocalFileDuckDbRunRequest {
+        services: test_execution_services(),
         resource,
         plan: default_live_plan(resource, package_id),
         package_root: root.to_path_buf(),
@@ -2987,6 +3134,7 @@ fn live_file_run_post_receipt_failure_keeps_checkpoint_uncommitted_and_receipt_r
 
     let error = futures_executor::block_on(run_local_file_to_duckdb_checkpoint(
         LocalFileDuckDbRunRequest {
+            services: test_execution_services(),
             resource: &resource,
             plan: live_plan(&resource, package_id),
             package_root: package_root.clone(),
@@ -3133,7 +3281,7 @@ fn general_project_run_records_ledger_events_in_commit_gate_order() {
     assert_eq!(bulk.get("bulk_path_version"), Some(&RunEventValue::U64(1)));
     assert_eq!(
         bulk.get("bulk_evidence_version"),
-        Some(&RunEventValue::String("p3-d2-2026-07-11-v1".to_owned()))
+        Some(&RunEventValue::String("p3-f2-2026-07-14-v2".to_owned()))
     );
     assert!(matches!(
         bulk.get("bulk_rows_per_batch"),
@@ -3423,6 +3571,69 @@ fn file_manifest_append_run_skips_unchanged_files_and_loads_only_changes() {
         package_id_name_rows(&reader),
         vec![(4, Some("grace".to_owned()))]
     );
+}
+
+#[test]
+fn file_manifest_noop_rejects_source_and_schedule_tampering_before_subsetting() {
+    let temp = tempfile::tempdir().unwrap();
+    let resource = multi_file_resource(temp.path());
+    let package_root = temp.path().join(".cdf/packages");
+    let duckdb_path = temp.path().join(".cdf/dev.duckdb");
+    let state_path = temp.path().join(".cdf/state.db");
+
+    futures_executor::block_on(run_project(project_run_request(
+        &resource,
+        "pkg-file-manifest-authority-1",
+        &package_root,
+        &duckdb_path,
+        &state_path,
+        "run-file-manifest-authority-1",
+    )))
+    .unwrap();
+
+    let source_plan = compiled_test_source_plan(&resource);
+    let mut source_tamper = project_run_request(
+        &resource,
+        "pkg-file-manifest-authority-2",
+        &package_root,
+        &duckdb_path,
+        &state_path,
+        "run-file-manifest-authority-2",
+    );
+    source_tamper.plan = source_tamper
+        .plan
+        .bind_compiled_source(&source_plan)
+        .unwrap();
+    let error = futures_executor::block_on(run_project(source_tamper)).unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("compiled engine source has no independently resolved source binding"),
+        "{error}"
+    );
+    assert!(!package_root.join("pkg-file-manifest-authority-2").exists());
+
+    let mut schedule_tamper = project_run_request(
+        &resource,
+        "pkg-file-manifest-authority-3",
+        &package_root,
+        &duckdb_path,
+        &state_path,
+        "run-file-manifest-authority-3",
+    );
+    schedule_tamper.plan = schedule_tamper
+        .plan
+        .bind_compiled_source(&source_plan)
+        .unwrap();
+    schedule_tamper.plan.explain.partition_schedule = None;
+    let error = futures_executor::block_on(run_project(schedule_tamper)).unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("engine partition schedule does not match its recorded explain schedule"),
+        "{error}"
+    );
+    assert!(!package_root.join("pkg-file-manifest-authority-3").exists());
 }
 
 #[test]
@@ -4314,6 +4525,7 @@ fn project_run_records_non_mirror_outcome_for_unsupported_quarantine_sheet() {
 
     let report = futures_executor::block_on(run_local_file_to_duckdb_checkpoint(
         LocalFileDuckDbRunRequest {
+            services: test_execution_services(),
             resource: &resource,
             plan,
             package_root: package_root.clone(),
@@ -5349,14 +5561,18 @@ fn general_project_run_rejects_sql_missing_secret_provider_before_writes() {
 }
 
 #[test]
-fn general_project_run_rejects_sql_empty_secret_before_writes() {
+fn general_project_run_rejects_sql_empty_secret_inside_source_lifecycle_before_destination() {
     let temp = tempfile::tempdir().unwrap();
     let compiled = sql_runtime_resource("public.orders");
+    let services = test_execution_services();
     let resource = compiled
         .to_sql_resource(
-            cdf_declarative::SqlRuntimeDependencies::new().with_secret_provider(
-                StaticSecretProvider::new([("secret://env/POSTGRES_URL", "")]),
-            ),
+            cdf_declarative::SqlRuntimeDependencies::new()
+                .with_secret_provider(StaticSecretProvider::new([(
+                    "secret://env/POSTGRES_URL",
+                    "",
+                )]))
+                .with_execution(services.clone()),
         )
         .unwrap();
     let package_id = "pkg-general-sql-empty-secret";
@@ -5364,29 +5580,38 @@ fn general_project_run_rejects_sql_empty_secret_before_writes() {
     let duckdb_path = temp.path().join(".cdf/dev.duckdb");
     let state_path = temp.path().join(".cdf/state.db");
 
-    let error = futures_executor::block_on(run_project(ProjectRunRequest {
-        resource: ProjectRunSource::sql(&resource),
-        plan: live_plan(resource.compiled(), package_id),
-        package_root: package_root.clone(),
-        state_store_path: state_path.clone(),
-        pipeline_id: PipelineId::new("pipeline-live").unwrap(),
-        package_id: package_id.to_owned(),
-        checkpoint_id: CheckpointId::new("checkpoint-general-sql-empty-secret").unwrap(),
-        destination: ResolvedProjectDestination::duckdb(
-            duckdb_path.clone(),
-            TargetName::new("orders").unwrap(),
-        )
-        .unwrap(),
-        run_id: Some(RunId::new("run-general-sql-empty-secret").unwrap()),
-        event_sink: None,
-        after_receipt_verified: None,
-    }))
+    let error = futures_executor::block_on(run_project_with_execution_services(
+        ProjectRunRequest {
+            resource: ProjectRunSource::sql(&resource),
+            plan: live_plan(resource.compiled(), package_id),
+            package_root: package_root.clone(),
+            state_store_path: state_path.clone(),
+            pipeline_id: PipelineId::new("pipeline-live").unwrap(),
+            package_id: package_id.to_owned(),
+            checkpoint_id: CheckpointId::new("checkpoint-general-sql-empty-secret").unwrap(),
+            destination: ResolvedProjectDestination::duckdb(
+                duckdb_path.clone(),
+                TargetName::new("orders").unwrap(),
+            )
+            .unwrap(),
+            run_id: Some(RunId::new("run-general-sql-empty-secret").unwrap()),
+            event_sink: None,
+            after_receipt_verified: None,
+        },
+        &services,
+    ))
     .unwrap_err();
 
-    assert!(error.to_string().contains("empty value"));
-    assert!(!package_root.join(package_id).exists());
+    assert!(error.to_string().contains("empty value"), "{error}");
+    assert!(
+        package_root
+            .join(package_id)
+            .join("plan/schema-admission.json")
+            .is_file(),
+        "the failed source invocation retains its deterministic run evidence"
+    );
     assert!(!duckdb_path.exists());
-    assert!(!state_path.exists());
+    assert!(state_path.exists(), "the failed run remains in the ledger");
 }
 
 #[test]
@@ -5411,9 +5636,12 @@ fn general_project_run_executes_table_backed_postgres_sql_resource_stream() {
     let compiled = sql_runtime_resource(&table);
     let resource = compiled
         .to_sql_resource(
-            cdf_declarative::SqlRuntimeDependencies::new().with_secret_provider(
-                StaticSecretProvider::new([("secret://env/POSTGRES_URL", postgres.url.clone())]),
-            ),
+            cdf_declarative::SqlRuntimeDependencies::new()
+                .with_secret_provider(StaticSecretProvider::new([(
+                    "secret://env/POSTGRES_URL",
+                    postgres.url.clone(),
+                )]))
+                .with_execution(test_execution_services()),
         )
         .unwrap();
     let package_id = "pkg-general-sql-runtime";
@@ -5589,6 +5817,7 @@ fn live_file_run_rejects_non_file_resource_before_writes() {
     let package_root = temp.path().join(".cdf/packages");
     let error = futures_executor::block_on(run_local_file_to_duckdb_checkpoint(
         LocalFileDuckDbRunRequest {
+            services: test_execution_services(),
             resource: &rest_resource,
             plan: live_plan(&file_resource, package_id),
             package_root: package_root.clone(),
@@ -5616,6 +5845,7 @@ fn live_file_run_rejects_plan_package_id_mismatch_before_writes() {
     let package_root = temp.path().join(".cdf/packages");
     let error = futures_executor::block_on(run_local_file_to_duckdb_checkpoint(
         LocalFileDuckDbRunRequest {
+            services: test_execution_services(),
             resource: &resource,
             plan: live_plan(&resource, "pkg-live-plan-id"),
             package_root: package_root.clone(),
@@ -7053,7 +7283,10 @@ fn zero_segment_processed_package_recovers_after_receipt_without_source_or_data_
         after_receipt_verified: Some(&hook),
     })
     .unwrap_err();
-    assert!(error.to_string().contains("stop before zero checkpoint"));
+    assert!(
+        error.to_string().contains("stop before zero checkpoint"),
+        "{error}"
+    );
     let reader = PackageReader::open(&package_dir).unwrap();
     let inputs = reader.replay_inputs().unwrap();
     assert!(inputs.state_delta.segments.is_empty());

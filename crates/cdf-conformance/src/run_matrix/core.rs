@@ -61,20 +61,24 @@ pub(crate) fn execute_cell(
         &scope,
         &gate_observed,
     );
+    let services = crate::test_execution_services();
 
-    let report = futures_executor::block_on(run_project(ProjectRunRequest {
-        resource: source.project_run_source(),
-        plan,
-        package_root,
-        state_store_path: state_store_path.clone(),
-        pipeline_id: pipeline_id.clone(),
-        package_id: package_id.clone(),
-        checkpoint_id: checkpoint_id.clone(),
-        destination: resolved_destination,
-        run_id: Some(run_id),
-        event_sink: None,
-        after_receipt_verified: Some(&hook),
-    }))?;
+    let report = futures_executor::block_on(run_project(
+        ProjectRunRequest {
+            resource: source.project_run_source(),
+            plan,
+            package_root,
+            state_store_path: state_store_path.clone(),
+            pipeline_id: pipeline_id.clone(),
+            package_id: package_id.clone(),
+            checkpoint_id: checkpoint_id.clone(),
+            destination: resolved_destination,
+            run_id: Some(run_id),
+            event_sink: None,
+            after_receipt_verified: Some(&hook),
+        },
+        &services,
+    ))?;
 
     assert!(
         gate_observed.get(),

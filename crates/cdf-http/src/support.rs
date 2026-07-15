@@ -1,6 +1,6 @@
 use std::str;
 
-use cdf_kernel::{CdfError, ErrorKind, Result};
+use cdf_kernel::{CdfError, Result};
 
 use crate::message::{HeaderMap, HttpResponse};
 
@@ -74,18 +74,6 @@ pub(crate) fn retry_after_ms(response: &HttpResponse) -> Option<u64> {
 
 pub(crate) fn parse_u64(value: &str) -> Option<u64> {
     value.trim().parse::<u64>().ok()
-}
-
-pub(crate) fn is_retryable_kind(kind: &ErrorKind) -> bool {
-    matches!(kind, ErrorKind::Transient | ErrorKind::RateLimited)
-}
-
-pub(crate) fn retry_exhausted_error(error: &CdfError, reason: &str) -> CdfError {
-    let message = format!("{reason}: {}", error.message);
-    match error.kind {
-        ErrorKind::RateLimited => CdfError::rate_limited(message, error.retry_after_ms),
-        _ => CdfError::new(error.kind.clone(), message),
-    }
 }
 
 pub(crate) fn normalize_host(host: impl Into<String>) -> String {

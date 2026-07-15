@@ -101,6 +101,14 @@ impl ResourceStream for WindowScopedResource<'_> {
         self.inner.schema()
     }
 
+    fn compiled_source_plan_hash(&self) -> Option<&str> {
+        self.inner.compiled_source_plan_hash()
+    }
+
+    fn validate_runtime_dependencies(&self) -> Result<()> {
+        self.inner.validate_runtime_dependencies()
+    }
+
     fn plan_partitions(&self, request: &ScanRequest) -> Result<Vec<PartitionPlan>> {
         self.inner
             .plan_partitions(&self.inner_request(request))
@@ -112,15 +120,23 @@ impl ResourceStream for WindowScopedResource<'_> {
             })
     }
 
-    fn open(
+    fn open(&self, partition: PartitionPlan) -> cdf_kernel::PartitionOpenAttempt<'_> {
+        self.inner.open(self.inner_partition(partition))
+    }
+
+    fn attest_partition(
         &self,
         partition: PartitionPlan,
-    ) -> cdf_kernel::BoxFuture<'_, Result<cdf_kernel::OpenedPartitionStream>> {
-        self.inner.open(self.inner_partition(partition))
+    ) -> cdf_kernel::PartitionAttestationAttempt<'_> {
+        self.inner.attest_partition(self.inner_partition(partition))
     }
 
     fn effective_schema_runtime(&self) -> Option<&EffectiveSchemaRuntime> {
         self.inner.effective_schema_runtime()
+    }
+
+    fn type_policy_allowances(&self) -> cdf_kernel::TypePolicyAllowances {
+        self.inner.type_policy_allowances()
     }
 }
 

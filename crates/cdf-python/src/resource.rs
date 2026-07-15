@@ -10,12 +10,12 @@ use arrow_array::{Array, Int64Array, TimestampMicrosecondArray, UInt64Array};
 use arrow_schema::{DataType, Field, Schema, SchemaRef, TimeUnit};
 use cdf_declarative::parse_arrow_field_type;
 use cdf_kernel::{
-    BackpressureSupport, BatchStream, BoxFuture, CapabilitySupport, CursorOrderingClaim,
-    CursorPosition, CursorSpec, CursorValue, DeliveryGuarantee, EstimateSupport,
-    FilterCapabilities, ForeignState, IncrementalShape, OpenedPartitionStream, PartitionId,
-    PartitionPlan, PartitioningCapabilities, PlanId, QueryableResource, ReplaySupport,
-    ResourceCapabilities, ResourceDescriptor, ResourceId, ResourceStream, Result, ScanPlan,
-    ScanRequest, SchemaSource, ScopeKey, SourcePosition, TrustLevel, WriteDisposition,
+    BackpressureSupport, BatchStream, CapabilitySupport, CursorOrderingClaim, CursorPosition,
+    CursorSpec, CursorValue, DeliveryGuarantee, EstimateSupport, FilterCapabilities, ForeignState,
+    IncrementalShape, PartitionId, PartitionPlan, PartitioningCapabilities, PlanId,
+    QueryableResource, ReplaySupport, ResourceCapabilities, ResourceDescriptor, ResourceId,
+    ResourceStream, Result, ScanPlan, ScanRequest, SchemaSource, ScopeKey, SourcePosition,
+    TrustLevel, WriteDisposition,
 };
 use futures_util::stream;
 use pyo3::{
@@ -177,6 +177,7 @@ impl PythonResource {
             scope: self.descriptor.state_scope.clone(),
             start_position: None,
             scan_intent: cdf_kernel::CompiledScanIntent::full_scan(),
+            retry_safety: cdf_kernel::PartitionRetrySafety::Forbidden,
             metadata: BTreeMap::from([
                 ("source_kind".to_owned(), "python".to_owned()),
                 ("module".to_owned(), self.module_relative.clone()),
@@ -337,16 +338,38 @@ impl ResourceStream for PythonResource {
         Ok(vec![self.partition()?])
     }
 
-    fn open(&self, partition: PartitionPlan) -> BoxFuture<'_, Result<OpenedPartitionStream>> {
-        let result = match (&self.execution, &self.blocking_lane) {
-            (Some(execution), Some(lane)) => {
-                let resource = self.clone();
-                let lane = lane.clone();
-                execution.run_blocking(&lane, move || resource.execute_inline(partition))
-            }
-            _ => self.execute_inline(partition),
+    fn open(&self, partition: PartitionPlan) -> cdf_kernel::PartitionOpenAttempt<'_> {
+        let (Some(execution), Some(lane)) = (&self.execution, &self.blocking_lane) else {
+            return cdf_kernel::PartitionOpenAttempt::materialized(Box::pin(async {
+                Err(cdf_kernel::CdfError::contract(
+                    "Python source execution requires injected execution services",
+                ))
+            }));
         };
-        Box::pin(async move { result.map(OpenedPartitionStream::without_completion) })
+        let resource = self.clone();
+        let task =
+            match execution.spawn_blocking_value("python-source-open", lane, move |cancellation| {
+                cancellation.check()?;
+                let stream = resource.execute_inline(partition)?;
+                cancellation.check()?;
+                Ok(stream)
+            }) {
+                Ok(task) => task,
+                Err(error) => {
+                    return cdf_kernel::PartitionOpenAttempt::materialized(Box::pin(async move {
+                        Err(error)
+                    }));
+                }
+            };
+        let termination = task.termination();
+        let opening = Box::pin(async move {
+            let stream = task.await?;
+            Ok(cdf_kernel::PartitionStreamPayload::new(
+                stream,
+                Box::pin(async { Ok(cdf_kernel::PartitionCompletion::default()) }),
+            ))
+        });
+        cdf_kernel::PartitionOpenAttempt::with_termination(opening, termination)
     }
 }
 

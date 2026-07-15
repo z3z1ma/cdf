@@ -10,25 +10,25 @@ use arrow_schema::{Schema, SchemaRef};
 use cdf_kernel::{
     BackpressureSupport, Batch, BatchStream, BoxFuture, CapabilitySupport, CdfError,
     CompiledScanIntent, DeliveryGuarantee, EffectiveSchemaRuntime, EstimateSupport,
-    FilterCapabilities, IncrementalShape, OpenedPartitionStream,
-    PLAN_SCHEMA_OBSERVATION_BINDING_KEY, PLAN_SCHEMA_OBSERVATION_ID_KEY, PartitionAttestation,
-    PartitionCompletion, PartitionId, PartitionPlan, PartitioningCapabilities, PayloadRetention,
-    PlanId, PushdownFidelity, PushedPredicate, QueryableResource, ReplaySupport,
-    ResourceCapabilities, ResourceDescriptor, ResourceId, ResourceStream, Result, ScanPlan,
-    ScanRequest, SchemaHash, ScopeKey, ScopeKind, SourcePosition, SourceReadMode,
-    TypePolicyAllowances, WriteDisposition, source_name,
+    FilterCapabilities, IncrementalShape, PLAN_SCHEMA_OBSERVATION_BINDING_KEY,
+    PLAN_SCHEMA_OBSERVATION_ID_KEY, PartitionAttestation, PartitionCompletion, PartitionId,
+    PartitionPlan, PartitioningCapabilities, PayloadRetention, PlanId, PushdownFidelity,
+    PushedPredicate, QueryableResource, ReplaySupport, ResourceCapabilities, ResourceDescriptor,
+    ResourceId, ResourceStream, Result, ScanPlan, ScanRequest, SchemaHash, ScopeKey, ScopeKind,
+    SourcePosition, SourceReadMode, TypePolicyAllowances, WriteDisposition, source_name,
 };
 use cdf_memory::{ConsumerKey, MemoryClass};
 use cdf_runtime::{
-    AccountedByteStream, ByteExtent, ByteSource, ByteSourceCapabilities, ByteTransformId,
-    ByteTransformRegistry, CanonicalStreamCompletion, CanonicalStreamOpener, CompiledFormatBinding,
-    ContentIdentity, DecodePlanningRequest, ExecutionServices, FormatDetection,
-    FormatDetectionConfidence, FormatDiscoveryRequest, FormatDriver, FormatProbe, FormatRegistry,
-    GenerationStrength, ObservedByteSource, PhysicalDecodeRequest, PreparedSourcePayload,
-    PreparedSourcePayloadKey, PreparedSourcePayloads, ReadOptions, SequentialReadRequest,
-    SourceContentDigest, SourceDriverId, SourceEvidenceLocation, SourceIoObserver,
-    TransformSourceConfig, TransformedByteSource, canonical_stream_frontier_with_completion,
-    decode_unit_no_lookback_frontiers, resolve_decode_unit_concurrency,
+    AccountedByteStream, BlockingLaneSpec, ByteExtent, ByteSource, ByteSourceCapabilities,
+    ByteTransformId, ByteTransformRegistry, CanonicalStreamCompletion, CanonicalStreamOpener,
+    CompiledFormatBinding, ContentIdentity, DecodePlanningRequest, ExecutionServices,
+    FormatDetection, FormatDetectionConfidence, FormatDiscoveryRequest, FormatDriver, FormatProbe,
+    FormatRegistry, GenerationStrength, InterruptionSafety, LaneAffinity, ObservedByteSource,
+    PhysicalDecodeRequest, PreparedSourcePayload, PreparedSourcePayloadKey, PreparedSourcePayloads,
+    ReadOptions, SequentialReadRequest, SourceContentDigest, SourceDriverId,
+    SourceEvidenceLocation, SourceIoObserver, TransformSourceConfig, TransformedByteSource,
+    canonical_stream_frontier_with_completion, decode_unit_no_lookback_frontiers,
+    resolve_decode_unit_concurrency,
 };
 #[cfg(test)]
 use futures_util::StreamExt;
@@ -52,6 +52,18 @@ const NATIVE_TARGET_BATCH_BYTES: u64 = 16 * 1024 * 1024;
 const NATIVE_STREAM_ITEMS: usize = 2;
 const NATIVE_UNIT_STREAM_ITEMS: usize = 1;
 const NATIVE_UNIT_BUFFERED_BATCHES: u16 = 2;
+pub const FILE_SOURCE_BLOCKING_LANE_ID: &str = "file-source.control";
+
+pub fn file_source_blocking_lane() -> BlockingLaneSpec {
+    BlockingLaneSpec {
+        lane_id: FILE_SOURCE_BLOCKING_LANE_ID.to_owned(),
+        maximum_concurrency: 16,
+        cpu_slot_cost: 1,
+        native_internal_parallelism: 1,
+        affinity: LaneAffinity::Shared,
+        interruption: InterruptionSafety::CooperativeOnly,
+    }
+}
 
 #[derive(Clone)]
 pub struct FileRuntimeDependencies {
@@ -777,6 +789,7 @@ pub struct FileResource {
     effective_schema_runtime: Option<Arc<EffectiveSchemaRuntime>>,
     compiled_format: CompiledFormatBinding,
     dependencies: FileRuntimeDependencies,
+    compiled_source_plan_hash: Option<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -832,7 +845,13 @@ impl FileResource {
             effective_schema_runtime: effective_schema_runtime.map(Arc::new),
             compiled_format,
             dependencies,
+            compiled_source_plan_hash: None,
         })
+    }
+
+    pub fn with_compiled_source_plan_hash(mut self, hash: String) -> Self {
+        self.compiled_source_plan_hash = Some(hash);
+        self
     }
 
     fn partitions_for_intent(
@@ -855,10 +874,7 @@ impl FileResource {
         Ok(())
     }
 
-    pub fn open_preview(
-        &self,
-        partition: PartitionPlan,
-    ) -> BoxFuture<'_, Result<OpenedPartitionStream>> {
+    pub fn open_preview(&self, partition: PartitionPlan) -> cdf_kernel::PartitionOpenAttempt<'_> {
         open_file_resource_with_dependencies(self.clone(), partition)
     }
 }
@@ -870,6 +886,10 @@ impl ResourceStream for FileResource {
 
     fn schema(&self) -> SchemaRef {
         Arc::clone(&self.schema)
+    }
+
+    fn compiled_source_plan_hash(&self) -> Option<&str> {
+        self.compiled_source_plan_hash.as_deref()
     }
 
     fn validate_runtime_dependencies(&self) -> Result<()> {
@@ -890,45 +910,74 @@ impl ResourceStream for FileResource {
         self.partitions_for_intent(&CompiledScanIntent::full_scan())
     }
 
-    fn open(&self, partition: PartitionPlan) -> BoxFuture<'_, Result<OpenedPartitionStream>> {
+    fn open(&self, partition: PartitionPlan) -> cdf_kernel::PartitionOpenAttempt<'_> {
         open_file_resource_with_dependencies(self.clone(), partition)
     }
 
     fn attest_partition(
         &self,
-        partition: &PartitionPlan,
-    ) -> BoxFuture<'_, Result<Option<cdf_kernel::PartitionAttestation>>> {
+        partition: PartitionPlan,
+    ) -> cdf_kernel::PartitionAttestationAttempt<'_> {
         let descriptor = self.descriptor.clone();
         let plan = self.plan.clone();
-        let partition = partition.clone();
         let dependencies = self.dependencies.clone();
-        Box::pin(async move {
-            let resolved = dependencies.with_transport(|transport| {
-                validate_partition(
-                    &descriptor,
-                    &plan,
-                    &partition,
-                    transport,
-                    dependencies.formats(),
-                    dependencies.transforms(),
-                )
-            })?;
-            let processed_position = SourcePosition::FileManifest(cdf_kernel::FileManifest {
-                version: 1,
-                files: vec![cdf_kernel::FilePosition {
-                    path: resolved.path_text,
-                    size_bytes: resolved.size_bytes,
-                    source_generation: resolved.source_generation,
-                    etag: resolved.etag,
-                    object_version: resolved.version,
-                    sha256: resolved.sha256,
-                }],
-            });
-            Ok(Some(cdf_kernel::PartitionAttestation::new(
-                processed_position,
-                None,
-            )))
-        })
+        let execution = dependencies.execution().clone();
+        if let Err(error) = execution.ensure_blocking_lanes(&[file_source_blocking_lane()]) {
+            return cdf_kernel::PartitionAttestationAttempt::materialized(Box::pin(async move {
+                Err(error)
+            }));
+        }
+        let mut scope_hasher = Sha256::new();
+        scope_hasher.update(descriptor.resource_id.as_str().as_bytes());
+        scope_hasher.update([0]);
+        scope_hasher.update(partition.partition_id.as_str().as_bytes());
+        let scope_id = format!(
+            "file-attest-{}",
+            &hex::encode(scope_hasher.finalize())[..16]
+        );
+        let task = execution.spawn_blocking_value(
+            &scope_id,
+            FILE_SOURCE_BLOCKING_LANE_ID,
+            move |cancellation| {
+                cancellation.check()?;
+                let resolved = dependencies.with_transport(|transport| {
+                    validate_partition(
+                        &descriptor,
+                        &plan,
+                        &partition,
+                        transport,
+                        dependencies.formats(),
+                        dependencies.transforms(),
+                    )
+                })?;
+                cancellation.check()?;
+                let processed_position = SourcePosition::FileManifest(cdf_kernel::FileManifest {
+                    version: 1,
+                    files: vec![cdf_kernel::FilePosition {
+                        path: resolved.path_text,
+                        size_bytes: resolved.size_bytes,
+                        source_generation: resolved.source_generation,
+                        etag: resolved.etag,
+                        object_version: resolved.version,
+                        sha256: resolved.sha256,
+                    }],
+                });
+                Ok(Some(cdf_kernel::PartitionAttestation::new(
+                    processed_position,
+                    None,
+                )))
+            },
+        );
+        let task = match task {
+            Ok(task) => task,
+            Err(error) => {
+                return cdf_kernel::PartitionAttestationAttempt::materialized(Box::pin(
+                    async move { Err(error) },
+                ));
+            }
+        };
+        let termination = task.termination();
+        cdf_kernel::PartitionAttestationAttempt::with_termination(Box::pin(task), termination)
     }
 
     fn effective_schema_runtime(&self) -> Option<&EffectiveSchemaRuntime> {
@@ -1637,7 +1686,7 @@ pub(crate) fn file_partitions_for_plan_with_transport(
 fn open_file_resource_with_dependencies(
     resource: FileResource,
     partition: PartitionPlan,
-) -> BoxFuture<'static, Result<OpenedPartitionStream>> {
+) -> cdf_kernel::PartitionOpenAttempt<'static> {
     let FileResource {
         descriptor,
         schema,
@@ -1647,45 +1696,60 @@ fn open_file_resource_with_dependencies(
         effective_schema_runtime,
         compiled_format,
         dependencies,
+        compiled_source_plan_hash: _,
     } = resource;
-    let prepared = match prepare_file_partition(
-        &descriptor,
-        &plan,
-        &partition,
-        schema,
-        &dependencies,
-        effective_schema_runtime.as_deref(),
-        &compiled_format,
-    ) {
-        Ok(prepared) => prepared,
-        Err(error) => return Box::pin(async move { Err(error) }),
-    };
+    if let Err(error) = validate_partition_plan_shape(&descriptor, &plan, &partition) {
+        return cdf_kernel::PartitionOpenAttempt::materialized(Box::pin(async move { Err(error) }));
+    }
     let execution = dependencies.execution().clone();
-    let source_io = prepared.source_io.clone();
-    let extraction_content_hash = prepared.extraction_content_hash.clone();
-    let hash_sweep_source = prepared.hash_sweep_source.clone();
-    let completed_position = cdf_kernel::FilePosition {
-        path: prepared.resolved.path_text.clone(),
-        size_bytes: prepared.resolved.size_bytes,
-        source_generation: prepared.resolved.source_generation.clone(),
-        etag: prepared.resolved.etag.clone(),
-        object_version: prepared.resolved.version.clone(),
-        sha256: prepared.resolved.sha256.clone(),
-    };
+    if let Err(error) = execution.ensure_blocking_lanes(&[file_source_blocking_lane()]) {
+        return cdf_kernel::PartitionOpenAttempt::materialized(Box::pin(async move { Err(error) }));
+    }
     let (completion_sender, completion_receiver) = tokio::sync::oneshot::channel();
     let mut scope_hasher = Sha256::new();
     scope_hasher.update(descriptor.resource_id.as_str().as_bytes());
     scope_hasher.update([0]);
     scope_hasher.update(partition.partition_id.as_str().as_bytes());
     let scope_id = format!("file-open-{}", &hex::encode(scope_hasher.finalize())[..16]);
-    let stream = execution.spawn_io_stream(
+    let prepare_dependencies = dependencies.clone();
+    let stream_dependencies = dependencies;
+    let stream = execution.spawn_blocking_prepared_io_stream(
         &scope_id,
+        FILE_SOURCE_BLOCKING_LANE_ID,
         NATIVE_STREAM_ITEMS,
-        move |mut sender, cancellation| async move {
+        move |cancellation| {
+            cancellation.check()?;
+            let prepared = prepare_file_partition(
+                &descriptor,
+                &plan,
+                &partition,
+                schema,
+                &prepare_dependencies,
+                effective_schema_runtime.as_deref(),
+                &compiled_format,
+            )?;
+            cancellation.check()?;
+            Ok(prepared)
+        },
+        move |prepared, mut sender, cancellation| async move {
+            let source_io = prepared.source_io.clone();
+            let extraction_content_hash = prepared.extraction_content_hash.clone();
+            let hash_sweep_source = prepared.hash_sweep_source.clone();
+            let completed_position = cdf_kernel::FilePosition {
+                path: prepared.resolved.path_text.clone(),
+                size_bytes: prepared.resolved.size_bytes,
+                source_generation: prepared.resolved.source_generation.clone(),
+                etag: prepared.resolved.etag.clone(),
+                object_version: prepared.resolved.version.clone(),
+                sha256: prepared.resolved.sha256.clone(),
+            };
             let decode = async {
-                let prepared_stream =
-                    stream_prepared_file_match(prepared, &dependencies, cancellation.clone())
-                        .await?;
+                let prepared_stream = stream_prepared_file_match(
+                    prepared,
+                    &stream_dependencies,
+                    cancellation.clone(),
+                )
+                .await?;
                 let PreparedFormatStream {
                     mut batches,
                     source_completion,
@@ -1705,26 +1769,33 @@ fn open_file_resource_with_dependencies(
             };
             let hash_sweep = complete_hash_sweep(hash_sweep_source, cancellation.clone());
             tokio::try_join!(decode, hash_sweep)?;
-            let attestation = if let Some(extraction_content_hash) = extraction_content_hash {
-                let mut completed_position = completed_position;
+            let mut completed_position = completed_position;
+            if let Some(extraction_content_hash) = extraction_content_hash {
                 completed_position.sha256 = Some(extraction_content_hash.completed()?);
-                Some(PartitionAttestation::new(
-                    SourcePosition::FileManifest(cdf_kernel::FileManifest {
-                        version: 1,
-                        files: vec![completed_position],
-                    }),
-                    None,
-                ))
-            } else {
-                None
-            };
+            }
+            let attestation = Some(PartitionAttestation::new(
+                SourcePosition::FileManifest(cdf_kernel::FileManifest {
+                    version: 1,
+                    files: vec![completed_position],
+                }),
+                None,
+            ));
             let completion = PartitionCompletion::new(attestation, Some(source_io.snapshot()));
             let _ = completion_sender.send(completion);
             Ok(())
         },
     );
-    Box::pin(async move {
-        let stream = Box::pin(stream?) as BatchStream;
+    let stream = match stream {
+        Ok(stream) => stream,
+        Err(error) => {
+            return cdf_kernel::PartitionOpenAttempt::materialized(Box::pin(
+                async move { Err(error) },
+            ));
+        }
+    };
+    let termination = stream.termination();
+    let opening = Box::pin(async move {
+        let stream = Box::pin(stream) as BatchStream;
         let completion = Box::pin(async move {
             completion_receiver.await.map_err(|_| {
                 CdfError::internal(
@@ -1732,8 +1803,9 @@ fn open_file_resource_with_dependencies(
                 )
             })
         });
-        Ok(OpenedPartitionStream::with_completion(stream, completion))
-    })
+        Ok(cdf_kernel::PartitionStreamPayload::new(stream, completion))
+    });
+    cdf_kernel::PartitionOpenAttempt::with_termination(opening, termination)
 }
 
 async fn complete_hash_sweep(
@@ -2583,6 +2655,25 @@ fn validate_partition(
     formats: &FormatRegistry,
     transforms: &ByteTransformRegistry,
 ) -> Result<ResolvedFileMatch> {
+    let (path, match_count) = validate_partition_plan_shape(descriptor, plan, partition)?;
+    let resolved =
+        resolve_planned_file_match(descriptor, plan, path, transport, formats, transforms)?;
+    let expected_size = resolved.size_bytes.to_string();
+    if partition.metadata.get("bytes").map(String::as_str) != Some(expected_size.as_str()) {
+        return Err(CdfError::data(format!(
+            "declarative file partition `{path}` changed size after planning"
+        )));
+    }
+    debug_assert!(match_count > 0);
+    validate_resolved_partition_metadata(partition, &resolved, plan, path)?;
+    Ok(resolved)
+}
+
+fn validate_partition_plan_shape<'a>(
+    descriptor: &ResourceDescriptor,
+    plan: &FileResourcePlan,
+    partition: &'a PartitionPlan,
+) -> Result<(&'a str, usize)> {
     if partition.metadata.get("kind").map(String::as_str) != Some("files") {
         return Err(CdfError::contract(format!(
             "declarative file resource `{}` expected a file partition plan",
@@ -2615,24 +2706,21 @@ fn validate_partition(
             "declarative file partition scope does not match file path `{path}`",
         )));
     }
-    let matches = resolve_file_matches(
-        &descriptor.resource_id,
-        plan,
-        transport,
-        formats,
-        transforms,
-    )?;
-    let match_count = matches.len();
-    let Some(resolved) = matches.into_iter().find(|file| file.path_text == *path) else {
-        return Err(CdfError::contract(format!(
-            "declarative file partition path `{path}` was not produced by glob `{}` under `{}`",
-            plan.glob, plan.root
-        )));
-    };
+    let match_count = partition
+        .metadata
+        .get("match_count")
+        .ok_or_else(|| CdfError::contract("file partition omitted planned match count"))?
+        .parse::<usize>()
+        .map_err(|_| CdfError::contract("file partition match count is invalid"))?;
+    if match_count == 0 {
+        return Err(CdfError::contract(
+            "file partition match count must be greater than zero",
+        ));
+    }
     let expected_partition_id = if match_count == 1 {
         "files".to_owned()
     } else {
-        file_partition_id(&resolved.path_text)
+        file_partition_id(path)
     };
     if partition.partition_id.as_str() != expected_partition_id.as_str() {
         return Err(CdfError::contract(format!(
@@ -2640,12 +2728,33 @@ fn validate_partition(
             partition.partition_id
         )));
     }
-    let expected_size = resolved.size_bytes.to_string();
-    if partition.metadata.get("bytes").map(String::as_str) != Some(expected_size.as_str()) {
-        return Err(CdfError::data(format!(
-            "declarative file partition `{path}` changed size after planning"
+    let expected_path_binding = planned_file_path_binding(
+        &descriptor.resource_id,
+        &plan.root,
+        &plan.glob,
+        path,
+        match_count,
+    )?;
+    if partition
+        .metadata
+        .get("plan_path_binding")
+        .map(String::as_str)
+        != Some(expected_path_binding.as_str())
+    {
+        return Err(CdfError::contract(format!(
+            "declarative file partition path `{path}` was not produced by glob `{}` under `{}` or does not match its compiled plan binding",
+            plan.glob, plan.root
         )));
     }
+    Ok((path, match_count))
+}
+
+fn validate_resolved_partition_metadata(
+    partition: &PartitionPlan,
+    resolved: &ResolvedFileMatch,
+    plan: &FileResourcePlan,
+    path: &str,
+) -> Result<()> {
     match (
         &resolved.sha256,
         &resolved.etag,
@@ -2706,7 +2815,7 @@ fn validate_partition(
         identity_strength_name(resolved.identity_strength),
         path,
     )?;
-    validate_compression_metadata(partition, &resolved, &plan.compression, path)?;
+    validate_compression_metadata(partition, resolved, &plan.compression, path)?;
     validate_partition_metadata_value(partition, "format", &resolved.format.format_id, path)?;
     validate_partition_metadata_value(
         partition,
@@ -2742,7 +2851,7 @@ fn validate_partition(
         &resolved.format.detection.reason,
         path,
     )?;
-    Ok(resolved)
+    Ok(())
 }
 
 fn validate_compression_metadata(
@@ -2817,6 +2926,17 @@ fn partition_for_file_match(
     metadata.insert("glob".to_owned(), plan.glob.clone());
     metadata.insert("resource_id".to_owned(), descriptor.resource_id.to_string());
     metadata.insert("path".to_owned(), file.path_text.clone());
+    metadata.insert("match_count".to_owned(), total_matches.to_string());
+    metadata.insert(
+        "plan_path_binding".to_owned(),
+        planned_file_path_binding(
+            &descriptor.resource_id,
+            &plan.root,
+            &plan.glob,
+            &file.path_text,
+            total_matches,
+        )?,
+    );
     metadata.insert(
         PLAN_SCHEMA_OBSERVATION_ID_KEY.to_owned(),
         file.path_text.clone(),
@@ -2904,8 +3024,183 @@ fn partition_for_file_match(
         },
         start_position: None,
         scan_intent: scan_intent.clone(),
+        retry_safety: match file.identity_strength {
+            GenerationStrength::Weak => cdf_kernel::PartitionRetrySafety::Forbidden,
+            GenerationStrength::Strong | GenerationStrength::ContentAddressed => {
+                cdf_kernel::PartitionRetrySafety::ImmutableContent
+            }
+        },
         metadata,
     })
+}
+
+fn planned_file_path_binding(
+    resource_id: &ResourceId,
+    root: &str,
+    glob: &str,
+    path: &str,
+    match_count: usize,
+) -> Result<String> {
+    cdf_runtime::artifact_hash(&serde_json::json!({
+        "resource_id": resource_id,
+        "root": root,
+        "glob": glob,
+        "path": path,
+        "match_count": match_count,
+    }))
+}
+
+/// Revalidates exactly one planned file without listing or resolving the resource glob again.
+///
+/// Planning owns enumeration. Open and attestation own generation validation for the selected
+/// partition only, keeping N-file execution O(N) rather than O(N²).
+fn resolve_planned_file_match(
+    descriptor: &ResourceDescriptor,
+    plan: &FileResourcePlan,
+    path: &str,
+    transport: &dyn FileTransport,
+    formats: &FormatRegistry,
+    transforms: &ByteTransformRegistry,
+) -> Result<ResolvedFileMatch> {
+    let components = pattern_components(&plan.glob)?;
+    match file_transport_scheme(&plan.root)? {
+        Some(FileTransportScheme::Http | FileTransportScheme::Https) => {
+            let root_prefix = format!("{}/", plan.root.trim_end_matches('/'));
+            let relative_path = path.strip_prefix(&root_prefix).ok_or_else(|| {
+                CdfError::contract(format!(
+                    "file partition `{path}` is outside HTTP root `{}`",
+                    plan.root
+                ))
+            })?;
+            let expected = http_glob_contains(&descriptor.resource_id, &plan.glob, relative_path)?;
+            if !expected {
+                return Err(CdfError::contract(format!(
+                    "file partition `{path}` is outside the compiled HTTP enumeration"
+                )));
+            }
+            let logical = FileTransportResource {
+                location: FileTransportLocation::HttpUrl {
+                    url: path.to_owned(),
+                },
+                egress_allowlist: plan.allowlist.clone(),
+                auth: plan.auth.clone(),
+                credentials: plan.credentials.clone(),
+            };
+            let observation = transport.metadata(&logical)?;
+            let compression = resolve_transport_compression(plan, path, transforms)?;
+            let format = resolve_transport_format(
+                &descriptor.resource_id,
+                plan,
+                path,
+                &compression,
+                formats,
+            )?;
+            resolved_transport_file_match(
+                observation.access_resource(&logical),
+                observation.into_identity(),
+                compression,
+                format,
+            )
+        }
+        Some(FileTransportScheme::S3 | FileTransportScheme::Gs | FileTransportScheme::Az) => {
+            let relative = object_store_relative_path(&plan.root, path)?;
+            if !glob_path_matches(&components, &relative) {
+                return Err(CdfError::contract(format!(
+                    "file partition `{path}` is outside glob `{}`",
+                    plan.glob
+                )));
+            }
+            let logical = FileTransportResource::object_store_url(path.to_owned())
+                .with_egress_allowlist(plan.allowlist.clone());
+            let logical = match &plan.credentials {
+                Some(credentials) => logical.with_credentials(credentials.clone()),
+                None => logical,
+            };
+            let observation = transport.metadata(&logical)?;
+            let compression = resolve_transport_compression(plan, path, transforms)?;
+            let format = resolve_transport_format(
+                &descriptor.resource_id,
+                plan,
+                path,
+                &compression,
+                formats,
+            )?;
+            resolved_transport_file_match(
+                observation.access_resource(&logical),
+                observation.into_identity(),
+                compression,
+                format,
+            )
+        }
+        Some(FileTransportScheme::File) => {
+            let mut local_plan = plan.clone();
+            local_plan.root = crate::transport::file_url_path(&plan.root)?
+                .to_str()
+                .map(str::to_owned)
+                .ok_or_else(|| CdfError::data("file URL path is not valid UTF-8"))?;
+            resolve_planned_local_file_match(
+                descriptor,
+                &local_plan,
+                path,
+                &components,
+                formats,
+                transforms,
+            )
+        }
+        None => resolve_planned_local_file_match(
+            descriptor,
+            plan,
+            path,
+            &components,
+            formats,
+            transforms,
+        ),
+    }
+}
+
+fn resolve_planned_local_file_match(
+    descriptor: &ResourceDescriptor,
+    plan: &FileResourcePlan,
+    path: &str,
+    components: &[String],
+    formats: &FormatRegistry,
+    transforms: &ByteTransformRegistry,
+) -> Result<ResolvedFileMatch> {
+    if !glob_path_matches(components, path) {
+        return Err(CdfError::contract(format!(
+            "file partition `{path}` is outside glob `{}`",
+            plan.glob
+        )));
+    }
+    let root = PathBuf::from(&plan.root);
+    if !root.is_absolute() {
+        return Err(CdfError::contract(format!(
+            "file source root `{}` for resource `{}` must be absolute before runtime open",
+            plan.root, descriptor.resource_id
+        )));
+    }
+    let canonical_root = fs::canonicalize(&root).map_err(|error| {
+        CdfError::data(format!(
+            "canonicalize file source root {}: {error}",
+            root.display()
+        ))
+    })?;
+    let candidate = fs::canonicalize(canonical_root.join(path)).map_err(|error| {
+        CdfError::data(format!("resolve planned file partition `{path}`: {error}"))
+    })?;
+    if !candidate.starts_with(&canonical_root) {
+        return Err(CdfError::contract(format!(
+            "file partition `{path}` escapes its compiled source root"
+        )));
+    }
+    resolved_file_match(
+        &descriptor.resource_id,
+        &canonical_root,
+        candidate,
+        plan,
+        formats,
+        transforms,
+    )
 }
 
 fn file_schema_observation_binding(file: &ResolvedFileMatch) -> String {
@@ -3641,6 +3936,67 @@ fn expand_http_glob(resource_id: &ResourceId, glob: &str) -> Result<Vec<String>>
     if let Some(months) = expand_http_year_month_glob(glob) {
         return Ok(months);
     }
+    let Some(template) = parse_http_numeric_template(resource_id, glob)? else {
+        return Ok(vec![glob.to_owned()]);
+    };
+    let mut expanded = Vec::with_capacity(template.count as usize);
+    for value in template.start..=template.end {
+        expanded.push(template.render(value));
+    }
+    Ok(expanded)
+}
+
+fn http_glob_contains(resource_id: &ResourceId, glob: &str, candidate: &str) -> Result<bool> {
+    if let Some(months) = expand_http_year_month_glob(glob) {
+        return Ok(months.iter().any(|month| month == candidate));
+    }
+    let Some(template) = parse_http_numeric_template(resource_id, glob)? else {
+        return Ok(glob == candidate);
+    };
+    let Some(value_text) = candidate
+        .strip_prefix(template.prefix)
+        .and_then(|candidate| candidate.strip_suffix(template.suffix))
+    else {
+        return Ok(false);
+    };
+    if value_text.is_empty() || !value_text.bytes().all(|byte| byte.is_ascii_digit()) {
+        return Ok(false);
+    }
+    let Ok(value) = value_text.parse::<u64>() else {
+        return Ok(false);
+    };
+    Ok(value >= template.start
+        && value <= template.end
+        && template.render_value(value) == value_text)
+}
+
+struct HttpNumericTemplate<'a> {
+    prefix: &'a str,
+    suffix: &'a str,
+    start: u64,
+    end: u64,
+    width: usize,
+    count: u64,
+}
+
+impl HttpNumericTemplate<'_> {
+    fn render_value(&self, value: u64) -> String {
+        if self.width == 0 {
+            value.to_string()
+        } else {
+            format!("{value:0width$}", width = self.width)
+        }
+    }
+
+    fn render(&self, value: u64) -> String {
+        format!("{}{}{}", self.prefix, self.render_value(value), self.suffix)
+    }
+}
+
+fn parse_http_numeric_template<'a>(
+    resource_id: &ResourceId,
+    glob: &'a str,
+) -> Result<Option<HttpNumericTemplate<'a>>> {
     let components = pattern_components(glob)?;
     if components
         .iter()
@@ -3656,7 +4012,7 @@ fn expand_http_glob(resource_id: &ResourceId, glob: &str) -> Result<Vec<String>>
                 "HTTP(S) file resource `{resource_id}` has an unmatched `}}` in glob `{glob}`"
             )));
         }
-        return Ok(vec![glob.to_owned()]);
+        return Ok(None);
     };
     let close = glob[open + 1..]
         .find('}')
@@ -3713,16 +4069,14 @@ fn expand_http_glob(resource_id: &ResourceId, glob: &str) -> Result<Vec<String>>
     } else {
         0
     };
-    let mut expanded = Vec::with_capacity(count as usize);
-    for value in start..=end {
-        let value = if width == 0 {
-            value.to_string()
-        } else {
-            format!("{value:0width$}")
-        };
-        expanded.push(format!("{}{}{}", &glob[..open], value, &glob[close + 1..]));
-    }
-    Ok(expanded)
+    Ok(Some(HttpNumericTemplate {
+        prefix: &glob[..open],
+        suffix: &glob[close + 1..],
+        start,
+        end,
+        width,
+        count,
+    }))
 }
 
 fn expand_http_year_month_glob(glob: &str) -> Option<Vec<String>> {
@@ -4066,6 +4420,8 @@ mod tests {
     struct PayloadOpenCountingTransport {
         inner: FileTransportFacade,
         payload_opens: Arc<AtomicUsize>,
+        metadata_reads: Arc<AtomicUsize>,
+        listings: Arc<AtomicUsize>,
     }
 
     impl FileTransport for PayloadOpenCountingTransport {
@@ -4073,6 +4429,7 @@ mod tests {
             &self,
             resource: &FileTransportResource,
         ) -> Result<crate::FileMetadataObservation> {
+            self.metadata_reads.fetch_add(1, Ordering::Relaxed);
             self.inner.metadata(resource)
         }
 
@@ -4084,6 +4441,7 @@ mod tests {
         }
 
         fn list(&self, resource: &FileTransportResource) -> Result<Vec<FileIdentityMetadata>> {
+            self.listings.fetch_add(1, Ordering::Relaxed);
             self.inner.list(resource)
         }
 
@@ -4936,11 +5294,15 @@ mod tests {
         ))
         .unwrap();
         let payload_opens = Arc::new(AtomicUsize::new(0));
+        let metadata_reads = Arc::new(AtomicUsize::new(0));
+        let listings = Arc::new(AtomicUsize::new(0));
         let transport = PayloadOpenCountingTransport {
             inner: FileTransportFacade::new()
                 .with_object_store("s3://events", store)
                 .with_execution_services(crate::test_execution_services()),
             payload_opens: Arc::clone(&payload_opens),
+            metadata_reads,
+            listings,
         };
         let plan = FileResourcePlan {
             source: "events".to_owned(),
@@ -4975,6 +5337,84 @@ mod tests {
     }
 
     #[test]
+    fn planned_object_partitions_revalidate_exact_objects_without_relisting_the_glob() {
+        let store = Arc::new(InMemory::new());
+        for path in ["prod/2026/01/events.parquet", "prod/2026/02/events.parquet"] {
+            futures_executor::block_on(store.put(
+                &ObjectPath::from(path),
+                PutPayload::from_static(b"PAR1fixture"),
+            ))
+            .unwrap();
+        }
+        let listings = Arc::new(AtomicUsize::new(0));
+        let metadata_reads = Arc::new(AtomicUsize::new(0));
+        let transport = PayloadOpenCountingTransport {
+            inner: FileTransportFacade::new()
+                .with_object_store("s3://events", store)
+                .with_execution_services(crate::test_execution_services()),
+            payload_opens: Arc::new(AtomicUsize::new(0)),
+            metadata_reads: Arc::clone(&metadata_reads),
+            listings: Arc::clone(&listings),
+        };
+        let plan = FileResourcePlan {
+            source: "events".to_owned(),
+            root: "s3://events/prod".to_owned(),
+            glob: "2026/**/*.parquet".to_owned(),
+            format: Some(FileFormatDeclaration::parquet()),
+            format_declared: true,
+            format_options: serde_json::json!({}),
+            compression: FileCompressionDeclaration::none(),
+            auth: None,
+            credentials: None,
+            allowlist: cdf_http::EgressAllowlist::allow_any(),
+        };
+        let empty_schema = Schema::empty();
+        let descriptor = ResourceDescriptor {
+            resource_id: ResourceId::new("events.raw").unwrap(),
+            schema_source: cdf_kernel::SchemaSource::Declared {
+                schema_hash: cdf_kernel::canonical_arrow_schema_hash(&empty_schema).unwrap(),
+                source: "test".to_owned(),
+            },
+            primary_key: Vec::new(),
+            merge_key: Vec::new(),
+            cursor: None,
+            write_disposition: WriteDisposition::Append,
+            deduplication: None,
+            contract: None,
+            state_scope: ScopeKey::Resource,
+            freshness: None,
+            trust_level: cdf_kernel::TrustLevel::Governed,
+        };
+        let formats = crate::test_format_registry();
+        let transforms = crate::test_transform_registry();
+        let partitions = file_partitions_for_plan_with_transport(
+            &descriptor,
+            &plan,
+            &CompiledScanIntent::full_scan(),
+            &transport,
+            formats.as_ref(),
+            transforms.as_ref(),
+        )
+        .unwrap();
+        assert_eq!(partitions.len(), 2);
+        assert_eq!(listings.load(Ordering::Relaxed), 1);
+
+        for partition in &partitions {
+            validate_partition(
+                &descriptor,
+                &plan,
+                partition,
+                &transport,
+                formats.as_ref(),
+                transforms.as_ref(),
+            )
+            .unwrap();
+        }
+        assert_eq!(listings.load(Ordering::Relaxed), 1);
+        assert_eq!(metadata_reads.load(Ordering::Relaxed), 2);
+    }
+
+    #[test]
     fn http_numeric_template_expands_finitely_and_preserves_width() {
         let resource_id = ResourceId::new("tlc.yellow").unwrap();
         assert_eq!(
@@ -4993,6 +5433,18 @@ mod tests {
         );
         let error = expand_http_glob(&resource_id, "yellow_tripdata_*.parquet").unwrap_err();
         assert!(error.message.contains("HTTP has no LIST operation"));
+    }
+
+    #[test]
+    fn http_numeric_template_membership_revalidates_one_path_without_expansion() {
+        let resource_id = ResourceId::new("archive.events").unwrap();
+        let glob = "part-{000000..999999}.parquet";
+
+        assert!(http_glob_contains(&resource_id, glob, "part-000000.parquet").unwrap());
+        assert!(http_glob_contains(&resource_id, glob, "part-999999.parquet").unwrap());
+        assert!(!http_glob_contains(&resource_id, glob, "part-1000000.parquet").unwrap());
+        assert!(!http_glob_contains(&resource_id, glob, "part-1.parquet").unwrap());
+        assert!(!http_glob_contains(&resource_id, glob, "other-000001.parquet").unwrap());
     }
 
     #[test]

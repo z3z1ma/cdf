@@ -306,8 +306,8 @@ mod tests {
     use arrow_array::{ArrayRef, Int64Array, RecordBatch, StringArray};
     use arrow_schema::{DataType, Field, Schema, SchemaRef};
     use cdf_kernel::{
-        BatchId, BatchPayload, BatchStats, BoxFuture, CdfError, FilePosition, PayloadRef,
-        ResourceId, Result, SchemaSource, ScopeKey, TrustLevel, WriteDisposition,
+        BatchId, BatchPayload, BatchStats, CdfError, FilePosition, PayloadRef, ResourceId, Result,
+        SchemaSource, ScopeKey, TrustLevel, WriteDisposition,
     };
     use futures_util::stream;
 
@@ -514,6 +514,7 @@ mod tests {
             scope: scenario.partition_scope,
             start_position: scenario.start_position,
             scan_intent: cdf_kernel::CompiledScanIntent::full_scan(),
+            retry_safety: cdf_kernel::PartitionRetrySafety::Forbidden,
             metadata: BTreeMap::new(),
         };
 
@@ -636,6 +637,7 @@ mod tests {
                         },
                         start_position: Some(file_position(id)),
                         scan_intent: cdf_kernel::CompiledScanIntent::full_scan(),
+                        retry_safety: cdf_kernel::PartitionRetrySafety::Forbidden,
                         metadata: BTreeMap::from([(
                             "resource_id".to_owned(),
                             self.descriptor.resource_id.as_str().to_owned(),
@@ -645,19 +647,14 @@ mod tests {
                 .collect()
         }
 
-        fn open(
-            &self,
-            partition: PartitionPlan,
-        ) -> BoxFuture<'_, Result<cdf_kernel::OpenedPartitionStream>> {
+        fn open(&self, partition: PartitionPlan) -> cdf_kernel::PartitionOpenAttempt<'_> {
             let fault = self.fault;
-            Box::pin(async move {
+            cdf_kernel::PartitionOpenAttempt::materialized(Box::pin(async move {
                 let batches = batches_for_partition(&partition.partition_id, fault)?;
                 let stream =
                     Box::pin(stream::iter(batches.into_iter().map(Ok))) as cdf_kernel::BatchStream;
-                Ok(cdf_kernel::OpenedPartitionStream::without_completion(
-                    stream,
-                ))
-            })
+                Ok(cdf_kernel::PartitionStreamPayload::batches(stream))
+            }))
         }
     }
 

@@ -105,6 +105,14 @@ impl cdf_runtime::ExecutionHost for TestIoHost {
         })
     }
 
+    fn monotonic_now(&self) -> Duration {
+        Duration::ZERO
+    }
+
+    fn entropy_u64(&self) -> u64 {
+        0
+    }
+
     fn ensure_blocking_lanes(
         &self,
         _lanes: &[cdf_runtime::BlockingLaneSpec],

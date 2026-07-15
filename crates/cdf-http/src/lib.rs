@@ -6,7 +6,7 @@ mod message;
 mod pagination;
 mod rate_limit;
 mod redaction;
-mod retry;
+mod response;
 mod support;
 mod trace;
 
@@ -27,5 +27,5 @@ pub use rate_limit::{
     QuotaHeaderPolicy, RateLimitDecision, RateLimitPolicy, RateLimiter, ResetHeaderSemantics,
 };
 pub use redaction::Redactor;
-pub use retry::{RetryBudget, RetryDecision, RetryPolicy, RetryUnit};
+pub use response::classify_response;
 pub use trace::TraceEvent;

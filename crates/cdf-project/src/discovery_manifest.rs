@@ -1280,6 +1280,7 @@ mod tests {
                     scope: cdf_kernel::ScopeKey::Partition { partition_id },
                     start_position: None,
                     scan_intent: cdf_kernel::CompiledScanIntent::full_scan(),
+                    retry_safety: cdf_kernel::PartitionRetrySafety::Forbidden,
                     metadata: BTreeMap::from([
                         ("kind".to_owned(), "files".to_owned()),
                         ("path".to_owned(), (*location).to_owned()),

@@ -21,6 +21,7 @@ fn schema_observation_identity_is_partition_scoped_for_file_partitions() {
         },
         start_position: None,
         scan_intent: CompiledScanIntent::full_scan(),
+        retry_safety: PartitionRetrySafety::Forbidden,
         metadata: BTreeMap::new(),
     };
 
@@ -1449,10 +1450,27 @@ fn partition_completion_evidence_is_eof_bound_and_single_use() {
     }
     let mut context = Context::from_waker(std::task::Waker::noop());
     let stream: BatchStream = Box::pin(EmptyBatchStream);
-    let mut opened = OpenedPartitionStream::with_completion(
+    let termination_polled = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let observed_termination = Arc::clone(&termination_polled);
+    let payload = PartitionStreamPayload::new(
         stream,
         Box::pin(async { Ok(PartitionCompletion::default()) }),
     );
+    let mut attempt = PartitionOpenAttempt::with_termination(
+        Box::pin(async move { Ok(payload) }),
+        InvocationTermination::new(
+            || {},
+            Box::pin(async move {
+                observed_termination.store(true, std::sync::atomic::Ordering::SeqCst);
+                Ok(())
+            }),
+        ),
+    );
+    let mut opened = match Pin::new(&mut attempt).poll(&mut context) {
+        Poll::Ready(Ok(opened)) => opened,
+        Poll::Ready(Err(error)) => panic!("partition opening failed: {error}"),
+        Poll::Pending => panic!("materialized partition opening unexpectedly blocked"),
+    };
 
     let before_eof = {
         let mut completion = Box::pin(opened.completion());
@@ -1475,6 +1493,7 @@ fn partition_completion_evidence_is_eof_bound_and_single_use() {
         }
     };
     assert_eq!(after_eof.unwrap(), PartitionCompletion::default());
+    assert!(termination_polled.load(std::sync::atomic::Ordering::SeqCst));
     let second = {
         let mut completion = Box::pin(opened.completion());
         match completion.as_mut().poll(&mut context) {
@@ -1483,4 +1502,215 @@ fn partition_completion_evidence_is_eof_bound_and_single_use() {
         }
     };
     assert!(second.is_err());
+}
+
+#[test]
+fn failed_partition_attempt_requires_its_bound_termination_barrier() {
+    struct ErrorBatchStream;
+    impl Stream for ErrorBatchStream {
+        type Item = Result<Batch>;
+
+        fn poll_next(self: Pin<&mut Self>, _context: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+            Poll::Ready(Some(Err(CdfError::transient("fixture producer failed"))))
+        }
+    }
+
+    let barrier_polled = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let observed_barrier = Arc::clone(&barrier_polled);
+    let stream: BatchStream = Box::pin(ErrorBatchStream);
+    let payload = PartitionStreamPayload::new(
+        stream,
+        Box::pin(async { Ok(PartitionCompletion::default()) }),
+    );
+    let mut attempt = PartitionOpenAttempt::with_termination(
+        Box::pin(async move { Ok(payload) }),
+        InvocationTermination::new(
+            || {},
+            Box::pin(async move {
+                observed_barrier.store(true, std::sync::atomic::Ordering::SeqCst);
+                Ok(())
+            }),
+        ),
+    );
+    let mut context = Context::from_waker(std::task::Waker::noop());
+    let mut opened = match Pin::new(&mut attempt).poll(&mut context) {
+        Poll::Ready(Ok(opened)) => opened,
+        Poll::Ready(Err(error)) => panic!("partition opening failed: {error}"),
+        Poll::Pending => panic!("materialized partition opening unexpectedly blocked"),
+    };
+    assert!(matches!(
+        Pin::new(&mut opened).poll_next(&mut context),
+        Poll::Ready(Some(Err(_)))
+    ));
+    let mut joined = Box::pin(opened.join_failed_attempt());
+    assert!(matches!(
+        joined.as_mut().poll(&mut context),
+        Poll::Ready(Ok(()))
+    ));
+    assert!(barrier_polled.load(std::sync::atomic::Ordering::SeqCst));
+}
+
+#[test]
+fn failed_partition_attempt_does_not_treat_repeated_producer_error_as_cleanup_failure() {
+    struct ErrorBatchStream(CdfError);
+    impl Stream for ErrorBatchStream {
+        type Item = Result<Batch>;
+
+        fn poll_next(self: Pin<&mut Self>, _context: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+            Poll::Ready(Some(Err(self.0.clone())))
+        }
+    }
+
+    let producer_error = CdfError::transient("fixture producer failed");
+    let stream: BatchStream = Box::pin(ErrorBatchStream(producer_error.clone()));
+    let payload = PartitionStreamPayload::batches(stream);
+    let mut attempt = PartitionOpenAttempt::with_termination(
+        Box::pin(async move { Ok(payload) }),
+        InvocationTermination::new(|| {}, Box::pin(async move { Err(producer_error) })),
+    );
+    let mut context = Context::from_waker(std::task::Waker::noop());
+    let mut opened = match Pin::new(&mut attempt).poll(&mut context) {
+        Poll::Ready(Ok(opened)) => opened,
+        Poll::Ready(Err(error)) => panic!("partition opening failed: {error}"),
+        Poll::Pending => panic!("materialized partition opening unexpectedly blocked"),
+    };
+    assert!(matches!(
+        Pin::new(&mut opened).poll_next(&mut context),
+        Poll::Ready(Some(Err(_)))
+    ));
+    let mut joined = Box::pin(opened.join_failed_attempt());
+    assert!(matches!(
+        joined.as_mut().poll(&mut context),
+        Poll::Ready(Ok(()))
+    ));
+    drop(joined);
+    let mut repeated = Box::pin(opened.terminate_and_join());
+    assert!(matches!(
+        repeated.as_mut().poll(&mut context),
+        Poll::Ready(Ok(()))
+    ));
+}
+
+#[test]
+fn cancelled_partition_open_retains_awaitable_termination_authority() {
+    let cancelled = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let observed_cancel = Arc::clone(&cancelled);
+    let barrier_polled = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let observed_barrier = Arc::clone(&barrier_polled);
+    let termination = InvocationTermination::new(
+        move || observed_cancel.store(true, std::sync::atomic::Ordering::SeqCst),
+        Box::pin(async move {
+            observed_barrier.store(true, std::sync::atomic::Ordering::SeqCst);
+            Ok(())
+        }),
+    );
+    let opening = Box::pin(std::future::pending::<Result<PartitionStreamPayload>>());
+    let mut attempt = PartitionOpenAttempt::with_termination(opening, termination);
+    let mut context = Context::from_waker(std::task::Waker::noop());
+
+    assert!(matches!(
+        Pin::new(&mut attempt).poll(&mut context),
+        Poll::Pending
+    ));
+    let mut terminated = Box::pin(attempt.terminate_and_join());
+    assert!(matches!(
+        terminated.as_mut().poll(&mut context),
+        Poll::Ready(Ok(()))
+    ));
+    assert!(cancelled.load(std::sync::atomic::Ordering::SeqCst));
+    assert!(barrier_polled.load(std::sync::atomic::Ordering::SeqCst));
+}
+
+#[test]
+fn cancelled_partition_attestation_retains_awaitable_termination_authority() {
+    let cancelled = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let observed_cancel = Arc::clone(&cancelled);
+    let barrier_polled = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let observed_barrier = Arc::clone(&barrier_polled);
+    let termination = InvocationTermination::new(
+        move || observed_cancel.store(true, std::sync::atomic::Ordering::SeqCst),
+        Box::pin(async move {
+            observed_barrier.store(true, std::sync::atomic::Ordering::SeqCst);
+            Ok(())
+        }),
+    );
+    let attesting = Box::pin(std::future::pending::<Result<Option<PartitionAttestation>>>());
+    let mut attempt = PartitionAttestationAttempt::with_termination(attesting, termination);
+    let mut context = Context::from_waker(std::task::Waker::noop());
+
+    assert!(matches!(
+        Pin::new(&mut attempt).poll(&mut context),
+        Poll::Pending
+    ));
+    let mut terminated = Box::pin(attempt.terminate_and_join());
+    assert!(matches!(
+        terminated.as_mut().poll(&mut context),
+        Poll::Ready(Ok(()))
+    ));
+    assert!(cancelled.load(std::sync::atomic::Ordering::SeqCst));
+    assert!(barrier_polled.load(std::sync::atomic::Ordering::SeqCst));
+}
+
+#[test]
+fn partition_open_error_is_visible_before_its_explicit_termination_barrier() {
+    let opening =
+        Box::pin(async { Err::<PartitionStreamPayload, _>(CdfError::transient("opening failed")) });
+    let termination = InvocationTermination::new(
+        || {},
+        Box::pin(async { Err(CdfError::internal("join failed")) }),
+    );
+    let mut attempt = PartitionOpenAttempt::with_termination(opening, termination);
+    let mut context = Context::from_waker(std::task::Waker::noop());
+
+    let result = match Pin::new(&mut attempt).poll(&mut context) {
+        Poll::Ready(result) => result,
+        Poll::Pending => panic!("immediate opening and termination unexpectedly blocked"),
+    };
+    let error = match result {
+        Ok(_) => panic!("opening unexpectedly succeeded"),
+        Err(error) => error,
+    };
+    assert_eq!(error.kind, ErrorKind::Transient);
+    assert!(error.message.contains("opening failed"));
+    assert!(!error.message.contains("join failed"));
+    let cleanup = {
+        let mut cleanup = Box::pin(attempt.terminate_and_join());
+        match cleanup.as_mut().poll(&mut context) {
+            Poll::Ready(result) => result.unwrap_err(),
+            Poll::Pending => panic!("immediate termination unexpectedly blocked"),
+        }
+    };
+    assert!(cleanup.message.contains("join failed"));
+}
+
+#[test]
+fn terminal_file_attestation_may_only_add_a_content_hash() {
+    let earlier_position = SourcePosition::FileManifest(FileManifest {
+        version: 1,
+        files: vec![FilePosition {
+            path: "https://example.invalid/data.parquet".to_owned(),
+            size_bytes: 42,
+            source_generation: Some("generation-1".to_owned()),
+            etag: None,
+            object_version: None,
+            sha256: None,
+        }],
+    });
+    let earlier = PartitionAttestation::new(earlier_position.clone(), None);
+    let mut completed_position = earlier_position.clone();
+    let SourcePosition::FileManifest(manifest) = &mut completed_position else {
+        unreachable!("fixture is a file manifest")
+    };
+    manifest.files[0].sha256 = Some(format!("sha256:{}", "a".repeat(64)));
+    let completed = PartitionAttestation::new(completed_position.clone(), None);
+    assert!(completed.is_monotonic_refinement_of(&earlier));
+
+    let mut changed_position = completed_position;
+    let SourcePosition::FileManifest(manifest) = &mut changed_position else {
+        unreachable!("fixture is a file manifest")
+    };
+    manifest.files[0].source_generation = Some("generation-2".to_owned());
+    let changed = PartitionAttestation::new(changed_position, None);
+    assert!(!changed.is_monotonic_refinement_of(&earlier));
+    assert!(!earlier.is_monotonic_refinement_of(&completed));
 }

@@ -908,7 +908,7 @@ fn ensure_http_success(method: HttpMethod, response: &HttpFileResponse) -> Resul
         ))),
         429 => Err(CdfError::rate_limited(
             format!("HTTP file transport {method} 429 rate limit"),
-            None,
+            http_retry_after_ms(response),
         )),
         400..=499 => Err(CdfError::data(format!(
             "HTTP file transport {method} {} response is not retryable as a request",
@@ -919,6 +919,12 @@ fn ensure_http_success(method: HttpMethod, response: &HttpFileResponse) -> Resul
             format!("unexpected HTTP file transport status {}", response.status),
         )),
     }
+}
+
+fn http_retry_after_ms(response: &HttpFileResponse) -> Option<u64> {
+    header_value(&response.headers, "retry-after")
+        .and_then(|value| value.trim().parse::<u64>().ok())
+        .map(|seconds| seconds.saturating_mul(1_000))
 }
 
 fn http_identity(url: &str, response: &HttpFileResponse) -> Result<FileIdentityMetadata> {
@@ -1053,6 +1059,15 @@ mod tests {
     use tempfile::TempDir;
 
     use super::*;
+
+    #[test]
+    fn http_rate_limit_preserves_retry_after_for_scheduler_policy() {
+        let response = HttpFileResponse::new(429).with_header("Retry-After", "7");
+        let error = ensure_http_success(HttpMethod::Get, &response).unwrap_err();
+
+        assert_eq!(error.kind, ErrorKind::RateLimited);
+        assert_eq!(error.retry_after_ms, Some(7_000));
+    }
 
     #[test]
     fn object_store_transport_lists_and_heads_through_one_facade() {

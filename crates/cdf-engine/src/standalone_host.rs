@@ -1,9 +1,10 @@
 use std::{
     collections::{BTreeMap, VecDeque},
+    hash::BuildHasher,
     panic::{AssertUnwindSafe, catch_unwind},
     sync::{
         Arc, Condvar, Mutex,
-        atomic::{AtomicU16, Ordering},
+        atomic::{AtomicU16, AtomicU64, Ordering},
         mpsc,
     },
     thread::JoinHandle,
@@ -21,8 +22,13 @@ use futures_util::{FutureExt, StreamExt, future::Either, stream::FuturesUnordere
 use tokio::{runtime::Runtime, sync::oneshot, task::JoinHandle as TokioJoinHandle};
 
 struct WorkCompletion {
-    result: Result<()>,
+    outcome: WorkOutcome,
     queue_wait_ns: u64,
+}
+
+enum WorkOutcome {
+    Completed(Result<()>),
+    CancelledBeforeAdmission,
 }
 
 struct WorkItem {
@@ -213,11 +219,13 @@ fn worker_loop(state: Arc<(Mutex<PoolState>, Condvar)>, slots: Arc<CpuSlots>) {
             usage.admit(item.slot_cost);
         }
         let queue_wait_ns = u64::try_from(item.enqueued.elapsed().as_nanos()).unwrap_or(u64::MAX);
-        let result = if item.cancellation.is_cancelled() {
-            Err(CdfError::internal("task cancelled before admission"))
+        let outcome = if item.cancellation.is_cancelled() {
+            WorkOutcome::CancelledBeforeAdmission
         } else {
-            catch_unwind(AssertUnwindSafe(item.task))
-                .unwrap_or_else(|_| Err(CdfError::internal("execution worker panicked")))
+            WorkOutcome::Completed(
+                catch_unwind(AssertUnwindSafe(item.task))
+                    .unwrap_or_else(|_| Err(CdfError::internal("execution worker panicked"))),
+            )
         };
         let slot_cost = item.slot_cost;
         let mut available = slots.available.lock().unwrap();
@@ -228,7 +236,7 @@ fn worker_loop(state: Arc<(Mutex<PoolState>, Condvar)>, slots: Arc<CpuSlots>) {
             usage.release(slot_cost);
         }
         let _ = item.completion.send(WorkCompletion {
-            result,
+            outcome,
             queue_wait_ns,
         });
         if let Some(released) = item.released {
@@ -245,6 +253,8 @@ pub struct StandaloneExecutionHost {
     slots: Arc<CpuSlots>,
     cpu: Arc<FixedTaskPool>,
     lanes: Mutex<BTreeMap<String, (BlockingLaneSpec, Arc<FixedTaskPool>)>>,
+    monotonic_origin: Instant,
+    entropy_counter: AtomicU64,
 }
 
 impl StandaloneExecutionHost {
@@ -362,6 +372,8 @@ impl StandaloneExecutionHost {
             slots,
             cpu,
             lanes: Mutex::new(lanes),
+            monotonic_origin: Instant::now(),
+            entropy_counter: AtomicU64::new(0),
         })
     }
 }
@@ -414,8 +426,17 @@ impl ExecutionHost for StandaloneExecutionHost {
     ) -> cdf_kernel::BoxFuture<'static, Result<()>> {
         let runtime_handle = self.runtime.handle().clone();
         Box::pin(async move {
+            struct AbortOnDrop(tokio::task::AbortHandle);
+
+            impl Drop for AbortOnDrop {
+                fn drop(&mut self) {
+                    self.0.abort();
+                }
+            }
+
             cancellation.check()?;
             let timer = runtime_handle.spawn(async move { tokio::time::sleep(duration).await });
+            let _abort_on_drop = AbortOnDrop(timer.abort_handle());
             let cancelled = cancellation.cancelled();
             futures_util::pin_mut!(timer, cancelled);
             match futures_util::future::select(timer, cancelled).await {
@@ -429,6 +450,15 @@ impl ExecutionHost for StandaloneExecutionHost {
                 }
             }
         })
+    }
+
+    fn monotonic_now(&self) -> Duration {
+        self.monotonic_origin.elapsed()
+    }
+
+    fn entropy_u64(&self) -> u64 {
+        let counter = self.entropy_counter.fetch_add(1, Ordering::Relaxed);
+        std::collections::hash_map::RandomState::new().hash_one(counter)
     }
 
     fn ensure_blocking_lanes(&self, lanes: &[BlockingLaneSpec]) -> Result<()> {
@@ -565,7 +595,8 @@ impl ExecutionTaskScope for StandaloneTaskScope {
     }
 
     fn join(mut self: Box<Self>) -> cdf_kernel::BoxFuture<'static, Result<TaskScopeReport>> {
-        Box::pin(async move {
+        let runtime = self.handle.clone();
+        let join = runtime.spawn(async move {
             enum ScopedCompletion {
                 Io(std::result::Result<Result<()>, tokio::task::JoinError>),
                 Worker(std::result::Result<WorkCompletion, oneshot::error::RecvError>),
@@ -619,9 +650,12 @@ impl ExecutionTaskScope for StandaloneTaskScope {
                             .report
                             .queue_wait_ns
                             .saturating_add(completion.queue_wait_ns);
-                        match completion.result {
-                            Ok(()) => self.report.completed += 1,
-                            Err(error) => {
+                        match completion.outcome {
+                            WorkOutcome::CancelledBeforeAdmission => {
+                                self.report.cancelled += 1;
+                            }
+                            WorkOutcome::Completed(Ok(())) => self.report.completed += 1,
+                            WorkOutcome::Completed(Err(error)) => {
                                 self.cancellation.cancel();
                                 self.report.failed += 1;
                                 first_error.get_or_insert(error);
@@ -644,6 +678,10 @@ impl ExecutionTaskScope for StandaloneTaskScope {
                     Ok(std::mem::take(&mut self.report))
                 }
             }
+        });
+        Box::pin(async move {
+            join.await
+                .map_err(|_| CdfError::internal("execution task-scope supervisor panicked"))?
         })
     }
 }
@@ -652,6 +690,7 @@ impl ExecutionTaskScope for StandaloneTaskScope {
 mod tests {
     use std::path::Path;
     use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::mpsc;
 
     use cdf_memory::{DeterministicMemoryCoordinator, MemoryClass, ReservationRequest};
     use cdf_runtime::{ExecutionHost, ExecutionServices, InterruptionSafety, LaneAffinity};
@@ -751,6 +790,68 @@ mod tests {
     }
 
     #[test]
+    fn dropped_scoped_stream_eagerly_joins_its_producer_without_a_waiter() {
+        struct DropSignal(Option<mpsc::SyncSender<()>>);
+
+        impl Drop for DropSignal {
+            fn drop(&mut self) {
+                let _ = self.0.take().expect("drop signal is emitted once").send(());
+            }
+        }
+
+        let services = ExecutionServices::new(Arc::new(host())).unwrap();
+        let (dropped_sender, dropped_receiver) = mpsc::sync_channel(1);
+        let producer_guard = DropSignal(Some(dropped_sender));
+        let stream = services
+            .spawn_io_stream(
+                "eager-drop-join",
+                1,
+                move |_sender: cdf_runtime::IoStreamSender<()>, cancellation| async move {
+                    let _producer_guard = producer_guard;
+                    cancellation.cancelled().await;
+                    Ok(())
+                },
+            )
+            .unwrap();
+        drop(stream);
+
+        dropped_receiver
+            .recv_timeout(std::time::Duration::from_secs(1))
+            .expect("dropping the stream must cancel and join its producer scope eagerly");
+    }
+
+    #[test]
+    fn dropped_blocking_invocation_cancels_and_joins_its_declared_lane() {
+        struct DropSignal(Option<mpsc::SyncSender<()>>);
+
+        impl Drop for DropSignal {
+            fn drop(&mut self) {
+                let _ = self.0.take().expect("drop signal is emitted once").send(());
+            }
+        }
+
+        let services = ExecutionServices::new(Arc::new(host())).unwrap();
+        let (dropped_sender, dropped_receiver) = mpsc::sync_channel(1);
+        let guard = DropSignal(Some(dropped_sender));
+        let task = services
+            .spawn_blocking_value("blocking-open", "native", move |cancellation| {
+                let _guard = guard;
+                while !cancellation.is_cancelled() {
+                    std::thread::yield_now();
+                }
+                Ok(())
+            })
+            .unwrap();
+        let termination = task.termination();
+        drop(task);
+
+        futures_executor::block_on(termination.join()).unwrap();
+        dropped_receiver
+            .recv_timeout(std::time::Duration::from_secs(1))
+            .expect("blocking invocation task must be dropped before join returns");
+    }
+
+    #[test]
     fn embedding_under_an_existing_tokio_runtime_and_worker_panic_join_cleanly() {
         let host = host();
         let memory = host.memory();
@@ -813,6 +914,47 @@ mod tests {
 
         assert!(error.message.contains("intentional graph stage failure"));
         assert_eq!(memory.snapshot().current_bytes, 0);
+    }
+
+    #[test]
+    fn explicit_scope_cancellation_counts_work_cancelled_before_admission() {
+        let host = host();
+        let (started_sender, started_receiver) = mpsc::sync_channel(1);
+        let (release_sender, release_receiver) = mpsc::sync_channel(1);
+        let mut scope = host.open_scope("cancel-before-admission").unwrap();
+        scope
+            .spawn_cpu(
+                CpuTaskSpec {
+                    task_kind: "occupy-all-slots".to_owned(),
+                    cpu_slot_cost: 2,
+                    native_internal_parallelism: 1,
+                },
+                Box::new(move || {
+                    started_sender.send(()).unwrap();
+                    release_receiver.recv().unwrap();
+                    Ok(())
+                }),
+            )
+            .unwrap();
+        started_receiver.recv().unwrap();
+        scope
+            .spawn_cpu(
+                CpuTaskSpec {
+                    task_kind: "queued-then-cancelled".to_owned(),
+                    cpu_slot_cost: 2,
+                    native_internal_parallelism: 1,
+                },
+                Box::new(|| panic!("cancelled work must not execute")),
+            )
+            .unwrap();
+
+        scope.cancel();
+        release_sender.send(()).unwrap();
+        let report = host.runtime.block_on(scope.join()).unwrap();
+
+        assert_eq!(report.completed, 1);
+        assert_eq!(report.cancelled, 1);
+        assert_eq!(report.failed, 0);
     }
 
     #[test]

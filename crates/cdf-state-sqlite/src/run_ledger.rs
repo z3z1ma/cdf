@@ -274,6 +274,7 @@ pub(crate) fn initialize_run_schema(conn: &Connection) -> Result<()> {
                 'run_resumed',
                 'replay_recorded',
                 'validation_depth_transition_recorded',
+                'source_retry_recorded',
                 'phase_measured'
             )),
             resource_id TEXT,

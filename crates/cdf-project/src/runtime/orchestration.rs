@@ -19,12 +19,11 @@ use super::{
     },
 };
 use cdf_contract::{AnomalyFact, ValidationDepth, ValidationProgram, ValidationTransitionTrigger};
-use std::sync::Arc;
-
 #[cfg(test)]
 pub(crate) async fn run_local_file_to_duckdb_checkpoint(
     request: LocalFileDuckDbRunRequest<'_>,
 ) -> Result<LocalFileDuckDbRunReport> {
+    let services = request.services;
     let destination = ResolvedProjectDestination::duckdb(request.destination_path, request.target)?;
     let request = ProjectRunRequest {
         resource: ProjectRunSource::new(request.resource),
@@ -39,32 +38,22 @@ pub(crate) async fn run_local_file_to_duckdb_checkpoint(
         event_sink: None,
         after_receipt_verified: request.after_receipt_verified,
     };
-    Ok(run_project(request).await?.into_local_file_duckdb_report())
+    Ok(run_project(request, &services)
+        .await?
+        .into_local_file_duckdb_report())
 }
 
-pub async fn run_project(request: ProjectRunRequest<'_>) -> Result<ProjectRunReport> {
-    run_project_with_context(request, RunTelemetryConfig::disabled(), None, None).await
-}
-
-pub async fn run_project_with_services(
+pub async fn run_project(
     request: ProjectRunRequest<'_>,
     services: &ExecutionServices,
 ) -> Result<ProjectRunReport> {
     run_project_with_context(
         request,
         RunTelemetryConfig::disabled(),
-        Some(services.clone()),
+        services.clone(),
         None,
     )
     .await
-}
-
-pub async fn run_project_with_services_and_telemetry(
-    request: ProjectRunRequest<'_>,
-    services: &ExecutionServices,
-    telemetry: RunTelemetryConfig,
-) -> Result<ProjectRunReport> {
-    run_project_with_context(request, telemetry, Some(services.clone()), None).await
 }
 
 pub async fn run_project_with_scheduler_and_telemetry(
@@ -73,20 +62,21 @@ pub async fn run_project_with_scheduler_and_telemetry(
     scheduler: Option<cdf_runtime::RuntimeSchedulerResolution>,
     telemetry: RunTelemetryConfig,
 ) -> Result<ProjectRunReport> {
-    run_project_with_context(request, telemetry, Some(services.clone()), scheduler).await
+    run_project_with_context(request, telemetry, services.clone(), scheduler).await
 }
 
 pub async fn run_project_with_telemetry(
     request: ProjectRunRequest<'_>,
+    services: &ExecutionServices,
     telemetry: RunTelemetryConfig,
 ) -> Result<ProjectRunReport> {
-    run_project_with_context(request, telemetry, None, None).await
+    run_project_with_context(request, telemetry, services.clone(), None).await
 }
 
 async fn run_project_with_context(
     request: ProjectRunRequest<'_>,
     telemetry: RunTelemetryConfig,
-    services: Option<ExecutionServices>,
+    services: ExecutionServices,
     scheduler: Option<cdf_runtime::RuntimeSchedulerResolution>,
 ) -> Result<ProjectRunReport> {
     let mut request = request;
@@ -188,7 +178,7 @@ struct ProjectRunExecution<'a> {
     recorder: &'a ProjectRunRecorder<'a>,
     after_receipt_verified: Option<ReceiptVerifiedHook<'a>>,
     schema_hash: SchemaHash,
-    services: Option<ExecutionServices>,
+    services: ExecutionServices,
     scheduler: Option<cdf_runtime::RuntimeSchedulerResolution>,
 }
 
@@ -264,15 +254,16 @@ async fn run_project_inner(execution: ProjectRunExecution<'_>) -> Result<Project
             output_schema: manifest_plan.plan.output_arrow_schema()?.as_ref().clone(),
             merge_keys: descriptor.merge_key.clone(),
         },
-        execution.services.as_ref(),
+        &execution.services,
     )?;
     let options = EngineExecutionOptions::default()
         .with_phase_metrics(execution.recorder.phase_telemetry_enabled())
-        .with_optional_execution_services(execution.services.clone());
+        .with_execution_services(execution.services.clone());
     let options = match execution.scheduler.clone() {
         Some(scheduler) => options.with_scheduler_resolution(scheduler),
         None => options,
     };
+    let retry_evidence = options.source_retry_evidence();
     let output_result = match active_staged.as_mut() {
         Some(staged) => {
             let staged = std::cell::RefCell::new(staged);
@@ -303,15 +294,34 @@ async fn run_project_inner(execution: ProjectRunExecution<'_>) -> Result<Project
             .await
         }
     };
+    let retry_history = retry_evidence.snapshot().and_then(|retry_history| {
+        execution.recorder.append_source_retries(
+            &retry_history,
+            manifest_plan.plan.partition_schedule.as_ref(),
+        )?;
+        Ok(retry_history)
+    });
     let output = match output_result {
         Ok(output) => output,
-        Err(error) => {
+        Err(mut error) => {
             if let Some(staged) = active_staged.take() {
                 staged.abort();
+            }
+            if let Err(evidence_error) = retry_history {
+                error.message = format!(
+                    "{}; source retry evidence persistence also failed: {}",
+                    error.message, evidence_error.message
+                );
             }
             return Err(error);
         }
     };
+    let retry_history = retry_history?;
+    if output.execution_evidence().source_retries() != retry_history {
+        return Err(CdfError::internal(
+            "engine output retry evidence diverged from the durable runtime journal",
+        ));
+    }
 
     for metric in output.phase_metrics.iter().cloned() {
         execution.recorder.append_phase_metric(metric)?;
@@ -380,13 +390,7 @@ async fn run_project_inner(execution: ProjectRunExecution<'_>) -> Result<Project
 
     let stage_hook =
         |stage: PackageReplayStage<'_>| notify_run_replay_stage(execution.recorder, stage);
-    let replay_memory = match &execution.services {
-        Some(services) => services.memory(),
-        None => Arc::new(cdf_memory::DeterministicMemoryCoordinator::new(
-            cdf_memory::DEFAULT_PROCESS_BUDGET_BYTES,
-            Default::default(),
-        )?) as Arc<dyn cdf_memory::MemoryCoordinator>,
-    };
+    let replay_memory = execution.services.memory();
     let replay_report = replay_package_with_runtime_and_staged(
         package,
         execution.destination.runtime_mut(),
@@ -467,20 +471,19 @@ fn plan_file_manifest_incrementality(
         .map(|file| file.path.clone())
         .collect::<BTreeSet<_>>();
     let changed_file_count = changed_paths.len();
-    let mut filtered = plan.clone();
-    filtered.scan.partitions.retain(|partition| {
-        partition
-            .metadata
-            .get("path")
-            .is_some_and(|path| changed_paths.contains(path))
-    });
-    filtered.explain.partitions.retain(|partition| {
-        filtered
-            .scan
-            .partitions
-            .iter()
-            .any(|planned| planned.partition_id.as_str() == partition.partition_id)
-    });
+    let selected = plan
+        .scan
+        .partitions
+        .iter()
+        .filter(|partition| {
+            partition
+                .metadata
+                .get("path")
+                .is_some_and(|path| changed_paths.contains(path))
+        })
+        .map(|partition| partition.partition_id.clone())
+        .collect::<BTreeSet<_>>();
+    let filtered = plan.clone().select_partitions(&selected)?;
 
     Ok(FileManifestPlanning {
         plan: filtered,

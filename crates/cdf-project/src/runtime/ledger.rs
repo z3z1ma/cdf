@@ -157,6 +157,54 @@ impl<'a> ProjectRunRecorder<'a> {
         self.append(event)
     }
 
+    pub(super) fn append_source_retries(
+        &self,
+        retries: &[SourceRetryEvidence],
+        schedule: Option<&cdf_runtime::CanonicalPartitionSchedule>,
+    ) -> Result<()> {
+        for retry in retries {
+            let schedule = schedule.ok_or_else(|| {
+                CdfError::internal("source retry event requires its compiled partition schedule")
+            })?;
+            retry.validate_against_schedule(schedule)?;
+            let mut event = self.base_event(RunEventKind::SourceRetryRecorded);
+            let mut details = details_for_phase("source");
+            details.insert(
+                "plan_id".to_owned(),
+                RunEventValue::String(retry.plan_id().to_owned()),
+            );
+            details.insert(
+                "partition_ordinal".to_owned(),
+                RunEventValue::U64(u64::from(retry.partition_ordinal())),
+            );
+            details.insert(
+                "partition_id".to_owned(),
+                RunEventValue::String(retry.partition_id().to_owned()),
+            );
+            details.insert(
+                "immutable_identity_hash".to_owned(),
+                RunEventValue::String(retry.immutable_identity_hash().to_owned()),
+            );
+            details.insert(
+                "partition_binding_hash".to_owned(),
+                RunEventValue::String(retry.partition_binding_hash().to_owned()),
+            );
+            details.insert(
+                "compiled_retry".to_owned(),
+                compiled_source_retry_value(retry.compiled_retry()),
+            );
+            details.insert(
+                "history".to_owned(),
+                source_retry_history_value(retry.history()),
+            );
+            event.details = RunEventDetails {
+                attributes: details,
+            };
+            self.append(event)?;
+        }
+        Ok(())
+    }
+
     pub(super) fn append_validation_depth_transition_recorded(
         &self,
         package_hash: &PackageHash,
@@ -461,6 +509,116 @@ impl<'a> ProjectRunRecorder<'a> {
         Ok(RunEventDetails {
             attributes: details,
         })
+    }
+}
+
+fn compiled_source_retry_value(retry: &cdf_runtime::CompiledSourceRetry) -> RunEventValue {
+    RunEventValue::Object(BTreeMap::from([
+        (
+            "granularity".to_owned(),
+            RunEventValue::String(
+                match retry.granularity {
+                    cdf_runtime::SourceRetryGranularity::None => "none",
+                    cdf_runtime::SourceRetryGranularity::Partition => "partition",
+                    cdf_runtime::SourceRetryGranularity::Unit => "unit",
+                }
+                .to_owned(),
+            ),
+        ),
+        (
+            "retryable_errors".to_owned(),
+            RunEventValue::List(
+                retry
+                    .retryable_errors
+                    .iter()
+                    .map(|kind| RunEventValue::String(error_kind_name(kind).to_owned()))
+                    .collect(),
+            ),
+        ),
+        (
+            "policy".to_owned(),
+            RunEventValue::Object(BTreeMap::from([
+                (
+                    "max_total_attempts".to_owned(),
+                    RunEventValue::U64(u64::from(retry.policy.max_total_attempts)),
+                ),
+                (
+                    "max_elapsed_ms".to_owned(),
+                    RunEventValue::U64(retry.policy.max_elapsed_ms),
+                ),
+                (
+                    "base_delay_ms".to_owned(),
+                    RunEventValue::U64(retry.policy.base_delay_ms),
+                ),
+                (
+                    "max_delay_ms".to_owned(),
+                    RunEventValue::U64(retry.policy.max_delay_ms),
+                ),
+            ])),
+        ),
+        (
+            "attestation".to_owned(),
+            RunEventValue::String(
+                match retry.attestation {
+                    cdf_runtime::SourceAttestationStrength::None => "none",
+                    cdf_runtime::SourceAttestationStrength::Metadata => "metadata",
+                    cdf_runtime::SourceAttestationStrength::ImmutableContent => "immutable_content",
+                    cdf_runtime::SourceAttestationStrength::Snapshot => "snapshot",
+                }
+                .to_owned(),
+            ),
+        ),
+        ("resumable".to_owned(), RunEventValue::Bool(retry.resumable)),
+    ]))
+}
+
+fn source_retry_history_value(history: &[cdf_runtime::SourceRetryHistoryEntry]) -> RunEventValue {
+    RunEventValue::List(
+        history
+            .iter()
+            .map(|entry| {
+                let mut fields = BTreeMap::from([
+                    (
+                        "failed_attempt".to_owned(),
+                        RunEventValue::U64(u64::from(entry.failed_attempt)),
+                    ),
+                    (
+                        "cause".to_owned(),
+                        RunEventValue::String(error_kind_name(&entry.cause).to_owned()),
+                    ),
+                ]);
+                if let Some(delay_ms) = entry.selected_delay_ms {
+                    fields.insert("selected_delay_ms".to_owned(), RunEventValue::U64(delay_ms));
+                }
+                if let Some(exhaustion) = entry.exhaustion {
+                    fields.insert(
+                        "exhaustion".to_owned(),
+                        RunEventValue::String(retry_exhaustion_name(exhaustion).to_owned()),
+                    );
+                }
+                RunEventValue::Object(fields)
+            })
+            .collect(),
+    )
+}
+
+fn error_kind_name(kind: &cdf_kernel::ErrorKind) -> &'static str {
+    match kind {
+        cdf_kernel::ErrorKind::Transient => "transient",
+        cdf_kernel::ErrorKind::RateLimited => "rate_limited",
+        cdf_kernel::ErrorKind::Auth => "auth",
+        cdf_kernel::ErrorKind::Contract => "contract",
+        cdf_kernel::ErrorKind::Data => "data",
+        cdf_kernel::ErrorKind::Destination => "destination",
+        cdf_kernel::ErrorKind::Internal => "internal",
+    }
+}
+
+fn retry_exhaustion_name(exhaustion: cdf_runtime::SourceRetryExhaustion) -> &'static str {
+    match exhaustion {
+        cdf_runtime::SourceRetryExhaustion::Ineligible => "ineligible",
+        cdf_runtime::SourceRetryExhaustion::AttemptLimit => "attempt_limit",
+        cdf_runtime::SourceRetryExhaustion::ElapsedDeadline => "elapsed_deadline",
     }
 }
 
@@ -887,5 +1045,89 @@ mod tests {
         assert_eq!(metric.status, RunPhaseStatus::Failed);
         assert!(metric.duration_ns > 0);
         assert_eq!(events.last().unwrap().kind, RunEventKind::RunFailed);
+    }
+
+    #[test]
+    fn source_retry_history_is_a_durable_nonpackage_run_event() {
+        let ledger = SqliteRunLedger::open_in_memory().unwrap();
+        let run = ledger
+            .create_run(Some(RunId::new("run-recorder-source-retry").unwrap()))
+            .unwrap();
+        let recorder = ProjectRunRecorder::new(
+            &ledger,
+            run.run_id.clone(),
+            ProjectRunRecorderContext {
+                resource_id: ResourceId::new("local.events").unwrap(),
+                scope: ScopeKey::Resource,
+                package_id: "pkg-recorder-source-retry".to_owned(),
+                package_path: "pkg-recorder-source-retry".to_owned(),
+                destination_id: DestinationId::new("duckdb").unwrap(),
+                plan_id: PlanId::new("plan-recorder-source-retry").unwrap(),
+                pipeline_id: PipelineId::new("pipeline-recorder-source-retry").unwrap(),
+            },
+            None,
+            RunTelemetryConfig::disabled(),
+        );
+        let partition_id = cdf_kernel::PartitionId::new("file-2").unwrap();
+        let scheduled = cdf_runtime::ScheduledPartition {
+            ordinal: cdf_runtime::CanonicalPartitionOrdinal::new(0),
+            partition: cdf_kernel::PartitionPlan {
+                partition_id: partition_id.clone(),
+                scope: ScopeKey::Partition {
+                    partition_id: partition_id.clone(),
+                },
+                start_position: None,
+                scan_intent: cdf_kernel::CompiledScanIntent::full_scan(),
+                retry_safety: cdf_kernel::PartitionRetrySafety::ImmutableContent,
+                metadata: BTreeMap::new(),
+            },
+            immutable_identity_hash: "sha256:fixture".to_owned(),
+            minimum_working_set_bytes: 1,
+            maximum_working_set_bytes: 1,
+            executor_class: cdf_runtime::SourceExecutorClass::Io,
+            retry: Some(cdf_runtime::CompiledSourceRetry {
+                granularity: cdf_runtime::SourceRetryGranularity::Partition,
+                retryable_errors: vec![cdf_kernel::ErrorKind::Transient],
+                policy: cdf_runtime::SourceRetryPolicy::default(),
+                attestation: cdf_runtime::SourceAttestationStrength::ImmutableContent,
+                resumable: true,
+            }),
+            speculative_safe: true,
+            canonical_order: true,
+        };
+        let schedule = cdf_runtime::CanonicalPartitionSchedule {
+            plan_id: "plan-recorder-source-retry".to_owned(),
+            partitions: vec![scheduled.clone()],
+        };
+        let journal = cdf_runtime::SourceRetryJournal::default();
+        journal
+            .record(
+                &schedule.plan_id,
+                &scheduled,
+                &[cdf_runtime::SourceRetryHistoryEntry {
+                    failed_attempt: 1,
+                    cause: cdf_kernel::ErrorKind::Transient,
+                    selected_delay_ms: Some(17),
+                    exhaustion: None,
+                }],
+            )
+            .unwrap();
+        let evidence = journal.snapshot().unwrap();
+
+        recorder
+            .append_source_retries(&evidence, Some(&schedule))
+            .unwrap();
+
+        let events = ledger.events(&run.run_id).unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].kind, RunEventKind::SourceRetryRecorded);
+        assert_eq!(
+            events[0].details.attributes.get("partition_id"),
+            Some(&RunEventValue::String("file-2".to_owned()))
+        );
+        assert!(matches!(
+            events[0].details.attributes.get("history"),
+            Some(RunEventValue::List(history)) if history.len() == 1
+        ));
     }
 }

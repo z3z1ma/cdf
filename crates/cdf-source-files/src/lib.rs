@@ -12,6 +12,8 @@ mod object_store_byte_source;
 mod runtime;
 mod transport;
 
+pub use runtime::{FILE_SOURCE_BLOCKING_LANE_ID, file_source_blocking_lane};
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(transparent)]
 pub struct FileFormatDeclaration(String);
@@ -272,6 +274,8 @@ impl cdf_runtime::ExecutionHost for TestIoHost {
             handle: self.runtime.handle().clone(),
             cancellation: cdf_runtime::RunCancellation::default(),
             tasks: Vec::new(),
+            submitted_io: 0,
+            submitted_blocking: 0,
         }))
     }
 
@@ -292,6 +296,14 @@ impl cdf_runtime::ExecutionHost for TestIoHost {
             tokio::time::sleep(duration).await;
             cancellation.check()
         })
+    }
+
+    fn monotonic_now(&self) -> std::time::Duration {
+        std::time::Duration::ZERO
+    }
+
+    fn entropy_u64(&self) -> u64 {
+        0
     }
 
     fn ensure_blocking_lanes(
@@ -315,6 +327,8 @@ struct TestIoScope {
     handle: tokio::runtime::Handle,
     cancellation: cdf_runtime::RunCancellation,
     tasks: Vec<tokio::task::JoinHandle<cdf_kernel::Result<()>>>,
+    submitted_io: u64,
+    submitted_blocking: u64,
 }
 
 #[cfg(test)]
@@ -335,6 +349,7 @@ impl cdf_runtime::ExecutionTaskScope for TestIoScope {
 
     fn spawn_io(&mut self, task: cdf_runtime::IoTask) -> cdf_kernel::Result<()> {
         self.tasks.push(self.handle.spawn(task));
+        self.submitted_io += 1;
         Ok(())
     }
 
@@ -351,11 +366,11 @@ impl cdf_runtime::ExecutionTaskScope for TestIoScope {
     fn spawn_blocking(
         &mut self,
         _lane: &str,
-        _task: cdf_runtime::BlockingTask,
+        task: cdf_runtime::BlockingTask,
     ) -> cdf_kernel::Result<()> {
-        Err(cdf_kernel::CdfError::internal(
-            "file source test scope does not execute blocking tasks",
-        ))
+        self.tasks.push(self.handle.spawn_blocking(task));
+        self.submitted_blocking += 1;
+        Ok(())
     }
 
     fn cancel(&self) {
@@ -367,7 +382,8 @@ impl cdf_runtime::ExecutionTaskScope for TestIoScope {
     ) -> cdf_kernel::BoxFuture<'static, cdf_kernel::Result<cdf_runtime::TaskScopeReport>> {
         Box::pin(async move {
             let mut report = cdf_runtime::TaskScopeReport {
-                submitted_io: self.tasks.len() as u64,
+                submitted_io: self.submitted_io,
+                submitted_blocking: self.submitted_blocking,
                 ..cdf_runtime::TaskScopeReport::default()
             };
             for task in self.tasks.drain(..) {

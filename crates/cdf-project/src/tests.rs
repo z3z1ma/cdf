@@ -1628,7 +1628,7 @@ fn generic_schema_discovery_dispatch_preserves_local_parquet_behavior_without_wr
         discovery
             .snapshot
             .source_identity
-            .contains_key("footer_sha256")
+            .contains_key("driver.footer_sha256")
     );
 }
 
@@ -1726,7 +1726,9 @@ fn project_external_codec_discovers_pins_previews_and_runs_over_remote_provider(
         )
         .unwrap();
     let runtime = registry.resolve(&source_plan, &resolution).unwrap();
-    let plan = live_plan_for_stream(runtime.as_ref(), "pkg-project-external-remote");
+    let plan = live_plan_for_stream(runtime.as_ref(), "pkg-project-external-remote")
+        .bind_compiled_source(&source_plan)
+        .unwrap();
     assert_eq!(plan.scan.partitions.len(), 1);
     assert_eq!(
         plan.scan.partitions[0].metadata["format"],
@@ -1739,23 +1741,26 @@ fn project_external_codec_discovers_pins_previews_and_runs_over_remote_provider(
         .sum::<u64>();
     assert_eq!(preview_rows, 1);
 
-    let report = futures_executor::block_on(run_project(ProjectRunRequest {
-        resource: ProjectRunSource::new(runtime.as_ref()),
-        plan,
-        package_root: temp.path().join(".cdf/packages"),
-        state_store_path: temp.path().join(".cdf/state.db"),
-        pipeline_id: PipelineId::new("pipeline-project-external-remote").unwrap(),
-        package_id: "pkg-project-external-remote".to_owned(),
-        checkpoint_id: CheckpointId::new("checkpoint-project-external-remote").unwrap(),
-        destination: ResolvedProjectDestination::duckdb(
-            temp.path().join(".cdf/dev.duckdb"),
-            TargetName::new("external_events").unwrap(),
-        )
-        .unwrap(),
-        run_id: Some(RunId::new("run-project-external-remote").unwrap()),
-        event_sink: None,
-        after_receipt_verified: None,
-    }))
+    let report = futures_executor::block_on(run_project(
+        ProjectRunRequest {
+            resource: ProjectRunSource::new(runtime.as_ref()),
+            plan,
+            package_root: temp.path().join(".cdf/packages"),
+            state_store_path: temp.path().join(".cdf/state.db"),
+            pipeline_id: PipelineId::new("pipeline-project-external-remote").unwrap(),
+            package_id: "pkg-project-external-remote".to_owned(),
+            checkpoint_id: CheckpointId::new("checkpoint-project-external-remote").unwrap(),
+            destination: ResolvedProjectDestination::duckdb(
+                temp.path().join(".cdf/dev.duckdb"),
+                TargetName::new("external_events").unwrap(),
+            )
+            .unwrap(),
+            run_id: Some(RunId::new("run-project-external-remote").unwrap()),
+            event_sink: None,
+            after_receipt_verified: None,
+        },
+        &execution,
+    ))
     .unwrap();
     assert_eq!(report.row_count, 1);
     assert_eq!(report.segment_count, 1);
@@ -1798,19 +1803,22 @@ fn http_parquet_schema_discovery_uses_bounded_ranges_without_artifacts() {
         "VendorID"
     );
     assert_eq!(
-        discovery.snapshot.source_identity["url"],
+        discovery.snapshot.source_identity["path"],
         "https://data.example.test/trip-data/vendors.parquet"
     );
     assert_eq!(
-        discovery.snapshot.source_identity["size_bytes"],
+        discovery.snapshot.source_identity["driver.size_bytes"],
         parquet.len().to_string()
     );
     assert_eq!(
-        discovery.snapshot.source_identity["etag"],
+        discovery.snapshot.source_identity["driver.etag"],
         "\"fixture-etag\""
     );
-    assert_eq!(discovery.snapshot.source_identity["row_count"], "10000");
-    assert!(discovery.snapshot.source_identity["footer_sha256"].starts_with("sha256:"));
+    assert_eq!(
+        discovery.snapshot.source_identity["driver.row_count"],
+        "10000"
+    );
+    assert!(discovery.snapshot.source_identity["driver.footer_sha256"].starts_with("sha256:"));
     let requests = transport.requests();
     assert_only_bounded_http_file_gets(&requests);
     assert_http_file_gets_download_less_than_fixture(&requests, parquet.len());
@@ -2298,23 +2306,26 @@ fn http_parquet_auto_pin_plan_preview_and_run_use_file_runtime() {
     assert_eq!(preview_rows, 2);
 
     let duckdb_path = temp.path().join(".cdf/dev.duckdb");
-    let report = futures_executor::block_on(run_project(ProjectRunRequest {
-        resource: ProjectRunSource::file(&file_resource),
-        plan,
-        package_root: temp.path().join(".cdf/packages"),
-        state_store_path: temp.path().join(".cdf/state.db"),
-        pipeline_id: PipelineId::new("pipeline-http").unwrap(),
-        package_id: "pkg-http-parquet-runtime".to_owned(),
-        checkpoint_id: CheckpointId::new("checkpoint-http-parquet-runtime").unwrap(),
-        destination: ResolvedProjectDestination::duckdb(
-            duckdb_path,
-            TargetName::new("events").unwrap(),
-        )
-        .unwrap(),
-        run_id: Some(RunId::new("run-http-parquet-runtime").unwrap()),
-        event_sink: None,
-        after_receipt_verified: None,
-    }))
+    let report = futures_executor::block_on(run_project(
+        ProjectRunRequest {
+            resource: ProjectRunSource::file(&file_resource),
+            plan,
+            package_root: temp.path().join(".cdf/packages"),
+            state_store_path: temp.path().join(".cdf/state.db"),
+            pipeline_id: PipelineId::new("pipeline-http").unwrap(),
+            package_id: "pkg-http-parquet-runtime".to_owned(),
+            checkpoint_id: CheckpointId::new("checkpoint-http-parquet-runtime").unwrap(),
+            destination: ResolvedProjectDestination::duckdb(
+                duckdb_path,
+                TargetName::new("events").unwrap(),
+            )
+            .unwrap(),
+            run_id: Some(RunId::new("run-http-parquet-runtime").unwrap()),
+            event_sink: None,
+            after_receipt_verified: None,
+        },
+        &test_execution_services(),
+    ))
     .unwrap();
 
     assert_eq!(report.row_count, 2);
@@ -2375,23 +2386,26 @@ fn http_parquet_auto_pin_plan_preview_and_run_use_file_runtime() {
         .unwrap();
     let pinned_plan =
         live_plan_for_stream(&pinned_file_resource, "pkg-http-parquet-pinned-runtime");
-    let pinned_report = futures_executor::block_on(run_project(ProjectRunRequest {
-        resource: ProjectRunSource::file(&pinned_file_resource),
-        plan: pinned_plan,
-        package_root: temp.path().join(".cdf/packages"),
-        state_store_path: temp.path().join(".cdf/state-pinned.db"),
-        pipeline_id: PipelineId::new("pipeline-http-pinned").unwrap(),
-        package_id: "pkg-http-parquet-pinned-runtime".to_owned(),
-        checkpoint_id: CheckpointId::new("checkpoint-http-parquet-pinned-runtime").unwrap(),
-        destination: ResolvedProjectDestination::duckdb(
-            temp.path().join(".cdf/dev-pinned.duckdb"),
-            TargetName::new("events_pinned").unwrap(),
-        )
-        .unwrap(),
-        run_id: Some(RunId::new("run-http-parquet-pinned-runtime").unwrap()),
-        event_sink: None,
-        after_receipt_verified: None,
-    }))
+    let pinned_report = futures_executor::block_on(run_project(
+        ProjectRunRequest {
+            resource: ProjectRunSource::file(&pinned_file_resource),
+            plan: pinned_plan,
+            package_root: temp.path().join(".cdf/packages"),
+            state_store_path: temp.path().join(".cdf/state-pinned.db"),
+            pipeline_id: PipelineId::new("pipeline-http-pinned").unwrap(),
+            package_id: "pkg-http-parquet-pinned-runtime".to_owned(),
+            checkpoint_id: CheckpointId::new("checkpoint-http-parquet-pinned-runtime").unwrap(),
+            destination: ResolvedProjectDestination::duckdb(
+                temp.path().join(".cdf/dev-pinned.duckdb"),
+                TargetName::new("events_pinned").unwrap(),
+            )
+            .unwrap(),
+            run_id: Some(RunId::new("run-http-parquet-pinned-runtime").unwrap()),
+            event_sink: None,
+            after_receipt_verified: None,
+        },
+        &test_execution_services(),
+    ))
     .unwrap();
     assert_eq!(pinned_report.row_count, 2);
     let pinned_package = cdf_package::PackageReader::open(&pinned_report.package_dir).unwrap();
@@ -2473,23 +2487,26 @@ fn unversioned_http_parquet_runs_and_commits_terminal_content_identity() {
     );
     assert_eq!(dependencies.prepared_payloads().pending_count().unwrap(), 1);
 
-    let report = futures_executor::block_on(run_project(ProjectRunRequest {
-        resource: ProjectRunSource::file(&file_resource),
-        plan,
-        package_root: temp.path().join(".cdf/packages"),
-        state_store_path: temp.path().join(".cdf/state.db"),
-        pipeline_id: PipelineId::new("pipeline-http-unversioned").unwrap(),
-        package_id: "pkg-http-unversioned".to_owned(),
-        checkpoint_id: CheckpointId::new("checkpoint-http-unversioned").unwrap(),
-        destination: ResolvedProjectDestination::duckdb(
-            temp.path().join(".cdf/dev.duckdb"),
-            TargetName::new("events").unwrap(),
-        )
-        .unwrap(),
-        run_id: Some(RunId::new("run-http-unversioned").unwrap()),
-        event_sink: None,
-        after_receipt_verified: None,
-    }))
+    let report = futures_executor::block_on(run_project(
+        ProjectRunRequest {
+            resource: ProjectRunSource::file(&file_resource),
+            plan,
+            package_root: temp.path().join(".cdf/packages"),
+            state_store_path: temp.path().join(".cdf/state.db"),
+            pipeline_id: PipelineId::new("pipeline-http-unversioned").unwrap(),
+            package_id: "pkg-http-unversioned".to_owned(),
+            checkpoint_id: CheckpointId::new("checkpoint-http-unversioned").unwrap(),
+            destination: ResolvedProjectDestination::duckdb(
+                temp.path().join(".cdf/dev.duckdb"),
+                TargetName::new("events").unwrap(),
+            )
+            .unwrap(),
+            run_id: Some(RunId::new("run-http-unversioned").unwrap()),
+            event_sink: None,
+            after_receipt_verified: None,
+        },
+        &test_execution_services(),
+    ))
     .unwrap();
 
     assert_eq!(report.row_count, 2);

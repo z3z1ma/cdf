@@ -15,7 +15,8 @@ use crate::{
     BoundedSchemaDiscoveryRequest, FileCompressionDeclaration, FileFormatDeclaration, FileResource,
     FileResourceDefinition, FileResourcePlan, FileRuntimeDependencies, FileTransportLocation,
     FileTransportResource, discover_local_binary_schema_bounded,
-    discover_transport_binary_schema_bounded, local_file_discovery_candidates,
+    discover_transport_binary_schema_bounded, file_source_blocking_lane,
+    local_file_discovery_candidates,
 };
 
 type RuntimeFactory = dyn Fn(Arc<dyn SecretProvider + Send + Sync>, ExecutionServices) -> Result<FileRuntimeDependencies>
@@ -189,17 +190,20 @@ impl SourceDriver for FileSourceDriver {
         )?
         .with_prepared_payloads(context.prepared_payloads().clone());
         physical.compiled_format.verify(dependencies.formats())?;
-        Ok(Arc::new(FileResource::new(
-            FileResourceDefinition {
-                descriptor: plan.descriptor.clone(),
-                schema: Arc::new(plan.schema.clone()),
-                plan: physical.to_runtime_plan(context.project_root())?,
-                type_policy_allowances: plan.type_policy_allowances,
-                effective_schema_runtime: plan.effective_schema_runtime.clone(),
-                compiled_format: physical.compiled_format,
-            },
-            dependencies,
-        )?))
+        Ok(Arc::new(
+            FileResource::new(
+                FileResourceDefinition {
+                    descriptor: plan.descriptor.clone(),
+                    schema: Arc::new(plan.schema.clone()),
+                    plan: physical.to_runtime_plan(context.project_root())?,
+                    type_policy_allowances: plan.type_policy_allowances,
+                    effective_schema_runtime: plan.effective_schema_runtime.clone(),
+                    compiled_format: physical.compiled_format,
+                },
+                dependencies,
+            )?
+            .with_compiled_source_plan_hash(cdf_runtime::artifact_hash(plan)?),
+        ))
     }
 }
 
@@ -786,8 +790,8 @@ fn execution_capabilities() -> SourceExecutionCapabilities {
         maximum_decode_bytes: 32 * 1024 * 1024,
         maximum_concurrency: 16,
         useful_concurrency: 16,
-        executor_class: SourceExecutorClass::Cpu,
-        blocking_lane: None,
+        executor_class: SourceExecutorClass::BlockingLane,
+        blocking_lane: Some(file_source_blocking_lane()),
         pausable: true,
         spillable: true,
         idempotent_reads: true,
@@ -795,7 +799,11 @@ fn execution_capabilities() -> SourceExecutionCapabilities {
         resumable: true,
         speculative_safe: true,
         retry_granularity: SourceRetryGranularity::Partition,
-        retryable_errors: vec![cdf_kernel::ErrorKind::Transient],
+        retryable_errors: vec![
+            cdf_kernel::ErrorKind::Transient,
+            cdf_kernel::ErrorKind::RateLimited,
+        ],
+        retry_policy: Some(cdf_runtime::SourceRetryPolicy::default()),
         attestation: SourceAttestationStrength::ImmutableContent,
         rate_limit_per_second: None,
         quota_authority: None,

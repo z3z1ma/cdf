@@ -20,8 +20,8 @@ use cdf_conformance::resource::{
     assert_queryable_resource_conformance, assert_resource_stream_execution_conformance,
 };
 use cdf_http::{
-    HttpRequest, HttpResponse, HttpTransport, ProviderRefreshHook, RetryPolicy, SecretProvider,
-    SecretUri, SecretValue,
+    HttpRequest, HttpResponse, HttpTransport, ProviderRefreshHook, SecretProvider, SecretUri,
+    SecretValue,
 };
 use cdf_kernel::{
     CdfError, CursorOrderingClaim, CursorValue, DeduplicationSpec, DeliveryGuarantee, ErrorKind,
@@ -1740,7 +1740,7 @@ fn rest_runtime_uses_numeric_float_cursor_max() {
 }
 
 #[test]
-fn rest_runtime_retries_transient_transport_errors() {
+fn rest_runtime_surfaces_transient_transport_errors_without_private_retry() {
     let resource = compile_document(&parse_toml(REST_RUNTIME_EXAMPLE).unwrap())
         .unwrap()
         .remove(0);
@@ -1758,24 +1758,18 @@ fn rest_runtime_retries_transient_transport_errors() {
     );
     let rest = resource
         .to_rest_resource(
-            RestRuntimeDependencies::new(transport.clone())
-                .with_secret_provider(StaticSecretProvider::new([(
-                    "secret://env/API_TOKEN",
-                    "token-1",
-                )]))
-                .with_retry_policy(RetryPolicy {
-                    max_attempts: 1,
-                    budget_ms: 1_000,
-                    base_delay_ms: 1,
-                    max_delay_ms: 1,
-                }),
+            RestRuntimeDependencies::new(transport.clone()).with_secret_provider(
+                StaticSecretProvider::new([("secret://env/API_TOKEN", "token-1")]),
+            ),
         )
         .unwrap();
 
-    let batches =
-        drain_batches(futures_executor::block_on(rest.open(plan.partitions[0].clone())).unwrap());
-    assert_eq!(batches[0].header.row_count, 1);
-    assert_eq!(transport.requests().len(), 2);
+    let error = match futures_executor::block_on(rest.open(plan.partitions[0].clone())) {
+        Ok(_) => panic!("private REST retry unexpectedly hid a transient transport error"),
+        Err(error) => error,
+    };
+    assert_eq!(error.kind, ErrorKind::Transient);
+    assert_eq!(transport.requests().len(), 1);
 }
 
 #[test]
@@ -2565,6 +2559,10 @@ trust = "governed"
     assert_eq!(partitions[0].metadata["format"], "parquet");
     assert_eq!(partitions[0].metadata["format_declared"], "false");
     assert_eq!(partitions[0].metadata["format_detection"], "none");
+    assert_eq!(
+        partitions[0].retry_safety,
+        cdf_kernel::PartitionRetrySafety::ImmutableContent
+    );
     assert_eq!(transport.payload_opens(), 0);
 }
 
@@ -2603,6 +2601,10 @@ fn file_glob_plans_deterministic_partition_per_match() {
         assert!(partition.metadata.contains_key("modified_ms"));
         assert!(partition.partition_id.as_str().starts_with("file-"));
         assert!(partition.start_position.is_none());
+        assert_eq!(
+            partition.retry_safety,
+            cdf_kernel::PartitionRetrySafety::Forbidden
+        );
 
         let path = partition.metadata.get("path").unwrap();
         assert_eq!(partition.scope, ScopeKey::File { path: path.clone() });
@@ -2631,7 +2633,7 @@ fn file_partition_attestation_rejects_identity_change_after_planning() {
         .remove(0);
 
     fs::write(root.path().join("data/events.ndjson"), "{\"id\":200}\n").unwrap();
-    let error = futures_executor::block_on(resource.attest_partition(&partition)).unwrap_err();
+    let error = futures_executor::block_on(resource.attest_partition(partition)).unwrap_err();
 
     assert!(
         error.to_string().contains("changed size after planning"),
@@ -3111,7 +3113,7 @@ fn sql_runtime_requires_explicit_secret_provider() {
 }
 
 #[test]
-fn sql_runtime_dependency_preflight_resolves_connection_secret() {
+fn sql_runtime_dependency_preflight_checks_presence_without_resolving_connection_secret() {
     let resource = compile_document(&parse_toml(SQL_RUNTIME_EXAMPLE).unwrap())
         .unwrap()
         .remove(0);
@@ -3123,14 +3125,34 @@ fn sql_runtime_dependency_preflight_resolves_connection_secret() {
     assert_eq!(error.kind, ErrorKind::Auth);
     assert!(error.to_string().contains("SecretProvider"));
 
+    let execution = cdf_engine::StandaloneExecutionHost::default_services(64 * 1024 * 1024)
+        .unwrap()
+        .1;
     let empty = resource
+        .to_sql_resource(
+            SqlRuntimeDependencies::new()
+                .with_secret_provider(StaticSecretProvider::new([(
+                    "secret://env/POSTGRES_URL",
+                    "",
+                )]))
+                .with_execution(execution),
+        )
+        .unwrap();
+    empty.validate_runtime_dependencies().unwrap();
+
+    let missing_execution = resource
         .to_sql_resource(SqlRuntimeDependencies::new().with_secret_provider(
-            StaticSecretProvider::new([("secret://env/POSTGRES_URL", "")]),
+            StaticSecretProvider::new([(
+                "secret://env/POSTGRES_URL",
+                "postgresql://localhost/not-contacted",
+            )]),
         ))
         .unwrap();
-    let error = empty.validate_runtime_dependencies().unwrap_err();
-    assert_eq!(error.kind, ErrorKind::Auth);
-    assert!(error.to_string().contains("empty value"));
+    let error = missing_execution
+        .validate_runtime_dependencies()
+        .unwrap_err();
+    assert_eq!(error.kind, ErrorKind::Contract);
+    assert!(error.to_string().contains("execution services"));
 }
 
 #[test]
@@ -3138,10 +3160,18 @@ fn sql_runtime_rejects_empty_connection_secret_before_connecting() {
     let resource = compile_document(&parse_toml(SQL_RUNTIME_EXAMPLE).unwrap())
         .unwrap()
         .remove(0);
+    let execution = cdf_engine::StandaloneExecutionHost::default_services(64 * 1024 * 1024)
+        .unwrap()
+        .1;
     let sql = resource
-        .to_sql_resource(SqlRuntimeDependencies::new().with_secret_provider(
-            StaticSecretProvider::new([("secret://env/POSTGRES_URL", "")]),
-        ))
+        .to_sql_resource(
+            SqlRuntimeDependencies::new()
+                .with_secret_provider(StaticSecretProvider::new([(
+                    "secret://env/POSTGRES_URL",
+                    "",
+                )]))
+                .with_execution(execution),
+        )
         .unwrap();
     let request = ScanRequest {
         resource_id: resource.descriptor().resource_id.clone(),

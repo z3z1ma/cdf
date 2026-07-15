@@ -2,7 +2,7 @@ use std::{
     collections::{BTreeMap, HashMap},
     fmt,
     sync::{
-        Arc, Mutex,
+        Arc, Mutex, OnceLock,
         atomic::{AtomicU64, AtomicUsize, Ordering},
     },
 };
@@ -141,6 +141,24 @@ fn residual_limit_is_consumed_across_partitions() {
     assert_eq!(output.profile.output_rows, 1);
     assert_eq!(output.profile.output_batches, 1);
     assert_eq!(output.segments.len(), 1);
+}
+
+#[test]
+fn zero_limit_finalizes_an_empty_package_without_source_contact() {
+    let resource = MockResource::tier_b(sample_batches());
+    let plan = Planner::new()
+        .plan_tier_b(
+            &resource,
+            plan_input(Vec::new(), None, Some(0), ExecutionExtent::bounded()),
+        )
+        .unwrap();
+    let temp = TempDir::new().unwrap();
+
+    let output = block_on(execute_to_package(&plan, &resource, temp.path())).unwrap();
+
+    assert_eq!(resource.open_count.load(Ordering::SeqCst), 0);
+    assert_eq!(output.profile.output_rows, 0);
+    assert!(output.segments.is_empty());
 }
 
 #[test]
@@ -642,7 +660,9 @@ fn execution_evidence_rejects_repeated_observation_identity_even_when_identical(
     )
     .unwrap();
 
-    let error = EngineExecutionEvidence::new(vec![observation.clone(), observation]).unwrap_err();
+    let error =
+        EngineExecutionEvidence::new(vec![observation.clone(), observation], Vec::new(), None)
+            .unwrap_err();
 
     assert!(
         error.to_string().contains("more than one partition"),
@@ -1878,6 +1898,70 @@ fn explain_and_operator_chain_carry_contract_package_details() {
     }));
 }
 
+fn mock_compiled_source_plan(
+    resource: &MockResource,
+    retry_policy: Option<cdf_runtime::SourceRetryPolicy>,
+) -> cdf_runtime::CompiledSourcePlan {
+    let retry_enabled = retry_policy.is_some();
+    cdf_runtime::CompiledSourcePlan::new(
+        cdf_runtime::SourceDriverDescriptor {
+            driver_id: cdf_runtime::SourceDriverId::new("external_mock").unwrap(),
+            driver_version: "mock-v1".to_owned(),
+            option_schema_hash:
+                "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                    .to_owned(),
+            kinds: vec!["external_mock".to_owned()],
+            schemes: vec!["mock".to_owned()],
+        },
+        resource.capabilities().clone(),
+        cdf_runtime::SourceExecutionCapabilities {
+            minimum_poll_bytes: 1024,
+            maximum_poll_bytes: 1024 * 1024,
+            minimum_decode_bytes: 1024,
+            maximum_decode_bytes: 8 * 1024 * 1024,
+            maximum_concurrency: 8,
+            useful_concurrency: 4,
+            executor_class: cdf_runtime::SourceExecutorClass::Io,
+            blocking_lane: None,
+            pausable: true,
+            spillable: false,
+            idempotent_reads: true,
+            reopenable: true,
+            resumable: true,
+            speculative_safe: retry_enabled,
+            retry_granularity: if retry_enabled {
+                cdf_runtime::SourceRetryGranularity::Partition
+            } else {
+                cdf_runtime::SourceRetryGranularity::None
+            },
+            retryable_errors: retry_enabled
+                .then_some(cdf_kernel::ErrorKind::Transient)
+                .into_iter()
+                .collect(),
+            retry_policy,
+            attestation: if retry_enabled {
+                cdf_runtime::SourceAttestationStrength::ImmutableContent
+            } else {
+                cdf_runtime::SourceAttestationStrength::None
+            },
+            rate_limit_per_second: None,
+            quota_authority: None,
+            canonical_order: true,
+            bounded: true,
+            telemetry_version: "mock-v1".to_owned(),
+        },
+        cdf_runtime::CompiledSourcePlanInput {
+            descriptor: resource.descriptor().clone(),
+            schema: resource.schema().as_ref().clone(),
+            type_policy_allowances: cdf_kernel::TypePolicyAllowances::default(),
+            effective_schema_runtime: None,
+            redacted_options: serde_json::json!({"endpoint": "redacted"}),
+            physical_plan: serde_json::json!({"partitioning": "mock"}),
+        },
+    )
+    .unwrap()
+}
+
 #[test]
 fn operator_graph_compiles_from_capabilities_without_driver_name_dispatch() {
     let resource = MockResource::tier_b(sample_batches());
@@ -1895,52 +1979,8 @@ fn operator_graph_compiles_from_capabilities_without_driver_name_dispatch() {
             segmentation.microbatch_maximum_rows = 1;
         }
     }
-    let source =
-        cdf_runtime::CompiledSourcePlan::new(
-            cdf_runtime::SourceDriverDescriptor {
-                driver_id: cdf_runtime::SourceDriverId::new("external_mock").unwrap(),
-                driver_version: "mock-v1".to_owned(),
-                option_schema_hash:
-                    "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-                        .to_owned(),
-                kinds: vec!["external_mock".to_owned()],
-                schemes: vec!["mock".to_owned()],
-            },
-            resource.capabilities().clone(),
-            cdf_runtime::SourceExecutionCapabilities {
-                minimum_poll_bytes: 1024,
-                maximum_poll_bytes: 1024 * 1024,
-                minimum_decode_bytes: 1024,
-                maximum_decode_bytes: 8 * 1024 * 1024,
-                maximum_concurrency: 8,
-                useful_concurrency: 4,
-                executor_class: cdf_runtime::SourceExecutorClass::Io,
-                blocking_lane: None,
-                pausable: true,
-                spillable: false,
-                idempotent_reads: true,
-                reopenable: true,
-                resumable: true,
-                speculative_safe: true,
-                retry_granularity: cdf_runtime::SourceRetryGranularity::Partition,
-                retryable_errors: vec![cdf_kernel::ErrorKind::Transient],
-                attestation: cdf_runtime::SourceAttestationStrength::ImmutableContent,
-                rate_limit_per_second: None,
-                quota_authority: None,
-                canonical_order: true,
-                bounded: true,
-                telemetry_version: "mock-v1".to_owned(),
-            },
-            cdf_runtime::CompiledSourcePlanInput {
-                descriptor: resource.descriptor().clone(),
-                schema: resource.schema().as_ref().clone(),
-                type_policy_allowances: cdf_kernel::TypePolicyAllowances::default(),
-                effective_schema_runtime: None,
-                redacted_options: serde_json::json!({"endpoint": "redacted"}),
-                physical_plan: serde_json::json!({"partitioning": "mock"}),
-            },
-        )
-        .unwrap();
+    let source = mock_compiled_source_plan(&resource, None);
+    resource.bind_compiled_source(&source);
 
     let graph = compile_operator_graph(
         &plan,
@@ -1982,7 +2022,7 @@ fn operator_graph_compiles_from_capabilities_without_driver_name_dispatch() {
         edge.transfer == cdf_runtime::GraphEdgeTransfer::Durable
             && edge.producer == "segment_persist"
     }));
-    plan = plan.bind_partition_schedule(&source).unwrap();
+    plan = plan.bind_compiled_source(&source).unwrap();
     plan.operator_graph = Some(graph.clone());
     let temp = TempDir::new().unwrap();
     let serial = block_on(execute_to_package(&plan, &resource, temp.path())).unwrap();
@@ -2072,6 +2112,374 @@ fn operator_graph_compiles_from_capabilities_without_driver_name_dispatch() {
         .find(|node| node.node_id == "destination_bind")
         .unwrap();
     assert_eq!(binding.blocking_lane.as_deref(), Some("mock.commit"));
+}
+
+fn fast_test_retry_policy() -> cdf_runtime::SourceRetryPolicy {
+    cdf_runtime::SourceRetryPolicy {
+        max_total_attempts: 3,
+        max_elapsed_ms: 30_000,
+        base_delay_ms: 1,
+        max_delay_ms: 1,
+    }
+}
+
+fn retry_positioned_batches(position: &SourcePosition) -> Vec<Batch> {
+    sample_batches()
+        .into_iter()
+        .map(|mut batch| {
+            batch.header.source_position = Some(position.clone());
+            batch
+        })
+        .collect()
+}
+
+#[test]
+fn scheduler_retries_atomic_open_and_records_one_canonical_success() {
+    let mut position = terminal_file_position();
+    let SourcePosition::FileManifest(planned_manifest) = &mut position else {
+        unreachable!("fixture is a file manifest")
+    };
+    planned_manifest.files[0].sha256 = None;
+    let attestation = PartitionAttestation::new(position.clone(), None);
+    let mut completed_position = position.clone();
+    let SourcePosition::FileManifest(completed_manifest) = &mut completed_position else {
+        unreachable!("fixture is a file manifest")
+    };
+    completed_manifest.files[0].sha256 = Some(format!("sha256:{}", "a".repeat(64)));
+    let resource = MockResource::tier_b(retry_positioned_batches(&position))
+        .with_partition_count(1)
+        .with_transient_open_failures(1)
+        .with_attestation(attestation)
+        .with_completion_attestation(PartitionAttestation::new(completed_position, None));
+    let mut plan = Planner::new()
+        .plan_tier_b(
+            &resource,
+            plan_input(Vec::new(), None, None, ExecutionExtent::bounded()),
+        )
+        .unwrap();
+    let source = mock_compiled_source_plan(&resource, Some(fast_test_retry_policy()));
+    resource.bind_compiled_source(&source);
+    plan = plan.bind_compiled_source(&source).unwrap();
+    let (_, services) = StandaloneExecutionHost::default_services(256 * 1024 * 1024).unwrap();
+    let package = TempDir::new().unwrap();
+    let pre_finalize =
+        |_builder: &cdf_package::PackageBuilder, _draft: EnginePackageDraft<'_>| Ok(());
+
+    let output = block_on(execute_to_package_with_segment_positions_and_pre_finalize(
+        &plan,
+        &resource,
+        package.path(),
+        &pre_finalize,
+        EngineExecutionOptions::default().with_execution_services(services),
+    ))
+    .unwrap();
+
+    assert_eq!(resource.open_count.load(Ordering::SeqCst), 2);
+    assert_eq!(resource.attest_count.load(Ordering::SeqCst), 1);
+    assert_eq!(output.output.profile.output_rows, 3);
+    let retries = output.execution_evidence().source_retries();
+    assert_eq!(retries.len(), 1);
+    assert_eq!(retries[0].partition_ordinal(), 0);
+    assert_eq!(retries[0].history().len(), 1);
+    assert_eq!(retries[0].history()[0].failed_attempt, 1);
+    assert_eq!(
+        retries[0].history()[0].cause,
+        cdf_kernel::ErrorKind::Transient
+    );
+}
+
+#[test]
+fn scheduler_retries_lazy_stream_failure_before_first_batch() {
+    let position = terminal_file_position();
+    let attestation = PartitionAttestation::new(position.clone(), None);
+    let resource = MockResource::tier_b(retry_positioned_batches(&position))
+        .with_partition_count(1)
+        .with_transient_stream_failures(1)
+        .with_attestation(attestation.clone())
+        .with_completion_attestation(attestation);
+    let mut plan = Planner::new()
+        .plan_tier_b(
+            &resource,
+            plan_input(Vec::new(), None, None, ExecutionExtent::bounded()),
+        )
+        .unwrap();
+    let source = mock_compiled_source_plan(&resource, Some(fast_test_retry_policy()));
+    resource.bind_compiled_source(&source);
+    plan = plan.bind_compiled_source(&source).unwrap();
+    let (_, services) = StandaloneExecutionHost::default_services(256 * 1024 * 1024).unwrap();
+    let package = TempDir::new().unwrap();
+    let pre_finalize =
+        |_builder: &cdf_package::PackageBuilder, _draft: EnginePackageDraft<'_>| Ok(());
+
+    let output = block_on(execute_to_package_with_segment_positions_and_pre_finalize(
+        &plan,
+        &resource,
+        package.path(),
+        &pre_finalize,
+        EngineExecutionOptions::default().with_execution_services(services),
+    ))
+    .unwrap();
+
+    assert_eq!(resource.open_count.load(Ordering::SeqCst), 2);
+    assert_eq!(resource.attest_count.load(Ordering::SeqCst), 1);
+    assert_eq!(output.output.profile.output_rows, 3);
+    assert_eq!(output.execution_evidence().source_retries().len(), 1);
+}
+
+#[test]
+fn scheduler_reattests_a_retried_partial_limit_without_requiring_eof() {
+    let position = terminal_file_position();
+    let attestation = PartitionAttestation::new(position.clone(), None);
+    let mut batches = retry_positioned_batches(&position);
+    batches[1].header.partition_id = PartitionId::new("part-0").unwrap();
+    let resource = MockResource::tier_b(batches)
+        .with_partition_count(1)
+        .with_transient_open_failures(1)
+        .with_attestation(attestation.clone())
+        .with_completion_attestation(attestation);
+    let mut plan = Planner::new()
+        .plan_tier_b(
+            &resource,
+            plan_input(Vec::new(), None, Some(1), ExecutionExtent::bounded()),
+        )
+        .unwrap();
+    let source = mock_compiled_source_plan(&resource, Some(fast_test_retry_policy()));
+    resource.bind_compiled_source(&source);
+    plan = plan.bind_compiled_source(&source).unwrap();
+    let (_, services) = StandaloneExecutionHost::default_services(256 * 1024 * 1024).unwrap();
+    let package = TempDir::new().unwrap();
+    let pre_finalize =
+        |_builder: &cdf_package::PackageBuilder, _draft: EnginePackageDraft<'_>| Ok(());
+
+    let output = block_on(execute_to_package_with_segment_positions_and_pre_finalize(
+        &plan,
+        &resource,
+        package.path(),
+        &pre_finalize,
+        EngineExecutionOptions::default().with_execution_services(services),
+    ))
+    .unwrap();
+
+    assert_eq!(resource.open_count.load(Ordering::SeqCst), 2);
+    assert_eq!(resource.attest_count.load(Ordering::SeqCst), 2);
+    assert_eq!(output.output.profile.output_rows, 1);
+    assert_eq!(output.execution_evidence().source_retries().len(), 1);
+}
+
+#[test]
+fn exhausted_retry_history_survives_a_failed_engine_return() {
+    let position = terminal_file_position();
+    let attestation = PartitionAttestation::new(position.clone(), None);
+    let resource = MockResource::tier_b(retry_positioned_batches(&position))
+        .with_partition_count(1)
+        .with_transient_open_failures(3)
+        .with_attestation(attestation.clone())
+        .with_completion_attestation(attestation);
+    let mut plan = Planner::new()
+        .plan_tier_b(
+            &resource,
+            plan_input(Vec::new(), None, None, ExecutionExtent::bounded()),
+        )
+        .unwrap();
+    let source = mock_compiled_source_plan(&resource, Some(fast_test_retry_policy()));
+    resource.bind_compiled_source(&source);
+    plan = plan.bind_compiled_source(&source).unwrap();
+    let (_, services) = StandaloneExecutionHost::default_services(256 * 1024 * 1024).unwrap();
+    let package = TempDir::new().unwrap();
+    let pre_finalize =
+        |_builder: &cdf_package::PackageBuilder, _draft: EnginePackageDraft<'_>| Ok(());
+    let options = EngineExecutionOptions::default().with_execution_services(services);
+    let retry_evidence = options.source_retry_evidence();
+
+    let error = block_on(execute_to_package_with_segment_positions_and_pre_finalize(
+        &plan,
+        &resource,
+        package.path(),
+        &pre_finalize,
+        options,
+    ))
+    .unwrap_err();
+
+    assert!(error.message.contains("attempt limit exhausted"));
+    let history = retry_evidence.snapshot().unwrap();
+    assert_eq!(history.len(), 1);
+    assert_eq!(history[0].history().len(), 3);
+    assert_eq!(
+        history[0].history()[2].exhaustion,
+        Some(cdf_runtime::SourceRetryExhaustion::AttemptLimit)
+    );
+}
+
+#[test]
+fn nonretryable_reattest_failure_preserves_primary_error_and_history() {
+    let position = terminal_file_position();
+    let resource = MockResource::tier_b(retry_positioned_batches(&position))
+        .with_partition_count(1)
+        .with_transient_open_failures(1)
+        .with_attestation_error("planned identity cannot be reattested");
+    let mut plan = Planner::new()
+        .plan_tier_b(
+            &resource,
+            plan_input(Vec::new(), None, None, ExecutionExtent::bounded()),
+        )
+        .unwrap();
+    let source = mock_compiled_source_plan(&resource, Some(fast_test_retry_policy()));
+    resource.bind_compiled_source(&source);
+    plan = plan.bind_compiled_source(&source).unwrap();
+    let (_, services) = StandaloneExecutionHost::default_services(256 * 1024 * 1024).unwrap();
+    let package = TempDir::new().unwrap();
+    let pre_finalize =
+        |_builder: &cdf_package::PackageBuilder, _draft: EnginePackageDraft<'_>| Ok(());
+    let options = EngineExecutionOptions::default().with_execution_services(services);
+    let retry_evidence = options.source_retry_evidence();
+
+    let error = block_on(execute_to_package_with_segment_positions_and_pre_finalize(
+        &plan,
+        &resource,
+        package.path(),
+        &pre_finalize,
+        options,
+    ))
+    .unwrap_err();
+
+    assert_eq!(error.kind, cdf_kernel::ErrorKind::Data);
+    assert!(error.message.contains("cannot be reattested"), "{error}");
+    let history = retry_evidence.snapshot().unwrap();
+    assert_eq!(history[0].history().len(), 2);
+    assert_eq!(
+        history[0].history()[1].exhaustion,
+        Some(cdf_runtime::SourceRetryExhaustion::Ineligible)
+    );
+    assert_eq!(history[0].history()[1].cause, cdf_kernel::ErrorKind::Data);
+}
+
+#[test]
+fn execution_rejects_tampered_retry_schedule_before_source_contact() {
+    let resource = MockResource::tier_b(sample_batches()).with_partition_count(1);
+    let mut plan = Planner::new()
+        .plan_tier_b(
+            &resource,
+            plan_input(Vec::new(), None, None, ExecutionExtent::bounded()),
+        )
+        .unwrap();
+    let source = mock_compiled_source_plan(&resource, Some(fast_test_retry_policy()));
+    resource.bind_compiled_source(&source);
+    plan = plan.bind_compiled_source(&source).unwrap();
+    let forged_retry =
+        cdf_runtime::CompiledSourceRetry::from_capabilities(&source.execution_capabilities)
+            .unwrap();
+    plan.partition_schedule.as_mut().unwrap().partitions[0].retry = forged_retry;
+    plan.explain.partition_schedule = plan.partition_schedule.clone();
+    let package = TempDir::new().unwrap();
+
+    let error = block_on(execute_to_package(&plan, &resource, package.path())).unwrap_err();
+
+    assert!(
+        error
+            .message
+            .contains("differs from its compiled source execution plan"),
+        "{error}"
+    );
+    assert_eq!(resource.open_count.load(Ordering::SeqCst), 0);
+}
+
+#[test]
+fn execution_rejects_coherently_widened_source_ceiling_and_schedule() {
+    let resource = MockResource::tier_b(sample_batches())
+        .with_partition_count(1)
+        .with_transient_open_failures(0);
+    let mut plan = Planner::new()
+        .plan_tier_b(
+            &resource,
+            plan_input(Vec::new(), None, None, ExecutionExtent::bounded()),
+        )
+        .unwrap();
+    let source = mock_compiled_source_plan(&resource, Some(fast_test_retry_policy()));
+    resource.bind_compiled_source(&source);
+    plan = plan.bind_compiled_source(&source).unwrap();
+    let original = plan.compiled_source_execution.as_ref().unwrap();
+    let mut forged_source = serde_json::to_value(original).unwrap();
+    *forged_source
+        .pointer_mut("/execution_capabilities/retry_policy/max_total_attempts")
+        .unwrap() = serde_json::json!(4);
+    forged_source["compiled_source_plan_hash"] = serde_json::json!("forged-source-plan");
+    forged_source["source_semantics_hash"] = serde_json::json!("forged-source-semantics");
+    let forged_capabilities_hash =
+        cdf_runtime::artifact_hash(&forged_source["execution_capabilities"]).unwrap();
+    let provisional: cdf_runtime::CompiledSourceExecutionPlan =
+        serde_json::from_value(forged_source.clone()).unwrap();
+    let execution_binding_hash = provisional.canonical_binding_hash().unwrap();
+    forged_source["execution_binding_hash"] = serde_json::json!(execution_binding_hash);
+    let forged_source: cdf_runtime::CompiledSourceExecutionPlan =
+        serde_json::from_value(forged_source).unwrap();
+    forged_source.validate().unwrap();
+    let forged_schedule =
+        cdf_runtime::CanonicalPartitionSchedule::compile(&forged_source, &plan.scan).unwrap();
+    let admission_source = plan.compiled_schema_admission.source.as_mut().unwrap();
+    admission_source.compiled_source_plan_hash = "forged-source-plan".to_owned();
+    admission_source.source_semantics_hash = "forged-source-semantics".to_owned();
+    admission_source.execution_capabilities_hash = forged_capabilities_hash;
+    plan.compiled_source_execution = Some(forged_source);
+    plan.partition_schedule = Some(forged_schedule.clone());
+    plan.explain.partition_schedule = Some(forged_schedule);
+    let package = TempDir::new().unwrap();
+
+    let error = block_on(execute_to_package(&plan, &resource, package.path())).unwrap_err();
+
+    assert!(
+        error
+            .message
+            .contains("resolved source does not match the compiler source artifact"),
+        "{error}"
+    );
+    assert_eq!(resource.open_count.load(Ordering::SeqCst), 0);
+}
+
+#[test]
+fn scheduler_rejects_generation_change_after_retried_open() {
+    let initial_position = terminal_file_position();
+    let pre_open = PartitionAttestation::new(initial_position.clone(), None);
+    let mut changed_position = initial_position.clone();
+    let SourcePosition::FileManifest(changed_manifest) = &mut changed_position else {
+        unreachable!("fixture is a file manifest")
+    };
+    changed_manifest.files[0].etag = Some("etag-changed".to_owned());
+    let resource = MockResource::tier_b(retry_positioned_batches(&initial_position))
+        .with_partition_count(1)
+        .with_transient_open_failures(1)
+        .with_attestation(pre_open)
+        .with_completion_attestation(PartitionAttestation::new(changed_position, None));
+    let mut plan = Planner::new()
+        .plan_tier_b(
+            &resource,
+            plan_input(Vec::new(), None, None, ExecutionExtent::bounded()),
+        )
+        .unwrap();
+    let source = mock_compiled_source_plan(&resource, Some(fast_test_retry_policy()));
+    resource.bind_compiled_source(&source);
+    plan = plan.bind_compiled_source(&source).unwrap();
+    let (_, services) = StandaloneExecutionHost::default_services(256 * 1024 * 1024).unwrap();
+    let package = TempDir::new().unwrap();
+    let pre_finalize =
+        |_builder: &cdf_package::PackageBuilder, _draft: EnginePackageDraft<'_>| Ok(());
+
+    let error = block_on(execute_to_package_with_segment_positions_and_pre_finalize(
+        &plan,
+        &resource,
+        package.path(),
+        &pre_finalize,
+        EngineExecutionOptions::default().with_execution_services(services),
+    ))
+    .unwrap_err();
+
+    assert_eq!(error.kind, cdf_kernel::ErrorKind::Data, "{error:?}");
+    assert!(
+        error
+            .message
+            .contains("changed source generation or schema")
+    );
+    assert!(error.message.contains("re-plan"));
+    assert_eq!(resource.open_count.load(Ordering::SeqCst), 2);
 }
 
 #[test]
@@ -3841,7 +4249,7 @@ fn package_identity_is_invariant_to_source_batch_rechunking() {
     );
     assert_eq!(
         one_output.manifest.package_hash,
-        "sha256:c55244ef832bf007c2d4a7520498b8134427f8b3db6312d6cc9978f70ac3452d"
+        "sha256:42d8d0d94740839e642745a43f2c321a93d7b0489ef56c674b93256c7d6e1e9f"
     );
 }
 
@@ -4403,6 +4811,24 @@ fn datafusion_limit_pushdown_remains_enabled_for_exact_filters() {
     assert_eq!(requests[1].limit, Some(1));
 }
 
+#[test]
+fn datafusion_zero_fetch_never_opens_a_source_partition() {
+    let resource = Arc::new(DataFusionMockResource::new());
+    let provider = QueryableResourceTableProvider::new(resource.clone(), ScopeKey::Resource);
+    let ctx = SessionContext::new();
+
+    let batches = block_on(async {
+        let plan = provider
+            .scan(&ctx.state(), None, &[], Some(0))
+            .await
+            .unwrap();
+        collect_execution_plan_partitions(plan, ctx.task_ctx()).await
+    });
+
+    assert!(batches.is_empty());
+    assert_eq!(resource.open_count.load(Ordering::SeqCst), 0);
+}
+
 #[derive(Clone)]
 struct MockResource {
     descriptor: ResourceDescriptor,
@@ -4415,11 +4841,15 @@ struct MockResource {
     attestation: Option<PartitionAttestation>,
     completion_attestation: Option<PartitionAttestation>,
     attestation_error: Option<String>,
+    transient_open_failures: Arc<AtomicUsize>,
+    transient_stream_failures: Arc<AtomicUsize>,
     effective_schema_runtime: Option<EffectiveSchemaRuntime>,
     type_policy_allowances: cdf_kernel::TypePolicyAllowances,
     duplicate_observation_identity: bool,
     misroute_batches: bool,
+    retry_safety: cdf_kernel::PartitionRetrySafety,
     tier_a_intent: cdf_kernel::CompiledScanIntent,
+    compiled_source_plan_hash: Arc<OnceLock<String>>,
 }
 
 #[derive(Clone)]
@@ -4458,10 +4888,7 @@ impl ResourceStream for DataFusionMockResource {
         unreachable!("DataFusion adapter must use QueryableResource::negotiate")
     }
 
-    fn open(
-        &self,
-        partition: PartitionPlan,
-    ) -> cdf_kernel::BoxFuture<'_, Result<cdf_kernel::OpenedPartitionStream>> {
+    fn open(&self, partition: PartitionPlan) -> cdf_kernel::PartitionOpenAttempt<'_> {
         self.open_count.fetch_add(1, Ordering::SeqCst);
         let exact_filters = partition
             .metadata
@@ -4474,12 +4901,10 @@ impl ResourceStream for DataFusionMockResource {
             .filter(|batch| batch.header.partition_id == partition.partition_id)
             .map(|batch| apply_mock_exact_filters(batch.clone(), &exact_filters))
             .collect::<Result<Vec<_>>>();
-        Box::pin(async move {
+        cdf_kernel::PartitionOpenAttempt::materialized(Box::pin(async move {
             let stream = Box::pin(stream::iter(batches?.into_iter().map(Ok))) as BatchStream;
-            Ok(cdf_kernel::OpenedPartitionStream::without_completion(
-                stream,
-            ))
-        })
+            Ok(cdf_kernel::PartitionStreamPayload::batches(stream))
+        }))
     }
 }
 
@@ -4549,6 +4974,7 @@ impl QueryableResource for DataFusionMockResource {
                     scope: ScopeKey::Partition { partition_id },
                     start_position: None,
                     scan_intent: scan_intent.clone(),
+                    retry_safety: cdf_kernel::PartitionRetrySafety::Forbidden,
                     metadata: BTreeMap::from([("exact_filters".to_owned(), exact_filters.clone())]),
                 })
             })
@@ -4597,11 +5023,15 @@ impl MockResource {
             attestation: None,
             completion_attestation: None,
             attestation_error: None,
+            transient_open_failures: Arc::new(AtomicUsize::new(0)),
+            transient_stream_failures: Arc::new(AtomicUsize::new(0)),
             effective_schema_runtime: None,
             type_policy_allowances: cdf_kernel::TypePolicyAllowances::default(),
             duplicate_observation_identity: false,
             misroute_batches: false,
+            retry_safety: cdf_kernel::PartitionRetrySafety::Forbidden,
             tier_a_intent: cdf_kernel::CompiledScanIntent::full_scan(),
+            compiled_source_plan_hash: Arc::new(OnceLock::new()),
         }
     }
 
@@ -4653,6 +5083,20 @@ impl MockResource {
         self
     }
 
+    fn with_transient_open_failures(mut self, failures: usize) -> Self {
+        self.transient_open_failures
+            .store(failures, Ordering::SeqCst);
+        self.retry_safety = cdf_kernel::PartitionRetrySafety::ImmutableContent;
+        self
+    }
+
+    fn with_transient_stream_failures(mut self, failures: usize) -> Self {
+        self.transient_stream_failures
+            .store(failures, Ordering::SeqCst);
+        self.retry_safety = cdf_kernel::PartitionRetrySafety::ImmutableContent;
+        self
+    }
+
     fn with_type_policy_allowances(mut self, allowances: cdf_kernel::TypePolicyAllowances) -> Self {
         self.type_policy_allowances = allowances;
         self
@@ -4672,6 +5116,12 @@ impl MockResource {
         self.tier_a_intent = intent;
         self
     }
+
+    fn bind_compiled_source(&self, source: &cdf_runtime::CompiledSourcePlan) {
+        self.compiled_source_plan_hash
+            .set(cdf_runtime::artifact_hash(source).unwrap())
+            .expect("mock source compiler binding is single-assignment");
+    }
 }
 
 impl ResourceStream for MockResource {
@@ -4681,6 +5131,10 @@ impl ResourceStream for MockResource {
 
     fn schema(&self) -> SchemaRef {
         self.schema.clone()
+    }
+
+    fn compiled_source_plan_hash(&self) -> Option<&str> {
+        self.compiled_source_plan_hash.get().map(String::as_str)
     }
 
     fn plan_partitions(&self, _request: &ScanRequest) -> Result<Vec<PartitionPlan>> {
@@ -4714,17 +5168,26 @@ impl ResourceStream for MockResource {
                     },
                     start_position: None,
                     scan_intent: self.tier_a_intent.clone(),
+                    retry_safety: self.retry_safety,
                     metadata,
                 })
             })
             .collect()
     }
 
-    fn open(
-        &self,
-        partition: PartitionPlan,
-    ) -> cdf_kernel::BoxFuture<'_, Result<cdf_kernel::OpenedPartitionStream>> {
+    fn open(&self, partition: PartitionPlan) -> cdf_kernel::PartitionOpenAttempt<'_> {
         self.open_count.fetch_add(1, Ordering::SeqCst);
+        if self
+            .transient_open_failures
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |remaining| {
+                remaining.checked_sub(1)
+            })
+            .is_ok()
+        {
+            return cdf_kernel::PartitionOpenAttempt::materialized(Box::pin(async {
+                Err(cdf_kernel::CdfError::transient("mock open unavailable"))
+            }));
+        }
         let batches = self
             .batches
             .iter()
@@ -4733,11 +5196,23 @@ impl ResourceStream for MockResource {
             })
             .cloned()
             .collect::<Vec<_>>();
+        let transient_stream_failure = self
+            .transient_stream_failures
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |remaining| {
+                remaining.checked_sub(1)
+            })
+            .is_ok();
         let completion_attestation = self.completion_attestation.clone();
-        Box::pin(async move {
-            let stream = Box::pin(stream::iter(batches.into_iter().map(Ok))) as BatchStream;
+        cdf_kernel::PartitionOpenAttempt::materialized(Box::pin(async move {
+            let stream = if transient_stream_failure {
+                Box::pin(stream::iter([Err(cdf_kernel::CdfError::transient(
+                    "mock lazy stream unavailable",
+                ))])) as BatchStream
+            } else {
+                Box::pin(stream::iter(batches.into_iter().map(Ok))) as BatchStream
+            };
             match completion_attestation {
-                Some(attestation) => Ok(cdf_kernel::OpenedPartitionStream::with_completion(
+                Some(attestation) => Ok(cdf_kernel::PartitionStreamPayload::new(
                     stream,
                     Box::pin(async move {
                         Ok(cdf_kernel::PartitionCompletion::new(
@@ -4746,26 +5221,24 @@ impl ResourceStream for MockResource {
                         ))
                     }),
                 )),
-                None => Ok(cdf_kernel::OpenedPartitionStream::without_completion(
-                    stream,
-                )),
+                None => Ok(cdf_kernel::PartitionStreamPayload::batches(stream)),
             }
-        })
+        }))
     }
 
     fn attest_partition(
         &self,
-        _partition: &PartitionPlan,
-    ) -> cdf_kernel::BoxFuture<'_, Result<Option<PartitionAttestation>>> {
+        _partition: PartitionPlan,
+    ) -> cdf_kernel::PartitionAttestationAttempt<'_> {
         self.attest_count.fetch_add(1, Ordering::SeqCst);
         let attestation = self.attestation.clone();
         let error = self.attestation_error.clone();
-        Box::pin(async move {
+        cdf_kernel::PartitionAttestationAttempt::materialized(Box::pin(async move {
             if let Some(error) = error {
                 return Err(cdf_kernel::CdfError::data(error));
             }
             Ok(attestation)
-        })
+        }))
     }
 
     fn effective_schema_runtime(&self) -> Option<&EffectiveSchemaRuntime> {

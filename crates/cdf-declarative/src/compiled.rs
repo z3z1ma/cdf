@@ -220,13 +220,13 @@ impl ResourceStream for CompiledResource {
         Ok(partitions)
     }
 
-    fn open(&self, partition: PartitionPlan) -> BoxFuture<'_, Result<OpenedPartitionStream>> {
+    fn open(&self, partition: PartitionPlan) -> cdf_kernel::PartitionOpenAttempt<'_> {
         let _ = partition;
-        Box::pin(async {
+        cdf_kernel::PartitionOpenAttempt::materialized(Box::pin(async {
             Err(CdfError::internal(
                 "compiled declarations are not executable; resolve their typed source driver",
             ))
-        })
+        }))
     }
 
     fn effective_schema_runtime(&self) -> Option<&EffectiveSchemaRuntime> {

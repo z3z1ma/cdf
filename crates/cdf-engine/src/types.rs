@@ -12,10 +12,10 @@ use cdf_contract::{
 };
 use cdf_kernel::{
     CdfError, DeliveryGuarantee, DiscoveryExecutorBudgetEvidence, EffectiveSchemaEvidence,
-    EstimateSupport, ExecutionExtent, ProcessedObservationPosition, PushdownFidelity, ResourceId,
-    ResourceStream, Result, RunPhaseMetric, ScanPlan, ScanPredicate, ScanRequest, SchemaHash,
-    SchemaObservationFieldQuarantine, SchemaObservationPolicy, SegmentId, SourcePosition,
-    TerminalSchemaObservationQuarantine, WriteDisposition, source_name,
+    EstimateSupport, ExecutionExtent, PartitionId, ProcessedObservationPosition, PushdownFidelity,
+    ResourceId, ResourceStream, Result, RunPhaseMetric, ScanPlan, ScanPredicate, ScanRequest,
+    SchemaHash, SchemaObservationFieldQuarantine, SchemaObservationPolicy, SegmentId,
+    SourcePosition, TerminalSchemaObservationQuarantine, WriteDisposition, source_name,
 };
 use cdf_package::VerifiedPackage;
 use cdf_package_contract::{PackageManifest, SegmentEntry};
@@ -33,6 +33,8 @@ pub struct EnginePlanInput {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EnginePlan {
     pub scan: ScanPlan,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compiled_source_execution: Option<cdf_runtime::CompiledSourceExecutionPlan>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub partition_schedule: Option<cdf_runtime::CanonicalPartitionSchedule>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -89,21 +91,38 @@ impl EnginePlan {
         Ok(())
     }
 
+    pub fn validate_partition_schedule(&self) -> Result<()> {
+        if self.partition_schedule != self.explain.partition_schedule {
+            return Err(CdfError::data(
+                "engine partition schedule does not match its recorded explain schedule",
+            ));
+        }
+        match (&self.partition_schedule, &self.compiled_source_execution) {
+            (Some(schedule), Some(source)) => {
+                let compiler_source = self.compiled_schema_admission.source.as_ref().ok_or_else(|| {
+                    CdfError::data(
+                        "partition schedule requires the compiler-owned schema-admission source binding",
+                    )
+                })?;
+                source.validate_compiler_binding(compiler_source)?;
+                schedule.validate_against_scan(&self.scan, source)?;
+            }
+            (None, None) => {}
+            (Some(_), None) | (None, Some(_)) => {
+                return Err(CdfError::data(
+                    "partition schedule and compiled source execution plan must be present together",
+                ));
+            }
+        }
+        Ok(())
+    }
+
     pub fn rebind_validation_program(
         &mut self,
         program: ValidationProgram,
         expression_schema: &Schema,
     ) -> Result<()> {
         crate::planning::rebind_validation_program(self, program, expression_schema)
-    }
-
-    pub fn bind_schema_admission_source(
-        mut self,
-        source: &cdf_runtime::CompiledSourcePlan,
-    ) -> Result<Self> {
-        self.compiled_schema_admission
-            .bind_source(source, &self.scan.request.resource_id)?;
-        Ok(self)
     }
 
     pub fn validate_compiled_schema_admission<R>(&self, resource: &R) -> Result<()>
@@ -117,13 +136,48 @@ impl EnginePlan {
         )
     }
 
-    pub fn bind_partition_schedule(
+    /// Validates the serialized source ceiling against the independently resolved resource.
+    pub fn validate_compiled_source_resource<R>(&self, resource: &R) -> Result<()>
+    where
+        R: ResourceStream + ?Sized,
+    {
+        match (
+            self.compiled_source_execution.as_ref(),
+            resource.compiled_source_plan_hash(),
+        ) {
+            (Some(compiled), Some(resolved))
+                if compiled.compiled_source_plan_hash() == resolved =>
+            {
+                Ok(())
+            }
+            (None, None) => Ok(()),
+            (Some(_), Some(_)) => Err(CdfError::data(
+                "resolved source does not match the compiler source artifact recorded by the engine plan",
+            )),
+            (Some(_), None) => Err(CdfError::data(
+                "compiled engine source has no independently resolved source binding",
+            )),
+            (None, Some(_)) => Err(CdfError::data(
+                "resolved source has a compiler binding but the engine plan omitted it",
+            )),
+        }
+    }
+
+    /// Binds every engine-owned source authority from one validated compiler output.
+    pub fn bind_compiled_source(
         mut self,
         source: &cdf_runtime::CompiledSourcePlan,
     ) -> Result<Self> {
-        let schedule = cdf_runtime::CanonicalPartitionSchedule::compile(source, &self.scan)?;
+        self.compiled_schema_admission
+            .bind_source(source, &self.scan.request.resource_id)?;
+        let compiled_source_execution = cdf_runtime::CompiledSourceExecutionPlan::compile(source)?;
+        let schedule = cdf_runtime::CanonicalPartitionSchedule::compile(
+            &compiled_source_execution,
+            &self.scan,
+        )?;
         self.explain.partition_schedule = Some(schedule.clone());
         self.partition_schedule = Some(schedule);
+        self.compiled_source_execution = Some(compiled_source_execution);
         Ok(self)
     }
 
@@ -134,6 +188,40 @@ impl EnginePlan {
     ) -> Result<Self> {
         let graph = crate::compile_operator_graph(&self, source, destination)?;
         self.operator_graph = Some(graph);
+        Ok(self)
+    }
+
+    /// Selects a deterministic subset of already-planned partitions and atomically rebinds every
+    /// scheduler-owned view of that scan.
+    ///
+    /// Incremental orchestration may choose which immutable planned partitions remain, but it may
+    /// not edit schedules directly or leave explain evidence stale.
+    pub fn select_partitions(mut self, selected: &BTreeSet<PartitionId>) -> Result<Self> {
+        let planned = self
+            .scan
+            .partitions
+            .iter()
+            .map(|partition| partition.partition_id.clone())
+            .collect::<BTreeSet<_>>();
+        if !selected.is_subset(&planned) {
+            return Err(CdfError::contract(
+                "partition selection contains an id absent from the compiled scan",
+            ));
+        }
+        self.scan
+            .partitions
+            .retain(|partition| selected.contains(&partition.partition_id));
+        self.explain.partitions.retain(|partition| {
+            self.scan
+                .partitions
+                .iter()
+                .any(|planned| planned.partition_id.as_str() == partition.partition_id)
+        });
+        if let Some(source) = &self.compiled_source_execution {
+            let schedule = cdf_runtime::CanonicalPartitionSchedule::compile(source, &self.scan)?;
+            self.explain.partition_schedule = Some(schedule.clone());
+            self.partition_schedule = Some(schedule);
+        }
         Ok(self)
     }
     pub fn effective_schema_evidence(&self) -> Option<&EffectiveSchemaPlanEvidence> {
@@ -184,15 +272,6 @@ pub const SCHEMA_ADMISSION_CACHE_KEY_FIELDS: [&str; 5] = [
 
 #[non_exhaustive]
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct CompiledSchemaAdmissionSource {
-    pub driver_id: String,
-    pub driver_version: String,
-    pub option_schema_hash: String,
-    pub physical_plan_hash: String,
-}
-
-#[non_exhaustive]
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CompiledSchemaAdmissionPlan {
     pub version: u16,
     pub baseline_schema_hash: SchemaHash,
@@ -209,7 +288,7 @@ pub struct CompiledSchemaAdmissionPlan {
     pub cache_key_fields: Vec<String>,
     pub contract_program_hash: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub source: Option<CompiledSchemaAdmissionSource>,
+    pub source: Option<cdf_runtime::CompiledSourceCompilerBinding>,
 }
 
 impl CompiledSchemaAdmissionPlan {
@@ -280,12 +359,7 @@ impl CompiledSchemaAdmissionPlan {
                 "compiled source type allowances do not match the schema-admission program",
             ));
         }
-        self.source = Some(CompiledSchemaAdmissionSource {
-            driver_id: source.driver.driver_id.as_str().to_owned(),
-            driver_version: source.driver.driver_version.clone(),
-            option_schema_hash: source.driver.option_schema_hash.clone(),
-            physical_plan_hash: source.physical_plan_hash.clone(),
-        });
+        self.source = Some(cdf_runtime::CompiledSourceCompilerBinding::compile(source)?);
         Ok(())
     }
 
@@ -851,15 +925,8 @@ impl CompiledSchemaAdmissionPlan {
                 "compiled schema-admission control fields or cache-key shape are invalid",
             ));
         }
-        if let Some(source) = &self.source
-            && (source.driver_id.is_empty()
-                || source.driver_version.is_empty()
-                || source.option_schema_hash.is_empty()
-                || source.physical_plan_hash.is_empty())
-        {
-            return Err(CdfError::data(
-                "compiled schema-admission source binding is incomplete",
-            ));
+        if let Some(source) = &self.source {
+            source.validate()?;
         }
         Ok(())
     }
@@ -1451,13 +1518,14 @@ pub struct EngineRunOutput {
     pub terminal_schema_quarantines: Vec<TerminalSchemaObservationQuarantine>,
 }
 
-pub const ENGINE_EXECUTION_EVIDENCE_VERSION: u16 = 1;
+pub const ENGINE_EXECUTION_EVIDENCE_VERSION: u16 = 2;
 
 #[non_exhaustive]
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct EngineExecutionEvidence {
     version: u16,
     processed_observations: Vec<ProcessedObservationPosition>,
+    source_retries: Vec<cdf_runtime::SourceRetryEvidence>,
 }
 
 impl Default for EngineExecutionEvidence {
@@ -1465,6 +1533,7 @@ impl Default for EngineExecutionEvidence {
         Self {
             version: ENGINE_EXECUTION_EVIDENCE_VERSION,
             processed_observations: Vec::new(),
+            source_retries: Vec::new(),
         }
     }
 }
@@ -1472,6 +1541,8 @@ impl Default for EngineExecutionEvidence {
 impl EngineExecutionEvidence {
     pub fn new(
         mut processed_observations: Vec<ProcessedObservationPosition>,
+        mut source_retries: Vec<cdf_runtime::SourceRetryEvidence>,
+        partition_schedule: Option<&cdf_runtime::CanonicalPartitionSchedule>,
     ) -> cdf_kernel::Result<Self> {
         processed_observations
             .sort_by(|left, right| left.observation_id.cmp(&right.observation_id));
@@ -1484,9 +1555,27 @@ impl EngineExecutionEvidence {
                 repeated[0].observation_id
             )));
         }
+        source_retries.sort_by_key(cdf_runtime::SourceRetryEvidence::partition_ordinal);
+        let retry_schedule_is_valid = match partition_schedule {
+            Some(schedule) => source_retries
+                .iter()
+                .all(|evidence| evidence.validate_against_schedule(schedule).is_ok()),
+            None => source_retries.is_empty(),
+        };
+        if !retry_schedule_is_valid
+            || source_retries.windows(2).any(|pair| {
+                pair[0].partition_ordinal() == pair[1].partition_ordinal()
+                    || pair[0].partition_id() == pair[1].partition_id()
+            })
+        {
+            return Err(cdf_kernel::CdfError::data(
+                "source retry evidence requires unique partitions and ordered nonempty attempt history",
+            ));
+        }
         Ok(Self {
             version: ENGINE_EXECUTION_EVIDENCE_VERSION,
             processed_observations,
+            source_retries,
         })
     }
 
@@ -1496,6 +1585,10 @@ impl EngineExecutionEvidence {
 
     pub fn processed_observations(&self) -> &[ProcessedObservationPosition] {
         &self.processed_observations
+    }
+
+    pub fn source_retries(&self) -> &[cdf_runtime::SourceRetryEvidence] {
+        &self.source_retries
     }
 }
 
@@ -1529,6 +1622,8 @@ pub struct EngineExecutionOptions {
     pub(crate) services: Option<cdf_runtime::ExecutionServices>,
     pub(crate) unfused_transform: bool,
     pub(crate) scheduler: Option<cdf_runtime::RuntimeSchedulerResolution>,
+    pub(crate) cancellation: cdf_runtime::RunCancellation,
+    pub(crate) retry_journal: cdf_runtime::SourceRetryJournal,
 }
 
 impl EngineExecutionOptions {
@@ -1539,14 +1634,6 @@ impl EngineExecutionOptions {
 
     pub fn with_execution_services(mut self, services: cdf_runtime::ExecutionServices) -> Self {
         self.services = Some(services);
-        self
-    }
-
-    pub fn with_optional_execution_services(
-        mut self,
-        services: Option<cdf_runtime::ExecutionServices>,
-    ) -> Self {
-        self.services = services;
         self
     }
 
@@ -1561,6 +1648,15 @@ impl EngineExecutionOptions {
     ) -> Self {
         self.scheduler = Some(scheduler);
         self
+    }
+
+    pub fn with_cancellation(mut self, cancellation: cdf_runtime::RunCancellation) -> Self {
+        self.cancellation = cancellation;
+        self
+    }
+
+    pub fn source_retry_evidence(&self) -> cdf_runtime::SourceRetryEvidenceView {
+        self.retry_journal.evidence_view()
     }
 }
 

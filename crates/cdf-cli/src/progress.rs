@@ -471,9 +471,9 @@ impl ProgressMilestone {
 fn phase_for_event(kind: RunEventKind) -> ProgressPhase {
     match kind {
         RunEventKind::RunStarted | RunEventKind::PlanRecorded => ProgressPhase::Plan,
-        RunEventKind::PackageStarted | RunEventKind::PackageSegmentRecorded => {
-            ProgressPhase::Extract
-        }
+        RunEventKind::PackageStarted
+        | RunEventKind::PackageSegmentRecorded
+        | RunEventKind::SourceRetryRecorded => ProgressPhase::Extract,
         RunEventKind::ValidationDepthTransitionRecorded => ProgressPhase::Validate,
         RunEventKind::PackageFinalized | RunEventKind::PhaseMeasured => ProgressPhase::Package,
         RunEventKind::DestinationCommitStarted

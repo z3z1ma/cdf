@@ -650,10 +650,10 @@ mod tests {
 
     use arrow_schema::{DataType, Field, Schema, SchemaRef};
     use cdf_kernel::{
-        BackpressureSupport, BoxFuture, CapabilitySupport, CdfError, ContractRef,
-        CursorOrderingClaim, CursorSpec, DeliveryGuarantee, EstimateSupport, FilterCapabilities,
-        PartitionId, PartitioningCapabilities, PlanId, Result, SchemaHash, SourcePosition,
-        TrustLevel, WriteDisposition,
+        BackpressureSupport, CapabilitySupport, CdfError, ContractRef, CursorOrderingClaim,
+        CursorSpec, DeliveryGuarantee, EstimateSupport, FilterCapabilities, PartitionId,
+        PartitioningCapabilities, PlanId, Result, SchemaHash, SourcePosition, TrustLevel,
+        WriteDisposition,
     };
 
     use super::*;
@@ -883,6 +883,7 @@ mod tests {
                     },
                     start_position: None::<SourcePosition>,
                     scan_intent: cdf_kernel::CompiledScanIntent::full_scan(),
+                    retry_safety: cdf_kernel::PartitionRetrySafety::Forbidden,
                     metadata: BTreeMap::from([("resource_id".to_owned(), "orders".to_owned())]),
                 }]);
             }
@@ -894,21 +895,19 @@ mod tests {
                     },
                     start_position: None::<SourcePosition>,
                     scan_intent: cdf_kernel::CompiledScanIntent::full_scan(),
+                    retry_safety: cdf_kernel::PartitionRetrySafety::Forbidden,
                     metadata: BTreeMap::from([("resource_id".to_owned(), "orders".to_owned())]),
                 }]);
             }
             Ok(vec![partition("p0")])
         }
 
-        fn open(
-            &self,
-            _partition: PartitionPlan,
-        ) -> BoxFuture<'_, Result<cdf_kernel::OpenedPartitionStream>> {
-            Box::pin(async {
+        fn open(&self, _partition: PartitionPlan) -> cdf_kernel::PartitionOpenAttempt<'_> {
+            cdf_kernel::PartitionOpenAttempt::materialized(Box::pin(async {
                 Err(CdfError::internal(
                     "resource conformance self-tests must not call open",
                 ))
-            })
+            }))
         }
     }
 
@@ -1043,6 +1042,7 @@ mod tests {
             },
             start_position: None::<SourcePosition>,
             scan_intent: cdf_kernel::CompiledScanIntent::full_scan(),
+            retry_safety: cdf_kernel::PartitionRetrySafety::Forbidden,
             metadata: BTreeMap::from([("resource_id".to_owned(), "orders".to_owned())]),
         }
     }
@@ -1055,6 +1055,7 @@ mod tests {
             },
             start_position: None::<SourcePosition>,
             scan_intent: cdf_kernel::CompiledScanIntent::full_scan(),
+            retry_safety: cdf_kernel::PartitionRetrySafety::Forbidden,
             metadata: BTreeMap::new(),
         }
     }

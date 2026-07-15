@@ -122,20 +122,24 @@ fn mvp_acceptance_demo_fixture_proves_rest_duckdb_recovery_replay_and_drift() {
     };
     let previous_hook = panic::take_hook();
     panic::set_hook(Box::new(|_| {}));
+    let services = crate::test_execution_services();
     let crashed = panic::catch_unwind(AssertUnwindSafe(|| {
-        futures_executor::block_on(run_project(ProjectRunRequest {
-            resource: ProjectRunSource::rest(&resource),
-            plan,
-            package_root: project.package_root(),
-            state_store_path: project.state_store_path(),
-            pipeline_id: PipelineId::new(PIPELINE_ID).unwrap(),
-            package_id: PACKAGE_ID.to_owned(),
-            checkpoint_id: CheckpointId::new(CHECKPOINT_ID).unwrap(),
-            destination,
-            run_id: Some(RunId::new(RUN_ID).unwrap()),
-            event_sink: None,
-            after_receipt_verified: Some(&gate),
-        }))
+        futures_executor::block_on(run_project(
+            ProjectRunRequest {
+                resource: ProjectRunSource::rest(&resource),
+                plan,
+                package_root: project.package_root(),
+                state_store_path: project.state_store_path(),
+                pipeline_id: PipelineId::new(PIPELINE_ID).unwrap(),
+                package_id: PACKAGE_ID.to_owned(),
+                checkpoint_id: CheckpointId::new(CHECKPOINT_ID).unwrap(),
+                destination,
+                run_id: Some(RunId::new(RUN_ID).unwrap()),
+                event_sink: None,
+                after_receipt_verified: Some(&gate),
+            },
+            &services,
+        ))
     }));
     panic::set_hook(previous_hook);
     match crashed {

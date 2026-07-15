@@ -393,6 +393,7 @@ schema = { fields = [
         while let Some(batch) = stream.next().await {
             batches.push(batch?);
         }
+        stream.completion().await?;
         Ok::<_, CdfError>(batches)
     })?;
     let rows = batches.iter().map(|batch| batch.header.row_count).sum();
@@ -534,19 +535,24 @@ schema = { fields = [
         policy.normalization.identifier = identifier;
     }
     let plan = engine_plan_with_policy(&resource, package_id, &policy)?;
-    let report = block_on(run_project(ProjectRunRequest {
-        resource: ProjectRunSource::file(&resource),
-        plan,
-        package_root: project_root.join(".cdf/packages"),
-        state_store_path: project_root.join(".cdf/state.db"),
-        pipeline_id: PipelineId::new("pipeline-startup-benchmark")?,
-        package_id: package_id.to_owned(),
-        checkpoint_id: CheckpointId::new("checkpoint-startup-benchmark")?,
-        destination,
-        run_id: Some(RunId::new("run-startup-benchmark")?),
-        event_sink: None,
-        after_receipt_verified: None,
-    }))?;
+    let services =
+        cdf_engine::StandaloneExecutionHost::default_services(BENCHMARK_MANAGED_MEMORY_BYTES)?.1;
+    let report = block_on(run_project(
+        ProjectRunRequest {
+            resource: ProjectRunSource::file(&resource),
+            plan,
+            package_root: project_root.join(".cdf/packages"),
+            state_store_path: project_root.join(".cdf/state.db"),
+            pipeline_id: PipelineId::new("pipeline-startup-benchmark")?,
+            package_id: package_id.to_owned(),
+            checkpoint_id: CheckpointId::new("checkpoint-startup-benchmark")?,
+            destination,
+            run_id: Some(RunId::new("run-startup-benchmark")?),
+            event_sink: None,
+            after_receipt_verified: None,
+        },
+        &services,
+    ))?;
     Ok(WorkMetric {
         rows: report.row_count,
         bytes: report

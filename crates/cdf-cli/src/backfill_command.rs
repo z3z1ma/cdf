@@ -2,7 +2,7 @@ use cdf_contract::{ContractPolicy, ObservedSchema, compile_resource_validation_p
 use cdf_kernel::{CdfError, PipelineId, RunEventSink, TargetName};
 use cdf_project::{
     BackfillPlan, BackfillPlanRequest, BackfillSlice, ProjectRunRequest, ProjectRunSource,
-    WindowScopedResource, backfill_pipeline_id, plan_backfill, run_project_with_services,
+    WindowScopedResource, backfill_pipeline_id, plan_backfill, run_project,
 };
 use serde::Serialize;
 
@@ -40,8 +40,10 @@ pub(crate) fn backfill(
             .clone()
             .unwrap_or_else(|| default_target_for_resource(&args.resource_id)),
     )?;
+    let source_plan = crate::project_run_resource::compile_source_plan_for_cli(resource)?;
     let plan = plan_backfill(
         resource,
+        Some(&source_plan),
         BackfillPlanRequest {
             target: target.clone(),
             from: args.from.clone(),
@@ -60,7 +62,6 @@ pub(crate) fn backfill(
             "backfill execution host was not provided",
         ))
     })?;
-    let source_plan = crate::project_run_resource::compile_source_plan_for_cli(resource)?;
     let run_resource = build_project_run_resource(
         &context,
         resource,
@@ -149,7 +150,7 @@ impl BackfillSliceExecutor<'_> {
         }
         let run = self
             .host
-            .block_on_root(run_project_with_services(
+            .block_on_root(run_project(
                 ProjectRunRequest {
                     resource: ProjectRunSource::new(&scoped),
                     plan: engine_plan,

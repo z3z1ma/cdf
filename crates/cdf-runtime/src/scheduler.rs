@@ -1,12 +1,12 @@
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
-use cdf_kernel::{CdfError, PartitionPlan, Result, ScanPlan};
+use cdf_kernel::{CdfError, PartitionPlan, PartitionRetrySafety, Result, ScanPlan};
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    CompiledSourcePlan, DecodeUnitPlan, DestinationIngressMode, DestinationRuntimeCapabilities,
-    DestinationWriterModel, ExecutionHostCapabilities, ExecutionServices,
-    SourceExecutionCapabilities, SourceExecutorClass, SourceRetryGranularity, artifact_hash,
+    CompiledSourceExecutionPlan, CompiledSourceRetry, DecodeUnitPlan, DestinationIngressMode,
+    DestinationRuntimeCapabilities, DestinationWriterModel, ExecutionHostCapabilities,
+    ExecutionServices, SourceExecutionCapabilities, SourceExecutorClass, artifact_hash,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -45,8 +45,7 @@ pub struct ScheduledPartition {
     pub minimum_working_set_bytes: u64,
     pub maximum_working_set_bytes: u64,
     pub executor_class: SourceExecutorClass,
-    pub retry_granularity: SourceRetryGranularity,
-    pub independently_retryable: bool,
+    pub retry: Option<CompiledSourceRetry>,
     pub speculative_safe: bool,
     pub canonical_order: bool,
 }
@@ -58,9 +57,9 @@ pub struct CanonicalPartitionSchedule {
 }
 
 impl CanonicalPartitionSchedule {
-    pub fn compile(source: &CompiledSourcePlan, scan: &ScanPlan) -> Result<Self> {
+    pub fn compile(source: &CompiledSourceExecutionPlan, scan: &ScanPlan) -> Result<Self> {
         source.validate()?;
-        if source.descriptor.resource_id != scan.request.resource_id {
+        if source.resource_id != scan.request.resource_id {
             return Err(CdfError::contract(
                 "source plan and scan plan resource ids do not match",
             ));
@@ -102,11 +101,10 @@ impl CanonicalPartitionSchedule {
                     minimum_working_set_bytes,
                     maximum_working_set_bytes,
                     executor_class: source.execution_capabilities.executor_class,
-                    retry_granularity: source.execution_capabilities.retry_granularity,
-                    independently_retryable: source.execution_capabilities.idempotent_reads
-                        && source.execution_capabilities.reopenable
-                        && source.execution_capabilities.retry_granularity
-                            != SourceRetryGranularity::None,
+                    retry: compile_partition_retry(
+                        &source.execution_capabilities,
+                        partition.retry_safety,
+                    )?,
                     speculative_safe: source.execution_capabilities.speculative_safe,
                     canonical_order: source.execution_capabilities.canonical_order,
                 })
@@ -117,6 +115,130 @@ impl CanonicalPartitionSchedule {
             partitions,
         })
     }
+
+    pub fn validate_against_scan(
+        &self,
+        scan: &ScanPlan,
+        source: &CompiledSourceExecutionPlan,
+    ) -> Result<()> {
+        source.validate()?;
+        if self.plan_id != scan.plan_id.as_str() || self.partitions.len() != scan.partitions.len() {
+            return Err(CdfError::data(
+                "partition schedule does not match its scan plan identity or partition count",
+            ));
+        }
+        for (ordinal, (scheduled, partition)) in
+            self.partitions.iter().zip(&scan.partitions).enumerate()
+        {
+            if usize::try_from(scheduled.ordinal.get()).ok() != Some(ordinal)
+                || &scheduled.partition != partition
+                || scheduled.minimum_working_set_bytes == 0
+                || scheduled.maximum_working_set_bytes < scheduled.minimum_working_set_bytes
+            {
+                return Err(CdfError::data(
+                    "partition schedule contains stale ordinal, partition, or working-set evidence",
+                ));
+            }
+            let expected_identity = artifact_hash(&serde_json::json!({
+                "driver": source.driver,
+                "physical_plan_hash": source.physical_plan_hash,
+                "partition": partition,
+            }))?;
+            let expected_retry =
+                compile_partition_retry(&source.execution_capabilities, partition.retry_safety)?;
+            if scheduled.immutable_identity_hash != expected_identity
+                || scheduled.minimum_working_set_bytes
+                    != source
+                        .execution_capabilities
+                        .minimum_poll_bytes
+                        .checked_add(source.execution_capabilities.minimum_decode_bytes)
+                        .ok_or_else(|| {
+                            CdfError::contract("source minimum working set overflowed u64")
+                        })?
+                || scheduled.maximum_working_set_bytes
+                    != source
+                        .execution_capabilities
+                        .maximum_poll_bytes
+                        .checked_add(source.execution_capabilities.maximum_decode_bytes)
+                        .ok_or_else(|| {
+                            CdfError::contract("source maximum working set overflowed u64")
+                        })?
+                || scheduled.executor_class != source.execution_capabilities.executor_class
+                || scheduled.retry != expected_retry
+                || scheduled.speculative_safe != source.execution_capabilities.speculative_safe
+                || scheduled.canonical_order != source.execution_capabilities.canonical_order
+            {
+                return Err(CdfError::data(
+                    "partition schedule widens or differs from its compiled source execution plan",
+                ));
+            }
+            validate_partition_retry_binding(partition.retry_safety, scheduled.retry.as_ref())?;
+        }
+        Ok(())
+    }
+}
+
+fn validate_partition_retry_binding(
+    partition_safety: PartitionRetrySafety,
+    retry: Option<&CompiledSourceRetry>,
+) -> Result<()> {
+    let Some(retry) = retry else {
+        return if partition_safety == PartitionRetrySafety::Forbidden {
+            Ok(())
+        } else {
+            Err(CdfError::data(
+                "retry-safe partition schedule omitted its compiled retry policy",
+            ))
+        };
+    };
+    retry.validate()?;
+    let expected_attestation = match partition_safety {
+        PartitionRetrySafety::Forbidden => {
+            return Err(CdfError::data(
+                "retry-forbidden partition schedule contains a compiled retry policy",
+            ));
+        }
+        PartitionRetrySafety::ImmutableContent => {
+            crate::SourceAttestationStrength::ImmutableContent
+        }
+        PartitionRetrySafety::Snapshot => crate::SourceAttestationStrength::Snapshot,
+    };
+    if retry.granularity != crate::SourceRetryGranularity::Partition
+        || retry.attestation != expected_attestation
+    {
+        return Err(CdfError::data(
+            "partition schedule retry granularity or attestation exceeds its planned safety proof",
+        ));
+    }
+    Ok(())
+}
+
+fn compile_partition_retry(
+    capabilities: &SourceExecutionCapabilities,
+    partition_safety: PartitionRetrySafety,
+) -> Result<Option<CompiledSourceRetry>> {
+    if partition_safety == PartitionRetrySafety::Forbidden {
+        capabilities.validate()?;
+        return Ok(None);
+    }
+    if capabilities.retry_granularity != crate::SourceRetryGranularity::Partition {
+        return Err(CdfError::contract(
+            "retry-safe partition requires partition-granularity source retry capability",
+        ));
+    }
+    let expected_attestation = match partition_safety {
+        PartitionRetrySafety::Forbidden => unreachable!("forbidden retry returned above"),
+        PartitionRetrySafety::ImmutableContent => {
+            crate::SourceAttestationStrength::ImmutableContent
+        }
+        PartitionRetrySafety::Snapshot => crate::SourceAttestationStrength::Snapshot,
+    };
+    if capabilities.attestation != expected_attestation {
+        return Err(CdfError::contract(
+            "partition retry identity proof does not match the source attestation capability",
+        ));
+    }
+    CompiledSourceRetry::from_capabilities(capabilities)
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -724,8 +846,9 @@ mod tests {
             reopenable: true,
             resumable: true,
             speculative_safe: true,
-            retry_granularity: SourceRetryGranularity::Partition,
+            retry_granularity: crate::SourceRetryGranularity::Partition,
             retryable_errors: vec![cdf_kernel::ErrorKind::Transient],
+            retry_policy: Some(crate::SourceRetryPolicy::default()),
             attestation: crate::SourceAttestationStrength::ImmutableContent,
             rate_limit_per_second: None,
             quota_authority: None,
@@ -749,6 +872,17 @@ mod tests {
         let mut too_small = ceilings;
         too_small.managed_memory_bytes = 19;
         assert!(resolve_effective_jobs(1, &source, &too_small).is_err());
+
+        let mut unit_only = source;
+        unit_only.retry_granularity = crate::SourceRetryGranularity::Unit;
+        assert!(
+            compile_partition_retry(&unit_only, PartitionRetrySafety::Forbidden)
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            compile_partition_retry(&unit_only, PartitionRetrySafety::ImmutableContent).is_err()
+        );
     }
 
     #[test]

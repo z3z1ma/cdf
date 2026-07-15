@@ -1,11 +1,14 @@
 use std::{
     collections::BTreeMap,
+    future::Future,
     pin::Pin,
+    sync::Arc,
     task::{Context, Poll},
 };
 
 use arrow_schema::SchemaRef;
 use futures_core::Stream;
+use futures_util::{FutureExt, future::Shared};
 use serde::{Deserialize, Serialize};
 
 use crate::{
@@ -428,7 +431,18 @@ pub struct PartitionPlan {
     pub scope: ScopeKey,
     pub start_position: Option<SourcePosition>,
     pub scan_intent: CompiledScanIntent,
+    /// The strongest identity proof available for restarting this exact planned partition.
+    pub retry_safety: PartitionRetrySafety,
     pub metadata: BTreeMap<String, String>,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PartitionRetrySafety {
+    #[default]
+    Forbidden,
+    ImmutableContent,
+    Snapshot,
 }
 
 pub const COMPILED_SCAN_INTENT_VERSION: u16 = 1;
@@ -784,6 +798,37 @@ impl PartitionAttestation {
 
     pub fn physical_schema_hash(&self) -> Option<&SchemaHash> {
         self.physical_schema_hash.as_ref()
+    }
+
+    /// Whether this terminal attestation only strengthens an earlier observation.
+    ///
+    /// File extraction may add a payload SHA-256 that metadata-only preflight could
+    /// not know. Every pre-existing identity field and schema hash must remain exact;
+    /// no terminal observation may remove or replace prior evidence.
+    pub fn is_monotonic_refinement_of(&self, earlier: &Self) -> bool {
+        if self.physical_schema_hash != earlier.physical_schema_hash {
+            return false;
+        }
+        match (&self.processed_position, &earlier.processed_position) {
+            (SourcePosition::FileManifest(current), SourcePosition::FileManifest(previous)) => {
+                current.version == previous.version
+                    && current.files.len() == previous.files.len()
+                    && current
+                        .files
+                        .iter()
+                        .zip(&previous.files)
+                        .all(|(current, previous)| {
+                            current.path == previous.path
+                                && current.size_bytes == previous.size_bytes
+                                && current.source_generation == previous.source_generation
+                                && current.etag == previous.etag
+                                && current.object_version == previous.object_version
+                                && (current.sha256 == previous.sha256
+                                    || (previous.sha256.is_none() && current.sha256.is_some()))
+                        })
+            }
+            (current, previous) => current == previous,
+        }
     }
 }
 
@@ -1432,21 +1477,31 @@ impl EffectiveSchemaRuntime {
 pub trait ResourceStream: Send + Sync {
     fn descriptor(&self) -> &ResourceDescriptor;
     fn schema(&self) -> SchemaRef;
+    /// Returns the canonical compiler artifact that produced this executable resource.
+    ///
+    /// Engine plans compiled from a source driver require this external binding before crossing
+    /// the source boundary. Keeping it on the resolved resource prevents a serialized engine plan
+    /// from coherently rewriting every copy of its own source ceiling.
+    fn compiled_source_plan_hash(&self) -> Option<&str> {
+        None
+    }
     /// Validates adapter-owned runtime dependencies before orchestration starts.
     /// Generic orchestration calls this hook without knowing the source kind.
     fn validate_runtime_dependencies(&self) -> Result<()> {
         Ok(())
     }
     fn plan_partitions(&self, request: &ScanRequest) -> Result<Vec<PartitionPlan>>;
-    fn open(&self, partition: PartitionPlan) -> BoxFuture<'_, Result<OpenedPartitionStream>>;
+    /// Opens one invocation-bound partition stream.
+    ///
+    /// The returned attempt exposes invocation termination before its opening future is polled.
+    /// Generic orchestration can therefore cancel and await producer shutdown even when
+    /// cancellation wins before the opened stream becomes visible.
+    fn open(&self, partition: PartitionPlan) -> PartitionOpenAttempt<'_>;
     /// Revalidates a planned observation without opening its payload and returns
     /// the exact source position safe to mark processed. Adapters with mutable
     /// external identity MUST override this method.
-    fn attest_partition(
-        &self,
-        _partition: &PartitionPlan,
-    ) -> BoxFuture<'_, Result<Option<PartitionAttestation>>> {
-        Box::pin(async { Ok(None) })
+    fn attest_partition(&self, _partition: PartitionPlan) -> PartitionAttestationAttempt<'_> {
+        PartitionAttestationAttempt::materialized(Box::pin(async { Ok(None) }))
     }
     fn effective_schema_runtime(&self) -> Option<&EffectiveSchemaRuntime> {
         None
@@ -1456,33 +1511,284 @@ pub trait ResourceStream: Send + Sync {
     }
 }
 
+/// One lifecycle-bound partition attestation.
+///
+/// Unlike an open attempt, attestation has no continuing payload to own producer work. The future
+/// therefore joins its invocation scope before returning the observation and preserves the primary
+/// typed error if cleanup also fails.
+pub struct PartitionAttestationAttempt<'a> {
+    attesting: Option<BoxFuture<'a, Result<Option<PartitionAttestation>>>>,
+    result: Option<Result<Option<PartitionAttestation>>>,
+    joining: Option<BoxFuture<'static, Result<()>>>,
+    termination: InvocationTermination,
+    terminal: bool,
+}
+
+impl<'a> PartitionAttestationAttempt<'a> {
+    pub fn materialized(attesting: BoxFuture<'a, Result<Option<PartitionAttestation>>>) -> Self {
+        Self::with_termination(attesting, InvocationTermination::completed())
+    }
+
+    pub fn with_termination(
+        attesting: BoxFuture<'a, Result<Option<PartitionAttestation>>>,
+        termination: InvocationTermination,
+    ) -> Self {
+        Self {
+            attesting: Some(attesting),
+            result: None,
+            joining: None,
+            termination,
+            terminal: false,
+        }
+    }
+
+    /// Cancels the attestation and waits for every invocation-owned task to terminate.
+    ///
+    /// Callers that race attestation against run cancellation MUST use this barrier before they
+    /// return. Drop remains a last-resort cancellation rail, not an asynchronous join primitive.
+    pub async fn terminate_and_join(&mut self) -> Result<()> {
+        drop(self.attesting.take());
+        drop(self.result.take());
+        drop(self.joining.take());
+        self.terminal = true;
+        self.termination.terminate_and_join().await
+    }
+}
+
+impl Future for PartitionAttestationAttempt<'_> {
+    type Output = Result<Option<PartitionAttestation>>;
+
+    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        if self.result.is_none() {
+            let attesting = self
+                .attesting
+                .as_mut()
+                .expect("partition attestation cannot be polled after completion");
+            let Poll::Ready(result) = attesting.as_mut().poll(cx) else {
+                return Poll::Pending;
+            };
+            self.attesting = None;
+            self.result = Some(result);
+            let termination = self.termination.clone();
+            self.joining = Some(Box::pin(async move { termination.join().await }));
+        }
+
+        let joining = self
+            .joining
+            .as_mut()
+            .expect("partition attestation join was initialized");
+        let Poll::Ready(joined) = joining.as_mut().poll(cx) else {
+            return Poll::Pending;
+        };
+        self.joining = None;
+        self.terminal = true;
+        let result = self
+            .result
+            .take()
+            .expect("partition attestation result was initialized");
+        match (result, joined) {
+            (Ok(attestation), Ok(())) => Poll::Ready(Ok(attestation)),
+            (Err(mut error), Err(cleanup)) => {
+                error.message = format!(
+                    "{}; source attestation termination also failed: {}",
+                    error.message, cleanup.message
+                );
+                Poll::Ready(Err(error))
+            }
+            (Err(error), Ok(())) => Poll::Ready(Err(error)),
+            (Ok(_), Err(error)) => Poll::Ready(Err(error)),
+        }
+    }
+}
+
+impl Drop for PartitionAttestationAttempt<'_> {
+    fn drop(&mut self) {
+        if !self.terminal {
+            self.termination.cancel();
+        }
+    }
+}
+
+/// Cloneable cancel-and-join authority for all producer work in one source invocation.
+#[derive(Clone)]
+pub struct InvocationTermination {
+    cancel: Arc<dyn Fn() + Send + Sync>,
+    joined: Shared<BoxFuture<'static, Result<()>>>,
+}
+
+impl InvocationTermination {
+    pub fn new(
+        cancel: impl Fn() + Send + Sync + 'static,
+        joined: BoxFuture<'static, Result<()>>,
+    ) -> Self {
+        Self {
+            cancel: Arc::new(cancel),
+            joined: joined.shared(),
+        }
+    }
+
+    pub fn completed() -> Self {
+        Self::new(|| {}, Box::pin(async { Ok(()) }))
+    }
+
+    pub async fn join(&self) -> Result<()> {
+        self.joined.clone().await
+    }
+
+    pub fn cancel(&self) {
+        (self.cancel)();
+    }
+
+    pub async fn terminate_and_join(&self) -> Result<()> {
+        self.cancel();
+        self.join().await
+    }
+}
+
+/// An opening source invocation whose termination authority exists before polling begins.
+///
+/// An opening error is returned before cleanup so orchestration can record the primary failure
+/// first. The caller MUST then call [`Self::terminate_and_join`] before retrying or returning;
+/// dropping an unfinished attempt still cancels its producer as a final safety rail.
+pub struct PartitionOpenAttempt<'a> {
+    opening: Option<BoxFuture<'a, Result<PartitionStreamPayload>>>,
+    termination: InvocationTermination,
+    needs_termination: bool,
+}
+
+impl<'a> PartitionOpenAttempt<'a> {
+    /// Creates an attempt whose opening work and payload are already materialized on the caller's
+    /// task. Sources that spawn any producer work MUST use [`Self::with_termination`].
+    pub fn materialized(opening: BoxFuture<'a, Result<PartitionStreamPayload>>) -> Self {
+        Self::with_termination(opening, InvocationTermination::completed())
+    }
+
+    pub fn with_termination(
+        opening: BoxFuture<'a, Result<PartitionStreamPayload>>,
+        termination: InvocationTermination,
+    ) -> Self {
+        Self {
+            opening: Some(opening),
+            termination,
+            needs_termination: true,
+        }
+    }
+
+    pub async fn terminate_and_join(&mut self) -> Result<()> {
+        drop(self.opening.take());
+        self.needs_termination = false;
+        self.termination.terminate_and_join().await
+    }
+}
+
+impl Future for PartitionOpenAttempt<'_> {
+    type Output = Result<OpenedPartitionStream>;
+
+    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        let opening = self
+            .opening
+            .as_mut()
+            .expect("partition opening attempt cannot be polled after completion");
+        match opening.as_mut().poll(cx) {
+            Poll::Pending => Poll::Pending,
+            Poll::Ready(Ok(payload)) => {
+                self.opening = None;
+                self.needs_termination = false;
+                Poll::Ready(Ok(OpenedPartitionStream::from_payload(
+                    payload,
+                    self.termination.clone(),
+                )))
+            }
+            Poll::Ready(Err(error)) => {
+                self.opening = None;
+                Poll::Ready(Err(error))
+            }
+        }
+    }
+}
+
+/// The payload published by a source invocation before its lifecycle authority is transferred.
+///
+/// This type deliberately carries no cancellation or join handle. [`PartitionOpenAttempt`] is the
+/// sole owner of that authority and attaches it to [`OpenedPartitionStream`] on successful open,
+/// making it impossible for an adapter to pair a payload with another invocation's termination.
+pub struct PartitionStreamPayload {
+    stream: BatchStream,
+    completion: BoxFuture<'static, Result<PartitionCompletion>>,
+}
+
+impl PartitionStreamPayload {
+    pub fn new(
+        stream: BatchStream,
+        completion: BoxFuture<'static, Result<PartitionCompletion>>,
+    ) -> Self {
+        Self { stream, completion }
+    }
+
+    pub fn batches(stream: BatchStream) -> Self {
+        Self::new(
+            stream,
+            Box::pin(async { Ok(PartitionCompletion::default()) }),
+        )
+    }
+}
+
+impl Drop for PartitionOpenAttempt<'_> {
+    fn drop(&mut self) {
+        if self.needs_termination {
+            self.termination.cancel();
+        }
+    }
+}
+
 /// One opened partition stream and its invocation-bound terminal evidence.
 ///
 /// Completion may be consumed only after the batch stream reaches EOF. Binding the future to this
 /// value prevents evidence from one preview, retry, or concurrent open being observed by another.
 pub struct OpenedPartitionStream {
-    stream: BatchStream,
+    stream: Option<BatchStream>,
     completion: Option<BoxFuture<'static, Result<PartitionCompletion>>>,
+    termination: InvocationTermination,
+    termination_consumed: bool,
     reached_eof: bool,
+    terminal_error: Option<CdfError>,
 }
 
 impl OpenedPartitionStream {
-    pub fn without_completion(stream: BatchStream) -> Self {
-        Self::with_completion(
-            stream,
-            Box::pin(async { Ok(PartitionCompletion::default()) }),
-        )
+    fn from_payload(payload: PartitionStreamPayload, termination: InvocationTermination) -> Self {
+        Self {
+            stream: Some(payload.stream),
+            completion: Some(payload.completion),
+            termination,
+            termination_consumed: false,
+            reached_eof: false,
+            terminal_error: None,
+        }
     }
 
-    pub fn with_completion(
-        stream: BatchStream,
-        completion: BoxFuture<'static, Result<PartitionCompletion>>,
-    ) -> Self {
-        Self {
-            stream,
-            completion: Some(completion),
-            reached_eof: false,
+    pub async fn join_failed_attempt(&mut self) -> Result<()> {
+        let Some(primary) = self.terminal_error.clone() else {
+            return Err(CdfError::contract(
+                "failed-attempt join requires a terminal stream error",
+            ));
+        };
+        match self.terminate_and_join().await {
+            // Execution scopes surface the producer's failure through the stream and retain the
+            // same task result in their join report. That repeated primary error proves the task
+            // was joined; it is not a second cleanup failure and must not suppress retry.
+            Err(joined) if joined == primary => Ok(()),
+            result => result,
         }
+    }
+
+    pub async fn terminate_and_join(&mut self) -> Result<()> {
+        drop(self.stream.take());
+        if self.termination_consumed {
+            return Ok(());
+        }
+        let result = self.termination.terminate_and_join().await;
+        self.termination_consumed = true;
+        result
     }
 
     pub async fn completion(&mut self) -> Result<PartitionCompletion> {
@@ -1494,7 +1800,20 @@ impl OpenedPartitionStream {
         let completion = self.completion.take().ok_or_else(|| {
             CdfError::contract("partition completion attestation was already consumed")
         })?;
-        completion.await
+        let completion = completion.await;
+        let termination = self.terminate_and_join().await;
+        match (completion, termination) {
+            (Ok(completion), Ok(())) => Ok(completion),
+            (Err(mut error), Err(termination)) => {
+                error.message = format!(
+                    "{}; source invocation termination also failed: {}",
+                    error.message, termination.message
+                );
+                Err(error)
+            }
+            (Err(error), Ok(())) => Err(error),
+            (Ok(_), Err(error)) => Err(error),
+        }
     }
 }
 
@@ -1502,11 +1821,24 @@ impl Stream for OpenedPartitionStream {
     type Item = Result<crate::Batch>;
 
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        let next = self.stream.as_mut().poll_next(cx);
-        if matches!(next, Poll::Ready(None)) {
-            self.reached_eof = true;
+        let Some(stream) = self.stream.as_mut() else {
+            return Poll::Ready(None);
+        };
+        let next = stream.as_mut().poll_next(cx);
+        match &next {
+            Poll::Ready(None) => self.reached_eof = true,
+            Poll::Ready(Some(Err(error))) => self.terminal_error = Some(error.clone()),
+            Poll::Ready(Some(Ok(_))) | Poll::Pending => {}
         }
         next
+    }
+}
+
+impl Drop for OpenedPartitionStream {
+    fn drop(&mut self) {
+        if self.stream.is_some() && !self.termination_consumed {
+            self.termination.cancel();
+        }
     }
 }
 

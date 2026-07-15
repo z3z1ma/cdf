@@ -1,11 +1,11 @@
 use crate::prelude::*;
 use arrow_schema::{DataType, Field};
 use cdf_kernel::{
-    BatchStream, BoxFuture, CommitCounts, CommitSegment, ConcurrencyLimit, DeliveryGuarantee,
-    DestinationId, ErrorKind, IdempotencySupport, IdempotencyToken, IdentifierRules,
-    MigrationRecord, PackageHash, PartitionId, PartitionPlan, PlanId, QueryableResource, ReceiptId,
-    ResourceCapabilities, ResourceDescriptor, ResourceId, ResourceStream, ScanPlan, ScanRequest,
-    SchemaHash, SchemaSource, ScopeKey, SegmentAck, SegmentId, TargetName, TransactionMetadata,
+    BatchStream, CommitCounts, CommitSegment, ConcurrencyLimit, DeliveryGuarantee, DestinationId,
+    ErrorKind, IdempotencySupport, IdempotencyToken, IdentifierRules, MigrationRecord, PackageHash,
+    PartitionId, PartitionPlan, PlanId, QueryableResource, ReceiptId, ResourceCapabilities,
+    ResourceDescriptor, ResourceId, ResourceStream, ScanPlan, ScanRequest, SchemaHash,
+    SchemaSource, ScopeKey, SegmentAck, SegmentId, TargetName, TransactionMetadata,
     TransactionSupport, TrustLevel, TypeMapping, VerifyClause,
 };
 use std::{
@@ -976,6 +976,7 @@ impl SourceDriver for MockSourceDriver {
                 speculative_safe: false,
                 retry_granularity: SourceRetryGranularity::Partition,
                 retryable_errors: vec![ErrorKind::Transient],
+                retry_policy: Some(SourceRetryPolicy::default()),
                 attestation: SourceAttestationStrength::ImmutableContent,
                 rate_limit_per_second: Some(100),
                 quota_authority: Some("mock-account".to_owned()),
@@ -1068,20 +1069,16 @@ impl ResourceStream for MockSourceResource {
             scope: request.scope.clone(),
             start_position: None,
             scan_intent: cdf_kernel::CompiledScanIntent::full_scan(),
+            retry_safety: cdf_kernel::PartitionRetrySafety::Forbidden,
             metadata: BTreeMap::new(),
         }])
     }
 
-    fn open(
-        &self,
-        _partition: PartitionPlan,
-    ) -> BoxFuture<'_, Result<cdf_kernel::OpenedPartitionStream>> {
-        Box::pin(async {
+    fn open(&self, _partition: PartitionPlan) -> cdf_kernel::PartitionOpenAttempt<'_> {
+        cdf_kernel::PartitionOpenAttempt::materialized(Box::pin(async {
             let stream: BatchStream = Box::pin(futures_util::stream::empty());
-            Ok(cdf_kernel::OpenedPartitionStream::without_completion(
-                stream,
-            ))
-        })
+            Ok(cdf_kernel::PartitionStreamPayload::batches(stream))
+        }))
     }
 }
 
@@ -1142,6 +1139,14 @@ impl ExecutionHost for NoopSourceHost {
         cancellation: RunCancellation,
     ) -> cdf_kernel::BoxFuture<'static, Result<()>> {
         Box::pin(async move { cancellation.check() })
+    }
+
+    fn monotonic_now(&self) -> std::time::Duration {
+        std::time::Duration::ZERO
+    }
+
+    fn entropy_u64(&self) -> u64 {
+        0
     }
 
     fn ensure_blocking_lanes(&self, _lanes: &[BlockingLaneSpec]) -> Result<()> {

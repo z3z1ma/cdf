@@ -110,51 +110,13 @@ fn rate_limiter_respects_retry_after_and_quota_headers() {
 }
 
 #[test]
-fn retry_budget_maps_taxonomy_and_retries_only_safe_units() {
+fn response_classification_preserves_typed_retry_metadata_without_policy() {
     let response = HttpResponse::new(500);
-    let error = RetryBudget::classify_response(&response).unwrap();
+    let error = classify_response(&response).unwrap();
     assert_eq!(error.kind, ErrorKind::Transient);
 
-    let mut budget = RetryBudget::new(RetryPolicy {
-        max_attempts: 1,
-        budget_ms: 1_000,
-        base_delay_ms: 100,
-        max_delay_ms: 500,
-    });
-    let decision = budget.next_retry(
-        &error,
-        &RetryUnit::Request {
-            method: HttpMethod::Get,
-            idempotency_key: false,
-        },
-    );
-    assert!(matches!(decision, RetryDecision::Retry { .. }));
-    let exhausted = budget.next_retry(
-        &error,
-        &RetryUnit::Request {
-            method: HttpMethod::Get,
-            idempotency_key: false,
-        },
-    );
-    assert!(matches!(
-        exhausted,
-        RetryDecision::GiveUp { error }
-            if error.kind == ErrorKind::Transient
-                && error.message.contains("attempt budget exhausted")
-    ));
-
-    let mut budget = RetryBudget::new(RetryPolicy::default());
-    let decision = budget.next_retry(
-        &error,
-        &RetryUnit::Request {
-            method: HttpMethod::Post,
-            idempotency_key: false,
-        },
-    );
-    assert!(matches!(decision, RetryDecision::GiveUp { .. }));
-
     let rate_limited = HttpResponse::new(429).with_header("Retry-After", "4");
-    let error = RetryBudget::classify_response(&rate_limited).unwrap();
+    let error = classify_response(&rate_limited).unwrap();
     assert_eq!(error.kind, ErrorKind::RateLimited);
     assert_eq!(error.retry_after_ms, Some(4_000));
 }
