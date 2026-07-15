@@ -23,8 +23,8 @@ use cdf_runtime::{
     FormatDetectionConfidence, FormatDiscoveryRequest, FormatDriver, FormatProbe, FormatRegistry,
     GenerationStrength, ObservedByteSource, PhysicalDecodeRequest, PreparedSourcePayload,
     PreparedSourcePayloadKey, PreparedSourcePayloads, ReadOptions, SequentialReadRequest,
-    SourceContentDigest, SourceDriverId, SourceIoObserver, TransformSourceConfig,
-    TransformedByteSource, canonical_stream_frontier_with_completion,
+    SourceContentDigest, SourceDriverId, SourceEvidenceLocation, SourceIoObserver,
+    TransformSourceConfig, TransformedByteSource, canonical_stream_frontier_with_completion,
     decode_unit_no_lookback_frontiers, resolve_decode_unit_concurrency,
 };
 #[cfg(test)]
@@ -316,7 +316,10 @@ pub fn discover_local_binary_schema_bounded(
     let schema = observation.arrow_schema;
     let schema_hash = cdf_kernel::canonical_arrow_schema_hash(schema.as_ref())?;
     let mut source_identity = BTreeMap::from([
-        ("stable_id".to_owned(), logical_source_identity.stable_id),
+        (
+            "stable_id".to_owned(),
+            diagnostic_location(&logical_source_identity.stable_id)?,
+        ),
         ("format".to_owned(), request.format.as_str().to_owned()),
         (
             "format_driver_version".to_owned(),
@@ -351,10 +354,11 @@ pub fn discover_transport_binary_schema_bounded(
     let observation = dependencies.with_transport(|transport| transport.metadata(&resource))?;
     let access_resource = observation.access_resource(&resource);
     let metadata = observation.into_identity();
+    let evidence_location = diagnostic_location(&metadata.location)?;
     let size_bytes = metadata.size_bytes.ok_or_else(|| {
         CdfError::data(format!(
             "remote binary discovery for `{}` did not receive byte-size metadata",
-            diagnostic_location(&metadata.location)
+            evidence_location
         ))
     })?;
     let driver = dependencies.formats().resolve(request.format.as_str())?;
@@ -414,7 +418,7 @@ pub fn discover_transport_binary_schema_bounded(
     )?;
     let confirmation = FormatConfirmationContext {
         resource_id: request.resource_id.clone(),
-        location: diagnostic_location(&metadata.location),
+        location: evidence_location.clone(),
         format_declared: request.format_declared,
         transform_name: request.transform_name.to_owned(),
     };
@@ -511,7 +515,10 @@ pub fn discover_transport_binary_schema_bounded(
     let probe_records_read = observation.sampled_records;
     let schema_hash = cdf_kernel::canonical_arrow_schema_hash(observation.arrow_schema.as_ref())?;
     let mut source_identity = BTreeMap::from([
-        ("stable_id".to_owned(), logical_source_identity.stable_id),
+        (
+            "stable_id".to_owned(),
+            diagnostic_location(&logical_source_identity.stable_id)?,
+        ),
         ("format".to_owned(), request.format.as_str().to_owned()),
         (
             "format_driver_version".to_owned(),
@@ -531,7 +538,7 @@ pub fn discover_transport_binary_schema_bounded(
     };
     probe
         .source_identity
-        .insert("url".to_owned(), metadata.location.clone());
+        .insert("url".to_owned(), evidence_location);
     if let Some(etag) = &metadata.etag {
         probe
             .source_identity
@@ -3291,7 +3298,7 @@ fn resolve_transport_format(
 ) -> Result<FormatEvidence> {
     let driver = formats.resolve(plan.resolved_format()?.as_str())?;
     let extension = format_extension(location, compression);
-    let diagnostic = diagnostic_location(location);
+    let diagnostic = diagnostic_location(location)?;
     validate_format_extension(
         resource_id,
         plan,
@@ -3374,13 +3381,10 @@ fn format_extension(path_text: &str, compression: &CompressionEvidence) -> Optio
         .map(|(_, extension)| extension.to_owned())
 }
 
-fn diagnostic_location(location: &str) -> String {
-    let path = location.split('?').next().unwrap_or(location);
-    if path == location {
-        path.to_owned()
-    } else {
-        format!("{path}?<redacted>")
-    }
+fn diagnostic_location(location: &str) -> Result<String> {
+    Ok(SourceEvidenceLocation::from_operational(location)?
+        .as_str()
+        .to_owned())
 }
 
 fn resolve_local_compression(
@@ -3404,8 +3408,9 @@ fn resolve_transport_compression(
     transforms: &ByteTransformRegistry,
 ) -> Result<CompressionEvidence> {
     let extension_signal = compression_extension_signal(location, transforms);
+    let diagnostic = diagnostic_location(location)?;
     resolve_compression_signals(
-        &diagnostic_location(location),
+        &diagnostic,
         &plan.compression,
         extension_signal,
         CompressionSignal::default(),

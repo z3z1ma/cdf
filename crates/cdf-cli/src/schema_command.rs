@@ -1,6 +1,6 @@
 use std::{collections::BTreeMap, fs, sync::Arc};
 
-use cdf_declarative::{CompiledResource, CompiledResourcePlan};
+use cdf_declarative::CompiledResource;
 use cdf_kernel::{
     CdfError, LeaseOwnerId, PipelineId, PromotionId, ResourceId, SchemaSnapshotReference,
     SchemaSource, TargetName,
@@ -20,9 +20,8 @@ use crate::{
     args::{Cli, SchemaCommand, SchemaDiscoverArgs, SchemaPromoteArgs, SchemaResourceArgs},
     context::ProjectContext,
     destination_uri::{redact_error_value, resolve_selected_destination_with_services},
-    http_transport::ReqwestHttpTransport,
     output::{CliError, CommandOutput},
-    project_run_resource::file_runtime_dependencies,
+    project_run_resource::discover_source_schema_for_cli,
     render::{
         RenderDocument,
         primitives::{KeyValuePanel, NextCommand, SectionRule, StatusKind, StatusLine, Table},
@@ -413,39 +412,13 @@ fn discover_artifacts_for_cli_resource(
 ) -> Result<ResourceSchemaDiscoveryArtifacts, CliError> {
     let options =
         options.with_observation_cache(cdf_project::ObservationCacheStore::new(&context.root));
-    let secret_provider = context.secret_provider();
-    if matches!(resource.descriptor().schema_source, SchemaSource::Discover)
-        && matches!(resource.plan(), CompiledResourcePlan::Files(_))
-    {
-        return Ok(
-            cdf_project::discover_resource_schema_with_file_dependencies_artifacts(
-                resource,
-                &secret_provider,
-                file_runtime_dependencies(context, Some(execution))?,
-                options,
-            )?,
-        );
-    }
-    if matches!(resource.descriptor().schema_source, SchemaSource::Discover)
-        && matches!(resource.plan(), CompiledResourcePlan::Rest(_))
-    {
-        let transport = ReqwestHttpTransport::new()?;
-        let dependencies = cdf_declarative::RestDiscoveryDependencies::new(
-            &transport,
-            &secret_provider,
-            execution.memory(),
-        );
-        Ok(ResourceSchemaDiscoveryArtifacts::new(
-            cdf_project::discover_resource_schema_with_rest_dependencies(resource, &dependencies)?,
-            None,
-        ))
-    } else {
-        Ok(cdf_project::discover_resource_schema_artifacts(
-            resource,
-            &secret_provider,
-            options,
-        )?)
-    }
+    Ok(discover_source_schema_for_cli(
+        context,
+        resource,
+        execution,
+        cdf_runtime::PreparedSourcePayloads::default(),
+        options,
+    )?)
 }
 
 fn update_lockfile(

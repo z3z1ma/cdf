@@ -247,6 +247,7 @@ impl ObservationCacheEntry {
                 "observation cache entry has an unsupported version, mismatched key, or missing source evidence",
             ));
         }
+        cdf_runtime::validate_source_evidence_identity(&self.source_identity)?;
         let schema = self.schema.to_arrow()?;
         let schema_hash = cdf_kernel::canonical_arrow_schema_hash(&schema)?;
         if schema_hash != self.schema_hash {
@@ -268,7 +269,7 @@ pub enum ObservationCacheMissReason {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ObservationCacheLookup {
-    Hit(ObservationCacheEntry),
+    Hit(Box<ObservationCacheEntry>),
     Miss(ObservationCacheMissReason),
 }
 
@@ -347,7 +348,7 @@ impl ObservationCacheStore {
             .ok()
             .filter(|entry| entry.key == *key && entry.validate().is_ok());
         match entry {
-            Some(entry) => ObservationCacheLookup::Hit(entry),
+            Some(entry) => ObservationCacheLookup::Hit(Box::new(entry)),
             None => {
                 let _ = fs::remove_file(path);
                 ObservationCacheLookup::Miss(ObservationCacheMissReason::CorruptOrUnsupported)
@@ -555,6 +556,27 @@ mod tests {
     }
 
     #[test]
+    fn cache_hit_with_unredacted_uri_evidence_is_rejected_and_removed() {
+        let temp = tempfile::tempdir().unwrap();
+        let store = ObservationCacheStore::new(temp.path());
+        let key = key("v1");
+        let path = store.entry_path(&key).unwrap();
+        let mut unsafe_entry = entry(key.clone());
+        unsafe_entry.source_identity.insert(
+            "url".to_owned(),
+            "https://example.test/data#access_token=secret".to_owned(),
+        );
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(&path, serde_json::to_vec(&unsafe_entry).unwrap()).unwrap();
+
+        assert_eq!(
+            store.lookup(&key),
+            ObservationCacheLookup::Miss(ObservationCacheMissReason::CorruptOrUnsupported)
+        );
+        assert!(!path.exists());
+    }
+
+    #[test]
     fn oversized_lookup_is_bounded_before_deserialization() {
         struct CountingReader {
             inner: Cursor<Vec<u8>>,
@@ -630,6 +652,9 @@ mod tests {
             store.store(&conflicting),
             ObservationCacheStoreOutcome::Unavailable
         );
-        assert_eq!(store.lookup(&key), ObservationCacheLookup::Hit(first));
+        assert_eq!(
+            store.lookup(&key),
+            ObservationCacheLookup::Hit(Box::new(first))
+        );
     }
 }

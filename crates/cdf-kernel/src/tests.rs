@@ -4,7 +4,7 @@ use std::{
     future::Future,
     pin::Pin,
     sync::Arc,
-    task::{Context, Poll, Wake, Waker},
+    task::{Context, Poll},
 };
 
 use futures_core::Stream;
@@ -1339,16 +1339,16 @@ fn receipt_rejects_state_delta_when_identity_or_segments_do_not_match() {
 
 #[test]
 fn two_axis_discovery_coverage_evidence_is_total_and_round_trips() {
-    let evidence = DiscoveryCoverageEvidence::new(
-        "sampled_files",
-        "bounded_content",
-        Some("stratified-hash-v1".to_owned()),
-        Some(2),
-        5,
-        2,
-        4096,
-        1000,
-    )
+    let evidence = DiscoveryCoverageEvidence::new(DiscoveryCoverageEvidenceInput {
+        file_coverage: "sampled_files".to_owned(),
+        within_file_coverage: "bounded_content".to_owned(),
+        selector: Some("stratified-hash-v1".to_owned()),
+        sample_files: Some(2),
+        matched_files: 5,
+        selected_files: 2,
+        observed_bytes: 4096,
+        observed_records: 1000,
+    })
     .unwrap();
     assert_eq!(evidence.unobserved_files, 3);
     let encoded = serde_json::to_vec(&evidence).unwrap();
@@ -1411,13 +1411,7 @@ fn partition_completion_evidence_is_eof_bound_and_single_use() {
             Poll::Ready(None)
         }
     }
-    struct NoopWake;
-    impl Wake for NoopWake {
-        fn wake(self: Arc<Self>) {}
-    }
-
-    let waker = Waker::from(Arc::new(NoopWake));
-    let mut context = Context::from_waker(&waker);
+    let mut context = Context::from_waker(std::task::Waker::noop());
     let stream: BatchStream = Box::pin(EmptyBatchStream);
     let mut opened = OpenedPartitionStream::with_completion(
         stream,

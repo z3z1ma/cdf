@@ -620,7 +620,7 @@ mod tests {
         );
     }
 
-    fn terminal_position<'a>(position: &'a SourcePosition, key: &str) -> SourcePosition {
+    fn terminal_position(position: &SourcePosition, key: &str) -> SourcePosition {
         let SourcePosition::Composite(composite) = position else {
             panic!("expected composite position");
         };

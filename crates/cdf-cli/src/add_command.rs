@@ -7,8 +7,7 @@ use std::{
 };
 
 use cdf_declarative::{
-    CompiledResource, CompiledResourcePlan, compile_document_with_project_root,
-    parse_toml as parse_declarative_toml,
+    CompiledResource, compile_document_with_project_root, parse_toml as parse_declarative_toml,
 };
 use cdf_http::{SecretProvider, SecretUri, SecretValue};
 use cdf_kernel::{CdfError, SchemaSource};
@@ -23,9 +22,7 @@ use crate::{
     args::{AddArgs, Cli},
     context::ProjectContext,
     error_catalog,
-    http_transport::ReqwestHttpTransport,
     output::{CliError, CommandOutput},
-    project_run_resource::file_runtime_dependencies,
     render::{
         RenderDocument,
         primitives::{KeyValuePanel, NextCommand, SectionRule, StatusKind, StatusLine, Table},
@@ -46,7 +43,7 @@ pub(crate) fn add(
 
     let direct_secret = match &request.target {
         AddRequestTarget::Postgres(target) => {
-            Some((target.secret_ref.as_str(), target.dsn.as_str()))
+            Some((target.secret_ref.as_str().to_owned(), target.dsn.clone()))
         }
         AddRequestTarget::File(_) | AddRequestTarget::Rest(_) => None,
     };
@@ -54,7 +51,7 @@ pub(crate) fn add(
         fallback: context.secret_provider(),
         direct: direct_secret,
     };
-    let artifacts = discover_for_add(&context, &proposed.resource, &add_secrets, execution)?;
+    let artifacts = discover_for_add(&context, &proposed.resource, add_secrets, execution)?;
     let discovery = &artifacts.discovery;
     let pinned_resource = proposed.resource.with_schema_source_and_schema(
         SchemaSource::Discovered {
@@ -166,54 +163,44 @@ fn ensure_add_is_available(
 fn discover_for_add(
     context: &ProjectContext,
     resource: &CompiledResource,
-    secret_provider: &dyn SecretProvider,
+    secret_provider: AddSecretProvider,
     execution: &cdf_runtime::ExecutionServices,
 ) -> Result<ResourceSchemaDiscoveryArtifacts, CliError> {
     let options = cdf_project::SchemaDiscoveryExecutionOptions::new()
         .with_observation_cache(cdf_project::ObservationCacheStore::new(&context.root));
-    match resource.plan() {
-        CompiledResourcePlan::Files(_) => Ok(
-            cdf_project::discover_resource_schema_with_file_dependencies_artifacts(
-                resource,
-                secret_provider,
-                file_runtime_dependencies(context, Some(execution))?,
-                options,
-            )?,
-        ),
-        CompiledResourcePlan::Sql(_) => Ok(cdf_project::discover_resource_schema_artifacts(
-            resource,
-            secret_provider,
-            options,
-        )?),
-        CompiledResourcePlan::Rest(_) => {
-            let transport = ReqwestHttpTransport::new()?;
-            let dependencies = cdf_declarative::RestDiscoveryDependencies::new(
-                &transport,
-                secret_provider,
-                execution.memory(),
-            );
-            Ok(ResourceSchemaDiscoveryArtifacts::new(
-                cdf_project::discover_resource_schema_with_rest_dependencies(
-                    resource,
-                    &dependencies,
-                )?,
-                None,
-            ))
-        }
-    }
+    let registry = crate::source_registry::builtin_source_registry()?;
+    let request = resource.source_compile_request().ok_or_else(|| {
+        CdfError::contract(format!(
+            "resource `{}` has no source compile request",
+            resource.descriptor().resource_id
+        ))
+    })?;
+    let source_plan = registry.compile(request.clone())?;
+    let resolution = cdf_runtime::SourceResolutionContext::new(
+        &context.root,
+        Arc::new(secret_provider),
+        execution,
+    );
+    Ok(cdf_project::discover_resource_schema_with_source_registry(
+        resource,
+        &registry,
+        &source_plan,
+        &resolution,
+        options,
+    )?)
 }
 
-struct AddSecretProvider<'a> {
+struct AddSecretProvider {
     fallback: cdf_project::DefaultSecretProvider,
-    direct: Option<(&'a str, &'a str)>,
+    direct: Option<(String, String)>,
 }
 
-impl SecretProvider for AddSecretProvider<'_> {
+impl SecretProvider for AddSecretProvider {
     fn resolve(&self, uri: &SecretUri) -> cdf_kernel::Result<SecretValue> {
-        if let Some((reference, value)) = self.direct
+        if let Some((reference, value)) = &self.direct
             && uri.as_str() == reference
         {
-            return Ok(SecretValue::new(value));
+            return Ok(SecretValue::new(value.clone()));
         }
         self.fallback.resolve(uri)
     }

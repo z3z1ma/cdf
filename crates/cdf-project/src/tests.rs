@@ -306,22 +306,33 @@ fn file_dependencies(transport: FileTransportFacade) -> FileRuntimeDependencies 
     )
 }
 
-fn external_mock_file_dependencies(
+fn external_mock_source_registry(
     transport: RecordingHttpFileTransport,
-) -> FileRuntimeDependencies {
+) -> cdf_runtime::SourceRegistry {
     let mut formats = cdf_runtime::FormatRegistry::default();
     formats
         .register(Arc::new(ProjectExternalMockFormat::new()))
         .unwrap();
-    let execution = test_execution_services();
-    FileRuntimeDependencies::new(
-        FileTransportFacade::new()
-            .with_http_transport(transport)
-            .with_execution_services(execution.clone()),
-        execution,
-        Arc::new(formats),
-        Arc::new(cdf_runtime::ByteTransformRegistry::default()),
-    )
+    let formats = Arc::new(formats);
+    let runtime_formats = Arc::clone(&formats);
+    let mut registry = cdf_runtime::SourceRegistry::new();
+    registry
+        .register(
+            cdf_declarative::FileSourceDriver::new(formats, move |secrets, execution| {
+                Ok(FileRuntimeDependencies::new(
+                    FileTransportFacade::new()
+                        .with_http_transport(transport.clone())
+                        .with_shared_secret_provider(secrets)
+                        .with_execution_services(execution.clone()),
+                    execution,
+                    Arc::clone(&runtime_formats),
+                    Arc::new(cdf_runtime::ByteTransformRegistry::default()),
+                ))
+            })
+            .unwrap(),
+        )
+        .unwrap();
+    registry
 }
 
 fn discover_resource_schema_artifacts(
@@ -1052,7 +1063,10 @@ fn discovery_executor_budget_defaults_and_rejects_invalid_shapes() {
 #[test]
 fn discovery_manifest_is_canonical_content_addressed_and_fail_closed() {
     let resource_id = ResourceId::new("events.raw").unwrap();
-    let first = observed_discovery_candidate("file:///data/a.parquet", "sha256:a", 48);
+    // Metadata authorities such as SQL catalogs can observe a complete schema
+    // without transferring source payload bytes.
+    let mut first = observed_discovery_candidate("catalog://warehouse/a", "sha256:a", 0);
+    first.identity.size_bytes = None;
     let mut second = observed_discovery_candidate("file:///data/b.parquet", "sha256:b", 64);
     second.metadata_variance = vec![DiscoveryMetadataVariance {
         scope: DiscoveryMetadataScope::Field,
@@ -1100,8 +1114,10 @@ fn discovery_manifest_is_canonical_content_addressed_and_fail_closed() {
             .iter()
             .map(|candidate| candidate.canonical_location.as_str())
             .collect::<Vec<_>>(),
-        vec!["file:///data/a.parquet", "file:///data/b.parquet"]
+        vec!["catalog://warehouse/a", "file:///data/b.parquet"]
     );
+    assert_eq!(artifact.candidates[0].probe_bytes, Some(0));
+    assert_eq!(artifact.candidates[0].identity.size_bytes, None);
     assert_eq!(
         artifact.candidates[1].metadata_variance[0].observed_values,
         vec!["decimal", "utf8"]
@@ -1657,23 +1673,33 @@ fn project_external_codec_discovers_pins_previews_and_runs_over_remote_provider(
     write_http_external_mock_project(temp.path());
     let resource = compile_single_project_resource(temp.path());
     let transport = RecordingHttpFileTransport::new(b"MOCK\n".to_vec());
-    let dependencies = external_mock_file_dependencies(transport.clone());
-    let secrets = EnvSecretProvider::from_map(std::iter::empty::<(&str, &str)>());
-
-    let prepared = prepare_discover_resource_with_file_dependencies(
-        temp.path(),
+    let registry = external_mock_source_registry(transport.clone());
+    let execution = test_execution_services();
+    let secrets = Arc::new(EnvSecretProvider::from_map(
+        std::iter::empty::<(&str, &str)>(),
+    ));
+    let resolution = cdf_runtime::SourceResolutionContext::new(temp.path(), secrets, &execution);
+    let source_plan = registry
+        .compile(resource.source_compile_request().unwrap().clone())
+        .unwrap();
+    let mut artifacts = discover_resource_schema_with_source_registry(
         &resource,
-        &secrets,
-        dependencies.clone(),
+        &registry,
+        &source_plan,
+        &resolution,
+        SchemaDiscoveryExecutionOptions::new()
+            .with_observation_cache(ObservationCacheStore::new(temp.path())),
     )
     .unwrap();
-    let discovery = prepared.discovery.as_ref().unwrap();
+    let prepared_resource = compile_discovered_schema_artifacts(&resource, &mut artifacts).unwrap();
+    write_schema_discovery_artifacts(temp.path(), &artifacts).unwrap();
+    let discovery = &artifacts.discovery;
     assert_eq!(
-        discovery.snapshot.artifact.metadata["format"],
-        "project_external_mock"
+        discovery.snapshot.artifact.metadata["source_driver"],
+        "files"
     );
     assert_eq!(
-        discovery.snapshot.source_identity["external_driver"],
+        discovery.snapshot.source_identity["driver.external_driver"],
         "project_fixture"
     );
     assert_eq!(discovery.snapshot.artifact.schema.fields[0].name, "value");
@@ -1682,7 +1708,7 @@ fn project_external_codec_discovers_pins_previews_and_runs_over_remote_provider(
             .join(&discovery.snapshot.artifact.path)
             .is_file()
     );
-    let SchemaSource::Discovered { snapshot } = &prepared.resource.descriptor().schema_source
+    let SchemaSource::Discovered { snapshot } = &prepared_resource.descriptor().schema_source
     else {
         panic!("external codec cold discovery must pin its schema");
     };
@@ -1691,25 +1717,29 @@ fn project_external_codec_discovers_pins_previews_and_runs_over_remote_provider(
         discovery.snapshot.artifact.schema_hash
     );
 
-    let runtime = prepared
-        .resource
-        .to_file_resource(dependencies.clone())
+    let source_plan = source_plan
+        .bind_schema_authority(
+            prepared_resource.descriptor(),
+            prepared_resource.schema().as_ref(),
+            prepared_resource.effective_schema_runtime().cloned(),
+        )
         .unwrap();
-    let plan = live_plan_for_stream(&runtime, "pkg-project-external-remote");
+    let runtime = registry.resolve(&source_plan, &resolution).unwrap();
+    let plan = live_plan_for_stream(runtime.as_ref(), "pkg-project-external-remote");
     assert_eq!(plan.scan.partitions.len(), 1);
     assert_eq!(
         plan.scan.partitions[0].metadata["format"],
         "project_external_mock"
     );
     let preview =
-        futures_executor::block_on(runtime.open_preview(plan.scan.partitions[0].clone())).unwrap();
+        futures_executor::block_on(runtime.open(plan.scan.partitions[0].clone())).unwrap();
     let preview_rows = futures_executor::block_on_stream(preview)
         .map(|batch| batch.unwrap().header.row_count)
         .sum::<u64>();
     assert_eq!(preview_rows, 1);
 
     let report = futures_executor::block_on(run_project(ProjectRunRequest {
-        resource: ProjectRunSource::file(&runtime),
+        resource: ProjectRunSource::new(runtime.as_ref()),
         plan,
         package_root: temp.path().join(".cdf/packages"),
         state_store_path: temp.path().join(".cdf/state.db"),
@@ -3003,7 +3033,7 @@ fn sampled_probe_budget_failure_does_not_substitute_an_unselected_candidate() {
     )
     .unwrap_err()
     .to_string();
-    assert!(error.contains("sampled local binary discovery failed"));
+    assert!(error.contains("sampled_files + format_metadata file discovery failed"));
     assert!(error.contains("without substitution"));
     assert_eq!(error.matches(": failed:").count(), 1);
     assert!(!temp.path().join(".cdf/schemas").exists());
@@ -3078,6 +3108,7 @@ fn all_files_discovery_uses_exact_verified_baseline_and_schema_only_effective_ha
         BTreeMap::from([
             ("cdf:normalizer".to_owned(), "namecase-v1".to_owned()),
             ("format".to_owned(), "parquet".to_owned()),
+            ("format_driver_version".to_owned(), "1.0.0".to_owned()),
             ("probe".to_owned(), "registered-format-discovery".to_owned()),
             ("source_kind".to_owned(), "files".to_owned()),
             (
@@ -3333,12 +3364,15 @@ fn all_files_local_parquet_discovery_budget_and_incompatibility_fail_without_art
     .unwrap_err()
     .to_string();
     assert!(
-        budget_error.contains("read 405 metadata bytes"),
+        budget_error.contains("format confirmation"),
         "{budget_error}"
     );
-    assert!(budget_error.contains("8-byte budget"), "{budget_error}");
     assert!(
-        budget_error.contains("increase the per-file"),
+        budget_error.contains("requires 482 bytes"),
+        "{budget_error}"
+    );
+    assert!(
+        budget_error.contains("configured 8-byte discovery budget"),
         "{budget_error}"
     );
     assert!(!temp.path().join(".cdf/schemas").exists());

@@ -1,4 +1,5 @@
 use crate::prelude::*;
+use arrow_schema::{DataType, Field};
 use cdf_kernel::{
     BatchStream, BoxFuture, CommitCounts, CommitSegment, ConcurrencyLimit, DeliveryGuarantee,
     DestinationId, ErrorKind, IdempotencySupport, IdempotencyToken, IdentifierRules,
@@ -1218,6 +1219,40 @@ fn source_registry_compiles_hashes_and_resolves_mock_without_order_authority() {
     assert!(error.message.contains("requires a source name"));
 
     let plan = registry.compile(request).unwrap();
+    let original_plan_hash = plan.physical_plan_hash.clone();
+    let original_stable_hash = plan.schema_binding_stable_hash().unwrap();
+    let mut discovered_descriptor = plan.descriptor.clone();
+    discovered_descriptor.schema_source = SchemaSource::Discover;
+    let discovered_schema = Schema::new(vec![Field::new("event_id", DataType::Int64, false)]);
+    let bound = plan
+        .clone()
+        .bind_schema_authority(&discovered_descriptor, &discovered_schema, None)
+        .unwrap();
+    assert_eq!(bound.physical_plan_hash, original_plan_hash);
+    assert_eq!(
+        bound.schema_binding_stable_hash().unwrap(),
+        original_stable_hash
+    );
+    assert_eq!(bound.physical_plan, plan.physical_plan);
+    assert_eq!(bound.schema, discovered_schema);
+
+    let mut invalid_binding = discovered_descriptor;
+    invalid_binding.primary_key.push("event_id".to_owned());
+    assert!(
+        plan.clone()
+            .bind_schema_authority(&invalid_binding, &bound.schema, None)
+            .unwrap_err()
+            .message
+            .contains("changed non-schema resource authority")
+    );
+    let mut changed_options = plan.clone();
+    changed_options.redacted_options = serde_json::json!({"token": "secret://env/OTHER_TOKEN"});
+    changed_options.redacted_options_hash =
+        artifact_hash(&changed_options.redacted_options).unwrap();
+    assert_ne!(
+        changed_options.schema_binding_stable_hash().unwrap(),
+        original_stable_hash
+    );
     assert_eq!(
         registry
             .driver_for_uri("mock://events")
@@ -1251,7 +1286,7 @@ fn source_registry_compiles_hashes_and_resolves_mock_without_order_authority() {
         )
         .unwrap();
     observation.validate().unwrap();
-    assert_eq!(observation.canonical_location, "mock://events");
+    assert_eq!(observation.evidence_location.as_str(), "mock://events");
     let resource = registry.resolve(&plan, &context).unwrap();
     assert_eq!(resource.descriptor().resource_id.as_str(), "mock.events");
 

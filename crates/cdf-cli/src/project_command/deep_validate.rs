@@ -15,8 +15,8 @@ use crate::{
     args::Cli,
     context::ProjectContext,
     destination_uri::{redact_error_value, resolve_environment_destination},
-    http_transport::ReqwestHttpTransport,
     output::{CliError, CommandOutput},
+    project_run_resource::{compile_source_plan_for_cli, discover_source_schema_with_plan_for_cli},
     render::{
         RenderDocument,
         primitives::{KeyValuePanel, NextCommand, SectionRule, StatusKind, StatusLine, Table},
@@ -78,7 +78,29 @@ fn deep_validate_resource(
 ) -> DeepValidateResourceReport {
     let mut diagnostics = Vec::new();
     let mut working_resource = resource.clone();
-    let discovery = discovery_check(context, resource, execution, &mut diagnostics);
+    let source_plan = match compile_source_plan_for_cli(resource) {
+        Ok(source_plan) => Some(source_plan),
+        Err(error) => {
+            diagnostics.push(diagnostic(
+                "error",
+                "source_plan_compilation",
+                redact_uri_userinfo(&error.message),
+                "Fix source configuration or install the required source driver.",
+            ));
+            None
+        }
+    };
+    let discovery = source_plan.as_ref().map_or_else(
+        || DeepValidateDiscoveryReport {
+            status: "failed".to_owned(),
+            schema_hash: None,
+            snapshot_path: None,
+            source_identity: BTreeMap::new(),
+            detail: "source plan compilation failed".to_owned(),
+            discovery: None,
+        },
+        |source_plan| discovery_check(context, resource, source_plan, execution, &mut diagnostics),
+    );
     if let Some(discovery) = &discovery.discovery {
         working_resource = resource.with_schema_source_and_schema(
             SchemaSource::Discovered {
@@ -87,23 +109,42 @@ fn deep_validate_resource(
             Arc::clone(&discovery.normalized_schema),
         );
     }
-    let runtime_resource = match crate::project_run_resource::build_project_run_resource(
-        context,
-        &working_resource,
-        Some(execution),
-        cdf_runtime::PreparedSourcePayloads::default(),
-    ) {
-        Ok(resource) => Some(resource),
-        Err(error) => {
-            diagnostics.push(diagnostic(
+    let runtime_resource = source_plan.and_then(|source_plan| {
+        let source_plan = match source_plan.bind_schema_authority(
+            working_resource.descriptor(),
+            working_resource.schema().as_ref(),
+            working_resource.effective_schema_runtime().cloned(),
+        ) {
+            Ok(source_plan) => source_plan,
+            Err(error) => {
+                diagnostics.push(diagnostic(
+                    "error",
+                    "source_schema_binding",
+                    redact_uri_userinfo(&error.message),
+                    "Fix discovery/schema authority before plan/run.",
+                ));
+                return None;
+            }
+        };
+        match crate::project_run_resource::build_project_run_resource(
+            context,
+            &working_resource,
+            source_plan,
+            Some(execution),
+            cdf_runtime::PreparedSourcePayloads::default(),
+        ) {
+            Ok(resource) => Some(resource),
+            Err(error) => {
+                diagnostics.push(diagnostic(
                 "error",
                 "source_runtime_resolution",
                 redact_uri_userinfo(&error.message),
                 "Fix source configuration or the installed source/format driver before plan/run.",
             ));
-            None
+                None
+            }
         }
-    };
+    });
     let partition_report = partition_check(runtime_resource.as_ref(), &mut diagnostics);
     physical_schema_reconciliation_check(context, resource, execution, &mut diagnostics);
     let validation_program = validation_program_check(&working_resource, &mut diagnostics);
@@ -189,6 +230,7 @@ fn partition_check(
 fn discovery_check(
     context: &ProjectContext,
     resource: &CompiledResource,
+    source_plan: &cdf_runtime::CompiledSourcePlan,
     execution: &cdf_runtime::ExecutionServices,
     diagnostics: &mut Vec<DeepValidateDiagnostic>,
 ) -> DeepValidateDiscoveryReport {
@@ -203,7 +245,7 @@ fn discovery_check(
         };
     }
 
-    match discover_for_deep_validate(context, resource, execution) {
+    match discover_for_deep_validate(context, resource, source_plan, execution) {
         Ok(discovery) => DeepValidateDiscoveryReport {
             status: "ok".to_owned(),
             schema_hash: Some(discovery.snapshot.artifact.schema_hash.to_string()),
@@ -234,34 +276,19 @@ fn discovery_check(
 fn discover_for_deep_validate(
     context: &ProjectContext,
     resource: &CompiledResource,
+    source_plan: &cdf_runtime::CompiledSourcePlan,
     execution: &cdf_runtime::ExecutionServices,
 ) -> cdf_kernel::Result<ResourceSchemaDiscovery> {
-    let secret_provider = context.secret_provider();
-    if matches!(resource.plan(), CompiledResourcePlan::Rest(_)) {
-        let transport = ReqwestHttpTransport::new()?;
-        let dependencies = cdf_declarative::RestDiscoveryDependencies::new(
-            &transport,
-            &secret_provider,
-            execution.memory(),
-        );
-        return cdf_project::discover_resource_schema_with_rest_dependencies(
-            resource,
-            &dependencies,
-        );
-    }
-    if matches!(resource.plan(), CompiledResourcePlan::Files(_)) {
-        return Ok(
-            cdf_project::discover_resource_schema_with_file_dependencies_artifacts(
-                resource,
-                &secret_provider,
-                crate::project_run_resource::file_runtime_dependencies(context, Some(execution))?,
-                cdf_project::SchemaDiscoveryExecutionOptions::new()
-                    .with_observation_cache(cdf_project::ObservationCacheStore::new(&context.root)),
-            )?
-            .discovery,
-        );
-    }
-    cdf_project::discover_resource_schema(resource, &secret_provider)
+    Ok(discover_source_schema_with_plan_for_cli(
+        context,
+        resource,
+        source_plan,
+        execution,
+        cdf_runtime::PreparedSourcePayloads::default(),
+        cdf_project::SchemaDiscoveryExecutionOptions::new()
+            .with_observation_cache(cdf_project::ObservationCacheStore::new(&context.root)),
+    )?
+    .discovery)
 }
 
 fn physical_schema_reconciliation_check(

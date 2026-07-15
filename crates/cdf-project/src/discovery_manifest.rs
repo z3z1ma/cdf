@@ -812,12 +812,9 @@ fn validate_candidate(candidate: &DiscoveryCandidateEvidence) -> Result<()> {
                     candidate.canonical_location
                 )));
             }
-            if candidate.probe_bytes == Some(0) {
-                return Err(CdfError::contract(format!(
-                    "observed discovery candidate `{}` requires probe_bytes greater than zero",
-                    candidate.canonical_location
-                )));
-            }
+            // Catalogs and other metadata authorities can establish a complete
+            // physical schema without reading source payload bytes. Presence is
+            // the accounting invariant; zero is an honest measurement.
         }
         DiscoveryParticipation::Unobserved => {
             if candidate.physical_schema_hash.is_some()

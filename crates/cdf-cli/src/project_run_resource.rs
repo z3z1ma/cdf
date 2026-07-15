@@ -1,5 +1,5 @@
 use cdf_declarative::{CompiledResource, FileRuntimeDependencies, FileTransportFacade};
-use cdf_kernel::QueryableResource;
+use cdf_kernel::{QueryableResource, ResourceStream};
 use cdf_project::{ProjectRunSource, ResourceSourceKind, TrustPreset};
 use std::sync::Arc;
 
@@ -146,6 +146,7 @@ pub(crate) fn prepare_runtime_resource_for_cli(
         resource: build_project_run_resource(
             context,
             &prepared.resource,
+            prepared.source_plan,
             execution,
             prepared.prepared_payloads,
         )?,
@@ -174,28 +175,81 @@ fn python_resource_error(mut error: cdf_kernel::CdfError) -> CliError {
 pub(crate) fn build_project_run_resource(
     context: &ProjectContext,
     resource: &CompiledResource,
+    source_plan: cdf_runtime::CompiledSourcePlan,
     execution: Option<&cdf_runtime::ExecutionServices>,
     prepared_payloads: cdf_runtime::PreparedSourcePayloads,
 ) -> Result<CliProjectRunSource, CliError> {
     let execution = execution.ok_or_else(|| {
         cdf_kernel::CdfError::internal("runtime source resolution requires execution services")
     })?;
+    let registry = crate::source_registry::builtin_source_registry()?;
+    source_plan.validate_schema_authority(
+        resource.descriptor(),
+        resource.schema().as_ref(),
+        resource.effective_schema_runtime(),
+    )?;
+    let secrets = context.secret_provider();
+    let resolution =
+        cdf_runtime::SourceResolutionContext::new(&context.root, Arc::new(secrets), execution)
+            .with_prepared_payloads(prepared_payloads);
+    Ok(CliProjectRunSource::from_shared(
+        registry.resolve(&source_plan, &resolution)?,
+        source_plan,
+    ))
+}
+
+pub(crate) fn compile_source_plan_for_cli(
+    resource: &CompiledResource,
+) -> cdf_kernel::Result<cdf_runtime::CompiledSourcePlan> {
     let request = resource.source_compile_request().ok_or_else(|| {
         cdf_kernel::CdfError::contract(format!(
             "resource `{}` has no source compile request",
             resource.descriptor().resource_id
         ))
     })?;
+    crate::source_registry::builtin_source_registry()?.compile(request.clone())
+}
+
+pub(crate) fn discover_source_schema_for_cli(
+    context: &ProjectContext,
+    resource: &CompiledResource,
+    execution: &cdf_runtime::ExecutionServices,
+    prepared_payloads: cdf_runtime::PreparedSourcePayloads,
+    options: cdf_project::SchemaDiscoveryExecutionOptions,
+) -> cdf_kernel::Result<cdf_project::ResourceSchemaDiscoveryArtifacts> {
+    let source_plan = compile_source_plan_for_cli(resource)?;
+    discover_source_schema_with_plan_for_cli(
+        context,
+        resource,
+        &source_plan,
+        execution,
+        prepared_payloads,
+        options,
+    )
+}
+
+pub(crate) fn discover_source_schema_with_plan_for_cli(
+    context: &ProjectContext,
+    resource: &CompiledResource,
+    source_plan: &cdf_runtime::CompiledSourcePlan,
+    execution: &cdf_runtime::ExecutionServices,
+    prepared_payloads: cdf_runtime::PreparedSourcePayloads,
+    options: cdf_project::SchemaDiscoveryExecutionOptions,
+) -> cdf_kernel::Result<cdf_project::ResourceSchemaDiscoveryArtifacts> {
     let registry = crate::source_registry::builtin_source_registry()?;
-    let plan = registry.compile(request.clone())?;
-    let secrets = context.secret_provider();
-    let resolution =
-        cdf_runtime::SourceResolutionContext::new(&context.root, Arc::new(secrets), execution)
-            .with_prepared_payloads(prepared_payloads);
-    Ok(CliProjectRunSource::from_shared(
-        registry.resolve(&plan, &resolution)?,
-        plan,
-    ))
+    let resolution = cdf_runtime::SourceResolutionContext::new(
+        &context.root,
+        Arc::new(context.secret_provider()),
+        execution,
+    )
+    .with_prepared_payloads(prepared_payloads);
+    cdf_project::discover_resource_schema_with_source_registry(
+        resource,
+        &registry,
+        source_plan,
+        &resolution,
+        options,
+    )
 }
 
 pub(crate) fn file_runtime_dependencies(

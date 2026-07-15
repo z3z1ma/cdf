@@ -60,9 +60,11 @@ pub(crate) fn backfill(
             "backfill execution host was not provided",
         ))
     })?;
+    let source_plan = crate::project_run_resource::compile_source_plan_for_cli(resource)?;
     let run_resource = build_project_run_resource(
         &context,
         resource,
+        source_plan,
         Some(services),
         cdf_runtime::PreparedSourcePayloads::default(),
     )?;

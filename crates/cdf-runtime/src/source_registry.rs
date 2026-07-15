@@ -193,17 +193,17 @@ impl SourceDiscoverySession for VerifiedSourceDiscoverySession {
             candidate.validate()?;
         }
         candidates.sort_by(|left, right| {
-            left.canonical_location
-                .cmp(&right.canonical_location)
+            left.evidence_location
+                .cmp(&right.evidence_location)
                 .then_with(|| left.identity.cmp(&right.identity))
         });
         if let Some(duplicates) = candidates
             .windows(2)
-            .find(|pair| pair[0].canonical_location == pair[1].canonical_location)
+            .find(|pair| pair[0].evidence_location == pair[1].evidence_location)
         {
             return Err(CdfError::contract(format!(
                 "source discovery returned duplicate canonical candidate `{}`",
-                duplicates[0].canonical_location
+                duplicates[0].evidence_location.as_str()
             )));
         }
         Ok(candidates)
@@ -218,10 +218,11 @@ impl SourceDiscoverySession for VerifiedSourceDiscoverySession {
         request.validate()?;
         let observation = self.inner.observe(candidate, request)?;
         observation.validate()?;
-        if observation.canonical_location != candidate.canonical_location {
+        if observation.evidence_location != candidate.evidence_location {
             return Err(CdfError::contract(format!(
                 "source discovery observation location `{}` does not match candidate `{}`",
-                observation.canonical_location, candidate.canonical_location
+                observation.evidence_location.as_str(),
+                candidate.evidence_location.as_str()
             )));
         }
         if observation.bytes_read > request.maximum_bytes
@@ -285,6 +286,7 @@ mod tests {
     use arrow_schema::Schema;
 
     use super::*;
+    use crate::SourceEvidenceLocation;
 
     struct BoundaryProbeSession {
         candidates: Vec<SourceDiscoveryCandidate>,
@@ -315,7 +317,7 @@ mod tests {
                 self.records_read,
             )?;
             if let Some(location) = &self.replace_location {
-                observation.canonical_location = location.clone();
+                observation.evidence_location = SourceEvidenceLocation::from_operational(location)?;
             }
             Ok(observation)
         }
@@ -360,6 +362,62 @@ mod tests {
                 .message
                 .contains("duplicate canonical candidate")
         );
+    }
+
+    #[test]
+    fn discovery_boundary_redacts_secret_bearing_locations_before_evidence() {
+        let secret_candidate = candidate(
+            "https://alice:secret@example.test/events.parquet?X-Amz-Signature=secret#fragment",
+        );
+        assert_eq!(
+            secret_candidate.evidence_location.as_str(),
+            "https://example.test/events.parquet?<redacted>"
+        );
+        let mut forged = secret_candidate.clone();
+        forged.evidence_location =
+            SourceEvidenceLocation::from_operational("https://safe.example/events.parquet")
+                .unwrap();
+        assert!(
+            forged
+                .validate()
+                .unwrap_err()
+                .message
+                .contains("does not match its canonical redaction")
+        );
+
+        let duplicate = VerifiedSourceDiscoverySession {
+            inner: Box::new(BoundaryProbeSession {
+                candidates: vec![
+                    secret_candidate.clone(),
+                    candidate(
+                        "https://bob:other@example.test/events.parquet?X-Amz-Signature=other",
+                    ),
+                ],
+                bytes_read: 1,
+                records_read: 1,
+                replace_location: None,
+            }),
+        };
+        assert!(
+            duplicate
+                .candidates()
+                .unwrap_err()
+                .message
+                .contains("duplicate canonical candidate")
+        );
+
+        let error = SourceSchemaObservation::new(
+            &secret_candidate,
+            Schema::empty(),
+            BTreeMap::from([(
+                "unsafe_location".to_owned(),
+                "https://alice:secret@example.test/events?token=secret".to_owned(),
+            )]),
+            1,
+            1,
+        )
+        .unwrap_err();
+        assert!(error.message.contains("invalid canonical identity"));
     }
 
     #[test]

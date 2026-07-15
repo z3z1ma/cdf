@@ -9,7 +9,7 @@ use arrow_schema::Schema;
 use cdf_http::SecretProvider;
 use cdf_kernel::{
     CdfError, EffectiveSchemaRuntime, ErrorKind, PayloadRetention, PushdownFidelity,
-    QueryableResource, ResourceCapabilities, ResourceDescriptor, ResourceId, Result,
+    QueryableResource, ResourceCapabilities, ResourceDescriptor, ResourceId, Result, SchemaSource,
     TypePolicyAllowances,
 };
 use serde::{Deserialize, Serialize};
@@ -441,6 +441,68 @@ impl CompiledSourcePlan {
         }
         Ok(())
     }
+
+    /// Rebinds compiler-owned schema authority without invoking the source
+    /// driver again. Driver identity, options, and physical plan remain exact.
+    pub fn bind_schema_authority(
+        mut self,
+        descriptor: &ResourceDescriptor,
+        schema: &Schema,
+        effective_schema_runtime: Option<EffectiveSchemaRuntime>,
+    ) -> Result<Self> {
+        let mut expected_descriptor = self.descriptor.clone();
+        expected_descriptor.schema_source = descriptor.schema_source.clone();
+        if &expected_descriptor != descriptor {
+            return Err(CdfError::contract(
+                "compiled source plan schema binding changed non-schema resource authority",
+            ));
+        }
+        if let Some(runtime) = &effective_schema_runtime {
+            runtime.validate_for_resource(descriptor)?;
+        }
+        self.descriptor = descriptor.clone();
+        self.schema = schema.clone();
+        self.effective_schema_runtime = effective_schema_runtime;
+        self.validate()?;
+        Ok(self)
+    }
+
+    pub fn validate_schema_authority(
+        &self,
+        descriptor: &ResourceDescriptor,
+        schema: &Schema,
+        effective_schema_runtime: Option<&EffectiveSchemaRuntime>,
+    ) -> Result<()> {
+        self.validate()?;
+        if &self.descriptor != descriptor
+            || &self.schema != schema
+            || self.effective_schema_runtime.as_ref() != effective_schema_runtime
+        {
+            return Err(CdfError::contract(
+                "compiled source plan does not match the prepared schema authority",
+            ));
+        }
+        Ok(())
+    }
+
+    /// Hashes the complete compiled source semantics while excluding only the
+    /// schema fields that the compiler is allowed to bind after discovery.
+    pub fn schema_binding_stable_hash(&self) -> Result<String> {
+        self.validate()?;
+        let mut descriptor = self.descriptor.clone();
+        descriptor.schema_source = SchemaSource::Discover;
+        artifact_hash(&serde_json::json!({
+            "driver": self.driver,
+            "descriptor": descriptor,
+            "resource_capabilities": self.resource_capabilities,
+            "execution_capabilities": self.execution_capabilities,
+            "type_policy_allowances": self.type_policy_allowances,
+            "redacted_options": self.redacted_options,
+            "redacted_options_hash": self.redacted_options_hash,
+            "physical_plan": self.physical_plan,
+            "physical_plan_hash": self.physical_plan_hash,
+        }))
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -477,9 +539,50 @@ impl SourceDiscoveryRequest {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct SourceEvidenceLocation(String);
+
+impl SourceEvidenceLocation {
+    pub fn from_operational(value: &str) -> Result<Self> {
+        if value.is_empty() || value.chars().any(char::is_control) {
+            return Err(CdfError::contract(
+                "source evidence location requires a nonempty control-free value",
+            ));
+        }
+        let without_fragment = value.split('#').next().unwrap_or(value);
+        let (base, had_query) = without_fragment
+            .split_once('?')
+            .map_or((without_fragment, false), |(base, _)| (base, true));
+        let redacted_base = redact_uri_userinfo(base);
+        let redacted = if had_query {
+            format!("{redacted_base}?<redacted>")
+        } else {
+            redacted_base
+        };
+        Ok(Self(redacted))
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+fn redact_uri_userinfo(value: &str) -> String {
+    let Some((scheme, remainder)) = value.split_once("://") else {
+        return value.to_owned();
+    };
+    let authority_end = remainder.find('/').unwrap_or(remainder.len());
+    let (authority, suffix) = remainder.split_at(authority_end);
+    let authority = authority
+        .rsplit_once('@')
+        .map_or(authority, |(_, host)| host);
+    format!("{scheme}://{authority}{suffix}")
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SourceDiscoveryCandidate {
     pub canonical_location: String,
+    pub evidence_location: SourceEvidenceLocation,
     pub size_bytes: Option<u64>,
     pub modified_at_ms: Option<i64>,
     pub identity: BTreeMap<String, String>,
@@ -492,8 +595,11 @@ impl SourceDiscoveryCandidate {
         modified_at_ms: Option<i64>,
         identity: BTreeMap<String, String>,
     ) -> Result<Self> {
+        let canonical_location = canonical_location.into();
+        let evidence_location = SourceEvidenceLocation::from_operational(&canonical_location)?;
         let candidate = Self {
-            canonical_location: canonical_location.into(),
+            canonical_location,
+            evidence_location,
             size_bytes,
             modified_at_ms,
             identity,
@@ -510,22 +616,30 @@ impl SourceDiscoveryCandidate {
                 "source discovery candidate requires a nonempty control-free canonical location",
             ));
         }
-        if self
-            .identity
-            .keys()
-            .any(|key| key.is_empty() || key.chars().any(char::is_control))
+        if SourceEvidenceLocation::from_operational(&self.canonical_location)?
+            != self.evidence_location
         {
             return Err(CdfError::contract(
-                "source discovery candidate identity keys must be nonempty and control-free",
+                "source discovery candidate evidence location does not match its canonical redaction",
+            ));
+        }
+        if self.identity.iter().any(|(key, value)| {
+            key.is_empty()
+                || key.chars().any(char::is_control)
+                || value.is_empty()
+                || value.chars().any(char::is_control)
+        }) {
+            return Err(CdfError::contract(
+                "source discovery candidate identity keys and values must be nonempty and control-free",
             ));
         }
         Ok(())
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct SourceSchemaObservation {
-    pub canonical_location: String,
+    pub evidence_location: SourceEvidenceLocation,
     pub schema: Schema,
     pub physical_schema_hash: cdf_kernel::SchemaHash,
     pub source_identity: BTreeMap<String, String>,
@@ -543,23 +657,21 @@ impl SourceSchemaObservation {
     ) -> Result<Self> {
         candidate.validate()?;
         let physical_schema_hash = cdf_kernel::canonical_arrow_schema_hash(&schema)?;
-        Ok(Self {
-            canonical_location: candidate.canonical_location.clone(),
+        let observation = Self {
+            evidence_location: candidate.evidence_location.clone(),
             schema,
             physical_schema_hash,
             source_identity,
             bytes_read,
             records_read,
-        })
+        };
+        observation.validate()?;
+        Ok(observation)
     }
 
     pub fn validate(&self) -> Result<()> {
-        if self.canonical_location.is_empty()
-            || self.canonical_location.chars().any(char::is_control)
-            || self
-                .source_identity
-                .keys()
-                .any(|key| key.is_empty() || key.chars().any(char::is_control))
+        if self.evidence_location.as_str().is_empty()
+            || validate_source_evidence_identity(&self.source_identity).is_err()
             || cdf_kernel::canonical_arrow_schema_hash(&self.schema)? != self.physical_schema_hash
         {
             return Err(CdfError::contract(
@@ -568,6 +680,32 @@ impl SourceSchemaObservation {
         }
         Ok(())
     }
+}
+
+pub fn validate_source_evidence_identity(identity: &BTreeMap<String, String>) -> Result<()> {
+    if identity.iter().any(|(key, value)| {
+        key.is_empty()
+            || key.chars().any(char::is_control)
+            || value.chars().any(char::is_control)
+            || contains_unredacted_uri_authority(value)
+    }) {
+        return Err(CdfError::contract(
+            "source evidence identity contains an invalid key, control character, or unredacted URI",
+        ));
+    }
+    Ok(())
+}
+
+fn contains_unredacted_uri_authority(value: &str) -> bool {
+    let Some((_, remainder)) = value.split_once("://") else {
+        return false;
+    };
+    let authority_end = remainder.find('/').unwrap_or(remainder.len());
+    let authority = &remainder[..authority_end];
+    let query_is_unredacted = value
+        .split_once('?')
+        .is_some_and(|(_, query)| query != "<redacted>");
+    authority.contains('@') || query_is_unredacted || value.contains('#')
 }
 
 pub trait SourceDiscoverySession: Send + Sync {

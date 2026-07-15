@@ -2771,9 +2771,9 @@ fn schema_discover_local_parquet_reports_schema_without_project_writes() {
     );
     assert_eq!(
         report["snapshot_metadata"]["probe"],
-        "registered-format-discovery"
+        "registered-source-discovery"
     );
-    assert_eq!(report["snapshot_metadata"]["format"], "parquet");
+    assert_eq!(report["snapshot_metadata"]["source_driver"], "files");
     assert_eq!(report["snapshot_metadata"]["cdf:normalizer"], "namecase-v1");
     assert_eq!(report["fields"][0]["name"], "vendor_id");
     assert_eq!(report["fields"][0]["source_name"], "VendorID");
@@ -2783,7 +2783,7 @@ fn schema_discover_local_parquet_reports_schema_without_project_writes() {
     );
     assert_eq!(report["source_identity"]["path"], "vendors.parquet");
     assert!(
-        report["source_identity"]["footer_sha256"]
+        report["source_identity"]["driver.footer_sha256"]
             .as_str()
             .is_some()
     );
@@ -2811,22 +2811,26 @@ fn local_arrow_ipc_discover_pin_show_diff_preview_and_run_share_pinned_schema() 
     let discovered = &discover_json["result"];
     assert_eq!(
         discovered["snapshot_metadata"]["probe"],
-        "registered-format-discovery"
+        "registered-source-discovery"
     );
-    assert_eq!(discovered["snapshot_metadata"]["format"], "arrow_ipc");
-    assert_eq!(discovered["snapshot_metadata"]["source_kind"], "files");
+    assert_eq!(discovered["snapshot_metadata"]["source_driver"], "files");
+    assert!(
+        discovered["snapshot_metadata"]["source_plan_hash"]
+            .as_str()
+            .is_some_and(|hash| hash.starts_with("sha256:"))
+    );
     assert_eq!(
         discovered["snapshot_metadata"]["cdf:normalizer"],
         "namecase-v1"
     );
     assert_eq!(discovered["source_identity"]["path"], "events.arrow");
-    assert_eq!(discovered["source_identity"]["transport"], "local");
+    assert_eq!(discovered["source_identity"]["transport"], "files");
     assert!(
-        discovered["source_identity"]["schema_hash"]
+        discovered["source_identity"]["driver.schema_hash"]
             .as_str()
             .is_some()
     );
-    let source_size = discovered["source_identity"]["size_bytes"]
+    let source_size = discovered["source_identity"]["driver.size_bytes"]
         .as_str()
         .unwrap()
         .parse::<u64>()
@@ -3036,10 +3040,13 @@ fn local_arrow_ipc_discover_pin_show_diff_preview_and_run_share_pinned_schema() 
     assert_eq!(manifest.files.len(), 1);
     let source_path = project.root.join("data/events.arrow");
     let source_bytes = fs::read(&source_path).unwrap();
-    let expected_sha = Sha256::digest(&source_bytes)
-        .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect::<String>();
+    let expected_sha = format!(
+        "sha256:{}",
+        Sha256::digest(&source_bytes)
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>()
+    );
     assert_eq!(manifest.files[0].path, "events.arrow");
     assert_eq!(
         manifest.files[0].size_bytes,
@@ -3314,7 +3321,7 @@ trust = "governed"
     );
     assert_eq!(
         remote_report["result"]["source_identity"]["transport"],
-        "remote"
+        "files"
     );
     assert_no_schema_discovery_writes(&remote);
 }
@@ -3608,8 +3615,11 @@ fn schema_discover_rest_reports_sample_schema_without_project_writes_or_secret_l
     assert_eq!(report["writes"]["package"], false);
     assert_eq!(report["writes"]["destination"], false);
     assert_eq!(report["writes"]["checkpoint"], false);
-    assert_eq!(report["snapshot_metadata"]["probe"], "rest-sample-page");
-    assert_eq!(report["snapshot_metadata"]["source_kind"], "rest");
+    assert_eq!(
+        report["snapshot_metadata"]["probe"],
+        "registered-source-discovery"
+    );
+    assert_eq!(report["snapshot_metadata"]["source_driver"], "rest");
     assert_eq!(report["snapshot_metadata"]["cdf:normalizer"], "namecase-v1");
     assert!(
         report["schema_snapshot_path"]
@@ -3629,9 +3639,12 @@ fn schema_discover_rest_reports_sample_schema_without_project_writes_or_secret_l
         .find(|field| field["name"] == "vendor_id")
         .unwrap();
     assert_eq!(vendor["source_name"], "VendorID");
-    assert_eq!(report["source_identity"]["record_selector"], "$.items");
-    assert_eq!(report["source_identity"]["sample_pages"], "1");
-    assert_eq!(report["source_identity"]["sample_records"], "3");
+    assert_eq!(
+        report["source_identity"]["driver.record_selector"],
+        "$.items"
+    );
+    assert_eq!(report["source_identity"]["driver.sample_pages"], "1");
+    assert_eq!(report["source_identity"]["driver.sample_records"], "3");
 
     let requests = requests.lock().unwrap();
     assert_eq!(requests.len(), 1);
@@ -3703,10 +3716,13 @@ fn schema_discover_postgres_catalog_uses_project_secret_without_writes_or_secret
     assert_eq!(report["writes"]["package"], false);
     assert_eq!(report["writes"]["destination"], false);
     assert_eq!(report["writes"]["checkpoint"], false);
-    assert_eq!(report["snapshot_metadata"]["probe"], "postgres-catalog");
-    assert_eq!(report["snapshot_metadata"]["source_kind"], "sql");
-    assert_eq!(report["snapshot_metadata"]["dialect"], "postgres");
-    assert_eq!(report["snapshot_metadata"]["table"], table);
+    assert_eq!(
+        report["snapshot_metadata"]["probe"],
+        "registered-source-discovery"
+    );
+    assert_eq!(report["snapshot_metadata"]["source_driver"], "postgres");
+    assert_eq!(report["source_identity"]["driver.dialect"], "postgres");
+    assert_eq!(report["source_identity"]["driver.table"], table);
     assert_eq!(report["snapshot_metadata"]["cdf:normalizer"], "namecase-v1");
     assert!(
         report["schema_snapshot_path"]
@@ -3732,9 +3748,9 @@ fn schema_discover_postgres_catalog_uses_project_secret_without_writes_or_secret
         report["fields"][2]["metadata"]["cdf:physical_type"],
         "timestamp with time zone"
     );
-    assert_eq!(report["source_identity"]["source_kind"], "sql");
-    assert_eq!(report["source_identity"]["dialect"], "postgres");
-    assert_eq!(report["source_identity"]["table"], table);
+    assert_eq!(report["source_identity"]["driver.source_kind"], "sql");
+    assert_eq!(report["source_identity"]["driver.dialect"], "postgres");
+    assert_eq!(report["source_identity"]["driver.table"], table);
     assert_eq!(report["next_command"], "cdf plan warehouse.orders");
 
     let human = run([
@@ -3748,7 +3764,8 @@ fn schema_discover_postgres_catalog_uses_project_secret_without_writes_or_secret
     assert_eq!(human.exit_code, 0, "stderr: {}", human.stderr);
     assert_secret_absent(&human, &source_dsn);
     assert_secret_absent(&human, "schema-discover-secret");
-    assert!(human.stdout.contains("postgres-catalog"));
+    assert!(human.stdout.contains("registered-source-discovery"));
+    assert!(human.stdout.contains("postgres"));
 }
 
 #[test]
@@ -5512,7 +5529,7 @@ fn plan_local_parquet_discover_autopins_snapshot_and_reports_hash() {
     );
     assert_eq!(
         report["resource_schema"]["snapshot_metadata"]["probe"],
-        "registered-format-discovery"
+        "registered-source-discovery"
     );
     assert_eq!(snapshot["schema"]["fields"][0]["name"], "vendor_id");
     assert_eq!(

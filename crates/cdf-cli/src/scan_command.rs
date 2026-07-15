@@ -21,10 +21,10 @@ use crate::{
     context::ProjectContext,
     destination_uri::{EnvironmentDestination, redact_error_value, resolve_selected_destination},
     error_catalog,
-    http_transport::ReqwestHttpTransport,
     output::{CliError, CommandOutput},
     project_run_resource::{
-        CliProjectRunSource, file_runtime_dependencies, prepare_runtime_resource_for_cli,
+        CliProjectRunSource, compile_source_plan_for_cli, discover_source_schema_with_plan_for_cli,
+        file_runtime_dependencies, prepare_runtime_resource_for_cli,
     },
     render::{
         RenderDocument,
@@ -39,8 +39,64 @@ use crate::{
 
 pub(crate) struct PreparedSchemaForCli {
     pub(crate) resource: CompiledResource,
+    pub(crate) source_plan: cdf_runtime::CompiledSourcePlan,
     pub(crate) schema_snapshot: Option<SchemaSnapshotActionReport>,
     pub(crate) prepared_payloads: cdf_runtime::PreparedSourcePayloads,
+}
+
+impl PreparedSchemaForCli {
+    fn new(
+        resource: CompiledResource,
+        source_plan: cdf_runtime::CompiledSourcePlan,
+        schema_snapshot: Option<SchemaSnapshotActionReport>,
+        prepared_payloads: cdf_runtime::PreparedSourcePayloads,
+    ) -> Result<Self, CliError> {
+        if let Some(snapshot) = resource.descriptor().schema_source.pinned_snapshot() {
+            validate_recorded_source_authority(
+                &snapshot.metadata,
+                source_plan.driver.driver_id.as_str(),
+                &source_plan.driver.driver_version,
+                &source_plan.schema_binding_stable_hash()?,
+            )?;
+        }
+        let source_plan = source_plan.bind_schema_authority(
+            resource.descriptor(),
+            resource.schema().as_ref(),
+            resource.effective_schema_runtime().cloned(),
+        )?;
+        Ok(Self {
+            resource,
+            source_plan,
+            schema_snapshot,
+            prepared_payloads,
+        })
+    }
+}
+
+fn validate_recorded_source_authority(
+    metadata: &BTreeMap<String, String>,
+    driver_id: &str,
+    driver_version: &str,
+    plan_hash: &str,
+) -> cdf_kernel::Result<()> {
+    let recorded_driver = metadata
+        .get("source_driver")
+        .ok_or_else(|| CdfError::data("schema snapshot omitted its source driver"))?;
+    let recorded_version = metadata.get("source_driver_version").ok_or_else(|| {
+        CdfError::data("registered-source schema snapshot omitted its source driver version")
+    })?;
+    let recorded_plan_hash = metadata.get("source_plan_hash").ok_or_else(|| {
+        CdfError::data("registered-source schema snapshot omitted its compiled source plan hash")
+    })?;
+    if recorded_driver != driver_id
+        || recorded_version != driver_version
+        || recorded_plan_hash != plan_hash
+    {
+        return Err(CdfError::data(format!(
+            "registered-source schema snapshot authority `{recorded_driver}`/{recorded_version}/{recorded_plan_hash} does not match compiled source authority `{driver_id}`/{driver_version}/{plan_hash}; repin the schema against the current source configuration",
+        )));
+    }
+    Ok(())
 }
 
 pub(crate) fn plan_or_explain(
@@ -147,6 +203,7 @@ pub(crate) fn prepare_resource_schema_for_cli(
     execution: Option<&cdf_runtime::ExecutionServices>,
 ) -> Result<PreparedSchemaForCli, CliError> {
     let prepared_payloads = cdf_runtime::PreparedSourcePayloads::default();
+    let source_plan = compile_source_plan_for_cli(resource)?;
     if matches!(
         resource.descriptor().schema_source,
         SchemaSource::Declared { .. }
@@ -159,11 +216,7 @@ pub(crate) fn prepare_resource_schema_for_cli(
                 .with_prepared_payloads(prepared_payloads.clone()),
         )?;
         let (resource, _) = prepared.into_parts();
-        return Ok(PreparedSchemaForCli {
-            resource,
-            schema_snapshot: None,
-            prepared_payloads,
-        });
+        return PreparedSchemaForCli::new(resource, source_plan, None, prepared_payloads);
     }
     if let Some(snapshot) = resource.descriptor().schema_source.pinned_snapshot()
         && !no_pin
@@ -174,9 +227,10 @@ pub(crate) fn prepare_resource_schema_for_cli(
             .discovery_manifest()
             .map(DiscoveryCoverageReport::from_manifest);
         let (prepared, _) = prepared.into_parts();
-        return Ok(PreparedSchemaForCli {
-            resource: prepared,
-            schema_snapshot: Some(SchemaSnapshotActionReport {
+        return PreparedSchemaForCli::new(
+            prepared,
+            source_plan,
+            Some(SchemaSnapshotActionReport {
                 outcome: "unchanged",
                 schema_hash: snapshot.schema_hash.to_string(),
                 path: snapshot.path.clone(),
@@ -185,7 +239,7 @@ pub(crate) fn prepare_resource_schema_for_cli(
                 discovery,
             }),
             prepared_payloads,
-        });
+        );
     }
     let probe_resource = if no_pin
         && resource
@@ -209,13 +263,8 @@ pub(crate) fn prepare_resource_schema_for_cli(
         probe_resource.descriptor().schema_source,
         SchemaSource::Discover | SchemaSource::Hints { snapshot: None, .. }
     ) {
-        return Ok(PreparedSchemaForCli {
-            resource: resource.clone(),
-            schema_snapshot: None,
-            prepared_payloads,
-        });
+        return PreparedSchemaForCli::new(resource.clone(), source_plan, None, prepared_payloads);
     }
-    let secret_provider = context.secret_provider();
     let options = match resource.descriptor().schema_source.pinned_snapshot() {
         Some(snapshot) => {
             let (_, verified_baseline) = cdf_project::SchemaSnapshotStore::new(&context.root)
@@ -226,32 +275,21 @@ pub(crate) fn prepare_resource_schema_for_cli(
         None => cdf_project::SchemaDiscoveryExecutionOptions::new(),
     }
     .with_observation_cache(cdf_project::ObservationCacheStore::new(&context.root));
-    let mut artifacts = if matches!(probe_resource.plan(), CompiledResourcePlan::Files(_)) {
-        cdf_project::discover_resource_schema_with_file_dependencies_artifacts(
-            &probe_resource,
-            &secret_provider,
-            file_runtime_dependencies(context, execution)?
-                .with_prepared_payloads(prepared_payloads.clone()),
-            options,
-        )?
-    } else if matches!(probe_resource.plan(), CompiledResourcePlan::Rest(_)) {
-        let transport = ReqwestHttpTransport::new()?;
-        let memory = execution
-            .ok_or_else(|| CdfError::internal("REST discovery requires execution services"))?
-            .memory();
-        let dependencies =
-            cdf_declarative::RestDiscoveryDependencies::new(&transport, &secret_provider, memory)
-                .with_prepared_payloads(prepared_payloads.clone());
-        cdf_project::ResourceSchemaDiscoveryArtifacts::new(
-            cdf_project::discover_resource_schema_with_rest_dependencies(
-                &probe_resource,
-                &dependencies,
-            )?,
-            None,
-        )
-    } else {
-        cdf_project::discover_resource_schema_artifacts(&probe_resource, &secret_provider, options)?
-    };
+    let execution = execution
+        .ok_or_else(|| CdfError::internal("source discovery requires execution services"))?;
+    let discovery_plan = source_plan.clone().bind_schema_authority(
+        probe_resource.descriptor(),
+        probe_resource.schema().as_ref(),
+        probe_resource.effective_schema_runtime().cloned(),
+    )?;
+    let mut artifacts = discover_source_schema_with_plan_for_cli(
+        context,
+        &probe_resource,
+        &discovery_plan,
+        execution,
+        prepared_payloads.clone(),
+        options,
+    )?;
     let prepared_resource =
         cdf_project::compile_discovered_schema_artifacts(&probe_resource, &mut artifacts)?;
     let discovery_coverage = artifacts
@@ -290,9 +328,10 @@ pub(crate) fn prepare_resource_schema_for_cli(
         }
         (snapshot_written, lockfile_written)
     };
-    Ok(PreparedSchemaForCli {
-        resource: prepared_resource,
-        schema_snapshot: Some(SchemaSnapshotActionReport {
+    PreparedSchemaForCli::new(
+        prepared_resource,
+        source_plan,
+        Some(SchemaSnapshotActionReport {
             outcome,
             schema_hash: artifact.schema_hash.to_string(),
             path: artifact.path.clone(),
@@ -301,7 +340,7 @@ pub(crate) fn prepare_resource_schema_for_cli(
             discovery: discovery_coverage,
         }),
         prepared_payloads,
-    })
+    )
 }
 
 pub(crate) fn build_engine_plan_for_resource(
@@ -1344,5 +1383,30 @@ fn capability_support_name(support: &CapabilitySupport) -> &'static str {
     match support {
         CapabilitySupport::Supported => "supported",
         CapabilitySupport::Unsupported => "unsupported",
+    }
+}
+
+#[cfg(test)]
+mod source_authority_tests {
+    use std::collections::BTreeMap;
+
+    use super::validate_recorded_source_authority;
+
+    #[test]
+    fn pinned_snapshot_rejects_a_different_compiled_source_plan() {
+        let metadata = BTreeMap::from([
+            ("source_driver".to_owned(), "files".to_owned()),
+            ("source_driver_version".to_owned(), "1.0.0".to_owned()),
+            ("source_plan_hash".to_owned(), "sha256:pinned".to_owned()),
+        ]);
+        let error =
+            validate_recorded_source_authority(&metadata, "files", "1.0.0", "sha256:recompiled")
+                .unwrap_err();
+        assert!(
+            error
+                .message
+                .contains("does not match compiled source authority")
+        );
+        assert!(error.message.contains("repin the schema"));
     }
 }

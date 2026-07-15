@@ -1024,24 +1024,37 @@ pub struct DiscoveryCoverageEvidence {
     pub observed_records: u64,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DiscoveryCoverageEvidenceInput {
+    pub file_coverage: String,
+    pub within_file_coverage: String,
+    pub selector: Option<String>,
+    pub sample_files: Option<u64>,
+    pub matched_files: u64,
+    pub selected_files: u64,
+    pub observed_bytes: u64,
+    pub observed_records: u64,
+}
+
 impl DiscoveryCoverageEvidence {
-    pub fn new(
-        file_coverage: impl Into<String>,
-        within_file_coverage: impl Into<String>,
-        selector: Option<String>,
-        sample_files: Option<u64>,
-        matched_files: u64,
-        selected_files: u64,
-        observed_bytes: u64,
-        observed_records: u64,
-    ) -> Result<Self> {
+    pub fn new(input: DiscoveryCoverageEvidenceInput) -> Result<Self> {
+        let DiscoveryCoverageEvidenceInput {
+            file_coverage,
+            within_file_coverage,
+            selector,
+            sample_files,
+            matched_files,
+            selected_files,
+            observed_bytes,
+            observed_records,
+        } = input;
         let unobserved_files = matched_files.checked_sub(selected_files).ok_or_else(|| {
             CdfError::contract("discovery coverage selected count exceeds matched count")
         })?;
         let evidence = Self {
             version: 1,
-            file_coverage: file_coverage.into(),
-            within_file_coverage: within_file_coverage.into(),
+            file_coverage,
+            within_file_coverage,
             selector,
             sample_files,
             matched_files,
