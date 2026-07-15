@@ -409,6 +409,31 @@ fn destination(path: &Path) -> DuckDbDestination {
     DuckDbDestination::new(path).unwrap()
 }
 
+#[test]
+fn connections_enforce_bounded_native_resources() {
+    let temp = tempfile::tempdir().unwrap();
+    let destination = destination(&temp.path().join("bounded.duckdb"));
+    let conn = destination.open_connection().unwrap();
+    let settings: (String, i64, String, bool) = conn
+        .query_row(
+            "SELECT current_setting('memory_limit'), current_setting('threads'), current_setting('max_temp_directory_size'), current_setting('preserve_insertion_order')",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        )
+        .unwrap();
+    assert_eq!(
+        settings,
+        ("256.0 MiB".to_owned(), 1, "1.0 GiB".to_owned(), false)
+    );
+    drop(conn);
+
+    let read_only = destination.open_read_only_connection().unwrap();
+    let threads: i64 = read_only
+        .query_row("SELECT current_setting('threads')", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(threads, 1);
+}
+
 #[derive(Debug)]
 struct CurrentCommitOutcome {
     receipt: Receipt,

@@ -50,7 +50,11 @@ impl DestinationDriver for DuckDbRuntimeDriver {
         context: &DestinationResolutionContext<'_>,
     ) -> Result<Box<dyn DestinationRuntime>> {
         let path = absolute_under_root(context.project_root()?, local_uri_path(uri, "duckdb")?);
-        Ok(Box::new(DuckDbDestination::new(path)?))
+        let mut destination = DuckDbDestination::new(path)?;
+        if let Some(execution) = context.execution_services() {
+            destination = destination.with_execution_services(execution)?;
+        }
+        Ok(Box::new(destination))
     }
 
     fn health(
@@ -189,13 +193,13 @@ impl DestinationRuntime for DuckDbDestination {
                 max_useful_writers: 1,
                 blocking_lane: Some("duckdb.connection".to_owned()),
                 native_internal_parallelism: 1,
-                external_staging: false,
+                external_staging: true,
                 fallback: cdf_runtime::BulkFallbackMode::Forbidden,
                 schema_preflight_version: "duckdb-arrow-mapping@1".to_owned(),
-                measured_evidence_version: Some("p3-d2-2026-07-11-v1".to_owned()),
+                measured_evidence_version: Some("p3-f2-2026-07-14-v2".to_owned()),
             }],
             bulk_path: Some("arrow_record_batch_appender".to_owned()),
-            bulk_evidence_version: Some("p3-d2-2026-07-11-v1".to_owned()),
+            bulk_evidence_version: Some("p3-f2-2026-07-14-v2".to_owned()),
             replay_requires_explicit_target: false,
             replay_target_hint: None,
             replay_policy_values: Default::default(),

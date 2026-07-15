@@ -39,6 +39,10 @@ use duckdb::{
 const DESTINATION_ID: &str = "duckdb";
 const MAIN_SCHEMA: &str = "main";
 const LOCK_SUFFIX: &str = "cdf.lock";
+const DUCKDB_MINIMUM_NATIVE_MEMORY_BYTES: u64 = 256 * 1024 * 1024;
+const DUCKDB_MAXIMUM_NATIVE_MEMORY_BYTES: u64 = 1024 * 1024 * 1024;
+const DUCKDB_MAXIMUM_TEMP_DIRECTORY_BYTES: u64 = 1024 * 1024 * 1024;
+const DUCKDB_INTERNAL_THREADS: i64 = 1;
 pub const CDF_ROW_KEY_COLUMN: &str = "_cdf_row_key";
 const CDF_STAGE_ORDER_COLUMN: &str = "_cdf_stage_order";
 

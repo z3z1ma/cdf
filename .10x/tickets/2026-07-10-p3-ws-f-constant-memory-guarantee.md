@@ -1,6 +1,6 @@
-Status: open
+Status: active
 Created: 2026-07-10
-Updated: 2026-07-11
+Updated: 2026-07-14
 Parent: .10x/tickets/2026-07-10-p3-terabyte-scale-program.md
 Depends-On: .10x/tickets/done/2026-07-11-p3-a2-unified-memory-ledger.md, .10x/specs/performance-lab-and-envelope.md, .10x/specs/runtime-memory-backpressure.md
 
@@ -26,7 +26,11 @@ Make the memory law executable: generated 100 GB input under 2 GiB, peak-RSS ass
 
 ## Blockers
 
-Blocked on WS-A ledger/spill and WS-L measurement protocol.
+None at the parent level. Child dependencies and closure gaps remain authoritative in F1–F4.
+
+## Progress
+
+- 2026-07-14: F2 isolated and bounded DuckDB's package-long native transaction, cutting the 2.15 GB FineWeb run's peak footprint from about 3.25 GB to 1.39 GB while retaining 85.8% of uncapped local throughput. DuckDB scratch capacity now reserves against the shared spill authority. This is a child milestone, not the parent constant-memory proof; F1–F4 remain active/open.
 
 ## References
 

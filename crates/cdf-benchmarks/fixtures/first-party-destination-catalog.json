@@ -11,9 +11,9 @@
       "commit_payload_mode": "segment_streaming",
       "max_in_flight_segments": 2,
       "max_in_flight_bytes": 134217728,
-      "bulk_paths": [{"path_id":"arrow_record_batch_appender","version":1,"ingress_mode":"staged_durable_segments","writer_model":"single_writer","ordering":"manifest_order","rows":{"minimum":8192,"preferred":65536,"maximum":65536},"bytes":{"minimum":1048576,"preferred":16777216,"maximum":67108864},"max_useful_writers":1,"blocking_lane":"duckdb.connection","native_internal_parallelism":1,"external_staging":false,"fallback":"forbidden","schema_preflight_version":"duckdb-arrow-mapping@1","measured_evidence_version":"p3-d2-2026-07-11-v1"}],
+      "bulk_paths": [{"path_id":"arrow_record_batch_appender","version":1,"ingress_mode":"staged_durable_segments","writer_model":"single_writer","ordering":"manifest_order","rows":{"minimum":8192,"preferred":65536,"maximum":65536},"bytes":{"minimum":1048576,"preferred":16777216,"maximum":67108864},"max_useful_writers":1,"blocking_lane":"duckdb.connection","native_internal_parallelism":1,"external_staging":true,"fallback":"forbidden","schema_preflight_version":"duckdb-arrow-mapping@1","measured_evidence_version":"p3-f2-2026-07-14-v2"}],
       "bulk_path": "arrow_record_batch_appender",
-      "bulk_evidence_version": "p3-d2-2026-07-11-v1",
+      "bulk_evidence_version": "p3-f2-2026-07-14-v2",
       "replay_requires_explicit_target": false,
       "replay_target_hint": null,
       "replay_policy_values": {}

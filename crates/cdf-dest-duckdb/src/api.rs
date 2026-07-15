@@ -8,7 +8,37 @@ use crate::{
 pub struct DuckDbDestination {
     database_path: PathBuf,
     sheet: DestinationSheet,
+    native_resources: DuckDbNativeResources,
     pub(crate) pending_corrections: Arc<Mutex<BTreeMap<PlanId, DuckDbCorrectionContext>>>,
+}
+
+#[derive(Clone)]
+struct DuckDbNativeResources {
+    memory_limit_bytes: u64,
+    maximum_temp_directory_bytes: u64,
+    internal_threads: i64,
+    scratch_reservation: Option<Arc<cdf_runtime::SpillReservation>>,
+}
+
+impl std::fmt::Debug for DuckDbNativeResources {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("DuckDbNativeResources")
+            .field("memory_limit_bytes", &self.memory_limit_bytes)
+            .field(
+                "maximum_temp_directory_bytes",
+                &self.maximum_temp_directory_bytes,
+            )
+            .field("internal_threads", &self.internal_threads)
+            .field(
+                "scratch_reserved_bytes",
+                &self
+                    .scratch_reservation
+                    .as_ref()
+                    .map(|reservation| reservation.bytes()),
+            )
+            .finish()
+    }
 }
 
 #[derive(Debug)]
@@ -160,8 +190,17 @@ impl DuckDbDestination {
         Ok(Self {
             database_path,
             sheet: duckdb_sheet()?,
+            native_resources: DuckDbNativeResources::conservative(),
             pending_corrections: Arc::new(Mutex::new(BTreeMap::new())),
         })
+    }
+
+    pub fn with_execution_services(
+        mut self,
+        execution: &cdf_runtime::ExecutionServices,
+    ) -> Result<Self> {
+        self.native_resources = DuckDbNativeResources::for_execution(execution)?;
+        Ok(self)
     }
 
     pub fn database_path(&self) -> &Path {
@@ -370,14 +409,15 @@ impl DuckDbDestination {
     }
 
     pub(crate) fn open_connection(&self) -> Result<Connection> {
-        Connection::open(&self.database_path)
-            .map_err(|error| duckdb_error(format!("open {}", self.database_path.display()), error))
+        Connection::open_with_flags(
+            &self.database_path,
+            bounded_connection_config(&self.native_resources, false)?,
+        )
+        .map_err(|error| duckdb_error(format!("open {}", self.database_path.display()), error))
     }
 
     pub(crate) fn open_read_only_connection(&self) -> Result<Connection> {
-        let config = Config::default()
-            .access_mode(AccessMode::ReadOnly)
-            .map_err(|error| duckdb_error("configure read-only DuckDB open", error))?;
+        let config = bounded_connection_config(&self.native_resources, true)?;
         Connection::open_with_flags(&self.database_path, config).map_err(|error| {
             duckdb_error(
                 format!("open {} read-only", self.database_path.display()),
@@ -398,6 +438,108 @@ impl DuckDbDestination {
             .unwrap_or("duckdb");
         self.database_path
             .with_file_name(format!("{file_name}.{LOCK_SUFFIX}"))
+    }
+}
+
+impl DuckDbNativeResources {
+    fn conservative() -> Self {
+        Self {
+            memory_limit_bytes: DUCKDB_MINIMUM_NATIVE_MEMORY_BYTES,
+            maximum_temp_directory_bytes: DUCKDB_MAXIMUM_TEMP_DIRECTORY_BYTES,
+            internal_threads: DUCKDB_INTERNAL_THREADS,
+            scratch_reservation: None,
+        }
+    }
+
+    fn for_execution(execution: &cdf_runtime::ExecutionServices) -> Result<Self> {
+        Self::for_budgets(
+            execution.memory().snapshot().budget_bytes,
+            execution.spill(),
+        )
+    }
+
+    fn for_budgets(
+        managed_budget: u64,
+        spill: Arc<dyn cdf_runtime::SpillBudgetCoordinator>,
+    ) -> Result<Self> {
+        let memory_limit_bytes = (managed_budget / 4).clamp(
+            DUCKDB_MINIMUM_NATIVE_MEMORY_BYTES,
+            DUCKDB_MAXIMUM_NATIVE_MEMORY_BYTES,
+        );
+        let maximum_temp_directory_bytes = spill
+            .snapshot()
+            .budget_bytes
+            .min(DUCKDB_MAXIMUM_TEMP_DIRECTORY_BYTES);
+        let scratch_reservation = spill
+            .try_reserve(maximum_temp_directory_bytes)?
+            .ok_or_else(|| {
+                CdfError::data(format!(
+                    "DuckDB destination requires {maximum_temp_directory_bytes} bytes of reserved scratch disk but the shared spill budget is already committed; increase the spill budget or reduce concurrent spool/sort work"
+                ))
+            })?;
+        Ok(Self {
+            memory_limit_bytes,
+            maximum_temp_directory_bytes,
+            internal_threads: DUCKDB_INTERNAL_THREADS,
+            scratch_reservation: Some(Arc::new(scratch_reservation)),
+        })
+    }
+}
+
+fn bounded_connection_config(resources: &DuckDbNativeResources, read_only: bool) -> Result<Config> {
+    let memory_limit = format!("{}B", resources.memory_limit_bytes);
+    let maximum_temp_directory = format!("{}B", resources.maximum_temp_directory_bytes);
+    let mut config = Config::default()
+        .max_memory(&memory_limit)
+        .and_then(|config| config.threads(resources.internal_threads))
+        .and_then(|config| config.with("max_temp_directory_size", &maximum_temp_directory))
+        .and_then(|config| config.with("preserve_insertion_order", "false"))
+        .map_err(|error| duckdb_error("configure bounded DuckDB runtime", error))?;
+    if read_only {
+        config = config
+            .access_mode(AccessMode::ReadOnly)
+            .map_err(|error| duckdb_error("configure read-only DuckDB open", error))?;
+    }
+    Ok(config)
+}
+
+#[cfg(test)]
+mod native_resource_tests {
+    use super::*;
+    use cdf_runtime::SpillBudgetCoordinator as _;
+
+    #[test]
+    fn execution_resources_reserve_and_release_bounded_scratch_capacity() {
+        let spill = Arc::new(cdf_runtime::FixedSpillBudget::new(2 * 1024 * 1024 * 1024).unwrap());
+        let coordinator: Arc<dyn cdf_runtime::SpillBudgetCoordinator> = spill.clone();
+        let resources =
+            DuckDbNativeResources::for_budgets(4 * 1024 * 1024 * 1024, coordinator).unwrap();
+        assert_eq!(resources.memory_limit_bytes, 1024 * 1024 * 1024);
+        assert_eq!(resources.maximum_temp_directory_bytes, 1024 * 1024 * 1024);
+        assert_eq!(spill.snapshot().current_bytes, 1024 * 1024 * 1024);
+
+        let clone = resources.clone();
+        drop(resources);
+        assert_eq!(spill.snapshot().current_bytes, 1024 * 1024 * 1024);
+        drop(clone);
+        assert_eq!(spill.snapshot().current_bytes, 0);
+    }
+
+    #[test]
+    fn execution_resources_fail_before_use_when_scratch_is_unavailable() {
+        let spill = Arc::new(cdf_runtime::FixedSpillBudget::new(1024).unwrap());
+        let held = spill.try_reserve(1024).unwrap().unwrap();
+        let coordinator: Arc<dyn cdf_runtime::SpillBudgetCoordinator> = spill.clone();
+        let error =
+            DuckDbNativeResources::for_budgets(DUCKDB_MINIMUM_NATIVE_MEMORY_BYTES, coordinator)
+                .unwrap_err();
+        assert!(
+            error
+                .message
+                .contains("shared spill budget is already committed")
+        );
+        drop(held);
+        assert_eq!(spill.snapshot().current_bytes, 0);
     }
 }
 
