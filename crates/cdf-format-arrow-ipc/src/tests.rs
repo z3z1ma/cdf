@@ -182,8 +182,8 @@ fn arrow_ipc_file_driver_discovers_projects_and_streams_blocks() {
     .unwrap();
     assert_eq!(observation.arrow_schema.as_ref(), schema.as_ref());
 
-    let units = futures_executor::block_on(driver.plan_decode_units(
-        Arc::clone(&source),
+    let session = futures_executor::block_on(driver.prepare_decode(
+        source,
         DecodePlanningRequest {
             options: serde_json::json!({}),
             projection: Some(vec!["id".to_owned()]),
@@ -194,26 +194,22 @@ fn arrow_ipc_file_driver_discovers_projects_and_streams_blocks() {
         },
     ))
     .unwrap();
-    assert_eq!(units.len(), 1);
+    assert_eq!(session.units().len(), 1);
 
-    let stream = futures_executor::block_on(driver.decode(
-        source,
-        PhysicalDecodeRequest {
-            options: serde_json::json!({}),
-            unit: units[0].clone(),
-            resource_id: ResourceId::new("fixture.arrow").unwrap(),
-            partition_id: PartitionId::new("file-000001").unwrap(),
-            batch_id_prefix: "fixture".to_owned(),
-            schema: cdf_runtime::DecodeSchemaPlan::verified_physical(schema),
-            source_position: None,
-            projection: Some(vec!["id".to_owned()]),
-            predicates: Vec::new(),
-            target_batch_rows: 64 * 1024,
-            target_batch_bytes: 1024 * 1024,
-            memory: Arc::clone(&memory),
-            cancellation: RunCancellation::default(),
-        },
-    ))
+    let stream = futures_executor::block_on(session.decode(PhysicalDecodeRequest {
+        unit: session.units()[0].clone(),
+        resource_id: ResourceId::new("fixture.arrow").unwrap(),
+        partition_id: PartitionId::new("file-000001").unwrap(),
+        batch_id_prefix: "fixture".to_owned(),
+        schema: cdf_runtime::DecodeSchemaPlan::verified_physical(schema),
+        source_position: None,
+        projection: Some(vec!["id".to_owned()]),
+        predicates: Vec::new(),
+        target_batch_rows: 64 * 1024,
+        target_batch_bytes: 1024 * 1024,
+        memory: Arc::clone(&memory),
+        cancellation: RunCancellation::default(),
+    }))
     .unwrap();
     let batches = futures_executor::block_on(stream.try_collect::<Vec<_>>()).unwrap();
     assert_eq!(batches.len(), 2);
@@ -229,6 +225,7 @@ fn arrow_ipc_file_driver_discovers_projects_and_streams_blocks() {
         record.num_columns() == 1 && record.column(0).as_any().is::<Int64Array>()
     }));
     drop(batches);
+    drop(session);
     assert_eq!(memory.snapshot().current_bytes, 0);
 }
 
@@ -270,8 +267,8 @@ fn arrow_ipc_driver_reference_rate() {
         Arc::new(DeterministicMemoryCoordinator::new(512 * 1024 * 1024, BTreeMap::new()).unwrap());
     let source: Arc<dyn ByteSource> = MemoryByteSource::new(bytes.clone(), Arc::clone(&memory));
     let driver = ArrowIpcFileFormatDriver::new().unwrap();
-    let units = futures_executor::block_on(driver.plan_decode_units(
-        Arc::clone(&source),
+    let session = futures_executor::block_on(driver.prepare_decode(
+        source,
         DecodePlanningRequest {
             options: serde_json::json!({}),
             projection: None,
@@ -283,24 +280,20 @@ fn arrow_ipc_driver_reference_rate() {
     ))
     .unwrap();
     let driver_start = Instant::now();
-    let stream = futures_executor::block_on(driver.decode(
-        source,
-        PhysicalDecodeRequest {
-            options: serde_json::json!({}),
-            unit: units[0].clone(),
-            resource_id: ResourceId::new("bench.arrow").unwrap(),
-            partition_id: PartitionId::new("file-000001").unwrap(),
-            batch_id_prefix: "bench".to_owned(),
-            schema: cdf_runtime::DecodeSchemaPlan::verified_physical(schema),
-            source_position: None,
-            projection: None,
-            predicates: Vec::new(),
-            target_batch_rows: ROWS,
-            target_batch_bytes: 16 * 1024 * 1024,
-            memory: Arc::clone(&memory),
-            cancellation: RunCancellation::default(),
-        },
-    ))
+    let stream = futures_executor::block_on(session.decode(PhysicalDecodeRequest {
+        unit: session.units()[0].clone(),
+        resource_id: ResourceId::new("bench.arrow").unwrap(),
+        partition_id: PartitionId::new("file-000001").unwrap(),
+        batch_id_prefix: "bench".to_owned(),
+        schema: cdf_runtime::DecodeSchemaPlan::verified_physical(schema),
+        source_position: None,
+        projection: None,
+        predicates: Vec::new(),
+        target_batch_rows: ROWS,
+        target_batch_bytes: 16 * 1024 * 1024,
+        memory: Arc::clone(&memory),
+        cancellation: RunCancellation::default(),
+    }))
     .unwrap();
     let decoded = futures_executor::block_on(stream.try_collect::<Vec<_>>()).unwrap();
     let driver_elapsed = driver_start.elapsed();
@@ -317,5 +310,6 @@ fn arrow_ipc_driver_reference_rate() {
         reference_elapsed.as_secs_f64() / driver_elapsed.as_secs_f64()
     );
     drop(decoded);
+    drop(session);
     assert_eq!(memory.snapshot().current_bytes, 0);
 }

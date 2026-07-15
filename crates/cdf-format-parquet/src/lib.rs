@@ -14,9 +14,10 @@ use cdf_kernel::{Batch, BatchId, BoxFuture, CdfError, PushdownFidelity, Result};
 use cdf_memory::{ConsumerKey, MemoryClass, ReservationRequest, reserve};
 use cdf_runtime::{
     AccountedPhysicalBatch, ByteExtent, ByteSource, DecodePlanningRequest, DecodeSchemaAuthority,
-    DecodeUnitPlan, FormatDetection, FormatDetectionConfidence, FormatDetectionProbe,
-    FormatDiscoveryRequest, FormatDriver, FormatDriverDescriptor, FormatId, FormatProbe,
-    MagicSignature, PhysicalDecodeRequest, PhysicalDecodeStream, PhysicalSchemaObservation,
+    DecodeUnitPlan, FormatDecodeSession, FormatDetection, FormatDetectionConfidence,
+    FormatDetectionProbe, FormatDiscoveryRequest, FormatDriver, FormatDriverDescriptor, FormatId,
+    FormatProbe, MagicSignature, PhysicalDecodeRequest, PhysicalDecodeStream,
+    PhysicalSchemaObservation,
 };
 use futures_util::{
     FutureExt, StreamExt, TryStreamExt, future::BoxFuture as FuturesBoxFuture, stream,
@@ -24,7 +25,7 @@ use futures_util::{
 use parquet::{
     arrow::{
         ProjectionMask,
-        arrow_reader::ArrowReaderOptions,
+        arrow_reader::{ArrowReaderMetadata, ArrowReaderOptions},
         async_reader::{AsyncFileReader, MetadataSuffixFetch, ParquetRecordBatchStreamBuilder},
     },
     errors::ParquetError,
@@ -140,11 +141,11 @@ impl FormatDriver for ParquetFormatDriver {
         })
     }
 
-    fn plan_decode_units(
+    fn prepare_decode(
         &self,
         source: Arc<dyn ByteSource>,
         request: DecodePlanningRequest,
-    ) -> BoxFuture<'_, Result<Vec<DecodeUnitPlan>>> {
+    ) -> BoxFuture<'_, Result<Arc<dyn FormatDecodeSession>>> {
         Box::pin(async move {
             request.cancellation.check()?;
             self.canonical_options(request.options)?;
@@ -155,13 +156,12 @@ impl FormatDriver for ParquetFormatDriver {
                 ));
             }
             let builder = ParquetRecordBatchStreamBuilder::new(ParquetByteSource::new(
-                source,
+                Arc::clone(&source),
                 request.cancellation.clone(),
             ))
             .await
             .map_err(parquet_error)?;
-            let row_groups = builder.metadata().row_groups();
-            if row_groups.is_empty() {
+            let units = if builder.metadata().row_groups().is_empty() {
                 let unit = DecodeUnitPlan {
                     unit_id: "parquet-schema-only".to_owned(),
                     ordinal: 0,
@@ -172,43 +172,66 @@ impl FormatDriver for ParquetFormatDriver {
                     independently_retryable: true,
                 };
                 unit.validate()?;
-                return Ok(vec![unit]);
-            }
-            row_groups
-                .iter()
-                .enumerate()
-                .map(|(ordinal, row_group)| {
-                    let ordinal = u32::try_from(ordinal)
-                        .map_err(|_| CdfError::data("Parquet row-group ordinal exceeds u32"))?;
-                    let compressed = u64::try_from(row_group.compressed_size())
-                        .map_err(|_| CdfError::data("Parquet row-group size is negative"))?;
-                    let estimated_working_set_bytes = compressed
-                        .max(request.target_batch_bytes)
-                        .min(self.descriptor.maximum_working_set_bytes);
-                    let unit = DecodeUnitPlan {
-                        unit_id: format!("row-group-{ordinal:08}"),
-                        ordinal,
-                        extent: None,
-                        estimated_working_set_bytes,
-                        independently_retryable: true,
-                    };
-                    unit.validate()?;
-                    Ok(unit)
-                })
-                .collect()
+                vec![unit]
+            } else {
+                builder
+                    .metadata()
+                    .row_groups()
+                    .iter()
+                    .enumerate()
+                    .map(|(ordinal, row_group)| {
+                        let ordinal = u32::try_from(ordinal)
+                            .map_err(|_| CdfError::data("Parquet row-group ordinal exceeds u32"))?;
+                        let compressed = u64::try_from(row_group.compressed_size())
+                            .map_err(|_| CdfError::data("Parquet row-group size is negative"))?;
+                        let estimated_working_set_bytes = compressed
+                            .max(request.target_batch_bytes)
+                            .min(self.descriptor.maximum_working_set_bytes);
+                        let unit = DecodeUnitPlan {
+                            unit_id: format!("row-group-{ordinal:08}"),
+                            ordinal,
+                            extent: None,
+                            estimated_working_set_bytes,
+                            independently_retryable: true,
+                        };
+                        unit.validate()?;
+                        Ok(unit)
+                    })
+                    .collect::<Result<Vec<_>>>()?
+            };
+            let metadata = ArrowReaderMetadata::try_new(
+                Arc::clone(builder.metadata()),
+                ArrowReaderOptions::new(),
+            )
+            .map_err(parquet_error)?;
+            Ok(Arc::new(ParquetDecodeSession {
+                source,
+                metadata,
+                units,
+            }) as Arc<dyn FormatDecodeSession>)
         })
+    }
+}
+
+struct ParquetDecodeSession {
+    source: Arc<dyn ByteSource>,
+    metadata: ArrowReaderMetadata,
+    units: Vec<DecodeUnitPlan>,
+}
+
+impl FormatDecodeSession for ParquetDecodeSession {
+    fn units(&self) -> &[DecodeUnitPlan] {
+        &self.units
     }
 
     fn decode(
         &self,
-        source: Arc<dyn ByteSource>,
         request: PhysicalDecodeRequest,
     ) -> BoxFuture<'_, Result<PhysicalDecodeStream>> {
         Box::pin(async move {
             request.cancellation.check()?;
-            self.canonical_options(request.options.clone())?;
-            request.unit.validate()?;
-            validate_parquet_source(source.as_ref())?;
+            self.validate_unit(&request.unit)?;
+            validate_parquet_source(self.source.as_ref())?;
             if request.target_batch_rows == 0 || request.target_batch_bytes == 0 {
                 return Err(CdfError::contract(
                     "Parquet decode requires nonzero row and byte batch targets",
@@ -219,12 +242,10 @@ impl FormatDriver for ParquetFormatDriver {
                     "Parquet predicate pushdown is not implemented by this driver version",
                 ));
             }
-            let mut builder = ParquetRecordBatchStreamBuilder::new(ParquetByteSource::new(
-                source,
-                request.cancellation.clone(),
-            ))
-            .await
-            .map_err(parquet_error)?
+            let mut builder = ParquetRecordBatchStreamBuilder::new_with_metadata(
+                ParquetByteSource::new(Arc::clone(&self.source), request.cancellation.clone()),
+                self.metadata.clone(),
+            )
             .with_batch_size(request.target_batch_rows);
             if request.unit.unit_id == "parquet-schema-only" {
                 if !builder.metadata().row_groups().is_empty() {

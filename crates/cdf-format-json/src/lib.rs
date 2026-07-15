@@ -22,10 +22,10 @@ use cdf_kernel::{
 use cdf_memory::{ConsumerKey, MemoryClass, MemoryLease, ReservationRequest, reserve};
 use cdf_runtime::{
     AccountedByteStream, AccountedChunksReader, AccountedPhysicalBatch, ByteExtent, ByteSource,
-    DecodePlanningRequest, DecodeUnitPlan, FormatDetection, FormatDetectionConfidence,
-    FormatDetectionProbe, FormatDiscoveryRequest, FormatDriver, FormatDriverDescriptor, FormatId,
-    FormatProbe, PhysicalDecodeRequest, PhysicalDecodeStream, PhysicalSchemaObservation,
-    SequentialReadRequest,
+    DecodePlanningRequest, DecodeUnitPlan, FormatDecodeSession, FormatDetection,
+    FormatDetectionConfidence, FormatDetectionProbe, FormatDiscoveryRequest, FormatDriver,
+    FormatDriverDescriptor, FormatId, FormatProbe, PhysicalDecodeRequest, PhysicalDecodeStream,
+    PhysicalSchemaObservation, SequentialReadRequest,
 };
 use futures_util::{TryStreamExt, stream};
 use serde::{
@@ -148,11 +148,11 @@ impl FormatDriver for NdjsonFormatDriver {
         })
     }
 
-    fn plan_decode_units(
+    fn prepare_decode(
         &self,
         source: Arc<dyn ByteSource>,
         request: DecodePlanningRequest,
-    ) -> BoxFuture<'_, Result<Vec<DecodeUnitPlan>>> {
+    ) -> BoxFuture<'_, Result<Arc<dyn FormatDecodeSession>>> {
         Box::pin(async move {
             self.canonical_options(request.options)?;
             request.cancellation.check()?;
@@ -166,7 +166,7 @@ impl FormatDriver for NdjsonFormatDriver {
                     "NDJSON projection and predicate pushdown are unsupported",
                 ));
             }
-            Ok(vec![DecodeUnitPlan {
+            let units = vec![DecodeUnitPlan {
                 unit_id: "ndjson-stream".to_owned(),
                 ordinal: 0,
                 extent: source
@@ -178,25 +178,36 @@ impl FormatDriver for NdjsonFormatDriver {
                     .target_batch_bytes
                     .clamp(1024 * 1024, 64 * 1024 * 1024),
                 independently_retryable: true,
-            }])
+            }];
+            Ok(Arc::new(NdjsonDecodeSession { source, units }) as Arc<dyn FormatDecodeSession>)
         })
+    }
+}
+
+struct NdjsonDecodeSession {
+    source: Arc<dyn ByteSource>,
+    units: Vec<DecodeUnitPlan>,
+}
+
+impl FormatDecodeSession for NdjsonDecodeSession {
+    fn units(&self) -> &[DecodeUnitPlan] {
+        &self.units
     }
 
     fn decode(
         &self,
-        source: Arc<dyn ByteSource>,
         request: PhysicalDecodeRequest,
     ) -> BoxFuture<'_, Result<PhysicalDecodeStream>> {
         Box::pin(async move {
-            self.canonical_options(request.options.clone())?;
             request.cancellation.check()?;
-            request.unit.validate()?;
+            self.validate_unit(&request.unit)?;
             if request.projection.is_some() || !request.predicates.is_empty() {
                 return Err(CdfError::contract(
                     "NDJSON projection and predicate pushdown are unsupported",
                 ));
             }
-            let input = source
+            let input = self
+                .source
                 .open_sequential(SequentialReadRequest {
                     preferred_chunk_bytes: request
                         .target_batch_bytes
@@ -324,11 +335,11 @@ impl FormatDriver for JsonDocumentFormatDriver {
         })
     }
 
-    fn plan_decode_units(
+    fn prepare_decode(
         &self,
         source: Arc<dyn ByteSource>,
         request: DecodePlanningRequest,
-    ) -> BoxFuture<'_, Result<Vec<DecodeUnitPlan>>> {
+    ) -> BoxFuture<'_, Result<Arc<dyn FormatDecodeSession>>> {
         Box::pin(async move {
             self.canonical_options(request.options)?;
             request.cancellation.check()?;
@@ -342,7 +353,7 @@ impl FormatDriver for JsonDocumentFormatDriver {
                     "JSON projection and predicate pushdown are unsupported",
                 ));
             }
-            Ok(vec![DecodeUnitPlan {
+            let units = vec![DecodeUnitPlan {
                 unit_id: "json-document".to_owned(),
                 ordinal: 0,
                 extent: source
@@ -354,25 +365,37 @@ impl FormatDriver for JsonDocumentFormatDriver {
                     .target_batch_bytes
                     .clamp(1024 * 1024, 64 * 1024 * 1024),
                 independently_retryable: true,
-            }])
+            }];
+            Ok(Arc::new(JsonDocumentDecodeSession { source, units })
+                as Arc<dyn FormatDecodeSession>)
         })
+    }
+}
+
+struct JsonDocumentDecodeSession {
+    source: Arc<dyn ByteSource>,
+    units: Vec<DecodeUnitPlan>,
+}
+
+impl FormatDecodeSession for JsonDocumentDecodeSession {
+    fn units(&self) -> &[DecodeUnitPlan] {
+        &self.units
     }
 
     fn decode(
         &self,
-        source: Arc<dyn ByteSource>,
         request: PhysicalDecodeRequest,
     ) -> BoxFuture<'_, Result<PhysicalDecodeStream>> {
         Box::pin(async move {
-            self.canonical_options(request.options.clone())?;
             request.cancellation.check()?;
-            request.unit.validate()?;
+            self.validate_unit(&request.unit)?;
             if request.projection.is_some() || !request.predicates.is_empty() {
                 return Err(CdfError::contract(
                     "JSON projection and predicate pushdown are unsupported",
                 ));
             }
-            let input = source
+            let input = self
+                .source
                 .open_sequential(SequentialReadRequest {
                     preferred_chunk_bytes: request
                         .target_batch_bytes
@@ -383,7 +406,7 @@ impl FormatDriver for JsonDocumentFormatDriver {
             let framed = frame_json_document(
                 input,
                 JsonFrameRequest {
-                    maximum_input_bytes: source.identity().size_bytes.unwrap_or(u64::MAX),
+                    maximum_input_bytes: self.source.identity().size_bytes.unwrap_or(u64::MAX),
                     maximum_records: None,
                     preferred_output_chunk_bytes: request
                         .target_batch_bytes
@@ -1360,7 +1383,6 @@ mod tests {
         })
         .collect::<Vec<Result<_>>>();
         let request = PhysicalDecodeRequest {
-            options: serde_json::json!({}),
             unit: DecodeUnitPlan {
                 unit_id: "ndjson-byte-target".to_owned(),
                 ordinal: 0,
@@ -1432,7 +1454,6 @@ mod tests {
             Field::new("event_type", DataType::Utf8, true),
         ]));
         let request = PhysicalDecodeRequest {
-            options: serde_json::json!({}),
             unit: DecodeUnitPlan {
                 unit_id: "ndjson-stream".to_owned(),
                 ordinal: 0,
@@ -1522,7 +1543,6 @@ mod tests {
         );
         let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, true)]));
         let request = PhysicalDecodeRequest {
-            options: serde_json::json!({}),
             unit: DecodeUnitPlan {
                 unit_id: "empty-ndjson".to_owned(),
                 ordinal: 0,

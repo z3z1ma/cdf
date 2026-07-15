@@ -12,9 +12,10 @@ use cdf_kernel::{Batch, BatchId, BoxFuture, CdfError, PushdownFidelity, Result};
 use cdf_memory::{ConsumerKey, MemoryClass, ReservationRequest, reserve};
 use cdf_runtime::{
     AccountedPhysicalBatch, ByteExtent, ByteSource, DecodePlanningRequest, DecodeSchemaAuthority,
-    DecodeUnitPlan, FormatDetection, FormatDetectionConfidence, FormatDetectionProbe,
-    FormatDiscoveryRequest, FormatDriver, FormatDriverDescriptor, FormatId, FormatProbe,
-    MagicSignature, PhysicalDecodeRequest, PhysicalDecodeStream, PhysicalSchemaObservation,
+    DecodeUnitPlan, FormatDecodeSession, FormatDetection, FormatDetectionConfidence,
+    FormatDetectionProbe, FormatDiscoveryRequest, FormatDriver, FormatDriverDescriptor, FormatId,
+    FormatProbe, MagicSignature, PhysicalDecodeRequest, PhysicalDecodeStream,
+    PhysicalSchemaObservation,
 };
 use futures_util::stream;
 
@@ -125,11 +126,11 @@ impl FormatDriver for ArrowIpcFileFormatDriver {
         })
     }
 
-    fn plan_decode_units(
+    fn prepare_decode(
         &self,
         source: Arc<dyn ByteSource>,
         request: DecodePlanningRequest,
-    ) -> BoxFuture<'_, Result<Vec<DecodeUnitPlan>>> {
+    ) -> BoxFuture<'_, Result<Arc<dyn FormatDecodeSession>>> {
         Box::pin(async move {
             self.canonical_options(request.options)?;
             request.cancellation.check()?;
@@ -145,33 +146,47 @@ impl FormatDriver for ArrowIpcFileFormatDriver {
                 .identity()
                 .size_bytes
                 .expect("validated Arrow IPC source length");
-            Ok(vec![DecodeUnitPlan {
+            let units = vec![DecodeUnitPlan {
                 unit_id: "ipc-file".to_owned(),
                 ordinal: 0,
                 extent: Some(ByteExtent::new(0, size)?),
                 estimated_working_set_bytes: footer.maximum_block_bytes.max(64 * 1024),
                 independently_retryable: true,
-            }])
+            }];
+            Ok(Arc::new(ArrowIpcDecodeSession {
+                source,
+                footer: Arc::new(footer),
+                units,
+            }) as Arc<dyn FormatDecodeSession>)
         })
+    }
+}
+
+struct ArrowIpcDecodeSession {
+    source: Arc<dyn ByteSource>,
+    footer: Arc<FooterRead>,
+    units: Vec<DecodeUnitPlan>,
+}
+
+impl FormatDecodeSession for ArrowIpcDecodeSession {
+    fn units(&self) -> &[DecodeUnitPlan] {
+        &self.units
     }
 
     fn decode(
         &self,
-        source: Arc<dyn ByteSource>,
         request: PhysicalDecodeRequest,
     ) -> BoxFuture<'_, Result<PhysicalDecodeStream>> {
         Box::pin(async move {
-            self.canonical_options(request.options.clone())?;
             request.cancellation.check()?;
-            request.unit.validate()?;
-            validate_source(source.as_ref())?;
+            self.validate_unit(&request.unit)?;
+            validate_source(self.source.as_ref())?;
             if !request.predicates.is_empty() {
                 return Err(CdfError::contract(
                     "Arrow IPC file predicate pushdown is unsupported",
                 ));
             }
-            let footer = read_footer(source.as_ref(), &request.cancellation, u64::MAX).await?;
-            let actual_hash = cdf_kernel::canonical_arrow_schema_hash(footer.schema.as_ref())?;
+            let actual_hash = cdf_kernel::canonical_arrow_schema_hash(self.footer.schema.as_ref())?;
             if request.schema.authority == DecodeSchemaAuthority::VerifiedPhysicalObservation {
                 let expected_hash = cdf_kernel::canonical_arrow_schema_hash(
                     request.schema.authority_schema.as_ref(),
@@ -184,16 +199,17 @@ impl FormatDriver for ArrowIpcFileFormatDriver {
                 }
             }
             let projection =
-                projection_indices(footer.schema.as_ref(), request.projection.as_deref())?;
-            let physical_schema = footer.schema.clone();
-            let mut decoder = FileDecoder::new(footer.schema, footer.version);
+                projection_indices(self.footer.schema.as_ref(), request.projection.as_deref())?;
+            let physical_schema = Arc::clone(&self.footer.schema);
+            let mut decoder =
+                FileDecoder::new(Arc::clone(&self.footer.schema), self.footer.version);
             if let Some(projection) = projection {
                 decoder = decoder.with_projection(projection);
             }
-            for block in &footer.dictionaries {
-                let bytes = read_block(source.as_ref(), block, &request.cancellation).await?;
+            for block in &self.footer.dictionaries {
+                let bytes = read_block(self.source.as_ref(), block, &request.cancellation).await?;
                 let buffer = Buffer::from(bytes::Bytes::from_owner(bytes));
-                let footer = parse_footer(footer.footer_bytes.as_ref())?;
+                let footer = parse_footer(self.footer.footer_bytes.as_ref().as_ref())?;
                 let dictionary = footer
                     .dictionaries()
                     .map(|blocks| blocks.get(block.footer_ordinal))
@@ -203,9 +219,9 @@ impl FormatDriver for ArrowIpcFileFormatDriver {
                     .map_err(ipc_error)?;
             }
             let state = DecodeState {
-                source,
-                footer_bytes: footer.footer_bytes,
-                blocks: footer.record_batches,
+                source: Arc::clone(&self.source),
+                footer_bytes: Arc::clone(&self.footer.footer_bytes),
+                blocks: self.footer.record_batches.clone(),
                 decoder,
                 request,
                 observed_schema_hash: actual_hash,
@@ -253,7 +269,7 @@ impl FormatDriver for ArrowIpcFileFormatDriver {
                 let bytes =
                     read_block(state.source.as_ref(), &block, &state.request.cancellation).await?;
                 let buffer = Buffer::from(bytes::Bytes::from_owner(bytes));
-                let footer = parse_footer(state.footer_bytes.as_ref())?;
+                let footer = parse_footer(state.footer_bytes.as_ref().as_ref())?;
                 let ipc_block = footer
                     .recordBatches()
                     .map(|blocks| blocks.get(block.footer_ordinal))
@@ -297,7 +313,7 @@ struct FooterRead {
     version: MetadataVersion,
     dictionaries: Vec<OwnedBlock>,
     record_batches: Vec<OwnedBlock>,
-    footer_bytes: cdf_memory::AccountedBytes,
+    footer_bytes: Arc<cdf_memory::AccountedBytes>,
     sampled_bytes: u64,
     maximum_block_bytes: u64,
 }
@@ -311,7 +327,7 @@ struct OwnedBlock {
 
 struct DecodeState {
     source: Arc<dyn ByteSource>,
-    footer_bytes: cdf_memory::AccountedBytes,
+    footer_bytes: Arc<cdf_memory::AccountedBytes>,
     blocks: Vec<OwnedBlock>,
     decoder: FileDecoder,
     request: PhysicalDecodeRequest,
@@ -404,7 +420,7 @@ async fn read_footer(
         version: footer.version(),
         dictionaries,
         record_batches,
-        footer_bytes,
+        footer_bytes: Arc::new(footer_bytes),
         sampled_bytes,
         maximum_block_bytes,
     })

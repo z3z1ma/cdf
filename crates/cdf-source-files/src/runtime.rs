@@ -2177,8 +2177,8 @@ fn stream_registered_format(
                 }
                 None => cdf_runtime::DecodeSchemaPlan::fixed_admission(admission_schema),
             };
-            let units = driver
-                .plan_decode_units(
+            let session = driver
+                .prepare_decode(
                     source.clone(),
                     DecodePlanningRequest {
                         options: options_json.clone(),
@@ -2190,12 +2190,10 @@ fn stream_registered_format(
                     },
                 )
                 .await?;
-            for unit in units {
-                let mut decoded = driver
+            for unit in session.units().iter().cloned() {
+                let mut decoded = session
                     .decode(
-                        source.clone(),
                         PhysicalDecodeRequest {
-                            options: options_json.clone(),
                             unit,
                             resource_id: options.resource_id.clone(),
                             partition_id: options.partition_id.clone(),
@@ -3581,35 +3579,49 @@ mod tests {
             })
         }
 
-        fn plan_decode_units(
+        fn prepare_decode(
             &self,
-            _source: Arc<dyn cdf_runtime::ByteSource>,
+            source: Arc<dyn cdf_runtime::ByteSource>,
             request: cdf_runtime::DecodePlanningRequest,
-        ) -> cdf_kernel::BoxFuture<'_, Result<Vec<cdf_runtime::DecodeUnitPlan>>> {
+        ) -> cdf_kernel::BoxFuture<'_, Result<Arc<dyn cdf_runtime::FormatDecodeSession>>> {
             Box::pin(async move {
                 request.cancellation.check()?;
-                Ok(vec![cdf_runtime::DecodeUnitPlan {
+                let units = vec![cdf_runtime::DecodeUnitPlan {
                     unit_id: "mock-file".to_owned(),
                     ordinal: 0,
                     extent: None,
                     estimated_working_set_bytes: 64,
                     independently_retryable: true,
-                }])
+                }];
+                Ok(Arc::new(ExternalMockDecodeSession { source, units })
+                    as Arc<dyn cdf_runtime::FormatDecodeSession>)
             })
+        }
+    }
+
+    struct ExternalMockDecodeSession {
+        source: Arc<dyn cdf_runtime::ByteSource>,
+        units: Vec<cdf_runtime::DecodeUnitPlan>,
+    }
+
+    impl cdf_runtime::FormatDecodeSession for ExternalMockDecodeSession {
+        fn units(&self) -> &[cdf_runtime::DecodeUnitPlan] {
+            &self.units
         }
 
         fn decode(
             &self,
-            source: Arc<dyn cdf_runtime::ByteSource>,
             request: cdf_runtime::PhysicalDecodeRequest,
         ) -> cdf_kernel::BoxFuture<'_, Result<cdf_runtime::PhysicalDecodeStream>> {
             Box::pin(async move {
                 request.cancellation.check()?;
+                self.validate_unit(&request.unit)?;
                 let preferred_chunk_bytes = (8 * 1024_u64).clamp(
-                    source.capabilities().minimum_chunk_bytes,
-                    source.capabilities().maximum_chunk_bytes,
+                    self.source.capabilities().minimum_chunk_bytes,
+                    self.source.capabilities().maximum_chunk_bytes,
                 );
-                let input = source
+                let input = self
+                    .source
                     .open_sequential(cdf_runtime::SequentialReadRequest {
                         preferred_chunk_bytes,
                         cancellation: request.cancellation.clone(),
@@ -3620,7 +3632,7 @@ mod tests {
                     return Err(CdfError::data("external mock payload mismatch"));
                 }
                 let record_batch = RecordBatch::try_new(
-                    Self::schema(),
+                    ExternalMockFormat::schema(),
                     vec![Arc::new(Int64Array::from(vec![42]))],
                 )
                 .map_err(|error| CdfError::data(format!("external mock batch: {error}")))?;

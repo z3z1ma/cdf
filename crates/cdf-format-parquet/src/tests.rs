@@ -1,6 +1,9 @@
 use std::{
     collections::{BTreeMap, HashMap},
-    sync::Arc,
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    },
 };
 
 use arrow_array::{Int64Array, RecordBatch};
@@ -24,6 +27,7 @@ struct MemoryByteSource {
     capabilities: ByteSourceCapabilities,
     bytes: Bytes,
     memory: Arc<dyn MemoryCoordinator>,
+    suffix_reads: AtomicU64,
 }
 
 impl MemoryByteSource {
@@ -47,6 +51,7 @@ impl MemoryByteSource {
             },
             bytes: Bytes::from(bytes),
             memory,
+            suffix_reads: AtomicU64::new(0),
         })
     }
 
@@ -101,6 +106,9 @@ impl ByteSource for MemoryByteSource {
             if end > self.bytes.len() {
                 return Err(CdfError::data("test range exceeds fixture"));
             }
+            if end == self.bytes.len() {
+                self.suffix_reads.fetch_add(1, Ordering::Relaxed);
+            }
             self.accounted(self.bytes.slice(start..end))
         })
     }
@@ -133,6 +141,72 @@ fn empty_fixture() -> (Arc<Schema>, Vec<u8>) {
     let writer = ArrowWriter::try_new(&mut bytes, Arc::clone(&schema), None).unwrap();
     writer.close().unwrap();
     (schema, bytes)
+}
+
+fn multi_row_group_fixture() -> (Arc<Schema>, Vec<u8>) {
+    let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, false)]));
+    let mut bytes = Vec::new();
+    let mut writer = ArrowWriter::try_new(&mut bytes, Arc::clone(&schema), None).unwrap();
+    for value in 0..8_i64 {
+        let batch = RecordBatch::try_new(
+            Arc::clone(&schema),
+            vec![Arc::new(Int64Array::from(vec![value]))],
+        )
+        .unwrap();
+        writer.write(&batch).unwrap();
+        writer.flush().unwrap();
+    }
+    writer.close().unwrap();
+    (schema, bytes)
+}
+
+#[test]
+fn prepared_session_loads_footer_once_across_many_row_groups() {
+    let (schema, bytes) = multi_row_group_fixture();
+    let memory: Arc<dyn MemoryCoordinator> =
+        Arc::new(DeterministicMemoryCoordinator::new(64 * 1024 * 1024, BTreeMap::new()).unwrap());
+    let source = MemoryByteSource::new(bytes, Arc::clone(&memory));
+    let driver = ParquetFormatDriver::new().unwrap();
+    let session = futures_executor::block_on(driver.prepare_decode(
+        source.clone(),
+        DecodePlanningRequest {
+            options: serde_json::json!({}),
+            projection: None,
+            predicates: Vec::new(),
+            target_batch_rows: 64 * 1024,
+            target_batch_bytes: 1024 * 1024,
+            cancellation: RunCancellation::default(),
+        },
+    ))
+    .unwrap();
+    assert_eq!(session.units().len(), 8);
+    let suffix_reads = source.suffix_reads.load(Ordering::Relaxed);
+    assert!(suffix_reads > 0);
+
+    for unit in session.units().iter().cloned() {
+        let stream = futures_executor::block_on(session.decode(PhysicalDecodeRequest {
+            unit,
+            resource_id: ResourceId::new("fixture.parquet").unwrap(),
+            partition_id: PartitionId::new("file-000001").unwrap(),
+            batch_id_prefix: "fixture".to_owned(),
+            schema: cdf_runtime::DecodeSchemaPlan::verified_physical(Arc::clone(&schema)),
+            source_position: None,
+            projection: None,
+            predicates: Vec::new(),
+            target_batch_rows: 64 * 1024,
+            target_batch_bytes: 1024 * 1024,
+            memory: Arc::clone(&memory),
+            cancellation: RunCancellation::default(),
+        }))
+        .unwrap();
+        let batches = futures_executor::block_on(stream.try_collect::<Vec<_>>()).unwrap();
+        assert_eq!(batches.len(), 1);
+        drop(batches);
+    }
+
+    assert_eq!(source.suffix_reads.load(Ordering::Relaxed), suffix_reads);
+    drop(session);
+    assert_eq!(memory.snapshot().current_bytes, 0);
 }
 
 #[test]
@@ -169,8 +243,8 @@ fn parquet_driver_discovers_plans_and_decodes_through_neutral_byte_source() {
     assert_eq!(observation.evidence["row_group_count"], "1");
     assert!(observation.evidence["footer_sha256"].starts_with("sha256:"));
 
-    let units = futures_executor::block_on(driver.plan_decode_units(
-        Arc::clone(&source),
+    let session = futures_executor::block_on(driver.prepare_decode(
+        source,
         DecodePlanningRequest {
             options: serde_json::json!({}),
             projection: None,
@@ -181,26 +255,22 @@ fn parquet_driver_discovers_plans_and_decodes_through_neutral_byte_source() {
         },
     ))
     .unwrap();
-    assert_eq!(units.len(), 1);
+    assert_eq!(session.units().len(), 1);
 
-    let stream = futures_executor::block_on(driver.decode(
-        source,
-        PhysicalDecodeRequest {
-            options: serde_json::json!({}),
-            unit: units[0].clone(),
-            resource_id: ResourceId::new("fixture.parquet").unwrap(),
-            partition_id: PartitionId::new("file-000001").unwrap(),
-            batch_id_prefix: "fixture".to_owned(),
-            schema: cdf_runtime::DecodeSchemaPlan::verified_physical(schema),
-            source_position: None,
-            projection: None,
-            predicates: Vec::new(),
-            target_batch_rows: 64 * 1024,
-            target_batch_bytes: 8 * 1024 * 1024,
-            memory: Arc::clone(&memory),
-            cancellation: RunCancellation::default(),
-        },
-    ))
+    let stream = futures_executor::block_on(session.decode(PhysicalDecodeRequest {
+        unit: session.units()[0].clone(),
+        resource_id: ResourceId::new("fixture.parquet").unwrap(),
+        partition_id: PartitionId::new("file-000001").unwrap(),
+        batch_id_prefix: "fixture".to_owned(),
+        schema: cdf_runtime::DecodeSchemaPlan::verified_physical(schema),
+        source_position: None,
+        projection: None,
+        predicates: Vec::new(),
+        target_batch_rows: 64 * 1024,
+        target_batch_bytes: 8 * 1024 * 1024,
+        memory: Arc::clone(&memory),
+        cancellation: RunCancellation::default(),
+    }))
     .unwrap();
     let batches = futures_executor::block_on(stream.try_collect::<Vec<_>>()).unwrap();
     assert_eq!(batches.len(), 1);
@@ -224,8 +294,8 @@ fn empty_parquet_file_emits_one_schema_bearing_batch() {
         Arc::new(DeterministicMemoryCoordinator::new(64 * 1024 * 1024, BTreeMap::new()).unwrap());
     let source: Arc<dyn ByteSource> = MemoryByteSource::new(bytes, Arc::clone(&memory));
     let driver = ParquetFormatDriver::new().unwrap();
-    let units = futures_executor::block_on(driver.plan_decode_units(
-        Arc::clone(&source),
+    let session = futures_executor::block_on(driver.prepare_decode(
+        source,
         DecodePlanningRequest {
             options: serde_json::json!({}),
             projection: None,
@@ -236,27 +306,23 @@ fn empty_parquet_file_emits_one_schema_bearing_batch() {
         },
     ))
     .unwrap();
-    assert_eq!(units.len(), 1);
-    assert_eq!(units[0].unit_id, "parquet-schema-only");
+    assert_eq!(session.units().len(), 1);
+    assert_eq!(session.units()[0].unit_id, "parquet-schema-only");
 
-    let stream = futures_executor::block_on(driver.decode(
-        source,
-        PhysicalDecodeRequest {
-            options: serde_json::json!({}),
-            unit: units[0].clone(),
-            resource_id: ResourceId::new("fixture.parquet").unwrap(),
-            partition_id: PartitionId::new("file-000001").unwrap(),
-            batch_id_prefix: "fixture".to_owned(),
-            schema: cdf_runtime::DecodeSchemaPlan::fixed_admission(Arc::clone(&schema)),
-            source_position: None,
-            projection: None,
-            predicates: Vec::new(),
-            target_batch_rows: 64 * 1024,
-            target_batch_bytes: 8 * 1024 * 1024,
-            memory: Arc::clone(&memory),
-            cancellation: RunCancellation::default(),
-        },
-    ))
+    let stream = futures_executor::block_on(session.decode(PhysicalDecodeRequest {
+        unit: session.units()[0].clone(),
+        resource_id: ResourceId::new("fixture.parquet").unwrap(),
+        partition_id: PartitionId::new("file-000001").unwrap(),
+        batch_id_prefix: "fixture".to_owned(),
+        schema: cdf_runtime::DecodeSchemaPlan::fixed_admission(Arc::clone(&schema)),
+        source_position: None,
+        projection: None,
+        predicates: Vec::new(),
+        target_batch_rows: 64 * 1024,
+        target_batch_bytes: 8 * 1024 * 1024,
+        memory: Arc::clone(&memory),
+        cancellation: RunCancellation::default(),
+    }))
     .unwrap();
     let batches = futures_executor::block_on(stream.try_collect::<Vec<_>>()).unwrap();
     assert_eq!(batches.len(), 1);

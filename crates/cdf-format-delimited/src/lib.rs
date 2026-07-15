@@ -8,10 +8,10 @@ use cdf_kernel::{Batch, BatchId, BoxFuture, CdfError, PushdownFidelity, Result};
 use cdf_memory::{ConsumerKey, MemoryClass, MemoryLease, ReservationRequest, reserve};
 use cdf_runtime::{
     AccountedByteStream, AccountedChunksReader, AccountedPhysicalBatch, ByteExtent, ByteSource,
-    DecodePlanningRequest, DecodeUnitPlan, FormatDetection, FormatDetectionConfidence,
-    FormatDetectionProbe, FormatDiscoveryRequest, FormatDriver, FormatDriverDescriptor, FormatId,
-    FormatProbe, PhysicalDecodeRequest, PhysicalDecodeStream, PhysicalSchemaObservation,
-    SequentialReadRequest,
+    DecodePlanningRequest, DecodeUnitPlan, FormatDecodeSession, FormatDetection,
+    FormatDetectionConfidence, FormatDetectionProbe, FormatDiscoveryRequest, FormatDriver,
+    FormatDriverDescriptor, FormatId, FormatProbe, PhysicalDecodeRequest, PhysicalDecodeStream,
+    PhysicalSchemaObservation, SequentialReadRequest,
 };
 use futures_util::{TryStreamExt, stream};
 
@@ -130,11 +130,11 @@ impl FormatDriver for CsvFormatDriver {
         })
     }
 
-    fn plan_decode_units(
+    fn prepare_decode(
         &self,
         source: Arc<dyn ByteSource>,
         request: DecodePlanningRequest,
-    ) -> BoxFuture<'_, Result<Vec<DecodeUnitPlan>>> {
+    ) -> BoxFuture<'_, Result<Arc<dyn FormatDecodeSession>>> {
         Box::pin(async move {
             self.canonical_options(request.options)?;
             request.cancellation.check()?;
@@ -148,7 +148,7 @@ impl FormatDriver for CsvFormatDriver {
                     "CSV projection and predicate pushdown are unsupported",
                 ));
             }
-            Ok(vec![DecodeUnitPlan {
+            let units = vec![DecodeUnitPlan {
                 unit_id: "csv-stream".to_owned(),
                 ordinal: 0,
                 extent: source
@@ -160,25 +160,36 @@ impl FormatDriver for CsvFormatDriver {
                     .target_batch_bytes
                     .clamp(1024 * 1024, 64 * 1024 * 1024),
                 independently_retryable: true,
-            }])
+            }];
+            Ok(Arc::new(CsvDecodeSession { source, units }) as Arc<dyn FormatDecodeSession>)
         })
+    }
+}
+
+struct CsvDecodeSession {
+    source: Arc<dyn ByteSource>,
+    units: Vec<DecodeUnitPlan>,
+}
+
+impl FormatDecodeSession for CsvDecodeSession {
+    fn units(&self) -> &[DecodeUnitPlan] {
+        &self.units
     }
 
     fn decode(
         &self,
-        source: Arc<dyn ByteSource>,
         request: PhysicalDecodeRequest,
     ) -> BoxFuture<'_, Result<PhysicalDecodeStream>> {
         Box::pin(async move {
-            self.canonical_options(request.options.clone())?;
             request.cancellation.check()?;
-            request.unit.validate()?;
+            self.validate_unit(&request.unit)?;
             if request.projection.is_some() || !request.predicates.is_empty() {
                 return Err(CdfError::contract(
                     "CSV projection and predicate pushdown are unsupported",
                 ));
             }
-            let input = source
+            let input = self
+                .source
                 .open_sequential(SequentialReadRequest {
                     preferred_chunk_bytes: request
                         .target_batch_bytes
@@ -333,7 +344,6 @@ mod tests {
         );
         let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, true)]));
         let request = PhysicalDecodeRequest {
-            options: serde_json::json!({}),
             unit: DecodeUnitPlan {
                 unit_id: "empty-csv".to_owned(),
                 ordinal: 0,

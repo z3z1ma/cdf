@@ -679,7 +679,6 @@ pub struct DecodePlanningRequest {
 
 #[derive(Clone)]
 pub struct PhysicalDecodeRequest {
-    pub options: serde_json::Value,
     pub unit: DecodeUnitPlan,
     pub resource_id: ResourceId,
     pub partition_id: PartitionId,
@@ -692,6 +691,23 @@ pub struct PhysicalDecodeRequest {
     pub target_batch_bytes: u64,
     pub memory: Arc<dyn MemoryCoordinator>,
     pub cancellation: RunCancellation,
+}
+
+pub trait FormatDecodeSession: Send + Sync {
+    fn units(&self) -> &[DecodeUnitPlan];
+    fn validate_unit(&self, unit: &DecodeUnitPlan) -> Result<()> {
+        unit.validate()?;
+        if self.units().iter().any(|planned| planned == unit) {
+            Ok(())
+        } else {
+            Err(CdfError::contract(format!(
+                "decode unit {:?} is not part of its prepared format session",
+                unit.unit_id
+            )))
+        }
+    }
+    fn decode(&self, request: PhysicalDecodeRequest)
+    -> BoxFuture<'_, Result<PhysicalDecodeStream>>;
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -785,16 +801,11 @@ pub trait FormatDriver: Send + Sync {
         source: Arc<dyn ByteSource>,
         request: FormatDiscoveryRequest,
     ) -> BoxFuture<'_, Result<PhysicalSchemaObservation>>;
-    fn plan_decode_units(
+    fn prepare_decode(
         &self,
         source: Arc<dyn ByteSource>,
         request: DecodePlanningRequest,
-    ) -> BoxFuture<'_, Result<Vec<DecodeUnitPlan>>>;
-    fn decode(
-        &self,
-        source: Arc<dyn ByteSource>,
-        request: PhysicalDecodeRequest,
-    ) -> BoxFuture<'_, Result<PhysicalDecodeStream>>;
+    ) -> BoxFuture<'_, Result<Arc<dyn FormatDecodeSession>>>;
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -1325,19 +1336,11 @@ mod tests {
             Box::pin(async { Err(CdfError::internal("unused test method")) })
         }
 
-        fn plan_decode_units(
+        fn prepare_decode(
             &self,
             _source: Arc<dyn ByteSource>,
             _request: DecodePlanningRequest,
-        ) -> BoxFuture<'_, Result<Vec<DecodeUnitPlan>>> {
-            Box::pin(async { Err(CdfError::internal("unused test method")) })
-        }
-
-        fn decode(
-            &self,
-            _source: Arc<dyn ByteSource>,
-            _request: PhysicalDecodeRequest,
-        ) -> BoxFuture<'_, Result<PhysicalDecodeStream>> {
+        ) -> BoxFuture<'_, Result<Arc<dyn FormatDecodeSession>>> {
             Box::pin(async { Err(CdfError::internal("unused test method")) })
         }
     }
