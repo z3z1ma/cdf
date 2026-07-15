@@ -18,13 +18,14 @@ use cdf_kernel::{
 use cdf_memory::{ConsumerKey, MemoryClass};
 use cdf_runtime::{
     AccountedByteStream, ByteExtent, ByteSource, ByteSourceCapabilities, ByteTransformId,
-    ByteTransformRegistry, CanonicalStreamOpener, CompiledFormatBinding, ContentIdentity,
-    DecodePlanningRequest, ExecutionServices, FormatDetection, FormatDetectionConfidence,
-    FormatDiscoveryRequest, FormatDriver, FormatProbe, FormatRegistry, GenerationStrength,
-    ObservedByteSource, PhysicalDecodeRequest, PreparedSourcePayload, PreparedSourcePayloadKey,
-    PreparedSourcePayloads, ReadOptions, SequentialReadRequest, SourceContentDigest,
-    SourceDriverId, SourceIoObserver, TransformSourceConfig, TransformedByteSource,
-    canonical_stream_frontier, resolve_decode_unit_concurrency,
+    ByteTransformRegistry, CanonicalStreamCompletion, CanonicalStreamOpener, CompiledFormatBinding,
+    ContentIdentity, DecodePlanningRequest, ExecutionServices, FormatDetection,
+    FormatDetectionConfidence, FormatDiscoveryRequest, FormatDriver, FormatProbe, FormatRegistry,
+    GenerationStrength, ObservedByteSource, PhysicalDecodeRequest, PreparedSourcePayload,
+    PreparedSourcePayloadKey, PreparedSourcePayloads, ReadOptions, SequentialReadRequest,
+    SourceContentDigest, SourceDriverId, SourceIoObserver, TransformSourceConfig,
+    TransformedByteSource, canonical_stream_frontier_with_completion,
+    decode_unit_no_lookback_frontiers, resolve_decode_unit_concurrency,
 };
 #[cfg(test)]
 use futures_util::StreamExt;
@@ -1086,6 +1087,10 @@ impl ByteSource for HashingByteSource {
         cancellation: cdf_runtime::RunCancellation,
     ) -> BoxFuture<'_, Result<cdf_memory::AccountedBytes>> {
         self.inner.read_exact_range(extent, cancellation)
+    }
+
+    fn release_before(&self, frontier: u64) -> Result<()> {
+        self.inner.release_before(frontier)
     }
 }
 
@@ -2289,6 +2294,7 @@ fn stream_registered_format(
                     "prepared format session must contain at least one decode unit",
                 ));
             }
+            let no_lookback_frontiers = decode_unit_no_lookback_frontiers(&units)?;
             let memory_snapshot = memory.snapshot();
             let available_memory = memory_snapshot
                 .budget_bytes
@@ -2310,7 +2316,7 @@ fn stream_registered_format(
                 }
             };
             if unit_jobs == 1 {
-                for unit in units {
+                for (ordinal, unit) in units.into_iter().enumerate() {
                     let mut decoded = session
                         .decode(PhysicalDecodeRequest {
                             unit,
@@ -2329,6 +2335,9 @@ fn stream_registered_format(
                         .await?;
                     while let Some(batch) = decoded.try_next().await? {
                         sender.send(batch.into_batch()?).await?;
+                    }
+                    if let Some(frontiers) = &no_lookback_frontiers {
+                        source.release_before(frontiers[ordinal])?;
                     }
                 }
                 return Ok(());
@@ -2381,7 +2390,23 @@ fn stream_registered_format(
                 )?;
                 Ok(Box::pin(unit_stream))
             });
-            let mut decoded = canonical_stream_frontier(unit_count, unit_jobs, opener)?;
+            let release_source = Arc::clone(&source);
+            let release_frontiers = no_lookback_frontiers;
+            let completion: CanonicalStreamCompletion = Box::new(move |ordinal| {
+                if let Some(frontiers) = &release_frontiers {
+                    let frontier = frontiers.get(ordinal).copied().ok_or_else(|| {
+                        CdfError::internal("decode-unit release frontier ordinal is outside its session")
+                    })?;
+                    release_source.release_before(frontier)?;
+                }
+                Ok(())
+            });
+            let mut decoded = canonical_stream_frontier_with_completion(
+                unit_count,
+                unit_jobs,
+                opener,
+                completion,
+            )?;
             while let Some(batch) = decoded.try_next().await? {
                 cancellation.check()?;
                 sender.send(batch).await?;

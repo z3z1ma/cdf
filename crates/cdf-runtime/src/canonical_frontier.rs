@@ -10,6 +10,7 @@ use futures_util::{FutureExt, Stream, StreamExt, stream::FuturesUnordered};
 pub type CanonicalBoxStream<T> = Pin<Box<dyn Stream<Item = Result<T>> + Send + 'static>>;
 pub type CanonicalStreamOpener<T> =
     Box<dyn FnMut(usize) -> Result<CanonicalBoxStream<T>> + Send + 'static>;
+pub type CanonicalStreamCompletion = Box<dyn FnMut(usize) -> Result<()> + Send + 'static>;
 
 type PendingPoll<T> = BoxFuture<'static, (usize, CanonicalBoxStream<T>, Result<Option<T>>)>;
 
@@ -28,6 +29,7 @@ pub struct CanonicalStreamFrontier<T> {
     stream_count: usize,
     maximum_active: usize,
     opener: CanonicalStreamOpener<T>,
+    completion: CanonicalStreamCompletion,
     next_to_open: usize,
     canonical_ordinal: usize,
     pending: FuturesUnordered<PendingPoll<T>>,
@@ -43,6 +45,22 @@ pub fn canonical_stream_frontier<T: Send + 'static>(
     maximum_active: usize,
     opener: CanonicalStreamOpener<T>,
 ) -> Result<CanonicalBoxStream<T>> {
+    canonical_stream_frontier_with_completion(
+        stream_count,
+        maximum_active,
+        opener,
+        Box::new(|_| Ok(())),
+    )
+}
+
+/// Creates a canonical frontier that reports each unit only after its stream
+/// reaches EOF in canonical order.
+pub fn canonical_stream_frontier_with_completion<T: Send + 'static>(
+    stream_count: usize,
+    maximum_active: usize,
+    opener: CanonicalStreamOpener<T>,
+    completion: CanonicalStreamCompletion,
+) -> Result<CanonicalBoxStream<T>> {
     if maximum_active == 0 {
         return Err(CdfError::contract(
             "canonical stream frontier requires nonzero active capacity",
@@ -52,6 +70,7 @@ pub fn canonical_stream_frontier<T: Send + 'static>(
         stream_count,
         maximum_active,
         opener,
+        completion,
         next_to_open: 0,
         canonical_ordinal: 0,
         pending: FuturesUnordered::new(),
@@ -139,6 +158,9 @@ impl<T: Send + 'static> Stream for CanonicalStreamFrontier<T> {
                         }
                     }
                     Ok(None) => {
+                        if let Err(error) = (frontier.completion)(frontier.canonical_ordinal) {
+                            return frontier.fail(error);
+                        }
                         frontier.canonical_ordinal += 1;
                         frontier.fill_active();
                         continue;
@@ -184,7 +206,7 @@ impl<T: Send + 'static> Stream for CanonicalStreamFrontier<T> {
 mod tests {
     use std::{
         sync::{
-            Arc,
+            Arc, Mutex,
             atomic::{AtomicUsize, Ordering},
         },
         task::{Context, Poll, Waker},
@@ -292,5 +314,25 @@ mod tests {
         assert_eq!(error.kind, cdf_kernel::ErrorKind::Data);
         assert_eq!(opened.load(Ordering::SeqCst), 2);
         assert!(futures_executor::block_on(frontier.next()).is_none());
+    }
+
+    #[test]
+    fn completion_frontiers_publish_once_in_canonical_order() {
+        let completed = Arc::new(Mutex::new(Vec::new()));
+        let completion_log = Arc::clone(&completed);
+        let opener: CanonicalStreamOpener<u64> = Box::new(move |ordinal| {
+            Ok(Box::pin(stream::iter([
+                Ok(u64::try_from(ordinal).unwrap()),
+            ])))
+        });
+        let completion: CanonicalStreamCompletion = Box::new(move |ordinal| {
+            completion_log.lock().unwrap().push(ordinal);
+            Ok(())
+        });
+        let frontier = canonical_stream_frontier_with_completion(4, 3, opener, completion).unwrap();
+        let values = futures_executor::block_on(frontier.try_collect::<Vec<_>>()).unwrap();
+
+        assert_eq!(values, vec![0, 1, 2, 3]);
+        assert_eq!(*completed.lock().unwrap(), vec![0, 1, 2, 3]);
     }
 }

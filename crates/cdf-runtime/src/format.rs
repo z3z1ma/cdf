@@ -662,6 +662,14 @@ pub trait ByteSource: Send + Sync {
         cancellation: RunCancellation,
     ) -> BoxFuture<'_, Result<AccountedBytes>>;
 
+    /// Publishes a codec-proven monotone frontier below which this prepared
+    /// session will never request bytes again. Sources without bounded retained
+    /// residency may ignore it. Implementations MUST reject a decreasing or
+    /// out-of-generation frontier rather than reclaiming unsafely.
+    fn release_before(&self, _frontier: u64) -> Result<()> {
+        Ok(())
+    }
+
     /// Reads a codec-declared batch of exact logical ranges. Choosing this batch
     /// API is the codec's capability assertion that bounded extra physical bytes
     /// are harmless; those bytes never escape the source/controller boundary.

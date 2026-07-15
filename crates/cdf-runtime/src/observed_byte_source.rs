@@ -171,6 +171,10 @@ impl ByteSource for ObservedByteSource {
         self.inner.exact_range_coalescing_policy()
     }
 
+    fn release_before(&self, frontier: u64) -> Result<()> {
+        self.inner.release_before(frontier)
+    }
+
     fn open_sequential(
         &self,
         request: SequentialReadRequest,
