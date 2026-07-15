@@ -181,6 +181,7 @@ impl StagingCleanupCandidate {
                 "staging cleanup namespace must contain 1..=4096 non-control characters",
             ));
         }
+        lease.validate()?;
         Ok(Self { namespace, lease })
     }
 

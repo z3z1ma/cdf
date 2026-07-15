@@ -1782,7 +1782,23 @@ fn staging_lease_supervisor_renews_independently_and_releases_structurally() {
         )
         .unwrap();
     let initial_expiry = lease.snapshot().unwrap().scope_lease.expires_at_ms;
-    std::thread::sleep(std::time::Duration::from_millis(45));
+    let churn_deadline = std::time::Instant::now() + std::time::Duration::from_millis(45);
+    let mut churn = 0_u64;
+    while std::time::Instant::now() < churn_deadline {
+        let transient = supervisor
+            .acquire(
+                StagingLeaseIdentity::new(
+                    DestinationId::new("mock_staged").unwrap(),
+                    TargetName::new("events").unwrap(),
+                    LoadAttemptId::new(format!("transient-{churn}")).unwrap(),
+                ),
+                cdf_kernel::LeaseOwnerId::new(format!("transient-owner-{churn}")).unwrap(),
+            )
+            .unwrap();
+        transient.finish().unwrap();
+        churn += 1;
+        std::thread::sleep(std::time::Duration::from_millis(2));
+    }
     assert!(authority.renewals.load(Ordering::SeqCst) >= 2);
     assert!(lease.snapshot().unwrap().scope_lease.expires_at_ms > initial_expiry);
     lease.finish().unwrap();

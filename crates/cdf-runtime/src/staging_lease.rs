@@ -62,10 +62,15 @@ impl StagingLease {
         self.scope_lease.fencing_token.get()
     }
 
-    fn validate(&self) -> Result<()> {
+    pub(crate) fn validate(&self) -> Result<()> {
         if self.scope_lease.scope != self.identity.scope() {
             return Err(CdfError::contract(
                 "staging lease identity does not match its fenced scope",
+            ));
+        }
+        if self.scope_lease.expires_at_ms <= self.scope_lease.acquired_at_ms {
+            return Err(CdfError::contract(
+                "staging lease expiry must follow acquisition",
             ));
         }
         Ok(())
@@ -309,7 +314,13 @@ impl StagingLeaseSupervisor {
         owner: LeaseOwnerId,
     ) -> Result<ManagedStagingLease> {
         let duration_ms = duration_ms(self.timing.lease_duration)?;
-        let lease = self.authority.acquire(identity, owner, duration_ms)?;
+        let lease = self
+            .authority
+            .acquire(identity.clone(), owner.clone(), duration_ms)?;
+        if let Err(error) = validate_acquired_lease(&lease, &identity, &owner) {
+            let _ = self.authority.release(&lease);
+            return Err(error);
+        }
         match self.register(lease.clone()) {
             Ok(managed) => Ok(managed),
             Err(error) => {
@@ -320,6 +331,7 @@ impl StagingLeaseSupervisor {
     }
 
     fn register(self: &Arc<Self>, lease: StagingLease) -> Result<ManagedStagingLease> {
+        lease.validate()?;
         let mut state = self
             .shared
             .state
@@ -337,7 +349,6 @@ impl StagingLeaseSupervisor {
                 failure: None,
             },
         );
-        self.shared.wake.notify_all();
         Ok(ManagedStagingLease {
             supervisor: Arc::clone(self),
             registration: Some(registration),
@@ -352,11 +363,14 @@ impl StagingLeaseSupervisor {
         let duration_ms = duration_ms(self.timing.lease_duration)?;
         let Some(proof) = self
             .authority
-            .prove_expired(lease, collector, duration_ms)?
+            .prove_expired(lease, collector.clone(), duration_ms)?
         else {
             return Ok(None);
         };
-        proof.validate()?;
+        if let Err(error) = validate_cleanup_proof(&proof, lease, &collector) {
+            let _ = self.authority.release(&proof.cleanup_lease);
+            return Err(error);
+        }
         let cleanup_lease = proof.cleanup_lease.clone();
         match self.register(cleanup_lease.clone()) {
             Ok(managed) => Ok(Some(ManagedExpiredStagingLeaseProof {
@@ -399,7 +413,6 @@ impl StagingLeaseSupervisor {
             .leases
             .remove(&registration)
             .ok_or_else(|| CdfError::internal("staging lease registration is absent"))?;
-        self.shared.wake.notify_all();
         let release = self.authority.release(&entry.lease);
         match (entry.failure, release) {
             (Some(error), _) => Err(error),
@@ -484,7 +497,9 @@ fn lease_supervisor_loop(
         if state.shutdown {
             return;
         }
-        let wait = shared.wake.wait_timeout(state, timing.renew_interval);
+        let wait = shared
+            .wake
+            .wait_timeout_while(state, timing.renew_interval, |state| !state.shutdown);
         let Ok((state, timeout)) = wait else {
             return;
         };
@@ -507,7 +522,9 @@ fn lease_supervisor_loop(
             Err(_) => return,
         };
         for (registration, lease) in leases {
-            let renewed = authority.renew(&lease, duration_ms);
+            let renewed = authority
+                .renew(&lease, duration_ms)
+                .and_then(|renewed| validate_renewed_lease(renewed, &lease));
             let Ok(mut state) = shared.state.lock() else {
                 return;
             };
@@ -528,4 +545,50 @@ fn lease_supervisor_loop(
 fn duration_ms(duration: Duration) -> Result<u64> {
     u64::try_from(duration.as_millis())
         .map_err(|_| CdfError::contract("staging lease duration exceeds u64 milliseconds"))
+}
+
+fn validate_acquired_lease(
+    lease: &StagingLease,
+    identity: &StagingLeaseIdentity,
+    owner: &LeaseOwnerId,
+) -> Result<()> {
+    lease.validate()?;
+    if &lease.identity != identity || &lease.scope_lease.owner != owner {
+        return Err(CdfError::contract(
+            "staging lease authority returned an acquisition outside the requested identity or owner",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_renewed_lease(renewed: StagingLease, previous: &StagingLease) -> Result<StagingLease> {
+    renewed.validate()?;
+    if renewed.identity != previous.identity
+        || renewed.scope_lease.owner != previous.scope_lease.owner
+        || renewed.scope_lease.fencing_token != previous.scope_lease.fencing_token
+        || renewed.scope_lease.acquired_at_ms != previous.scope_lease.acquired_at_ms
+        || renewed.scope_lease.expires_at_ms <= previous.scope_lease.expires_at_ms
+    {
+        return Err(CdfError::contract(
+            "staging lease authority returned a renewal that changed identity or did not extend expiry",
+        ));
+    }
+    Ok(renewed)
+}
+
+fn validate_cleanup_proof(
+    proof: &ExpiredStagingLeaseProof,
+    expired: &StagingLease,
+    collector: &LeaseOwnerId,
+) -> Result<()> {
+    proof.validate()?;
+    if !proof.proves(expired)
+        || &proof.cleanup_lease.scope_lease.owner != collector
+        || proof.cleanup_lease.scope_lease.acquired_at_ms != proof.proven_at_ms
+    {
+        return Err(CdfError::contract(
+            "staging lease authority returned a cleanup proof outside the requested generation or collector",
+        ));
+    }
+    Ok(())
 }
