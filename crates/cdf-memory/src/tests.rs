@@ -5,7 +5,7 @@ use std::{
         Arc,
         atomic::{AtomicBool, AtomicUsize, Ordering},
     },
-    task::{Context, Poll, Waker},
+    task::{Context, Poll, Wake, Waker},
 };
 
 use arrow_array::{ArrayRef, Int64Array, RecordBatch};
@@ -129,6 +129,37 @@ fn weighted_subcap_and_async_release_enforce_admission() {
             .values()
             .any(|usage| usage.waits > 0)
     );
+}
+
+struct SnapshotOnWake {
+    coordinator: Arc<dyn MemoryCoordinator>,
+    observed: Arc<AtomicBool>,
+}
+
+impl Wake for SnapshotOnWake {
+    fn wake(self: Arc<Self>) {
+        let _ = self.coordinator.snapshot();
+        self.observed.store(true, Ordering::SeqCst);
+    }
+}
+
+#[test]
+fn lease_release_invokes_reentrant_waker_outside_coordinator_lock() {
+    let coordinator = Arc::new(DeterministicMemoryCoordinator::new(128, BTreeMap::new()).unwrap());
+    let request = ReservationRequest::new(consumer("holder", MemoryClass::Decode), 128).unwrap();
+    let lease = coordinator.try_reserve(&request).unwrap().unwrap();
+    let observed = Arc::new(AtomicBool::new(false));
+    let coordinator_trait: Arc<dyn MemoryCoordinator> = coordinator.clone();
+    let waker = Waker::from(Arc::new(SnapshotOnWake {
+        coordinator: coordinator_trait.clone(),
+        observed: Arc::clone(&observed),
+    }));
+    coordinator_trait.register_waiter(&waker);
+
+    drop(lease);
+
+    assert!(observed.load(Ordering::SeqCst));
+    assert_eq!(coordinator.snapshot().current_bytes, 0);
 }
 
 fn futures_poll<F: Future>(future: Pin<&mut F>) -> Poll<F::Output> {

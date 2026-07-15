@@ -144,14 +144,19 @@ impl DataFusionMemoryCoordinator {
 
     fn record_external_release(&self, reservation: &MemoryReservation, bytes: usize) {
         if let Ok(bytes) = u64::try_from(bytes) {
-            let mut state = self.inner.state.lock().unwrap();
-            state.snapshot.current_bytes = state.snapshot.current_bytes.saturating_sub(bytes);
-            if let Some(key) = datafusion_consumer_key(reservation)
-                && let Some(usage) = state.snapshot.consumers.get_mut(&key)
-            {
-                usage.current_bytes = usage.current_bytes.saturating_sub(bytes);
+            let waiters = {
+                let mut state = self.inner.state.lock().unwrap();
+                state.snapshot.current_bytes = state.snapshot.current_bytes.saturating_sub(bytes);
+                if let Some(key) = datafusion_consumer_key(reservation)
+                    && let Some(usage) = state.snapshot.consumers.get_mut(&key)
+                {
+                    usage.current_bytes = usage.current_bytes.saturating_sub(bytes);
+                }
+                state.waiters.take_all()
+            };
+            for waiter in waiters {
+                waiter.wake();
             }
-            state.waiters.wake_all();
         }
     }
 }
@@ -245,33 +250,40 @@ impl LeaseAccount for DataFusionLeaseAccount {
         let coordinator = self.coordinator.upgrade().ok_or_else(|| {
             CdfError::internal("DataFusion memory coordinator was dropped before its lease")
         })?;
-        let mut state = coordinator.state.lock().unwrap();
-        if new_bytes > current_bytes {
-            let additional = new_bytes - current_bytes;
-            if subcap_available(&state, &self.request) < additional {
-                return Err(CdfError::data(format!(
-                    "memory lease growth by {additional} bytes exceeds its borrowing sub-cap"
-                )));
+        let waiters = {
+            let mut state = coordinator.state.lock().unwrap();
+            if new_bytes > current_bytes {
+                let additional = new_bytes - current_bytes;
+                if subcap_available(&state, &self.request) < additional {
+                    return Err(CdfError::data(format!(
+                        "memory lease growth by {additional} bytes exceeds its borrowing sub-cap"
+                    )));
+                }
+                self.reservation
+                    .try_grow(usize::try_from(additional).map_err(|_| {
+                        CdfError::data("memory lease growth exceeds platform usize")
+                    })?)
+                    .map_err(|error| {
+                        CdfError::data(format!(
+                            "memory lease growth by {additional} bytes exceeds shared DataFusion capacity: {error}"
+                        ))
+                    })?;
+                apply_growth(&mut state.snapshot, &self.request, additional);
+                Vec::new()
+            } else if current_bytes > new_bytes {
+                let released = current_bytes - new_bytes;
+                self.reservation
+                    .shrink(usize::try_from(released).map_err(|_| {
+                        CdfError::internal("memory lease release exceeds platform usize")
+                    })?);
+                apply_release(&mut state.snapshot, &self.request, released);
+                state.waiters.take_all()
+            } else {
+                Vec::new()
             }
-            self.reservation
-                .try_grow(usize::try_from(additional).map_err(|_| {
-                    CdfError::data("memory lease growth exceeds platform usize")
-                })?)
-                .map_err(|error| {
-                    CdfError::data(format!(
-                        "memory lease growth by {additional} bytes exceeds shared DataFusion capacity: {error}"
-                    ))
-                })?;
-            apply_growth(&mut state.snapshot, &self.request, additional);
-        } else if current_bytes > new_bytes {
-            let released = current_bytes - new_bytes;
-            self.reservation.shrink(
-                usize::try_from(released).map_err(|_| {
-                    CdfError::internal("memory lease release exceeds platform usize")
-                })?,
-            );
-            apply_release(&mut state.snapshot, &self.request, released);
-            state.waiters.wake_all();
+        };
+        for waiter in waiters {
+            waiter.wake();
         }
         Ok(())
     }
@@ -279,9 +291,14 @@ impl LeaseAccount for DataFusionLeaseAccount {
     fn release(&self, bytes: u64) {
         self.reservation.free();
         if let Some(coordinator) = self.coordinator.upgrade() {
-            let mut state = coordinator.state.lock().unwrap();
-            apply_release(&mut state.snapshot, &self.request, bytes);
-            state.waiters.wake_all();
+            let waiters = {
+                let mut state = coordinator.state.lock().unwrap();
+                apply_release(&mut state.snapshot, &self.request, bytes);
+                state.waiters.take_all()
+            };
+            for waiter in waiters {
+                waiter.wake();
+            }
         }
     }
 }

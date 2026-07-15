@@ -508,10 +508,14 @@ impl MemoryWaiterSet {
         }
     }
 
-    pub fn wake_all(&mut self) {
-        for waiter in std::mem::take(&mut self.waiters) {
-            waiter.waker.wake();
-        }
+    /// Removes every registered task and returns its waker for invocation after
+    /// the coordinator state lock has been released. A waker is arbitrary user
+    /// code and may immediately attempt another reservation.
+    pub fn take_all(&mut self) -> Vec<Waker> {
+        std::mem::take(&mut self.waiters)
+            .into_iter()
+            .map(|waiter| waiter.waker)
+            .collect()
     }
 }
 
@@ -762,58 +766,71 @@ impl LeaseAccount for DeterministicLeaseAccount {
                 "memory coordinator was dropped before its lease",
             ));
         };
-        let mut state = coordinator.state.lock().unwrap();
-        if let Some(tag) = &self.request.subcap
-            && !state.subcap_limits.contains_key(tag)
-        {
-            return Err(CdfError::contract(format!(
-                "memory sub-cap `{}` is not declared by the coordinator",
-                tag.as_str()
-            )));
-        }
-        if new_bytes > current_bytes {
-            let additional = new_bytes - current_bytes;
-            let available = state
-                .snapshot
-                .budget_bytes
-                .saturating_sub(state.snapshot.current_bytes);
-            let subcap_available = self.request.subcap.as_ref().map(|tag| {
-                state
-                    .subcap_limits
-                    .get(tag)
-                    .copied()
-                    .unwrap_or(0)
-                    .saturating_sub(
-                        state
-                            .snapshot
-                            .subcaps
-                            .get(tag)
-                            .map(|usage| usage.current_bytes)
-                            .unwrap_or(0),
-                    )
-            });
-            if available < additional || subcap_available.is_some_and(|v| v < additional) {
-                return Err(CdfError::data(format!(
-                    "memory lease growth by {additional} bytes exceeds available managed capacity"
+        let waiters = {
+            let mut state = coordinator.state.lock().unwrap();
+            if let Some(tag) = &self.request.subcap
+                && !state.subcap_limits.contains_key(tag)
+            {
+                return Err(CdfError::contract(format!(
+                    "memory sub-cap `{}` is not declared by the coordinator",
+                    tag.as_str()
                 )));
             }
-            apply_growth(&mut state.snapshot, &self.request, additional);
-        } else if current_bytes > new_bytes {
-            apply_release(
-                &mut state.snapshot,
-                &self.request,
-                current_bytes - new_bytes,
-            );
-            state.waiters.wake_all();
+            if new_bytes > current_bytes {
+                let additional = new_bytes - current_bytes;
+                let available = state
+                    .snapshot
+                    .budget_bytes
+                    .saturating_sub(state.snapshot.current_bytes);
+                let subcap_available = self.request.subcap.as_ref().map(|tag| {
+                    state
+                        .subcap_limits
+                        .get(tag)
+                        .copied()
+                        .unwrap_or(0)
+                        .saturating_sub(
+                            state
+                                .snapshot
+                                .subcaps
+                                .get(tag)
+                                .map(|usage| usage.current_bytes)
+                                .unwrap_or(0),
+                        )
+                });
+                if available < additional || subcap_available.is_some_and(|v| v < additional) {
+                    return Err(CdfError::data(format!(
+                        "memory lease growth by {additional} bytes exceeds available managed capacity"
+                    )));
+                }
+                apply_growth(&mut state.snapshot, &self.request, additional);
+                Vec::new()
+            } else if current_bytes > new_bytes {
+                apply_release(
+                    &mut state.snapshot,
+                    &self.request,
+                    current_bytes - new_bytes,
+                );
+                state.waiters.take_all()
+            } else {
+                Vec::new()
+            }
+        };
+        for waiter in waiters {
+            waiter.wake();
         }
         Ok(())
     }
 
     fn release(&self, bytes: u64) {
         if let Some(coordinator) = self.coordinator.upgrade() {
-            let mut state = coordinator.state.lock().unwrap();
-            apply_release(&mut state.snapshot, &self.request, bytes);
-            state.waiters.wake_all();
+            let waiters = {
+                let mut state = coordinator.state.lock().unwrap();
+                apply_release(&mut state.snapshot, &self.request, bytes);
+                state.waiters.take_all()
+            };
+            for waiter in waiters {
+                waiter.wake();
+            }
         }
     }
 }
