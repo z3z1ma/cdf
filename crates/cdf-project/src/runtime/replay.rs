@@ -222,6 +222,7 @@ impl Drop for InFlightBytePermit {
 struct CompletedBackgroundStaging {
     session: Option<Box<dyn cdf_runtime::StagedIngressSession>>,
     staged: Vec<cdf_runtime::StagedSegmentIdentity>,
+    error: Option<CdfError>,
     ingress_duration: Duration,
     ingress_input_bytes: u64,
     ingress_operations: u64,
@@ -300,7 +301,7 @@ impl ActiveStagedIngress {
             ingress_operations: 0,
         };
         if let Some(lane) = capabilities.staged_ingress_lane.as_deref() {
-            active.start_background(lane, &capabilities, scheduling.max_in_flight_segments)?;
+            active.start_background(lane, &capabilities)?;
         }
         Ok(Some(active))
     }
@@ -309,15 +310,15 @@ impl ActiveStagedIngress {
         &mut self,
         lane: &str,
         capabilities: &cdf_runtime::DestinationRuntimeCapabilities,
-        maximum_segments: u16,
     ) -> Result<()> {
         let services = self
             .execution
             .clone()
             .ok_or_else(|| CdfError::internal("staged blocking lane has no execution services"))?;
         let mut scope = services.open_scope(self.attempt_id.as_str())?;
-        let capacity = usize::from(maximum_segments);
-        let (sender, receiver) = mpsc::sync_channel::<BackgroundStagedSegment>(capacity);
+        // The staged session owns the in-flight window by pulling exact segments. A rendezvous
+        // channel prevents orchestration from retaining a second hidden queue beyond that bound.
+        let (sender, receiver) = mpsc::sync_channel::<BackgroundStagedSegment>(0);
         let completed = Arc::new(Mutex::new(CompletedBackgroundStaging::default()));
         let bytes = Arc::new(InFlightByteBudget {
             maximum: capabilities
@@ -345,6 +346,9 @@ impl ActiveStagedIngress {
                 let started = Instant::now();
                 if let Err(error) = session.stage_stream(&mut stream) {
                     let _ = session.abort();
+                    if let Ok(mut output) = completed_worker.lock() {
+                        output.error = Some(error.clone());
+                    }
                     return Err(error);
                 }
                 let elapsed = started.elapsed();
@@ -352,6 +356,9 @@ impl ActiveStagedIngress {
                     Ok(finished) => finished,
                     Err(error) => {
                         let _ = session.abort();
+                        if let Ok(mut output) = completed_worker.lock() {
+                            output.error = Some(error.clone());
+                        }
                         return Err(error);
                     }
                 };
@@ -419,7 +426,7 @@ impl ActiveStagedIngress {
                 )));
             }
             let bytes = background.bytes.acquire(retained_bytes)?;
-            background
+            let send = background
                 .sender
                 .as_ref()
                 .ok_or_else(|| CdfError::internal("staged ingress worker is closed"))?
@@ -427,8 +434,16 @@ impl ActiveStagedIngress {
                     request,
                     identity,
                     bytes,
-                })
-                .map_err(|_| CdfError::destination("staged ingress worker stopped"))?;
+                });
+            if send.is_err() {
+                let error = background
+                    .completed
+                    .lock()
+                    .ok()
+                    .and_then(|output| output.error.clone())
+                    .unwrap_or_else(|| CdfError::destination("staged ingress worker stopped"));
+                return Err(error);
+            }
             return Ok(());
         }
         let mut stream = OneStagedSegmentStream {
@@ -1249,7 +1264,7 @@ where
     }
     notify_destination_replay_stage(&hooks, PackageReplayStage::DestinationWriteReady)?;
 
-    let (receipt, receipt_policy) = match capabilities.ingress_mode {
+    let (receipt, receipt_policy, commit_verification) = match capabilities.ingress_mode {
         cdf_runtime::DestinationIngressMode::StagedDurableSegments => {
             let outcome = match match active_staged {
                 Some(active) => finalize_active_staged_ingress(
@@ -1276,7 +1291,11 @@ where
                     return Err(error);
                 }
             };
-            (outcome.receipt, outcome.reporting_policy)
+            (
+                outcome.receipt,
+                outcome.reporting_policy,
+                outcome.verification,
+            )
         }
         cdf_runtime::DestinationIngressMode::FinalizedPackageOnly => {
             let prepared_result = match runtime.ingress() {
@@ -1339,7 +1358,11 @@ where
                     return Err(error);
                 }
             };
-            (receipt, receipt_policy)
+            (
+                receipt,
+                receipt_policy,
+                cdf_runtime::DestinationCommitVerification::Independent,
+            )
         }
     };
 
@@ -1349,6 +1372,7 @@ where
         &inputs.destination_commit.target,
         &inputs.destination_commit.disposition,
         &receipt,
+        &commit_verification,
     ) {
         let _ = checkpoint_store.abandon(&checkpoint_id);
         return Err(error);
@@ -1711,6 +1735,7 @@ where
         &inputs.destination_commit.target,
         &inputs.destination_commit.disposition,
         &receipt,
+        &cdf_runtime::DestinationCommitVerification::Independent,
     )?;
     record_package_receipt_once(package.reader(), &receipt)?;
     notify_verified_receipt(&receipt, &hooks)?;
@@ -1786,9 +1811,23 @@ fn verify_destination_receipt_before_checkpoint_with_runtime(
     target: &TargetName,
     disposition: &WriteDisposition,
     receipt: &Receipt,
+    commit_verification: &cdf_runtime::DestinationCommitVerification,
 ) -> Result<()> {
     validate_destination_receipt_before_checkpoint(delta, target, disposition, receipt)?;
-    let verification = runtime.verify_receipt(receipt)?;
+    let verification = match commit_verification {
+        cdf_runtime::DestinationCommitVerification::Independent => {
+            runtime.verify_receipt(receipt)?
+        }
+        cdf_runtime::DestinationCommitVerification::VerifiedAtCommit(verification) => {
+            verification.clone()
+        }
+    };
+    if verification.receipt_id != receipt.receipt_id {
+        return Err(CdfError::destination(format!(
+            "destination verification names receipt {} instead of {}",
+            verification.receipt_id, receipt.receipt_id
+        )));
+    }
     if !verification.verified {
         return Err(CdfError::destination(format!(
             "destination receipt {} did not verify: {}",

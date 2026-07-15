@@ -90,11 +90,7 @@ fn write_parquet_batches(
         writer_bytes,
     )?
     .as_minimum_working_set();
-    let _writer_lease = writer_memory.try_reserve(&request)?.ok_or_else(|| {
-        CdfError::data(format!(
-            "Parquet row-group writer requires {writer_bytes} bytes beyond the retained input segment; raise the run memory budget or lower the canonical segment size"
-        ))
-    })?;
+    let _writer_lease = cdf_memory::reserve_blocking(writer_memory, &request)?;
     let initial_spill = retained_bytes.clamp(1, SPILL_GROWTH_BYTES);
     let reservation = spill.try_reserve(initial_spill)?.ok_or_else(|| {
         CdfError::data(format!(

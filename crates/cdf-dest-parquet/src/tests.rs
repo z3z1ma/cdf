@@ -9,7 +9,7 @@ use crate::{
         ReplacePointer, canonical_json_bytes, sha256_hex,
     },
     sheet::{parquet_correction_capabilities, parquet_protocol_capabilities, parquet_sheet},
-    store::{ObjectKeyEncoder, package_manifest_key},
+    store::{ObjectKeyEncoder, package_manifest_key, staged_segment_object_key},
 };
 use ::parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use arrow_array::{ArrayRef, Float64Array, Int64Array, StringArray};
@@ -503,6 +503,7 @@ fn receipt_with_pointer_store(receipt: &Receipt, pointer: StoredJson) -> Receipt
 struct CommittedPackage {
     receipt: Receipt,
     duplicate: bool,
+    verification: cdf_runtime::DestinationCommitVerification,
     plan: ParquetCommitPlan,
     object_manifest: ParquetObjectManifest,
 }
@@ -601,6 +602,46 @@ fn commit_through_ingress(
     package_dir: &Path,
     commit: ParquetCommitRequest,
 ) -> Result<CommittedPackage> {
+    let staged_commit = stage_through_ingress(dest, package_dir, commit)?;
+    let binding =
+        cdf_runtime::VerifiedFinalBinding::from_verified_package_with_execution_authority(
+            staged_commit.attempt_id,
+            staged_commit.execution_plan_id,
+            &staged_commit.package,
+            staged_commit.plan.kernel.clone(),
+        )?;
+    binding.validate_staged_identities(&staged_commit.staged)?;
+    let outcome = staged_commit.session.bind_final(binding)?;
+    let duplicate = matches!(
+        outcome.reporting_policy,
+        cdf_runtime::DestinationReceiptReportingPolicy::DestinationCommit { duplicate: true }
+    );
+    let verification = outcome.verification;
+    let receipt = outcome.receipt;
+    let object_manifest = load_manifest(dest, &staged_commit.plan.manifest_key);
+    Ok(CommittedPackage {
+        receipt,
+        duplicate,
+        verification,
+        plan: staged_commit.plan,
+        object_manifest,
+    })
+}
+
+struct StagedTestCommit {
+    session: Box<dyn cdf_runtime::StagedIngressSession>,
+    staged: Vec<cdf_runtime::StagedSegmentIdentity>,
+    attempt_id: cdf_runtime::LoadAttemptId,
+    execution_plan_id: PlanId,
+    plan: ParquetCommitPlan,
+    package: TestVerifiedPackage,
+}
+
+fn stage_through_ingress(
+    dest: &mut ParquetDestination,
+    package_dir: &Path,
+    commit: ParquetCommitRequest,
+) -> Result<StagedTestCommit> {
     let reader = PackageReader::open(package_dir)?;
     let commit_segments = reader.read_commit_segments(&commit.commit.segments)?;
     let output_schema = commit_segments
@@ -708,26 +749,13 @@ fn commit_through_ingress(
         inputs,
         schema: Arc::new(output_schema),
     };
-    let binding =
-        cdf_runtime::VerifiedFinalBinding::from_verified_package_with_execution_authority(
-            attempt_id,
-            execution_plan_id,
-            &package,
-            plan.kernel.clone(),
-        )?;
-    binding.validate_staged_identities(&staged)?;
-    let outcome = session.bind_final(binding)?;
-    let duplicate = matches!(
-        outcome.reporting_policy,
-        cdf_runtime::DestinationReceiptReportingPolicy::DestinationCommit { duplicate: true }
-    );
-    let receipt = outcome.receipt;
-    let object_manifest = load_manifest(dest, &plan.manifest_key);
-    Ok(CommittedPackage {
-        receipt,
-        duplicate,
+    Ok(StagedTestCommit {
+        session,
+        staged,
+        attempt_id,
+        execution_plan_id,
         plan,
-        object_manifest,
+        package,
     })
 }
 
@@ -738,6 +766,50 @@ fn plan_package_for_test(
 ) -> Result<ParquetCommitPlan> {
     let reader = PackageReader::open(package_dir)?;
     dest.plan_package_commit(commit, &reader.manifest().identity.segments)
+}
+
+fn assert_staged_abort_cleans_destination(
+    dest: &mut ParquetDestination,
+    package_dir: &Path,
+    commit: ParquetCommitRequest,
+) {
+    let staged = stage_through_ingress(dest, package_dir, commit).unwrap();
+    let staging_keys = staged
+        .staged
+        .iter()
+        .map(|identity| {
+            staged_segment_object_key(
+                dest.object_key_encoder(),
+                &TargetName::new("orders").unwrap(),
+                &staged.attempt_id,
+                &identity.segment_id,
+            )
+        })
+        .collect::<Vec<_>>();
+    assert!(staging_keys.iter().all(|key| {
+        dest.store()
+            .exists(dest.execution(), key)
+            .expect("inspect staged Parquet object")
+    }));
+    staged.session.abort().unwrap();
+    assert!(staging_keys.iter().all(|key| {
+        !dest
+            .store()
+            .exists(dest.execution(), key)
+            .expect("inspect cleaned Parquet object")
+    }));
+    assert!(staged.plan.object_keys.iter().all(|key| {
+        !dest
+            .store()
+            .exists(dest.execution(), key)
+            .expect("inspect unpublished Parquet object")
+    }));
+    assert!(
+        !dest
+            .store()
+            .exists(dest.execution(), &staged.plan.manifest_key)
+            .unwrap()
+    );
 }
 
 #[test]
@@ -1368,6 +1440,10 @@ fn staged_segment_ingress_materializes_verifiable_manifest_receipt() {
     let receipt = committed.receipt;
 
     assert!(!plan.duplicate);
+    assert!(matches!(
+        committed.verification,
+        cdf_runtime::DestinationCommitVerification::VerifiedAtCommit(_)
+    ));
     assert_eq!(receipt.destination.as_str(), DESTINATION_ID);
     assert_eq!(
         receipt.receipt_id.as_str(),
@@ -1396,6 +1472,30 @@ fn staged_segment_ingress_materializes_verifiable_manifest_receipt() {
         receipts.is_empty(),
         "package receipts belong to orchestration"
     );
+}
+
+#[test]
+fn staged_segment_abort_cleans_local_and_object_store_attempts() {
+    let temp = tempfile::tempdir().unwrap();
+    let package_dir = temp.path().join("pkg-staged-abort");
+    let built = build_package(
+        &package_dir,
+        "pkg-staged-abort",
+        vec![
+            (
+                "seg-000001",
+                vec![sample_batch(vec![1, 2], vec![Some("left"), Some("right")])],
+            ),
+            ("seg-000002", vec![sample_batch(vec![3], vec![None])]),
+        ],
+    );
+    let commit = request(&package_dir, &built, WriteDisposition::Append);
+
+    let mut local = test_filesystem(&temp.path().join("lake")).unwrap();
+    assert_staged_abort_cleans_destination(&mut local, &package_dir, commit.clone());
+
+    let mut object_store = test_object_store(Arc::new(InMemory::default()), "remote").unwrap();
+    assert_staged_abort_cleans_destination(&mut object_store, &package_dir, commit);
 }
 
 #[test]
@@ -1475,6 +1575,10 @@ fn staged_segment_ingress_duplicate_replay_preserves_existing_manifest() {
         .unwrap();
 
     assert!(duplicate.duplicate);
+    assert_eq!(
+        duplicate.verification,
+        cdf_runtime::DestinationCommitVerification::Independent
+    );
     assert_eq!(first.receipt.receipt_id, duplicate.receipt.receipt_id);
     assert_eq!(manifest_before, manifest_after);
     assert!(dest.verify_receipt(&duplicate.receipt).unwrap().verified);

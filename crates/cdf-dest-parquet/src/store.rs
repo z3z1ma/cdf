@@ -97,10 +97,6 @@ impl StoreClient {
         }
     }
 
-    pub(crate) fn is_local(&self) -> bool {
-        self.local_root.is_some()
-    }
-
     pub(crate) fn put(
         &self,
         execution: &cdf_runtime::ExecutionServices,
@@ -372,6 +368,17 @@ impl StoreClient {
         execution: &cdf_runtime::ExecutionServices,
         key: &str,
     ) -> Result<()> {
+        if let Some(root) = &self.local_root {
+            let path = root.join(self.path(key)?.as_ref());
+            return match fs::remove_file(&path) {
+                Ok(()) => Ok(()),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+                Err(error) => Err(CdfError::destination(format!(
+                    "delete {}: {error}",
+                    path.display()
+                ))),
+            };
+        }
         let path = self.path(key)?;
         let store = Arc::clone(&self.store);
         let operation = format!("delete {key}");
@@ -383,14 +390,25 @@ impl StoreClient {
         })
     }
 
-    pub(crate) fn copy_create_or_verify(
+    pub(crate) fn promote_create_or_verify(
         &self,
         execution: &cdf_runtime::ExecutionServices,
         source_key: &str,
         destination_key: &str,
         expected_sha256: &str,
         expected_bytes: u64,
+        expected_etag: Option<String>,
     ) -> Result<StoredObject> {
+        if let Some(root) = &self.local_root {
+            return self.promote_local_create_or_verify(
+                root,
+                source_key,
+                destination_key,
+                expected_sha256,
+                expected_bytes,
+                expected_etag,
+            );
+        }
         let source = self.path(source_key)?;
         let destination = self.path(destination_key)?;
         let store = Arc::clone(&self.store);
@@ -416,6 +434,79 @@ impl StoreClient {
             byte_count: expected_bytes,
             e_tag: self.etag(execution, destination_key)?,
         })
+    }
+
+    fn promote_local_create_or_verify(
+        &self,
+        root: &Path,
+        source_key: &str,
+        destination_key: &str,
+        expected_sha256: &str,
+        expected_bytes: u64,
+        expected_etag: Option<String>,
+    ) -> Result<StoredObject> {
+        let source = root.join(self.path(source_key)?.as_ref());
+        let destination = root.join(self.path(destination_key)?.as_ref());
+        let parent = destination.parent().ok_or_else(|| {
+            CdfError::destination(format!(
+                "Parquet object {} has no parent directory",
+                destination.display()
+            ))
+        })?;
+        fs::create_dir_all(parent).map_err(|error| {
+            CdfError::destination(format!("create {}: {error}", parent.display()))
+        })?;
+        match fs::hard_link(&source, &destination) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                let metadata = fs::metadata(&destination).map_err(|error| {
+                    CdfError::destination(format!("inspect {}: {error}", destination.display()))
+                })?;
+                let actual_hash = sha256_file(&destination)?;
+                if metadata.len() != expected_bytes || actual_hash != expected_sha256 {
+                    return Err(CdfError::destination(format!(
+                        "immutable Parquet object {} already exists with different bytes",
+                        destination.display()
+                    )));
+                }
+            }
+            Err(error) => {
+                return Err(CdfError::destination(format!(
+                    "promote {} to {}: {error}",
+                    source.display(),
+                    destination.display()
+                )));
+            }
+        }
+        Ok(StoredObject {
+            byte_count: expected_bytes,
+            e_tag: expected_etag,
+        })
+    }
+
+    pub(crate) fn sync_local_object_parents(&self, keys: &[String]) -> Result<()> {
+        let Some(root) = &self.local_root else {
+            return Ok(());
+        };
+        let mut parents = BTreeSet::new();
+        for key in keys {
+            let object = root.join(self.path(key)?.as_ref());
+            let parent = object.parent().ok_or_else(|| {
+                CdfError::destination(format!(
+                    "Parquet object {} has no parent directory",
+                    object.display()
+                ))
+            })?;
+            parents.insert(parent.to_path_buf());
+        }
+        for parent in parents {
+            fs::File::open(&parent)
+                .and_then(|directory| directory.sync_all())
+                .map_err(|error| {
+                    CdfError::destination(format!("sync {}: {error}", parent.display()))
+                })?;
+        }
+        Ok(())
     }
 
     fn path(&self, key: &str) -> Result<ObjectPath> {

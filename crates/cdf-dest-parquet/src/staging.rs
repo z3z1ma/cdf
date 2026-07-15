@@ -11,7 +11,7 @@ use crate::{
     ParquetCommitRequest, ParquetDestination,
     api::{duplicate_parquet_receipt, finalize_parquet_objects},
     manifest::ParquetObjectEntry,
-    package::{EncodedParquetObject, write_parquet_staged_segment},
+    package::write_parquet_staged_segment,
     store::{StoreClient, StoredObject, staged_segment_object_key},
 };
 
@@ -24,15 +24,7 @@ pub(crate) struct ParquetStagedIngressSession {
     objects: BTreeMap<u32, StagedParquetObject>,
 }
 
-enum StagedParquetObject {
-    Local {
-        identity: StagedSegmentIdentity,
-        encoded: EncodedParquetObject,
-    },
-    Remote(RemoteStagedParquetObject),
-}
-
-struct RemoteStagedParquetObject {
+struct StagedParquetObject {
     identity: StagedSegmentIdentity,
     store: StoreClient,
     execution: cdf_runtime::ExecutionServices,
@@ -42,7 +34,7 @@ struct RemoteStagedParquetObject {
     cleanup: bool,
 }
 
-impl Drop for RemoteStagedParquetObject {
+impl Drop for StagedParquetObject {
     fn drop(&mut self) {
         if self.cleanup {
             let _ = self.store.delete(&self.execution, &self.staging_key);
@@ -123,9 +115,6 @@ impl ParquetStagedIngressSession {
                     file,
                 )?;
                 cancellation.check()?;
-                if destination.store().is_local() {
-                    return Ok(StagedParquetObject::Local { identity, encoded });
-                }
                 let staging_key = staged_segment_object_key(
                     destination.object_key_encoder(),
                     &target,
@@ -138,7 +127,7 @@ impl ParquetStagedIngressSession {
                     &staging_key,
                     encoded,
                 )?;
-                Ok(StagedParquetObject::Remote(RemoteStagedParquetObject {
+                Ok(StagedParquetObject {
                     identity,
                     store: destination.store().clone(),
                     execution: destination.execution().clone(),
@@ -146,7 +135,7 @@ impl ParquetStagedIngressSession {
                     stored,
                     sha256,
                     cleanup: true,
-                }))
+                })
             },
         )
     }
@@ -217,67 +206,47 @@ impl ParquetStagedIngressSession {
 
 impl StagedParquetObject {
     fn identity(&self) -> &StagedSegmentIdentity {
-        match self {
-            Self::Local { identity, .. } => identity,
-            Self::Remote(remote) => &remote.identity,
-        }
+        &self.identity
     }
 
     fn external_durable(&self) -> bool {
-        matches!(self, Self::Remote(_))
+        true
     }
 
     fn cleanup(&mut self) -> Result<()> {
-        if let Self::Remote(remote) = self
-            && remote.cleanup
-        {
-            remote
-                .store
-                .delete(&remote.execution, &remote.staging_key)?;
-            remote.cleanup = false;
+        if self.cleanup {
+            self.store.delete(&self.execution, &self.staging_key)?;
+            self.cleanup = false;
         }
         Ok(())
     }
 
     fn finalize(
         self,
-        destination: &ParquetDestination,
         state: &StateSegment,
         final_key: String,
         schema_hash: &SchemaHash,
     ) -> Result<ParquetObjectEntry> {
-        let identity = self.identity().clone();
+        let mut staged = self;
+        let identity = staged.identity.clone();
         if identity.segment_id != state.segment_id || identity.row_count != state.row_count {
             return Err(CdfError::data(format!(
                 "Parquet staged segment {} differs from final state authority",
                 identity.segment_id
             )));
         }
-        let (stored, sha256) = match self {
-            Self::Local { encoded, .. } => {
-                let sha256 = encoded.sha256.clone();
-                let stored = destination.store().put_encoded_file(
-                    destination.execution(),
-                    &final_key,
-                    encoded,
-                )?;
-                (stored, sha256)
-            }
-            Self::Remote(mut remote) => {
-                let stored = remote.store.copy_create_or_verify(
-                    &remote.execution,
-                    &remote.staging_key,
-                    &final_key,
-                    &remote.sha256,
-                    remote.stored.byte_count,
-                )?;
-                remote
-                    .store
-                    .delete(&remote.execution, &remote.staging_key)?;
-                remote.cleanup = false;
-                (stored, remote.sha256.clone())
-            }
-        };
+        let stored = staged.store.promote_create_or_verify(
+            &staged.execution,
+            &staged.staging_key,
+            &final_key,
+            &staged.sha256,
+            staged.stored.byte_count,
+            staged.stored.e_tag.clone(),
+        )?;
+        staged
+            .store
+            .delete(&staged.execution, &staged.staging_key)?;
+        staged.cleanup = false;
         Ok(ParquetObjectEntry {
             segment_id: identity.segment_id.as_str().to_owned(),
             key: final_key,
@@ -285,7 +254,7 @@ impl StagedParquetObject {
             byte_count: state.byte_count,
             package_byte_count: identity.byte_count,
             parquet_byte_count: stored.byte_count,
-            sha256,
+            sha256: staged.sha256.clone(),
             etag: stored.e_tag,
             schema_hash: schema_hash.as_str().to_owned(),
         })
@@ -394,13 +363,22 @@ impl StagedIngressSession for ParquetStagedIngressSession {
                         CdfError::data("Parquet staged ordinal is outside the final object plan")
                     })?
                     .clone();
-            objects.push(object.finalize(&self.destination, state, key, binding.schema_hash())?);
+            objects.push(object.finalize(state, key, binding.schema_hash())?);
         }
+        self.destination
+            .store()
+            .sync_local_object_parents(&plan.object_keys)?;
         let receipt = finalize_parquet_objects(&self.destination, request, plan, objects)?;
-        Ok(DestinationCommitOutcome::new(
+        let verification = cdf_kernel::ReceiptVerification {
+            verified: true,
+            receipt_id: receipt.receipt_id.clone(),
+            reason: None,
+        };
+        DestinationCommitOutcome::new(
             receipt,
             DestinationReceiptReportingPolicy::DestinationCommit { duplicate: false },
-        ))
+        )
+        .with_commit_verification(verification)
     }
 
     fn abort(mut self: Box<Self>) -> Result<()> {

@@ -22,7 +22,7 @@ Final binding MUST occur only after local package finalization and verification.
 
 Staged writes and final binding MUST execute through the blocking lanes declared by destination capabilities. The generic host owns scheduling and admission; adapters own native connection and transaction behavior.
 
-Successful final binding MUST produce the existing receipt shape over the final package hash and committed segment acknowledgements. Runtime verification and checkpoint commit then follow the existing gate.
+Successful final binding MUST produce the existing receipt shape over the final package hash and committed segment acknowledgements. When final binding itself has exactly verified every published mutation from hash-while-write evidence, create-only publication, durability barriers, and the completed manifest, it MAY return commit-bound receipt verification for that exact receipt id. The generic gate MUST still validate receipt/state structure and exact receipt-id binding before accepting that evidence. Duplicate, recovered, or otherwise pre-existing commits MUST use independent runtime verification. This is an optimization of when verification occurs, never permission to omit it; checkpoint commit still follows only verified receipt evidence.
 
 Abort MUST be idempotent. Staging garbage collection MUST be bounded by an explicit lifecycle/retention policy and MUST never infer committed state from attempt identity. Recovery MAY reattach only after destination-reported staging identities exactly match the run ledger and final package where available.
 

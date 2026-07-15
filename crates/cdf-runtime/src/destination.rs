@@ -7,9 +7,16 @@ pub enum DestinationReceiptReportingPolicy {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+pub enum DestinationCommitVerification {
+    Independent,
+    VerifiedAtCommit(ReceiptVerification),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DestinationCommitOutcome {
     pub receipt: Receipt,
     pub reporting_policy: DestinationReceiptReportingPolicy,
+    pub verification: DestinationCommitVerification,
 }
 
 impl DestinationCommitOutcome {
@@ -17,7 +24,18 @@ impl DestinationCommitOutcome {
         Self {
             receipt,
             reporting_policy,
+            verification: DestinationCommitVerification::Independent,
         }
+    }
+
+    pub fn with_commit_verification(mut self, verification: ReceiptVerification) -> Result<Self> {
+        if !verification.verified || verification.receipt_id != self.receipt.receipt_id {
+            return Err(CdfError::contract(
+                "commit-bound destination verification must verify the exact returned receipt",
+            ));
+        }
+        self.verification = DestinationCommitVerification::VerifiedAtCommit(verification);
+        Ok(self)
     }
 }
 
