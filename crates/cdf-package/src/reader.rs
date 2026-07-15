@@ -2,10 +2,7 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     fs::{self, File},
     path::{Path, PathBuf},
-    sync::{
-        Arc,
-        atomic::{AtomicBool, Ordering},
-    },
+    sync::Arc,
 };
 
 use arrow_array::{Array, RecordBatch, UInt64Array};
@@ -136,13 +133,6 @@ pub struct VerifiedSegment<T> {
 #[derive(Debug)]
 struct VerifiedSegmentWindow {
     memory_lease: MemoryLease,
-    in_flight: Arc<AtomicBool>,
-}
-
-impl Drop for VerifiedSegmentWindow {
-    fn drop(&mut self) {
-        self.in_flight.store(false, Ordering::Release);
-    }
 }
 
 impl<T> VerifiedSegment<T> {
@@ -168,7 +158,6 @@ pub struct VerifiedSegmentStream<T> {
     segments: std::vec::IntoIter<(SegmentEntry, T)>,
     memory: Arc<dyn MemoryCoordinator>,
     maximum_segment_bytes: u64,
-    window_in_flight: Arc<AtomicBool>,
     failed: bool,
 }
 
@@ -194,7 +183,6 @@ fn verified_segment_stream<T>(
         segments: segments.into_iter(),
         memory,
         maximum_segment_bytes,
-        window_in_flight: Arc::new(AtomicBool::new(false)),
         failed: false,
     })
 }
@@ -207,16 +195,6 @@ impl<T> Iterator for VerifiedSegmentStream<T> {
             return None;
         }
         let (entry, authority) = self.segments.next()?;
-        if self
-            .window_in_flight
-            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-            .is_err()
-        {
-            self.failed = true;
-            return Some(Err(CdfError::contract(
-                "verified segment stream requires the previous accounted segment to be dropped before advancing",
-            )));
-        }
         let result = (|| {
             let request = ReservationRequest::new(
                 ConsumerKey::new("verified-segment-stream", MemoryClass::Package)?,
@@ -253,7 +231,6 @@ impl<T> Iterator for VerifiedSegmentStream<T> {
             lease.reconcile(retained_bytes.max(1))?;
             let window = Arc::new(VerifiedSegmentWindow {
                 memory_lease: lease,
-                in_flight: Arc::clone(&self.window_in_flight),
             });
             Ok(VerifiedSegment {
                 entry,
@@ -263,7 +240,6 @@ impl<T> Iterator for VerifiedSegmentStream<T> {
             })
         })();
         if result.is_err() {
-            self.window_in_flight.store(false, Ordering::Release);
             self.failed = true;
         }
         Some(result)

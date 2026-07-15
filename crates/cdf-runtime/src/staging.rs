@@ -196,8 +196,11 @@ pub struct StagedSegmentRequest {
 
 /// A bounded, acknowledgement-bearing stream of durable segments.
 ///
-/// The destination drives the stream for one native ingress lifetime. It must acknowledge each
-/// segment only after consuming it successfully and before requesting the next segment.
+/// The destination drives the stream for one native ingress lifetime. It may retain multiple
+/// segment readers only within the request's declared scheduling bounds and must acknowledge each
+/// exact identity after consuming it successfully or transferring it to equally authoritative
+/// destination accounting. Acknowledgements may complete out of order; final binding remains in
+/// canonical ordinal order.
 pub trait StagedSegmentStream {
     fn next_segment(&mut self) -> Result<Option<StagedSegmentRequest>>;
     fn acknowledge(&mut self, acknowledgement: StagedSegmentAck) -> Result<()>;

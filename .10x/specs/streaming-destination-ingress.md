@@ -1,6 +1,6 @@
 Status: active
 Created: 2026-07-11
-Updated: 2026-07-11
+Updated: 2026-07-15
 
 # Streaming destination ingress
 
@@ -14,7 +14,7 @@ Only a durable package segment whose bytes and SHA-256 are complete MAY enter st
 
 A staged-ingress request MUST carry a `LoadAttemptId`, destination/target identity, planned disposition/schema/plan authority, the complete compiled output Arrow schema, disposition inputs such as merge keys, and bounded scheduling context. It MUST NOT claim a package hash or package-token idempotency guarantee. Driver-specific schema preparation remains inside the destination adapter; the generic runtime MUST NOT branch on destination identity or physical provenance encoding.
 
-A staged-segment request MUST carry segment id, SHA-256, row/byte counts, schema hash, ordinal, and a bounded Arrow batch stream or segment reader. The destination MUST acknowledge the exact identity accepted into its declared staging scope or fail; partial acknowledgement is forbidden. The capability MUST declare `resumable` or `rollback_redrive` recovery and MUST NOT imply persistence across process loss for ephemeral transactions.
+A staged-segment request MUST carry segment id, SHA-256, row/byte counts, schema hash, ordinal, and a bounded Arrow batch stream or segment reader. The reader retains the source memory accounting until the destination finishes or transfers it into equally authoritative destination accounting. A destination MAY hold multiple unacknowledged requests only within the request's declared segment/byte scheduling bounds. It MUST acknowledge each exact identity accepted into its declared staging scope or fail; completion and acknowledgement MAY arrive out of order, but snapshots and final binding MUST restore canonical ordinal order. Partial acknowledgement is forbidden. The capability MUST declare `resumable` or `rollback_redrive` recovery and MUST NOT imply persistence across process loss for ephemeral transactions.
 
 Before final binding, staged data MUST be invisible to target reads that represent committed destination state. No package receipt, `_cdf_loads` committed row, final object manifest/pointer, checkpoint, or delivery guarantee may be emitted.
 
@@ -32,7 +32,7 @@ All staging buffers, queues, transactions, temporary files, and multipart parts 
 
 Destination inspection/sheets MUST declare finalized-only versus staged ingress, visibility isolation, rollback/cleanup support, writer concurrency, and useful in-flight byte/segment bounds. Planner/runtime selection MUST be capability-driven.
 
-Conformance MUST cover successful overlap, staged-write failure, crash after every staged segment, resumable reattach, rollback/redrive, abort repetition, final-binding mismatch, duplicate finalized package, no receipt before binding, no checkpoint before verified receipt, staging cleanup, and finalized-only fallback. Jobs 1/N MUST yield identical package hashes and receipt package/segment identities; destination transaction metadata may truthfully differ.
+Conformance MUST cover successful overlap, bounded multi-segment ownership, out-of-order acknowledgement with canonical final order, staged-write failure, crash after every staged segment, resumable reattach, rollback/redrive, abort repetition, final-binding mismatch, duplicate finalized package, no receipt before binding, no checkpoint before verified receipt, staging cleanup, and finalized-only fallback. Jobs 1/N MUST yield identical package hashes and receipt package/segment identities; destination transaction metadata may truthfully differ.
 
 ## Explicit exclusions
 

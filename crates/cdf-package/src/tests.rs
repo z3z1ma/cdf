@@ -863,29 +863,39 @@ fn verified_commit_stream_holds_one_accounted_segment_window() {
 }
 
 #[test]
-fn commit_segment_retains_verified_window_until_destination_releases_it() {
+fn concurrent_commit_segments_retain_independent_accounted_windows() {
     let temp = tempfile::tempdir().unwrap();
     let manifest = build_archive_fixture(temp.path());
     let reader = PackageReader::open(temp.path()).unwrap();
     let state_segments = state_segments_for_manifest(&manifest);
     let memory: Arc<dyn MemoryCoordinator> =
-        Arc::new(DeterministicMemoryCoordinator::new(64 * 1024, BTreeMap::new()).unwrap());
+        Arc::new(DeterministicMemoryCoordinator::new(128 * 1024, BTreeMap::new()).unwrap());
     let mut stream = reader
         .verified_commit_segment_stream(&state_segments, Arc::clone(&memory), 64 * 1024)
         .unwrap();
 
-    let segment = stream
+    let first = stream
         .next()
         .unwrap()
         .unwrap()
         .into_commit_segment()
         .unwrap();
-    assert!(segment.retained_bytes() > 0);
-    assert_eq!(memory.snapshot().current_bytes, segment.retained_bytes());
-    let error = stream.next().unwrap().unwrap_err();
-    assert!(error.message.contains("previous accounted segment"));
-
-    drop(segment);
+    let second = stream
+        .next()
+        .unwrap()
+        .unwrap()
+        .into_commit_segment()
+        .unwrap();
+    assert!(first.retained_bytes() > 0);
+    assert!(second.retained_bytes() > 0);
+    assert_eq!(
+        memory.snapshot().current_bytes,
+        first.retained_bytes() + second.retained_bytes()
+    );
+    assert!(stream.next().is_none());
+    drop(first);
+    assert_eq!(memory.snapshot().current_bytes, second.retained_bytes());
+    drop(second);
     assert_eq!(memory.snapshot().current_bytes, 0);
 }
 
@@ -924,22 +934,26 @@ fn verified_segment_stream_rejects_tamper_and_undersized_windows() {
 }
 
 #[test]
-fn verified_segment_stream_refuses_two_live_windows_without_deadlock() {
+fn verified_segment_stream_allows_multiple_windows_within_memory_budget() {
     let temp = tempfile::tempdir().unwrap();
     let manifest = build_archive_fixture(temp.path());
     let reader = PackageReader::open(temp.path()).unwrap();
     let memory: Arc<dyn MemoryCoordinator> =
-        Arc::new(DeterministicMemoryCoordinator::new(64 * 1024, BTreeMap::new()).unwrap());
+        Arc::new(DeterministicMemoryCoordinator::new(128 * 1024, BTreeMap::new()).unwrap());
     let mut stream = reader
         .verified_segment_stream(Arc::clone(&memory), 64 * 1024)
         .unwrap();
     let first = stream.next().unwrap().unwrap();
-    let error = stream.next().unwrap().unwrap_err();
-    assert!(error.message.contains("previous accounted segment"));
-    assert_eq!(memory.snapshot().current_bytes, first.accounted_bytes());
-    drop(first);
-    assert_eq!(memory.snapshot().current_bytes, 0);
+    let second = stream.next().unwrap().unwrap();
+    assert_eq!(
+        memory.snapshot().current_bytes,
+        first.accounted_bytes() + second.accounted_bytes()
+    );
     assert!(stream.next().is_none());
+    drop(first);
+    assert_eq!(memory.snapshot().current_bytes, second.accounted_bytes());
+    drop(second);
+    assert_eq!(memory.snapshot().current_bytes, 0);
     assert_eq!(manifest.identity.segments.len(), 2);
 }
 
