@@ -1,8 +1,9 @@
-use std::panic;
+use std::{collections::BTreeMap, panic, sync::Arc};
 
-use cdf_formats::{JsonOptions, read_ndjson_bytes};
+use cdf_format_json::NdjsonFormatDriver;
 use cdf_kernel::{ErrorKind, PartitionId, ResourceId};
-use cdf_runtime::ReadOptions;
+use cdf_memory::{DeterministicMemoryCoordinator, MemoryCoordinator};
+use cdf_runtime::{BoundedFormatRequest, MemoryByteSource, ReadOptions, decode_bounded_format};
 use proptest::prelude::*;
 
 fn read_options() -> ReadOptions {
@@ -15,8 +16,26 @@ fn read_options() -> ReadOptions {
 }
 
 fn assert_ndjson_data_error(bytes: &[u8]) {
-    let error = read_ndjson_bytes(bytes, &read_options(), &JsonOptions::default()).unwrap_err();
+    let error = read_ndjson_bytes(bytes).unwrap_err();
     assert_eq!(error.kind, ErrorKind::Data);
+}
+
+fn read_ndjson_bytes(bytes: &[u8]) -> cdf_kernel::Result<cdf_runtime::BoundedFormatRead> {
+    futures_executor::block_on(async {
+        let memory = Arc::new(
+            DeterministicMemoryCoordinator::new(64 * 1024 * 1024, BTreeMap::new()).unwrap(),
+        );
+        let source = Arc::new(
+            MemoryByteSource::from_bytes("property-fuzz:ndjson", bytes.to_vec(), memory.clone())
+                .await?,
+        );
+        decode_bounded_format(
+            Arc::new(NdjsonFormatDriver::new()?),
+            source,
+            BoundedFormatRequest::new(read_options(), memory),
+        )
+        .await
+    })
 }
 
 proptest! {
@@ -26,9 +45,7 @@ proptest! {
     fn property_fuzz_ndjson_parser_never_panics_on_adversarial_bytes(
         bytes in prop::collection::vec(any::<u8>(), 0..=1024)
     ) {
-        let outcome = panic::catch_unwind(|| {
-            read_ndjson_bytes(&bytes, &read_options(), &JsonOptions::default())
-        });
+        let outcome = panic::catch_unwind(|| read_ndjson_bytes(&bytes));
 
         prop_assert!(outcome.is_ok());
         if std::str::from_utf8(&bytes).is_err() {
@@ -59,7 +76,7 @@ fn property_fuzz_ndjson_strange_scalar_values_are_all_or_error() {
         i64::MIN
     );
 
-    match read_ndjson_bytes(bytes.as_bytes(), &read_options(), &JsonOptions::default()) {
+    match read_ndjson_bytes(bytes.as_bytes()) {
         Ok(read) => {
             let rows = read
                 .batches
@@ -70,4 +87,41 @@ fn property_fuzz_ndjson_strange_scalar_values_are_all_or_error() {
         }
         Err(error) => assert_eq!(error.kind, ErrorKind::Data),
     }
+}
+
+#[test]
+fn bounded_ndjson_decode_releases_input_and_output_leases() {
+    futures_executor::block_on(async {
+        let memory = Arc::new(
+            DeterministicMemoryCoordinator::new(64 * 1024 * 1024, BTreeMap::new()).unwrap(),
+        );
+        let source = Arc::new(
+            MemoryByteSource::from_bytes(
+                "conformance:bounded-ndjson",
+                b"{\"id\":1}\n{\"id\":2}\n".to_vec(),
+                memory.clone(),
+            )
+            .await
+            .unwrap(),
+        );
+        let read = decode_bounded_format(
+            Arc::new(NdjsonFormatDriver::new().unwrap()),
+            source.clone(),
+            BoundedFormatRequest::new(read_options(), memory.clone()),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(
+            read.batches
+                .iter()
+                .map(|batch| batch.header.row_count)
+                .sum::<u64>(),
+            2
+        );
+        assert!(memory.snapshot().current_bytes > 0);
+        drop(read);
+        drop(source);
+        assert_eq!(memory.snapshot().current_bytes, 0);
+    });
 }

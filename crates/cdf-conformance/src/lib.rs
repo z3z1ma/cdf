@@ -27,3 +27,21 @@ pub(crate) fn test_execution_services() -> cdf_runtime::ExecutionServices {
         })
         .clone()
 }
+
+#[cfg(test)]
+pub(crate) fn test_rest_runtime_dependencies(
+    transport: impl cdf_http::HttpTransport + 'static,
+) -> cdf_declarative::RestRuntimeDependencies {
+    let services = test_execution_services();
+    services
+        .ensure_blocking_lanes(&[cdf_runtime::BlockingLaneSpec {
+            lane_id: "rest-source.sync".to_owned(),
+            maximum_concurrency: 8,
+            cpu_slot_cost: 1,
+            native_internal_parallelism: 1,
+            affinity: cdf_runtime::LaneAffinity::Shared,
+            interruption: cdf_runtime::InterruptionSafety::CooperativeOnly,
+        }])
+        .expect("conformance REST blocking lane");
+    cdf_declarative::RestRuntimeDependencies::new(transport).with_execution_services(services)
+}

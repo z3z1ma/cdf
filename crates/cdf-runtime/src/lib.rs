@@ -1,5 +1,6 @@
 #![doc = "Engine-neutral runtime contracts and extension registries for cdf."]
 
+mod bounded_format;
 mod bulk;
 mod canonical_frontier;
 mod capabilities;
@@ -18,6 +19,7 @@ mod staging;
 mod transformed_byte_source;
 mod utilities;
 
+pub use bounded_format::*;
 pub use bulk::*;
 pub use canonical_frontier::*;
 pub use capabilities::*;

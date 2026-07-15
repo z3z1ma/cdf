@@ -19,10 +19,6 @@ use sha2::{Digest, Sha256};
 pub const SCHEMA_SNAPSHOT_ARTIFACT_VERSION: u16 = 4;
 pub const SCHEMA_SNAPSHOT_PROMOTION_AUTHORITY_VERSION: u16 = 1;
 pub const SCHEMA_SNAPSHOT_DIR: &str = ".cdf/schemas";
-pub const SCHEMA_DISCOVERY_PROBE_PARQUET_FOOTER: &str = "parquet-footer";
-pub const SCHEMA_DISCOVERY_FORMAT_PARQUET: &str = "parquet";
-pub const SCHEMA_DISCOVERY_PROBE_ARROW_IPC_FILE_SCHEMA: &str = "arrow-ipc-file-schema";
-pub const SCHEMA_DISCOVERY_FORMAT_ARROW_IPC: &str = "arrow_ipc";
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SchemaSnapshotArtifact {
@@ -35,13 +31,6 @@ pub struct SchemaSnapshotArtifact {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub promotion_authority: Option<SchemaSnapshotPromotionAuthority>,
     pub hash_input: serde_json::Value,
-}
-
-#[derive(Clone, Debug, PartialEq)]
-pub struct DiscoveredParquetSchemaSnapshot {
-    pub artifact: SchemaSnapshotArtifact,
-    pub reference: SchemaSnapshotReference,
-    pub source_identity: BTreeMap<String, String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -1005,29 +994,6 @@ fn promotion_snapshot_metadata(
         "cdf:normalizer".to_owned(),
         authority.normalizer_version.clone(),
     )])
-}
-
-pub fn schema_snapshot_from_parquet_footer_schema(
-    resource_id: &ResourceId,
-    schema: &Schema,
-    source_identity: BTreeMap<String, String>,
-) -> Result<DiscoveredParquetSchemaSnapshot> {
-    let metadata = BTreeMap::from([
-        (
-            "probe".to_owned(),
-            SCHEMA_DISCOVERY_PROBE_PARQUET_FOOTER.to_owned(),
-        ),
-        (
-            "format".to_owned(),
-            SCHEMA_DISCOVERY_FORMAT_PARQUET.to_owned(),
-        ),
-    ]);
-    let artifact = SchemaSnapshotArtifact::new(resource_id, schema, metadata)?;
-    Ok(DiscoveredParquetSchemaSnapshot {
-        reference: artifact.reference(),
-        artifact,
-        source_identity,
-    })
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

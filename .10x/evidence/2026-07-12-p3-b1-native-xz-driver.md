@@ -1,7 +1,7 @@
 Status: recorded
 Created: 2026-07-12
 Updated: 2026-07-12
-Relates-To: .10x/tickets/2026-07-11-p3-b1-streaming-byte-transforms.md, .10x/tickets/2026-07-11-p0-fx1-native-format-extension-boundary.md
+Relates-To: .10x/tickets/2026-07-11-p3-b1-streaming-byte-transforms.md, .10x/tickets/done/2026-07-11-p0-fx1-native-format-extension-boundary.md
 
 # Native xz driver
 
@@ -29,4 +29,3 @@ XZ can stream with deterministic native implementation identity, a hard memory l
 ## Limits
 
 The bundled C implementation remains an unsafe/native supply-chain boundary. Whole-stream integrity is learned after earlier output chunks, so product composition still requires the checksum publication barrier before accepted visibility.
-

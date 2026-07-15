@@ -1,7 +1,7 @@
 Status: recorded
 Created: 2026-07-11
 Updated: 2026-07-11
-Relates-To: .10x/tickets/2026-07-11-p3-b3-arrow-ipc-codecs.md, .10x/tickets/2026-07-11-p0-fx1-native-format-extension-boundary.md
+Relates-To: .10x/tickets/2026-07-11-p3-b3-arrow-ipc-codecs.md, .10x/tickets/done/2026-07-11-p0-fx1-native-format-extension-boundary.md
 
 # Native Arrow IPC file-driver milestone
 

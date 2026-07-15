@@ -1,6 +1,6 @@
 use std::{collections::BTreeSet, path::Path, process::Command};
 
-fn cargo_tree(edges: &str) -> String {
+fn cargo_tree(package: &str, edges: &str) -> String {
     let workspace = Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .and_then(Path::parent)
@@ -8,14 +8,7 @@ fn cargo_tree(edges: &str) -> String {
     let output = Command::new(env!("CARGO"))
         .current_dir(workspace)
         .args([
-            "tree",
-            "--locked",
-            "-p",
-            "cdf-runtime",
-            "-e",
-            edges,
-            "--prefix",
-            "none",
+            "tree", "--locked", "-p", package, "-e", edges, "--prefix", "none",
         ])
         .output()
         .expect("run cargo tree");
@@ -36,7 +29,7 @@ fn package_names(tree: &str) -> BTreeSet<&str> {
 #[test]
 fn runtime_graph_excludes_package_implementation_and_codecs() {
     for edges in ["normal", "normal,dev"] {
-        let tree = cargo_tree(edges);
+        let tree = cargo_tree("cdf-runtime", edges);
         let packages = package_names(&tree);
         for forbidden in ["cdf-package", "parquet", "arrow-ipc"] {
             assert!(
@@ -53,6 +46,51 @@ fn runtime_graph_excludes_package_implementation_and_codecs() {
                 packages.len() <= 67,
                 "cdf-runtime normal graph contains {} unique packages, above the 67-package ceiling:\n{tree}",
                 packages.len()
+            );
+        }
+    }
+}
+
+#[test]
+fn first_party_codec_graphs_are_parser_local_and_mutually_isolated() {
+    let codecs = [
+        "cdf-format-arrow-ipc",
+        "cdf-format-delimited",
+        "cdf-format-json",
+        "cdf-format-parquet",
+    ];
+    let forbidden_layers = [
+        "cdf-cli",
+        "cdf-project",
+        "cdf-declarative",
+        "cdf-source-files",
+        "cdf-source-rest",
+        "cdf-source-postgres",
+        "cdf-dest-duckdb",
+        "cdf-dest-parquet",
+        "cdf-dest-postgres",
+    ];
+    for codec in codecs {
+        let tree = cargo_tree(codec, "normal");
+        let packages = package_names(&tree);
+        assert!(
+            packages.contains(codec),
+            "missing codec root {codec}:\n{tree}"
+        );
+        assert!(
+            !packages.contains("cdf-formats"),
+            "codec {codec} reaches deleted aggregation crate:\n{tree}"
+        );
+        for sibling in codecs.into_iter().filter(|candidate| *candidate != codec) {
+            assert!(
+                !packages.contains(sibling),
+                "codec {codec} reaches sibling codec {sibling}:\n{tree}"
+            );
+        }
+        for forbidden in forbidden_layers {
+            assert!(
+                !packages.contains(forbidden),
+                "codec {codec} reaches upper-layer package {forbidden}:\n{tree}"
             );
         }
     }

@@ -1,7 +1,7 @@
 Status: recorded
 Created: 2026-07-11
 Updated: 2026-07-11
-Relates-To: .10x/decisions/native-format-driver-and-byte-source-boundary.md, .10x/specs/native-format-codec-runtime.md, .10x/tickets/2026-07-11-p0-fx1-native-format-extension-boundary.md
+Relates-To: .10x/decisions/native-format-driver-and-byte-source-boundary.md, .10x/specs/native-format-codec-runtime.md, .10x/tickets/done/2026-07-11-p0-fx1-native-format-extension-boundary.md
 
 # Format extension shaping evidence
 

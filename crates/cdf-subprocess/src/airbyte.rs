@@ -1,4 +1,7 @@
+use std::sync::Arc;
+
 use cdf_kernel::Result;
+use cdf_memory::MemoryCoordinator;
 use cdf_runtime::ReadOptions;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -79,7 +82,11 @@ pub fn parse_airbyte_ndjson(bytes: &[u8]) -> Result<Vec<AirbyteMessage>> {
         .collect()
 }
 
-pub fn read_airbyte_ndjson_bytes(bytes: &[u8], options: &ReadOptions) -> Result<AirbyteRead> {
+pub fn read_airbyte_ndjson_bytes(
+    bytes: &[u8],
+    options: &ReadOptions,
+    memory: Arc<dyn MemoryCoordinator>,
+) -> Result<AirbyteRead> {
     let messages = parse_airbyte_ndjson(bytes)?;
     let records = messages.iter().filter_map(|message| match message {
         AirbyteMessage::Record(record) => Some((
@@ -88,7 +95,7 @@ pub fn read_airbyte_ndjson_bytes(bytes: &[u8], options: &ReadOptions) -> Result<
         )),
         _ => None,
     });
-    let streams = records_to_stream_reads(records, options)?;
+    let streams = records_to_stream_reads(records, options, memory)?;
     let catalogs = messages
         .iter()
         .filter_map(|message| match message {

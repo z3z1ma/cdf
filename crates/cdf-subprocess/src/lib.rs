@@ -14,7 +14,7 @@ pub use airbyte::{
 };
 pub use command::{
     CommandSpec, DEFAULT_STDERR_LINE_LIMIT, StderrTrace, StdoutFormat, SubprocessOutput,
-    SupervisionOptions,
+    SubprocessRead, SupervisionOptions,
 };
 pub use protocol::{ProtocolState, ProtocolStreamRead, StreamIdentity};
 pub use runner::run_stdout_adapter;

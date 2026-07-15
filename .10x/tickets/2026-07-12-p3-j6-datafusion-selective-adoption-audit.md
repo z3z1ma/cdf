@@ -2,7 +2,7 @@ Status: open
 Created: 2026-07-12
 Updated: 2026-07-12
 Parent: .10x/tickets/2026-07-12-p3-ws-j-datafusion-currency-bridges.md
-Depends-On: .10x/tickets/2026-07-11-p0-fx1-native-format-extension-boundary.md, .10x/tickets/done/2026-07-11-p3-v2-validation-graph-integration.md
+Depends-On: .10x/tickets/done/2026-07-11-p0-fx1-native-format-extension-boundary.md, .10x/tickets/done/2026-07-11-p3-v2-validation-graph-integration.md
 
 # P3 J6: DataFusion selective-adoption audit
 

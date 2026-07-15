@@ -1,7 +1,7 @@
 Status: recorded
 Created: 2026-07-12
 Updated: 2026-07-12
-Relates-To: .10x/tickets/2026-07-11-p0-fx1-native-format-extension-boundary.md
+Relates-To: .10x/tickets/done/2026-07-11-p0-fx1-native-format-extension-boundary.md
 
 # FX1 open format declaration evidence
 
@@ -25,4 +25,3 @@ An external format id can now cross TOML/JSON, compiled source-plan serializatio
 ## Limits
 
 Project schema discovery still maps the standard formats to private adapters. This change alone does not prove external discover/preview/run or delete row-format fallbacks; FX1 remains open.
-

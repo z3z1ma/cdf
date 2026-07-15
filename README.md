@@ -169,7 +169,9 @@ crates/
   cdf-package/         package builder, reader, replay, archive support
   cdf-state-sqlite/    SQLite and in-memory checkpoint stores
   cdf-http/            pagination, retry, auth, egress, and redaction tools
-  cdf-formats/         Arrow-native file readers and writers
+  cdf-runtime/         engine-neutral execution and extension contracts
+  cdf-format-*/        dependency-isolated native format codecs
+  cdf-source-*/        dependency-isolated native source drivers
   cdf-declarative/     Tier 0 resource compiler
   cdf-python/          Python bridge and dlt preview shim
   cdf-wasm/            WASM component boundary
@@ -215,8 +217,8 @@ This is a Cargo workspace.
 ```bash
 cargo metadata --format-version 1 --locked --no-deps >/dev/null
 cargo fmt --all -- --check
-cargo clippy -p cdf-kernel -p cdf-contract -p cdf-package -p cdf-formats -p cdf-engine --lib --locked -- -D warnings
-cargo test -p cdf-kernel -p cdf-contract -p cdf-package -p cdf-formats --lib --locked --no-fail-fast
+cargo clippy -p cdf-kernel -p cdf-contract -p cdf-package -p cdf-runtime -p cdf-engine --lib --locked -- -D warnings
+cargo test -p cdf-kernel -p cdf-contract -p cdf-package -p cdf-runtime --lib --locked --no-fail-fast
 ```
 
 These are the deliberately lean fast checks. Significant changes should follow

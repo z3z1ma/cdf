@@ -104,6 +104,192 @@ fn test_format_registry() -> Arc<cdf_runtime::FormatRegistry> {
     Arc::new(registry)
 }
 
+#[derive(Debug)]
+struct ProjectExternalMockFormat {
+    descriptor: cdf_runtime::FormatDriverDescriptor,
+}
+
+impl ProjectExternalMockFormat {
+    fn new() -> Self {
+        Self {
+            descriptor: cdf_runtime::FormatDriverDescriptor {
+                format_id: cdf_runtime::FormatId::new("project_external_mock").unwrap(),
+                semantic_version: "1.0.0".to_owned(),
+                aliases: Vec::new(),
+                extensions: vec!["mock".to_owned()],
+                mime_types: Vec::new(),
+                magic: Vec::new(),
+                detection_probe: cdf_runtime::FormatDetectionProbe {
+                    prefix_bytes: 4,
+                    suffix_bytes: 0,
+                },
+                option_schema: serde_json::json!({
+                    "type": "object",
+                    "additionalProperties": false
+                }),
+                projection_pushdown: cdf_kernel::PushdownFidelity::Unsupported,
+                predicate_pushdown: cdf_kernel::PushdownFidelity::Unsupported,
+                source_access: cdf_runtime::FormatSourceAccess::Sequential,
+                discovery_kind: cdf_runtime::FormatDiscoveryKind::BoundedContent,
+                decode_unit_policy: "whole_mock_file".to_owned(),
+                error_isolation: cdf_runtime::FormatErrorIsolation::DecodeUnit,
+                minimum_working_set_bytes: 64,
+                maximum_working_set_bytes: 1024 * 1024,
+            },
+        }
+    }
+
+    fn schema() -> Arc<Schema> {
+        Arc::new(Schema::new(vec![Field::new(
+            "value",
+            DataType::Int64,
+            false,
+        )]))
+    }
+}
+
+impl cdf_runtime::FormatDriver for ProjectExternalMockFormat {
+    fn descriptor(&self) -> &cdf_runtime::FormatDriverDescriptor {
+        &self.descriptor
+    }
+
+    fn canonical_options(&self, options: serde_json::Value) -> Result<serde_json::Value> {
+        if options.as_object().is_some_and(serde_json::Map::is_empty) {
+            Ok(options)
+        } else {
+            Err(CdfError::contract(
+                "project external mock options must be empty",
+            ))
+        }
+    }
+
+    fn detect(&self, probe: &cdf_runtime::FormatProbe) -> Result<cdf_runtime::FormatDetection> {
+        Ok(cdf_runtime::FormatDetection {
+            confidence: if probe.prefix.starts_with(b"MOCK") {
+                cdf_runtime::FormatDetectionConfidence::Strong
+            } else {
+                cdf_runtime::FormatDetectionConfidence::None
+            },
+            reason: "project external mock framing".to_owned(),
+        })
+    }
+
+    fn discover(
+        &self,
+        source: Arc<dyn ByteSource>,
+        request: cdf_runtime::FormatDiscoveryRequest,
+    ) -> BoxFuture<'_, Result<cdf_runtime::PhysicalSchemaObservation>> {
+        Box::pin(async move {
+            let input = source
+                .open_sequential(SequentialReadRequest {
+                    preferred_chunk_bytes: 5,
+                    cancellation: request.cancellation,
+                })
+                .await?;
+            let mut cursor = cdf_runtime::AccountedByteCursor::new(input);
+            if cursor
+                .read_exact(5, "project external mock discovery")
+                .await?
+                != b"MOCK\n"
+            {
+                return Err(CdfError::data("project external mock framing mismatch"));
+            }
+            Ok(cdf_runtime::PhysicalSchemaObservation {
+                identity: source.identity().clone(),
+                arrow_schema: Self::schema(),
+                sampled_bytes: 5,
+                sampled_records: 1,
+                evidence: BTreeMap::from([(
+                    "external_driver".to_owned(),
+                    "project_fixture".to_owned(),
+                )]),
+            })
+        })
+    }
+
+    fn prepare_decode(
+        &self,
+        source: Arc<dyn ByteSource>,
+        request: cdf_runtime::DecodePlanningRequest,
+    ) -> BoxFuture<'_, Result<Arc<dyn cdf_runtime::FormatDecodeSession>>> {
+        Box::pin(async move {
+            request.cancellation.check()?;
+            Ok(Arc::new(ProjectExternalMockSession {
+                source,
+                units: vec![cdf_runtime::DecodeUnitPlan {
+                    unit_id: "mock-file".to_owned(),
+                    ordinal: 0,
+                    extent: None,
+                    estimated_working_set_bytes: 64,
+                    independently_retryable: true,
+                }],
+            }) as Arc<dyn cdf_runtime::FormatDecodeSession>)
+        })
+    }
+}
+
+struct ProjectExternalMockSession {
+    source: Arc<dyn ByteSource>,
+    units: Vec<cdf_runtime::DecodeUnitPlan>,
+}
+
+impl cdf_runtime::FormatDecodeSession for ProjectExternalMockSession {
+    fn units(&self) -> &[cdf_runtime::DecodeUnitPlan] {
+        &self.units
+    }
+
+    fn decode(
+        &self,
+        request: cdf_runtime::PhysicalDecodeRequest,
+    ) -> BoxFuture<'_, Result<cdf_runtime::PhysicalDecodeStream>> {
+        Box::pin(async move {
+            self.validate_unit(&request.unit)?;
+            let input = self
+                .source
+                .open_sequential(SequentialReadRequest {
+                    preferred_chunk_bytes: 5,
+                    cancellation: request.cancellation,
+                })
+                .await?;
+            let mut cursor = cdf_runtime::AccountedByteCursor::new(input);
+            if cursor.read_exact(5, "project external mock decode").await? != b"MOCK\n" {
+                return Err(CdfError::data("project external mock framing mismatch"));
+            }
+            let record_batch = RecordBatch::try_new(
+                ProjectExternalMockFormat::schema(),
+                vec![Arc::new(Int64Array::from(vec![42]))],
+            )?;
+            let retained = cdf_memory::record_batch_retained_bytes(&record_batch)?;
+            let lease = reserve(
+                Arc::clone(&request.memory),
+                ReservationRequest::new(
+                    ConsumerKey::new("project-external-mock", MemoryClass::Decode)?,
+                    retained,
+                )?,
+            )
+            .await?;
+            let mut batch = cdf_kernel::Batch::from_record_batch(
+                cdf_kernel::BatchId::new(format!(
+                    "{}-u{:08}-b00000000",
+                    request.batch_id_prefix, request.unit.ordinal
+                ))?,
+                request.resource_id,
+                request.partition_id,
+                cdf_kernel::canonical_arrow_schema_hash(
+                    ProjectExternalMockFormat::schema().as_ref(),
+                )?,
+                record_batch,
+            )?;
+            batch.header.source_position = request.source_position;
+            let physical = cdf_runtime::AccountedPhysicalBatch::new(batch, lease)?;
+            Ok(
+                Box::pin(futures_util::stream::once(async move { Ok(physical) }))
+                    as cdf_runtime::PhysicalDecodeStream,
+            )
+        })
+    }
+}
+
 fn file_dependencies(transport: FileTransportFacade) -> FileRuntimeDependencies {
     let mut transforms = cdf_runtime::ByteTransformRegistry::default();
     transforms
@@ -117,6 +303,24 @@ fn file_dependencies(transport: FileTransportFacade) -> FileRuntimeDependencies 
         execution,
         test_format_registry(),
         Arc::new(transforms),
+    )
+}
+
+fn external_mock_file_dependencies(
+    transport: RecordingHttpFileTransport,
+) -> FileRuntimeDependencies {
+    let mut formats = cdf_runtime::FormatRegistry::default();
+    formats
+        .register(Arc::new(ProjectExternalMockFormat::new()))
+        .unwrap();
+    let execution = test_execution_services();
+    FileRuntimeDependencies::new(
+        FileTransportFacade::new()
+            .with_http_transport(transport)
+            .with_execution_services(execution.clone()),
+        execution,
+        Arc::new(formats),
+        Arc::new(cdf_runtime::ByteTransformRegistry::default()),
     )
 }
 
@@ -1266,7 +1470,7 @@ fn schema_snapshot_arrow_round_trip_covers_closed_type_vocabulary() {
 }
 
 #[test]
-fn local_parquet_discovery_handoff_builds_deterministic_snapshot() {
+fn generic_discovery_builds_deterministic_snapshot_without_transport_identity() {
     let resource_id = ResourceId::new("tlc.yellow").unwrap();
     let schema = Schema::new(vec![
         Field::new("VendorID", DataType::Int32, true),
@@ -1285,46 +1489,31 @@ fn local_parquet_discovery_handoff_builds_deterministic_snapshot() {
         ),
     ]);
 
-    let handoff =
-        schema_snapshot_from_parquet_footer_schema(&resource_id, &schema, source_identity.clone())
-            .unwrap();
-    let repeated =
-        schema_snapshot_from_parquet_footer_schema(&resource_id, &schema, source_identity).unwrap();
+    let metadata = BTreeMap::from([
+        ("driver".to_owned(), "external_table".to_owned()),
+        ("probe".to_owned(), "bounded_metadata".to_owned()),
+    ]);
+    let artifact = SchemaSnapshotArtifact::new(&resource_id, &schema, metadata.clone()).unwrap();
+    let repeated = SchemaSnapshotArtifact::new(&resource_id, &schema, metadata).unwrap();
 
-    assert_eq!(handoff.artifact, repeated.artifact);
-    assert_eq!(handoff.reference, handoff.artifact.reference());
+    assert_eq!(artifact, repeated);
+    assert_eq!(artifact.reference(), repeated.reference());
+    assert_eq!(artifact.metadata["driver"], "external_table");
     assert_eq!(
-        handoff.source_identity["local_path"],
-        "/tmp/private/orders.parquet"
+        artifact.path,
+        format!(".cdf/schemas/tlc.yellow@{}.json", artifact.schema_hash)
     );
-    assert_eq!(
-        handoff.artifact.metadata["probe"],
-        SCHEMA_DISCOVERY_PROBE_PARQUET_FOOTER
-    );
-    assert_eq!(
-        handoff.artifact.metadata["format"],
-        SCHEMA_DISCOVERY_FORMAT_PARQUET
-    );
-    assert_eq!(
-        handoff.artifact.path,
-        format!(
-            ".cdf/schemas/tlc.yellow@{}.json",
-            handoff.artifact.schema_hash
-        )
-    );
-    assert_eq!(
-        handoff.artifact.hash_input["metadata"]["format"],
-        SCHEMA_DISCOVERY_FORMAT_PARQUET
-    );
+    assert_eq!(artifact.hash_input["metadata"]["driver"], "external_table");
 
-    let hash_input = serde_json::to_string(&handoff.artifact.hash_input).unwrap();
+    let hash_input = serde_json::to_string(&artifact.hash_input).unwrap();
     assert!(!hash_input.contains("/tmp/private/orders.parquet"));
+    assert_eq!(source_identity["local_path"], "/tmp/private/orders.parquet");
     assert!(!hash_input.contains("sha256:footer"));
 
     let temp = tempfile::tempdir().unwrap();
     let store = SchemaSnapshotStore::new(temp.path());
-    store.write(&handoff.artifact).unwrap();
-    assert_eq!(store.read(&handoff.reference).unwrap(), handoff.artifact);
+    store.write(&artifact).unwrap();
+    assert_eq!(store.read(&artifact.reference()).unwrap(), artifact);
 }
 
 #[test]
@@ -1401,10 +1590,7 @@ fn generic_schema_discovery_dispatch_preserves_local_parquet_behavior_without_wr
         discovery.snapshot.artifact.metadata["probe"],
         "registered-format-discovery"
     );
-    assert_eq!(
-        discovery.snapshot.artifact.metadata["format"],
-        SCHEMA_DISCOVERY_FORMAT_PARQUET
-    );
+    assert_eq!(discovery.snapshot.artifact.metadata["format"], "parquet");
     assert_eq!(
         discovery.snapshot.artifact.metadata["cdf:normalizer"],
         NORMALIZER_NAMECASE_V1
@@ -1463,6 +1649,88 @@ fn generic_discover_prepare_preserves_local_parquet_autopin_behavior() {
         snapshot.schema_hash,
         discovery.snapshot.artifact.schema_hash
     );
+}
+
+#[test]
+fn project_external_codec_discovers_pins_previews_and_runs_over_remote_provider() {
+    let temp = tempfile::tempdir().unwrap();
+    write_http_external_mock_project(temp.path());
+    let resource = compile_single_project_resource(temp.path());
+    let transport = RecordingHttpFileTransport::new(b"MOCK\n".to_vec());
+    let dependencies = external_mock_file_dependencies(transport.clone());
+    let secrets = EnvSecretProvider::from_map(std::iter::empty::<(&str, &str)>());
+
+    let prepared = prepare_discover_resource_with_file_dependencies(
+        temp.path(),
+        &resource,
+        &secrets,
+        dependencies.clone(),
+    )
+    .unwrap();
+    let discovery = prepared.discovery.as_ref().unwrap();
+    assert_eq!(
+        discovery.snapshot.artifact.metadata["format"],
+        "project_external_mock"
+    );
+    assert_eq!(
+        discovery.snapshot.source_identity["external_driver"],
+        "project_fixture"
+    );
+    assert_eq!(discovery.snapshot.artifact.schema.fields[0].name, "value");
+    assert!(
+        temp.path()
+            .join(&discovery.snapshot.artifact.path)
+            .is_file()
+    );
+    let SchemaSource::Discovered { snapshot } = &prepared.resource.descriptor().schema_source
+    else {
+        panic!("external codec cold discovery must pin its schema");
+    };
+    assert_eq!(
+        snapshot.schema_hash,
+        discovery.snapshot.artifact.schema_hash
+    );
+
+    let runtime = prepared
+        .resource
+        .to_file_resource(dependencies.clone())
+        .unwrap();
+    let plan = live_plan_for_stream(&runtime, "pkg-project-external-remote");
+    assert_eq!(plan.scan.partitions.len(), 1);
+    assert_eq!(
+        plan.scan.partitions[0].metadata["format"],
+        "project_external_mock"
+    );
+    let preview =
+        futures_executor::block_on(runtime.open_preview(plan.scan.partitions[0].clone())).unwrap();
+    let preview_rows = futures_executor::block_on_stream(preview)
+        .map(|batch| batch.unwrap().header.row_count)
+        .sum::<u64>();
+    assert_eq!(preview_rows, 1);
+
+    let report = futures_executor::block_on(run_project(ProjectRunRequest {
+        resource: ProjectRunSource::file(&runtime),
+        plan,
+        package_root: temp.path().join(".cdf/packages"),
+        state_store_path: temp.path().join(".cdf/state.db"),
+        pipeline_id: PipelineId::new("pipeline-project-external-remote").unwrap(),
+        package_id: "pkg-project-external-remote".to_owned(),
+        checkpoint_id: CheckpointId::new("checkpoint-project-external-remote").unwrap(),
+        destination: ResolvedProjectDestination::duckdb(
+            temp.path().join(".cdf/dev.duckdb"),
+            TargetName::new("external_events").unwrap(),
+        )
+        .unwrap(),
+        run_id: Some(RunId::new("run-project-external-remote").unwrap()),
+        event_sink: None,
+        after_receipt_verified: None,
+    }))
+    .unwrap();
+    assert_eq!(report.row_count, 1);
+    assert_eq!(report.segment_count, 1);
+    assert!(transport.requests().iter().any(|request| {
+        request.method == HttpMethod::Get && !request.headers.contains_key("range")
+    }));
 }
 
 #[test]
@@ -2809,10 +3077,7 @@ fn all_files_discovery_uses_exact_verified_baseline_and_schema_only_effective_ha
         artifacts.discovery.normalized_schema.as_ref(),
         BTreeMap::from([
             ("cdf:normalizer".to_owned(), "namecase-v1".to_owned()),
-            (
-                "format".to_owned(),
-                SCHEMA_DISCOVERY_FORMAT_PARQUET.to_owned(),
-            ),
+            ("format".to_owned(), "parquet".to_owned()),
             ("probe".to_owned(), "registered-format-discovery".to_owned()),
             ("source_kind".to_owned(), "files".to_owned()),
             (
@@ -3262,6 +3527,16 @@ trust = "governed"
     let secret_provider = EnvSecretProvider::from_map(std::iter::empty::<(&str, &str)>());
     let prepared_payloads = cdf_runtime::PreparedSourcePayloads::default();
     let execution = test_execution_services();
+    execution
+        .ensure_blocking_lanes(&[cdf_runtime::BlockingLaneSpec {
+            lane_id: "rest-source.sync".to_owned(),
+            maximum_concurrency: 8,
+            cpu_slot_cost: 1,
+            native_internal_parallelism: 1,
+            affinity: cdf_runtime::LaneAffinity::Shared,
+            interruption: cdf_runtime::InterruptionSafety::CooperativeOnly,
+        }])
+        .unwrap();
     let dependencies = cdf_declarative::RestDiscoveryDependencies::new(
         &transport,
         &secret_provider,
@@ -3300,6 +3575,7 @@ trust = "governed"
         .resource
         .to_rest_resource(
             cdf_declarative::RestRuntimeDependencies::new(transport.clone())
+                .with_execution_services(execution.clone())
                 .with_prepared_payloads(prepared_payloads.clone()),
         )
         .unwrap();
@@ -3819,6 +4095,43 @@ write_disposition = "append"
 trust = "governed"
 "#
         ),
+    )
+    .unwrap();
+}
+
+fn write_http_external_mock_project(root: &Path) {
+    fs::create_dir_all(root.join("resources")).unwrap();
+    fs::write(
+        root.join("cdf.toml"),
+        r#"
+[project]
+name = "external_remote"
+default_environment = "dev"
+normalizer = "namecase-v1"
+
+[environments.dev]
+state = "sqlite://.cdf/state.db"
+packages = ".cdf/packages"
+destination = "duckdb://.cdf/dev.duckdb"
+
+[resources."external.*"]
+source = "resources/files.toml"
+"#,
+    )
+    .unwrap();
+    fs::write(
+        root.join("resources/files.toml"),
+        r#"
+[source.external]
+kind = "files"
+root = "https://data.example.test/custom"
+
+[resource.events]
+glob = "events.mock"
+format = "project_external_mock"
+write_disposition = "append"
+trust = "governed"
+"#,
     )
     .unwrap();
 }

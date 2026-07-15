@@ -6,7 +6,7 @@ use std::{
 
 use arrow_array::{RecordBatch, new_null_array};
 use arrow_schema::{DataType, Field, Schema, SchemaRef, TimeUnit};
-use cdf_formats::{JsonOptions, read_ndjson_bytes_with_declared_schema};
+use cdf_contract::{ContractPolicy, TypePolicy, reconcile_schema};
 use cdf_http::{
     AuthRefreshHook, AuthScheme, AuthSession, HttpMethod, HttpRequest, HttpResponse, HttpTransport,
     Paginator, RateLimiter, RetryBudget, RetryDecision, RetryPolicy, RetryUnit, SecretProvider,
@@ -24,8 +24,9 @@ use cdf_memory::{
     ConsumerKey, MemoryClass, MemoryCoordinator, MemoryLease, ReservationRequest, reserve_blocking,
 };
 use cdf_runtime::{
-    ExecutionServices, PreparedSourcePayload, PreparedSourcePayloadKey, PreparedSourcePayloads,
-    ReadOptions, SourceDiscoveryRequest, SourceDriverId, artifact_hash,
+    BoundedFormatRequest, DecodeSchemaPlan, ExecutionServices, MemoryByteSource,
+    PreparedSourcePayload, PreparedSourcePayloadKey, PreparedSourcePayloads, ReadOptions,
+    SourceDiscoveryRequest, SourceDriverId, artifact_hash, decode_bounded_format,
 };
 use futures_util::stream;
 use serde_json::{Map, Value};
@@ -264,15 +265,30 @@ impl ResourceStream for RestResource {
         let descriptor = self.descriptor.clone();
         let schema = Arc::clone(&self.schema);
         let plan = self.plan.clone();
+        let type_policy_allowances = self.type_policy_allowances;
         let dependencies = self.dependencies.clone();
 
         Box::pin(async move {
             let execution = dependencies.execution.clone();
             let batches = match execution {
                 Some(execution) => execution.run_blocking("rest-source.sync", move || {
-                    execute_rest(&descriptor, schema, &plan, &partition, dependencies)
+                    execute_rest(
+                        &descriptor,
+                        schema,
+                        &plan,
+                        &partition,
+                        type_policy_allowances,
+                        dependencies,
+                    )
                 })?,
-                None => execute_rest(&descriptor, schema, &plan, &partition, dependencies)?,
+                None => execute_rest(
+                    &descriptor,
+                    schema,
+                    &plan,
+                    &partition,
+                    type_policy_allowances,
+                    dependencies,
+                )?,
             };
             let stream = Box::pin(stream::iter(batches.into_iter().map(Ok))) as BatchStream;
             Ok(OpenedPartitionStream::without_completion(stream))
@@ -408,6 +424,7 @@ fn execute_rest(
     schema: SchemaRef,
     plan: &RestResourcePlan,
     partition: &PartitionPlan,
+    type_policy_allowances: TypePolicyAllowances,
     dependencies: RestRuntimeDependencies,
 ) -> Result<Vec<Batch>> {
     validate_partition(descriptor, plan, partition)?;
@@ -472,7 +489,23 @@ fn execute_rest(
         response.page.fields = decoded.pagination_fields;
 
         if !decoded.records.is_empty() {
-            let page = reconcile_rest_page(&schema, descriptor, partition, &decoded.records)?;
+            let memory = dependencies
+                .execution
+                .as_ref()
+                .ok_or_else(|| {
+                    CdfError::internal(
+                        "REST execution requires injected execution services for memory authority",
+                    )
+                })?
+                .memory();
+            let page = reconcile_rest_page(
+                &schema,
+                descriptor,
+                partition,
+                &decoded.records,
+                type_policy_allowances,
+                memory,
+            )?;
             if let Some(page_plan) = &page.schema_coercion_plan {
                 if let Some(previous) = &reconciliation_plan
                     && previous != page_plan
@@ -944,7 +977,8 @@ impl InferredRestField {
             Some(InferredRestKind::Int64) => DataType::Int64,
             Some(InferredRestKind::UInt64) => DataType::UInt64,
             Some(InferredRestKind::Float64) => DataType::Float64,
-            Some(InferredRestKind::Utf8) | None => DataType::Utf8,
+            Some(InferredRestKind::Utf8) => DataType::Utf8,
+            None => DataType::Null,
         })
     }
 }
@@ -1009,7 +1043,20 @@ fn reconcile_rest_page(
     descriptor: &ResourceDescriptor,
     partition: &PartitionPlan,
     records: &[Map<String, Value>],
+    type_policy_allowances: TypePolicyAllowances,
+    memory: Arc<dyn MemoryCoordinator>,
 ) -> Result<ReconciledRestPage> {
+    let mut type_policy = ContractPolicy::default().types;
+    type_policy.coerce_types = type_policy_allowances.coerce_types;
+    type_policy.allow_lossy_mapping = type_policy_allowances.allow_lossy_mapping;
+    let physical_schema = infer_admitted_rest_physical_schema(schema, records, &type_policy)?;
+    let physical_schema_hash = cdf_kernel::canonical_arrow_schema_hash(&physical_schema)?;
+    let reconciliation = reconcile_schema(&physical_schema, schema.as_ref(), &type_policy)?;
+    let reconciliation_plan = serde_json::to_string(&reconciliation.plan).map_err(|error| {
+        CdfError::internal(format!(
+            "serialize REST schema reconciliation plan: {error}"
+        ))
+    })?;
     let mut ndjson = Vec::new();
     for record in records {
         serde_json::to_writer(&mut ndjson, record)
@@ -1021,12 +1068,26 @@ fn reconcile_rest_page(
         partition.partition_id.clone(),
     )
     .with_batch_size(records.len().max(1))?;
-    let read = read_ndjson_bytes_with_declared_schema(
-        &ndjson,
-        &read_options,
-        &JsonOptions::default(),
-        schema.clone(),
-    )?;
+    let read = futures_executor::block_on(async {
+        let source = Arc::new(
+            MemoryByteSource::from_bytes(
+                format!(
+                    "rest-page:{}:{}",
+                    descriptor.resource_id, partition.partition_id
+                ),
+                ndjson,
+                Arc::clone(&memory),
+            )
+            .await?,
+        );
+        decode_bounded_format(
+            Arc::new(cdf_format_json::NdjsonFormatDriver::new()?),
+            source,
+            BoundedFormatRequest::new(read_options, memory)
+                .with_schema(DecodeSchemaPlan::fixed_admission(schema.clone())),
+        )
+        .await
+    })?;
     let [format_batch] = read.batches.as_slice() else {
         return Err(CdfError::internal(
             "REST page reconciliation expected exactly one format batch",
@@ -1073,26 +1134,142 @@ fn reconcile_rest_page(
         fact.source_position = source_position.clone();
     }
 
-    let record_batch = format_batch
+    let decoded_batch = format_batch
         .record_batch()
         .ok_or_else(|| CdfError::internal("REST format batch has no Arrow payload"))?
         .clone();
-    let physical_schema = if format_batch.header.observation_representation
-        == cdf_kernel::PhysicalObservationRepresentation::MaterializedOutput
-    {
-        format_batch.header.materialized_physical_schema()?
-    } else {
-        record_batch.schema().as_ref().clone()
-    };
+    let nullable_sources = residual_candidates
+        .iter()
+        .filter(|candidate| candidate.expected_field().is_some())
+        .filter_map(|candidate| candidate.source_path().first().map(String::as_str))
+        .collect::<BTreeSet<_>>();
+    let output_schema = Arc::new(Schema::new_with_metadata(
+        reconciliation
+            .schema
+            .fields()
+            .iter()
+            .map(|field| {
+                let source = source_name(field.as_ref()).unwrap_or_else(|| field.name());
+                Arc::new(
+                    field
+                        .as_ref()
+                        .clone()
+                        .with_nullable(field.is_nullable() || nullable_sources.contains(source)),
+                )
+            })
+            .collect::<Vec<_>>(),
+        reconciliation.schema.metadata().clone(),
+    ));
+    let record_batch = RecordBatch::try_new(output_schema, decoded_batch.columns().to_vec())
+        .map_err(CdfError::from)?;
 
     Ok(ReconciledRestPage {
         record_batch,
         physical_schema,
-        observed_schema_hash: format_batch.header.observed_schema_hash.clone(),
+        observed_schema_hash: physical_schema_hash,
         source_position,
         pre_contract_quarantine,
         residual_candidates,
-        schema_coercion_plan: format_batch.header.schema_coercion_plan.clone(),
+        schema_coercion_plan: Some(reconciliation_plan),
+    })
+}
+
+fn infer_admitted_rest_physical_schema(
+    declared: &Schema,
+    records: &[Map<String, Value>],
+    type_policy: &TypePolicy,
+) -> Result<Schema> {
+    let declared_fields = declared
+        .fields()
+        .iter()
+        .map(|field| {
+            (
+                source_name(field.as_ref()).unwrap_or_else(|| field.name()),
+                field.as_ref(),
+            )
+        })
+        .collect::<BTreeMap<_, _>>();
+    let mut admitted = Vec::with_capacity(records.len());
+    for record in records {
+        let mut row = record.clone();
+        row.retain(|source, _| declared_fields.contains_key(source.as_str()));
+        for (source, field) in &declared_fields {
+            let Some(value) = row.get(*source) else {
+                continue;
+            };
+            if !value.is_null() && declared_rest_type_mismatch(field, value, type_policy)? {
+                row.insert((*source).to_owned(), Value::Null);
+            }
+        }
+        admitted.push(row);
+    }
+    let inferred = infer_rest_sample_schema(&admitted)?;
+    let fields = declared
+        .fields()
+        .iter()
+        .filter_map(|declared_field| {
+            let source =
+                source_name(declared_field.as_ref()).unwrap_or_else(|| declared_field.name());
+            inferred
+                .fields()
+                .iter()
+                .find(|field| field.name() == source)
+        })
+        .map(|field| {
+            if field.data_type() != &DataType::Null {
+                return field.as_ref().clone();
+            }
+            declared_fields.get(field.name().as_str()).map_or_else(
+                || field.as_ref().clone(),
+                |declared| {
+                    Field::new(field.name(), declared.data_type().clone(), true)
+                        .with_metadata(field.metadata().clone())
+                },
+            )
+        })
+        .collect::<Vec<_>>();
+    Ok(Schema::new_with_metadata(
+        fields,
+        inferred.metadata().clone(),
+    ))
+}
+
+fn declared_rest_type_mismatch(
+    field: &Field,
+    value: &Value,
+    type_policy: &TypePolicy,
+) -> Result<bool> {
+    Ok(match field.data_type() {
+        DataType::Boolean => !(value.is_boolean() || value.is_string() && type_policy.coerce_types),
+        DataType::Int8 | DataType::Int16 | DataType::Int32 | DataType::Int64 => {
+            !(value.as_i64().is_some()
+                || value.as_u64().is_some_and(|value| value <= i64::MAX as u64)
+                || value.is_number() && type_policy.allow_lossy_mapping
+                || value.is_string() && type_policy.coerce_types)
+        }
+        DataType::UInt8 | DataType::UInt16 | DataType::UInt32 | DataType::UInt64 => {
+            !(value.as_u64().is_some()
+                || value.is_number() && type_policy.allow_lossy_mapping
+                || value.is_string() && type_policy.coerce_types)
+        }
+        DataType::Float16
+        | DataType::Float32
+        | DataType::Float64
+        | DataType::Decimal32(_, _)
+        | DataType::Decimal64(_, _)
+        | DataType::Decimal128(_, _)
+        | DataType::Decimal256(_, _) => {
+            !(value.is_number() || value.is_string() && type_policy.coerce_types)
+        }
+        DataType::Utf8 | DataType::LargeUtf8 | DataType::Date32 | DataType::Timestamp(_, _) => {
+            !value.is_string()
+        }
+        other => {
+            return Err(CdfError::contract(format!(
+                "REST bounded JSON admission does not support field {:?} with type {other}",
+                field.name()
+            )));
+        }
     })
 }
 

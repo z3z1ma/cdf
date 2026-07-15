@@ -1,7 +1,7 @@
 Status: recorded
 Created: 2026-07-12
 Updated: 2026-07-12
-Relates-To: .10x/tickets/2026-07-11-p0-fx1-native-format-extension-boundary.md
+Relates-To: .10x/tickets/done/2026-07-11-p0-fx1-native-format-extension-boundary.md
 
 # FX1 registered format discovery evidence
 
@@ -25,4 +25,3 @@ Registered binary formats now use one discovery interpretation and project code 
 ## Limits
 
 Format confirmation still has first-party magic signaling, row formats still bypass `FormatDriver`, and native remote `ByteSource` is G1 work. This is not the full external-codec law or FX1 closure.
-

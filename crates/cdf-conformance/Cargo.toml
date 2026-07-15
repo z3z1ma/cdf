@@ -31,7 +31,7 @@ serde_json = "1.0.150"
 [dev-dependencies]
 arrow-cast = "59.1.0"
 cdf-cli = { path = "../cdf-cli" }
-cdf-formats = { path = "../cdf-formats" }
+cdf-memory = { path = "../cdf-memory" }
 cdf-python = { path = "../cdf-python" }
 cdf-subprocess = { path = "../cdf-subprocess" }
 duckdb = { version = "1.10504.0", features = ["bundled"] }

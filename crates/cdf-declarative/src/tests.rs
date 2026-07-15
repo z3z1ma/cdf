@@ -87,6 +87,28 @@ fn test_file_dependencies(
     )
 }
 
+#[allow(non_snake_case)]
+mod RestRuntimeDependencies {
+    pub fn new(
+        transport: impl cdf_http::HttpTransport + 'static,
+    ) -> cdf_source_rest::RestRuntimeDependencies {
+        let execution = cdf_engine::StandaloneExecutionHost::default_services(64 * 1024 * 1024)
+            .unwrap()
+            .1;
+        execution
+            .ensure_blocking_lanes(&[cdf_runtime::BlockingLaneSpec {
+                lane_id: "rest-source.sync".to_owned(),
+                maximum_concurrency: 8,
+                cpu_slot_cost: 1,
+                native_internal_parallelism: 1,
+                affinity: cdf_runtime::LaneAffinity::Shared,
+                interruption: cdf_runtime::InterruptionSafety::CooperativeOnly,
+            }])
+            .unwrap();
+        cdf_source_rest::RestRuntimeDependencies::new(transport).with_execution_services(execution)
+    }
+}
+
 const BOOK_REST_EXAMPLE: &str = r#"
 [source.github]
 kind = "rest"
@@ -294,7 +316,10 @@ fn rest_runtime_executes_json_pages_with_explicit_dependencies() {
     assert_eq!(batches[1].header.row_count, 1);
     assert_eq!(
         batches[0].header.observed_schema_hash,
-        declared_schema_hash(&resource)
+        cdf_kernel::canonical_arrow_schema_hash(
+            &batches[0].header.materialized_physical_schema().unwrap()
+        )
+        .unwrap()
     );
 
     let first = batches[0].record_batch().unwrap();
@@ -442,7 +467,17 @@ fn rest_runtime_executes_with_discovered_snapshot_hash() {
         drain_batches(futures_executor::block_on(rest.open(plan.partitions[0].clone())).unwrap());
 
     assert_eq!(batches.len(), 1);
-    assert_eq!(batches[0].header.observed_schema_hash, snapshot_hash);
+    assert_eq!(
+        batches[0].header.observed_schema_hash,
+        cdf_kernel::canonical_arrow_schema_hash(
+            &batches[0].header.materialized_physical_schema().unwrap()
+        )
+        .unwrap()
+    );
+    assert!(matches!(
+        resource.descriptor().schema_source,
+        SchemaSource::Discovered { ref snapshot } if snapshot.schema_hash == snapshot_hash
+    ));
 }
 
 #[test]
@@ -628,11 +663,12 @@ fn rest_runtime_satisfies_execution_conformance_helper() {
     let partition = PartitionId::new("rest").unwrap();
     let case = ResourceExecutionConformanceCase::new(
         request,
-        declared_schema_hash(&resource),
+        cdf_kernel::canonical_arrow_schema_hash(resource.schema().as_ref()).unwrap(),
         [partition.clone()],
         3,
     )
-    .with_expected_partition_rows([(partition, 3)]);
+    .with_expected_partition_rows([(partition, 3)])
+    .allow_observed_schema_variance();
 
     futures_executor::block_on(assert_resource_stream_execution_conformance(&rest, [case]));
 }
@@ -3640,13 +3676,6 @@ fn expect_open_or_stream_error(
             Some(Ok(_)) => panic!("malformed input emitted a partial batch before failing"),
             None => panic!("malformed input completed without an error"),
         },
-    }
-}
-
-fn declared_schema_hash(resource: &CompiledResource) -> SchemaHash {
-    match &resource.descriptor().schema_source {
-        SchemaSource::Declared { schema_hash, .. } => schema_hash.clone(),
-        other => panic!("expected declared schema hash, got {other:?}"),
     }
 }
 

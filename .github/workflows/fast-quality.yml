@@ -46,7 +46,7 @@ jobs:
           -p cdf-kernel
           -p cdf-contract
           -p cdf-package
-          -p cdf-formats
+          -p cdf-runtime
           -p cdf-engine
           --lib
           --locked
@@ -58,7 +58,7 @@ jobs:
           -p cdf-kernel
           -p cdf-contract
           -p cdf-package
-          -p cdf-formats
+          -p cdf-runtime
           --lib
           --locked
           --no-fail-fast

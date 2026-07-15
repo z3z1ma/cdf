@@ -9,7 +9,6 @@ members = [
     "crates/cdf-memory",
     "crates/cdf-state-sqlite",
     "crates/cdf-http",
-    "crates/cdf-formats",
     "crates/cdf-format-parquet",
     "crates/cdf-format-arrow-ipc",
     "crates/cdf-format-delimited",

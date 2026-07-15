@@ -1040,6 +1040,15 @@ async fn recover_decode_window(
             }
             wrote = true;
         }
+        for (source, field) in &expected {
+            if !seen.contains(*source) && !field.is_nullable() {
+                return Err(CdfError::contract(format!(
+                    "declared NDJSON field {:?} with source name {source:?} was not observed in record {}",
+                    field.name(),
+                    source_row_ordinal + batch_row as u64
+                )));
+            }
+        }
         sanitized.extend_from_slice(b"}\n");
         batch_row = batch_row
             .checked_add(1)
@@ -1079,11 +1088,31 @@ async fn recover_decode_window(
             "recovered NDJSON row count diverged from its source window",
         ));
     }
-    let recovered = RecordBatch::try_new(
-        Arc::clone(&request.schema.decoder_schema),
-        recovered.columns().to_vec(),
-    )
-    .map_err(CdfError::from)?;
+    let nullable_sources = candidates
+        .iter()
+        .filter(|candidate| candidate.expected_field().is_some())
+        .filter_map(|candidate| candidate.source_path().first().map(String::as_str))
+        .collect::<BTreeSet<_>>();
+    let recovered_schema = Arc::new(Schema::new_with_metadata(
+        request
+            .schema
+            .decoder_schema
+            .fields()
+            .iter()
+            .map(|field| {
+                let source = source_name(field.as_ref()).unwrap_or_else(|| field.name());
+                Arc::new(
+                    field
+                        .as_ref()
+                        .clone()
+                        .with_nullable(field.is_nullable() || nullable_sources.contains(source)),
+                )
+            })
+            .collect::<Vec<_>>(),
+        request.schema.decoder_schema.metadata().clone(),
+    ));
+    let recovered = RecordBatch::try_new(recovered_schema, recovered.columns().to_vec())
+        .map_err(CdfError::from)?;
     Ok((recovered, candidates))
 }
 

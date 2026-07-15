@@ -1,17 +1,23 @@
-use std::process::{ExitStatus, Stdio};
+use std::{
+    process::{ExitStatus, Stdio},
+    sync::Arc,
+};
 
-use cdf_formats::JsonOptions;
 use cdf_kernel::{CdfError, ErrorKind, Result};
-use cdf_runtime::ReadOptions;
+use cdf_memory::MemoryCoordinator;
+use cdf_runtime::{BoundedFormatRequest, MemoryByteSource, ReadOptions, decode_bounded_format};
 use tokio::{process::Command, time::timeout};
 
-use crate::{CommandSpec, StderrTrace, StdoutFormat, SubprocessOutput, SupervisionOptions};
+use crate::{
+    CommandSpec, StderrTrace, StdoutFormat, SubprocessOutput, SubprocessRead, SupervisionOptions,
+};
 
 pub async fn run_stdout_adapter(
     command: &CommandSpec,
     stdout_format: StdoutFormat,
     read_options: &ReadOptions,
     supervision: &SupervisionOptions,
+    memory: Arc<dyn MemoryCoordinator>,
 ) -> Result<SubprocessOutput> {
     let mut process = Command::new(&command.program);
     process
@@ -53,14 +59,31 @@ pub async fn run_stdout_adapter(
         ));
     }
 
-    let read = match stdout_format {
+    let driver: Arc<dyn cdf_runtime::FormatDriver> = match stdout_format {
         StdoutFormat::ArrowIpc => {
-            cdf_formats::read_arrow_ipc_stream(output.stdout.as_slice(), read_options)
+            Arc::new(cdf_format_arrow_ipc::ArrowIpcStreamFormatDriver::new()?)
         }
-        StdoutFormat::Ndjson => {
-            cdf_formats::read_ndjson_bytes(&output.stdout, read_options, &JsonOptions::default())
-        }
-    }
+        StdoutFormat::Ndjson => Arc::new(cdf_format_json::NdjsonFormatDriver::new()?),
+    };
+    let source = Arc::new(
+        MemoryByteSource::from_bytes("subprocess:stdout", output.stdout, Arc::clone(&memory))
+            .await
+            .map_err(|error| add_stderr_context(error, &stderr, stdout_format))?,
+    );
+    let read = decode_bounded_format(
+        driver,
+        source,
+        BoundedFormatRequest::new(read_options.clone(), memory),
+    )
+    .await
+    .and_then(|read| {
+        SubprocessRead::from_bounded(
+            read,
+            cdf_kernel::ScopeKey::Stream {
+                name: "subprocess_stdout".to_owned(),
+            },
+        )
+    })
     .map_err(|error| add_stderr_context(error, &stderr, stdout_format))?;
 
     Ok(SubprocessOutput {

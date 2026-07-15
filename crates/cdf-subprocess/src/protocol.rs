@@ -1,11 +1,13 @@
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, sync::Arc};
 
-use cdf_formats::{FormatRead, JsonOptions};
 use cdf_kernel::{CdfError, ForeignState, Result, ScopeKey, SourcePosition};
-use cdf_runtime::ReadOptions;
+use cdf_memory::MemoryCoordinator;
+use cdf_runtime::{BoundedFormatRequest, MemoryByteSource, ReadOptions, decode_bounded_format};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
+
+use crate::SubprocessRead;
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct StreamIdentity {
@@ -47,7 +49,7 @@ impl StreamIdentity {
 #[derive(Clone, Debug)]
 pub struct ProtocolStreamRead {
     pub stream: StreamIdentity,
-    pub read: FormatRead,
+    pub read: SubprocessRead,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -60,6 +62,7 @@ pub struct ProtocolState {
 pub(crate) fn records_to_stream_reads(
     records: impl IntoIterator<Item = (StreamIdentity, Value)>,
     options: &ReadOptions,
+    memory: Arc<dyn MemoryCoordinator>,
 ) -> Result<Vec<ProtocolStreamRead>> {
     let mut by_stream = BTreeMap::<StreamIdentity, Vec<Value>>::new();
     for (stream, record) in records {
@@ -74,11 +77,22 @@ pub(crate) fn records_to_stream_reads(
             stream.batch_id_part()
         ))?;
         let bytes = ndjson_bytes(&rows)?;
-        let mut read =
-            cdf_formats::read_ndjson_bytes(&bytes, &read_options, &JsonOptions::default())?;
-        read.descriptor.state_scope = ScopeKey::Stream {
-            name: stream.scope_name(),
-        };
+        let source = futures_executor::block_on(MemoryByteSource::from_bytes(
+            format!("subprocess-protocol:{}", stream.scope_name()),
+            bytes,
+            Arc::clone(&memory),
+        ))?;
+        let bounded = futures_executor::block_on(decode_bounded_format(
+            Arc::new(cdf_format_json::NdjsonFormatDriver::new()?),
+            Arc::new(source),
+            BoundedFormatRequest::new(read_options, Arc::clone(&memory)),
+        ))?;
+        let read = SubprocessRead::from_bounded(
+            bounded,
+            ScopeKey::Stream {
+                name: stream.scope_name(),
+            },
+        )?;
         streams.push(ProtocolStreamRead { stream, read });
     }
 

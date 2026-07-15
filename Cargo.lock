@@ -825,9 +825,9 @@ dependencies = [
  "cdf-dest-postgres",
  "cdf-engine",
  "cdf-format-json",
- "cdf-formats",
  "cdf-http",
  "cdf-kernel",
+ "cdf-memory",
  "cdf-package",
  "cdf-package-contract",
  "cdf-project",
@@ -1074,32 +1074,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "cdf-formats"
-version = "0.1.0"
-dependencies = [
- "arrow-array 59.1.0",
- "arrow-cast 59.1.0",
- "arrow-csv",
- "arrow-ipc",
- "arrow-json",
- "arrow-schema 59.1.0",
- "bytes",
- "cdf-conformance",
- "cdf-contract",
- "cdf-kernel",
- "cdf-package",
- "cdf-runtime",
- "futures-executor",
- "futures-util",
- "hex",
- "parquet",
- "serde",
- "serde_json",
- "sha2 0.10.9",
- "tempfile",
-]
-
-[[package]]
 name = "cdf-http"
 version = "0.1.0"
 dependencies = [
@@ -1309,11 +1283,13 @@ version = "0.1.0"
 dependencies = [
  "arrow-array 59.1.0",
  "arrow-schema 59.1.0",
- "cdf-formats",
+ "cdf-contract",
+ "cdf-format-json",
  "cdf-http",
  "cdf-kernel",
  "cdf-memory",
  "cdf-runtime",
+ "futures-executor",
  "futures-util",
  "serde",
  "serde_json",
@@ -1338,10 +1314,13 @@ dependencies = [
  "arrow-array 59.1.0",
  "arrow-ipc",
  "arrow-schema 59.1.0",
- "cdf-formats",
+ "cdf-format-arrow-ipc",
+ "cdf-format-json",
  "cdf-kernel",
+ "cdf-memory",
  "cdf-package",
  "cdf-runtime",
+ "futures-executor",
  "hex",
  "serde",
  "serde_json",

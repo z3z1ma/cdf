@@ -1,7 +1,7 @@
 Status: recorded
 Created: 2026-07-12
 Updated: 2026-07-12
-Relates-To: .10x/tickets/2026-07-11-p3-b1-streaming-byte-transforms.md, .10x/tickets/2026-07-11-p0-fx1-native-format-extension-boundary.md
+Relates-To: .10x/tickets/2026-07-11-p3-b1-streaming-byte-transforms.md, .10x/tickets/done/2026-07-11-p0-fx1-native-format-extension-boundary.md
 
 # Native Brotli driver
 
@@ -27,4 +27,3 @@ Brotli can be a bounded, parser-local transform with throughput essentially equa
 ## Limits
 
 The managed-memory test proves CDF lease behavior, not exact allocator RSS inside Rust Brotli. B1's stress/RSS layer must falsify the 32 MiB conservative native reservation. Registry composition and product-default expansion policy remain open.
-

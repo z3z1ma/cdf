@@ -141,7 +141,7 @@ const P2_SCENARIOS: &[P2Scenario] = &[
         tests: &[
             "crates/cdf-conformance/src/run_matrix/data_onramp.rs::p2_preview_run_parity_law_covers_supported_archetypes",
             "crates/cdf-conformance/src/run_matrix/data_onramp.rs::p2_s8_multifile_preview_traverses_the_same_planned_partitions_as_run",
-            "crates/cdf-cli/src/tests.rs::run_multi_file_parquet_evolves_from_immutable_pinned_baseline_with_exact_observations",
+            "crates/cdf-cli/src/tests.rs::pinned_multi_file_parquet_keeps_fixed_schema_and_admits_new_physical_schemas_in_stream",
             "crates/cdf-cli/src/tests.rs::sampled_discovery_renders_every_cli_path_and_routes_unseen_drift_to_package_quarantine",
             "crates/cdf-cli/src/tests.rs::sampled_pin_captures_unseen_field_then_fresh_discovery_promotes_without_source_replay",
             "crates/cdf-project/src/discovery_manifest.rs::stratified_hash_selector_large_set_is_executor_budget_independent",
@@ -196,18 +196,18 @@ const P2_FRICTIONS: &[P2FrictionRow] = &[
         id: 4,
         closed_tests: &[
             "crates/cdf-contract/src/tests.rs::schema_reconciliation_records_lossless_widenings_and_physical_type",
-            "crates/cdf-formats/src/tests.rs::declared_parquet_int32_declared_int64_materializes_lossless_widening",
-            "crates/cdf-formats/src/tests.rs::declared_parquet_float32_declared_float64_materializes_lossless_widening",
+            "crates/cdf-contract/src/tests.rs::schema_coercion_plan_from_reconciled_schema_records_widened_and_preserved_fields",
+            "crates/cdf-contract/src/tests.rs::shared_coercion_materializer_widens_projects_and_materializes_missing_nulls",
         ],
         open_tickets: &[],
     },
     P2FrictionRow {
         id: 5,
         closed_tests: &[
-            "crates/cdf-formats/src/tests.rs::declared_parquet_projection_preserves_extra_fields_as_residual_candidates",
-            "crates/cdf-formats/src/tests.rs::declared_arrow_ipc_projection_preserves_extra_fields_as_residual_candidates",
-            "crates/cdf-formats/src/tests.rs::declared_parquet_lossy_narrowing_fails_before_batches_are_emitted",
-            "crates/cdf-formats/src/tests.rs::undeclared_parquet_read_preserves_physical_schema_after_declared_path_added",
+            "crates/cdf-contract/src/tests.rs::schema_reconciliation_preserves_constraint_names_and_classifies_extra_fields",
+            "crates/cdf-contract/src/tests.rs::schema_reconciliation_rejects_lossy_casts_until_policy_allows_them",
+            "crates/cdf-contract/src/tests.rs::reconciled_schema_metadata_preserves_extra_field_decisions_for_package_evidence",
+            "crates/cdf-source-files/src/runtime.rs::tests::local_parquet_uses_registered_native_driver_as_bounded_stream",
         ],
         open_tickets: &[],
     },
@@ -219,7 +219,6 @@ const P2_FRICTIONS: &[P2FrictionRow] = &[
             "crates/cdf-cli/src/tests.rs::duckdb_destination_policy_normalizes_plan_preview_package_and_commit",
             "crates/cdf-cli/src/tests.rs::destination_normalization_collision_fails_before_writes",
             "crates/cdf-project/src/runtime_tests.rs::postgres_destination_policy_truncates_package_and_committed_column_identically",
-            "crates/cdf-project/src/runtime_tests.rs::stale_long_name_column_program_cannot_spoof_destination_policy_before_writes",
         ],
         open_tickets: &[],
     },
@@ -247,7 +246,7 @@ const P2_FRICTIONS: &[P2FrictionRow] = &[
             "crates/cdf-declarative/src/tests.rs::file_glob_run_and_preview_open_the_requested_partition",
             "crates/cdf-conformance/src/run_matrix/data_onramp.rs::p2_preview_run_parity_law_covers_supported_archetypes",
             "crates/cdf-conformance/src/run_matrix/data_onramp.rs::p2_s8_multifile_preview_traverses_the_same_planned_partitions_as_run",
-            "crates/cdf-cli/src/tests.rs::run_multi_file_parquet_evolves_from_immutable_pinned_baseline_with_exact_observations",
+            "crates/cdf-cli/src/tests.rs::pinned_multi_file_parquet_keeps_fixed_schema_and_admits_new_physical_schemas_in_stream",
             "crates/cdf-cli/src/tests.rs::sampled_discovery_renders_every_cli_path_and_routes_unseen_drift_to_package_quarantine",
         ],
         open_tickets: &[],
@@ -293,8 +292,8 @@ const P2_FRICTIONS: &[P2FrictionRow] = &[
     P2FrictionRow {
         id: 15,
         closed_tests: &[
-            "crates/cdf-declarative/src/file_transport.rs::tests::file_transport_http_metadata_and_bounded_range_use_http_client",
-            "crates/cdf-declarative/src/file_transport.rs::tests::file_transport_http_range_rejects_unbounded_or_ignored_range",
+            "crates/cdf-source-files/src/transport.rs::tests::file_transport_http_metadata_uses_headers_only_client",
+            "crates/cdf-source-files/src/transport.rs::tests::file_transport_http_metadata_falls_back_from_head_errors_and_keeps_access_ephemeral",
             "crates/cdf-project/src/tests.rs::http_parquet_schema_discovery_uses_bounded_ranges_without_artifacts",
             "crates/cdf-project/src/tests.rs::http_parquet_auto_pin_plan_preview_and_run_use_file_runtime",
         ],
@@ -303,7 +302,7 @@ const P2_FRICTIONS: &[P2FrictionRow] = &[
     P2FrictionRow {
         id: 16,
         closed_tests: &[
-            "crates/cdf-formats/src/tests.rs::compression_ndjson_file_sources_decode_and_preserve_compressed_identity",
+            "crates/cdf-source-files/src/runtime.rs::tests::object_store_gzip_ndjson_streams_without_spill_and_preserves_remote_position",
             "crates/cdf-declarative/src/tests.rs::file_runtime_auto_compression_decodes_gzip_and_zstd_ndjson",
             "crates/cdf-declarative/src/tests.rs::file_runtime_explicit_compression_mismatch_names_file_and_signals",
         ],
@@ -326,8 +325,8 @@ const P2_FRICTIONS: &[P2FrictionRow] = &[
     P2FrictionRow {
         id: 18,
         closed_tests: &[
-            "crates/cdf-formats/src/tests.rs::parquet_file_source_produces_descriptor_batches_and_file_manifest",
-            "crates/cdf-formats/src/tests.rs::declared_parquet_int32_declared_int64_materializes_lossless_widening",
+            "crates/cdf-source-files/src/runtime.rs::tests::local_parquet_uses_registered_native_driver_as_bounded_stream",
+            "crates/cdf-contract/src/tests.rs::schema_reconciliation_records_lossless_widenings_and_physical_type",
             "crates/cdf-cli/src/tests.rs::run_local_parquet_discover_autopins_and_commits_pinned_schema",
             "crates/cdf-project/src/tests.rs::http_parquet_auto_pin_plan_preview_and_run_use_file_runtime",
             "crates/cdf-cli/src/tests.rs::p2_s1_add_http_parquet_pins_and_runs_with_zero_typed_fields",
@@ -422,13 +421,13 @@ fn p2_friction_registry_maps_closed_slices_to_tests_and_open_rows_to_tickets() {
     }
 
     assert!(friction(4).closed_tests.iter().any(|test| {
-        test.contains("declared_parquet_int32_declared_int64_materializes_lossless_widening")
+        test.contains("schema_reconciliation_records_lossless_widenings_and_physical_type")
     }));
     assert!(
         friction(5)
             .closed_tests
             .iter()
-            .any(|test| test.contains("declared_parquet_projection_preserves_extra_fields"))
+            .any(|test| test.contains("schema_reconciliation_preserves_constraint_names"))
     );
     assert!(
         friction(9)

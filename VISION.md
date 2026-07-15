@@ -324,7 +324,9 @@ crates/
   cdf-package/         # Package builder, reader, replayer, hasher, GC, archive transcoder.
   cdf-state-sqlite/    # CheckpointStore + run ledger over SQLite (WAL).
   cdf-http/            # HTTP toolkit: paginators, limiter, backoff budget, auth sessions.
-  cdf-formats/         # arrow-ipc, parquet, ndjson, csv adapters.
+  cdf-runtime/         # Engine-neutral execution, registry, and extension contracts.
+  cdf-format-*/        # Dependency-isolated native codecs: Arrow IPC, Parquet, JSON, delimited.
+  cdf-source-*/        # Dependency-isolated native source drivers and protocol ownership.
   cdf-declarative/     # Tier 0: TOML/YAML → Resource compiler + published JSON Schema.
   cdf-python/          # Tier 2: PyO3 embedding, PyCapsule / C Data Interface bridge. Optional.
   cdf-wasm/            # Tier 3: wasmtime host, WASI 0.3 WIT bindings. Optional, post-MVP.

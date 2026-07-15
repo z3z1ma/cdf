@@ -1,7 +1,7 @@
 Status: recorded
 Created: 2026-07-12
 Updated: 2026-07-12
-Relates-To: .10x/tickets/2026-07-11-p3-b1-streaming-byte-transforms.md, .10x/tickets/2026-07-11-p0-fx1-native-format-extension-boundary.md
+Relates-To: .10x/tickets/2026-07-11-p3-b1-streaming-byte-transforms.md, .10x/tickets/done/2026-07-11-p0-fx1-native-format-extension-boundary.md
 
 # Native LZ4 frame driver
 
@@ -28,4 +28,3 @@ LZ4 framing can be added as a parser-local leaf through the shared transform sea
 ## Limits
 
 The leaf stream exposes verified blocks before an optional whole-frame content checksum is observed. Standard product composition must apply the already-required checksum publication barrier before accepted downstream visibility. Registry wiring, fuzz corpus integration, and removal of superseded product paths remain in B1/FX1.
-

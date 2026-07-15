@@ -1,4 +1,7 @@
+use std::sync::Arc;
+
 use cdf_kernel::Result;
+use cdf_memory::MemoryCoordinator;
 use cdf_runtime::ReadOptions;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -61,7 +64,11 @@ pub fn parse_singer_ndjson(bytes: &[u8]) -> Result<Vec<SingerMessage>> {
         .collect()
 }
 
-pub fn read_singer_ndjson_bytes(bytes: &[u8], options: &ReadOptions) -> Result<SingerRead> {
+pub fn read_singer_ndjson_bytes(
+    bytes: &[u8],
+    options: &ReadOptions,
+    memory: Arc<dyn MemoryCoordinator>,
+) -> Result<SingerRead> {
     let messages = parse_singer_ndjson(bytes)?;
     let records = messages.iter().filter_map(|message| match message {
         SingerMessage::Record(record) => Some((
@@ -70,7 +77,7 @@ pub fn read_singer_ndjson_bytes(bytes: &[u8], options: &ReadOptions) -> Result<S
         )),
         _ => None,
     });
-    let streams = records_to_stream_reads(records, options)?;
+    let streams = records_to_stream_reads(records, options, memory)?;
     let schemas = messages
         .iter()
         .filter_map(|message| match message {

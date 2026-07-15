@@ -1,7 +1,7 @@
 Status: recorded
 Created: 2026-07-12
 Updated: 2026-07-12
-Relates-To: .10x/tickets/2026-07-11-p0-fx1-native-format-extension-boundary.md
+Relates-To: .10x/tickets/done/2026-07-11-p0-fx1-native-format-extension-boundary.md
 
 # FX1 external codec and transform law evidence
 
@@ -29,4 +29,3 @@ This proves the neutral contracts are executable rather than descriptor-only and
 ## Limits
 
 The implementation is a conformance fixture, not a shipped format. It does not yet prove remote native `ByteSource`, project `cdf add`/pin, malformed/cancellation matrices, or build-domain isolation; those remain active FX1/G1 work.
-

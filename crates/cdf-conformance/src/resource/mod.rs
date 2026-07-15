@@ -627,7 +627,7 @@ mod tests {
 
     use arrow_schema::{DataType, Field, Schema, SchemaRef};
     use cdf_kernel::{
-        BackpressureSupport, BatchStream, BoxFuture, CapabilitySupport, CdfError, ContractRef,
+        BackpressureSupport, BoxFuture, CapabilitySupport, CdfError, ContractRef,
         CursorOrderingClaim, CursorSpec, DeliveryGuarantee, EstimateSupport, FilterCapabilities,
         PartitionId, PartitioningCapabilities, PlanId, Result, SchemaHash, SourcePosition,
         TrustLevel, WriteDisposition,

@@ -1,4 +1,4 @@
-use cdf_declarative::{CompiledResource, RestResource, RestRuntimeDependencies};
+use cdf_declarative::{CompiledResource, RestResource};
 use cdf_http::HttpMethod;
 use cdf_kernel::{CdfError, CursorValue, Result, SourcePosition};
 use cdf_project::ProjectRunReport;
@@ -23,7 +23,7 @@ pub(crate) fn resource(
         ] }"#,
     )]);
     let resource = compiled.to_rest_resource(
-        RestRuntimeDependencies::new(transport.clone()).with_secret_provider(
+        crate::test_rest_runtime_dependencies(transport.clone()).with_secret_provider(
             StaticSecretProvider::new([(SECRET_REF, "run-matrix-token")]),
         ),
     )?;

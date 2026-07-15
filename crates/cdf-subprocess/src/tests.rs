@@ -1,6 +1,7 @@
 use super::*;
 
 use std::{
+    collections::BTreeMap,
     fs::{self, File},
     io::Write,
     sync::Arc,
@@ -13,6 +14,7 @@ use arrow_schema::{DataType, Field, Schema};
 use cdf_kernel::{
     ErrorKind, ForeignState, PartitionId, ResourceId, ScopeKey, SegmentId, SourcePosition,
 };
+use cdf_memory::{DeterministicMemoryCoordinator, MemoryCoordinator};
 use cdf_runtime::ReadOptions;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -22,6 +24,10 @@ fn read_options() -> ReadOptions {
         ResourceId::new("orders").unwrap(),
         PartitionId::new("p0").unwrap(),
     )
+}
+
+fn memory() -> Arc<dyn MemoryCoordinator> {
+    Arc::new(DeterministicMemoryCoordinator::new(256 * 1024 * 1024, BTreeMap::new()).unwrap())
 }
 
 fn shell(args: impl IntoIterator<Item = impl Into<String>>) -> CommandSpec {
@@ -111,6 +117,7 @@ async fn ndjson_stdout_adapter_captures_stderr_and_packages_output() {
         StdoutFormat::Ndjson,
         &read_options(),
         &SupervisionOptions::default(),
+        memory(),
     )
     .await
     .unwrap();
@@ -161,6 +168,7 @@ async fn arrow_ipc_stdout_adapter_reads_kernel_batches() {
         StdoutFormat::ArrowIpc,
         &read_options(),
         &SupervisionOptions::default(),
+        memory(),
     )
     .await
     .unwrap();
@@ -184,6 +192,7 @@ async fn nonzero_exit_maps_to_transient_with_stderr() {
         StdoutFormat::Ndjson,
         &read_options(),
         &SupervisionOptions::default(),
+        memory(),
     )
     .await
     .unwrap_err();
@@ -204,6 +213,7 @@ async fn timeout_maps_to_transient() {
             timeout: Some(Duration::from_millis(10)),
             stderr_line_limit: DEFAULT_STDERR_LINE_LIMIT,
         },
+        memory(),
     )
     .await
     .unwrap_err();
@@ -220,6 +230,7 @@ async fn malformed_stdout_maps_to_data_with_stderr_context() {
         StdoutFormat::Ndjson,
         &read_options(),
         &SupervisionOptions::default(),
+        memory(),
     )
     .await
     .unwrap_err();
@@ -266,7 +277,7 @@ fn singer_protocol_parses_schema_record_state_and_batches_by_stream() {
         }),
     ]);
 
-    let read = read_singer_ndjson_bytes(&bytes, &read_options()).unwrap();
+    let read = read_singer_ndjson_bytes(&bytes, &read_options(), memory()).unwrap();
 
     assert_eq!(read.schemas.len(), 1);
     assert_eq!(read.schemas[0].raw["tap_metadata"]["unknown"], true);
@@ -276,7 +287,7 @@ fn singer_protocol_parses_schema_record_state_and_batches_by_stream() {
     assert_eq!(read.streams[0].stream, StreamIdentity::singer("orders"));
     assert_eq!(
         read.streams[0].read.batches[0].header.batch_id.as_str(),
-        "orders-p0-orders-000001"
+        "orders-p0-orders-u00000000-b00000000"
     );
     assert_eq!(read.streams[0].read.batches[0].header.row_count, 1);
     match &read.streams[0].read.descriptor.state_scope {
@@ -351,7 +362,7 @@ fn airbyte_protocol_parses_catalog_record_and_state_variants() {
         json!({ "type": "STATE", "state": global_state }),
     ]);
 
-    let read = read_airbyte_ndjson_bytes(&bytes, &read_options()).unwrap();
+    let read = read_airbyte_ndjson_bytes(&bytes, &read_options(), memory()).unwrap();
 
     assert_eq!(read.catalogs.len(), 1);
     assert_eq!(read.catalogs[0].raw["future_field"]["retained"], true);
@@ -364,7 +375,7 @@ fn airbyte_protocol_parses_catalog_record_and_state_variants() {
     }
     assert_eq!(
         read.streams[0].read.batches[0].header.batch_id.as_str(),
-        "orders-p0-crm-data-users-new_v2-000001"
+        "orders-p0-crm-data-users-new_v2-u00000000-b00000000"
     );
     assert_eq!(read.streams[0].read.batches[0].header.row_count, 1);
 
@@ -509,8 +520,8 @@ fn protocol_state_hashes_are_deterministic() {
         "type": "STATE",
         "value": singer_state
     })]);
-    let first = read_singer_ndjson_bytes(&singer_bytes, &read_options()).unwrap();
-    let second = read_singer_ndjson_bytes(&singer_bytes, &read_options()).unwrap();
+    let first = read_singer_ndjson_bytes(&singer_bytes, &read_options(), memory()).unwrap();
+    let second = read_singer_ndjson_bytes(&singer_bytes, &read_options(), memory()).unwrap();
     let first_state = foreign_state(&first.states[0].position);
     let second_state = foreign_state(&second.states[0].position);
     assert_eq!(first_state.blob_sha256, second_state.blob_sha256);
@@ -522,7 +533,8 @@ fn protocol_state_hashes_are_deterministic() {
 
     let reordered_singer_bytes =
         br#"{"type":"STATE","value":{"m":{"b":2,"a":3},"z":1,"a":[true,false]}}"#;
-    let reordered = read_singer_ndjson_bytes(reordered_singer_bytes, &read_options()).unwrap();
+    let reordered =
+        read_singer_ndjson_bytes(reordered_singer_bytes, &read_options(), memory()).unwrap();
     assert_eq!(
         foreign_state(&reordered.states[0].position).blob_sha256,
         first_state.blob_sha256
@@ -539,8 +551,8 @@ fn protocol_state_hashes_are_deterministic() {
         "type": "STATE",
         "state": airbyte_state
     })]);
-    let first = read_airbyte_ndjson_bytes(&airbyte_bytes, &read_options()).unwrap();
-    let second = read_airbyte_ndjson_bytes(&airbyte_bytes, &read_options()).unwrap();
+    let first = read_airbyte_ndjson_bytes(&airbyte_bytes, &read_options(), memory()).unwrap();
+    let second = read_airbyte_ndjson_bytes(&airbyte_bytes, &read_options(), memory()).unwrap();
     let first_state = foreign_state(&first.states[0].position);
     let second_state = foreign_state(&second.states[0].position);
     assert_eq!(first_state.blob_sha256, second_state.blob_sha256);
@@ -569,7 +581,7 @@ fn protocol_batches_write_to_and_replay_from_package() {
             }
         }),
     ]);
-    let read = read_airbyte_ndjson_bytes(&bytes, &read_options()).unwrap();
+    let read = read_airbyte_ndjson_bytes(&bytes, &read_options(), memory()).unwrap();
 
     let package = cdf_package::PackageBuilder::create(&package_dir, "pkg-protocol").unwrap();
     for (index, stream) in read.streams.iter().enumerate() {

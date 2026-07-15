@@ -32,7 +32,7 @@ state = "sqlite://.cdf/state.sqlite"
 packages = ".cdf/packages"
 destination = "duckdb://.cdf/dev.duckdb"
 
-[resources."local.drift_events"]
+[resources."local.events"]
 source = "resources/live.toml"
 "#;
 
@@ -56,7 +56,7 @@ schema = { fields = [
 ] }
 "#;
 
-const RESOURCE_ID: &str = "local.drift_events";
+const RESOURCE_ID: &str = "local.events";
 const SOURCE_FILE: &str = "data/events.ndjson";
 const SOURCE_SCOPE: &str = "events.ndjson";
 

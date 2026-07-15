@@ -82,6 +82,23 @@ fn test_execution_services() -> cdf_runtime::ExecutionServices {
         .1
 }
 
+fn test_rest_runtime_dependencies(
+    transport: impl HttpTransport + 'static,
+) -> cdf_declarative::RestRuntimeDependencies {
+    let execution = test_execution_services();
+    execution
+        .ensure_blocking_lanes(&[cdf_runtime::BlockingLaneSpec {
+            lane_id: "rest-source.sync".to_owned(),
+            maximum_concurrency: 8,
+            cpu_slot_cost: 1,
+            native_internal_parallelism: 1,
+            affinity: cdf_runtime::LaneAffinity::Shared,
+            interruption: cdf_runtime::InterruptionSafety::CooperativeOnly,
+        }])
+        .unwrap();
+    cdf_declarative::RestRuntimeDependencies::new(transport).with_execution_services(execution)
+}
+
 fn test_file_runtime_dependencies() -> cdf_declarative::FileRuntimeDependencies {
     let execution = test_execution_services();
     let mut formats = cdf_runtime::FormatRegistry::default();
@@ -2922,7 +2939,7 @@ fn run_rest_project(root: &Path, run_id: &str) -> (ProjectRunReport, RecordingTr
     )]);
     let resource = compiled
         .to_rest_resource(
-            cdf_declarative::RestRuntimeDependencies::new(transport.clone()).with_secret_provider(
+            test_rest_runtime_dependencies(transport.clone()).with_secret_provider(
                 StaticSecretProvider::new([("secret://env/API_TOKEN", "token-1")]),
             ),
         )
@@ -4632,7 +4649,7 @@ fn general_project_run_executes_rest_with_discovered_snapshot_hash() {
     )]);
     let resource = compiled
         .to_rest_resource(
-            cdf_declarative::RestRuntimeDependencies::new(transport.clone()).with_secret_provider(
+            test_rest_runtime_dependencies(transport.clone()).with_secret_provider(
                 StaticSecretProvider::new([("secret://env/API_TOKEN", "token-1")]),
             ),
         )
@@ -5160,7 +5177,7 @@ fn general_project_run_rejects_rest_missing_secret_value_before_writes() {
     let transport = RecordingTransport::new([json_response(r#"{ "items": [] }"#)]);
     let resource = compiled
         .to_rest_resource(
-            cdf_declarative::RestRuntimeDependencies::new(transport.clone()).with_secret_provider(
+            test_rest_runtime_dependencies(transport.clone()).with_secret_provider(
                 StaticSecretProvider::new(std::iter::empty::<(&str, &str)>()),
             ),
         )
@@ -5257,7 +5274,7 @@ fn general_project_run_window_closes_inexact_numeric_rest_cursor() {
     )]);
     let resource = compiled
         .to_rest_resource(
-            cdf_declarative::RestRuntimeDependencies::new(transport.clone()).with_secret_provider(
+            test_rest_runtime_dependencies(transport.clone()).with_secret_provider(
                 StaticSecretProvider::new([("secret://env/API_TOKEN", "token-1")]),
             ),
         )

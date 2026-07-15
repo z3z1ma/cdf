@@ -1,6 +1,6 @@
-Status: active
+Status: done
 Created: 2026-07-11
-Updated: 2026-07-13
+Updated: 2026-07-14
 Parent: .10x/tickets/2026-07-05-implement-cdf-system.md
 Depends-On: .10x/tickets/done/2026-07-11-p0-dx1-neutral-runtime-crate.md, .10x/tickets/done/2026-07-11-p3-a2-unified-memory-ledger.md, .10x/tickets/done/2026-07-11-p3-a4-injected-execution-host.md, .10x/specs/native-format-codec-runtime.md
 
@@ -30,7 +30,7 @@ No new parser dependency, new native format, optimized decoder, dynamic plugin A
 
 ## Blockers
 
-None external. The 2026-07-13 aggregate adversarial review failed closure. The pinned-`Hints` governance defect, first-party format capability branches, and executable codec binding are fixed. Remaining in-scope blockers are: delete the surviving monolithic `cdf-formats` parser/dispatch surface and prove a project-level external codec over a remote provider. These are FX1 acceptance work, not deferred follow-ups.
+None.
 
 ## References
 
@@ -43,6 +43,8 @@ None external. The 2026-07-13 aggregate adversarial review failed closure. The p
 - `.10x/specs/schema-discovery-and-stream-admission.md`
 
 ## Progress and notes
+
+- 2026-07-14: Deleted the final `cdf-formats` aggregation crate and its closed `FileFormat`/eager parser surface (3,126 tracked lines). REST, subprocess Arrow IPC/NDJSON, Singer/Airbyte conversion, and format fuzzing now compose dependency-isolated drivers through one neutral finite-payload boundary with shared ledger/cancellation/schema contracts. A project fixture registers a non-first-party codec and proves remote provider inventory, discovery, schema pin, plan, preview, package/receipt, and checkpoint execution without a generic runtime branch. The P2 friction matrix now points only at live contract/codec/source laws. Evidence: `.10x/evidence/2026-07-14-p0-fx1-monolith-deletion-remote-extension.md`.
 
 - 2026-07-14: The live FineWeb profile exposed a boundary defect: deterministic decode units were planned once but decoded through stateless driver calls, forcing metadata-driven codecs to reload immutable file structure per unit. The runtime now prepares one neutral `FormatDecodeSession` per file generation; reusable codec state stays inside the codec crate, and the generic file runtime only iterates declared units. The old stateless decode surface was deleted rather than retained as a compatibility shim. Parquet and Arrow IPC reuse footer metadata; CSV/JSON remain ordinary sessions. Evidence: `.10x/evidence/2026-07-14-p3-b2-prepared-parquet-decode-session.md`.
 
@@ -102,7 +104,11 @@ None external. The 2026-07-13 aggregate adversarial review failed closure. The p
   - **Residual risk:** the external codec law is local-only; the existing HTTP provider law uses first-party Parquet and does not prove external codec composition through the project remote path.
   - 2026-07-13 reconciliation: the critical pinned-hints finding is fixed and covered by `.10x/evidence/2026-07-13-fx1-pinned-hints-governance.md`; the aggregate verdict remains fail while significant findings and residual risk remain.
   - 2026-07-13 reconciliation: descriptor-owned inference/capabilities and compiled format binding are now covered by `.10x/evidence/2026-07-13-fx1-registry-owned-format-inference.md`; those two significant findings are resolved. The aggregate verdict remains fail on the monolithic parser surface and remote external-codec proof.
+- 2026-07-14 aggregate closure review — **Verdict: pass after repair**.
+  - The first pass found no critical defect and three significant closure blockers: executable fast CI/current docs still named the deleted aggregation crate; `cdf-project` retained a Parquet-specific snapshot compatibility helper; and the bounded finite-payload bridge lacked permanent cancellation, over-budget, lease-release, and codec-graph laws.
+  - Repair removed every live executable/documentation reference, deleted the format-specific project API rather than aliasing it, replaced its test with generic `SchemaSnapshotArtifact` construction, and added permanent runtime/conformance/build-graph laws.
+  - Focused re-review passed all three repairs and found no newly introduced critical or significant defect. H3 retains the honestly scoped risk that subprocess stdout is collected before entering the bounded bridge.
 
 ## Retrospective
 
-Pending implementation completion and passing aggregate review.
+Deleting the monolith exposed two different kinds of coupling: parser dependency edges and semantic convenience APIs in generic crates. Cargo isolation alone would have missed the latter; closure needed both graph laws and a residue audit of exported names. The external-codec proof also had to cross the project/compiler/remote-provider/package/gate boundary—unit-level registry registration was necessary but not sufficient. The most effective closure sequence was deletion first, compiler-guided consumer migration, focused behavioral laws, then a fresh search for names and graph edges. Future extension-boundary work should make those static residue and dependency laws permanent as soon as the first leaf implementation lands.

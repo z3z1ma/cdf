@@ -6,7 +6,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use cdf_declarative::{RestResource, RestRuntimeDependencies};
+use cdf_declarative::RestResource;
 use cdf_dest_duckdb::DuckDbDestination;
 use cdf_engine::{EnginePlan, EnginePlanInput, PlanBoundedness, Planner};
 use cdf_kernel::{
@@ -506,7 +506,7 @@ fn github_issues_resource() -> Result<(RestResource, RecordingTransport)> {
     }
     let transport = RecordingTransport::new([json_response(GITHUB_ISSUES_RESPONSE)]);
     let resource = compiled.to_rest_resource(
-        RestRuntimeDependencies::new(transport.clone())
+        crate::test_rest_runtime_dependencies(transport.clone())
             .with_secret_provider(StaticSecretProvider::new([(SECRET_REF, SECRET_VALUE)])),
     )?;
     Ok((resource, transport))

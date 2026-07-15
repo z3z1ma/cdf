@@ -16,7 +16,7 @@ pub struct ResourceExecutionConformanceCase {
     pub expected_partition_ids: Vec<PartitionId>,
     pub expected_total_rows: u64,
     pub expected_partition_rows: Option<BTreeMap<PartitionId, u64>>,
-    pub expected_schema_hash: SchemaHash,
+    pub expected_observed_schema_hash: Option<SchemaHash>,
     pub source_position_requirement: SourcePositionRequirement,
 }
 
@@ -35,7 +35,7 @@ impl ResourceExecutionConformanceCase {
             expected_partition_ids: expected_partition_ids.into_iter().collect(),
             expected_total_rows,
             expected_partition_rows: None,
-            expected_schema_hash,
+            expected_observed_schema_hash: Some(expected_schema_hash),
             source_position_requirement: SourcePositionRequirement::NotRequired,
         }
     }
@@ -58,6 +58,11 @@ impl ResourceExecutionConformanceCase {
 
     pub fn require_file_manifest_positions(self) -> Self {
         self.with_source_position_requirement(SourcePositionRequirement::FileManifest)
+    }
+
+    pub fn allow_observed_schema_variance(mut self) -> Self {
+        self.expected_observed_schema_hash = None;
+        self
     }
 }
 
@@ -196,10 +201,12 @@ fn assert_batch_header_and_payload(
         "batch id `{}` is emitted more than once",
         batch.header.batch_id
     );
-    assert_eq!(
-        batch.header.observed_schema_hash, case.expected_schema_hash,
-        "batch observed schema hash must match the expected resource schema hash"
-    );
+    if let Some(expected) = &case.expected_observed_schema_hash {
+        assert_eq!(
+            &batch.header.observed_schema_hash, expected,
+            "batch physical observation hash must match the case expectation"
+        );
+    }
 
     let record_batch = batch
         .record_batch()

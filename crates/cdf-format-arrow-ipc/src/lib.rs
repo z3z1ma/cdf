@@ -1,3 +1,7 @@
+mod stream_driver;
+
+pub use stream_driver::ArrowIpcStreamFormatDriver;
+
 use std::sync::Arc;
 
 use arrow_array::RecordBatch;

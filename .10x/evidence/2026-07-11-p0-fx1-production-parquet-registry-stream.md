@@ -1,7 +1,7 @@
 Status: recorded
 Created: 2026-07-11
 Updated: 2026-07-11
-Relates-To: .10x/tickets/2026-07-11-p0-fx1-native-format-extension-boundary.md, .10x/tickets/2026-07-11-p3-b2-parquet-codec.md, .10x/tickets/done/2026-07-11-p3-a5e-streaming-graph-integration.md
+Relates-To: .10x/tickets/done/2026-07-11-p0-fx1-native-format-extension-boundary.md, .10x/tickets/2026-07-11-p3-b2-parquet-codec.md, .10x/tickets/done/2026-07-11-p3-a5e-streaming-graph-integration.md
 
 # Production Parquet routes through the native registry stream
 

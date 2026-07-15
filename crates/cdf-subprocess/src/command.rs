@@ -1,6 +1,10 @@
 use std::{collections::BTreeMap, path::PathBuf, process::ExitStatus, time::Duration};
 
-use cdf_formats::FormatRead;
+use cdf_kernel::{
+    Batch, ResourceDescriptor, SchemaSnapshotReference, SchemaSource, ScopeKey, TrustLevel,
+    WriteDisposition,
+};
+use cdf_runtime::BoundedFormatRead;
 use serde::{Deserialize, Serialize};
 
 pub const DEFAULT_STDERR_LINE_LIMIT: usize = 64;
@@ -69,9 +73,56 @@ pub struct StderrTrace {
 
 #[derive(Clone, Debug)]
 pub struct SubprocessOutput {
-    pub read: FormatRead,
+    pub read: SubprocessRead,
     pub stderr: StderrTrace,
     pub exit_status: ExitStatus,
+}
+
+#[derive(Clone, Debug)]
+pub struct SubprocessRead {
+    pub descriptor: ResourceDescriptor,
+    pub batches: Vec<Batch>,
+}
+
+impl SubprocessRead {
+    pub(crate) fn from_bounded(
+        read: BoundedFormatRead,
+        scope: ScopeKey,
+    ) -> cdf_kernel::Result<Self> {
+        let schema_hash = cdf_kernel::canonical_arrow_schema_hash(read.schema.as_ref())?;
+        let resource_id = read
+            .batches
+            .first()
+            .map(|batch| batch.header.resource_id.clone())
+            .ok_or_else(|| {
+                cdf_kernel::CdfError::internal("bounded subprocess read emitted no batch")
+            })?;
+        Ok(Self {
+            descriptor: ResourceDescriptor {
+                resource_id: resource_id.clone(),
+                schema_source: SchemaSource::Discovered {
+                    snapshot: SchemaSnapshotReference {
+                        schema_hash: schema_hash.clone(),
+                        path: format!(".cdf/schemas/{resource_id}@{schema_hash}.json"),
+                        metadata: BTreeMap::from([(
+                            "probe".to_owned(),
+                            "subprocess-format-driver".to_owned(),
+                        )]),
+                    },
+                },
+                primary_key: Vec::new(),
+                merge_key: Vec::new(),
+                cursor: None,
+                write_disposition: WriteDisposition::Append,
+                deduplication: None,
+                contract: None,
+                state_scope: scope,
+                freshness: None,
+                trust_level: TrustLevel::Experimental,
+            },
+            batches: read.batches,
+        })
+    }
 }
 
 impl StderrTrace {

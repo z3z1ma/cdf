@@ -7,9 +7,12 @@ publish = false
 description = "Subprocess adapter boundary for cdf."
 
 [dependencies]
-cdf-formats = { path = "../cdf-formats" }
+cdf-format-arrow-ipc = { path = "../cdf-format-arrow-ipc" }
+cdf-format-json = { path = "../cdf-format-json" }
 cdf-kernel = { path = "../cdf-kernel" }
+cdf-memory = { path = "../cdf-memory" }
 cdf-runtime = { path = "../cdf-runtime" }
+futures-executor = "0.3.32"
 hex = "0.4.3"
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.150"
