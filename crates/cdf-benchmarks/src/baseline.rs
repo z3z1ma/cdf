@@ -85,6 +85,7 @@ pub fn run_preoptimization_baseline(
             source_path: fixture_root.join("orders.ndjson"),
             package_dir: config.output_root.join("cdf-packages"),
             format: PreparedFileFormat::Ndjson,
+            jobs: None,
         })?,
     )?;
     observations.push(run_cell(

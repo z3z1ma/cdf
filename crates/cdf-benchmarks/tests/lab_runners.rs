@@ -85,7 +85,10 @@ fn isolated_macro_runner_retains_samples_and_derives_distribution() {
     )
     .unwrap();
 
-    assert!(matches!(observation.status, ObservationStatus::Observed));
+    assert!(
+        matches!(observation.status, ObservationStatus::Observed),
+        "reference worker observation was not recorded: {observation:#?}"
+    );
     assert_eq!(observation.samples.len(), 3);
     assert!(observation.samples.iter().all(|sample| {
         sample.wall_time_ns > 0
@@ -260,6 +263,7 @@ fn prepared_cdf_worker_emits_real_phase_breakdown_without_timing_fixture_setup()
             source_path: temp.path().join("orders.ndjson"),
             package_dir: temp.path().join("packages"),
             format: PreparedFileFormat::Ndjson,
+            jobs: None,
         })
         .unwrap(),
     )
@@ -282,7 +286,10 @@ fn prepared_cdf_worker_emits_real_phase_breakdown_without_timing_fixture_setup()
         },
     )
     .unwrap();
-    assert!(matches!(observation.status, ObservationStatus::Observed));
+    assert!(
+        matches!(observation.status, ObservationStatus::Observed),
+        "prepared worker observation was not recorded: {observation:#?}"
+    );
     assert_eq!(observation.samples.len(), 3);
     assert!(observation.samples.iter().all(|sample| {
         sample.rows == spec.rows as u64

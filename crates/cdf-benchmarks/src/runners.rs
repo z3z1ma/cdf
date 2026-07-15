@@ -21,8 +21,8 @@ use cdf_engine::{
 use cdf_kernel::ExecutionExtent;
 use cdf_kernel::{
     CHECKPOINT_STATE_VERSION, CdfError, CheckpointId, CursorPosition, CursorValue, PipelineId,
-    PredicateId, ResourceId, ResourceStream, RunId, ScanPredicate, ScanRequest, ScopeKey,
-    SegmentId, SourcePosition, StateSegment, TargetName, WriteDisposition,
+    PredicateId, QueryableResource, ResourceId, ResourceStream, RunId, ScanPredicate, ScanRequest,
+    ScopeKey, SegmentId, SourcePosition, StateSegment, TargetName, WriteDisposition,
     canonical_arrow_schema_hash,
 };
 use cdf_package::{PackageBuilder, PackageReader, archive_package_to_parquet};
@@ -32,8 +32,8 @@ use cdf_project::{
     ResolvedProjectDestination, prepare_declared_file_schema_artifacts,
     replay_package_from_artifacts, run_project,
 };
-use cdf_runtime::{ByteTransformRegistry, FormatRegistry};
-use cdf_source_files::{FileResource, FileRuntimeDependencies, FileTransportFacade};
+use cdf_runtime::{ByteTransformRegistry, FormatRegistry, SourceRegistry, SourceResolutionContext};
+use cdf_source_files::{FileRuntimeDependencies, FileSourceDriver, FileTransportFacade};
 use cdf_state_sqlite::InMemoryCheckpointStore;
 use datafusion::prelude::{SessionContext, col, lit};
 use duckdb::{Connection, appender_params_from_iter, types::Value};
@@ -66,6 +66,11 @@ struct PackageFixture {
     package_dir: PathBuf,
 }
 
+struct BenchmarkFileSource {
+    resource: Arc<dyn QueryableResource>,
+    source_plan: cdf_runtime::CompiledSourcePlan,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PreparedFileFormat {
@@ -81,6 +86,18 @@ pub struct PreparedFilePackageWorkload {
     pub source_path: PathBuf,
     pub package_dir: PathBuf,
     pub format: PreparedFileFormat,
+    pub jobs: Option<u16>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PreparedFilePackageRun {
+    #[serde(flatten)]
+    pub measurement: WorkerMeasurement,
+    pub configured_jobs: Option<u16>,
+    pub effective_jobs: u16,
+    pub limiting_factors: Vec<String>,
+    pub package_hash: String,
+    pub segments: Vec<cdf_package_contract::SegmentEntry>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -93,7 +110,8 @@ fn benchmark_file_resource(
     source_path: &Path,
     format_id: &str,
     spec: &FixtureSpec,
-) -> BenchResult<FileResource> {
+    execution: &cdf_runtime::ExecutionServices,
+) -> BenchResult<BenchmarkFileSource> {
     let project_root = source_path
         .parent()
         .ok_or_else(|| bench_error("benchmark source path must have a parent directory"))?;
@@ -125,19 +143,41 @@ schema = {{ fields = [
         .into_iter()
         .next()
         .ok_or_else(|| bench_error("benchmark file declaration compiled no resource"))?;
-    resolve_benchmark_file_resource(compiled)
+    resolve_benchmark_file_resource(compiled, project_root, execution)
 }
 
-fn resolve_benchmark_file_resource(compiled: CompiledResource) -> BenchResult<FileResource> {
-    let dependencies = benchmark_file_dependencies()?;
-    let secrets = EnvSecretProvider::from_map(std::iter::empty::<(&str, &str)>());
-    let prepared =
-        prepare_declared_file_schema_artifacts(&compiled, &secrets, dependencies.clone())?;
-    prepared
-        .into_parts()
-        .0
-        .into_file_resource(dependencies)
-        .map_err(Into::into)
+fn resolve_benchmark_file_resource(
+    compiled: CompiledResource,
+    project_root: &Path,
+    execution: &cdf_runtime::ExecutionServices,
+) -> BenchResult<BenchmarkFileSource> {
+    let secrets = Arc::new(EnvSecretProvider::from_map(
+        std::iter::empty::<(&str, &str)>(),
+    ));
+    let prepared = prepare_declared_file_schema_artifacts(
+        &compiled,
+        secrets.as_ref(),
+        benchmark_file_dependencies(execution.clone())?,
+    )?;
+    let (compiled, _) = prepared.into_parts();
+    let request = compiled.source_compile_request().cloned().ok_or_else(|| {
+        bench_error(format!(
+            "benchmark resource `{}` omitted its source compile request",
+            compiled.descriptor().resource_id
+        ))
+    })?;
+    let registry = benchmark_source_registry()?;
+    let source_plan = registry.compile(request)?.bind_schema_authority(
+        compiled.descriptor(),
+        compiled.schema().as_ref(),
+        compiled.effective_schema_runtime().cloned(),
+    )?;
+    let resolution = SourceResolutionContext::new(project_root, secrets, execution);
+    let resource = registry.resolve(&source_plan, &resolution)?;
+    Ok(BenchmarkFileSource {
+        resource,
+        source_plan,
+    })
 }
 
 fn benchmark_schema_fields(spec: &FixtureSpec) -> Vec<String> {
@@ -153,21 +193,50 @@ fn benchmark_schema_fields(spec: &FixtureSpec) -> Vec<String> {
     fields
 }
 
-fn benchmark_file_dependencies() -> BenchResult<FileRuntimeDependencies> {
-    let execution =
-        cdf_engine::StandaloneExecutionHost::default_services(BENCHMARK_MANAGED_MEMORY_BYTES)?.1;
+fn benchmark_file_dependencies(
+    execution: cdf_runtime::ExecutionServices,
+) -> BenchResult<FileRuntimeDependencies> {
+    let formats = benchmark_format_registry()?;
+    let transport = FileTransportFacade::new().with_execution_services(execution.clone());
+    Ok(FileRuntimeDependencies::new(
+        transport,
+        execution,
+        formats,
+        Arc::new(ByteTransformRegistry::default()),
+    ))
+}
+
+fn benchmark_format_registry() -> BenchResult<Arc<FormatRegistry>> {
     let mut formats = FormatRegistry::default();
     formats.register(Arc::new(cdf_format_delimited::CsvFormatDriver::new()?))?;
     formats.register(Arc::new(cdf_format_json::NdjsonFormatDriver::new()?))?;
     formats.register(Arc::new(cdf_format_json::JsonDocumentFormatDriver::new()?))?;
     formats.register(Arc::new(cdf_format_parquet::ParquetFormatDriver::new()?))?;
-    let transport = FileTransportFacade::new().with_execution_services(execution.clone());
-    Ok(FileRuntimeDependencies::new(
-        transport,
-        execution,
-        Arc::new(formats),
-        Arc::new(ByteTransformRegistry::default()),
-    ))
+    Ok(Arc::new(formats))
+}
+
+fn benchmark_source_registry() -> BenchResult<SourceRegistry> {
+    let mut registry = SourceRegistry::new();
+    let formats = benchmark_format_registry()?;
+    let runtime_formats = Arc::clone(&formats);
+    registry.register(FileSourceDriver::new(
+        formats,
+        move |secrets, execution| {
+            Ok(FileRuntimeDependencies::new(
+                FileTransportFacade::new()
+                    .with_shared_secret_provider(secrets)
+                    .with_execution_services(execution.clone()),
+                execution,
+                Arc::clone(&runtime_formats),
+                Arc::new(ByteTransformRegistry::default()),
+            ))
+        },
+    )?)?;
+    Ok(registry)
+}
+
+fn benchmark_execution_services() -> BenchResult<cdf_runtime::ExecutionServices> {
+    Ok(cdf_engine::StandaloneExecutionHost::default_services(BENCHMARK_MANAGED_MEMORY_BYTES)?.1)
 }
 
 pub fn run_legacy_case_workload(request: &LegacyCaseWorkload) -> BenchResult<WorkerMeasurement> {
@@ -193,7 +262,10 @@ pub fn run_legacy_case_workload(request: &LegacyCaseWorkload) -> BenchResult<Wor
 
 pub fn run_prepared_file_to_package(
     request: &PreparedFilePackageWorkload,
-) -> BenchResult<WorkerMeasurement> {
+) -> BenchResult<PreparedFilePackageRun> {
+    if request.jobs == Some(0) {
+        return Err(bench_error("prepared file workload jobs must be nonzero"));
+    }
     let spec = fixture_spec(&request.fixture_name)?;
     validate_spec(&spec)?;
     let format_id = match request.format {
@@ -202,30 +274,60 @@ pub fn run_prepared_file_to_package(
         PreparedFileFormat::Ndjson => "ndjson",
         PreparedFileFormat::Parquet => "parquet",
     };
-    let resource = benchmark_file_resource(&request.source_path, format_id, &spec)?;
+    let execution = benchmark_execution_services()?;
+    let host_jobs = execution.capabilities().logical_cpu_slots;
+    let execution = execution.with_run_job_ceiling(request.jobs.unwrap_or(host_jobs))?;
+    let source = benchmark_file_resource(&request.source_path, format_id, &spec, &execution)?;
+    let plan = identity_engine_plan(source.resource.as_ref(), "pkg-p3-prepared")?
+        .bind_compiled_source(&source.source_plan)?
+        .bind_operator_graph(
+            &source.source_plan,
+            &cdf_runtime::DestinationRuntimeCapabilities::default(),
+        )?;
+    let source_execution = plan.compiled_source_execution.as_ref().ok_or_else(|| {
+        bench_error("prepared file plan omitted its compiled source execution authority")
+    })?;
+    let scheduler = cdf_runtime::resolve_runtime_scheduler(
+        plan.scan.partitions.len(),
+        source_execution.execution_capabilities(),
+        &cdf_runtime::DestinationRuntimeCapabilities::default(),
+        &execution,
+        request.jobs,
+    )?;
+    execution.tighten_run_job_ceiling(scheduler.effective_jobs.jobs)?;
     let pre_finalize = |_builder: &PackageBuilder, _draft: EnginePackageDraft<'_>| Ok(());
     let output = block_on(execute_to_package_with_segment_positions_and_pre_finalize(
-        &identity_engine_plan(&resource, "pkg-p3-prepared")?,
-        &resource,
+        &plan,
+        source.resource.as_ref(),
         &request.package_dir,
         &pre_finalize,
-        EngineExecutionOptions::default().with_phase_metrics(true),
+        EngineExecutionOptions::default()
+            .with_phase_metrics(true)
+            .with_execution_services(execution)
+            .with_scheduler_resolution(scheduler.clone()),
     ))?;
-    Ok(WorkerMeasurement {
-        timed_wall_time_ns: None,
-        rows: output.output.profile.output_rows,
-        logical_bytes: output.output.profile.output_bytes,
-        physical_bytes: fs::metadata(&request.source_path)?.len(),
-        spill_bytes: 0,
-        phases: output
-            .phase_metrics
-            .into_iter()
-            .map(|metric| PhaseMetric {
-                phase: metric.phase.as_str().to_owned(),
-                duration_ns: metric.duration_ns,
-                bytes: metric.output_bytes.max(metric.input_bytes),
-            })
-            .collect(),
+    Ok(PreparedFilePackageRun {
+        measurement: WorkerMeasurement {
+            timed_wall_time_ns: None,
+            rows: output.output.profile.output_rows,
+            logical_bytes: output.output.profile.output_bytes,
+            physical_bytes: fs::metadata(&request.source_path)?.len(),
+            spill_bytes: 0,
+            phases: output
+                .phase_metrics
+                .into_iter()
+                .map(|metric| PhaseMetric {
+                    phase: metric.phase.as_str().to_owned(),
+                    duration_ns: metric.duration_ns,
+                    bytes: metric.output_bytes.max(metric.input_bytes),
+                })
+                .collect(),
+        },
+        configured_jobs: request.jobs,
+        effective_jobs: scheduler.effective_jobs.jobs,
+        limiting_factors: scheduler.effective_jobs.limiting_factors,
+        package_hash: output.output.manifest.package_hash,
+        segments: output.output.segments,
     })
 }
 
@@ -330,15 +432,25 @@ fn run_file_to_package(
 ) -> BenchResult<WorkMetric> {
     let data_root = root.join("data");
     let path = write_local_fixture_file(&data_root, spec, format)?;
-    let resource = benchmark_file_resource(&path, format.format_id(), spec)?;
-    let output = block_on(execute_to_package(
-        &engine_plan(&resource, "pkg-file-benchmark")?,
-        &resource,
+    let execution = benchmark_execution_services()?;
+    let source = benchmark_file_resource(&path, format.format_id(), spec, &execution)?;
+    let pre_finalize = |_builder: &PackageBuilder, _draft: EnginePackageDraft<'_>| Ok(());
+    let plan = engine_plan(source.resource.as_ref(), "pkg-file-benchmark")?
+        .bind_compiled_source(&source.source_plan)?
+        .bind_operator_graph(
+            &source.source_plan,
+            &cdf_runtime::DestinationRuntimeCapabilities::default(),
+        )?;
+    let output = block_on(execute_to_package_with_segment_positions_and_pre_finalize(
+        &plan,
+        source.resource.as_ref(),
         root.join(format!("pkg-file-{}", format.label())),
+        &pre_finalize,
+        EngineExecutionOptions::default().with_execution_services(execution),
     ))?;
     Ok(WorkMetric {
-        rows: output.profile.output_rows,
-        bytes: output.profile.output_bytes,
+        rows: output.output.profile.output_rows,
+        bytes: output.output.profile.output_bytes,
     })
 }
 
@@ -522,7 +634,8 @@ schema = { fields = [
 "#,
     )?;
     let resource = compile_document_with_project_root(&document, &project_root)?.remove(0);
-    let resource = resolve_benchmark_file_resource(resource)?;
+    let services = benchmark_execution_services()?;
+    let source = resolve_benchmark_file_resource(resource, &project_root, &services)?;
     let package_id = "pkg-startup-benchmark";
     let destination = ResolvedProjectDestination::new(
         Box::new(cdf_dest_duckdb::DuckDbDestination::new(
@@ -530,16 +643,16 @@ schema = { fields = [
         )?),
         TargetName::new("events")?,
     );
-    let mut policy = ContractPolicy::for_trust(resource.descriptor().trust_level.clone());
+    let mut policy = ContractPolicy::for_trust(source.resource.descriptor().trust_level.clone());
     if let Some(identifier) = destination.column_identifier_policy()? {
         policy.normalization.identifier = identifier;
     }
-    let plan = engine_plan_with_policy(&resource, package_id, &policy)?;
-    let services =
-        cdf_engine::StandaloneExecutionHost::default_services(BENCHMARK_MANAGED_MEMORY_BYTES)?.1;
+    let plan = engine_plan_with_policy(source.resource.as_ref(), package_id, &policy)?
+        .bind_compiled_source(&source.source_plan)?
+        .bind_operator_graph(&source.source_plan, &destination.runtime_capabilities())?;
     let report = block_on(run_project(
         ProjectRunRequest {
-            resource: ProjectRunSource::file(&resource),
+            resource: ProjectRunSource::new(source.resource.as_ref()),
             plan,
             package_root: project_root.join(".cdf/packages"),
             state_store_path: project_root.join(".cdf/state.db"),

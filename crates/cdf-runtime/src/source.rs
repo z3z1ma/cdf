@@ -669,6 +669,10 @@ impl CompiledSourceExecutionPlan {
     pub fn batch_memory_contract(&self) -> SourceBatchMemoryContract {
         self.execution_capabilities.batch_memory
     }
+
+    pub fn execution_capabilities(&self) -> &SourceExecutionCapabilities {
+        &self.execution_capabilities
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

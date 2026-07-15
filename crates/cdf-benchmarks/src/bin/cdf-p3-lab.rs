@@ -33,10 +33,10 @@ fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             let package_root = tempfile::tempdir_in(&workload.package_dir)?;
             workload.package_dir = package_root.path().join("package");
             let started = std::time::Instant::now();
-            let mut measurement = run_prepared_file_to_package(&workload)?;
-            measurement.timed_wall_time_ns =
+            let mut run = run_prepared_file_to_package(&workload)?;
+            run.measurement.timed_wall_time_ns =
                 Some(u64::try_from(started.elapsed().as_nanos()).unwrap_or(u64::MAX));
-            write_stdout(&canonical_json_bytes(&measurement)?)
+            write_stdout(&canonical_json_bytes(&run)?)
         }
         [command, request, iterations] if command == "profile-repeat-cdf" => {
             let workload: PreparedFilePackageWorkload =
