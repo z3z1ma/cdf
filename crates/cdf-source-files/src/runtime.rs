@@ -34,7 +34,8 @@ use tokio::io::AsyncWriteExt;
 use crate::{
     FileCompressionDeclaration, FileFormatDeclaration, FileIdentityMetadata, FileResourcePlan,
     FileTransport, FileTransportFacade, FileTransportLocation, FileTransportResource,
-    LocalByteSource, local_byte_source::local_source_generation,
+    LocalByteSource, growing_spool_byte_source::start_growing_spool,
+    local_byte_source::local_source_generation,
 };
 
 const NATIVE_TARGET_BATCH_ROWS: usize = 64 * 1024;
@@ -1584,11 +1585,23 @@ fn open_file_resource_with_dependencies(
         NATIVE_STREAM_ITEMS,
         move |mut sender, cancellation| async move {
             let decode = async {
-                let mut batches =
+                let prepared_stream =
                     stream_prepared_file_match(prepared, &dependencies, cancellation.clone())
                         .await?;
-                while let Some(batch) = batches.try_next().await? {
-                    sender.send(batch).await?;
+                let PreparedFormatStream {
+                    mut batches,
+                    source_completion,
+                } = prepared_stream;
+                let forward = async {
+                    while let Some(batch) = batches.try_next().await? {
+                        sender.send(batch).await?;
+                    }
+                    Ok::<_, CdfError>(())
+                };
+                if let Some(source_completion) = source_completion {
+                    tokio::try_join!(forward, source_completion)?;
+                } else {
+                    forward.await?;
                 }
                 Ok::<_, CdfError>(())
             };
@@ -1890,7 +1903,7 @@ async fn stream_prepared_file_match(
     prepared: PreparedFilePartition,
     dependencies: &FileRuntimeDependencies,
     cancellation: cdf_runtime::RunCancellation,
-) -> Result<BatchStream> {
+) -> Result<PreparedFormatStream> {
     let PreparedFilePartition {
         resolved,
         input: prepared,
@@ -1914,15 +1927,40 @@ async fn stream_prepared_file_match(
             sha256: resolved.sha256.clone(),
         }],
     }));
-    let (source, payload_retention): (Arc<dyn ByteSource>, Option<PayloadRetention>) =
-        match prepared {
-            PreparedFileInput::Source(source) => (source, payload_retention),
-            PreparedFileInput::SpoolSource { source, size_bytes } => {
-                if payload_retention.is_some() {
-                    return Err(CdfError::internal(
-                        "prepared source payload cannot request a second spool",
-                    ));
+    let ReadyFileInput {
+        source,
+        payload_retention,
+        source_completion,
+    } = match prepared {
+        PreparedFileInput::Source(source) => ReadyFileInput {
+            source,
+            payload_retention,
+            source_completion: None,
+        },
+        PreparedFileInput::SpoolSource { source, size_bytes } => {
+            if payload_retention.is_some() {
+                return Err(CdfError::internal(
+                    "prepared source payload cannot request a second spool",
+                ));
+            }
+            if let Some(size_bytes) = size_bytes
+                && source.identity().strength != GenerationStrength::Weak
+                && source.capabilities().exact_ranges
+            {
+                let growing = start_growing_spool(
+                    source,
+                    size_bytes,
+                    dependencies.max_spool_bytes(),
+                    dependencies.execution().spill(),
+                    dependencies.execution().memory(),
+                    cancellation.clone(),
+                )?;
+                ReadyFileInput {
+                    source: growing.source,
+                    payload_retention: Some(growing.retention),
+                    source_completion: Some(growing.completion),
                 }
+            } else {
                 let spool = Arc::new(
                     spool_byte_source_async(source, size_bytes, dependencies, cancellation.clone())
                         .await?,
@@ -1932,11 +1970,16 @@ async fn stream_prepared_file_match(
                     dependencies.execution().memory(),
                 )?);
                 let retention = retain_spool(&spool, spool.bytes())?;
-                (local, Some(retention))
+                ReadyFileInput {
+                    source: local,
+                    payload_retention: Some(retention),
+                    source_completion: None,
+                }
             }
-        };
+        }
+    };
 
-    stream_registered_format(
+    let batches = stream_registered_format(
         RegisteredFormatStreamRequest {
             source,
             payload_retention,
@@ -1948,7 +1991,22 @@ async fn stream_prepared_file_match(
             physical_schema_authority,
         },
         dependencies,
-    )
+    )?;
+    Ok(PreparedFormatStream {
+        batches,
+        source_completion,
+    })
+}
+
+struct PreparedFormatStream {
+    batches: BatchStream,
+    source_completion: Option<BoxFuture<'static, Result<()>>>,
+}
+
+struct ReadyFileInput {
+    source: Arc<dyn ByteSource>,
+    payload_retention: Option<PayloadRetention>,
+    source_completion: Option<BoxFuture<'static, Result<()>>>,
 }
 
 #[cfg(test)]
@@ -1984,14 +2042,36 @@ fn stream_file_match_blocking(
     };
     let dependencies = dependencies.clone();
     let execution = dependencies.execution().clone();
-    execution.run_io(async move {
+    let prepared_stream = execution.run_io(async move {
         stream_prepared_file_match(
             prepared,
             &dependencies,
             cdf_runtime::RunCancellation::default(),
         )
         .await
-    })
+    })?;
+    let PreparedFormatStream {
+        mut batches,
+        source_completion,
+    } = prepared_stream;
+    let Some(source_completion) = source_completion else {
+        return Ok(batches);
+    };
+    let stream = execution.spawn_io_stream(
+        "file-test-spool-completion",
+        NATIVE_STREAM_ITEMS,
+        move |mut sender, _| async move {
+            let forward = async {
+                while let Some(batch) = batches.try_next().await? {
+                    sender.send(batch).await?;
+                }
+                Ok::<_, CdfError>(())
+            };
+            tokio::try_join!(forward, source_completion)?;
+            Ok(())
+        },
+    )?;
+    Ok(Box::pin(stream))
 }
 
 async fn spool_byte_source_async(
@@ -2036,7 +2116,8 @@ async fn spool_byte_source_async(
         })
         .await?;
     let mut transferred = 0_u64;
-    let mut hasher = Sha256::new();
+    let expected_checksum = source.identity().checksum.clone();
+    let mut hasher = expected_checksum.as_ref().map(|_| Sha256::new());
     while let Some(chunk) = input.try_next().await? {
         cancellation.check()?;
         let chunk_bytes = u64::try_from(chunk.payload().len())
@@ -2065,7 +2146,9 @@ async fn spool_byte_source_async(
             .write_all(chunk.payload())
             .await
             .map_err(|error| CdfError::data(format!("write accounted file spool: {error}")))?;
-        hasher.update(chunk.payload());
+        if let Some(hasher) = &mut hasher {
+            hasher.update(chunk.payload());
+        }
         transferred = next_transferred;
     }
     output
@@ -2079,7 +2162,7 @@ async fn spool_byte_source_async(
             "file spool wrote {transferred} bytes for a planned {size_bytes}-byte generation"
         )));
     }
-    if let Some(expected) = &source.identity().checksum {
+    if let (Some(expected), Some(hasher)) = (expected_checksum.as_deref(), hasher) {
         let observed = hex::encode(hasher.finalize());
         let expected = expected.strip_prefix("sha256:").unwrap_or(expected);
         if observed != expected {

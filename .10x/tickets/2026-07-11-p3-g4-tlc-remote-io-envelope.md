@@ -1,6 +1,6 @@
 Status: open
 Created: 2026-07-11
-Updated: 2026-07-11
+Updated: 2026-07-14
 Parent: .10x/tickets/2026-07-10-p3-ws-g-remote-io-overlap.md
 Depends-On: .10x/tickets/2026-07-11-p3-g3-codec-download-decode-overlap.md, .10x/tickets/done/2026-07-11-p3-d2-duckdb-arrow-bulk.md, .10x/tickets/2026-07-11-p3-c4-jobs-invariance-scaling-matrix.md
 
@@ -33,3 +33,7 @@ Depends on G1-G3, DuckDB bulk, and deterministic scaling closeout.
 
 - `.10x/specs/remote-local-io-overlap.md`
 - `.10x/decisions/terabyte-scale-performance-envelope.md`
+
+## Progress and notes
+
+- 2026-07-14: The live single-object FineWeb proxy is I/O-bound after prepared decode metadata and growing-spool overlap: 16.21 seconds CDF end to end versus 14.70 seconds immediate curl (1.10x), with a 2.205 GB governed package, DuckDB receipt, and committed checkpoint. This is strong proxy evidence but does not close G4's full-year TLC, provider matrix, memory, retry/waste, or recorded-fixture gates. Evidence: `.10x/evidence/2026-07-14-p3-g2-fineweb-growing-spool-overlap.md`.

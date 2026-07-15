@@ -16,6 +16,8 @@ Execute finite drain-mode epochs on the fused runtime graph: closure requests, c
 - Every epoch independently passes package verification, destination receipt verification, and checkpoint gate before later progress publishes.
 - Crash/resume repeats only existing lifecycle states and never advances past receipts.
 - Pausable and non-pausable sources remain within the memory/spill contract; million-epoch metadata does not accumulate in memory.
+- Non-pausable replay retention uses a byte/time-bounded rolling spool whose low watermark advances only with the committed checkpoint frontier; eviction/recovery cannot lose or duplicate an admitted position.
+- Unbounded sources never use a finite-object spool, and exhaustion pauses/backpressures where supported or fails cleanly before memory/disk bounds are exceeded.
 - Fixed captured intervals are jobs-invariant.
 
 ## Evidence expectations
