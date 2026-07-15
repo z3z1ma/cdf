@@ -4,9 +4,9 @@ use cdf_kernel::{CdfError, PartitionPlan, Result, ScanPlan};
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    CompiledSourcePlan, DestinationIngressMode, DestinationRuntimeCapabilities,
-    DestinationWriterModel, ExecutionServices, SourceExecutionCapabilities, SourceExecutorClass,
-    SourceRetryGranularity, artifact_hash,
+    CompiledSourcePlan, DecodeUnitPlan, DestinationIngressMode, DestinationRuntimeCapabilities,
+    DestinationWriterModel, ExecutionHostCapabilities, ExecutionServices,
+    SourceExecutionCapabilities, SourceExecutorClass, SourceRetryGranularity, artifact_hash,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -167,6 +167,95 @@ pub struct RuntimeSchedulerResolution {
     pub transport_connection_limit: Option<u16>,
     pub destination_writer_concurrency: u16,
     pub destination_in_flight_segments: Option<u16>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DecodeUnitConcurrencyResolution {
+    pub jobs: u16,
+    pub memory_jobs: u16,
+    pub cpu_jobs: u16,
+    pub io_jobs: u16,
+    pub estimated_bytes_per_job: u64,
+    pub limiting_factors: Vec<String>,
+}
+
+pub fn resolve_decode_unit_concurrency(
+    units: &[DecodeUnitPlan],
+    host: &ExecutionHostCapabilities,
+    managed_memory_available_bytes: u64,
+    useful_concurrency: u16,
+    target_batch_bytes: u64,
+    buffered_batches_per_unit: u16,
+) -> Result<DecodeUnitConcurrencyResolution> {
+    host.validate()?;
+    if units.is_empty() {
+        return Ok(DecodeUnitConcurrencyResolution {
+            jobs: 0,
+            memory_jobs: 0,
+            cpu_jobs: 0,
+            io_jobs: 0,
+            estimated_bytes_per_job: 0,
+            limiting_factors: vec!["no_units".to_owned()],
+        });
+    }
+    if managed_memory_available_bytes == 0
+        || useful_concurrency == 0
+        || target_batch_bytes == 0
+        || buffered_batches_per_unit == 0
+    {
+        return Err(CdfError::contract(
+            "decode-unit concurrency requires nonzero memory, useful concurrency, batch bytes, and buffered-batch bound",
+        ));
+    }
+    for unit in units {
+        unit.validate()?;
+    }
+    let maximum_unit_bytes = units
+        .iter()
+        .map(|unit| unit.estimated_working_set_bytes)
+        .max()
+        .unwrap_or(0);
+    let buffered_batch_bytes = target_batch_bytes
+        .checked_mul(u64::from(buffered_batches_per_unit))
+        .ok_or_else(|| CdfError::contract("decode-unit buffered batch bytes overflowed"))?;
+    let estimated_bytes_per_job = maximum_unit_bytes
+        .checked_add(buffered_batch_bytes)
+        .ok_or_else(|| CdfError::contract("decode-unit working set overflowed"))?;
+    let memory_jobs = u16::try_from(
+        (managed_memory_available_bytes / estimated_bytes_per_job).min(u64::from(u16::MAX)),
+    )
+    .unwrap_or(u16::MAX);
+    if memory_jobs == 0 {
+        return Err(CdfError::data(format!(
+            "one decode unit requires an estimated {estimated_bytes_per_job} bytes including bounded handoff, but only {managed_memory_available_bytes} managed bytes are available; raise the memory budget, reduce the codec batch target, or reduce decode concurrency"
+        )));
+    }
+    let unit_jobs = u16::try_from(units.len()).unwrap_or(u16::MAX);
+    let candidates = [
+        ("unit_count", unit_jobs),
+        ("source_useful", useful_concurrency),
+        ("container_cpu", host.logical_cpu_slots),
+        ("io_workers", host.io_workers),
+        ("managed_memory", memory_jobs),
+    ];
+    let jobs = candidates
+        .iter()
+        .map(|(_, value)| *value)
+        .min()
+        .unwrap_or(1);
+    let limiting_factors = candidates
+        .iter()
+        .filter(|(_, value)| *value == jobs)
+        .map(|(name, _)| (*name).to_owned())
+        .collect();
+    Ok(DecodeUnitConcurrencyResolution {
+        jobs,
+        memory_jobs,
+        cpu_jobs: host.logical_cpu_slots,
+        io_jobs: host.io_workers,
+        estimated_bytes_per_job,
+        limiting_factors,
+    })
 }
 
 pub fn resolve_runtime_scheduler(
@@ -660,6 +749,30 @@ mod tests {
         let mut too_small = ceilings;
         too_small.managed_memory_bytes = 19;
         assert!(resolve_effective_jobs(1, &source, &too_small).is_err());
+    }
+
+    #[test]
+    fn decode_unit_concurrency_joins_unit_cpu_io_source_and_memory_bounds() {
+        let units = (0..20)
+            .map(|ordinal| DecodeUnitPlan {
+                unit_id: format!("row-group-{ordinal}"),
+                ordinal,
+                extent: None,
+                estimated_working_set_bytes: 16,
+                independently_retryable: true,
+            })
+            .collect::<Vec<_>>();
+        let host = ExecutionHostCapabilities {
+            logical_cpu_slots: 12,
+            io_workers: 4,
+            blocking_lanes: Vec::new(),
+        };
+        let resolution = resolve_decode_unit_concurrency(&units, &host, 160, 8, 16, 2).unwrap();
+        assert_eq!(resolution.estimated_bytes_per_job, 48);
+        assert_eq!(resolution.memory_jobs, 3);
+        assert_eq!(resolution.jobs, 3);
+        assert_eq!(resolution.limiting_factors, vec!["managed_memory"]);
+        assert!(resolve_decode_unit_concurrency(&units, &host, 47, 8, 16, 2).is_err());
     }
 
     #[test]

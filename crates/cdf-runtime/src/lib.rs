@@ -1,6 +1,7 @@
 #![doc = "Engine-neutral runtime contracts and extension registries for cdf."]
 
 mod bulk;
+mod canonical_frontier;
 mod capabilities;
 mod context;
 mod destination;
@@ -17,6 +18,7 @@ mod transformed_byte_source;
 mod utilities;
 
 pub use bulk::*;
+pub use canonical_frontier::*;
 pub use capabilities::*;
 pub use context::*;
 pub use destination::*;

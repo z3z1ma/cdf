@@ -8,7 +8,7 @@ use std::{
 
 use arrow_schema::SchemaRef;
 use cdf_kernel::{
-    BatchStream, BoxFuture, CdfError, DeliveryGuarantee, EffectiveSchemaRuntime,
+    Batch, BatchStream, BoxFuture, CdfError, DeliveryGuarantee, EffectiveSchemaRuntime,
     OpenedPartitionStream, PLAN_PHYSICAL_SCHEMA_HASH_KEY, PLAN_SCHEMA_OBSERVATION_BINDING_KEY,
     PLAN_SCHEMA_OBSERVATION_ID_KEY, PartitionAttestation, PartitionId, PartitionPlan,
     PayloadRetention, PlanId, QueryableResource, ResourceCapabilities, ResourceDescriptor,
@@ -18,12 +18,12 @@ use cdf_kernel::{
 use cdf_memory::{ConsumerKey, MemoryClass};
 use cdf_runtime::{
     AccountedByteStream, ByteExtent, ByteSource, ByteSourceCapabilities, ByteTransformId,
-    ByteTransformRegistry, CompiledFormatBinding, ContentIdentity, DecodePlanningRequest,
-    ExecutionServices, FormatDetection, FormatDetectionConfidence, FormatDiscoveryRequest,
-    FormatDriver, FormatProbe, FormatRegistry, GenerationStrength, PhysicalDecodeRequest,
-    PreparedSourcePayload, PreparedSourcePayloadKey, PreparedSourcePayloads, ReadOptions,
-    SequentialReadRequest, SourceContentDigest, SourceDriverId, TransformSourceConfig,
-    TransformedByteSource,
+    ByteTransformRegistry, CanonicalStreamOpener, CompiledFormatBinding, ContentIdentity,
+    DecodePlanningRequest, ExecutionServices, FormatDetection, FormatDetectionConfidence,
+    FormatDiscoveryRequest, FormatDriver, FormatProbe, FormatRegistry, GenerationStrength,
+    PhysicalDecodeRequest, PreparedSourcePayload, PreparedSourcePayloadKey, PreparedSourcePayloads,
+    ReadOptions, SequentialReadRequest, SourceContentDigest, SourceDriverId, TransformSourceConfig,
+    TransformedByteSource, canonical_stream_frontier, resolve_decode_unit_concurrency,
 };
 #[cfg(test)]
 use futures_util::StreamExt;
@@ -41,6 +41,8 @@ use crate::{
 const NATIVE_TARGET_BATCH_ROWS: usize = 64 * 1024;
 const NATIVE_TARGET_BATCH_BYTES: u64 = 16 * 1024 * 1024;
 const NATIVE_STREAM_ITEMS: usize = 2;
+const NATIVE_UNIT_STREAM_ITEMS: usize = 1;
+const NATIVE_UNIT_BUFFERED_BATCHES: u16 = 2;
 
 #[derive(Clone)]
 pub struct FileRuntimeDependencies {
@@ -2241,13 +2243,16 @@ fn stream_registered_format(
         source_position,
         physical_schema_authority,
     } = request;
-    let memory = dependencies.execution().memory();
+    let execution = dependencies.execution().clone();
+    let memory = execution.memory();
     let scope_id = format!(
         "format-{}-{}",
         driver.descriptor().format_id,
         options.batch_id_prefix
     );
-    let stream = dependencies.execution().spawn_io_stream(
+    let unit_execution = execution.clone();
+    let unit_scope_prefix = scope_id.clone();
+    let stream = execution.spawn_io_stream(
         &scope_id,
         NATIVE_STREAM_ITEMS,
         move |mut sender, cancellation| async move {
@@ -2281,10 +2286,36 @@ fn stream_registered_format(
                     },
                 )
                 .await?;
-            for unit in session.units().iter().cloned() {
-                let mut decoded = session
-                    .decode(
-                        PhysicalDecodeRequest {
+            let units = session.units().to_vec();
+            if units.is_empty() {
+                return Err(CdfError::contract(
+                    "prepared format session must contain at least one decode unit",
+                ));
+            }
+            let memory_snapshot = memory.snapshot();
+            let available_memory = memory_snapshot
+                .budget_bytes
+                .saturating_sub(memory_snapshot.current_bytes);
+            let unit_jobs = if units.len() == 1 {
+                1
+            } else {
+                match resolve_decode_unit_concurrency(
+                    &units,
+                    &unit_execution.capabilities(),
+                    available_memory,
+                    source.capabilities().useful_range_concurrency.max(1),
+                    NATIVE_TARGET_BATCH_BYTES,
+                    NATIVE_UNIT_BUFFERED_BATCHES,
+                ) {
+                    Ok(resolution) => usize::from(resolution.jobs),
+                    Err(error) if error.kind == cdf_kernel::ErrorKind::Data => 1,
+                    Err(error) => return Err(error),
+                }
+            };
+            if unit_jobs == 1 {
+                for unit in units {
+                    let mut decoded = session
+                        .decode(PhysicalDecodeRequest {
                             unit,
                             resource_id: options.resource_id.clone(),
                             partition_id: options.partition_id.clone(),
@@ -2297,12 +2328,66 @@ fn stream_registered_format(
                             target_batch_bytes: NATIVE_TARGET_BATCH_BYTES,
                             memory: Arc::clone(&memory),
                             cancellation: cancellation.clone(),
-                        },
-                    )
-                    .await?;
-                while let Some(batch) = decoded.try_next().await? {
-                    sender.send(batch.into_batch()?).await?;
+                        })
+                        .await?;
+                    while let Some(batch) = decoded.try_next().await? {
+                        sender.send(batch.into_batch()?).await?;
+                    }
                 }
+                return Ok(());
+            }
+
+            let units = Arc::new(units);
+            let unit_count = units.len();
+            let opener_session = Arc::clone(&session);
+            let opener_units = Arc::clone(&units);
+            let opener_execution = unit_execution.clone();
+            let opener_memory = Arc::clone(&memory);
+            let opener_options = options.clone();
+            let opener_schema = decode_schema.clone();
+            let opener_position = source_position.clone();
+            let opener_scope_prefix = unit_scope_prefix.clone();
+            let opener: CanonicalStreamOpener<Batch> = Box::new(move |ordinal| {
+                let unit = opener_units.get(ordinal).cloned().ok_or_else(|| {
+                    CdfError::internal("decode-unit frontier ordinal is outside its session")
+                })?;
+                let session = Arc::clone(&opener_session);
+                let memory = Arc::clone(&opener_memory);
+                let options = opener_options.clone();
+                let schema = opener_schema.clone();
+                let source_position = opener_position.clone();
+                let unit_stream = opener_execution.spawn_io_stream(
+                    &format!("{opener_scope_prefix}-unit-{ordinal:08}"),
+                    NATIVE_UNIT_STREAM_ITEMS,
+                    move |mut unit_sender, unit_cancellation| async move {
+                        let mut decoded = session
+                            .decode(PhysicalDecodeRequest {
+                                unit,
+                                resource_id: options.resource_id,
+                                partition_id: options.partition_id,
+                                batch_id_prefix: options.batch_id_prefix,
+                                schema,
+                                source_position,
+                                projection: None,
+                                predicates: Vec::new(),
+                                target_batch_rows: NATIVE_TARGET_BATCH_ROWS,
+                                target_batch_bytes: NATIVE_TARGET_BATCH_BYTES,
+                                memory,
+                                cancellation: unit_cancellation,
+                            })
+                            .await?;
+                        while let Some(batch) = decoded.try_next().await? {
+                            unit_sender.send(batch.into_batch()?).await?;
+                        }
+                        Ok(())
+                    },
+                )?;
+                Ok(Box::pin(unit_stream))
+            });
+            let mut decoded = canonical_stream_frontier(unit_count, unit_jobs, opener)?;
+            while let Some(batch) = decoded.try_next().await? {
+                cancellation.check()?;
+                sender.send(batch).await?;
             }
             Ok(())
         },
@@ -3566,6 +3651,7 @@ mod tests {
     use arrow_schema::{DataType, Field, Schema};
     use flate2::{Compression, write::GzEncoder};
     use object_store::{ObjectStoreExt, PutPayload, memory::InMemory, path::Path as ObjectPath};
+    use parquet::arrow::ArrowWriter;
     use tempfile::TempDir;
 
     use super::*;
@@ -3972,18 +4058,23 @@ mod tests {
             Field::new("id", DataType::Int64, false),
             Field::new("name", DataType::Utf8, false),
         ]));
-        let record_batch = RecordBatch::try_new(
-            Arc::clone(&schema),
-            vec![
-                Arc::new(Int64Array::from_iter_values(0..150_000)) as ArrayRef,
-                Arc::new(StringArray::from_iter_values(
-                    (0..150_000).map(|value| format!("name-{value}")),
-                )) as ArrayRef,
-            ],
-        )
-        .unwrap();
-        let bytes =
-            cdf_package::transcode_record_batches_to_parquet_bytes(&[record_batch]).unwrap();
+        let mut bytes = Vec::new();
+        let mut writer = ArrowWriter::try_new(&mut bytes, Arc::clone(&schema), None).unwrap();
+        for start in [0_i64, 50_000, 100_000] {
+            let record_batch = RecordBatch::try_new(
+                Arc::clone(&schema),
+                vec![
+                    Arc::new(Int64Array::from_iter_values(start..start + 50_000)) as ArrayRef,
+                    Arc::new(StringArray::from_iter_values(
+                        (start..start + 50_000).map(|value| format!("name-{value}")),
+                    )) as ArrayRef,
+                ],
+            )
+            .unwrap();
+            writer.write(&record_batch).unwrap();
+            writer.flush().unwrap();
+        }
+        writer.close().unwrap();
         let temp = tempfile::NamedTempFile::new().unwrap();
         std::fs::write(temp.path(), bytes).unwrap();
         let dependencies = FileRuntimeDependencies::new(

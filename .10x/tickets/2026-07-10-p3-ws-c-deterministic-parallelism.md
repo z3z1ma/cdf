@@ -1,6 +1,6 @@
-Status: open
+Status: active
 Created: 2026-07-10
-Updated: 2026-07-11
+Updated: 2026-07-14
 Parent: .10x/tickets/2026-07-10-p3-terabyte-scale-program.md
 Depends-On: .10x/tickets/2026-07-11-p0-sx1-source-extension-boundary.md, .10x/tickets/done/2026-07-11-p3-a4-injected-execution-host.md, .10x/tickets/done/2026-07-11-p3-a3-canonical-segmentation-adaptive-batching.md, .10x/tickets/2026-07-07-local-partition-parallelism-triage.md
 
