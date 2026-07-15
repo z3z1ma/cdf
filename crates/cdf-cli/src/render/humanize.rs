@@ -37,6 +37,19 @@ pub(crate) fn humanize_rate(bytes_per_second: f64) -> String {
 }
 
 pub(crate) fn humanize_duration(duration: Duration) -> String {
+    if duration.is_zero() {
+        return "0s".to_owned();
+    }
+    if duration.as_secs() == 0 {
+        let nanos = duration.as_nanos();
+        if nanos >= 1_000_000 {
+            return format!("{}ms", nanos / 1_000_000);
+        }
+        if nanos >= 1_000 {
+            return format!("{}us", nanos / 1_000);
+        }
+        return format!("{nanos}ns");
+    }
     let seconds = duration.as_secs();
     if seconds < 60 {
         return format!("{seconds}s");

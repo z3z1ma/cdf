@@ -10,10 +10,10 @@ use arrow_schema::SchemaRef;
 use cdf_kernel::{
     Batch, BatchStream, BoxFuture, CdfError, DeliveryGuarantee, EffectiveSchemaRuntime,
     OpenedPartitionStream, PLAN_PHYSICAL_SCHEMA_HASH_KEY, PLAN_SCHEMA_OBSERVATION_BINDING_KEY,
-    PLAN_SCHEMA_OBSERVATION_ID_KEY, PartitionAttestation, PartitionId, PartitionPlan,
-    PayloadRetention, PlanId, QueryableResource, ResourceCapabilities, ResourceDescriptor,
-    ResourceId, ResourceStream, Result, ScanPlan, ScanRequest, SchemaHash, ScopeKey,
-    SourcePosition, TypePolicyAllowances, WriteDisposition,
+    PLAN_SCHEMA_OBSERVATION_ID_KEY, PartitionAttestation, PartitionCompletion, PartitionId,
+    PartitionPlan, PayloadRetention, PlanId, QueryableResource, ResourceCapabilities,
+    ResourceDescriptor, ResourceId, ResourceStream, Result, ScanPlan, ScanRequest, SchemaHash,
+    ScopeKey, SourcePosition, TypePolicyAllowances, WriteDisposition,
 };
 use cdf_memory::{ConsumerKey, MemoryClass};
 use cdf_runtime::{
@@ -21,9 +21,10 @@ use cdf_runtime::{
     ByteTransformRegistry, CanonicalStreamOpener, CompiledFormatBinding, ContentIdentity,
     DecodePlanningRequest, ExecutionServices, FormatDetection, FormatDetectionConfidence,
     FormatDiscoveryRequest, FormatDriver, FormatProbe, FormatRegistry, GenerationStrength,
-    PhysicalDecodeRequest, PreparedSourcePayload, PreparedSourcePayloadKey, PreparedSourcePayloads,
-    ReadOptions, SequentialReadRequest, SourceContentDigest, SourceDriverId, TransformSourceConfig,
-    TransformedByteSource, canonical_stream_frontier, resolve_decode_unit_concurrency,
+    ObservedByteSource, PhysicalDecodeRequest, PreparedSourcePayload, PreparedSourcePayloadKey,
+    PreparedSourcePayloads, ReadOptions, SequentialReadRequest, SourceContentDigest,
+    SourceDriverId, SourceIoObserver, TransformSourceConfig, TransformedByteSource,
+    canonical_stream_frontier, resolve_decode_unit_concurrency,
 };
 #[cfg(test)]
 use futures_util::StreamExt;
@@ -973,6 +974,7 @@ enum PreparedFileInput {
 
 struct PreparedInput {
     input: PreparedFileInput,
+    source_io: SourceIoObserver,
     extraction_content_hash: Option<SourceContentDigest>,
     hash_sweep_source: Option<Arc<dyn ByteSource>>,
     payload_retention: Option<PayloadRetention>,
@@ -1412,6 +1414,7 @@ struct PreparedFilePartition {
     physical_schema_authority: PhysicalSchemaAuthority,
     canonical_format_options: serde_json::Value,
     driver: Arc<dyn FormatDriver>,
+    source_io: SourceIoObserver,
     extraction_content_hash: Option<SourceContentDigest>,
     hash_sweep_source: Option<Arc<dyn ByteSource>>,
     payload_retention: Option<PayloadRetention>,
@@ -1566,6 +1569,7 @@ fn open_file_resource_with_dependencies(
         Err(error) => return Box::pin(async move { Err(error) }),
     };
     let execution = dependencies.execution().clone();
+    let source_io = prepared.source_io.clone();
     let extraction_content_hash = prepared.extraction_content_hash.clone();
     let hash_sweep_source = prepared.hash_sweep_source.clone();
     let completed_position = cdf_kernel::FilePosition {
@@ -1609,7 +1613,7 @@ fn open_file_resource_with_dependencies(
             };
             let hash_sweep = complete_hash_sweep(hash_sweep_source, cancellation.clone());
             tokio::try_join!(decode, hash_sweep)?;
-            let completion = if let Some(extraction_content_hash) = extraction_content_hash {
+            let attestation = if let Some(extraction_content_hash) = extraction_content_hash {
                 let mut completed_position = completed_position;
                 completed_position.sha256 = Some(extraction_content_hash.completed()?);
                 Some(PartitionAttestation::new(
@@ -1622,6 +1626,7 @@ fn open_file_resource_with_dependencies(
             } else {
                 None
             };
+            let completion = PartitionCompletion::new(attestation, Some(source_io.snapshot()));
             let _ = completion_sender.send(completion);
             Ok(())
         },
@@ -1715,6 +1720,7 @@ fn prepare_file_partition(
         },
         canonical_format_options: compiled_format.canonical_options.clone(),
         driver,
+        source_io: prepared_input.source_io,
         extraction_content_hash: prepared_input.extraction_content_hash,
         hash_sweep_source: prepared_input.hash_sweep_source,
         payload_retention: prepared_input.payload_retention,
@@ -1750,48 +1756,20 @@ fn prepare_file_input(
     {
         let (payload, retention) =
             payload.into_typed::<PreparedFilePayload>("file source execution")?;
+        let observed = Arc::new(ObservedByteSource::new(payload.source));
+        let source_io = observed.observer();
         return Ok(PreparedInput {
-            input: PreparedFileInput::Source(payload.source),
+            input: PreparedFileInput::Source(observed),
+            source_io,
             extraction_content_hash: payload.source_content_digest,
             hash_sweep_source: None,
             payload_retention: Some(retention),
         });
     }
     if resolved.compression.transform_id.is_none() {
-        let expected = expected_file_identity(resolved);
-        let (source, extraction_content_hash): (Arc<dyn ByteSource>, Option<SourceContentDigest>) =
-            match &resolved.open {
-                ResolvedFileOpen::LocalPath(path) => {
-                    let local: Arc<dyn ByteSource> = Arc::new(LocalByteSource::open(
-                        path,
-                        dependencies.execution().memory(),
-                    )?);
-                    verify_opened_local_generation(resolved, local.as_ref())?;
-                    let observation = SourceContentDigest::default();
-                    (
-                        Arc::new(HashingByteSource::new(local, observation.clone())),
-                        Some(observation),
-                    )
-                }
-                ResolvedFileOpen::Transport(resource) => {
-                    let upstream = dependencies.with_transport(|transport| {
-                        transport.open_byte_source(
-                            resource,
-                            &expected,
-                            dependencies.execution().memory(),
-                        )
-                    })?;
-                    if resolved.identity_strength == GenerationStrength::Weak {
-                        let observation = SourceContentDigest::default();
-                        (
-                            Arc::new(HashingByteSource::new(upstream, observation.clone())),
-                            Some(observation),
-                        )
-                    } else {
-                        (upstream, None)
-                    }
-                }
-            };
+        let opened = open_file_byte_source(resolved, dependencies)?;
+        let source = opened.source;
+        let extraction_content_hash = opened.content_digest;
         let transport_spool = matches!(resolved.open, ResolvedFileOpen::Transport(_))
             && source_access == cdf_runtime::FormatSourceAccess::Adaptive;
         let hash_sweep_source = (extraction_content_hash.is_some()
@@ -1808,49 +1786,15 @@ fn prepare_file_input(
         };
         return Ok(PreparedInput {
             input,
+            source_io: opened.observer,
             extraction_content_hash,
             hash_sweep_source,
             payload_retention: None,
         });
     }
     if let Some(transform_id) = &resolved.compression.transform_id {
-        let expected = expected_file_identity(resolved);
-        let (upstream, extraction_content_hash): (
-            Arc<dyn ByteSource>,
-            Option<SourceContentDigest>,
-        ) = match &resolved.open {
-            ResolvedFileOpen::LocalPath(path) => {
-                let local: Arc<dyn ByteSource> = Arc::new(LocalByteSource::open(
-                    path,
-                    dependencies.execution().memory(),
-                )?);
-                verify_opened_local_generation(resolved, local.as_ref())?;
-                let observation = SourceContentDigest::default();
-                (
-                    Arc::new(HashingByteSource::new(local, observation.clone())),
-                    Some(observation),
-                )
-            }
-            ResolvedFileOpen::Transport(resource) => {
-                let upstream = dependencies.with_transport(|transport| {
-                    transport.open_byte_source(
-                        resource,
-                        &expected,
-                        dependencies.execution().memory(),
-                    )
-                })?;
-                if resolved.identity_strength == GenerationStrength::Weak {
-                    let observation = SourceContentDigest::default();
-                    (
-                        Arc::new(HashingByteSource::new(upstream, observation.clone())),
-                        Some(observation),
-                    )
-                } else {
-                    (upstream, None)
-                }
-            }
-        };
-        let transformed = transformed_byte_source(upstream, transform_id, dependencies)?;
+        let opened = open_file_byte_source(resolved, dependencies)?;
+        let transformed = transformed_byte_source(opened.source, transform_id, dependencies)?;
         let input = if source_access != cdf_runtime::FormatSourceAccess::Sequential {
             PreparedFileInput::SpoolSource {
                 source: transformed,
@@ -1861,7 +1805,8 @@ fn prepare_file_input(
         };
         return Ok(PreparedInput {
             input,
-            extraction_content_hash,
+            source_io: opened.observer,
+            extraction_content_hash: opened.content_digest,
             hash_sweep_source: None,
             payload_retention: None,
         });
@@ -1869,6 +1814,53 @@ fn prepare_file_input(
     Err(CdfError::internal(
         "file preparation reached an unclassified compression state",
     ))
+}
+
+struct OpenedFileByteSource {
+    source: Arc<dyn ByteSource>,
+    observer: SourceIoObserver,
+    content_digest: Option<SourceContentDigest>,
+}
+
+fn open_file_byte_source(
+    resolved: &ResolvedFileMatch,
+    dependencies: &FileRuntimeDependencies,
+) -> Result<OpenedFileByteSource> {
+    let raw: Arc<dyn ByteSource> = match &resolved.open {
+        ResolvedFileOpen::LocalPath(path) => {
+            let local: Arc<dyn ByteSource> = Arc::new(LocalByteSource::open(
+                path,
+                dependencies.execution().memory(),
+            )?);
+            verify_opened_local_generation(resolved, local.as_ref())?;
+            local
+        }
+        ResolvedFileOpen::Transport(resource) => {
+            let expected = expected_file_identity(resolved);
+            dependencies.with_transport(|transport| {
+                transport.open_byte_source(resource, &expected, dependencies.execution().memory())
+            })?
+        }
+    };
+    let observed = Arc::new(ObservedByteSource::new(raw));
+    let observer = observed.observer();
+    let requires_content_digest = matches!(resolved.open, ResolvedFileOpen::LocalPath(_))
+        || resolved.identity_strength == GenerationStrength::Weak;
+    let (source, content_digest): (Arc<dyn ByteSource>, Option<SourceContentDigest>) =
+        if requires_content_digest {
+            let digest = SourceContentDigest::default();
+            (
+                Arc::new(HashingByteSource::new(observed, digest.clone())),
+                Some(digest),
+            )
+        } else {
+            (observed, None)
+        };
+    Ok(OpenedFileByteSource {
+        source,
+        observer,
+        content_digest,
+    })
 }
 
 fn verify_opened_local_generation(
@@ -1914,6 +1906,7 @@ async fn stream_prepared_file_match(
         physical_schema_authority,
         canonical_format_options,
         driver,
+        source_io: _,
         extraction_content_hash: _,
         hash_sweep_source: _,
         payload_retention,
@@ -2046,6 +2039,7 @@ fn stream_file_match_blocking(
         physical_schema_authority,
         canonical_format_options,
         driver,
+        source_io: prepared_input.source_io,
         extraction_content_hash: prepared_input.extraction_content_hash,
         hash_sweep_source: prepared_input.hash_sweep_source,
         payload_retention: prepared_input.payload_retention,

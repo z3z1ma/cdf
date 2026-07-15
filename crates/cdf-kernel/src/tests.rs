@@ -1402,10 +1402,13 @@ fn partition_completion_evidence_is_eof_bound_and_single_use() {
     let waker = Waker::from(Arc::new(NoopWake));
     let mut context = Context::from_waker(&waker);
     let stream: BatchStream = Box::pin(EmptyBatchStream);
-    let mut opened = OpenedPartitionStream::with_completion(stream, Box::pin(async { Ok(None) }));
+    let mut opened = OpenedPartitionStream::with_completion(
+        stream,
+        Box::pin(async { Ok(PartitionCompletion::default()) }),
+    );
 
     let before_eof = {
-        let mut completion = Box::pin(opened.completion_attestation());
+        let mut completion = Box::pin(opened.completion());
         match completion.as_mut().poll(&mut context) {
             Poll::Ready(result) => result,
             Poll::Pending => panic!("pre-EOF completion check unexpectedly blocked"),
@@ -1418,15 +1421,15 @@ fn partition_completion_evidence_is_eof_bound_and_single_use() {
     ));
 
     let after_eof = {
-        let mut completion = Box::pin(opened.completion_attestation());
+        let mut completion = Box::pin(opened.completion());
         match completion.as_mut().poll(&mut context) {
             Poll::Ready(result) => result,
             Poll::Pending => panic!("terminal completion evidence unexpectedly blocked"),
         }
     };
-    assert_eq!(after_eof.unwrap(), None);
+    assert_eq!(after_eof.unwrap(), PartitionCompletion::default());
     let second = {
-        let mut completion = Box::pin(opened.completion_attestation());
+        let mut completion = Box::pin(opened.completion());
         match completion.as_mut().poll(&mut context) {
             Poll::Ready(result) => result,
             Poll::Pending => panic!("duplicate completion check unexpectedly blocked"),

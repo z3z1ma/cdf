@@ -510,6 +510,65 @@ pub struct PartitionAttestation {
     physical_schema_hash: Option<SchemaHash>,
 }
 
+/// Invocation-local source I/O measurements. These values are operational
+/// telemetry only: they never participate in plan, package, or manifest identity.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct SourceIoMetrics {
+    /// Sum of time awaiting source opens/range responses/stream chunks. Consumer
+    /// backpressure between polls is excluded; concurrent range waits may overlap.
+    pub duration_ns: u64,
+    pub logical_bytes: u64,
+    pub physical_bytes: u64,
+    pub requests: u64,
+}
+
+impl SourceIoMetrics {
+    pub fn prefetch_waste_bytes(self) -> u64 {
+        self.physical_bytes.saturating_sub(self.logical_bytes)
+    }
+
+    pub fn is_empty(self) -> bool {
+        self.duration_ns == 0
+            && self.logical_bytes == 0
+            && self.physical_bytes == 0
+            && self.requests == 0
+    }
+}
+
+/// EOF-bound outcome of one partition invocation.
+///
+/// Correctness evidence and operational measurements share the same lifecycle
+/// barrier but remain separate values so telemetry cannot affect package identity.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct PartitionCompletion {
+    attestation: Option<PartitionAttestation>,
+    source_io: Option<SourceIoMetrics>,
+}
+
+impl PartitionCompletion {
+    pub fn new(
+        attestation: Option<PartitionAttestation>,
+        source_io: Option<SourceIoMetrics>,
+    ) -> Self {
+        Self {
+            attestation,
+            source_io,
+        }
+    }
+
+    pub fn attestation(&self) -> Option<&PartitionAttestation> {
+        self.attestation.as_ref()
+    }
+
+    pub fn into_attestation(self) -> Option<PartitionAttestation> {
+        self.attestation
+    }
+
+    pub fn source_io(&self) -> Option<SourceIoMetrics> {
+        self.source_io
+    }
+}
+
 impl PartitionAttestation {
     pub fn new(
         processed_position: SourcePosition,
@@ -1196,18 +1255,21 @@ pub trait ResourceStream: Send + Sync {
 /// value prevents evidence from one preview, retry, or concurrent open being observed by another.
 pub struct OpenedPartitionStream {
     stream: BatchStream,
-    completion: Option<BoxFuture<'static, Result<Option<PartitionAttestation>>>>,
+    completion: Option<BoxFuture<'static, Result<PartitionCompletion>>>,
     reached_eof: bool,
 }
 
 impl OpenedPartitionStream {
     pub fn without_completion(stream: BatchStream) -> Self {
-        Self::with_completion(stream, Box::pin(async { Ok(None) }))
+        Self::with_completion(
+            stream,
+            Box::pin(async { Ok(PartitionCompletion::default()) }),
+        )
     }
 
     pub fn with_completion(
         stream: BatchStream,
-        completion: BoxFuture<'static, Result<Option<PartitionAttestation>>>,
+        completion: BoxFuture<'static, Result<PartitionCompletion>>,
     ) -> Self {
         Self {
             stream,
@@ -1216,10 +1278,10 @@ impl OpenedPartitionStream {
         }
     }
 
-    pub async fn completion_attestation(&mut self) -> Result<Option<PartitionAttestation>> {
+    pub async fn completion(&mut self) -> Result<PartitionCompletion> {
         if !self.reached_eof {
             return Err(CdfError::contract(
-                "partition completion attestation requires a fully consumed stream",
+                "partition completion requires a fully consumed stream",
             ));
         }
         let completion = self.completion.take().ok_or_else(|| {

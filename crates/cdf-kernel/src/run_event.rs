@@ -258,6 +258,7 @@ pub enum RunEventValue {
 #[serde(rename_all = "snake_case")]
 pub enum RunPhase {
     PackageExecution,
+    SourceRead,
     Decode,
     ValidationNormalization,
     SegmentEncode,
@@ -272,6 +273,7 @@ impl RunPhase {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::PackageExecution => "package_execution",
+            Self::SourceRead => "source_read",
             Self::Decode => "decode",
             Self::ValidationNormalization => "validation_normalization",
             Self::SegmentEncode => "segment_encode",

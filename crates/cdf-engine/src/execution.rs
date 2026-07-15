@@ -129,6 +129,17 @@ impl PhaseMeasurements {
     }
 
     fn add(&mut self, phase: RunPhase, duration_ns: u64, input_bytes: u64, output_bytes: u64) {
+        self.add_operations(phase, duration_ns, input_bytes, output_bytes, 1);
+    }
+
+    fn add_operations(
+        &mut self,
+        phase: RunPhase,
+        duration_ns: u64,
+        input_bytes: u64,
+        output_bytes: u64,
+        operations: u64,
+    ) {
         if !self.enabled {
             return;
         }
@@ -136,7 +147,7 @@ impl PhaseMeasurements {
         metric.duration_ns = metric.duration_ns.saturating_add(duration_ns);
         metric.input_bytes = metric.input_bytes.saturating_add(input_bytes);
         metric.output_bytes = metric.output_bytes.saturating_add(output_bytes);
-        metric.operations = metric.operations.saturating_add(1);
+        metric.operations = metric.operations.saturating_add(operations);
     }
 
     fn into_metrics(self) -> Vec<RunPhaseMetric> {
@@ -2925,11 +2936,25 @@ where
                     durable: &mut durable_segment_observer,
                 },
             )?;
-            let completion_attestation = if fully_processed {
-                stream.completion_attestation().await?
+            let completion = if fully_processed {
+                Some(stream.completion().await?)
             } else {
                 None
             };
+            if let Some(source_io) = completion
+                .as_ref()
+                .and_then(cdf_kernel::PartitionCompletion::source_io)
+            {
+                phase_measurements.add_operations(
+                    RunPhase::SourceRead,
+                    source_io.duration_ns,
+                    source_io.physical_bytes,
+                    source_io.logical_bytes,
+                    source_io.requests,
+                );
+            }
+            let completion_attestation = completion
+                .and_then(cdf_kernel::PartitionCompletion::into_attestation);
             Ok::<_, CdfError>((
                 fully_processed,
                 observed_positions,

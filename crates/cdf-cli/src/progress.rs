@@ -647,6 +647,17 @@ fn display_event_value(key: &str, value: &RunEventValue) -> String {
             .map(|(key, value)| format!("{key}:{}", display_event_value(key, value)))
             .collect::<Vec<_>>()
             .join(","),
+        RunEventValue::PhaseMetric(metric) if metric.phase == cdf_kernel::RunPhase::SourceRead => {
+            format!(
+                "source_read {:?} {} physical / {} logical / {} waste across {} requests in {}",
+                metric.status,
+                humanize_bytes(metric.input_bytes),
+                humanize_bytes(metric.output_bytes),
+                humanize_bytes(metric.input_bytes.saturating_sub(metric.output_bytes)),
+                metric.operations,
+                humanize_duration(Duration::from_nanos(metric.duration_ns))
+            )
+        }
         RunEventValue::PhaseMetric(metric) => format!(
             "{} {:?} {} ns {}/{} bytes",
             metric.phase.as_str(),
@@ -690,8 +701,8 @@ mod tests {
     use std::collections::BTreeMap;
 
     use cdf_kernel::{
-        CheckpointId, DestinationId, PackageHash, PlanId, ReceiptId, ResourceId, RunId,
-        SecretReference,
+        CheckpointId, DestinationId, PackageHash, PlanId, ReceiptId, ResourceId, RunId, RunPhase,
+        RunPhaseMetric, RunPhaseStatus, SecretReference,
     };
 
     use super::*;
@@ -759,6 +770,25 @@ mod tests {
             plan_id: Some(PlanId::new("plan-progress-test").unwrap()),
             details: cdf_kernel::RunEventDetails { attributes },
         }
+    }
+
+    #[test]
+    fn source_read_metric_names_physical_logical_waste_and_requests() {
+        let rendered = display_event_value(
+            "metric",
+            &RunEventValue::PhaseMetric(RunPhaseMetric {
+                phase: RunPhase::SourceRead,
+                status: RunPhaseStatus::Completed,
+                duration_ns: 2_000_000,
+                input_bytes: 10 * 1024 * 1024,
+                output_bytes: 8 * 1024 * 1024,
+                operations: 3,
+            }),
+        );
+        assert_eq!(
+            rendered,
+            "source_read Completed 10 MiB physical / 8 MiB logical / 2 MiB waste across 3 requests in 2ms"
+        );
     }
 
     #[test]

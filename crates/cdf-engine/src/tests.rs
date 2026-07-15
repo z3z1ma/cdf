@@ -4506,7 +4506,12 @@ impl ResourceStream for MockResource {
             match completion_attestation {
                 Some(attestation) => Ok(cdf_kernel::OpenedPartitionStream::with_completion(
                     stream,
-                    Box::pin(async move { Ok(Some(attestation)) }),
+                    Box::pin(async move {
+                        Ok(cdf_kernel::PartitionCompletion::new(
+                            Some(attestation),
+                            None,
+                        ))
+                    }),
                 )),
                 None => Ok(cdf_kernel::OpenedPartitionStream::without_completion(
                     stream,
