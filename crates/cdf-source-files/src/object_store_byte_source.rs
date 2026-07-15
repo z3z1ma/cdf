@@ -7,7 +7,8 @@ use cdf_memory::{
 };
 use cdf_runtime::{
     AccountedByteStream, ByteExtent, ByteSource, ByteSourceCapabilities, ContentIdentity,
-    GenerationStrength, RunCancellation, SequentialReadRequest,
+    ExactRangeCoalescingPolicy, GenerationStrength, REMOTE_RANGE_COALESCING_POLICY,
+    RunCancellation, SequentialReadRequest,
 };
 use futures_util::{TryStreamExt, stream};
 use object_store::{GetOptions, ObjectStore, ObjectStoreExt, path::Path as ObjectPath};
@@ -109,6 +110,10 @@ impl ByteSource for ObjectStoreByteSource {
 
     fn capabilities(&self) -> &ByteSourceCapabilities {
         &self.capabilities
+    }
+
+    fn exact_range_coalescing_policy(&self) -> ExactRangeCoalescingPolicy {
+        REMOTE_RANGE_COALESCING_POLICY
     }
 
     fn open_sequential(

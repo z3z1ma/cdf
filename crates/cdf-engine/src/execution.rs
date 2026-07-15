@@ -2949,7 +2949,7 @@ where
                     RunPhase::SourceRead,
                     source_io.duration_ns,
                     source_io.physical_bytes,
-                    source_io.logical_bytes,
+                    source_io.useful_bytes,
                     source_io.requests,
                 );
             }

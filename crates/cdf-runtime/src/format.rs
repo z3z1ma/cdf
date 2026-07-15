@@ -428,10 +428,40 @@ pub struct SequentialReadRequest {
     pub cancellation: RunCancellation,
 }
 
+pub const REMOTE_RANGE_COALESCING_POLICY: ExactRangeCoalescingPolicy = ExactRangeCoalescingPolicy {
+    maximum_gap_bytes: 64 * 1024,
+    maximum_physical_amplification_bps: 12_500,
+};
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ExactRangeCoalescingPolicy {
+    pub maximum_gap_bytes: u64,
+    /// Maximum physical/useful byte ratio in basis points. `10_000` permits
+    /// adjacency/overlap reuse but no prefetch amplification.
+    pub maximum_physical_amplification_bps: u32,
+}
+
+impl ExactRangeCoalescingPolicy {
+    pub const CONSERVATIVE: Self = Self {
+        maximum_gap_bytes: 0,
+        maximum_physical_amplification_bps: 10_000,
+    };
+
+    pub fn validate(self) -> Result<()> {
+        if !(10_000..=100_000).contains(&self.maximum_physical_amplification_bps) {
+            return Err(CdfError::contract(
+                "exact-range physical amplification must be within 1x..=10x",
+            ));
+        }
+        Ok(())
+    }
+}
+
 #[derive(Debug)]
 pub struct ExactRangeReadBatch {
     logical: Vec<AccountedBytes>,
     logical_bytes: u64,
+    useful_bytes: u64,
     physical_bytes: u64,
     request_count: u32,
 }
@@ -439,15 +469,16 @@ pub struct ExactRangeReadBatch {
 impl ExactRangeReadBatch {
     pub fn try_new(
         logical: Vec<AccountedBytes>,
+        useful_bytes: u64,
         physical_bytes: u64,
         request_count: u32,
     ) -> Result<Self> {
         let empty = logical.is_empty();
-        if empty != (physical_bytes == 0 && request_count == 0)
-            || (!empty && (physical_bytes == 0 || request_count == 0))
+        if empty != (useful_bytes == 0 && physical_bytes == 0 && request_count == 0)
+            || (!empty && (useful_bytes == 0 || physical_bytes == 0 || request_count == 0))
         {
             return Err(CdfError::contract(
-                "exact-range batch requires empty or jointly nonempty logical bytes, physical bytes, and request count",
+                "exact-range batch requires empty or jointly nonempty logical, useful, physical, and request evidence",
             ));
         }
         let logical_bytes = logical.iter().try_fold(0_u64, |total, bytes| {
@@ -457,9 +488,15 @@ impl ExactRangeReadBatch {
                 .checked_add(length)
                 .ok_or_else(|| CdfError::data("logical range byte count overflowed"))
         })?;
+        if useful_bytes > logical_bytes || useful_bytes > physical_bytes {
+            return Err(CdfError::contract(
+                "exact-range useful bytes cannot exceed logical or physical bytes",
+            ));
+        }
         Ok(Self {
             logical,
             logical_bytes,
+            useful_bytes,
             physical_bytes,
             request_count,
         })
@@ -481,6 +518,14 @@ impl ExactRangeReadBatch {
         self.physical_bytes
     }
 
+    pub fn useful_bytes(&self) -> u64 {
+        self.useful_bytes
+    }
+
+    pub fn prefetch_waste_bytes(&self) -> u64 {
+        self.physical_bytes - self.useful_bytes
+    }
+
     pub fn request_count(&self) -> u32 {
         self.request_count
     }
@@ -489,6 +534,7 @@ impl ExactRangeReadBatch {
 #[derive(Debug)]
 struct CoalescedRangeGroup {
     extent: ByteExtent,
+    useful_bytes: u64,
     members: Vec<CoalescedRangeMember>,
 }
 
@@ -502,12 +548,14 @@ struct CoalescedRangeMember {
 fn coalesce_exact_ranges(
     extents: Vec<ByteExtent>,
     maximum_request_bytes: u64,
+    policy: ExactRangeCoalescingPolicy,
 ) -> Result<Vec<CoalescedRangeGroup>> {
     if maximum_request_bytes == 0 {
         return Err(CdfError::contract(
             "exact-range coalescing requires a nonzero request ceiling",
         ));
     }
+    policy.validate()?;
     let mut ordered = extents
         .into_iter()
         .enumerate()
@@ -530,25 +578,54 @@ fn coalesce_exact_ranges(
                 .checked_add(group.extent.length)
                 .ok_or_else(|| CdfError::contract("coalesced byte range overflowed"))?;
             let combined_end = group_end.max(end);
-            extent.start <= group_end
-                && combined_end
-                    .checked_sub(group.extent.start)
-                    .is_some_and(|length| length <= maximum_request_bytes)
+            let gap = extent.start.saturating_sub(group_end);
+            let additional_useful = if end <= group_end {
+                0
+            } else if extent.start >= group_end {
+                extent.length
+            } else {
+                end - group_end
+            };
+            let combined_useful = group
+                .useful_bytes
+                .checked_add(additional_useful)
+                .ok_or_else(|| CdfError::data("coalesced useful byte count overflowed"))?;
+            let combined_length = combined_end
+                .checked_sub(group.extent.start)
+                .ok_or_else(|| CdfError::contract("coalesced byte range moved backwards"))?;
+            gap <= policy.maximum_gap_bytes
+                && combined_length <= maximum_request_bytes
+                && u128::from(combined_length) * 10_000
+                    <= u128::from(combined_useful)
+                        * u128::from(policy.maximum_physical_amplification_bps)
         } else {
             false
         };
         if !merge {
+            let useful_bytes = extent.length;
             groups.push(CoalescedRangeGroup {
                 extent,
+                useful_bytes,
                 members: Vec::new(),
             });
         } else if let Some(group) = groups.last_mut() {
-            group.extent.length = group
+            let group_end = group
                 .extent
                 .start
                 .checked_add(group.extent.length)
-                .map(|group_end| group_end.max(end) - group.extent.start)
                 .ok_or_else(|| CdfError::contract("coalesced byte range overflowed"))?;
+            let additional_useful = if end <= group_end {
+                0
+            } else if extent.start >= group_end {
+                extent.length
+            } else {
+                end - group_end
+            };
+            group.useful_bytes = group
+                .useful_bytes
+                .checked_add(additional_useful)
+                .ok_or_else(|| CdfError::data("coalesced useful byte count overflowed"))?;
+            group.extent.length = group_end.max(end) - group.extent.start;
         }
         let group = groups
             .last_mut()
@@ -572,6 +649,9 @@ fn coalesce_exact_ranges(
 pub trait ByteSource: Send + Sync {
     fn identity(&self) -> &ContentIdentity;
     fn capabilities(&self) -> &ByteSourceCapabilities;
+    fn exact_range_coalescing_policy(&self) -> ExactRangeCoalescingPolicy {
+        ExactRangeCoalescingPolicy::CONSERVATIVE
+    }
     fn open_sequential(
         &self,
         request: SequentialReadRequest,
@@ -582,9 +662,10 @@ pub trait ByteSource: Send + Sync {
         cancellation: RunCancellation,
     ) -> BoxFuture<'_, Result<AccountedBytes>>;
 
-    /// Reads a codec-declared batch of exact logical ranges. Adjacent and
-    /// overlapping ranges may share one physical request, but the returned
-    /// payloads always preserve the caller's original order and exact extents.
+    /// Reads a codec-declared batch of exact logical ranges. Choosing this batch
+    /// API is the codec's capability assertion that bounded extra physical bytes
+    /// are harmless; those bytes never escape the source/controller boundary.
+    /// The returned payloads preserve the caller's original order and extents.
     fn read_exact_ranges(
         &self,
         extents: Vec<ByteExtent>,
@@ -593,8 +674,10 @@ pub trait ByteSource: Send + Sync {
         Box::pin(async move {
             cancellation.check()?;
             self.capabilities().validate()?;
+            let policy = self.exact_range_coalescing_policy();
+            policy.validate()?;
             if extents.is_empty() {
-                return ExactRangeReadBatch::try_new(Vec::new(), 0, 0);
+                return ExactRangeReadBatch::try_new(Vec::new(), 0, 0, 0);
             }
             if !self.capabilities().exact_ranges {
                 return Err(CdfError::contract(
@@ -602,7 +685,13 @@ pub trait ByteSource: Send + Sync {
                 ));
             }
             let logical_count = extents.len();
-            let groups = coalesce_exact_ranges(extents, self.capabilities().maximum_chunk_bytes)?;
+            let groups =
+                coalesce_exact_ranges(extents, self.capabilities().maximum_chunk_bytes, policy)?;
+            let useful_bytes = groups.iter().try_fold(0_u64, |total, group| {
+                total
+                    .checked_add(group.useful_bytes)
+                    .ok_or_else(|| CdfError::data("exact-range useful byte count overflowed"))
+            })?;
             let request_count = u32::try_from(groups.len())
                 .map_err(|_| CdfError::data("exact-range request count exceeds u32"))?;
             let concurrency = usize::from(self.capabilities().useful_range_concurrency.max(1));
@@ -650,7 +739,7 @@ pub trait ByteSource: Send + Sync {
                     item.ok_or_else(|| CdfError::internal("exact-range member was not populated"))
                 })
                 .collect::<Result<Vec<_>>>()?;
-            ExactRangeReadBatch::try_new(logical, physical_bytes, request_count)
+            ExactRangeReadBatch::try_new(logical, useful_bytes, physical_bytes, request_count)
         })
     }
 }
@@ -1472,6 +1561,7 @@ mod tests {
         payload: bytes::Bytes,
         memory: Arc<dyn MemoryCoordinator>,
         requests: Mutex<Vec<ByteExtent>>,
+        policy: ExactRangeCoalescingPolicy,
     }
 
     impl ByteSource for RecordingRangeSource {
@@ -1481,6 +1571,10 @@ mod tests {
 
         fn capabilities(&self) -> &ByteSourceCapabilities {
             &self.capabilities
+        }
+
+        fn exact_range_coalescing_policy(&self) -> ExactRangeCoalescingPolicy {
+            self.policy
         }
 
         fn open_sequential(
@@ -1550,6 +1644,7 @@ mod tests {
             payload: bytes::Bytes::from_static(b"0123456789abcdefghijklmnopqrstuv"),
             memory: memory.clone(),
             requests: Mutex::new(Vec::new()),
+            policy: ExactRangeCoalescingPolicy::CONSERVATIVE,
         };
         let batch = futures_executor::block_on(source.read_exact_ranges(
             vec![
@@ -1579,7 +1674,9 @@ mod tests {
             ]
         );
         assert_eq!(batch.logical_bytes(), 20);
+        assert_eq!(batch.useful_bytes(), 16);
         assert_eq!(batch.physical_bytes(), 16);
+        assert_eq!(batch.prefetch_waste_bytes(), 0);
         assert_eq!(batch.request_count(), 2);
         let mut requests = source.requests.lock().unwrap().clone();
         requests.sort_unstable_by_key(|extent| extent.start);
@@ -1592,6 +1689,68 @@ mod tests {
         );
         assert_eq!(memory.snapshot().current_bytes, 16);
         drop(batch);
+        assert_eq!(memory.snapshot().current_bytes, 0);
+    }
+
+    #[test]
+    fn bounded_gap_readahead_obeys_amplification_and_reports_exact_waste() {
+        let memory = Arc::new(DeterministicMemoryCoordinator::new(1024, BTreeMap::new()).unwrap());
+        let source = RecordingRangeSource {
+            identity: ContentIdentity {
+                stable_id: "memory://readahead".to_owned(),
+                size_bytes: Some(64),
+                generation: Some("generation-1".to_owned()),
+                checksum: None,
+                strength: GenerationStrength::Strong,
+            },
+            capabilities: ByteSourceCapabilities {
+                known_length: true,
+                reopenable: true,
+                seekable: true,
+                exact_ranges: true,
+                useful_range_concurrency: 4,
+                minimum_chunk_bytes: 1,
+                maximum_chunk_bytes: 64,
+            },
+            payload: bytes::Bytes::from_static(
+                b"0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ+-",
+            ),
+            memory: memory.clone(),
+            requests: Mutex::new(Vec::new()),
+            policy: REMOTE_RANGE_COALESCING_POLICY,
+        };
+        let admitted = futures_executor::block_on(source.read_exact_ranges(
+            vec![
+                ByteExtent::new(0, 8).unwrap(),
+                ByteExtent::new(10, 8).unwrap(),
+            ],
+            RunCancellation::default(),
+        ))
+        .unwrap();
+        assert_eq!(admitted.logical_bytes(), 16);
+        assert_eq!(admitted.useful_bytes(), 16);
+        assert_eq!(admitted.physical_bytes(), 18);
+        assert_eq!(admitted.prefetch_waste_bytes(), 2);
+        assert_eq!(admitted.request_count(), 1);
+        assert_eq!(
+            source.requests.lock().unwrap().as_slice(),
+            &[ByteExtent::new(0, 18).unwrap()]
+        );
+        drop(admitted);
+        source.requests.lock().unwrap().clear();
+
+        let rejected = futures_executor::block_on(source.read_exact_ranges(
+            vec![
+                ByteExtent::new(0, 4).unwrap(),
+                ByteExtent::new(8, 4).unwrap(),
+            ],
+            RunCancellation::default(),
+        ))
+        .unwrap();
+        assert_eq!(rejected.physical_bytes(), 8);
+        assert_eq!(rejected.prefetch_waste_bytes(), 0);
+        assert_eq!(rejected.request_count(), 2);
+        drop(rejected);
         assert_eq!(memory.snapshot().current_bytes, 0);
     }
 

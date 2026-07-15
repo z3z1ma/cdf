@@ -13,7 +13,8 @@ use cdf_memory::{
 };
 use cdf_runtime::{
     AccountedByteStream, ByteExtent, ByteSource, ByteSourceCapabilities, ContentIdentity,
-    GenerationStrength, RunCancellation, SequentialReadRequest,
+    ExactRangeCoalescingPolicy, GenerationStrength, REMOTE_RANGE_COALESCING_POLICY,
+    RunCancellation, SequentialReadRequest,
 };
 use cdf_source_files::{
     FileIdentityMetadata, FileTransportResource, HttpFileRequest, HttpFileResponse,
@@ -250,6 +251,10 @@ impl ByteSource for HttpByteSource {
 
     fn capabilities(&self) -> &ByteSourceCapabilities {
         &self.capabilities
+    }
+
+    fn exact_range_coalescing_policy(&self) -> ExactRangeCoalescingPolicy {
+        REMOTE_RANGE_COALESCING_POLICY
     }
 
     fn open_sequential(
@@ -713,7 +718,9 @@ mod tests {
         assert_eq!(batch.logical()[1].payload(), b"0123");
         assert_eq!(batch.logical()[2].payload(), b"cdef");
         assert_eq!(batch.logical_bytes(), 12);
+        assert_eq!(batch.useful_bytes(), 12);
         assert_eq!(batch.physical_bytes(), 12);
+        assert_eq!(batch.prefetch_waste_bytes(), 0);
         assert_eq!(batch.request_count(), 2);
         assert_eq!(requests.lock().unwrap().len(), 2);
         assert_eq!(coordinator.snapshot().current_bytes, 12);

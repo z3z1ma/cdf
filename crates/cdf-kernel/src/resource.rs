@@ -518,18 +518,24 @@ pub struct SourceIoMetrics {
     /// backpressure between polls is excluded; concurrent range waits may overlap.
     pub duration_ns: u64,
     pub logical_bytes: u64,
+    pub useful_bytes: u64,
     pub physical_bytes: u64,
     pub requests: u64,
 }
 
 impl SourceIoMetrics {
     pub fn prefetch_waste_bytes(self) -> u64 {
-        self.physical_bytes.saturating_sub(self.logical_bytes)
+        self.physical_bytes.saturating_sub(self.useful_bytes)
+    }
+
+    pub fn reused_bytes(self) -> u64 {
+        self.logical_bytes.saturating_sub(self.useful_bytes)
     }
 
     pub fn is_empty(self) -> bool {
         self.duration_ns == 0
             && self.logical_bytes == 0
+            && self.useful_bytes == 0
             && self.physical_bytes == 0
             && self.requests == 0
     }

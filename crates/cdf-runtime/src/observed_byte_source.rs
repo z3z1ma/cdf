@@ -18,6 +18,7 @@ use crate::{
 struct SourceIoCounters {
     duration_ns: AtomicU64,
     logical_bytes: AtomicU64,
+    useful_bytes: AtomicU64,
     physical_bytes: AtomicU64,
     requests: AtomicU64,
 }
@@ -42,9 +43,17 @@ pub struct SourceIoObserver {
 }
 
 impl SourceIoObserver {
-    fn observe(&self, duration_ns: u64, logical_bytes: u64, physical_bytes: u64, requests: u64) {
+    fn observe(
+        &self,
+        duration_ns: u64,
+        logical_bytes: u64,
+        useful_bytes: u64,
+        physical_bytes: u64,
+        requests: u64,
+    ) {
         saturating_add(&self.counters.duration_ns, duration_ns);
         saturating_add(&self.counters.logical_bytes, logical_bytes);
+        saturating_add(&self.counters.useful_bytes, useful_bytes);
         saturating_add(&self.counters.physical_bytes, physical_bytes);
         saturating_add(&self.counters.requests, requests);
     }
@@ -53,6 +62,7 @@ impl SourceIoObserver {
         SourceIoMetrics {
             duration_ns: self.counters.duration_ns.load(Ordering::Relaxed),
             logical_bytes: self.counters.logical_bytes.load(Ordering::Relaxed),
+            useful_bytes: self.counters.useful_bytes.load(Ordering::Relaxed),
             physical_bytes: self.counters.physical_bytes.load(Ordering::Relaxed),
             requests: self.counters.requests.load(Ordering::Relaxed),
         }
@@ -91,6 +101,10 @@ impl ByteSource for ObservedByteSource {
         self.inner.capabilities()
     }
 
+    fn exact_range_coalescing_policy(&self) -> crate::ExactRangeCoalescingPolicy {
+        self.inner.exact_range_coalescing_policy()
+    }
+
     fn open_sequential(
         &self,
         request: SequentialReadRequest,
@@ -102,7 +116,7 @@ impl ByteSource for ObservedByteSource {
             let stream = match inner.open_sequential(request).await {
                 Ok(stream) => stream,
                 Err(error) => {
-                    observer.observe(elapsed_ns(open_started), 0, 0, 1);
+                    observer.observe(elapsed_ns(open_started), 0, 0, 0, 1);
                     return Err(error);
                 }
             };
@@ -122,11 +136,11 @@ impl ByteSource for ObservedByteSource {
                             Ok(Some((chunk, (stream, observer, duration_ns, bytes))))
                         }
                         Ok(None) => {
-                            observer.observe(duration_ns, bytes, bytes, 1);
+                            observer.observe(duration_ns, bytes, bytes, bytes, 1);
                             Ok(None)
                         }
                         Err(error) => {
-                            observer.observe(duration_ns, bytes, bytes, 1);
+                            observer.observe(duration_ns, bytes, bytes, bytes, 1);
                             Err(error)
                         }
                     }
@@ -150,9 +164,9 @@ impl ByteSource for ObservedByteSource {
                 Ok(bytes) => {
                     let length = u64::try_from(bytes.payload().len())
                         .map_err(|_| CdfError::data("exact source range length exceeds u64"))?;
-                    observer.observe(elapsed_ns(started), length, length, 1);
+                    observer.observe(elapsed_ns(started), length, length, length, 1);
                 }
-                Err(_) => observer.observe(elapsed_ns(started), 0, 0, 1),
+                Err(_) => observer.observe(elapsed_ns(started), 0, 0, 0, 1),
             }
             result
         })
@@ -172,6 +186,7 @@ impl ByteSource for ObservedByteSource {
                 observer.observe(
                     elapsed_ns(started),
                     batch.logical_bytes(),
+                    batch.useful_bytes(),
                     batch.physical_bytes(),
                     u64::from(batch.request_count()),
                 );
@@ -304,9 +319,11 @@ mod tests {
 
         let snapshot = observer.snapshot();
         assert_eq!(snapshot.logical_bytes, 18);
+        assert_eq!(snapshot.useful_bytes, 16);
         assert_eq!(snapshot.physical_bytes, 16);
         assert_eq!(snapshot.requests, 2);
         assert_eq!(snapshot.prefetch_waste_bytes(), 0);
+        assert_eq!(snapshot.reused_bytes(), 2);
         assert!(snapshot.duration_ns > 0);
     }
 }

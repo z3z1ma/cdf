@@ -649,7 +649,7 @@ fn display_event_value(key: &str, value: &RunEventValue) -> String {
             .join(","),
         RunEventValue::PhaseMetric(metric) if metric.phase == cdf_kernel::RunPhase::SourceRead => {
             format!(
-                "source_read {:?} {} physical / {} logical / {} waste across {} requests in {}",
+                "source_read {:?} {} physical / {} useful / {} waste across {} requests in {}",
                 metric.status,
                 humanize_bytes(metric.input_bytes),
                 humanize_bytes(metric.output_bytes),
@@ -773,7 +773,7 @@ mod tests {
     }
 
     #[test]
-    fn source_read_metric_names_physical_logical_waste_and_requests() {
+    fn source_read_metric_names_physical_useful_waste_and_requests() {
         let rendered = display_event_value(
             "metric",
             &RunEventValue::PhaseMetric(RunPhaseMetric {
@@ -787,7 +787,7 @@ mod tests {
         );
         assert_eq!(
             rendered,
-            "source_read Completed 10 MiB physical / 8 MiB logical / 2 MiB waste across 3 requests in 2ms"
+            "source_read Completed 10 MiB physical / 8 MiB useful / 2 MiB waste across 3 requests in 2ms"
         );
     }
 
