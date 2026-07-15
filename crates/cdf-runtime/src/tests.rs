@@ -10,7 +10,10 @@ use cdf_kernel::{
 };
 use std::{
     collections::BTreeMap,
-    sync::{Arc, Mutex},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, AtomicUsize, Ordering},
+    },
 };
 
 use super::*;
@@ -1365,6 +1368,7 @@ fn staged_ingress_types_cannot_claim_package_commit_authority() {
             merge_keys: Vec::new(),
             execution_plan_id: PlanId::new("plan-staging").unwrap(),
         },
+        test_staging_lease(&attempt_id, "mock", "events"),
         test_prepared_bulk_path(),
         StagingSchedulingContext::new(2, 1024).unwrap(),
         arrow_schema::Schema::empty(),
@@ -1386,8 +1390,9 @@ fn staged_ingress_types_cannot_claim_package_commit_authority() {
 
 #[test]
 fn staged_ingress_request_rejects_schema_payload_outside_binding_authority() {
+    let attempt_id = LoadAttemptId::new("attempt_schema_mismatch").unwrap();
     let error = StagedIngressRequest::new(
-        LoadAttemptId::new("attempt_schema_mismatch").unwrap(),
+        attempt_id.clone(),
         StagingAttemptBinding {
             destination_id: DestinationId::new("mock_staged").unwrap(),
             target: TargetName::new("events").unwrap(),
@@ -1397,6 +1402,7 @@ fn staged_ingress_request_rejects_schema_payload_outside_binding_authority() {
             merge_keys: Vec::new(),
             execution_plan_id: PlanId::new("plan-staged").unwrap(),
         },
+        test_staging_lease(&attempt_id, "mock_staged", "events"),
         test_prepared_bulk_path(),
         StagingSchedulingContext::new(2, 1024).unwrap(),
         arrow_schema::Schema::empty(),
@@ -1649,6 +1655,7 @@ fn staged_request_for_target(
     schema_hash: SchemaHash,
     target: &str,
 ) -> StagedIngressRequest {
+    let lease = test_staging_lease(&attempt_id, "mock_staged", target);
     StagedIngressRequest::new(
         attempt_id,
         StagingAttemptBinding {
@@ -1663,11 +1670,123 @@ fn staged_request_for_target(
             merge_keys: Vec::new(),
             execution_plan_id: PlanId::new("plan-staged").unwrap(),
         },
+        lease,
         test_prepared_bulk_path(),
         StagingSchedulingContext::new(2, 1024).unwrap(),
         arrow_schema::Schema::empty(),
     )
     .unwrap()
+}
+
+fn test_staging_lease(attempt_id: &LoadAttemptId, destination: &str, target: &str) -> StagingLease {
+    let identity = StagingLeaseIdentity::new(
+        DestinationId::new(destination).unwrap(),
+        TargetName::new(target).unwrap(),
+        attempt_id.clone(),
+    );
+    StagingLease {
+        scope_lease: cdf_kernel::ScopeLease {
+            scope: ScopeKey::Composite {
+                parts: vec![
+                    ScopeKey::DestinationLoad {
+                        destination: identity.destination_id.clone(),
+                        target: identity.target.clone(),
+                    },
+                    ScopeKey::Stream {
+                        name: format!("staging:{}", identity.attempt_id),
+                    },
+                ],
+            },
+            owner: cdf_kernel::LeaseOwnerId::new("test-owner").unwrap(),
+            fencing_token: cdf_kernel::FencingToken::new(1).unwrap(),
+            acquired_at_ms: 1,
+            expires_at_ms: i64::MAX,
+        },
+        identity,
+    }
+}
+
+struct RecordingStagingLeaseAuthority {
+    renewals: AtomicUsize,
+    released: AtomicBool,
+}
+
+impl StagingLeaseAuthority for RecordingStagingLeaseAuthority {
+    fn acquire(
+        &self,
+        identity: StagingLeaseIdentity,
+        owner: cdf_kernel::LeaseOwnerId,
+        lease_duration_ms: u64,
+    ) -> Result<StagingLease> {
+        let mut lease = test_staging_lease(
+            &identity.attempt_id,
+            identity.destination_id.as_str(),
+            identity.target.as_str(),
+        );
+        lease.scope_lease.owner = owner;
+        lease.scope_lease.expires_at_ms = i64::try_from(lease_duration_ms).unwrap();
+        Ok(lease)
+    }
+
+    fn renew(&self, lease: &StagingLease, lease_duration_ms: u64) -> Result<StagingLease> {
+        self.renewals.fetch_add(1, Ordering::SeqCst);
+        let mut renewed = lease.clone();
+        renewed.scope_lease.expires_at_ms = renewed
+            .scope_lease
+            .expires_at_ms
+            .saturating_add(i64::try_from(lease_duration_ms).unwrap());
+        Ok(renewed)
+    }
+
+    fn release(&self, _lease: &StagingLease) -> Result<()> {
+        self.released.store(true, Ordering::SeqCst);
+        Ok(())
+    }
+
+    fn assert_current(&self, _lease: &StagingLease) -> Result<()> {
+        Ok(())
+    }
+
+    fn prove_expired(
+        &self,
+        _lease: &StagingLease,
+        _collector: cdf_kernel::LeaseOwnerId,
+        _cleanup_lease_duration_ms: u64,
+    ) -> Result<Option<ExpiredStagingLeaseProof>> {
+        Ok(None)
+    }
+}
+
+#[test]
+fn staging_lease_supervisor_renews_independently_and_releases_structurally() {
+    let authority = Arc::new(RecordingStagingLeaseAuthority {
+        renewals: AtomicUsize::new(0),
+        released: AtomicBool::new(false),
+    });
+    let supervisor = StagingLeaseSupervisor::with_timing(
+        authority.clone(),
+        StagingLeaseTiming {
+            lease_duration: std::time::Duration::from_millis(100),
+            renew_interval: std::time::Duration::from_millis(10),
+        },
+    )
+    .unwrap();
+    let lease = supervisor
+        .acquire(
+            StagingLeaseIdentity::new(
+                DestinationId::new("mock_staged").unwrap(),
+                TargetName::new("events").unwrap(),
+                LoadAttemptId::new("supervised-attempt").unwrap(),
+            ),
+            cdf_kernel::LeaseOwnerId::new("runtime-owner").unwrap(),
+        )
+        .unwrap();
+    let initial_expiry = lease.snapshot().unwrap().scope_lease.expires_at_ms;
+    std::thread::sleep(std::time::Duration::from_millis(45));
+    assert!(authority.renewals.load(Ordering::SeqCst) >= 2);
+    assert!(lease.snapshot().unwrap().scope_lease.expires_at_ms > initial_expiry);
+    lease.finish().unwrap();
+    assert!(authority.released.load(Ordering::SeqCst));
 }
 
 fn test_prepared_bulk_path() -> PreparedBulkPath {

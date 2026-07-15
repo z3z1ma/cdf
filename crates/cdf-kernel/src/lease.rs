@@ -31,6 +31,13 @@ pub struct ScopeLease {
     pub expires_at_ms: i64,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ExpiredScopeLeaseProof {
+    pub expired_lease: ScopeLease,
+    pub cleanup_lease: ScopeLease,
+    pub proven_at_ms: i64,
+}
+
 impl ScopeLease {
     pub fn is_expired_at(&self, now_ms: i64) -> bool {
         self.expires_at_ms <= now_ms
@@ -50,6 +57,20 @@ pub trait ScopeLeaseStore: Send + Sync {
     fn release(&self, lease: &ScopeLease) -> Result<()>;
 
     fn assert_current(&self, lease: &ScopeLease) -> Result<()>;
+
+    /// Proves that a recorded lease generation can no longer be live and atomically claims cleanup.
+    ///
+    /// `None` means the generation itself, or a newer generation for the same scope, remains
+    /// active. Implementations must retain monotonically increasing fencing state after release so
+    /// a collector never substitutes object age or process-local state for this proof. A successful
+    /// call must install `cleanup_lease` as the active next fencing generation in the same atomic
+    /// operation; the collector renews it until deletion completes and then releases it.
+    fn prove_expired(
+        &self,
+        lease: &ScopeLease,
+        collector: LeaseOwnerId,
+        cleanup_lease_duration_ms: u64,
+    ) -> Result<Option<ExpiredScopeLeaseProof>>;
 }
 
 pub trait ScopeLeaseClock: Send + Sync {

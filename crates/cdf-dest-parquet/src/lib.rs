@@ -1,10 +1,10 @@
 #![doc = "Parquet object-store destination boundary for cdf."]
 
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::BTreeMap,
     fs,
     path::{Path, PathBuf},
-    sync::{Arc, Mutex, OnceLock},
+    sync::{Arc, Mutex},
     time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -42,12 +42,6 @@ const MANIFEST_VERSION: u16 = 1;
 const REPLACE_POINTER_VERSION: u16 = 1;
 const CORRECTION_SIDECAR_VERSION: u16 = 1;
 const CORRECTION_SIDECAR_MANIFEST_VERSION: u16 = 1;
-
-static ACTIVE_STAGING_ATTEMPTS: OnceLock<Mutex<BTreeSet<String>>> = OnceLock::new();
-
-fn active_staging_attempts() -> &'static Mutex<BTreeSet<String>> {
-    ACTIVE_STAGING_ATTEMPTS.get_or_init(|| Mutex::new(BTreeSet::new()))
-}
 
 mod api;
 mod corrections;

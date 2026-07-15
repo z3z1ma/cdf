@@ -9,6 +9,8 @@ use cdf_kernel::{
 use cdf_package_contract::{SegmentEntry, VerifiedPackageAccess};
 use serde::{Deserialize, Serialize};
 
+use crate::StagingLease;
+
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct LoadAttemptId(String);
@@ -97,6 +99,7 @@ pub struct StagingAttemptBinding {
 pub struct StagedIngressRequest {
     attempt_id: LoadAttemptId,
     binding: StagingAttemptBinding,
+    staging_lease: StagingLease,
     bulk_path: crate::PreparedBulkPath,
     scheduling: StagingSchedulingContext,
     output_schema: Schema,
@@ -106,6 +109,7 @@ impl StagedIngressRequest {
     pub fn new(
         attempt_id: LoadAttemptId,
         binding: StagingAttemptBinding,
+        staging_lease: StagingLease,
         bulk_path: crate::PreparedBulkPath,
         scheduling: StagingSchedulingContext,
         output_schema: Schema,
@@ -117,9 +121,18 @@ impl StagedIngressRequest {
                 binding.output_arrow_schema_hash
             )));
         }
+        if staging_lease.identity.destination_id != binding.destination_id
+            || staging_lease.identity.target != binding.target
+            || staging_lease.identity.attempt_id != attempt_id
+        {
+            return Err(CdfError::contract(
+                "staged ingress request does not match its staging lease identity",
+            ));
+        }
         Ok(Self {
             attempt_id,
             binding,
+            staging_lease,
             bulk_path,
             scheduling,
             output_schema,
@@ -134,6 +147,10 @@ impl StagedIngressRequest {
         &self.binding
     }
 
+    pub fn staging_lease(&self) -> &StagingLease {
+        &self.staging_lease
+    }
+
     pub fn bulk_path(&self) -> &crate::PreparedBulkPath {
         &self.bulk_path
     }
@@ -144,6 +161,35 @@ impl StagedIngressRequest {
 
     pub fn output_schema(&self) -> &Schema {
         &self.output_schema
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StagingCleanupCandidate {
+    namespace: String,
+    lease: StagingLease,
+}
+
+impl StagingCleanupCandidate {
+    pub fn new(namespace: impl Into<String>, lease: StagingLease) -> Result<Self> {
+        let namespace = namespace.into();
+        if namespace.is_empty()
+            || namespace.len() > 4_096
+            || namespace.chars().any(char::is_control)
+        {
+            return Err(CdfError::contract(
+                "staging cleanup namespace must contain 1..=4096 non-control characters",
+            ));
+        }
+        Ok(Self { namespace, lease })
+    }
+
+    pub fn namespace(&self) -> &str {
+        &self.namespace
+    }
+
+    pub fn lease(&self) -> &StagingLease {
+        &self.lease
     }
 }
 

@@ -19,6 +19,8 @@ use super::{
     },
 };
 use cdf_contract::{AnomalyFact, ValidationDepth, ValidationProgram, ValidationTransitionTrigger};
+use cdf_kernel::ScopeLeaseStore;
+use std::sync::Arc;
 #[cfg(test)]
 pub(crate) async fn run_local_file_to_duckdb_checkpoint(
     request: LocalFileDuckDbRunRequest<'_>,
@@ -104,6 +106,13 @@ async fn run_project_with_context(
         after_receipt_verified,
         ..
     } = request;
+    let staging_scopes: Arc<dyn ScopeLeaseStore> = Arc::new(
+        cdf_state_sqlite::SqliteScopeLeaseStore::open(&state_store_path)?,
+    );
+    let services = services.with_staging_lease_authority(Arc::new(
+        cdf_runtime::ScopeStagingLeaseAuthority::new(staging_scopes),
+    ))?;
+    destination = destination.with_execution_services(services.clone());
     let run_ledger = SqliteRunLedger::open(&state_store_path)?;
     let run = run_ledger.create_run(run_id)?;
     let checkpoint_store = SqliteCheckpointStore::open(&state_store_path)?;
@@ -401,6 +410,7 @@ async fn run_project_inner(execution: ProjectRunExecution<'_>) -> Result<Project
             stage: Some(&stage_hook),
         },
         active_staged,
+        Some(&execution.services),
     )?;
     execution.recorder.append_run_succeeded()?;
     let ledger_snapshot = execution.recorder.snapshot()?;

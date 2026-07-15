@@ -1,3 +1,4 @@
+use crate::ExpiredStagingLeaseProof;
 use crate::prelude::*;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -212,6 +213,23 @@ pub trait StagedSegmentIngress {
         &mut self,
         attempt_id: &LoadAttemptId,
     ) -> Result<Option<StagingSnapshot>>;
+
+    fn staging_cleanup_candidates(
+        &mut self,
+        _target: &TargetName,
+    ) -> Result<Vec<StagingCleanupCandidate>> {
+        Ok(Vec::new())
+    }
+
+    fn cleanup_expired_staging(
+        &mut self,
+        _candidate: &StagingCleanupCandidate,
+        _proof: &ExpiredStagingLeaseProof,
+    ) -> Result<u64> {
+        Err(CdfError::contract(
+            "destination returned a staging cleanup candidate without implementing proof-gated cleanup",
+        ))
+    }
 }
 
 pub trait DestinationRuntime {

@@ -110,6 +110,16 @@ impl ScopeLeaseStore for SqlitePromotionSettlementStore {
     fn assert_current(&self, lease: &ScopeLease) -> Result<()> {
         self.leases.assert_current(lease)
     }
+
+    fn prove_expired(
+        &self,
+        lease: &ScopeLease,
+        collector: LeaseOwnerId,
+        cleanup_lease_duration_ms: u64,
+    ) -> Result<Option<cdf_kernel::ExpiredScopeLeaseProof>> {
+        self.leases
+            .prove_expired(lease, collector, cleanup_lease_duration_ms)
+    }
 }
 
 impl PromotionSettlementStore for SqlitePromotionSettlementStore {

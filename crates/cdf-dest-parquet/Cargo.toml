@@ -29,3 +29,4 @@ tokio = { version = "=1.52.3", features = ["fs", "io-util"] }
 [dev-dependencies]
 cdf-conformance = { path = "../cdf-conformance" }
 cdf-engine = { path = "../cdf-engine" }
+cdf-state-sqlite = { path = "../cdf-state-sqlite" }

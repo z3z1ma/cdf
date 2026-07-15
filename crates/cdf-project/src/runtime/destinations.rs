@@ -38,6 +38,7 @@ pub(super) fn project_receipt_source(
 pub struct ResolvedProjectDestination {
     target: TargetName,
     runtime: Box<dyn ProjectDestinationRuntime>,
+    execution: Option<cdf_runtime::ExecutionServices>,
 }
 
 impl std::fmt::Debug for ResolvedProjectDestination {
@@ -51,30 +52,53 @@ impl std::fmt::Debug for ResolvedProjectDestination {
 
 impl ResolvedProjectDestination {
     pub fn new(runtime: Box<dyn ProjectDestinationRuntime>, target: TargetName) -> Self {
-        Self { target, runtime }
+        Self {
+            target,
+            runtime,
+            execution: None,
+        }
+    }
+
+    pub fn with_execution_services(mut self, execution: cdf_runtime::ExecutionServices) -> Self {
+        self.execution = Some(execution);
+        self
     }
 
     #[cfg(test)]
     pub fn duckdb(database_path: impl AsRef<Path>, target: TargetName) -> Result<Self> {
+        let (_, base_services) =
+            cdf_engine::StandaloneExecutionHost::default_services(64 * 1024 * 1024)?;
+        let scopes: std::sync::Arc<dyn cdf_kernel::ScopeLeaseStore> =
+            std::sync::Arc::new(cdf_state_sqlite::InMemoryScopeLeaseStore::new());
+        let services = base_services.with_staging_lease_authority(std::sync::Arc::new(
+            cdf_runtime::ScopeStagingLeaseAuthority::new(scopes),
+        ))?;
         Ok(Self::new(
             Box::new(cdf_dest_duckdb::DuckDbDestination::new(database_path)?),
             target,
-        ))
+        )
+        .with_execution_services(services))
     }
 
     #[cfg(test)]
     pub fn parquet_filesystem(root: impl AsRef<Path>, target: TargetName) -> Result<Self> {
-        let (_, services) =
+        let (_, base_services) =
             cdf_engine::StandaloneExecutionHost::default_services(64 * 1024 * 1024)?;
+        let scopes: std::sync::Arc<dyn cdf_kernel::ScopeLeaseStore> =
+            std::sync::Arc::new(cdf_state_sqlite::InMemoryScopeLeaseStore::new());
+        let services = base_services.with_staging_lease_authority(std::sync::Arc::new(
+            cdf_runtime::ScopeStagingLeaseAuthority::new(scopes),
+        ))?;
         Ok(Self::new(
             Box::new(
                 cdf_dest_parquet::FilesystemParquetRuntime::with_execution_services(
                     root.as_ref().to_path_buf(),
-                    services,
+                    services.clone(),
                 ),
             ),
             target,
-        ))
+        )
+        .with_execution_services(services))
     }
 
     #[cfg(test)]
@@ -139,6 +163,10 @@ impl ResolvedProjectDestination {
     pub(super) fn runtime_mut(&mut self) -> &mut dyn ProjectDestinationRuntime {
         self.runtime.as_mut()
     }
+
+    pub(super) fn execution_services(&self) -> Option<&cdf_runtime::ExecutionServices> {
+        self.execution.as_ref()
+    }
 }
 
 pub fn resolve_project_run_destination(
@@ -159,8 +187,9 @@ pub fn resolve_project_run_destination(
         }
         error
     })?;
-    Ok(ResolvedProjectDestination::new(
-        runtime,
-        context.target()?.clone(),
-    ))
+    let destination = ResolvedProjectDestination::new(runtime, context.target()?.clone());
+    Ok(match context.execution_services() {
+        Some(execution) => destination.with_execution_services(execution.clone()),
+        None => destination,
+    })
 }

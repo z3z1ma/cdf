@@ -50,8 +50,8 @@ use cdf_package_contract::{
     STATE_PROPOSED_DELTA_FILE, SegmentEntry, StateDeltaPreimage,
 };
 use cdf_state_sqlite::{
-    RunEventDetails, RunEventKind, RunEventValue, SecretReference, SqliteCheckpointStore,
-    SqliteRunLedger,
+    InMemoryScopeLeaseStore, RunEventDetails, RunEventKind, RunEventValue, SecretReference,
+    SqliteCheckpointStore, SqliteRunLedger,
 };
 use postgres::{Client, NoTls};
 use tempfile::TempDir;
@@ -79,9 +79,15 @@ use crate::{
 };
 
 fn test_execution_services() -> cdf_runtime::ExecutionServices {
-    cdf_engine::StandaloneExecutionHost::default_services(64 * 1024 * 1024)
+    let services = cdf_engine::StandaloneExecutionHost::default_services(64 * 1024 * 1024)
         .unwrap()
-        .1
+        .1;
+    let scopes: Arc<dyn cdf_kernel::ScopeLeaseStore> = Arc::new(InMemoryScopeLeaseStore::new());
+    services
+        .with_staging_lease_authority(Arc::new(cdf_runtime::ScopeStagingLeaseAuthority::new(
+            scopes,
+        )))
+        .unwrap()
 }
 
 async fn run_project(request: ProjectRunRequest<'_>) -> Result<ProjectRunReport> {
@@ -1593,6 +1599,7 @@ fn resolved_duckdb_destination(
     target: TargetName,
 ) -> ResolvedProjectDestination {
     ResolvedProjectDestination::new(Box::new(destination.clone()), target)
+        .with_execution_services(test_execution_services())
 }
 
 #[derive(Clone)]
@@ -6900,6 +6907,7 @@ source = "resources/mock.toml"
             stage: Some(&stage_hook),
             ..Default::default()
         },
+        None,
     )
     .unwrap();
 
@@ -6991,15 +6999,17 @@ fn generic_replay_streams_verified_segments_through_staged_final_binding() {
         Ok(())
     };
 
+    let execution = test_execution_services();
     let report = replay_package_with_runtime(
         package,
         &mut runtime,
         &store,
-        test_execution_services().memory(),
+        execution.memory(),
         PackageReplayHooks {
             stage: Some(&stage_hook),
             ..Default::default()
         },
+        Some(&execution),
     )
     .unwrap();
 
@@ -7175,6 +7185,7 @@ fn generic_stage_hook_stops_mock_replay_before_destination_write() {
             stage: Some(&stage_hook),
             ..Default::default()
         },
+        None,
     )
     .unwrap_err();
 

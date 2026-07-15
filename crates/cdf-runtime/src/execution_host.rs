@@ -461,6 +461,7 @@ pub trait ExecutionHost: Send + Sync {
 pub struct ExecutionServices {
     host: Arc<dyn ExecutionHost>,
     run_work: Option<Arc<RunWorkAdmission>>,
+    staging_leases: Option<Arc<crate::StagingLeaseSupervisor>>,
 }
 
 struct RunWorkAdmission {
@@ -559,6 +560,7 @@ impl ExecutionServices {
         Ok(Self {
             host,
             run_work: None,
+            staging_leases: None,
         })
     }
 
@@ -577,7 +579,51 @@ impl ExecutionServices {
                     waiters: WakerRegistry::default(),
                 }),
             })),
+            staging_leases: self.staging_leases.clone(),
         })
+    }
+
+    pub fn with_staging_lease_authority(
+        &self,
+        authority: Arc<dyn crate::StagingLeaseAuthority>,
+    ) -> Result<Self> {
+        Ok(Self {
+            host: Arc::clone(&self.host),
+            run_work: self.run_work.clone(),
+            staging_leases: Some(crate::StagingLeaseSupervisor::new(authority)?),
+        })
+    }
+
+    pub fn acquire_staging_lease(
+        &self,
+        identity: crate::StagingLeaseIdentity,
+    ) -> Result<crate::ManagedStagingLease> {
+        let supervisor = self.staging_leases.as_ref().ok_or_else(|| {
+            CdfError::contract(
+                "externally durable staged ingress requires an injected staging lease authority",
+            )
+        })?;
+        let owner = cdf_kernel::LeaseOwnerId::new(format!(
+            "cdf-{}-{:016x}",
+            std::process::id(),
+            self.entropy_u64()
+        ))?;
+        supervisor.acquire(identity, owner)
+    }
+
+    pub fn prove_expired_staging_lease(
+        &self,
+        lease: &crate::StagingLease,
+    ) -> Result<Option<crate::ManagedExpiredStagingLeaseProof>> {
+        let supervisor = self.staging_leases.as_ref().ok_or_else(|| {
+            CdfError::contract("staging cleanup requires an injected staging lease authority")
+        })?;
+        let collector = cdf_kernel::LeaseOwnerId::new(format!(
+            "cdf-cleanup-{}-{:016x}",
+            std::process::id(),
+            self.entropy_u64()
+        ))?;
+        supervisor.prove_expired(lease, collector)
     }
 
     /// Tightens the provisional run ceiling after source/destination/memory
@@ -946,6 +992,7 @@ mod tests {
             let services = ExecutionServices {
                 host: Arc::new(TestHost),
                 run_work: Some(Arc::clone(&admission)),
+                staging_leases: None,
             };
             services.tighten_run_job_ceiling(2).unwrap();
             assert_eq!(services.run_job_ceiling().unwrap(), Some(2));

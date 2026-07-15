@@ -28,6 +28,7 @@ pub(crate) struct ActiveStagedIngress {
     execution: Option<ExecutionServices>,
     final_binding_lane: Option<String>,
     bulk_path: cdf_runtime::PreparedBulkPath,
+    staging_lease: Option<cdf_runtime::ManagedStagingLease>,
     ingress_duration: Duration,
     ingress_input_bytes: u64,
     ingress_operations: u64,
@@ -258,6 +259,18 @@ impl ActiveStagedIngress {
                 "staged ingress plan reached a finalized destination runtime",
             ));
         };
+        for candidate in staged_runtime.staging_cleanup_candidates(&plan.target)? {
+            if let Some(proof) = services.prove_expired_staging_lease(candidate.lease())? {
+                staged_runtime.cleanup_expired_staging(&candidate, proof.proof())?;
+                proof.finish()?;
+            }
+        }
+        let staging_lease =
+            services.acquire_staging_lease(cdf_runtime::StagingLeaseIdentity::new(
+                destination_id.clone(),
+                plan.target.clone(),
+                attempt_id.clone(),
+            ))?;
         let session =
             staged_runtime.begin_staged_ingress(cdf_runtime::StagedIngressRequest::new(
                 attempt_id.clone(),
@@ -272,6 +285,7 @@ impl ActiveStagedIngress {
                     merge_keys: plan.merge_keys.clone(),
                     execution_plan_id: plan.execution_plan_id.clone(),
                 },
+                staging_lease.snapshot()?,
                 bulk_path.clone(),
                 scheduling.clone(),
                 plan.output_schema,
@@ -296,6 +310,7 @@ impl ActiveStagedIngress {
             execution,
             final_binding_lane: capabilities.final_binding_lane.clone(),
             bulk_path,
+            staging_lease: Some(staging_lease),
             ingress_duration: Duration::ZERO,
             ingress_input_bytes: 0,
             ingress_operations: 0,
@@ -391,6 +406,10 @@ impl ActiveStagedIngress {
         entry: &SegmentEntry,
         payload: cdf_engine::DurableSegmentPayload,
     ) -> Result<()> {
+        self.staging_lease
+            .as_ref()
+            .ok_or_else(|| CdfError::internal("staged ingress lease is absent"))?
+            .snapshot()?;
         let ordinal = self.next_ordinal;
         self.next_ordinal = self
             .next_ordinal
@@ -470,6 +489,10 @@ impl ActiveStagedIngress {
     }
 
     pub(crate) fn finish_background(&mut self) -> Result<()> {
+        self.staging_lease
+            .as_ref()
+            .ok_or_else(|| CdfError::internal("staged ingress lease is absent"))?
+            .snapshot()?;
         let Some(mut background) = self.background.take() else {
             return Ok(());
         };
@@ -521,11 +544,15 @@ impl ActiveStagedIngress {
         &mut self,
         binding: cdf_runtime::VerifiedFinalBinding,
     ) -> Result<cdf_runtime::DestinationCommitOutcome> {
+        self.staging_lease
+            .as_ref()
+            .ok_or_else(|| CdfError::internal("staged ingress lease is absent"))?
+            .snapshot()?;
         let session = self
             .session
             .take()
             .ok_or_else(|| CdfError::internal("staged session is no longer active"))?;
-        match &self.final_binding_lane {
+        let outcome = match &self.final_binding_lane {
             Some(lane) => {
                 let execution = self.execution.as_ref().ok_or_else(|| {
                     CdfError::internal("staged final-binding lane has no execution services")
@@ -534,7 +561,12 @@ impl ActiveStagedIngress {
                 execution.run_blocking(&lane, move || session.bind_final(binding))
             }
             None => session.bind_final(binding),
-        }
+        }?;
+        self.staging_lease
+            .take()
+            .ok_or_else(|| CdfError::internal("staged ingress lease is absent"))?
+            .finish()?;
+        Ok(outcome)
     }
 
     pub(crate) fn abort(mut self) {
@@ -557,6 +589,9 @@ impl ActiveStagedIngress {
                     let _ = session.abort();
                 }
             }
+        }
+        if let Some(lease) = self.staging_lease.take() {
+            let _ = lease.finish();
         }
     }
 }
@@ -1140,13 +1175,18 @@ where
         .reader()
         .replay_inputs_verified(package.verification())?;
     validate_resolved_destination_target(&destination, &inputs)?;
-    let memory = default_replay_memory()?;
+    let execution = destination.execution_services().cloned();
+    let memory = match execution.as_ref() {
+        Some(execution) => execution.memory(),
+        None => default_replay_memory()?,
+    };
     replay_package_with_runtime(
         package,
         destination.runtime_mut(),
         checkpoint_store,
         memory,
         hooks,
+        execution.as_ref(),
     )
 }
 
@@ -1193,11 +1233,20 @@ pub(crate) fn replay_package_with_runtime<Store>(
     checkpoint_store: &Store,
     memory: Arc<dyn MemoryCoordinator>,
     hooks: PackageReplayHooks<'_>,
+    execution: Option<&ExecutionServices>,
 ) -> Result<PackageReplayReport>
 where
     Store: CheckpointStore + ?Sized,
 {
-    replay_package_with_runtime_and_staged(package, runtime, checkpoint_store, memory, hooks, None)
+    replay_package_with_runtime_and_staged(
+        package,
+        runtime,
+        checkpoint_store,
+        memory,
+        hooks,
+        None,
+        execution,
+    )
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1208,6 +1257,7 @@ pub(crate) fn replay_package_with_runtime_and_staged<Store>(
     memory: Arc<dyn MemoryCoordinator>,
     hooks: PackageReplayHooks<'_>,
     active_staged: Option<ActiveStagedIngress>,
+    execution: Option<&ExecutionServices>,
 ) -> Result<PackageReplayReport>
 where
     Store: CheckpointStore + ?Sized,
@@ -1282,8 +1332,12 @@ where
                     &inputs,
                     &capabilities,
                     &selected_bulk_path,
-                    memory,
                     &hooks,
+                    execution.ok_or_else(|| {
+                        CdfError::contract(
+                            "artifact replay through externally durable staging requires execution services",
+                        )
+                    })?,
                 ),
             } {
                 Ok(outcome) => outcome,
@@ -1536,8 +1590,8 @@ fn commit_package_through_staged_ingress(
     inputs: &PackageReplayInputs,
     capabilities: &cdf_runtime::DestinationRuntimeCapabilities,
     bulk_path: &cdf_runtime::PreparedBulkPath,
-    memory: Arc<dyn MemoryCoordinator>,
     hooks: &PackageReplayHooks<'_>,
+    services: &ExecutionServices,
 ) -> Result<cdf_runtime::DestinationCommitOutcome> {
     let reader = package.reader();
     let verified = package.verification();
@@ -1546,6 +1600,27 @@ fn commit_package_through_staged_ingress(
     let destination_id = runtime.describe().destination_id;
     let attempt_id = staging_attempt_id(&inputs.state_delta.checkpoint_id, &destination_id)?;
     let output_schema = reader.runtime_arrow_schema_verified(verified)?;
+    let memory = services.memory();
+    match runtime.ingress() {
+        cdf_runtime::DestinationIngress::StagedSegments(staged) => {
+            for candidate in staged.staging_cleanup_candidates(&inputs.destination_commit.target)? {
+                if let Some(proof) = services.prove_expired_staging_lease(candidate.lease())? {
+                    staged.cleanup_expired_staging(&candidate, proof.proof())?;
+                    proof.finish()?;
+                }
+            }
+        }
+        cdf_runtime::DestinationIngress::FinalizedPackage(_) => {
+            return Err(CdfError::contract(
+                "staged package commit reached a finalized destination runtime",
+            ));
+        }
+    }
+    let staging_lease = services.acquire_staging_lease(cdf_runtime::StagingLeaseIdentity::new(
+        destination_id.clone(),
+        inputs.destination_commit.target.clone(),
+        attempt_id.clone(),
+    ))?;
     let request = cdf_runtime::StagedIngressRequest::new(
         attempt_id.clone(),
         cdf_runtime::StagingAttemptBinding {
@@ -1559,6 +1634,7 @@ fn commit_package_through_staged_ingress(
             merge_keys: inputs.merge_keys.clone(),
             execution_plan_id: reader.recorded_scan_plan_verified(verified)?.plan_id,
         },
+        staging_lease.snapshot()?,
         bulk_path.clone(),
         cdf_runtime::StagingSchedulingContext::new(
             capabilities
@@ -1596,7 +1672,7 @@ fn commit_package_through_staged_ingress(
             .min(memory.snapshot().budget_bytes);
         let segments = reader.verified_canonical_segment_stream_with(
             verified,
-            memory,
+            memory.clone(),
             maximum_segment_bytes,
         )?;
         let mut acknowledge = |identity: &cdf_runtime::StagedSegmentIdentity| {
@@ -1637,17 +1713,28 @@ fn commit_package_through_staged_ingress(
         let binding =
             cdf_runtime::VerifiedFinalBinding::from_verified_package(attempt_id, &package, plan)?;
         binding.validate_staged_identities(&staged)?;
-        session
+        staging_lease.snapshot()?;
+        let outcome = session
             .take()
             .expect("staged session is consumed exactly once")
-            .bind_final(binding)
+            .bind_final(binding)?;
+        Ok(outcome)
     })();
     if result.is_err()
         && let Some(session) = session
     {
         let _ = session.abort();
     }
-    result
+    match result {
+        Ok(outcome) => {
+            staging_lease.finish()?;
+            Ok(outcome)
+        }
+        Err(error) => {
+            let _ = staging_lease.finish();
+            Err(error)
+        }
+    }
 }
 
 fn finalize_active_staged_ingress(

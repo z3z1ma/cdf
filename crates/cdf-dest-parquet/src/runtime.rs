@@ -122,12 +122,25 @@ impl cdf_runtime::StagedSegmentIngress for ParquetDestination {
         &mut self,
         attempt_id: &cdf_runtime::LoadAttemptId,
     ) -> Result<Option<cdf_runtime::StagingSnapshot>> {
-        // Rollback/redrive recovery has no reattachable state: remove the exact abandoned
-        // attempt before reporting that a fresh session is required.
-        // Direct destinations do not carry a target argument here, so cleanup occurs at begin
-        // where the recorded binding supplies the authoritative target.
+        // Parquet has no reattachable in-process encoder state. Generic orchestration separately
+        // enumerates durable candidates and holds an exact cleanup lease before deleting them.
         let _ = attempt_id;
         Ok(None)
+    }
+
+    fn staging_cleanup_candidates(
+        &mut self,
+        target: &cdf_kernel::TargetName,
+    ) -> Result<Vec<cdf_runtime::StagingCleanupCandidate>> {
+        ParquetDestination::staging_cleanup_candidates(self, target)
+    }
+
+    fn cleanup_expired_staging(
+        &mut self,
+        candidate: &cdf_runtime::StagingCleanupCandidate,
+        proof: &cdf_runtime::ExpiredStagingLeaseProof,
+    ) -> Result<u64> {
+        self.cleanup_expired_staging_candidate(candidate, proof)
     }
 }
 
@@ -243,6 +256,22 @@ impl cdf_runtime::StagedSegmentIngress for FilesystemParquetRuntime {
         _attempt_id: &cdf_runtime::LoadAttemptId,
     ) -> Result<Option<cdf_runtime::StagingSnapshot>> {
         Ok(None)
+    }
+
+    fn staging_cleanup_candidates(
+        &mut self,
+        target: &cdf_kernel::TargetName,
+    ) -> Result<Vec<cdf_runtime::StagingCleanupCandidate>> {
+        self.destination()?.staging_cleanup_candidates(target)
+    }
+
+    fn cleanup_expired_staging(
+        &mut self,
+        candidate: &cdf_runtime::StagingCleanupCandidate,
+        proof: &cdf_runtime::ExpiredStagingLeaseProof,
+    ) -> Result<u64> {
+        self.destination()?
+            .cleanup_expired_staging_candidate(candidate, proof)
     }
 }
 

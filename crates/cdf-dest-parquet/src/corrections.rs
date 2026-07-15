@@ -11,6 +11,7 @@ use crate::{
         correction_sidecar_object_key, current_pointer_key, now_ms, version_manifest_key,
     },
 };
+use std::collections::BTreeSet;
 
 #[derive(Clone, Debug)]
 pub(crate) struct ParquetCorrectionContext {

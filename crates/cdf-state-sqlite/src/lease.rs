@@ -6,8 +6,8 @@ use std::{
 };
 
 use cdf_kernel::{
-    CdfError, FencingToken, LeaseOwnerId, Result, ScopeKey, ScopeLease, ScopeLeaseClock,
-    ScopeLeaseStore,
+    CdfError, ExpiredScopeLeaseProof, FencingToken, LeaseOwnerId, Result, ScopeKey, ScopeLease,
+    ScopeLeaseClock, ScopeLeaseStore,
 };
 use rusqlite::{Connection, OpenFlags, OptionalExtension, Row, params};
 
@@ -125,6 +125,22 @@ impl ScopeLeaseStore for InMemoryScopeLeaseStore {
         let leases = self.lock()?;
         let record = leases.get(&key).ok_or_else(|| stale_error(&lease.scope))?;
         ensure_current(record, lease, now_ms)
+    }
+
+    fn prove_expired(
+        &self,
+        lease: &ScopeLease,
+        collector: LeaseOwnerId,
+        cleanup_lease_duration_ms: u64,
+    ) -> Result<Option<ExpiredScopeLeaseProof>> {
+        let now_ms = self.clock.now_ms()?;
+        let expires_at_ms = expiry(now_ms, cleanup_lease_duration_ms)?;
+        let key = encode_json(&lease.scope)?;
+        let mut leases = self.lock()?;
+        let record = leases
+            .get_mut(&key)
+            .ok_or_else(|| stale_error(&lease.scope))?;
+        claim_expired_record(record, lease, collector, now_ms, expires_at_ms)
     }
 }
 
@@ -272,6 +288,54 @@ impl ScopeLeaseStore for SqliteScopeLeaseStore {
             .map_err(sqlite_error)?;
         current.ok_or_else(|| stale_error(&lease.scope))
     }
+
+    fn prove_expired(
+        &self,
+        lease: &ScopeLease,
+        collector: LeaseOwnerId,
+        cleanup_lease_duration_ms: u64,
+    ) -> Result<Option<ExpiredScopeLeaseProof>> {
+        let now_ms = self.clock.now_ms()?;
+        let expires_at_ms = expiry(now_ms, cleanup_lease_duration_ms)?;
+        let mut conn = self.lock()?;
+        let tx = conn
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+            .map_err(sqlite_error)?;
+        let (current, released) = tx
+            .query_row(
+                "SELECT scope_json, owner, fencing_token, acquired_at_ms, expires_at_ms, released \
+                 FROM cdf_scope_leases WHERE scope_json = ?",
+                params![encode_json(&lease.scope)?],
+                |row| Ok((row_to_lease(row)?, row.get::<_, i64>(5)? != 0)),
+            )
+            .optional()
+            .map_err(sqlite_error)?
+            .ok_or_else(|| stale_error(&lease.scope))?;
+        let mut record = LeaseRecord {
+            lease: current,
+            released,
+        };
+        let Some(proof) =
+            claim_expired_record(&mut record, lease, collector, now_ms, expires_at_ms)?
+        else {
+            tx.commit().map_err(sqlite_error)?;
+            return Ok(None);
+        };
+        tx.execute(
+            "UPDATE cdf_scope_leases SET owner = ?, fencing_token = ?, acquired_at_ms = ?, \
+             expires_at_ms = ?, released = 0 WHERE scope_json = ?",
+            params![
+                proof.cleanup_lease.owner.as_str(),
+                token_i64(proof.cleanup_lease.fencing_token)?,
+                proof.cleanup_lease.acquired_at_ms,
+                proof.cleanup_lease.expires_at_ms,
+                encode_json(&lease.scope)?,
+            ],
+        )
+        .map_err(sqlite_error)?;
+        tx.commit().map_err(sqlite_error)?;
+        Ok(Some(proof))
+    }
 }
 
 pub(crate) fn initialize_schema(conn: &Connection) -> Result<()> {
@@ -338,6 +402,50 @@ fn ensure_current(record: &LeaseRecord, lease: &ScopeLease, now_ms: i64) -> Resu
     } else {
         Err(stale_error(&lease.scope))
     }
+}
+
+fn claim_expired_record(
+    record: &mut LeaseRecord,
+    lease: &ScopeLease,
+    collector: LeaseOwnerId,
+    now_ms: i64,
+    expires_at_ms: i64,
+) -> Result<Option<ExpiredScopeLeaseProof>> {
+    if record.lease.scope != lease.scope {
+        return Err(CdfError::contract(
+            "scope lease expiry proof crossed lease identities",
+        ));
+    }
+    let current = record.lease.fencing_token.get();
+    let candidate = lease.fencing_token.get();
+    if current < candidate {
+        return Err(CdfError::contract(
+            "scope lease expiry proof references an unissued fencing generation",
+        ));
+    }
+    if !record.released && !record.lease.is_expired_at(now_ms) {
+        return Ok(None);
+    }
+    let next_token = record
+        .lease
+        .fencing_token
+        .get()
+        .checked_add(1)
+        .ok_or_else(|| CdfError::internal("scope lease fencing token overflow"))?;
+    let cleanup_lease = ScopeLease {
+        scope: lease.scope.clone(),
+        owner: collector,
+        fencing_token: FencingToken::new(next_token)?,
+        acquired_at_ms: now_ms,
+        expires_at_ms,
+    };
+    record.lease = cleanup_lease.clone();
+    record.released = false;
+    Ok(Some(ExpiredScopeLeaseProof {
+        expired_lease: lease.clone(),
+        cleanup_lease,
+        proven_at_ms: now_ms,
+    }))
 }
 
 fn expiry(now_ms: i64, duration_ms: u64) -> Result<i64> {

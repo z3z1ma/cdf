@@ -1,4 +1,5 @@
 use std::{
+    collections::BTreeSet,
     fs::OpenOptions,
     io::{Read, Write},
 };
@@ -19,7 +20,7 @@ pub(crate) struct StoredObject {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct ListedObject {
     pub(crate) key: String,
-    pub(crate) last_modified_ms: i64,
+    pub(crate) byte_count: u64,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -51,7 +52,6 @@ pub(crate) struct StoreClient {
     store: Arc<dyn ObjectStore>,
     root_prefix: String,
     local_root: Option<PathBuf>,
-    registry_namespace: String,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -73,7 +73,7 @@ impl ObjectKeyEncoder {
         Ok(Self { policy })
     }
 
-    fn encode(self, value: &str) -> String {
+    pub(crate) fn encode(self, value: &str) -> String {
         match self.policy {
             ObjectKeyPolicy::ComponentV1 => encode_component_v1(value),
         }
@@ -97,42 +97,19 @@ impl StoreClient {
             store: Arc::new(store),
             root_prefix: String::new(),
             local_root: Some(canonical_root.clone()),
-            registry_namespace: format!("file:{}", canonical_root.display()),
         })
     }
 
     pub(crate) fn new_object_store(
         store: Arc<dyn ObjectStore>,
-        store_identity: impl Into<String>,
         root_prefix: impl Into<String>,
     ) -> Result<Self> {
-        let store_identity = store_identity.into();
-        if store_identity.trim().is_empty() || store_identity.chars().any(char::is_control) {
-            return Err(CdfError::contract(
-                "object store identity must be nonempty and contain no control characters",
-            ));
-        }
         let root_prefix = normalize_prefix(root_prefix.into())?;
-        let registry_namespace = format!("object-store:{store_identity}:{root_prefix}");
         Ok(Self {
             store,
             root_prefix,
             local_root: None,
-            registry_namespace,
         })
-    }
-
-    pub(crate) fn staging_registry_key(
-        &self,
-        target: &TargetName,
-        attempt_id: &cdf_runtime::LoadAttemptId,
-    ) -> String {
-        format!(
-            "{}:{}:{}",
-            self.registry_namespace,
-            target.as_str(),
-            attempt_id.as_str()
-        )
     }
 
     pub(crate) fn staging_file(&self) -> Result<tempfile::NamedTempFile> {
@@ -752,7 +729,7 @@ impl StoreClient {
                     };
                     Ok(ListedObject {
                         key,
-                        last_modified_ms: object.last_modified.timestamp_millis(),
+                        byte_count: object.size,
                     })
                 })
                 .collect()
@@ -918,12 +895,14 @@ pub(crate) fn staged_segment_object_key(
     encoder: ObjectKeyEncoder,
     target: &TargetName,
     attempt_id: &cdf_runtime::LoadAttemptId,
+    fencing_token: u64,
     segment_id: &cdf_kernel::SegmentId,
 ) -> String {
     format!(
-        "targets/{}/staging/{}/{}.parquet",
+        "targets/{}/staging/{}/{}/{}.parquet",
         encoder.encode(target.as_str()),
         encoder.encode(attempt_id.as_str()),
+        fencing_token,
         encoder.encode(segment_id.as_str())
     )
 }
@@ -932,11 +911,13 @@ pub(crate) fn staged_attempt_prefix(
     encoder: ObjectKeyEncoder,
     target: &TargetName,
     attempt_id: &cdf_runtime::LoadAttemptId,
+    fencing_token: u64,
 ) -> String {
     format!(
-        "targets/{}/staging/{}/",
+        "targets/{}/staging/{}/{}/",
         encoder.encode(target.as_str()),
-        encoder.encode(attempt_id.as_str())
+        encoder.encode(attempt_id.as_str()),
+        fencing_token
     )
 }
 
@@ -948,10 +929,11 @@ pub(crate) fn staged_attempt_metadata_key(
     encoder: ObjectKeyEncoder,
     target: &TargetName,
     attempt_id: &cdf_runtime::LoadAttemptId,
+    fencing_token: u64,
 ) -> String {
     format!(
         "{}attempt.json",
-        staged_attempt_prefix(encoder, target, attempt_id)
+        staged_attempt_prefix(encoder, target, attempt_id, fencing_token)
     )
 }
 
@@ -986,11 +968,15 @@ pub(crate) fn replace_settlement_key(
 pub(crate) fn package_publication_metadata_key(
     encoder: ObjectKeyEncoder,
     target: &TargetName,
+    attempt_id: &cdf_runtime::LoadAttemptId,
+    fencing_token: u64,
     token: &cdf_kernel::IdempotencyToken,
 ) -> String {
     format!(
-        "targets/{}/publication-attempts/{}.json",
+        "targets/{}/publication-attempts/{}/{}/{}.json",
         encoder.encode(target.as_str()),
+        encoder.encode(attempt_id.as_str()),
+        fencing_token,
         encoder.encode(token.as_str())
     )
 }
@@ -1001,17 +987,6 @@ pub(crate) fn publication_attempt_target_prefix(
 ) -> String {
     format!(
         "targets/{}/publication-attempts/",
-        encoder.encode(target.as_str())
-    )
-}
-
-pub(crate) fn package_prefix_from_encoded_token(
-    encoder: ObjectKeyEncoder,
-    target: &TargetName,
-    encoded_token: &str,
-) -> String {
-    format!(
-        "targets/{}/packages/{encoded_token}/",
         encoder.encode(target.as_str())
     )
 }

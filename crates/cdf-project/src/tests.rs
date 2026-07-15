@@ -894,6 +894,15 @@ impl ScopeLeaseStore for StaleAtPublicationStore {
             Err(CdfError::contract("lease superseded before publication"))
         }
     }
+
+    fn prove_expired(
+        &self,
+        _lease: &ScopeLease,
+        _collector: LeaseOwnerId,
+        _cleanup_lease_duration_ms: u64,
+    ) -> cdf_kernel::Result<Option<cdf_kernel::ExpiredScopeLeaseProof>> {
+        Ok(None)
+    }
 }
 
 #[test]

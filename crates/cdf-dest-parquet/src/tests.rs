@@ -9,9 +9,7 @@ use crate::{
         ReplacePointer, canonical_json_bytes, sha256_hex,
     },
     sheet::{parquet_correction_capabilities, parquet_protocol_capabilities, parquet_sheet},
-    store::{
-        ObjectKeyEncoder, package_manifest_key, segment_object_key, staged_segment_object_key,
-    },
+    store::{ObjectKeyEncoder, package_manifest_key, staged_segment_object_key},
 };
 use ::parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use arrow_array::{ArrayRef, Float64Array, Int64Array, StringArray};
@@ -257,8 +255,7 @@ fn test_object_store(
     store: Arc<dyn ObjectStore>,
     root_prefix: impl Into<String>,
 ) -> Result<ParquetDestination> {
-    let store_identity = format!("test-store:{:p}", Arc::as_ptr(&store));
-    ParquetDestination::new_object_store(store, store_identity, root_prefix, test_execution())
+    ParquetDestination::new_object_store(store, root_prefix, test_execution())
 }
 
 fn sample_batch(ids: Vec<i64>, names: Vec<Option<&str>>) -> RecordBatch {
@@ -739,6 +736,7 @@ struct StagedTestCommit {
     session: Box<dyn cdf_runtime::StagedIngressSession>,
     staged: Vec<cdf_runtime::StagedSegmentIdentity>,
     attempt_id: cdf_runtime::LoadAttemptId,
+    staging_lease: cdf_runtime::StagingLease,
     execution_plan_id: PlanId,
     plan: ParquetCommitPlan,
     package: TestVerifiedPackage,
@@ -761,6 +759,22 @@ fn stage_through_ingress_with_attempt(
     package_dir: &Path,
     commit: ParquetCommitRequest,
     attempt_id: cdf_runtime::LoadAttemptId,
+) -> Result<StagedTestCommit> {
+    let staging_lease = test_staging_lease(
+        dest.sheet().destination.clone(),
+        commit.commit.target.clone(),
+        attempt_id.clone(),
+        1,
+    );
+    stage_through_ingress_with_lease(dest, package_dir, commit, attempt_id, staging_lease)
+}
+
+fn stage_through_ingress_with_lease(
+    dest: &mut ParquetDestination,
+    package_dir: &Path,
+    commit: ParquetCommitRequest,
+    attempt_id: cdf_runtime::LoadAttemptId,
+    staging_lease: cdf_runtime::StagingLease,
 ) -> Result<StagedTestCommit> {
     let reader = PackageReader::open(package_dir)?;
     let commit_segments = reader.read_commit_segments(&commit.commit.segments)?;
@@ -793,6 +807,7 @@ fn stage_through_ingress_with_attempt(
             merge_keys: Vec::new(),
             execution_plan_id: execution_plan_id.clone(),
         },
+        staging_lease.clone(),
         bulk_path,
         cdf_runtime::StagingSchedulingContext::new(
             capabilities.max_in_flight_segments.unwrap(),
@@ -870,6 +885,7 @@ fn stage_through_ingress_with_attempt(
         session,
         staged,
         attempt_id,
+        staging_lease,
         execution_plan_id,
         plan,
         package,
@@ -899,6 +915,7 @@ fn assert_staged_abort_cleans_destination(
                 dest.object_key_encoder(),
                 &TargetName::new("orders").unwrap(),
                 &staged.attempt_id,
+                staged.staging_lease.fencing_token(),
                 &identity.segment_id,
             )
         })
@@ -927,6 +944,39 @@ fn assert_staged_abort_cleans_destination(
             .exists(dest.execution(), &staged.plan.manifest_key)
             .unwrap()
     );
+}
+
+fn test_staging_lease(
+    destination_id: DestinationId,
+    target: TargetName,
+    attempt_id: cdf_runtime::LoadAttemptId,
+    fencing_token: u64,
+) -> cdf_runtime::StagingLease {
+    let identity = cdf_runtime::StagingLeaseIdentity::new(
+        destination_id.clone(),
+        target.clone(),
+        attempt_id.clone(),
+    );
+    cdf_runtime::StagingLease {
+        identity,
+        scope_lease: cdf_kernel::ScopeLease {
+            scope: ScopeKey::Composite {
+                parts: vec![
+                    ScopeKey::DestinationLoad {
+                        destination: destination_id,
+                        target,
+                    },
+                    ScopeKey::Stream {
+                        name: format!("staging:{attempt_id}"),
+                    },
+                ],
+            },
+            owner: cdf_kernel::LeaseOwnerId::new("parquet-test-owner").unwrap(),
+            fencing_token: cdf_kernel::FencingToken::new(fencing_token).unwrap(),
+            acquired_at_ms: 1,
+            expires_at_ms: i64::MAX,
+        },
+    }
 }
 
 #[test]
@@ -1684,6 +1734,7 @@ fn staged_attempt_records_the_exact_prepared_physical_plan() {
         destination.object_key_encoder(),
         &commit.commit.target,
         &staged.attempt_id,
+        staged.staging_lease.fencing_token(),
     );
     let metadata: serde_json::Value = serde_json::from_slice(
         &destination
@@ -1697,46 +1748,6 @@ fn staged_attempt_records_the_exact_prepared_physical_plan() {
     assert_eq!(metadata["writers"], 2);
     assert_eq!(metadata["rows_per_batch"], 64 * 1024);
     assert_eq!(metadata["bytes_per_batch"], 16 * 1024 * 1024);
-    staged.session.abort().unwrap();
-}
-
-#[test]
-fn staged_attempt_heartbeat_advances_without_segment_completion() {
-    let temp = tempfile::tempdir().unwrap();
-    let package_dir = temp.path().join("pkg-heartbeat");
-    let built = build_package(
-        &package_dir,
-        "pkg-heartbeat",
-        vec![(
-            "seg-000001",
-            vec![sample_batch(vec![1, 2], vec![Some("left"), Some("right")])],
-        )],
-    );
-    let mut destination = test_object_store(Arc::new(InMemory::default()), "lake").unwrap();
-    let commit = request(&package_dir, &built, WriteDisposition::Append);
-    let staged = stage_through_ingress(&mut destination, &package_dir, commit.clone()).unwrap();
-    let metadata_key = crate::store::staged_attempt_metadata_key(
-        destination.object_key_encoder(),
-        &commit.commit.target,
-        &staged.attempt_id,
-    );
-    let read_heartbeat = || {
-        let metadata: serde_json::Value = serde_json::from_slice(
-            &destination
-                .store()
-                .get_required(destination.execution(), &metadata_key)
-                .unwrap(),
-        )
-        .unwrap();
-        metadata["heartbeat_at_ms"].as_i64().unwrap()
-    };
-    let before = read_heartbeat();
-    std::thread::sleep(std::time::Duration::from_millis(250));
-    let after = read_heartbeat();
-    assert!(
-        after > before,
-        "heartbeat did not advance: {before} -> {after}"
-    );
     staged.session.abort().unwrap();
 }
 
@@ -1873,191 +1884,111 @@ fn concurrent_same_token_publication_is_immutable_and_independently_verifiable()
 }
 
 #[test]
-fn independent_destination_instances_share_exact_attempt_ownership() {
+fn abandoned_attempt_cleanup_requires_exact_expiry_proof() {
     let temp = tempfile::tempdir().unwrap();
-    let package_dir = temp.path().join("pkg-shared-attempt");
+    let package_dir = temp.path().join("pkg-proof-gated-cleanup");
     let built = build_package(
         &package_dir,
-        "pkg-shared-attempt",
+        "pkg-proof-gated-cleanup",
         vec![(
             "seg-000001",
             vec![sample_batch(vec![1, 2], vec![Some("left"), Some("right")])],
         )],
     );
-    let store = Arc::new(InMemory::default());
-    let mut first_destination = test_object_store(store.clone(), "lake").unwrap();
-    let mut second_destination = test_object_store(store, "lake").unwrap();
+    let mut destination = test_object_store(Arc::new(InMemory::default()), "lake").unwrap();
     let commit = request(&package_dir, &built, WriteDisposition::Append);
-    let attempt_id = cdf_runtime::LoadAttemptId::new("shared-exact-attempt").unwrap();
-    let first = stage_through_ingress_with_attempt(
-        &mut first_destination,
-        &package_dir,
-        commit.clone(),
-        attempt_id.clone(),
-    )
+    let scopes = Arc::new(cdf_state_sqlite::InMemoryScopeLeaseStore::new());
+    let supervisor = cdf_runtime::StagingLeaseSupervisor::new(Arc::new(
+        cdf_runtime::ScopeStagingLeaseAuthority::new(scopes),
+    ))
     .unwrap();
-
-    let error = match stage_through_ingress_with_attempt(
-        &mut second_destination,
-        &package_dir,
-        commit.clone(),
-        attempt_id.clone(),
-    ) {
-        Ok(_) => panic!("independent destination reused an active exact attempt"),
-        Err(error) => error,
-    };
-    assert!(error.to_string().contains("already active"), "{error}");
-
-    first.session.abort().unwrap();
-    let restarted = stage_through_ingress_with_attempt(
-        &mut second_destination,
-        &package_dir,
-        commit,
-        attempt_id,
-    )
-    .unwrap();
-    restarted.session.abort().unwrap();
-}
-
-#[test]
-fn rollback_redrive_removes_exact_process_loss_attempt_before_reuse() {
-    let temp = tempfile::tempdir().unwrap();
-    let package_dir = temp.path().join("pkg-process-loss");
-    let built = build_package(
-        &package_dir,
-        "pkg-process-loss",
-        vec![(
-            "seg-000001",
-            vec![sample_batch(vec![1, 2], vec![Some("left"), Some("right")])],
-        )],
-    );
-    let store = Arc::new(InMemory::default());
-    let commit = request(&package_dir, &built, WriteDisposition::Append);
-    let mut crashed_destination = test_object_store(store.clone(), "lake").unwrap();
-    let crashed =
-        stage_through_ingress(&mut crashed_destination, &package_dir, commit.clone()).unwrap();
-    let staging_key = staged_segment_object_key(
-        crashed_destination.object_key_encoder(),
-        &commit.commit.target,
-        &crashed.attempt_id,
-        &crashed.staged[0].segment_id,
-    );
-    assert!(
-        crashed_destination
-            .store()
-            .exists(crashed_destination.execution(), &staging_key)
-            .unwrap()
-    );
-    std::mem::forget(crashed.session);
-    crate::active_staging_attempts().lock().unwrap().remove(
-        &crashed_destination
-            .store()
-            .staging_registry_key(&commit.commit.target, &crashed.attempt_id),
-    );
-    drop(crashed_destination);
-
-    let mut restarted_destination = test_object_store(store, "lake").unwrap();
-    let restarted =
-        stage_through_ingress(&mut restarted_destination, &package_dir, commit).unwrap();
-    restarted.session.abort().unwrap();
-    assert!(
-        !restarted_destination
-            .store()
-            .exists(restarted_destination.execution(), &staging_key)
-            .unwrap()
-    );
-}
-
-#[test]
-fn abandoned_attempt_retention_sweep_bounds_process_loss_storage() {
-    const EIGHT_DAYS_MS: i64 = 8 * 24 * 60 * 60 * 1_000;
-    let temp = tempfile::tempdir().unwrap();
-    let package_dir = temp.path().join("pkg-retention-sweep");
-    let built = build_package(
-        &package_dir,
-        "pkg-retention-sweep",
-        vec![(
-            "seg-000001",
-            vec![sample_batch(vec![1, 2], vec![Some("left"), Some("right")])],
-        )],
-    );
-    let store = Arc::new(InMemory::default());
-    let commit = request(&package_dir, &built, WriteDisposition::Append);
-    let mut crashed_destination = test_object_store(store.clone(), "lake").unwrap();
-    let crashed =
-        stage_through_ingress(&mut crashed_destination, &package_dir, commit.clone()).unwrap();
-    let staging_key = staged_segment_object_key(
-        crashed_destination.object_key_encoder(),
-        &commit.commit.target,
-        &crashed.attempt_id,
-        &crashed.staged[0].segment_id,
-    );
-    std::mem::forget(crashed.session);
-    crate::active_staging_attempts().lock().unwrap().remove(
-        &crashed_destination
-            .store()
-            .staging_registry_key(&commit.commit.target, &crashed.attempt_id),
-    );
-    drop(crashed_destination);
-
-    let restarted = test_object_store(store, "lake").unwrap();
-    let removed = restarted
-        .cleanup_expired_staging(
-            &commit.commit.target,
-            crate::store::now_ms().unwrap() + EIGHT_DAYS_MS,
+    let attempt_id = cdf_runtime::LoadAttemptId::new("proof-gated-cleanup").unwrap();
+    let managed_lease = supervisor
+        .acquire(
+            cdf_runtime::StagingLeaseIdentity::new(
+                destination.sheet().destination.clone(),
+                commit.commit.target.clone(),
+                attempt_id.clone(),
+            ),
+            cdf_kernel::LeaseOwnerId::new("writer").unwrap(),
         )
         .unwrap();
-    assert!(
-        removed >= 2,
-        "attempt metadata and payload must both be removed"
-    );
-    assert!(
-        !restarted
-            .store()
-            .exists(restarted.execution(), &staging_key)
-            .unwrap()
-    );
-}
-
-#[test]
-fn abandoned_final_publication_is_bounded_and_committed_packages_are_preserved() {
-    const EIGHT_DAYS_MS: i64 = 8 * 24 * 60 * 60 * 1_000;
-    let store = Arc::new(InMemory::default());
-    let destination = test_object_store(store, "lake").unwrap();
-    let target = TargetName::new("orders").unwrap();
-    let token = IdempotencyToken::new("orphan-publication-token").unwrap();
-    let segment = SegmentId::new("orphan-segment").unwrap();
-    let object_key =
-        segment_object_key(destination.object_key_encoder(), &target, &token, &segment);
-    let marker_key = crate::store::package_publication_metadata_key(
+    let staging_lease = managed_lease.snapshot().unwrap();
+    let crashed = stage_through_ingress_with_lease(
+        &mut destination,
+        &package_dir,
+        commit.clone(),
+        attempt_id,
+        staging_lease,
+    )
+    .unwrap();
+    let staging_key = staged_segment_object_key(
         destination.object_key_encoder(),
-        &target,
-        &token,
+        &commit.commit.target,
+        &crashed.attempt_id,
+        crashed.staging_lease.fencing_token(),
+        &crashed.staged[0].segment_id,
     );
-    destination
-        .store()
-        .put(destination.execution(), &object_key, vec![1, 2, 3])
-        .unwrap();
-    destination
-        .store()
-        .put(destination.execution(), &marker_key, vec![4, 5, 6])
-        .unwrap();
+    std::mem::forget(crashed.session);
+    managed_lease.finish().unwrap();
 
-    let removed = destination
-        .cleanup_expired_publications(&target, crate::store::now_ms().unwrap() + EIGHT_DAYS_MS)
+    let candidates = destination
+        .staging_cleanup_candidates(&commit.commit.target)
         .unwrap();
-
-    assert_eq!(removed, 2);
+    let candidate = candidates
+        .iter()
+        .find(|candidate| candidate.lease() == &crashed.staging_lease)
+        .unwrap();
+    let wrong_managed = supervisor
+        .acquire(
+            cdf_runtime::StagingLeaseIdentity::new(
+                candidate.lease().identity.destination_id.clone(),
+                candidate.lease().identity.target.clone(),
+                cdf_runtime::LoadAttemptId::new("different-attempt").unwrap(),
+            ),
+            cdf_kernel::LeaseOwnerId::new("other-writer").unwrap(),
+        )
+        .unwrap();
+    let wrong_lease = wrong_managed.snapshot().unwrap();
+    wrong_managed.finish().unwrap();
+    let wrong_proof = supervisor
+        .prove_expired(
+            &wrong_lease,
+            cdf_kernel::LeaseOwnerId::new("wrong-collector").unwrap(),
+        )
+        .unwrap()
+        .unwrap();
     assert!(
-        !destination
+        destination
+            .cleanup_expired_staging_candidate(candidate, wrong_proof.proof())
+            .is_err()
+    );
+    wrong_proof.finish().unwrap();
+    assert!(
+        destination
             .store()
-            .exists(destination.execution(), &object_key)
+            .exists(destination.execution(), &staging_key)
             .unwrap()
     );
+
+    let proof = supervisor
+        .prove_expired(
+            candidate.lease(),
+            cdf_kernel::LeaseOwnerId::new("collector").unwrap(),
+        )
+        .unwrap()
+        .unwrap();
+    assert!(
+        destination
+            .cleanup_expired_staging_candidate(candidate, proof.proof())
+            .unwrap()
+            >= 2
+    );
+    proof.finish().unwrap();
     assert!(
         !destination
             .store()
-            .exists(destination.execution(), &marker_key)
+            .exists(destination.execution(), &staging_key)
             .unwrap()
     );
 }

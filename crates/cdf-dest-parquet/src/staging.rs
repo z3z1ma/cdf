@@ -1,9 +1,4 @@
-use std::{
-    collections::{BTreeMap, BTreeSet, VecDeque},
-    sync::{Arc, Condvar, Mutex},
-    thread::JoinHandle,
-    time::Duration,
-};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use cdf_kernel::{CdfError, DestinationProtocol, Result, SchemaHash, SegmentId, StateSegment};
 use cdf_runtime::{
@@ -28,19 +23,12 @@ const ENCODE_LANE: &str = "parquet.encode";
 const PHYSICAL_PLAN_PATH: &str = "arrow_ipc_to_parquet";
 const PHYSICAL_PLAN_VERSION: u16 = 2;
 const STAGING_METADATA_VERSION: u16 = 1;
-#[cfg(not(test))]
-const HEARTBEAT_INTERVAL_MS: i64 = 60_000;
-#[cfg(test)]
-const HEARTBEAT_INTERVAL_MS: i64 = 100;
-
 pub(crate) struct ParquetStagedIngressSession {
     destination: ParquetDestination,
     request: StagedIngressRequest,
     accepted: BTreeMap<u32, StagedSegmentIdentity>,
     objects: BTreeMap<u32, StagedParquetObject>,
-    active_attempt_key: String,
     physical_plan: ParquetPhysicalWritePlan,
-    heartbeat: AttemptHeartbeat,
 }
 
 #[derive(Clone)]
@@ -48,6 +36,7 @@ struct ParquetPhysicalWritePlan {
     encoder: ObjectKeyEncoder,
     target: cdf_kernel::TargetName,
     attempt_id: cdf_runtime::LoadAttemptId,
+    fencing_token: u64,
     writers: u16,
     rows_per_batch: u64,
     bytes_per_batch: u64,
@@ -73,6 +62,7 @@ impl ParquetPhysicalWritePlan {
             encoder: destination.object_key_encoder(),
             target: request.binding().target.clone(),
             attempt_id: request.attempt_id().clone(),
+            fencing_token: request.staging_lease().fencing_token(),
             writers: request.bulk_path().writers,
             rows_per_batch: request.bulk_path().rows_per_batch,
             bytes_per_batch: request.bulk_path().bytes_per_batch,
@@ -80,7 +70,13 @@ impl ParquetPhysicalWritePlan {
     }
 
     fn staging_key(&self, segment_id: &SegmentId) -> String {
-        staged_segment_object_key(self.encoder, &self.target, &self.attempt_id, segment_id)
+        staged_segment_object_key(
+            self.encoder,
+            &self.target,
+            &self.attempt_id,
+            self.fencing_token,
+            segment_id,
+        )
     }
 
     fn final_keys(
@@ -95,8 +91,8 @@ impl ParquetPhysicalWritePlan {
     }
 }
 
-#[derive(Clone, serde::Serialize)]
-struct StagingAttemptMetadata {
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
+pub(crate) struct StagingAttemptMetadata {
     version: u16,
     target: String,
     attempt_id: String,
@@ -106,157 +102,13 @@ struct StagingAttemptMetadata {
     rows_per_batch: u64,
     bytes_per_batch: u64,
     started_at_ms: i64,
-    heartbeat_at_ms: i64,
+    pub(crate) staging_lease: cdf_runtime::StagingLease,
 }
 
-struct AttemptHeartbeat {
-    stop: Arc<(Mutex<bool>, Condvar)>,
-    error: Arc<Mutex<Option<String>>>,
-    keys: Arc<Mutex<BTreeSet<String>>>,
-    handle: Option<JoinHandle<()>>,
-}
-
-impl AttemptHeartbeat {
-    fn start(
-        destination: ParquetDestination,
-        metadata_key: String,
-        mut metadata: StagingAttemptMetadata,
-    ) -> Result<Self> {
-        let stop = Arc::new((Mutex::new(false), Condvar::new()));
-        let error = Arc::new(Mutex::new(None));
-        let keys = Arc::new(Mutex::new(BTreeSet::from([metadata_key])));
-        let worker_stop = Arc::clone(&stop);
-        let worker_error = Arc::clone(&error);
-        let worker_keys = Arc::clone(&keys);
-        let handle = std::thread::Builder::new()
-            .name("cdf-parquet-attempt-heartbeat".to_owned())
-            .spawn(move || {
-                loop {
-                    let (lock, wake) = &*worker_stop;
-                    let stopped = match lock.lock() {
-                        Ok(stopped) => stopped,
-                        Err(_) => return,
-                    };
-                    let wait = wake.wait_timeout(
-                        stopped,
-                        Duration::from_millis(
-                            u64::try_from(HEARTBEAT_INTERVAL_MS / 2).unwrap_or(1),
-                        ),
-                    );
-                    let Ok((stopped, _)) = wait else {
-                        return;
-                    };
-                    if *stopped {
-                        return;
-                    }
-                    drop(stopped);
-                    let heartbeat_at_ms = match now_ms() {
-                        Ok(now) => now,
-                        Err(failure) => {
-                            if let Ok(mut error) = worker_error.lock() {
-                                *error = Some(failure.to_string());
-                            }
-                            return;
-                        }
-                    };
-                    metadata.heartbeat_at_ms = heartbeat_at_ms;
-                    let bytes = match canonical_json_bytes(&metadata) {
-                        Ok(bytes) => bytes,
-                        Err(failure) => {
-                            if let Ok(mut error) = worker_error.lock() {
-                                *error = Some(failure.to_string());
-                            }
-                            return;
-                        }
-                    };
-                    let keys = match worker_keys.lock() {
-                        Ok(keys) => keys.iter().cloned().collect::<Vec<_>>(),
-                        Err(_) => return,
-                    };
-                    for key in keys {
-                        if let Err(failure) =
-                            destination
-                                .store()
-                                .put(destination.execution(), &key, bytes.clone())
-                        {
-                            if let Ok(mut error) = worker_error.lock() {
-                                *error = Some(failure.to_string());
-                            }
-                            return;
-                        }
-                    }
-                }
-            })
-            .map_err(|error| {
-                CdfError::destination(format!("start Parquet attempt heartbeat: {error}"))
-            })?;
-        Ok(Self {
-            stop,
-            error,
-            keys,
-            handle: Some(handle),
-        })
-    }
-
-    fn check(&self) -> Result<()> {
-        let error = self
-            .error
-            .lock()
-            .map_err(|_| CdfError::internal("Parquet heartbeat error lock is poisoned"))?;
-        match error.as_ref() {
-            Some(error) => Err(CdfError::destination(format!(
-                "Parquet staging heartbeat failed: {error}"
-            ))),
-            None => Ok(()),
-        }
-    }
-
-    fn add_key(&self, key: String) -> Result<()> {
-        self.keys
-            .lock()
-            .map_err(|_| CdfError::internal("Parquet heartbeat key lock is poisoned"))?
-            .insert(key);
-        Ok(())
-    }
-
-    fn remove_key(&self, key: &str) {
-        if let Ok(mut keys) = self.keys.lock() {
-            keys.remove(key);
-        }
-    }
-
-    fn stop(&mut self) -> Result<()> {
-        if self.handle.is_none() {
-            return self.check();
-        }
-        let (lock, wake) = &*self.stop;
-        let mut stopped = lock
-            .lock()
-            .map_err(|_| CdfError::internal("Parquet heartbeat stop lock is poisoned"))?;
-        *stopped = true;
-        wake.notify_all();
-        drop(stopped);
-        if let Some(handle) = self.handle.take() {
-            handle
-                .join()
-                .map_err(|_| CdfError::internal("Parquet staging heartbeat thread panicked"))?;
-        }
-        self.check()
-    }
-}
-
-impl Drop for AttemptHeartbeat {
-    fn drop(&mut self) {
-        let _ = self.stop();
-    }
-}
-
-impl Drop for ParquetStagedIngressSession {
-    fn drop(&mut self) {
-        let _ = self.heartbeat.stop();
-        self.destination
-            .release_staged_attempt(&self.active_attempt_key);
-    }
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
+pub(crate) struct PublicationAttemptMetadata {
+    version: u16,
+    pub(crate) staging_lease: cdf_runtime::StagingLease,
 }
 
 struct StagedParquetObject {
@@ -295,20 +147,11 @@ impl ParquetStagedIngressSession {
         cdf_package::validate_parquet_schema(request.output_schema())?;
         let physical_plan = ParquetPhysicalWritePlan::compile(&destination, &request)?;
         let started_at_ms = now_ms()?;
-        destination.cleanup_expired_publications(&request.binding().target, started_at_ms)?;
-        destination.cleanup_expired_staging(&request.binding().target, started_at_ms)?;
-        let active_attempt_key =
-            destination.claim_staged_attempt(&request.binding().target, request.attempt_id())?;
-        if let Err(error) =
-            destination.cleanup_staged_attempt(&request.binding().target, request.attempt_id())
-        {
-            destination.release_staged_attempt(&active_attempt_key);
-            return Err(error);
-        }
         let metadata_key = staged_attempt_metadata_key(
             destination.object_key_encoder(),
             &request.binding().target,
             request.attempt_id(),
+            request.staging_lease().fencing_token(),
         );
         let metadata = StagingAttemptMetadata {
             version: STAGING_METADATA_VERSION,
@@ -320,32 +163,19 @@ impl ParquetStagedIngressSession {
             rows_per_batch: physical_plan.rows_per_batch,
             bytes_per_batch: physical_plan.bytes_per_batch,
             started_at_ms,
-            heartbeat_at_ms: started_at_ms,
+            staging_lease: request.staging_lease().clone(),
         };
-        if let Err(error) = destination.store().put(
+        destination.store().put(
             destination.execution(),
             &metadata_key,
             canonical_json_bytes(&metadata)?,
-        ) {
-            destination.release_staged_attempt(&active_attempt_key);
-            return Err(error);
-        }
-        let heartbeat =
-            match AttemptHeartbeat::start(destination.clone(), metadata_key.clone(), metadata) {
-                Ok(heartbeat) => heartbeat,
-                Err(error) => {
-                    destination.release_staged_attempt(&active_attempt_key);
-                    return Err(error);
-                }
-            };
+        )?;
         Ok(Self {
             destination,
             request,
             accepted: BTreeMap::new(),
             objects: BTreeMap::new(),
-            active_attempt_key,
             physical_plan,
-            heartbeat,
         })
     }
 
@@ -449,7 +279,6 @@ impl ParquetStagedIngressSession {
                     "Parquet staged encode completed a duplicate ordinal",
                 ));
             }
-            self.heartbeat.check()?;
             Ok(())
         })();
         if let Err(error) = completed {
@@ -496,9 +325,6 @@ impl ParquetStagedIngressSession {
 
     fn cleanup(&mut self) -> Result<()> {
         let mut first_error = None;
-        if let Err(error) = self.heartbeat.stop() {
-            first_error.get_or_insert(error);
-        }
         for object in self.objects.values_mut() {
             if let Err(error) = object.cleanup() {
                 first_error.get_or_insert(error);
@@ -509,6 +335,7 @@ impl ParquetStagedIngressSession {
             self.destination.object_key_encoder(),
             &self.request.binding().target,
             self.request.attempt_id(),
+            self.request.staging_lease().fencing_token(),
         );
         if let Err(error) = self
             .destination
@@ -677,17 +504,18 @@ impl StagedIngressSession for ParquetStagedIngressSession {
         let publication_key = package_publication_metadata_key(
             self.destination.object_key_encoder(),
             &request.commit.target,
+            self.request.attempt_id(),
+            self.request.staging_lease().fencing_token(),
             &request.commit.idempotency_token,
         );
         self.destination.store().put(
             self.destination.execution(),
             &publication_key,
-            canonical_json_bytes(&serde_json::json!({
-                "attempt_id": self.request.attempt_id().as_str(),
-                "heartbeat_at_ms": now_ms()?,
-            }))?,
+            canonical_json_bytes(&PublicationAttemptMetadata {
+                version: STAGING_METADATA_VERSION,
+                staging_lease: self.request.staging_lease().clone(),
+            })?,
         )?;
-        self.heartbeat.add_key(publication_key.clone())?;
 
         let mut objects = Vec::with_capacity(segment_ids.len());
         let staged = std::mem::take(&mut self.objects);
@@ -728,8 +556,6 @@ impl StagedIngressSession for ParquetStagedIngressSession {
             .store()
             .sync_local_object_parents(&plan.object_keys)?;
         let publication = finalize_parquet_objects(&self.destination, request, plan, objects)?;
-        self.heartbeat.remove_key(&publication_key);
-        self.heartbeat.stop()?;
         self.destination
             .store()
             .delete(self.destination.execution(), &publication_key)?;

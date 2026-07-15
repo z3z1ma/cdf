@@ -59,6 +59,7 @@ pub(crate) fn resume(
             }
         },
     };
+    let execution = context.execution_with_staging_leases(execution)?;
     resume_run(
         destinations,
         &context,
@@ -66,7 +67,7 @@ pub(crate) fn resume(
         run_id,
         cli.json,
         &cli.terminal,
-        execution,
+        &execution,
     )
 }
 

@@ -18,6 +18,7 @@ mod source_frontier;
 mod source_registry;
 mod spill;
 mod staging;
+mod staging_lease;
 mod transformed_byte_source;
 mod utilities;
 
@@ -39,6 +40,7 @@ pub use source_frontier::*;
 pub use source_registry::*;
 pub use spill::*;
 pub use staging::*;
+pub use staging_lease::*;
 pub use transformed_byte_source::*;
 pub use utilities::*;
 

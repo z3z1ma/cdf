@@ -506,6 +506,31 @@ fn try_commit_current(
         "duckdb-test-{}",
         ATTEMPT.fetch_add(1, Ordering::Relaxed)
     ))?;
+    let staging_identity = cdf_runtime::StagingLeaseIdentity::new(
+        destination_id.clone(),
+        request.commit.target.clone(),
+        attempt_id.clone(),
+    );
+    let staging_lease = cdf_runtime::StagingLease {
+        scope_lease: cdf_kernel::ScopeLease {
+            scope: ScopeKey::Composite {
+                parts: vec![
+                    ScopeKey::DestinationLoad {
+                        destination: destination_id.clone(),
+                        target: request.commit.target.clone(),
+                    },
+                    ScopeKey::Stream {
+                        name: format!("staging:{attempt_id}"),
+                    },
+                ],
+            },
+            owner: cdf_kernel::LeaseOwnerId::new("duckdb-test-owner")?,
+            fencing_token: cdf_kernel::FencingToken::new(1)?,
+            acquired_at_ms: 1,
+            expires_at_ms: i64::MAX,
+        },
+        identity: staging_identity,
+    };
     let mut session = runtime.begin_staged_ingress(cdf_runtime::StagedIngressRequest::new(
         attempt_id.clone(),
         cdf_runtime::StagingAttemptBinding {
@@ -519,6 +544,7 @@ fn try_commit_current(
             merge_keys: request.merge_keys.clone(),
             execution_plan_id: reader.recorded_scan_plan_verified(verified)?.plan_id,
         },
+        staging_lease,
         bulk_path,
         cdf_runtime::StagingSchedulingContext::new(
             capabilities

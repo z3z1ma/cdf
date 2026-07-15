@@ -943,6 +943,7 @@ dependencies = [
  "cdf-package",
  "cdf-package-contract",
  "cdf-runtime",
+ "cdf-state-sqlite",
  "futures-util",
  "hex",
  "object_store 0.14.1",

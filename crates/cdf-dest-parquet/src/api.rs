@@ -10,8 +10,8 @@ use crate::{
     sheet::{parquet_protocol_capabilities, parquet_sheet},
     store::{
         ObjectKeyEncoder, StoreClient, current_pointer_key, now_ms, package_manifest_key,
-        package_prefix_from_encoded_token, provenance_manifest_key,
-        publication_attempt_target_prefix, replace_settlement_key, segment_object_key,
+        provenance_manifest_key, publication_attempt_target_prefix, replace_settlement_key,
+        segment_object_key,
     },
 };
 
@@ -84,12 +84,11 @@ impl ParquetDestination {
 
     pub fn new_object_store(
         store: Arc<dyn ObjectStore>,
-        store_identity: impl Into<String>,
         root_prefix: impl Into<String>,
         execution: cdf_runtime::ExecutionServices,
     ) -> Result<Self> {
         Self::from_store(
-            StoreClient::new_object_store(store, store_identity, root_prefix)?,
+            StoreClient::new_object_store(store, root_prefix)?,
             execution,
         )
     }
@@ -166,108 +165,131 @@ impl ParquetDestination {
         self.object_key_encoder
     }
 
-    pub(crate) fn cleanup_staged_attempt(
+    pub(crate) fn staging_cleanup_candidates(
         &self,
         target: &TargetName,
-        attempt_id: &cdf_runtime::LoadAttemptId,
-    ) -> Result<u64> {
-        let prefix =
-            crate::store::staged_attempt_prefix(self.object_key_encoder, target, attempt_id);
-        self.store.delete_prefix(self.execution(), &prefix)
-    }
-
-    pub(crate) fn cleanup_expired_staging(&self, target: &TargetName, now_ms: i64) -> Result<u64> {
-        const RETENTION_MS: i64 = 7 * 24 * 60 * 60 * 1_000;
-        let prefix = crate::store::staged_target_prefix(self.object_key_encoder, target);
-        let active = crate::active_staging_attempts()
-            .lock()
-            .map_err(|_| CdfError::internal("Parquet staging registry lock is poisoned"))?
-            .clone();
-        let mut attempts = BTreeMap::<String, i64>::new();
-        for object in self.store.list_prefix(self.execution(), &prefix)? {
-            let Some(relative) = object.key.strip_prefix(&prefix) else {
-                continue;
-            };
-            let Some((attempt, _)) = relative.split_once('/') else {
-                continue;
-            };
-            attempts
-                .entry(attempt.to_owned())
-                .and_modify(|latest| *latest = (*latest).max(object.last_modified_ms))
-                .or_insert(object.last_modified_ms);
-        }
-        let cutoff = now_ms.saturating_sub(RETENTION_MS);
-        let mut removed = 0_u64;
-        for (attempt, latest) in attempts {
-            let attempt_id = cdf_runtime::LoadAttemptId::new(attempt.clone())?;
-            let active_key = self.store.staging_registry_key(target, &attempt_id);
-            if latest > cutoff || active.contains(&active_key) {
+    ) -> Result<Vec<cdf_runtime::StagingCleanupCandidate>> {
+        const MAX_METADATA_BYTES: u64 = 64 * 1024;
+        let mut candidates = Vec::new();
+        let staging_prefix = crate::store::staged_target_prefix(self.object_key_encoder, target);
+        for object in self.store.list_prefix(self.execution(), &staging_prefix)? {
+            if !object.key.ends_with("/attempt.json") {
                 continue;
             }
-            removed = removed.saturating_add(self.cleanup_staged_attempt(target, &attempt_id)?);
-        }
-        Ok(removed)
-    }
-
-    pub(crate) fn cleanup_expired_publications(
-        &self,
-        target: &TargetName,
-        now_ms: i64,
-    ) -> Result<u64> {
-        const RETENTION_MS: i64 = 7 * 24 * 60 * 60 * 1_000;
-        let marker_prefix = publication_attempt_target_prefix(self.object_key_encoder, target);
-        let cutoff = now_ms.saturating_sub(RETENTION_MS);
-        let mut removed = 0_u64;
-        for object in self.store.list_prefix(self.execution(), &marker_prefix)? {
-            if object.last_modified_ms > cutoff {
-                continue;
+            if object.byte_count > MAX_METADATA_BYTES {
+                return Err(CdfError::data(format!(
+                    "Parquet staging metadata {} exceeds {} bytes",
+                    object.key, MAX_METADATA_BYTES
+                )));
             }
-            let Some(relative) = object.key.strip_prefix(&marker_prefix) else {
-                continue;
-            };
-            let Some(encoded_token) = relative.strip_suffix(".json") else {
-                continue;
-            };
-            let package_prefix =
-                package_prefix_from_encoded_token(self.object_key_encoder, target, encoded_token);
-            if !self
-                .store
-                .exists(self.execution(), &format!("{package_prefix}manifest.json"))?
+            let metadata: crate::staging::StagingAttemptMetadata =
+                serde_json::from_slice(&self.store.get_required(self.execution(), &object.key)?)
+                    .map_err(|error| {
+                        CdfError::data(format!(
+                            "decode Parquet staging metadata {}: {error}",
+                            object.key
+                        ))
+                    })?;
+            let expected = crate::store::staged_attempt_metadata_key(
+                self.object_key_encoder,
+                target,
+                &metadata.staging_lease.identity.attempt_id,
+                metadata.staging_lease.fencing_token(),
+            );
+            if object.key != expected
+                || metadata.staging_lease.identity.target != *target
+                || metadata.staging_lease.identity.destination_id != self.sheet.destination
             {
-                removed = removed.saturating_add(
-                    self.store
-                        .delete_prefix(self.execution(), &package_prefix)?,
-                );
+                return Err(CdfError::data(format!(
+                    "Parquet staging metadata {} does not bind its exact lease namespace",
+                    object.key
+                )));
             }
-            self.store.delete(self.execution(), &object.key)?;
-            removed = removed.saturating_add(1);
+            candidates.push(cdf_runtime::StagingCleanupCandidate::new(
+                format!(
+                    "parquet-staging:{}",
+                    object.key.trim_end_matches("attempt.json")
+                ),
+                metadata.staging_lease,
+            )?);
         }
-        Ok(removed)
+
+        let publication_prefix = publication_attempt_target_prefix(self.object_key_encoder, target);
+        for object in self
+            .store
+            .list_prefix(self.execution(), &publication_prefix)?
+        {
+            if object.byte_count > MAX_METADATA_BYTES {
+                return Err(CdfError::data(format!(
+                    "Parquet publication metadata {} exceeds {} bytes",
+                    object.key, MAX_METADATA_BYTES
+                )));
+            }
+            let metadata: crate::staging::PublicationAttemptMetadata =
+                serde_json::from_slice(&self.store.get_required(self.execution(), &object.key)?)
+                    .map_err(|error| {
+                        CdfError::data(format!(
+                            "decode Parquet publication metadata {}: {error}",
+                            object.key
+                        ))
+                    })?;
+            let expected_marker_prefix = format!(
+                "{}{}/{}/",
+                publication_prefix,
+                self.object_key_encoder
+                    .encode(metadata.staging_lease.identity.attempt_id.as_str()),
+                metadata.staging_lease.fencing_token()
+            );
+            if !object.key.starts_with(&expected_marker_prefix)
+                || !object.key.ends_with(".json")
+                || metadata.staging_lease.identity.target != *target
+                || metadata.staging_lease.identity.destination_id != self.sheet.destination
+            {
+                return Err(CdfError::data(format!(
+                    "Parquet publication metadata {} does not bind its target namespace",
+                    object.key
+                )));
+            }
+            candidates.push(cdf_runtime::StagingCleanupCandidate::new(
+                format!("parquet-publication:{}", object.key),
+                metadata.staging_lease,
+            )?);
+        }
+        Ok(candidates)
     }
 
-    pub(crate) fn claim_staged_attempt(
+    pub(crate) fn cleanup_expired_staging_candidate(
         &self,
-        target: &TargetName,
-        attempt_id: &cdf_runtime::LoadAttemptId,
-    ) -> Result<String> {
-        let key = self.store.staging_registry_key(target, attempt_id);
-        let mut active = crate::active_staging_attempts()
-            .lock()
-            .map_err(|_| CdfError::internal("Parquet staging registry lock is poisoned"))?;
-        if !active.insert(key.clone()) {
-            return Err(CdfError::destination(format!(
-                "Parquet staging attempt {} for target {} is already active",
-                attempt_id,
-                target.as_str()
-            )));
+        candidate: &cdf_runtime::StagingCleanupCandidate,
+        proof: &cdf_runtime::ExpiredStagingLeaseProof,
+    ) -> Result<u64> {
+        if !proof.proves(candidate.lease()) {
+            return Err(CdfError::contract(
+                "Parquet staging cleanup proof does not bind the candidate lease generation",
+            ));
         }
-        Ok(key)
-    }
-
-    pub(crate) fn release_staged_attempt(&self, key: &str) {
-        if let Ok(mut active) = crate::active_staging_attempts().lock() {
-            active.remove(key);
+        if let Some(prefix) = candidate.namespace().strip_prefix("parquet-staging:") {
+            return self.store.delete_prefix(self.execution(), prefix);
         }
+        let marker = candidate
+            .namespace()
+            .strip_prefix("parquet-publication:")
+            .ok_or_else(|| CdfError::contract("unknown Parquet staging cleanup namespace"))?;
+        let metadata: crate::staging::PublicationAttemptMetadata = serde_json::from_slice(
+            &self.store.get_required(self.execution(), marker)?,
+        )
+        .map_err(|error| {
+            CdfError::data(format!(
+                "decode Parquet publication metadata {marker}: {error}"
+            ))
+        })?;
+        if metadata.staging_lease != *candidate.lease() {
+            return Err(CdfError::contract(
+                "Parquet publication marker changed after cleanup candidacy",
+            ));
+        }
+        self.store.delete(self.execution(), marker)?;
+        Ok(1)
     }
 
     pub(crate) fn plan_package_shape(
@@ -769,7 +791,7 @@ fn validate_manifest_requested_segments(
             "package manifest contains duplicate segment ids",
         ));
     }
-    let mut seen = BTreeSet::new();
+    let mut seen = std::collections::BTreeSet::new();
     for state in requested {
         if !seen.insert(state.segment_id.clone()) {
             return Err(CdfError::data(format!(

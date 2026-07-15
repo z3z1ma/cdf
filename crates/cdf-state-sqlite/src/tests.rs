@@ -866,6 +866,99 @@ fn sqlite_scope_lease_persists_fence_across_reopen() {
     assert!(reopened.assert_current(&lease).is_err());
 }
 
+#[test]
+fn expiry_proof_never_treats_a_live_successor_as_abandoned() {
+    let clock = Arc::new(ManualScopeLeaseClock::new(30_000));
+    let store = InMemoryScopeLeaseStore::with_clock(clock.clone());
+    let scope = ScopeKey::DestinationLoad {
+        destination: DestinationId::new("parquet").unwrap(),
+        target: TargetName::new("events").unwrap(),
+    };
+    let first = store
+        .acquire(scope.clone(), LeaseOwnerId::new("owner-a").unwrap(), 100)
+        .unwrap();
+    let collector = LeaseOwnerId::new("collector").unwrap();
+    assert_eq!(
+        store.prove_expired(&first, collector.clone(), 100).unwrap(),
+        None
+    );
+
+    clock.set(30_100);
+    let successor = store
+        .acquire(scope, LeaseOwnerId::new("owner-b").unwrap(), 100)
+        .unwrap();
+    assert_eq!(
+        store.prove_expired(&first, collector.clone(), 100).unwrap(),
+        None
+    );
+
+    store.release(&successor).unwrap();
+    let proof = store
+        .prove_expired(&first, collector, 100)
+        .unwrap()
+        .unwrap();
+    assert_eq!(proof.expired_lease, first);
+    assert_eq!(
+        proof.cleanup_lease.fencing_token.get(),
+        successor.fencing_token.get() + 1,
+        "cleanup atomically fences every inactive generation"
+    );
+    assert!(
+        store
+            .acquire(
+                successor.scope.clone(),
+                LeaseOwnerId::new("owner-c").unwrap(),
+                100,
+            )
+            .is_err(),
+        "cleanup ownership blocks a new writer until deletion completes"
+    );
+    store.release(&proof.cleanup_lease).unwrap();
+    let next = store
+        .acquire(successor.scope, LeaseOwnerId::new("owner-c").unwrap(), 100)
+        .unwrap();
+    assert_eq!(
+        next.fencing_token.get(),
+        proof.cleanup_lease.fencing_token.get() + 1
+    );
+}
+
+#[test]
+fn sqlite_expiry_proof_claim_blocks_other_processes_until_cleanup_finishes() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("cleanup-claim.db");
+    let clock = Arc::new(ManualScopeLeaseClock::new(40_000));
+    let writer = SqliteScopeLeaseStore::open_with_clock(&path, clock.clone()).unwrap();
+    let collector = SqliteScopeLeaseStore::open_with_clock(&path, clock).unwrap();
+    let scope = ScopeKey::DestinationLoad {
+        destination: DestinationId::new("parquet").unwrap(),
+        target: TargetName::new("events").unwrap(),
+    };
+    let abandoned = writer
+        .acquire(scope.clone(), LeaseOwnerId::new("writer").unwrap(), 100)
+        .unwrap();
+    writer.release(&abandoned).unwrap();
+
+    let proof = collector
+        .prove_expired(&abandoned, LeaseOwnerId::new("collector").unwrap(), 100)
+        .unwrap()
+        .unwrap();
+    assert!(
+        writer
+            .acquire(scope.clone(), LeaseOwnerId::new("new-writer").unwrap(), 100,)
+            .is_err(),
+        "the transactional cleanup claim is visible to independent connections"
+    );
+    collector.release(&proof.cleanup_lease).unwrap();
+    let successor = writer
+        .acquire(scope, LeaseOwnerId::new("new-writer").unwrap(), 100)
+        .unwrap();
+    assert_eq!(
+        successor.fencing_token.get(),
+        proof.cleanup_lease.fencing_token.get() + 1
+    );
+}
+
 fn assert_concurrent_lease_contention<S>(store: Arc<S>)
 where
     S: ScopeLeaseStore + 'static,
