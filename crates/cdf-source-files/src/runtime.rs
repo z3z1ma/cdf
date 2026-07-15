@@ -195,16 +195,18 @@ pub fn discover_local_binary_schema_bounded(
     let logical_source_identity = source.identity().clone();
     let options = driver.canonical_options(request.format_options.clone())?;
     let prepared_payload_key = prepared_file_payload_key(
-        request.resource_id,
-        location,
-        source_size,
-        upstream_identity.generation.as_deref(),
-        None,
-        None,
-        upstream_identity.checksum.as_deref(),
-        driver.as_ref(),
-        &options,
-        request.transform_name,
+        PreparedFilePayloadKeyInput {
+            resource_id: request.resource_id,
+            location,
+            size_bytes: source_size,
+            source_generation: upstream_identity.generation.as_deref(),
+            etag: None,
+            object_version: None,
+            sha256: upstream_identity.checksum.as_deref(),
+            driver: driver.as_ref(),
+            canonical_format_options: &options,
+            transform_name: request.transform_name,
+        },
         dependencies,
     )?;
     let discovery_memory = dependencies.execution().memory();
@@ -388,19 +390,21 @@ pub fn discover_transport_binary_schema_bounded(
     let memory = execution.memory();
     let options = driver.canonical_options(request.format_options.clone())?;
     let source_generation = (metadata.generation_strength() == GenerationStrength::Weak)
-        .then(|| metadata.modified.as_deref())
+        .then_some(metadata.modified.as_deref())
         .flatten();
     let prepared_payload_key = prepared_file_payload_key(
-        request.resource_id,
-        &metadata.location,
-        size_bytes,
-        source_generation,
-        metadata.etag.as_deref(),
-        metadata.version.as_deref(),
-        metadata.sha256(),
-        driver.as_ref(),
-        &options,
-        request.transform_name,
+        PreparedFilePayloadKeyInput {
+            resource_id: request.resource_id,
+            location: &metadata.location,
+            size_bytes,
+            source_generation,
+            etag: metadata.etag.as_deref(),
+            object_version: metadata.version.as_deref(),
+            sha256: metadata.sha256(),
+            driver: driver.as_ref(),
+            canonical_format_options: &options,
+            transform_name: request.transform_name,
+        },
         dependencies,
     )?;
     let confirmation = FormatConfirmationContext {
@@ -1374,10 +1378,8 @@ impl ByteSource for ReplayThenContinueByteSource {
                 state,
                 |(mut replay, continuation, replay_done, cancellation)| async move {
                     cancellation.check()?;
-                    if !replay_done {
-                        if let Some(chunk) = replay.try_next().await? {
-                            return Ok(Some((chunk, (replay, continuation, false, cancellation))));
-                        }
+                    if !replay_done && let Some(chunk) = replay.try_next().await? {
+                        return Ok(Some((chunk, (replay, continuation, false, cancellation))));
                     }
                     let next = continuation.lock().await.try_next().await?;
                     Ok(next.map(|chunk| (chunk, (replay, continuation, true, cancellation))))
@@ -1412,23 +1414,29 @@ struct PreparedFilePartition {
     payload_retention: Option<PayloadRetention>,
 }
 
-fn prepared_file_payload_key(
-    resource_id: &ResourceId,
-    location: &str,
+struct PreparedFilePayloadKeyInput<'a> {
+    resource_id: &'a ResourceId,
+    location: &'a str,
     size_bytes: u64,
-    source_generation: Option<&str>,
-    etag: Option<&str>,
-    object_version: Option<&str>,
-    sha256: Option<&str>,
-    driver: &dyn FormatDriver,
-    canonical_format_options: &serde_json::Value,
-    transform_name: &str,
+    source_generation: Option<&'a str>,
+    etag: Option<&'a str>,
+    object_version: Option<&'a str>,
+    sha256: Option<&'a str>,
+    driver: &'a dyn FormatDriver,
+    canonical_format_options: &'a serde_json::Value,
+    transform_name: &'a str,
+}
+
+fn prepared_file_payload_key(
+    input: PreparedFilePayloadKeyInput<'_>,
     dependencies: &FileRuntimeDependencies,
 ) -> Result<PreparedSourcePayloadKey> {
-    let transform = if transform_name == "none" {
+    let transform = if input.transform_name == "none" {
         serde_json::json!({"id": "none", "version": "none"})
     } else {
-        let transform = dependencies.transforms().resolve_name(transform_name)?;
+        let transform = dependencies
+            .transforms()
+            .resolve_name(input.transform_name)?;
         serde_json::json!({
             "id": transform.descriptor().transform_id.as_str(),
             "version": transform.descriptor().semantic_version,
@@ -1436,22 +1444,22 @@ fn prepared_file_payload_key(
     };
     let payload_hash = cdf_runtime::artifact_hash(&serde_json::json!({
         "version": 1,
-        "resource_id": resource_id.as_str(),
-        "location": location,
-        "size_bytes": size_bytes,
-        "source_generation": source_generation,
-        "etag": etag,
-        "object_version": object_version,
-        "sha256": sha256,
+        "resource_id": input.resource_id.as_str(),
+        "location": input.location,
+        "size_bytes": input.size_bytes,
+        "source_generation": input.source_generation,
+        "etag": input.etag,
+        "object_version": input.object_version,
+        "sha256": input.sha256,
         "format": {
-            "id": driver.descriptor().format_id.as_str(),
-            "version": driver.descriptor().semantic_version,
-            "options": canonical_format_options,
+            "id": input.driver.descriptor().format_id.as_str(),
+            "version": input.driver.descriptor().semantic_version,
+            "options": input.canonical_format_options,
         },
         "transform": transform,
     }))?;
     PreparedSourcePayloadKey::new(
-        resource_id.clone(),
+        input.resource_id.clone(),
         SourceDriverId::new("files")?,
         payload_hash,
     )
@@ -1537,7 +1545,7 @@ fn open_file_resource_with_dependencies(
         schema,
         capabilities: _,
         plan,
-        type_policy_allowances,
+        type_policy_allowances: _,
         effective_schema_runtime,
         compiled_format,
         dependencies,
@@ -1548,7 +1556,6 @@ fn open_file_resource_with_dependencies(
         &partition,
         schema,
         &dependencies,
-        type_policy_allowances,
         effective_schema_runtime.as_deref(),
         &compiled_format,
     ) {
@@ -1646,7 +1653,6 @@ fn prepare_file_partition(
     partition: &PartitionPlan,
     admission_schema: SchemaRef,
     dependencies: &FileRuntimeDependencies,
-    _allowances: cdf_kernel::TypePolicyAllowances,
     effective_schema_runtime: Option<&EffectiveSchemaRuntime>,
     compiled_format: &CompiledFormatBinding,
 ) -> Result<PreparedFilePartition> {
@@ -1709,16 +1715,18 @@ fn prepare_file_input(
     dependencies: &FileRuntimeDependencies,
 ) -> Result<PreparedInput> {
     let prepared_payload_key = prepared_file_payload_key(
-        resource_id,
-        &resolved.path_text,
-        resolved.size_bytes,
-        resolved.source_generation.as_deref(),
-        resolved.etag.as_deref(),
-        resolved.version.as_deref(),
-        resolved.sha256.as_deref(),
-        driver,
-        canonical_format_options,
-        resolved.compression.mode_name(),
+        PreparedFilePayloadKeyInput {
+            resource_id,
+            location: &resolved.path_text,
+            size_bytes: resolved.size_bytes,
+            source_generation: resolved.source_generation.as_deref(),
+            etag: resolved.etag.as_deref(),
+            object_version: resolved.version.as_deref(),
+            sha256: resolved.sha256.as_deref(),
+            driver,
+            canonical_format_options,
+            transform_name: resolved.compression.mode_name(),
+        },
         dependencies,
     )?;
     if let Some(payload) = dependencies
