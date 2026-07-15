@@ -2125,7 +2125,7 @@ async fn spool_byte_source_async(
     let mut transferred = 0_u64;
     let expected_checksum = source.identity().checksum.clone();
     let mut hasher = expected_checksum.as_ref().map(|_| Sha256::new());
-    while let Some(chunk) = input.try_next().await? {
+    while let Some(chunk) = cancellation.await_or_cancel(input.try_next()).await? {
         cancellation.check()?;
         let chunk_bytes = u64::try_from(chunk.payload().len())
             .map_err(|_| CdfError::data("file spool chunk exceeds u64"))?;

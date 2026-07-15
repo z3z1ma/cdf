@@ -13,7 +13,7 @@ use std::{
 use cdf_kernel::{BoxFuture, CdfError, Result};
 use cdf_memory::MemoryCoordinator;
 use futures_channel::mpsc;
-use futures_util::{SinkExt, Stream};
+use futures_util::{SinkExt, Stream, future::Either};
 use serde::{Deserialize, Serialize};
 
 pub type IoTask = BoxFuture<'static, Result<()>>;
@@ -130,6 +130,30 @@ impl RunCancellation {
 
     pub fn cancelled(&self) -> CancellationFuture {
         CancellationFuture(self.clone())
+    }
+
+    /// Awaits a fallible operation until this run is cancelled.
+    ///
+    /// Dropping the operation future is the cancellation boundary for providers
+    /// whose own pending I/O does not cooperatively observe [`RunCancellation`].
+    pub async fn await_or_cancel<T, F>(&self, operation: F) -> Result<T>
+    where
+        F: Future<Output = Result<T>>,
+    {
+        self.check()?;
+        let cancelled = self.cancelled();
+        futures_util::pin_mut!(operation, cancelled);
+        match futures_util::future::select(operation, cancelled).await {
+            Either::Left((result, _)) => {
+                self.check()?;
+                result
+            }
+            Either::Right(((), _)) => self.check().and_then(|()| {
+                Err(CdfError::internal(
+                    "run cancellation notification completed without cancellation",
+                ))
+            }),
+        }
     }
 }
 

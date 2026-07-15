@@ -24,6 +24,8 @@ pub(crate) struct GrowingSpoolSession {
     pub(crate) source: Arc<dyn ByteSource>,
     pub(crate) retention: PayloadRetention,
     pub(crate) completion: BoxFuture<'static, Result<()>>,
+    #[cfg(test)]
+    spool_path: std::path::PathBuf,
 }
 
 struct GrowingSpoolStorage {
@@ -148,6 +150,8 @@ fn start_growing_spool_with_tail_bytes(
     });
     let owner: Arc<dyn std::any::Any + Send + Sync> = storage.clone();
     let retention = PayloadRetention::new(owner, size_bytes)?;
+    #[cfg(test)]
+    let spool_path = storage.path().to_path_buf();
     let completion = Box::pin(async move {
         let result = download_into_growing_spool(
             upstream,
@@ -167,6 +171,8 @@ fn start_growing_spool_with_tail_bytes(
         source,
         retention,
         completion,
+        #[cfg(test)]
+        spool_path,
     }))
 }
 
@@ -196,7 +202,7 @@ async fn download_into_growing_spool(
     let mut transferred = 0_u64;
     let expected_checksum = upstream.identity().checksum.as_deref();
     let mut hasher = expected_checksum.map(|_| Sha256::new());
-    while let Some(chunk) = input.try_next().await? {
+    while let Some(chunk) = cancellation.await_or_cancel(input.try_next()).await? {
         cancellation.check()?;
         let length = u64::try_from(chunk.payload().len())
             .map_err(|_| CdfError::data("growing spool chunk exceeds u64"))?;
@@ -709,6 +715,105 @@ mod tests {
 
         assert_eq!(error.kind, cdf_kernel::ErrorKind::Contract);
         assert!(error.message.contains("strong"));
+        assert_eq!(memory.snapshot().current_bytes, 0);
+        assert_eq!(spill.snapshot().current_bytes, 0);
+    }
+
+    #[test]
+    fn growing_spool_cancellation_releases_blocked_io_memory_disk_and_file() {
+        let memory: Arc<dyn MemoryCoordinator> =
+            Arc::new(DeterministicMemoryCoordinator::new(1024 * 1024, BTreeMap::new()).unwrap());
+        let spill: Arc<dyn SpillBudgetCoordinator> =
+            Arc::new(FixedSpillBudget::new(1024 * 1024).unwrap());
+        let payload = Arc::new((0_u8..96).collect::<Vec<_>>());
+        let continuation = Arc::new(tokio::sync::Semaphore::new(0));
+        let source: Arc<dyn ByteSource> = Arc::new(GatedStrongSource {
+            identity: ContentIdentity {
+                stable_id: "growing-spool-cancel-test".to_owned(),
+                size_bytes: Some(payload.len() as u64),
+                generation: Some("etag:growing-spool-cancel-test".to_owned()),
+                checksum: None,
+                strength: GenerationStrength::Strong,
+            },
+            capabilities: ByteSourceCapabilities {
+                known_length: true,
+                reopenable: true,
+                seekable: true,
+                exact_ranges: true,
+                useful_range_concurrency: 4,
+                minimum_chunk_bytes: 1,
+                maximum_chunk_bytes: 64,
+            },
+            payload: Arc::clone(&payload),
+            memory: Arc::clone(&memory),
+            continuation,
+            range_reads: Arc::new(AtomicUsize::new(0)),
+        });
+        let cancellation = RunCancellation::default();
+        let spool_path = crate::test_execution_services()
+            .run_io({
+                let memory = Arc::clone(&memory);
+                let spill = Arc::clone(&spill);
+                let cancellation = cancellation.clone();
+                async move {
+                    let session = start_growing_spool_with_tail_bytes(
+                        source,
+                        payload.len() as u64,
+                        1024 * 1024,
+                        Arc::clone(&spill),
+                        memory,
+                        16,
+                        cancellation.clone(),
+                    )?
+                    .ok_or_else(|| {
+                        CdfError::internal("test growing spool unexpectedly declined admission")
+                    })?;
+                    let spool_path = session.spool_path.clone();
+                    assert!(spool_path.exists());
+                    assert_eq!(spill.snapshot().current_bytes, payload.len() as u64);
+
+                    let completion = tokio::spawn(session.completion);
+                    let prefix = session
+                        .source
+                        .read_exact_range(ByteExtent::new(0, 8)?, cancellation.clone())
+                        .await?;
+                    assert_eq!(prefix.payload(), &payload[0..8]);
+                    drop(prefix);
+
+                    let waiting_source = Arc::clone(&session.source);
+                    let waiting_cancellation = cancellation.clone();
+                    let waiting_reader = tokio::spawn(async move {
+                        waiting_source
+                            .read_exact_range(ByteExtent::new(40, 8)?, waiting_cancellation)
+                            .await
+                    });
+                    tokio::task::yield_now().await;
+                    assert!(!completion.is_finished());
+                    assert!(!waiting_reader.is_finished());
+
+                    cancellation.cancel();
+                    let completion_error = completion
+                        .await
+                        .map_err(|error| CdfError::internal(format!("join test spool: {error}")))?
+                        .expect_err("cancelled spool producer must fail");
+                    assert!(completion_error.message.contains("cancelled"));
+                    let reader_error = waiting_reader
+                        .await
+                        .map_err(|error| {
+                            CdfError::internal(format!("join waiting spool reader: {error}"))
+                        })?
+                        .expect_err("cancelled blocked reader must fail");
+                    assert!(reader_error.message.contains("cancelled"));
+                    assert_eq!(spill.snapshot().current_bytes, payload.len() as u64);
+
+                    drop(session.source);
+                    drop(session.retention);
+                    Ok::<_, CdfError>(spool_path)
+                }
+            })
+            .unwrap();
+
+        assert!(!spool_path.exists());
         assert_eq!(memory.snapshot().current_bytes, 0);
         assert_eq!(spill.snapshot().current_bytes, 0);
     }
