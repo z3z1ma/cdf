@@ -1,7 +1,7 @@
 Status: done
 Created: 2026-07-11
 Updated: 2026-07-13
-Parent: .10x/tickets/done/2026-07-10-p3-ws-d-destination-bulk-paths.md
+Parent: .10x/tickets/2026-07-10-p3-ws-d-destination-bulk-paths.md
 Depends-On: .10x/tickets/done/2026-07-11-p3-d1-bulk-path-contract.md, .10x/tickets/done/2026-07-07-duckdb-arrow-bulk-load-triage.md, .10x/tickets/done/2026-07-11-p3-a4-injected-execution-host.md
 
 # P3 D2: Arrow-native DuckDB bulk writer

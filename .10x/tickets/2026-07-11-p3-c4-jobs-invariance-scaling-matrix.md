@@ -1,8 +1,8 @@
-Status: active
+Status: blocked
 Created: 2026-07-11
-Updated: 2026-07-14
+Updated: 2026-07-15
 Parent: .10x/tickets/2026-07-10-p3-ws-c-deterministic-parallelism.md
-Depends-On: .10x/tickets/done/2026-07-11-p3-c3-engine-ffi-parallel-integration.md
+Depends-On: .10x/tickets/done/2026-07-11-p3-c3-engine-ffi-parallel-integration.md, .10x/tickets/2026-07-14-p3-d8-parquet-staged-parallel-ingress.md
 
 # P3 C4: jobs-invariance and scaling matrix
 
@@ -27,7 +27,7 @@ No distributed scheduler.
 
 ## Blockers
 
-None. C1–C3 are complete.
+D8 must remove the measured serialized Parquet ingress deficit before C4 can honestly claim scaling to the full-path roofline. Exact effective-jobs assertions, actual PostgreSQL destination coverage, and the remaining scheduler telemetry must land before closure.
 
 ## Assumptions
 
@@ -49,6 +49,7 @@ None. C1–C3 are complete.
 - 2026-07-14 lost-wake diagnosis and repair: a repeated jobs=4 FineWeb run parked after exactly 230 of 460 durable segments with every CPU/encode worker idle and no further progress. Inspection found the generic async memory reservation path attempted admission, then registered its waker, then returned `Pending`; a capacity release between the first attempt and registration woke nobody. `ReserveFuture` now stores exactly one registered waker, retries admission after registration, unregisters on completion/error/cancellation, and every coordinator implements explicit removal. Deterministic tests reproduce the release-before-registration interleaving and pending-future cancellation; all 14 `cdf-memory` tests, all 160 non-ignored `cdf-engine` tests, and strict clippy for both crates pass. Post-fix live repetitions remain required before closure.
 - 2026-07-15 shared-waker falsification: the first post-fix scale run parked after 23 segments. The release-before-registration repair was necessary but its removal operation incorrectly assumed one waker represented one reservation; sibling futures inside one task can share a waker, so one completed future removed the wake registration required by another. It also retained a local registration marker after a wake had drained the coordinator set. The neutral `cdf-memory` authority now owns a ref-counted `MemoryWaiterSet` used by both deterministic and DataFusion coordinators; each poll clears any consumed prior registration before retrying, shared registrations decrement independently, and wake drains one task waker while consuming all of its registrations. New deterministic tests cover shared sibling cancellation and capacity stolen between wake/re-poll. All 16 memory tests, focused DataFusion-memory tests, and strict affected-crate clippy pass. The interrupted 135.08-second live run, process sample, and 23-segment frontier remain falsification evidence; post-fix live repetitions are still required.
 - 2026-07-15 repetition and clean-build stress: after the waiter repairs, five full finalized-Parquet repetitions and ten full package-to-DuckDB repetitions completed the 8.59 GB/460-segment workload at jobs=4. A generated four-partition fixture with 517 Parquet row groups per file, 4.2 million rows, about 8 GiB of repeated decoded strings, and 296 canonical segments then completed 35/35 jobs=4 package-to-DuckDB runs under a 15-second timeout; the final five used a clean release rebuild with all diagnostic-only code removed. Each completed in 5–7 seconds. One same-build 230-segment park observed before this run remains explicitly recorded as residual risk rather than rewritten as fixed. The exact results, OS counters, measured Parquet writer ratio, and evidence boundary are in `.10x/evidence/2026-07-14-p3-c4-fineweb-local-scaling.md`.
+- 2026-07-15 fresh closure review failed on three significant gaps: the unexplained production park plus a concrete re-entrant-waker lock hazard; jobs matrices that did not require effective parallelism and omitted an actual PostgreSQL destination; and full-path scaling/telemetry that stopped below the D8-owned Parquet roofline. Commit `b4e7ec6d` removes the lock hazard by draining wakers under the coordinator mutex and invoking them only after unlock, with a permanent re-entrant snapshot-on-wake regression. C4 remains blocked rather than laundering repeated successes into proof; D8 is now the critical-path dependency, and the matrix/telemetry gaps remain owned here.
 
 ## Evidence
 
@@ -60,7 +61,7 @@ None. C1–C3 are complete.
 ## Review
 
 - First fresh adversarial review verdict: **fail** with three significant findings (incomplete jobs/source/destination matrix, degenerate failure variation, and no actual writer roofline/host counters). All three were repaired and journaled above.
-- Fresh post-repair adversarial verdict: pending.
+- Fresh post-repair adversarial verdict: **fail**, with the three significant findings journaled above. No critical finding or destination-identity leak was found.
 
 ## Retrospective
 

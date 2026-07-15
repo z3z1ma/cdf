@@ -1,8 +1,8 @@
-Status: open
+Status: active
 Created: 2026-07-14
-Updated: 2026-07-14
-Parent: .10x/tickets/done/2026-07-10-p3-ws-d-destination-bulk-paths.md
-Depends-On: .10x/tickets/done/2026-07-11-p3-d4-parquet-streaming-writer.md, .10x/tickets/done/2026-07-14-p3-d7-persistent-staged-ingress-stream.md, .10x/tickets/2026-07-11-p3-c4-jobs-invariance-scaling-matrix.md
+Updated: 2026-07-15
+Parent: .10x/tickets/2026-07-10-p3-ws-d-destination-bulk-paths.md
+Depends-On: .10x/tickets/done/2026-07-11-p3-d4-parquet-streaming-writer.md, .10x/tickets/done/2026-07-14-p3-d7-persistent-staged-ingress-stream.md, .10x/tickets/done/2026-07-11-p3-c3-engine-ffi-parallel-integration.md
 
 # P3 D8: Parquet staged parallel ingress
 
@@ -32,7 +32,7 @@ Staged-ingress conformance, jobs/golden hashes, local and multipart abort/crash 
 
 ## Blockers
 
-None after C4 closure. D4 supplies the bounded streaming writer and D7 supplies the generic persistent staged-ingress protocol.
+None. D4 supplies the bounded streaming writer, D7 supplies the generic persistent staged-ingress protocol, and C3 supplies the scheduler substrate. C4 consumes D8's full-path result; D8 does not depend on C4 closure.
 
 ## References
 
@@ -50,6 +50,7 @@ None after C4 closure. D4 supplies the bounded streaming writer and D7 supplies 
 ## Journal
 
 - 2026-07-14 shaping: C4's 8.59 GB four-partition FineWeb run reached jobs=4 but spent 33.069 of 40.67 wall seconds in finalized Parquet destination write/receipt. Source/package execution was 7.329 seconds. Source inspection confirms both first-party Parquet runtimes still advertise `FinalizedPackageOnly`, while the governing bulk-path spec requires Parquet to stream row groups/data files as batches arrive. D4 proved the individual bounded writer can exceed the 60% roofline; D8 owns composing it through the generic staged protocol and deleting the superseded finalized path. No implementation is included in this shaping change.
+- 2026-07-15 activation: Fresh C4 review correctly identified that C4 cannot claim its full-path roofline while D8's measured serialized ingress deficit remains. The graph is inverted: D8 depends on the completed C3 scheduler substrate, and C4 now waits on D8's result. The WS-D parent is reopened because this is a destination composition defect, not a program-only reporting tail.
 
 ## Evidence
 

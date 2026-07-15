@@ -1,6 +1,6 @@
-Status: done
+Status: active
 Created: 2026-07-10
-Updated: 2026-07-14
+Updated: 2026-07-15
 Parent: .10x/tickets/2026-07-10-p3-terabyte-scale-program.md
 Depends-On: .10x/tickets/done/2026-07-10-p3-ws-l-performance-lab.md, .10x/tickets/2026-07-11-p0-destination-extension-boundary.md, .10x/tickets/done/2026-07-11-p3-a1-staged-ingress-final-binding.md, .10x/tickets/done/2026-07-07-duckdb-arrow-bulk-load-triage.md, .10x/tickets/done/2026-07-07-native-parquet-streaming-write-triage.md
 
@@ -20,6 +20,7 @@ Split by destination; no shared generic branch may name a concrete destination.
 - `.10x/tickets/done/2026-07-11-p3-d4-parquet-streaming-writer.md`
 - `.10x/tickets/done/2026-07-11-p3-d5-bulk-path-matrix.md`
 - `.10x/tickets/done/2026-07-14-p3-d7-persistent-staged-ingress-stream.md`
+- `.10x/tickets/2026-07-14-p3-d8-parquet-staged-parallel-ingress.md`
 
 ## Acceptance criteria
 
@@ -29,17 +30,18 @@ Split by destination; no shared generic branch may name a concrete destination.
 
 ## Blockers
 
-None.
+D8 is active. The C4 full-path profile falsified the earlier assumption that D4's isolated writer roofline implied the finalized-package composition was complete.
 
 ## Evidence
 
 - D1 records the neutral capability and bounded writer contract; D2-D4 record the Arrow-native DuckDB, binary Postgres COPY, and streaming Parquet paths; D5 owns the cross-destination guarantee/envelope matrix; D6 proves compact provenance equivalence.
 - D7 removes the superseded per-segment staged API, retains one bounded native writer through a generic acknowledgement stream, preserves transaction/receipt/checkpoint semantics, reports destination ingress separately, reaches 9.51M TLC rows/s, and measures the exact 2.205 GB FineWeb package path at 2.017 seconds.
 - D7's public Arrow-vtab alternative measured 2.845 seconds and uses upstream process-global retention. Its deletion is the measured no-action outcome required by P3's boundedness and no-legacy guardrails.
+- 2026-07-15: Reopened after C4 measured 33.069 seconds in Parquet finalized-package ingress despite the isolated writer running at 0.786 of its raw-write roofline. D8 owns enrollment in generic staged ingress and deletion of the superseded finalized path.
 
 ## Review
 
-2026-07-14 closure review reconciled every child and the parent criteria. All concrete destination behavior remains in its adapter behind one ingress capability; generic orchestration names no destination; append/replace/merge, replay, rollback, receipt, and provenance conformance are terminal in D2-D6; and the reopened wide-string regression is terminal in D7. Verdict: **pass**. Program-level end-to-end envelope reconciliation remains owned by Z1 rather than keeping this implementation workstream artificially open.
+2026-07-14 closure review passed against the then-known evidence. C4 subsequently falsified the Parquet full-path performance premise, so that verdict no longer supports terminal status. Fresh review is required after D8.
 
 ## Retrospective
 

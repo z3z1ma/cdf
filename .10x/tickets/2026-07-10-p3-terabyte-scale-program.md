@@ -43,7 +43,7 @@ This parent is an aggregate plan. Workstream records own sequencing and integrat
 - `.10x/tickets/2026-07-10-p3-ws-a-streaming-runtime-pipeline.md`
 - `.10x/tickets/2026-07-10-p3-ws-b-format-decode-engines.md`
 - `.10x/tickets/2026-07-10-p3-ws-c-deterministic-parallelism.md`
-- `.10x/tickets/done/2026-07-10-p3-ws-d-destination-bulk-paths.md`
+- `.10x/tickets/2026-07-10-p3-ws-d-destination-bulk-paths.md`
 - `.10x/tickets/2026-07-10-p3-ws-e-hashing-package-io.md`
 - `.10x/tickets/2026-07-10-p3-ws-f-constant-memory-guarantee.md`
 - `.10x/tickets/2026-07-10-p3-ws-g-remote-io-overlap.md`
