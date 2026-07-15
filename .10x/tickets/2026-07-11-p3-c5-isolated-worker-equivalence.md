@@ -2,7 +2,7 @@ Status: open
 Created: 2026-07-11
 Updated: 2026-07-11
 Parent: .10x/tickets/2026-07-10-p3-ws-c-deterministic-parallelism.md
-Depends-On: .10x/tickets/2026-07-11-p0-wx1-portable-partition-task-protocol.md, .10x/tickets/2026-07-11-p3-c2-parallel-frontier-execution.md, .10x/tickets/2026-07-11-p3-c4-jobs-invariance-scaling-matrix.md, .10x/tickets/2026-07-11-p3-a8-drain-epoch-executor.md
+Depends-On: .10x/tickets/2026-07-11-p0-wx1-portable-partition-task-protocol.md, .10x/tickets/done/2026-07-11-p3-c2-parallel-frontier-execution.md, .10x/tickets/2026-07-11-p3-c4-jobs-invariance-scaling-matrix.md, .10x/tickets/2026-07-11-p3-a8-drain-epoch-executor.md
 
 # P3 C5: isolated worker serialization equivalence law
 

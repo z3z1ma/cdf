@@ -25,7 +25,7 @@ Local authority and evidence inspected:
 - `.10x/evidence/2026-07-11-p3-a5e-parallel-segment-frontier.md`
 - `.10x/evidence/2026-07-11-p3-c2-canonical-open-frontier.md`
 - `.10x/reviews/2026-07-11-p3-c2-canonical-open-frontier-review.md`
-- `.10x/tickets/2026-07-11-p3-c2-parallel-frontier-execution.md`
+- `.10x/tickets/done/2026-07-11-p3-c2-parallel-frontier-execution.md`
 
 Local source inspected included `cdf-runtime` scheduler/source/host/graph contracts, `cdf-kernel` batch/resource/stream types, `cdf-engine` partition execution/segmentation/standalone host, first-party source capability declarations, generation checks, accounted format batches, and the existing HTTP retry implementation.
 

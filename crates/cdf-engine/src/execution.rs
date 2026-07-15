@@ -38,7 +38,7 @@ use cdf_package::PackageBuilder;
 use cdf_package_contract::{
     PackageStatus, QuarantineObservedValue, QuarantineRecord, SegmentEntry,
 };
-use futures_util::{StreamExt, stream::FuturesOrdered};
+use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tracing::{Instrument, Span, info_span};
@@ -50,7 +50,8 @@ use crate::{
     EnginePackageDraft, EnginePlan, EnginePreviewLimits, EnginePreviewOutput, EngineRunOutput,
     EngineRunOutputWithSegmentPositions, EngineSegmentPosition, ExecutionProfile,
     LineageInputObservation, LineageSummary, PhysicalObservationEvidence,
-    SchemaQuarantineObservationEvidence, StreamAdmissionObservationEvidence,
+    SchemaQuarantineObservationEvidence, StandaloneExecutionHost,
+    StreamAdmissionObservationEvidence,
     output_schema::canonicalize_effective_output_schema,
     planning::{scan_expression_schema, validate_program},
     predicates::{
@@ -70,6 +71,11 @@ pub type DurableSegmentHook<'a> =
     dyn FnMut(&SegmentEntry, DurableSegmentPayload) -> Result<()> + 'a;
 pub type StreamingFinalizeHook<'a> = dyn FnMut() -> Result<()> + 'a;
 const SOURCE_ROW_FIELD: &str = "_cdf_internal_source_row";
+
+fn standalone_execution_options() -> Result<EngineExecutionOptions> {
+    let (_, services) = StandaloneExecutionHost::default_services(DEFAULT_PROCESS_BUDGET_BYTES)?;
+    Ok(EngineExecutionOptions::default().with_execution_services(services))
+}
 
 /// An owned, accounted handoff from durable package publication to staged ingress.
 ///
@@ -504,6 +510,7 @@ where
                         let ExecutedBatch {
                             batch: output,
                             source_rows,
+                            limit_truncated: _,
                         } = apply_pre_contract_expressions(
                             executed.batch,
                             if track_source_rows {
@@ -1500,6 +1507,7 @@ struct ResidualBatchContext<'a> {
 struct ExecutedBatch {
     batch: RecordBatch,
     source_rows: Option<Vec<usize>>,
+    limit_truncated: bool,
 }
 
 struct PendingDedupBatch {
@@ -2119,7 +2127,7 @@ where
         None,
         None,
         None,
-        EngineExecutionOptions::default(),
+        standalone_execution_options()?,
     )
     .await?
     .output)
@@ -2143,7 +2151,7 @@ where
         None,
         None,
         None,
-        EngineExecutionOptions::default(),
+        standalone_execution_options()?,
     )
     .instrument(package_execution_span(&trace_context))
     .await?
@@ -2166,7 +2174,7 @@ where
         None,
         None,
         None,
-        EngineExecutionOptions::default(),
+        standalone_execution_options()?,
     )
     .await
 }
@@ -2219,17 +2227,22 @@ where
     .await
 }
 
+#[derive(Clone)]
 struct PartitionOpenEvidence {
     duration_ns: u64,
     retry_pre_attestation: Option<PartitionAttestation>,
-    first_batch: Option<Batch>,
+}
+
+#[derive(Clone)]
+struct PartitionOpenMetadata {
+    ordinal: usize,
+    partition: cdf_kernel::PartitionPlan,
+    evidence: PartitionOpenEvidence,
 }
 
 type OpenedPartition = (
-    usize,
-    cdf_kernel::PartitionPlan,
+    PartitionOpenMetadata,
     Option<cdf_kernel::OpenedPartitionStream>,
-    PartitionOpenEvidence,
 );
 
 #[derive(Clone)]
@@ -2254,14 +2267,15 @@ where
     if terminal_quarantine {
         return Box::pin(async move {
             Ok((
-                ordinal,
-                partition,
-                None,
-                PartitionOpenEvidence {
-                    duration_ns: 0,
-                    retry_pre_attestation: None,
-                    first_batch: None,
+                PartitionOpenMetadata {
+                    ordinal,
+                    partition,
+                    evidence: PartitionOpenEvidence {
+                        duration_ns: 0,
+                        retry_pre_attestation: None,
+                    },
                 },
+                None,
             ))
         });
     }
@@ -2400,15 +2414,19 @@ where
                     } else {
                         None
                     };
+                    if let Some(first_batch) = first_batch {
+                        stream.prepend_batch(first_batch)?;
+                    }
                     return Ok((
-                        ordinal,
-                        partition,
-                        Some(stream),
-                        PartitionOpenEvidence {
-                            duration_ns: elapsed_ns(Some(started), "resource open")?,
-                            retry_pre_attestation,
-                            first_batch,
+                        PartitionOpenMetadata {
+                            ordinal,
+                            partition,
+                            evidence: PartitionOpenEvidence {
+                                duration_ns: elapsed_ns(Some(started), "resource open")?,
+                                retry_pre_attestation,
+                            },
                         },
+                        Some(stream),
                     ));
                 }
                 Err(error) => {
@@ -2514,30 +2532,6 @@ async fn next_source_batch(
             }
         })
         .await
-}
-
-async fn next_source_batch_with_terminal_join(
-    stream: &mut cdf_kernel::OpenedPartitionStream,
-    cancellation: &cdf_runtime::RunCancellation,
-) -> Result<Option<Batch>> {
-    match next_source_batch(stream, cancellation).await {
-        Ok(batch) => Ok(batch),
-        Err(error) => {
-            let cleanup = if cancellation.is_cancelled() {
-                stream.terminate_and_join().await
-            } else {
-                stream.join_failed_attempt().await
-            };
-            if let Err(cleanup) = cleanup {
-                return Err(with_cleanup_failure(
-                    error,
-                    "source stream termination",
-                    cleanup,
-                ));
-            }
-            Err(error)
-        }
-    }
 }
 
 fn decide_partition_retry(
@@ -2656,38 +2650,66 @@ fn scheduled_partition(
     Ok(Some(scheduled.clone()))
 }
 
-fn enqueue_next_partition<'a, R, I>(
+fn source_partition_opener<'a, R>(
     resource: &'a R,
-    partitions: &mut I,
-    frontier: &mut FuturesOrdered<cdf_kernel::BoxFuture<'a, Result<OpenedPartition>>>,
-    effective_schema_evidence: Option<&EffectiveSchemaPlanEvidence>,
-    schedule: Option<&cdf_runtime::CanonicalPartitionSchedule>,
-    open_runtime: &PartitionOpenRuntime,
-) -> Result<bool>
+    partitions: Vec<cdf_kernel::PartitionPlan>,
+    effective_schema_evidence: Option<&'a EffectiveSchemaPlanEvidence>,
+    schedule: Option<&'a cdf_runtime::CanonicalPartitionSchedule>,
+    open_runtime: PartitionOpenRuntime,
+) -> cdf_runtime::SourcePartitionOpener<'a, PartitionOpenMetadata>
 where
     R: ResourceStream + ?Sized,
-    I: Iterator<Item = (usize, cdf_kernel::PartitionPlan)>,
 {
-    let Some((ordinal, partition)) = partitions.next() else {
-        return Ok(false);
-    };
-    let terminal = effective_schema_evidence
-        .map(|evidence| partition_schema_disposition(&partition, evidence))
-        .transpose()?
-        .is_some_and(|disposition| {
-            matches!(disposition, PartitionSchemaDisposition::Quarantined(_))
-        });
-    let scheduled = scheduled_partition(schedule, ordinal, &partition)?;
-    frontier.push_back(open_partition(
-        resource,
-        ordinal,
-        partition,
-        terminal,
-        schedule.map_or_else(String::new, |schedule| schedule.plan_id.clone()),
-        scheduled,
-        open_runtime.clone(),
-    ));
-    Ok(true)
+    Box::new(move |ordinal, cancellation| {
+        let partition = partitions.get(ordinal).cloned().ok_or_else(|| {
+            CdfError::internal("source frontier requested an absent partition ordinal")
+        })?;
+        let terminal = effective_schema_evidence
+            .map(|evidence| partition_schema_disposition(&partition, evidence))
+            .transpose()?
+            .is_some_and(|disposition| {
+                matches!(disposition, PartitionSchemaDisposition::Quarantined(_))
+            });
+        let scheduled = scheduled_partition(schedule, ordinal, &partition)?;
+        let mut partition_runtime = open_runtime.clone();
+        partition_runtime.cancellation = cancellation;
+        Ok(open_partition(
+            resource,
+            ordinal,
+            partition,
+            terminal,
+            schedule.map_or_else(String::new, |schedule| schedule.plan_id.clone()),
+            scheduled,
+            partition_runtime,
+        ))
+    })
+}
+
+fn source_frontier_batch_bounds(plan: &EnginePlan, partition_count: usize) -> Result<Vec<u64>> {
+    if partition_count == 0 {
+        return Ok(Vec::new());
+    }
+    let schedule = plan.partition_schedule.as_ref().ok_or_else(|| {
+        CdfError::contract("package execution requires a compiled partition schedule")
+    })?;
+    if schedule.partitions.len() != partition_count {
+        return Err(CdfError::contract(
+            "source frontier schedule does not cover every executable partition",
+        ));
+    }
+    schedule
+        .partitions
+        .iter()
+        .map(|partition| {
+            if partition.maximum_working_set_bytes == 0 {
+                Err(CdfError::contract(
+                    "source frontier partition requires a nonzero working-set bound",
+                ))
+            } else {
+                Ok(partition.maximum_working_set_bytes)
+            }
+        })
+        .collect()
 }
 
 fn partition_open_jobs(plan: &EnginePlan, options: &EngineExecutionOptions) -> usize {
@@ -2821,6 +2843,7 @@ where
     let mut schema_admission_cache =
         BTreeMap::<cdf_kernel::SchemaHash, cdf_contract::SchemaCoercionPlan>::new();
     let mut processed_observations = Vec::new();
+    let mut checkpoint_eligible = true;
     let mut completion_positions = Vec::<(u32, PartitionPlan, SourcePosition)>::new();
     let mut terminal_quarantines = Vec::new();
     let mut quarantine_physical_observations =
@@ -2891,40 +2914,44 @@ where
         cancellation: run_cancellation.clone(),
         retry_journal: options.retry_journal.clone(),
     };
-    let mut partition_iter = plan.scan.partitions.clone().into_iter().enumerate();
-    let mut open_frontier: FuturesOrdered<cdf_kernel::BoxFuture<'_, Result<OpenedPartition>>> =
-        FuturesOrdered::new();
-    for _ in 0..partition_jobs {
-        if !enqueue_next_partition(
-            resource,
-            &mut partition_iter,
-            &mut open_frontier,
-            effective_schema_evidence,
-            plan.partition_schedule.as_ref(),
-            &partition_open_runtime,
-        )? {
-            break;
-        }
-    }
+    let frontier_partition_count = if partition_jobs == 0 {
+        0
+    } else {
+        plan.scan.partitions.len()
+    };
+    let source_opener = source_partition_opener(
+        resource,
+        plan.scan.partitions.clone(),
+        effective_schema_evidence,
+        plan.partition_schedule.as_ref(),
+        partition_open_runtime,
+    );
+    let source_batch_bounds = source_frontier_batch_bounds(plan, frontier_partition_count)?;
+    let source_batch_memory = plan
+        .compiled_source_execution
+        .as_ref()
+        .ok_or_else(|| {
+            CdfError::contract("package execution requires a compiled source execution plan")
+        })?
+        .batch_memory_contract();
+    let mut source_frontier = cdf_runtime::CanonicalSourceFrontier::new(
+        frontier_partition_count,
+        partition_jobs.max(1),
+        source_opener,
+        source_batch_bounds,
+        memory.clone(),
+        source_batch_memory,
+        run_cancellation.clone(),
+    )?;
 
     let segment_result: Result<()> = async {
-    while let Some(opened) = open_frontier.next().await {
-        if remaining_limit.is_none() {
-            enqueue_next_partition(
-                resource,
-                &mut partition_iter,
-                &mut open_frontier,
-                effective_schema_evidence,
-                plan.partition_schedule.as_ref(),
-                &partition_open_runtime,
-            )?;
-        }
-        let (partition_ordinal, partition, opened_stream, open_evidence) = opened?;
-        let partition_ordinal = u32::try_from(partition_ordinal)
+    while let Some(mut opened_partition) = source_frontier.next_partition().await? {
+        let open_metadata = opened_partition.metadata().clone();
+        let partition_ordinal_usize = open_metadata.ordinal;
+        let partition = open_metadata.partition;
+        let open_evidence = open_metadata.evidence;
+        let partition_ordinal = u32::try_from(partition_ordinal_usize)
             .map_err(|_| CdfError::data("partition ordinal exceeds u32"))?;
-        if remaining_limit == Some(0) {
-            break;
-        }
         let partition_scope = partition.scope.clone();
         let current_schema_disposition = effective_schema_evidence
             .map(|evidence| partition_schema_disposition(&partition, evidence))
@@ -2987,16 +3014,7 @@ where
                 quarantine,
                 physical_observation,
             )?;
-            if remaining_limit.is_some() {
-                enqueue_next_partition(
-                    resource,
-                    &mut partition_iter,
-                    &mut open_frontier,
-                    effective_schema_evidence,
-                    plan.partition_schedule.as_ref(),
-                    &partition_open_runtime,
-                )?;
-            }
+            opened_partition.finish_metadata_only()?;
             continue;
         }
         let partition_schema_evidence =
@@ -3013,9 +3031,11 @@ where
 
         let mut segment_assembler =
             crate::CanonicalSegmentAssembler::new(segmentation_policy.clone(), partition_ordinal)?;
-        let mut stream = opened_stream.ok_or_else(|| {
-            CdfError::internal("admitted partition reached execution without an open stream")
-        })?;
+        if !opened_partition.has_stream() {
+            return Err(CdfError::internal(
+                "admitted partition reached execution without an open stream",
+            ));
+        }
         let partition_result = async {
             phase_measurements.add(
                 RunPhase::Decode,
@@ -3029,37 +3049,18 @@ where
             let mut partition_observation_id = None::<String>;
             let mut admitted_batch_count = 0_u64;
             let mut partition_source_row_ordinal = 0_u64;
-            let mut first_batch = open_evidence.first_batch;
             loop {
+                if remaining_limit == Some(0) {
+                    fully_processed = false;
+                    break;
+                }
                 let decode_started = phase_measurements.start();
-                let next_batch = match first_batch.take() {
-                    Some(batch) => {
-                        if let Err(error) = run_cancellation.check() {
-                            return match stream.terminate_and_join().await {
-                                Ok(()) => Err(error),
-                                Err(cleanup) => Err(with_cleanup_failure(
-                                    error,
-                                    "cancelled prefetched source termination",
-                                    cleanup,
-                                )),
-                            };
-                        }
-                        Some(batch)
-                    }
-                    None => {
-                        next_source_batch_with_terminal_join(&mut stream, &run_cancellation).await?
-                    }
-                };
+                let next_batch = opened_partition.next_batch().await?;
                 let decode_duration_ns = elapsed_ns(decode_started, "resource decode")?;
                 let Some(batch) = next_batch else {
                     phase_measurements.add(RunPhase::Decode, decode_duration_ns, 0, 0);
                     break;
                 };
-                if remaining_limit == Some(0) {
-                    fully_processed = false;
-                    break;
-                }
-
                 let mut batch = batch;
                 validate_batch_partition_ownership(
                     &batch,
@@ -3152,11 +3153,7 @@ where
                         // validation or segment production after this verdict is fixed.
                         loop {
                             let decode_started = phase_measurements.start();
-                            let next_batch = next_source_batch_with_terminal_join(
-                                &mut stream,
-                                &run_cancellation,
-                            )
-                            .await?;
+                            let next_batch = opened_partition.next_batch().await?;
                             let decode_duration_ns =
                                 elapsed_ns(decode_started, "quarantined resource drain")?;
                             let Some(drained) = next_batch else {
@@ -3254,6 +3251,7 @@ where
                 let ExecutedBatch {
                     batch: output,
                     source_rows,
+                    limit_truncated,
                 } = apply_pre_contract_expressions(
                     executed.batch,
                     if track_source_rows {
@@ -3271,6 +3269,12 @@ where
                 if let Some(position) = &batch_source_position {
                     observed_positions.push(position.clone());
                 }
+                let batch_output_position = batch_source_position
+                    .as_ref()
+                    .filter(|position| {
+                        !limit_truncated || position.is_batch_slice_invariant()
+                    })
+                    .cloned();
                 if output.num_rows() == 0 {
                     phase_measurements.add(
                         RunPhase::ValidationNormalization,
@@ -3350,7 +3354,7 @@ where
                         PreparedOutputBatch {
                             output,
                             variant_values,
-                            output_position: batch_source_position.clone(),
+                            output_position: batch_output_position.clone(),
                             memory_lease,
                         },
                         &mut output_schema,
@@ -3373,12 +3377,12 @@ where
                             rule,
                             &output,
                         )?)?;
-                        payload.push(partition_ordinal, batch_source_position, &output)?;
+                        payload.push(partition_ordinal, batch_output_position, &output)?;
                     } else {
                         pending_dedup_batches.push(PendingDedupBatch {
                             partition_ordinal,
                             output,
-                            output_position: batch_source_position,
+                            output_position: batch_output_position,
                             _memory_lease: memory_lease,
                         });
                     }
@@ -3396,7 +3400,7 @@ where
                     PreparedOutputBatch {
                         output,
                         variant_values,
-                        output_position: batch_source_position,
+                        output_position: batch_output_position,
                         memory_lease,
                     },
                     &mut segment_assembler,
@@ -3440,24 +3444,10 @@ where
                 },
             )?;
             let completion = if fully_processed {
-                match run_cancellation
-                    .await_or_cancel(stream.completion())
-                    .await
-                {
-                    Ok(completion) => Some(completion),
-                    Err(error) => {
-                        return match stream.terminate_and_join().await {
-                            Ok(()) => Err(error),
-                            Err(cleanup) => Err(with_cleanup_failure(
-                                error,
-                                "partition completion termination",
-                                cleanup,
-                            )),
-                        };
-                    }
-                }
+                let (_, completion) = opened_partition.finish()?;
+                completion
             } else {
-                stream.terminate_and_join().await?;
+                opened_partition.terminate_partial().await?;
                 None
             };
             if let Some(source_io) = completion
@@ -3495,18 +3485,8 @@ where
             partition_observation_id,
             partition_observed_rows,
             completion_attestation,
-        ) = match partition_result {
-            Ok(result) => result,
-            Err(mut error) => {
-                if let Err(termination_error) = stream.terminate_and_join().await {
-                    error.message = format!(
-                        "{}; partition producer termination also failed: {}",
-                        error.message, termination_error.message
-                    );
-                }
-                return Err(error);
-            }
-        };
+        ) = partition_result?;
+        checkpoint_eligible &= fully_processed;
         let partial_retry_attestation = if open_evidence.retry_pre_attestation.is_some()
             && completion_attestation.is_none()
         {
@@ -3707,16 +3687,6 @@ where
                 }
             }
         }
-        if remaining_limit.is_some_and(|remaining| remaining > 0) {
-            enqueue_next_partition(
-                resource,
-                &mut partition_iter,
-                &mut open_frontier,
-                effective_schema_evidence,
-                plan.partition_schedule.as_ref(),
-                &partition_open_runtime,
-            )?;
-        }
     }
 
     if apply_package_dedup {
@@ -3775,15 +3745,11 @@ where
     .await;
     if let Err(mut error) = segment_result {
         run_cancellation.cancel();
-        while let Some(opened) = open_frontier.next().await {
-            if let Ok((_, _, Some(mut stream), _)) = opened
-                && let Err(cleanup_error) = stream.terminate_and_join().await
-            {
-                error.message = format!(
-                    "{}; speculative partition producer termination also failed: {}",
-                    error.message, cleanup_error.message
-                );
-            }
+        if let Err(cleanup_error) = source_frontier.terminate_and_join().await {
+            error.message = format!(
+                "{}; source frontier termination also failed: {}",
+                error.message, cleanup_error.message
+            );
         }
         return match segment_queue.abort_and_cleanup() {
             Ok(()) => Err(error),
@@ -3938,6 +3904,7 @@ where
         processed_observations,
         options.retry_journal.snapshot()?,
         plan.partition_schedule.as_ref(),
+        checkpoint_eligible,
     )?;
     if let Some(stream_finalize) = stream_finalize {
         stream_finalize()?;
@@ -4735,6 +4702,7 @@ fn execute_batch(
     Ok(ExecutedBatch {
         batch: filtered,
         source_rows: None,
+        limit_truncated: false,
     })
 }
 
@@ -4745,18 +4713,20 @@ fn apply_pre_contract_expressions(
     track_source_rows: bool,
 ) -> Result<ExecutedBatch> {
     let transformed = apply_bound_expression_transforms(batch, transforms)?;
-    let transformed = match remaining_limit {
+    let transformed_rows = transformed.num_rows();
+    let (transformed, limit_truncated) = match remaining_limit {
         Some(remaining) => {
             let take = (*remaining).min(transformed.num_rows() as u64) as usize;
             *remaining -= take as u64;
-            transformed.slice(0, take)
+            (transformed.slice(0, take), take < transformed_rows)
         }
-        None => transformed,
+        None => (transformed, false),
     };
     if !track_source_rows {
         return Ok(ExecutedBatch {
             batch: transformed,
             source_rows: None,
+            limit_truncated,
         });
     }
     let ordinal_index = transformed.schema().index_of(SOURCE_ROW_FIELD)?;
@@ -4777,6 +4747,7 @@ fn apply_pre_contract_expressions(
     Ok(ExecutedBatch {
         batch,
         source_rows: Some(source_rows),
+        limit_truncated,
     })
 }
 

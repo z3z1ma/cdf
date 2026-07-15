@@ -2304,11 +2304,12 @@ fn http_parquet_auto_pin_plan_preview_and_run_use_file_runtime() {
         .map(|batch| batch.unwrap().header.row_count)
         .sum::<u64>();
     assert_eq!(preview_rows, 2);
+    let (run_resource, plan) = bind_project_test_source(&file_resource, plan);
 
     let duckdb_path = temp.path().join(".cdf/dev.duckdb");
     let report = futures_executor::block_on(run_project(
         ProjectRunRequest {
-            resource: ProjectRunSource::file(&file_resource),
+            resource: ProjectRunSource::new(&run_resource),
             plan,
             package_root: temp.path().join(".cdf/packages"),
             state_store_path: temp.path().join(".cdf/state.db"),
@@ -2386,9 +2387,11 @@ fn http_parquet_auto_pin_plan_preview_and_run_use_file_runtime() {
         .unwrap();
     let pinned_plan =
         live_plan_for_stream(&pinned_file_resource, "pkg-http-parquet-pinned-runtime");
+    let (pinned_run_resource, pinned_plan) =
+        bind_project_test_source(&pinned_file_resource, pinned_plan);
     let pinned_report = futures_executor::block_on(run_project(
         ProjectRunRequest {
-            resource: ProjectRunSource::file(&pinned_file_resource),
+            resource: ProjectRunSource::new(&pinned_run_resource),
             plan: pinned_plan,
             package_root: temp.path().join(".cdf/packages"),
             state_store_path: temp.path().join(".cdf/state-pinned.db"),
@@ -2439,11 +2442,19 @@ fn http_parquet_auto_pin_plan_preview_and_run_use_file_runtime() {
         1,
         "pinned execution must transfer the extraction payload once: {pinned_execution_requests:?}"
     );
+    let pinned_ranges = pinned_execution_requests
+        .iter()
+        .filter(|request| {
+            request.method == HttpMethod::Get && request.headers.contains_key("range")
+        })
+        .collect::<Vec<_>>();
+    let expected_tail = format!("-{}", parquet.len().saturating_sub(1));
     assert!(
-        pinned_execution_requests.iter().all(|request| {
-            request.method != HttpMethod::Get || !request.headers.contains_key("range")
+        pinned_ranges.iter().all(|request| {
+            request.headers.get("if-match").map(String::as_str) == Some("\"fixture-etag\"")
+                && request.headers["range"].ends_with(&expected_tail)
         }),
-        "pinned execution must not perform a separate schema range probe: {pinned_execution_requests:?}"
+        "pinned extraction may overlap its sequential spool only with generation-bound Parquet tail reads: {pinned_execution_requests:?}"
     );
 }
 
@@ -2486,10 +2497,11 @@ fn unversioned_http_parquet_runs_and_commits_terminal_content_identity() {
         "cold discovery must materialize the unversioned payload exactly once"
     );
     assert_eq!(dependencies.prepared_payloads().pending_count().unwrap(), 1);
+    let (run_resource, plan) = bind_project_test_source(&file_resource, plan);
 
     let report = futures_executor::block_on(run_project(
         ProjectRunRequest {
-            resource: ProjectRunSource::file(&file_resource),
+            resource: ProjectRunSource::new(&run_resource),
             plan,
             package_root: temp.path().join(".cdf/packages"),
             state_store_path: temp.path().join(".cdf/state.db"),
@@ -4293,6 +4305,128 @@ fn live_plan_for_stream(resource: &dyn QueryableResource, package_id: &str) -> E
             },
         )
         .unwrap()
+}
+
+struct BoundProjectTestResource<'a> {
+    inner: &'a dyn QueryableResource,
+    compiled_source_plan_hash: String,
+}
+
+impl ResourceStream for BoundProjectTestResource<'_> {
+    fn descriptor(&self) -> &cdf_kernel::ResourceDescriptor {
+        self.inner.descriptor()
+    }
+
+    fn schema(&self) -> arrow_schema::SchemaRef {
+        self.inner.schema()
+    }
+
+    fn compiled_source_plan_hash(&self) -> Option<&str> {
+        Some(&self.compiled_source_plan_hash)
+    }
+
+    fn validate_runtime_dependencies(&self) -> cdf_kernel::Result<()> {
+        self.inner.validate_runtime_dependencies()
+    }
+
+    fn plan_partitions(
+        &self,
+        request: &ScanRequest,
+    ) -> cdf_kernel::Result<Vec<cdf_kernel::PartitionPlan>> {
+        self.inner.plan_partitions(request)
+    }
+
+    fn open(&self, partition: cdf_kernel::PartitionPlan) -> cdf_kernel::PartitionOpenAttempt<'_> {
+        self.inner.open(partition)
+    }
+
+    fn attest_partition(
+        &self,
+        partition: cdf_kernel::PartitionPlan,
+    ) -> cdf_kernel::PartitionAttestationAttempt<'_> {
+        self.inner.attest_partition(partition)
+    }
+
+    fn effective_schema_runtime(&self) -> Option<&cdf_kernel::EffectiveSchemaRuntime> {
+        self.inner.effective_schema_runtime()
+    }
+
+    fn type_policy_allowances(&self) -> cdf_kernel::TypePolicyAllowances {
+        self.inner.type_policy_allowances()
+    }
+}
+
+impl QueryableResource for BoundProjectTestResource<'_> {
+    fn capabilities(&self) -> &cdf_kernel::ResourceCapabilities {
+        self.inner.capabilities()
+    }
+
+    fn negotiate(&self, request: &ScanRequest) -> cdf_kernel::Result<cdf_kernel::ScanPlan> {
+        self.inner.negotiate(request)
+    }
+}
+
+fn bind_project_test_source<'a>(
+    resource: &'a dyn QueryableResource,
+    plan: EnginePlan,
+) -> (BoundProjectTestResource<'a>, EnginePlan) {
+    let source = cdf_runtime::CompiledSourcePlan::new(
+        cdf_runtime::SourceDriverDescriptor {
+            driver_id: cdf_runtime::SourceDriverId::new("project_test").unwrap(),
+            driver_version: "1.0.0".to_owned(),
+            option_schema_hash: cdf_runtime::artifact_hash(&serde_json::json!({})).unwrap(),
+            kinds: vec!["project_test".to_owned()],
+            schemes: Vec::new(),
+        },
+        resource.capabilities().clone(),
+        cdf_runtime::SourceExecutionCapabilities {
+            minimum_poll_bytes: 1,
+            maximum_poll_bytes: 4 * 1024 * 1024,
+            minimum_decode_bytes: 1,
+            maximum_decode_bytes: 32 * 1024 * 1024,
+            maximum_concurrency: 1,
+            useful_concurrency: 1,
+            executor_class: cdf_runtime::SourceExecutorClass::Io,
+            blocking_lane: None,
+            pausable: true,
+            spillable: true,
+            idempotent_reads: true,
+            reopenable: true,
+            resumable: false,
+            speculative_safe: true,
+            retry_granularity: cdf_runtime::SourceRetryGranularity::Partition,
+            retryable_errors: vec![
+                cdf_kernel::ErrorKind::Transient,
+                cdf_kernel::ErrorKind::RateLimited,
+            ],
+            retry_policy: Some(cdf_runtime::SourceRetryPolicy::default()),
+            attestation: cdf_runtime::SourceAttestationStrength::ImmutableContent,
+            rate_limit_per_second: None,
+            quota_authority: None,
+            canonical_order: true,
+            bounded: true,
+            batch_memory: cdf_runtime::SourceBatchMemoryContract::Preaccounted,
+            telemetry_version: "project-test-v1".to_owned(),
+        },
+        cdf_runtime::CompiledSourcePlanInput {
+            descriptor: resource.descriptor().clone(),
+            schema: resource.schema().as_ref().clone(),
+            type_policy_allowances: resource.type_policy_allowances(),
+            effective_schema_runtime: resource.effective_schema_runtime().cloned(),
+            redacted_options: serde_json::json!({}),
+            physical_plan: serde_json::json!({"fixture": "project-file-runtime"}),
+        },
+    )
+    .unwrap();
+    let compiled_source_plan_hash = cdf_runtime::artifact_hash(&source).unwrap();
+    let plan = plan.bind_compiled_source(&source).unwrap();
+    (
+        BoundProjectTestResource {
+            inner: resource,
+            compiled_source_plan_hash,
+        },
+        plan,
+    )
 }
 
 fn assert_only_bounded_http_file_gets(requests: &[HttpFileRequest]) {

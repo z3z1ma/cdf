@@ -1055,6 +1055,63 @@ fn artifact_values_serde_round_trip() {
 }
 
 #[test]
+fn closed_cursor_aggregation_validates_resource_schema_without_reapplying_lag() {
+    let descriptor = ResourceDescriptor {
+        resource_id: ResourceId::new("orders").unwrap(),
+        schema_source: SchemaSource::Declared {
+            schema_hash: SchemaHash::new("schema-sha256").unwrap(),
+            source: "fixture".to_owned(),
+        },
+        primary_key: Vec::new(),
+        merge_key: Vec::new(),
+        cursor: Some(CursorSpec {
+            field: "updated_at".to_owned(),
+            ordering: CursorOrderingClaim::Exact,
+            lag_tolerance_ms: 5,
+        }),
+        write_disposition: WriteDisposition::Append,
+        deduplication: None,
+        contract: None,
+        state_scope: ScopeKey::Resource,
+        freshness: None,
+        trust_level: TrustLevel::Governed,
+    };
+    let schema = Schema::new(vec![Field::new("updated_at", DataType::Int64, false)]);
+    let prior = SourcePosition::Cursor(CursorPosition {
+        version: 1,
+        field: "updated_at".to_owned(),
+        value: CursorValue::I64(90),
+    });
+    let observed = SourcePosition::Cursor(CursorPosition {
+        version: 1,
+        field: "updated_at".to_owned(),
+        value: CursorValue::I64(100),
+    });
+
+    let output = aggregate_resource_closed_output_position(
+        &descriptor,
+        &schema,
+        Some(&prior),
+        std::slice::from_ref(&observed),
+    )
+    .unwrap();
+    assert_eq!(output, observed);
+
+    let missing_cursor_schema = Schema::new(vec![Field::new("other", DataType::Int64, false)]);
+    assert!(
+        aggregate_resource_closed_output_position(
+            &descriptor,
+            &missing_cursor_schema,
+            Some(&prior),
+            &[observed],
+        )
+        .unwrap_err()
+        .message
+        .contains("missing from the declared schema")
+    );
+}
+
+#[test]
 fn schema_source_modes_serde_round_trip() {
     let snapshot = SchemaSnapshotReference {
         schema_hash: SchemaHash::new("sha256:snapshot").unwrap(),
@@ -1588,6 +1645,67 @@ fn failed_partition_attempt_does_not_treat_repeated_producer_error_as_cleanup_fa
     assert!(matches!(
         repeated.as_mut().poll(&mut context),
         Poll::Ready(Ok(()))
+    ));
+}
+
+#[test]
+fn probed_batch_can_return_to_its_invocation_bound_stream() {
+    fn batch(id: &str, value: i64) -> Batch {
+        let record_batch = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![Field::new(
+                "value",
+                DataType::Int64,
+                false,
+            )])),
+            vec![Arc::new(Int64Array::from(vec![value]))],
+        )
+        .unwrap();
+        Batch::from_record_batch(
+            BatchId::new(id).unwrap(),
+            ResourceId::new("test.events").unwrap(),
+            PartitionId::new("p0").unwrap(),
+            SchemaHash::new("sha256:test").unwrap(),
+            record_batch,
+        )
+        .unwrap()
+    }
+
+    let stream: BatchStream = Box::pin(futures_util::stream::iter([
+        Ok(batch("first", 1)),
+        Ok(batch("second", 2)),
+    ]));
+    let mut attempt = PartitionOpenAttempt::materialized(Box::pin(async move {
+        Ok(PartitionStreamPayload::batches(stream))
+    }));
+    let mut context = Context::from_waker(std::task::Waker::noop());
+    let mut opened = match Pin::new(&mut attempt).poll(&mut context) {
+        Poll::Ready(Ok(opened)) => opened,
+        Poll::Ready(Err(error)) => panic!("partition opening failed: {error}"),
+        Poll::Pending => panic!("materialized partition opening unexpectedly blocked"),
+    };
+    let first = match Pin::new(&mut opened).poll_next(&mut context) {
+        Poll::Ready(Some(Ok(batch))) => batch,
+        result => panic!("first batch was not ready: {result:?}"),
+    };
+    opened.prepend_batch(first).unwrap();
+    let replayed = match Pin::new(&mut opened).poll_next(&mut context) {
+        Poll::Ready(Some(Ok(batch))) => batch,
+        result => panic!("replayed batch was not ready: {result:?}"),
+    };
+    assert_eq!(replayed.header.batch_id.as_str(), "first");
+    let second = match Pin::new(&mut opened).poll_next(&mut context) {
+        Poll::Ready(Some(Ok(batch))) => batch,
+        result => panic!("second batch was not ready: {result:?}"),
+    };
+    assert_eq!(second.header.batch_id.as_str(), "second");
+    assert!(matches!(
+        Pin::new(&mut opened).poll_next(&mut context),
+        Poll::Ready(None)
+    ));
+    let mut completion = Box::pin(opened.completion());
+    assert!(matches!(
+        completion.as_mut().poll(&mut context),
+        Poll::Ready(Ok(_))
     ));
 }
 

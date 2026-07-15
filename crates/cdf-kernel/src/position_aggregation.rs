@@ -26,8 +26,40 @@ pub fn aggregate_resource_output_position(
             "source-position aggregation requires at least one processed position",
         ));
     }
+    if let Some(cursor) = &descriptor.cursor {
+        return aggregate_cursor(descriptor, schema, positions, cursor.lag_tolerance_ms);
+    }
+    aggregate_position_set(
+        descriptor.resource_id.as_ref(),
+        input,
+        positions,
+        &descriptor.write_disposition,
+    )
+}
+
+/// Aggregates positions whose cursor windows were already closed by execution.
+///
+/// This preserves the resource/schema validation of [`aggregate_resource_output_position`]
+/// without applying cursor lag a second time when checkpoint artifacts join per-observation
+/// evidence. The prior checkpoint participates in the maximum so state cannot regress.
+pub fn aggregate_resource_closed_output_position(
+    descriptor: &ResourceDescriptor,
+    schema: &Schema,
+    input: Option<&SourcePosition>,
+    positions: &[SourcePosition],
+) -> Result<SourcePosition> {
+    if positions.is_empty() {
+        return Err(CdfError::data(
+            "closed source-position aggregation requires at least one processed position",
+        ));
+    }
     if descriptor.cursor.is_some() {
-        return aggregate_cursor(descriptor, schema, positions);
+        let mut candidates = Vec::with_capacity(positions.len() + usize::from(input.is_some()));
+        if let Some(input) = input {
+            candidates.push(input.clone());
+        }
+        candidates.extend_from_slice(positions);
+        return aggregate_cursor(descriptor, schema, &candidates, 0);
     }
     aggregate_position_set(
         descriptor.resource_id.as_ref(),
@@ -58,6 +90,22 @@ pub fn aggregate_position_set(
         }
         return merge_file_manifest_input(resource_id, input, current);
     }
+    if positions
+        .iter()
+        .all(|position| matches!(position, SourcePosition::Cursor(_)))
+    {
+        if input.is_some_and(|position| !matches!(position, SourcePosition::Cursor(_))) {
+            return Err(CdfError::data(format!(
+                "resource `{resource_id}` cannot join a cursor observation to a non-cursor input position"
+            )));
+        }
+        let mut candidates = Vec::with_capacity(positions.len() + usize::from(input.is_some()));
+        if let Some(input) = input {
+            candidates.push(input.clone());
+        }
+        candidates.extend_from_slice(positions);
+        return aggregate_closed_cursors(resource_id, &candidates);
+    }
     let first = &positions[0];
     if positions.iter().any(|position| position != first) {
         return Err(CdfError::data(
@@ -65,6 +113,73 @@ pub fn aggregate_position_set(
         ));
     }
     Ok(first.clone())
+}
+
+fn aggregate_closed_cursors(
+    resource_id: &str,
+    positions: &[SourcePosition],
+) -> Result<SourcePosition> {
+    let SourcePosition::Cursor(first) = &positions[0] else {
+        unreachable!("caller verified cursor-only positions");
+    };
+    let arithmetic = match &first.value {
+        CursorValue::I64(_) => CursorArithmetic::I64,
+        CursorValue::U64(_) => CursorArithmetic::U64,
+        CursorValue::TimestampMicros { .. } => CursorArithmetic::TimestampMicros,
+        CursorValue::String(_) | CursorValue::DecimalString(_) => {
+            return Err(CdfError::data(format!(
+                "resource `{resource_id}` produced cursor positions without deterministic ordered arithmetic"
+            )));
+        }
+    };
+    let mut maximum = first;
+    for position in &positions[1..] {
+        let SourcePosition::Cursor(cursor) = position else {
+            unreachable!("caller verified cursor-only positions");
+        };
+        if cursor.version != first.version || cursor.field != first.field {
+            return Err(CdfError::data(format!(
+                "resource `{resource_id}` produced incompatible closed cursor positions"
+            )));
+        }
+        if let (
+            CursorValue::TimestampMicros {
+                timezone: first_timezone,
+                ..
+            },
+            CursorValue::TimestampMicros {
+                timezone: cursor_timezone,
+                ..
+            },
+        ) = (&first.value, &cursor.value)
+            && first_timezone != cursor_timezone
+        {
+            return Err(CdfError::data(format!(
+                "resource `{resource_id}` produced closed timestamp cursors with different timezones"
+            )));
+        }
+        if !cursor_value_matches(arithmetic, &cursor.value) {
+            return Err(CdfError::data(format!(
+                "resource `{resource_id}` produced incompatible closed cursor value kinds"
+            )));
+        }
+        if greater(arithmetic, &cursor.value, &maximum.value) {
+            maximum = cursor;
+        }
+    }
+    Ok(SourcePosition::Cursor(maximum.clone()))
+}
+
+fn cursor_value_matches(arithmetic: CursorArithmetic, value: &CursorValue) -> bool {
+    matches!(
+        (arithmetic, value),
+        (CursorArithmetic::I64, CursorValue::I64(_))
+            | (CursorArithmetic::U64, CursorValue::U64(_))
+            | (
+                CursorArithmetic::TimestampMicros,
+                CursorValue::TimestampMicros { .. }
+            )
+    )
 }
 
 /// Merges evidence about the same logical file without permitting its source
@@ -269,6 +384,7 @@ fn aggregate_cursor(
     descriptor: &ResourceDescriptor,
     schema: &Schema,
     positions: &[SourcePosition],
+    lag_tolerance_ms: u64,
 ) -> Result<SourcePosition> {
     let cursor = descriptor.cursor.as_ref().expect("cursor is present");
     if cursor.ordering == CursorOrderingClaim::Unordered {
@@ -316,12 +432,7 @@ fn aggregate_cursor(
     Ok(SourcePosition::Cursor(CursorPosition {
         version: maximum.version,
         field: cursor.field.clone(),
-        value: close_cursor(
-            descriptor,
-            arithmetic,
-            &maximum.value,
-            cursor.lag_tolerance_ms,
-        )?,
+        value: close_cursor(descriptor, arithmetic, &maximum.value, lag_tolerance_ms)?,
     }))
 }
 
@@ -515,6 +626,37 @@ mod tests {
                 &file(Some("sha256:second")),
             )
             .is_err()
+        );
+    }
+
+    #[test]
+    fn closed_cursor_observations_aggregate_without_reapplying_lag() {
+        let positions = [15, 12].map(|value| {
+            SourcePosition::Cursor(CursorPosition {
+                version: 1,
+                field: "updated_at".to_owned(),
+                value: CursorValue::I64(value),
+            })
+        });
+        let prior = SourcePosition::Cursor(CursorPosition {
+            version: 1,
+            field: "updated_at".to_owned(),
+            value: CursorValue::I64(20),
+        });
+        let output = aggregate_position_set(
+            "events",
+            Some(&prior),
+            &positions,
+            &WriteDisposition::Append,
+        )
+        .unwrap();
+        assert_eq!(
+            output,
+            SourcePosition::Cursor(CursorPosition {
+                version: 1,
+                field: "updated_at".to_owned(),
+                value: CursorValue::I64(20),
+            })
         );
     }
 

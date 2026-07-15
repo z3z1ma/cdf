@@ -8,7 +8,7 @@ use std::{
 
 use arrow_schema::SchemaRef;
 use futures_core::Stream;
-use futures_util::{FutureExt, future::Shared};
+use futures_util::{FutureExt, StreamExt, future::Shared, stream};
 use serde::{Deserialize, Serialize};
 
 use crate::{
@@ -1779,6 +1779,26 @@ impl OpenedPartitionStream {
             Err(joined) if joined == primary => Ok(()),
             result => result,
         }
+    }
+
+    /// Returns a probed batch to the front of this invocation-bound stream.
+    ///
+    /// Scheduler retry may need to observe the first stream item before it can publish a
+    /// successful open. Re-inserting that item keeps the source frontier as the sole owner of
+    /// ready payload and preserves the original completion and termination authority.
+    pub fn prepend_batch(&mut self, batch: crate::Batch) -> Result<()> {
+        if self.reached_eof || self.terminal_error.is_some() {
+            return Err(CdfError::contract(
+                "cannot prepend a batch after source stream termination",
+            ));
+        }
+        let remaining = self.stream.take().ok_or_else(|| {
+            CdfError::contract("cannot prepend a batch after source stream consumption")
+        })?;
+        self.stream = Some(Box::pin(
+            stream::once(async move { Ok(batch) }).chain(remaining),
+        ));
+        Ok(())
     }
 
     pub async fn terminate_and_join(&mut self) -> Result<()> {

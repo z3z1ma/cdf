@@ -265,6 +265,7 @@ fn execution_capabilities() -> SourceExecutionCapabilities {
         quota_authority: None,
         canonical_order: false,
         bounded: true,
+        batch_memory: cdf_runtime::SourceBatchMemoryContract::FrontierReserved,
         telemetry_version: "v1".to_owned(),
     }
 }

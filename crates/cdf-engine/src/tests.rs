@@ -22,11 +22,12 @@ use cdf_contract::{
 };
 use cdf_kernel::{
     BackpressureSupport, Batch, BatchHeader, BatchId, BatchStream, CapabilitySupport, ContractRef,
-    DeduplicationSpec, DeliveryGuarantee, DiscoveryExecutorBudgetEvidence, DiscoveryManifestHash,
-    DiscoveryManifestReference, DrainTermination, EXECUTION_EXTENT_VERSION,
-    EffectiveSchemaCatalogEntry, EffectiveSchemaEvidence, EffectiveSchemaObservationEvidence,
-    EffectiveSchemaRuntime, EpochClosureTrigger, EstimateSupport, ExecutionExtent, FileManifest,
-    FilePosition, FilterCapabilities, FreshnessSpec, IncrementalShape, LateDataAction,
+    CursorPosition, CursorValue, DeduplicationSpec, DeliveryGuarantee,
+    DiscoveryExecutorBudgetEvidence, DiscoveryManifestHash, DiscoveryManifestReference,
+    DrainTermination, EXECUTION_EXTENT_VERSION, EffectiveSchemaCatalogEntry,
+    EffectiveSchemaEvidence, EffectiveSchemaObservationEvidence, EffectiveSchemaRuntime,
+    EpochClosureTrigger, EstimateSupport, ExecutionExtent, FileManifest, FilePosition,
+    FilterCapabilities, FreshnessSpec, IncrementalShape, LateDataAction,
     PLAN_PHYSICAL_SCHEMA_HASH_KEY, PLAN_SCHEMA_OBSERVATION_BINDING_KEY,
     PLAN_SCHEMA_OBSERVATION_ID_KEY, PartitionAttestation, PartitionId, PartitionPlan,
     PartitioningCapabilities, PreContractObservedValue, PreContractQuarantineFact,
@@ -45,7 +46,7 @@ use datafusion::{
     catalog::TableProvider, physical_plan::common::collect as collect_stream, prelude::*,
 };
 use futures_executor::block_on;
-use futures_util::stream;
+use futures_util::{StreamExt, stream};
 use tempfile::TempDir;
 use tracing::{
     Event, Id, Metadata, Subscriber,
@@ -53,11 +54,109 @@ use tracing::{
     span::{Attributes, Record},
 };
 
+fn executable_mock_plan(plan: &EnginePlan, resource: &MockResource) -> Result<EnginePlan> {
+    if plan.compiled_source_execution.is_some() {
+        return Ok(plan.clone());
+    }
+    let source = match resource.compiled_source_plan.get() {
+        Some(source) => source.clone(),
+        None => {
+            let source = mock_compiled_source_plan(resource, None);
+            resource.bind_compiled_source(&source);
+            source
+        }
+    };
+    plan.clone().bind_compiled_source(&source)
+}
+
+fn executable_mock_options(options: EngineExecutionOptions) -> Result<EngineExecutionOptions> {
+    if options.services.is_some() {
+        return Ok(options);
+    }
+    let (_, services) =
+        StandaloneExecutionHost::default_services(cdf_memory::DEFAULT_PROCESS_BUDGET_BYTES)?;
+    Ok(options.with_execution_services(services))
+}
+
+async fn execute_to_package(
+    plan: &EnginePlan,
+    resource: &MockResource,
+    package_dir: impl AsRef<std::path::Path>,
+) -> Result<EngineRunOutput> {
+    let plan = executable_mock_plan(plan, resource)?;
+    super::execute_to_package(&plan, resource, package_dir).await
+}
+
+async fn execute_to_package_with_run_id(
+    run_id: &RunId,
+    plan: &EnginePlan,
+    resource: &MockResource,
+    package_dir: impl AsRef<std::path::Path>,
+) -> Result<EngineRunOutput> {
+    let plan = executable_mock_plan(plan, resource)?;
+    super::execute_to_package_with_run_id(run_id, &plan, resource, package_dir).await
+}
+
+async fn execute_to_package_with_segment_positions(
+    plan: &EnginePlan,
+    resource: &MockResource,
+    package_dir: impl AsRef<std::path::Path>,
+) -> Result<EngineRunOutputWithSegmentPositions> {
+    let plan = executable_mock_plan(plan, resource)?;
+    super::execute_to_package_with_segment_positions(&plan, resource, package_dir).await
+}
+
+async fn execute_to_package_with_segment_positions_and_pre_finalize(
+    plan: &EnginePlan,
+    resource: &MockResource,
+    package_dir: impl AsRef<std::path::Path>,
+    pre_finalize: &PackagePreFinalizeHook<'_>,
+    options: EngineExecutionOptions,
+) -> Result<EngineRunOutputWithSegmentPositions> {
+    let plan = executable_mock_plan(plan, resource)?;
+    let options = executable_mock_options(options)?;
+    super::execute_to_package_with_segment_positions_and_pre_finalize(
+        &plan,
+        resource,
+        package_dir,
+        pre_finalize,
+        options,
+    )
+    .await
+}
+
+async fn execute_to_package_with_streaming_hooks<'a>(
+    plan: &EnginePlan,
+    resource: &MockResource,
+    package_dir: impl AsRef<std::path::Path>,
+    pre_finalize: &PackagePreFinalizeHook<'_>,
+    durable_segment: &'a mut DurableSegmentHook<'a>,
+    stream_finalize: &'a mut StreamingFinalizeHook<'a>,
+    options: EngineExecutionOptions,
+) -> Result<EngineRunOutputWithSegmentPositions> {
+    let plan = executable_mock_plan(plan, resource)?;
+    let options = executable_mock_options(options)?;
+    super::execute_to_package_with_streaming_hooks(
+        &plan,
+        resource,
+        package_dir,
+        pre_finalize,
+        durable_segment,
+        stream_finalize,
+        options,
+    )
+    .await
+}
+
 use super::*;
 
 #[test]
 fn tier_a_resource_runs_engine_projection_filter_limit_into_package() {
-    let resource = MockResource::tier_a(sample_batches());
+    let mut batches = sample_batches();
+    for batch in &mut batches {
+        batch.header.source_position = Some(terminal_file_position());
+    }
+    let resource = MockResource::tier_a(batches);
     let input = plan_input(
         vec!["id > 1", "active = true"],
         Some(vec!["name".to_owned()]),
@@ -127,7 +226,11 @@ fn tier_a_rejects_partition_intent_that_claims_source_pushdown() {
 
 #[test]
 fn residual_limit_is_consumed_across_partitions() {
-    let resource = MockResource::tier_b(sample_batches());
+    let mut batches = sample_batches();
+    for batch in &mut batches {
+        batch.header.source_position = Some(terminal_file_position());
+    }
+    let resource = MockResource::tier_b(batches);
     let input = plan_input(
         vec!["active = true"],
         Some(vec!["name".to_owned()]),
@@ -187,12 +290,15 @@ fn validation_program_rebind_atomically_rebuilds_compiled_output_schema() {
 #[test]
 fn engine_plan_requires_recorded_schema_authorities() {
     let resource = MockResource::tier_a(Vec::new());
-    let plan = Planner::new()
+    let mut plan = Planner::new()
         .plan_tier_a(
             &resource,
             plan_input(vec![], None, None, ExecutionExtent::bounded()),
         )
         .unwrap();
+    let source = mock_compiled_source_plan(&resource, None);
+    resource.bind_compiled_source(&source);
+    plan = plan.bind_compiled_source(&source).unwrap();
     for required in [
         "schema_authority",
         "output_schema",
@@ -660,9 +766,13 @@ fn execution_evidence_rejects_repeated_observation_identity_even_when_identical(
     )
     .unwrap();
 
-    let error =
-        EngineExecutionEvidence::new(vec![observation.clone(), observation], Vec::new(), None)
-            .unwrap_err();
+    let error = EngineExecutionEvidence::new(
+        vec![observation.clone(), observation],
+        Vec::new(),
+        None,
+        true,
+    )
+    .unwrap_err();
 
     assert!(
         error.to_string().contains("more than one partition"),
@@ -1282,7 +1392,7 @@ fn effective_schema_binds_only_the_attempted_partition_observation_under_limit()
     assert_eq!(witnessed["observations"].as_array().unwrap().len(), 1);
     assert_eq!(
         witnessed["observations"][0]["completion"]["kind"],
-        "complete"
+        "partial"
     );
 
     let mut tampered = plan.clone();
@@ -1388,15 +1498,26 @@ fn limited_multi_batch_partition_records_exact_non_checkpointing_partial_attempt
         batch.header.source_position = Some(terminal_file_position());
     }
     let resource = MockResource::tier_a(batches);
-    let plan = Planner::new()
+    let mut plan = Planner::new()
         .plan_tier_a(
             &resource,
             plan_input(Vec::new(), None, Some(1), ExecutionExtent::bounded()),
         )
         .unwrap();
+    let source = mock_compiled_source_plan(&resource, None);
+    resource.bind_compiled_source(&source);
+    plan = plan.bind_compiled_source(&source).unwrap();
     let temp = TempDir::new().unwrap();
 
-    block_on(execute_to_package(&plan, &resource, temp.path())).unwrap();
+    let output = block_on(execute_to_package_with_segment_positions(
+        &plan,
+        &resource,
+        temp.path(),
+    ))
+    .unwrap();
+
+    assert_eq!(resource.batch_poll_count.load(Ordering::SeqCst), 1);
+    assert!(!output.execution_evidence().checkpoint_eligible());
 
     let evidence: CompiledStreamAdmissionEvidence = serde_json::from_slice(
         &std::fs::read(temp.path().join("schema/stream-admission-evidence.json")).unwrap(),
@@ -1423,6 +1544,57 @@ fn limited_multi_batch_partition_records_exact_non_checkpointing_partial_attempt
             .join(cdf_package_contract::PROCESSED_OBSERVATIONS_FILE)
             .exists()
     );
+}
+
+#[test]
+fn limited_cursor_batch_never_assigns_unsliced_position_to_output_segments() {
+    let attempted = SourcePosition::Cursor(CursorPosition {
+        version: 1,
+        field: "id".to_owned(),
+        value: CursorValue::I64(3),
+    });
+    let mut batches = sample_batches();
+    for batch in &mut batches {
+        batch.header.partition_id = PartitionId::new("part-0").unwrap();
+        batch.header.source_position = Some(attempted.clone());
+    }
+    let resource = MockResource::tier_a(batches);
+    let mut plan = Planner::new()
+        .plan_tier_a(
+            &resource,
+            plan_input(Vec::new(), None, Some(1), ExecutionExtent::bounded()),
+        )
+        .unwrap();
+    let source = mock_compiled_source_plan(&resource, None);
+    resource.bind_compiled_source(&source);
+    plan = plan.bind_compiled_source(&source).unwrap();
+    let temp = TempDir::new().unwrap();
+
+    let output = block_on(execute_to_package_with_segment_positions(
+        &plan,
+        &resource,
+        temp.path(),
+    ))
+    .unwrap();
+
+    assert!(!output.execution_evidence().checkpoint_eligible());
+    assert_eq!(output.segment_positions.len(), 1);
+    assert_eq!(output.segment_positions[0].output_position, None);
+
+    let evidence: CompiledStreamAdmissionEvidence = serde_json::from_slice(
+        &std::fs::read(temp.path().join("schema/stream-admission-evidence.json")).unwrap(),
+    )
+    .unwrap();
+    let [observation] = evidence.observations.as_slice() else {
+        panic!("expected exactly one partial schema observation");
+    };
+    match &observation.completion {
+        crate::StreamAdmissionCompletion::Partial {
+            attempted_position: Some(position),
+            ..
+        } => assert_eq!(position, &attempted),
+        other => panic!("expected exact partial attempt, got {other:?}"),
+    }
 }
 
 #[test]
@@ -1948,13 +2120,18 @@ fn mock_compiled_source_plan(
             quota_authority: None,
             canonical_order: true,
             bounded: true,
+            batch_memory: if retry_enabled {
+                cdf_runtime::SourceBatchMemoryContract::Preaccounted
+            } else {
+                cdf_runtime::SourceBatchMemoryContract::FrontierReserved
+            },
             telemetry_version: "mock-v1".to_owned(),
         },
         cdf_runtime::CompiledSourcePlanInput {
             descriptor: resource.descriptor().clone(),
             schema: resource.schema().as_ref().clone(),
-            type_policy_allowances: cdf_kernel::TypePolicyAllowances::default(),
-            effective_schema_runtime: None,
+            type_policy_allowances: resource.type_policy_allowances,
+            effective_schema_runtime: resource.effective_schema_runtime.clone(),
             redacted_options: serde_json::json!({"endpoint": "redacted"}),
             physical_plan: serde_json::json!({"partitioning": "mock"}),
         },
@@ -2114,6 +2291,112 @@ fn operator_graph_compiles_from_capabilities_without_driver_name_dispatch() {
     assert_eq!(binding.blocking_lane.as_deref(), Some("mock.commit"));
 }
 
+#[test]
+fn engine_parallel_frontier_polls_later_partition_while_head_is_stalled() {
+    let (head_sender, head_receiver) = tokio::sync::oneshot::channel::<()>();
+    let later_polls = Arc::new(AtomicUsize::new(0));
+    let resource = StalledHeadResource {
+        inner: MockResource::tier_b(sample_batches()),
+        head_gate: Arc::new(Mutex::new(Some(head_receiver))),
+        later_polls: Arc::clone(&later_polls),
+    };
+    let mut plan = Planner::new()
+        .plan_tier_b(
+            &resource,
+            plan_input(Vec::new(), None, None, ExecutionExtent::bounded()),
+        )
+        .unwrap();
+    let source = mock_compiled_source_plan(&resource.inner, None);
+    resource.inner.bind_compiled_source(&source);
+    plan = plan.bind_compiled_source(&source).unwrap();
+    plan.operator_graph = Some(
+        compile_operator_graph(
+            &plan,
+            &source,
+            &cdf_runtime::DestinationRuntimeCapabilities::default(),
+        )
+        .unwrap(),
+    );
+
+    let memory: Arc<dyn cdf_memory::MemoryCoordinator> = Arc::new(
+        cdf_memory::DeterministicMemoryCoordinator::new(512 * 1024 * 1024, BTreeMap::new())
+            .unwrap(),
+    );
+    let host = Arc::new(
+        StandaloneExecutionHost::new(
+            cdf_runtime::ExecutionHostCapabilities {
+                logical_cpu_slots: 2,
+                io_workers: 2,
+                blocking_lanes: Vec::new(),
+            },
+            memory,
+        )
+        .unwrap(),
+    );
+    let services = cdf_runtime::ExecutionServices::new(host).unwrap();
+    let scheduler = cdf_runtime::resolve_runtime_scheduler(
+        plan.scan.partitions.len(),
+        &source.execution_capabilities,
+        &cdf_runtime::DestinationRuntimeCapabilities::default(),
+        &services,
+        Some(2),
+    )
+    .unwrap();
+    assert_eq!(scheduler.effective_jobs.jobs, 2);
+
+    let parallel_plan = plan.clone();
+    let parallel_resource = resource.clone();
+    let parallel_services = services.clone();
+    let run = std::thread::spawn(move || {
+        let package = TempDir::new().unwrap();
+        let pre_finalize =
+            |_builder: &cdf_package::PackageBuilder, _draft: EnginePackageDraft<'_>| Ok(());
+        block_on(
+            super::execute_to_package_with_segment_positions_and_pre_finalize(
+                &parallel_plan,
+                &parallel_resource,
+                package.path(),
+                &pre_finalize,
+                EngineExecutionOptions::default()
+                    .with_execution_services(parallel_services)
+                    .with_scheduler_resolution(scheduler),
+            ),
+        )
+    });
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while later_polls.load(Ordering::SeqCst) == 0 && std::time::Instant::now() < deadline {
+        std::thread::yield_now();
+    }
+    let later_polled_while_head_stalled = later_polls.load(Ordering::SeqCst) == 1;
+    head_sender.send(()).unwrap();
+    let parallel = run.join().unwrap().unwrap();
+
+    assert!(
+        later_polled_while_head_stalled,
+        "jobs=2 did not poll the later partition before the canonical head was released"
+    );
+    assert_eq!(later_polls.load(Ordering::SeqCst), 1);
+    assert_eq!(resource.inner.open_count.load(Ordering::SeqCst), 2);
+    assert_eq!(services.memory().snapshot().current_bytes, 0);
+
+    let serial_resource = MockResource::tier_b(sample_batches());
+    serial_resource.bind_compiled_source(&source);
+    let serial_package = TempDir::new().unwrap();
+    let serial = block_on(execute_to_package(
+        &plan,
+        &serial_resource,
+        serial_package.path(),
+    ))
+    .unwrap();
+    assert_eq!(parallel.output.manifest.identity, serial.manifest.identity);
+    assert_eq!(parallel.output.lineage, serial.lineage);
+    assert_eq!(
+        parallel.output.profile.statistics,
+        serial.profile.statistics
+    );
+}
+
 fn fast_test_retry_policy() -> cdf_runtime::SourceRetryPolicy {
     cdf_runtime::SourceRetryPolicy {
         max_total_attempts: 3,
@@ -2128,7 +2411,18 @@ fn retry_positioned_batches(position: &SourcePosition) -> Vec<Batch> {
         .into_iter()
         .map(|mut batch| {
             batch.header.source_position = Some(position.clone());
+            let retained_bytes = batch
+                .record_batch()
+                .map(cdf_memory::record_batch_retained_bytes)
+                .transpose()
+                .unwrap()
+                .unwrap_or(0)
+                + batch.header.pre_contract_evidence_retained_bytes().unwrap();
             batch
+                .with_retention(
+                    cdf_kernel::PayloadRetention::new(Arc::new(()), retained_bytes).unwrap(),
+                )
+                .unwrap()
         })
         .collect()
 }
@@ -2300,7 +2594,7 @@ fn exhausted_retry_history_survives_a_failed_engine_return() {
     ))
     .unwrap_err();
 
-    assert!(error.message.contains("attempt limit exhausted"));
+    assert!(error.message.contains("attempt limit exhausted"), "{error}");
     let history = retry_evidence.snapshot().unwrap();
     assert_eq!(history.len(), 1);
     assert_eq!(history[0].history().len(), 3);
@@ -2342,7 +2636,7 @@ fn nonretryable_reattest_failure_preserves_primary_error_and_history() {
     ))
     .unwrap_err();
 
-    assert_eq!(error.kind, cdf_kernel::ErrorKind::Data);
+    assert_eq!(error.kind, cdf_kernel::ErrorKind::Data, "{error}");
     assert!(error.message.contains("cannot be reattested"), "{error}");
     let history = retry_evidence.snapshot().unwrap();
     assert_eq!(history[0].history().len(), 2);
@@ -4249,7 +4543,7 @@ fn package_identity_is_invariant_to_source_batch_rechunking() {
     );
     assert_eq!(
         one_output.manifest.package_hash,
-        "sha256:42d8d0d94740839e642745a43f2c321a93d7b0489ef56c674b93256c7d6e1e9f"
+        "sha256:297a8981e4e2cd159488644b8b47ed848fe19f4dd593dc4e55af6f47f8cc8797"
     );
 }
 
@@ -4837,6 +5131,7 @@ struct MockResource {
     partition_count: usize,
     negotiate_count: Arc<AtomicUsize>,
     open_count: Arc<AtomicUsize>,
+    batch_poll_count: Arc<AtomicUsize>,
     attest_count: Arc<AtomicUsize>,
     attestation: Option<PartitionAttestation>,
     completion_attestation: Option<PartitionAttestation>,
@@ -4849,7 +5144,15 @@ struct MockResource {
     misroute_batches: bool,
     retry_safety: cdf_kernel::PartitionRetrySafety,
     tier_a_intent: cdf_kernel::CompiledScanIntent,
+    compiled_source_plan: Arc<OnceLock<cdf_runtime::CompiledSourcePlan>>,
     compiled_source_plan_hash: Arc<OnceLock<String>>,
+}
+
+#[derive(Clone)]
+struct StalledHeadResource {
+    inner: MockResource,
+    head_gate: Arc<Mutex<Option<tokio::sync::oneshot::Receiver<()>>>>,
+    later_polls: Arc<AtomicUsize>,
 }
 
 #[derive(Clone)]
@@ -5019,6 +5322,7 @@ impl MockResource {
             partition_count: if tier_b { 2 } else { 1 },
             negotiate_count: Arc::new(AtomicUsize::new(0)),
             open_count: Arc::new(AtomicUsize::new(0)),
+            batch_poll_count: Arc::new(AtomicUsize::new(0)),
             attest_count: Arc::new(AtomicUsize::new(0)),
             attestation: None,
             completion_attestation: None,
@@ -5031,6 +5335,7 @@ impl MockResource {
             misroute_batches: false,
             retry_safety: cdf_kernel::PartitionRetrySafety::Forbidden,
             tier_a_intent: cdf_kernel::CompiledScanIntent::full_scan(),
+            compiled_source_plan: Arc::new(OnceLock::new()),
             compiled_source_plan_hash: Arc::new(OnceLock::new()),
         }
     }
@@ -5118,9 +5423,105 @@ impl MockResource {
     }
 
     fn bind_compiled_source(&self, source: &cdf_runtime::CompiledSourcePlan) {
-        self.compiled_source_plan_hash
-            .set(cdf_runtime::artifact_hash(source).unwrap())
-            .expect("mock source compiler binding is single-assignment");
+        let hash = cdf_runtime::artifact_hash(source).unwrap();
+        match self.compiled_source_plan.set(source.clone()) {
+            Ok(()) => {}
+            Err(source) => assert_eq!(
+                self.compiled_source_plan.get(),
+                Some(&source),
+                "mock source compiler binding is single-assignment"
+            ),
+        }
+        match self.compiled_source_plan_hash.set(hash) {
+            Ok(()) => {}
+            Err(hash) => assert_eq!(
+                self.compiled_source_plan_hash.get(),
+                Some(&hash),
+                "mock source hash binding is single-assignment"
+            ),
+        }
+    }
+}
+
+impl ResourceStream for StalledHeadResource {
+    fn descriptor(&self) -> &ResourceDescriptor {
+        self.inner.descriptor()
+    }
+
+    fn schema(&self) -> SchemaRef {
+        self.inner.schema()
+    }
+
+    fn compiled_source_plan_hash(&self) -> Option<&str> {
+        self.inner.compiled_source_plan_hash()
+    }
+
+    fn plan_partitions(&self, request: &ScanRequest) -> Result<Vec<PartitionPlan>> {
+        self.inner.plan_partitions(request)
+    }
+
+    fn open(&self, partition: PartitionPlan) -> cdf_kernel::PartitionOpenAttempt<'_> {
+        self.inner.open_count.fetch_add(1, Ordering::SeqCst);
+        let batch = self
+            .inner
+            .batches
+            .iter()
+            .find(|batch| batch.header.partition_id == partition.partition_id)
+            .cloned()
+            .expect("stalled-head fixture covers every partition");
+        if partition.partition_id.as_str() == "part-0" {
+            let receiver = self
+                .head_gate
+                .lock()
+                .unwrap()
+                .take()
+                .expect("head gate is single-use");
+            return cdf_kernel::PartitionOpenAttempt::materialized(Box::pin(async move {
+                let stream = stream::once(async move {
+                    receiver
+                        .await
+                        .map_err(|_| cdf_kernel::CdfError::internal("head gate dropped"))?;
+                    Ok(batch)
+                });
+                Ok(cdf_kernel::PartitionStreamPayload::batches(Box::pin(
+                    stream,
+                )))
+            }));
+        }
+        let later_polls = Arc::clone(&self.later_polls);
+        cdf_kernel::PartitionOpenAttempt::materialized(Box::pin(async move {
+            let stream = stream::iter([Ok(batch)]).inspect(move |_| {
+                later_polls.fetch_add(1, Ordering::SeqCst);
+            });
+            Ok(cdf_kernel::PartitionStreamPayload::batches(Box::pin(
+                stream,
+            )))
+        }))
+    }
+
+    fn attest_partition(
+        &self,
+        partition: PartitionPlan,
+    ) -> cdf_kernel::PartitionAttestationAttempt<'_> {
+        self.inner.attest_partition(partition)
+    }
+
+    fn effective_schema_runtime(&self) -> Option<&EffectiveSchemaRuntime> {
+        self.inner.effective_schema_runtime()
+    }
+
+    fn type_policy_allowances(&self) -> cdf_kernel::TypePolicyAllowances {
+        self.inner.type_policy_allowances()
+    }
+}
+
+impl QueryableResource for StalledHeadResource {
+    fn capabilities(&self) -> &ResourceCapabilities {
+        self.inner.capabilities()
+    }
+
+    fn negotiate(&self, request: &ScanRequest) -> Result<ScanPlan> {
+        self.inner.negotiate(request)
     }
 }
 
@@ -5203,6 +5604,7 @@ impl ResourceStream for MockResource {
             })
             .is_ok();
         let completion_attestation = self.completion_attestation.clone();
+        let batch_poll_count = Arc::clone(&self.batch_poll_count);
         cdf_kernel::PartitionOpenAttempt::materialized(Box::pin(async move {
             let stream = if transient_stream_failure {
                 Box::pin(stream::iter([Err(cdf_kernel::CdfError::transient(
@@ -5211,6 +5613,9 @@ impl ResourceStream for MockResource {
             } else {
                 Box::pin(stream::iter(batches.into_iter().map(Ok))) as BatchStream
             };
+            let stream = Box::pin(stream.inspect(move |_| {
+                batch_poll_count.fetch_add(1, Ordering::SeqCst);
+            })) as BatchStream;
             match completion_attestation {
                 Some(attestation) => Ok(cdf_kernel::PartitionStreamPayload::new(
                     stream,

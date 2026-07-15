@@ -73,7 +73,6 @@ use crate::{
     plan_backfill, recover_package_from_artifacts, replay_package_from_artifacts,
     replay_package_from_artifacts_with_stage_hook, replay_package_with_runtime,
     resolve_project_run_destination, run_local_file_to_duckdb_checkpoint,
-    run_project as run_project_with_execution_services,
     run_project_with_telemetry as run_project_with_execution_services_and_telemetry,
     runtime::{record_package_receipt_once, state_delta_from_run},
 };
@@ -86,7 +85,7 @@ fn test_execution_services() -> cdf_runtime::ExecutionServices {
 
 async fn run_project(request: ProjectRunRequest<'_>) -> Result<ProjectRunReport> {
     let services = test_execution_services();
-    run_project_with_execution_services(request, &services).await
+    run_project_fixture(request, &services, RunTelemetryConfig::disabled()).await
 }
 
 async fn run_project_with_telemetry(
@@ -94,7 +93,84 @@ async fn run_project_with_telemetry(
     telemetry: RunTelemetryConfig,
 ) -> Result<ProjectRunReport> {
     let services = test_execution_services();
-    run_project_with_execution_services_and_telemetry(request, &services, telemetry).await
+    run_project_fixture(request, &services, telemetry).await
+}
+
+async fn run_project_fixture<'a>(
+    mut request: ProjectRunRequest<'a>,
+    services: &cdf_runtime::ExecutionServices,
+    telemetry: RunTelemetryConfig,
+) -> Result<ProjectRunReport> {
+    if request.plan.compiled_source_execution.is_some() {
+        return run_project_with_execution_services_and_telemetry(request, services, telemetry)
+            .await;
+    }
+    let resource = request.resource.queryable();
+    let source = compiled_test_source_plan(resource);
+    let compiled_source_plan_hash = cdf_runtime::artifact_hash(&source)?;
+    request.plan = request.plan.bind_compiled_source(&source)?;
+    let bound = BoundTestResource {
+        inner: resource,
+        compiled_source_plan_hash,
+    };
+    request.resource = ProjectRunSource::new(&bound);
+    run_project_with_execution_services_and_telemetry(request, services, telemetry).await
+}
+
+struct BoundTestResource<'a> {
+    inner: &'a dyn QueryableResource,
+    compiled_source_plan_hash: String,
+}
+
+impl ResourceStream for BoundTestResource<'_> {
+    fn descriptor(&self) -> &ResourceDescriptor {
+        self.inner.descriptor()
+    }
+
+    fn schema(&self) -> Arc<Schema> {
+        self.inner.schema()
+    }
+
+    fn compiled_source_plan_hash(&self) -> Option<&str> {
+        Some(&self.compiled_source_plan_hash)
+    }
+
+    fn validate_runtime_dependencies(&self) -> Result<()> {
+        self.inner.validate_runtime_dependencies()
+    }
+
+    fn plan_partitions(&self, request: &ScanRequest) -> Result<Vec<cdf_kernel::PartitionPlan>> {
+        self.inner.plan_partitions(request)
+    }
+
+    fn open(&self, partition: cdf_kernel::PartitionPlan) -> cdf_kernel::PartitionOpenAttempt<'_> {
+        self.inner.open(partition)
+    }
+
+    fn attest_partition(
+        &self,
+        partition: cdf_kernel::PartitionPlan,
+    ) -> cdf_kernel::PartitionAttestationAttempt<'_> {
+        self.inner.attest_partition(partition)
+    }
+
+    fn effective_schema_runtime(&self) -> Option<&cdf_kernel::EffectiveSchemaRuntime> {
+        self.inner.effective_schema_runtime()
+    }
+
+    fn type_policy_allowances(&self) -> cdf_kernel::TypePolicyAllowances {
+        self.inner.type_policy_allowances()
+    }
+}
+
+impl QueryableResource for BoundTestResource<'_> {
+    fn capabilities(&self) -> &ResourceCapabilities {
+        self.inner.capabilities()
+    }
+
+    fn negotiate(&self, request: &ScanRequest) -> Result<cdf_kernel::ScanPlan> {
+        self.inner.negotiate(request)
+    }
 }
 
 fn test_rest_runtime_dependencies(
@@ -565,13 +641,18 @@ fn backfill_planner_binds_every_slice_to_the_compiled_source_artifact() {
             quota_authority: None,
             canonical_order: true,
             bounded: true,
+            batch_memory: if resource.capabilities().incremental == IncrementalShape::File {
+                cdf_runtime::SourceBatchMemoryContract::Preaccounted
+            } else {
+                cdf_runtime::SourceBatchMemoryContract::FrontierReserved
+            },
             telemetry_version: "backfill-mock-v1".to_owned(),
         },
         cdf_runtime::CompiledSourcePlanInput {
             descriptor: resource.descriptor.clone(),
             schema: resource.schema.as_ref().clone(),
-            type_policy_allowances: Default::default(),
-            effective_schema_runtime: None,
+            type_policy_allowances: resource.type_policy_allowances(),
+            effective_schema_runtime: resource.effective_schema_runtime().cloned(),
             redacted_options: serde_json::json!({}),
             physical_plan: serde_json::json!({"partitions": 1}),
         },
@@ -668,6 +749,26 @@ impl BackfillMockResource {
 
     fn file_incremental() -> Self {
         Self::new(IncrementalShape::File, Some(CursorOrderingClaim::Exact))
+    }
+
+    fn postgres_unsupported_schema() -> Self {
+        let mut resource = Self::new(IncrementalShape::Cursor, Some(CursorOrderingClaim::Exact));
+        resource.descriptor.resource_id = ResourceId::new("mock.unsupported_postgres").unwrap();
+        resource
+            .descriptor
+            .cursor
+            .as_mut()
+            .expect("cursor fixture")
+            .field = "id".to_owned();
+        resource.schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int64, false),
+            Field::new(
+                "seen_at",
+                DataType::Timestamp(arrow_schema::TimeUnit::Millisecond, Some("UTC".into())),
+                false,
+            ),
+        ]));
+        resource
     }
 
     fn new(incremental: IncrementalShape, ordering: Option<CursorOrderingClaim>) -> Self {
@@ -800,23 +901,6 @@ schema = { fields = [
   { name = "name", type = "string", nullable = true },
 ] }
 "#;
-const POSTGRES_UNSUPPORTED_FILE_RESOURCE: &str = r#"
-[source.local]
-kind = "files"
-root = "data"
-
-[resource.events]
-glob = "events.ndjson"
-format = "ndjson"
-primary_key = ["id"]
-write_disposition = "append"
-trust = "governed"
-schema = { fields = [
-  { name = "id", type = "int64", nullable = false },
-  { name = "seen_at", type = "timestamp_millis", nullable = false, timezone = "UTC" },
-] }
-"#;
-
 const REST_RESOURCE: &str = r#"
 [source.api]
 kind = "rest"
@@ -1071,6 +1155,50 @@ fn build_zero_segment_processed_package(package_dir: &Path, package_id: &str) ->
         Field::new("name", DataType::Utf8, true),
     ]));
     let physical_hash = cdf_kernel::canonical_arrow_schema_hash(physical_schema.as_ref()).unwrap();
+    let artifact_plan = artifact_expression_plan();
+    let constraint = artifact_plan
+        .compiled_schema_admission
+        .constraint_schema
+        .to_arrow()
+        .unwrap();
+    let reconciliation = cdf_contract::plan_schema_reconciliation(
+        physical_schema.as_ref(),
+        constraint.as_ref(),
+        &artifact_plan.compiled_schema_admission.type_policy,
+    )
+    .unwrap();
+    assert!(!reconciliation.errors.is_empty());
+    let fields = reconciliation
+        .errors
+        .into_iter()
+        .map(|error| {
+            let observed = physical_schema
+                .fields()
+                .iter()
+                .find(|field| {
+                    cdf_kernel::source_name(field.as_ref()).unwrap_or_else(|| field.name())
+                        == error.source_name
+                })
+                .map(|field| cdf_kernel::CanonicalArrowField::from_arrow(field.as_ref()))
+                .transpose()?;
+            let effective = constraint
+                .fields()
+                .iter()
+                .find(|field| {
+                    cdf_kernel::source_name(field.as_ref()).unwrap_or_else(|| field.name())
+                        == error.source_name
+                })
+                .map(|field| cdf_kernel::CanonicalArrowField::from_arrow(field.as_ref()))
+                .transpose()?;
+            cdf_kernel::SchemaObservationFieldQuarantine::new_field_path(
+                vec![error.source_name],
+                observed,
+                effective,
+                error.message,
+            )
+        })
+        .collect::<Result<Vec<_>>>()
+        .unwrap();
     let mut quarantine = cdf_kernel::TerminalSchemaObservationQuarantine::new(
         "month-07.parquet",
         physical_hash,
@@ -1078,24 +1206,7 @@ fn build_zero_segment_processed_package(package_dir: &Path, package_id: &str) ->
         "schema_observation_quarantined",
         cdf_kernel::SchemaObservationPolicy::Evolve,
         "publish a compatible source type, declare an allowed coercion, or repin the schema after review",
-        vec![
-            cdf_kernel::SchemaObservationFieldQuarantine::new_field_path(
-                vec!["id".to_owned()],
-                Some(
-                    cdf_kernel::CanonicalArrowField::from_arrow(physical_schema.field(0)).unwrap(),
-                ),
-                Some(
-                    cdf_kernel::CanonicalArrowField::from_arrow(&Field::new(
-                        "id",
-                        DataType::Int64,
-                        false,
-                    ))
-                    .unwrap(),
-                ),
-                "incompatible fixture schema",
-            )
-            .unwrap(),
-        ],
+        fields,
     )
     .unwrap();
     quarantine
@@ -1145,32 +1256,7 @@ fn write_compiled_expression_artifacts(
     duplicate_scan_observation: bool,
 ) {
     let schema = sample_batch(vec![], vec![]).schema();
-    let mut program = compile_validation_program(
-        &ContractPolicy::evolve(),
-        &ObservedSchema::from_arrow(schema.as_ref()),
-    )
-    .unwrap();
-    program.row_rules.clear();
-    program.transforms.clear();
-    let resource = ArtifactPlanResource::new(Arc::clone(&schema));
-    let mut plan = Planner::new()
-        .plan_tier_a(
-            &resource,
-            EnginePlanInput {
-                request: ScanRequest {
-                    resource_id: ResourceId::new("orders").unwrap(),
-                    projection: None,
-                    filters: Vec::new(),
-                    limit: None,
-                    order_by: Vec::new(),
-                    scope: ScopeKey::Resource,
-                },
-                validation_program: program,
-                execution_extent: ExecutionExtent::bounded(),
-                package_id: "artifact-test-package".to_owned(),
-            },
-        )
-        .unwrap();
+    let mut plan = artifact_expression_plan();
     if stale {
         plan.validation_program
             .compiled_expression_plan
@@ -1261,6 +1347,36 @@ fn write_compiled_expression_artifacts(
             )
             .unwrap();
     }
+}
+
+fn artifact_expression_plan() -> EnginePlan {
+    let schema = sample_batch(vec![], vec![]).schema();
+    let mut program = compile_validation_program(
+        &ContractPolicy::evolve(),
+        &ObservedSchema::from_arrow(schema.as_ref()),
+    )
+    .unwrap();
+    program.row_rules.clear();
+    program.transforms.clear();
+    let resource = ArtifactPlanResource::new(Arc::clone(&schema));
+    Planner::new()
+        .plan_tier_a(
+            &resource,
+            EnginePlanInput {
+                request: ScanRequest {
+                    resource_id: ResourceId::new("orders").unwrap(),
+                    projection: None,
+                    filters: Vec::new(),
+                    limit: None,
+                    order_by: Vec::new(),
+                    scope: ScopeKey::Resource,
+                },
+                validation_program: program,
+                execution_extent: ExecutionExtent::bounded(),
+                package_id: "artifact-test-package".to_owned(),
+            },
+        )
+        .unwrap()
 }
 
 struct ArtifactPlanResource {
@@ -2246,13 +2362,18 @@ fn compiled_test_source_plan(resource: &dyn QueryableResource) -> cdf_runtime::C
             quota_authority: None,
             canonical_order: true,
             bounded: true,
+            batch_memory: if resource.capabilities().incremental == IncrementalShape::File {
+                cdf_runtime::SourceBatchMemoryContract::Preaccounted
+            } else {
+                cdf_runtime::SourceBatchMemoryContract::FrontierReserved
+            },
             telemetry_version: "project-test-v1".to_owned(),
         },
         cdf_runtime::CompiledSourcePlanInput {
             descriptor: resource.descriptor().clone(),
             schema: resource.schema().as_ref().clone(),
-            type_policy_allowances: Default::default(),
-            effective_schema_runtime: None,
+            type_policy_allowances: resource.type_policy_allowances(),
+            effective_schema_runtime: resource.effective_schema_runtime().cloned(),
             redacted_options: serde_json::json!({}),
             physical_plan: serde_json::json!({"partitions": 2}),
         },
@@ -2475,6 +2596,20 @@ fn engine_output_with_positions(
     package_id: &str,
     positions: Vec<SourcePosition>,
 ) -> EngineRunOutputWithSegmentPositions {
+    engine_output_with_positions_and_checkpoint_eligibility(
+        package_dir,
+        package_id,
+        positions,
+        true,
+    )
+}
+
+fn engine_output_with_positions_and_checkpoint_eligibility(
+    package_dir: &Path,
+    package_id: &str,
+    positions: Vec<SourcePosition>,
+    checkpoint_eligible: bool,
+) -> EngineRunOutputWithSegmentPositions {
     let mut manifest = build_package(package_dir, package_id, PackageStatus::Packaged);
     let verification = PackageReader::open(package_dir)
         .unwrap()
@@ -2493,6 +2628,18 @@ fn engine_output_with_positions(
             segment
         })
         .collect::<Vec<_>>();
+    let processed_observations = positions
+        .iter()
+        .enumerate()
+        .map(|(index, position)| {
+            ProcessedObservationPosition::new(
+                format!("fixture-observation-{index}"),
+                ProcessedObservationOutcome::Admitted,
+                position.clone(),
+            )
+            .unwrap()
+        })
+        .collect();
     let segment_positions = segments
         .iter()
         .zip(positions)
@@ -2503,6 +2650,13 @@ fn engine_output_with_positions(
         })
         .collect();
     manifest.identity.segments = segments.clone();
+    let execution_evidence = cdf_engine::EngineExecutionEvidence::new(
+        processed_observations,
+        Vec::new(),
+        None,
+        checkpoint_eligible,
+    )
+    .unwrap();
     EngineRunOutputWithSegmentPositions::new(
         EngineRunOutput {
             manifest,
@@ -2513,6 +2667,7 @@ fn engine_output_with_positions(
             terminal_schema_quarantines: Vec::new(),
         },
         segment_positions,
+        execution_evidence,
     )
 }
 
@@ -3131,12 +3286,20 @@ fn live_file_run_post_receipt_failure_keeps_checkpoint_uncommitted_and_receipt_r
     let state_path = temp.path().join(".cdf/state.db");
     let pipeline_id = PipelineId::new("pipeline-live").unwrap();
     let hook = |_receipt: &Receipt| Err(CdfError::internal("injected live checkpoint failure"));
+    let source = compiled_test_source_plan(&resource);
+    let plan = live_plan(&resource, package_id)
+        .bind_compiled_source(&source)
+        .unwrap();
+    let bound = BoundTestResource {
+        inner: &resource,
+        compiled_source_plan_hash: cdf_runtime::artifact_hash(&source).unwrap(),
+    };
 
     let error = futures_executor::block_on(run_local_file_to_duckdb_checkpoint(
         LocalFileDuckDbRunRequest {
             services: test_execution_services(),
-            resource: &resource,
-            plan: live_plan(&resource, package_id),
+            resource: &bound,
+            plan,
             package_root: package_root.clone(),
             destination_path: duckdb_path.clone(),
             state_store_path: state_path.clone(),
@@ -4238,6 +4401,11 @@ fn trust_ring_explicit_anomaly_fact_demotes_sampled_fast_path() {
             threshold: "3.0".to_owned(),
             window: "last_5_committed_packages".to_owned(),
         });
+    let anomaly_program = anomaly.plan.validation_program.clone();
+    anomaly
+        .plan
+        .rebind_validation_program(anomaly_program, resource.schema().as_ref())
+        .unwrap();
     let report = futures_executor::block_on(run_project(anomaly)).unwrap();
     let transition = report
         .ledger_snapshot
@@ -4522,11 +4690,17 @@ fn project_run_records_non_mirror_outcome_for_unsupported_quarantine_sheet() {
         live_plan_with_policy(&resource, package_id, &policy).validation_program;
     plan.rebind_validation_program(validation_program, resource.schema().as_ref())
         .unwrap();
+    let source = compiled_test_source_plan(&resource);
+    plan = plan.bind_compiled_source(&source).unwrap();
+    let bound = BoundTestResource {
+        inner: &resource,
+        compiled_source_plan_hash: cdf_runtime::artifact_hash(&source).unwrap(),
+    };
 
     let report = futures_executor::block_on(run_local_file_to_duckdb_checkpoint(
         LocalFileDuckDbRunRequest {
             services: test_execution_services(),
-            resource: &resource,
+            resource: &bound,
             plan,
             package_root: package_root.clone(),
             destination_path: duckdb_path,
@@ -4933,7 +5107,7 @@ fn general_project_run_rejects_unsupported_postgres_schema_before_writes() {
         return;
     };
     let temp = tempfile::tempdir().unwrap();
-    let resource = simple_file_resource(temp.path(), POSTGRES_UNSUPPORTED_FILE_RESOURCE);
+    let resource = BackfillMockResource::postgres_unsupported_schema();
     let package_id = "pkg-general-postgres-unsupported-schema";
     let package_root = temp.path().join(".cdf/packages");
     let state_path = temp.path().join(".cdf/state.db");
@@ -4975,6 +5149,7 @@ fn general_project_run_rejects_unsupported_postgres_schema_before_writes() {
         .get(0);
     assert!(target_exists.is_none());
     assert!(loads_exists.is_none());
+    assert_eq!(resource.open_count.load(Ordering::SeqCst), 0);
 }
 
 #[test]
@@ -5580,7 +5755,7 @@ fn general_project_run_rejects_sql_empty_secret_inside_source_lifecycle_before_d
     let duckdb_path = temp.path().join(".cdf/dev.duckdb");
     let state_path = temp.path().join(".cdf/state.db");
 
-    let error = futures_executor::block_on(run_project_with_execution_services(
+    let error = futures_executor::block_on(run_project_fixture(
         ProjectRunRequest {
             resource: ProjectRunSource::sql(&resource),
             plan: live_plan(resource.compiled(), package_id),
@@ -5599,6 +5774,7 @@ fn general_project_run_rejects_sql_empty_secret_inside_source_lifecycle_before_d
             after_receipt_verified: None,
         },
         &services,
+        RunTelemetryConfig::disabled(),
     ))
     .unwrap_err();
 
@@ -5872,6 +6048,34 @@ fn live_file_run_rejects_plan_package_id_mismatch_before_writes() {
 }
 
 #[test]
+fn state_delta_rejects_partial_execution_even_with_an_earlier_complete_observation() {
+    let temp = tempfile::tempdir().unwrap();
+    let resource = live_file_resource(temp.path());
+    let output = engine_output_with_positions_and_checkpoint_eligibility(
+        &temp.path().join("pkg-partial-state"),
+        "pkg-partial-state",
+        vec![file_position("/tmp/cdf/partial.ndjson")],
+        false,
+    );
+    let request = state_delta_request(&resource, "pkg-partial-state", temp.path());
+
+    let error = state_delta_from_run(
+        &request,
+        &output,
+        &SchemaHash::new(SCHEMA_HASH).unwrap(),
+        &resource.descriptor().state_scope,
+        None,
+    )
+    .unwrap_err();
+
+    assert!(
+        error
+            .message
+            .contains("partial or limited source execution")
+    );
+}
+
+#[test]
 fn state_delta_aggregates_file_manifest_positions_deterministically() {
     let temp = tempfile::tempdir().unwrap();
     let resource = live_file_resource(temp.path());
@@ -6074,7 +6278,7 @@ fn state_delta_normalizes_file_manifest_entries_for_file_scope() {
 }
 
 #[test]
-fn state_delta_window_closes_timestamp_cursor_positions() {
+fn state_delta_joins_already_closed_timestamp_cursor_positions_without_second_lag() {
     let temp = tempfile::tempdir().unwrap();
     let resource = rest_cursor_runtime_resource(
         "updated_at",
@@ -6111,7 +6315,7 @@ fn state_delta_window_closes_timestamp_cursor_positions() {
         cursor_position(
             "updated_at",
             CursorValue::TimestampMicros {
-                micros: 300_000_000,
+                micros: 600_000_000,
                 timezone: Some("UTC".to_owned()),
             },
         )
@@ -6139,7 +6343,7 @@ fn state_delta_window_closes_timestamp_cursor_positions() {
 }
 
 #[test]
-fn state_delta_window_closes_date_cursor_positions() {
+fn state_delta_joins_already_closed_date_cursor_positions_without_second_lag() {
     let temp = tempfile::tempdir().unwrap();
     let resource = rest_cursor_runtime_resource(
         "event_day",
@@ -6161,7 +6365,7 @@ fn state_delta_window_closes_date_cursor_positions() {
 
     assert_eq!(
         delta.output_position,
-        cursor_position("event_day", CursorValue::I64(7))
+        cursor_position("event_day", CursorValue::I64(9))
     );
     assert_eq!(
         delta.segments[0].output_position,
@@ -6255,7 +6459,7 @@ fn state_delta_rejects_divergent_non_file_source_position_variants() {
 }
 
 #[test]
-fn state_delta_rejects_incompatible_cursor_fields_values_and_lag() {
+fn state_delta_rejects_incompatible_cursor_fields_and_values_but_never_reapplies_lag() {
     let temp = tempfile::tempdir().unwrap();
     let numeric_resource = rest_cursor_runtime_resource(
         "updated_at",
@@ -6304,16 +6508,16 @@ fn state_delta_rejects_incompatible_cursor_fields_values_and_lag() {
         "best_effort",
         "5ms",
     );
-    let lag_error = state_delta_for_positions(
+    let delta = state_delta_for_positions(
         &unsigned_resource,
         temp.path(),
-        "pkg-state-delta-incompatible-cursor-lag",
+        "pkg-state-delta-closed-unsigned-cursor",
         vec![cursor_position("updated_at", CursorValue::U64(3))],
     )
-    .unwrap_err();
-    assert!(
-        lag_error.to_string().contains("incompatible cursor lag"),
-        "{lag_error}"
+    .unwrap();
+    assert_eq!(
+        delta.output_position,
+        cursor_position("updated_at", CursorValue::U64(3))
     );
 }
 

@@ -199,9 +199,15 @@ impl CanonicalSegmentAssembler {
             let oversized = batch_rows > u64::from(self.policy.maximum_rows)
                 || batch_bytes > self.policy.maximum_bytes;
             if oversized && slice_position.is_none() {
-                return Err(CdfError::data(
-                    "oversized positioned batch requires exact slice-position authority",
-                ));
+                // The source position describes the complete input batch and cannot be invented
+                // for row slices. Preserve exact authority by emitting one conservative oversized
+                // segment rather than rejecting valid data or advancing a fabricated cursor.
+                self.push_exact_positioned_batch(batch, batch_bytes, lease.as_ref())?;
+                emitted.push(
+                    self.flush()?
+                        .expect("positioned batch appended one segment"),
+                );
+                return Ok(emitted);
             }
             if !oversized {
                 self.push_chunk(batch, batch_bytes, lease.as_ref())?;
@@ -291,6 +297,30 @@ impl CanonicalSegmentAssembler {
         logical_bytes: u64,
         lease: Option<&MemoryLease>,
     ) -> Result<()> {
+        self.push_chunk_inner(chunk, logical_bytes, lease, false)
+    }
+
+    fn push_exact_positioned_batch(
+        &mut self,
+        chunk: RecordBatch,
+        logical_bytes: u64,
+        lease: Option<&MemoryLease>,
+    ) -> Result<()> {
+        if self.rows != 0 || self.output_position.is_none() {
+            return Err(CdfError::internal(
+                "exact oversized batch requires an empty positioned segment",
+            ));
+        }
+        self.push_chunk_inner(chunk, logical_bytes, lease, true)
+    }
+
+    fn push_chunk_inner(
+        &mut self,
+        chunk: RecordBatch,
+        logical_bytes: u64,
+        lease: Option<&MemoryLease>,
+        allow_exact_oversize: bool,
+    ) -> Result<()> {
         let rows = u64::try_from(chunk.num_rows())
             .map_err(|_| CdfError::data("canonical segment rows exceed u64"))?;
         let retained_bytes = u64::try_from(chunk.get_array_memory_size())
@@ -303,8 +333,9 @@ impl CanonicalSegmentAssembler {
             .logical_bytes
             .checked_add(logical_bytes)
             .ok_or_else(|| CdfError::data("canonical segment logical bytes overflow"))?;
-        if self.rows > u64::from(self.policy.maximum_rows)
-            || self.logical_bytes > self.policy.maximum_bytes
+        if !allow_exact_oversize
+            && (self.rows > u64::from(self.policy.maximum_rows)
+                || self.logical_bytes > self.policy.maximum_bytes)
         {
             return Err(CdfError::data(
                 "canonical segment exceeds the plan row/byte maximum",
@@ -994,19 +1025,20 @@ mod tests {
     }
 
     #[test]
-    fn positioned_oversize_requires_slice_authority_instead_of_inventing_cursor() {
+    fn positioned_oversize_preserves_one_exact_conservative_boundary() {
         let mut assembler = CanonicalSegmentAssembler::new(test_policy(), 0).unwrap();
-        let error = assembler
-            .push(
-                batch(&[1, 2, 3, 4, 5]),
-                Some(SourcePosition::Cursor(CursorPosition {
-                    version: 1,
-                    field: "id".to_owned(),
-                    value: CursorValue::U64(5),
-                })),
-            )
-            .unwrap_err();
-        assert!(error.message.contains("slice-position authority"));
+        let position = SourcePosition::Cursor(CursorPosition {
+            version: 1,
+            field: "id".to_owned(),
+            value: CursorValue::U64(5),
+        });
+        let segments = assembler
+            .push(batch(&[1, 2, 3, 4, 5]), Some(position.clone()))
+            .unwrap();
+        assert_eq!(segments.len(), 1);
+        assert_eq!(segments[0].row_count, 5);
+        assert_eq!(segments[0].output_position.as_ref(), Some(&position));
+        assert!(assembler.finish().unwrap().is_empty());
     }
 
     #[test]

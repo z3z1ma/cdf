@@ -809,6 +809,7 @@ fn execution_capabilities() -> SourceExecutionCapabilities {
         quota_authority: None,
         canonical_order: true,
         bounded: true,
+        batch_memory: cdf_runtime::SourceBatchMemoryContract::Preaccounted,
         telemetry_version: "v1".to_owned(),
     }
 }

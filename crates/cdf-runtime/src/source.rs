@@ -299,6 +299,15 @@ pub enum SourceAttestationStrength {
     Snapshot,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SourceBatchMemoryContract {
+    /// Every emitted in-memory batch already carries a lease covering its complete retained payload.
+    Preaccounted,
+    /// The runtime must reserve the compiled maximum before polling and bind it to the emitted batch.
+    FrontierReserved,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SourceExecutionCapabilities {
     pub minimum_poll_bytes: u64,
@@ -323,6 +332,7 @@ pub struct SourceExecutionCapabilities {
     pub quota_authority: Option<String>,
     pub canonical_order: bool,
     pub bounded: bool,
+    pub batch_memory: SourceBatchMemoryContract,
     pub telemetry_version: String,
 }
 
@@ -359,6 +369,13 @@ impl SourceExecutionCapabilities {
         {
             return Err(CdfError::contract(
                 "source retry requires idempotent and reopenable reads",
+            ));
+        }
+        if self.retry_granularity != SourceRetryGranularity::None
+            && self.batch_memory != SourceBatchMemoryContract::Preaccounted
+        {
+            return Err(CdfError::contract(
+                "retryable source streams must preaccount emitted batches before the scheduler probes their first item",
             ));
         }
         if self.retry_granularity != SourceRetryGranularity::None
@@ -647,6 +664,10 @@ impl CompiledSourceExecutionPlan {
 
     pub fn compiled_source_plan_hash(&self) -> &str {
         &self.compiled_source_plan_hash
+    }
+
+    pub fn batch_memory_contract(&self) -> SourceBatchMemoryContract {
+        self.execution_capabilities.batch_memory
     }
 }
 

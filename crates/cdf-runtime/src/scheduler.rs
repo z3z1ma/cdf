@@ -488,10 +488,13 @@ pub fn resolve_effective_jobs(
             limiting_factors: vec!["no_partitions".to_owned()],
         });
     }
+    // Admission is a safety bound, not a throughput estimate. Every admitted source may retain
+    // its compiled maximum while the canonical head is stalled, so sizing from the minimum can
+    // admit a frontier that cannot make forward progress under the memory ledger.
     let working_set = source
-        .minimum_poll_bytes
-        .checked_add(source.minimum_decode_bytes)
-        .ok_or_else(|| CdfError::contract("source minimum working set overflowed u64"))?;
+        .maximum_poll_bytes
+        .checked_add(source.maximum_decode_bytes)
+        .ok_or_else(|| CdfError::contract("source maximum working set overflowed u64"))?;
     let memory_jobs =
         u16::try_from((ceilings.managed_memory_bytes / working_set).min(u64::from(u16::MAX)))
             .unwrap_or(u16::MAX);
@@ -854,12 +857,13 @@ mod tests {
             quota_authority: None,
             canonical_order: true,
             bounded: true,
+            batch_memory: crate::SourceBatchMemoryContract::Preaccounted,
             telemetry_version: "v1".to_owned(),
         };
         let ceilings = AdmissionCeilings {
             configured_jobs: Some(7),
             container_cpu_slots: 16,
-            managed_memory_bytes: 120,
+            managed_memory_bytes: 1_000,
             transport_connections: Some(5),
             destination_writers: Some(4),
             lane_concurrency: None,
@@ -870,8 +874,18 @@ mod tests {
         assert_eq!(resolution.limiting_factors, vec!["checkpoint_scope"]);
 
         let mut too_small = ceilings;
-        too_small.managed_memory_bytes = 19;
+        too_small.managed_memory_bytes = 199;
         assert!(resolve_effective_jobs(1, &source, &too_small).is_err());
+
+        let mut unaccounted_retry = source.clone();
+        unaccounted_retry.batch_memory = crate::SourceBatchMemoryContract::FrontierReserved;
+        assert!(
+            unaccounted_retry
+                .validate()
+                .unwrap_err()
+                .message
+                .contains("must preaccount")
+        );
 
         let mut unit_only = source;
         unit_only.retry_granularity = crate::SourceRetryGranularity::Unit;

@@ -399,8 +399,7 @@ impl ByteSource for GrowingSpoolByteSource {
                                     .to_owned(),
                             ),
                             GrowingSpoolTerminal::Running
-                                if extent.start
-                                    >= size_bytes.saturating_sub(self.tail_range_bytes) =>
+                                if end == size_bytes && extent.length <= self.tail_range_bytes =>
                             {
                                 GrowingReadDecision::GenerationBoundTail
                             }
@@ -642,7 +641,15 @@ mod tests {
                     assert_eq!(tail.payload(), &payload[88..96]);
                     assert_eq!(range_reads.load(Ordering::Relaxed), 1);
 
-                    let middle = {
+                    let (middle, near_tail) = {
+                        let near_tail = session
+                            .source
+                            .read_exact_range(ByteExtent::new(80, 8)?, RunCancellation::default());
+                        futures_util::pin_mut!(near_tail);
+                        assert!(matches!(
+                            futures_util::poll!(near_tail.as_mut()),
+                            Poll::Pending
+                        ));
                         let middle = session
                             .source
                             .read_exact_range(ByteExtent::new(40, 8)?, RunCancellation::default());
@@ -652,9 +659,10 @@ mod tests {
                             Poll::Pending
                         ));
                         continuation.add_permits(2);
-                        middle.await?
+                        (middle.await?, near_tail.await?)
                     };
                     assert_eq!(middle.payload(), &payload[40..48]);
+                    assert_eq!(near_tail.payload(), &payload[80..88]);
                     assert_eq!(range_reads.load(Ordering::Relaxed), 1);
                     completion.await.map_err(|error| {
                         CdfError::internal(format!("join test spool: {error}"))
@@ -662,6 +670,7 @@ mod tests {
                     drop(prefix);
                     drop(tail);
                     drop(middle);
+                    drop(near_tail);
                     drop(session.source);
                     drop(session.retention);
                     Ok::<_, CdfError>(())

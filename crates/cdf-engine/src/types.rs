@@ -1526,16 +1526,7 @@ pub struct EngineExecutionEvidence {
     version: u16,
     processed_observations: Vec<ProcessedObservationPosition>,
     source_retries: Vec<cdf_runtime::SourceRetryEvidence>,
-}
-
-impl Default for EngineExecutionEvidence {
-    fn default() -> Self {
-        Self {
-            version: ENGINE_EXECUTION_EVIDENCE_VERSION,
-            processed_observations: Vec::new(),
-            source_retries: Vec::new(),
-        }
-    }
+    checkpoint_eligible: bool,
 }
 
 impl EngineExecutionEvidence {
@@ -1543,6 +1534,7 @@ impl EngineExecutionEvidence {
         mut processed_observations: Vec<ProcessedObservationPosition>,
         mut source_retries: Vec<cdf_runtime::SourceRetryEvidence>,
         partition_schedule: Option<&cdf_runtime::CanonicalPartitionSchedule>,
+        checkpoint_eligible: bool,
     ) -> cdf_kernel::Result<Self> {
         processed_observations
             .sort_by(|left, right| left.observation_id.cmp(&right.observation_id));
@@ -1576,6 +1568,7 @@ impl EngineExecutionEvidence {
             version: ENGINE_EXECUTION_EVIDENCE_VERSION,
             processed_observations,
             source_retries,
+            checkpoint_eligible,
         })
     }
 
@@ -1590,6 +1583,10 @@ impl EngineExecutionEvidence {
     pub fn source_retries(&self) -> &[cdf_runtime::SourceRetryEvidence] {
         &self.source_retries
     }
+
+    pub fn checkpoint_eligible(&self) -> bool {
+        self.checkpoint_eligible
+    }
 }
 
 #[non_exhaustive]
@@ -1602,12 +1599,16 @@ pub struct EngineRunOutputWithSegmentPositions {
 }
 
 impl EngineRunOutputWithSegmentPositions {
-    pub fn new(output: EngineRunOutput, segment_positions: Vec<EngineSegmentPosition>) -> Self {
+    pub fn new(
+        output: EngineRunOutput,
+        segment_positions: Vec<EngineSegmentPosition>,
+        execution_evidence: EngineExecutionEvidence,
+    ) -> Self {
         Self {
             output,
             segment_positions,
             phase_metrics: Vec::new(),
-            execution_evidence: EngineExecutionEvidence::default(),
+            execution_evidence,
         }
     }
 

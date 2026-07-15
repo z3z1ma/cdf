@@ -18,7 +18,7 @@ pub(super) fn write_run_state_commit_artifacts(
         context,
         draft.segments,
         draft.segment_positions,
-        draft.execution_evidence().processed_observations(),
+        draft.execution_evidence(),
         schema_hash,
         scope,
         head.as_ref(),
@@ -166,7 +166,7 @@ pub(crate) fn state_delta_from_run(
         &context,
         &output.output.segments,
         &output.segment_positions,
-        output.execution_evidence().processed_observations(),
+        output.execution_evidence(),
         schema_hash,
         scope,
         head,
@@ -180,11 +180,16 @@ fn state_delta_preimage_from_run_draft(
     context: &StateCommitArtifactContext<'_>,
     segments: &[SegmentEntry],
     segment_positions: &[cdf_engine::EngineSegmentPosition],
-    processed_observations: &[cdf_kernel::ProcessedObservationPosition],
+    execution_evidence: &cdf_engine::EngineExecutionEvidence,
     schema_hash: &SchemaHash,
     scope: &ScopeKey,
     head: Option<&Checkpoint>,
 ) -> Result<StateDeltaPreimage> {
+    if !execution_evidence.checkpoint_eligible() {
+        return Err(CdfError::data(
+            "checkpoint state requires complete source execution; a partial or limited source execution cannot advance state",
+        ));
+    }
     let positions = segment_positions_by_id(segments, segment_positions)?;
     let mut segment_evidence = Vec::with_capacity(segments.len());
 
@@ -208,22 +213,23 @@ fn state_delta_preimage_from_run_draft(
         segment_evidence.push((segment, segment_position));
     }
 
-    let output_positions = if processed_observations.is_empty() {
-        segment_evidence
-            .iter()
-            .map(|(_, position)| position.clone())
-            .collect::<Vec<_>>()
-    } else {
-        processed_observations
-            .iter()
-            .map(|observation| observation.source_position.clone())
-            .collect::<Vec<_>>()
-    };
-    let output_position = cdf_kernel::aggregate_resource_output_position(
+    if execution_evidence.processed_observations().is_empty() {
+        return Err(CdfError::data(
+            "checkpoint state requires complete processed-observation evidence; a partial or limited source execution cannot advance state",
+        ));
+    }
+    let observed_positions = execution_evidence
+        .processed_observations()
+        .iter()
+        .map(|observation| {
+            normalize_source_position_for_scope(observation.source_position.clone(), scope)
+        })
+        .collect::<Vec<_>>();
+    let output_position = cdf_kernel::aggregate_resource_closed_output_position(
         context.descriptor,
         context.schema,
         head.map(|checkpoint| &checkpoint.delta.output_position),
-        &output_positions,
+        &observed_positions,
     )?;
     let state_segments = segment_evidence
         .into_iter()

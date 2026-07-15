@@ -586,6 +586,7 @@ mod tests {
             quota_authority: None,
             canonical_order: true,
             bounded: true,
+            batch_memory: crate::SourceBatchMemoryContract::Preaccounted,
             telemetry_version: "v1".to_owned(),
         }
     }

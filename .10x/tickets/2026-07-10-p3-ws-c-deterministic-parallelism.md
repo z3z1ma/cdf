@@ -13,7 +13,7 @@ Execute logical file, row-group, window, and other safe partitions concurrently 
 ## Activated children
 
 - `.10x/tickets/done/2026-07-11-p3-c1-scheduler-admission-contract.md`
-- `.10x/tickets/2026-07-11-p3-c2-parallel-frontier-execution.md`
+- `.10x/tickets/done/2026-07-11-p3-c2-parallel-frontier-execution.md`
 - `.10x/tickets/2026-07-11-p3-c3-engine-ffi-parallel-integration.md`
 - `.10x/tickets/2026-07-11-p3-c4-jobs-invariance-scaling-matrix.md`
 - `.10x/tickets/2026-07-11-p3-c5-isolated-worker-equivalence.md`
@@ -28,7 +28,11 @@ Execute logical file, row-group, window, and other safe partitions concurrently 
 
 ## Blockers
 
-C1 admission, the injected execution host, memory ledger, and WS-L baseline are complete. C2 production frontier execution is next; SX1's compiler/discovery hooks and A3 closure evidence continue independently where their active tickets specify.
+C1 admission, the injected execution host, memory ledger, WS-L baseline, and C2 production frontier are complete. C3's shared CPU/FFI admission integration is the next dependency-critical leaf; its completion unlocks C4's permanent jobs-invariance and scaling matrix.
+
+## Progress and notes
+
+- 2026-07-14: Closed C2 after the source-neutral canonical frontier passed a fresh significant-only review and 537 affected-graph tests. The active-ticket directory fell from 85 to 84 records (15 active, 63 open, 6 blocked), with 299 tickets now done. C3 is activated next because it is the only remaining dependency before C4 can exercise the system-wide jobs-invariance/scaling matrix.
 
 ## References
 

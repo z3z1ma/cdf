@@ -982,6 +982,7 @@ impl SourceDriver for MockSourceDriver {
                 quota_authority: Some("mock-account".to_owned()),
                 canonical_order: true,
                 bounded: true,
+                batch_memory: SourceBatchMemoryContract::Preaccounted,
                 telemetry_version: "v1".to_owned(),
             },
             CompiledSourcePlanInput {
