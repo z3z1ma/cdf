@@ -1,10 +1,14 @@
-use std::io::Read;
+use std::{
+    fs::OpenOptions,
+    io::{Read, Write},
+};
 
 use crate::*;
 use futures_util::TryStreamExt;
 
 const MULTIPART_CHUNK_BYTES: usize = 8 * 1024 * 1024;
 const MULTIPART_CONCURRENCY: usize = 4;
+const VERIFY_RANGE_BYTES: u64 = 64 * 1024 * 1024;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct StoredObject {
@@ -19,9 +23,27 @@ pub(crate) struct ListedObject {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ObjectDigest {
+    pub(crate) byte_count: u64,
+    pub(crate) sha256: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum CreateObjectOutcome {
     Created(StoredObject),
     AlreadyExists,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct VersionedObject {
+    pub(crate) bytes: Vec<u8>,
+    version: UpdateVersion,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum CompareAndSwapOutcome {
+    Written(StoredObject),
+    Conflict,
 }
 
 #[derive(Clone)]
@@ -29,6 +51,7 @@ pub(crate) struct StoreClient {
     store: Arc<dyn ObjectStore>,
     root_prefix: String,
     local_root: Option<PathBuf>,
+    registry_namespace: String,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -62,6 +85,9 @@ impl StoreClient {
         fs::create_dir_all(root).map_err(|error| {
             CdfError::destination(format!("create {}: {error}", root.display()))
         })?;
+        let canonical_root = fs::canonicalize(root).map_err(|error| {
+            CdfError::destination(format!("canonicalize {}: {error}", root.display()))
+        })?;
         let store = LocalFileSystem::new_with_prefix(root)
             .map(|store| store.with_fsync(true))
             .map_err(|error| {
@@ -70,20 +96,43 @@ impl StoreClient {
         Ok(Self {
             store: Arc::new(store),
             root_prefix: String::new(),
-            local_root: Some(root.to_path_buf()),
+            local_root: Some(canonical_root.clone()),
+            registry_namespace: format!("file:{}", canonical_root.display()),
         })
     }
 
     pub(crate) fn new_object_store(
         store: Arc<dyn ObjectStore>,
+        store_identity: impl Into<String>,
         root_prefix: impl Into<String>,
     ) -> Result<Self> {
+        let store_identity = store_identity.into();
+        if store_identity.trim().is_empty() || store_identity.chars().any(char::is_control) {
+            return Err(CdfError::contract(
+                "object store identity must be nonempty and contain no control characters",
+            ));
+        }
         let root_prefix = normalize_prefix(root_prefix.into())?;
+        let registry_namespace = format!("object-store:{store_identity}:{root_prefix}");
         Ok(Self {
             store,
             root_prefix,
             local_root: None,
+            registry_namespace,
         })
+    }
+
+    pub(crate) fn staging_registry_key(
+        &self,
+        target: &TargetName,
+        attempt_id: &cdf_runtime::LoadAttemptId,
+    ) -> String {
+        format!(
+            "{}:{}:{}",
+            self.registry_namespace,
+            target.as_str(),
+            attempt_id.as_str()
+        )
     }
 
     pub(crate) fn staging_file(&self) -> Result<tempfile::NamedTempFile> {
@@ -340,6 +389,180 @@ impl StoreClient {
             .ok_or_else(|| CdfError::data(format!("object {key} is missing")))
     }
 
+    pub(crate) fn get_optional_versioned(
+        &self,
+        execution: &cdf_runtime::ExecutionServices,
+        key: &str,
+    ) -> Result<Option<VersionedObject>> {
+        let path = self.path(key)?;
+        let store = Arc::clone(&self.store);
+        let key = key.to_owned();
+        execution.run_io(async move {
+            match store.get(&path).await {
+                Ok(result) => {
+                    let version = UpdateVersion {
+                        e_tag: result.meta.e_tag.clone(),
+                        version: result.meta.version.clone(),
+                    };
+                    result
+                        .bytes()
+                        .await
+                        .map(|bytes| {
+                            Some(VersionedObject {
+                                bytes: bytes.to_vec(),
+                                version,
+                            })
+                        })
+                        .map_err(|error| store_error(format!("read {key}"), error))
+                }
+                Err(object_store::Error::NotFound { .. }) => Ok(None),
+                Err(error) => Err(store_error(format!("get {key}"), error)),
+            }
+        })
+    }
+
+    /// Atomically replaces one small control object iff `expected` is still current.
+    ///
+    /// Local filesystems serialize cooperating processes through a persistent advisory lock and
+    /// publish with a same-directory durable rename. Remote stores use the provider's generation
+    /// precondition. A provider that cannot honor conditional update fails closed.
+    pub(crate) fn compare_and_swap(
+        &self,
+        execution: &cdf_runtime::ExecutionServices,
+        key: &str,
+        expected: Option<&VersionedObject>,
+        replacement: Vec<u8>,
+    ) -> Result<CompareAndSwapOutcome> {
+        if let Some(root) = &self.local_root {
+            return self.compare_and_swap_local(root, key, expected, replacement);
+        }
+        let byte_count = replacement.len() as u64;
+        let path = self.path(key)?;
+        let mode = match expected {
+            Some(expected) => PutMode::Update(expected.version.clone()),
+            None => PutMode::Create,
+        };
+        let options = PutOptions {
+            mode,
+            ..PutOptions::default()
+        };
+        let store = Arc::clone(&self.store);
+        let operation = format!("compare-and-swap {key}");
+        match execution.run_io(async move {
+            Ok(store
+                .put_opts(&path, PutPayload::from(replacement), options)
+                .await)
+        })? {
+            Ok(put) => Ok(CompareAndSwapOutcome::Written(StoredObject {
+                byte_count,
+                e_tag: put.e_tag,
+            })),
+            Err(object_store::Error::AlreadyExists { .. })
+            | Err(object_store::Error::Precondition { .. })
+            | Err(object_store::Error::NotFound { .. }) => Ok(CompareAndSwapOutcome::Conflict),
+            Err(error) => Err(store_error(operation, error)),
+        }
+    }
+
+    fn compare_and_swap_local(
+        &self,
+        root: &Path,
+        key: &str,
+        expected: Option<&VersionedObject>,
+        replacement: Vec<u8>,
+    ) -> Result<CompareAndSwapOutcome> {
+        let destination = root.join(self.path(key)?.as_ref());
+        let parent = destination.parent().ok_or_else(|| {
+            CdfError::destination(format!(
+                "Parquet control object {} has no parent directory",
+                destination.display()
+            ))
+        })?;
+        fs::create_dir_all(parent).map_err(|error| {
+            CdfError::destination(format!("create {}: {error}", parent.display()))
+        })?;
+        let filename = destination
+            .file_name()
+            .and_then(std::ffi::OsStr::to_str)
+            .ok_or_else(|| CdfError::destination("Parquet control object filename is invalid"))?;
+        let lock_path = parent.join(format!(".{filename}.cdf-cas.lock"));
+        let lock = OpenOptions::new()
+            .create(true)
+            .read(true)
+            .write(true)
+            .truncate(false)
+            .open(&lock_path)
+            .map_err(|error| {
+                CdfError::destination(format!("open {}: {error}", lock_path.display()))
+            })?;
+        lock.lock().map_err(|error| {
+            CdfError::destination(format!("lock {}: {error}", lock_path.display()))
+        })?;
+        let observed = match fs::read(&destination) {
+            Ok(bytes) => Some(bytes),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+            Err(error) => {
+                return Err(CdfError::destination(format!(
+                    "read {}: {error}",
+                    destination.display()
+                )));
+            }
+        };
+        if observed.as_deref() != expected.map(|expected| expected.bytes.as_slice()) {
+            return Ok(CompareAndSwapOutcome::Conflict);
+        }
+        let byte_count = replacement.len() as u64;
+        let mut temporary = tempfile::NamedTempFile::new_in(parent).map_err(|error| {
+            CdfError::destination(format!(
+                "create control object under {}: {error}",
+                parent.display()
+            ))
+        })?;
+        temporary.write_all(&replacement).map_err(|error| {
+            CdfError::destination(format!(
+                "write control object {}: {error}",
+                destination.display()
+            ))
+        })?;
+        temporary.as_file().sync_all().map_err(|error| {
+            CdfError::destination(format!(
+                "sync control object {}: {error}",
+                destination.display()
+            ))
+        })?;
+        match expected {
+            Some(_) => temporary.persist(&destination).map_err(|error| {
+                CdfError::destination(format!(
+                    "atomically replace {}: {}",
+                    destination.display(),
+                    error.error
+                ))
+            })?,
+            None => match temporary.persist_noclobber(&destination) {
+                Ok(file) => file,
+                Err(error) if error.error.kind() == std::io::ErrorKind::AlreadyExists => {
+                    return Ok(CompareAndSwapOutcome::Conflict);
+                }
+                Err(error) => {
+                    return Err(CdfError::destination(format!(
+                        "atomically create {}: {}",
+                        destination.display(),
+                        error.error
+                    )));
+                }
+            },
+        };
+        fs::File::open(parent)
+            .and_then(|directory| directory.sync_all())
+            .map_err(|error| {
+                CdfError::destination(format!("sync {}: {error}", parent.display()))
+            })?;
+        Ok(CompareAndSwapOutcome::Written(StoredObject {
+            byte_count,
+            e_tag: None,
+        }))
+    }
+
     pub(crate) fn exists(
         &self,
         execution: &cdf_runtime::ExecutionServices,
@@ -352,6 +575,77 @@ impl StoreClient {
             Err(object_store::Error::NotFound { .. }) => Ok(false),
             Err(error) => Err(store_error(format!("head {key}"), error)),
         }
+    }
+
+    pub(crate) fn digest(
+        &self,
+        execution: &cdf_runtime::ExecutionServices,
+        key: &str,
+    ) -> Result<ObjectDigest> {
+        if let Some(root) = &self.local_root {
+            let path = root.join(self.path(key)?.as_ref());
+            let byte_count = match fs::metadata(&path) {
+                Ok(metadata) => metadata.len(),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                    return Err(CdfError::data(format!("object {key} is missing")));
+                }
+                Err(error) => {
+                    return Err(CdfError::destination(format!(
+                        "inspect {}: {error}",
+                        path.display()
+                    )));
+                }
+            };
+            return Ok(ObjectDigest {
+                byte_count,
+                sha256: sha256_file(&path)?,
+            });
+        }
+        let path = self.path(key)?;
+        let store = Arc::clone(&self.store);
+        let memory = execution.memory();
+        let key = key.to_owned();
+        execution.run_io(async move {
+            let metadata = match store.head(&path).await {
+                Ok(metadata) => metadata,
+                Err(object_store::Error::NotFound { .. }) => {
+                    return Err(CdfError::data(format!("object {key} is missing")));
+                }
+                Err(error) => return Err(store_error(format!("head {key}"), error)),
+            };
+            let reserved_bytes = metadata.size.clamp(1, VERIFY_RANGE_BYTES);
+            let request = cdf_memory::ReservationRequest::new(
+                cdf_memory::ConsumerKey::new(
+                    "parquet-object-verification",
+                    cdf_memory::MemoryClass::Destination,
+                )?,
+                reserved_bytes,
+            )?
+            .as_minimum_working_set();
+            let _lease = cdf_memory::reserve(memory, request).await?;
+            let mut hash = Sha256::new();
+            let mut offset = 0_u64;
+            while offset < metadata.size {
+                let end = offset.saturating_add(VERIFY_RANGE_BYTES).min(metadata.size);
+                let bytes = store
+                    .get_range(&path, offset..end)
+                    .await
+                    .map_err(|error| store_error(format!("read {key} at {offset}..{end}"), error))?;
+                let observed = u64::try_from(bytes.len())
+                    .map_err(|_| CdfError::destination("verification range exceeds u64"))?;
+                if observed != end.saturating_sub(offset) {
+                    return Err(CdfError::destination(format!(
+                        "object {key} returned {observed} bytes for verification range {offset}..{end}"
+                    )));
+                }
+                hash.update(&bytes);
+                offset = end;
+            }
+            Ok(ObjectDigest {
+                byte_count: metadata.size,
+                sha256: hex::encode(hash.finalize()),
+            })
+        })
     }
 
     pub(crate) fn etag(
@@ -494,10 +788,8 @@ impl StoreClient {
             Ok(()) => {}
             Err(object_store::Error::AlreadyExists { .. })
             | Err(object_store::Error::Precondition { .. }) => {
-                let bytes = self.get_required(execution, destination_key)?;
-                if u64::try_from(bytes.len()).ok() != Some(expected_bytes)
-                    || hex::encode(Sha256::digest(&bytes)) != expected_sha256
-                {
+                let digest = self.digest(execution, destination_key)?;
+                if digest.byte_count != expected_bytes || digest.sha256 != expected_sha256 {
                     return Err(CdfError::destination(format!(
                         "immutable Parquet object {destination_key} already exists with different bytes"
                     )));
@@ -688,6 +980,39 @@ pub(crate) fn replace_settlement_key(
         "targets/{}/packages/{}/replace.json",
         encoder.encode(target.as_str()),
         encoder.encode(token.as_str())
+    )
+}
+
+pub(crate) fn package_publication_metadata_key(
+    encoder: ObjectKeyEncoder,
+    target: &TargetName,
+    token: &cdf_kernel::IdempotencyToken,
+) -> String {
+    format!(
+        "targets/{}/publication-attempts/{}.json",
+        encoder.encode(target.as_str()),
+        encoder.encode(token.as_str())
+    )
+}
+
+pub(crate) fn publication_attempt_target_prefix(
+    encoder: ObjectKeyEncoder,
+    target: &TargetName,
+) -> String {
+    format!(
+        "targets/{}/publication-attempts/",
+        encoder.encode(target.as_str())
+    )
+}
+
+pub(crate) fn package_prefix_from_encoded_token(
+    encoder: ObjectKeyEncoder,
+    target: &TargetName,
+    encoded_token: &str,
+) -> String {
+    format!(
+        "targets/{}/packages/{encoded_token}/",
+        encoder.encode(target.as_str())
     )
 }
 

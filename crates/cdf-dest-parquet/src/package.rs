@@ -11,13 +11,29 @@ use tempfile::NamedTempFile;
 
 use crate::*;
 
-const WRITE_BATCH_ROWS: usize = 1024 * 1024;
-const DATA_PAGE_ROWS: usize = 64 * 1024;
-const DATA_PAGE_BYTES: usize = 8 * 1024 * 1024;
-const ROW_GROUP_ROWS: usize = 1024 * 1024;
-const ROW_GROUP_BYTES: usize = 32 * 1024 * 1024;
 const SPILL_GROWTH_BYTES: u64 = 8 * 1024 * 1024;
 const OUTPUT_BUFFER_BYTES: usize = 1024 * 1024;
+
+#[derive(Clone, Copy)]
+pub(crate) struct ParquetWriterSettings {
+    pub(crate) rows_per_batch: u64,
+    pub(crate) bytes_per_batch: u64,
+}
+
+impl ParquetWriterSettings {
+    fn validate(self) -> Result<Self> {
+        if self.rows_per_batch == 0 || self.bytes_per_batch == 0 {
+            return Err(CdfError::contract(
+                "Parquet writer row and byte bounds must be nonzero",
+            ));
+        }
+        usize::try_from(self.rows_per_batch)
+            .map_err(|_| CdfError::contract("Parquet writer row bound exceeds platform usize"))?;
+        usize::try_from(self.bytes_per_batch)
+            .map_err(|_| CdfError::contract("Parquet writer byte bound exceeds platform usize"))?;
+        Ok(self)
+    }
+}
 
 pub(crate) struct EncodedParquetObject {
     pub(crate) file: NamedTempFile,
@@ -31,11 +47,13 @@ struct ParquetBatchWritePlan<'a> {
     expected_rows: u64,
     expected_schema: Option<&'a arrow_schema::Schema>,
     cancellation: Option<&'a cdf_runtime::RunCancellation>,
+    settings: ParquetWriterSettings,
 }
 
 #[cfg(test)]
 pub(crate) fn write_parquet_segment(
     segment: CommitSegment,
+    settings: ParquetWriterSettings,
     writer_memory: Arc<dyn MemoryCoordinator>,
     spill: Arc<dyn SpillBudgetCoordinator>,
     file: NamedTempFile,
@@ -51,6 +69,7 @@ pub(crate) fn write_parquet_segment(
             expected_rows,
             expected_schema: None,
             cancellation: None,
+            settings,
         },
         writer_memory,
         spill,
@@ -67,6 +86,7 @@ pub(crate) fn write_parquet_staged_segment(
     spill: Arc<dyn SpillBudgetCoordinator>,
     file: NamedTempFile,
     cancellation: &cdf_runtime::RunCancellation,
+    settings: ParquetWriterSettings,
 ) -> Result<(cdf_runtime::StagedSegmentIdentity, EncodedParquetObject)> {
     let identity = segment.identity.clone();
     let encoded = write_parquet_batches(
@@ -75,6 +95,7 @@ pub(crate) fn write_parquet_staged_segment(
             expected_rows: identity.row_count,
             expected_schema: Some(expected_schema),
             cancellation: Some(cancellation),
+            settings,
         },
         writer_memory,
         spill,
@@ -96,9 +117,11 @@ fn write_parquet_batches(
         expected_rows,
         expected_schema,
         cancellation,
+        settings,
     } = plan;
-    let writer_bytes = retained_bytes
-        .saturating_mul(2)
+    let settings = settings.validate()?;
+    let writer_bytes = settings
+        .bytes_per_batch
         .clamp(1024 * 1024, 64 * 1024 * 1024);
     let request = cdf_memory::ReservationRequest::new(
         cdf_memory::ConsumerKey::new(
@@ -108,14 +131,19 @@ fn write_parquet_batches(
         writer_bytes,
     )?
     .as_minimum_working_set();
-    let _writer_lease = writer_memory.try_reserve(&request)?.ok_or_else(|| {
-        let snapshot = writer_memory.snapshot();
+    let snapshot = writer_memory.snapshot();
+    let memory_failure = |detail: Option<&CdfError>| {
         CdfError::data(format!(
-            "Parquet destination needs {writer_bytes} additional accounted writer bytes while staged input retains memory, but only {} of {} managed bytes are free; reduce canonical segment size or destination concurrency, or raise the memory budget",
+            "Parquet destination needs {writer_bytes} additional accounted writer bytes while staged input retains memory, but only {} of {} managed bytes are free{}; reduce canonical segment size or destination concurrency, or raise the memory budget",
             snapshot.budget_bytes.saturating_sub(snapshot.current_bytes),
-            snapshot.budget_bytes
+            snapshot.budget_bytes,
+            detail.map_or_else(String::new, |error| format!(" ({error})"))
         ))
-    })?;
+    };
+    let _writer_lease = writer_memory
+        .try_reserve(&request)
+        .map_err(|error| memory_failure(Some(&error)))?
+        .ok_or_else(|| memory_failure(None))?;
     let initial_spill = retained_bytes.clamp(1, SPILL_GROWTH_BYTES);
     let reservation = spill.try_reserve(initial_spill)?.ok_or_else(|| {
         CdfError::data(format!(
@@ -135,13 +163,19 @@ fn write_parquet_batches(
         ));
     }
     let mut output = SpillHashWriter::new(file, reservation);
+    let rows_per_batch = usize::try_from(settings.rows_per_batch)
+        .map_err(|_| CdfError::contract("Parquet writer row bound exceeds platform usize"))?;
+    let bytes_per_batch = usize::try_from(settings.bytes_per_batch)
+        .map_err(|_| CdfError::contract("Parquet writer byte bound exceeds platform usize"))?;
+    let data_page_rows = rows_per_batch.min(64 * 1024);
+    let data_page_bytes = bytes_per_batch.min(8 * 1024 * 1024);
     let properties = WriterProperties::builder()
         .set_created_by("cdf native arrow-rs parquet writer".to_owned())
-        .set_write_batch_size(WRITE_BATCH_ROWS)
-        .set_data_page_row_count_limit(DATA_PAGE_ROWS)
-        .set_data_page_size_limit(DATA_PAGE_BYTES)
-        .set_max_row_group_row_count(Some(ROW_GROUP_ROWS))
-        .set_max_row_group_bytes(Some(ROW_GROUP_BYTES))
+        .set_write_batch_size(rows_per_batch)
+        .set_data_page_row_count_limit(data_page_rows)
+        .set_data_page_size_limit(data_page_bytes)
+        .set_max_row_group_row_count(Some(rows_per_batch))
+        .set_max_row_group_bytes(Some(bytes_per_batch))
         .set_dictionary_enabled(false)
         .set_statistics_enabled(EnabledStatistics::None)
         .build();

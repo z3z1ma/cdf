@@ -9,7 +9,9 @@ use crate::{
         ReplacePointer, canonical_json_bytes, sha256_hex,
     },
     sheet::{parquet_correction_capabilities, parquet_protocol_capabilities, parquet_sheet},
-    store::{ObjectKeyEncoder, package_manifest_key, staged_segment_object_key},
+    store::{
+        ObjectKeyEncoder, package_manifest_key, segment_object_key, staged_segment_object_key,
+    },
 };
 use ::parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use arrow_array::{ArrayRef, Float64Array, Int64Array, StringArray};
@@ -33,6 +35,13 @@ use cdf_package_contract::{
 };
 use cdf_runtime::DestinationRuntime;
 use object_store::{memory::InMemory, path::Path as ObjectPath};
+
+fn test_writer_settings() -> crate::package::ParquetWriterSettings {
+    crate::package::ParquetWriterSettings {
+        rows_per_batch: 64 * 1024,
+        bytes_per_batch: 16 * 1024 * 1024,
+    }
+}
 
 #[test]
 #[ignore = "release-mode Parquet destination write-roofline benchmark"]
@@ -83,6 +92,7 @@ fn local_streaming_parquet_reaches_sixty_percent_of_write_roofline() {
         let started = std::time::Instant::now();
         let (_, _, encoded) = crate::package::write_parquet_segment(
             segment(),
+            test_writer_settings(),
             services.memory(),
             services.spill(),
             tempfile::NamedTempFile::new_in(root.path()).unwrap(),
@@ -172,7 +182,7 @@ fn local_staged_parquet_ingress_reports_isolated_write_roofline() {
             .object_manifest
             .objects
             .iter()
-            .map(|object| object.byte_count)
+            .map(|object| object.parquet_byte_count)
             .sum::<u64>();
 
         let mut raw = tempfile::NamedTempFile::new_in(root.path()).unwrap();
@@ -207,7 +217,10 @@ fn local_staged_parquet_ingress_reports_isolated_write_roofline() {
         staged_rate / (1024.0 * 1024.0),
         raw_rate / (1024.0 * 1024.0),
     );
-    assert!(ratio.is_finite() && ratio > 0.0);
+    assert!(
+        ratio >= 0.60,
+        "staged Parquet write-roofline ratio was {ratio:.3}"
+    );
 }
 
 #[derive(Clone, Debug)]
@@ -244,7 +257,8 @@ fn test_object_store(
     store: Arc<dyn ObjectStore>,
     root_prefix: impl Into<String>,
 ) -> Result<ParquetDestination> {
-    ParquetDestination::new_object_store(store, root_prefix, test_execution())
+    let store_identity = format!("test-store:{:p}", Arc::as_ptr(&store));
+    ParquetDestination::new_object_store(store, store_identity, root_prefix, test_execution())
 }
 
 fn sample_batch(ids: Vec<i64>, names: Vec<Option<&str>>) -> RecordBatch {
@@ -735,6 +749,19 @@ fn stage_through_ingress(
     package_dir: &Path,
     commit: ParquetCommitRequest,
 ) -> Result<StagedTestCommit> {
+    let attempt_id = cdf_runtime::LoadAttemptId::new(format!(
+        "parquet_test_{}",
+        commit.commit.idempotency_token.as_str().replace(':', "_")
+    ))?;
+    stage_through_ingress_with_attempt(dest, package_dir, commit, attempt_id)
+}
+
+fn stage_through_ingress_with_attempt(
+    dest: &mut ParquetDestination,
+    package_dir: &Path,
+    commit: ParquetCommitRequest,
+    attempt_id: cdf_runtime::LoadAttemptId,
+) -> Result<StagedTestCommit> {
     let reader = PackageReader::open(package_dir)?;
     let commit_segments = reader.read_commit_segments(&commit.commit.segments)?;
     let output_schema = commit_segments
@@ -754,10 +781,6 @@ fn stage_through_ingress(
     let preparation = cdf_runtime::BulkPathPreparationInput::new(&output_schema)
         .with_execution(dest.execution().capabilities());
     let bulk_path = dest.prepare_selected_bulk_path(&preparation)?;
-    let attempt_id = cdf_runtime::LoadAttemptId::new(format!(
-        "parquet_test_{}",
-        commit.commit.idempotency_token.as_str().replace(':', "_")
-    ))?;
     let execution_plan_id = PlanId::new("parquet-staged-test-plan")?;
     let staging_request = cdf_runtime::StagedIngressRequest::new(
         attempt_id.clone(),
@@ -1678,6 +1701,46 @@ fn staged_attempt_records_the_exact_prepared_physical_plan() {
 }
 
 #[test]
+fn staged_attempt_heartbeat_advances_without_segment_completion() {
+    let temp = tempfile::tempdir().unwrap();
+    let package_dir = temp.path().join("pkg-heartbeat");
+    let built = build_package(
+        &package_dir,
+        "pkg-heartbeat",
+        vec![(
+            "seg-000001",
+            vec![sample_batch(vec![1, 2], vec![Some("left"), Some("right")])],
+        )],
+    );
+    let mut destination = test_object_store(Arc::new(InMemory::default()), "lake").unwrap();
+    let commit = request(&package_dir, &built, WriteDisposition::Append);
+    let staged = stage_through_ingress(&mut destination, &package_dir, commit.clone()).unwrap();
+    let metadata_key = crate::store::staged_attempt_metadata_key(
+        destination.object_key_encoder(),
+        &commit.commit.target,
+        &staged.attempt_id,
+    );
+    let read_heartbeat = || {
+        let metadata: serde_json::Value = serde_json::from_slice(
+            &destination
+                .store()
+                .get_required(destination.execution(), &metadata_key)
+                .unwrap(),
+        )
+        .unwrap();
+        metadata["heartbeat_at_ms"].as_i64().unwrap()
+    };
+    let before = read_heartbeat();
+    std::thread::sleep(std::time::Duration::from_millis(250));
+    let after = read_heartbeat();
+    assert!(
+        after > before,
+        "heartbeat did not advance: {before} -> {after}"
+    );
+    staged.session.abort().unwrap();
+}
+
+#[test]
 fn staged_segment_ingress_duplicate_replay_preserves_existing_manifest() {
     let temp = tempfile::tempdir().unwrap();
     let package_dir = temp.path().join("pkg-session-duplicate");
@@ -1775,10 +1838,20 @@ fn concurrent_same_token_publication_is_immutable_and_independently_verifiable()
     let mut first_destination = test_object_store(store.clone(), "lake").unwrap();
     let mut second_destination = test_object_store(store.clone(), "lake").unwrap();
     let commit = request(&package_dir, &built, WriteDisposition::Append);
-    let first =
-        stage_through_ingress(&mut first_destination, &package_dir, commit.clone()).unwrap();
-    let second =
-        stage_through_ingress(&mut second_destination, &package_dir, commit.clone()).unwrap();
+    let first = stage_through_ingress_with_attempt(
+        &mut first_destination,
+        &package_dir,
+        commit.clone(),
+        cdf_runtime::LoadAttemptId::new("concurrent-attempt-a").unwrap(),
+    )
+    .unwrap();
+    let second = stage_through_ingress_with_attempt(
+        &mut second_destination,
+        &package_dir,
+        commit.clone(),
+        cdf_runtime::LoadAttemptId::new("concurrent-attempt-b").unwrap(),
+    )
+    .unwrap();
 
     let first_thread = std::thread::spawn(move || bind_staged_test_commit(first));
     let second_thread = std::thread::spawn(move || bind_staged_test_commit(second));
@@ -1797,6 +1870,53 @@ fn concurrent_same_token_publication_is_immutable_and_independently_verifiable()
     ));
     let verifier = test_object_store(store, "lake").unwrap();
     assert!(verifier.verify_receipt(&first.receipt).unwrap().verified);
+}
+
+#[test]
+fn independent_destination_instances_share_exact_attempt_ownership() {
+    let temp = tempfile::tempdir().unwrap();
+    let package_dir = temp.path().join("pkg-shared-attempt");
+    let built = build_package(
+        &package_dir,
+        "pkg-shared-attempt",
+        vec![(
+            "seg-000001",
+            vec![sample_batch(vec![1, 2], vec![Some("left"), Some("right")])],
+        )],
+    );
+    let store = Arc::new(InMemory::default());
+    let mut first_destination = test_object_store(store.clone(), "lake").unwrap();
+    let mut second_destination = test_object_store(store, "lake").unwrap();
+    let commit = request(&package_dir, &built, WriteDisposition::Append);
+    let attempt_id = cdf_runtime::LoadAttemptId::new("shared-exact-attempt").unwrap();
+    let first = stage_through_ingress_with_attempt(
+        &mut first_destination,
+        &package_dir,
+        commit.clone(),
+        attempt_id.clone(),
+    )
+    .unwrap();
+
+    let error = match stage_through_ingress_with_attempt(
+        &mut second_destination,
+        &package_dir,
+        commit.clone(),
+        attempt_id.clone(),
+    ) {
+        Ok(_) => panic!("independent destination reused an active exact attempt"),
+        Err(error) => error,
+    };
+    assert!(error.to_string().contains("already active"), "{error}");
+
+    first.session.abort().unwrap();
+    let restarted = stage_through_ingress_with_attempt(
+        &mut second_destination,
+        &package_dir,
+        commit,
+        attempt_id,
+    )
+    .unwrap();
+    restarted.session.abort().unwrap();
 }
 
 #[test]
@@ -1829,6 +1949,11 @@ fn rollback_redrive_removes_exact_process_loss_attempt_before_reuse() {
             .unwrap()
     );
     std::mem::forget(crashed.session);
+    crate::active_staging_attempts().lock().unwrap().remove(
+        &crashed_destination
+            .store()
+            .staging_registry_key(&commit.commit.target, &crashed.attempt_id),
+    );
     drop(crashed_destination);
 
     let mut restarted_destination = test_object_store(store, "lake").unwrap();
@@ -1868,6 +1993,11 @@ fn abandoned_attempt_retention_sweep_bounds_process_loss_storage() {
         &crashed.staged[0].segment_id,
     );
     std::mem::forget(crashed.session);
+    crate::active_staging_attempts().lock().unwrap().remove(
+        &crashed_destination
+            .store()
+            .staging_registry_key(&commit.commit.target, &crashed.attempt_id),
+    );
     drop(crashed_destination);
 
     let restarted = test_object_store(store, "lake").unwrap();
@@ -1885,6 +2015,49 @@ fn abandoned_attempt_retention_sweep_bounds_process_loss_storage() {
         !restarted
             .store()
             .exists(restarted.execution(), &staging_key)
+            .unwrap()
+    );
+}
+
+#[test]
+fn abandoned_final_publication_is_bounded_and_committed_packages_are_preserved() {
+    const EIGHT_DAYS_MS: i64 = 8 * 24 * 60 * 60 * 1_000;
+    let store = Arc::new(InMemory::default());
+    let destination = test_object_store(store, "lake").unwrap();
+    let target = TargetName::new("orders").unwrap();
+    let token = IdempotencyToken::new("orphan-publication-token").unwrap();
+    let segment = SegmentId::new("orphan-segment").unwrap();
+    let object_key =
+        segment_object_key(destination.object_key_encoder(), &target, &token, &segment);
+    let marker_key = crate::store::package_publication_metadata_key(
+        destination.object_key_encoder(),
+        &target,
+        &token,
+    );
+    destination
+        .store()
+        .put(destination.execution(), &object_key, vec![1, 2, 3])
+        .unwrap();
+    destination
+        .store()
+        .put(destination.execution(), &marker_key, vec![4, 5, 6])
+        .unwrap();
+
+    let removed = destination
+        .cleanup_expired_publications(&target, crate::store::now_ms().unwrap() + EIGHT_DAYS_MS)
+        .unwrap();
+
+    assert_eq!(removed, 2);
+    assert!(
+        !destination
+            .store()
+            .exists(destination.execution(), &object_key)
+            .unwrap()
+    );
+    assert!(
+        !destination
+            .store()
+            .exists(destination.execution(), &marker_key)
             .unwrap()
     );
 }
@@ -1928,6 +2101,7 @@ fn constrained_writer_memory_fails_cleanly_instead_of_waiting_on_its_input() {
     );
     let result = crate::package::write_parquet_segment(
         segment,
+        test_writer_settings(),
         memory,
         spill,
         tempfile::NamedTempFile::new().unwrap(),
@@ -1957,12 +2131,9 @@ fn replace_writes_current_pointer_to_latest_manifest() {
         "pkg-first",
         vec![("seg-000001", vec![sample_batch(vec![1], vec![Some("old")])])],
     );
-    let first_outcome = commit_through_ingress(
-        &mut dest,
-        &first_dir,
-        request(&first_dir, &first, WriteDisposition::Replace),
-    )
-    .unwrap();
+    let first_request = request(&first_dir, &first, WriteDisposition::Replace);
+    let first_outcome =
+        commit_through_ingress(&mut dest, &first_dir, first_request.clone()).unwrap();
 
     let second_dir = temp.path().join("pkg-second");
     let second = build_package(
@@ -1996,6 +2167,20 @@ fn replace_writes_current_pointer_to_latest_manifest() {
         dest.verify_receipt(&second_outcome.receipt)
             .unwrap()
             .verified
+    );
+
+    let replayed_first = commit_through_ingress(&mut dest, &first_dir, first_request).unwrap();
+    assert!(replayed_first.duplicate);
+    let pointer: ReplacePointer = serde_json::from_slice(
+        &dest
+            .store()
+            .get_required(dest.execution(), pointer_key)
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        pointer.manifest_key, second_outcome.plan.manifest_key,
+        "an older duplicate replace must not roll the current pointer back"
     );
 }
 

@@ -10,7 +10,8 @@ use crate::{
     sheet::{parquet_protocol_capabilities, parquet_sheet},
     store::{
         ObjectKeyEncoder, StoreClient, current_pointer_key, now_ms, package_manifest_key,
-        provenance_manifest_key, replace_settlement_key, segment_object_key,
+        package_prefix_from_encoded_token, provenance_manifest_key,
+        publication_attempt_target_prefix, replace_settlement_key, segment_object_key,
     },
 };
 
@@ -20,7 +21,6 @@ pub struct ParquetDestination {
     execution: cdf_runtime::ExecutionServices,
     sheet: DestinationSheet,
     object_key_encoder: ObjectKeyEncoder,
-    active_staging: Arc<Mutex<BTreeSet<String>>>,
     pub(crate) pending_corrections: Arc<Mutex<BTreeMap<PlanId, ParquetCorrectionContext>>>,
 }
 
@@ -84,11 +84,12 @@ impl ParquetDestination {
 
     pub fn new_object_store(
         store: Arc<dyn ObjectStore>,
+        store_identity: impl Into<String>,
         root_prefix: impl Into<String>,
         execution: cdf_runtime::ExecutionServices,
     ) -> Result<Self> {
         Self::from_store(
-            StoreClient::new_object_store(store, root_prefix)?,
+            StoreClient::new_object_store(store, store_identity, root_prefix)?,
             execution,
         )
     }
@@ -104,7 +105,6 @@ impl ParquetDestination {
             execution,
             sheet,
             object_key_encoder,
-            active_staging: Arc::new(Mutex::new(BTreeSet::new())),
             pending_corrections: Arc::new(Mutex::new(BTreeMap::new())),
         })
     }
@@ -179,8 +179,7 @@ impl ParquetDestination {
     pub(crate) fn cleanup_expired_staging(&self, target: &TargetName, now_ms: i64) -> Result<u64> {
         const RETENTION_MS: i64 = 7 * 24 * 60 * 60 * 1_000;
         let prefix = crate::store::staged_target_prefix(self.object_key_encoder, target);
-        let active = self
-            .active_staging
+        let active = crate::active_staging_attempts()
             .lock()
             .map_err(|_| CdfError::internal("Parquet staging registry lock is poisoned"))?
             .clone();
@@ -200,12 +199,48 @@ impl ParquetDestination {
         let cutoff = now_ms.saturating_sub(RETENTION_MS);
         let mut removed = 0_u64;
         for (attempt, latest) in attempts {
-            let active_key = format!("{}:{attempt}", target.as_str());
+            let attempt_id = cdf_runtime::LoadAttemptId::new(attempt.clone())?;
+            let active_key = self.store.staging_registry_key(target, &attempt_id);
             if latest > cutoff || active.contains(&active_key) {
                 continue;
             }
-            let attempt = cdf_runtime::LoadAttemptId::new(attempt)?;
-            removed = removed.saturating_add(self.cleanup_staged_attempt(target, &attempt)?);
+            removed = removed.saturating_add(self.cleanup_staged_attempt(target, &attempt_id)?);
+        }
+        Ok(removed)
+    }
+
+    pub(crate) fn cleanup_expired_publications(
+        &self,
+        target: &TargetName,
+        now_ms: i64,
+    ) -> Result<u64> {
+        const RETENTION_MS: i64 = 7 * 24 * 60 * 60 * 1_000;
+        let marker_prefix = publication_attempt_target_prefix(self.object_key_encoder, target);
+        let cutoff = now_ms.saturating_sub(RETENTION_MS);
+        let mut removed = 0_u64;
+        for object in self.store.list_prefix(self.execution(), &marker_prefix)? {
+            if object.last_modified_ms > cutoff {
+                continue;
+            }
+            let Some(relative) = object.key.strip_prefix(&marker_prefix) else {
+                continue;
+            };
+            let Some(encoded_token) = relative.strip_suffix(".json") else {
+                continue;
+            };
+            let package_prefix =
+                package_prefix_from_encoded_token(self.object_key_encoder, target, encoded_token);
+            if !self
+                .store
+                .exists(self.execution(), &format!("{package_prefix}manifest.json"))?
+            {
+                removed = removed.saturating_add(
+                    self.store
+                        .delete_prefix(self.execution(), &package_prefix)?,
+                );
+            }
+            self.store.delete(self.execution(), &object.key)?;
+            removed = removed.saturating_add(1);
         }
         Ok(removed)
     }
@@ -215,9 +250,8 @@ impl ParquetDestination {
         target: &TargetName,
         attempt_id: &cdf_runtime::LoadAttemptId,
     ) -> Result<String> {
-        let key = format!("{}:{}", target.as_str(), attempt_id.as_str());
-        let mut active = self
-            .active_staging
+        let key = self.store.staging_registry_key(target, attempt_id);
+        let mut active = crate::active_staging_attempts()
             .lock()
             .map_err(|_| CdfError::internal("Parquet staging registry lock is poisoned"))?;
         if !active.insert(key.clone()) {
@@ -231,7 +265,7 @@ impl ParquetDestination {
     }
 
     pub(crate) fn release_staged_attempt(&self, key: &str) {
-        if let Ok(mut active) = self.active_staging.lock() {
+        if let Ok(mut active) = crate::active_staging_attempts().lock() {
             active.remove(key);
         }
     }
@@ -328,7 +362,7 @@ impl ParquetDestination {
             )));
         }
         let replace_pointer = self.load_replace_pointer_receipt(request, plan, &loaded.manifest)?;
-        self.ensure_current_replace_pointer(request, plan, &loaded.manifest, false)?;
+        self.ensure_current_replace_pointer(request, plan, &loaded.manifest)?;
         let receipt = build_receipt(
             request,
             plan,
@@ -393,46 +427,56 @@ impl ParquetDestination {
         request: &ParquetCommitRequest,
         plan: &ParquetCommitPlan,
         manifest: &ParquetObjectManifest,
-        force: bool,
     ) -> Result<()> {
         let Some(current_key) = &plan.current_pointer_key else {
             return Ok(());
         };
         let pointer = replace_pointer(request, plan, manifest)?;
         let expected = canonical_json_bytes(&pointer)?;
-        let current = self.store.get_optional(self.execution(), current_key)?;
-        let should_write = match current {
-            None => true,
-            Some(ref bytes) if bytes == &expected => false,
-            Some(bytes) if force => {
-                let current: ReplacePointer = serde_json::from_slice(&bytes).map_err(|error| {
-                    CdfError::data(format!(
-                        "parse current replace pointer {current_key}: {error}"
-                    ))
-                })?;
-                if current.updated_at_ms > pointer.updated_at_ms {
-                    return Err(CdfError::destination(format!(
-                        "current replace pointer {current_key} is newer than package {}",
-                        plan.manifest_key
-                    )));
+        for _ in 0..32 {
+            let current = self
+                .store
+                .get_optional_versioned(self.execution(), current_key)?;
+            if current
+                .as_ref()
+                .is_some_and(|current| current.bytes == expected)
+            {
+                return Ok(());
+            }
+            if let Some(current) = &current {
+                let current_pointer: ReplacePointer = serde_json::from_slice(&current.bytes)
+                    .map_err(|error| {
+                        CdfError::data(format!(
+                            "parse current replace pointer {current_key}: {error}"
+                        ))
+                    })?;
+                let current_order = (
+                    current_pointer.updated_at_ms,
+                    current_pointer.idempotency_token.as_str(),
+                    current_pointer.manifest_key.as_str(),
+                );
+                let candidate_order = (
+                    pointer.updated_at_ms,
+                    pointer.idempotency_token.as_str(),
+                    pointer.manifest_key.as_str(),
+                );
+                if current_order >= candidate_order {
+                    return Ok(());
                 }
-                true
             }
-            Some(_) => false,
-        };
-        if should_write {
-            self.store
-                .put(self.execution(), current_key, expected.clone())?;
-        }
-        if force {
-            let observed = self.store.get_required(self.execution(), current_key)?;
-            if observed != expected {
-                return Err(CdfError::destination(format!(
-                    "current replace pointer {current_key} changed during commit publication"
-                )));
+            match self.store.compare_and_swap(
+                self.execution(),
+                current_key,
+                current.as_ref(),
+                expected.clone(),
+            )? {
+                crate::store::CompareAndSwapOutcome::Written(_) => return Ok(()),
+                crate::store::CompareAndSwapOutcome::Conflict => continue,
             }
         }
-        Ok(())
+        Err(CdfError::destination(format!(
+            "current replace pointer {current_key} remained contended after 32 conditional updates"
+        )))
     }
 
     fn load_manifest(&self, key: &str) -> Result<Option<ParquetObjectManifest>> {
@@ -560,7 +604,7 @@ pub(crate) fn finalize_parquet_objects(
     } else {
         None
     };
-    destination.ensure_current_replace_pointer(&request, &plan, &object_manifest, true)?;
+    destination.ensure_current_replace_pointer(&request, &plan, &object_manifest)?;
     let receipt = build_receipt(
         &request,
         &plan,

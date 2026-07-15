@@ -283,7 +283,7 @@ pub(crate) fn parquet_runtime_capabilities() -> DestinationRuntimeCapabilities {
             visibility: cdf_runtime::StagingVisibility::IsolatedUntilFinalBinding,
             abort_idempotent: true,
             lifecycle_cleanup: true,
-            final_binding_requires_exclusive_writer: true,
+            final_binding_requires_exclusive_writer: false,
         }),
         writer_model: DestinationWriterModel::ConcurrentSegments,
         commit_payload_mode: cdf_runtime::DestinationCommitPayloadMode::SegmentStreaming,

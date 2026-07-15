@@ -153,22 +153,19 @@ pub(crate) fn verify_receipt(destination: &ParquetDestination, receipt: &Receipt
     validate_manifest_matches_receipt(&manifest, receipt)?;
 
     for object in &manifest.objects {
-        let bytes = destination
+        let digest = destination
             .store()
-            .get_required(destination.execution(), &object.key)?;
-        let actual = sha256_hex(&bytes);
-        if actual != object.sha256 {
+            .digest(destination.execution(), &object.key)?;
+        if digest.sha256 != object.sha256 {
             return Err(CdfError::data(format!(
                 "object {} sha256 mismatch: expected {}, got {}",
-                object.key, object.sha256, actual
+                object.key, object.sha256, digest.sha256
             )));
         }
-        if bytes.len() as u64 != object.parquet_byte_count {
+        if digest.byte_count != object.parquet_byte_count {
             return Err(CdfError::data(format!(
                 "object {} byte count mismatch: expected {}, got {}",
-                object.key,
-                object.parquet_byte_count,
-                bytes.len()
+                object.key, object.parquet_byte_count, digest.byte_count
             )));
         }
         if let Some(expected_etag) = &object.etag {

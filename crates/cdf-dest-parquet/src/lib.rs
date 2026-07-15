@@ -4,7 +4,7 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     fs,
     path::{Path, PathBuf},
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, OnceLock},
     time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -31,7 +31,7 @@ use cdf_package::PackageReader;
 #[cfg(test)]
 use cdf_package_contract::SegmentEntry;
 use object_store::{
-    ObjectStore, ObjectStoreExt, PutMode, PutOptions, PutPayload, PutResult,
+    ObjectStore, ObjectStoreExt, PutMode, PutOptions, PutPayload, PutResult, UpdateVersion,
     local::LocalFileSystem, path::Path as ObjectPath,
 };
 use serde::{Deserialize, Serialize};
@@ -42,6 +42,12 @@ const MANIFEST_VERSION: u16 = 1;
 const REPLACE_POINTER_VERSION: u16 = 1;
 const CORRECTION_SIDECAR_VERSION: u16 = 1;
 const CORRECTION_SIDECAR_MANIFEST_VERSION: u16 = 1;
+
+static ACTIVE_STAGING_ATTEMPTS: OnceLock<Mutex<BTreeSet<String>>> = OnceLock::new();
+
+fn active_staging_attempts() -> &'static Mutex<BTreeSet<String>> {
+    ACTIVE_STAGING_ATTEMPTS.get_or_init(|| Mutex::new(BTreeSet::new()))
+}
 
 mod api;
 mod corrections;
