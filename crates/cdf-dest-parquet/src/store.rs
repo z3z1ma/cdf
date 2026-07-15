@@ -29,6 +29,12 @@ pub(crate) struct ObjectDigest {
     pub(crate) sha256: String,
 }
 
+pub(crate) struct ExpectedObject<'a> {
+    pub(crate) byte_count: u64,
+    pub(crate) sha256: &'a str,
+    pub(crate) e_tag: Option<String>,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum CreateObjectOutcome {
     Created(StoredObject),
@@ -159,9 +165,16 @@ impl StoreClient {
         execution: &cdf_runtime::ExecutionServices,
         key: &str,
         encoded: crate::package::EncodedParquetObject,
+        mutation_guard: &cdf_runtime::StagingMutationGuard,
+        cancellation: &cdf_runtime::RunCancellation,
     ) -> Result<StoredObject> {
+        cancellation.check()?;
+        mutation_guard.assert_current()?;
         if let Some(root) = &self.local_root {
-            return self.install_local_file(execution, root, key, encoded);
+            let stored = self.install_local_file(execution, root, key, encoded)?;
+            cancellation.check()?;
+            mutation_guard.assert_current()?;
+            return Ok(stored);
         }
         let byte_count = encoded.byte_count;
         let object_path = self.path(key)?;
@@ -180,6 +193,8 @@ impl StoreClient {
         )?
         .as_minimum_working_set();
         let memory = execution.memory();
+        let mutation_guard = mutation_guard.clone();
+        let cancellation = cancellation.clone();
         let put: PutResult = execution.run_io(async move {
             use tokio::io::AsyncReadExt;
 
@@ -195,6 +210,8 @@ impl StoreClient {
             let mut writer =
                 object_store::WriteMultipart::new_with_chunk_size(upload, MULTIPART_CHUNK_BYTES);
             loop {
+                cancellation.check()?;
+                mutation_guard.assert_current()?;
                 if let Err(error) = writer.wait_for_capacity(MULTIPART_CONCURRENCY).await {
                     let _ = writer.abort().await;
                     return Err(store_error(&operation, error));
@@ -216,10 +233,15 @@ impl StoreClient {
                 chunk.truncate(read);
                 writer.put(bytes::Bytes::from(chunk));
             }
-            writer
+            cancellation.check()?;
+            mutation_guard.assert_current()?;
+            let result = writer
                 .finish()
                 .await
-                .map_err(|error| store_error(operation, error))
+                .map_err(|error| store_error(operation, error))?;
+            mutation_guard.assert_current()?;
+            cancellation.check()?;
+            Ok(result)
         })?;
         Ok(StoredObject {
             byte_count,
@@ -248,8 +270,8 @@ impl StoreClient {
         let byte_count = encoded.byte_count;
         let expected_hash = encoded.sha256.clone();
         match encoded.file.persist_noclobber(&destination) {
-            // The encoder synced the exact bytes before this create-only publication. The
-            // directory barrier below makes the new name durable without writing the file twice.
+            // Rollback/redrive staging is intentionally not fsynced here. Final binding syncs the
+            // exact file before create-only promotion, so a process loss can only require redrive.
             Ok(_file) => {}
             Err(error) if error.error.kind() == std::io::ErrorKind::AlreadyExists => {
                 let actual_hash = sha256_file(&destination)?;
@@ -270,11 +292,6 @@ impl StoreClient {
                 )));
             }
         }
-        fs::File::open(parent)
-            .and_then(|directory| directory.sync_all())
-            .map_err(|error| {
-                CdfError::destination(format!("sync {}: {error}", parent.display()))
-            })?;
         Ok(StoredObject {
             byte_count,
             e_tag: self.etag(execution, key)?,
@@ -674,9 +691,11 @@ impl StoreClient {
         &self,
         execution: &cdf_runtime::ExecutionServices,
         prefix: &str,
+        mutation_guard: &cdf_runtime::StagingMutationGuard,
     ) -> Result<u64> {
         let prefix = self.path(prefix)?;
         let store = Arc::clone(&self.store);
+        let mutation_guard = mutation_guard.clone();
         let operation = format!("delete prefix {prefix}");
         execution.run_io(async move {
             let objects = store
@@ -686,6 +705,7 @@ impl StoreClient {
                 .map_err(|error| store_error(&operation, error))?;
             let mut removed = 0_u64;
             for object in objects {
+                mutation_guard.assert_current()?;
                 match store.delete(&object.location).await {
                     Ok(()) | Err(object_store::Error::NotFound { .. }) => {
                         removed = removed.saturating_add(1);
@@ -693,6 +713,7 @@ impl StoreClient {
                     Err(error) => return Err(store_error(&operation, error)),
                 }
             }
+            mutation_guard.assert_current()?;
             Ok(removed)
         })
     }
@@ -702,6 +723,7 @@ impl StoreClient {
         execution: &cdf_runtime::ExecutionServices,
         prefix: &str,
         marker: &str,
+        mutation_guard: &cdf_runtime::StagingMutationGuard,
     ) -> Result<u64> {
         let prefix = self.path(prefix)?;
         let marker = self.path(marker)?;
@@ -711,6 +733,7 @@ impl StoreClient {
             ));
         }
         let store = Arc::clone(&self.store);
+        let mutation_guard = mutation_guard.clone();
         let operation = format!("delete prefix {prefix} with marker last");
         execution.run_io(async move {
             let mut objects = store
@@ -730,6 +753,7 @@ impl StoreClient {
                 .into_iter()
                 .filter(|object| object.location != marker)
             {
+                mutation_guard.assert_current()?;
                 match store.delete(&object.location).await {
                     Ok(()) | Err(object_store::Error::NotFound { .. }) => {
                         removed = removed.saturating_add(1);
@@ -737,12 +761,14 @@ impl StoreClient {
                     Err(error) => return Err(store_error(&operation, error)),
                 }
             }
+            mutation_guard.assert_current()?;
             match store.delete(&marker).await {
                 Ok(()) | Err(object_store::Error::NotFound { .. }) => {
                     removed = removed.saturating_add(1);
                 }
                 Err(error) => return Err(store_error(&operation, error)),
             }
+            mutation_guard.assert_current()?;
             Ok(removed)
         })
     }
@@ -791,19 +817,21 @@ impl StoreClient {
         execution: &cdf_runtime::ExecutionServices,
         source_key: &str,
         destination_key: &str,
-        expected_sha256: &str,
-        expected_bytes: u64,
-        expected_etag: Option<String>,
+        expected: ExpectedObject<'_>,
+        mutation_guard: &cdf_runtime::StagingMutationGuard,
     ) -> Result<StoredObject> {
+        mutation_guard.assert_current()?;
         if let Some(root) = &self.local_root {
-            return self.promote_local_create_or_verify(
+            let stored = self.promote_local_create_or_verify(
                 root,
                 source_key,
                 destination_key,
-                expected_sha256,
-                expected_bytes,
-                expected_etag,
-            );
+                expected.sha256,
+                expected.byte_count,
+                expected.e_tag,
+            )?;
+            mutation_guard.assert_current()?;
+            return Ok(stored);
         }
         let source = self.path(source_key)?;
         let destination = self.path(destination_key)?;
@@ -811,12 +839,13 @@ impl StoreClient {
         let operation = format!("copy {source_key} to {destination_key}");
         let outcome = execution
             .run_io(async move { Ok(store.copy_if_not_exists(&source, &destination).await) })?;
+        mutation_guard.assert_current()?;
         match outcome {
             Ok(()) => {}
             Err(object_store::Error::AlreadyExists { .. })
             | Err(object_store::Error::Precondition { .. }) => {
                 let digest = self.digest(execution, destination_key)?;
-                if digest.byte_count != expected_bytes || digest.sha256 != expected_sha256 {
+                if digest.byte_count != expected.byte_count || digest.sha256 != expected.sha256 {
                     return Err(CdfError::destination(format!(
                         "immutable Parquet object {destination_key} already exists with different bytes"
                     )));
@@ -824,10 +853,12 @@ impl StoreClient {
             }
             Err(error) => return Err(store_error(operation, error)),
         }
-        Ok(StoredObject {
-            byte_count: expected_bytes,
+        let stored = StoredObject {
+            byte_count: expected.byte_count,
             e_tag: self.etag(execution, destination_key)?,
-        })
+        };
+        mutation_guard.assert_current()?;
+        Ok(stored)
     }
 
     fn promote_local_create_or_verify(
@@ -850,6 +881,11 @@ impl StoreClient {
         fs::create_dir_all(parent).map_err(|error| {
             CdfError::destination(format!("create {}: {error}", parent.display()))
         })?;
+        fs::File::open(&source)
+            .and_then(|file| file.sync_all())
+            .map_err(|error| {
+                CdfError::destination(format!("sync {}: {error}", source.display()))
+            })?;
         match fs::hard_link(&source, &destination) {
             Ok(()) => {}
             Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
@@ -927,35 +963,33 @@ pub(crate) fn package_manifest_key(
     )
 }
 
-pub(crate) fn segment_object_key(
+pub(crate) fn data_object_key(
     encoder: ObjectKeyEncoder,
     target: &TargetName,
     token: &cdf_kernel::IdempotencyToken,
-    segment_id: &cdf_kernel::SegmentId,
+    object_ordinal: u32,
 ) -> String {
     format!(
-        "targets/{}/packages/{}/data/{}.parquet",
+        "targets/{}/packages/{}/data/part-{object_ordinal:08}.parquet",
         encoder.encode(target.as_str()),
-        encoder.encode(token.as_str()),
-        encoder.encode(segment_id.as_str())
+        encoder.encode(token.as_str())
     )
 }
 
-pub(crate) fn staged_segment_object_key(
+pub(crate) fn staged_data_object_key(
     encoder: ObjectKeyEncoder,
     target: &TargetName,
     authority_domain_id: &cdf_kernel::LeaseAuthorityDomainId,
     attempt_id: &cdf_runtime::LoadAttemptId,
     fencing_token: u64,
-    segment_id: &cdf_kernel::SegmentId,
+    object_ordinal: u32,
 ) -> String {
     format!(
-        "targets/{}/staging/{}/{}/{}/{}.parquet",
+        "targets/{}/staging/{}/{}/{}/part-{object_ordinal:08}.parquet",
         encoder.encode(target.as_str()),
         encoder.encode(authority_domain_id.as_str()),
         encoder.encode(attempt_id.as_str()),
-        fencing_token,
-        encoder.encode(segment_id.as_str())
+        fencing_token
     )
 }
 

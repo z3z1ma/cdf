@@ -1713,7 +1713,10 @@ fn test_staging_lease(attempt_id: &LoadAttemptId, destination: &str, target: &st
     }
 }
 
-struct LeaseTestHost;
+#[derive(Default)]
+struct LeaseTestHost {
+    fail_delay: bool,
+}
 
 struct LeaseTestScope {
     cancellation: RunCancellation,
@@ -1802,13 +1805,21 @@ impl ExecutionHost for LeaseTestHost {
         duration: std::time::Duration,
         cancellation: RunCancellation,
     ) -> cdf_kernel::BoxFuture<'static, Result<()>> {
+        let fail_delay = self.fail_delay;
         Box::pin(async move {
             let deadline = std::time::Instant::now() + duration;
             while std::time::Instant::now() < deadline {
                 cancellation.check()?;
                 std::thread::sleep(std::time::Duration::from_millis(1));
             }
-            cancellation.check()
+            cancellation.check()?;
+            if fail_delay {
+                Err(CdfError::transient(
+                    "injected staging supervisor delay failure",
+                ))
+            } else {
+                Ok(())
+            }
         })
     }
 
@@ -1842,7 +1853,7 @@ fn supervised_test_staging_lease(
             released: AtomicBool::new(false),
             fail_renewal: AtomicBool::new(false),
         }),
-        Arc::new(LeaseTestHost),
+        Arc::new(LeaseTestHost::default()),
     )
     .unwrap();
     let managed = supervisor
@@ -1929,7 +1940,7 @@ fn staging_lease_supervisor_renews_independently_and_releases_structurally() {
     });
     let supervisor = StagingLeaseSupervisor::with_timing(
         authority.clone(),
-        Arc::new(LeaseTestHost),
+        Arc::new(LeaseTestHost::default()),
         StagingLeaseTiming {
             lease_duration: std::time::Duration::from_millis(100),
             renew_interval: std::time::Duration::from_millis(10),
@@ -1946,7 +1957,8 @@ fn staging_lease_supervisor_renews_independently_and_releases_structurally() {
             cdf_kernel::LeaseOwnerId::new("runtime-owner").unwrap(),
         )
         .unwrap();
-    let initial_expiry = lease.snapshot().unwrap().scope_lease.expires_at_ms;
+    let initial = lease.snapshot().unwrap();
+    let initial_expiry = initial.scope_lease.expires_at_ms;
     let churn_deadline = std::time::Instant::now() + std::time::Duration::from_millis(45);
     let mut churn = 0_u64;
     while std::time::Instant::now() < churn_deadline {
@@ -1965,7 +1977,10 @@ fn staging_lease_supervisor_renews_independently_and_releases_structurally() {
         std::thread::sleep(std::time::Duration::from_millis(2));
     }
     assert!(authority.renewals.load(Ordering::SeqCst) >= 2);
-    assert!(lease.snapshot().unwrap().scope_lease.expires_at_ms > initial_expiry);
+    let renewed = lease.snapshot().unwrap();
+    assert!(renewed.scope_lease.expires_at_ms > initial_expiry);
+    assert_ne!(initial, renewed);
+    assert!(initial.same_generation(&renewed));
     lease.finish().unwrap();
     assert!(authority.released.load(Ordering::SeqCst));
 }
@@ -1979,7 +1994,7 @@ fn staging_lease_renewal_failure_cancels_mutation_guard_before_more_work() {
     });
     let supervisor = StagingLeaseSupervisor::with_timing(
         authority.clone(),
-        Arc::new(LeaseTestHost),
+        Arc::new(LeaseTestHost::default()),
         StagingLeaseTiming {
             lease_duration: std::time::Duration::from_millis(100),
             renew_interval: std::time::Duration::from_millis(5),
@@ -2008,6 +2023,55 @@ fn staging_lease_renewal_failure_cancels_mutation_guard_before_more_work() {
         error.message.contains("cancelled") || error.message.contains("renewal failure"),
         "unexpected mutation guard error: {error}"
     );
+    drop(guard);
+    assert!(lease.finish().is_err());
+}
+
+#[test]
+fn staging_supervisor_terminal_failure_cancels_live_and_rejects_new_leases() {
+    let authority = Arc::new(RecordingStagingLeaseAuthority {
+        renewals: AtomicUsize::new(0),
+        released: AtomicBool::new(false),
+        fail_renewal: AtomicBool::new(false),
+    });
+    let supervisor = StagingLeaseSupervisor::with_timing(
+        authority,
+        Arc::new(LeaseTestHost { fail_delay: true }),
+        StagingLeaseTiming {
+            lease_duration: std::time::Duration::from_millis(100),
+            renew_interval: std::time::Duration::from_millis(5),
+        },
+    )
+    .unwrap();
+    let lease = supervisor
+        .acquire(
+            StagingLeaseIdentity::new(
+                DestinationId::new("mock_staged").unwrap(),
+                TargetName::new("events").unwrap(),
+                LoadAttemptId::new("terminal-supervisor-failure").unwrap(),
+            ),
+            cdf_kernel::LeaseOwnerId::new("runtime-owner").unwrap(),
+        )
+        .unwrap();
+    let guard = lease.mutation_guard().unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_millis(100);
+    while guard.assert_current().is_ok() && std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+    let error = guard.assert_current().unwrap_err();
+    assert!(error.message.contains("supervisor delay failure"));
+    let rejected = match supervisor.acquire(
+        StagingLeaseIdentity::new(
+            DestinationId::new("mock_staged").unwrap(),
+            TargetName::new("events").unwrap(),
+            LoadAttemptId::new("after-terminal-failure").unwrap(),
+        ),
+        cdf_kernel::LeaseOwnerId::new("runtime-owner-2").unwrap(),
+    ) {
+        Ok(_) => panic!("terminal staging supervisor accepted a new lease"),
+        Err(error) => error,
+    };
+    assert!(rejected.message.contains("supervisor delay failure"));
     drop(guard);
     assert!(lease.finish().is_err());
 }

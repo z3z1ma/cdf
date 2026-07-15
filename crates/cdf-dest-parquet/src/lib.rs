@@ -20,7 +20,7 @@ use cdf_kernel::{
     DestinationCorrectionSidecarObjectEvidence, DestinationCorrectionSidecarReceiptEvidence,
     DestinationId, DestinationProtocol, DestinationSheet, IdempotencySupport, IdentifierRules,
     ObjectKeyPolicy, ObjectKeyRules, PackageHash, PlanId, PromotionId, Receipt, ReceiptId, Result,
-    RowProvenanceAddress, RowProvenanceCapabilities, SchemaHash, SegmentAck, SegmentId, TargetName,
+    RowProvenanceAddress, RowProvenanceCapabilities, SchemaHash, SegmentAck, TargetName,
     TransactionMetadata, TransactionSupport, TypeMapping, TypeMappingFidelity, VerifyClause,
     WriteDisposition,
 };
@@ -38,13 +38,14 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 const DESTINATION_ID: &str = "parquet_object_store";
-const MANIFEST_VERSION: u16 = 1;
+const MANIFEST_VERSION: u16 = 2;
 const REPLACE_POINTER_VERSION: u16 = 1;
 const CORRECTION_SIDECAR_VERSION: u16 = 1;
 const CORRECTION_SIDECAR_MANIFEST_VERSION: u16 = 1;
 
 mod api;
 mod corrections;
+mod layout;
 mod manifest;
 mod package;
 mod receipts;

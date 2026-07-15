@@ -16,7 +16,6 @@ pub struct ParquetObjectManifest {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ParquetObjectEntry {
-    pub segment_id: String,
     pub key: String,
     pub row_count: u64,
     pub byte_count: u64,
@@ -25,6 +24,16 @@ pub struct ParquetObjectEntry {
     pub sha256: String,
     pub etag: Option<String>,
     pub schema_hash: String,
+    pub segments: Vec<ParquetObjectSegmentEntry>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ParquetObjectSegmentEntry {
+    pub segment_id: String,
+    pub row_offset: u64,
+    pub row_count: u64,
+    pub byte_count: u64,
+    pub package_byte_count: u64,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

@@ -67,6 +67,17 @@ impl StagingLease {
         &self.authority_domain_id
     }
 
+    /// Whether two observations name the same fenced generation. Expiry is deliberately excluded:
+    /// renewal extends it without creating a new owner/token generation.
+    pub fn same_generation(&self, other: &Self) -> bool {
+        self.authority_domain_id == other.authority_domain_id
+            && self.identity == other.identity
+            && self.scope_lease.scope == other.scope_lease.scope
+            && self.scope_lease.owner == other.scope_lease.owner
+            && self.scope_lease.fencing_token == other.scope_lease.fencing_token
+            && self.scope_lease.acquired_at_ms == other.scope_lease.acquired_at_ms
+    }
+
     pub(crate) fn validate(&self) -> Result<()> {
         if self.scope_lease.scope != self.identity.scope() {
             return Err(CdfError::contract(
@@ -103,12 +114,12 @@ impl ExpiredStagingLeaseProof {
     }
 
     pub fn proves(&self, lease: &StagingLease) -> bool {
-        &self.expired_lease == lease
+        self.expired_lease.same_generation(lease)
     }
 
     pub fn assert_cleanup_guard(&self, guard: &StagingMutationGuard) -> Result<()> {
         let guarded = guard.assert_current()?;
-        if guarded != self.cleanup_lease {
+        if !guarded.same_generation(&self.cleanup_lease) {
             return Err(CdfError::contract(
                 "staging cleanup mutation guard does not bind the proof's cleanup generation",
             ));
@@ -304,6 +315,7 @@ struct LeaseEntry {
 struct LeaseSupervisorState {
     next_registration: u64,
     leases: BTreeMap<u64, LeaseEntry>,
+    terminal_failure: Option<CdfError>,
 }
 
 struct LeaseSupervisorShared {
@@ -335,6 +347,7 @@ impl StagingLeaseSupervisor {
             state: Mutex::new(LeaseSupervisorState {
                 next_registration: 1,
                 leases: BTreeMap::new(),
+                terminal_failure: None,
             }),
         });
         let mut scope = host.open_scope("cdf-staging-leases")?;
@@ -344,14 +357,18 @@ impl StagingLeaseSupervisor {
         let task_authority = Arc::clone(&authority);
         let task_shared = Arc::clone(&shared);
         scope.spawn_io(Box::pin(async move {
-            lease_supervisor_loop(
+            let result = lease_supervisor_loop(
                 task_authority,
                 task_host,
                 timing,
-                task_shared,
+                Arc::clone(&task_shared),
                 task_cancellation,
             )
-            .await
+            .await;
+            if let Err(error) = &result {
+                fail_registered_leases(&task_shared, error.clone());
+            }
+            result
         }))?;
         let joined = scope.join();
         let termination = cdf_kernel::InvocationTermination::new(
@@ -400,6 +417,9 @@ impl StagingLeaseSupervisor {
             .state
             .lock()
             .map_err(|_| CdfError::internal("staging lease supervisor lock is poisoned"))?;
+        if let Some(error) = &state.terminal_failure {
+            return Err(error.clone());
+        }
         let registration = state.next_registration;
         state.next_registration = state
             .next_registration
@@ -522,7 +542,13 @@ impl StagingLeaseSupervisor {
         };
         let release = self.authority.release(&entry.lease);
         match (entry.failure, release) {
-            (Some(error), _) => Err(error),
+            (Some(mut error), Err(release)) => {
+                error
+                    .message
+                    .push_str(&format!("; staging lease release also failed: {release}"));
+                Err(error)
+            }
+            (Some(error), Ok(())) => Err(error),
             (None, result) => result,
         }
     }
@@ -747,6 +773,21 @@ async fn lease_supervisor_loop(
                 }
             }
         }
+    }
+}
+
+fn fail_registered_leases(shared: &LeaseSupervisorShared, error: CdfError) {
+    let Ok(mut state) = shared.state.lock() else {
+        return;
+    };
+    if state.terminal_failure.is_none() {
+        state.terminal_failure = Some(error.clone());
+    }
+    for entry in state.leases.values_mut() {
+        if entry.failure.is_none() {
+            entry.failure = Some(error.clone());
+        }
+        entry.cancellation.cancel();
     }
 }
 

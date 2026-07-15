@@ -132,7 +132,7 @@ impl StagedIngressRequest {
             ));
         }
         let guarded_lease = mutation_guard.assert_current()?;
-        if guarded_lease != staging_lease {
+        if !guarded_lease.same_generation(&staging_lease) {
             return Err(CdfError::contract(
                 "staged ingress mutation guard does not bind its staging lease generation",
             ));

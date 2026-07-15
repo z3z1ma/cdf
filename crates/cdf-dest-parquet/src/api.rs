@@ -1,6 +1,7 @@
 use crate::*;
 use crate::{
     corrections::*,
+    layout::ParquetObjectLayout,
     manifest::{
         ParquetObjectEntry, ParquetObjectManifest, ParquetReplacePointerReceipt, ReplacePointer,
         canonical_json_bytes, sha256_hex,
@@ -9,11 +10,14 @@ use crate::{
     runtime::parquet_runtime_capabilities,
     sheet::{parquet_protocol_capabilities, parquet_sheet},
     store::{
-        ObjectKeyEncoder, StoreClient, current_pointer_key, now_ms, package_manifest_key,
-        provenance_manifest_key, publication_attempt_target_prefix, replace_settlement_key,
-        segment_object_key,
+        ObjectKeyEncoder, StoreClient, current_pointer_key, data_object_key, now_ms,
+        package_manifest_key, provenance_manifest_key, publication_attempt_target_prefix,
+        replace_settlement_key,
     },
 };
+
+#[cfg(test)]
+use crate::layout::{ParquetObjectLayoutPolicy, ParquetSegmentLayout};
 
 #[derive(Clone)]
 pub struct ParquetDestination {
@@ -131,11 +135,14 @@ impl ParquetDestination {
             .iter()
             .map(|segment| segment.byte_count)
             .sum();
-        let segment_ids = manifest_segments
-            .iter()
-            .map(|segment| segment.segment_id.clone())
-            .collect::<Vec<_>>();
-        self.plan_package_shape(request, &segment_ids, rows_planned, bytes_planned)
+        let object_layouts =
+            ParquetObjectLayoutPolicy::current().plan(manifest_segments.iter().map(|segment| {
+                ParquetSegmentLayout {
+                    segment_id: segment.segment_id.clone(),
+                    package_byte_count: segment.byte_count,
+                }
+            }))?;
+        self.plan_package_shape(request, &object_layouts, rows_planned, bytes_planned)
     }
 
     pub fn verify_receipt(&self, receipt: &Receipt) -> Result<ReceiptVerification> {
@@ -278,6 +285,7 @@ impl ParquetDestination {
                 self.execution(),
                 prefix,
                 &format!("{prefix}attempt.json"),
+                mutation_guard,
             );
         }
         let marker = candidate
@@ -292,20 +300,21 @@ impl ParquetDestination {
                 "decode Parquet publication metadata {marker}: {error}"
             ))
         })?;
-        if metadata.staging_lease != *candidate.lease() {
+        if !metadata.staging_lease.same_generation(candidate.lease()) {
             return Err(CdfError::contract(
                 "Parquet publication marker changed after cleanup candidacy",
             ));
         }
         proof.assert_cleanup_guard(mutation_guard)?;
         self.store.delete(self.execution(), marker)?;
+        mutation_guard.assert_current()?;
         Ok(1)
     }
 
     pub(crate) fn plan_package_shape(
         &self,
         request: &ParquetCommitRequest,
-        segment_ids: &[SegmentId],
+        object_layouts: &[ParquetObjectLayout],
         rows_planned: u64,
         bytes_planned: u64,
     ) -> Result<ParquetCommitPlan> {
@@ -345,14 +354,14 @@ impl ParquetDestination {
                 ));
             }
         };
-        let object_keys = segment_ids
+        let object_keys = object_layouts
             .iter()
-            .map(|segment_id| {
-                segment_object_key(
+            .map(|object| {
+                data_object_key(
                     self.object_key_encoder(),
                     &request.commit.target,
                     &request.commit.idempotency_token,
-                    segment_id,
+                    object.ordinal,
                 )
             })
             .collect::<Vec<_>>();
@@ -431,6 +440,7 @@ impl ParquetDestination {
         let stored =
             self.store
                 .put_create_or_verify(self.execution(), pointer_key, expected.clone())?;
+        mutation_guard.assert_current()?;
         let bytes = self.store.get_required(self.execution(), pointer_key)?;
         let sha256 = sha256_hex(&bytes);
         let pointer: ReplacePointer = serde_json::from_slice(&bytes).map_err(|error| {
@@ -503,12 +513,14 @@ impl ParquetDestination {
                     return Ok(());
                 }
             }
-            match self.store.compare_and_swap(
+            let outcome = self.store.compare_and_swap(
                 self.execution(),
                 current_key,
                 current.as_ref(),
                 expected.clone(),
-            )? {
+            )?;
+            mutation_guard.assert_current()?;
+            match outcome {
                 crate::store::CompareAndSwapOutcome::Written(_) => return Ok(()),
                 crate::store::CompareAndSwapOutcome::Conflict => continue,
             }
@@ -543,19 +555,24 @@ impl ParquetDestination {
                 "Parquet provenance manifest {key} contradicts its target/package key"
             )));
         }
-        let Some(object) = manifest
-            .objects
-            .iter()
-            .find(|object| object.segment_id == address.original_segment_id.as_str())
-        else {
+        let Some((object, segment)) = manifest.objects.iter().find_map(|object| {
+            object
+                .segments
+                .iter()
+                .find(|segment| segment.segment_id == address.original_segment_id.as_str())
+                .map(|segment| (object, segment))
+        }) else {
             return Ok(None);
         };
-        if address.original_row_ordinal >= object.row_count {
+        if address.original_row_ordinal >= segment.row_count {
             return Ok(None);
         }
         Ok(Some(ParquetRowLocation {
             object_key: object.key.clone(),
-            row_ordinal: address.original_row_ordinal,
+            row_ordinal: segment
+                .row_offset
+                .checked_add(address.original_row_ordinal)
+                .ok_or_else(|| CdfError::data("Parquet provenance row ordinal overflow"))?,
         }))
     }
 
@@ -630,6 +647,7 @@ pub(crate) fn finalize_parquet_objects(
         &plan.manifest_key,
         manifest_bytes.clone(),
     )?;
+    mutation_guard.assert_current()?;
     let replace_pointer = if let Some(pointer_key) = &plan.replace_pointer_key {
         let pointer = replace_pointer(&request, &plan, &object_manifest)?;
         let pointer_bytes = canonical_json_bytes(&pointer)?;
@@ -640,6 +658,7 @@ pub(crate) fn finalize_parquet_objects(
             pointer_key,
             pointer_bytes,
         )?;
+        mutation_guard.assert_current()?;
         Some(ParquetReplacePointerReceipt {
             key: pointer_key.clone(),
             sha256: pointer_sha256,
@@ -710,10 +729,11 @@ fn ensure_provenance_manifest(
     );
     let bytes = canonical_json_bytes(manifest)?;
     mutation_guard.assert_current()?;
-    match destination
+    let outcome = destination
         .store
-        .put_create(destination.execution(), &key, bytes)?
-    {
+        .put_create(destination.execution(), &key, bytes)?;
+    mutation_guard.assert_current()?;
+    match outcome {
         crate::store::CreateObjectOutcome::Created(_) => Ok(manifest.clone()),
         crate::store::CreateObjectOutcome::AlreadyExists => {
             let existing_bytes = destination

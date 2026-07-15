@@ -1,4 +1,7 @@
-use std::io::{self, BufWriter, Write};
+use std::{
+    io::{self, BufWriter, Write},
+    sync::mpsc,
+};
 
 use cdf_memory::MemoryCoordinator;
 use cdf_runtime::{SpillBudgetCoordinator, SpillReservation};
@@ -52,9 +55,19 @@ pub(crate) struct StagedParquetEncodeContext<'a> {
     pub(crate) settings: ParquetWriterSettings,
 }
 
+pub(crate) enum ParquetGroupCommand {
+    Segment(cdf_runtime::StagedSegmentRequest),
+    Finish,
+}
+
+pub(crate) struct EncodedParquetGroup {
+    pub(crate) identities: Vec<cdf_runtime::StagedSegmentIdentity>,
+    pub(crate) encoded: EncodedParquetObject,
+}
+
 struct ParquetBatchWritePlan<'a> {
     retained_bytes: u64,
-    expected_rows: u64,
+    expected_rows: Option<u64>,
     expected_schema: Option<&'a arrow_schema::Schema>,
     cancellation: Option<&'a cdf_runtime::RunCancellation>,
     mutation_guard: Option<&'a cdf_runtime::StagingMutationGuard>,
@@ -77,7 +90,7 @@ pub(crate) fn write_parquet_segment(
     let encoded = write_parquet_batches(
         ParquetBatchWritePlan {
             retained_bytes,
-            expected_rows,
+            expected_rows: Some(expected_rows),
             expected_schema: None,
             cancellation: None,
             mutation_guard: None,
@@ -91,15 +104,16 @@ pub(crate) fn write_parquet_segment(
     Ok((state, package_byte_count, encoded))
 }
 
-pub(crate) fn write_parquet_staged_segment(
-    mut segment: cdf_runtime::StagedSegmentRequest,
+pub(crate) fn write_parquet_staged_group(
+    commands: mpsc::Receiver<ParquetGroupCommand>,
+    consumed: mpsc::SyncSender<Result<cdf_runtime::StagedSegmentIdentity>>,
     context: StagedParquetEncodeContext<'_>,
-) -> Result<(cdf_runtime::StagedSegmentIdentity, EncodedParquetObject)> {
-    let identity = segment.identity.clone();
-    let encoded = write_parquet_batches(
+) -> Result<EncodedParquetGroup> {
+    let mut reader = StagedGroupBatchReader::new(commands, consumed);
+    let result = write_parquet_batches(
         ParquetBatchWritePlan {
-            retained_bytes: identity.byte_count.max(1),
-            expected_rows: identity.row_count,
+            retained_bytes: context.settings.bytes_per_batch.max(1),
+            expected_rows: None,
             expected_schema: Some(context.expected_schema),
             cancellation: Some(context.cancellation),
             mutation_guard: Some(context.mutation_guard),
@@ -108,9 +122,110 @@ pub(crate) fn write_parquet_staged_segment(
         context.writer_memory,
         context.spill,
         context.file,
-        || segment.reader_mut().next_batch(),
-    )?;
-    Ok((identity, encoded))
+        || reader.next_batch(),
+    );
+    match result {
+        Ok(encoded) => Ok(EncodedParquetGroup {
+            identities: reader.finish()?,
+            encoded,
+        }),
+        Err(error) => {
+            reader.report_failure(error.clone());
+            Err(error)
+        }
+    }
+}
+
+struct StagedGroupBatchReader {
+    commands: mpsc::Receiver<ParquetGroupCommand>,
+    consumed: mpsc::SyncSender<Result<cdf_runtime::StagedSegmentIdentity>>,
+    current: Option<(cdf_runtime::StagedSegmentRequest, u64)>,
+    identities: Vec<cdf_runtime::StagedSegmentIdentity>,
+    finished: bool,
+}
+
+impl StagedGroupBatchReader {
+    fn new(
+        commands: mpsc::Receiver<ParquetGroupCommand>,
+        consumed: mpsc::SyncSender<Result<cdf_runtime::StagedSegmentIdentity>>,
+    ) -> Self {
+        Self {
+            commands,
+            consumed,
+            current: None,
+            identities: Vec::new(),
+            finished: false,
+        }
+    }
+
+    fn next_batch(&mut self) -> Result<Option<arrow_array::RecordBatch>> {
+        loop {
+            if let Some((request, rows)) = &mut self.current {
+                match request.reader_mut().next_batch()? {
+                    Some(batch) => {
+                        *rows = rows
+                            .checked_add(u64::try_from(batch.num_rows()).map_err(|_| {
+                                CdfError::data("Parquet destination row count exceeds u64")
+                            })?)
+                            .ok_or_else(|| {
+                                CdfError::data("Parquet destination row count overflow")
+                            })?;
+                        return Ok(Some(batch));
+                    }
+                    None => {
+                        let (request, rows) =
+                            self.current.take().expect("group segment is present");
+                        let identity = request.identity;
+                        if rows != identity.row_count {
+                            return Err(CdfError::data(format!(
+                                "Parquet destination segment {} has {rows} payload rows but its durable identity expects {}",
+                                identity.segment_id, identity.row_count
+                            )));
+                        }
+                        self.consumed.send(Ok(identity.clone())).map_err(|_| {
+                            CdfError::destination(
+                                "Parquet staged ingress stopped before segment acknowledgement",
+                            )
+                        })?;
+                        self.identities.push(identity);
+                    }
+                }
+                continue;
+            }
+            match self.commands.recv() {
+                Ok(ParquetGroupCommand::Segment(request)) => {
+                    if self.finished {
+                        return Err(CdfError::internal(
+                            "Parquet object group received a segment after finish",
+                        ));
+                    }
+                    self.current = Some((request, 0));
+                }
+                Ok(ParquetGroupCommand::Finish) => {
+                    self.finished = true;
+                    return Ok(None);
+                }
+                Err(_) => {
+                    return Err(CdfError::destination(
+                        "Parquet object group command stream closed before finish",
+                    ));
+                }
+            }
+        }
+    }
+
+    fn report_failure(&self, error: CdfError) {
+        let _ = self.consumed.send(Err(error));
+    }
+
+    fn finish(self) -> Result<Vec<cdf_runtime::StagedSegmentIdentity>> {
+        if !self.finished || self.current.is_some() || self.identities.is_empty() {
+            return Err(CdfError::internal(
+                "Parquet object group did not finish with at least one complete segment",
+            ));
+        }
+        Ok(self.identities)
+    }
 }
 
 fn write_parquet_batches(
@@ -227,9 +342,10 @@ fn write_parquet_batches(
         if let Some(mutation_guard) = mutation_guard {
             mutation_guard.assert_current()?;
         }
-        if rows != expected_rows {
+        if expected_rows.is_some_and(|expected| rows != expected) {
             return Err(CdfError::data(format!(
-                "Parquet destination segment has {rows} payload rows but its durable identity expects {expected_rows}"
+                "Parquet destination payload has {rows} rows but its durable identity expects {}",
+                expected_rows.expect("checked as present")
             )));
         }
         writer
@@ -259,9 +375,6 @@ impl SpillHashWriter {
     fn finish(mut self) -> Result<EncodedParquetObject> {
         self.flush().map_err(|error| {
             CdfError::destination(format!("flush Parquet staging file: {error}"))
-        })?;
-        self.file.get_ref().as_file().sync_all().map_err(|error| {
-            CdfError::destination(format!("sync Parquet staging file: {error}"))
         })?;
         let file = self.file.into_inner().map_err(|error| {
             CdfError::destination(format!("finish Parquet staging buffer: {error}"))

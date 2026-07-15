@@ -279,11 +279,54 @@ fn validate_manifest_matches_receipt(
         )));
     }
 
-    let manifest_segments = manifest
-        .objects
-        .iter()
-        .map(|object| (object.segment_id.as_str(), object))
-        .collect::<BTreeMap<_, _>>();
+    let mut manifest_segments = BTreeMap::new();
+    for object in &manifest.objects {
+        if object.schema_hash != receipt.schema_hash.as_str() {
+            return Err(CdfError::data(format!(
+                "object {} schema hash mismatch",
+                object.key
+            )));
+        }
+        let mut row_offset = 0_u64;
+        let mut byte_count = 0_u64;
+        let mut package_byte_count = 0_u64;
+        for segment in &object.segments {
+            if segment.row_offset != row_offset {
+                return Err(CdfError::data(format!(
+                    "object {} segment {} row offset {} does not follow {}",
+                    object.key, segment.segment_id, segment.row_offset, row_offset
+                )));
+            }
+            row_offset = row_offset
+                .checked_add(segment.row_count)
+                .ok_or_else(|| CdfError::data("manifest object row count overflow"))?;
+            byte_count = byte_count
+                .checked_add(segment.byte_count)
+                .ok_or_else(|| CdfError::data("manifest object state byte count overflow"))?;
+            package_byte_count = package_byte_count
+                .checked_add(segment.package_byte_count)
+                .ok_or_else(|| CdfError::data("manifest object package byte count overflow"))?;
+            if manifest_segments
+                .insert(segment.segment_id.as_str(), segment)
+                .is_some()
+            {
+                return Err(CdfError::data(format!(
+                    "manifest repeats segment {}",
+                    segment.segment_id
+                )));
+            }
+        }
+        if object.segments.is_empty()
+            || object.row_count != row_offset
+            || object.byte_count != byte_count
+            || object.package_byte_count != package_byte_count
+        {
+            return Err(CdfError::data(format!(
+                "object {} aggregate counts do not match its segment entries",
+                object.key
+            )));
+        }
+    }
     for ack in &receipt.segment_acks {
         let object = manifest_segments
             .get(ack.segment_id.as_str())
@@ -309,18 +352,12 @@ fn validate_manifest_matches_receipt(
                 ack.byte_count
             )));
         }
-        if object.schema_hash != receipt.schema_hash.as_str() {
-            return Err(CdfError::data(format!(
-                "segment {} schema hash mismatch",
-                ack.segment_id.as_str()
-            )));
-        }
     }
 
-    if manifest.objects.len() != receipt.segment_acks.len() {
+    if manifest_segments.len() != receipt.segment_acks.len() {
         return Err(CdfError::data(format!(
-            "manifest object count {} does not match receipt segment count {}",
-            manifest.objects.len(),
+            "manifest segment count {} does not match receipt segment count {}",
+            manifest_segments.len(),
             receipt.segment_acks.len()
         )));
     }
@@ -332,11 +369,12 @@ fn segment_acks(manifest: &ParquetObjectManifest) -> Result<Vec<SegmentAck>> {
     manifest
         .objects
         .iter()
-        .map(|object| {
+        .flat_map(|object| object.segments.iter())
+        .map(|segment| {
             Ok(SegmentAck {
-                segment_id: cdf_kernel::SegmentId::new(object.segment_id.clone())?,
-                row_count: object.row_count,
-                byte_count: object.byte_count,
+                segment_id: cdf_kernel::SegmentId::new(segment.segment_id.clone())?,
+                row_count: segment.row_count,
+                byte_count: segment.byte_count,
             })
         })
         .collect()

@@ -1,4 +1,7 @@
-use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::{
+    collections::{BTreeMap, BTreeSet, VecDeque},
+    sync::mpsc,
+};
 
 use cdf_kernel::{CdfError, DestinationProtocol, Result, SchemaHash, SegmentId, StateSegment};
 use cdf_runtime::{
@@ -10,18 +13,23 @@ use cdf_runtime::{
 use crate::{
     ParquetCommitRequest, ParquetDestination,
     api::{duplicate_parquet_receipt, finalize_parquet_objects},
-    manifest::ParquetObjectEntry,
+    layout::{
+        PHYSICAL_PLAN_PATH, PHYSICAL_PLAN_VERSION, ParquetObjectLayout, ParquetObjectLayoutPolicy,
+        ParquetSegmentLayout,
+    },
     manifest::canonical_json_bytes,
-    package::{ParquetWriterSettings, StagedParquetEncodeContext, write_parquet_staged_segment},
+    manifest::{ParquetObjectEntry, ParquetObjectSegmentEntry},
+    package::{
+        ParquetGroupCommand, ParquetWriterSettings, StagedParquetEncodeContext,
+        write_parquet_staged_group,
+    },
     store::{
-        ObjectKeyEncoder, StoreClient, StoredObject, now_ms, package_publication_metadata_key,
-        segment_object_key, staged_attempt_metadata_key, staged_segment_object_key,
+        ObjectKeyEncoder, StoreClient, StoredObject, data_object_key, now_ms,
+        package_publication_metadata_key, staged_attempt_metadata_key, staged_data_object_key,
     },
 };
 
 const ENCODE_LANE: &str = "parquet.encode";
-const PHYSICAL_PLAN_PATH: &str = "arrow_ipc_to_parquet";
-const PHYSICAL_PLAN_VERSION: u16 = 2;
 const STAGING_METADATA_VERSION: u16 = 1;
 pub(crate) struct ParquetStagedIngressSession {
     destination: ParquetDestination,
@@ -41,6 +49,7 @@ struct ParquetPhysicalWritePlan {
     writers: u16,
     rows_per_batch: u64,
     bytes_per_batch: u64,
+    object_layout: ParquetObjectLayoutPolicy,
 }
 
 impl ParquetPhysicalWritePlan {
@@ -68,28 +77,29 @@ impl ParquetPhysicalWritePlan {
             writers: request.bulk_path().writers,
             rows_per_batch: request.bulk_path().rows_per_batch,
             bytes_per_batch: request.bulk_path().bytes_per_batch,
+            object_layout: ParquetObjectLayoutPolicy::current().validate()?,
         })
     }
 
-    fn staging_key(&self, segment_id: &SegmentId) -> String {
-        staged_segment_object_key(
+    fn staging_key(&self, object_ordinal: u32) -> String {
+        staged_data_object_key(
             self.encoder,
             &self.target,
             &self.authority_domain_id,
             &self.attempt_id,
             self.fencing_token,
-            segment_id,
+            object_ordinal,
         )
     }
 
     fn final_keys(
         &self,
         token: &cdf_kernel::IdempotencyToken,
-        segments: &[SegmentId],
+        objects: &[ParquetObjectLayout],
     ) -> Vec<String> {
-        segments
+        objects
             .iter()
-            .map(|segment| segment_object_key(self.encoder, &self.target, token, segment))
+            .map(|object| data_object_key(self.encoder, &self.target, token, object.ordinal))
             .collect()
     }
 }
@@ -104,6 +114,8 @@ pub(crate) struct StagingAttemptMetadata {
     writers: u16,
     rows_per_batch: u64,
     bytes_per_batch: u64,
+    object_target_package_bytes: u64,
+    max_segments_per_object: u16,
     started_at_ms: i64,
     pub(crate) staging_lease: cdf_runtime::StagingLease,
 }
@@ -115,7 +127,8 @@ pub(crate) struct PublicationAttemptMetadata {
 }
 
 struct StagedParquetObject {
-    identity: StagedSegmentIdentity,
+    object_ordinal: u32,
+    identities: Vec<StagedSegmentIdentity>,
     store: StoreClient,
     execution: cdf_runtime::ExecutionServices,
     staging_key: String,
@@ -125,12 +138,12 @@ struct StagedParquetObject {
     mutation_guard: cdf_runtime::StagingMutationGuard,
 }
 
-impl Drop for StagedParquetObject {
-    fn drop(&mut self) {
-        if self.cleanup && self.mutation_guard.assert_current().is_ok() {
-            let _ = self.store.delete(&self.execution, &self.staging_key);
-        }
-    }
+struct ActiveParquetGroup {
+    package_byte_count: u64,
+    segment_count: usize,
+    commands: mpsc::SyncSender<ParquetGroupCommand>,
+    consumed: mpsc::Receiver<Result<StagedSegmentIdentity>>,
+    task: cdf_runtime::ScopedBlockingTask<StagedParquetObject>,
 }
 
 impl ParquetStagedIngressSession {
@@ -167,6 +180,8 @@ impl ParquetStagedIngressSession {
             writers: physical_plan.writers,
             rows_per_batch: physical_plan.rows_per_batch,
             bytes_per_batch: physical_plan.bytes_per_batch,
+            object_target_package_bytes: physical_plan.object_layout.target_package_bytes,
+            max_segments_per_object: physical_plan.object_layout.max_segments,
             started_at_ms,
             staging_lease: request.staging_lease().clone(),
         };
@@ -176,6 +191,7 @@ impl ParquetStagedIngressSession {
             &metadata_key,
             canonical_json_bytes(&metadata)?,
         )?;
+        request.mutation_guard().assert_current()?;
         Ok(Self {
             destination,
             request,
@@ -209,30 +225,31 @@ impl ParquetStagedIngressSession {
         Ok(())
     }
 
-    fn spawn_encode(
-        &self,
-        segment: StagedSegmentRequest,
-    ) -> Result<cdf_runtime::ScopedBlockingTask<StagedParquetObject>> {
-        let identity = segment.identity.clone();
-        self.validate_identity(&identity)?;
+    fn start_group(&self, object_ordinal: u32) -> Result<ActiveParquetGroup> {
         let destination = self.destination.clone();
         let output_schema = self.request.output_schema().clone();
         let attempt_id = self.request.attempt_id().clone();
-        let staging_key = self.physical_plan.staging_key(&identity.segment_id);
+        let staging_key = self.physical_plan.staging_key(object_ordinal);
         let writer_settings = ParquetWriterSettings {
             rows_per_batch: self.physical_plan.rows_per_batch,
             bytes_per_batch: self.physical_plan.bytes_per_batch,
         };
         let mutation_guard = self.request.mutation_guard().clone();
-        let run_id = format!("parquet-stage-{}-{}", attempt_id.as_str(), identity.ordinal);
-        self.destination.execution().spawn_blocking_value(
+        let run_id = format!(
+            "parquet-stage-{}-object-{object_ordinal}",
+            attempt_id.as_str()
+        );
+        let (commands, command_receiver) = mpsc::sync_channel(0);
+        let (consumed_sender, consumed) = mpsc::sync_channel(0);
+        let task = self.destination.execution().spawn_blocking_value(
             &run_id,
             ENCODE_LANE,
             move |cancellation| {
                 cancellation.check()?;
                 let file = destination.store().staging_file()?;
-                let (identity, encoded) = write_parquet_staged_segment(
-                    segment,
+                let group = write_parquet_staged_group(
+                    command_receiver,
+                    consumed_sender,
                     StagedParquetEncodeContext {
                         expected_schema: &output_schema,
                         writer_memory: destination.execution().memory(),
@@ -245,15 +262,18 @@ impl ParquetStagedIngressSession {
                 )?;
                 cancellation.check()?;
                 mutation_guard.assert_current()?;
-                let sha256 = encoded.sha256.clone();
+                let sha256 = group.encoded.sha256.clone();
                 let stored = destination.store().put_encoded_file(
                     destination.execution(),
                     &staging_key,
-                    encoded,
+                    group.encoded,
+                    &mutation_guard,
+                    &cancellation,
                 )?;
                 mutation_guard.assert_current()?;
                 Ok(StagedParquetObject {
-                    identity,
+                    object_ordinal,
+                    identities: group.identities,
                     store: destination.store().clone(),
                     execution: destination.execution().clone(),
                     staging_key,
@@ -263,55 +283,126 @@ impl ParquetStagedIngressSession {
                     mutation_guard,
                 })
             },
-        )
+        )?;
+        Ok(ActiveParquetGroup {
+            package_byte_count: 0,
+            segment_count: 0,
+            commands,
+            consumed,
+            task,
+        })
+    }
+
+    fn feed_group_segment(
+        &mut self,
+        group: &mut ActiveParquetGroup,
+        segment: StagedSegmentRequest,
+        stream: &mut dyn StagedSegmentStream,
+    ) -> Result<()> {
+        let identity = segment.identity.clone();
+        self.validate_identity(&identity)?;
+        group
+            .commands
+            .send(ParquetGroupCommand::Segment(segment))
+            .map_err(|_| CdfError::destination("Parquet object group encoder stopped"))?;
+        let consumed = group
+            .consumed
+            .recv()
+            .map_err(|_| CdfError::destination("Parquet object group encoder stopped"))??;
+        if consumed != identity {
+            return Err(CdfError::destination(
+                "Parquet object group consumed a different segment identity",
+            ));
+        }
+        stream.acknowledge(cdf_runtime::StagedSegmentAck {
+            attempt_id: self.request.attempt_id().clone(),
+            identity: identity.clone(),
+            external_durable: false,
+        })?;
+        if self.accepted.insert(identity.ordinal, identity).is_some() {
+            return Err(CdfError::destination(
+                "Parquet object group acknowledged a duplicate segment ordinal",
+            ));
+        }
+        group.segment_count += 1;
+        group.package_byte_count = group
+            .package_byte_count
+            .checked_add(consumed.byte_count)
+            .ok_or_else(|| CdfError::data("Parquet object package byte count overflow"))?;
+        Ok(())
+    }
+
+    fn finish_group(
+        &self,
+        group: ActiveParquetGroup,
+    ) -> cdf_runtime::ScopedBlockingTask<StagedParquetObject> {
+        let _ = group.commands.send(ParquetGroupCommand::Finish);
+        group.task
     }
 
     fn complete_oldest(
         &mut self,
         pending: &mut VecDeque<cdf_runtime::ScopedBlockingTask<StagedParquetObject>>,
-        stream: &mut dyn StagedSegmentStream,
     ) -> Result<()> {
         let task = pending
             .pop_front()
             .ok_or_else(|| CdfError::internal("Parquet staged encode queue is empty"))?;
-        let completed = (|| {
-            let object = self.destination.execution().run_io(task)?;
-            let identity = object.identity().clone();
-            stream.acknowledge(cdf_runtime::StagedSegmentAck {
-                attempt_id: self.request.attempt_id().clone(),
-                identity: identity.clone(),
-                external_durable: object.external_durable(),
-            })?;
-            if self
-                .accepted
-                .insert(identity.ordinal, identity.clone())
-                .is_some()
-                || self.objects.insert(identity.ordinal, object).is_some()
-            {
-                return Err(CdfError::destination(
-                    "Parquet staged encode completed a duplicate ordinal",
-                ));
+        let mut object = match self.destination.execution().run_io(task) {
+            Ok(object) => object,
+            Err(error) => return Err(self.with_join_failures(error, None, pending)),
+        };
+        if self.objects.contains_key(&object.object_ordinal) {
+            let mut error =
+                CdfError::destination("Parquet staged encode completed a duplicate object ordinal");
+            if let Err(cleanup) = object.cleanup() {
+                error = attach_secondary(error, "duplicate staged object cleanup", cleanup);
             }
-            Ok(())
-        })();
-        if let Err(error) = completed {
-            self.cancel_and_join(pending);
-            return Err(error);
+            return Err(self.with_join_failures(error, None, pending));
         }
+        self.objects.insert(object.object_ordinal, object);
         Ok(())
     }
 
     fn cancel_and_join(
         &self,
+        active: Option<ActiveParquetGroup>,
         pending: &mut VecDeque<cdf_runtime::ScopedBlockingTask<StagedParquetObject>>,
-    ) {
+    ) -> Result<()> {
+        if let Some(active) = active {
+            active.task.termination().cancel();
+            pending.push_back(active.task);
+        }
         for task in pending.iter() {
             task.termination().cancel();
         }
+        let mut failure = None;
         while let Some(task) = pending.pop_front() {
             // Cancellation is the expected terminal result. Awaiting every task is the
             // structural ownership barrier that prevents a retry from overlapping orphan work.
-            let _ = self.destination.execution().run_io(task);
+            match self.destination.execution().run_io(task) {
+                Ok(mut object) => {
+                    if let Err(error) = object.cleanup() {
+                        append_failure(&mut failure, "cancelled staged object cleanup", error);
+                    }
+                }
+                Err(error) => append_failure(&mut failure, "staged sibling join", error),
+            }
+        }
+        match failure {
+            Some(error) => Err(error),
+            None => Ok(()),
+        }
+    }
+
+    fn with_join_failures(
+        &self,
+        error: CdfError,
+        active: Option<ActiveParquetGroup>,
+        pending: &mut VecDeque<cdf_runtime::ScopedBlockingTask<StagedParquetObject>>,
+    ) -> CdfError {
+        match self.cancel_and_join(active, pending) {
+            Ok(()) => error,
+            Err(cleanup) => attach_secondary(error, "Parquet staged sibling cleanup", cleanup),
         }
     }
 
@@ -338,11 +429,11 @@ impl ParquetStagedIngressSession {
 
     fn cleanup(&mut self) -> Result<()> {
         self.request.mutation_guard().assert_current()?;
-        let mut first_error = None;
+        let mut failure = None;
         for object in self.objects.values_mut() {
             self.request.mutation_guard().assert_current()?;
             if let Err(error) = object.cleanup() {
-                first_error.get_or_insert(error);
+                append_failure(&mut failure, "staged object cleanup", error);
             }
         }
         self.objects.clear();
@@ -354,14 +445,14 @@ impl ParquetStagedIngressSession {
             self.request.attempt_id(),
             self.request.staging_lease().fencing_token(),
         );
-        if let Err(error) = self
-            .destination
-            .store()
-            .delete_prefix(self.destination.execution(), &prefix)
-        {
-            first_error.get_or_insert(error);
+        if let Err(error) = self.destination.store().delete_prefix(
+            self.destination.execution(),
+            &prefix,
+            self.request.mutation_guard(),
+        ) {
+            append_failure(&mut failure, "staged attempt cleanup", error);
         }
-        match first_error {
+        match failure {
             Some(error) => Err(error),
             None => Ok(()),
         }
@@ -369,18 +460,11 @@ impl ParquetStagedIngressSession {
 }
 
 impl StagedParquetObject {
-    fn identity(&self) -> &StagedSegmentIdentity {
-        &self.identity
-    }
-
-    fn external_durable(&self) -> bool {
-        true
-    }
-
     fn cleanup(&mut self) -> Result<()> {
         if self.cleanup {
             self.mutation_guard.assert_current()?;
             self.store.delete(&self.execution, &self.staging_key)?;
+            self.mutation_guard.assert_current()?;
             self.cleanup = false;
         }
         Ok(())
@@ -388,44 +472,88 @@ impl StagedParquetObject {
 
     fn finalize(
         self,
-        state: &StateSegment,
+        states: &BTreeMap<SegmentId, &StateSegment>,
         final_key: String,
         schema_hash: &SchemaHash,
         mutation_guard: &cdf_runtime::StagingMutationGuard,
     ) -> Result<ParquetObjectEntry> {
         let mut staged = self;
-        let identity = staged.identity.clone();
-        if identity.segment_id != state.segment_id || identity.row_count != state.row_count {
-            return Err(CdfError::data(format!(
-                "Parquet staged segment {} differs from final state authority",
-                identity.segment_id
-            )));
+        let result = (|| {
+            let mut row_offset = 0_u64;
+            let mut byte_count = 0_u64;
+            let mut package_byte_count = 0_u64;
+            let mut segments = Vec::with_capacity(staged.identities.len());
+            for identity in &staged.identities {
+                let state = states.get(&identity.segment_id).ok_or_else(|| {
+                    CdfError::data(format!(
+                        "Parquet staged segment {} is absent from final state authority",
+                        identity.segment_id
+                    ))
+                })?;
+                if identity.row_count != state.row_count {
+                    return Err(CdfError::data(format!(
+                        "Parquet staged segment {} differs from final state authority",
+                        identity.segment_id
+                    )));
+                }
+                segments.push(ParquetObjectSegmentEntry {
+                    segment_id: identity.segment_id.as_str().to_owned(),
+                    row_offset,
+                    row_count: identity.row_count,
+                    byte_count: state.byte_count,
+                    package_byte_count: identity.byte_count,
+                });
+                row_offset = row_offset
+                    .checked_add(identity.row_count)
+                    .ok_or_else(|| CdfError::data("Parquet object row count overflow"))?;
+                byte_count = byte_count
+                    .checked_add(state.byte_count)
+                    .ok_or_else(|| CdfError::data("Parquet object state byte count overflow"))?;
+                package_byte_count = package_byte_count
+                    .checked_add(identity.byte_count)
+                    .ok_or_else(|| CdfError::data("Parquet object package byte count overflow"))?;
+            }
+            mutation_guard.assert_current()?;
+            let stored = staged.store.promote_create_or_verify(
+                &staged.execution,
+                &staged.staging_key,
+                &final_key,
+                crate::store::ExpectedObject {
+                    byte_count: staged.stored.byte_count,
+                    sha256: &staged.sha256,
+                    e_tag: staged.stored.e_tag.clone(),
+                },
+                mutation_guard,
+            )?;
+            mutation_guard.assert_current()?;
+            staged
+                .store
+                .delete(&staged.execution, &staged.staging_key)?;
+            mutation_guard.assert_current()?;
+            staged.cleanup = false;
+            Ok(ParquetObjectEntry {
+                key: final_key,
+                row_count: row_offset,
+                byte_count,
+                package_byte_count,
+                parquet_byte_count: stored.byte_count,
+                sha256: staged.sha256.clone(),
+                etag: stored.e_tag,
+                schema_hash: schema_hash.as_str().to_owned(),
+                segments,
+            })
+        })();
+        match result {
+            Ok(entry) => Ok(entry),
+            Err(error) => match staged.cleanup() {
+                Ok(()) => Err(error),
+                Err(cleanup) => Err(attach_secondary(
+                    error,
+                    "failed Parquet object finalization cleanup",
+                    cleanup,
+                )),
+            },
         }
-        mutation_guard.assert_current()?;
-        let stored = staged.store.promote_create_or_verify(
-            &staged.execution,
-            &staged.staging_key,
-            &final_key,
-            &staged.sha256,
-            staged.stored.byte_count,
-            staged.stored.e_tag.clone(),
-        )?;
-        mutation_guard.assert_current()?;
-        staged
-            .store
-            .delete(&staged.execution, &staged.staging_key)?;
-        staged.cleanup = false;
-        Ok(ParquetObjectEntry {
-            segment_id: identity.segment_id.as_str().to_owned(),
-            key: final_key,
-            row_count: identity.row_count,
-            byte_count: state.byte_count,
-            package_byte_count: identity.byte_count,
-            parquet_byte_count: stored.byte_count,
-            sha256: staged.sha256.clone(),
-            etag: stored.e_tag,
-            schema_hash: schema_hash.as_str().to_owned(),
-        })
     }
 }
 
@@ -433,29 +561,53 @@ impl StagedIngressSession for ParquetStagedIngressSession {
     fn stage_stream(&mut self, stream: &mut dyn StagedSegmentStream) -> Result<()> {
         let maximum = usize::from(self.physical_plan.writers);
         let mut pending = VecDeque::with_capacity(maximum);
+        let mut active = None;
+        let mut next_object_ordinal = 0_u32;
         loop {
             let segment = match stream.next_segment() {
                 Ok(Some(segment)) => segment,
                 Ok(None) => break,
                 Err(error) => {
-                    self.cancel_and_join(&mut pending);
-                    return Err(error);
+                    return Err(self.with_join_failures(error, active.take(), &mut pending));
                 }
             };
-            let task = match self.spawn_encode(segment) {
-                Ok(task) => task,
-                Err(error) => {
-                    self.cancel_and_join(&mut pending);
-                    return Err(error);
+            if active.as_ref().is_some_and(|group: &ActiveParquetGroup| {
+                self.physical_plan.object_layout.closes_before(
+                    group.segment_count,
+                    group.package_byte_count,
+                    segment.identity.byte_count,
+                )
+            }) {
+                let group = active.take().expect("active group was observed");
+                pending.push_back(self.finish_group(group));
+                if pending.len() == maximum {
+                    self.complete_oldest(&mut pending)?;
                 }
-            };
-            pending.push_back(task);
-            if pending.len() == maximum {
-                self.complete_oldest(&mut pending, stream)?;
+            }
+            if active.is_none() {
+                active = match self.start_group(next_object_ordinal) {
+                    Ok(group) => Some(group),
+                    Err(error) => {
+                        return Err(self.with_join_failures(error, None, &mut pending));
+                    }
+                };
+                next_object_ordinal = next_object_ordinal.checked_add(1).ok_or_else(|| {
+                    CdfError::data("Parquet destination object count exceeds u32")
+                })?;
+            }
+            if let Err(error) = self.feed_group_segment(
+                active.as_mut().expect("active group was initialized"),
+                segment,
+                stream,
+            ) {
+                return Err(self.with_join_failures(error, active.take(), &mut pending));
             }
         }
+        if let Some(group) = active.take() {
+            pending.push_back(self.finish_group(group));
+        }
         while !pending.is_empty() {
-            self.complete_oldest(&mut pending, stream)?;
+            self.complete_oldest(&mut pending)?;
         }
         Ok(())
     }
@@ -473,100 +625,124 @@ impl StagedIngressSession for ParquetStagedIngressSession {
         mut self: Box<Self>,
         binding: VerifiedFinalBinding,
     ) -> Result<DestinationCommitOutcome> {
-        self.validate_final_binding(&binding)?;
-        let request = ParquetCommitRequest {
-            commit: binding.commit().clone(),
-            schema_hash: binding.schema_hash().clone(),
-        };
-        let segment_ids = binding
-            .ordered_segments()
-            .iter()
-            .map(|identity| identity.segment_id.clone())
-            .collect::<Vec<SegmentId>>();
-        let rows = binding
-            .ordered_segments()
-            .iter()
-            .map(|identity| identity.row_count)
-            .sum();
-        let package_bytes = binding
-            .ordered_segments()
-            .iter()
-            .map(|identity| identity.byte_count)
-            .sum();
-        let plan =
-            self.destination
-                .plan_package_shape(&request, &segment_ids, rows, package_bytes)?;
-        if plan.object_keys
-            != self
-                .physical_plan
-                .final_keys(&request.commit.idempotency_token, &segment_ids)
-        {
-            return Err(CdfError::destination(
-                "Parquet final object keys differ from the compiled physical write plan",
-            ));
-        }
-        if &plan.kernel != binding.plan() {
-            return Err(CdfError::destination(
-                "Parquet staged final binding commit plan differs from destination planning",
-            ));
-        }
-        if let Some(existing) = self.destination.existing_verified_manifest(
-            &request,
-            &plan,
-            self.request.mutation_guard(),
-        )? {
-            self.cleanup()?;
-            let receipt = duplicate_parquet_receipt(request, plan, existing)?;
-            return Ok(DestinationCommitOutcome::new(
-                receipt,
-                DestinationReceiptReportingPolicy::DestinationCommit { duplicate: true },
-            ));
-        }
-
-        let publication_key = package_publication_metadata_key(
-            self.destination.object_key_encoder(),
-            &request.commit.target,
-            self.request.staging_lease().authority_domain_id(),
-            self.request.attempt_id(),
-            self.request.staging_lease().fencing_token(),
-            &request.commit.idempotency_token,
-        );
-        self.request.mutation_guard().assert_current()?;
-        self.destination.store().put(
-            self.destination.execution(),
-            &publication_key,
-            canonical_json_bytes(&PublicationAttemptMetadata {
-                version: STAGING_METADATA_VERSION,
-                staging_lease: self.request.staging_lease().clone(),
-            })?,
-        )?;
-
-        let mut objects = Vec::with_capacity(segment_ids.len());
-        let staged = std::mem::take(&mut self.objects);
-        let states = binding
-            .commit()
-            .segments
-            .iter()
-            .map(|state| (state.segment_id.clone(), state))
-            .collect::<BTreeMap<_, _>>();
-        let mut seen = BTreeSet::new();
-        for (ordinal, object) in staged {
-            let identity = self.accepted.get(&ordinal).ok_or_else(|| {
-                CdfError::internal("Parquet staged object has no accepted identity")
-            })?;
-            if !seen.insert(identity.segment_id.clone()) {
-                return Err(CdfError::data(
-                    "Parquet staged final binding repeats a segment id",
+        let result = (|| {
+            self.validate_final_binding(&binding)?;
+            let request = ParquetCommitRequest {
+                commit: binding.commit().clone(),
+                schema_hash: binding.schema_hash().clone(),
+            };
+            let segment_layouts = binding
+                .ordered_segments()
+                .iter()
+                .map(|identity| ParquetSegmentLayout {
+                    segment_id: identity.segment_id.clone(),
+                    package_byte_count: identity.byte_count,
+                })
+                .collect::<Vec<_>>();
+            let object_layouts = self.physical_plan.object_layout.plan(segment_layouts)?;
+            let rows = binding
+                .ordered_segments()
+                .iter()
+                .map(|identity| identity.row_count)
+                .sum();
+            let package_bytes = binding
+                .ordered_segments()
+                .iter()
+                .map(|identity| identity.byte_count)
+                .sum();
+            let plan = self.destination.plan_package_shape(
+                &request,
+                &object_layouts,
+                rows,
+                package_bytes,
+            )?;
+            if plan.object_keys
+                != self
+                    .physical_plan
+                    .final_keys(&request.commit.idempotency_token, &object_layouts)
+            {
+                return Err(CdfError::destination(
+                    "Parquet final object keys differ from the compiled physical write plan",
                 ));
             }
-            let state = states.get(&identity.segment_id).ok_or_else(|| {
-                CdfError::data(format!(
-                    "Parquet staged segment {} is absent from final state authority",
-                    identity.segment_id
-                ))
-            })?;
-            let key =
-                plan.object_keys
+            if &plan.kernel != binding.plan() {
+                return Err(CdfError::destination(
+                    "Parquet staged final binding commit plan differs from destination planning",
+                ));
+            }
+            if let Some(existing) = self.destination.existing_verified_manifest(
+                &request,
+                &plan,
+                self.request.mutation_guard(),
+            )? {
+                self.cleanup()?;
+                let receipt = duplicate_parquet_receipt(request, plan, existing)?;
+                return Ok(DestinationCommitOutcome::new(
+                    receipt,
+                    DestinationReceiptReportingPolicy::DestinationCommit { duplicate: true },
+                ));
+            }
+
+            let publication_key = package_publication_metadata_key(
+                self.destination.object_key_encoder(),
+                &request.commit.target,
+                self.request.staging_lease().authority_domain_id(),
+                self.request.attempt_id(),
+                self.request.staging_lease().fencing_token(),
+                &request.commit.idempotency_token,
+            );
+            self.request.mutation_guard().assert_current()?;
+            self.destination.store().put(
+                self.destination.execution(),
+                &publication_key,
+                canonical_json_bytes(&PublicationAttemptMetadata {
+                    version: STAGING_METADATA_VERSION,
+                    staging_lease: self.request.staging_lease().clone(),
+                })?,
+            )?;
+            self.request.mutation_guard().assert_current()?;
+
+            let mut objects = Vec::with_capacity(object_layouts.len());
+            let staged = std::mem::take(&mut self.objects);
+            let states = binding
+                .commit()
+                .segments
+                .iter()
+                .map(|state| (state.segment_id.clone(), state))
+                .collect::<BTreeMap<_, _>>();
+            let mut seen = BTreeSet::new();
+            for (ordinal, object) in staged {
+                let expected = object_layouts
+                    .get(usize::try_from(ordinal).map_err(|_| {
+                        CdfError::data("Parquet object ordinal exceeds platform usize")
+                    })?)
+                    .ok_or_else(|| {
+                        CdfError::data("Parquet staged object is outside the final object plan")
+                    })?;
+                let actual = object
+                    .identities
+                    .iter()
+                    .map(|identity| &identity.segment_id)
+                    .collect::<Vec<_>>();
+                let expected_ids = expected
+                    .segments
+                    .iter()
+                    .map(|segment| &segment.segment_id)
+                    .collect::<Vec<_>>();
+                if actual != expected_ids {
+                    return Err(CdfError::data(
+                        "Parquet staged object segments differ from the final object layout",
+                    ));
+                }
+                for segment_id in actual {
+                    if !seen.insert(segment_id.clone()) {
+                        return Err(CdfError::data(
+                            "Parquet staged final binding repeats a segment id",
+                        ));
+                    }
+                }
+                let key = plan
+                    .object_keys
                     .get(usize::try_from(ordinal).map_err(|_| {
                         CdfError::data("Parquet staged ordinal exceeds platform usize")
                     })?)
@@ -574,37 +750,67 @@ impl StagedIngressSession for ParquetStagedIngressSession {
                         CdfError::data("Parquet staged ordinal is outside the final object plan")
                     })?
                     .clone();
-            objects.push(object.finalize(
-                state,
-                key,
-                binding.schema_hash(),
+                objects.push(object.finalize(
+                    &states,
+                    key,
+                    binding.schema_hash(),
+                    self.request.mutation_guard(),
+                )?);
+            }
+            self.destination
+                .store()
+                .sync_local_object_parents(&plan.object_keys)?;
+            let publication = finalize_parquet_objects(
+                &self.destination,
+                request,
+                plan,
+                objects,
                 self.request.mutation_guard(),
-            )?);
+            )?;
+            self.request.mutation_guard().assert_current()?;
+            self.destination
+                .store()
+                .delete(self.destination.execution(), &publication_key)?;
+            let (receipt, verification) = publication.into_parts();
+            self.cleanup()?;
+            DestinationCommitOutcome::new(
+                receipt,
+                DestinationReceiptReportingPolicy::DestinationCommit { duplicate: false },
+            )
+            .with_commit_verification(verification)
+        })();
+        match result {
+            Ok(outcome) => Ok(outcome),
+            Err(error) => match self.cleanup() {
+                Ok(()) => Err(error),
+                Err(cleanup) => Err(attach_secondary(
+                    error,
+                    "failed Parquet final-binding cleanup",
+                    cleanup,
+                )),
+            },
         }
-        self.destination
-            .store()
-            .sync_local_object_parents(&plan.object_keys)?;
-        let publication = finalize_parquet_objects(
-            &self.destination,
-            request,
-            plan,
-            objects,
-            self.request.mutation_guard(),
-        )?;
-        self.request.mutation_guard().assert_current()?;
-        self.destination
-            .store()
-            .delete(self.destination.execution(), &publication_key)?;
-        let (receipt, verification) = publication.into_parts();
-        self.cleanup()?;
-        DestinationCommitOutcome::new(
-            receipt,
-            DestinationReceiptReportingPolicy::DestinationCommit { duplicate: false },
-        )
-        .with_commit_verification(verification)
     }
 
     fn abort(mut self: Box<Self>) -> Result<()> {
         self.cleanup()
+    }
+}
+
+fn attach_secondary(mut primary: CdfError, context: &str, secondary: CdfError) -> CdfError {
+    primary
+        .message
+        .push_str(&format!("; {context} also failed: {secondary}"));
+    primary
+}
+
+fn append_failure(failure: &mut Option<CdfError>, context: &str, error: CdfError) {
+    match failure.take() {
+        Some(primary) => *failure = Some(attach_secondary(primary, context, error)),
+        None => {
+            let mut error = error;
+            error.message = format!("{context}: {}", error.message);
+            *failure = Some(error);
+        }
     }
 }

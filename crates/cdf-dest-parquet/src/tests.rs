@@ -9,7 +9,7 @@ use crate::{
         ReplacePointer, canonical_json_bytes, sha256_hex,
     },
     sheet::{parquet_correction_capabilities, parquet_protocol_capabilities, parquet_sheet},
-    store::{ObjectKeyEncoder, package_manifest_key, staged_segment_object_key},
+    store::{ObjectKeyEncoder, package_manifest_key, staged_data_object_key},
 };
 use ::parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use arrow_array::{ArrayRef, Float64Array, Int64Array, StringArray};
@@ -96,6 +96,7 @@ fn local_streaming_parquet_reaches_sixty_percent_of_write_roofline() {
             tempfile::NamedTempFile::new_in(root.path()).unwrap(),
         )
         .unwrap();
+        encoded.file.as_file().sync_all().unwrap();
         let parquet_elapsed = started.elapsed();
 
         let mut raw = tempfile::NamedTempFile::new_in(root.path()).unwrap();
@@ -757,8 +758,10 @@ fn stage_through_ingress(
     package_dir: &Path,
     commit: ParquetCommitRequest,
 ) -> Result<StagedTestCommit> {
+    static NEXT_TEST_ATTEMPT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    let ordinal = NEXT_TEST_ATTEMPT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let attempt_id = cdf_runtime::LoadAttemptId::new(format!(
-        "parquet_test_{}",
+        "parquet_test_{ordinal}_{}",
         commit.commit.idempotency_token.as_str().replace(':', "_")
     ))?;
     stage_through_ingress_with_attempt(dest, package_dir, commit, attempt_id)
@@ -932,17 +935,15 @@ fn assert_staged_abort_cleans_destination(
     commit: ParquetCommitRequest,
 ) {
     let staged = stage_through_ingress(dest, package_dir, commit).unwrap();
-    let staging_keys = staged
-        .staged
-        .iter()
-        .map(|identity| {
-            staged_segment_object_key(
+    let staging_keys = (0..staged.plan.object_keys.len())
+        .map(|ordinal| {
+            staged_data_object_key(
                 dest.object_key_encoder(),
                 &TargetName::new("orders").unwrap(),
                 staged.staging_lease.authority_domain_id(),
                 &staged.attempt_id,
                 staged.staging_lease.fencing_token(),
-                &identity.segment_id,
+                u32::try_from(ordinal).unwrap(),
             )
         })
         .collect::<Vec<_>>();
@@ -1694,9 +1695,11 @@ fn staged_segment_ingress_preserves_manifest_segment_order() {
             },
         ]
     );
-    assert_eq!(manifest.objects.len(), 2);
-    assert_eq!(manifest.objects[0].segment_id, "seg-000001");
-    assert_eq!(manifest.objects[1].segment_id, "seg-000002");
+    assert_eq!(manifest.objects.len(), 1);
+    assert_eq!(manifest.objects[0].segments.len(), 2);
+    assert_eq!(manifest.objects[0].segments[0].segment_id, "seg-000001");
+    assert_eq!(manifest.objects[0].segments[1].segment_id, "seg-000002");
+    assert_eq!(manifest.objects[0].segments[1].row_offset, 2);
     assert!(
         manifest
             .objects
@@ -1738,10 +1741,12 @@ fn staged_attempt_records_the_exact_prepared_physical_plan() {
     )
     .unwrap();
     assert_eq!(metadata["physical_plan_path"], "arrow_ipc_to_parquet");
-    assert_eq!(metadata["physical_plan_version"], 2);
+    assert_eq!(metadata["physical_plan_version"], 3);
     assert_eq!(metadata["writers"], 2);
     assert_eq!(metadata["rows_per_batch"], 64 * 1024);
     assert_eq!(metadata["bytes_per_batch"], 16 * 1024 * 1024);
+    assert_eq!(metadata["object_target_package_bytes"], 256 * 1024 * 1024);
+    assert_eq!(metadata["max_segments_per_object"], 8);
     staged.session.abort().unwrap();
 }
 
@@ -1914,13 +1919,13 @@ fn abandoned_attempt_cleanup_requires_exact_expiry_proof() {
         &attempt_id,
         staging_lease.fencing_token(),
     );
-    let staging_key = staged_segment_object_key(
+    let staging_key = staged_data_object_key(
         destination.object_key_encoder(),
         &commit.commit.target,
         staging_lease.authority_domain_id(),
         &attempt_id,
         staging_lease.fencing_token(),
-        &SegmentId::new("seg-000001").unwrap(),
+        0,
     );
     destination
         .store()
@@ -1932,10 +1937,12 @@ fn abandoned_attempt_cleanup_requires_exact_expiry_proof() {
                 "target": commit.commit.target.as_str(),
                 "attempt_id": attempt_id.as_str(),
                 "physical_plan_path": "arrow_ipc_to_parquet",
-                "physical_plan_version": 2,
+                "physical_plan_version": 3,
                 "writers": 1,
                 "rows_per_batch": 65_536,
                 "bytes_per_batch": 16_777_216,
+                "object_target_package_bytes": 268_435_456,
+                "max_segments_per_object": 8,
                 "started_at_ms": 1,
                 "staging_lease": staging_lease.clone(),
             }))
@@ -2047,13 +2054,13 @@ fn independent_lease_domains_cannot_collide_or_collect_each_others_staging() {
             .unwrap();
         let lease = managed.snapshot().unwrap();
         assert_eq!(lease.fencing_token(), 1);
-        let key = staged_segment_object_key(
+        let key = staged_data_object_key(
             destination.object_key_encoder(),
             &commit.commit.target,
             lease.authority_domain_id(),
             &attempt_id,
             lease.fencing_token(),
-            &SegmentId::new("seg-000001").unwrap(),
+            0,
         );
         let metadata_key = crate::store::staged_attempt_metadata_key(
             destination.object_key_encoder(),
@@ -2072,10 +2079,12 @@ fn independent_lease_domains_cannot_collide_or_collect_each_others_staging() {
                     "target": commit.commit.target.as_str(),
                     "attempt_id": attempt_id.as_str(),
                     "physical_plan_path": "arrow_ipc_to_parquet",
-                    "physical_plan_version": 2,
+                    "physical_plan_version": 3,
                     "writers": 1,
                     "rows_per_batch": 65_536,
                     "bytes_per_batch": 16_777_216,
+                    "object_target_package_bytes": 268_435_456,
+                    "max_segments_per_object": 8,
                     "started_at_ms": index,
                     "staging_lease": lease.clone(),
                 }))
@@ -2177,10 +2186,12 @@ fn failed_staging_cleanup_retains_attempt_marker_until_payload_deletion_complete
                 "target": target.as_str(),
                 "attempt_id": attempt_id.as_str(),
                 "physical_plan_path": "arrow_ipc_to_parquet",
-                "physical_plan_version": 2,
+                "physical_plan_version": 3,
                 "writers": 1,
                 "rows_per_batch": 65_536,
                 "bytes_per_batch": 16_777_216,
+                "object_target_package_bytes": 268_435_456,
+                "max_segments_per_object": 8,
                 "started_at_ms": 1,
                 "staging_lease": lease.clone(),
             }))
@@ -2453,7 +2464,7 @@ fn dry_run_plan_reports_keys_without_writing() {
     assert_eq!(
         plan.object_keys,
         vec![format!(
-            "targets/orders/packages/{encoded_token}/data/seg-000001.parquet"
+            "targets/orders/packages/{encoded_token}/data/part-00000000.parquet"
         )]
     );
     let expected_settlement = format!("targets/orders/packages/{encoded_token}/replace.json");
