@@ -84,6 +84,8 @@ pub struct AccountedChunksReader {
     chunks: Vec<AccountedBytes>,
     chunk: usize,
     offset: usize,
+    consumed_bytes: u64,
+    byte_limit: Option<u64>,
 }
 
 impl AccountedChunksReader {
@@ -92,7 +94,24 @@ impl AccountedChunksReader {
             chunks,
             chunk: 0,
             offset: 0,
+            consumed_bytes: 0,
+            byte_limit: None,
         }
+    }
+
+    pub fn with_byte_limit(chunks: Vec<AccountedBytes>, byte_limit: u64) -> Result<Self> {
+        if byte_limit == 0 {
+            return Err(CdfError::contract(
+                "accounted chunks reader byte limit must be greater than zero",
+            ));
+        }
+        Ok(Self {
+            chunks,
+            chunk: 0,
+            offset: 0,
+            consumed_bytes: 0,
+            byte_limit: Some(byte_limit),
+        })
     }
 
     pub fn retained_bytes(&self) -> u64 {
@@ -112,17 +131,31 @@ impl Read for AccountedChunksReader {
 
 impl BufRead for AccountedChunksReader {
     fn fill_buf(&mut self) -> std::io::Result<&[u8]> {
+        let remaining = self
+            .byte_limit
+            .map(|limit| limit.saturating_sub(self.consumed_bytes));
+        if remaining == Some(0) {
+            return Ok(&[]);
+        }
         while self.chunk < self.chunks.len()
             && self.offset == self.chunks[self.chunk].payload().len()
         {
             self.chunk += 1;
             self.offset = 0;
         }
-        Ok(self
+        let available = self
             .chunks
             .get(self.chunk)
             .map(|chunk| &chunk.payload()[self.offset..])
-            .unwrap_or_default())
+            .unwrap_or_default();
+        let visible = remaining
+            .map(|remaining| {
+                available
+                    .len()
+                    .min(usize::try_from(remaining).unwrap_or(usize::MAX))
+            })
+            .unwrap_or(available.len());
+        Ok(&available[..visible])
     }
 
     fn consume(&mut self, amount: usize) {
@@ -131,7 +164,15 @@ impl BufRead for AccountedChunksReader {
             .get(self.chunk)
             .map(|chunk| chunk.payload().len().saturating_sub(self.offset))
             .unwrap_or(0);
-        self.offset += amount.min(available);
+        let limited = self
+            .byte_limit
+            .map(|limit| {
+                usize::try_from(limit.saturating_sub(self.consumed_bytes)).unwrap_or(usize::MAX)
+            })
+            .unwrap_or(available);
+        let consumed = amount.min(available).min(limited);
+        self.offset += consumed;
+        self.consumed_bytes = self.consumed_bytes.saturating_add(consumed as u64);
     }
 }
 
@@ -1210,6 +1251,40 @@ mod tests {
         assert_eq!(options.batch_size, DEFAULT_FORMAT_BATCH_ROWS);
         assert!(options.clone().with_batch_id_prefix(" ").is_err());
         assert!(options.with_batch_size(0).is_err());
+    }
+
+    #[test]
+    fn accounted_chunks_reader_exposes_only_its_bounded_prefix() {
+        let memory = Arc::new(DeterministicMemoryCoordinator::new(16, BTreeMap::new()).unwrap());
+        let chunks = [b"abcd".as_slice(), b"efgh".as_slice()]
+            .into_iter()
+            .enumerate()
+            .map(|(index, payload)| {
+                let lease = memory
+                    .try_reserve(
+                        &ReservationRequest::new(
+                            ConsumerKey::new(
+                                format!("bounded-reader-{index}"),
+                                MemoryClass::Source,
+                            )
+                            .unwrap(),
+                            payload.len() as u64,
+                        )
+                        .unwrap(),
+                    )
+                    .unwrap()
+                    .unwrap();
+                AccountedBytes::new(bytes::Bytes::copy_from_slice(payload), lease).unwrap()
+            })
+            .collect::<Vec<_>>();
+        let mut reader = AccountedChunksReader::with_byte_limit(chunks, 5).unwrap();
+        let mut observed = Vec::new();
+        reader.read_to_end(&mut observed).unwrap();
+
+        assert_eq!(observed, b"abcde");
+        assert_eq!(reader.retained_bytes(), 8);
+        drop(reader);
+        assert_eq!(memory.snapshot().current_bytes, 0);
     }
 
     impl ByteTransformDriver for DescriptorOnlyTransform {

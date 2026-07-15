@@ -3075,19 +3075,16 @@ fn validate_format_extension(
     extension: Option<&str>,
     formats: &FormatRegistry,
 ) -> Result<()> {
+    if plan.format_declared {
+        return Ok(());
+    }
     let Some(extension) = extension else {
-        if plan.format_declared {
-            return Ok(());
-        }
         return Err(CdfError::data(format!(
             "file `{path_text}` for resource `{resource_id}` has no extension that can attest inferred format `{}`; declare `format` explicitly",
             plan.resolved_format()?.as_str()
         )));
     };
     let Some(extension_driver) = formats.by_extension(extension) else {
-        if plan.format_declared {
-            return Ok(());
-        }
         return Err(CdfError::data(format!(
             "file `{path_text}` for resource `{resource_id}` has unregistered extension `.{extension}` for inferred format `{}`; declare `format` explicitly or register the extension",
             plan.resolved_format()?.as_str()
@@ -4912,6 +4909,48 @@ mod tests {
         assert_eq!(
             dependencies.execution().memory().snapshot().current_bytes,
             0
+        );
+    }
+
+    #[test]
+    fn explicit_format_wins_over_an_ambiguous_extension() {
+        let formats = crate::test_format_registry();
+        let resource_id = ResourceId::new("events.rows").unwrap();
+        let mut plan = FileResourcePlan {
+            source: "events".to_owned(),
+            root: ".".to_owned(),
+            glob: "events.json".to_owned(),
+            format: Some(FileFormatDeclaration::ndjson()),
+            format_declared: true,
+            format_options: serde_json::json!({}),
+            compression: FileCompressionDeclaration::none(),
+            auth: None,
+            credentials: None,
+            allowlist: cdf_http::EgressAllowlist::allow_any(),
+        };
+
+        validate_format_extension(
+            &resource_id,
+            &plan,
+            "events.json",
+            Some("json"),
+            formats.as_ref(),
+        )
+        .unwrap();
+
+        plan.format_declared = false;
+        let error = validate_format_extension(
+            &resource_id,
+            &plan,
+            "events.json",
+            Some("json"),
+            formats.as_ref(),
+        )
+        .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("extension `.json` selects `json`")
         );
     }
 }

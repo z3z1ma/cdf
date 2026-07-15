@@ -1620,7 +1620,9 @@ fn build_path_reports(
                     decision,
                 });
                 match decision {
-                    FieldCoercionDecision::Preserved | FieldCoercionDecision::Widened => {}
+                    FieldCoercionDecision::Preserved
+                    | FieldCoercionDecision::Rebound
+                    | FieldCoercionDecision::Widened => {}
                     FieldCoercionDecision::CoercedByPolicy
                     | FieldCoercionDecision::LossyAllowed
                         if explicit_type.is_some() => {}

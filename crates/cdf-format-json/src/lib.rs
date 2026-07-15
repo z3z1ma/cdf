@@ -35,6 +35,7 @@ use serde::{
 use serde_json::value::RawValue;
 
 const DISCOVERY_CHUNK_BYTES: u64 = 1024 * 1024;
+const MAXIMUM_DECODE_WORKING_SET_BYTES: u64 = 64 * 1024 * 1024;
 
 #[derive(Debug)]
 pub struct NdjsonFormatDriver {
@@ -123,21 +124,14 @@ impl FormatDriver for NdjsonFormatDriver {
                 let Some(chunk) = input.try_next().await? else {
                     break;
                 };
-                sampled_bytes =
-                    sampled_bytes
-                        .checked_add(u64::try_from(chunk.payload().len()).map_err(|_| {
-                            CdfError::data("NDJSON discovery chunk length exceeds u64")
-                        })?)
-                        .ok_or_else(|| CdfError::data("NDJSON discovery byte count overflowed"))?;
-                if sampled_bytes > request.maximum_bytes {
-                    return Err(CdfError::data(format!(
-                        "NDJSON discovery source chunk crossed its {}-byte bound",
-                        request.maximum_bytes
-                    )));
-                }
+                let chunk_bytes = u64::try_from(chunk.payload().len())
+                    .map_err(|_| CdfError::data("NDJSON discovery chunk length exceeds u64"))?;
+                sampled_bytes = sampled_bytes
+                    .saturating_add(chunk_bytes)
+                    .min(request.maximum_bytes);
                 chunks.push(chunk);
             }
-            let reader = AccountedChunksReader::new(chunks);
+            let reader = AccountedChunksReader::with_byte_limit(chunks, sampled_bytes)?;
             let maximum_records = usize::try_from(request.maximum_records)
                 .map_err(|_| CdfError::contract("NDJSON record bound exceeds usize"))?;
             let (schema, sampled_records) = infer_json_schema(reader, Some(maximum_records))
@@ -770,7 +764,11 @@ async fn decode_next(
             }
         }
         if let Some(chunk) = &state.current {
-            let available = &chunk.payload()[state.offset..];
+            let available = ndjson_decode_window(
+                &chunk.payload()[state.offset..],
+                state.retained_bytes,
+                state.request.target_batch_bytes,
+            );
             let start = state.offset;
             let consumed = state
                 .decoder
@@ -791,7 +789,14 @@ async fn decode_next(
                         .ok_or_else(|| CdfError::data("NDJSON retained byte count overflowed"))?;
             }
             if consumed == available.len() {
-                continue;
+                let complete_record_boundary = available
+                    .get(consumed.saturating_sub(1))
+                    .is_some_and(|byte| *byte == b'\n');
+                if state.retained_bytes < state.request.target_batch_bytes
+                    || !complete_record_boundary
+                {
+                    continue;
+                }
             }
         }
         let flushed = state.decoder.flush();
@@ -887,6 +892,22 @@ async fn decode_next(
         }
         return Ok(Some((physical, state)));
     }
+}
+
+fn ndjson_decode_window(available: &[u8], retained_bytes: u64, target_batch_bytes: u64) -> &[u8] {
+    let remaining = target_batch_bytes.saturating_sub(retained_bytes);
+    let search_from = usize::try_from(remaining)
+        .unwrap_or(available.len())
+        .min(available.len());
+    if search_from == available.len() {
+        return available;
+    }
+    available[search_from..]
+        .iter()
+        .position(|byte| *byte == b'\n')
+        .map_or(available, |relative| {
+            &available[..search_from + relative + 1]
+        })
 }
 
 fn strict_decoder(schema: SchemaRef, batch_rows: usize) -> Result<arrow_json::reader::Decoder> {
@@ -1186,11 +1207,17 @@ fn raw_residual_array(source: &str, value: &RawValue) -> Result<(Field, ArrayRef
 }
 
 async fn reserve_output(request: &PhysicalDecodeRequest) -> Result<MemoryLease> {
+    let input_window_bytes = request
+        .target_batch_bytes
+        .clamp(1024 * 1024, MAXIMUM_DECODE_WORKING_SET_BYTES / 2);
+    let output_authority_bytes = MAXIMUM_DECODE_WORKING_SET_BYTES
+        .checked_sub(input_window_bytes)
+        .ok_or_else(|| CdfError::internal("NDJSON decode working-set split underflowed"))?;
     reserve(
         Arc::clone(&request.memory),
         ReservationRequest::new(
             ConsumerKey::new("ndjson-tape-output", MemoryClass::Decode)?,
-            request.target_batch_bytes.max(1024 * 1024),
+            output_authority_bytes,
         )?
         .as_minimum_working_set(),
     )
@@ -1295,6 +1322,88 @@ mod tests {
         let error = frame(br#"[{"a":1},]"#, None).unwrap_err();
 
         assert!(error.message.contains("trailing comma"), "{error}");
+    }
+
+    #[test]
+    fn ndjson_tape_decode_flushes_at_the_byte_target_before_the_row_target() {
+        let coordinator = Arc::new(
+            DeterministicMemoryCoordinator::new(128 * 1024 * 1024, BTreeMap::new()).unwrap(),
+        );
+        let memory: Arc<dyn MemoryCoordinator> = coordinator.clone();
+        let chunks = [
+            br#"{"id":1,"value":"aaaa"#.as_slice(),
+            br#"bbbbbbbb"}
+{"id":2,"value":"cccccccc"}
+"#
+            .as_slice(),
+            br#"{"id":3,"value":"dddddddd"}
+"#
+            .as_slice(),
+        ]
+        .into_iter()
+        .enumerate()
+        .map(|(index, input)| {
+            let lease = reserve_blocking(
+                Arc::clone(&memory),
+                &ReservationRequest::new(
+                    ConsumerKey::new(
+                        format!("json-byte-target-input-{index}"),
+                        MemoryClass::Source,
+                    )
+                    .unwrap(),
+                    u64::try_from(input.len()).unwrap(),
+                )
+                .unwrap(),
+            )
+            .unwrap();
+            Ok(AccountedBytes::new(bytes::Bytes::copy_from_slice(input), lease).unwrap())
+        })
+        .collect::<Vec<Result<_>>>();
+        let request = PhysicalDecodeRequest {
+            options: serde_json::json!({}),
+            unit: DecodeUnitPlan {
+                unit_id: "ndjson-byte-target".to_owned(),
+                ordinal: 0,
+                extent: None,
+                estimated_working_set_bytes: 1024 * 1024,
+                independently_retryable: true,
+            },
+            resource_id: ResourceId::new("events.byte_target").unwrap(),
+            partition_id: PartitionId::new("file-0001").unwrap(),
+            batch_id_prefix: "events-byte-target".to_owned(),
+            schema: cdf_runtime::DecodeSchemaPlan::verified_physical(Arc::new(Schema::new(vec![
+                Field::new("id", DataType::Int64, true),
+                Field::new("value", DataType::Utf8, true),
+            ]))),
+            source_position: None,
+            projection: None,
+            predicates: Vec::new(),
+            target_batch_rows: 64,
+            target_batch_bytes: 16,
+            memory,
+            cancellation: cdf_runtime::RunCancellation::default(),
+        };
+        let batches = futures_executor::block_on(async move {
+            let input: AccountedByteStream = Box::pin(stream::iter(chunks));
+            let mut decoded = decode_ndjson_stream(input, request).await?;
+            let mut batches = Vec::new();
+            while let Some(batch) = decoded.try_next().await? {
+                batches.push(batch);
+            }
+            Result::<Vec<AccountedPhysicalBatch>>::Ok(batches)
+        })
+        .unwrap();
+
+        assert_eq!(batches.len(), 3);
+        assert_eq!(
+            batches
+                .iter()
+                .map(|batch| batch.batch().header.row_count)
+                .collect::<Vec<_>>(),
+            vec![1, 1, 1]
+        );
+        drop(batches);
+        assert_eq!(coordinator.snapshot().current_bytes, 0);
     }
 
     #[test]

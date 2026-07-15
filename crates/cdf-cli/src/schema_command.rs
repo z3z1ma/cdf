@@ -1413,6 +1413,7 @@ fn promotion_receipt_verification_label(
 fn promotion_coercion_label(decision: cdf_contract::FieldCoercionDecision) -> &'static str {
     match decision {
         cdf_contract::FieldCoercionDecision::Preserved => "preserved",
+        cdf_contract::FieldCoercionDecision::Rebound => "rebound",
         cdf_contract::FieldCoercionDecision::Widened => "widened",
         cdf_contract::FieldCoercionDecision::CoercedByPolicy => "coerced_by_policy",
         cdf_contract::FieldCoercionDecision::LossyAllowed => "lossy_allowed",

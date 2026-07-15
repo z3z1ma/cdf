@@ -72,6 +72,7 @@ pub struct FieldCoercion {
 #[serde(rename_all = "snake_case")]
 pub enum FieldCoercionDecision {
     Preserved,
+    Rebound,
     Widened,
     CoercedByPolicy,
     LossyAllowed,
@@ -201,6 +202,7 @@ pub fn materialize_schema_coercion(
                 new_null_array(output_field.data_type(), observed.num_rows())
             }
             FieldCoercionDecision::Preserved
+            | FieldCoercionDecision::Rebound
             | FieldCoercionDecision::Widened
             | FieldCoercionDecision::CoercedByPolicy
             | FieldCoercionDecision::LossyAllowed => {
@@ -257,6 +259,18 @@ pub fn materialize_schema_coercion(
 fn materialize_column(observed: &ArrayRef, output_field: &Field, source: &str) -> Result<ArrayRef> {
     if observed.data_type() == output_field.data_type() {
         return Ok(Arc::clone(observed));
+    }
+    if observed
+        .data_type()
+        .equals_datatype(output_field.data_type())
+    {
+        let data = observed
+            .to_data()
+            .into_builder()
+            .data_type(output_field.data_type().clone())
+            .build()
+            .map_err(CdfError::from)?;
+        return Ok(arrow_array::make_array(data));
     }
     if !can_cast_types(observed.data_type(), output_field.data_type()) {
         return Err(CdfError::contract(format!(
@@ -374,6 +388,11 @@ fn validate_output_field_decision(field: &Field, decision: &FieldCoercion) -> Re
             RuleOutcome::Pass,
             "observed type already satisfies the constraint".to_owned(),
             observed == constraint,
+        ),
+        FieldCoercionDecision::Rebound => (
+            RuleOutcome::Coerced,
+            "nested Arrow field identity normalized without changing physical layout".to_owned(),
+            observed != constraint,
         ),
         FieldCoercionDecision::Widened => (
             RuleOutcome::Coerced,
@@ -557,6 +576,7 @@ pub fn plan_schema_reconciliation(
 
         match type_decision {
             TypeReconciliation::Preserved
+            | TypeReconciliation::Rebound
             | TypeReconciliation::Widened
             | TypeReconciliation::CoercedByPolicy
             | TypeReconciliation::LossyAllowed => {
@@ -649,6 +669,7 @@ fn field_identity_differs(observed_field: &Field, constraint_field: &Field) -> b
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum TypeReconciliation {
     Preserved,
+    Rebound,
     Widened,
     CoercedByPolicy,
     LossyAllowed,
@@ -674,6 +695,13 @@ impl TypeReconciliation {
                 FieldCoercionDecision::Preserved,
                 RuleOutcome::Pass,
                 "observed type already satisfies the constraint".to_owned(),
+                Vec::new(),
+            ),
+            Self::Rebound => (
+                FieldCoercionDecision::Rebound,
+                RuleOutcome::Coerced,
+                "nested Arrow field identity normalized without changing physical layout"
+                    .to_owned(),
                 Vec::new(),
             ),
             Self::Widened => (
@@ -757,6 +785,9 @@ fn reconcile_type(
 ) -> TypeReconciliation {
     if observed == constraint {
         return TypeReconciliation::Preserved;
+    }
+    if observed.equals_datatype(constraint) {
+        return TypeReconciliation::Rebound;
     }
     if is_lossless_type_widening(observed, constraint) {
         return TypeReconciliation::Widened;

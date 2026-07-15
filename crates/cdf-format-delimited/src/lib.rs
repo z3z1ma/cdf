@@ -105,21 +105,18 @@ impl FormatDriver for CsvFormatDriver {
                 let chunk_bytes = u64::try_from(chunk.payload().len())
                     .map_err(|_| CdfError::data("CSV discovery chunk length exceeds u64"))?;
                 sampled_bytes = sampled_bytes
-                    .checked_add(chunk_bytes)
-                    .ok_or_else(|| CdfError::data("CSV discovery byte count overflowed"))?;
-                if sampled_bytes > request.maximum_bytes {
-                    return Err(CdfError::data(format!(
-                        "CSV discovery source chunk crossed its {}-byte bound",
-                        request.maximum_bytes
-                    )));
-                }
+                    .saturating_add(chunk_bytes)
+                    .min(request.maximum_bytes);
                 chunks.push(chunk);
             }
             let maximum_records = usize::try_from(request.maximum_records)
                 .map_err(|_| CdfError::contract("CSV record bound exceeds usize"))?;
             let (schema, sampled_records) = Format::default()
                 .with_header(true)
-                .infer_schema(AccountedChunksReader::new(chunks), Some(maximum_records))
+                .infer_schema(
+                    AccountedChunksReader::with_byte_limit(chunks, sampled_bytes)?,
+                    Some(maximum_records),
+                )
                 .map_err(|error| CdfError::data(format!("infer CSV schema: {error}")))?;
             let schema = Arc::new(schema);
             Ok(PhysicalSchemaObservation {

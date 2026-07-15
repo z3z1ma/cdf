@@ -6,7 +6,8 @@ use std::{
 };
 
 use arrow_array::{
-    ArrayRef, Int32Array, Int64Array, RecordBatch, StringArray, TimestampMillisecondArray,
+    Array, ArrayRef, Int32Array, Int64Array, ListArray, RecordBatch, StringArray,
+    TimestampMillisecondArray, types::Int64Type,
 };
 use arrow_schema::{DataType, Field, Schema, TimeUnit};
 use cdf_kernel::{
@@ -1223,4 +1224,48 @@ fn shared_coercion_materializer_widens_projects_and_materializes_missing_nulls()
         &[1, 2]
     );
     assert_eq!(materialized.column(1).null_count(), 2);
+}
+
+#[test]
+fn reconciliation_rebinds_nested_field_identity_without_copying_values() {
+    let values = ListArray::from_iter_primitive::<Int64Type, _, _>(vec![Some(vec![
+        Some(1_i64),
+        Some(2_i64),
+    ])]);
+    let observed_type = values.data_type().clone();
+    let observed_schema = Arc::new(Schema::new(vec![Field::new(
+        "line_ids",
+        observed_type.clone(),
+        true,
+    )]));
+    let observed = RecordBatch::try_new(
+        Arc::clone(&observed_schema),
+        vec![Arc::new(values) as ArrayRef],
+    )
+    .unwrap();
+    let DataType::List(item) = observed_type else {
+        panic!("fixture must be a list");
+    };
+    let rebound_type = DataType::List(Arc::new(with_source_name(item.as_ref().clone(), "item")));
+    let constraint = Schema::new(vec![Field::new("line_ids", rebound_type.clone(), true)]);
+
+    let reconciliation = reconcile_schema(
+        observed_schema.as_ref(),
+        &constraint,
+        &TypePolicy::strict_fidelity(),
+    )
+    .unwrap();
+    assert_eq!(
+        reconciliation.plan.fields[0].decision,
+        FieldCoercionDecision::Rebound
+    );
+    let observed_offsets = observed.column(0).to_data().buffers()[0].as_ptr();
+    let materialized =
+        materialize_schema_coercion(&observed, &constraint, &reconciliation.plan).unwrap();
+
+    assert_eq!(materialized.column(0).data_type(), &rebound_type);
+    assert_eq!(
+        materialized.column(0).to_data().buffers()[0].as_ptr(),
+        observed_offsets
+    );
 }
