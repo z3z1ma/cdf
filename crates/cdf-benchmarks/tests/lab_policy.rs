@@ -6,6 +6,10 @@ use cdf_benchmarks::{
     compare_reports, comparison_fails, generate_envelope, host_class, install_baseline,
     report_fixture, summarize_samples,
 };
+use cdf_dest_duckdb::DuckDbRuntimeDriver;
+use cdf_dest_parquet::ParquetRuntimeDriver;
+use cdf_dest_postgres::PostgresRuntimeDriver;
+use cdf_runtime::{DestinationRegistry, DestinationResolutionContext};
 
 fn workspace_root() -> &'static Path {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -19,6 +23,37 @@ fn first_party_destination_catalog() -> Vec<DestinationBulkCatalogEntry> {
         "../fixtures/first-party-destination-catalog.json"
     ))
     .unwrap()
+}
+
+#[test]
+fn first_party_destination_catalog_matches_runtime_inspection() {
+    let temp = tempfile::tempdir().unwrap();
+    let mut registry = DestinationRegistry::new();
+    registry.register(DuckDbRuntimeDriver).unwrap();
+    registry.register(ParquetRuntimeDriver).unwrap();
+    registry.register(PostgresRuntimeDriver).unwrap();
+    let context = DestinationResolutionContext::for_project_inspection(temp.path());
+
+    let uris = [
+        format!("duckdb://{}", temp.path().join("catalog.duckdb").display()),
+        format!("parquet://{}", temp.path().join("catalog-lake").display()),
+        "postgres://localhost/catalog".to_owned(),
+    ];
+    let mut actual = uris
+        .iter()
+        .map(|uri| {
+            let inspection = registry.inspect(uri, &context).unwrap();
+            DestinationBulkCatalogEntry::from(&inspection)
+        })
+        .collect::<Vec<_>>();
+    actual.sort_by(|left, right| left.destination_id.cmp(&right.destination_id));
+
+    let mut recorded = first_party_destination_catalog();
+    recorded.sort_by(|left, right| left.destination_id.cmp(&right.destination_id));
+    assert_eq!(
+        recorded, actual,
+        "the benchmark catalog must be an exact projection of destination runtime inspection"
+    );
 }
 
 fn current_report(percent: u64) -> BenchmarkReport {
