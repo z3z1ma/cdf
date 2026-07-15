@@ -26,6 +26,13 @@ pub(crate) struct EncodedParquetObject {
     pub(crate) _spill: SpillReservation,
 }
 
+struct ParquetBatchWritePlan<'a> {
+    retained_bytes: u64,
+    expected_rows: u64,
+    expected_schema: Option<&'a arrow_schema::Schema>,
+    cancellation: Option<&'a cdf_runtime::RunCancellation>,
+}
+
 #[cfg(test)]
 pub(crate) fn write_parquet_segment(
     segment: CommitSegment,
@@ -39,9 +46,12 @@ pub(crate) fn write_parquet_segment(
     let package_byte_count = segment.package_byte_count;
     let mut batches = segment.into_batches()?;
     let encoded = write_parquet_batches(
-        retained_bytes,
-        expected_rows,
-        None,
+        ParquetBatchWritePlan {
+            retained_bytes,
+            expected_rows,
+            expected_schema: None,
+            cancellation: None,
+        },
         writer_memory,
         spill,
         file,
@@ -56,12 +66,16 @@ pub(crate) fn write_parquet_staged_segment(
     writer_memory: Arc<dyn MemoryCoordinator>,
     spill: Arc<dyn SpillBudgetCoordinator>,
     file: NamedTempFile,
+    cancellation: &cdf_runtime::RunCancellation,
 ) -> Result<(cdf_runtime::StagedSegmentIdentity, EncodedParquetObject)> {
     let identity = segment.identity.clone();
     let encoded = write_parquet_batches(
-        identity.byte_count.max(1),
-        identity.row_count,
-        Some(expected_schema),
+        ParquetBatchWritePlan {
+            retained_bytes: identity.byte_count.max(1),
+            expected_rows: identity.row_count,
+            expected_schema: Some(expected_schema),
+            cancellation: Some(cancellation),
+        },
         writer_memory,
         spill,
         file,
@@ -71,14 +85,18 @@ pub(crate) fn write_parquet_staged_segment(
 }
 
 fn write_parquet_batches(
-    retained_bytes: u64,
-    expected_rows: u64,
-    expected_schema: Option<&arrow_schema::Schema>,
+    plan: ParquetBatchWritePlan<'_>,
     writer_memory: Arc<dyn MemoryCoordinator>,
     spill: Arc<dyn SpillBudgetCoordinator>,
     file: NamedTempFile,
     mut next_batch: impl FnMut() -> Result<Option<arrow_array::RecordBatch>>,
 ) -> Result<EncodedParquetObject> {
+    let ParquetBatchWritePlan {
+        retained_bytes,
+        expected_rows,
+        expected_schema,
+        cancellation,
+    } = plan;
     let writer_bytes = retained_bytes
         .saturating_mul(2)
         .clamp(1024 * 1024, 64 * 1024 * 1024);
@@ -90,7 +108,14 @@ fn write_parquet_batches(
         writer_bytes,
     )?
     .as_minimum_working_set();
-    let _writer_lease = cdf_memory::reserve_blocking(writer_memory, &request)?;
+    let _writer_lease = writer_memory.try_reserve(&request)?.ok_or_else(|| {
+        let snapshot = writer_memory.snapshot();
+        CdfError::data(format!(
+            "Parquet destination needs {writer_bytes} additional accounted writer bytes while staged input retains memory, but only {} of {} managed bytes are free; reduce canonical segment size or destination concurrency, or raise the memory budget",
+            snapshot.budget_bytes.saturating_sub(snapshot.current_bytes),
+            snapshot.budget_bytes
+        ))
+    })?;
     let initial_spill = retained_bytes.clamp(1, SPILL_GROWTH_BYTES);
     let reservation = spill.try_reserve(initial_spill)?.ok_or_else(|| {
         CdfError::data(format!(
@@ -99,6 +124,9 @@ fn write_parquet_batches(
     })?;
     let first = next_batch()?
         .ok_or_else(|| CdfError::data("Parquet destination segment contains no Arrow batches"))?;
+    if let Some(cancellation) = cancellation {
+        cancellation.check()?;
+    }
     let schema = first.schema();
     cdf_package::validate_parquet_schema(schema.as_ref())?;
     if expected_schema.is_some_and(|expected| expected != schema.as_ref()) {
@@ -126,6 +154,9 @@ fn write_parquet_batches(
             .write(&first)
             .map_err(|error| parquet_error("write Parquet record batch", error))?;
         while let Some(batch) = next_batch()? {
+            if let Some(cancellation) = cancellation {
+                cancellation.check()?;
+            }
             if batch.schema().as_ref() != schema.as_ref() {
                 return Err(CdfError::data(
                     "Parquet destination segment contains mixed Arrow schemas",
@@ -140,6 +171,9 @@ fn write_parquet_batches(
             writer
                 .write(&batch)
                 .map_err(|error| parquet_error("write Parquet record batch", error))?;
+        }
+        if let Some(cancellation) = cancellation {
+            cancellation.check()?;
         }
         if rows != expected_rows {
             return Err(CdfError::data(format!(

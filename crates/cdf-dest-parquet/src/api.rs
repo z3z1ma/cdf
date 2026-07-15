@@ -9,8 +9,8 @@ use crate::{
     runtime::parquet_runtime_capabilities,
     sheet::{parquet_protocol_capabilities, parquet_sheet},
     store::{
-        ObjectKeyEncoder, StoreClient, now_ms, package_manifest_key, provenance_manifest_key,
-        replace_pointer_key, segment_object_key,
+        ObjectKeyEncoder, StoreClient, current_pointer_key, now_ms, package_manifest_key,
+        provenance_manifest_key, replace_settlement_key, segment_object_key,
     },
 };
 
@@ -20,6 +20,7 @@ pub struct ParquetDestination {
     execution: cdf_runtime::ExecutionServices,
     sheet: DestinationSheet,
     object_key_encoder: ObjectKeyEncoder,
+    active_staging: Arc<Mutex<BTreeSet<String>>>,
     pub(crate) pending_corrections: Arc<Mutex<BTreeMap<PlanId, ParquetCorrectionContext>>>,
 }
 
@@ -41,10 +42,26 @@ pub(crate) struct ParquetCommitPlan {
     pub manifest_key: String,
     pub provenance_manifest_key: String,
     pub replace_pointer_key: Option<String>,
+    pub current_pointer_key: Option<String>,
     pub object_keys: Vec<String>,
     pub duplicate: bool,
     pub rows_planned: u64,
     pub bytes_planned: u64,
+}
+
+/// Proof that one exact immutable Parquet publication completed before checkpoint admission.
+///
+/// Construction is private to the publication protocol below: callers cannot synthesize
+/// commit-bound verification from a receipt alone.
+pub(crate) struct CommittedParquetPublication {
+    receipt: Receipt,
+    verification: ReceiptVerification,
+}
+
+impl CommittedParquetPublication {
+    pub(crate) fn into_parts(self) -> (Receipt, ReceiptVerification) {
+        (self.receipt, self.verification)
+    }
 }
 
 pub type ReceiptVerification = cdf_kernel::ReceiptVerification;
@@ -87,6 +104,7 @@ impl ParquetDestination {
             execution,
             sheet,
             object_key_encoder,
+            active_staging: Arc::new(Mutex::new(BTreeSet::new())),
             pending_corrections: Arc::new(Mutex::new(BTreeMap::new())),
         })
     }
@@ -148,6 +166,45 @@ impl ParquetDestination {
         self.object_key_encoder
     }
 
+    pub(crate) fn cleanup_staged_attempt(
+        &self,
+        target: &TargetName,
+        attempt_id: &cdf_runtime::LoadAttemptId,
+    ) -> Result<u64> {
+        let prefix = crate::store::staged_attempt_prefix(
+            self.object_key_encoder,
+            target,
+            attempt_id,
+        );
+        self.store.delete_prefix(self.execution(), &prefix)
+    }
+
+    pub(crate) fn claim_staged_attempt(
+        &self,
+        target: &TargetName,
+        attempt_id: &cdf_runtime::LoadAttemptId,
+    ) -> Result<String> {
+        let key = format!("{}:{}", target.as_str(), attempt_id.as_str());
+        let mut active = self
+            .active_staging
+            .lock()
+            .map_err(|_| CdfError::internal("Parquet staging registry lock is poisoned"))?;
+        if !active.insert(key.clone()) {
+            return Err(CdfError::destination(format!(
+                "Parquet staging attempt {} for target {} is already active",
+                attempt_id,
+                target.as_str()
+            )));
+        }
+        Ok(key)
+    }
+
+    pub(crate) fn release_staged_attempt(&self, key: &str) {
+        if let Ok(mut active) = self.active_staging.lock() {
+            active.remove(key);
+        }
+    }
+
     pub(crate) fn plan_package_shape(
         &self,
         request: &ParquetCommitRequest,
@@ -171,13 +228,20 @@ impl ParquetDestination {
             &request.commit.target,
             &request.commit.idempotency_token,
         );
-        let replace_pointer_key = match request.commit.disposition {
-            _ if request.commit.is_data_noop() => None,
-            WriteDisposition::Replace => Some(replace_pointer_key(
-                self.object_key_encoder(),
-                &request.commit.target,
-            )),
-            WriteDisposition::Append => None,
+        let (replace_pointer_key, current_pointer_key) = match request.commit.disposition {
+            _ if request.commit.is_data_noop() => (None, None),
+            WriteDisposition::Replace => (
+                Some(replace_settlement_key(
+                    self.object_key_encoder(),
+                    &request.commit.target,
+                    &request.commit.idempotency_token,
+                )),
+                Some(current_pointer_key(
+                    self.object_key_encoder(),
+                    &request.commit.target,
+                )),
+            ),
+            WriteDisposition::Append => (None, None),
             WriteDisposition::Merge | WriteDisposition::CdcApply => {
                 return Err(CdfError::contract(
                     "Parquet destination supports append and replace only",
@@ -209,6 +273,7 @@ impl ParquetDestination {
                 &request.commit.package_hash,
             ),
             replace_pointer_key,
+            current_pointer_key,
             object_keys,
             duplicate,
             rows_planned,
@@ -224,8 +289,15 @@ impl ParquetDestination {
         let Some(mut loaded) = self.load_manifest_with_etag(&plan.manifest_key)? else {
             return Ok(None);
         };
-        ensure_provenance_manifest(self, request, &loaded.manifest)?;
+        let provenance = ensure_provenance_manifest(self, request, &loaded.manifest)?;
+        if provenance != loaded.manifest {
+            return Err(CdfError::destination(format!(
+                "Parquet package-token manifest {} differs from its immutable provenance authority",
+                plan.manifest_key
+            )));
+        }
         let replace_pointer = self.load_replace_pointer_receipt(request, plan, &loaded.manifest)?;
+        self.ensure_current_replace_pointer(request, plan, &loaded.manifest, false)?;
         let receipt = build_receipt(
             request,
             plan,
@@ -252,6 +324,11 @@ impl ParquetDestination {
         let Some(pointer_key) = &plan.replace_pointer_key else {
             return Ok(None);
         };
+        let pointer = replace_pointer(request, plan, manifest)?;
+        let expected = canonical_json_bytes(&pointer)?;
+        let stored = self
+            .store
+            .put_create_or_verify(self.execution(), pointer_key, expected.clone())?;
         let bytes = self.store.get_required(self.execution(), pointer_key)?;
         let sha256 = sha256_hex(&bytes);
         let pointer: ReplacePointer = serde_json::from_slice(&bytes).map_err(|error| {
@@ -270,12 +347,56 @@ impl ParquetDestination {
                 plan.manifest_key
             )));
         }
-        let etag = self.store.etag(self.execution(), pointer_key)?;
+        let etag = stored.e_tag.or(self.store.etag(self.execution(), pointer_key)?);
         Ok(Some(ParquetReplacePointerReceipt {
             key: pointer_key.clone(),
             sha256,
             etag,
         }))
+    }
+
+    fn ensure_current_replace_pointer(
+        &self,
+        request: &ParquetCommitRequest,
+        plan: &ParquetCommitPlan,
+        manifest: &ParquetObjectManifest,
+        force: bool,
+    ) -> Result<()> {
+        let Some(current_key) = &plan.current_pointer_key else {
+            return Ok(());
+        };
+        let pointer = replace_pointer(request, plan, manifest)?;
+        let expected = canonical_json_bytes(&pointer)?;
+        let current = self.store.get_optional(self.execution(), current_key)?;
+        let should_write = match current {
+            None => true,
+            Some(ref bytes) if bytes == &expected => false,
+            Some(bytes) if force => {
+                let current: ReplacePointer = serde_json::from_slice(&bytes).map_err(|error| {
+                    CdfError::data(format!("parse current replace pointer {current_key}: {error}"))
+                })?;
+                if current.updated_at_ms > pointer.updated_at_ms {
+                    return Err(CdfError::destination(format!(
+                        "current replace pointer {current_key} is newer than package {}",
+                        plan.manifest_key
+                    )));
+                }
+                true
+            }
+            Some(_) => false,
+        };
+        if should_write {
+            self.store.put(self.execution(), current_key, expected.clone())?;
+        }
+        if force {
+            let observed = self.store.get_required(self.execution(), current_key)?;
+            if observed != expected {
+                return Err(CdfError::destination(format!(
+                    "current replace pointer {current_key} changed during commit publication"
+                )));
+            }
+        }
+        Ok(())
     }
 
     fn load_manifest(&self, key: &str) -> Result<Option<ParquetObjectManifest>> {
@@ -362,7 +483,7 @@ pub(crate) fn finalize_parquet_objects(
     request: ParquetCommitRequest,
     plan: ParquetCommitPlan,
     object_entries: Vec<ParquetObjectEntry>,
-) -> Result<Receipt> {
+) -> Result<CommittedParquetPublication> {
     let committed_at_ms = now_ms()?;
     let object_manifest = ParquetObjectManifest {
         manifest_version: MANIFEST_VERSION,
@@ -376,30 +497,23 @@ pub(crate) fn finalize_parquet_objects(
         total_rows: plan.rows_planned,
         objects: object_entries,
     };
+    // The provenance key is create-only and selects the authoritative bytes when same-token
+    // writers race. This makes the later package manifest byte-identical for every contender,
+    // including its recorded commit time.
+    let object_manifest = ensure_provenance_manifest(destination, &request, &object_manifest)?;
     let manifest_bytes = canonical_json_bytes(&object_manifest)?;
-    let manifest_sha256 = sha256_hex(&manifest_bytes);
-    let manifest_put = destination.store.put(
+    let manifest_put = destination.store.put_create_or_verify(
         &destination.execution,
         &plan.manifest_key,
         manifest_bytes.clone(),
     )?;
-    ensure_provenance_manifest(destination, &request, &object_manifest)?;
     let replace_pointer = if let Some(pointer_key) = &plan.replace_pointer_key {
-        let pointer = ReplacePointer {
-            pointer_version: REPLACE_POINTER_VERSION,
-            target: request.commit.target.as_str().to_owned(),
-            package_hash: request.commit.package_hash.as_str().to_owned(),
-            idempotency_token: request.commit.idempotency_token.as_str().to_owned(),
-            schema_hash: request.schema_hash.as_str().to_owned(),
-            manifest_key: plan.manifest_key.clone(),
-            manifest_sha256,
-            updated_at_ms: committed_at_ms,
-        };
+        let pointer = replace_pointer(&request, &plan, &object_manifest)?;
         let pointer_bytes = canonical_json_bytes(&pointer)?;
         let pointer_sha256 = sha256_hex(&pointer_bytes);
         let put = destination
             .store
-            .put(&destination.execution, pointer_key, pointer_bytes)?;
+            .put_create_or_verify(&destination.execution, pointer_key, pointer_bytes)?;
         Some(ParquetReplacePointerReceipt {
             key: pointer_key.clone(),
             sha256: pointer_sha256,
@@ -408,24 +522,48 @@ pub(crate) fn finalize_parquet_objects(
     } else {
         None
     };
-    let persisted_manifest = destination
-        .load_manifest(&plan.manifest_key)?
-        .ok_or_else(|| CdfError::destination("Parquet object manifest was not written"))?;
+    destination.ensure_current_replace_pointer(&request, &plan, &object_manifest, true)?;
     let receipt = build_receipt(
         &request,
         &plan,
-        &persisted_manifest,
+        &object_manifest,
         manifest_put.e_tag,
         replace_pointer,
     )?;
-    Ok(receipt)
+    let verification = ReceiptVerification {
+        verified: true,
+        receipt_id: receipt.receipt_id.clone(),
+        reason: None,
+    };
+    Ok(CommittedParquetPublication {
+        receipt,
+        verification,
+    })
+}
+
+fn replace_pointer(
+    request: &ParquetCommitRequest,
+    plan: &ParquetCommitPlan,
+    manifest: &ParquetObjectManifest,
+) -> Result<ReplacePointer> {
+    let manifest_sha256 = sha256_hex(&canonical_json_bytes(manifest)?);
+    Ok(ReplacePointer {
+        pointer_version: REPLACE_POINTER_VERSION,
+        target: request.commit.target.as_str().to_owned(),
+        package_hash: request.commit.package_hash.as_str().to_owned(),
+        idempotency_token: request.commit.idempotency_token.as_str().to_owned(),
+        schema_hash: request.schema_hash.as_str().to_owned(),
+        manifest_key: plan.manifest_key.clone(),
+        manifest_sha256,
+        updated_at_ms: manifest.committed_at_ms,
+    })
 }
 
 fn ensure_provenance_manifest(
     destination: &ParquetDestination,
     request: &ParquetCommitRequest,
     manifest: &ParquetObjectManifest,
-) -> Result<()> {
+) -> Result<ParquetObjectManifest> {
     if manifest.target != request.commit.target.as_str()
         || manifest.package_hash != request.commit.package_hash.as_str()
     {
@@ -438,12 +576,30 @@ fn ensure_provenance_manifest(
         &request.commit.target,
         &request.commit.package_hash,
     );
-    destination.store.put_create_or_verify(
-        destination.execution(),
-        &key,
-        canonical_json_bytes(manifest)?,
-    )?;
-    Ok(())
+    let bytes = canonical_json_bytes(manifest)?;
+    match destination
+        .store
+        .put_create(destination.execution(), &key, bytes)?
+    {
+        crate::store::CreateObjectOutcome::Created(_) => Ok(manifest.clone()),
+        crate::store::CreateObjectOutcome::AlreadyExists => {
+            let existing_bytes = destination.store.get_required(destination.execution(), &key)?;
+            let existing: ParquetObjectManifest = serde_json::from_slice(&existing_bytes)
+                .map_err(|error| {
+                    CdfError::data(format!(
+                        "parse immutable Parquet provenance manifest {key}: {error}"
+                    ))
+                })?;
+            let mut candidate = manifest.clone();
+            candidate.committed_at_ms = existing.committed_at_ms;
+            if candidate != existing {
+                return Err(CdfError::destination(format!(
+                    "immutable Parquet provenance manifest {key} already binds different publication bytes"
+                )));
+            }
+            Ok(existing)
+        }
+    }
 }
 
 impl DestinationProtocol for ParquetDestination {

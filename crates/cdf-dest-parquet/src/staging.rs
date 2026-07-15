@@ -22,6 +22,14 @@ pub(crate) struct ParquetStagedIngressSession {
     request: StagedIngressRequest,
     accepted: BTreeMap<u32, StagedSegmentIdentity>,
     objects: BTreeMap<u32, StagedParquetObject>,
+    active_attempt_key: String,
+}
+
+impl Drop for ParquetStagedIngressSession {
+    fn drop(&mut self) {
+        self.destination
+            .release_staged_attempt(&self.active_attempt_key);
+    }
 }
 
 struct StagedParquetObject {
@@ -58,11 +66,20 @@ impl ParquetStagedIngressSession {
             ));
         }
         cdf_package::validate_parquet_schema(request.output_schema())?;
+        let active_attempt_key = destination
+            .claim_staged_attempt(&request.binding().target, request.attempt_id())?;
+        if let Err(error) = destination
+            .cleanup_staged_attempt(&request.binding().target, request.attempt_id())
+        {
+            destination.release_staged_attempt(&active_attempt_key);
+            return Err(error);
+        }
         Ok(Self {
             destination,
             request,
             accepted: BTreeMap::new(),
             objects: BTreeMap::new(),
+            active_attempt_key,
         })
     }
 
@@ -113,6 +130,7 @@ impl ParquetStagedIngressSession {
                     destination.execution().memory(),
                     destination.execution().spill(),
                     file,
+                    &cancellation,
                 )?;
                 cancellation.check()?;
                 let staging_key = staged_segment_object_key(
@@ -148,24 +166,45 @@ impl ParquetStagedIngressSession {
         let task = pending
             .pop_front()
             .ok_or_else(|| CdfError::internal("Parquet staged encode queue is empty"))?;
-        let object = self.destination.execution().run_io(task)?;
-        let identity = object.identity().clone();
-        stream.acknowledge(cdf_runtime::StagedSegmentAck {
-            attempt_id: self.request.attempt_id().clone(),
-            identity: identity.clone(),
-            external_durable: object.external_durable(),
-        })?;
-        if self
-            .accepted
-            .insert(identity.ordinal, identity.clone())
-            .is_some()
-            || self.objects.insert(identity.ordinal, object).is_some()
-        {
-            return Err(CdfError::destination(
-                "Parquet staged encode completed a duplicate ordinal",
-            ));
+        let completed = (|| {
+            let object = self.destination.execution().run_io(task)?;
+            let identity = object.identity().clone();
+            stream.acknowledge(cdf_runtime::StagedSegmentAck {
+                attempt_id: self.request.attempt_id().clone(),
+                identity: identity.clone(),
+                external_durable: object.external_durable(),
+            })?;
+            if self
+                .accepted
+                .insert(identity.ordinal, identity.clone())
+                .is_some()
+                || self.objects.insert(identity.ordinal, object).is_some()
+            {
+                return Err(CdfError::destination(
+                    "Parquet staged encode completed a duplicate ordinal",
+                ));
+            }
+            Ok(())
+        })();
+        if let Err(error) = completed {
+            self.cancel_and_join(pending);
+            return Err(error);
         }
         Ok(())
+    }
+
+    fn cancel_and_join(
+        &self,
+        pending: &mut VecDeque<cdf_runtime::ScopedBlockingTask<StagedParquetObject>>,
+    ) {
+        for task in pending.iter() {
+            task.termination().cancel();
+        }
+        while let Some(task) = pending.pop_front() {
+            // Cancellation is the expected terminal result. Awaiting every task is the
+            // structural ownership barrier that prevents a retry from overlapping orphan work.
+            let _ = self.destination.execution().run_io(task);
+        }
     }
 
     fn accepted_in_order(&self) -> Vec<StagedSegmentIdentity> {
@@ -265,8 +304,23 @@ impl StagedIngressSession for ParquetStagedIngressSession {
     fn stage_stream(&mut self, stream: &mut dyn StagedSegmentStream) -> Result<()> {
         let maximum = usize::from(self.request.scheduling().max_in_flight_segments);
         let mut pending = VecDeque::with_capacity(maximum);
-        while let Some(segment) = stream.next_segment()? {
-            pending.push_back(self.spawn_encode(segment)?);
+        loop {
+            let segment = match stream.next_segment() {
+                Ok(Some(segment)) => segment,
+                Ok(None) => break,
+                Err(error) => {
+                    self.cancel_and_join(&mut pending);
+                    return Err(error);
+                }
+            };
+            let task = match self.spawn_encode(segment) {
+                Ok(task) => task,
+                Err(error) => {
+                    self.cancel_and_join(&mut pending);
+                    return Err(error);
+                }
+            };
+            pending.push_back(task);
             if pending.len() == maximum {
                 self.complete_oldest(&mut pending, stream)?;
             }
@@ -368,12 +422,8 @@ impl StagedIngressSession for ParquetStagedIngressSession {
         self.destination
             .store()
             .sync_local_object_parents(&plan.object_keys)?;
-        let receipt = finalize_parquet_objects(&self.destination, request, plan, objects)?;
-        let verification = cdf_kernel::ReceiptVerification {
-            verified: true,
-            receipt_id: receipt.receipt_id.clone(),
-            reason: None,
-        };
+        let publication = finalize_parquet_objects(&self.destination, request, plan, objects)?;
+        let (receipt, verification) = publication.into_parts();
         DestinationCommitOutcome::new(
             receipt,
             DestinationReceiptReportingPolicy::DestinationCommit { duplicate: false },

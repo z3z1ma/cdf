@@ -1,6 +1,7 @@
 use std::io::Read;
 
 use crate::*;
+use futures_util::TryStreamExt;
 
 const MULTIPART_CHUNK_BYTES: usize = 8 * 1024 * 1024;
 const MULTIPART_CONCURRENCY: usize = 4;
@@ -55,7 +56,9 @@ impl StoreClient {
         fs::create_dir_all(root).map_err(|error| {
             CdfError::destination(format!("create {}: {error}", root.display()))
         })?;
-        let store = LocalFileSystem::new_with_prefix(root).map_err(|error| {
+        let store = LocalFileSystem::new_with_prefix(root)
+            .map(|store| store.with_fsync(true))
+            .map_err(|error| {
             CdfError::destination(format!("open object store filesystem: {error}"))
         })?;
         Ok(Self {
@@ -213,9 +216,9 @@ impl StoreClient {
         let byte_count = encoded.byte_count;
         let expected_hash = encoded.sha256.clone();
         match encoded.file.persist_noclobber(&destination) {
-            Ok(file) => file.sync_all().map_err(|error| {
-                CdfError::destination(format!("sync {}: {error}", destination.display()))
-            })?,
+            // The encoder synced the exact bytes before this create-only publication. The
+            // directory barrier below makes the new name durable without writing the file twice.
+            Ok(_file) => {}
             Err(error) if error.error.kind() == std::io::ErrorKind::AlreadyExists => {
                 let actual_hash = sha256_file(&destination)?;
                 if actual_hash != expected_hash {
@@ -390,6 +393,33 @@ impl StoreClient {
         })
     }
 
+    pub(crate) fn delete_prefix(
+        &self,
+        execution: &cdf_runtime::ExecutionServices,
+        prefix: &str,
+    ) -> Result<u64> {
+        let prefix = self.path(prefix)?;
+        let store = Arc::clone(&self.store);
+        let operation = format!("delete prefix {prefix}");
+        execution.run_io(async move {
+            let objects = store
+                .list(Some(&prefix))
+                .try_collect::<Vec<_>>()
+                .await
+                .map_err(|error| store_error(&operation, error))?;
+            let mut removed = 0_u64;
+            for object in objects {
+                match store.delete(&object.location).await {
+                    Ok(()) | Err(object_store::Error::NotFound { .. }) => {
+                        removed = removed.saturating_add(1);
+                    }
+                    Err(error) => return Err(store_error(&operation, error)),
+                }
+            }
+            Ok(removed)
+        })
+    }
+
     pub(crate) fn promote_create_or_verify(
         &self,
         execution: &cdf_runtime::ExecutionServices,
@@ -561,6 +591,18 @@ pub(crate) fn staged_segment_object_key(
     )
 }
 
+pub(crate) fn staged_attempt_prefix(
+    encoder: ObjectKeyEncoder,
+    target: &TargetName,
+    attempt_id: &cdf_runtime::LoadAttemptId,
+) -> String {
+    format!(
+        "targets/{}/staging/{}/",
+        encoder.encode(target.as_str()),
+        encoder.encode(attempt_id.as_str())
+    )
+}
+
 pub(crate) fn provenance_manifest_key(
     encoder: ObjectKeyEncoder,
     target: &TargetName,
@@ -573,8 +615,20 @@ pub(crate) fn provenance_manifest_key(
     )
 }
 
-pub(crate) fn replace_pointer_key(encoder: ObjectKeyEncoder, target: &TargetName) -> String {
+pub(crate) fn current_pointer_key(encoder: ObjectKeyEncoder, target: &TargetName) -> String {
     format!("targets/{}/current.json", encoder.encode(target.as_str()))
+}
+
+pub(crate) fn replace_settlement_key(
+    encoder: ObjectKeyEncoder,
+    target: &TargetName,
+    token: &cdf_kernel::IdempotencyToken,
+) -> String {
+    format!(
+        "targets/{}/packages/{}/replace.json",
+        encoder.encode(target.as_str()),
+        encoder.encode(token.as_str())
+    )
 }
 
 pub(crate) fn correction_sidecar_object_key(

@@ -8,7 +8,7 @@ use crate::{
     sheet::parquet_correction_capabilities,
     store::{
         CreateObjectOutcome, correction_receipt_key, correction_sidecar_manifest_key,
-        correction_sidecar_object_key, now_ms, replace_pointer_key, version_manifest_key,
+        correction_sidecar_object_key, current_pointer_key, now_ms, version_manifest_key,
     },
 };
 
@@ -107,7 +107,7 @@ impl ParquetDestination {
                 &request.target,
                 &request.target_version,
             ),
-            target_pointer_key: replace_pointer_key(self.object_key_encoder(), &request.target),
+            target_pointer_key: current_pointer_key(self.object_key_encoder(), &request.target),
             target: request.target,
             correction_package_hash: request.correction_package_hash,
             required_source_packages: request.required_source_packages,

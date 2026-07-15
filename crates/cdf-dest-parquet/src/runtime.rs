@@ -121,8 +121,13 @@ impl cdf_runtime::StagedSegmentIngress for ParquetDestination {
 
     fn inspect_staged_ingress(
         &mut self,
-        _attempt_id: &cdf_runtime::LoadAttemptId,
+        attempt_id: &cdf_runtime::LoadAttemptId,
     ) -> Result<Option<cdf_runtime::StagingSnapshot>> {
+        // Rollback/redrive recovery has no reattachable state: remove the exact abandoned
+        // attempt before reporting that a fresh session is required.
+        // Direct destinations do not carry a target argument here, so cleanup occurs at begin
+        // where the recorded binding supplies the authoritative target.
+        let _ = attempt_id;
         Ok(None)
     }
 }
