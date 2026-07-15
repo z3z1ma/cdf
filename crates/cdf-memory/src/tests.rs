@@ -30,6 +30,28 @@ fn shared_payload_clones_release_exactly_once() {
 }
 
 #[test]
+fn logical_slices_retain_one_complete_physical_allocation() {
+    let coordinator = DeterministicMemoryCoordinator::new(1024, BTreeMap::new()).unwrap();
+    let request =
+        ReservationRequest::new(consumer("coalesced-range", MemoryClass::Source), 16).unwrap();
+    let lease = coordinator.try_reserve(&request).unwrap().unwrap();
+    let physical =
+        AccountedBytes::new(bytes::Bytes::from_static(b"0123456789abcdef"), lease).unwrap();
+    let left = physical.slice(0..4).unwrap();
+    let right = physical.slice(12..16).unwrap();
+
+    assert_eq!(left.payload(), b"0123");
+    assert_eq!(right.payload(), b"cdef");
+    assert_eq!(left.lease().bytes(), 16);
+    assert_eq!(coordinator.snapshot().current_bytes, 16);
+    drop(physical);
+    drop(left);
+    assert_eq!(coordinator.snapshot().current_bytes, 16);
+    drop(right);
+    assert_eq!(coordinator.snapshot().current_bytes, 0);
+}
+
+#[test]
 fn accounted_batch_reconciles_reservation_and_error_drops_release() {
     let coordinator = DeterministicMemoryCoordinator::new(4096, BTreeMap::new()).unwrap();
     let request = ReservationRequest::new(consumer("batch", MemoryClass::Transform), 2048).unwrap();

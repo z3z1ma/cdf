@@ -649,6 +649,79 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn http_range_batch_coalesces_requests_and_preserves_logical_order() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let requests = Arc::new(Mutex::new(Vec::new()));
+        let observed = Arc::clone(&requests);
+        let server = thread::spawn(move || {
+            for _ in 0..2 {
+                let (mut socket, _) = listener.accept().unwrap();
+                let mut request = Vec::new();
+                let mut buffer = [0_u8; 1024];
+                while !request.windows(4).any(|window| window == b"\r\n\r\n") {
+                    let read = socket.read(&mut buffer).unwrap();
+                    if read == 0 {
+                        break;
+                    }
+                    request.extend_from_slice(&buffer[..read]);
+                }
+                let request = String::from_utf8(request).unwrap();
+                observed.lock().unwrap().push(request.clone());
+                let response = if request.to_ascii_lowercase().contains("range: bytes=0-7") {
+                    b"HTTP/1.1 206 Partial Content\r\nContent-Length: 8\r\nContent-Range: bytes 0-7/16\r\nETag: \"generation-1\"\r\nConnection: close\r\n\r\n01234567".as_slice()
+                } else if request.to_ascii_lowercase().contains("range: bytes=12-15") {
+                    b"HTTP/1.1 206 Partial Content\r\nContent-Length: 4\r\nContent-Range: bytes 12-15/16\r\nETag: \"generation-1\"\r\nConnection: close\r\n\r\ncdef".as_slice()
+                } else {
+                    panic!("unexpected HTTP range request: {request}");
+                };
+                socket.write_all(response).unwrap();
+            }
+        });
+        let url = format!("http://{address}/events.bin");
+        let resource = FileTransportResource::http_url(url.clone());
+        let expected = FileIdentityMetadata {
+            location: url,
+            size_bytes: Some(16),
+            checksum: None,
+            etag: Some("\"generation-1\"".to_owned()),
+            version: None,
+            modified: None,
+        };
+        let coordinator =
+            Arc::new(DeterministicMemoryCoordinator::new(1024 * 1024, BTreeMap::new()).unwrap());
+        let memory: Arc<dyn MemoryCoordinator> = coordinator.clone();
+        let source = ReqwestHttpTransport::new()
+            .unwrap()
+            .open_byte_source(&resource, &expected, memory)
+            .unwrap();
+
+        let batch = source
+            .read_exact_ranges(
+                vec![
+                    ByteExtent::new(4, 4).unwrap(),
+                    ByteExtent::new(0, 4).unwrap(),
+                    ByteExtent::new(12, 4).unwrap(),
+                ],
+                RunCancellation::default(),
+            )
+            .await
+            .unwrap();
+        server.join().unwrap();
+
+        assert_eq!(batch.logical()[0].payload(), b"4567");
+        assert_eq!(batch.logical()[1].payload(), b"0123");
+        assert_eq!(batch.logical()[2].payload(), b"cdef");
+        assert_eq!(batch.logical_bytes(), 12);
+        assert_eq!(batch.physical_bytes(), 12);
+        assert_eq!(batch.request_count(), 2);
+        assert_eq!(requests.lock().unwrap().len(), 2);
+        assert_eq!(coordinator.snapshot().current_bytes, 12);
+        drop(batch);
+        assert_eq!(coordinator.snapshot().current_bytes, 0);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn metadata_get_returns_after_headers_without_draining_the_object_body() {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let address = listener.local_addr().unwrap();

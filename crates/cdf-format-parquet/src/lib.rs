@@ -19,9 +19,7 @@ use cdf_runtime::{
     FormatProbe, MagicSignature, PhysicalDecodeRequest, PhysicalDecodeStream,
     PhysicalSchemaObservation,
 };
-use futures_util::{
-    FutureExt, StreamExt, TryStreamExt, future::BoxFuture as FuturesBoxFuture, stream,
-};
+use futures_util::{FutureExt, TryStreamExt, future::BoxFuture as FuturesBoxFuture, stream};
 use parquet::{
     arrow::{
         ProjectionMask,
@@ -477,18 +475,29 @@ impl AsyncFileReader for ParquetByteSource {
         ranges: Vec<Range<u64>>,
     ) -> FuturesBoxFuture<'_, parquet::errors::Result<Vec<Bytes>>> {
         let source = self.clone();
-        let concurrency = usize::from(source.source.capabilities().useful_range_concurrency.max(1));
         async move {
-            let mut completed = stream::iter(ranges.into_iter().enumerate())
-                .map(|(ordinal, range)| {
-                    let source = source.clone();
-                    async move { source.range(range).await.map(|bytes| (ordinal, bytes)) }
+            let extents = ranges
+                .into_iter()
+                .map(|range| {
+                    let length = range.end.checked_sub(range.start).ok_or_else(|| {
+                        ParquetError::General("Parquet requested an inverted range".to_owned())
+                    })?;
+                    ByteExtent::new(range.start, length).map_err(to_parquet_error)
                 })
-                .buffer_unordered(concurrency)
-                .try_collect::<Vec<_>>()
-                .await?;
-            completed.sort_unstable_by_key(|(ordinal, _)| *ordinal);
-            Ok(completed.into_iter().map(|(_, bytes)| bytes).collect())
+                .collect::<parquet::errors::Result<Vec<_>>>()?;
+            let batch = source
+                .source
+                .read_exact_ranges(extents, source.cancellation.clone())
+                .await
+                .map_err(to_parquet_error)?;
+            source
+                .bytes_read
+                .fetch_add(batch.physical_bytes(), Ordering::Relaxed);
+            Ok(batch
+                .into_logical()
+                .into_iter()
+                .map(Bytes::from_owner)
+                .collect())
         }
         .boxed()
     }

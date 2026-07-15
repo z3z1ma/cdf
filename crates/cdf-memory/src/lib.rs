@@ -316,6 +316,21 @@ impl AccountedBytes {
     pub fn lease(&self) -> &MemoryLease {
         &self.lease
     }
+
+    /// Returns a zero-copy logical slice while retaining the lease for the complete
+    /// physical allocation. This is intentionally conservative: coalesced I/O is
+    /// accounted until every logical slice of the response has been released.
+    pub fn slice(&self, range: std::ops::Range<usize>) -> Result<Self> {
+        if range.start >= range.end || range.end > self.payload.len() {
+            return Err(CdfError::contract(
+                "accounted byte slice requires a nonempty in-bounds range",
+            ));
+        }
+        Ok(Self {
+            payload: self.payload.slice(range),
+            lease: self.lease.clone(),
+        })
+    }
 }
 
 impl AsRef<[u8]> for AccountedBytes {
