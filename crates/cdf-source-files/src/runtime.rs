@@ -13,7 +13,7 @@ use cdf_kernel::{
     PLAN_SCHEMA_OBSERVATION_ID_KEY, PartitionAttestation, PartitionCompletion, PartitionId,
     PartitionPlan, PayloadRetention, PlanId, QueryableResource, ResourceCapabilities,
     ResourceDescriptor, ResourceId, ResourceStream, Result, ScanPlan, ScanRequest, SchemaHash,
-    ScopeKey, SourcePosition, TypePolicyAllowances, WriteDisposition,
+    ScopeKey, SourcePosition, SourceReadMode, TypePolicyAllowances, WriteDisposition,
 };
 use cdf_memory::{ConsumerKey, MemoryClass};
 use cdf_runtime::{
@@ -1906,7 +1906,7 @@ async fn stream_prepared_file_match(
         physical_schema_authority,
         canonical_format_options,
         driver,
-        source_io: _,
+        source_io,
         extraction_content_hash: _,
         hash_sweep_source: _,
         payload_retention,
@@ -1951,12 +1951,14 @@ async fn stream_prepared_file_match(
                     cancellation.clone(),
                 )?;
                 if let Some(growing) = growing {
+                    source_io.set_mode(SourceReadMode::GrowingSpool)?;
                     ReadyFileInput {
                         source: growing.source,
                         payload_retention: Some(growing.retention),
                         source_completion: Some(growing.completion),
                     }
                 } else {
+                    source_io.set_mode(SourceReadMode::ExactRanges)?;
                     ReadyFileInput {
                         source,
                         payload_retention: None,
@@ -1964,6 +1966,7 @@ async fn stream_prepared_file_match(
                     }
                 }
             } else {
+                source_io.set_mode(SourceReadMode::FullSpool)?;
                 let spool = Arc::new(
                     spool_byte_source_async(source, size_bytes, dependencies, cancellation.clone())
                         .await?,

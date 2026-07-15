@@ -485,6 +485,7 @@ impl ActiveStagedIngress {
         }
         Ok(Some(RunPhaseMetric {
             phase: RunPhase::DestinationIngress,
+            context: None,
             status: RunPhaseStatus::Completed,
             duration_ns: u64::try_from(self.ingress_duration.as_nanos()).map_err(|error| {
                 CdfError::internal(format!(

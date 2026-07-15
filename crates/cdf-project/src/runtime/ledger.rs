@@ -471,6 +471,7 @@ fn phase_metric(
 ) -> Result<RunPhaseMetric> {
     Ok(RunPhaseMetric {
         phase,
+        context: None,
         status,
         duration_ns: u64::try_from(active.started_at.elapsed().as_nanos()).map_err(|error| {
             CdfError::internal(format!("phase duration does not fit in u64: {error}"))
@@ -858,6 +859,7 @@ mod tests {
         recorder
             .append_phase_metric(RunPhaseMetric {
                 phase: RunPhase::Decode,
+                context: None,
                 status: RunPhaseStatus::Completed,
                 duration_ns: 1,
                 input_bytes: 1,

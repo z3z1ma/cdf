@@ -3186,6 +3186,10 @@ fn general_project_run_records_bounded_complete_phase_telemetry() {
         .iter()
         .find(|metric| metric.phase == RunPhase::SourceRead)
         .expect("file run omitted source I/O telemetry");
+    assert!(matches!(
+        source_read.context,
+        Some(cdf_kernel::RunPhaseContext::SourceRead { .. })
+    ));
     assert!(source_read.input_bytes > 0);
     assert!(source_read.output_bytes > 0);
     assert!(source_read.operations > 0);

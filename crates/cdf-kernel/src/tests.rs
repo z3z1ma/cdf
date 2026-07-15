@@ -1371,6 +1371,7 @@ fn run_phase_metric_preserves_the_current_scalar_event_value_shape() {
         "metric",
         RunEventValue::PhaseMetric(RunPhaseMetric {
             phase: RunPhase::Decode,
+            context: None,
             status: RunPhaseStatus::Completed,
             duration_ns: 42,
             input_bytes: 100,
@@ -1382,6 +1383,22 @@ fn run_phase_metric_preserves_the_current_scalar_event_value_shape() {
     let encoded = serde_json::to_vec(&details).unwrap();
     let decoded: RunEventDetails = serde_json::from_slice(&encoded).unwrap();
     assert_eq!(decoded, details);
+
+    let invalid = RunEventDetails::new([(
+        "metric",
+        RunEventValue::PhaseMetric(RunPhaseMetric {
+            phase: RunPhase::Decode,
+            context: Some(RunPhaseContext::SourceRead {
+                mode: SourceReadMode::ExactRanges,
+            }),
+            status: RunPhaseStatus::Completed,
+            duration_ns: 1,
+            input_bytes: 1,
+            output_bytes: 1,
+            operations: 1,
+        }),
+    )]);
+    assert!(invalid.validate().is_err());
 }
 
 #[test]

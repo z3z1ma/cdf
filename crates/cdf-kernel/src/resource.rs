@@ -512,8 +512,36 @@ pub struct PartitionAttestation {
 
 /// Invocation-local source I/O measurements. These values are operational
 /// telemetry only: they never participate in plan, package, or manifest identity.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SourceReadMode {
+    /// One forward byte stream feeds a streaming codec or one complete verifier.
+    DirectStream,
+    /// Seekable decode reads generation-bound byte extents without a full local copy.
+    ExactRanges,
+    /// Decode begins only after a finite, fully reserved spool is complete.
+    FullSpool,
+    /// Decode tails already-published extents while a finite, fully reserved spool grows.
+    GrowingSpool,
+    /// One invocation intentionally combines direct verification and exact-range decode.
+    MixedAccess,
+}
+
+impl SourceReadMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::DirectStream => "direct_stream",
+            Self::ExactRanges => "exact_ranges",
+            Self::FullSpool => "full_spool",
+            Self::GrowingSpool => "growing_spool",
+            Self::MixedAccess => "mixed_access",
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct SourceIoMetrics {
+    pub mode: Option<SourceReadMode>,
     /// Sum of time awaiting source opens/range responses/stream chunks. Consumer
     /// backpressure between polls is excluded; concurrent range waits may overlap.
     pub duration_ns: u64,
@@ -533,7 +561,8 @@ impl SourceIoMetrics {
     }
 
     pub fn is_empty(self) -> bool {
-        self.duration_ns == 0
+        self.mode.is_none()
+            && self.duration_ns == 0
             && self.logical_bytes == 0
             && self.useful_bytes == 0
             && self.physical_bytes == 0

@@ -24,8 +24,8 @@ use cdf_kernel::{
     PLAN_SCHEMA_OBSERVATION_BINDING_KEY, PLAN_SCHEMA_OBSERVATION_ID_KEY, PartitionAttestation,
     PartitionPlan, PhysicalObservationRepresentation, PreContractObservedValue,
     PreContractQuarantineFact, PreContractResidualCandidate, ProcessedObservationOutcome,
-    ProcessedObservationPosition, ResourceStream, Result, RunId, RunPhase, RunPhaseMetric,
-    RunPhaseStatus, SOURCE_NAME_METADATA_KEY, ScopeKey, SourcePosition,
+    ProcessedObservationPosition, ResourceStream, Result, RunId, RunPhase, RunPhaseContext,
+    RunPhaseMetric, RunPhaseStatus, SOURCE_NAME_METADATA_KEY, ScopeKey, SourcePosition,
     StratifiedHashBoundedIdentity, StratifiedHashCandidate, StratifiedHashIdentityStrength,
     TerminalSchemaObservationQuarantine, WriteDisposition, aggregate_resource_output_position,
     merge_terminal_position_evidence, semantic, source_name,
@@ -113,7 +113,7 @@ struct PhaseAggregate {
 
 struct PhaseMeasurements {
     enabled: bool,
-    values: BTreeMap<RunPhase, PhaseAggregate>,
+    values: BTreeMap<(RunPhase, Option<RunPhaseContext>), PhaseAggregate>,
 }
 
 impl PhaseMeasurements {
@@ -140,10 +140,29 @@ impl PhaseMeasurements {
         output_bytes: u64,
         operations: u64,
     ) {
+        self.add_operations_with_context(
+            phase,
+            None,
+            duration_ns,
+            input_bytes,
+            output_bytes,
+            operations,
+        );
+    }
+
+    fn add_operations_with_context(
+        &mut self,
+        phase: RunPhase,
+        context: Option<RunPhaseContext>,
+        duration_ns: u64,
+        input_bytes: u64,
+        output_bytes: u64,
+        operations: u64,
+    ) {
         if !self.enabled {
             return;
         }
-        let metric = self.values.entry(phase).or_default();
+        let metric = self.values.entry((phase, context)).or_default();
         metric.duration_ns = metric.duration_ns.saturating_add(duration_ns);
         metric.input_bytes = metric.input_bytes.saturating_add(input_bytes);
         metric.output_bytes = metric.output_bytes.saturating_add(output_bytes);
@@ -153,8 +172,9 @@ impl PhaseMeasurements {
     fn into_metrics(self) -> Vec<RunPhaseMetric> {
         self.values
             .into_iter()
-            .map(|(phase, metric)| RunPhaseMetric {
+            .map(|((phase, context), metric)| RunPhaseMetric {
                 phase,
+                context,
                 status: RunPhaseStatus::Completed,
                 duration_ns: metric.duration_ns,
                 input_bytes: metric.input_bytes,
@@ -2945,8 +2965,11 @@ where
                 .as_ref()
                 .and_then(cdf_kernel::PartitionCompletion::source_io)
             {
-                phase_measurements.add_operations(
+                phase_measurements.add_operations_with_context(
                     RunPhase::SourceRead,
+                    source_io
+                        .mode
+                        .map(|mode| RunPhaseContext::SourceRead { mode }),
                     source_io.duration_ns,
                     source_io.physical_bytes,
                     source_io.useful_bytes,

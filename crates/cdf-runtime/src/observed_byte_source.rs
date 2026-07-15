@@ -1,12 +1,12 @@
 use std::{
     sync::{
         Arc,
-        atomic::{AtomicU64, Ordering},
+        atomic::{AtomicU8, AtomicU64, Ordering},
     },
     time::Instant,
 };
 
-use cdf_kernel::{BoxFuture, CdfError, Result, SourceIoMetrics};
+use cdf_kernel::{BoxFuture, CdfError, Result, SourceIoMetrics, SourceReadMode};
 use futures_util::TryStreamExt;
 
 use crate::{
@@ -16,6 +16,8 @@ use crate::{
 
 #[derive(Default)]
 struct SourceIoCounters {
+    explicit_mode: AtomicU8,
+    observed_mode: AtomicU8,
     duration_ns: AtomicU64,
     logical_bytes: AtomicU64,
     useful_bytes: AtomicU64,
@@ -43,6 +45,37 @@ pub struct SourceIoObserver {
 }
 
 impl SourceIoObserver {
+    pub fn set_mode(&self, mode: SourceReadMode) -> Result<()> {
+        let encoded = encode_mode(mode);
+        match self.counters.explicit_mode.compare_exchange(
+            0,
+            encoded,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        ) {
+            Ok(_) => Ok(()),
+            Err(current) if current == encoded => Ok(()),
+            Err(_) => Err(CdfError::internal(
+                "source I/O invocation selected more than one explicit access mode",
+            )),
+        }
+    }
+
+    fn observe_mode(&self, mode: SourceReadMode) {
+        let encoded = encode_mode(mode);
+        let _ = self.counters.observed_mode.fetch_update(
+            Ordering::Relaxed,
+            Ordering::Relaxed,
+            |current| {
+                Some(if current == 0 || current == encoded {
+                    encoded
+                } else {
+                    encode_mode(SourceReadMode::MixedAccess)
+                })
+            },
+        );
+    }
+
     fn observe(
         &self,
         duration_ns: u64,
@@ -59,7 +92,10 @@ impl SourceIoObserver {
     }
 
     pub fn snapshot(&self) -> SourceIoMetrics {
+        let explicit = self.counters.explicit_mode.load(Ordering::Acquire);
+        let observed = self.counters.observed_mode.load(Ordering::Acquire);
         SourceIoMetrics {
+            mode: decode_mode(if explicit == 0 { observed } else { explicit }),
             duration_ns: self.counters.duration_ns.load(Ordering::Relaxed),
             logical_bytes: self.counters.logical_bytes.load(Ordering::Relaxed),
             useful_bytes: self.counters.useful_bytes.load(Ordering::Relaxed),
@@ -112,6 +148,7 @@ impl ByteSource for ObservedByteSource {
         let inner = Arc::clone(&self.inner);
         let observer = self.observer.clone();
         Box::pin(async move {
+            observer.observe_mode(SourceReadMode::DirectStream);
             let open_started = Instant::now();
             let stream = match inner.open_sequential(request).await {
                 Ok(stream) => stream,
@@ -158,6 +195,7 @@ impl ByteSource for ObservedByteSource {
         let inner = Arc::clone(&self.inner);
         let observer = self.observer.clone();
         Box::pin(async move {
+            observer.observe_mode(SourceReadMode::ExactRanges);
             let started = Instant::now();
             let result = inner.read_exact_range(extent, cancellation).await;
             match &result {
@@ -180,6 +218,7 @@ impl ByteSource for ObservedByteSource {
         let inner = Arc::clone(&self.inner);
         let observer = self.observer.clone();
         Box::pin(async move {
+            observer.observe_mode(SourceReadMode::ExactRanges);
             let started = Instant::now();
             let result = inner.read_exact_ranges(extents, cancellation).await;
             if let Ok(batch) = &result {
@@ -193,6 +232,28 @@ impl ByteSource for ObservedByteSource {
             }
             result
         })
+    }
+}
+
+fn encode_mode(mode: SourceReadMode) -> u8 {
+    match mode {
+        SourceReadMode::DirectStream => 1,
+        SourceReadMode::ExactRanges => 2,
+        SourceReadMode::FullSpool => 3,
+        SourceReadMode::GrowingSpool => 4,
+        SourceReadMode::MixedAccess => 5,
+    }
+}
+
+fn decode_mode(encoded: u8) -> Option<SourceReadMode> {
+    match encoded {
+        0 => None,
+        1 => Some(SourceReadMode::DirectStream),
+        2 => Some(SourceReadMode::ExactRanges),
+        3 => Some(SourceReadMode::FullSpool),
+        4 => Some(SourceReadMode::GrowingSpool),
+        5 => Some(SourceReadMode::MixedAccess),
+        _ => None,
     }
 }
 
@@ -318,6 +379,7 @@ mod tests {
         assert_eq!(ranges.logical()[1].payload(), b"cdef");
 
         let snapshot = observer.snapshot();
+        assert_eq!(snapshot.mode, Some(SourceReadMode::MixedAccess));
         assert_eq!(snapshot.logical_bytes, 18);
         assert_eq!(snapshot.useful_bytes, 16);
         assert_eq!(snapshot.physical_bytes, 16);
@@ -325,5 +387,9 @@ mod tests {
         assert_eq!(snapshot.prefetch_waste_bytes(), 0);
         assert_eq!(snapshot.reused_bytes(), 2);
         assert!(snapshot.duration_ns > 0);
+
+        observer.set_mode(SourceReadMode::GrowingSpool).unwrap();
+        assert_eq!(observer.snapshot().mode, Some(SourceReadMode::GrowingSpool));
+        assert!(observer.set_mode(SourceReadMode::FullSpool).is_err());
     }
 }

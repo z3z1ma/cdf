@@ -648,8 +648,12 @@ fn display_event_value(key: &str, value: &RunEventValue) -> String {
             .collect::<Vec<_>>()
             .join(","),
         RunEventValue::PhaseMetric(metric) if metric.phase == cdf_kernel::RunPhase::SourceRead => {
+            let mode = match &metric.context {
+                Some(cdf_kernel::RunPhaseContext::SourceRead { mode }) => mode.as_str(),
+                None => "unclassified",
+            };
             format!(
-                "source_read {:?} {} physical / {} useful / {} waste across {} requests in {}",
+                "source_read {mode} {:?} {} physical / {} useful / {} waste across {} requests in {}",
                 metric.status,
                 humanize_bytes(metric.input_bytes),
                 humanize_bytes(metric.output_bytes),
@@ -778,6 +782,9 @@ mod tests {
             "metric",
             &RunEventValue::PhaseMetric(RunPhaseMetric {
                 phase: RunPhase::SourceRead,
+                context: Some(cdf_kernel::RunPhaseContext::SourceRead {
+                    mode: cdf_kernel::SourceReadMode::GrowingSpool,
+                }),
                 status: RunPhaseStatus::Completed,
                 duration_ns: 2_000_000,
                 input_bytes: 10 * 1024 * 1024,
@@ -787,7 +794,7 @@ mod tests {
         );
         assert_eq!(
             rendered,
-            "source_read Completed 10 MiB physical / 8 MiB useful / 2 MiB waste across 3 requests in 2ms"
+            "source_read growing_spool Completed 10 MiB physical / 8 MiB useful / 2 MiB waste across 3 requests in 2ms"
         );
     }
 

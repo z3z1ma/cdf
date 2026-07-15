@@ -294,14 +294,36 @@ pub enum RunPhaseStatus {
     Interrupted,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum RunPhaseContext {
+    SourceRead { mode: crate::SourceReadMode },
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RunPhaseMetric {
     pub phase: RunPhase,
+    pub context: Option<RunPhaseContext>,
     pub status: RunPhaseStatus,
     pub duration_ns: u64,
     pub input_bytes: u64,
     pub output_bytes: u64,
     pub operations: u64,
+}
+
+impl RunPhaseMetric {
+    pub fn validate(&self) -> Result<()> {
+        match (&self.phase, &self.context) {
+            (RunPhase::SourceRead, Some(RunPhaseContext::SourceRead { .. })) => Ok(()),
+            (RunPhase::SourceRead, None) => Err(CdfError::contract(
+                "source-read phase metrics require a typed access mode",
+            )),
+            (_, None) => Ok(()),
+            (_, Some(RunPhaseContext::SourceRead { .. })) => Err(CdfError::contract(
+                "source-read context cannot be attached to another run phase",
+            )),
+        }
+    }
 }
 
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -403,11 +425,11 @@ fn validate_event_value(key: &str, value: &RunEventValue) -> Result<()> {
             }
             Ok(())
         }
+        RunEventValue::PhaseMetric(metric) => metric.validate(),
         RunEventValue::Bool(_)
         | RunEventValue::I64(_)
         | RunEventValue::U64(_)
-        | RunEventValue::SecretRef(_)
-        | RunEventValue::PhaseMetric(_) => Ok(()),
+        | RunEventValue::SecretRef(_) => Ok(()),
     }
 }
 
