@@ -29,8 +29,8 @@ use cdf_package::{PackageBuilder, PackageReader, archive_package_to_parquet};
 use cdf_package_contract::{DestinationCommitPlanPreimage, PackageStatus, StateDeltaPreimage};
 use cdf_project::{
     EnvSecretProvider, PackageArtifactReplayRequest, ProjectRunRequest, ProjectRunSource,
-    ResolvedProjectDestination, prepare_declared_file_schema_artifacts,
-    replay_package_from_artifacts, run_project,
+    ResolvedProjectDestination, RunTelemetryConfig, prepare_declared_file_schema_artifacts,
+    replay_package_from_artifacts, run_project, run_project_with_scheduler_and_telemetry,
 };
 use cdf_runtime::{ByteTransformRegistry, FormatRegistry, SourceRegistry, SourceResolutionContext};
 use cdf_source_files::{FileRuntimeDependencies, FileSourceDriver, FileTransportFacade};
@@ -100,6 +100,37 @@ pub struct PreparedFilePackageRun {
     pub partition_count: usize,
     pub package_hash: String,
     pub segments: Vec<cdf_package_contract::SegmentEntry>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PreparedDestinationKind {
+    DuckDb,
+    Parquet,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PreparedFileDestinationWorkload {
+    pub fixture_name: String,
+    pub source_root: PathBuf,
+    pub glob: String,
+    pub format: PreparedFileFormat,
+    pub output_root: PathBuf,
+    pub destination: PreparedDestinationKind,
+    pub jobs: Option<u16>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PreparedFileDestinationRun {
+    pub configured_jobs: Option<u16>,
+    pub effective_jobs: u16,
+    pub limiting_factors: Vec<String>,
+    pub partition_count: usize,
+    pub package_hash: String,
+    pub receipt_package_hash: String,
+    pub receipt_segment_ids: Vec<String>,
+    pub state_segment_ids: Vec<String>,
+    pub row_count: u64,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -348,6 +379,117 @@ pub fn run_prepared_file_to_package(
         partition_count,
         package_hash: output.output.manifest.package_hash,
         segments: output.output.segments,
+    })
+}
+
+pub fn run_prepared_file_to_destination(
+    request: &PreparedFileDestinationWorkload,
+) -> BenchResult<PreparedFileDestinationRun> {
+    if request.jobs == Some(0) {
+        return Err(bench_error(
+            "prepared destination workload jobs must be nonzero",
+        ));
+    }
+    let spec = fixture_spec(&request.fixture_name)?;
+    validate_spec(&spec)?;
+    let format_id = match request.format {
+        PreparedFileFormat::Csv => "csv",
+        PreparedFileFormat::Json => "json",
+        PreparedFileFormat::Ndjson => "ndjson",
+        PreparedFileFormat::Parquet => "parquet",
+    };
+    let execution = benchmark_execution_services()?;
+    let host_jobs = execution.capabilities().logical_cpu_slots;
+    let execution = execution.with_run_job_ceiling(request.jobs.unwrap_or(host_jobs))?;
+    let source = benchmark_file_resource(
+        &request.source_root,
+        &request.glob,
+        format_id,
+        &spec,
+        &execution,
+    )?;
+    fs::create_dir_all(&request.output_root)?;
+    let target = TargetName::new("orders")?;
+    let destination = match request.destination {
+        PreparedDestinationKind::DuckDb => ResolvedProjectDestination::new(
+            Box::new(cdf_dest_duckdb::DuckDbDestination::new(
+                request.output_root.join("destination.duckdb"),
+            )?),
+            target,
+        ),
+        PreparedDestinationKind::Parquet => ResolvedProjectDestination::new(
+            Box::new(
+                cdf_dest_parquet::FilesystemParquetRuntime::with_execution_services(
+                    request.output_root.join("parquet"),
+                    execution.clone(),
+                ),
+            ),
+            target,
+        ),
+    };
+    let destination_capabilities = destination.runtime_capabilities();
+    let mut policy = ContractPolicy::for_trust(source.resource.descriptor().trust_level.clone());
+    if let Some(identifier) = destination.column_identifier_policy()? {
+        policy.normalization.identifier = identifier;
+    }
+    let plan = identity_engine_plan_with_policy(
+        source.resource.as_ref(),
+        "pkg-p3-destination-jobs",
+        &policy,
+    )?
+    .bind_compiled_source(&source.source_plan)?
+    .bind_operator_graph(&source.source_plan, &destination_capabilities)?;
+    let source_execution = plan.compiled_source_execution.as_ref().ok_or_else(|| {
+        bench_error("prepared destination plan omitted its compiled source execution authority")
+    })?;
+    let scheduler = cdf_runtime::resolve_runtime_scheduler(
+        plan.scan.partitions.len(),
+        source_execution.execution_capabilities(),
+        &destination_capabilities,
+        &execution,
+        request.jobs,
+    )?;
+    execution.tighten_run_job_ceiling(scheduler.effective_jobs.jobs)?;
+    let partition_count = plan.scan.partitions.len();
+    let report = block_on(run_project_with_scheduler_and_telemetry(
+        ProjectRunRequest {
+            resource: ProjectRunSource::new(source.resource.as_ref()),
+            plan,
+            package_root: request.output_root.join("packages"),
+            state_store_path: request.output_root.join("state.db"),
+            pipeline_id: PipelineId::new("pipeline-p3-destination-jobs")?,
+            package_id: "pkg-p3-destination-jobs".to_owned(),
+            checkpoint_id: CheckpointId::new("checkpoint-p3-destination-jobs")?,
+            destination,
+            run_id: Some(RunId::new("run-p3-destination-jobs")?),
+            event_sink: None,
+            after_receipt_verified: None,
+        },
+        &execution,
+        Some(scheduler.clone()),
+        RunTelemetryConfig::disabled(),
+    ))?;
+    Ok(PreparedFileDestinationRun {
+        configured_jobs: request.jobs,
+        effective_jobs: scheduler.effective_jobs.jobs,
+        limiting_factors: scheduler.effective_jobs.limiting_factors,
+        partition_count,
+        package_hash: report.package_hash.to_string(),
+        receipt_package_hash: report.receipt.package_hash.to_string(),
+        receipt_segment_ids: report
+            .receipt
+            .segment_acks
+            .iter()
+            .map(|ack| ack.segment_id.to_string())
+            .collect(),
+        state_segment_ids: report
+            .checkpoint
+            .delta
+            .segments
+            .iter()
+            .map(|segment| segment.segment_id.to_string())
+            .collect(),
+        row_count: report.row_count,
     })
 }
 
@@ -760,11 +902,20 @@ fn identity_engine_plan<R: ResourceStream + ?Sized>(
     resource: &R,
     package_id: &str,
 ) -> BenchResult<cdf_engine::EnginePlan> {
-    let observed_schema = ObservedSchema::from_arrow(resource.schema().as_ref());
-    let validation_program = compile_validation_program(
+    identity_engine_plan_with_policy(
+        resource,
+        package_id,
         &ContractPolicy::for_trust(resource.descriptor().trust_level.clone()),
-        &observed_schema,
-    )?;
+    )
+}
+
+fn identity_engine_plan_with_policy<R: ResourceStream + ?Sized>(
+    resource: &R,
+    package_id: &str,
+    policy: &ContractPolicy,
+) -> BenchResult<cdf_engine::EnginePlan> {
+    let observed_schema = ObservedSchema::from_arrow(resource.schema().as_ref());
+    let validation_program = compile_validation_program(policy, &observed_schema)?;
     Planner::new()
         .plan_tier_a(
             resource,

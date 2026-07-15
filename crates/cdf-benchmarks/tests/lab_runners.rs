@@ -4,11 +4,12 @@ use cdf_benchmarks::{
     BENCHMARK_REPORT_SCHEMA_VERSION, BenchmarkReport, BiasLabel, Capability, ChildCommand,
     ChildObservationStatus, ComparabilityKey, ExternalFileFormat, HostCapabilityProvider,
     HostProbeConfig, IoMode, MacroRunRequest, ObservationStatus, PreoptimizationBaselineConfig,
-    PreparedFileFormat, PreparedFilePackageWorkload, ProfileTool, ReferenceIdentity,
-    ReferenceWorkload, SystemHostProvider, ToolIdentity, discover_polars, fixture_spec, host_class,
-    plan_profile, polars_scan_command, run_macro_cell, run_preoptimization_baseline,
-    run_prepared_file_to_package, run_reference, unavailable_reference_cell, validate_report,
-    write_all_local_fixture_formats,
+    PreparedDestinationKind, PreparedFileDestinationWorkload, PreparedFileFormat,
+    PreparedFilePackageWorkload, ProfileTool, ReferenceIdentity, ReferenceWorkload,
+    SystemHostProvider, ToolIdentity, discover_polars, fixture_spec, host_class, plan_profile,
+    polars_scan_command, run_macro_cell, run_preoptimization_baseline,
+    run_prepared_file_to_destination, run_prepared_file_to_package, run_reference,
+    unavailable_reference_cell, validate_report, write_all_local_fixture_formats,
 };
 
 fn provider() -> SystemHostProvider {
@@ -383,6 +384,67 @@ fn prepared_jobs_zero_is_rejected_before_source_contact() {
         "{error}"
     );
     assert!(!PathBuf::from("must-not-be-created").exists());
+}
+
+#[test]
+fn staged_and_finalized_destinations_preserve_jobs_identity() {
+    let temp = tempfile::tempdir().unwrap();
+    let spec = fixture_spec("medium").unwrap();
+    write_all_local_fixture_formats(temp.path(), &spec).unwrap();
+    let source = fs::read(temp.path().join("orders.parquet")).unwrap();
+    for ordinal in 0..4 {
+        fs::write(
+            temp.path().join(format!("part-{ordinal:02}.parquet")),
+            &source,
+        )
+        .unwrap();
+    }
+
+    for (label, destination) in [
+        ("duckdb", PreparedDestinationKind::DuckDb),
+        ("parquet", PreparedDestinationKind::Parquet),
+    ] {
+        let serial = run_prepared_file_to_destination(&PreparedFileDestinationWorkload {
+            fixture_name: "medium".to_owned(),
+            source_root: temp.path().to_path_buf(),
+            glob: "part-*.parquet".to_owned(),
+            format: PreparedFileFormat::Parquet,
+            output_root: temp.path().join(format!("destination-{label}-one")),
+            destination,
+            jobs: Some(1),
+        })
+        .unwrap();
+        let parallel = run_prepared_file_to_destination(&PreparedFileDestinationWorkload {
+            fixture_name: "medium".to_owned(),
+            source_root: temp.path().to_path_buf(),
+            glob: "part-*.parquet".to_owned(),
+            format: PreparedFileFormat::Parquet,
+            output_root: temp.path().join(format!("destination-{label}-four")),
+            destination,
+            jobs: Some(4),
+        })
+        .unwrap();
+
+        assert_eq!(serial.effective_jobs, 1);
+        assert_eq!(parallel.effective_jobs, 4);
+        assert_eq!(serial.partition_count, 4);
+        assert_eq!(parallel.partition_count, 4);
+        assert_eq!(serial.row_count, (spec.rows * 4) as u64);
+        assert_eq!(parallel.row_count, serial.row_count);
+        assert_eq!(parallel.package_hash, serial.package_hash, "{label}");
+        assert_eq!(
+            parallel.receipt_package_hash, serial.receipt_package_hash,
+            "{label}"
+        );
+        assert_eq!(
+            parallel.receipt_segment_ids, serial.receipt_segment_ids,
+            "{label}"
+        );
+        assert_eq!(
+            parallel.state_segment_ids, serial.state_segment_ids,
+            "{label}"
+        );
+    }
 }
 
 #[test]
