@@ -6,6 +6,10 @@ Updated: 2026-07-15
 
 ## Observation
 
+The `arrow_ipc_to_parquet@4` bounded-publication repair at commit `56b00216` completed the same isolated four-file FineWeb cell in 19.15 seconds. It processed 8,590,037,948 source bytes and 4,234,560 rows into 460 canonical segments, wrote 14,370,730,688 destination bytes in 58 immutable content-addressed objects, preserved 460 exact acknowledgements, verified the receipt, and committed the checkpoint. Destination ingress overlapped package execution for 18.410 seconds; final manifest/receipt binding took 73.2 milliseconds because it did not recopy accumulated output. Maximum RSS was 1,231,093,760 bytes. The attempt staging hierarchy contained zero files after success.
+
+Charging all 19.15 seconds to destination output yields 715.5 MiB/s, or 0.747x the recorded favorable 958.4 MiB/s two-writer same-FineWeb reference. The architecture repair is 6.7% slower than the previous 17.95-second `@3` cell, primarily inside overlapped ingress where immediate create-or-verify publication and per-object durability now occur, but remains 52.9% faster than the 40.67-second finalized-package control and clears the exact 0.60 gate. Final binding itself improved from 318 milliseconds to 73.2 milliseconds. This is the closure measurement for `@4`; the older `@3` measurement below remains investigation history rather than current-path evidence.
+
 The deterministic object-layout and generic lease repair at commit `b2cbb88b` supersedes the earlier open throughput result below. A fresh isolated copy of the same four-file FineWeb project completed in 17.95 seconds, with 16.577 seconds of overlapped package execution, 16.209 seconds of destination ingress, 0.318 seconds of final binding/receipt publication, 1,389,346,816 bytes maximum RSS, and no staging residue. It wrote the same 14,370,730,688 destination bytes, but `arrow_ipc_to_parquet@3` reduced the physical object count from 460 to 58 while preserving all 460 segment acknowledgements and provenance offsets. Output over the complete overlapped destination interval is 845.5 MiB/s, 10.5% above the prior 765.4 MiB/s cell; end-to-end wall is 5.7% lower than the prior staged path and 55.9% lower than the 40.67-second finalized-package control.
 
 The former narrow-numeric direct-writer comparator was not semantically comparable to wide-text FineWeb. The performance lab now has a durable `arrow_parquet_rewrite` reference that reads the exact FineWeb object and writes it with the destination's 64k-row/16 MiB, no-dictionary, no-statistics policy. One direct writer produced 3,592,546,468 bytes in a 6.136-second timed region (558.5 MiB/s). Two isolated workers on the same APFS volume produced 7,185,092,936 bytes in 7.15 seconds including process startup, a conservative 958.4 MiB/s two-writer roofline. For closure, CDF is charged its entire 17.95-second command wall—not merely destination ingress—yielding 763.5 MiB/s of final output and 0.797x that favorable same-data/same-policy source-to-destination reference. This clears the ticket's 0.60 threshold without mixed source/package byte accounting even though the reference intentionally omits CDF's package, evidence, fencing, publication, receipt, and checkpoint work. The narrower overlapped-ingress observation is 845.5 MiB/s or 0.882x and is diagnostic only.
@@ -23,6 +27,26 @@ Peak RSS was 1,281,064,960 bytes, below the 4 GiB managed authority and the earl
 ## Procedure
 
 Superseding closure procedure:
+
+1. Built release `cdf` and `cdf-p3-lab` at `56b00216` with 12 Cargo build jobs.
+2. Copied only project TOML, lockfile, pinned schema artifacts, and resource TOML into `/tmp/cdf-d8-v4.zVsfaj`; symlinked the immutable four-file data directory; allowed the run to create fresh state, packages, destination, and leases.
+3. Ran `/usr/bin/time -lp .../cdf run fineweb.documents --jobs 4 --progress never --color never`, then queried typed phase events from the fresh SQLite ledger, counted/summed destination Parquet objects, and searched the staging hierarchy for files. Run: `run-cf7f7370001f592ec03df926a7b60341`; package hash: `sha256:ee79b5e0857c913dd0530985bbba7dd216215e74ac180b9c105b3f4a79902c12`.
+4. Reused the already-recorded two-worker `ArrowParquetRewrite` reference because the v4 repair does not change the source data or destination writer settings that define that comparator.
+
+| `@4` closure metric | Observation |
+|---|---:|
+| wall / user / system | 19.15 / 49.78 / 33.12 s |
+| peak RSS | 1,231,093,760 B |
+| package execution | 18.875 s |
+| destination ingress, overlapped | 18.410 s |
+| final binding + receipt | 0.073 s |
+| destination objects / segment acks | 58 / 460 |
+| destination output / complete wall | 715.5 MiB/s |
+| two-writer same-FineWeb reference | 958.4 MiB/s |
+| complete CDF command / favorable same-data reference | 0.747x |
+| attempt staging files after success | 0 |
+
+Historical `@3` closure procedure:
 
 1. Built release `cdf` and `cdf-p3-lab` with 12 Cargo build jobs.
 2. Copied only project TOML, lockfile, pinned schema artifacts, and resource TOML into `/tmp/cdf-d8-live.FH6y91`; symlinked the immutable four-file data directory; allowed the run to create fresh state, packages, destination, and leases.
@@ -74,6 +98,7 @@ The selected `arrow_ipc_to_parquet@4` physical plan records its exact two-writer
 ## What it supports or challenges
 
 - It supports D8's architectural claim: Parquet is a generic staged destination, the expensive phase overlaps package production, final binding is subsecond, memory remains bounded, and the old serialized 33.069-second post-package phase is gone.
+- It supports the v4 bounded-publication claim: attempt-owned files do not accumulate with run size, final binding performs no whole-output copy, and the complete current command still reaches 0.747x the favorable same-data reference.
 - It falsifies the earlier throughput closure claim and then supersedes it with a comparable one. The complete CDF command reaches 0.797x the same-FineWeb, same-writer-policy, two-writer source-to-destination reference after object coalescing, while also building/verifying the canonical package and committing the receipt/checkpoint. The former 0.481x comparison used a much easier narrow numeric schema and is retained above only as investigation history.
 - Adapter tests prove new commits carry exact commit-bound verification while duplicates require independent verification. Local and in-memory object-store abort tests prove attempt staging and unpublished final objects are removed; successful tests cover duplicate replay, deterministic multi-segment order, replace, tamper detection, and correction behavior.
 - Full `cdf-project` and `cdf-runtime` library suites preserve checkpoint-gate and recovery semantics, including independent receipt verification after source loss.
