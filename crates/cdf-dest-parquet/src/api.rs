@@ -5,7 +5,6 @@ use crate::{
         ParquetObjectEntry, ParquetObjectManifest, ParquetReplacePointerReceipt, ReplacePointer,
         canonical_json_bytes, sha256_hex,
     },
-    package::write_parquet_segment,
     receipts::{build_receipt, verify_receipt},
     runtime::parquet_runtime_capabilities,
     sheet::{parquet_protocol_capabilities, parquet_sheet},
@@ -15,12 +14,13 @@ use crate::{
     },
 };
 
+#[derive(Clone)]
 pub struct ParquetDestination {
     store: StoreClient,
     execution: cdf_runtime::ExecutionServices,
     sheet: DestinationSheet,
     object_key_encoder: ObjectKeyEncoder,
-    pub(crate) pending_corrections: Mutex<BTreeMap<PlanId, ParquetCorrectionContext>>,
+    pub(crate) pending_corrections: Arc<Mutex<BTreeMap<PlanId, ParquetCorrectionContext>>>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -87,7 +87,7 @@ impl ParquetDestination {
             execution,
             sheet,
             object_key_encoder,
-            pending_corrections: Mutex::new(BTreeMap::new()),
+            pending_corrections: Arc::new(Mutex::new(BTreeMap::new())),
         })
     }
 
@@ -99,6 +99,7 @@ impl ParquetDestination {
         Ok((sheet, plan))
     }
 
+    #[cfg(test)]
     pub(crate) fn plan_package_commit(
         &self,
         request: &ParquetCommitRequest,
@@ -147,7 +148,7 @@ impl ParquetDestination {
         self.object_key_encoder
     }
 
-    fn plan_package_shape(
+    pub(crate) fn plan_package_shape(
         &self,
         request: &ParquetCommitRequest,
         segment_ids: &[SegmentId],
@@ -215,7 +216,7 @@ impl ParquetDestination {
         })
     }
 
-    fn existing_verified_manifest(
+    pub(crate) fn existing_verified_manifest(
         &self,
         request: &ParquetCommitRequest,
         plan: &ParquetCommitPlan,
@@ -332,135 +333,16 @@ impl ParquetDestination {
             replace_pointer: None,
         }))
     }
-
-    pub(crate) fn begin_prepared_commit_session(
-        &self,
-        context: ParquetSessionContext,
-    ) -> Result<Box<dyn CommitSession + '_>> {
-        Ok(Box::new(ParquetCommitSession::new(self, context)?))
-    }
 }
 
 #[derive(Clone, Debug)]
-struct LoadedManifest {
-    manifest: ParquetObjectManifest,
-    manifest_etag: Option<String>,
-    replace_pointer: Option<ParquetReplacePointerReceipt>,
+pub(crate) struct LoadedManifest {
+    pub(crate) manifest: ParquetObjectManifest,
+    pub(crate) manifest_etag: Option<String>,
+    pub(crate) replace_pointer: Option<ParquetReplacePointerReceipt>,
 }
 
-#[derive(Clone, Debug)]
-pub(crate) struct ParquetSessionContext {
-    pub(crate) request: ParquetCommitRequest,
-    pub(crate) plan: ParquetCommitPlan,
-    pub(crate) manifest_segments: Vec<SegmentEntry>,
-}
-
-struct ParquetCommitSession<'a> {
-    destination: &'a ParquetDestination,
-    request: ParquetCommitRequest,
-    plan: ParquetCommitPlan,
-    migrations_applied: bool,
-    expected_segments: BTreeMap<SegmentId, ExpectedSegment>,
-    expected_order: Vec<SegmentId>,
-    accepted_segments: BTreeSet<SegmentId>,
-    object_entries: BTreeMap<SegmentId, ParquetObjectEntry>,
-    existing: Option<LoadedManifest>,
-    schema: Option<SchemaRef>,
-}
-
-#[derive(Clone, Debug)]
-struct ExpectedSegment {
-    state: StateSegment,
-    package_byte_count: u64,
-}
-
-impl<'a> ParquetCommitSession<'a> {
-    fn new(destination: &'a ParquetDestination, context: ParquetSessionContext) -> Result<Self> {
-        let (expected_segments, expected_order) =
-            expected_segments_for_context(destination.object_key_encoder(), &context)?;
-        let existing = destination.existing_verified_manifest(&context.request, &context.plan)?;
-        Ok(Self {
-            destination,
-            request: context.request,
-            plan: context.plan,
-            migrations_applied: false,
-            expected_segments,
-            expected_order,
-            accepted_segments: BTreeSet::new(),
-            object_entries: BTreeMap::new(),
-            existing,
-            schema: None,
-        })
-    }
-
-    fn finalize_receipt(self) -> Result<Receipt> {
-        if !self.migrations_applied {
-            return Err(CdfError::destination(
-                "migrations must be applied before finalizing",
-            ));
-        }
-        if self.accepted_segments.len() != self.expected_segments.len() {
-            return Err(CdfError::destination(format!(
-                "cannot finalize Parquet commit session before all segments are written: accepted {} of {}",
-                self.accepted_segments.len(),
-                self.expected_segments.len()
-            )));
-        }
-
-        if let Some(existing) = self.existing {
-            return duplicate_parquet_receipt(self.request, self.plan, existing);
-        }
-        let mut object_entries = Vec::with_capacity(self.expected_order.len());
-        for segment_id in &self.expected_order {
-            let entry = self.object_entries.get(segment_id).ok_or_else(|| {
-                CdfError::internal(format!(
-                    "accepted Parquet segment {} is missing its durable object entry",
-                    segment_id.as_str()
-                ))
-            })?;
-            object_entries.push(entry.clone());
-        }
-        finalize_parquet_objects(self.destination, self.request, self.plan, object_entries)
-    }
-}
-
-fn write_commit_segment_object(
-    destination: &ParquetDestination,
-    request: &ParquetCommitRequest,
-    segment: CommitSegment,
-) -> Result<ParquetObjectEntry> {
-    let execution = destination.execution.clone();
-    let memory = execution.memory();
-    let spill = execution.spill();
-    let staging_file = destination.store.staging_file()?;
-    let (state, package_byte_count, encoded) = execution
-        .run_blocking("parquet.encode", move || {
-            write_parquet_segment(segment, memory, spill, staging_file)
-        })?;
-    let key = segment_object_key(
-        destination.object_key_encoder(),
-        &request.commit.target,
-        &request.commit.idempotency_token,
-        &state.segment_id,
-    );
-    let parquet_sha256 = encoded.sha256.clone();
-    let put = destination
-        .store
-        .put_encoded_file(&destination.execution, &key, encoded)?;
-    Ok(ParquetObjectEntry {
-        segment_id: state.segment_id.as_str().to_owned(),
-        key,
-        row_count: state.row_count,
-        byte_count: state.byte_count,
-        package_byte_count,
-        parquet_byte_count: put.byte_count,
-        sha256: parquet_sha256,
-        etag: put.e_tag,
-        schema_hash: request.schema_hash.as_str().to_owned(),
-    })
-}
-
-fn duplicate_parquet_receipt(
+pub(crate) fn duplicate_parquet_receipt(
     request: ParquetCommitRequest,
     plan: ParquetCommitPlan,
     existing: LoadedManifest,
@@ -475,7 +357,7 @@ fn duplicate_parquet_receipt(
     Ok(receipt)
 }
 
-fn finalize_parquet_objects(
+pub(crate) fn finalize_parquet_objects(
     destination: &ParquetDestination,
     request: ParquetCommitRequest,
     plan: ParquetCommitPlan,
@@ -564,72 +446,6 @@ fn ensure_provenance_manifest(
     Ok(())
 }
 
-impl CommitSession for ParquetCommitSession<'_> {
-    fn apply_migrations(&mut self) -> Result<()> {
-        if !self.plan.kernel.migrations.is_empty() {
-            return Err(CdfError::destination(
-                "Parquet destination does not support migrations",
-            ));
-        }
-        self.migrations_applied = true;
-        Ok(())
-    }
-
-    fn write_segment(&mut self, segment: CommitSegment) -> Result<SegmentAck> {
-        if !self.migrations_applied {
-            return Err(CdfError::destination(
-                "migrations must be applied before writing",
-            ));
-        }
-        let segment_id = segment.state.segment_id.clone();
-        let expected = self.expected_segments.get(&segment_id).ok_or_else(|| {
-            CdfError::data(format!(
-                "Parquet commit segment {} is not in the planned package request",
-                segment_id.as_str()
-            ))
-        })?;
-        if self.accepted_segments.contains(&segment_id) {
-            return Err(CdfError::data(format!(
-                "Parquet commit session received duplicate segment {}",
-                segment_id.as_str()
-            )));
-        }
-        let schema = validate_commit_segment(&segment, expected, self.schema.as_ref())?;
-        if self.schema.is_none() {
-            self.schema = Some(schema);
-        }
-
-        let entry = if self.existing.is_some() {
-            None
-        } else {
-            Some(write_commit_segment_object(
-                self.destination,
-                &self.request,
-                segment,
-            )?)
-        };
-
-        let ack = SegmentAck {
-            segment_id: expected.state.segment_id.clone(),
-            row_count: expected.state.row_count,
-            byte_count: expected.state.byte_count,
-        };
-        self.accepted_segments.insert(segment_id);
-        if let Some(entry) = entry {
-            self.object_entries.insert(ack.segment_id.clone(), entry);
-        }
-        Ok(ack)
-    }
-
-    fn finalize(self: Box<Self>) -> Result<Receipt> {
-        self.finalize_receipt()
-    }
-
-    fn abort(self: Box<Self>) -> Result<()> {
-        Ok(())
-    }
-}
-
 impl DestinationProtocol for ParquetDestination {
     fn sheet(&self) -> &DestinationSheet {
         &self.sheet
@@ -699,102 +515,7 @@ fn plan_kernel_commit(
     })
 }
 
-fn expected_segments_for_context(
-    object_key_encoder: ObjectKeyEncoder,
-    context: &ParquetSessionContext,
-) -> Result<(BTreeMap<SegmentId, ExpectedSegment>, Vec<SegmentId>)> {
-    let mut manifest_by_id = BTreeMap::new();
-    let mut expected_order = Vec::new();
-    let mut rows_planned = 0_u64;
-    let mut bytes_planned = 0_u64;
-    for segment in &context.manifest_segments {
-        if manifest_by_id
-            .insert(segment.segment_id.clone(), segment)
-            .is_some()
-        {
-            return Err(CdfError::data(format!(
-                "package manifest contains duplicate segment {}",
-                segment.segment_id.as_str()
-            )));
-        }
-        rows_planned += segment.row_count;
-        bytes_planned += segment.byte_count;
-        expected_order.push(segment.segment_id.clone());
-    }
-
-    if rows_planned != context.plan.rows_planned || bytes_planned != context.plan.bytes_planned {
-        return Err(CdfError::destination(
-            "Parquet commit plan does not match package manifest totals",
-        ));
-    }
-
-    let expected_object_keys = expected_order
-        .iter()
-        .map(|segment_id| {
-            segment_object_key(
-                object_key_encoder,
-                &context.request.commit.target,
-                &context.request.commit.idempotency_token,
-                segment_id,
-            )
-        })
-        .collect::<Vec<_>>();
-    if expected_object_keys != context.plan.object_keys {
-        return Err(CdfError::destination(
-            "Parquet commit plan object keys do not match package manifest",
-        ));
-    }
-
-    let mut request_by_id = BTreeMap::new();
-    for state in &context.request.commit.segments {
-        if request_by_id
-            .insert(state.segment_id.clone(), state)
-            .is_some()
-        {
-            return Err(CdfError::data(format!(
-                "destination commit request contains duplicate segment {}",
-                state.segment_id.as_str()
-            )));
-        }
-    }
-
-    let mut expected_segments = BTreeMap::new();
-    for (segment_id, manifest_segment) in &manifest_by_id {
-        let state = request_by_id.get(segment_id).ok_or_else(|| {
-            CdfError::data(format!(
-                "package manifest segment {} is missing from destination commit request",
-                segment_id.as_str()
-            ))
-        })?;
-        if state.row_count != manifest_segment.row_count {
-            return Err(CdfError::data(format!(
-                "destination commit request segment {} has {} rows but package manifest has {} rows",
-                segment_id.as_str(),
-                state.row_count,
-                manifest_segment.row_count
-            )));
-        }
-        expected_segments.insert(
-            segment_id.clone(),
-            ExpectedSegment {
-                state: (*state).clone(),
-                package_byte_count: manifest_segment.byte_count,
-            },
-        );
-    }
-
-    for segment_id in request_by_id.keys() {
-        if !manifest_by_id.contains_key(segment_id) {
-            return Err(CdfError::data(format!(
-                "destination commit request segment {} is not present in the package manifest",
-                segment_id.as_str()
-            )));
-        }
-    }
-
-    Ok((expected_segments, expected_order))
-}
-
+#[cfg(test)]
 fn validate_manifest_requested_segments(
     requested: &[StateSegment],
     manifest: &[SegmentEntry],
@@ -838,61 +559,4 @@ fn validate_manifest_requested_segments(
         ));
     }
     Ok(())
-}
-
-fn validate_commit_segment(
-    segment: &CommitSegment,
-    expected: &ExpectedSegment,
-    session_schema: Option<&SchemaRef>,
-) -> Result<SchemaRef> {
-    if segment.state != expected.state {
-        return Err(CdfError::data(format!(
-            "Parquet commit segment {} state does not match destination commit request",
-            segment.state.segment_id.as_str()
-        )));
-    }
-    if segment.package_byte_count != expected.package_byte_count {
-        return Err(CdfError::data(format!(
-            "Parquet commit segment {} package byte count {} differs from manifest {}",
-            segment.state.segment_id.as_str(),
-            segment.package_byte_count,
-            expected.package_byte_count
-        )));
-    }
-    if segment.batches.is_empty() {
-        return Err(CdfError::data(format!(
-            "Parquet commit segment {} contains no record batches",
-            segment.state.segment_id.as_str()
-        )));
-    }
-
-    let schema = segment.batches[0].schema();
-    if let Some(session_schema) = session_schema
-        && schema.as_ref() != session_schema.as_ref()
-    {
-        return Err(CdfError::data(
-            "Parquet destination requires all package segments to share one schema",
-        ));
-    }
-
-    let mut row_count = 0_u64;
-    for batch in &segment.batches {
-        if batch.schema().as_ref() != schema.as_ref() {
-            return Err(CdfError::data(format!(
-                "Parquet commit segment {} contains mixed schemas",
-                segment.state.segment_id.as_str()
-            )));
-        }
-        row_count += batch.num_rows() as u64;
-    }
-    if row_count != expected.state.row_count {
-        return Err(CdfError::data(format!(
-            "Parquet commit segment {} has {} payload rows but request expects {}",
-            segment.state.segment_id.as_str(),
-            row_count,
-            expected.state.row_count
-        )));
-    }
-
-    Ok(schema)
 }

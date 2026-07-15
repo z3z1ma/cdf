@@ -5,17 +5,15 @@ use cdf_kernel::{
     CapabilitySupport, CdfError, DestinationId, DestinationProtocol, DestinationSheet,
     ResourceStream, Result, WriteDisposition,
 };
-use cdf_package_contract::PackageReplayInputs;
 use cdf_runtime::{
     DestinationCommitPlanningInputs, DestinationCommitPlanningOutcome, DestinationDescription,
     DestinationDriver, DestinationHealthProbe, DestinationHealthResult, DestinationHealthStatus,
-    DestinationIngressMode, DestinationInspection, DestinationPlanningContext,
-    DestinationReceiptReportingPolicy, DestinationResolutionContext, DestinationRuntime,
-    DestinationRuntimeCapabilities, DestinationWriterModel, PreparedDestinationCommit,
+    DestinationIngressMode, DestinationInspection, DestinationResolutionContext,
+    DestinationRuntime, DestinationRuntimeCapabilities, DestinationWriterModel,
     absolute_under_root, artifact_hash, local_uri_path,
 };
 
-use crate::{ParquetCommitRequest, ParquetDestination};
+use crate::ParquetDestination;
 
 pub struct ParquetRuntimeDriver;
 
@@ -84,7 +82,7 @@ impl DestinationRuntime for ParquetDestination {
     }
 
     fn ingress(&mut self) -> cdf_runtime::DestinationIngress<'_> {
-        cdf_runtime::DestinationIngress::FinalizedPackage(self)
+        cdf_runtime::DestinationIngress::StagedSegments(self)
     }
 
     fn describe(&self) -> DestinationDescription {
@@ -108,23 +106,24 @@ impl DestinationRuntime for ParquetDestination {
     }
 }
 
-impl cdf_runtime::FinalizedPackageIngress for ParquetDestination {
-    fn prepare_package_commit(
+impl cdf_runtime::StagedSegmentIngress for ParquetDestination {
+    fn begin_staged_ingress(
         &mut self,
-        inputs: &PackageReplayInputs,
-        context: &DestinationPlanningContext<'_>,
-    ) -> Result<PreparedDestinationCommit> {
+        request: cdf_runtime::StagedIngressRequest,
+    ) -> Result<Box<dyn cdf_runtime::StagedIngressSession>> {
         self.runtime_capabilities()
-            .validate_prepared_bulk_path(context.bulk_path)?;
-        prepare_parquet_commit(self, inputs, context)
+            .validate_prepared_bulk_path(request.bulk_path())?;
+        Ok(Box::new(crate::staging::ParquetStagedIngressSession::new(
+            self.clone(),
+            request,
+        )?))
     }
 
-    fn begin_prepared_commit(
+    fn inspect_staged_ingress(
         &mut self,
-        prepared: &mut PreparedDestinationCommit,
-    ) -> Result<Box<dyn cdf_kernel::CommitSession + '_>> {
-        let context = take_parquet_session_context(prepared)?;
-        self.begin_prepared_commit_session(context)
+        _attempt_id: &cdf_runtime::LoadAttemptId,
+    ) -> Result<Option<cdf_runtime::StagingSnapshot>> {
+        Ok(None)
     }
 }
 
@@ -175,7 +174,7 @@ impl DestinationRuntime for FilesystemParquetRuntime {
     }
 
     fn ingress(&mut self) -> cdf_runtime::DestinationIngress<'_> {
-        cdf_runtime::DestinationIngress::FinalizedPackage(self)
+        cdf_runtime::DestinationIngress::StagedSegments(self)
     }
 
     fn describe(&self) -> DestinationDescription {
@@ -223,47 +222,25 @@ impl DestinationRuntime for FilesystemParquetRuntime {
     }
 }
 
-impl cdf_runtime::FinalizedPackageIngress for FilesystemParquetRuntime {
-    fn prepare_package_commit(
+impl cdf_runtime::StagedSegmentIngress for FilesystemParquetRuntime {
+    fn begin_staged_ingress(
         &mut self,
-        inputs: &PackageReplayInputs,
-        context: &DestinationPlanningContext<'_>,
-    ) -> Result<PreparedDestinationCommit> {
+        request: cdf_runtime::StagedIngressRequest,
+    ) -> Result<Box<dyn cdf_runtime::StagedIngressSession>> {
         self.runtime_capabilities()
-            .validate_prepared_bulk_path(context.bulk_path)?;
-        let destination = self.destination()?;
-        prepare_parquet_commit(destination, inputs, context)
+            .validate_prepared_bulk_path(request.bulk_path())?;
+        Ok(Box::new(crate::staging::ParquetStagedIngressSession::new(
+            self.destination()?.clone(),
+            request,
+        )?))
     }
 
-    fn begin_prepared_commit(
+    fn inspect_staged_ingress(
         &mut self,
-        prepared: &mut PreparedDestinationCommit,
-    ) -> Result<Box<dyn cdf_kernel::CommitSession + '_>> {
-        let context = take_parquet_session_context(prepared)?;
-        self.destination()?.begin_prepared_commit_session(context)
+        _attempt_id: &cdf_runtime::LoadAttemptId,
+    ) -> Result<Option<cdf_runtime::StagingSnapshot>> {
+        Ok(None)
     }
-}
-
-pub(crate) fn take_parquet_session_context(
-    prepared: &mut PreparedDestinationCommit,
-) -> Result<crate::api::ParquetSessionContext> {
-    let context = prepared.take_pending_context::<crate::api::ParquetSessionContext>("Parquet")?;
-    if &context.request.commit != prepared.commit() {
-        return Err(CdfError::contract(
-            "Parquet pending context commit does not match the prepared destination commit",
-        ));
-    }
-    if &context.request.schema_hash != prepared.schema_hash() {
-        return Err(CdfError::contract(
-            "Parquet pending context schema does not match the prepared destination schema",
-        ));
-    }
-    if &context.plan.kernel != prepared.plan() {
-        return Err(CdfError::contract(
-            "Parquet pending context plan does not match the prepared destination plan",
-        ));
-    }
-    Ok(context)
 }
 
 fn filesystem_description(root: &Path) -> DestinationDescription {
@@ -275,55 +252,45 @@ fn filesystem_description(root: &Path) -> DestinationDescription {
     .with_product_location_field("root")
 }
 
-fn prepare_parquet_commit(
-    destination: &ParquetDestination,
-    inputs: &PackageReplayInputs,
-    context: &DestinationPlanningContext<'_>,
-) -> Result<PreparedDestinationCommit> {
-    let request = ParquetCommitRequest {
-        commit: inputs.destination_commit.clone(),
-        schema_hash: inputs.schema_hash.clone(),
-    };
-    let manifest_segments = context.verified_package.identity_segments().to_vec();
-    let plan = destination.plan_package_commit(&request, &manifest_segments)?;
-    let duplicate = plan.duplicate;
-    let kernel = plan.kernel.clone();
-    Ok(PreparedDestinationCommit::from_verified_inputs(
-        inputs,
-        kernel,
-        context.bulk_path.clone(),
-        DestinationReceiptReportingPolicy::DestinationCommit { duplicate },
-    )?
-    .with_pending_context(crate::api::ParquetSessionContext {
-        request,
-        plan,
-        manifest_segments,
-    }))
-}
-
 pub(crate) fn parquet_runtime_capabilities() -> DestinationRuntimeCapabilities {
     DestinationRuntimeCapabilities {
-        blocking_lanes: vec![cdf_runtime::BlockingLaneSpec {
-            lane_id: "parquet.encode".to_owned(),
-            maximum_concurrency: 2,
-            cpu_slot_cost: 1,
-            native_internal_parallelism: 1,
-            affinity: cdf_runtime::LaneAffinity::Shared,
-            interruption: cdf_runtime::InterruptionSafety::CooperativeOnly,
-        }],
-        staged_ingress_lane: None,
-        final_binding_lane: None,
-        ingress_mode: DestinationIngressMode::FinalizedPackageOnly,
-        staged_ingress: None,
-        writer_model: DestinationWriterModel::SingleWriter,
+        blocking_lanes: vec![
+            cdf_runtime::BlockingLaneSpec {
+                lane_id: "parquet.ingress".to_owned(),
+                maximum_concurrency: 1,
+                cpu_slot_cost: 1,
+                native_internal_parallelism: 1,
+                affinity: cdf_runtime::LaneAffinity::Shared,
+                interruption: cdf_runtime::InterruptionSafety::CooperativeOnly,
+            },
+            cdf_runtime::BlockingLaneSpec {
+                lane_id: "parquet.encode".to_owned(),
+                maximum_concurrency: 2,
+                cpu_slot_cost: 1,
+                native_internal_parallelism: 1,
+                affinity: cdf_runtime::LaneAffinity::Shared,
+                interruption: cdf_runtime::InterruptionSafety::CooperativeOnly,
+            },
+        ],
+        staged_ingress_lane: Some("parquet.ingress".to_owned()),
+        final_binding_lane: Some("parquet.ingress".to_owned()),
+        ingress_mode: DestinationIngressMode::StagedDurableSegments,
+        staged_ingress: Some(cdf_runtime::StagedIngressCapabilities {
+            recovery: cdf_runtime::StagingRecoveryMode::RollbackRedrive,
+            visibility: cdf_runtime::StagingVisibility::IsolatedUntilFinalBinding,
+            abort_idempotent: true,
+            lifecycle_cleanup: true,
+            final_binding_requires_exclusive_writer: true,
+        }),
+        writer_model: DestinationWriterModel::ConcurrentSegments,
         commit_payload_mode: cdf_runtime::DestinationCommitPayloadMode::SegmentStreaming,
-        max_in_flight_segments: Some(1),
-        max_in_flight_bytes: Some(64 * 1024 * 1024),
+        max_in_flight_segments: Some(2),
+        max_in_flight_bytes: Some(128 * 1024 * 1024),
         bulk_paths: vec![cdf_runtime::BulkPathDescriptor {
             path_id: "arrow_ipc_to_parquet".to_owned(),
             version: 1,
-            ingress_mode: DestinationIngressMode::FinalizedPackageOnly,
-            writer_model: DestinationWriterModel::SingleWriter,
+            ingress_mode: DestinationIngressMode::StagedDurableSegments,
+            writer_model: DestinationWriterModel::ConcurrentSegments,
             ordering: cdf_runtime::BulkOrdering::ManifestOrder,
             rows: cdf_runtime::BulkSizeRange {
                 minimum: 8 * 1024,
@@ -335,8 +302,8 @@ pub(crate) fn parquet_runtime_capabilities() -> DestinationRuntimeCapabilities {
                 preferred: 16 * 1024 * 1024,
                 maximum: 64 * 1024 * 1024,
             },
-            max_useful_writers: 1,
-            blocking_lane: None,
+            max_useful_writers: 2,
+            blocking_lane: Some("parquet.encode".to_owned()),
             native_internal_parallelism: 1,
             external_staging: true,
             fallback: cdf_runtime::BulkFallbackMode::Forbidden,

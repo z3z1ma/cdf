@@ -10,10 +10,9 @@ use std::{
 
 #[cfg(test)]
 use arrow_array::RecordBatch;
-use arrow_schema::SchemaRef;
 use cdf_kernel::{
-    CapabilitySupport, CdfError, CommitCounts, CommitPlan, CommitSegment, CommitSession,
-    ConcurrencyLimit, CorrectionCommitSession, CorrectionStrategy, CorrectionStrategyCapability,
+    CapabilitySupport, CdfError, CommitCounts, CommitPlan, ConcurrencyLimit,
+    CorrectionCommitSession, CorrectionStrategy, CorrectionStrategyCapability,
     DESTINATION_CORRECTION_RECEIPT_EVIDENCE_KEY,
     DESTINATION_CORRECTION_SIDECAR_RECEIPT_EVIDENCE_KEY, DeliveryGuarantee,
     DestinationCommitRequest, DestinationCorrectionCommitPlan, DestinationCorrectionCommitRequest,
@@ -21,12 +20,15 @@ use cdf_kernel::{
     DestinationCorrectionSidecarObjectEvidence, DestinationCorrectionSidecarReceiptEvidence,
     DestinationId, DestinationProtocol, DestinationSheet, IdempotencySupport, IdentifierRules,
     ObjectKeyPolicy, ObjectKeyRules, PackageHash, PlanId, PromotionId, Receipt, ReceiptId, Result,
-    RowProvenanceAddress, RowProvenanceCapabilities, SchemaHash, SegmentAck, SegmentId,
-    StateSegment, TargetName, TransactionMetadata, TransactionSupport, TypeMapping,
-    TypeMappingFidelity, VerifyClause, WriteDisposition,
+    RowProvenanceAddress, RowProvenanceCapabilities, SchemaHash, SegmentAck, SegmentId, TargetName,
+    TransactionMetadata, TransactionSupport, TypeMapping, TypeMappingFidelity, VerifyClause,
+    WriteDisposition,
 };
 #[cfg(test)]
+use cdf_kernel::{CommitSegment, StateSegment};
+#[cfg(test)]
 use cdf_package::PackageReader;
+#[cfg(test)]
 use cdf_package_contract::SegmentEntry;
 use object_store::{
     ObjectStore, ObjectStoreExt, PutMode, PutOptions, PutPayload, PutResult,
@@ -48,6 +50,7 @@ mod package;
 mod receipts;
 mod runtime;
 mod sheet;
+mod staging;
 mod store;
 #[cfg(test)]
 mod tests;

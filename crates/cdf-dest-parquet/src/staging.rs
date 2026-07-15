@@ -1,0 +1,409 @@
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
+
+use cdf_kernel::{CdfError, DestinationProtocol, Result, SchemaHash, SegmentId, StateSegment};
+use cdf_runtime::{
+    DestinationCommitOutcome, DestinationReceiptReportingPolicy, StagedIngressRequest,
+    StagedIngressSession, StagedSegmentIdentity, StagedSegmentRequest, StagedSegmentStream,
+    StagingRecoveryMode, StagingSnapshot, VerifiedFinalBinding,
+};
+
+use crate::{
+    ParquetCommitRequest, ParquetDestination,
+    api::{duplicate_parquet_receipt, finalize_parquet_objects},
+    manifest::ParquetObjectEntry,
+    package::{EncodedParquetObject, write_parquet_staged_segment},
+    store::{StoreClient, StoredObject, staged_segment_object_key},
+};
+
+const ENCODE_LANE: &str = "parquet.encode";
+
+pub(crate) struct ParquetStagedIngressSession {
+    destination: ParquetDestination,
+    request: StagedIngressRequest,
+    accepted: BTreeMap<u32, StagedSegmentIdentity>,
+    objects: BTreeMap<u32, StagedParquetObject>,
+}
+
+enum StagedParquetObject {
+    Local {
+        identity: StagedSegmentIdentity,
+        encoded: EncodedParquetObject,
+    },
+    Remote(RemoteStagedParquetObject),
+}
+
+struct RemoteStagedParquetObject {
+    identity: StagedSegmentIdentity,
+    store: StoreClient,
+    execution: cdf_runtime::ExecutionServices,
+    staging_key: String,
+    stored: StoredObject,
+    sha256: String,
+    cleanup: bool,
+}
+
+impl Drop for RemoteStagedParquetObject {
+    fn drop(&mut self) {
+        if self.cleanup {
+            let _ = self.store.delete(&self.execution, &self.staging_key);
+        }
+    }
+}
+
+impl ParquetStagedIngressSession {
+    pub(crate) fn new(
+        destination: ParquetDestination,
+        request: StagedIngressRequest,
+    ) -> Result<Self> {
+        if request.binding().destination_id != destination.sheet().destination {
+            return Err(CdfError::contract(
+                "Parquet staged ingress request names a different destination",
+            ));
+        }
+        if !request.binding().merge_keys.is_empty() {
+            return Err(CdfError::contract(
+                "Parquet staged ingress does not support merge keys",
+            ));
+        }
+        cdf_package::validate_parquet_schema(request.output_schema())?;
+        Ok(Self {
+            destination,
+            request,
+            accepted: BTreeMap::new(),
+            objects: BTreeMap::new(),
+        })
+    }
+
+    fn validate_identity(&self, identity: &StagedSegmentIdentity) -> Result<()> {
+        if identity.schema_hash != self.request.binding().schema_hash {
+            return Err(CdfError::data(
+                "Parquet staged segment schema hash differs from its attempt",
+            ));
+        }
+        if identity.row_count == 0 {
+            return Err(CdfError::data(
+                "Parquet staged data segment must contain at least one row",
+            ));
+        }
+        if self.accepted.contains_key(&identity.ordinal)
+            || self
+                .accepted
+                .values()
+                .any(|accepted| accepted.segment_id == identity.segment_id)
+        {
+            return Err(CdfError::data(
+                "Parquet staged segments must have unique ids and ordinals",
+            ));
+        }
+        Ok(())
+    }
+
+    fn spawn_encode(
+        &self,
+        segment: StagedSegmentRequest,
+    ) -> Result<cdf_runtime::ScopedBlockingTask<StagedParquetObject>> {
+        let identity = segment.identity.clone();
+        self.validate_identity(&identity)?;
+        let destination = self.destination.clone();
+        let output_schema = self.request.output_schema().clone();
+        let attempt_id = self.request.attempt_id().clone();
+        let target = self.request.binding().target.clone();
+        let run_id = format!("parquet-stage-{}-{}", attempt_id.as_str(), identity.ordinal);
+        self.destination.execution().spawn_blocking_value(
+            &run_id,
+            ENCODE_LANE,
+            move |cancellation| {
+                cancellation.check()?;
+                let file = destination.store().staging_file()?;
+                let (identity, encoded) = write_parquet_staged_segment(
+                    segment,
+                    &output_schema,
+                    destination.execution().memory(),
+                    destination.execution().spill(),
+                    file,
+                )?;
+                cancellation.check()?;
+                if destination.store().is_local() {
+                    return Ok(StagedParquetObject::Local { identity, encoded });
+                }
+                let staging_key = staged_segment_object_key(
+                    destination.object_key_encoder(),
+                    &target,
+                    &attempt_id,
+                    &identity.segment_id,
+                );
+                let sha256 = encoded.sha256.clone();
+                let stored = destination.store().put_encoded_file(
+                    destination.execution(),
+                    &staging_key,
+                    encoded,
+                )?;
+                Ok(StagedParquetObject::Remote(RemoteStagedParquetObject {
+                    identity,
+                    store: destination.store().clone(),
+                    execution: destination.execution().clone(),
+                    staging_key,
+                    stored,
+                    sha256,
+                    cleanup: true,
+                }))
+            },
+        )
+    }
+
+    fn complete_oldest(
+        &mut self,
+        pending: &mut VecDeque<cdf_runtime::ScopedBlockingTask<StagedParquetObject>>,
+        stream: &mut dyn StagedSegmentStream,
+    ) -> Result<()> {
+        let task = pending
+            .pop_front()
+            .ok_or_else(|| CdfError::internal("Parquet staged encode queue is empty"))?;
+        let object = self.destination.execution().run_io(task)?;
+        let identity = object.identity().clone();
+        stream.acknowledge(cdf_runtime::StagedSegmentAck {
+            attempt_id: self.request.attempt_id().clone(),
+            identity: identity.clone(),
+            external_durable: object.external_durable(),
+        })?;
+        if self
+            .accepted
+            .insert(identity.ordinal, identity.clone())
+            .is_some()
+            || self.objects.insert(identity.ordinal, object).is_some()
+        {
+            return Err(CdfError::destination(
+                "Parquet staged encode completed a duplicate ordinal",
+            ));
+        }
+        Ok(())
+    }
+
+    fn accepted_in_order(&self) -> Vec<StagedSegmentIdentity> {
+        self.accepted.values().cloned().collect()
+    }
+
+    fn validate_final_binding(&self, binding: &VerifiedFinalBinding) -> Result<()> {
+        if binding.attempt_id() != self.request.attempt_id()
+            || binding.execution_plan_id() != &self.request.binding().execution_plan_id
+            || binding.commit().target != self.request.binding().target
+            || binding.commit().disposition != self.request.binding().disposition
+            || binding.schema_hash() != &self.request.binding().schema_hash
+            || binding.output_arrow_schema_hash()
+                != &self.request.binding().output_arrow_schema_hash
+            || binding.merge_keys() != self.request.binding().merge_keys
+        {
+            return Err(CdfError::destination(
+                "Parquet staged ingress final binding differs from its attempt authority",
+            ));
+        }
+        binding.validate_staged_identities(&self.accepted_in_order())
+    }
+
+    fn cleanup(&mut self) -> Result<()> {
+        let mut first_error = None;
+        for object in self.objects.values_mut() {
+            if let Err(error) = object.cleanup() {
+                first_error.get_or_insert(error);
+            }
+        }
+        self.objects.clear();
+        match first_error {
+            Some(error) => Err(error),
+            None => Ok(()),
+        }
+    }
+}
+
+impl StagedParquetObject {
+    fn identity(&self) -> &StagedSegmentIdentity {
+        match self {
+            Self::Local { identity, .. } => identity,
+            Self::Remote(remote) => &remote.identity,
+        }
+    }
+
+    fn external_durable(&self) -> bool {
+        matches!(self, Self::Remote(_))
+    }
+
+    fn cleanup(&mut self) -> Result<()> {
+        if let Self::Remote(remote) = self
+            && remote.cleanup
+        {
+            remote
+                .store
+                .delete(&remote.execution, &remote.staging_key)?;
+            remote.cleanup = false;
+        }
+        Ok(())
+    }
+
+    fn finalize(
+        self,
+        destination: &ParquetDestination,
+        state: &StateSegment,
+        final_key: String,
+        schema_hash: &SchemaHash,
+    ) -> Result<ParquetObjectEntry> {
+        let identity = self.identity().clone();
+        if identity.segment_id != state.segment_id || identity.row_count != state.row_count {
+            return Err(CdfError::data(format!(
+                "Parquet staged segment {} differs from final state authority",
+                identity.segment_id
+            )));
+        }
+        let (stored, sha256) = match self {
+            Self::Local { encoded, .. } => {
+                let sha256 = encoded.sha256.clone();
+                let stored = destination.store().put_encoded_file(
+                    destination.execution(),
+                    &final_key,
+                    encoded,
+                )?;
+                (stored, sha256)
+            }
+            Self::Remote(mut remote) => {
+                let stored = remote.store.copy_create_or_verify(
+                    &remote.execution,
+                    &remote.staging_key,
+                    &final_key,
+                    &remote.sha256,
+                    remote.stored.byte_count,
+                )?;
+                remote
+                    .store
+                    .delete(&remote.execution, &remote.staging_key)?;
+                remote.cleanup = false;
+                (stored, remote.sha256.clone())
+            }
+        };
+        Ok(ParquetObjectEntry {
+            segment_id: identity.segment_id.as_str().to_owned(),
+            key: final_key,
+            row_count: identity.row_count,
+            byte_count: state.byte_count,
+            package_byte_count: identity.byte_count,
+            parquet_byte_count: stored.byte_count,
+            sha256,
+            etag: stored.e_tag,
+            schema_hash: schema_hash.as_str().to_owned(),
+        })
+    }
+}
+
+impl StagedIngressSession for ParquetStagedIngressSession {
+    fn stage_stream(&mut self, stream: &mut dyn StagedSegmentStream) -> Result<()> {
+        let maximum = usize::from(self.request.scheduling().max_in_flight_segments);
+        let mut pending = VecDeque::with_capacity(maximum);
+        while let Some(segment) = stream.next_segment()? {
+            pending.push_back(self.spawn_encode(segment)?);
+            if pending.len() == maximum {
+                self.complete_oldest(&mut pending, stream)?;
+            }
+        }
+        while !pending.is_empty() {
+            self.complete_oldest(&mut pending, stream)?;
+        }
+        Ok(())
+    }
+
+    fn snapshot(&self) -> Result<StagingSnapshot> {
+        Ok(StagingSnapshot {
+            attempt_id: self.request.attempt_id().clone(),
+            binding: self.request.binding().clone(),
+            recovery: StagingRecoveryMode::RollbackRedrive,
+            accepted_segments: self.accepted_in_order(),
+        })
+    }
+
+    fn bind_final(
+        mut self: Box<Self>,
+        binding: VerifiedFinalBinding,
+    ) -> Result<DestinationCommitOutcome> {
+        self.validate_final_binding(&binding)?;
+        let request = ParquetCommitRequest {
+            commit: binding.commit().clone(),
+            schema_hash: binding.schema_hash().clone(),
+        };
+        let segment_ids = binding
+            .ordered_segments()
+            .iter()
+            .map(|identity| identity.segment_id.clone())
+            .collect::<Vec<SegmentId>>();
+        let rows = binding
+            .ordered_segments()
+            .iter()
+            .map(|identity| identity.row_count)
+            .sum();
+        let package_bytes = binding
+            .ordered_segments()
+            .iter()
+            .map(|identity| identity.byte_count)
+            .sum();
+        let plan =
+            self.destination
+                .plan_package_shape(&request, &segment_ids, rows, package_bytes)?;
+        if &plan.kernel != binding.plan() {
+            return Err(CdfError::destination(
+                "Parquet staged final binding commit plan differs from destination planning",
+            ));
+        }
+        if let Some(existing) = self
+            .destination
+            .existing_verified_manifest(&request, &plan)?
+        {
+            self.cleanup()?;
+            let receipt = duplicate_parquet_receipt(request, plan, existing)?;
+            return Ok(DestinationCommitOutcome::new(
+                receipt,
+                DestinationReceiptReportingPolicy::DestinationCommit { duplicate: true },
+            ));
+        }
+
+        let mut objects = Vec::with_capacity(segment_ids.len());
+        let staged = std::mem::take(&mut self.objects);
+        let states = binding
+            .commit()
+            .segments
+            .iter()
+            .map(|state| (state.segment_id.clone(), state))
+            .collect::<BTreeMap<_, _>>();
+        let mut seen = BTreeSet::new();
+        for (ordinal, object) in staged {
+            let identity = self.accepted.get(&ordinal).ok_or_else(|| {
+                CdfError::internal("Parquet staged object has no accepted identity")
+            })?;
+            if !seen.insert(identity.segment_id.clone()) {
+                return Err(CdfError::data(
+                    "Parquet staged final binding repeats a segment id",
+                ));
+            }
+            let state = states.get(&identity.segment_id).ok_or_else(|| {
+                CdfError::data(format!(
+                    "Parquet staged segment {} is absent from final state authority",
+                    identity.segment_id
+                ))
+            })?;
+            let key =
+                plan.object_keys
+                    .get(usize::try_from(ordinal).map_err(|_| {
+                        CdfError::data("Parquet staged ordinal exceeds platform usize")
+                    })?)
+                    .ok_or_else(|| {
+                        CdfError::data("Parquet staged ordinal is outside the final object plan")
+                    })?
+                    .clone();
+            objects.push(object.finalize(&self.destination, state, key, binding.schema_hash())?);
+        }
+        let receipt = finalize_parquet_objects(&self.destination, request, plan, objects)?;
+        Ok(DestinationCommitOutcome::new(
+            receipt,
+            DestinationReceiptReportingPolicy::DestinationCommit { duplicate: false },
+        ))
+    }
+
+    fn abort(mut self: Box<Self>) -> Result<()> {
+        self.cleanup()
+    }
+}

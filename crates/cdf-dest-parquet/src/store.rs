@@ -17,6 +17,7 @@ pub(crate) enum CreateObjectOutcome {
     AlreadyExists,
 }
 
+#[derive(Clone)]
 pub(crate) struct StoreClient {
     store: Arc<dyn ObjectStore>,
     root_prefix: String,
@@ -94,6 +95,10 @@ impl StoreClient {
                 CdfError::destination(format!("create Parquet staging file: {error}"))
             }),
         }
+    }
+
+    pub(crate) fn is_local(&self) -> bool {
+        self.local_root.is_some()
     }
 
     pub(crate) fn put(
@@ -362,7 +367,6 @@ impl StoreClient {
             .map(|meta| meta.e_tag)
     }
 
-    #[cfg(test)]
     pub(crate) fn delete(
         &self,
         execution: &cdf_runtime::ExecutionServices,
@@ -372,10 +376,45 @@ impl StoreClient {
         let store = Arc::clone(&self.store);
         let operation = format!("delete {key}");
         execution.run_io(async move {
-            store
-                .delete(&path)
-                .await
-                .map_err(|error| store_error(operation, error))
+            match store.delete(&path).await {
+                Ok(()) | Err(object_store::Error::NotFound { .. }) => Ok(()),
+                Err(error) => Err(store_error(operation, error)),
+            }
+        })
+    }
+
+    pub(crate) fn copy_create_or_verify(
+        &self,
+        execution: &cdf_runtime::ExecutionServices,
+        source_key: &str,
+        destination_key: &str,
+        expected_sha256: &str,
+        expected_bytes: u64,
+    ) -> Result<StoredObject> {
+        let source = self.path(source_key)?;
+        let destination = self.path(destination_key)?;
+        let store = Arc::clone(&self.store);
+        let operation = format!("copy {source_key} to {destination_key}");
+        let outcome = execution
+            .run_io(async move { Ok(store.copy_if_not_exists(&source, &destination).await) })?;
+        match outcome {
+            Ok(()) => {}
+            Err(object_store::Error::AlreadyExists { .. })
+            | Err(object_store::Error::Precondition { .. }) => {
+                let bytes = self.get_required(execution, destination_key)?;
+                if u64::try_from(bytes.len()).ok() != Some(expected_bytes)
+                    || hex::encode(Sha256::digest(&bytes)) != expected_sha256
+                {
+                    return Err(CdfError::destination(format!(
+                        "immutable Parquet object {destination_key} already exists with different bytes"
+                    )));
+                }
+            }
+            Err(error) => return Err(store_error(operation, error)),
+        }
+        Ok(StoredObject {
+            byte_count: expected_bytes,
+            e_tag: self.etag(execution, destination_key)?,
         })
     }
 
@@ -413,6 +452,20 @@ pub(crate) fn segment_object_key(
         "targets/{}/packages/{}/data/{}.parquet",
         encoder.encode(target.as_str()),
         encoder.encode(token.as_str()),
+        encoder.encode(segment_id.as_str())
+    )
+}
+
+pub(crate) fn staged_segment_object_key(
+    encoder: ObjectKeyEncoder,
+    target: &TargetName,
+    attempt_id: &cdf_runtime::LoadAttemptId,
+    segment_id: &cdf_kernel::SegmentId,
+) -> String {
+    format!(
+        "targets/{}/staging/{}/{}.parquet",
+        encoder.encode(target.as_str()),
+        encoder.encode(attempt_id.as_str()),
         encoder.encode(segment_id.as_str())
     )
 }

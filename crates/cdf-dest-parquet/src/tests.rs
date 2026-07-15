@@ -1,6 +1,6 @@
 use super::*;
 
-use std::io::Write;
+use std::{collections::VecDeque, io::Write};
 
 use crate::{
     corrections::{build_correction_context, build_correction_receipt},
@@ -13,22 +13,24 @@ use crate::{
 };
 use ::parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use arrow_array::{ArrayRef, Float64Array, Int64Array, StringArray};
-use arrow_schema::{DataType, Field, Schema};
+use arrow_schema::{DataType, Field, Schema, SchemaRef};
 use cdf_conformance::destination::{
     DestinationConformanceCase, DestinationCorrectionConformanceEvidence,
     assert_destination_conformance, assert_destination_correction_conformance,
     representative_commit_request,
 };
 use cdf_kernel::{
-    CanonicalArrowField, CorrectionStrategy, CursorPosition, CursorValue,
+    CanonicalArrowField, CorrectionStrategy, CursorPosition, CursorValue, DeliveryGuarantee,
     DestinationCorrectionCommitRequest, DestinationCorrectionOperation, DestinationCorrectionPlan,
     DestinationCorrectionReceiptEvidence, DestinationCorrectionRequest,
     DestinationCorrectionSidecarReceiptEvidence, IdempotencyToken, PackageHash, PartitionId,
-    PromotionId, ResidualCorrectionOperation, RowProvenanceAddress, ScopeKey, SegmentAck,
-    SegmentId, SourcePosition,
+    PlanId, PromotionId, ResidualCorrectionOperation, ResourceId, RowProvenanceAddress, ScanPlan,
+    ScanRequest, ScopeKey, SegmentAck, SegmentId, SourcePosition,
 };
 use cdf_package::PackageBuilder;
-use cdf_package_contract::{PackageReplayInputs, PackageStatus, SegmentEntry};
+use cdf_package_contract::{
+    PackageReplayInputs, PackageStatus, QuarantineRecord, SegmentEntry, VerifiedPackageAccess,
+};
 use cdf_runtime::DestinationRuntime;
 use object_store::{memory::InMemory, path::Path as ObjectPath};
 
@@ -505,60 +507,221 @@ struct CommittedPackage {
     object_manifest: ParquetObjectManifest,
 }
 
+struct TestVerifiedPackage {
+    package_hash: String,
+    segments: Vec<SegmentEntry>,
+    scan: ScanPlan,
+    inputs: PackageReplayInputs,
+    schema: SchemaRef,
+}
+
+impl VerifiedPackageAccess for TestVerifiedPackage {
+    fn package_hash(&self) -> &str {
+        &self.package_hash
+    }
+
+    fn identity_segments(&self) -> &[SegmentEntry] {
+        &self.segments
+    }
+
+    fn recorded_scan_plan(&self) -> Result<ScanPlan> {
+        Ok(self.scan.clone())
+    }
+
+    fn replay_inputs(&self) -> Result<PackageReplayInputs> {
+        Ok(self.inputs.clone())
+    }
+
+    fn runtime_arrow_schema(&self) -> Result<SchemaRef> {
+        Ok(Arc::clone(&self.schema))
+    }
+
+    fn quarantine_records(&self) -> Result<Vec<QuarantineRecord>> {
+        Ok(Vec::new())
+    }
+}
+
+struct TestSegmentReader {
+    identity: cdf_runtime::StagedSegmentIdentity,
+    batches: std::vec::IntoIter<RecordBatch>,
+}
+
+impl cdf_runtime::DurableSegmentReader for TestSegmentReader {
+    fn identity(&self) -> &cdf_runtime::StagedSegmentIdentity {
+        &self.identity
+    }
+
+    fn next_batch(&mut self) -> Result<Option<RecordBatch>> {
+        Ok(self.batches.next())
+    }
+}
+
+struct TestStagedStream {
+    attempt_id: cdf_runtime::LoadAttemptId,
+    requests: VecDeque<cdf_runtime::StagedSegmentRequest>,
+    in_flight: BTreeMap<SegmentId, cdf_runtime::StagedSegmentIdentity>,
+    accepted: BTreeMap<u32, cdf_runtime::StagedSegmentIdentity>,
+}
+
+impl cdf_runtime::StagedSegmentStream for TestStagedStream {
+    fn next_segment(&mut self) -> Result<Option<cdf_runtime::StagedSegmentRequest>> {
+        let Some(request) = self.requests.pop_front() else {
+            return Ok(None);
+        };
+        if self
+            .in_flight
+            .insert(
+                request.identity.segment_id.clone(),
+                request.identity.clone(),
+            )
+            .is_some()
+        {
+            return Err(CdfError::data("test staged stream repeated a segment id"));
+        }
+        Ok(Some(request))
+    }
+
+    fn acknowledge(&mut self, acknowledgement: cdf_runtime::StagedSegmentAck) -> Result<()> {
+        let expected = self
+            .in_flight
+            .remove(&acknowledgement.identity.segment_id)
+            .ok_or_else(|| CdfError::data("test staged stream acknowledged an absent segment"))?;
+        if acknowledgement.attempt_id != self.attempt_id || acknowledgement.identity != expected {
+            return Err(CdfError::data(
+                "test staged stream acknowledgement identity mismatch",
+            ));
+        }
+        self.accepted.insert(expected.ordinal, expected);
+        Ok(())
+    }
+}
+
 fn commit_through_ingress(
     dest: &mut ParquetDestination,
     package_dir: &Path,
     commit: ParquetCommitRequest,
 ) -> Result<CommittedPackage> {
     let reader = PackageReader::open(package_dir)?;
+    let commit_segments = reader.read_commit_segments(&commit.commit.segments)?;
+    let output_schema = commit_segments
+        .iter()
+        .flat_map(|segment| segment.batches.first())
+        .next()
+        .map(|batch| batch.schema().as_ref().clone())
+        .unwrap_or_else(|| {
+            sample_batch(Vec::new(), Vec::new())
+                .schema()
+                .as_ref()
+                .clone()
+        });
     let plan = dest.plan_package_commit(&commit, &reader.manifest().identity.segments)?;
-    let duplicate = plan.duplicate;
     let inputs = replay_inputs(&commit);
-    let verified = reader.verify_for_consumption()?;
-    let package = Arc::new(reader.clone().with_verification(verified.clone())?);
     let capabilities = dest.runtime_capabilities();
     let bulk_path = cdf_runtime::BulkPathPreparation::from_capabilities(&capabilities)?
         .into_selected(&capabilities)?;
-    let mut prepared = match dest.ingress() {
-        cdf_runtime::DestinationIngress::FinalizedPackage(ingress) => ingress
-            .prepare_package_commit(
-                &inputs,
-                &cdf_runtime::DestinationPlanningContext::new(package, &bulk_path),
-            )?,
-        cdf_runtime::DestinationIngress::StagedSegments(_) => {
-            return Err(CdfError::contract(
-                "Parquet test destination exposed staged ingress",
-            ));
-        }
-    };
-    prepared.validate_verified_inputs(&inputs)?;
-    let memory = dest.execution().memory();
-    let maximum_segment_bytes = memory.snapshot().budget_bytes.min(64 * 1024 * 1024);
+    let attempt_id = cdf_runtime::LoadAttemptId::new(format!(
+        "parquet_test_{}",
+        commit.commit.idempotency_token.as_str().replace(':', "_")
+    ))?;
+    let execution_plan_id = PlanId::new("parquet-staged-test-plan")?;
+    let staging_request = cdf_runtime::StagedIngressRequest::new(
+        attempt_id.clone(),
+        cdf_runtime::StagingAttemptBinding {
+            destination_id: dest.sheet().destination.clone(),
+            target: commit.commit.target.clone(),
+            disposition: commit.commit.disposition.clone(),
+            schema_hash: commit.schema_hash.clone(),
+            output_arrow_schema_hash: cdf_kernel::canonical_arrow_schema_hash(&output_schema)?,
+            merge_keys: Vec::new(),
+            execution_plan_id: execution_plan_id.clone(),
+        },
+        bulk_path,
+        cdf_runtime::StagingSchedulingContext::new(
+            capabilities.max_in_flight_segments.unwrap(),
+            capabilities.max_in_flight_bytes.unwrap(),
+        )?,
+        output_schema.clone(),
+    )?;
     let mut session = match dest.ingress() {
-        cdf_runtime::DestinationIngress::FinalizedPackage(ingress) => {
-            ingress.begin_prepared_commit(&mut prepared)?
+        cdf_runtime::DestinationIngress::StagedSegments(ingress) => {
+            ingress.begin_staged_ingress(staging_request)?
         }
-        cdf_runtime::DestinationIngress::StagedSegments(_) => {
+        cdf_runtime::DestinationIngress::FinalizedPackage(_) => {
             return Err(CdfError::contract(
-                "Parquet test destination changed ingress category",
+                "Parquet test destination exposed finalized-package ingress",
             ));
         }
     };
-    session.apply_migrations()?;
-    for segment in reader.verified_commit_segment_stream_with(
-        &verified,
-        &commit.commit.segments,
-        memory,
-        maximum_segment_bytes,
-    )? {
-        let ack = session.write_segment(segment?.into_commit_segment()?)?;
-        assert!(commit.commit.segments.iter().any(|state| {
-            ack.segment_id == state.segment_id
-                && ack.row_count == state.row_count
-                && ack.byte_count == state.byte_count
-        }));
-    }
-    let receipt = session.finalize()?;
+    let requests = reader
+        .manifest()
+        .identity
+        .segments
+        .iter()
+        .zip(commit_segments)
+        .enumerate()
+        .map(|(ordinal, (entry, segment))| {
+            let identity = cdf_runtime::StagedSegmentIdentity::from_manifest_entry(
+                entry,
+                commit.schema_hash.clone(),
+                u32::try_from(ordinal)
+                    .map_err(|_| CdfError::data("test staged ordinal exceeds u32"))?,
+            )?;
+            cdf_runtime::StagedSegmentRequest::new(
+                identity.clone(),
+                Box::new(TestSegmentReader {
+                    identity,
+                    batches: segment.batches.into_iter(),
+                }),
+            )
+        })
+        .collect::<Result<VecDeque<_>>>()?;
+    let mut stream = TestStagedStream {
+        attempt_id: attempt_id.clone(),
+        requests,
+        in_flight: BTreeMap::new(),
+        accepted: BTreeMap::new(),
+    };
+    session.stage_stream(&mut stream)?;
+    let staged = stream.accepted.into_values().collect::<Vec<_>>();
+    assert!(stream.in_flight.is_empty());
+    assert_eq!(session.snapshot()?.accepted_segments, staged);
+    let package = TestVerifiedPackage {
+        package_hash: commit.commit.package_hash.as_str().to_owned(),
+        segments: reader.manifest().identity.segments.clone(),
+        scan: ScanPlan {
+            plan_id: execution_plan_id.clone(),
+            request: ScanRequest {
+                resource_id: ResourceId::new("orders")?,
+                projection: None,
+                filters: Vec::new(),
+                limit: None,
+                order_by: Vec::new(),
+                scope: ScopeKey::Resource,
+            },
+            partitions: Vec::new(),
+            pushed_predicates: Vec::new(),
+            unsupported_predicates: Vec::new(),
+            estimated_rows: None,
+            estimated_bytes: None,
+            delivery_guarantee: DeliveryGuarantee::AtLeastOnceDuplicateRisk,
+        },
+        inputs,
+        schema: Arc::new(output_schema),
+    };
+    let binding =
+        cdf_runtime::VerifiedFinalBinding::from_verified_package_with_execution_authority(
+            attempt_id,
+            execution_plan_id,
+            &package,
+            plan.kernel.clone(),
+        )?;
+    binding.validate_staged_identities(&staged)?;
+    let outcome = session.bind_final(binding)?;
+    let duplicate = matches!(
+        outcome.reporting_policy,
+        cdf_runtime::DestinationReceiptReportingPolicy::DestinationCommit { duplicate: true }
+    );
+    let receipt = outcome.receipt;
     let object_manifest = load_manifest(dest, &plan.manifest_key);
     Ok(CommittedPackage {
         receipt,
@@ -1186,7 +1349,7 @@ fn filesystem_append_materializes_parquet_and_verifies_receipt() {
 }
 
 #[test]
-fn finalized_package_ingress_materializes_verifiable_manifest_receipt() {
+fn staged_segment_ingress_materializes_verifiable_manifest_receipt() {
     let temp = tempfile::tempdir().unwrap();
     let package_dir = temp.path().join("pkg-session");
     let built = build_package(
@@ -1236,7 +1399,7 @@ fn finalized_package_ingress_materializes_verifiable_manifest_receipt() {
 }
 
 #[test]
-fn finalized_package_ingress_preserves_manifest_segment_order() {
+fn staged_segment_ingress_preserves_manifest_segment_order() {
     let temp = tempfile::tempdir().unwrap();
     let package_dir = temp.path().join("pkg-session-equivalence");
     let built = build_package(
@@ -1286,142 +1449,7 @@ fn finalized_package_ingress_preserves_manifest_segment_order() {
 }
 
 #[test]
-fn session_finalize_rejects_missing_segments() {
-    let temp = tempfile::tempdir().unwrap();
-    let package_dir = temp.path().join("pkg-session-missing-segments");
-    let built = build_package(
-        &package_dir,
-        "pkg-session-missing-segments",
-        vec![
-            ("seg-000001", vec![sample_batch(vec![1], vec![Some("ada")])]),
-            (
-                "seg-000002",
-                vec![sample_batch(vec![2], vec![Some("grace")])],
-            ),
-        ],
-    );
-    let dest = test_object_store(Arc::new(InMemory::default()), "").unwrap();
-    let commit = request(&package_dir, &built, WriteDisposition::Append);
-    let plan = plan_package_for_test(&dest, &package_dir, &commit).unwrap();
-    let mut session = dest
-        .begin_prepared_commit_session(ParquetSessionContext {
-            request: commit.clone(),
-            plan: plan.clone(),
-            manifest_segments: built.segments.clone(),
-        })
-        .expect("begin Parquet commit session");
-    session.apply_migrations().unwrap();
-    let mut segments = PackageReader::open(&package_dir)
-        .unwrap()
-        .read_commit_segments(&commit.commit.segments)
-        .unwrap();
-    session.write_segment(segments.remove(0)).unwrap();
-
-    let error = session.finalize().unwrap_err();
-    assert!(error.to_string().contains("accepted 1 of 2"), "{error}");
-    assert!(
-        !dest
-            .store()
-            .exists(dest.execution(), &plan.manifest_key)
-            .unwrap()
-    );
-}
-
-#[test]
-fn prepared_ingress_rejects_pending_context_commit_schema_and_plan_drift() {
-    let temp = tempfile::tempdir().unwrap();
-    let package_dir = temp.path().join("pkg-prepared-context-drift");
-    let built = build_package(
-        &package_dir,
-        "pkg-prepared-context-drift",
-        vec![("seg-000001", vec![sample_batch(vec![1], vec![Some("ada")])])],
-    );
-    let destination = test_object_store(Arc::new(InMemory::default()), "").unwrap();
-    let request = request(&package_dir, &built, WriteDisposition::Append);
-    let inputs = replay_inputs(&request);
-    let plan = plan_package_for_test(&destination, &package_dir, &request).unwrap();
-    let capabilities = crate::runtime::parquet_runtime_capabilities();
-    let bulk_path = cdf_runtime::BulkPathPreparation::from_capabilities(&capabilities)
-        .unwrap()
-        .into_selected(&capabilities)
-        .unwrap();
-    let prepared = |inputs: &PackageReplayInputs, kernel: CommitPlan| {
-        cdf_runtime::PreparedDestinationCommit::from_verified_inputs(
-            inputs,
-            kernel,
-            bulk_path.clone(),
-            cdf_runtime::DestinationReceiptReportingPolicy::DestinationCommit { duplicate: false },
-        )
-        .unwrap()
-        .with_pending_context(ParquetSessionContext {
-            request: request.clone(),
-            plan: plan.clone(),
-            manifest_segments: built.segments.clone(),
-        })
-    };
-
-    let canonical = prepared(&inputs, plan.kernel.clone());
-    let mut mismatched_commit_inputs = inputs.clone();
-    mismatched_commit_inputs.destination_commit.target = TargetName::new("other_target").unwrap();
-    let error = canonical
-        .validate_verified_inputs(&mismatched_commit_inputs)
-        .unwrap_err();
-    assert!(
-        error
-            .to_string()
-            .contains("does not match verified package commit authority")
-    );
-
-    let mut mismatched_schema_inputs = inputs.clone();
-    mismatched_schema_inputs.schema_hash = SchemaHash::new("schema-other").unwrap();
-    let error = canonical
-        .validate_verified_inputs(&mismatched_schema_inputs)
-        .unwrap_err();
-    assert!(
-        error
-            .to_string()
-            .contains("does not match verified package schema authority")
-    );
-
-    let mut mismatched_kernel = plan.kernel.clone();
-    mismatched_kernel.target = TargetName::new("other_target").unwrap();
-    let error = cdf_runtime::PreparedDestinationCommit::from_verified_inputs(
-        &inputs,
-        mismatched_kernel,
-        bulk_path.clone(),
-        cdf_runtime::DestinationReceiptReportingPolicy::DestinationCommit { duplicate: false },
-    )
-    .err()
-    .expect("mismatched finalized-package plan must fail before mutation");
-    assert!(
-        error
-            .to_string()
-            .contains("plan target/disposition does not match verified package commit authority")
-    );
-
-    let mut commit_inputs = inputs.clone();
-    commit_inputs.destination_commit.target = TargetName::new("other_target").unwrap();
-    let mut commit_plan = plan.kernel.clone();
-    commit_plan.target = commit_inputs.destination_commit.target.clone();
-    let mut commit_drift = prepared(&commit_inputs, commit_plan);
-    let error = crate::runtime::take_parquet_session_context(&mut commit_drift).unwrap_err();
-    assert!(error.to_string().contains("context commit does not match"));
-
-    let mut schema_inputs = inputs.clone();
-    schema_inputs.schema_hash = SchemaHash::new("schema-other").unwrap();
-    let mut schema_drift = prepared(&schema_inputs, plan.kernel.clone());
-    let error = crate::runtime::take_parquet_session_context(&mut schema_drift).unwrap_err();
-    assert!(error.to_string().contains("context schema does not match"));
-
-    let mut drift_plan = plan.kernel.clone();
-    drift_plan.plan_id = PlanId::new("different-plan").unwrap();
-    let mut plan_drift = prepared(&inputs, drift_plan);
-    let error = crate::runtime::take_parquet_session_context(&mut plan_drift).unwrap_err();
-    assert!(error.to_string().contains("context plan does not match"));
-}
-
-#[test]
-fn finalized_package_ingress_duplicate_replay_preserves_existing_manifest() {
+fn staged_segment_ingress_duplicate_replay_preserves_existing_manifest() {
     let temp = tempfile::tempdir().unwrap();
     let package_dir = temp.path().join("pkg-session-duplicate");
     let built = build_package(
@@ -1458,46 +1486,6 @@ fn finalized_package_ingress_duplicate_replay_preserves_existing_manifest() {
     assert!(
         receipts.is_empty(),
         "package receipts belong to orchestration"
-    );
-}
-
-#[test]
-fn begin_session_abort_before_write_leaves_manifest_unwritten() {
-    let temp = tempfile::tempdir().unwrap();
-    let package_dir = temp.path().join("pkg-session-abort");
-    let built = build_package(
-        &package_dir,
-        "pkg-session-abort",
-        vec![(
-            "seg-000001",
-            vec![sample_batch(vec![1], vec![Some("abort")])],
-        )],
-    );
-    let dest = test_object_store(Arc::new(InMemory::default()), "").unwrap();
-    let commit = request(&package_dir, &built, WriteDisposition::Append);
-    let plan = plan_package_for_test(&dest, &package_dir, &commit).unwrap();
-
-    let session = dest
-        .begin_prepared_commit_session(ParquetSessionContext {
-            request: commit.clone(),
-            plan: plan.clone(),
-            manifest_segments: built.segments.clone(),
-        })
-        .expect("begin Parquet commit session");
-    session.abort().unwrap();
-
-    assert!(
-        !dest
-            .store()
-            .exists(dest.execution(), &plan.manifest_key)
-            .unwrap()
-    );
-    assert!(
-        PackageReader::open(&package_dir)
-            .unwrap()
-            .receipts()
-            .unwrap()
-            .is_empty()
     );
 }
 
