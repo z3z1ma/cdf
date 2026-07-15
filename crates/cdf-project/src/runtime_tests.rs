@@ -22,10 +22,11 @@ use cdf_dest_postgres::{MergeDedupPolicy, PostgresDestination, PostgresTarget};
 use cdf_engine::{
     CompiledStreamAdmissionEvidence, EnginePlan, EnginePlanInput, EngineRunOutput,
     EngineRunOutputWithSegmentPositions, EngineSegmentPosition, ExecutionProfile,
-    LineageInputObservation, LineageSummary, PlanBoundedness, Planner,
-    StreamAdmissionObservationEvidence, negotiate_scan_plan,
+    LineageInputObservation, LineageSummary, Planner, StreamAdmissionObservationEvidence,
+    negotiate_scan_plan,
 };
 use cdf_http::{HttpRequest, HttpResponse, HttpTransport, SecretProvider, SecretUri, SecretValue};
+use cdf_kernel::ExecutionExtent;
 use cdf_kernel::{
     BackpressureSupport, CHECKPOINT_STATE_VERSION, CapabilitySupport, CdfError, Checkpoint,
     CheckpointId, CheckpointStatus, CheckpointStore, CommitCounts, CommitPlan, CommitSegment,
@@ -1065,7 +1066,7 @@ fn write_compiled_expression_artifacts(
                     scope: ScopeKey::Resource,
                 },
                 validation_program: program,
-                boundedness: PlanBoundedness::Bounded,
+                execution_extent: ExecutionExtent::bounded(),
                 package_id: "artifact-test-package".to_owned(),
             },
         )
@@ -2227,7 +2228,7 @@ fn live_plan_for_queryable(resource: &dyn QueryableResource, package_id: &str) -
                     scope: resource.descriptor().state_scope.clone(),
                 },
                 validation_program,
-                boundedness: PlanBoundedness::Bounded,
+                execution_extent: ExecutionExtent::bounded(),
                 package_id: package_id.to_owned(),
             },
         )
@@ -2257,7 +2258,7 @@ fn live_plan_for_queryable_with_exact_policy(
                     scope: resource.descriptor().state_scope.clone(),
                 },
                 validation_program,
-                boundedness: PlanBoundedness::Bounded,
+                execution_extent: ExecutionExtent::bounded(),
                 package_id: package_id.to_owned(),
             },
         )

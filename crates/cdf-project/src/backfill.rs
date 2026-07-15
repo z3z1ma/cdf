@@ -1,5 +1,6 @@
 use cdf_contract::{ContractPolicy, ObservedSchema, compile_resource_validation_program};
-use cdf_engine::{EnginePlan, EnginePlanInput, PlanBoundedness, Planner};
+use cdf_engine::{EnginePlan, EnginePlanInput, Planner};
+use cdf_kernel::ExecutionExtent;
 use cdf_kernel::{
     CdfError, CheckpointId, CursorOrderingClaim, IncrementalShape, PipelineId, PredicateId,
     PushdownFidelity, QueryableResource, Result, ScanPredicate, ScanRequest, ScopeKey, TargetName,
@@ -101,7 +102,7 @@ pub fn plan_backfill(
             EnginePlanInput {
                 request: scan_request,
                 validation_program: validation_program.clone(),
-                boundedness: PlanBoundedness::Bounded,
+                execution_extent: ExecutionExtent::bounded(),
                 package_id: package_id.clone(),
             },
         )?;

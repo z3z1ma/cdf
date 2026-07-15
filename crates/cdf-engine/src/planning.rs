@@ -5,17 +5,17 @@ use cdf_contract::{
     assert_verdict_lattice_total, bind_validation_program_to_resource, reconcile_schema,
 };
 use cdf_kernel::{
-    CapabilitySupport, CdfError, DeliveryGuarantee, EstimateSupport, PLAN_PHYSICAL_SCHEMA_HASH_KEY,
-    PLAN_SCHEMA_OBSERVATION_BINDING_KEY, PLAN_SCHEMA_OBSERVATION_ID_KEY, PartitionPlan, PlanId,
-    PushdownFidelity, QueryableResource, ResourceCapabilities, ResourceId, ResourceStream, Result,
-    ScanPlan, ScanPredicate, ScanRequest, WriteDisposition,
+    CapabilitySupport, CdfError, DeliveryGuarantee, EstimateSupport, ExecutionExtent,
+    PLAN_PHYSICAL_SCHEMA_HASH_KEY, PLAN_SCHEMA_OBSERVATION_BINDING_KEY,
+    PLAN_SCHEMA_OBSERVATION_ID_KEY, PartitionPlan, PlanId, PushdownFidelity, QueryableResource,
+    ResourceCapabilities, ResourceId, ResourceStream, Result, ScanPlan, ScanPredicate, ScanRequest,
+    WriteDisposition,
 };
 
 use crate::{
     CompiledArrowSchema, CompiledSchemaAdmissionPlan, EffectiveSchemaObservationCoercion,
     EffectiveSchemaPlanEvidence, EnginePlan, EnginePlanInput, EngineSchemaAuthority,
-    EstimateExplain, ExplainData, OperatorNode, PartitionExplain, PlanBoundedness,
-    PredicateExplain,
+    EstimateExplain, ExplainData, OperatorNode, PartitionExplain, PredicateExplain,
     expression::{
         mark_cursor_subsumed, plan_expression, record_exact_source_expression,
         record_native_contract_expression, validate_recorded_expressions,
@@ -54,7 +54,7 @@ impl Planner {
     {
         input.validation_program =
             bind_validation_program_to_resource(input.validation_program, resource.descriptor())?;
-        validate_boundedness(&input.boundedness)?;
+        validate_execution_extent(&input.execution_extent)?;
         validate_program(&input.validation_program)?;
         let write_disposition = resource.descriptor().write_disposition.clone();
 
@@ -119,7 +119,7 @@ impl Planner {
     {
         input.validation_program =
             bind_validation_program_to_resource(input.validation_program, resource.descriptor())?;
-        validate_boundedness(&input.boundedness)?;
+        validate_execution_extent(&input.execution_extent)?;
         validate_program(&input.validation_program)?;
         let write_disposition = resource.descriptor().write_disposition.clone();
 
@@ -274,7 +274,7 @@ impl Planner {
         );
         let explain = explain_data(
             &scan,
-            &input.boundedness,
+            &input.execution_extent,
             &operator_chain,
             finish.projection_pushed,
             finish.limit_pushed,
@@ -290,7 +290,7 @@ impl Planner {
             residual_predicates,
             compiled_expression_plan,
             compiled_schema_admission,
-            boundedness: input.boundedness,
+            execution_extent: input.execution_extent,
             write_disposition: finish.write_disposition,
             validation_program,
             schema_authority: finish.schema_authority,
@@ -857,13 +857,8 @@ pub(crate) fn validate_program(program: &ValidationProgram) -> Result<()> {
     assert_verdict_lattice_total(program)
 }
 
-fn validate_boundedness(boundedness: &PlanBoundedness) -> Result<()> {
-    match boundedness {
-        PlanBoundedness::Bounded | PlanBoundedness::UnboundedDrain => Ok(()),
-        PlanBoundedness::UnboundedLive { .. } => Err(CdfError::contract(
-            "unbounded live plans are illegal in the MVP; use drain mode or add cadence, rotation, and watermark support in a later ticket",
-        )),
-    }
+fn validate_execution_extent(execution_extent: &ExecutionExtent) -> Result<()> {
+    execution_extent.validate_for_plan()
 }
 
 fn residual_predicates(scan: &ScanPlan) -> Vec<ScanPredicate> {
@@ -917,7 +912,7 @@ fn operator_chain(
 
 fn explain_data(
     scan: &ScanPlan,
-    boundedness: &PlanBoundedness,
+    execution_extent: &ExecutionExtent,
     operator_chain: &[OperatorNode],
     projection_pushed: bool,
     limit_pushed: bool,
@@ -972,7 +967,7 @@ fn explain_data(
             bytes: scan.estimated_bytes,
         },
         delivery_guarantee: scan.delivery_guarantee.clone(),
-        boundedness: boundedness.clone(),
+        execution_extent: execution_extent.clone(),
         operator_chain: operator_chain.to_vec(),
     }
 }

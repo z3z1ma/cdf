@@ -127,7 +127,7 @@ pub struct BatchHeader {
     pub pre_contract_quarantine: Vec<PreContractQuarantineFact>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub schema_coercion_plan: Option<String>,
-    pub watermarks: Vec<Watermark>,
+    pub watermarks: Vec<crate::WatermarkClaim>,
     pub stats: BatchStats,
     pub cdc: Option<CdcMetadata>,
     #[serde(skip, default)]
@@ -398,12 +398,6 @@ pub struct PayloadRef {
     pub uri: String,
     pub byte_count: u64,
     pub sha256: Option<String>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Watermark {
-    pub name: String,
-    pub position: SourcePosition,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

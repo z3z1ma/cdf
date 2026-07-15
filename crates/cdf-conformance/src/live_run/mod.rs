@@ -5,7 +5,8 @@ use std::{
 };
 
 use cdf_contract::{ContractPolicy, ObservedSchema, compile_validation_program};
-use cdf_engine::{EnginePlanInput, PlanBoundedness, Planner};
+use cdf_engine::{EnginePlanInput, Planner};
+use cdf_kernel::ExecutionExtent;
 use cdf_kernel::{
     CdfError, CheckpointId, CheckpointStatus, PipelineId, Receipt, Result, ScanRequest,
     SourcePosition, StateDelta, TargetName, WriteDisposition,
@@ -310,7 +311,7 @@ pub async fn run_live_local_file_fixture_with_destination(
                 scope: runtime_resource.descriptor().state_scope.clone(),
             },
             validation_program,
-            boundedness: PlanBoundedness::Bounded,
+            execution_extent: ExecutionExtent::bounded(),
             package_id: spec.package_id.clone(),
         },
     )?;

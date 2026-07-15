@@ -15,9 +15,10 @@ use cdf_declarative::{
 };
 use cdf_dest_postgres::{MergeDedupPolicy, PostgresTarget};
 use cdf_engine::{
-    EngineExecutionOptions, EnginePackageDraft, EnginePlanInput, PlanBoundedness, Planner,
-    execute_to_package, execute_to_package_with_segment_positions_and_pre_finalize,
+    EngineExecutionOptions, EnginePackageDraft, EnginePlanInput, Planner, execute_to_package,
+    execute_to_package_with_segment_positions_and_pre_finalize,
 };
+use cdf_kernel::ExecutionExtent;
 use cdf_kernel::{
     CHECKPOINT_STATE_VERSION, CdfError, CheckpointId, CursorPosition, CursorValue, PipelineId,
     PredicateId, ResourceId, ResourceStream, RunId, ScanPredicate, ScanRequest, ScopeKey,
@@ -591,7 +592,7 @@ fn engine_plan_with_policy<R: ResourceStream + ?Sized>(
                     scope: resource.descriptor().state_scope.clone(),
                 },
                 validation_program,
-                boundedness: PlanBoundedness::Bounded,
+                execution_extent: ExecutionExtent::bounded(),
                 package_id: package_id.to_owned(),
             },
         )
@@ -620,7 +621,7 @@ fn identity_engine_plan<R: ResourceStream + ?Sized>(
                     scope: resource.descriptor().state_scope.clone(),
                 },
                 validation_program,
-                boundedness: PlanBoundedness::Bounded,
+                execution_extent: ExecutionExtent::bounded(),
                 package_id: package_id.to_owned(),
             },
         )

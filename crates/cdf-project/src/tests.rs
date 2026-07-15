@@ -24,10 +24,11 @@ use cdf_declarative::{
     FileTransportFacade, FileTransportLocation, FileTransportResource, HttpFileRequest,
     HttpFileResponse, HttpFileTransport, SourceDeclaration,
 };
-use cdf_engine::{EnginePlan, EnginePlanInput, PlanBoundedness, Planner};
+use cdf_engine::{EnginePlan, EnginePlanInput, Planner};
 use cdf_http::{
     HttpMethod, HttpRequest, HttpResponse, HttpTransport, SecretProvider, SecretUri, SecretValue,
 };
+use cdf_kernel::ExecutionExtent;
 use cdf_kernel::{
     BoxFuture, CapabilitySupport, CdfError, CheckpointId, ConcurrencyLimit, ContractRef,
     DestinationId, DestinationProtocol, DestinationProtocolCapabilities, DestinationSheet,
@@ -4271,7 +4272,7 @@ fn live_plan_for_stream(resource: &dyn QueryableResource, package_id: &str) -> E
                     scope: resource.descriptor().state_scope.clone(),
                 },
                 validation_program,
-                boundedness: PlanBoundedness::Bounded,
+                execution_extent: ExecutionExtent::bounded(),
                 package_id: package_id.to_owned(),
             },
         )

@@ -4,7 +4,8 @@ use cdf_contract::{
     ContractPolicy, ObservedSchema, compile_resource_validation_program, reconcile_schema,
 };
 use cdf_declarative::{CompiledResource, CompiledResourcePlan};
-use cdf_engine::{EnginePlanInput, PlanBoundedness, Planner};
+use cdf_engine::{EnginePlanInput, Planner};
+use cdf_kernel::ExecutionExtent;
 use cdf_kernel::{ResourceDescriptor, ResourceStream, ScanRequest, SchemaSource};
 use cdf_project::{
     FileResourceSourceResolver, ProjectResourceOrigin, ResourceSchemaDiscovery, validate_project,
@@ -525,7 +526,7 @@ fn destination_check(
                     EnginePlanInput {
                         request: deep_scan_request(compiled_resource.descriptor())?,
                         validation_program,
-                        boundedness: PlanBoundedness::Bounded,
+                        execution_extent: ExecutionExtent::bounded(),
                         package_id: format!("deep-validate-{}", resource.descriptor().resource_id),
                     },
                 )

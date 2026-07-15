@@ -5,9 +5,9 @@ use cdf_contract::{
 };
 use cdf_declarative::{CompiledResource, CompiledResourcePlan};
 use cdf_engine::{
-    EnginePlan, EnginePlanInput, EnginePreviewLimits, EnginePreviewSelectionEvidence,
-    PlanBoundedness, Planner,
+    EnginePlan, EnginePlanInput, EnginePreviewLimits, EnginePreviewSelectionEvidence, Planner,
 };
+use cdf_kernel::ExecutionExtent;
 use cdf_kernel::{
     CapabilitySupport, CdfError, DeliveryGuarantee, DestinationSheet, IdempotencySupport, OrderBy,
     PartitionPlan, PredicateId, QueryableResource, ResourceStream, ScanPredicate, ScanRequest,
@@ -365,7 +365,7 @@ pub(crate) fn build_engine_plan_for_resource(
     let input = EnginePlanInput {
         request,
         validation_program,
-        boundedness: PlanBoundedness::Bounded,
+        execution_extent: ExecutionExtent::bounded(),
         package_id: run_package_id
             .map(ToOwned::to_owned)
             .unwrap_or_else(|| format!("cli-{}", resource.descriptor().resource_id)),

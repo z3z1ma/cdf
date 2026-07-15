@@ -223,6 +223,7 @@ pub async fn preview_resource<R>(
 where
     R: ResourceStream + ?Sized,
 {
+    plan.validate_execution_extent_for_execution()?;
     plan.validate_compiled_expression_plan()?;
     validate_program(&plan.validation_program)?;
     cdf_kernel::validate_scan_partition_observation_identities(&plan.scan)?;
@@ -2277,6 +2278,7 @@ async fn execute_to_package_inner<'a, R>(
 where
     R: ResourceStream + ?Sized,
 {
+    plan.validate_execution_extent_for_execution()?;
     plan.validate_compiled_expression_plan()?;
     let validation_program = plan.validation_program.clone();
     validate_program(&validation_program)?;

@@ -9,7 +9,8 @@ use cdf_contract::{
     ContractPolicy, DedupKeep, IdentifierPolicy, ObservedSchema, RowRule,
     compile_validation_program,
 };
-use cdf_engine::{EnginePlan, EnginePlanInput, PlanBoundedness, Planner};
+use cdf_engine::{EnginePlan, EnginePlanInput, Planner};
+use cdf_kernel::ExecutionExtent;
 use cdf_kernel::{
     CdfError, CheckpointId, CheckpointStatus, CheckpointStore, PipelineId, QueryableResource,
     Receipt, ResourceId, Result, RunId, ScanRequest, ScopeKey, TargetName, WriteDisposition,
@@ -230,7 +231,7 @@ fn drift_quarantine_plan(
                 },
             },
             validation_program,
-            boundedness: PlanBoundedness::Bounded,
+            execution_extent: ExecutionExtent::bounded(),
             package_id: package_id.to_owned(),
         },
     )

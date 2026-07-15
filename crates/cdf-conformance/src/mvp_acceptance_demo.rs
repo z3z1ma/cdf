@@ -8,7 +8,8 @@ use std::{
 
 use cdf_declarative::RestResource;
 use cdf_dest_duckdb::DuckDbDestination;
-use cdf_engine::{EnginePlan, EnginePlanInput, PlanBoundedness, Planner};
+use cdf_engine::{EnginePlan, EnginePlanInput, Planner};
+use cdf_kernel::ExecutionExtent;
 use cdf_kernel::{
     CdfError, CheckpointId, CheckpointStatus, CheckpointStore, CursorValue, DestinationProtocol,
     PipelineId, Receipt, ResourceId, ResourceStream, Result, RunId, ScanRequest, ScopeKey,
@@ -536,7 +537,7 @@ fn engine_plan(
                 scope: resource.descriptor().state_scope.clone(),
             },
             validation_program,
-            boundedness: PlanBoundedness::Bounded,
+            execution_extent: ExecutionExtent::bounded(),
             package_id: package_id.to_owned(),
         },
     )

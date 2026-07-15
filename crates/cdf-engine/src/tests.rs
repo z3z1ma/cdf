@@ -23,17 +23,20 @@ use cdf_contract::{
 use cdf_kernel::{
     BackpressureSupport, Batch, BatchHeader, BatchId, BatchStream, CapabilitySupport, ContractRef,
     DeduplicationSpec, DeliveryGuarantee, DiscoveryExecutorBudgetEvidence, DiscoveryManifestHash,
-    DiscoveryManifestReference, EffectiveSchemaCatalogEntry, EffectiveSchemaEvidence,
-    EffectiveSchemaObservationEvidence, EffectiveSchemaRuntime, EstimateSupport, FileManifest,
-    FilePosition, FilterCapabilities, FreshnessSpec, IncrementalShape,
+    DiscoveryManifestReference, DrainTermination, EXECUTION_EXTENT_VERSION,
+    EffectiveSchemaCatalogEntry, EffectiveSchemaEvidence, EffectiveSchemaObservationEvidence,
+    EffectiveSchemaRuntime, EpochClosureTrigger, EstimateSupport, ExecutionExtent, FileManifest,
+    FilePosition, FilterCapabilities, FreshnessSpec, IncrementalShape, LateDataAction,
     PLAN_SCHEMA_OBSERVATION_BINDING_KEY, PLAN_SCHEMA_OBSERVATION_ID_KEY, PartitionAttestation,
     PartitionId, PartitionPlan, PartitioningCapabilities, PreContractObservedValue,
     PreContractQuarantineFact, PreContractResidualCandidate, PredicateId, PushdownFidelity,
     QueryableResource, ResourceCapabilities, ResourceDescriptor, ResourceId, ResourceStream,
-    Result, RunId, RunPhase, RunPhaseStatus, STRATIFIED_HASH_SELECTOR_V1, ScanPlan, ScanPredicate,
-    ScanRequest, SchemaBaselineReference, SchemaHash, SchemaObservationFieldQuarantine,
-    SchemaObservationPolicy, SchemaSnapshotReference, SchemaSource, ScopeKey, SourcePosition,
-    TerminalSchemaObservationQuarantine, TrustLevel, WriteDisposition, source_name, with_semantic,
+    Result, RunId, RunPhase, RunPhaseStatus, STRATIFIED_HASH_SELECTOR_V1,
+    STREAM_EPOCH_POLICY_VERSION, SafeFrontierPolicy, ScanPlan, ScanPredicate, ScanRequest,
+    SchemaBaselineReference, SchemaHash, SchemaObservationFieldQuarantine, SchemaObservationPolicy,
+    SchemaSnapshotReference, SchemaSource, ScopeKey, SourcePosition, StreamEpochPolicy,
+    TerminalSchemaObservationQuarantine, TrustLevel, WatermarkPolicy, WriteDisposition,
+    source_name, with_semantic,
 };
 use cdf_package_contract::{
     DEDUP_SUMMARY_FILE, PackageStatus, QuarantineObservedValue, SegmentEntry,
@@ -59,7 +62,7 @@ fn tier_a_resource_runs_engine_projection_filter_limit_into_package() {
         vec!["id > 1", "active = true"],
         Some(vec!["name".to_owned()]),
         Some(1),
-        PlanBoundedness::Bounded,
+        ExecutionExtent::bounded(),
     );
     let plan = Planner::new().plan_tier_a(&resource, input).unwrap();
 
@@ -104,7 +107,7 @@ fn residual_limit_is_consumed_across_partitions() {
         vec!["active = true"],
         Some(vec!["name".to_owned()]),
         Some(1),
-        PlanBoundedness::Bounded,
+        ExecutionExtent::bounded(),
     );
     let plan = Planner::new().plan_tier_b(&resource, input).unwrap();
     let temp = TempDir::new().unwrap();
@@ -121,7 +124,7 @@ fn validation_program_rebind_atomically_rebuilds_compiled_output_schema() {
     let mut plan = Planner::new()
         .plan_tier_a(
             &resource,
-            plan_input(Vec::new(), None, None, PlanBoundedness::Bounded),
+            plan_input(Vec::new(), None, None, ExecutionExtent::bounded()),
         )
         .unwrap();
     let before = plan.output_arrow_schema().unwrap();
@@ -144,7 +147,7 @@ fn engine_plan_requires_recorded_schema_authorities() {
     let plan = Planner::new()
         .plan_tier_a(
             &resource,
-            plan_input(vec![], None, None, PlanBoundedness::Bounded),
+            plan_input(vec![], None, None, ExecutionExtent::bounded()),
         )
         .unwrap();
     for required in [
@@ -165,7 +168,7 @@ fn compiled_stream_admission_is_replay_verifiable_and_rejects_mismatched_evidenc
     let plan = Planner::new()
         .plan_tier_a(
             &resource,
-            plan_input(Vec::new(), None, None, PlanBoundedness::Bounded),
+            plan_input(Vec::new(), None, None, ExecutionExtent::bounded()),
         )
         .unwrap();
     let physical_schema_hash =
@@ -262,7 +265,7 @@ fn compiled_stream_admission_enforces_unknown_and_widening_verdicts() {
     let mut plan = Planner::new()
         .plan_tier_a(
             &resource,
-            plan_input(Vec::new(), None, None, PlanBoundedness::Bounded),
+            plan_input(Vec::new(), None, None, ExecutionExtent::bounded()),
         )
         .unwrap();
     assert!(
@@ -322,7 +325,7 @@ fn materialized_stream_admission_rejects_noncanonical_provenance_and_nullable_cl
     let plan = Planner::new()
         .plan_tier_a(
             &resource,
-            plan_input(Vec::new(), None, None, PlanBoundedness::Bounded),
+            plan_input(Vec::new(), None, None, ExecutionExtent::bounded()),
         )
         .unwrap();
     let output_schema = plan
@@ -453,7 +456,7 @@ fn preobserved_widening_is_rejected_by_the_compiled_verdict_program() {
         vec![],
         None,
         None,
-        PlanBoundedness::Bounded,
+        ExecutionExtent::bounded(),
     );
     input
         .validation_program
@@ -503,7 +506,7 @@ fn planning_rejects_one_schema_observation_identity_across_partitions() {
     let error = Planner::new()
         .plan_tier_b(
             &resource,
-            plan_input(Vec::new(), None, None, PlanBoundedness::Bounded),
+            plan_input(Vec::new(), None, None, ExecutionExtent::bounded()),
         )
         .unwrap_err();
 
@@ -520,7 +523,7 @@ fn dynamic_planning_rejects_duplicate_observation_identity_without_runtime_evide
     let error = Planner::new()
         .plan_tier_b(
             &resource,
-            plan_input(Vec::new(), None, None, PlanBoundedness::Bounded),
+            plan_input(Vec::new(), None, None, ExecutionExtent::bounded()),
         )
         .unwrap_err();
 
@@ -537,7 +540,7 @@ fn execution_rejects_duplicate_planned_observations_before_staged_ingress() {
     let mut plan = Planner::new()
         .plan_tier_b(
             &resource,
-            plan_input(Vec::new(), None, None, PlanBoundedness::Bounded),
+            plan_input(Vec::new(), None, None, ExecutionExtent::bounded()),
         )
         .unwrap();
     for partition in &mut plan.scan.partitions {
@@ -590,7 +593,7 @@ fn execution_rejects_batch_labeled_for_another_partition_before_admission() {
     let plan = Planner::new()
         .plan_tier_a(
             &resource,
-            plan_input(Vec::new(), None, None, PlanBoundedness::Bounded),
+            plan_input(Vec::new(), None, None, ExecutionExtent::bounded()),
         )
         .unwrap();
     let package_dir = TempDir::new().unwrap();
@@ -628,7 +631,7 @@ fn missing_control_critical_field_becomes_a_named_schema_quarantine() {
     let plan = Planner::new()
         .plan_tier_a(
             &resource,
-            plan_input(Vec::new(), None, None, PlanBoundedness::Bounded),
+            plan_input(Vec::new(), None, None, ExecutionExtent::bounded()),
         )
         .unwrap();
     let physical = Schema::new(vec![
@@ -657,7 +660,7 @@ fn recorded_schema_quarantine_must_match_the_compiled_admission_action() {
     let plan = Planner::new()
         .plan_tier_b(
             &resource,
-            plan_input(Vec::new(), None, None, PlanBoundedness::Bounded),
+            plan_input(Vec::new(), None, None, ExecutionExtent::bounded()),
         )
         .unwrap();
     let physical = incompatible_sample_schema();
@@ -696,7 +699,7 @@ fn validation_program_rebind_rejects_new_physical_dependencies_without_mutating_
         Vec::new(),
         Some(vec!["name".to_owned()]),
         None,
-        PlanBoundedness::Bounded,
+        ExecutionExtent::bounded(),
     );
     input.validation_program = compile_validation_program(
         &ContractPolicy::evolve(),
@@ -751,7 +754,7 @@ fn tier_b_exact_temporal_pushdown_selects_recorded_source_lowering_without_resid
                 vec!["updated_at >= '2026-07-12T00:00:00Z'"],
                 None,
                 None,
-                PlanBoundedness::Bounded,
+                ExecutionExtent::bounded(),
             ),
         )
         .unwrap();
@@ -771,7 +774,7 @@ fn preview_traverses_every_planned_partition_through_the_engine_front_end() {
     let plan = Planner::new()
         .plan_tier_b(
             &resource,
-            plan_input(Vec::new(), None, None, PlanBoundedness::Bounded),
+            plan_input(Vec::new(), None, None, ExecutionExtent::bounded()),
         )
         .unwrap();
     let limits = EnginePreviewLimits::default();
@@ -805,7 +808,7 @@ fn preview_rejects_stale_compiled_expression_plan_before_source_contact() {
     let mut plan = Planner::new()
         .plan_tier_b(
             &resource,
-            plan_input(vec!["id >= 1"], None, None, PlanBoundedness::Bounded),
+            plan_input(vec!["id >= 1"], None, None, ExecutionExtent::bounded()),
         )
         .unwrap();
     plan.compiled_expression_plan.native_filter_lowering_version = "stale".to_owned();
@@ -827,7 +830,7 @@ fn preview_applies_explicit_row_limit_globally_without_opening_later_payloads() 
     let plan = Planner::new()
         .plan_tier_b(
             &resource,
-            plan_input(Vec::new(), None, Some(2), PlanBoundedness::Bounded),
+            plan_input(Vec::new(), None, Some(2), ExecutionExtent::bounded()),
         )
         .unwrap();
     let limits = EnginePreviewLimits::default().with_max_rows(2).unwrap();
@@ -857,7 +860,7 @@ fn preview_configured_byte_limit_accounts_decoded_input_separately_from_output()
     let baseline_plan = Planner::new()
         .plan_tier_b(
             &baseline_resource,
-            plan_input(Vec::new(), None, Some(1), PlanBoundedness::Bounded),
+            plan_input(Vec::new(), None, Some(1), ExecutionExtent::bounded()),
         )
         .unwrap();
     let one_row = block_on(preview_resource(
@@ -871,7 +874,7 @@ fn preview_configured_byte_limit_accounts_decoded_input_separately_from_output()
     let plan = Planner::new()
         .plan_tier_b(
             &resource,
-            plan_input(Vec::new(), None, None, PlanBoundedness::Bounded),
+            plan_input(Vec::new(), None, None, ExecutionExtent::bounded()),
         )
         .unwrap();
     let preview = block_on(preview_resource(
@@ -895,7 +898,7 @@ fn preview_rejects_an_oversized_batch_atomically() {
     let baseline_plan = Planner::new()
         .plan_tier_b(
             &baseline_resource,
-            plan_input(Vec::new(), None, None, PlanBoundedness::Bounded),
+            plan_input(Vec::new(), None, None, ExecutionExtent::bounded()),
         )
         .unwrap();
     let baseline = block_on(preview_resource(
@@ -908,7 +911,7 @@ fn preview_rejects_an_oversized_batch_atomically() {
     let plan = Planner::new()
         .plan_tier_b(
             &resource,
-            plan_input(Vec::new(), None, None, PlanBoundedness::Bounded),
+            plan_input(Vec::new(), None, None, ExecutionExtent::bounded()),
         )
         .unwrap();
 
@@ -935,7 +938,7 @@ fn preview_fair_batch_quotas_are_fixed_before_payload_io() {
     let plan = Planner::new()
         .plan_tier_b(
             &resource,
-            plan_input(Vec::new(), None, None, PlanBoundedness::Bounded),
+            plan_input(Vec::new(), None, None, ExecutionExtent::bounded()),
         )
         .unwrap();
 
@@ -964,7 +967,7 @@ fn preview_large_plan_selects_and_opens_at_most_the_global_batch_budget() {
     let plan = Planner::new()
         .plan_tier_b(
             &resource,
-            plan_input(Vec::new(), None, None, PlanBoundedness::Bounded),
+            plan_input(Vec::new(), None, None, ExecutionExtent::bounded()),
         )
         .unwrap();
 
@@ -1008,7 +1011,7 @@ fn preview_terminal_quarantine_uses_run_attestation_without_opening_payloads() {
     let plan = Planner::new()
         .plan_tier_b(
             &resource,
-            plan_input(Vec::new(), None, None, PlanBoundedness::Bounded),
+            plan_input(Vec::new(), None, None, ExecutionExtent::bounded()),
         )
         .unwrap();
 
@@ -1031,7 +1034,7 @@ fn preview_terminal_quarantine_uses_run_attestation_without_opening_payloads() {
 #[test]
 fn execution_returns_segment_source_position_evidence() {
     let resource = MockResource::tier_a(vec![batch_with_file_position()]);
-    let input = plan_input(vec![], None, None, PlanBoundedness::Bounded);
+    let input = plan_input(vec![], None, None, ExecutionExtent::bounded());
     let plan = Planner::new().plan_tier_a(&resource, input).unwrap();
     let temp = TempDir::new().unwrap();
     let output = block_on(execute_to_package_with_segment_positions(
@@ -1061,7 +1064,7 @@ fn tier_b_negotiates_pushdown_fidelity_without_io() {
         vec!["id > 1", "active = true", "name != 'missing'"],
         Some(vec!["name".to_owned()]),
         Some(10),
-        PlanBoundedness::Bounded,
+        ExecutionExtent::bounded(),
     );
     let plan = Planner::new().plan_tier_b(&resource, input).unwrap();
 
@@ -1101,7 +1104,7 @@ fn tier_b_explain_serializes_honest_cdf_native_operator_metadata() {
         vec!["id > 1", "active = true", "name != 'missing'"],
         Some(vec!["name".to_owned()]),
         Some(10),
-        PlanBoundedness::Bounded,
+        ExecutionExtent::bounded(),
     );
     let plan = Planner::new().plan_tier_b(&resource, input).unwrap();
     let explain_json = serde_json::to_value(&plan.explain).unwrap();
@@ -1125,8 +1128,16 @@ fn tier_b_explain_serializes_honest_cdf_native_operator_metadata() {
 fn engine_plan_deserialization_rejects_missing_required_execution_policy() {
     let resource =
         MockResource::tier_a(sample_batches()).with_write_disposition(WriteDisposition::Append);
-    let input = plan_input(Vec::new(), None, None, PlanBoundedness::Bounded);
+    let input = plan_input(Vec::new(), None, None, ExecutionExtent::bounded());
     let plan = Planner::new().plan_tier_a(&resource, input).unwrap();
+    let mut plan_json = serde_json::to_value(&plan).unwrap();
+    plan_json
+        .as_object_mut()
+        .unwrap()
+        .remove("execution_extent");
+    let error = serde_json::from_value::<EnginePlan>(plan_json).unwrap_err();
+    assert!(error.to_string().contains("execution_extent"));
+
     let mut plan_json = serde_json::to_value(&plan).unwrap();
     plan_json
         .as_object_mut()
@@ -1206,7 +1217,7 @@ fn effective_schema_binds_only_the_attempted_partition_observation_under_limit()
     let plan = Planner::new()
         .plan_tier_b(
             &resource,
-            plan_input(Vec::new(), None, Some(1), PlanBoundedness::Bounded),
+            plan_input(Vec::new(), None, Some(1), ExecutionExtent::bounded()),
         )
         .unwrap();
     assert_eq!(
@@ -1260,7 +1271,7 @@ fn limited_multi_batch_partition_records_exact_non_checkpointing_partial_attempt
     let plan = Planner::new()
         .plan_tier_a(
             &resource,
-            plan_input(Vec::new(), None, Some(1), PlanBoundedness::Bounded),
+            plan_input(Vec::new(), None, Some(1), ExecutionExtent::bounded()),
         )
         .unwrap();
     let temp = TempDir::new().unwrap();
@@ -1318,7 +1329,7 @@ fn terminal_schema_observation_quarantine_processes_distinct_partitions_without_
     let plan = Planner::new()
         .plan_tier_b(
             &resource,
-            plan_input(Vec::new(), None, None, PlanBoundedness::Bounded),
+            plan_input(Vec::new(), None, None, ExecutionExtent::bounded()),
         )
         .unwrap();
     let temp = TempDir::new().unwrap();
@@ -1391,7 +1402,7 @@ fn terminal_schema_observation_attestation_change_aborts_before_processed_eviden
     let plan = Planner::new()
         .plan_tier_b(
             &resource,
-            plan_input(Vec::new(), None, None, PlanBoundedness::Bounded),
+            plan_input(Vec::new(), None, None, ExecutionExtent::bounded()),
         )
         .unwrap();
     let temp = TempDir::new().unwrap();
@@ -1430,7 +1441,7 @@ fn terminal_schema_observation_identity_attestation_failure_aborts_before_proces
     let plan = Planner::new()
         .plan_tier_b(
             &resource,
-            plan_input(Vec::new(), None, None, PlanBoundedness::Bounded),
+            plan_input(Vec::new(), None, None, ExecutionExtent::bounded()),
         )
         .unwrap();
     let temp = TempDir::new().unwrap();
@@ -1458,7 +1469,7 @@ fn terminal_effective_schema_runtime(
     let authority_plan = Planner::new()
         .plan_tier_b(
             &MockResource::tier_b(Vec::new()),
-            plan_input(Vec::new(), None, None, PlanBoundedness::Bounded),
+            plan_input(Vec::new(), None, None, ExecutionExtent::bounded()),
         )
         .unwrap();
     let CompiledSchemaAdmissionOutcome::Quarantined(terminal_0) = authority_plan
@@ -1528,7 +1539,7 @@ fn inexact_and_unsupported_predicates_are_reapplied_during_execution() {
         vec!["id > 1", "active = true", "name != 'three'"],
         Some(vec!["name".to_owned()]),
         None,
-        PlanBoundedness::Bounded,
+        ExecutionExtent::bounded(),
     );
     let plan = Planner::new().plan_tier_b(&resource, input).unwrap();
     let temp = TempDir::new().unwrap();
@@ -1553,7 +1564,7 @@ fn durable_segment_hook_runs_after_publish_with_exact_entry_and_batch() {
     let plan = Planner::new()
         .plan_tier_b(
             &resource,
-            plan_input(vec![], None, None, PlanBoundedness::Bounded),
+            plan_input(vec![], None, None, ExecutionExtent::bounded()),
         )
         .unwrap();
     let package_dir = TempDir::new().unwrap();
@@ -1611,22 +1622,122 @@ fn durable_segment_hook_runs_after_publish_with_exact_entry_and_batch() {
 }
 
 #[test]
-fn illegal_unbounded_live_plan_is_rejected() {
+fn resident_execution_plan_is_rejected_until_supervisor_exists() {
     let resource = MockResource::tier_a(sample_batches());
     let input = plan_input(
         vec![],
         None,
         None,
-        PlanBoundedness::UnboundedLive {
-            checkpoint_cadence_ms: None,
-            package_rotation_rows: None,
-            watermark: None,
+        ExecutionExtent::Resident {
+            version: EXECUTION_EXTENT_VERSION,
+            policy: sample_stream_epoch_policy(),
         },
     );
     let error = Planner::new().plan_tier_a(&resource, input).unwrap_err();
 
     assert_eq!(error.kind, cdf_kernel::ErrorKind::Contract);
-    assert!(error.message.contains("unbounded live plans are illegal"));
+    assert!(error.message.contains("resident execution is not enabled"));
+}
+
+#[test]
+fn execution_extent_is_not_redefined_by_the_engine() {
+    let source_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    for entry in std::fs::read_dir(source_dir).unwrap() {
+        let path = entry.unwrap().path();
+        if path.extension().and_then(std::ffi::OsStr::to_str) != Some("rs")
+            || path.file_name().and_then(std::ffi::OsStr::to_str) == Some("tests.rs")
+        {
+            continue;
+        }
+        let source = std::fs::read_to_string(&path).unwrap();
+        for forbidden in ["PlanBoundedness", "UnboundedLive", "UnboundedDrain"] {
+            assert!(
+                !source.contains(forbidden),
+                "{} contains obsolete execution-extent authority {forbidden}",
+                path.display()
+            );
+        }
+        for line in source.lines() {
+            let tokens = line.split_whitespace().collect::<Vec<_>>();
+            for declaration in tokens.windows(2) {
+                assert!(
+                    !matches!(declaration[0], "enum" | "struct")
+                        || !declaration[1].trim_end_matches('{').contains("Extent"),
+                    "{} defines engine-owned extent type on line `{}`",
+                    path.display(),
+                    line.trim()
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn execution_rejects_resident_extent_before_source_contact() {
+    let resource = MockResource::tier_a(sample_batches());
+    let mut plan = Planner::new()
+        .plan_tier_a(
+            &resource,
+            plan_input(Vec::new(), None, None, ExecutionExtent::bounded()),
+        )
+        .unwrap();
+    plan.execution_extent = ExecutionExtent::Resident {
+        version: EXECUTION_EXTENT_VERSION,
+        policy: sample_stream_epoch_policy(),
+    };
+
+    let temp = TempDir::new().unwrap();
+    let error = block_on(execute_to_package(&plan, &resource, temp.path())).unwrap_err();
+    assert!(error.message.contains("resident execution is not enabled"));
+    assert!(std::fs::read_dir(temp.path()).unwrap().next().is_none());
+}
+
+#[test]
+fn execution_rejects_drain_extent_before_source_contact() {
+    let resource = MockResource::tier_a(sample_batches());
+    let mut plan = Planner::new()
+        .plan_tier_a(
+            &resource,
+            plan_input(Vec::new(), None, None, ExecutionExtent::bounded()),
+        )
+        .unwrap();
+    let drain = ExecutionExtent::Drain {
+        version: EXECUTION_EXTENT_VERSION,
+        policy: sample_stream_epoch_policy(),
+        termination: DrainTermination::Records { count: 10 },
+    };
+    plan.execution_extent = drain.clone();
+    plan.explain.execution_extent = drain;
+
+    let temp = TempDir::new().unwrap();
+    let error = block_on(execute_to_package(&plan, &resource, temp.path())).unwrap_err();
+    assert!(error.message.contains("drain execution is not enabled"));
+    assert!(std::fs::read_dir(temp.path()).unwrap().next().is_none());
+}
+
+#[test]
+fn execution_rejects_divergent_recorded_extent_before_source_contact() {
+    let resource = MockResource::tier_a(sample_batches());
+    let mut plan = Planner::new()
+        .plan_tier_a(
+            &resource,
+            plan_input(Vec::new(), None, None, ExecutionExtent::bounded()),
+        )
+        .unwrap();
+    plan.explain.execution_extent = ExecutionExtent::Drain {
+        version: EXECUTION_EXTENT_VERSION,
+        policy: sample_stream_epoch_policy(),
+        termination: DrainTermination::Records { count: 10 },
+    };
+
+    let temp = TempDir::new().unwrap();
+    let error = block_on(execute_to_package(&plan, &resource, temp.path())).unwrap_err();
+    assert!(
+        error
+            .message
+            .contains("does not match its recorded explain extent")
+    );
+    assert!(std::fs::read_dir(temp.path()).unwrap().next().is_none());
 }
 
 #[test]
@@ -1636,7 +1747,11 @@ fn explain_and_operator_chain_carry_contract_package_details() {
         vec!["active = true"],
         Some(vec!["id".to_owned(), "name".to_owned()]),
         Some(2),
-        PlanBoundedness::UnboundedDrain,
+        ExecutionExtent::Drain {
+            version: EXECUTION_EXTENT_VERSION,
+            policy: sample_stream_epoch_policy(),
+            termination: DrainTermination::Records { count: 10 },
+        },
     );
     let plan = Planner::new().plan_tier_a(&resource, input).unwrap();
     let explain_json = serde_json::to_value(&plan.explain).unwrap();
@@ -1668,7 +1783,7 @@ fn operator_graph_compiles_from_capabilities_without_driver_name_dispatch() {
     let mut plan = Planner::new()
         .plan_tier_b(
             &resource,
-            plan_input(Vec::new(), None, None, PlanBoundedness::Bounded),
+            plan_input(Vec::new(), None, None, ExecutionExtent::bounded()),
         )
         .unwrap();
     for operator in &mut plan.operator_chain {
@@ -1865,7 +1980,7 @@ fn validation_program_source_name_can_cover_and_rename_batch_field() {
         vec![],
         Some(vec!["name".to_owned()]),
         None,
-        PlanBoundedness::Bounded,
+        ExecutionExtent::bounded(),
     );
     rename_column_program_output(&mut input.validation_program, "name", "customer_name");
     let plan = Planner::new().plan_tier_a(&resource, input).unwrap();
@@ -1889,7 +2004,7 @@ fn validation_program_output_name_can_cover_already_normalized_batch_field() {
         vec![],
         Some(vec!["customer_name".to_owned()]),
         None,
-        PlanBoundedness::Bounded,
+        ExecutionExtent::bounded(),
     );
     rename_column_program_source(&mut input.validation_program, "customer_name", "name");
     let plan = Planner::new().plan_tier_a(&resource, input).unwrap();
@@ -1913,7 +2028,7 @@ fn package_artifacts_record_schema_coercion_evidence_and_physical_type_metadata(
         vec![],
         None,
         None,
-        PlanBoundedness::Bounded,
+        ExecutionExtent::bounded(),
     );
     let plan = Planner::new().plan_tier_a(&resource, input).unwrap();
     let temp = TempDir::new().unwrap();
@@ -2000,7 +2115,7 @@ fn compiled_output_schema_strips_runtime_provenance_only_after_serializing_evide
     batch.header.schema_coercion_plan = Some(serialized_plan);
     batch.header.mark_materialized_output(&observed).unwrap();
     let resource = MockResource::tier_a(vec![batch]).with_schema(constraint.clone());
-    let input = plan_input_for_schema(constraint, vec![], None, None, PlanBoundedness::Bounded);
+    let input = plan_input_for_schema(constraint, vec![], None, None, ExecutionExtent::bounded());
     let plan = Planner::new().plan_tier_a(&resource, input).unwrap();
     let temp = TempDir::new().unwrap();
 
@@ -2080,7 +2195,7 @@ fn package_artifacts_preserve_exact_embedded_lossy_and_extra_reconciliation_deci
         vec![],
         None,
         None,
-        PlanBoundedness::Bounded,
+        ExecutionExtent::bounded(),
     );
     let plan = Planner::new().plan_tier_a(&resource, input).unwrap();
     let temp = TempDir::new().unwrap();
@@ -2110,7 +2225,7 @@ fn package_artifacts_preserve_exact_embedded_lossy_and_extra_reconciliation_deci
                 vec![],
                 None,
                 None,
-                PlanBoundedness::Bounded,
+                ExecutionExtent::bounded(),
             ),
         )
         .unwrap();
@@ -2162,7 +2277,7 @@ fn package_execution_rejects_source_carried_coercion_metadata_without_trusted_he
         vec![],
         None,
         None,
-        PlanBoundedness::Bounded,
+        ExecutionExtent::bounded(),
     );
     let plan = Planner::new().plan_tier_a(&resource, input).unwrap();
     let temp = TempDir::new().unwrap();
@@ -2190,7 +2305,7 @@ fn package_execution_rejects_malformed_trusted_coercion_header() {
         .mark_materialized_output(schema.as_ref())
         .unwrap();
     let resource = MockResource::tier_a(vec![batch]);
-    let input = plan_input_for_schema(schema, vec![], None, None, PlanBoundedness::Bounded);
+    let input = plan_input_for_schema(schema, vec![], None, None, ExecutionExtent::bounded());
     let plan = Planner::new().plan_tier_a(&resource, input).unwrap();
     let temp = TempDir::new().unwrap();
 
@@ -2229,7 +2344,7 @@ fn package_execution_rejects_valid_header_only_coercion_injection() {
         .mark_materialized_output(schema.as_ref())
         .unwrap();
     let resource = MockResource::tier_a(vec![batch]);
-    let input = plan_input_for_schema(schema, vec![], None, None, PlanBoundedness::Bounded);
+    let input = plan_input_for_schema(schema, vec![], None, None, ExecutionExtent::bounded());
     let plan = Planner::new().plan_tier_a(&resource, input).unwrap();
     let temp = TempDir::new().unwrap();
 
@@ -2244,7 +2359,7 @@ fn package_execution_rejects_valid_header_only_coercion_injection() {
 #[test]
 fn contract_exec_filters_quarantined_rows_before_normalize() {
     let resource = MockResource::tier_a(sample_batches());
-    let mut input = plan_input(vec![], None, None, PlanBoundedness::Bounded);
+    let mut input = plan_input(vec![], None, None, ExecutionExtent::bounded());
     let mut policy = ContractPolicy::for_trust(TrustLevel::Governed);
     policy.rows.rules = vec![RowRule::Domain {
         column: "name".to_owned(),
@@ -2276,7 +2391,7 @@ fn contract_exec_filters_quarantined_rows_before_normalize() {
 #[test]
 fn fused_and_unfused_transform_modes_produce_identical_packages() {
     let resource = MockResource::tier_a(sample_batches());
-    let mut input = plan_input(vec![], None, None, PlanBoundedness::Bounded);
+    let mut input = plan_input(vec![], None, None, ExecutionExtent::bounded());
     let mut policy = ContractPolicy::for_trust(TrustLevel::Governed);
     policy.schema.mode = SchemaEvolutionMode::Evolve;
     policy.rows.rules = vec![RowRule::Domain {
@@ -2332,7 +2447,7 @@ fn fused_transform_reserves_before_allocation_and_releases_after_persist() {
     let plan = Planner::new()
         .plan_tier_a(
             &resource,
-            plan_input(vec![], None, None, PlanBoundedness::Bounded),
+            plan_input(vec![], None, None, ExecutionExtent::bounded()),
         )
         .unwrap();
     let pre_finalize =
@@ -2399,7 +2514,7 @@ fn contract_exec_writes_redacted_quarantine_artifact_and_keeps_accepted_rows() {
         }],
     }));
     let resource = MockResource::tier_a(vec![batch]);
-    let mut input = plan_input_for_schema(schema, vec![], None, None, PlanBoundedness::Bounded);
+    let mut input = plan_input_for_schema(schema, vec![], None, None, ExecutionExtent::bounded());
     let mut policy = ContractPolicy::for_trust(TrustLevel::Governed);
     policy.rows.rules = vec![RowRule::Regex {
         column: "name".to_owned(),
@@ -2520,7 +2635,7 @@ fn contract_quarantine_preserves_source_ordinal_after_transform_filter() {
         vec![true, true],
     );
     let resource = MockResource::tier_a(vec![batch]);
-    let mut input = plan_input_for_schema(schema, vec![], None, None, PlanBoundedness::Bounded);
+    let mut input = plan_input_for_schema(schema, vec![], None, None, ExecutionExtent::bounded());
     let mut policy = ContractPolicy::for_trust(TrustLevel::Governed);
     policy.transforms = vec![cdf_contract::TransformDescription::Filter {
         expression: Expression::parse_comparison("id >= 2").unwrap(),
@@ -2584,7 +2699,7 @@ fn contract_quarantine_preserves_source_ordinal_after_residual_quarantine() {
         .unwrap(),
     );
     let resource = MockResource::tier_a(vec![batch]);
-    let mut input = plan_input_for_schema(schema, vec![], None, None, PlanBoundedness::Bounded);
+    let mut input = plan_input_for_schema(schema, vec![], None, None, ExecutionExtent::bounded());
     let mut policy = ContractPolicy::for_trust(TrustLevel::Governed);
     policy.schema.mode = SchemaEvolutionMode::Evolve;
     policy.rows.rules = vec![RowRule::Regex {
@@ -2640,7 +2755,7 @@ fn source_decode_quarantine_facts_fold_into_package_artifacts() {
         },
     }];
     let resource = MockResource::tier_a(vec![batch]);
-    let input = plan_input(vec![], None, None, PlanBoundedness::Bounded);
+    let input = plan_input(vec![], None, None, ExecutionExtent::bounded());
     let plan = Planner::new().plan_tier_a(&resource, input).unwrap();
     let temp = TempDir::new().unwrap();
     let output = block_on(execute_to_package(&plan, &resource, temp.path())).unwrap();
@@ -2714,7 +2829,7 @@ fn variant_capture_materializes_nested_values_and_contract_evolution_evidence() 
         vec![],
         None,
         None,
-        PlanBoundedness::Bounded,
+        ExecutionExtent::bounded(),
     );
     let mut policy = ContractPolicy::for_trust(TrustLevel::Governed);
     policy.normalization.nested = NestedDataPolicy::VariantCapture(Default::default());
@@ -2924,7 +3039,7 @@ fn residual_contract_exec_captures_safe_values_redacts_pii_and_quarantines_contr
         vec![],
         Some(vec!["id".to_owned(), "note".to_owned()]),
         None,
-        PlanBoundedness::Bounded,
+        ExecutionExtent::bounded(),
     );
     let mut policy = ContractPolicy::for_trust(TrustLevel::Governed);
     policy.schema.mode = SchemaEvolutionMode::Evolve;
@@ -3120,7 +3235,7 @@ fn residual_multi_partition_decisions_share_verified_effective_schema_and_keep_i
         vec![],
         Some(vec!["id".to_owned(), "note".to_owned()]),
         None,
-        PlanBoundedness::Bounded,
+        ExecutionExtent::bounded(),
     );
     let mut policy = ContractPolicy::for_trust(TrustLevel::Governed);
     policy.schema.mode = SchemaEvolutionMode::Evolve;
@@ -3238,7 +3353,7 @@ fn residual_unsupported_encoding_becomes_named_quarantine() {
     );
     let resource =
         MockResource::tier_a(vec![batch]).with_write_disposition(WriteDisposition::Append);
-    let mut input = plan_input_for_schema(schema, vec![], None, None, PlanBoundedness::Bounded);
+    let mut input = plan_input_for_schema(schema, vec![], None, None, ExecutionExtent::bounded());
     let mut policy = ContractPolicy::for_trust(TrustLevel::Governed);
     policy.schema.mode = SchemaEvolutionMode::Evolve;
     input.validation_program = compile_validation_program(
@@ -3271,7 +3386,7 @@ fn residual_unsupported_encoding_becomes_named_quarantine() {
 fn execution_rejects_schema_authority_and_zero_row_output_schema_tampering() {
     let resource =
         MockResource::tier_a(Vec::new()).with_write_disposition(WriteDisposition::Append);
-    let input = plan_input(vec![], None, None, PlanBoundedness::Bounded);
+    let input = plan_input(vec![], None, None, ExecutionExtent::bounded());
     let plan = Planner::new().plan_tier_a(&resource, input).unwrap();
 
     let mut authority_tamper = plan.clone();
@@ -3305,7 +3420,7 @@ fn execution_rejects_schema_authority_and_zero_row_output_schema_tampering() {
 #[test]
 fn reject_batch_contract_abort_prevents_packaged_manifest() {
     let resource = MockResource::tier_a(sample_batches());
-    let mut input = plan_input(vec![], None, None, PlanBoundedness::Bounded);
+    let mut input = plan_input(vec![], None, None, ExecutionExtent::bounded());
     let mut policy = ContractPolicy::for_trust(TrustLevel::Governed);
     policy.verdicts.violation = VerdictAction::RejectBatch;
     policy.rows.rules = vec![RowRule::Domain {
@@ -3346,7 +3461,7 @@ fn merge_dedup_keep_last_runs_after_contract_filtering_and_before_normalize() {
         ),
     ];
     let resource = MockResource::tier_a(batches);
-    let mut input = plan_input(vec![], None, None, PlanBoundedness::Bounded);
+    let mut input = plan_input(vec![], None, None, ExecutionExtent::bounded());
     let mut policy = ContractPolicy::for_trust(TrustLevel::Governed);
     policy.rows.rules = vec![
         RowRule::Domain {
@@ -3445,7 +3560,7 @@ fn terminal_attestation_enriches_segments_after_package_dedup() {
     }
     let resource = MockResource::tier_a(batches)
         .with_completion_attestation(PartitionAttestation::new(terminal_position.clone(), None));
-    let mut input = plan_input(vec![], None, None, PlanBoundedness::Bounded);
+    let mut input = plan_input(vec![], None, None, ExecutionExtent::bounded());
     let mut policy = ContractPolicy::for_trust(TrustLevel::Governed);
     policy.rows.rules = vec![RowRule::Dedup {
         keys: vec!["id".to_owned()],
@@ -3508,7 +3623,7 @@ fn dynamic_schema_quarantine_drains_to_eof_and_commits_terminal_content_identity
     let plan = Planner::new()
         .plan_tier_a(
             &resource,
-            plan_input(Vec::new(), None, None, PlanBoundedness::Bounded),
+            plan_input(Vec::new(), None, None, ExecutionExtent::bounded()),
         )
         .unwrap();
     let temp = TempDir::new().unwrap();
@@ -3551,7 +3666,7 @@ fn merge_dedup_keep_first_uses_package_order() {
         ),
     ];
     let resource = MockResource::tier_a(batches);
-    let mut input = plan_input(vec![], None, None, PlanBoundedness::Bounded);
+    let mut input = plan_input(vec![], None, None, ExecutionExtent::bounded());
     let mut policy = ContractPolicy::for_trust(TrustLevel::Governed);
     policy.rows.rules = vec![RowRule::Dedup {
         keys: vec!["id".to_owned()],
@@ -3608,7 +3723,7 @@ fn package_identity_is_invariant_to_source_batch_rechunking() {
         ),
         batch_for_partition("source-page-c", "part-0", vec![4], vec!["four"], vec![true]),
     ]);
-    let input = plan_input(Vec::new(), None, None, PlanBoundedness::Bounded);
+    let input = plan_input(Vec::new(), None, None, ExecutionExtent::bounded());
     let one_plan = Planner::new().plan_tier_a(&one, input.clone()).unwrap();
     let many_plan = Planner::new().plan_tier_a(&many, input).unwrap();
     assert_eq!(one_plan, many_plan);
@@ -3639,7 +3754,7 @@ fn append_plan_with_compiled_dedup_rule_does_not_change_rows_or_write_summary() 
         vec![true, true],
     )])
     .with_write_disposition(WriteDisposition::Append);
-    let mut input = plan_input(vec![], None, None, PlanBoundedness::Bounded);
+    let mut input = plan_input(vec![], None, None, ExecutionExtent::bounded());
     let mut policy = ContractPolicy::for_trust(TrustLevel::Governed);
     policy.rows.rules = vec![RowRule::Dedup {
         keys: vec!["id".to_owned()],
@@ -3677,7 +3792,7 @@ fn append_exact_row_dedup_compiles_and_drops_only_complete_duplicates() {
     )])
     .with_write_disposition(WriteDisposition::Append);
     resource.descriptor.deduplication = Some(DeduplicationSpec::ExactRow);
-    let mut input = plan_input(vec![], None, None, PlanBoundedness::Bounded);
+    let mut input = plan_input(vec![], None, None, ExecutionExtent::bounded());
     input.validation_program = compile_resource_validation_program(
         &ContractPolicy::for_trust(TrustLevel::Governed),
         &ObservedSchema::from_arrow(sample_schema().as_ref()),
@@ -3747,7 +3862,7 @@ fn replace_plan_with_compiled_dedup_rule_does_not_change_rows_or_write_summary()
         vec![true, true],
     )])
     .with_write_disposition(WriteDisposition::Replace);
-    let mut input = plan_input(vec![], None, None, PlanBoundedness::Bounded);
+    let mut input = plan_input(vec![], None, None, ExecutionExtent::bounded());
     let mut policy = ContractPolicy::for_trust(TrustLevel::Governed);
     policy.rows.rules = vec![RowRule::Dedup {
         keys: vec!["id".to_owned()],
@@ -3783,7 +3898,7 @@ fn merge_dedup_fail_aborts_before_package_finalization() {
         vec!["one-first", "one-last"],
         vec![true, true],
     )]);
-    let mut input = plan_input(vec![], None, None, PlanBoundedness::Bounded);
+    let mut input = plan_input(vec![], None, None, ExecutionExtent::bounded());
     let mut policy = ContractPolicy::for_trust(TrustLevel::Governed);
     policy.rows.rules = vec![RowRule::Dedup {
         keys: vec!["id".to_owned()],
@@ -3831,7 +3946,7 @@ fn freshness_contract_writes_observed_at_context_when_rule_requires_it() {
     resource.descriptor.primary_key.clear();
     resource.descriptor.merge_key.clear();
     resource.descriptor.write_disposition = WriteDisposition::Append;
-    let mut input = plan_input_for_schema(schema, vec![], None, None, PlanBoundedness::Bounded);
+    let mut input = plan_input_for_schema(schema, vec![], None, None, ExecutionExtent::bounded());
     let mut policy = ContractPolicy::for_trust(TrustLevel::Governed);
     policy.rows.rules = vec![RowRule::Freshness {
         column: "updated_at".to_owned(),
@@ -3862,7 +3977,7 @@ fn freshness_contract_writes_observed_at_context_when_rule_requires_it() {
 #[test]
 fn traced_execution_emits_run_resource_package_and_partition_spans() {
     let resource = MockResource::tier_a(sample_batches());
-    let input = plan_input(vec![], None, None, PlanBoundedness::Bounded);
+    let input = plan_input(vec![], None, None, ExecutionExtent::bounded());
     let plan = Planner::new().plan_tier_a(&resource, input).unwrap();
     let run_id = RunId::new("run-engine-trace-test").unwrap();
     let temp = TempDir::new().unwrap();
@@ -3911,7 +4026,7 @@ fn traced_execution_emits_run_resource_package_and_partition_spans() {
 #[test]
 fn traced_execution_preserves_manifest_identity_hash() {
     let resource = MockResource::tier_a(sample_batches());
-    let input = plan_input(vec![], None, None, PlanBoundedness::Bounded);
+    let input = plan_input(vec![], None, None, ExecutionExtent::bounded());
     let plan = Planner::new().plan_tier_a(&resource, input).unwrap();
     let untraced_temp = TempDir::new().unwrap();
     let traced_temp = TempDir::new().unwrap();
@@ -3933,7 +4048,7 @@ fn traced_execution_preserves_manifest_identity_hash() {
 #[test]
 fn phase_telemetry_is_additive_and_preserves_manifest_identity() {
     let resource = MockResource::tier_a(sample_batches());
-    let input = plan_input(vec![], None, None, PlanBoundedness::Bounded);
+    let input = plan_input(vec![], None, None, ExecutionExtent::bounded());
     let plan = Planner::new().plan_tier_a(&resource, input).unwrap();
     let plain_temp = TempDir::new().unwrap();
     let measured_temp = TempDir::new().unwrap();
@@ -3984,7 +4099,7 @@ fn parallel_segment_encoding_is_identical_to_inline_canonical_registration() {
     let mut plan = Planner::new()
         .plan_tier_a(
             &resource,
-            plan_input(vec![], None, None, PlanBoundedness::Bounded),
+            plan_input(vec![], None, None, ExecutionExtent::bounded()),
         )
         .unwrap();
     for operator in &mut plan.operator_chain {
@@ -4036,7 +4151,7 @@ fn parallel_segment_frontier_failure_joins_workers_and_prevents_finalization() {
     let mut plan = Planner::new()
         .plan_tier_a(
             &resource,
-            plan_input(vec![], None, None, PlanBoundedness::Bounded),
+            plan_input(vec![], None, None, ExecutionExtent::bounded()),
         )
         .unwrap();
     for operator in &mut plan.operator_chain {
@@ -4746,7 +4861,7 @@ fn assert_explain_carries_required_fields(explain_json: &serde_json::Value) {
         "partitions",
         "estimates",
         "delivery_guarantee",
-        "boundedness",
+        "execution_extent",
     ] {
         assert!(explain_json.get(field).is_some(), "missing {field}");
     }
@@ -4830,9 +4945,26 @@ fn plan_input(
     filters: Vec<&str>,
     projection: Option<Vec<String>>,
     limit: Option<u64>,
-    boundedness: PlanBoundedness,
+    execution_extent: ExecutionExtent,
 ) -> EnginePlanInput {
-    plan_input_for_schema(sample_schema(), filters, projection, limit, boundedness)
+    plan_input_for_schema(
+        sample_schema(),
+        filters,
+        projection,
+        limit,
+        execution_extent,
+    )
+}
+
+fn sample_stream_epoch_policy() -> StreamEpochPolicy {
+    StreamEpochPolicy {
+        version: STREAM_EPOCH_POLICY_VERSION,
+        checkpoint_cadence: EpochClosureTrigger::Rows { count: 5 },
+        package_rotation: EpochClosureTrigger::Bytes { count: 1 << 20 },
+        watermark: WatermarkPolicy::Disabled,
+        late_data: LateDataAction::Quarantine,
+        safe_frontier: SafeFrontierPolicy::CanonicalAdmittedSourcePosition,
+    }
 }
 
 fn plan_input_for_schema(
@@ -4840,7 +4972,7 @@ fn plan_input_for_schema(
     filters: Vec<&str>,
     projection: Option<Vec<String>>,
     limit: Option<u64>,
-    boundedness: PlanBoundedness,
+    execution_extent: ExecutionExtent,
 ) -> EnginePlanInput {
     let observed = ObservedSchema::from_arrow(schema.as_ref());
     let validation_program =
@@ -4863,7 +4995,7 @@ fn plan_input_for_schema(
             scope: ScopeKey::Resource,
         },
         validation_program,
-        boundedness,
+        execution_extent,
         package_id: "pkg-engine-test".to_owned(),
     }
 }

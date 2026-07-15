@@ -12,8 +12,8 @@ use cdf_contract::{
 };
 use cdf_kernel::{
     CdfError, DeliveryGuarantee, DiscoveryExecutorBudgetEvidence, EffectiveSchemaEvidence,
-    EstimateSupport, ProcessedObservationPosition, PushdownFidelity, ResourceId, ResourceStream,
-    Result, RunPhaseMetric, ScanPlan, ScanPredicate, ScanRequest, SchemaHash,
+    EstimateSupport, ExecutionExtent, ProcessedObservationPosition, PushdownFidelity, ResourceId,
+    ResourceStream, Result, RunPhaseMetric, ScanPlan, ScanPredicate, ScanRequest, SchemaHash,
     SchemaObservationFieldQuarantine, SchemaObservationPolicy, SegmentId, SourcePosition,
     TerminalSchemaObservationQuarantine, WriteDisposition, source_name,
 };
@@ -25,20 +25,8 @@ use serde::{Deserialize, Serialize};
 pub struct EnginePlanInput {
     pub request: ScanRequest,
     pub validation_program: ValidationProgram,
-    pub boundedness: PlanBoundedness,
+    pub execution_extent: ExecutionExtent,
     pub package_id: String,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
-pub enum PlanBoundedness {
-    Bounded,
-    UnboundedDrain,
-    UnboundedLive {
-        checkpoint_cadence_ms: Option<u64>,
-        package_rotation_rows: Option<u64>,
-        watermark: Option<String>,
-    },
 }
 
 #[non_exhaustive]
@@ -57,7 +45,7 @@ pub struct EnginePlan {
     pub compiled_expression_plan: CompiledExpressionPlan,
     /// The sole schema-admission program consumed by extraction and replay.
     pub compiled_schema_admission: CompiledSchemaAdmissionPlan,
-    pub boundedness: PlanBoundedness,
+    pub execution_extent: ExecutionExtent,
     pub write_disposition: WriteDisposition,
     pub validation_program: ValidationProgram,
     pub schema_authority: EngineSchemaAuthority,
@@ -68,6 +56,15 @@ pub struct EnginePlan {
 }
 
 impl EnginePlan {
+    pub fn validate_execution_extent_for_execution(&self) -> Result<()> {
+        if self.execution_extent != self.explain.execution_extent {
+            return Err(CdfError::contract(
+                "plan execution extent does not match its recorded explain extent",
+            ));
+        }
+        self.execution_extent.validate_for_execution()
+    }
+
     pub fn validate_compiled_expression_plan(&self) -> Result<()> {
         let compiled = &self.compiled_expression_plan;
         compiled.validate_program_binding(&self.validation_program)?;
@@ -1419,7 +1416,7 @@ pub struct ExplainData {
     pub partition_schedule: Option<cdf_runtime::CanonicalPartitionSchedule>,
     pub estimates: EstimateExplain,
     pub delivery_guarantee: DeliveryGuarantee,
-    pub boundedness: PlanBoundedness,
+    pub execution_extent: ExecutionExtent,
     pub operator_chain: Vec<OperatorNode>,
 }
 

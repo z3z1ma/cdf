@@ -24,9 +24,9 @@ use cdf_contract::{
 use cdf_dest_duckdb::DuckDbDestination;
 use cdf_dest_parquet::ParquetDestination;
 use cdf_engine::{
-    CompiledStreamAdmissionEvidence, EnginePlanInput, PlanBoundedness, Planner,
-    StreamAdmissionObservationEvidence,
+    CompiledStreamAdmissionEvidence, EnginePlanInput, Planner, StreamAdmissionObservationEvidence,
 };
+use cdf_kernel::ExecutionExtent;
 use cdf_kernel::{
     BatchStream, BoxFuture, CHECKPOINT_STATE_VERSION, CdfError, CheckpointId, CheckpointStatus,
     CheckpointStore, CommitCounts, CursorPosition, CursorValue, DestinationId, FileManifest,
@@ -15102,7 +15102,7 @@ fn write_current_replay_artifacts(builder: &PackageBuilder, schema: &Schema, sch
                     scope: ScopeKey::Resource,
                 },
                 validation_program: program,
-                boundedness: PlanBoundedness::Bounded,
+                execution_extent: ExecutionExtent::bounded(),
                 package_id: "cli-current-fixture-package".to_owned(),
             },
         )
