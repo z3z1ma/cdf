@@ -87,6 +87,9 @@ pub fn run_preoptimization_baseline(
             package_dir: config.output_root.join("cdf-packages"),
             format: PreparedFileFormat::Ndjson,
             jobs: None,
+            execution_host_jobs: std::thread::available_parallelism()
+                .map(|jobs| u16::try_from(jobs.get()).unwrap_or(u16::MAX))
+                .unwrap_or(1),
         })?,
     )?;
     observations.push(run_cell(

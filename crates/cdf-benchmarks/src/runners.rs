@@ -1,4 +1,5 @@
 use std::{
+    collections::BTreeMap,
     fs,
     path::{Path, PathBuf},
     sync::{
@@ -88,6 +89,7 @@ pub struct PreparedFilePackageWorkload {
     pub package_dir: PathBuf,
     pub format: PreparedFileFormat,
     pub jobs: Option<u16>,
+    pub execution_host_jobs: u16,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -102,11 +104,16 @@ pub struct PreparedFilePackageRun {
     pub segments: Vec<cdf_package_contract::SegmentEntry>,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PreparedDestinationKind {
     DuckDb,
     Parquet,
+    Postgres {
+        database_url: String,
+        schema: Option<String>,
+        table: String,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -118,6 +125,7 @@ pub struct PreparedFileDestinationWorkload {
     pub output_root: PathBuf,
     pub destination: PreparedDestinationKind,
     pub jobs: Option<u16>,
+    pub execution_host_jobs: u16,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -262,8 +270,32 @@ fn benchmark_source_registry() -> BenchResult<SourceRegistry> {
     Ok(registry)
 }
 
-fn benchmark_execution_services() -> BenchResult<cdf_runtime::ExecutionServices> {
-    Ok(cdf_engine::StandaloneExecutionHost::default_services(BENCHMARK_MANAGED_MEMORY_BYTES)?.1)
+fn benchmark_execution_services(host_jobs: u16) -> BenchResult<cdf_runtime::ExecutionServices> {
+    if host_jobs == 0 {
+        return Err(bench_error(
+            "prepared workload execution_host_jobs must be nonzero",
+        ));
+    }
+    let memory: Arc<dyn cdf_memory::MemoryCoordinator> =
+        Arc::new(cdf_memory::DeterministicMemoryCoordinator::new(
+            BENCHMARK_MANAGED_MEMORY_BYTES,
+            BTreeMap::new(),
+        )?);
+    let host = Arc::new(cdf_engine::StandaloneExecutionHost::new(
+        cdf_runtime::ExecutionHostCapabilities {
+            logical_cpu_slots: host_jobs,
+            io_workers: host_jobs.min(4),
+            blocking_lanes: Vec::new(),
+        },
+        memory,
+    )?);
+    cdf_runtime::ExecutionServices::new(host).map_err(Into::into)
+}
+
+fn available_host_jobs() -> u16 {
+    std::thread::available_parallelism()
+        .map(|jobs| u16::try_from(jobs.get()).unwrap_or(u16::MAX))
+        .unwrap_or(1)
 }
 
 pub fn run_legacy_case_workload(request: &LegacyCaseWorkload) -> BenchResult<WorkerMeasurement> {
@@ -301,7 +333,7 @@ pub fn run_prepared_file_to_package(
         PreparedFileFormat::Ndjson => "ndjson",
         PreparedFileFormat::Parquet => "parquet",
     };
-    let execution = benchmark_execution_services()?;
+    let execution = benchmark_execution_services(request.execution_host_jobs)?;
     let host_jobs = execution.capabilities().logical_cpu_slots;
     let execution = execution.with_run_job_ceiling(request.jobs.unwrap_or(host_jobs))?;
     let source = benchmark_file_resource(
@@ -398,7 +430,7 @@ pub fn run_prepared_file_to_destination(
         PreparedFileFormat::Ndjson => "ndjson",
         PreparedFileFormat::Parquet => "parquet",
     };
-    let execution = benchmark_execution_services()?;
+    let execution = benchmark_execution_services(request.execution_host_jobs)?;
     let host_jobs = execution.capabilities().logical_cpu_slots;
     let execution = execution.with_run_job_ceiling(request.jobs.unwrap_or(host_jobs))?;
     let source = benchmark_file_resource(
@@ -410,7 +442,7 @@ pub fn run_prepared_file_to_destination(
     )?;
     fs::create_dir_all(&request.output_root)?;
     let target = TargetName::new("orders")?;
-    let destination = match request.destination {
+    let destination = match &request.destination {
         PreparedDestinationKind::DuckDb => ResolvedProjectDestination::new(
             Box::new(cdf_dest_duckdb::DuckDbDestination::new(
                 request.output_root.join("destination.duckdb"),
@@ -426,6 +458,24 @@ pub fn run_prepared_file_to_destination(
             ),
             target,
         ),
+        PreparedDestinationKind::Postgres {
+            database_url,
+            schema,
+            table,
+        } => {
+            let postgres_target = PostgresTarget::new(schema.as_deref(), table)?;
+            let target = TargetName::new(postgres_target.display_name())?;
+            let destination = cdf_dest_postgres::PostgresDestination::connect(database_url)?;
+            ResolvedProjectDestination::new(
+                Box::new(cdf_dest_postgres::PostgresRuntime::for_replay(
+                    &destination,
+                    postgres_target,
+                    MergeDedupPolicy::Last,
+                    None,
+                )),
+                target,
+            )
+        }
     };
     let destination_capabilities = destination.runtime_capabilities();
     let mut policy = ContractPolicy::for_trust(source.resource.descriptor().trust_level.clone());
@@ -594,7 +644,7 @@ fn run_file_to_package(
 ) -> BenchResult<WorkMetric> {
     let data_root = root.join("data");
     let path = write_local_fixture_file(&data_root, spec, format)?;
-    let execution = benchmark_execution_services()?;
+    let execution = benchmark_execution_services(available_host_jobs())?;
     let source_root = path
         .parent()
         .ok_or_else(|| bench_error("benchmark source path must have a parent directory"))?;
@@ -803,7 +853,7 @@ schema = { fields = [
 "#,
     )?;
     let resource = compile_document_with_project_root(&document, &project_root)?.remove(0);
-    let services = benchmark_execution_services()?;
+    let services = benchmark_execution_services(available_host_jobs())?;
     let source = resolve_benchmark_file_resource(resource, &project_root, &services)?;
     let package_id = "pkg-startup-benchmark";
     let destination = ResolvedProjectDestination::new(

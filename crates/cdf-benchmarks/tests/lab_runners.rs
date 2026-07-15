@@ -1,4 +1,9 @@
-use std::{collections::BTreeMap, fs, path::PathBuf, time::Duration};
+use std::{
+    collections::BTreeMap,
+    fs,
+    path::PathBuf,
+    time::{Duration, SystemTime, UNIX_EPOCH},
+};
 
 use cdf_benchmarks::{
     BENCHMARK_REPORT_SCHEMA_VERSION, BenchmarkReport, BiasLabel, Capability, ChildCommand,
@@ -267,6 +272,7 @@ fn prepared_cdf_worker_emits_real_phase_breakdown_without_timing_fixture_setup()
             package_dir: temp.path().join("packages"),
             format: PreparedFileFormat::Ndjson,
             jobs: None,
+            execution_host_jobs: 4,
         })
         .unwrap(),
     )
@@ -342,6 +348,7 @@ fn prepared_multi_file_jobs_matrix_preserves_canonical_package_identity() {
                     .join(format!("package-{format_label}-{jobs_label}")),
                 format,
                 jobs,
+                execution_host_jobs: 4,
             })
             .unwrap();
             assert_eq!(run.configured_jobs, jobs);
@@ -351,9 +358,9 @@ fn prepared_multi_file_jobs_matrix_preserves_canonical_package_identity() {
         }
 
         assert_eq!(runs[0].effective_jobs, 1);
-        assert!(runs[1].effective_jobs <= 2);
-        assert!((1..=4).contains(&runs[2].effective_jobs));
-        assert!(runs[3].effective_jobs <= 4);
+        assert_eq!(runs[1].effective_jobs, 2);
+        assert_eq!(runs[2].effective_jobs, 4);
+        assert_eq!(runs[3].effective_jobs, 4);
         for run in &runs[1..] {
             assert_eq!(
                 run.package_hash, runs[0].package_hash,
@@ -376,6 +383,7 @@ fn prepared_jobs_zero_is_rejected_before_source_contact() {
         package_dir: PathBuf::from("must-not-be-created"),
         format: PreparedFileFormat::Ndjson,
         jobs: Some(0),
+        execution_host_jobs: 4,
     })
     .unwrap_err();
 
@@ -387,7 +395,7 @@ fn prepared_jobs_zero_is_rejected_before_source_contact() {
 }
 
 #[test]
-fn staged_and_finalized_destinations_preserve_jobs_identity() {
+fn destination_ingress_categories_preserve_jobs_identity() {
     let temp = tempfile::tempdir().unwrap();
     let spec = fixture_spec("medium").unwrap();
     write_all_local_fixture_formats(temp.path(), &spec).unwrap();
@@ -420,17 +428,18 @@ fn staged_and_finalized_destinations_preserve_jobs_identity() {
                     output_root: temp
                         .path()
                         .join(format!("destination-{label}-{jobs_label}")),
-                    destination,
+                    destination: destination.clone(),
                     jobs,
+                    execution_host_jobs: 4,
                 })
                 .unwrap(),
             );
         }
 
         assert_eq!(runs[0].effective_jobs, 1);
-        assert!(runs[1].effective_jobs <= 2);
-        assert!((1..=4).contains(&runs[2].effective_jobs));
-        assert!(runs[3].effective_jobs <= 4);
+        assert_eq!(runs[1].effective_jobs, 2);
+        assert_eq!(runs[2].effective_jobs, 4);
+        assert_eq!(runs[3].effective_jobs, 4);
         for run in &runs {
             assert_eq!(run.partition_count, 4);
             assert_eq!(run.row_count, (spec.rows * 4) as u64);
@@ -447,6 +456,80 @@ fn staged_and_finalized_destinations_preserve_jobs_identity() {
             );
             assert_eq!(run.state_segment_ids, runs[0].state_segment_ids, "{label}");
         }
+    }
+}
+
+#[test]
+#[ignore = "requires CDF_BENCH_POSTGRES_URL for the live PostgreSQL destination matrix"]
+fn postgres_destination_preserves_jobs_identity() {
+    let database_url = std::env::var("CDF_BENCH_POSTGRES_URL")
+        .expect("CDF_BENCH_POSTGRES_URL must name the live benchmark database");
+    let temp = tempfile::tempdir().unwrap();
+    let spec = fixture_spec("medium").unwrap();
+    write_all_local_fixture_formats(temp.path(), &spec).unwrap();
+    let source = fs::read(temp.path().join("orders.parquet")).unwrap();
+    for ordinal in 0..4 {
+        fs::write(
+            temp.path().join(format!("part-{ordinal:02}.parquet")),
+            &source,
+        )
+        .unwrap();
+    }
+    let unique = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let table = format!("cdf_c4_jobs_{}_{}_orders", std::process::id(), unique);
+    let mut runs = Vec::new();
+    for (jobs_label, jobs) in [
+        ("one", Some(1)),
+        ("two", Some(2)),
+        ("auto", None),
+        ("four", Some(4)),
+    ] {
+        runs.push(
+            run_prepared_file_to_destination(&PreparedFileDestinationWorkload {
+                fixture_name: "medium".to_owned(),
+                source_root: temp.path().to_path_buf(),
+                glob: "part-*.parquet".to_owned(),
+                format: PreparedFileFormat::Parquet,
+                output_root: temp.path().join(format!("postgres-{jobs_label}")),
+                destination: PreparedDestinationKind::Postgres {
+                    database_url: database_url.clone(),
+                    schema: None,
+                    table: table.clone(),
+                },
+                jobs,
+                execution_host_jobs: 4,
+            })
+            .unwrap(),
+        );
+        let mut client = postgres::Client::connect(&database_url, postgres::NoTls).unwrap();
+        client
+            .batch_execute(&format!(
+                "DROP TABLE IF EXISTS \"{table}\", \"{}\", \"{}\", \"{}\", \"{}\", \"{}\" CASCADE",
+                cdf_dest_postgres::CDF_LOADS_TABLE,
+                cdf_dest_postgres::CDF_STATE_TABLE,
+                cdf_dest_postgres::CDF_QUARANTINE_TABLE,
+                cdf_dest_postgres::CDF_ROW_KEY_ALLOCATOR_TABLE,
+                cdf_dest_postgres::CDF_SEGMENTS_TABLE,
+            ))
+            .unwrap();
+    }
+
+    assert_eq!(runs[0].effective_jobs, 1);
+    assert_eq!(runs[1].effective_jobs, 2);
+    assert_eq!(runs[2].effective_jobs, 4);
+    assert_eq!(runs[3].effective_jobs, 4);
+    for run in &runs {
+        assert_eq!(run.partition_count, 4);
+        assert_eq!(run.row_count, (spec.rows * 4) as u64);
+    }
+    for run in &runs[1..] {
+        assert_eq!(run.package_hash, runs[0].package_hash);
+        assert_eq!(run.receipt_package_hash, runs[0].receipt_package_hash);
+        assert_eq!(run.receipt_segment_ids, runs[0].receipt_segment_ids);
+        assert_eq!(run.state_segment_ids, runs[0].state_segment_ids);
     }
 }
 
