@@ -266,40 +266,54 @@ impl ActiveStagedIngress {
                 })?;
             }
         }
+        let execution = if capabilities.staged_ingress_lane.is_some()
+            || capabilities.final_binding_lane.is_some()
+        {
+            services.ensure_blocking_lanes(&capabilities.blocking_lanes)?;
+            Some(services.clone())
+        } else {
+            None
+        };
+        let output_arrow_schema_hash =
+            cdf_kernel::canonical_arrow_schema_hash(&plan.output_schema)?;
         let staging_lease =
             services.acquire_staging_lease(cdf_runtime::StagingLeaseIdentity::new(
                 destination_id.clone(),
                 plan.target.clone(),
                 attempt_id.clone(),
             ))?;
-        let session =
-            staged_runtime.begin_staged_ingress(cdf_runtime::StagedIngressRequest::new(
-                attempt_id.clone(),
-                cdf_runtime::StagingAttemptBinding {
-                    destination_id,
-                    target: plan.target,
-                    disposition: plan.disposition,
-                    schema_hash: plan.schema_hash.clone(),
-                    output_arrow_schema_hash: cdf_kernel::canonical_arrow_schema_hash(
-                        &plan.output_schema,
-                    )?,
-                    merge_keys: plan.merge_keys.clone(),
-                    execution_plan_id: plan.execution_plan_id.clone(),
-                },
-                staging_lease.snapshot()?,
-                staging_lease.mutation_guard()?,
-                bulk_path.clone(),
-                scheduling.clone(),
-                plan.output_schema,
-            )?)?;
-        let execution = if capabilities.staged_ingress_lane.is_some()
-            || capabilities.final_binding_lane.is_some()
-        {
-            let execution = services.clone();
-            execution.ensure_blocking_lanes(&capabilities.blocking_lanes)?;
-            Some(execution)
-        } else {
-            None
+        let lease_snapshot = match staging_lease.snapshot() {
+            Ok(snapshot) => snapshot,
+            Err(error) => return Err(release_staging_lease_after_error(error, staging_lease)),
+        };
+        let mutation_guard = match staging_lease.mutation_guard() {
+            Ok(guard) => guard,
+            Err(error) => return Err(release_staging_lease_after_error(error, staging_lease)),
+        };
+        let request = cdf_runtime::StagedIngressRequest::new(
+            attempt_id.clone(),
+            cdf_runtime::StagingAttemptBinding {
+                destination_id,
+                target: plan.target,
+                disposition: plan.disposition,
+                schema_hash: plan.schema_hash.clone(),
+                output_arrow_schema_hash,
+                merge_keys: plan.merge_keys.clone(),
+                execution_plan_id: plan.execution_plan_id.clone(),
+            },
+            lease_snapshot,
+            mutation_guard,
+            bulk_path.clone(),
+            scheduling.clone(),
+            plan.output_schema,
+        );
+        let request = match request {
+            Ok(request) => request,
+            Err(error) => return Err(release_staging_lease_after_error(error, staging_lease)),
+        };
+        let session = match staged_runtime.begin_staged_ingress(request) {
+            Ok(session) => session,
+            Err(error) => return Err(release_staging_lease_after_error(error, staging_lease)),
         };
         let mut active = Self {
             attempt_id,
@@ -317,8 +331,13 @@ impl ActiveStagedIngress {
             ingress_input_bytes: 0,
             ingress_operations: 0,
         };
-        if let Some(lane) = capabilities.staged_ingress_lane.as_deref() {
-            active.start_background(lane, &capabilities)?;
+        if let Some(lane) = capabilities.staged_ingress_lane.as_deref()
+            && let Err(mut error) = active.start_background(lane, &capabilities)
+        {
+            if let Err(cleanup) = active.abort() {
+                error = attach_cleanup_failure(error, "staged ingress construction", cleanup);
+            }
+            return Err(error);
         }
         Ok(Some(active))
     }
@@ -640,6 +659,16 @@ fn attach_cleanup_failure(mut primary: CdfError, context: &str, cleanup: CdfErro
         primary.message, cleanup.message
     );
     primary
+}
+
+fn release_staging_lease_after_error(
+    mut error: CdfError,
+    lease: cdf_runtime::ManagedStagingLease,
+) -> CdfError {
+    if let Err(release) = lease.finish() {
+        error = attach_cleanup_failure(error, "staging lease release", release);
+    }
+    error
 }
 
 struct LiveStagedSegmentReader {
@@ -1663,11 +1692,29 @@ fn commit_package_through_staged_ingress(
             ));
         }
     }
+    let output_arrow_schema_hash = cdf_kernel::canonical_arrow_schema_hash(output_schema.as_ref())?;
+    let execution_plan_id = reader.recorded_scan_plan_verified(verified)?.plan_id;
+    let scheduling = cdf_runtime::StagingSchedulingContext::new(
+        capabilities
+            .max_in_flight_segments
+            .ok_or_else(|| CdfError::contract("staged ingress omitted its segment bound"))?,
+        capabilities
+            .max_in_flight_bytes
+            .ok_or_else(|| CdfError::contract("staged ingress omitted its byte bound"))?,
+    )?;
     let staging_lease = services.acquire_staging_lease(cdf_runtime::StagingLeaseIdentity::new(
         destination_id.clone(),
         inputs.destination_commit.target.clone(),
         attempt_id.clone(),
     ))?;
+    let lease_snapshot = match staging_lease.snapshot() {
+        Ok(snapshot) => snapshot,
+        Err(error) => return Err(release_staging_lease_after_error(error, staging_lease)),
+    };
+    let mutation_guard = match staging_lease.mutation_guard() {
+        Ok(guard) => guard,
+        Err(error) => return Err(release_staging_lease_after_error(error, staging_lease)),
+    };
     let request = cdf_runtime::StagedIngressRequest::new(
         attempt_id.clone(),
         cdf_runtime::StagingAttemptBinding {
@@ -1675,32 +1722,33 @@ fn commit_package_through_staged_ingress(
             target: inputs.destination_commit.target.clone(),
             disposition: inputs.destination_commit.disposition.clone(),
             schema_hash: inputs.schema_hash.clone(),
-            output_arrow_schema_hash: cdf_kernel::canonical_arrow_schema_hash(
-                output_schema.as_ref(),
-            )?,
+            output_arrow_schema_hash,
             merge_keys: inputs.merge_keys.clone(),
-            execution_plan_id: reader.recorded_scan_plan_verified(verified)?.plan_id,
+            execution_plan_id,
         },
-        staging_lease.snapshot()?,
-        staging_lease.mutation_guard()?,
+        lease_snapshot,
+        mutation_guard,
         bulk_path.clone(),
-        cdf_runtime::StagingSchedulingContext::new(
-            capabilities
-                .max_in_flight_segments
-                .ok_or_else(|| CdfError::contract("staged ingress omitted its segment bound"))?,
-            capabilities
-                .max_in_flight_bytes
-                .ok_or_else(|| CdfError::contract("staged ingress omitted its byte bound"))?,
-        )?,
+        scheduling,
         output_schema.as_ref().clone(),
-    )?;
+    );
+    let request = match request {
+        Ok(request) => request,
+        Err(error) => return Err(release_staging_lease_after_error(error, staging_lease)),
+    };
     let session = match runtime.ingress() {
         cdf_runtime::DestinationIngress::StagedSegments(staged) => {
-            staged.begin_staged_ingress(request)?
+            match staged.begin_staged_ingress(request) {
+                Ok(session) => session,
+                Err(error) => {
+                    return Err(release_staging_lease_after_error(error, staging_lease));
+                }
+            }
         }
         cdf_runtime::DestinationIngress::FinalizedPackage(_) => {
-            return Err(CdfError::contract(
-                "staged package commit reached a finalized destination runtime",
+            return Err(release_staging_lease_after_error(
+                CdfError::contract("staged package commit reached a finalized destination runtime"),
+                staging_lease,
             ));
         }
     };

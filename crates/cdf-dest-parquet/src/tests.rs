@@ -1752,7 +1752,11 @@ fn staged_attempt_records_the_exact_prepared_physical_plan() {
     )
     .unwrap();
     assert_eq!(metadata["physical_plan_path"], "arrow_ipc_to_parquet");
-    assert_eq!(metadata["physical_plan_version"], 4);
+    assert_eq!(metadata["physical_plan_version"], 5);
+    assert_eq!(
+        metadata["object_publication_mode"],
+        "atomic_content_create_v1"
+    );
     assert_eq!(metadata["writers"], 2);
     assert_eq!(metadata["rows_per_batch"], 64 * 1024);
     assert_eq!(metadata["bytes_per_batch"], 16 * 1024 * 1024);
@@ -1948,7 +1952,8 @@ fn abandoned_attempt_cleanup_requires_exact_expiry_proof() {
                 "target": commit.commit.target.as_str(),
                 "attempt_id": attempt_id.as_str(),
                 "physical_plan_path": "arrow_ipc_to_parquet",
-                "physical_plan_version": 4,
+                "physical_plan_version": 5,
+                "object_publication_mode": "atomic_content_create_v1",
                 "writers": 1,
                 "rows_per_batch": 65_536,
                 "bytes_per_batch": 16_777_216,
@@ -2090,7 +2095,8 @@ fn independent_lease_domains_cannot_collide_or_collect_each_others_staging() {
                     "target": commit.commit.target.as_str(),
                     "attempt_id": attempt_id.as_str(),
                     "physical_plan_path": "arrow_ipc_to_parquet",
-                    "physical_plan_version": 4,
+                    "physical_plan_version": 5,
+                    "object_publication_mode": "atomic_content_create_v1",
                     "writers": 1,
                     "rows_per_batch": 65_536,
                     "bytes_per_batch": 16_777_216,
@@ -2197,7 +2203,8 @@ fn failed_staging_cleanup_retains_attempt_marker_until_payload_deletion_complete
                 "target": target.as_str(),
                 "attempt_id": attempt_id.as_str(),
                 "physical_plan_path": "arrow_ipc_to_parquet",
-                "physical_plan_version": 4,
+                "physical_plan_version": 5,
+                "object_publication_mode": "atomic_content_create_v1",
                 "writers": 1,
                 "rows_per_batch": 65_536,
                 "bytes_per_batch": 16_777_216,

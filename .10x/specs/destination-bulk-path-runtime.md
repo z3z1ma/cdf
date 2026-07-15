@@ -42,7 +42,7 @@ DuckDB MUST use an Arrow-native batch path by default. A5/WS-D compare appender-
 
 Postgres MUST implement binary `COPY` from Arrow with exact PostgreSQL binary encodings and null framing. There is no CSV/text compatibility path before production: unsupported mappings fail during preparation with field-level remediation. Staging/disposition SQL remains transactional or follows staged-ingress final binding with no target visibility.
 
-Parquet destination MUST stream row groups/data files and hash/upload as batches arrive. Local temp files and object-store multipart/temp objects remain invisible until final binding. Output file/row-group sizing is bounded and deterministic where it affects receipt/object identity; live pressure cannot change package identity. No full-table buffer is permitted.
+Parquet destination MUST stream row groups/data files and hash/publish as batches arrive. Local publication and remote bounded-object upload MUST be atomic create-or-verify against immutable content identity and remain invisible to target reads until final manifest binding. Generic object-store multipart handles are process-local and therefore MUST NOT be used for externally staged publication; multipart is eligible only through a capability that exposes persistent provider upload identity, exact recovery/abort, and initiation-ambiguity handling to the runtime-owned lease authority. Output file/row-group sizing and upload mode are bounded and deterministic where they affect receipt/object identity; live pressure cannot change package identity. No full-table buffer is permitted.
 
 ## Conformance and performance
 

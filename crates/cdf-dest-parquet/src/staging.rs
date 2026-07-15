@@ -24,12 +24,13 @@ use crate::{
     },
     store::{
         ObjectKeyEncoder, StoredObject, data_object_key, now_ms, package_publication_metadata_key,
-        staged_attempt_metadata_key, staged_data_object_key,
+        staged_attempt_metadata_key,
     },
 };
 
 const ENCODE_LANE: &str = "parquet.encode";
 const STAGING_METADATA_VERSION: u16 = 1;
+const OBJECT_PUBLICATION_MODE: &str = "atomic_content_create_v1";
 pub(crate) struct ParquetStagedIngressSession {
     destination: ParquetDestination,
     request: StagedIngressRequest,
@@ -42,9 +43,6 @@ pub(crate) struct ParquetStagedIngressSession {
 struct ParquetPhysicalWritePlan {
     encoder: ObjectKeyEncoder,
     target: cdf_kernel::TargetName,
-    attempt_id: cdf_runtime::LoadAttemptId,
-    authority_domain_id: cdf_kernel::LeaseAuthorityDomainId,
-    fencing_token: u64,
     writers: u16,
     rows_per_batch: u64,
     bytes_per_batch: u64,
@@ -70,25 +68,11 @@ impl ParquetPhysicalWritePlan {
         Ok(Self {
             encoder: destination.object_key_encoder(),
             target: request.binding().target.clone(),
-            attempt_id: request.attempt_id().clone(),
-            authority_domain_id: request.staging_lease().authority_domain_id().clone(),
-            fencing_token: request.staging_lease().fencing_token(),
             writers: request.bulk_path().writers,
             rows_per_batch: request.bulk_path().rows_per_batch,
             bytes_per_batch: request.bulk_path().bytes_per_batch,
             object_layout: ParquetObjectLayoutPolicy::current().validate()?,
         })
-    }
-
-    fn staging_key(&self, object_ordinal: u32) -> String {
-        staged_data_object_key(
-            self.encoder,
-            &self.target,
-            &self.authority_domain_id,
-            &self.attempt_id,
-            self.fencing_token,
-            object_ordinal,
-        )
     }
 
     fn content_key(&self, sha256: &str) -> String {
@@ -103,6 +87,7 @@ pub(crate) struct StagingAttemptMetadata {
     attempt_id: String,
     physical_plan_path: String,
     physical_plan_version: u16,
+    object_publication_mode: String,
     writers: u16,
     rows_per_batch: u64,
     bytes_per_batch: u64,
@@ -165,6 +150,7 @@ impl ParquetStagedIngressSession {
             attempt_id: request.attempt_id().as_str().to_owned(),
             physical_plan_path: PHYSICAL_PLAN_PATH.to_owned(),
             physical_plan_version: PHYSICAL_PLAN_VERSION,
+            object_publication_mode: OBJECT_PUBLICATION_MODE.to_owned(),
             writers: physical_plan.writers,
             rows_per_batch: physical_plan.rows_per_batch,
             bytes_per_batch: physical_plan.bytes_per_batch,
@@ -217,7 +203,6 @@ impl ParquetStagedIngressSession {
         let destination = self.destination.clone();
         let output_schema = self.request.output_schema().clone();
         let attempt_id = self.request.attempt_id().clone();
-        let staging_key = self.physical_plan.staging_key(object_ordinal);
         let physical_plan = self.physical_plan.clone();
         let writer_settings = ParquetWriterSettings {
             rows_per_batch: self.physical_plan.rows_per_batch,
@@ -252,59 +237,15 @@ impl ParquetStagedIngressSession {
                 cancellation.check()?;
                 mutation_guard.assert_current()?;
                 let sha256 = group.encoded.sha256.clone();
-                let staged = destination.store().put_encoded_file(
+                let object_key = physical_plan.content_key(&sha256);
+                let stored = destination.store().put_encoded_file(
                     destination.execution(),
-                    &staging_key,
+                    &object_key,
                     group.encoded,
                     &mutation_guard,
                     &cancellation,
                 )?;
                 mutation_guard.assert_current()?;
-                let object_key = physical_plan.content_key(&sha256);
-                let published = (|| {
-                    let stored = destination.store().promote_create_or_verify(
-                        destination.execution(),
-                        &staging_key,
-                        &object_key,
-                        crate::store::ExpectedObject {
-                            byte_count: staged.byte_count,
-                            sha256: &sha256,
-                            e_tag: staged.e_tag.clone(),
-                        },
-                        &mutation_guard,
-                    )?;
-                    destination.store().sync_local_object_parents(
-                        std::slice::from_ref(&object_key),
-                        &mutation_guard,
-                    )?;
-                    mutation_guard.assert_current()?;
-                    destination
-                        .store()
-                        .delete(destination.execution(), &staging_key)?;
-                    mutation_guard.assert_current()?;
-                    Ok(stored)
-                })();
-                let stored = match published {
-                    Ok(stored) => stored,
-                    Err(error) => {
-                        let cleanup = mutation_guard
-                            .assert_current()
-                            .and_then(|_| {
-                                destination
-                                    .store()
-                                    .delete(destination.execution(), &staging_key)
-                            })
-                            .and_then(|()| mutation_guard.assert_current().map(|_| ()));
-                        return match cleanup {
-                            Ok(()) => Err(error),
-                            Err(cleanup) => Err(attach_secondary(
-                                error,
-                                "failed bounded Parquet staging cleanup",
-                                cleanup,
-                            )),
-                        };
-                    }
-                };
                 Ok(StagedParquetObject {
                     object_ordinal,
                     identities: group.identities,
@@ -350,6 +291,7 @@ impl ParquetStagedIngressSession {
             identity: identity.clone(),
             external_durable: false,
         })?;
+        self.request.mutation_guard().assert_current()?;
         if self.accepted.insert(identity.ordinal, identity).is_some() {
             return Err(CdfError::destination(
                 "Parquet object group acknowledged a duplicate segment ordinal",

@@ -723,7 +723,20 @@ impl ManagedExpiredStagingLeaseProof {
             .cleanup_lease
             .as_ref()
             .ok_or_else(|| CdfError::internal("staging cleanup lease was already released"))?
-            .mutation_guard()?;
+            .mutation_guard();
+        let guard = match guard {
+            Ok(guard) => guard,
+            Err(error) => {
+                let released = self
+                    .cleanup_lease
+                    .take()
+                    .ok_or_else(|| {
+                        CdfError::internal("staging cleanup lease was already released")
+                    })?
+                    .finish();
+                return combine_cleanup_release(Err(error), released);
+            }
+        };
         let cleaned = cleanup(&self.proof, &guard);
         drop(guard);
         let released = self

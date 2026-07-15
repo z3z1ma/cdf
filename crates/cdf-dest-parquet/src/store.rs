@@ -1,15 +1,12 @@
 use std::{
-    collections::BTreeSet,
     fs::OpenOptions,
     future::Future,
     io::{Read, Write},
 };
 
 use crate::*;
-use futures_util::{StreamExt, TryStreamExt, stream::FuturesUnordered};
+use futures_util::TryStreamExt;
 
-const MULTIPART_CHUNK_BYTES: usize = 8 * 1024 * 1024;
-const MULTIPART_CONCURRENCY: usize = 4;
 const VERIFY_RANGE_BYTES: u64 = 64 * 1024 * 1024;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -28,12 +25,6 @@ pub(crate) struct ListedObject {
 pub(crate) struct ObjectDigest {
     pub(crate) byte_count: u64,
     pub(crate) sha256: String,
-}
-
-pub(crate) struct ExpectedObject<'a> {
-    pub(crate) byte_count: u64,
-    pub(crate) sha256: &'a str,
-    pub(crate) e_tag: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -172,141 +163,88 @@ impl StoreClient {
         cancellation.check()?;
         mutation_guard.assert_current()?;
         if let Some(root) = &self.local_root {
-            let stored = self.install_local_file(execution, root, key, encoded)?;
+            let stored = self.install_local_file(
+                execution,
+                root,
+                key,
+                encoded,
+                mutation_guard,
+                cancellation,
+            )?;
             cancellation.check()?;
             mutation_guard.assert_current()?;
             return Ok(stored);
         }
         let byte_count = encoded.byte_count;
+        let expected_hash = encoded.sha256.clone();
         let object_path = self.path(key)?;
         let store = Arc::clone(&self.store);
         let file_path = encoded.file.path().to_path_buf();
-        let operation = format!("multipart put {key}");
-        let reserved_bytes = byte_count
-            .min((MULTIPART_CHUNK_BYTES * (MULTIPART_CONCURRENCY + 1)) as u64)
-            .max(1);
+        let operation = format!("atomic put {key}");
         let request = cdf_memory::ReservationRequest::new(
             cdf_memory::ConsumerKey::new(
-                "parquet-multipart-upload",
+                "parquet-atomic-object-put",
                 cdf_memory::MemoryClass::Destination,
             )?,
-            reserved_bytes,
+            byte_count.max(1),
         )?
         .as_minimum_working_set();
         let memory = execution.memory();
-        let mutation_guard = mutation_guard.clone();
-        let cancellation = cancellation.clone();
-        let put: PutResult = execution.run_io(async move {
-            use tokio::io::AsyncReadExt;
-
+        let async_mutation_guard = mutation_guard.clone();
+        let async_cancellation = cancellation.clone();
+        let put: object_store::Result<PutResult> = execution.run_io(async move {
             let _encoded = encoded;
             let _lease = await_fenced(
-                &cancellation,
-                &mutation_guard,
+                &async_cancellation,
+                &async_mutation_guard,
                 cdf_memory::reserve(memory, request),
             )
             .await?;
-            let mut file = await_fenced(&cancellation, &mutation_guard, async {
-                tokio::fs::File::open(&file_path).await.map_err(|error| {
-                    CdfError::destination(format!("open {}: {error}", file_path.display()))
+            let bytes = await_fenced(&async_cancellation, &async_mutation_guard, async {
+                tokio::fs::read(&file_path).await.map_err(|error| {
+                    CdfError::destination(format!("read {}: {error}", file_path.display()))
                 })
             })
             .await?;
-            cancellation.check()?;
-            mutation_guard.assert_current()?;
-            let mut upload = store
-                .put_multipart(&object_path)
-                .await
-                .map_err(|error| store_error(&operation, error))?;
-            let mut parts: FuturesUnordered<object_store::UploadPart> = FuturesUnordered::new();
-            if let Err(error) = mutation_guard.assert_current() {
-                return Err(abort_multipart(&mut upload, &operation, error).await);
+            if bytes.len() as u64 != byte_count {
+                return Err(CdfError::destination(format!(
+                    "encoded Parquet object changed size from {byte_count} to {} before publication",
+                    bytes.len()
+                )));
             }
-            loop {
-                while parts.len() >= MULTIPART_CONCURRENCY {
-                    let completed = await_fenced(&cancellation, &mutation_guard, async {
-                        parts
-                            .next()
-                            .await
-                            .ok_or_else(|| {
-                                CdfError::internal(
-                                    "Parquet multipart part queue ended unexpectedly",
-                                )
-                            })?
-                            .map_err(|error| store_error(&operation, error))
-                    })
-                    .await;
-                    if let Err(error) = completed {
-                        drop(parts);
-                        return Err(abort_multipart(&mut upload, &operation, error).await);
-                    }
-                }
-                let mut chunk = vec![0; MULTIPART_CHUNK_BYTES];
-                let read = await_fenced(&cancellation, &mutation_guard, async {
-                    file.read(&mut chunk).await.map_err(|error| {
-                        CdfError::destination(format!("read {}: {error}", file_path.display()))
-                    })
-                })
-                .await;
-                let read = match read {
-                    Ok(read) => read,
-                    Err(error) => {
-                        drop(parts);
-                        return Err(abort_multipart(&mut upload, &operation, error).await);
-                    }
-                };
-                if read == 0 {
-                    break;
-                }
-                chunk.truncate(read);
-                if let Err(error) = cancellation
-                    .check()
-                    .and_then(|()| mutation_guard.assert_current().map(|_| ()))
-                {
-                    drop(parts);
-                    return Err(abort_multipart(&mut upload, &operation, error).await);
-                }
-                parts.push(upload.put_part(PutPayload::from(bytes::Bytes::from(chunk))));
-                if let Err(error) = mutation_guard.assert_current() {
-                    drop(parts);
-                    return Err(abort_multipart(&mut upload, &operation, error).await);
-                }
-            }
-            while !parts.is_empty() {
-                let completed = await_fenced(&cancellation, &mutation_guard, async {
-                    parts
-                        .next()
-                        .await
-                        .ok_or_else(|| {
-                            CdfError::internal("Parquet multipart part queue ended unexpectedly")
-                        })?
-                        .map_err(|error| store_error(&operation, error))
-                })
-                .await;
-                if let Err(error) = completed {
-                    drop(parts);
-                    return Err(abort_multipart(&mut upload, &operation, error).await);
-                }
-            }
-            drop(parts);
-            let result = await_fenced(&cancellation, &mutation_guard, async {
-                upload
-                    .complete()
-                    .await
-                    .map_err(|error| store_error(&operation, error))
-            })
-            .await;
-            let result = match result {
-                Ok(result) => result,
-                Err(error) => return Err(abort_multipart(&mut upload, &operation, error).await),
+            let options = PutOptions {
+                mode: PutMode::Create,
+                ..PutOptions::default()
             };
-            mutation_guard.assert_current()?;
-            Ok(result)
+            await_fenced(&async_cancellation, &async_mutation_guard, async {
+                Ok(store
+                    .put_opts(&object_path, PutPayload::from(bytes), options)
+                    .await)
+            })
+            .await
         })?;
-        Ok(StoredObject {
-            byte_count,
-            e_tag: put.e_tag,
-        })
+        match put {
+            Ok(put) => Ok(StoredObject {
+                byte_count,
+                e_tag: put.e_tag,
+            }),
+            Err(object_store::Error::AlreadyExists { .. })
+            | Err(object_store::Error::Precondition { .. }) => {
+                mutation_guard.assert_current()?;
+                let digest = self.digest(execution, key)?;
+                mutation_guard.assert_current()?;
+                if digest.byte_count != byte_count || digest.sha256 != expected_hash {
+                    return Err(CdfError::destination(format!(
+                        "immutable Parquet object {key} already exists with different bytes"
+                    )));
+                }
+                Ok(StoredObject {
+                    byte_count,
+                    e_tag: self.etag(execution, key)?,
+                })
+            }
+            Err(error) => Err(store_error(operation, error)),
+        }
     }
 
     fn install_local_file(
@@ -315,7 +253,11 @@ impl StoreClient {
         root: &Path,
         key: &str,
         encoded: crate::package::EncodedParquetObject,
+        mutation_guard: &cdf_runtime::StagingMutationGuard,
+        cancellation: &cdf_runtime::RunCancellation,
     ) -> Result<StoredObject> {
+        cancellation.check()?;
+        mutation_guard.assert_current()?;
         let object_path = self.path(key)?;
         let destination = root.join(object_path.as_ref());
         let parent = destination.parent().ok_or_else(|| {
@@ -327,14 +269,20 @@ impl StoreClient {
         fs::create_dir_all(parent).map_err(|error| {
             CdfError::destination(format!("create {}: {error}", parent.display()))
         })?;
+        mutation_guard.assert_current()?;
         let byte_count = encoded.byte_count;
         let expected_hash = encoded.sha256.clone();
         match encoded.file.persist_noclobber(&destination) {
-            // Rollback/redrive staging is intentionally not fsynced here. Final binding syncs the
-            // exact file before create-only promotion, so a process loss can only require redrive.
-            Ok(_file) => {}
+            Ok(file) => {
+                mutation_guard.assert_current()?;
+                file.sync_all().map_err(|error| {
+                    CdfError::destination(format!("sync {}: {error}", destination.display()))
+                })?;
+            }
             Err(error) if error.error.kind() == std::io::ErrorKind::AlreadyExists => {
+                mutation_guard.assert_current()?;
                 let actual_hash = sha256_file(&destination)?;
+                mutation_guard.assert_current()?;
                 if actual_hash != expected_hash {
                     return Err(CdfError::destination(format!(
                         "immutable Parquet object {} already exists with hash {} instead of {}",
@@ -352,6 +300,14 @@ impl StoreClient {
                 )));
             }
         }
+        mutation_guard.assert_current()?;
+        fs::File::open(parent)
+            .and_then(|directory| directory.sync_all())
+            .map_err(|error| {
+                CdfError::destination(format!("sync {}: {error}", parent.display()))
+            })?;
+        cancellation.check()?;
+        mutation_guard.assert_current()?;
         Ok(StoredObject {
             byte_count,
             e_tag: self.etag(execution, key)?,
@@ -872,139 +828,6 @@ impl StoreClient {
         })
     }
 
-    pub(crate) fn promote_create_or_verify(
-        &self,
-        execution: &cdf_runtime::ExecutionServices,
-        source_key: &str,
-        destination_key: &str,
-        expected: ExpectedObject<'_>,
-        mutation_guard: &cdf_runtime::StagingMutationGuard,
-    ) -> Result<StoredObject> {
-        mutation_guard.assert_current()?;
-        if let Some(root) = &self.local_root {
-            let stored = self.promote_local_create_or_verify(
-                root,
-                source_key,
-                destination_key,
-                expected,
-                mutation_guard,
-            )?;
-            mutation_guard.assert_current()?;
-            return Ok(stored);
-        }
-        let source = self.path(source_key)?;
-        let destination = self.path(destination_key)?;
-        let store = Arc::clone(&self.store);
-        let operation = format!("copy {source_key} to {destination_key}");
-        let outcome = execution
-            .run_io(async move { Ok(store.copy_if_not_exists(&source, &destination).await) })?;
-        mutation_guard.assert_current()?;
-        match outcome {
-            Ok(()) => {}
-            Err(object_store::Error::AlreadyExists { .. })
-            | Err(object_store::Error::Precondition { .. }) => {
-                let digest = self.digest(execution, destination_key)?;
-                if digest.byte_count != expected.byte_count || digest.sha256 != expected.sha256 {
-                    return Err(CdfError::destination(format!(
-                        "immutable Parquet object {destination_key} already exists with different bytes"
-                    )));
-                }
-            }
-            Err(error) => return Err(store_error(operation, error)),
-        }
-        let stored = StoredObject {
-            byte_count: expected.byte_count,
-            e_tag: self.etag(execution, destination_key)?,
-        };
-        mutation_guard.assert_current()?;
-        Ok(stored)
-    }
-
-    fn promote_local_create_or_verify(
-        &self,
-        root: &Path,
-        source_key: &str,
-        destination_key: &str,
-        expected: ExpectedObject<'_>,
-        mutation_guard: &cdf_runtime::StagingMutationGuard,
-    ) -> Result<StoredObject> {
-        let source = root.join(self.path(source_key)?.as_ref());
-        let destination = root.join(self.path(destination_key)?.as_ref());
-        let parent = destination.parent().ok_or_else(|| {
-            CdfError::destination(format!(
-                "Parquet object {} has no parent directory",
-                destination.display()
-            ))
-        })?;
-        fs::create_dir_all(parent).map_err(|error| {
-            CdfError::destination(format!("create {}: {error}", parent.display()))
-        })?;
-        fs::File::open(&source)
-            .and_then(|file| file.sync_all())
-            .map_err(|error| {
-                CdfError::destination(format!("sync {}: {error}", source.display()))
-            })?;
-        mutation_guard.assert_current()?;
-        match fs::hard_link(&source, &destination) {
-            Ok(()) => {}
-            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
-                let metadata = fs::metadata(&destination).map_err(|error| {
-                    CdfError::destination(format!("inspect {}: {error}", destination.display()))
-                })?;
-                let actual_hash = sha256_file(&destination)?;
-                if metadata.len() != expected.byte_count || actual_hash != expected.sha256 {
-                    return Err(CdfError::destination(format!(
-                        "immutable Parquet object {} already exists with different bytes",
-                        destination.display()
-                    )));
-                }
-            }
-            Err(error) => {
-                return Err(CdfError::destination(format!(
-                    "promote {} to {}: {error}",
-                    source.display(),
-                    destination.display()
-                )));
-            }
-        }
-        mutation_guard.assert_current()?;
-        Ok(StoredObject {
-            byte_count: expected.byte_count,
-            e_tag: expected.e_tag,
-        })
-    }
-
-    pub(crate) fn sync_local_object_parents(
-        &self,
-        keys: &[String],
-        mutation_guard: &cdf_runtime::StagingMutationGuard,
-    ) -> Result<()> {
-        let Some(root) = &self.local_root else {
-            return Ok(());
-        };
-        let mut parents = BTreeSet::new();
-        for key in keys {
-            let object = root.join(self.path(key)?.as_ref());
-            let parent = object.parent().ok_or_else(|| {
-                CdfError::destination(format!(
-                    "Parquet object {} has no parent directory",
-                    object.display()
-                ))
-            })?;
-            parents.insert(parent.to_path_buf());
-        }
-        for parent in parents {
-            mutation_guard.assert_current()?;
-            fs::File::open(&parent)
-                .and_then(|directory| directory.sync_all())
-                .map_err(|error| {
-                    CdfError::destination(format!("sync {}: {error}", parent.display()))
-                })?;
-            mutation_guard.assert_current()?;
-        }
-        Ok(())
-    }
-
     fn path(&self, key: &str) -> Result<ObjectPath> {
         if key.trim().is_empty() {
             return Err(CdfError::contract("object key cannot be empty"));
@@ -1041,6 +864,7 @@ pub(crate) fn data_object_key(
     )
 }
 
+#[cfg(test)]
 pub(crate) fn staged_data_object_key(
     encoder: ObjectKeyEncoder,
     target: &TargetName,
@@ -1247,19 +1071,6 @@ where
         .await?;
     mutation_guard.assert_current()?;
     Ok(result)
-}
-
-async fn abort_multipart(
-    upload: &mut dyn object_store::MultipartUpload,
-    operation: &str,
-    mut primary: CdfError,
-) -> CdfError {
-    if let Err(error) = upload.abort().await {
-        primary.message.push_str(&format!(
-            "; multipart abort for {operation} also failed: {error}"
-        ));
-    }
-    primary
 }
 
 fn sha256_file(path: &Path) -> Result<String> {
