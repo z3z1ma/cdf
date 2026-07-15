@@ -72,7 +72,7 @@ impl CpuUsageTracker {
 
 struct FixedTaskPool {
     capacity: u16,
-    state: Arc<(Mutex<PoolState>, Condvar)>,
+    state: Arc<Mutex<PoolState>>,
     slots: Arc<CpuSlots>,
     workers: Mutex<Vec<JoinHandle<()>>>,
 }
@@ -263,13 +263,10 @@ impl FixedTaskPool {
         }
         let pool = Arc::new(Self {
             capacity: slots.capacity,
-            state: Arc::new((
-                Mutex::new(PoolState {
-                    queue: VecDeque::new(),
-                    shutdown: false,
-                }),
-                Condvar::new(),
-            )),
+            state: Arc::new(Mutex::new(PoolState {
+                queue: VecDeque::new(),
+                shutdown: false,
+            })),
             slots,
             workers: Mutex::new(Vec::new()),
         });
@@ -306,8 +303,7 @@ impl FixedTaskPool {
         }
         cancellation.check()?;
         let (sender, receiver) = oneshot::channel();
-        let (lock, available) = &*self.state;
-        let mut state = lock.lock().unwrap();
+        let mut state = self.state.lock().unwrap();
         if state.shutdown {
             return Err(CdfError::internal("task pool is shutting down"));
         }
@@ -320,7 +316,8 @@ impl FixedTaskPool {
             released: None,
             usage: Some(usage),
         });
-        available.notify_all();
+        let _available = self.slots.available.lock().unwrap();
+        self.slots.changed.notify_all();
         Ok(receiver)
     }
 
@@ -339,8 +336,7 @@ impl FixedTaskPool {
         cancellation.check()?;
         let (completion, _receiver) = oneshot::channel();
         let (released, release_receiver) = mpsc::sync_channel(1);
-        let (lock, available) = &*self.state;
-        let mut state = lock.lock().unwrap();
+        let mut state = self.state.lock().unwrap();
         if state.shutdown {
             return Err(CdfError::internal("task pool is shutting down"));
         }
@@ -353,17 +349,19 @@ impl FixedTaskPool {
             released: Some(released),
             usage: None,
         });
-        available.notify_all();
+        let _available = self.slots.available.lock().unwrap();
+        self.slots.changed.notify_all();
         Ok(release_receiver)
     }
 }
 
 impl Drop for FixedTaskPool {
     fn drop(&mut self) {
-        let (lock, available) = &*self.state;
-        if let Ok(mut state) = lock.lock() {
+        if let Ok(mut state) = self.state.lock() {
             state.shutdown = true;
-            available.notify_all();
+            if let Ok(_available) = self.slots.available.lock() {
+                self.slots.changed.notify_all();
+            }
         }
         if let Ok(workers) = self.workers.get_mut() {
             for worker in workers.drain(..) {
@@ -373,28 +371,31 @@ impl Drop for FixedTaskPool {
     }
 }
 
-fn worker_loop(state: Arc<(Mutex<PoolState>, Condvar)>, slots: Arc<CpuSlots>) {
+fn worker_loop(state: Arc<Mutex<PoolState>>, slots: Arc<CpuSlots>) {
     loop {
         let item = {
-            let (lock, available) = &*state;
-            let mut state = lock.lock().unwrap();
             loop {
+                let mut state = state.lock().unwrap();
+                let mut available = slots.available.lock().unwrap();
                 if state.shutdown && state.queue.is_empty() {
                     return;
                 }
-                if let Some(item) = state.queue.pop_front() {
+                if let Some(index) = state
+                    .queue
+                    .iter()
+                    .position(|item| item.slot_cost <= *available)
+                {
+                    let item = state
+                        .queue
+                        .remove(index)
+                        .expect("eligible work item index remains present");
+                    *available -= item.slot_cost;
                     break item;
                 }
-                state = available.wait(state).unwrap();
+                drop(state);
+                drop(slots.changed.wait(available).unwrap());
             }
         };
-        {
-            let mut available = slots.available.lock().unwrap();
-            while *available < item.slot_cost {
-                available = slots.changed.wait(available).unwrap();
-            }
-            *available -= item.slot_cost;
-        }
         if let Some(usage) = &item.usage {
             usage.admit(item.slot_cost);
         }
@@ -1051,6 +1052,69 @@ mod tests {
         let report = host.block_on_root(scope.join()).unwrap();
 
         assert_eq!(report.submitted_cpu, 3);
+        assert_eq!(report.completed, 3);
+        assert_eq!(report.peak_cpu_slots, 2);
+    }
+
+    #[test]
+    fn slot_ineligible_head_does_not_occupy_worker_or_starve_eligible_tail() {
+        let host = host();
+        let mut scope = host.open_scope("mixed-slot-work-conservation").unwrap();
+        let (long_started_sender, long_started_receiver) = mpsc::sync_channel(1);
+        let (release_long_sender, release_long_receiver) = mpsc::sync_channel(1);
+        scope
+            .spawn_cpu(
+                CpuTaskSpec {
+                    task_kind: "long-one-slot".to_owned(),
+                    cpu_slot_cost: 1,
+                    native_internal_parallelism: 1,
+                },
+                Box::new(move || {
+                    long_started_sender.send(()).unwrap();
+                    release_long_receiver.recv().unwrap();
+                    Ok(())
+                }),
+            )
+            .unwrap();
+        long_started_receiver.recv().unwrap();
+
+        scope
+            .spawn_cpu(
+                CpuTaskSpec {
+                    task_kind: "waiting-two-slots".to_owned(),
+                    cpu_slot_cost: 2,
+                    native_internal_parallelism: 1,
+                },
+                Box::new(|| Ok(())),
+            )
+            .unwrap();
+        std::thread::sleep(Duration::from_millis(10));
+        assert_eq!(
+            host.cpu.state.lock().unwrap().queue.len(),
+            1,
+            "slot-ineligible work must remain visible to admission instead of occupying a worker"
+        );
+
+        let (eligible_sender, eligible_receiver) = mpsc::sync_channel(1);
+        scope
+            .spawn_cpu(
+                CpuTaskSpec {
+                    task_kind: "eligible-one-slot".to_owned(),
+                    cpu_slot_cost: 1,
+                    native_internal_parallelism: 1,
+                },
+                Box::new(move || {
+                    eligible_sender.send(()).unwrap();
+                    Ok(())
+                }),
+            )
+            .unwrap();
+        eligible_receiver
+            .recv_timeout(Duration::from_secs(1))
+            .expect("eligible tail work must use the available worker and slot");
+
+        release_long_sender.send(()).unwrap();
+        let report = host.block_on_root(scope.join()).unwrap();
         assert_eq!(report.completed, 3);
         assert_eq!(report.peak_cpu_slots, 2);
     }

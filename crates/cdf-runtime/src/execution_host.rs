@@ -1,10 +1,11 @@
 use std::{
     any::Any,
+    collections::BTreeMap,
     future::Future,
     pin::Pin,
     sync::{
         Arc, Mutex,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
     },
     task::{Context, Poll, Waker},
     time::Duration,
@@ -151,7 +152,8 @@ impl<T> Drop for ScopedTaskStream<T> {
 #[derive(Debug, Default)]
 struct CancellationState {
     cancelled: AtomicBool,
-    waiters: Mutex<Vec<Waker>>,
+    next_waiter_id: AtomicU64,
+    waiters: Mutex<BTreeMap<u64, Waker>>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -163,7 +165,7 @@ impl RunCancellation {
             return;
         }
         let waiters = std::mem::take(&mut *self.0.waiters.lock().unwrap());
-        for waiter in waiters {
+        for waiter in waiters.into_values() {
             waiter.wake();
         }
     }
@@ -181,7 +183,10 @@ impl RunCancellation {
     }
 
     pub fn cancelled(&self) -> CancellationFuture {
-        CancellationFuture(self.clone())
+        CancellationFuture {
+            cancellation: self.clone(),
+            waiter_id: None,
+        }
     }
 
     /// Awaits a fallible operation until this run is cancelled.
@@ -209,26 +214,48 @@ impl RunCancellation {
     }
 }
 
-pub struct CancellationFuture(RunCancellation);
+pub struct CancellationFuture {
+    cancellation: RunCancellation,
+    waiter_id: Option<u64>,
+}
 
 impl Future for CancellationFuture {
     type Output = ();
 
     fn poll(self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<Self::Output> {
-        if self.0.is_cancelled() {
+        let future = self.get_mut();
+        if future.cancellation.is_cancelled() {
             return Poll::Ready(());
         }
-        let mut waiters = self.0.0.waiters.lock().unwrap();
-        if self.0.is_cancelled() {
+        let mut waiters = future.cancellation.0.waiters.lock().unwrap();
+        if future.cancellation.is_cancelled() {
             return Poll::Ready(());
         }
-        if !waiters
-            .iter()
-            .any(|waiter| waiter.will_wake(context.waker()))
-        {
-            waiters.push(context.waker().clone());
+        let waiter_id = *future.waiter_id.get_or_insert_with(|| {
+            future
+                .cancellation
+                .0
+                .next_waiter_id
+                .fetch_add(1, Ordering::Relaxed)
+        });
+        match waiters.get_mut(&waiter_id) {
+            Some(waiter) if waiter.will_wake(context.waker()) => {}
+            Some(waiter) => waiter.clone_from(context.waker()),
+            None => {
+                waiters.insert(waiter_id, context.waker().clone());
+            }
         }
         Poll::Pending
+    }
+}
+
+impl Drop for CancellationFuture {
+    fn drop(&mut self) {
+        if let Some(waiter_id) = self.waiter_id.take()
+            && let Ok(mut waiters) = self.cancellation.0.waiters.lock()
+        {
+            waiters.remove(&waiter_id);
+        }
     }
 }
 
@@ -823,9 +850,31 @@ impl ExecutionServices {
 
 #[cfg(test)]
 mod tests {
-    use std::task::Poll;
+    use std::task::{Context, Poll};
 
     use super::*;
+
+    #[test]
+    fn cancellation_future_unregisters_its_unique_waiter_on_drop() {
+        let cancellation = RunCancellation::default();
+        let waker = futures_util::task::noop_waker();
+        let mut context = Context::from_waker(&waker);
+        let mut first = Box::pin(cancellation.cancelled());
+        let mut second = Box::pin(cancellation.cancelled());
+
+        assert!(matches!(first.as_mut().poll(&mut context), Poll::Pending));
+        assert!(matches!(second.as_mut().poll(&mut context), Poll::Pending));
+        assert_eq!(cancellation.0.waiters.lock().unwrap().len(), 2);
+
+        drop(first);
+        assert_eq!(cancellation.0.waiters.lock().unwrap().len(), 1);
+        cancellation.cancel();
+        assert!(cancellation.0.waiters.lock().unwrap().is_empty());
+        assert!(matches!(
+            second.as_mut().poll(&mut context),
+            Poll::Ready(())
+        ));
+    }
 
     #[test]
     fn run_work_admission_is_shared_tightenable_and_cancellable() {

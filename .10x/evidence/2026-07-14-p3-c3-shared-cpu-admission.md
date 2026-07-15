@@ -23,6 +23,7 @@ Focused conformance:
 - `cargo test -p cdf-runtime -p cdf-engine -p cdf-source-files -p cdf-project -p cdf-format-parquet -p cdf-format-json -p cdf-format-delimited -p cdf-format-arrow-ipc --lib --locked` passed 478 tests with seven intentional release/slow ignores.
 - Affected all-target `cargo check`, strict `cargo clippy ... --all-targets --locked -- -D warnings`, formatting, and diff hygiene passed with `CARGO_BUILD_JOBS=12`.
 - After the review repairs, `cargo test -p cdf-runtime -p cdf-engine -p cdf-python --lib --locked` passed 239 tests with seven intentional release/slow ignores (151 engine, 21 Python, 67 runtime). `cargo check --workspace --all-targets --locked` also passed.
+- After the second review repairs, the engine/runtime graph passed 220 runnable tests with seven intentional ignores (152 engine, 68 runtime); strict all-target Clippy passed. `cancellation_future_unregisters_its_unique_waiter_on_drop` proves independent registration and exact deregistration even when two futures share one waker. `slot_ineligible_head_does_not_occupy_worker_or_starve_eligible_tail` proves admission retains a two-slot ineligible head in the queue while a later one-slot task uses the available worker/slot.
 
 Release executor comparison:
 
