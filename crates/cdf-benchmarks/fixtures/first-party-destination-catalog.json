@@ -31,9 +31,9 @@
       "commit_payload_mode": "segment_streaming",
       "max_in_flight_segments": 2,
       "max_in_flight_bytes": 134217728,
-      "bulk_paths": [{"path_id":"arrow_ipc_to_parquet","version":3,"ingress_mode":"staged_durable_segments","writer_model":"concurrent_segments","ordering":"manifest_order","rows":{"minimum":8192,"preferred":65536,"maximum":1048576},"bytes":{"minimum":1048576,"preferred":16777216,"maximum":67108864},"max_useful_writers":2,"blocking_lane":"parquet.encode","native_internal_parallelism":1,"external_staging":true,"fallback":"forbidden","schema_preflight_version":"parquet-arrow-mapping@1","measured_evidence_version":"p3-d8-2026-07-15-v3"}],
+      "bulk_paths": [{"path_id":"arrow_ipc_to_parquet","version":4,"ingress_mode":"staged_durable_segments","writer_model":"concurrent_segments","ordering":"manifest_order","rows":{"minimum":8192,"preferred":65536,"maximum":1048576},"bytes":{"minimum":1048576,"preferred":16777216,"maximum":67108864},"max_useful_writers":2,"blocking_lane":"parquet.encode","native_internal_parallelism":1,"external_staging":true,"fallback":"forbidden","schema_preflight_version":"parquet-arrow-mapping@1","measured_evidence_version":"p3-d8-2026-07-15-v4"}],
       "bulk_path": "arrow_ipc_to_parquet",
-      "bulk_evidence_version": "p3-d8-2026-07-15-v3",
+      "bulk_evidence_version": "p3-d8-2026-07-15-v4",
       "replay_requires_explicit_target": false,
       "replay_target_hint": null,
       "replay_policy_values": {}

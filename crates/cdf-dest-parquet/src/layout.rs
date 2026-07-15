@@ -1,7 +1,7 @@
 use cdf_kernel::{CdfError, Result, SegmentId};
 
 pub(crate) const PHYSICAL_PLAN_PATH: &str = "arrow_ipc_to_parquet";
-pub(crate) const PHYSICAL_PLAN_VERSION: u16 = 3;
+pub(crate) const PHYSICAL_PLAN_VERSION: u16 = 4;
 pub(crate) const TARGET_PACKAGE_BYTES_PER_OBJECT: u64 = 256 * 1024 * 1024;
 pub(crate) const MAX_SEGMENTS_PER_OBJECT: u16 = 8;
 

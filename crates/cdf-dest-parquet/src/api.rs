@@ -1,23 +1,18 @@
 use crate::*;
 use crate::{
     corrections::*,
-    layout::ParquetObjectLayout,
     manifest::{
-        ParquetObjectEntry, ParquetObjectManifest, ParquetReplacePointerReceipt, ReplacePointer,
-        canonical_json_bytes, sha256_hex,
+        CurrentReplacePointer, ParquetObjectEntry, ParquetObjectManifest,
+        ParquetReplacePointerReceipt, ReplacePointer, canonical_json_bytes, sha256_hex,
     },
     receipts::{build_receipt, verify_receipt},
     runtime::parquet_runtime_capabilities,
     sheet::{parquet_protocol_capabilities, parquet_sheet},
     store::{
-        ObjectKeyEncoder, StoreClient, current_pointer_key, data_object_key, now_ms,
-        package_manifest_key, provenance_manifest_key, publication_attempt_target_prefix,
-        replace_settlement_key,
+        ObjectKeyEncoder, StoreClient, current_pointer_key, now_ms, package_manifest_key,
+        provenance_manifest_key, publication_attempt_target_prefix, replace_settlement_key,
     },
 };
-
-#[cfg(test)]
-use crate::layout::{ParquetObjectLayoutPolicy, ParquetSegmentLayout};
 
 #[derive(Clone)]
 pub struct ParquetDestination {
@@ -47,7 +42,6 @@ pub(crate) struct ParquetCommitPlan {
     pub provenance_manifest_key: String,
     pub replace_pointer_key: Option<String>,
     pub current_pointer_key: Option<String>,
-    pub object_keys: Vec<String>,
     pub duplicate: bool,
     pub rows_planned: u64,
     pub bytes_planned: u64,
@@ -135,14 +129,7 @@ impl ParquetDestination {
             .iter()
             .map(|segment| segment.byte_count)
             .sum();
-        let object_layouts =
-            ParquetObjectLayoutPolicy::current().plan(manifest_segments.iter().map(|segment| {
-                ParquetSegmentLayout {
-                    segment_id: segment.segment_id.clone(),
-                    package_byte_count: segment.byte_count,
-                }
-            }))?;
-        self.plan_package_shape(request, &object_layouts, rows_planned, bytes_planned)
+        self.plan_package_shape(request, rows_planned, bytes_planned)
     }
 
     pub fn verify_receipt(&self, receipt: &Receipt) -> Result<ReceiptVerification> {
@@ -314,7 +301,6 @@ impl ParquetDestination {
     pub(crate) fn plan_package_shape(
         &self,
         request: &ParquetCommitRequest,
-        object_layouts: &[ParquetObjectLayout],
         rows_planned: u64,
         bytes_planned: u64,
     ) -> Result<ParquetCommitPlan> {
@@ -354,17 +340,6 @@ impl ParquetDestination {
                 ));
             }
         };
-        let object_keys = object_layouts
-            .iter()
-            .map(|object| {
-                data_object_key(
-                    self.object_key_encoder(),
-                    &request.commit.target,
-                    &request.commit.idempotency_token,
-                    object.ordinal,
-                )
-            })
-            .collect::<Vec<_>>();
         let duplicate = self
             .store
             .exists(self.execution(), &manifest_key)
@@ -380,7 +355,6 @@ impl ParquetDestination {
             ),
             replace_pointer_key,
             current_pointer_key,
-            object_keys,
             duplicate,
             rows_planned,
             bytes_planned,
@@ -405,8 +379,7 @@ impl ParquetDestination {
             )));
         }
         let replace_pointer =
-            self.load_replace_pointer_receipt(request, plan, &loaded.manifest, mutation_guard)?;
-        self.ensure_current_replace_pointer(request, plan, &loaded.manifest, mutation_guard)?;
+            self.ensure_replace_settlement(request, plan, &loaded.manifest, mutation_guard)?;
         let receipt = build_receipt(
             request,
             plan,
@@ -424,7 +397,7 @@ impl ParquetDestination {
         Ok(Some(loaded))
     }
 
-    fn load_replace_pointer_receipt(
+    fn ensure_replace_settlement(
         &self,
         request: &ParquetCommitRequest,
         plan: &ParquetCommitPlan,
@@ -436,12 +409,28 @@ impl ParquetDestination {
         };
         let pointer = replace_pointer(request, plan, manifest)?;
         let expected = canonical_json_bytes(&pointer)?;
-        mutation_guard.assert_current()?;
-        let stored =
-            self.store
-                .put_create_or_verify(self.execution(), pointer_key, expected.clone())?;
-        mutation_guard.assert_current()?;
+        let existing = self.store.get_optional(self.execution(), pointer_key)?;
+        let stored = match existing {
+            Some(_) => None,
+            None => {
+                self.ensure_current_replace_pointer(request, plan, manifest, mutation_guard)?;
+                mutation_guard.assert_current()?;
+                let stored = self.store.put_create_or_verify(
+                    self.execution(),
+                    pointer_key,
+                    expected.clone(),
+                )?;
+                mutation_guard.assert_current()?;
+                Some(stored)
+            }
+        };
         let bytes = self.store.get_required(self.execution(), pointer_key)?;
+        mutation_guard.assert_current()?;
+        if bytes != expected {
+            return Err(CdfError::data(format!(
+                "replace settlement {pointer_key} differs from its package authority"
+            )));
+        }
         let sha256 = sha256_hex(&bytes);
         let pointer: ReplacePointer = serde_json::from_slice(&bytes).map_err(|error| {
             CdfError::data(format!("parse replace pointer {pointer_key}: {error}"))
@@ -460,7 +449,7 @@ impl ParquetDestination {
             )));
         }
         let etag = stored
-            .e_tag
+            .and_then(|stored| stored.e_tag)
             .or(self.store.etag(self.execution(), pointer_key)?);
         Ok(Some(ParquetReplacePointerReceipt {
             key: pointer_key.clone(),
@@ -479,49 +468,49 @@ impl ParquetDestination {
         let Some(current_key) = &plan.current_pointer_key else {
             return Ok(());
         };
-        let pointer = replace_pointer(request, plan, manifest)?;
-        let expected = canonical_json_bytes(&pointer)?;
         for _ in 0..32 {
             mutation_guard.assert_current()?;
             let current = self
                 .store
                 .get_optional_versioned(self.execution(), current_key)?;
-            if current
+            let observed = current
                 .as_ref()
-                .is_some_and(|current| current.bytes == expected)
+                .map(|current| parse_current_replace_pointer(current_key, &current.bytes))
+                .transpose()?;
+            if observed
+                .as_ref()
+                .map(|pointer| current_pointer_binds(pointer, request, plan, manifest))
+                .transpose()?
+                .unwrap_or(false)
             {
                 return Ok(());
             }
-            if let Some(current) = &current {
-                let current_pointer: ReplacePointer = serde_json::from_slice(&current.bytes)
-                    .map_err(|error| {
-                        CdfError::data(format!(
-                            "parse current replace pointer {current_key}: {error}"
-                        ))
-                    })?;
-                let current_order = (
-                    current_pointer.updated_at_ms,
-                    current_pointer.idempotency_token.as_str(),
-                    current_pointer.manifest_key.as_str(),
-                );
-                let candidate_order = (
-                    pointer.updated_at_ms,
-                    pointer.idempotency_token.as_str(),
-                    pointer.manifest_key.as_str(),
-                );
-                if current_order >= candidate_order {
-                    return Ok(());
-                }
-            }
+            let generation = observed.as_ref().map_or(Ok(1), |pointer| {
+                pointer.generation.checked_add(1).ok_or_else(|| {
+                    CdfError::destination("Parquet replace generation exhausted u64")
+                })
+            })?;
+            let replacement = canonical_json_bytes(&current_replace_pointer(
+                request, plan, manifest, generation,
+            )?)?;
             let outcome = self.store.compare_and_swap(
                 self.execution(),
                 current_key,
                 current.as_ref(),
-                expected.clone(),
+                replacement.clone(),
             )?;
             mutation_guard.assert_current()?;
             match outcome {
-                crate::store::CompareAndSwapOutcome::Written(_) => return Ok(()),
+                crate::store::CompareAndSwapOutcome::Written(_) => {
+                    let readback = self.store.get_required(self.execution(), current_key)?;
+                    mutation_guard.assert_current()?;
+                    if readback != replacement {
+                        return Err(CdfError::destination(format!(
+                            "current replace pointer {current_key} changed before exact readback"
+                        )));
+                    }
+                    return Ok(());
+                }
                 crate::store::CompareAndSwapOutcome::Conflict => continue,
             }
         }
@@ -648,31 +637,8 @@ pub(crate) fn finalize_parquet_objects(
         manifest_bytes.clone(),
     )?;
     mutation_guard.assert_current()?;
-    let replace_pointer = if let Some(pointer_key) = &plan.replace_pointer_key {
-        let pointer = replace_pointer(&request, &plan, &object_manifest)?;
-        let pointer_bytes = canonical_json_bytes(&pointer)?;
-        let pointer_sha256 = sha256_hex(&pointer_bytes);
-        mutation_guard.assert_current()?;
-        let put = destination.store.put_create_or_verify(
-            &destination.execution,
-            pointer_key,
-            pointer_bytes,
-        )?;
-        mutation_guard.assert_current()?;
-        Some(ParquetReplacePointerReceipt {
-            key: pointer_key.clone(),
-            sha256: pointer_sha256,
-            etag: put.e_tag,
-        })
-    } else {
-        None
-    };
-    destination.ensure_current_replace_pointer(
-        &request,
-        &plan,
-        &object_manifest,
-        mutation_guard,
-    )?;
+    let replace_pointer =
+        destination.ensure_replace_settlement(&request, &plan, &object_manifest, mutation_guard)?;
     let receipt = build_receipt(
         &request,
         &plan,
@@ -707,6 +673,52 @@ fn replace_pointer(
         manifest_sha256,
         updated_at_ms: manifest.committed_at_ms,
     })
+}
+
+fn current_replace_pointer(
+    request: &ParquetCommitRequest,
+    plan: &ParquetCommitPlan,
+    manifest: &ParquetObjectManifest,
+    generation: u64,
+) -> Result<CurrentReplacePointer> {
+    let settlement_key = plan.replace_pointer_key.as_ref().ok_or_else(|| {
+        CdfError::internal("replace current-pointer construction requires a settlement key")
+    })?;
+    Ok(CurrentReplacePointer {
+        pointer_version: REPLACE_POINTER_VERSION,
+        generation,
+        target: request.commit.target.as_str().to_owned(),
+        package_hash: request.commit.package_hash.as_str().to_owned(),
+        idempotency_token: request.commit.idempotency_token.as_str().to_owned(),
+        schema_hash: request.schema_hash.as_str().to_owned(),
+        manifest_key: plan.manifest_key.clone(),
+        manifest_sha256: sha256_hex(&canonical_json_bytes(manifest)?),
+        settlement_key: settlement_key.clone(),
+    })
+}
+
+fn parse_current_replace_pointer(key: &str, bytes: &[u8]) -> Result<CurrentReplacePointer> {
+    serde_json::from_slice(bytes)
+        .map_err(|error| CdfError::data(format!("parse current replace pointer {key}: {error}")))
+}
+
+fn current_pointer_binds(
+    pointer: &CurrentReplacePointer,
+    request: &ParquetCommitRequest,
+    plan: &ParquetCommitPlan,
+    manifest: &ParquetObjectManifest,
+) -> Result<bool> {
+    Ok(pointer.pointer_version == REPLACE_POINTER_VERSION
+        && pointer.target == request.commit.target.as_str()
+        && pointer.package_hash == request.commit.package_hash.as_str()
+        && pointer.idempotency_token == request.commit.idempotency_token.as_str()
+        && pointer.schema_hash == request.schema_hash.as_str()
+        && pointer.manifest_key == plan.manifest_key
+        && pointer.manifest_sha256 == sha256_hex(&canonical_json_bytes(manifest)?)
+        && plan
+            .replace_pointer_key
+            .as_ref()
+            .is_some_and(|key| pointer.settlement_key == *key))
 }
 
 fn ensure_provenance_manifest(

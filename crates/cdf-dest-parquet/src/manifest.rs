@@ -56,6 +56,19 @@ pub struct ReplacePointer {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CurrentReplacePointer {
+    pub pointer_version: u16,
+    pub generation: u64,
+    pub target: String,
+    pub package_hash: String,
+    pub idempotency_token: String,
+    pub schema_hash: String,
+    pub manifest_key: String,
+    pub manifest_sha256: String,
+    pub settlement_key: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ParquetCorrectionSidecar {
     pub sidecar_version: u16,

@@ -1,11 +1,12 @@
 use std::{
     collections::BTreeSet,
     fs::OpenOptions,
+    future::Future,
     io::{Read, Write},
 };
 
 use crate::*;
-use futures_util::TryStreamExt;
+use futures_util::{StreamExt, TryStreamExt, stream::FuturesUnordered};
 
 const MULTIPART_CHUNK_BYTES: usize = 8 * 1024 * 1024;
 const MULTIPART_CONCURRENCY: usize = 4;
@@ -199,48 +200,107 @@ impl StoreClient {
             use tokio::io::AsyncReadExt;
 
             let _encoded = encoded;
-            let _lease = cdf_memory::reserve(memory, request).await?;
-            let mut file = tokio::fs::File::open(&file_path).await.map_err(|error| {
-                CdfError::destination(format!("open {}: {error}", file_path.display()))
-            })?;
-            let upload = store
+            let _lease = await_fenced(
+                &cancellation,
+                &mutation_guard,
+                cdf_memory::reserve(memory, request),
+            )
+            .await?;
+            let mut file = await_fenced(&cancellation, &mutation_guard, async {
+                tokio::fs::File::open(&file_path).await.map_err(|error| {
+                    CdfError::destination(format!("open {}: {error}", file_path.display()))
+                })
+            })
+            .await?;
+            cancellation.check()?;
+            mutation_guard.assert_current()?;
+            let mut upload = store
                 .put_multipart(&object_path)
                 .await
                 .map_err(|error| store_error(&operation, error))?;
-            let mut writer =
-                object_store::WriteMultipart::new_with_chunk_size(upload, MULTIPART_CHUNK_BYTES);
+            let mut parts: FuturesUnordered<object_store::UploadPart> = FuturesUnordered::new();
+            if let Err(error) = mutation_guard.assert_current() {
+                return Err(abort_multipart(&mut upload, &operation, error).await);
+            }
             loop {
-                cancellation.check()?;
-                mutation_guard.assert_current()?;
-                if let Err(error) = writer.wait_for_capacity(MULTIPART_CONCURRENCY).await {
-                    let _ = writer.abort().await;
-                    return Err(store_error(&operation, error));
+                while parts.len() >= MULTIPART_CONCURRENCY {
+                    let completed = await_fenced(&cancellation, &mutation_guard, async {
+                        parts
+                            .next()
+                            .await
+                            .ok_or_else(|| {
+                                CdfError::internal(
+                                    "Parquet multipart part queue ended unexpectedly",
+                                )
+                            })?
+                            .map_err(|error| store_error(&operation, error))
+                    })
+                    .await;
+                    if let Err(error) = completed {
+                        drop(parts);
+                        return Err(abort_multipart(&mut upload, &operation, error).await);
+                    }
                 }
                 let mut chunk = vec![0; MULTIPART_CHUNK_BYTES];
-                let read = match file.read(&mut chunk).await {
+                let read = await_fenced(&cancellation, &mutation_guard, async {
+                    file.read(&mut chunk).await.map_err(|error| {
+                        CdfError::destination(format!("read {}: {error}", file_path.display()))
+                    })
+                })
+                .await;
+                let read = match read {
                     Ok(read) => read,
                     Err(error) => {
-                        let _ = writer.abort().await;
-                        return Err(CdfError::destination(format!(
-                            "read {}: {error}",
-                            file_path.display()
-                        )));
+                        drop(parts);
+                        return Err(abort_multipart(&mut upload, &operation, error).await);
                     }
                 };
                 if read == 0 {
                     break;
                 }
                 chunk.truncate(read);
-                writer.put(bytes::Bytes::from(chunk));
+                if let Err(error) = cancellation
+                    .check()
+                    .and_then(|()| mutation_guard.assert_current().map(|_| ()))
+                {
+                    drop(parts);
+                    return Err(abort_multipart(&mut upload, &operation, error).await);
+                }
+                parts.push(upload.put_part(PutPayload::from(bytes::Bytes::from(chunk))));
+                if let Err(error) = mutation_guard.assert_current() {
+                    drop(parts);
+                    return Err(abort_multipart(&mut upload, &operation, error).await);
+                }
             }
-            cancellation.check()?;
+            while !parts.is_empty() {
+                let completed = await_fenced(&cancellation, &mutation_guard, async {
+                    parts
+                        .next()
+                        .await
+                        .ok_or_else(|| {
+                            CdfError::internal("Parquet multipart part queue ended unexpectedly")
+                        })?
+                        .map_err(|error| store_error(&operation, error))
+                })
+                .await;
+                if let Err(error) = completed {
+                    drop(parts);
+                    return Err(abort_multipart(&mut upload, &operation, error).await);
+                }
+            }
+            drop(parts);
+            let result = await_fenced(&cancellation, &mutation_guard, async {
+                upload
+                    .complete()
+                    .await
+                    .map_err(|error| store_error(&operation, error))
+            })
+            .await;
+            let result = match result {
+                Ok(result) => result,
+                Err(error) => return Err(abort_multipart(&mut upload, &operation, error).await),
+            };
             mutation_guard.assert_current()?;
-            let result = writer
-                .finish()
-                .await
-                .map_err(|error| store_error(operation, error))?;
-            mutation_guard.assert_current()?;
-            cancellation.check()?;
             Ok(result)
         })?;
         Ok(StoredObject {
@@ -826,9 +886,8 @@ impl StoreClient {
                 root,
                 source_key,
                 destination_key,
-                expected.sha256,
-                expected.byte_count,
-                expected.e_tag,
+                expected,
+                mutation_guard,
             )?;
             mutation_guard.assert_current()?;
             return Ok(stored);
@@ -866,9 +925,8 @@ impl StoreClient {
         root: &Path,
         source_key: &str,
         destination_key: &str,
-        expected_sha256: &str,
-        expected_bytes: u64,
-        expected_etag: Option<String>,
+        expected: ExpectedObject<'_>,
+        mutation_guard: &cdf_runtime::StagingMutationGuard,
     ) -> Result<StoredObject> {
         let source = root.join(self.path(source_key)?.as_ref());
         let destination = root.join(self.path(destination_key)?.as_ref());
@@ -886,6 +944,7 @@ impl StoreClient {
             .map_err(|error| {
                 CdfError::destination(format!("sync {}: {error}", source.display()))
             })?;
+        mutation_guard.assert_current()?;
         match fs::hard_link(&source, &destination) {
             Ok(()) => {}
             Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
@@ -893,7 +952,7 @@ impl StoreClient {
                     CdfError::destination(format!("inspect {}: {error}", destination.display()))
                 })?;
                 let actual_hash = sha256_file(&destination)?;
-                if metadata.len() != expected_bytes || actual_hash != expected_sha256 {
+                if metadata.len() != expected.byte_count || actual_hash != expected.sha256 {
                     return Err(CdfError::destination(format!(
                         "immutable Parquet object {} already exists with different bytes",
                         destination.display()
@@ -908,13 +967,18 @@ impl StoreClient {
                 )));
             }
         }
+        mutation_guard.assert_current()?;
         Ok(StoredObject {
-            byte_count: expected_bytes,
-            e_tag: expected_etag,
+            byte_count: expected.byte_count,
+            e_tag: expected.e_tag,
         })
     }
 
-    pub(crate) fn sync_local_object_parents(&self, keys: &[String]) -> Result<()> {
+    pub(crate) fn sync_local_object_parents(
+        &self,
+        keys: &[String],
+        mutation_guard: &cdf_runtime::StagingMutationGuard,
+    ) -> Result<()> {
         let Some(root) = &self.local_root else {
             return Ok(());
         };
@@ -930,11 +994,13 @@ impl StoreClient {
             parents.insert(parent.to_path_buf());
         }
         for parent in parents {
+            mutation_guard.assert_current()?;
             fs::File::open(&parent)
                 .and_then(|directory| directory.sync_all())
                 .map_err(|error| {
                     CdfError::destination(format!("sync {}: {error}", parent.display()))
                 })?;
+            mutation_guard.assert_current()?;
         }
         Ok(())
     }
@@ -966,13 +1032,12 @@ pub(crate) fn package_manifest_key(
 pub(crate) fn data_object_key(
     encoder: ObjectKeyEncoder,
     target: &TargetName,
-    token: &cdf_kernel::IdempotencyToken,
-    object_ordinal: u32,
+    sha256: &str,
 ) -> String {
     format!(
-        "targets/{}/packages/{}/data/part-{object_ordinal:08}.parquet",
+        "targets/{}/objects/sha256/{}.parquet",
         encoder.encode(target.as_str()),
-        encoder.encode(token.as_str())
+        encoder.encode(sha256)
     )
 }
 
@@ -1164,6 +1229,37 @@ fn encode_component_v1(value: &str) -> String {
 
 fn store_error(action: impl Into<String>, error: object_store::Error) -> CdfError {
     CdfError::destination(format!("{}: {error}", action.into()))
+}
+
+async fn await_fenced<T, F>(
+    cancellation: &cdf_runtime::RunCancellation,
+    mutation_guard: &cdf_runtime::StagingMutationGuard,
+    future: F,
+) -> Result<T>
+where
+    F: Future<Output = Result<T>>,
+{
+    cancellation.check()?;
+    mutation_guard.assert_current()?;
+    let lease_cancellation = mutation_guard.cancellation();
+    let result = cancellation
+        .await_or_cancel(lease_cancellation.await_or_cancel(future))
+        .await?;
+    mutation_guard.assert_current()?;
+    Ok(result)
+}
+
+async fn abort_multipart(
+    upload: &mut dyn object_store::MultipartUpload,
+    operation: &str,
+    mut primary: CdfError,
+) -> CdfError {
+    if let Err(error) = upload.abort().await {
+        primary.message.push_str(&format!(
+            "; multipart abort for {operation} also failed: {error}"
+        ));
+    }
+    primary
 }
 
 fn sha256_file(path: &Path) -> Result<String> {

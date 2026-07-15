@@ -261,12 +261,9 @@ impl ActiveStagedIngress {
         };
         for candidate in staged_runtime.staging_cleanup_candidates(&plan.target)? {
             if let Some(proof) = services.prove_expired_staging_lease(candidate.lease())? {
-                staged_runtime.cleanup_expired_staging(
-                    &candidate,
-                    proof.proof(),
-                    &proof.mutation_guard()?,
-                )?;
-                proof.finish()?;
+                proof.execute(|proof, guard| {
+                    staged_runtime.cleanup_expired_staging(&candidate, proof, guard)
+                })?;
             }
         }
         let staging_lease =
@@ -1654,12 +1651,9 @@ fn commit_package_through_staged_ingress(
         cdf_runtime::DestinationIngress::StagedSegments(staged) => {
             for candidate in staged.staging_cleanup_candidates(&inputs.destination_commit.target)? {
                 if let Some(proof) = services.prove_expired_staging_lease(candidate.lease())? {
-                    staged.cleanup_expired_staging(
-                        &candidate,
-                        proof.proof(),
-                        &proof.mutation_guard()?,
-                    )?;
-                    proof.finish()?;
+                    proof.execute(|proof, guard| {
+                        staged.cleanup_expired_staging(&candidate, proof, guard)
+                    })?;
                 }
             }
         }

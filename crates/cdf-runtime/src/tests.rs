@@ -2028,6 +2028,17 @@ fn staging_lease_renewal_failure_cancels_mutation_guard_before_more_work() {
 }
 
 #[test]
+fn staging_cleanup_preserves_storage_and_release_failures() {
+    let error = combine_cleanup_release::<()>(
+        Err(CdfError::destination("injected staging cleanup failure")),
+        Err(CdfError::transient("injected lease release failure")),
+    )
+    .unwrap_err();
+    assert!(error.message.contains("injected staging cleanup failure"));
+    assert!(error.message.contains("injected lease release failure"));
+}
+
+#[test]
 fn staging_supervisor_terminal_failure_cancels_live_and_rejects_new_leases() {
     let authority = Arc::new(RecordingStagingLeaseAuthority {
         renewals: AtomicUsize::new(0),

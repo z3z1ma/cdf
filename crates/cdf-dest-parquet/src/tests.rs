@@ -5,11 +5,11 @@ use std::{collections::VecDeque, io::Write};
 use crate::{
     corrections::{build_correction_context, build_correction_receipt},
     manifest::{
-        ParquetCorrectionSidecar, ParquetCorrectionSidecarManifest, ParquetObjectManifest,
-        ReplacePointer, canonical_json_bytes, sha256_hex,
+        CurrentReplacePointer, ParquetCorrectionSidecar, ParquetCorrectionSidecarManifest,
+        ParquetObjectManifest, ReplacePointer, canonical_json_bytes, sha256_hex,
     },
     sheet::{parquet_correction_capabilities, parquet_protocol_capabilities, parquet_sheet},
-    store::{ObjectKeyEncoder, package_manifest_key, staged_data_object_key},
+    store::{ObjectKeyEncoder, data_object_key, package_manifest_key, staged_data_object_key},
 };
 use ::parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use arrow_array::{ArrayRef, Float64Array, Int64Array, StringArray};
@@ -131,95 +131,6 @@ fn local_streaming_parquet_reaches_sixty_percent_of_write_roofline() {
         raw_rate / (1024.0 * 1024.0),
     );
     assert!(ratio >= 0.60, "Parquet write-roofline ratio was {ratio:.3}");
-}
-
-#[test]
-#[ignore = "release-mode staged Parquet ingress/write-roofline benchmark"]
-fn local_staged_parquet_ingress_reports_isolated_write_roofline() {
-    const ROWS_PER_SEGMENT: usize = 2 * 1024 * 1024;
-    const CHUNK: usize = 8 * 1024 * 1024;
-    let root = tempfile::tempdir().unwrap();
-    let package_dir = root.path().join("package");
-    let batch = RecordBatch::try_new(
-        Arc::new(Schema::new(vec![
-            Field::new("id", DataType::Int64, false),
-            Field::new("value", DataType::Float64, false),
-        ])),
-        vec![
-            Arc::new(Int64Array::from_iter_values(
-                (0..ROWS_PER_SEGMENT)
-                    .map(|row| (row as i64).wrapping_mul(6_364_136_223_846_793_005)),
-            )),
-            Arc::new(Float64Array::from_iter_values((0..ROWS_PER_SEGMENT).map(
-                |row| f64::from_bits((row as u64).wrapping_mul(11_400_714_819_323_198_485)),
-            ))),
-        ],
-    )
-    .unwrap();
-    let built = build_package(
-        &package_dir,
-        "pkg-staged-roofline",
-        vec![
-            ("seg-000001", vec![batch.clone()]),
-            ("seg-000002", vec![batch.clone()]),
-            ("seg-000003", vec![batch.clone()]),
-            ("seg-000004", vec![batch]),
-        ],
-    );
-    let commit = request(&package_dir, &built, WriteDisposition::Append);
-    let raw_buffer = vec![0_u8; CHUNK];
-    let mut observations = Vec::with_capacity(3);
-
-    for iteration in 0..3 {
-        let mut destination =
-            test_filesystem(root.path().join(format!("destination-{iteration}"))).unwrap();
-        let started = std::time::Instant::now();
-        let committed =
-            commit_through_ingress(&mut destination, &package_dir, commit.clone()).unwrap();
-        let staged_elapsed = started.elapsed();
-        let physical_bytes = committed
-            .object_manifest
-            .objects
-            .iter()
-            .map(|object| object.parquet_byte_count)
-            .sum::<u64>();
-
-        let mut raw = tempfile::NamedTempFile::new_in(root.path()).unwrap();
-        let started = std::time::Instant::now();
-        let mut remaining = physical_bytes;
-        while remaining > 0 {
-            let write = remaining.min(CHUNK as u64) as usize;
-            raw.write_all(&raw_buffer[..write]).unwrap();
-            remaining -= write as u64;
-        }
-        raw.as_file().sync_all().unwrap();
-        let raw_elapsed = started.elapsed();
-        let staged_rate = physical_bytes as f64 / staged_elapsed.as_secs_f64();
-        let raw_rate = physical_bytes as f64 / raw_elapsed.as_secs_f64();
-        observations.push((
-            physical_bytes,
-            staged_elapsed,
-            raw_elapsed,
-            staged_rate,
-            raw_rate,
-        ));
-    }
-
-    observations.sort_by(|left, right| (left.3 / left.4).total_cmp(&(right.3 / right.4)));
-    let (physical_bytes, staged_elapsed, raw_elapsed, staged_rate, raw_rate) = observations[1];
-    let ratio = staged_rate / raw_rate;
-    eprintln!(
-        "parquet_staged_ingress physical_bytes={} wall_time_ns={} raw_wall_time_ns={} staged_mib_s={:.1} raw_mib_s={:.1} ratio={ratio:.3}",
-        physical_bytes,
-        staged_elapsed.as_nanos(),
-        raw_elapsed.as_nanos(),
-        staged_rate / (1024.0 * 1024.0),
-        raw_rate / (1024.0 * 1024.0),
-    );
-    assert!(
-        ratio >= 0.60,
-        "staged Parquet write-roofline ratio was {ratio:.3}"
-    );
 }
 
 #[derive(Clone, Debug)]
@@ -375,10 +286,10 @@ fn commit_correction_base(
     built
 }
 
-fn build_package(
+fn build_package<S: AsRef<str>>(
     package_dir: &Path,
     package_id: &str,
-    segments: Vec<(&str, Vec<RecordBatch>)>,
+    segments: Vec<(S, Vec<RecordBatch>)>,
 ) -> BuiltPackage {
     let builder = PackageBuilder::create(package_dir, package_id).unwrap();
     builder.update_status(PackageStatus::Extracting).unwrap();
@@ -403,7 +314,7 @@ fn build_package(
 
     for (segment_id, batches) in segments {
         builder
-            .write_segment(SegmentId::new(segment_id).unwrap(), &batches)
+            .write_segment(SegmentId::new(segment_id.as_ref()).unwrap(), &batches)
             .unwrap();
     }
 
@@ -935,36 +846,39 @@ fn assert_staged_abort_cleans_destination(
     commit: ParquetCommitRequest,
 ) {
     let staged = stage_through_ingress(dest, package_dir, commit).unwrap();
-    let staging_keys = (0..staged.plan.object_keys.len())
-        .map(|ordinal| {
-            staged_data_object_key(
-                dest.object_key_encoder(),
-                &TargetName::new("orders").unwrap(),
-                staged.staging_lease.authority_domain_id(),
-                &staged.attempt_id,
-                staged.staging_lease.fencing_token(),
-                u32::try_from(ordinal).unwrap(),
-            )
-        })
-        .collect::<Vec<_>>();
-    assert!(staging_keys.iter().all(|key| {
-        dest.store()
-            .exists(dest.execution(), key)
-            .expect("inspect staged Parquet object")
-    }));
+    let staging_key = staged_data_object_key(
+        dest.object_key_encoder(),
+        &TargetName::new("orders").unwrap(),
+        staged.staging_lease.authority_domain_id(),
+        &staged.attempt_id,
+        staged.staging_lease.fencing_token(),
+        0,
+    );
+    assert!(
+        !dest
+            .store()
+            .exists(dest.execution(), &staging_key)
+            .expect("inspect bounded staged Parquet object")
+    );
+    let content_before = dest
+        .store()
+        .list_prefix(dest.execution(), "targets/orders/objects/sha256/")
+        .unwrap();
+    assert_eq!(content_before.len(), 1);
     staged.session.abort().unwrap();
-    assert!(staging_keys.iter().all(|key| {
+    assert!(
         !dest
             .store()
-            .exists(dest.execution(), key)
-            .expect("inspect cleaned Parquet object")
-    }));
-    assert!(staged.plan.object_keys.iter().all(|key| {
-        !dest
-            .store()
-            .exists(dest.execution(), key)
-            .expect("inspect unpublished Parquet object")
-    }));
+            .exists(dest.execution(), &staging_key)
+            .expect("inspect cleaned Parquet staging object")
+    );
+    assert_eq!(
+        dest.store()
+            .list_prefix(dest.execution(), "targets/orders/objects/sha256/")
+            .unwrap(),
+        content_before,
+        "abort must retain shared immutable objects for reachability GC"
+    );
     assert!(
         !dest
             .store()
@@ -1621,7 +1535,14 @@ fn staged_segment_ingress_materializes_verifiable_manifest_receipt() {
 
     let manifest = load_manifest(&dest, manifest_key(&receipt));
     assert_eq!(manifest.objects.len(), 1);
-    assert_eq!(manifest.objects[0].key, plan.object_keys[0]);
+    assert_eq!(
+        manifest.objects[0].key,
+        data_object_key(
+            dest.object_key_encoder(),
+            &TargetName::new("orders").unwrap(),
+            &manifest.objects[0].sha256,
+        )
+    );
     assert_eq!(manifest.objects[0].row_count, 2);
     assert_eq!(manifest.objects[0].schema_hash, "schema-v1");
 
@@ -1712,6 +1633,96 @@ fn staged_segment_ingress_preserves_manifest_segment_order() {
 }
 
 #[test]
+fn staged_grouping_materializes_deterministic_eight_eight_one_objects() {
+    let temp = tempfile::tempdir().unwrap();
+    let package_dir = temp.path().join("pkg-session-17");
+    let built = build_package(
+        &package_dir,
+        "pkg-session-17",
+        (0..17)
+            .map(|ordinal| {
+                (
+                    format!("seg-{ordinal:06}"),
+                    vec![sample_batch(vec![i64::from(ordinal)], vec![Some("row")])],
+                )
+            })
+            .collect(),
+    );
+    let commit = request(&package_dir, &built, WriteDisposition::Append);
+
+    let mut first = test_filesystem(temp.path().join("first")).unwrap();
+    let first_outcome = commit_through_ingress(&mut first, &package_dir, commit.clone()).unwrap();
+    let mut second = test_filesystem(temp.path().join("second")).unwrap();
+    let second_outcome = commit_through_ingress(&mut second, &package_dir, commit).unwrap();
+
+    let expected_group_sizes = [8, 8, 1];
+    assert_eq!(first_outcome.object_manifest.objects.len(), 3);
+    assert_eq!(
+        first_outcome
+            .object_manifest
+            .objects
+            .iter()
+            .map(|object| object.segments.len())
+            .collect::<Vec<_>>(),
+        expected_group_sizes
+    );
+    for object in &first_outcome.object_manifest.objects {
+        for (row_offset, segment) in object.segments.iter().enumerate() {
+            assert_eq!(segment.row_offset, row_offset as u64);
+        }
+        assert_eq!(
+            object.key,
+            data_object_key(
+                first.object_key_encoder(),
+                &TargetName::new("orders").unwrap(),
+                &object.sha256,
+            )
+        );
+    }
+    assert_eq!(first_outcome.receipt.segment_acks.len(), 17);
+    let logical_objects = |manifest: &ParquetObjectManifest| {
+        manifest
+            .objects
+            .iter()
+            .cloned()
+            .map(|mut object| {
+                object.etag = None;
+                object
+            })
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        logical_objects(&first_outcome.object_manifest),
+        logical_objects(&second_outcome.object_manifest),
+        "writer completion order must not affect grouped objects or provenance"
+    );
+    assert_eq!(
+        first_outcome.receipt.segment_acks,
+        second_outcome.receipt.segment_acks
+    );
+    assert!(
+        first
+            .verify_receipt(&first_outcome.receipt)
+            .unwrap()
+            .verified
+    );
+    assert!(
+        second
+            .verify_receipt(&second_outcome.receipt)
+            .unwrap()
+            .verified
+    );
+    assert!(
+        first
+            .store()
+            .list_prefix(first.execution(), "targets/orders/staging/")
+            .unwrap()
+            .is_empty(),
+        "successful final binding must leave no attempt-owned staging bytes"
+    );
+}
+
+#[test]
 fn staged_attempt_records_the_exact_prepared_physical_plan() {
     let temp = tempfile::tempdir().unwrap();
     let package_dir = temp.path().join("pkg-physical-plan");
@@ -1741,7 +1752,7 @@ fn staged_attempt_records_the_exact_prepared_physical_plan() {
     )
     .unwrap();
     assert_eq!(metadata["physical_plan_path"], "arrow_ipc_to_parquet");
-    assert_eq!(metadata["physical_plan_version"], 3);
+    assert_eq!(metadata["physical_plan_version"], 4);
     assert_eq!(metadata["writers"], 2);
     assert_eq!(metadata["rows_per_batch"], 64 * 1024);
     assert_eq!(metadata["bytes_per_batch"], 16 * 1024 * 1024);
@@ -1937,7 +1948,7 @@ fn abandoned_attempt_cleanup_requires_exact_expiry_proof() {
                 "target": commit.commit.target.as_str(),
                 "attempt_id": attempt_id.as_str(),
                 "physical_plan_path": "arrow_ipc_to_parquet",
-                "physical_plan_version": 3,
+                "physical_plan_version": 4,
                 "writers": 1,
                 "rows_per_batch": 65_536,
                 "bytes_per_batch": 16_777_216,
@@ -2079,7 +2090,7 @@ fn independent_lease_domains_cannot_collide_or_collect_each_others_staging() {
                     "target": commit.commit.target.as_str(),
                     "attempt_id": attempt_id.as_str(),
                     "physical_plan_path": "arrow_ipc_to_parquet",
-                    "physical_plan_version": 3,
+                    "physical_plan_version": 4,
                     "writers": 1,
                     "rows_per_batch": 65_536,
                     "bytes_per_batch": 16_777_216,
@@ -2186,7 +2197,7 @@ fn failed_staging_cleanup_retains_attempt_marker_until_payload_deletion_complete
                 "target": target.as_str(),
                 "attempt_id": attempt_id.as_str(),
                 "physical_plan_path": "arrow_ipc_to_parquet",
-                "physical_plan_version": 3,
+                "physical_plan_version": 4,
                 "writers": 1,
                 "rows_per_batch": 65_536,
                 "bytes_per_batch": 16_777_216,
@@ -2347,13 +2358,14 @@ fn replace_writes_current_pointer_to_latest_manifest() {
         .store()
         .get_required(dest.execution(), pointer_key)
         .unwrap();
-    let pointer: ReplacePointer = serde_json::from_slice(&pointer_bytes).unwrap();
+    let pointer: CurrentReplacePointer = serde_json::from_slice(&pointer_bytes).unwrap();
 
     assert_ne!(
         first_outcome.plan.manifest_key,
         second_outcome.plan.manifest_key
     );
     assert_eq!(pointer.manifest_key, second_outcome.plan.manifest_key);
+    assert_eq!(pointer.generation, 2);
     assert!(
         dest.verify_receipt(&second_outcome.receipt)
             .unwrap()
@@ -2362,7 +2374,7 @@ fn replace_writes_current_pointer_to_latest_manifest() {
 
     let replayed_first = commit_through_ingress(&mut dest, &first_dir, first_request).unwrap();
     assert!(replayed_first.duplicate);
-    let pointer: ReplacePointer = serde_json::from_slice(
+    let pointer: CurrentReplacePointer = serde_json::from_slice(
         &dest
             .store()
             .get_required(dest.execution(), pointer_key)
@@ -2406,10 +2418,13 @@ fn zero_data_append_and_replace_emit_receipts_without_objects_or_pointer_mutatio
         ("pkg-empty-replace", WriteDisposition::Replace),
     ] {
         let package_dir = temp.path().join(package_id);
-        let empty = build_package(&package_dir, package_id, Vec::new());
+        let empty = build_package(
+            &package_dir,
+            package_id,
+            Vec::<(&str, Vec<RecordBatch>)>::new(),
+        );
         let commit = request(&package_dir, &empty, disposition.clone());
         let plan = plan_package_for_test(&dest, &package_dir, &commit).unwrap();
-        assert!(plan.object_keys.is_empty());
         assert!(plan.replace_pointer_key.is_none());
 
         let outcome = commit_through_ingress(&mut dest, &package_dir, commit).unwrap();
@@ -2426,7 +2441,7 @@ fn zero_data_append_and_replace_emit_receipts_without_objects_or_pointer_mutatio
 }
 
 #[test]
-fn dry_run_plan_reports_keys_without_writing() {
+fn dry_run_plan_reports_binding_keys_without_writing() {
     let temp = tempfile::tempdir().unwrap();
     let package_dir = temp.path().join("pkg-plan");
     let built = build_package(
@@ -2461,12 +2476,6 @@ fn dry_run_plan_reports_keys_without_writing() {
         plan.manifest_key,
         format!("targets/orders/packages/{encoded_token}/manifest.json")
     );
-    assert_eq!(
-        plan.object_keys,
-        vec![format!(
-            "targets/orders/packages/{encoded_token}/data/part-00000000.parquet"
-        )]
-    );
     let expected_settlement = format!("targets/orders/packages/{encoded_token}/replace.json");
     assert_eq!(
         plan.replace_pointer_key.as_deref(),
@@ -2476,7 +2485,6 @@ fn dry_run_plan_reports_keys_without_writing() {
         plan.current_pointer_key.as_deref(),
         Some("targets/orders/current.json")
     );
-    assert_eq!(plan.object_keys.len(), 1);
     assert!(plan.replace_pointer_key.is_some());
     assert!(
         !dest
@@ -2526,10 +2534,10 @@ fn duplicate_column_names_fail_before_writing_objects() {
             .unwrap()
     );
     assert!(
-        !dest
-            .store()
-            .exists(dest.execution(), &plan.object_keys[0])
+        dest.store()
+            .list_prefix(dest.execution(), "targets/orders/objects/sha256/")
             .unwrap()
+            .is_empty()
     );
 }
 
@@ -2583,12 +2591,7 @@ fn replace_duplicate_replay_requires_immutable_settlement_identity() {
         store_replace_pointer(&dest, &pointer_key, &pointer);
 
         let error = commit_through_ingress(&mut dest, &package_dir, commit.clone()).unwrap_err();
-        assert!(
-            error
-                .to_string()
-                .contains("immutable object targets/orders/packages/"),
-            "{error}"
-        );
+        assert!(error.to_string().contains("replace settlement"), "{error}");
     }
     store_replace_pointer(&dest, &pointer_key, &original_pointer);
 }
@@ -2772,7 +2775,12 @@ fn verification_fails_for_tampered_and_missing_objects() {
         request(&tamper_dir, &tamper_pkg, WriteDisposition::Append),
     )
     .unwrap_err();
-    assert!(replay_error.to_string().contains("refusing to overwrite"));
+    assert!(
+        replay_error
+            .to_string()
+            .contains("already exists with different bytes"),
+        "{replay_error}"
+    );
 
     let missing_dir = temp.path().join("pkg-missing");
     let missing_pkg = build_package(

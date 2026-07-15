@@ -14,8 +14,7 @@ use crate::{
     ParquetCommitRequest, ParquetDestination,
     api::{duplicate_parquet_receipt, finalize_parquet_objects},
     layout::{
-        PHYSICAL_PLAN_PATH, PHYSICAL_PLAN_VERSION, ParquetObjectLayout, ParquetObjectLayoutPolicy,
-        ParquetSegmentLayout,
+        PHYSICAL_PLAN_PATH, PHYSICAL_PLAN_VERSION, ParquetObjectLayoutPolicy, ParquetSegmentLayout,
     },
     manifest::canonical_json_bytes,
     manifest::{ParquetObjectEntry, ParquetObjectSegmentEntry},
@@ -24,8 +23,8 @@ use crate::{
         write_parquet_staged_group,
     },
     store::{
-        ObjectKeyEncoder, StoreClient, StoredObject, data_object_key, now_ms,
-        package_publication_metadata_key, staged_attempt_metadata_key, staged_data_object_key,
+        ObjectKeyEncoder, StoredObject, data_object_key, now_ms, package_publication_metadata_key,
+        staged_attempt_metadata_key, staged_data_object_key,
     },
 };
 
@@ -92,15 +91,8 @@ impl ParquetPhysicalWritePlan {
         )
     }
 
-    fn final_keys(
-        &self,
-        token: &cdf_kernel::IdempotencyToken,
-        objects: &[ParquetObjectLayout],
-    ) -> Vec<String> {
-        objects
-            .iter()
-            .map(|object| data_object_key(self.encoder, &self.target, token, object.ordinal))
-            .collect()
+    fn content_key(&self, sha256: &str) -> String {
+        data_object_key(self.encoder, &self.target, sha256)
     }
 }
 
@@ -129,13 +121,9 @@ pub(crate) struct PublicationAttemptMetadata {
 struct StagedParquetObject {
     object_ordinal: u32,
     identities: Vec<StagedSegmentIdentity>,
-    store: StoreClient,
-    execution: cdf_runtime::ExecutionServices,
-    staging_key: String,
+    object_key: String,
     stored: StoredObject,
     sha256: String,
-    cleanup: bool,
-    mutation_guard: cdf_runtime::StagingMutationGuard,
 }
 
 struct ActiveParquetGroup {
@@ -230,6 +218,7 @@ impl ParquetStagedIngressSession {
         let output_schema = self.request.output_schema().clone();
         let attempt_id = self.request.attempt_id().clone();
         let staging_key = self.physical_plan.staging_key(object_ordinal);
+        let physical_plan = self.physical_plan.clone();
         let writer_settings = ParquetWriterSettings {
             rows_per_batch: self.physical_plan.rows_per_batch,
             bytes_per_batch: self.physical_plan.bytes_per_batch,
@@ -263,7 +252,7 @@ impl ParquetStagedIngressSession {
                 cancellation.check()?;
                 mutation_guard.assert_current()?;
                 let sha256 = group.encoded.sha256.clone();
-                let stored = destination.store().put_encoded_file(
+                let staged = destination.store().put_encoded_file(
                     destination.execution(),
                     &staging_key,
                     group.encoded,
@@ -271,16 +260,57 @@ impl ParquetStagedIngressSession {
                     &cancellation,
                 )?;
                 mutation_guard.assert_current()?;
+                let object_key = physical_plan.content_key(&sha256);
+                let published = (|| {
+                    let stored = destination.store().promote_create_or_verify(
+                        destination.execution(),
+                        &staging_key,
+                        &object_key,
+                        crate::store::ExpectedObject {
+                            byte_count: staged.byte_count,
+                            sha256: &sha256,
+                            e_tag: staged.e_tag.clone(),
+                        },
+                        &mutation_guard,
+                    )?;
+                    destination.store().sync_local_object_parents(
+                        std::slice::from_ref(&object_key),
+                        &mutation_guard,
+                    )?;
+                    mutation_guard.assert_current()?;
+                    destination
+                        .store()
+                        .delete(destination.execution(), &staging_key)?;
+                    mutation_guard.assert_current()?;
+                    Ok(stored)
+                })();
+                let stored = match published {
+                    Ok(stored) => stored,
+                    Err(error) => {
+                        let cleanup = mutation_guard
+                            .assert_current()
+                            .and_then(|_| {
+                                destination
+                                    .store()
+                                    .delete(destination.execution(), &staging_key)
+                            })
+                            .and_then(|()| mutation_guard.assert_current().map(|_| ()));
+                        return match cleanup {
+                            Ok(()) => Err(error),
+                            Err(cleanup) => Err(attach_secondary(
+                                error,
+                                "failed bounded Parquet staging cleanup",
+                                cleanup,
+                            )),
+                        };
+                    }
+                };
                 Ok(StagedParquetObject {
                     object_ordinal,
                     identities: group.identities,
-                    store: destination.store().clone(),
-                    execution: destination.execution().clone(),
-                    staging_key,
+                    object_key,
                     stored,
                     sha256,
-                    cleanup: true,
-                    mutation_guard,
                 })
             },
         )?;
@@ -314,6 +344,7 @@ impl ParquetStagedIngressSession {
                 "Parquet object group consumed a different segment identity",
             ));
         }
+        self.request.mutation_guard().assert_current()?;
         stream.acknowledge(cdf_runtime::StagedSegmentAck {
             attempt_id: self.request.attempt_id().clone(),
             identity: identity.clone(),
@@ -347,17 +378,16 @@ impl ParquetStagedIngressSession {
         let task = pending
             .pop_front()
             .ok_or_else(|| CdfError::internal("Parquet staged encode queue is empty"))?;
-        let mut object = match self.destination.execution().run_io(task) {
+        let object = match self.destination.execution().run_io(task) {
             Ok(object) => object,
             Err(error) => return Err(self.with_join_failures(error, None, pending)),
         };
         if self.objects.contains_key(&object.object_ordinal) {
-            let mut error =
-                CdfError::destination("Parquet staged encode completed a duplicate object ordinal");
-            if let Err(cleanup) = object.cleanup() {
-                error = attach_secondary(error, "duplicate staged object cleanup", cleanup);
-            }
-            return Err(self.with_join_failures(error, None, pending));
+            return Err(self.with_join_failures(
+                CdfError::destination("Parquet staged encode completed a duplicate object ordinal"),
+                None,
+                pending,
+            ));
         }
         self.objects.insert(object.object_ordinal, object);
         Ok(())
@@ -380,11 +410,7 @@ impl ParquetStagedIngressSession {
             // Cancellation is the expected terminal result. Awaiting every task is the
             // structural ownership barrier that prevents a retry from overlapping orphan work.
             match self.destination.execution().run_io(task) {
-                Ok(mut object) => {
-                    if let Err(error) = object.cleanup() {
-                        append_failure(&mut failure, "cancelled staged object cleanup", error);
-                    }
-                }
+                Ok(_) => {}
                 Err(error) => append_failure(&mut failure, "staged sibling join", error),
             }
         }
@@ -430,12 +456,6 @@ impl ParquetStagedIngressSession {
     fn cleanup(&mut self) -> Result<()> {
         self.request.mutation_guard().assert_current()?;
         let mut failure = None;
-        for object in self.objects.values_mut() {
-            self.request.mutation_guard().assert_current()?;
-            if let Err(error) = object.cleanup() {
-                append_failure(&mut failure, "staged object cleanup", error);
-            }
-        }
         self.objects.clear();
         self.request.mutation_guard().assert_current()?;
         let prefix = crate::store::staged_attempt_prefix(
@@ -460,25 +480,13 @@ impl ParquetStagedIngressSession {
 }
 
 impl StagedParquetObject {
-    fn cleanup(&mut self) -> Result<()> {
-        if self.cleanup {
-            self.mutation_guard.assert_current()?;
-            self.store.delete(&self.execution, &self.staging_key)?;
-            self.mutation_guard.assert_current()?;
-            self.cleanup = false;
-        }
-        Ok(())
-    }
-
     fn finalize(
         self,
         states: &BTreeMap<SegmentId, &StateSegment>,
-        final_key: String,
         schema_hash: &SchemaHash,
-        mutation_guard: &cdf_runtime::StagingMutationGuard,
     ) -> Result<ParquetObjectEntry> {
-        let mut staged = self;
-        let result = (|| {
+        let staged = self;
+        (|| {
             let mut row_offset = 0_u64;
             let mut byte_count = 0_u64;
             let mut package_byte_count = 0_u64;
@@ -513,47 +521,18 @@ impl StagedParquetObject {
                     .checked_add(identity.byte_count)
                     .ok_or_else(|| CdfError::data("Parquet object package byte count overflow"))?;
             }
-            mutation_guard.assert_current()?;
-            let stored = staged.store.promote_create_or_verify(
-                &staged.execution,
-                &staged.staging_key,
-                &final_key,
-                crate::store::ExpectedObject {
-                    byte_count: staged.stored.byte_count,
-                    sha256: &staged.sha256,
-                    e_tag: staged.stored.e_tag.clone(),
-                },
-                mutation_guard,
-            )?;
-            mutation_guard.assert_current()?;
-            staged
-                .store
-                .delete(&staged.execution, &staged.staging_key)?;
-            mutation_guard.assert_current()?;
-            staged.cleanup = false;
             Ok(ParquetObjectEntry {
-                key: final_key,
+                key: staged.object_key,
                 row_count: row_offset,
                 byte_count,
                 package_byte_count,
-                parquet_byte_count: stored.byte_count,
-                sha256: staged.sha256.clone(),
-                etag: stored.e_tag,
+                parquet_byte_count: staged.stored.byte_count,
+                sha256: staged.sha256,
+                etag: staged.stored.e_tag,
                 schema_hash: schema_hash.as_str().to_owned(),
                 segments,
             })
-        })();
-        match result {
-            Ok(entry) => Ok(entry),
-            Err(error) => match staged.cleanup() {
-                Ok(()) => Err(error),
-                Err(cleanup) => Err(attach_secondary(
-                    error,
-                    "failed Parquet object finalization cleanup",
-                    cleanup,
-                )),
-            },
-        }
+        })()
     }
 }
 
@@ -650,21 +629,9 @@ impl StagedIngressSession for ParquetStagedIngressSession {
                 .iter()
                 .map(|identity| identity.byte_count)
                 .sum();
-            let plan = self.destination.plan_package_shape(
-                &request,
-                &object_layouts,
-                rows,
-                package_bytes,
-            )?;
-            if plan.object_keys
-                != self
-                    .physical_plan
-                    .final_keys(&request.commit.idempotency_token, &object_layouts)
-            {
-                return Err(CdfError::destination(
-                    "Parquet final object keys differ from the compiled physical write plan",
-                ));
-            }
+            let plan = self
+                .destination
+                .plan_package_shape(&request, rows, package_bytes)?;
             if &plan.kernel != binding.plan() {
                 return Err(CdfError::destination(
                     "Parquet staged final binding commit plan differs from destination planning",
@@ -741,25 +708,8 @@ impl StagedIngressSession for ParquetStagedIngressSession {
                         ));
                     }
                 }
-                let key = plan
-                    .object_keys
-                    .get(usize::try_from(ordinal).map_err(|_| {
-                        CdfError::data("Parquet staged ordinal exceeds platform usize")
-                    })?)
-                    .ok_or_else(|| {
-                        CdfError::data("Parquet staged ordinal is outside the final object plan")
-                    })?
-                    .clone();
-                objects.push(object.finalize(
-                    &states,
-                    key,
-                    binding.schema_hash(),
-                    self.request.mutation_guard(),
-                )?);
+                objects.push(object.finalize(&states, binding.schema_hash())?);
             }
-            self.destination
-                .store()
-                .sync_local_object_parents(&plan.object_keys)?;
             let publication = finalize_parquet_objects(
                 &self.destination,
                 request,

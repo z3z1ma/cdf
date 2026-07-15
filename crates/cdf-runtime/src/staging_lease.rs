@@ -398,15 +398,11 @@ impl StagingLeaseSupervisor {
             &identity,
             &owner,
         ) {
-            let _ = self.authority.release(&lease);
-            return Err(error);
+            return Err(with_release_failure(error, self.authority.release(&lease)));
         }
         match self.register(lease.clone()) {
             Ok(managed) => Ok(managed),
-            Err(error) => {
-                let _ = self.authority.release(&lease);
-                Err(error)
-            }
+            Err(error) => Err(with_release_failure(error, self.authority.release(&lease))),
         }
     }
 
@@ -457,8 +453,10 @@ impl StagingLeaseSupervisor {
             return Ok(None);
         };
         if let Err(error) = validate_cleanup_proof(&proof, lease, &collector) {
-            let _ = self.authority.release(&proof.cleanup_lease);
-            return Err(error);
+            return Err(with_release_failure(
+                error,
+                self.authority.release(&proof.cleanup_lease),
+            ));
         }
         let cleanup_lease = proof.cleanup_lease.clone();
         match self.register(cleanup_lease.clone()) {
@@ -466,10 +464,10 @@ impl StagingLeaseSupervisor {
                 proof,
                 cleanup_lease: Some(managed),
             })),
-            Err(error) => {
-                let _ = self.authority.release(&cleanup_lease);
-                Err(error)
-            }
+            Err(error) => Err(with_release_failure(
+                error,
+                self.authority.release(&cleanup_lease),
+            )),
         }
     }
 
@@ -714,6 +712,45 @@ impl ManagedExpiredStagingLeaseProof {
             .ok_or_else(|| CdfError::internal("staging cleanup lease was already released"))?
             .finish()
     }
+
+    /// Executes exact-generation cleanup and always releases the cleanup lease, preserving both
+    /// errors when storage cleanup and authoritative release fail together.
+    pub fn execute<T>(
+        mut self,
+        cleanup: impl FnOnce(&ExpiredStagingLeaseProof, &StagingMutationGuard) -> Result<T>,
+    ) -> Result<T> {
+        let guard = self
+            .cleanup_lease
+            .as_ref()
+            .ok_or_else(|| CdfError::internal("staging cleanup lease was already released"))?
+            .mutation_guard()?;
+        let cleaned = cleanup(&self.proof, &guard);
+        drop(guard);
+        let released = self
+            .cleanup_lease
+            .take()
+            .ok_or_else(|| CdfError::internal("staging cleanup lease was already released"))?
+            .finish();
+        combine_cleanup_release(cleaned, released)
+    }
+}
+
+pub(crate) fn combine_cleanup_release<T>(cleaned: Result<T>, released: Result<()>) -> Result<T> {
+    match (cleaned, released) {
+        (Ok(value), Ok(())) => Ok(value),
+        (Err(error), Ok(())) => Err(error),
+        (Ok(_), Err(error)) => Err(error),
+        (Err(error), Err(release)) => Err(with_release_failure(error, Err(release))),
+    }
+}
+
+pub(crate) fn with_release_failure(mut primary: CdfError, release: Result<()>) -> CdfError {
+    if let Err(release) = release {
+        primary
+            .message
+            .push_str(&format!("; staging lease release also failed: {release}"));
+    }
+    primary
 }
 
 async fn lease_supervisor_loop(
