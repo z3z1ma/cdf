@@ -433,8 +433,17 @@ impl Drop for FixedTaskPool {
             }
         }
         if let Ok(workers) = self.workers.get_mut() {
+            let current_thread = std::thread::current().id();
             for worker in workers.drain(..) {
-                let _ = worker.join();
+                if worker.thread().id() == current_thread {
+                    // A legal task may own the final host reference. In that
+                    // case pool destruction runs on this worker: detaching its
+                    // own handle lets it finish the current item and observe
+                    // shutdown, while every other worker remains joined here.
+                    drop(worker);
+                } else {
+                    let _ = worker.join();
+                }
             }
         }
     }
@@ -1470,6 +1479,50 @@ mod tests {
         assert!(slots.reservation.is_none());
         drop(slots);
         drop(host);
+    }
+
+    #[test]
+    fn fixed_pool_teardown_is_safe_when_worker_releases_the_last_owner() {
+        let (test_finished_sender, test_finished_receiver) = mpsc::sync_channel(1);
+        std::thread::spawn(move || {
+            let slots = Arc::new(CpuSlots {
+                capacity: 1,
+                next_work_id: AtomicU64::new(0),
+                state: Mutex::new(CpuSlotState {
+                    available: 1,
+                    waiting: BTreeMap::new(),
+                    reservation: None,
+                }),
+                changed: Condvar::new(),
+            });
+            let pool = FixedTaskPool::new("self-drop", 1, slots).unwrap();
+            let final_worker_owner = Arc::clone(&pool);
+            let (started_sender, started_receiver) = mpsc::sync_channel(1);
+            let (release_sender, release_receiver) = mpsc::sync_channel(1);
+            let completion = pool
+                .submit(
+                    1,
+                    RunCancellation::default(),
+                    Box::new(move || {
+                        started_sender.send(()).unwrap();
+                        release_receiver.recv().unwrap();
+                        drop(final_worker_owner);
+                        Ok(())
+                    }),
+                    Arc::new(CpuUsageTracker::default()),
+                )
+                .unwrap();
+            started_receiver.recv().unwrap();
+            drop(pool);
+            release_sender.send(()).unwrap();
+            let outcome = futures_executor::block_on(completion).unwrap();
+            assert!(matches!(outcome.outcome, WorkOutcome::Completed(Ok(()))));
+            test_finished_sender.send(()).unwrap();
+        });
+
+        test_finished_receiver
+            .recv_timeout(Duration::from_secs(1))
+            .expect("pool teardown attempted to join its own worker");
     }
 
     #[test]
