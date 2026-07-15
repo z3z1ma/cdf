@@ -11,11 +11,19 @@ use crate::{
     ParquetCommitRequest, ParquetDestination,
     api::{duplicate_parquet_receipt, finalize_parquet_objects},
     manifest::ParquetObjectEntry,
+    manifest::canonical_json_bytes,
     package::write_parquet_staged_segment,
-    store::{StoreClient, StoredObject, staged_segment_object_key},
+    store::{
+        ObjectKeyEncoder, StoreClient, StoredObject, now_ms, segment_object_key,
+        staged_attempt_metadata_key, staged_segment_object_key,
+    },
 };
 
 const ENCODE_LANE: &str = "parquet.encode";
+const PHYSICAL_PLAN_PATH: &str = "arrow_ipc_to_parquet";
+const PHYSICAL_PLAN_VERSION: u16 = 2;
+const STAGING_METADATA_VERSION: u16 = 1;
+const HEARTBEAT_INTERVAL_MS: i64 = 60_000;
 
 pub(crate) struct ParquetStagedIngressSession {
     destination: ParquetDestination,
@@ -23,6 +31,76 @@ pub(crate) struct ParquetStagedIngressSession {
     accepted: BTreeMap<u32, StagedSegmentIdentity>,
     objects: BTreeMap<u32, StagedParquetObject>,
     active_attempt_key: String,
+    physical_plan: ParquetPhysicalWritePlan,
+    metadata_key: String,
+    started_at_ms: i64,
+    last_heartbeat_ms: i64,
+}
+
+#[derive(Clone)]
+struct ParquetPhysicalWritePlan {
+    encoder: ObjectKeyEncoder,
+    target: cdf_kernel::TargetName,
+    attempt_id: cdf_runtime::LoadAttemptId,
+    writers: u16,
+    rows_per_batch: u64,
+    bytes_per_batch: u64,
+}
+
+impl ParquetPhysicalWritePlan {
+    fn compile(destination: &ParquetDestination, request: &StagedIngressRequest) -> Result<Self> {
+        let descriptor = &request.bulk_path().descriptor;
+        if descriptor.path_id != PHYSICAL_PLAN_PATH || descriptor.version != PHYSICAL_PLAN_VERSION {
+            return Err(CdfError::contract(format!(
+                "Parquet staged ingress requires physical plan {PHYSICAL_PLAN_PATH}@{PHYSICAL_PLAN_VERSION}, got {}@{}",
+                descriptor.path_id, descriptor.version
+            )));
+        }
+        if request.bulk_path().writers > request.scheduling().max_in_flight_segments {
+            return Err(CdfError::contract(format!(
+                "Parquet physical plan requires {} writers but staged ingress permits only {} in-flight segments",
+                request.bulk_path().writers,
+                request.scheduling().max_in_flight_segments
+            )));
+        }
+        Ok(Self {
+            encoder: destination.object_key_encoder(),
+            target: request.binding().target.clone(),
+            attempt_id: request.attempt_id().clone(),
+            writers: request.bulk_path().writers,
+            rows_per_batch: request.bulk_path().rows_per_batch,
+            bytes_per_batch: request.bulk_path().bytes_per_batch,
+        })
+    }
+
+    fn staging_key(&self, segment_id: &SegmentId) -> String {
+        staged_segment_object_key(self.encoder, &self.target, &self.attempt_id, segment_id)
+    }
+
+    fn final_keys(
+        &self,
+        token: &cdf_kernel::IdempotencyToken,
+        segments: &[SegmentId],
+    ) -> Vec<String> {
+        segments
+            .iter()
+            .map(|segment| segment_object_key(self.encoder, &self.target, token, segment))
+            .collect()
+    }
+}
+
+#[derive(serde::Serialize)]
+struct StagingAttemptMetadata<'a> {
+    version: u16,
+    target: &'a str,
+    attempt_id: &'a str,
+    physical_plan_path: &'a str,
+    physical_plan_version: u16,
+    writers: u16,
+    rows_per_batch: u64,
+    bytes_per_batch: u64,
+    started_at_ms: i64,
+    heartbeat_at_ms: i64,
 }
 
 impl Drop for ParquetStagedIngressSession {
@@ -66,21 +144,70 @@ impl ParquetStagedIngressSession {
             ));
         }
         cdf_package::validate_parquet_schema(request.output_schema())?;
-        let active_attempt_key = destination
-            .claim_staged_attempt(&request.binding().target, request.attempt_id())?;
-        if let Err(error) = destination
-            .cleanup_staged_attempt(&request.binding().target, request.attempt_id())
+        let physical_plan = ParquetPhysicalWritePlan::compile(&destination, &request)?;
+        let started_at_ms = now_ms()?;
+        destination.cleanup_expired_staging(&request.binding().target, started_at_ms)?;
+        let active_attempt_key =
+            destination.claim_staged_attempt(&request.binding().target, request.attempt_id())?;
+        if let Err(error) =
+            destination.cleanup_staged_attempt(&request.binding().target, request.attempt_id())
         {
             destination.release_staged_attempt(&active_attempt_key);
             return Err(error);
         }
-        Ok(Self {
+        let metadata_key = staged_attempt_metadata_key(
+            destination.object_key_encoder(),
+            &request.binding().target,
+            request.attempt_id(),
+        );
+        let session = Self {
             destination,
             request,
             accepted: BTreeMap::new(),
             objects: BTreeMap::new(),
             active_attempt_key,
-        })
+            physical_plan,
+            metadata_key,
+            started_at_ms,
+            last_heartbeat_ms: started_at_ms,
+        };
+        if let Err(error) = session.write_heartbeat(started_at_ms) {
+            session
+                .destination
+                .release_staged_attempt(&session.active_attempt_key);
+            return Err(error);
+        }
+        Ok(session)
+    }
+
+    fn write_heartbeat(&self, heartbeat_at_ms: i64) -> Result<()> {
+        self.destination.store().put(
+            self.destination.execution(),
+            &self.metadata_key,
+            canonical_json_bytes(&StagingAttemptMetadata {
+                version: STAGING_METADATA_VERSION,
+                target: self.request.binding().target.as_str(),
+                attempt_id: self.request.attempt_id().as_str(),
+                physical_plan_path: PHYSICAL_PLAN_PATH,
+                physical_plan_version: PHYSICAL_PLAN_VERSION,
+                writers: self.physical_plan.writers,
+                rows_per_batch: self.physical_plan.rows_per_batch,
+                bytes_per_batch: self.physical_plan.bytes_per_batch,
+                started_at_ms: self.started_at_ms,
+                heartbeat_at_ms,
+            })?,
+        )?;
+        Ok(())
+    }
+
+    fn refresh_heartbeat(&mut self) -> Result<()> {
+        let now = now_ms()?;
+        if now.saturating_sub(self.last_heartbeat_ms) < HEARTBEAT_INTERVAL_MS {
+            return Ok(());
+        }
+        self.write_heartbeat(now)?;
+        self.last_heartbeat_ms = now;
+        Ok(())
     }
 
     fn validate_identity(&self, identity: &StagedSegmentIdentity) -> Result<()> {
@@ -116,7 +243,7 @@ impl ParquetStagedIngressSession {
         let destination = self.destination.clone();
         let output_schema = self.request.output_schema().clone();
         let attempt_id = self.request.attempt_id().clone();
-        let target = self.request.binding().target.clone();
+        let staging_key = self.physical_plan.staging_key(&identity.segment_id);
         let run_id = format!("parquet-stage-{}-{}", attempt_id.as_str(), identity.ordinal);
         self.destination.execution().spawn_blocking_value(
             &run_id,
@@ -133,12 +260,6 @@ impl ParquetStagedIngressSession {
                     &cancellation,
                 )?;
                 cancellation.check()?;
-                let staging_key = staged_segment_object_key(
-                    destination.object_key_encoder(),
-                    &target,
-                    &attempt_id,
-                    &identity.segment_id,
-                );
                 let sha256 = encoded.sha256.clone();
                 let stored = destination.store().put_encoded_file(
                     destination.execution(),
@@ -184,6 +305,7 @@ impl ParquetStagedIngressSession {
                     "Parquet staged encode completed a duplicate ordinal",
                 ));
             }
+            self.refresh_heartbeat()?;
             Ok(())
         })();
         if let Err(error) = completed {
@@ -236,6 +358,18 @@ impl ParquetStagedIngressSession {
             }
         }
         self.objects.clear();
+        let prefix = crate::store::staged_attempt_prefix(
+            self.destination.object_key_encoder(),
+            &self.request.binding().target,
+            self.request.attempt_id(),
+        );
+        if let Err(error) = self
+            .destination
+            .store()
+            .delete_prefix(self.destination.execution(), &prefix)
+        {
+            first_error.get_or_insert(error);
+        }
         match first_error {
             Some(error) => Err(error),
             None => Ok(()),
@@ -302,7 +436,7 @@ impl StagedParquetObject {
 
 impl StagedIngressSession for ParquetStagedIngressSession {
     fn stage_stream(&mut self, stream: &mut dyn StagedSegmentStream) -> Result<()> {
-        let maximum = usize::from(self.request.scheduling().max_in_flight_segments);
+        let maximum = usize::from(self.physical_plan.writers);
         let mut pending = VecDeque::with_capacity(maximum);
         loop {
             let segment = match stream.next_segment() {
@@ -367,6 +501,15 @@ impl StagedIngressSession for ParquetStagedIngressSession {
         let plan =
             self.destination
                 .plan_package_shape(&request, &segment_ids, rows, package_bytes)?;
+        if plan.object_keys
+            != self
+                .physical_plan
+                .final_keys(&request.commit.idempotency_token, &segment_ids)
+        {
+            return Err(CdfError::destination(
+                "Parquet final object keys differ from the compiled physical write plan",
+            ));
+        }
         if &plan.kernel != binding.plan() {
             return Err(CdfError::destination(
                 "Parquet staged final binding commit plan differs from destination planning",
@@ -424,6 +567,7 @@ impl StagedIngressSession for ParquetStagedIngressSession {
             .sync_local_object_parents(&plan.object_keys)?;
         let publication = finalize_parquet_objects(&self.destination, request, plan, objects)?;
         let (receipt, verification) = publication.into_parts();
+        self.cleanup()?;
         DestinationCommitOutcome::new(
             receipt,
             DestinationReceiptReportingPolicy::DestinationCommit { duplicate: false },

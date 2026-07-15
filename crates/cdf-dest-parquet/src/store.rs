@@ -13,6 +13,12 @@ pub(crate) struct StoredObject {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ListedObject {
+    pub(crate) key: String,
+    pub(crate) last_modified_ms: i64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum CreateObjectOutcome {
     Created(StoredObject),
     AlreadyExists,
@@ -59,8 +65,8 @@ impl StoreClient {
         let store = LocalFileSystem::new_with_prefix(root)
             .map(|store| store.with_fsync(true))
             .map_err(|error| {
-            CdfError::destination(format!("open object store filesystem: {error}"))
-        })?;
+                CdfError::destination(format!("open object store filesystem: {error}"))
+            })?;
         Ok(Self {
             store: Arc::new(store),
             root_prefix: String::new(),
@@ -420,6 +426,45 @@ impl StoreClient {
         })
     }
 
+    pub(crate) fn list_prefix(
+        &self,
+        execution: &cdf_runtime::ExecutionServices,
+        prefix: &str,
+    ) -> Result<Vec<ListedObject>> {
+        let prefix_path = self.path(prefix)?;
+        let store = Arc::clone(&self.store);
+        let root_prefix = self.root_prefix.clone();
+        let operation = format!("list prefix {prefix}");
+        execution.run_io(async move {
+            let objects = store
+                .list(Some(&prefix_path))
+                .try_collect::<Vec<_>>()
+                .await
+                .map_err(|error| store_error(&operation, error))?;
+            objects
+                .into_iter()
+                .map(|object| {
+                    let key = object.location.as_ref();
+                    let key = if root_prefix.is_empty() {
+                        key.to_owned()
+                    } else {
+                        key.strip_prefix(&format!("{root_prefix}/"))
+                            .ok_or_else(|| {
+                                CdfError::destination(format!(
+                                    "listed object {key} is outside configured root {root_prefix}"
+                                ))
+                            })?
+                            .to_owned()
+                    };
+                    Ok(ListedObject {
+                        key,
+                        last_modified_ms: object.last_modified.timestamp_millis(),
+                    })
+                })
+                .collect()
+        })
+    }
+
     pub(crate) fn promote_create_or_verify(
         &self,
         execution: &cdf_runtime::ExecutionServices,
@@ -600,6 +645,21 @@ pub(crate) fn staged_attempt_prefix(
         "targets/{}/staging/{}/",
         encoder.encode(target.as_str()),
         encoder.encode(attempt_id.as_str())
+    )
+}
+
+pub(crate) fn staged_target_prefix(encoder: ObjectKeyEncoder, target: &TargetName) -> String {
+    format!("targets/{}/staging/", encoder.encode(target.as_str()))
+}
+
+pub(crate) fn staged_attempt_metadata_key(
+    encoder: ObjectKeyEncoder,
+    target: &TargetName,
+    attempt_id: &cdf_runtime::LoadAttemptId,
+) -> String {
+    format!(
+        "{}attempt.json",
+        staged_attempt_prefix(encoder, target, attempt_id)
     )
 }
 

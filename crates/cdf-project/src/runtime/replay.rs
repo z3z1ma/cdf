@@ -1231,20 +1231,21 @@ where
     let output_schema = package
         .reader()
         .runtime_arrow_schema_verified(package.verification())?;
-    let selected_bulk_path = runtime.prepare_selected_bulk_path(
-        &cdf_runtime::BulkPathPreparationInput::new(output_schema.as_ref())
-            .with_commit(&inputs.destination_commit),
-    )?;
-    let mut active_staged = active_staged;
-    if active_staged
-        .as_ref()
-        .is_some_and(|active| active.bulk_path != selected_bulk_path)
-    {
-        active_staged.take().expect("checked above").abort();
-        return Err(CdfError::contract(
-            "destination bulk-path selection changed after staged ingress began",
-        ));
-    }
+    // A live staged attempt has already crossed the destination mutation boundary under this
+    // exact prepared path. Final package binding supplies identities that did not exist earlier;
+    // it must not re-plan writer or batching policy. Artifact-only replay has no live attempt and
+    // therefore prepares from the verified package inputs here.
+    let selected_bulk_path = match active_staged.as_ref() {
+        Some(active) => {
+            capabilities.validate_prepared_bulk_path(&active.bulk_path)?;
+            active.bulk_path.clone()
+        }
+        None => runtime.prepare_selected_bulk_path(
+            &cdf_runtime::BulkPathPreparationInput::new(output_schema.as_ref())
+                .with_commit(&inputs.destination_commit),
+        )?,
+    };
+    let active_staged = active_staged;
     notify_destination_replay_stage(&hooks, PackageReplayStage::PackageReplayVerified)?;
 
     let checkpoint_id = inputs.state_delta.checkpoint_id.clone();

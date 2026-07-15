@@ -124,6 +124,92 @@ fn local_streaming_parquet_reaches_sixty_percent_of_write_roofline() {
     assert!(ratio >= 0.60, "Parquet write-roofline ratio was {ratio:.3}");
 }
 
+#[test]
+#[ignore = "release-mode staged Parquet ingress/write-roofline benchmark"]
+fn local_staged_parquet_ingress_reports_isolated_write_roofline() {
+    const ROWS_PER_SEGMENT: usize = 2 * 1024 * 1024;
+    const CHUNK: usize = 8 * 1024 * 1024;
+    let root = tempfile::tempdir().unwrap();
+    let package_dir = root.path().join("package");
+    let batch = RecordBatch::try_new(
+        Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int64, false),
+            Field::new("value", DataType::Float64, false),
+        ])),
+        vec![
+            Arc::new(Int64Array::from_iter_values(
+                (0..ROWS_PER_SEGMENT)
+                    .map(|row| (row as i64).wrapping_mul(6_364_136_223_846_793_005)),
+            )),
+            Arc::new(Float64Array::from_iter_values((0..ROWS_PER_SEGMENT).map(
+                |row| f64::from_bits((row as u64).wrapping_mul(11_400_714_819_323_198_485)),
+            ))),
+        ],
+    )
+    .unwrap();
+    let built = build_package(
+        &package_dir,
+        "pkg-staged-roofline",
+        vec![
+            ("seg-000001", vec![batch.clone()]),
+            ("seg-000002", vec![batch.clone()]),
+            ("seg-000003", vec![batch.clone()]),
+            ("seg-000004", vec![batch]),
+        ],
+    );
+    let commit = request(&package_dir, &built, WriteDisposition::Append);
+    let raw_buffer = vec![0_u8; CHUNK];
+    let mut observations = Vec::with_capacity(3);
+
+    for iteration in 0..3 {
+        let mut destination =
+            test_filesystem(root.path().join(format!("destination-{iteration}"))).unwrap();
+        let started = std::time::Instant::now();
+        let committed =
+            commit_through_ingress(&mut destination, &package_dir, commit.clone()).unwrap();
+        let staged_elapsed = started.elapsed();
+        let physical_bytes = committed
+            .object_manifest
+            .objects
+            .iter()
+            .map(|object| object.byte_count)
+            .sum::<u64>();
+
+        let mut raw = tempfile::NamedTempFile::new_in(root.path()).unwrap();
+        let started = std::time::Instant::now();
+        let mut remaining = physical_bytes;
+        while remaining > 0 {
+            let write = remaining.min(CHUNK as u64) as usize;
+            raw.write_all(&raw_buffer[..write]).unwrap();
+            remaining -= write as u64;
+        }
+        raw.as_file().sync_all().unwrap();
+        let raw_elapsed = started.elapsed();
+        let staged_rate = physical_bytes as f64 / staged_elapsed.as_secs_f64();
+        let raw_rate = physical_bytes as f64 / raw_elapsed.as_secs_f64();
+        observations.push((
+            physical_bytes,
+            staged_elapsed,
+            raw_elapsed,
+            staged_rate,
+            raw_rate,
+        ));
+    }
+
+    observations.sort_by(|left, right| (left.3 / left.4).total_cmp(&(right.3 / right.4)));
+    let (physical_bytes, staged_elapsed, raw_elapsed, staged_rate, raw_rate) = observations[1];
+    let ratio = staged_rate / raw_rate;
+    eprintln!(
+        "parquet_staged_ingress physical_bytes={} wall_time_ns={} raw_wall_time_ns={} staged_mib_s={:.1} raw_mib_s={:.1} ratio={ratio:.3}",
+        physical_bytes,
+        staged_elapsed.as_nanos(),
+        raw_elapsed.as_nanos(),
+        staged_rate / (1024.0 * 1024.0),
+        raw_rate / (1024.0 * 1024.0),
+    );
+    assert!(ratio.is_finite() && ratio > 0.0);
+}
+
 #[derive(Clone, Debug)]
 struct BuiltPackage {
     hash: PackageHash,
@@ -665,8 +751,9 @@ fn stage_through_ingress(
     let plan = dest.plan_package_commit(&commit, &reader.manifest().identity.segments)?;
     let inputs = replay_inputs(&commit);
     let capabilities = dest.runtime_capabilities();
-    let bulk_path = cdf_runtime::BulkPathPreparation::from_capabilities(&capabilities)?
-        .into_selected(&capabilities)?;
+    let preparation = cdf_runtime::BulkPathPreparationInput::new(&output_schema)
+        .with_execution(dest.execution().capabilities());
+    let bulk_path = dest.prepare_selected_bulk_path(&preparation)?;
     let attempt_id = cdf_runtime::LoadAttemptId::new(format!(
         "parquet_test_{}",
         commit.commit.idempotency_token.as_str().replace(':', "_")
@@ -1556,6 +1643,41 @@ fn staged_segment_ingress_preserves_manifest_segment_order() {
 }
 
 #[test]
+fn staged_attempt_records_the_exact_prepared_physical_plan() {
+    let temp = tempfile::tempdir().unwrap();
+    let package_dir = temp.path().join("pkg-physical-plan");
+    let built = build_package(
+        &package_dir,
+        "pkg-physical-plan",
+        vec![(
+            "seg-000001",
+            vec![sample_batch(vec![1, 2], vec![Some("left"), Some("right")])],
+        )],
+    );
+    let mut destination = test_object_store(Arc::new(InMemory::default()), "lake").unwrap();
+    let commit = request(&package_dir, &built, WriteDisposition::Append);
+    let staged = stage_through_ingress(&mut destination, &package_dir, commit.clone()).unwrap();
+    let metadata_key = crate::store::staged_attempt_metadata_key(
+        destination.object_key_encoder(),
+        &commit.commit.target,
+        &staged.attempt_id,
+    );
+    let metadata: serde_json::Value = serde_json::from_slice(
+        &destination
+            .store()
+            .get_required(destination.execution(), &metadata_key)
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(metadata["physical_plan_path"], "arrow_ipc_to_parquet");
+    assert_eq!(metadata["physical_plan_version"], 2);
+    assert_eq!(metadata["writers"], 2);
+    assert_eq!(metadata["rows_per_batch"], 64 * 1024);
+    assert_eq!(metadata["bytes_per_batch"], 16 * 1024 * 1024);
+    staged.session.abort().unwrap();
+}
+
+#[test]
 fn staged_segment_ingress_duplicate_replay_preserves_existing_manifest() {
     let temp = tempfile::tempdir().unwrap();
     let package_dir = temp.path().join("pkg-session-duplicate");
@@ -1653,7 +1775,8 @@ fn concurrent_same_token_publication_is_immutable_and_independently_verifiable()
     let mut first_destination = test_object_store(store.clone(), "lake").unwrap();
     let mut second_destination = test_object_store(store.clone(), "lake").unwrap();
     let commit = request(&package_dir, &built, WriteDisposition::Append);
-    let first = stage_through_ingress(&mut first_destination, &package_dir, commit.clone()).unwrap();
+    let first =
+        stage_through_ingress(&mut first_destination, &package_dir, commit.clone()).unwrap();
     let second =
         stage_through_ingress(&mut second_destination, &package_dir, commit.clone()).unwrap();
 
@@ -1721,10 +1844,55 @@ fn rollback_redrive_removes_exact_process_loss_attempt_before_reuse() {
 }
 
 #[test]
+fn abandoned_attempt_retention_sweep_bounds_process_loss_storage() {
+    const EIGHT_DAYS_MS: i64 = 8 * 24 * 60 * 60 * 1_000;
+    let temp = tempfile::tempdir().unwrap();
+    let package_dir = temp.path().join("pkg-retention-sweep");
+    let built = build_package(
+        &package_dir,
+        "pkg-retention-sweep",
+        vec![(
+            "seg-000001",
+            vec![sample_batch(vec![1, 2], vec![Some("left"), Some("right")])],
+        )],
+    );
+    let store = Arc::new(InMemory::default());
+    let commit = request(&package_dir, &built, WriteDisposition::Append);
+    let mut crashed_destination = test_object_store(store.clone(), "lake").unwrap();
+    let crashed =
+        stage_through_ingress(&mut crashed_destination, &package_dir, commit.clone()).unwrap();
+    let staging_key = staged_segment_object_key(
+        crashed_destination.object_key_encoder(),
+        &commit.commit.target,
+        &crashed.attempt_id,
+        &crashed.staged[0].segment_id,
+    );
+    std::mem::forget(crashed.session);
+    drop(crashed_destination);
+
+    let restarted = test_object_store(store, "lake").unwrap();
+    let removed = restarted
+        .cleanup_expired_staging(
+            &commit.commit.target,
+            crate::store::now_ms().unwrap() + EIGHT_DAYS_MS,
+        )
+        .unwrap();
+    assert!(
+        removed >= 2,
+        "attempt metadata and payload must both be removed"
+    );
+    assert!(
+        !restarted
+            .store()
+            .exists(restarted.execution(), &staging_key)
+            .unwrap()
+    );
+}
+
+#[test]
 fn constrained_writer_memory_fails_cleanly_instead_of_waiting_on_its_input() {
     let memory: Arc<dyn cdf_memory::MemoryCoordinator> = Arc::new(
-        cdf_memory::DeterministicMemoryCoordinator::new(2 * 1024 * 1024, BTreeMap::new())
-            .unwrap(),
+        cdf_memory::DeterministicMemoryCoordinator::new(2 * 1024 * 1024, BTreeMap::new()).unwrap(),
     );
     let blocker = memory
         .try_reserve(
@@ -1740,9 +1908,8 @@ fn constrained_writer_memory_fails_cleanly_instead_of_waiting_on_its_input() {
         )
         .unwrap()
         .unwrap();
-    let spill: Arc<dyn cdf_runtime::SpillBudgetCoordinator> = Arc::new(
-        cdf_runtime::FixedSpillBudget::new(64 * 1024 * 1024).unwrap(),
-    );
+    let spill: Arc<dyn cdf_runtime::SpillBudgetCoordinator> =
+        Arc::new(cdf_runtime::FixedSpillBudget::new(64 * 1024 * 1024).unwrap());
     let batch = sample_batch(vec![1, 2], vec![Some("left"), Some("right")]);
     let segment = CommitSegment::new(
         StateSegment {

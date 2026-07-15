@@ -171,12 +171,43 @@ impl ParquetDestination {
         target: &TargetName,
         attempt_id: &cdf_runtime::LoadAttemptId,
     ) -> Result<u64> {
-        let prefix = crate::store::staged_attempt_prefix(
-            self.object_key_encoder,
-            target,
-            attempt_id,
-        );
+        let prefix =
+            crate::store::staged_attempt_prefix(self.object_key_encoder, target, attempt_id);
         self.store.delete_prefix(self.execution(), &prefix)
+    }
+
+    pub(crate) fn cleanup_expired_staging(&self, target: &TargetName, now_ms: i64) -> Result<u64> {
+        const RETENTION_MS: i64 = 7 * 24 * 60 * 60 * 1_000;
+        let prefix = crate::store::staged_target_prefix(self.object_key_encoder, target);
+        let active = self
+            .active_staging
+            .lock()
+            .map_err(|_| CdfError::internal("Parquet staging registry lock is poisoned"))?
+            .clone();
+        let mut attempts = BTreeMap::<String, i64>::new();
+        for object in self.store.list_prefix(self.execution(), &prefix)? {
+            let Some(relative) = object.key.strip_prefix(&prefix) else {
+                continue;
+            };
+            let Some((attempt, _)) = relative.split_once('/') else {
+                continue;
+            };
+            attempts
+                .entry(attempt.to_owned())
+                .and_modify(|latest| *latest = (*latest).max(object.last_modified_ms))
+                .or_insert(object.last_modified_ms);
+        }
+        let cutoff = now_ms.saturating_sub(RETENTION_MS);
+        let mut removed = 0_u64;
+        for (attempt, latest) in attempts {
+            let active_key = format!("{}:{attempt}", target.as_str());
+            if latest > cutoff || active.contains(&active_key) {
+                continue;
+            }
+            let attempt = cdf_runtime::LoadAttemptId::new(attempt)?;
+            removed = removed.saturating_add(self.cleanup_staged_attempt(target, &attempt)?);
+        }
+        Ok(removed)
     }
 
     pub(crate) fn claim_staged_attempt(
@@ -326,9 +357,9 @@ impl ParquetDestination {
         };
         let pointer = replace_pointer(request, plan, manifest)?;
         let expected = canonical_json_bytes(&pointer)?;
-        let stored = self
-            .store
-            .put_create_or_verify(self.execution(), pointer_key, expected.clone())?;
+        let stored =
+            self.store
+                .put_create_or_verify(self.execution(), pointer_key, expected.clone())?;
         let bytes = self.store.get_required(self.execution(), pointer_key)?;
         let sha256 = sha256_hex(&bytes);
         let pointer: ReplacePointer = serde_json::from_slice(&bytes).map_err(|error| {
@@ -347,7 +378,9 @@ impl ParquetDestination {
                 plan.manifest_key
             )));
         }
-        let etag = stored.e_tag.or(self.store.etag(self.execution(), pointer_key)?);
+        let etag = stored
+            .e_tag
+            .or(self.store.etag(self.execution(), pointer_key)?);
         Ok(Some(ParquetReplacePointerReceipt {
             key: pointer_key.clone(),
             sha256,
@@ -373,7 +406,9 @@ impl ParquetDestination {
             Some(ref bytes) if bytes == &expected => false,
             Some(bytes) if force => {
                 let current: ReplacePointer = serde_json::from_slice(&bytes).map_err(|error| {
-                    CdfError::data(format!("parse current replace pointer {current_key}: {error}"))
+                    CdfError::data(format!(
+                        "parse current replace pointer {current_key}: {error}"
+                    ))
                 })?;
                 if current.updated_at_ms > pointer.updated_at_ms {
                     return Err(CdfError::destination(format!(
@@ -386,7 +421,8 @@ impl ParquetDestination {
             Some(_) => false,
         };
         if should_write {
-            self.store.put(self.execution(), current_key, expected.clone())?;
+            self.store
+                .put(self.execution(), current_key, expected.clone())?;
         }
         if force {
             let observed = self.store.get_required(self.execution(), current_key)?;
@@ -511,9 +547,11 @@ pub(crate) fn finalize_parquet_objects(
         let pointer = replace_pointer(&request, &plan, &object_manifest)?;
         let pointer_bytes = canonical_json_bytes(&pointer)?;
         let pointer_sha256 = sha256_hex(&pointer_bytes);
-        let put = destination
-            .store
-            .put_create_or_verify(&destination.execution, pointer_key, pointer_bytes)?;
+        let put = destination.store.put_create_or_verify(
+            &destination.execution,
+            pointer_key,
+            pointer_bytes,
+        )?;
         Some(ParquetReplacePointerReceipt {
             key: pointer_key.clone(),
             sha256: pointer_sha256,
@@ -583,9 +621,11 @@ fn ensure_provenance_manifest(
     {
         crate::store::CreateObjectOutcome::Created(_) => Ok(manifest.clone()),
         crate::store::CreateObjectOutcome::AlreadyExists => {
-            let existing_bytes = destination.store.get_required(destination.execution(), &key)?;
-            let existing: ParquetObjectManifest = serde_json::from_slice(&existing_bytes)
-                .map_err(|error| {
+            let existing_bytes = destination
+                .store
+                .get_required(destination.execution(), &key)?;
+            let existing: ParquetObjectManifest =
+                serde_json::from_slice(&existing_bytes).map_err(|error| {
                     CdfError::data(format!(
                         "parse immutable Parquet provenance manifest {key}: {error}"
                     ))

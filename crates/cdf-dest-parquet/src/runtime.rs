@@ -101,8 +101,7 @@ impl DestinationRuntime for ParquetDestination {
         &mut self,
         input: &cdf_runtime::BulkPathPreparationInput<'_>,
     ) -> Result<cdf_runtime::BulkPathPreparation> {
-        cdf_package::validate_parquet_schema(input.output_schema)?;
-        cdf_runtime::BulkPathPreparation::from_capabilities(&self.runtime_capabilities())
+        prepare_parquet_bulk_paths(input, &self.runtime_capabilities())
     }
 }
 
@@ -194,8 +193,7 @@ impl DestinationRuntime for FilesystemParquetRuntime {
         &mut self,
         input: &cdf_runtime::BulkPathPreparationInput<'_>,
     ) -> Result<cdf_runtime::BulkPathPreparation> {
-        cdf_package::validate_parquet_schema(input.output_schema)?;
-        cdf_runtime::BulkPathPreparation::from_capabilities(&self.runtime_capabilities())
+        prepare_parquet_bulk_paths(input, &self.runtime_capabilities())
     }
 
     fn destination_sheet(&self) -> Result<DestinationSheet> {
@@ -293,7 +291,7 @@ pub(crate) fn parquet_runtime_capabilities() -> DestinationRuntimeCapabilities {
         max_in_flight_bytes: Some(128 * 1024 * 1024),
         bulk_paths: vec![cdf_runtime::BulkPathDescriptor {
             path_id: "arrow_ipc_to_parquet".to_owned(),
-            version: 1,
+            version: 2,
             ingress_mode: DestinationIngressMode::StagedDurableSegments,
             writer_model: DestinationWriterModel::ConcurrentSegments,
             ordering: cdf_runtime::BulkOrdering::ManifestOrder,
@@ -313,12 +311,29 @@ pub(crate) fn parquet_runtime_capabilities() -> DestinationRuntimeCapabilities {
             external_staging: true,
             fallback: cdf_runtime::BulkFallbackMode::Forbidden,
             schema_preflight_version: "parquet-arrow-mapping@1".to_owned(),
-            measured_evidence_version: Some("p3-d4-2026-07-11-v1".to_owned()),
+            measured_evidence_version: Some("p3-d8-2026-07-15-v2".to_owned()),
         }],
         bulk_path: Some("arrow_ipc_to_parquet".to_owned()),
-        bulk_evidence_version: Some("p3-d4-2026-07-11-v1".to_owned()),
+        bulk_evidence_version: Some("p3-d8-2026-07-15-v2".to_owned()),
         replay_requires_explicit_target: false,
         replay_target_hint: None,
         replay_policy_values: Default::default(),
     }
+}
+
+fn prepare_parquet_bulk_paths(
+    input: &cdf_runtime::BulkPathPreparationInput<'_>,
+    capabilities: &DestinationRuntimeCapabilities,
+) -> Result<cdf_runtime::BulkPathPreparation> {
+    cdf_package::validate_parquet_schema(input.output_schema)?;
+    let mut preparation = cdf_runtime::BulkPathPreparation::from_capabilities(capabilities)?;
+    let available_writers = input
+        .execution
+        .as_ref()
+        .map_or(1, |execution| execution.logical_cpu_slots.max(1));
+    for path in &mut preparation.eligible {
+        path.writers = available_writers.min(path.descriptor.max_useful_writers);
+    }
+    preparation.validate()?;
+    Ok(preparation)
 }
