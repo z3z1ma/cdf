@@ -718,6 +718,14 @@ mod tests {
             ))
         }
 
+        fn delay(
+            &self,
+            _duration: std::time::Duration,
+            cancellation: cdf_runtime::RunCancellation,
+        ) -> cdf_kernel::BoxFuture<'static, Result<()>> {
+            Box::pin(async move { cancellation.check() })
+        }
+
         fn ensure_blocking_lanes(&self, _lanes: &[BlockingLaneSpec]) -> Result<()> {
             Ok(())
         }

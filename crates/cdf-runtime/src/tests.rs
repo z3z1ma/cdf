@@ -1134,6 +1134,14 @@ impl ExecutionHost for NoopSourceHost {
         Err(CdfError::internal("mock source host does not execute I/O"))
     }
 
+    fn delay(
+        &self,
+        _duration: std::time::Duration,
+        cancellation: RunCancellation,
+    ) -> cdf_kernel::BoxFuture<'static, Result<()>> {
+        Box::pin(async move { cancellation.check() })
+    }
+
     fn ensure_blocking_lanes(&self, _lanes: &[BlockingLaneSpec]) -> Result<()> {
         Ok(())
     }

@@ -7,7 +7,7 @@ use std::{
         mpsc,
     },
     thread::JoinHandle,
-    time::Instant,
+    time::{Duration, Instant},
 };
 
 use cdf_kernel::{CdfError, Result};
@@ -405,6 +405,30 @@ impl ExecutionHost for StandaloneExecutionHost {
         receiver
             .recv()
             .map_err(|_| CdfError::internal("I/O runtime stopped before the operation completed"))?
+    }
+
+    fn delay(
+        &self,
+        duration: Duration,
+        cancellation: RunCancellation,
+    ) -> cdf_kernel::BoxFuture<'static, Result<()>> {
+        let runtime_handle = self.runtime.handle().clone();
+        Box::pin(async move {
+            cancellation.check()?;
+            let timer = runtime_handle.spawn(async move { tokio::time::sleep(duration).await });
+            let cancelled = cancellation.cancelled();
+            futures_util::pin_mut!(timer, cancelled);
+            match futures_util::future::select(timer, cancelled).await {
+                Either::Left((result, _)) => result
+                    .map_err(|_| CdfError::internal("execution delay task failed"))
+                    .map(|_| ()),
+                Either::Right(((), timer)) => {
+                    timer.abort();
+                    let _ = timer.await;
+                    cancellation.check()
+                }
+            }
+        })
     }
 
     fn ensure_blocking_lanes(&self, lanes: &[BlockingLaneSpec]) -> Result<()> {
@@ -805,6 +829,25 @@ mod tests {
                 .unwrap();
             assert_eq!(value, "host-io");
         });
+    }
+
+    #[test]
+    fn execution_delay_uses_the_io_runtime_and_honors_cancellation() {
+        let host = Arc::new(host());
+        let services = cdf_runtime::ExecutionServices::new(host).unwrap();
+        futures_executor::block_on(services.delay(
+            std::time::Duration::from_millis(1),
+            RunCancellation::default(),
+        ))
+        .unwrap();
+
+        let cancellation = RunCancellation::default();
+        cancellation.cancel();
+        let error = futures_executor::block_on(
+            services.delay(std::time::Duration::from_secs(60), cancellation),
+        )
+        .unwrap_err();
+        assert!(error.message.contains("cancelled"));
     }
 
     #[test]

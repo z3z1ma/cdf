@@ -281,6 +281,18 @@ impl cdf_runtime::ExecutionHost for TestIoHost {
         self.runtime.block_on(task)
     }
 
+    fn delay(
+        &self,
+        duration: std::time::Duration,
+        cancellation: cdf_runtime::RunCancellation,
+    ) -> cdf_kernel::BoxFuture<'static, cdf_kernel::Result<()>> {
+        Box::pin(async move {
+            cancellation.check()?;
+            tokio::time::sleep(duration).await;
+            cancellation.check()
+        })
+    }
+
     fn ensure_blocking_lanes(
         &self,
         _lanes: &[cdf_runtime::BlockingLaneSpec],

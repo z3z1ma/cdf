@@ -7,6 +7,7 @@ use std::{
         atomic::{AtomicBool, Ordering},
     },
     task::{Context, Poll, Waker},
+    time::Duration,
 };
 
 use cdf_kernel::{BoxFuture, CdfError, Result};
@@ -279,6 +280,11 @@ pub trait ExecutionHost: Send + Sync {
     fn spill(&self) -> Arc<dyn crate::SpillBudgetCoordinator>;
     fn open_scope(&self, run_id: &str) -> Result<Box<dyn ExecutionTaskScope>>;
     fn run_io_blocking(&self, task: IoValueTask) -> Result<IoValue>;
+    fn delay(
+        &self,
+        duration: Duration,
+        cancellation: RunCancellation,
+    ) -> BoxFuture<'static, Result<()>>;
     fn ensure_blocking_lanes(&self, lanes: &[BlockingLaneSpec]) -> Result<()>;
     fn run_blocking_value(&self, lane: &str, task: BlockingValueTask) -> Result<IoValue>;
 }
@@ -317,6 +323,16 @@ impl ExecutionServices {
 
     pub fn capabilities(&self) -> ExecutionHostCapabilities {
         self.host.capabilities()
+    }
+
+    /// Waits on the host I/O runtime rather than occupying a CPU or adapter
+    /// blocking lane. Cancellation always wins over a pending delay.
+    pub fn delay(
+        &self,
+        duration: Duration,
+        cancellation: RunCancellation,
+    ) -> BoxFuture<'static, Result<()>> {
+        self.host.delay(duration, cancellation)
     }
 
     pub fn open_scope(&self, run_id: &str) -> Result<Box<dyn ExecutionTaskScope>> {
