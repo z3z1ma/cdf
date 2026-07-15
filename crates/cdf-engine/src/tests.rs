@@ -1,5 +1,5 @@
 use std::{
-    collections::{BTreeMap, HashMap},
+    collections::{BTreeMap, BTreeSet, HashMap},
     fmt,
     sync::{
         Arc, Mutex, OnceLock,
@@ -2404,7 +2404,10 @@ fn engine_parallel_frontier_polls_later_partition_while_head_is_stalled() {
     );
 }
 
-fn skewed_resource(seed: usize, terminal_failure_partition: Option<usize>) -> SkewedMockResource {
+fn skewed_resource(
+    seed: usize,
+    terminal_failure_partitions: impl IntoIterator<Item = usize>,
+) -> SkewedMockResource {
     let partition_count = 8;
     let batches = (0..partition_count)
         .map(|ordinal| {
@@ -2433,7 +2436,7 @@ fn skewed_resource(seed: usize, terminal_failure_partition: Option<usize>) -> Sk
                 .map(|ordinal| (seed * 29 + ordinal * 11) % 9)
                 .collect(),
         ),
-        terminal_failure_partition,
+        terminal_failure_partitions: terminal_failure_partitions.into_iter().collect(),
     }
 }
 
@@ -2516,7 +2519,7 @@ fn run_skewed_jobs(
 #[test]
 fn randomized_skew_limit_projection_and_filter_matrix_is_jobs_invariant() {
     for seed in 0..12 {
-        let resource = skewed_resource(seed, None);
+        let resource = skewed_resource(seed, []);
         let (plan, source) = skewed_plan(&resource, seed);
         let runs = [1, 2, 4, 8]
             .into_iter()
@@ -2541,23 +2544,61 @@ fn randomized_skew_limit_projection_and_filter_matrix_is_jobs_invariant() {
 
 #[test]
 fn randomized_skew_terminal_failure_is_canonical_across_jobs() {
-    for seed in (12..60).step_by(6) {
-        let resource = skewed_resource(seed, Some(2));
-        let (plan, source) = skewed_plan(&resource, seed);
-        let errors = [1, 2, 4, 8]
-            .into_iter()
-            .map(|jobs| run_skewed_jobs(&resource, &plan, &source, jobs).unwrap_err())
-            .collect::<Vec<_>>();
-        for error in &errors[1..] {
-            assert_eq!(error.kind, errors[0].kind);
-            assert_eq!(error.message, errors[0].message);
+    let mut successful_cases = 0;
+    let mut canonical_failures = BTreeSet::new();
+    for seed in 12..36 {
+        let first_failure = (seed * 5 + 1) % 8;
+        let mut second_failure = (seed * 3 + 4) % 8;
+        if second_failure == first_failure {
+            second_failure = (second_failure + 1) % 8;
         }
-        assert!(
-            errors[0]
-                .message
-                .contains("skew fixture terminal failure at partition 2")
-        );
+        let resource = skewed_resource(seed, [first_failure, second_failure]);
+        let (plan, source) = skewed_plan(&resource, seed);
+        let outcomes = [1, 2, 4, 8]
+            .into_iter()
+            .map(|jobs| run_skewed_jobs(&resource, &plan, &source, jobs))
+            .collect::<Vec<_>>();
+        match &outcomes[0] {
+            Ok(expected) => {
+                successful_cases += 1;
+                for outcome in &outcomes[1..] {
+                    let actual = outcome.as_ref().unwrap();
+                    assert_eq!(
+                        actual.output.manifest.package_hash,
+                        expected.output.manifest.package_hash
+                    );
+                    assert_eq!(actual.output.segments, expected.output.segments);
+                    assert_eq!(actual.output.lineage, expected.output.lineage);
+                    assert_eq!(actual.segment_positions, expected.segment_positions);
+                }
+            }
+            Err(expected) => {
+                canonical_failures.insert(expected.message.clone());
+                for outcome in &outcomes[1..] {
+                    let actual = outcome.as_ref().unwrap_err();
+                    assert_eq!(actual.kind, expected.kind);
+                    assert_eq!(actual.message, expected.message);
+                }
+                assert!(
+                    expected
+                        .message
+                        .contains(&format!("partition {first_failure}"))
+                        || expected
+                            .message
+                            .contains(&format!("partition {second_failure}")),
+                    "{expected}"
+                );
+            }
+        }
     }
+    assert!(
+        successful_cases > 0,
+        "limits never stopped before source failure"
+    );
+    assert!(
+        canonical_failures.len() >= 4,
+        "failure matrix did not vary canonical error authority: {canonical_failures:?}"
+    );
 }
 
 fn fast_test_retry_policy() -> cdf_runtime::SourceRetryPolicy {
@@ -5354,7 +5395,7 @@ struct StalledHeadResource {
 struct SkewedMockResource {
     inner: MockResource,
     poll_delays: Arc<Vec<usize>>,
-    terminal_failure_partition: Option<usize>,
+    terminal_failure_partitions: BTreeSet<usize>,
 }
 
 #[derive(Clone)]
@@ -5761,7 +5802,7 @@ impl ResourceStream for SkewedMockResource {
             .map(Ok)
             .collect::<Vec<Result<Batch>>>()
             .into_iter();
-        if self.terminal_failure_partition == Some(ordinal) {
+        if self.terminal_failure_partitions.contains(&ordinal) {
             batches = vec![Err(cdf_kernel::CdfError::data(format!(
                 "skew fixture terminal failure at partition {ordinal}"
             )))]

@@ -73,6 +73,7 @@ use crate::{
     plan_backfill, recover_package_from_artifacts, replay_package_from_artifacts,
     replay_package_from_artifacts_with_stage_hook, replay_package_with_runtime,
     resolve_project_run_destination, run_local_file_to_duckdb_checkpoint,
+    run_project_with_scheduler_and_telemetry,
     run_project_with_telemetry as run_project_with_execution_services_and_telemetry,
     runtime::{record_package_receipt_once, state_delta_from_run},
 };
@@ -176,7 +177,13 @@ impl QueryableResource for BoundTestResource<'_> {
 fn test_rest_runtime_dependencies(
     transport: impl HttpTransport + 'static,
 ) -> cdf_declarative::RestRuntimeDependencies {
-    let execution = test_execution_services();
+    test_rest_runtime_dependencies_with_execution(transport, test_execution_services())
+}
+
+fn test_rest_runtime_dependencies_with_execution(
+    transport: impl HttpTransport + 'static,
+    execution: cdf_runtime::ExecutionServices,
+) -> cdf_declarative::RestRuntimeDependencies {
     execution
         .ensure_blocking_lanes(&[cdf_runtime::BlockingLaneSpec {
             lane_id: "rest-source.sync".to_owned(),
@@ -3235,7 +3242,21 @@ fn assert_bad_reuse_head_rejected(
 }
 
 fn run_rest_project(root: &Path, run_id: &str) -> (ProjectRunReport, RecordingTransport) {
+    let (report, transport, _) = run_rest_project_with_jobs(root, run_id, None);
+    (report, transport)
+}
+
+fn run_rest_project_with_jobs(
+    root: &Path,
+    run_id: &str,
+    jobs: Option<u16>,
+) -> (ProjectRunReport, RecordingTransport, u16) {
     let compiled = rest_runtime_resource();
+    let services = test_execution_services();
+    let host_jobs = services.capabilities().logical_cpu_slots;
+    let services = services
+        .with_run_job_ceiling(jobs.unwrap_or(host_jobs))
+        .unwrap();
     let transport = RecordingTransport::new([json_response(
         r#"{ "items": [
             { "id": 1, "updated_at": 10 },
@@ -3244,9 +3265,11 @@ fn run_rest_project(root: &Path, run_id: &str) -> (ProjectRunReport, RecordingTr
     )]);
     let resource = compiled
         .to_rest_resource(
-            test_rest_runtime_dependencies(transport.clone()).with_secret_provider(
-                StaticSecretProvider::new([("secret://env/API_TOKEN", "token-1")]),
-            ),
+            test_rest_runtime_dependencies_with_execution(transport.clone(), services.clone())
+                .with_secret_provider(StaticSecretProvider::new([(
+                    "secret://env/API_TOKEN",
+                    "token-1",
+                )])),
         )
         .unwrap();
     let package_id = "pkg-general-rest-runtime";
@@ -3254,25 +3277,121 @@ fn run_rest_project(root: &Path, run_id: &str) -> (ProjectRunReport, RecordingTr
     let state_path = root.join(".cdf/state.db");
     let duckdb_path = root.join(".cdf/dev.duckdb");
 
-    let report = futures_executor::block_on(run_project(ProjectRunRequest {
-        resource: ProjectRunSource::rest(&resource),
-        plan: live_plan(&compiled, package_id),
-        package_root,
-        state_store_path: state_path,
-        pipeline_id: PipelineId::new("pipeline-live").unwrap(),
-        package_id: package_id.to_owned(),
-        checkpoint_id: CheckpointId::new("checkpoint-general-rest-runtime").unwrap(),
-        destination: ResolvedProjectDestination::duckdb(
-            duckdb_path,
-            TargetName::new("items").unwrap(),
-        )
-        .unwrap(),
-        run_id: Some(RunId::new(run_id).unwrap()),
-        event_sink: None,
-        after_receipt_verified: None,
-    }))
+    let source = compiled_test_source_plan(&resource);
+    let destination =
+        ResolvedProjectDestination::duckdb(duckdb_path, TargetName::new("items").unwrap()).unwrap();
+    let plan = live_plan(&compiled, package_id)
+        .bind_compiled_source(&source)
+        .unwrap()
+        .bind_operator_graph(&source, &destination.runtime_capabilities())
+        .unwrap();
+    let scheduler = cdf_runtime::resolve_runtime_scheduler(
+        plan.scan.partitions.len(),
+        &source.execution_capabilities,
+        &destination.runtime_capabilities(),
+        &services,
+        jobs,
+    )
     .unwrap();
-    (report, transport)
+    services
+        .tighten_run_job_ceiling(scheduler.effective_jobs.jobs)
+        .unwrap();
+    let effective_jobs = scheduler.effective_jobs.jobs;
+    let bound = BoundTestResource {
+        inner: &resource,
+        compiled_source_plan_hash: cdf_runtime::artifact_hash(&source).unwrap(),
+    };
+    let report = futures_executor::block_on(run_project_with_scheduler_and_telemetry(
+        ProjectRunRequest {
+            resource: ProjectRunSource::new(&bound),
+            plan,
+            package_root,
+            state_store_path: state_path,
+            pipeline_id: PipelineId::new("pipeline-live").unwrap(),
+            package_id: package_id.to_owned(),
+            checkpoint_id: CheckpointId::new("checkpoint-general-rest-runtime").unwrap(),
+            destination,
+            run_id: Some(RunId::new(run_id).unwrap()),
+            event_sink: None,
+            after_receipt_verified: None,
+        },
+        &services,
+        Some(scheduler),
+        RunTelemetryConfig::disabled(),
+    ))
+    .unwrap();
+    (report, transport, effective_jobs)
+}
+
+fn run_sql_project_with_jobs(
+    compiled: &cdf_declarative::CompiledResource,
+    database_url: &str,
+    root: &Path,
+    jobs: Option<u16>,
+) -> (ProjectRunReport, u16) {
+    let services = test_execution_services();
+    let host_jobs = services.capabilities().logical_cpu_slots;
+    let services = services
+        .with_run_job_ceiling(jobs.unwrap_or(host_jobs))
+        .unwrap();
+    let resource = compiled
+        .to_sql_resource(
+            cdf_declarative::SqlRuntimeDependencies::new()
+                .with_secret_provider(StaticSecretProvider::new([(
+                    "secret://env/POSTGRES_URL",
+                    database_url,
+                )]))
+                .with_execution(services.clone()),
+        )
+        .unwrap();
+    let package_id = "pkg-general-sql-runtime";
+    let destination = ResolvedProjectDestination::duckdb(
+        root.join(".cdf/dev.duckdb"),
+        TargetName::new("orders").unwrap(),
+    )
+    .unwrap();
+    let source = compiled_test_source_plan(&resource);
+    let plan = live_plan(&resource, package_id)
+        .bind_compiled_source(&source)
+        .unwrap()
+        .bind_operator_graph(&source, &destination.runtime_capabilities())
+        .unwrap();
+    let scheduler = cdf_runtime::resolve_runtime_scheduler(
+        plan.scan.partitions.len(),
+        &source.execution_capabilities,
+        &destination.runtime_capabilities(),
+        &services,
+        jobs,
+    )
+    .unwrap();
+    services
+        .tighten_run_job_ceiling(scheduler.effective_jobs.jobs)
+        .unwrap();
+    let effective_jobs = scheduler.effective_jobs.jobs;
+    let bound = BoundTestResource {
+        inner: &resource,
+        compiled_source_plan_hash: cdf_runtime::artifact_hash(&source).unwrap(),
+    };
+    let report = futures_executor::block_on(run_project_with_scheduler_and_telemetry(
+        ProjectRunRequest {
+            resource: ProjectRunSource::new(&bound),
+            plan,
+            package_root: root.join(".cdf/packages"),
+            state_store_path: root.join(".cdf/state.db"),
+            pipeline_id: PipelineId::new("pipeline-live").unwrap(),
+            package_id: package_id.to_owned(),
+            checkpoint_id: CheckpointId::new("checkpoint-general-sql-runtime").unwrap(),
+            destination,
+            run_id: Some(RunId::new("run-general-sql-runtime").unwrap()),
+            event_sink: None,
+            after_receipt_verified: None,
+        },
+        &services,
+        Some(scheduler),
+        RunTelemetryConfig::disabled(),
+    ))
+    .unwrap();
+    (report, effective_jobs)
 }
 
 #[test]
@@ -5015,6 +5134,40 @@ fn general_project_run_executes_deterministic_rest_resource_stream() {
 }
 
 #[test]
+fn rest_source_jobs_matrix_preserves_package_receipt_and_checkpoint_identity() {
+    let mut roots = Vec::new();
+    let mut runs = Vec::new();
+    for (label, jobs) in [
+        ("one", Some(1)),
+        ("two", Some(2)),
+        ("auto", None),
+        ("four", Some(4)),
+    ] {
+        let root = tempfile::tempdir().unwrap();
+        let (report, transport, effective_jobs) =
+            run_rest_project_with_jobs(root.path(), "run-general-rest-jobs-matrix", jobs);
+        assert_eq!(transport.requests().len(), 1, "{label}");
+        assert_eq!(effective_jobs, 1, "single REST cursor partition at {label}");
+        roots.push(root);
+        runs.push(report);
+    }
+
+    for report in &runs[1..] {
+        assert_eq!(report.package_hash, runs[0].package_hash);
+        assert_eq!(report.receipt.package_hash, runs[0].receipt.package_hash);
+        assert_eq!(report.receipt.segment_acks, runs[0].receipt.segment_acks);
+        assert_eq!(
+            report.checkpoint.delta.segments,
+            runs[0].checkpoint.delta.segments
+        );
+        assert_eq!(
+            report.checkpoint.delta.output_position,
+            runs[0].checkpoint.delta.output_position
+        );
+    }
+}
+
+#[test]
 fn general_project_run_executes_rest_with_discovered_snapshot_hash() {
     let temp = tempfile::tempdir().unwrap();
     let compiled = rest_runtime_resource();
@@ -5808,47 +5961,40 @@ fn general_project_run_executes_table_backed_postgres_sql_resource_stream() {
         ))
         .unwrap();
 
-    let temp = tempfile::tempdir().unwrap();
     let compiled = sql_runtime_resource(&table);
-    let resource = compiled
-        .to_sql_resource(
-            cdf_declarative::SqlRuntimeDependencies::new()
-                .with_secret_provider(StaticSecretProvider::new([(
-                    "secret://env/POSTGRES_URL",
-                    postgres.url.clone(),
-                )]))
-                .with_execution(test_execution_services()),
-        )
-        .unwrap();
-    let package_id = "pkg-general-sql-runtime";
-    let package_root = temp.path().join(".cdf/packages");
-    let state_path = temp.path().join(".cdf/state.db");
-    let duckdb_path = temp.path().join(".cdf/dev.duckdb");
-
-    let report = futures_executor::block_on(run_project(ProjectRunRequest {
-        resource: ProjectRunSource::sql(&resource),
-        plan: live_plan(resource.compiled(), package_id),
-        package_root,
-        state_store_path: state_path,
-        pipeline_id: PipelineId::new("pipeline-live").unwrap(),
-        package_id: package_id.to_owned(),
-        checkpoint_id: CheckpointId::new("checkpoint-general-sql-runtime").unwrap(),
-        destination: ResolvedProjectDestination::duckdb(
-            duckdb_path,
-            TargetName::new("orders").unwrap(),
-        )
-        .unwrap(),
-        run_id: Some(RunId::new("run-general-sql-runtime").unwrap()),
-        event_sink: None,
-        after_receipt_verified: None,
-    }))
-    .unwrap();
-
-    assert_eq!(report.row_count, 2);
-    assert_eq!(report.segment_count, 1);
-    assert_eq!(report.package_status, PackageStatus::Checkpointed);
-    assert_eq!(report.checkpoint.status, CheckpointStatus::Committed);
-    let SourcePosition::Cursor(cursor) = &report.checkpoint.delta.output_position else {
+    let mut roots = Vec::new();
+    let mut runs = Vec::new();
+    for (label, jobs) in [
+        ("one", Some(1)),
+        ("two", Some(2)),
+        ("auto", None),
+        ("four", Some(4)),
+    ] {
+        let root = tempfile::tempdir().unwrap();
+        let (report, effective_jobs) =
+            run_sql_project_with_jobs(&compiled, &postgres.url, root.path(), jobs);
+        assert_eq!(effective_jobs, 1, "single SQL table partition at {label}");
+        assert_eq!(report.row_count, 2);
+        assert_eq!(report.segment_count, 1);
+        assert_eq!(report.package_status, PackageStatus::Checkpointed);
+        assert_eq!(report.checkpoint.status, CheckpointStatus::Committed);
+        roots.push(root);
+        runs.push(report);
+    }
+    for report in &runs[1..] {
+        assert_eq!(report.package_hash, runs[0].package_hash);
+        assert_eq!(report.receipt.package_hash, runs[0].receipt.package_hash);
+        assert_eq!(report.receipt.segment_acks, runs[0].receipt.segment_acks);
+        assert_eq!(
+            report.checkpoint.delta.segments,
+            runs[0].checkpoint.delta.segments
+        );
+        assert_eq!(
+            report.checkpoint.delta.output_position,
+            runs[0].checkpoint.delta.output_position
+        );
+    }
+    let SourcePosition::Cursor(cursor) = &runs[0].checkpoint.delta.output_position else {
         panic!("expected SQL run to checkpoint a cursor position");
     };
     assert_eq!(cursor.field, "updated_at");

@@ -351,9 +351,9 @@ fn prepared_multi_file_jobs_matrix_preserves_canonical_package_identity() {
         }
 
         assert_eq!(runs[0].effective_jobs, 1);
-        assert_eq!(runs[1].effective_jobs, 2);
-        assert_eq!(runs[2].effective_jobs, 4);
-        assert_eq!(runs[3].effective_jobs, 4);
+        assert!(runs[1].effective_jobs <= 2);
+        assert!((1..=4).contains(&runs[2].effective_jobs));
+        assert!(runs[3].effective_jobs <= 4);
         for run in &runs[1..] {
             assert_eq!(
                 run.package_hash, runs[0].package_hash,
@@ -404,46 +404,49 @@ fn staged_and_finalized_destinations_preserve_jobs_identity() {
         ("duckdb", PreparedDestinationKind::DuckDb),
         ("parquet", PreparedDestinationKind::Parquet),
     ] {
-        let serial = run_prepared_file_to_destination(&PreparedFileDestinationWorkload {
-            fixture_name: "medium".to_owned(),
-            source_root: temp.path().to_path_buf(),
-            glob: "part-*.parquet".to_owned(),
-            format: PreparedFileFormat::Parquet,
-            output_root: temp.path().join(format!("destination-{label}-one")),
-            destination,
-            jobs: Some(1),
-        })
-        .unwrap();
-        let parallel = run_prepared_file_to_destination(&PreparedFileDestinationWorkload {
-            fixture_name: "medium".to_owned(),
-            source_root: temp.path().to_path_buf(),
-            glob: "part-*.parquet".to_owned(),
-            format: PreparedFileFormat::Parquet,
-            output_root: temp.path().join(format!("destination-{label}-four")),
-            destination,
-            jobs: Some(4),
-        })
-        .unwrap();
+        let mut runs = Vec::new();
+        for (jobs_label, jobs) in [
+            ("one", Some(1)),
+            ("two", Some(2)),
+            ("auto", None),
+            ("four", Some(4)),
+        ] {
+            runs.push(
+                run_prepared_file_to_destination(&PreparedFileDestinationWorkload {
+                    fixture_name: "medium".to_owned(),
+                    source_root: temp.path().to_path_buf(),
+                    glob: "part-*.parquet".to_owned(),
+                    format: PreparedFileFormat::Parquet,
+                    output_root: temp
+                        .path()
+                        .join(format!("destination-{label}-{jobs_label}")),
+                    destination,
+                    jobs,
+                })
+                .unwrap(),
+            );
+        }
 
-        assert_eq!(serial.effective_jobs, 1);
-        assert_eq!(parallel.effective_jobs, 4);
-        assert_eq!(serial.partition_count, 4);
-        assert_eq!(parallel.partition_count, 4);
-        assert_eq!(serial.row_count, (spec.rows * 4) as u64);
-        assert_eq!(parallel.row_count, serial.row_count);
-        assert_eq!(parallel.package_hash, serial.package_hash, "{label}");
-        assert_eq!(
-            parallel.receipt_package_hash, serial.receipt_package_hash,
-            "{label}"
-        );
-        assert_eq!(
-            parallel.receipt_segment_ids, serial.receipt_segment_ids,
-            "{label}"
-        );
-        assert_eq!(
-            parallel.state_segment_ids, serial.state_segment_ids,
-            "{label}"
-        );
+        assert_eq!(runs[0].effective_jobs, 1);
+        assert!(runs[1].effective_jobs <= 2);
+        assert!((1..=4).contains(&runs[2].effective_jobs));
+        assert!(runs[3].effective_jobs <= 4);
+        for run in &runs {
+            assert_eq!(run.partition_count, 4);
+            assert_eq!(run.row_count, (spec.rows * 4) as u64);
+        }
+        for run in &runs[1..] {
+            assert_eq!(run.package_hash, runs[0].package_hash, "{label}");
+            assert_eq!(
+                run.receipt_package_hash, runs[0].receipt_package_hash,
+                "{label}"
+            );
+            assert_eq!(
+                run.receipt_segment_ids, runs[0].receipt_segment_ids,
+                "{label}"
+            );
+            assert_eq!(run.state_segment_ids, runs[0].state_segment_ids, "{label}");
+        }
     }
 }
 
