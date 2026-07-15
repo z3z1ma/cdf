@@ -227,6 +227,7 @@ where
     plan.validate_compiled_expression_plan()?;
     validate_program(&plan.validation_program)?;
     cdf_kernel::validate_scan_partition_observation_identities(&plan.scan)?;
+    cdf_kernel::validate_compiled_scan_intents(&plan.scan)?;
     let schema_authority = plan.schema_authority();
     if schema_authority.version != 1 {
         return Err(CdfError::data(format!(
@@ -432,11 +433,7 @@ where
                                 plan.effective_schema_evidence.as_ref(),
                                 candidate.expected.as_ref(),
                             )?,
-                            effective_schema: if candidate.expected.is_some() {
-                                resource_schema.as_ref()
-                            } else {
-                                &expression_schema
-                            },
+                            effective_schema: &expression_schema,
                         },
                         &plan.compiled_schema_admission,
                         &mut schema_admission_cache,
@@ -2283,6 +2280,7 @@ where
     let validation_program = plan.validation_program.clone();
     validate_program(&validation_program)?;
     cdf_kernel::validate_scan_partition_observation_identities(&plan.scan)?;
+    cdf_kernel::validate_compiled_scan_intents(&plan.scan)?;
     let schema_authority = plan.schema_authority();
     if schema_authority.version != 1 {
         return Err(CdfError::data(format!(
@@ -2638,11 +2636,7 @@ where
                             effective_schema_evidence,
                             partition_schema_evidence,
                         )?,
-                        effective_schema: if partition_schema_evidence.is_some() {
-                            resource_schema.as_ref()
-                        } else {
-                            &expression_schema
-                        },
+                        effective_schema: &expression_schema,
                     },
                     &plan.compiled_schema_admission,
                     &mut schema_admission_cache,

@@ -1279,6 +1279,7 @@ mod tests {
                     partition_id: partition_id.clone(),
                     scope: cdf_kernel::ScopeKey::Partition { partition_id },
                     start_position: None,
+                    scan_intent: cdf_kernel::CompiledScanIntent::full_scan(),
                     metadata: BTreeMap::from([
                         ("kind".to_owned(), "files".to_owned()),
                         ("path".to_owned(), (*location).to_owned()),

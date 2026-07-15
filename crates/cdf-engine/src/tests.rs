@@ -27,16 +27,16 @@ use cdf_kernel::{
     EffectiveSchemaCatalogEntry, EffectiveSchemaEvidence, EffectiveSchemaObservationEvidence,
     EffectiveSchemaRuntime, EpochClosureTrigger, EstimateSupport, ExecutionExtent, FileManifest,
     FilePosition, FilterCapabilities, FreshnessSpec, IncrementalShape, LateDataAction,
-    PLAN_SCHEMA_OBSERVATION_BINDING_KEY, PLAN_SCHEMA_OBSERVATION_ID_KEY, PartitionAttestation,
-    PartitionId, PartitionPlan, PartitioningCapabilities, PreContractObservedValue,
-    PreContractQuarantineFact, PreContractResidualCandidate, PredicateId, PushdownFidelity,
-    QueryableResource, ResourceCapabilities, ResourceDescriptor, ResourceId, ResourceStream,
-    Result, RunId, RunPhase, RunPhaseStatus, STRATIFIED_HASH_SELECTOR_V1,
-    STREAM_EPOCH_POLICY_VERSION, SafeFrontierPolicy, ScanPlan, ScanPredicate, ScanRequest,
-    SchemaBaselineReference, SchemaHash, SchemaObservationFieldQuarantine, SchemaObservationPolicy,
-    SchemaSnapshotReference, SchemaSource, ScopeKey, SourcePosition, StreamEpochPolicy,
-    TerminalSchemaObservationQuarantine, TrustLevel, WatermarkPolicy, WriteDisposition,
-    source_name, with_semantic,
+    PLAN_PHYSICAL_SCHEMA_HASH_KEY, PLAN_SCHEMA_OBSERVATION_BINDING_KEY,
+    PLAN_SCHEMA_OBSERVATION_ID_KEY, PartitionAttestation, PartitionId, PartitionPlan,
+    PartitioningCapabilities, PreContractObservedValue, PreContractQuarantineFact,
+    PreContractResidualCandidate, PredicateId, PushdownFidelity, QueryableResource,
+    ResourceCapabilities, ResourceDescriptor, ResourceId, ResourceStream, Result, RunId, RunPhase,
+    RunPhaseStatus, STRATIFIED_HASH_SELECTOR_V1, STREAM_EPOCH_POLICY_VERSION, SafeFrontierPolicy,
+    ScanPlan, ScanPredicate, ScanRequest, SchemaBaselineReference, SchemaHash,
+    SchemaObservationFieldQuarantine, SchemaObservationPolicy, SchemaSnapshotReference,
+    SchemaSource, ScopeKey, SourcePosition, StreamEpochPolicy, TerminalSchemaObservationQuarantine,
+    TrustLevel, WatermarkPolicy, WriteDisposition, source_name, with_semantic,
 };
 use cdf_package_contract::{
     DEDUP_SUMMARY_FILE, PackageStatus, QuarantineObservedValue, SegmentEntry,
@@ -98,6 +98,31 @@ fn tier_a_resource_runs_engine_projection_filter_limit_into_package() {
         .downcast_ref::<StringArray>()
         .unwrap();
     assert_eq!(names.value(0), "two");
+}
+
+#[test]
+fn tier_a_rejects_partition_intent_that_claims_source_pushdown() {
+    let intent = cdf_kernel::CompiledScanIntent {
+        version: cdf_kernel::COMPILED_SCAN_INTENT_VERSION,
+        projection: Some(vec!["name".to_owned()]),
+        predicates: Vec::new(),
+        limit: Some(1),
+        order_by: Vec::new(),
+    };
+    let resource = MockResource::tier_a(sample_batches()).with_tier_a_intent(intent);
+    let error = Planner::new()
+        .plan_tier_a(
+            &resource,
+            plan_input(
+                Vec::new(),
+                Some(vec!["name".to_owned()]),
+                Some(1),
+                ExecutionExtent::bounded(),
+            ),
+        )
+        .unwrap_err();
+    assert!(error.message.contains("Tier-A partition"));
+    assert!(error.message.contains("full-scan intent"));
 }
 
 #[test]
@@ -1261,6 +1286,81 @@ fn effective_schema_binds_only_the_attempted_partition_observation_under_limit()
 }
 
 #[test]
+fn pushed_projection_rebinds_preobserved_physical_evidence_before_execution() {
+    let effective_schema = sample_schema();
+    let physical_schema = sample_schema();
+    let physical_hash = cdf_kernel::canonical_arrow_schema_hash(physical_schema.as_ref()).unwrap();
+    let projected_schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)]));
+    let projected_hash =
+        cdf_kernel::canonical_arrow_schema_hash(projected_schema.as_ref()).unwrap();
+    let record_batch = RecordBatch::try_new(
+        projected_schema.clone(),
+        vec![Arc::new(Int32Array::from(vec![1, 2, 3])) as ArrayRef],
+    )
+    .unwrap();
+    let mut batch = Batch::from_record_batch(
+        BatchId::new("batch-projected-preobserved").unwrap(),
+        ResourceId::new("orders").unwrap(),
+        PartitionId::new("part-0").unwrap(),
+        projected_hash.clone(),
+        record_batch,
+    )
+    .unwrap();
+    batch.header.source_position = Some(terminal_file_position());
+
+    let descriptor = descriptor();
+    let evidence = EffectiveSchemaEvidence::new(
+        SchemaBaselineReference::Pinned {
+            snapshot: descriptor.schema_source.pinned_snapshot().unwrap().clone(),
+        },
+        SchemaHash::new("effective-projected-v1").unwrap(),
+        DiscoveryManifestReference {
+            manifest_hash: DiscoveryManifestHash::new("manifest-projected-v1").unwrap(),
+            path: ".cdf/schemas/orders@manifest-projected-v1.discovery.json".to_owned(),
+        },
+        vec![EffectiveSchemaObservationEvidence::new(
+            "input-0",
+            physical_hash.clone(),
+        )],
+    )
+    .unwrap();
+    let runtime = EffectiveSchemaRuntime::new(
+        evidence,
+        vec![EffectiveSchemaCatalogEntry::new(
+            physical_hash,
+            physical_schema,
+        )],
+    )
+    .unwrap();
+    let resource = MockResource::tier_b(vec![batch])
+        .with_partition_count(1)
+        .with_effective_schema_runtime(effective_schema, runtime);
+    let mut input = plan_input(
+        Vec::new(),
+        Some(vec!["id".to_owned()]),
+        None,
+        ExecutionExtent::bounded(),
+    );
+    input.validation_program.row_rules.clear();
+    let plan = Planner::new().plan_tier_b(&resource, input).unwrap();
+    let planned = &plan.effective_schema_evidence().unwrap().observations[0];
+    assert_eq!(
+        planned.physical_schema_hash, projected_hash,
+        "compiled projection: {:?}",
+        plan.scan.partitions[0].scan_intent.projection
+    );
+    assert_eq!(
+        plan.scan.partitions[0]
+            .metadata
+            .get(PLAN_PHYSICAL_SCHEMA_HASH_KEY),
+        Some(&projected_hash.to_string())
+    );
+
+    let temp = TempDir::new().unwrap();
+    block_on(execute_to_package(&plan, &resource, temp.path())).unwrap();
+}
+
+#[test]
 fn limited_multi_batch_partition_records_exact_non_checkpointing_partial_attempt() {
     let mut batches = sample_batches();
     for batch in &mut batches {
@@ -1685,6 +1785,7 @@ fn execution_rejects_resident_extent_before_source_contact() {
         version: EXECUTION_EXTENT_VERSION,
         policy: sample_stream_epoch_policy(),
     };
+    plan.explain.execution_extent = plan.execution_extent.clone();
 
     let temp = TempDir::new().unwrap();
     let error = block_on(execute_to_package(&plan, &resource, temp.path())).unwrap_err();
@@ -3740,7 +3841,7 @@ fn package_identity_is_invariant_to_source_batch_rechunking() {
     );
     assert_eq!(
         one_output.manifest.package_hash,
-        "sha256:2a64bf8fd6114a460dce240870f1b6ae6ad621f38bc87026262303d3055b5885"
+        "sha256:c55244ef832bf007c2d4a7520498b8134427f8b3db6312d6cc9978f70ac3452d"
     );
 }
 
@@ -4318,6 +4419,7 @@ struct MockResource {
     type_policy_allowances: cdf_kernel::TypePolicyAllowances,
     duplicate_observation_identity: bool,
     misroute_batches: bool,
+    tier_a_intent: cdf_kernel::CompiledScanIntent,
 }
 
 #[derive(Clone)]
@@ -4430,6 +4532,14 @@ impl QueryableResource for DataFusionMockResource {
             .map(|pushed| pushed.predicate.expression.clone())
             .collect::<Vec<_>>()
             .join("\n");
+        let scan_intent = cdf_kernel::CompiledScanIntent {
+            version: cdf_kernel::COMPILED_SCAN_INTENT_VERSION,
+            projection: request.projection.clone(),
+            predicates: pushed_predicates.clone(),
+            limit: request.limit,
+            order_by: Vec::new(),
+        };
+        scan_intent.validate()?;
         let partitions = ["part-0", "part-1"]
             .into_iter()
             .map(|partition| {
@@ -4438,6 +4548,7 @@ impl QueryableResource for DataFusionMockResource {
                     partition_id: partition_id.clone(),
                     scope: ScopeKey::Partition { partition_id },
                     start_position: None,
+                    scan_intent: scan_intent.clone(),
                     metadata: BTreeMap::from([("exact_filters".to_owned(), exact_filters.clone())]),
                 })
             })
@@ -4490,6 +4601,7 @@ impl MockResource {
             type_policy_allowances: cdf_kernel::TypePolicyAllowances::default(),
             duplicate_observation_identity: false,
             misroute_batches: false,
+            tier_a_intent: cdf_kernel::CompiledScanIntent::full_scan(),
         }
     }
 
@@ -4555,6 +4667,11 @@ impl MockResource {
         self.misroute_batches = true;
         self
     }
+
+    fn with_tier_a_intent(mut self, intent: cdf_kernel::CompiledScanIntent) -> Self {
+        self.tier_a_intent = intent;
+        self
+    }
 }
 
 impl ResourceStream for MockResource {
@@ -4596,6 +4713,7 @@ impl ResourceStream for MockResource {
                         partition_id: PartitionId::new(format!("part-{index}"))?,
                     },
                     start_position: None,
+                    scan_intent: self.tier_a_intent.clone(),
                     metadata,
                 })
             })
@@ -4699,6 +4817,9 @@ impl QueryableResource for MockResource {
             {
                 pushed.fidelity = PushdownFidelity::Exact;
             }
+        }
+        for partition in &mut plan.partitions {
+            partition.scan_intent.predicates = plan.pushed_predicates.clone();
         }
         Ok(plan)
     }

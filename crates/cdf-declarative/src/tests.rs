@@ -105,7 +105,7 @@ mod RestRuntimeDependencies {
                 interruption: cdf_runtime::InterruptionSafety::CooperativeOnly,
             }])
             .unwrap();
-        cdf_source_rest::RestRuntimeDependencies::new(transport).with_execution_services(execution)
+        cdf_source_rest::RestRuntimeDependencies::new(transport, execution)
     }
 }
 
@@ -206,6 +206,11 @@ fn book_rest_example_parses_and_negotiates_inexact_cursor_pushdown() {
     );
     assert_eq!(plan.unsupported_predicates.len(), 1);
     assert_eq!(
+        plan.partitions[0].scan_intent.predicates,
+        plan.pushed_predicates
+    );
+    cdf_kernel::validate_compiled_scan_intents(&plan).unwrap();
+    assert_eq!(
         plan.delivery_guarantee,
         DeliveryGuarantee::EffectivelyOncePerKey
     );
@@ -213,6 +218,26 @@ fn book_rest_example_parses_and_negotiates_inexact_cursor_pushdown() {
         plan.partitions[0].metadata.get("pagination").unwrap(),
         "link_header"
     );
+}
+
+#[test]
+fn rest_tier_a_partition_is_full_scan_while_tier_b_uses_compiled_cursor_pushdown() {
+    let resource = compile_document(&parse_toml(BOOK_REST_EXAMPLE).unwrap())
+        .unwrap()
+        .remove(0);
+    let request = rest_cursor_request(&resource, "updated_at >= \"2026-07-01T00:00:00Z\"");
+    let dependencies = RestRuntimeDependencies::new(RecordingTransport::new([]));
+    let rest = resource.to_rest_resource(dependencies).unwrap();
+
+    let tier_a = rest.plan_partitions(&request).unwrap().remove(0);
+    assert_eq!(
+        tier_a.scan_intent,
+        cdf_kernel::CompiledScanIntent::full_scan()
+    );
+
+    let tier_b = rest.negotiate(&request).unwrap();
+    assert_eq!(tier_b.pushed_predicates.len(), 1);
+    assert_eq!(tier_b.partitions[0].scan_intent.predicates.len(), 1);
 }
 
 #[test]
@@ -277,13 +302,15 @@ fn rest_runtime_executes_json_pages_with_explicit_dependencies() {
     let request = rest_cursor_request(&resource, "updated_at >= \"2026-07-01T00:00:00Z\"");
     let plan = resource.negotiate(&request).unwrap();
     assert_eq!(plan.pushed_predicates.len(), 1);
-    assert_eq!(
-        plan.partitions[0].metadata.get("cursor_query_param"),
-        Some(&"since".to_owned())
+    assert!(
+        !plan.partitions[0]
+            .metadata
+            .contains_key("cursor_query_param")
     );
-    assert_eq!(
-        plan.partitions[0].metadata.get("cursor_query_value"),
-        Some(&"2026-07-01T00:00:00Z".to_owned())
+    assert!(
+        !plan.partitions[0]
+            .metadata
+            .contains_key("cursor_query_value")
     );
 
     let transport = RecordingTransport::new([
@@ -709,9 +736,14 @@ fn rest_cursor_pushdown_accepts_only_safe_literal_tokens() {
         .negotiate(&rest_cursor_request(&resource, "updated_at >= -20260701.5"))
         .unwrap();
     assert_eq!(plan.pushed_predicates.len(), 1);
+    assert!(
+        !plan.partitions[0]
+            .metadata
+            .contains_key("cursor_query_value")
+    );
     assert_eq!(
-        plan.partitions[0].metadata.get("cursor_query_value"),
-        Some(&"-20260701.5".to_owned())
+        plan.partitions[0].scan_intent.predicates,
+        plan.pushed_predicates
     );
 
     let error = ScanPredicate::new(
@@ -2566,7 +2598,8 @@ fn file_glob_plans_deterministic_partition_per_match() {
             Some(resource.descriptor().resource_id.as_str())
         );
         assert!(partition.metadata.contains_key("bytes"));
-        assert!(partition.metadata.contains_key("sha256"));
+        assert!(partition.metadata.contains_key("source_generation"));
+        assert!(!partition.metadata.contains_key("sha256"));
         assert!(partition.metadata.contains_key("modified_ms"));
         assert!(partition.partition_id.as_str().starts_with("file-"));
         assert!(partition.start_position.is_none());
@@ -2577,22 +2610,16 @@ fn file_glob_plans_deterministic_partition_per_match() {
 }
 
 #[test]
-fn file_glob_partition_checksum_changes_when_file_content_changes() {
-    let (root, resource) = compile_local_glob_runtime_resource([("events.ndjson", "{\"id\":1}\n")]);
-    let first = resource
+fn file_glob_inventory_does_not_hash_payload_before_execution() {
+    let (_root, resource) =
+        compile_local_glob_runtime_resource([("events.ndjson", "{\"id\":1}\n")]);
+    let partition = resource
         .plan_partitions(&scan_request_for(&resource))
         .unwrap()
         .remove(0);
 
-    fs::write(root.path().join("data/events.ndjson"), "{\"id\":2}\n").unwrap();
-    let second = resource
-        .plan_partitions(&scan_request_for(&resource))
-        .unwrap()
-        .remove(0);
-
-    assert_eq!(first.metadata.get("path"), second.metadata.get("path"));
-    assert_eq!(first.metadata.get("bytes"), second.metadata.get("bytes"));
-    assert_ne!(first.metadata.get("sha256"), second.metadata.get("sha256"));
+    assert!(partition.metadata.contains_key("source_generation"));
+    assert!(!partition.metadata.contains_key("sha256"));
 }
 
 #[test]
@@ -3005,8 +3032,19 @@ fn sql_negotiate_pushes_filters_exactly() {
     );
     let plan = resource.negotiate(&request).unwrap();
     assert_eq!(plan.pushed_predicates[0].fidelity, PushdownFidelity::Exact);
+    assert_eq!(
+        plan.partitions[0].scan_intent.projection,
+        request.projection
+    );
+    assert_eq!(
+        plan.partitions[0].scan_intent.predicates,
+        plan.pushed_predicates
+    );
+    assert_eq!(plan.partitions[0].scan_intent.limit, request.limit);
+    assert_eq!(plan.partitions[0].scan_intent.order_by, request.order_by);
+    cdf_kernel::validate_compiled_scan_intents(&plan).unwrap();
     assert!(
-        plan.partitions[0]
+        !plan.partitions[0]
             .metadata
             .contains_key("postgres_sql_scan")
     );
@@ -3043,12 +3081,12 @@ fn sql_negotiate_does_not_smuggle_unstructured_predicates() {
     let plan = resource.negotiate(&request).unwrap();
     assert_eq!(plan.pushed_predicates.len(), 1);
     assert_eq!(plan.unsupported_predicates.len(), 1);
-    let scan = plan.partitions[0]
-        .metadata
-        .get("postgres_sql_scan")
-        .unwrap();
-    assert!(scan.contains("updated_at"));
-    assert!(!scan.contains("OR 1"));
+    let intent = &plan.partitions[0].scan_intent;
+    assert_eq!(intent.predicates.len(), 1);
+    assert_eq!(
+        intent.predicates[0].predicate.canonical_expression,
+        cdf_kernel::Expression::parse_comparison("updated_at >= 10").unwrap()
+    );
 }
 
 #[test]

@@ -4,11 +4,7 @@ use cdf_http::{
     AuthScheme, EgressAllowlist, HttpTransport, PaginationConfig, QuotaHeaderPolicy,
     RateLimitPolicy, ResetHeaderSemantics, SecretUri,
 };
-use cdf_kernel::{
-    BackpressureSupport, CapabilitySupport, CdfError, EstimateSupport, FilterCapabilities,
-    IncrementalShape, PartitioningCapabilities, PushdownFidelity, QueryableResource, ReplaySupport,
-    ResourceCapabilities, Result, ScanRequest, ScopeKind,
-};
+use cdf_kernel::{CdfError, PushdownFidelity, QueryableResource, Result, ScanRequest};
 use cdf_runtime::{
     BlockingLaneSpec, CompiledSourcePlan, InterruptionSafety, LaneAffinity,
     SourceAttestationStrength, SourceCompileRequest, SourceCursorPushdown,
@@ -21,7 +17,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     RestDiscoveryDependencies, RestResource, RestResourcePlan, RestRuntimeDependencies,
-    discover_rest_sample_schema, rest_partition,
+    discover_rest_sample_schema, rest_partition, rest_resource_capabilities,
 };
 
 type TransportFactory = dyn Fn() -> Result<Box<dyn HttpTransport>> + Send + Sync + 'static;
@@ -84,10 +80,11 @@ impl SourceDriver for RestSourceDriver {
             source,
             resource,
         };
-        physical.to_runtime_plan()?;
+        let runtime_plan = physical.to_runtime_plan()?;
+        let capabilities = rest_resource_capabilities(&request.descriptor, &runtime_plan);
         CompiledSourcePlan::new(
             self.descriptor.clone(),
-            rest_capabilities(&request.descriptor),
+            capabilities,
             execution_capabilities(),
             cdf_runtime::CompiledSourcePlanInput {
                 descriptor: request.descriptor,
@@ -108,9 +105,11 @@ impl SourceDriver for RestSourceDriver {
         plan.validate()?;
         let physical: RestPhysicalPlan = serde_json::from_value(plan.physical_plan.clone())
             .map_err(|error| CdfError::contract(format!("invalid REST source plan: {error}")))?;
+        let runtime_plan = physical.to_runtime_plan()?;
+        validate_compiled_capabilities(plan, &runtime_plan)?;
         Ok(Box::new(RestDriverDiscoverySession {
             descriptor: plan.descriptor.clone(),
-            plan: physical.to_runtime_plan()?,
+            plan: runtime_plan,
             transport: Arc::from((self.transport_factory)()?),
             secret_provider: Arc::clone(context.secret_provider()),
             memory: context.execution().memory(),
@@ -124,14 +123,16 @@ impl SourceDriver for RestSourceDriver {
         plan: &CompiledSourcePlan,
         context: &SourceResolutionContext<'_>,
     ) -> Result<Arc<dyn QueryableResource>> {
+        plan.validate()?;
         let physical: RestPhysicalPlan = serde_json::from_value(plan.physical_plan.clone())
             .map_err(|error| CdfError::contract(format!("invalid REST source plan: {error}")))?;
         let runtime_plan = physical.to_runtime_plan()?;
+        validate_compiled_capabilities(plan, &runtime_plan)?;
         let transport = (self.transport_factory)()?;
-        let dependencies = RestRuntimeDependencies::from_boxed_transport(transport)
-            .with_shared_secret_provider(Arc::clone(context.secret_provider()))
-            .with_execution_services(context.execution().clone())
-            .with_prepared_payloads(context.prepared_payloads().clone());
+        let dependencies =
+            RestRuntimeDependencies::from_boxed_transport(transport, context.execution().clone())
+                .with_shared_secret_provider(Arc::clone(context.secret_provider()))
+                .with_prepared_payloads(context.prepared_payloads().clone());
         Ok(Arc::new(RestResource::new(
             plan.descriptor.clone(),
             Arc::new(plan.schema.clone()),
@@ -141,6 +142,19 @@ impl SourceDriver for RestSourceDriver {
             dependencies,
         )?))
     }
+}
+
+fn validate_compiled_capabilities(
+    plan: &CompiledSourcePlan,
+    runtime_plan: &RestResourcePlan,
+) -> Result<()> {
+    let expected = rest_resource_capabilities(&plan.descriptor, runtime_plan);
+    if plan.resource_capabilities != expected {
+        return Err(CdfError::contract(
+            "compiled REST resource capabilities do not match the executable cursor plan; recompile the source plan",
+        ));
+    }
+    Ok(())
 }
 
 struct RestDriverDiscoverySession {
@@ -578,42 +592,6 @@ fn scalar_param(name: &str, value: &serde_json::Value) -> Result<String> {
     }
 }
 
-fn rest_capabilities(descriptor: &cdf_kernel::ResourceDescriptor) -> ResourceCapabilities {
-    ResourceCapabilities {
-        projection: CapabilitySupport::Unsupported,
-        filters: FilterCapabilities {
-            default_fidelity: PushdownFidelity::Unsupported,
-            supported_operators: if descriptor.cursor.is_some() {
-                vec![">".to_owned(), ">=".to_owned(), "=".to_owned()]
-            } else {
-                Vec::new()
-            },
-        },
-        limits: CapabilitySupport::Unsupported,
-        ordering: CapabilitySupport::Unsupported,
-        partitioning: match descriptor.state_scope.kind() {
-            ScopeKind::Resource => PartitioningCapabilities::default(),
-            kind => PartitioningCapabilities {
-                parallel_partitions: true,
-                supported_scopes: vec![kind],
-            },
-        },
-        incremental: if descriptor.cursor.is_some() {
-            IncrementalShape::Cursor
-        } else {
-            IncrementalShape::Full
-        },
-        replay: if descriptor.cursor.is_some() {
-            ReplaySupport::FromPosition
-        } else {
-            ReplaySupport::None
-        },
-        idempotent_reads: true,
-        backpressure: BackpressureSupport::CannotPause,
-        estimates: EstimateSupport::None,
-    }
-}
-
 fn execution_capabilities() -> SourceExecutionCapabilities {
     SourceExecutionCapabilities {
         minimum_poll_bytes: 8 * 1024,
@@ -799,11 +777,25 @@ mod tests {
                 effective_schema_runtime: None,
             })
             .unwrap();
-        let physical: RestPhysicalPlan = serde_json::from_value(plan.physical_plan).unwrap();
+        assert_eq!(
+            plan.resource_capabilities.filters.default_fidelity,
+            PushdownFidelity::Exact
+        );
+        assert_eq!(
+            plan.resource_capabilities.filters.supported_operators,
+            vec![">", ">=", "="]
+        );
+        let physical: RestPhysicalPlan =
+            serde_json::from_value(plan.physical_plan.clone()).unwrap();
         let runtime = physical.to_runtime_plan().unwrap();
         assert_eq!(runtime.source, "api");
         assert_eq!(runtime.cursor_param.as_deref(), Some("since"));
         assert_eq!(runtime.cursor_filter_fidelity, PushdownFidelity::Exact);
+
+        let mut drifted = plan;
+        drifted.resource_capabilities.filters.default_fidelity = PushdownFidelity::Unsupported;
+        let error = validate_compiled_capabilities(&drifted, &runtime).unwrap_err();
+        assert!(error.message.contains("executable cursor plan"));
     }
 
     #[test]

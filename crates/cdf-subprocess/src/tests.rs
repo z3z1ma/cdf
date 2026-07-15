@@ -30,6 +30,97 @@ fn memory() -> Arc<dyn MemoryCoordinator> {
     Arc::new(DeterministicMemoryCoordinator::new(256 * 1024 * 1024, BTreeMap::new()).unwrap())
 }
 
+fn execution() -> cdf_runtime::ExecutionServices {
+    static SERVICES: std::sync::OnceLock<cdf_runtime::ExecutionServices> =
+        std::sync::OnceLock::new();
+    SERVICES
+        .get_or_init(|| {
+            cdf_runtime::ExecutionServices::new(Arc::new(TestIoHost::new().unwrap())).unwrap()
+        })
+        .clone()
+}
+
+struct TestIoHost {
+    runtime: tokio::runtime::Runtime,
+    memory: Arc<dyn MemoryCoordinator>,
+    spill: Arc<dyn cdf_runtime::SpillBudgetCoordinator>,
+}
+
+impl TestIoHost {
+    fn new() -> cdf_kernel::Result<Self> {
+        Ok(Self {
+            runtime: tokio::runtime::Builder::new_multi_thread()
+                .worker_threads(2)
+                .enable_all()
+                .build()
+                .map_err(|error| cdf_kernel::CdfError::internal(error.to_string()))?,
+            memory: memory(),
+            spill: Arc::new(cdf_runtime::FixedSpillBudget::new(256 * 1024 * 1024)?),
+        })
+    }
+}
+
+impl cdf_runtime::ExecutionHost for TestIoHost {
+    fn capabilities(&self) -> cdf_runtime::ExecutionHostCapabilities {
+        cdf_runtime::ExecutionHostCapabilities {
+            logical_cpu_slots: 2,
+            io_workers: 2,
+            blocking_lanes: Vec::new(),
+        }
+    }
+
+    fn memory(&self) -> Arc<dyn MemoryCoordinator> {
+        Arc::clone(&self.memory)
+    }
+
+    fn spill(&self) -> Arc<dyn cdf_runtime::SpillBudgetCoordinator> {
+        Arc::clone(&self.spill)
+    }
+
+    fn open_scope(
+        &self,
+        _run_id: &str,
+    ) -> cdf_kernel::Result<Box<dyn cdf_runtime::ExecutionTaskScope>> {
+        Err(cdf_kernel::CdfError::internal(
+            "subprocess protocol test does not open task scopes",
+        ))
+    }
+
+    fn run_io_blocking(
+        &self,
+        task: cdf_runtime::IoValueTask,
+    ) -> cdf_kernel::Result<cdf_runtime::IoValue> {
+        self.runtime.block_on(task)
+    }
+
+    fn delay(
+        &self,
+        duration: Duration,
+        cancellation: cdf_runtime::RunCancellation,
+    ) -> cdf_kernel::BoxFuture<'static, cdf_kernel::Result<()>> {
+        Box::pin(async move {
+            cancellation.check()?;
+            tokio::time::sleep(duration).await;
+            cancellation.check()
+        })
+    }
+
+    fn ensure_blocking_lanes(
+        &self,
+        _lanes: &[cdf_runtime::BlockingLaneSpec],
+    ) -> cdf_kernel::Result<()> {
+        Ok(())
+    }
+
+    fn run_blocking_value(
+        &self,
+        _lane: &str,
+        task: cdf_runtime::BlockingValueTask,
+    ) -> cdf_kernel::Result<cdf_runtime::IoValue> {
+        task()
+    }
+}
+
 fn shell(args: impl IntoIterator<Item = impl Into<String>>) -> CommandSpec {
     CommandSpec::new("/bin/sh").with_args(args)
 }
@@ -277,7 +368,7 @@ fn singer_protocol_parses_schema_record_state_and_batches_by_stream() {
         }),
     ]);
 
-    let read = read_singer_ndjson_bytes(&bytes, &read_options(), memory()).unwrap();
+    let read = read_singer_ndjson_bytes(&bytes, &read_options(), &execution()).unwrap();
 
     assert_eq!(read.schemas.len(), 1);
     assert_eq!(read.schemas[0].raw["tap_metadata"]["unknown"], true);
@@ -362,7 +453,7 @@ fn airbyte_protocol_parses_catalog_record_and_state_variants() {
         json!({ "type": "STATE", "state": global_state }),
     ]);
 
-    let read = read_airbyte_ndjson_bytes(&bytes, &read_options(), memory()).unwrap();
+    let read = read_airbyte_ndjson_bytes(&bytes, &read_options(), &execution()).unwrap();
 
     assert_eq!(read.catalogs.len(), 1);
     assert_eq!(read.catalogs[0].raw["future_field"]["retained"], true);
@@ -520,8 +611,8 @@ fn protocol_state_hashes_are_deterministic() {
         "type": "STATE",
         "value": singer_state
     })]);
-    let first = read_singer_ndjson_bytes(&singer_bytes, &read_options(), memory()).unwrap();
-    let second = read_singer_ndjson_bytes(&singer_bytes, &read_options(), memory()).unwrap();
+    let first = read_singer_ndjson_bytes(&singer_bytes, &read_options(), &execution()).unwrap();
+    let second = read_singer_ndjson_bytes(&singer_bytes, &read_options(), &execution()).unwrap();
     let first_state = foreign_state(&first.states[0].position);
     let second_state = foreign_state(&second.states[0].position);
     assert_eq!(first_state.blob_sha256, second_state.blob_sha256);
@@ -534,7 +625,7 @@ fn protocol_state_hashes_are_deterministic() {
     let reordered_singer_bytes =
         br#"{"type":"STATE","value":{"m":{"b":2,"a":3},"z":1,"a":[true,false]}}"#;
     let reordered =
-        read_singer_ndjson_bytes(reordered_singer_bytes, &read_options(), memory()).unwrap();
+        read_singer_ndjson_bytes(reordered_singer_bytes, &read_options(), &execution()).unwrap();
     assert_eq!(
         foreign_state(&reordered.states[0].position).blob_sha256,
         first_state.blob_sha256
@@ -551,8 +642,8 @@ fn protocol_state_hashes_are_deterministic() {
         "type": "STATE",
         "state": airbyte_state
     })]);
-    let first = read_airbyte_ndjson_bytes(&airbyte_bytes, &read_options(), memory()).unwrap();
-    let second = read_airbyte_ndjson_bytes(&airbyte_bytes, &read_options(), memory()).unwrap();
+    let first = read_airbyte_ndjson_bytes(&airbyte_bytes, &read_options(), &execution()).unwrap();
+    let second = read_airbyte_ndjson_bytes(&airbyte_bytes, &read_options(), &execution()).unwrap();
     let first_state = foreign_state(&first.states[0].position);
     let second_state = foreign_state(&second.states[0].position);
     assert_eq!(first_state.blob_sha256, second_state.blob_sha256);
@@ -581,7 +672,7 @@ fn protocol_batches_write_to_and_replay_from_package() {
             }
         }),
     ]);
-    let read = read_airbyte_ndjson_bytes(&bytes, &read_options(), memory()).unwrap();
+    let read = read_airbyte_ndjson_bytes(&bytes, &read_options(), &execution()).unwrap();
 
     let package = cdf_package::PackageBuilder::create(&package_dir, "pkg-protocol").unwrap();
     for (index, stream) in read.streams.iter().enumerate() {

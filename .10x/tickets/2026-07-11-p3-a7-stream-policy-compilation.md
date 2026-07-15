@@ -27,7 +27,7 @@ No runtime epoch execution or resident lifecycle.
 
 ## Blockers
 
-Blocked on BX1, SX1, and A5.
+Blocked only on SX1. BX1 and A5 are done.
 
 ## References
 

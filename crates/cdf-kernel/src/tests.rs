@@ -20,6 +20,7 @@ fn schema_observation_identity_is_partition_scoped_for_file_partitions() {
             path: "s3://bucket/object.parquet".to_owned(),
         },
         start_position: None,
+        scan_intent: CompiledScanIntent::full_scan(),
         metadata: BTreeMap::new(),
     };
 
@@ -37,6 +38,41 @@ fn schema_observation_identity_is_partition_scoped_for_file_partitions() {
         partition_schema_observation_id(&explicit),
         "planned-observation-7"
     );
+}
+
+#[test]
+fn compiled_scan_intent_is_versioned_and_rejects_ambiguous_work() {
+    let intent = CompiledScanIntent {
+        version: COMPILED_SCAN_INTENT_VERSION,
+        projection: Some(vec!["id".to_owned()]),
+        predicates: vec![PushedPredicate {
+            predicate: ScanPredicate::new(PredicateId::new("p1").unwrap(), "id >= 7").unwrap(),
+            fidelity: PushdownFidelity::Exact,
+        }],
+        limit: Some(10),
+        order_by: vec![OrderBy {
+            field: "id".to_owned(),
+            direction: SortDirection::Asc,
+        }],
+    };
+    intent.validate().unwrap();
+    let encoded = serde_json::to_value(&intent).unwrap();
+    assert_eq!(
+        serde_json::from_value::<CompiledScanIntent>(encoded).unwrap(),
+        intent
+    );
+
+    let mut wrong_version = serde_json::to_value(&intent).unwrap();
+    wrong_version["version"] = serde_json::json!(99);
+    assert!(serde_json::from_value::<CompiledScanIntent>(wrong_version).is_err());
+
+    let mut duplicate_projection = intent.clone();
+    duplicate_projection.projection = Some(vec!["id".to_owned(), "id".to_owned()]);
+    assert!(duplicate_projection.validate().is_err());
+
+    let mut unsupported = intent;
+    unsupported.predicates[0].fidelity = PushdownFidelity::Unsupported;
+    assert!(unsupported.validate().is_err());
 }
 
 fn sample_state_delta_and_receipt() -> (StateDelta, Receipt) {

@@ -335,12 +335,35 @@ impl FormatDecodeSession for ParquetDecodeSession {
             }
             let physical_schema_metadata = builder.schema().metadata().clone();
             let parquet_stream = builder.build().map_err(parquet_error)?;
+            let output_indices = request
+                .projection
+                .as_ref()
+                .map(|projection| {
+                    projection
+                        .iter()
+                        .map(|name| {
+                            parquet_stream.schema().index_of(name).map_err(|_| {
+                                CdfError::internal(format!(
+                                    "Parquet projected stream omitted requested field {name:?}"
+                                ))
+                            })
+                        })
+                        .collect::<Result<Vec<_>>>()
+                })
+                .transpose()?;
+            let physical_fields = match &output_indices {
+                Some(indices) => indices
+                    .iter()
+                    .map(|index| parquet_stream.schema().field(*index).clone())
+                    .collect(),
+                None => parquet_stream.schema().fields().clone(),
+            };
             // Arrow's Parquet stream intentionally strips schema-level metadata from its
             // projected schema and emitted batches. That metadata is nevertheless part of
             // CDF's canonical physical observation, so bind the zero-copy batch columns back
             // to the exact metadata-bearing projected schema before hashing or admission.
             let physical_schema = Arc::new(arrow_schema::Schema::new_with_metadata(
-                parquet_stream.schema().fields().clone(),
+                physical_fields,
                 physical_schema_metadata,
             ));
             let observed_schema_hash =
@@ -350,6 +373,7 @@ impl FormatDecodeSession for ParquetDecodeSession {
                 request,
                 observed_schema_hash,
                 physical_schema,
+                output_indices,
                 sequence: 0,
                 emitted_schema: false,
             };
@@ -361,25 +385,39 @@ impl FormatDecodeSession for ParquetDecodeSession {
                 )?
                 .as_minimum_working_set();
                 let lease = reserve(Arc::clone(&state.request.memory), reservation).await?;
-                let record_batch = match state.stream.try_next().await.map_err(parquet_error)? {
-                    Some(record_batch) => record_batch,
-                    None if !state.emitted_schema => {
-                        arrow_array::RecordBatch::new_empty(Arc::clone(&state.physical_schema))
-                    }
-                    None => return Ok(None),
-                };
-                let record_batch =
-                    if record_batch.schema().as_ref() == state.physical_schema.as_ref() {
-                        record_batch
-                    } else {
-                        let row_count = record_batch.num_rows();
-                        arrow_array::RecordBatch::try_new_with_options(
-                            Arc::clone(&state.physical_schema),
-                            record_batch.columns().to_vec(),
-                            &arrow_array::RecordBatchOptions::new().with_row_count(Some(row_count)),
-                        )
-                        .map_err(CdfError::from)?
+                let (record_batch, synthetic_empty) =
+                    match state.stream.try_next().await.map_err(parquet_error)? {
+                        Some(record_batch) => (record_batch, false),
+                        None if !state.emitted_schema => (
+                            arrow_array::RecordBatch::new_empty(Arc::clone(&state.physical_schema)),
+                            true,
+                        ),
+                        None => return Ok(None),
                     };
+                let record_batch = if synthetic_empty
+                    || (state.output_indices.is_none()
+                        && record_batch.schema().as_ref() == state.physical_schema.as_ref())
+                {
+                    record_batch
+                } else {
+                    let row_count = record_batch.num_rows();
+                    let columns = state
+                        .output_indices
+                        .as_ref()
+                        .map(|indices| {
+                            indices
+                                .iter()
+                                .map(|index| Arc::clone(record_batch.column(*index)))
+                                .collect()
+                        })
+                        .unwrap_or_else(|| record_batch.columns().to_vec());
+                    arrow_array::RecordBatch::try_new_with_options(
+                        Arc::clone(&state.physical_schema),
+                        columns,
+                        &arrow_array::RecordBatchOptions::new().with_row_count(Some(row_count)),
+                    )
+                    .map_err(CdfError::from)?
+                };
                 state.emitted_schema = true;
                 let batch_id = BatchId::new(format!(
                     "{}-u{:08}-b{:08}",
@@ -460,6 +498,7 @@ struct DecodeState {
     request: PhysicalDecodeRequest,
     observed_schema_hash: cdf_kernel::SchemaHash,
     physical_schema: arrow_schema::SchemaRef,
+    output_indices: Option<Vec<usize>>,
     sequence: u64,
     emitted_schema: bool,
 }

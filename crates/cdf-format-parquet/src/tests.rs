@@ -6,7 +6,7 @@ use std::{
     },
 };
 
-use arrow_array::{Int64Array, RecordBatch};
+use arrow_array::{Int64Array, RecordBatch, StringArray};
 use arrow_schema::{DataType, Field, Schema};
 use cdf_kernel::{PartitionId, ResourceId};
 use cdf_memory::{
@@ -142,6 +142,37 @@ fn empty_fixture() -> (Arc<Schema>, Vec<u8>) {
     let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, false)]));
     let mut bytes = Vec::new();
     let writer = ArrowWriter::try_new(&mut bytes, Arc::clone(&schema), None).unwrap();
+    writer.close().unwrap();
+    (schema, bytes)
+}
+
+fn ordered_projection_fixture(with_rows: bool) -> (Arc<Schema>, Vec<u8>) {
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("a", DataType::Int64, false).with_metadata(HashMap::from([(
+            "cdf:source_name".to_owned(),
+            "SourceA".to_owned(),
+        )])),
+        Field::new("b", DataType::Utf8, false).with_metadata(HashMap::from([(
+            "cdf:source_name".to_owned(),
+            "SourceB".to_owned(),
+        )])),
+    ]));
+    let mut bytes = Vec::new();
+    let mut writer = ArrowWriter::try_new(&mut bytes, Arc::clone(&schema), None).unwrap();
+    if with_rows {
+        writer
+            .write(
+                &RecordBatch::try_new(
+                    Arc::clone(&schema),
+                    vec![
+                        Arc::new(Int64Array::from(vec![1, 2])),
+                        Arc::new(StringArray::from(vec!["ten", "twenty"])),
+                    ],
+                )
+                .unwrap(),
+            )
+            .unwrap();
+    }
     writer.close().unwrap();
     (schema, bytes)
 }
@@ -349,4 +380,59 @@ fn empty_parquet_file_emits_one_schema_bearing_batch() {
     );
     drop(batches);
     assert_eq!(memory.snapshot().current_bytes, 0);
+}
+
+#[test]
+fn parquet_projection_preserves_compiled_field_order_for_rows_and_empty_files() {
+    for with_rows in [true, false] {
+        let (schema, bytes) = ordered_projection_fixture(with_rows);
+        let memory: Arc<dyn MemoryCoordinator> = Arc::new(
+            DeterministicMemoryCoordinator::new(64 * 1024 * 1024, BTreeMap::new()).unwrap(),
+        );
+        let source: Arc<dyn ByteSource> = MemoryByteSource::new(bytes, Arc::clone(&memory));
+        let driver = ParquetFormatDriver::new().unwrap();
+        let projection = vec!["b".to_owned(), "a".to_owned()];
+        let session = futures_executor::block_on(driver.prepare_decode(
+            source,
+            DecodePlanningRequest {
+                options: serde_json::json!({}),
+                projection: Some(projection.clone()),
+                predicates: Vec::new(),
+                target_batch_rows: 64 * 1024,
+                target_batch_bytes: 8 * 1024 * 1024,
+                cancellation: RunCancellation::default(),
+            },
+        ))
+        .unwrap();
+        let stream = futures_executor::block_on(session.decode(PhysicalDecodeRequest {
+            unit: session.units()[0].clone(),
+            resource_id: ResourceId::new("fixture.parquet").unwrap(),
+            partition_id: PartitionId::new("file-000001").unwrap(),
+            batch_id_prefix: "fixture".to_owned(),
+            schema: cdf_runtime::DecodeSchemaPlan::verified_physical(schema),
+            source_position: None,
+            projection: Some(projection),
+            predicates: Vec::new(),
+            target_batch_rows: 64 * 1024,
+            target_batch_bytes: 8 * 1024 * 1024,
+            memory: Arc::clone(&memory),
+            cancellation: RunCancellation::default(),
+        }))
+        .unwrap();
+        let batches = futures_executor::block_on(stream.try_collect::<Vec<_>>()).unwrap();
+        assert_eq!(batches.len(), 1);
+        let batch = batches[0].batch();
+        let schema = batch.record_batch().unwrap().schema();
+        assert_eq!(schema.field(0).name(), "b");
+        assert_eq!(schema.field(0).metadata()["cdf:source_name"], "SourceB");
+        assert_eq!(schema.field(1).name(), "a");
+        assert_eq!(schema.field(1).metadata()["cdf:source_name"], "SourceA");
+        assert_eq!(
+            batch.header.observed_schema_hash,
+            cdf_kernel::canonical_arrow_schema_hash(schema.as_ref()).unwrap()
+        );
+        drop(batches);
+        drop(session);
+        assert_eq!(memory.snapshot().current_bytes, 0);
+    }
 }

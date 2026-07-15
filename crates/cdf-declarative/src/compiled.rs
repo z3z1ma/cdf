@@ -16,22 +16,23 @@ use cdf_http::{
 use cdf_kernel::{
     BackpressureSupport, BoxFuture, CapabilitySupport, CdfError, ContractRef, CursorOrderingClaim,
     CursorSpec, DeduplicationSpec, DeliveryGuarantee, EffectiveSchemaRuntime, EstimateSupport,
-    FilterCapabilities, FreshnessSpec, IncrementalShape, OpenedPartitionStream, PartitionId,
-    PartitionPlan, PartitioningCapabilities, PlanId, PushdownFidelity, PushedPredicate,
-    QueryableResource, ReplaySupport, ResourceCapabilities, ResourceDescriptor, ResourceId,
-    ResourceStream, Result, ScanPlan, ScanRequest, SchemaHash, SchemaSource, ScopeKey, ScopeKind,
-    TrustLevel, TypePolicyAllowances, WriteDisposition, with_cdf_metadata,
+    FilterCapabilities, FreshnessSpec, IncrementalShape, OpenedPartitionStream, PartitionPlan,
+    PartitioningCapabilities, PlanId, PushdownFidelity, PushedPredicate, QueryableResource,
+    ReplaySupport, ResourceCapabilities, ResourceDescriptor, ResourceId, ResourceStream, Result,
+    ScanPlan, ScanRequest, SchemaHash, SchemaSource, ScopeKey, ScopeKind, TrustLevel,
+    TypePolicyAllowances, WriteDisposition, with_cdf_metadata,
 };
 use cdf_runtime::{SourceCompileContext, SourceCompileRequest, SourceCursorPushdown};
 use cdf_source_files::FileResourcePlan;
-use cdf_source_rest::{RestResourcePlan, cursor_pushdown_value};
+use cdf_source_rest::{
+    RestResourcePlan, cursor_pushdown_value, rest_partition, rest_resource_capabilities,
+};
 use sha2::{Digest, Sha256};
 
 use crate::declarations::*;
 use crate::sql_runtime::{
     sql_capabilities_for, sql_partition_for_plan, sql_predicate_fidelity_for,
 };
-use cdf_source_rest::{CURSOR_QUERY_PARAM_METADATA, CURSOR_QUERY_VALUE_METADATA};
 
 #[derive(Clone, Debug)]
 pub struct CompiledResource {
@@ -211,7 +212,12 @@ impl ResourceStream for CompiledResource {
     }
 
     fn plan_partitions(&self, request: &ScanRequest) -> Result<Vec<PartitionPlan>> {
-        partitions_for_plan(&self.descriptor, &self.schema, &self.plan, Some(request))
+        let mut partitions =
+            partitions_for_plan(&self.descriptor, &self.schema, &self.plan, Some(request))?;
+        for partition in &mut partitions {
+            partition.scan_intent = cdf_kernel::CompiledScanIntent::full_scan();
+        }
+        Ok(partitions)
     }
 
     fn open(&self, partition: PartitionPlan) -> BoxFuture<'_, Result<OpenedPartitionStream>> {
@@ -391,16 +397,16 @@ fn compile_resource(
             allow_lossy_mapping: types.allow_lossy_mapping,
         })
         .unwrap_or_default();
-    let source_compile_request = build_source_compile_request(
+    let source_compile_request = build_source_compile_request(SourceCompileRequestInput {
         source_name,
         source,
         resource,
-        &plan,
-        &descriptor,
-        &schema,
+        typed_plan: &plan,
+        descriptor: &descriptor,
+        schema: &schema,
         type_policy_allowances,
         project_root,
-    )?;
+    })?;
 
     Ok(CompiledResource {
         descriptor,
@@ -416,16 +422,30 @@ fn compile_resource(
     })
 }
 
-fn build_source_compile_request(
-    source_name: &str,
-    source: &SourceDeclaration,
-    resource: &ResourceDeclaration,
-    typed_plan: &CompiledResourcePlan,
-    descriptor: &ResourceDescriptor,
-    schema: &Schema,
+struct SourceCompileRequestInput<'a> {
+    source_name: &'a str,
+    source: &'a SourceDeclaration,
+    resource: &'a ResourceDeclaration,
+    typed_plan: &'a CompiledResourcePlan,
+    descriptor: &'a ResourceDescriptor,
+    schema: &'a Schema,
     type_policy_allowances: TypePolicyAllowances,
-    project_root: Option<&Path>,
+    project_root: Option<&'a Path>,
+}
+
+fn build_source_compile_request(
+    input: SourceCompileRequestInput<'_>,
 ) -> Result<Option<SourceCompileRequest>> {
+    let SourceCompileRequestInput {
+        source_name,
+        source,
+        resource,
+        typed_plan,
+        descriptor,
+        schema,
+        type_policy_allowances,
+        project_root,
+    } = input;
     let context = SourceCompileContext {
         source_name: source_name.to_owned(),
         project_root: project_root.map(Path::to_path_buf),
@@ -525,7 +545,7 @@ fn build_source_compile_request(
             let mut source_options = BTreeMap::from([
                 (
                     "root".to_owned(),
-                    serde_json::Value::String(file_plan.root.clone()),
+                    serde_json::Value::String(files.root.clone()),
                 ),
                 (
                     "egress_allowlist".to_owned(),
@@ -957,37 +977,7 @@ fn capabilities_for(
     plan: &CompiledResourcePlan,
 ) -> ResourceCapabilities {
     match plan {
-        CompiledResourcePlan::Rest(rest) => ResourceCapabilities {
-            projection: CapabilitySupport::Unsupported,
-            filters: FilterCapabilities {
-                default_fidelity: if descriptor.cursor.is_some() {
-                    rest.cursor_filter_fidelity.clone()
-                } else {
-                    PushdownFidelity::Unsupported
-                },
-                supported_operators: if descriptor.cursor.is_some() {
-                    vec![">".to_owned(), ">=".to_owned(), "=".to_owned()]
-                } else {
-                    Vec::new()
-                },
-            },
-            limits: CapabilitySupport::Unsupported,
-            ordering: CapabilitySupport::Unsupported,
-            partitioning: partitioning_capabilities(descriptor),
-            incremental: if descriptor.cursor.is_some() {
-                IncrementalShape::Cursor
-            } else {
-                IncrementalShape::Full
-            },
-            replay: if descriptor.cursor.is_some() {
-                ReplaySupport::FromPosition
-            } else {
-                ReplaySupport::None
-            },
-            idempotent_reads: true,
-            backpressure: BackpressureSupport::Pausable,
-            estimates: EstimateSupport::None,
-        },
+        CompiledResourcePlan::Rest(rest) => rest_resource_capabilities(descriptor, rest),
         CompiledResourcePlan::Sql(sql) => sql_capabilities_for(descriptor, sql),
         CompiledResourcePlan::Files(_) => ResourceCapabilities {
             projection: CapabilitySupport::Unsupported,
@@ -1007,61 +997,24 @@ fn capabilities_for(
     }
 }
 
-fn partitioning_capabilities(descriptor: &ResourceDescriptor) -> PartitioningCapabilities {
-    match descriptor.state_scope.kind() {
-        ScopeKind::Resource => PartitioningCapabilities::default(),
-        kind => PartitioningCapabilities {
-            parallel_partitions: true,
-            supported_scopes: vec![kind],
-        },
-    }
-}
-
 fn partition_for_plan(
     descriptor: &ResourceDescriptor,
     schema: &SchemaRef,
     plan: &CompiledResourcePlan,
     request: Option<&ScanRequest>,
 ) -> Result<PartitionPlan> {
-    let (partition_id, scope, mut metadata) = match plan {
+    match plan {
         CompiledResourcePlan::Rest(rest) => {
-            let mut metadata = BTreeMap::new();
-            metadata.insert("kind".to_owned(), "rest".to_owned());
-            metadata.insert("path".to_owned(), rest.path.clone());
-            if let Some(pagination) = &rest.pagination {
-                metadata.insert("pagination".to_owned(), pagination.kind().to_string());
-            }
-            if let Some(cursor) = &descriptor.cursor {
-                metadata.insert("cursor_field".to_owned(), cursor.field.clone());
-            }
-            if let (Some(request), Some(cursor_param)) = (request, rest.cursor_param.as_ref())
-                && rest.cursor_filter_fidelity != PushdownFidelity::Unsupported
-                && let Some(value) = request.filters.iter().find_map(|predicate| {
-                    cursor_pushdown_value(descriptor, rest, &predicate.canonical_expression)
-                })
-            {
-                metadata.insert(CURSOR_QUERY_PARAM_METADATA.to_owned(), cursor_param.clone());
-                metadata.insert(CURSOR_QUERY_VALUE_METADATA.to_owned(), value);
-            }
-            ("rest".to_owned(), descriptor.state_scope.clone(), metadata)
+            let request = request.ok_or_else(|| {
+                CdfError::internal("compiled REST partition requires its canonical scan request")
+            })?;
+            rest_partition(descriptor, rest, request)
         }
-        CompiledResourcePlan::Sql(sql) => {
-            return sql_partition_for_plan(descriptor, schema, sql, request);
-        }
-        CompiledResourcePlan::Files(_) => {
-            return Err(CdfError::internal(
-                "file resources must plan through the file partition resolver",
-            ));
-        }
-    };
-    metadata.insert("resource_id".to_owned(), descriptor.resource_id.to_string());
-
-    Ok(PartitionPlan {
-        partition_id: PartitionId::new(partition_id)?,
-        scope,
-        start_position: None,
-        metadata,
-    })
+        CompiledResourcePlan::Sql(sql) => sql_partition_for_plan(descriptor, schema, sql, request),
+        CompiledResourcePlan::Files(_) => Err(CdfError::internal(
+            "file resources must plan through the file partition resolver",
+        )),
+    }
 }
 
 fn partitions_for_plan(

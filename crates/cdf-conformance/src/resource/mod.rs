@@ -503,9 +503,19 @@ where
     let stream_partitions = resource
         .plan_partitions(&case.request)
         .unwrap_or_else(|error| panic!("resource partition planning failed: {error}"));
+    assert!(
+        stream_partitions.iter().all(|partition| {
+            partition.scan_intent == cdf_kernel::CompiledScanIntent::full_scan()
+        }),
+        "ResourceStream partition planning is Tier-A and must not compile source pushdown"
+    );
+    let mut negotiated_topology = plan.partitions.clone();
+    for partition in &mut negotiated_topology {
+        partition.scan_intent = cdf_kernel::CompiledScanIntent::full_scan();
+    }
     assert_eq!(
-        plan.partitions, stream_partitions,
-        "negotiated partitions must match the public partition planner"
+        negotiated_topology, stream_partitions,
+        "negotiated partitions must preserve Tier-A partition topology and metadata"
     );
     assert_partition_plans(
         resource.descriptor(),
@@ -610,11 +620,24 @@ fn predicate_matches_supported_operator(
     capabilities: &ResourceCapabilities,
     predicate: &ScanPredicate,
 ) -> bool {
+    let cdf_kernel::ExpressionNode::Call { function, .. } = &predicate.canonical_expression.root
+    else {
+        return false;
+    };
+    let operator = match function.name.as_str() {
+        "eq" => "=",
+        "neq" => "!=",
+        "gt" => ">",
+        "gte" => ">=",
+        "lt" => "<",
+        "lte" => "<=",
+        _ => return false,
+    };
     capabilities
         .filters
         .supported_operators
         .iter()
-        .any(|operator| predicate.expression.contains(operator))
+        .any(|supported| supported == operator)
 }
 
 #[cfg(test)]
@@ -730,7 +753,7 @@ mod tests {
             filters: vec![
                 ScanPredicate::new(exact.clone(), "id = 1").unwrap(),
                 ScanPredicate::new(inexact.clone(), "updated_at >= 1").unwrap(),
-                ScanPredicate::new(unsupported.clone(), "notes = 'x'").unwrap(),
+                ScanPredicate::new(unsupported.clone(), "notes != 'x'").unwrap(),
             ],
             limit: Some(100),
             order_by: Vec::new(),
@@ -859,6 +882,7 @@ mod tests {
                         end: String::new(),
                     },
                     start_position: None::<SourcePosition>,
+                    scan_intent: cdf_kernel::CompiledScanIntent::full_scan(),
                     metadata: BTreeMap::from([("resource_id".to_owned(), "orders".to_owned())]),
                 }]);
             }
@@ -869,6 +893,7 @@ mod tests {
                         partition_id: PartitionId::new("p1").unwrap(),
                     },
                     start_position: None::<SourcePosition>,
+                    scan_intent: cdf_kernel::CompiledScanIntent::full_scan(),
                     metadata: BTreeMap::from([("resource_id".to_owned(), "orders".to_owned())]),
                 }]);
             }
@@ -1017,6 +1042,7 @@ mod tests {
                 partition_id: PartitionId::new(id).unwrap(),
             },
             start_position: None::<SourcePosition>,
+            scan_intent: cdf_kernel::CompiledScanIntent::full_scan(),
             metadata: BTreeMap::from([("resource_id".to_owned(), "orders".to_owned())]),
         }
     }
@@ -1028,6 +1054,7 @@ mod tests {
                 partition_id: PartitionId::new(id).unwrap(),
             },
             start_position: None::<SourcePosition>,
+            scan_intent: cdf_kernel::CompiledScanIntent::full_scan(),
             metadata: BTreeMap::new(),
         }
     }

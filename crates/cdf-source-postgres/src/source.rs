@@ -11,21 +11,18 @@ use arrow_array::{
 use arrow_schema::{DataType, Field, Schema, SchemaRef, TimeUnit};
 use cdf_kernel::{
     BackpressureSupport, Batch, BatchId, BatchStream, BoxFuture, CapabilitySupport, CdfError,
-    CursorPosition, CursorValue, DeliveryGuarantee, EstimateSupport, Expression, ExpressionLiteral,
-    FilterCapabilities, IncrementalShape, OpenedPartitionStream, PartitionId, PartitionPlan,
-    PartitioningCapabilities, PlanId, PushdownFidelity, PushedPredicate, QueryableResource,
-    ReplaySupport, ResourceCapabilities, ResourceDescriptor, ResourceStream, Result, ScanPlan,
-    ScanPredicate, ScanRequest, SchemaHash, SchemaSource, ScopeKind, SortDirection, SourcePosition,
-    source_name,
+    CompiledScanIntent, CursorPosition, CursorValue, DeliveryGuarantee, EstimateSupport,
+    Expression, ExpressionLiteral, FilterCapabilities, IncrementalShape, OpenedPartitionStream,
+    PartitionId, PartitionPlan, PartitioningCapabilities, PlanId, PushdownFidelity,
+    PushedPredicate, QueryableResource, ReplaySupport, ResourceCapabilities, ResourceDescriptor,
+    ResourceStream, Result, ScanPlan, ScanPredicate, ScanRequest, SchemaHash, SchemaSource,
+    ScopeKind, SortDirection, SourcePosition, source_name,
 };
 use futures_util::stream;
 use postgres::{Client, NoTls, Row, types::ToSql};
-use serde::{Deserialize, Serialize};
 
 use cdf_postgres::{PostgresIdentifier, PostgresTarget};
 use cdf_runtime::ExecutionServices;
-
-pub const POSTGRES_SQL_SCAN_METADATA: &str = "postgres_sql_scan";
 
 const POSTGRES_SQL_KIND: &str = "sql";
 const POSTGRES_SQL_DIALECT: &str = "postgres";
@@ -102,12 +99,10 @@ impl ResourceStream for PostgresTableResource {
     }
 
     fn plan_partitions(&self, request: &ScanRequest) -> Result<Vec<PartitionPlan>> {
-        Ok(vec![plan_postgres_table_partition(
-            &self.descriptor,
-            &self.schema,
-            &self.target,
-            request,
-        )?])
+        let mut partition =
+            plan_postgres_table_partition(&self.descriptor, &self.schema, &self.target, request)?;
+        partition.scan_intent = cdf_kernel::CompiledScanIntent::full_scan();
+        Ok(vec![partition])
     }
 
     fn type_policy_allowances(&self) -> cdf_kernel::TypePolicyAllowances {
@@ -291,7 +286,16 @@ pub fn plan_postgres_table_partition(
         )));
     }
     validate_postgres_table_resource_shape(descriptor, schema, target)?;
-    let scan = PostgresTableScan::from_request(schema, target, request)?;
+    let (pushed_predicates, _) = classify_postgres_table_predicates(schema, &request.filters);
+    let scan_intent = CompiledScanIntent {
+        version: cdf_kernel::COMPILED_SCAN_INTENT_VERSION,
+        projection: request.projection.clone(),
+        predicates: pushed_predicates,
+        limit: request.limit,
+        order_by: request.order_by.clone(),
+    };
+    scan_intent.validate()?;
+    PostgresTableScan::from_intent(schema, &scan_intent)?;
     let mut metadata = BTreeMap::new();
     metadata.insert("kind".to_owned(), POSTGRES_SQL_KIND.to_owned());
     metadata.insert("dialect".to_owned(), POSTGRES_SQL_DIALECT.to_owned());
@@ -300,17 +304,11 @@ pub fn plan_postgres_table_partition(
     if let Some(cursor) = &descriptor.cursor {
         metadata.insert("cursor_field".to_owned(), cursor.field.clone());
     }
-    metadata.insert(
-        POSTGRES_SQL_SCAN_METADATA.to_owned(),
-        serde_json::to_string(&scan).map_err(|error| {
-            CdfError::internal(format!("serialize Postgres scan plan: {error}"))
-        })?,
-    );
-
     Ok(PartitionPlan {
         partition_id: PartitionId::new("sql")?,
         scope: descriptor.state_scope.clone(),
         start_position: None,
+        scan_intent,
         metadata,
     })
 }
@@ -405,13 +403,8 @@ fn scan_from_partition(
         )));
     }
 
-    let metadata = partition
-        .metadata
-        .get(POSTGRES_SQL_SCAN_METADATA)
-        .ok_or_else(|| CdfError::contract("Postgres SQL partition is missing scan metadata"))?;
-    let scan = serde_json::from_str::<PostgresTableScan>(metadata)
-        .map_err(|error| CdfError::contract(format!("decode Postgres scan metadata: {error}")))?;
-    scan.validate(schema, target)?;
+    partition.scan_intent.validate()?;
+    let scan = PostgresTableScan::from_intent(schema, &partition.scan_intent)?;
     if let Some(cursor) = &descriptor.cursor
         && !scan.projection.iter().any(|field| field == &cursor.field)
     {
@@ -423,10 +416,8 @@ fn scan_from_partition(
     Ok(scan)
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 struct PostgresTableScan {
-    version: u16,
-    target: String,
     projection: Vec<String>,
     filters: Vec<PostgresStoredPredicate>,
     order_by: Vec<PostgresStoredOrder>,
@@ -434,12 +425,9 @@ struct PostgresTableScan {
 }
 
 impl PostgresTableScan {
-    fn from_request(
-        schema: &SchemaRef,
-        target: &PostgresTarget,
-        request: &ScanRequest,
-    ) -> Result<Self> {
-        let projection = match &request.projection {
+    fn from_intent(schema: &SchemaRef, intent: &CompiledScanIntent) -> Result<Self> {
+        intent.validate()?;
+        let projection = match &intent.projection {
             Some(fields) => fields.clone(),
             None => schema
                 .fields()
@@ -449,14 +437,20 @@ impl PostgresTableScan {
         };
         validate_projection(schema, &projection)?;
 
-        let filters = request
-            .filters
+        let filters = intent
+            .predicates
             .iter()
-            .filter_map(|predicate| {
-                parse_supported_predicate(schema, &predicate.canonical_expression)
+            .map(|pushed| {
+                parse_supported_predicate(schema, &pushed.predicate.canonical_expression)
+                    .ok_or_else(|| {
+                        CdfError::contract(format!(
+                            "compiled Postgres predicate `{:?}` is not executable by the adapter",
+                            pushed.predicate.canonical_expression
+                        ))
+                    })
             })
-            .collect();
-        let order_by = request
+            .collect::<Result<Vec<_>>>()?;
+        let order_by = intent
             .order_by
             .iter()
             .map(|order| {
@@ -474,30 +468,17 @@ impl PostgresTableScan {
             })
             .collect::<Result<Vec<_>>>()?;
 
-        Ok(Self {
-            version: 1,
-            target: target.display_name(),
+        let scan = Self {
             projection,
             filters,
             order_by,
-            limit: request.limit,
-        })
+            limit: intent.limit,
+        };
+        scan.validate(schema)?;
+        Ok(scan)
     }
 
-    fn validate(&self, schema: &SchemaRef, target: &PostgresTarget) -> Result<()> {
-        if self.version != 1 {
-            return Err(CdfError::contract(format!(
-                "unsupported Postgres scan metadata version {}",
-                self.version
-            )));
-        }
-        if self.target != target.display_name() {
-            return Err(CdfError::contract(format!(
-                "Postgres scan target `{}` does not match `{}`",
-                self.target,
-                target.display_name()
-            )));
-        }
+    fn validate(&self, schema: &SchemaRef) -> Result<()> {
         validate_projection(schema, &self.projection)?;
         for predicate in &self.filters {
             predicate.validate(schema)?;
@@ -520,7 +501,7 @@ impl PostgresTableScan {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 struct PostgresStoredPredicate {
     field: String,
     operator: PostgresPredicateOperator,
@@ -542,14 +523,13 @@ impl PostgresStoredPredicate {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 struct PostgresStoredOrder {
     field: String,
     direction: PostgresStoredDirection,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum PostgresStoredDirection {
     Asc,
     Desc,
@@ -571,8 +551,7 @@ impl PostgresStoredDirection {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum PostgresPredicateOperator {
     Eq,
     Gt,
@@ -1392,10 +1371,8 @@ mod tests {
         let partition =
             plan_postgres_table_partition(&descriptor, &schema, &target, &request).unwrap();
         assert_eq!(partition.partition_id.as_str(), "sql");
-        let scan = serde_json::from_str::<PostgresTableScan>(
-            partition.metadata.get(POSTGRES_SQL_SCAN_METADATA).unwrap(),
-        )
-        .unwrap();
+        assert!(!partition.metadata.contains_key("postgres_sql_scan"));
+        let scan = PostgresTableScan::from_intent(&schema, &partition.scan_intent).unwrap();
         assert_eq!(scan.projection, vec!["id", "name"]);
         assert_eq!(scan.filters.len(), 1);
         assert_eq!(scan.filters[0].field, "id");
@@ -1486,8 +1463,6 @@ mod tests {
         )]));
         let target = PostgresTarget::parse("raw.orders").unwrap();
         let scan = PostgresTableScan {
-            version: 1,
-            target: target.display_name(),
             projection: vec!["vendor_id".to_owned()],
             filters: vec![PostgresStoredPredicate {
                 field: "vendor_id".to_owned(),
@@ -1583,7 +1558,7 @@ mod tests {
     }
 
     #[test]
-    fn cursor_projection_is_required_at_open_time() {
+    fn tier_a_partition_ignores_projection_and_executes_as_full_scan() {
         let descriptor = descriptor(Some(CursorSpec {
             field: "id".to_owned(),
             ordering: CursorOrderingClaim::Exact,
@@ -1607,10 +1582,9 @@ mod tests {
             scope: ScopeKey::Resource,
         };
         let partition = resource.plan_partitions(&request).unwrap().remove(0);
-        let error = match futures_executor::block_on(resource.open(partition)) {
-            Ok(_) => panic!("cursorless projection unexpectedly opened"),
-            Err(error) => error,
-        };
-        assert!(error.to_string().contains("must be projected"));
+        assert_eq!(
+            partition.scan_intent,
+            cdf_kernel::CompiledScanIntent::full_scan()
+        );
     }
 }

@@ -5,8 +5,8 @@ use cdf_contract::{
     assert_verdict_lattice_total, bind_validation_program_to_resource, reconcile_schema,
 };
 use cdf_kernel::{
-    CapabilitySupport, CdfError, DeliveryGuarantee, EstimateSupport, ExecutionExtent,
-    PLAN_PHYSICAL_SCHEMA_HASH_KEY, PLAN_SCHEMA_OBSERVATION_BINDING_KEY,
+    CapabilitySupport, CdfError, CompiledScanIntent, DeliveryGuarantee, EstimateSupport,
+    ExecutionExtent, PLAN_PHYSICAL_SCHEMA_HASH_KEY, PLAN_SCHEMA_OBSERVATION_BINDING_KEY,
     PLAN_SCHEMA_OBSERVATION_ID_KEY, PartitionPlan, PlanId, PushdownFidelity, QueryableResource,
     ResourceCapabilities, ResourceId, ResourceStream, Result, ScanPlan, ScanPredicate, ScanRequest,
     WriteDisposition,
@@ -59,6 +59,7 @@ impl Planner {
         let write_disposition = resource.descriptor().write_disposition.clone();
 
         let partitions = resource.plan_partitions(&input.request)?;
+        validate_tier_a_partition_intents(&partitions)?;
         let mut scan = ScanPlan {
             plan_id: PlanId::new(format!("plan-{}", input.request.resource_id.as_str()))?,
             request: input.request.clone(),
@@ -135,7 +136,7 @@ impl Planner {
             &required_fields,
         )?;
         let mut scan = resource.negotiate(&physical_request)?;
-        validate_negotiated_scan(&physical_request, &scan)?;
+        validate_negotiated_scan(&physical_request, &scan, resource.capabilities())?;
         cdf_kernel::validate_scan_partition_observation_identities(&scan)?;
         let effective_schema_evidence = bind_effective_schema_evidence(&mut scan, resource)?;
         let output_schema = CompiledArrowSchema::from_arrow(
@@ -302,6 +303,19 @@ impl Planner {
     }
 }
 
+fn validate_tier_a_partition_intents(partitions: &[PartitionPlan]) -> Result<()> {
+    let full_scan = CompiledScanIntent::full_scan();
+    for partition in partitions {
+        if partition.scan_intent != full_scan {
+            return Err(CdfError::contract(format!(
+                "Tier-A partition `{}` compiled source pushdown; ResourceStream partitions must use a full-scan intent so engine projection, filtering, ordering, and limits remain authoritative",
+                partition.partition_id
+            )));
+        }
+    }
+    Ok(())
+}
+
 fn physical_scan_request(
     request: &ScanRequest,
     schema: &arrow_schema::Schema,
@@ -396,7 +410,11 @@ pub(crate) fn scan_expression_schema(
     ))
 }
 
-fn validate_negotiated_scan(request: &ScanRequest, scan: &ScanPlan) -> Result<()> {
+fn validate_negotiated_scan(
+    request: &ScanRequest,
+    scan: &ScanPlan,
+    capabilities: &ResourceCapabilities,
+) -> Result<()> {
     if &scan.request != request {
         return Err(CdfError::contract(
             "source negotiation changed the canonical scan request",
@@ -427,6 +445,60 @@ fn validate_negotiated_scan(request: &ScanRequest, scan: &ScanPlan) -> Result<()
         return Err(CdfError::contract(
             "source negotiation did not classify each canonical predicate exactly once",
         ));
+    }
+    let supported_operators = capabilities
+        .filters
+        .supported_operators
+        .iter()
+        .map(String::as_str)
+        .collect::<BTreeSet<_>>();
+    for pushed in &scan.pushed_predicates {
+        let operator = predicate_operator(&pushed.predicate.canonical_expression);
+        if capabilities.filters.default_fidelity == PushdownFidelity::Unsupported
+            || pushed.fidelity == PushdownFidelity::Unsupported
+            || operator
+                .as_deref()
+                .is_none_or(|operator| !supported_operators.contains(operator))
+        {
+            return Err(CdfError::contract(format!(
+                "source pushed predicate {} outside its declared filter capabilities",
+                pushed.predicate.predicate_id
+            )));
+        }
+    }
+    cdf_kernel::validate_compiled_scan_intents(scan)?;
+    for partition in &scan.partitions {
+        let expected_projection = (capabilities.projection == CapabilitySupport::Supported)
+            .then(|| request.projection.clone())
+            .flatten();
+        if partition.scan_intent.projection != expected_projection {
+            return Err(CdfError::contract(format!(
+                "source projection capability does not match compiled intent for partition {}",
+                partition.partition_id
+            )));
+        }
+        let expected_limit = if capabilities.limits == CapabilitySupport::Supported {
+            request.limit
+        } else {
+            None
+        };
+        if partition.scan_intent.limit != expected_limit {
+            return Err(CdfError::contract(format!(
+                "source limit capability does not match compiled intent for partition {}",
+                partition.partition_id
+            )));
+        }
+        let expected_order = if capabilities.ordering == CapabilitySupport::Supported {
+            request.order_by.as_slice()
+        } else {
+            &[]
+        };
+        if partition.scan_intent.order_by.as_slice() != expected_order {
+            return Err(CdfError::contract(format!(
+                "source ordering capability does not match compiled intent for partition {}",
+                partition.partition_id
+            )));
+        }
     }
     Ok(())
 }
@@ -585,6 +657,37 @@ where
     };
     runtime.validate_for_resource(resource.descriptor())?;
     let evidence = &runtime.evidence;
+    let projection = scan
+        .partitions
+        .first()
+        .and_then(|partition| partition.scan_intent.projection.as_deref());
+    let admission_constraint = scan_expression_schema(resource.schema().as_ref(), projection)?;
+    let projected_observations = evidence
+        .observations
+        .iter()
+        .filter(|observation| {
+            runtime
+                .terminal_quarantine(&observation.observation_id)
+                .is_none()
+        })
+        .map(|observation| {
+            let physical = runtime
+                .physical_schema(&observation.physical_schema_hash)
+                .ok_or_else(|| {
+                    CdfError::data(format!(
+                        "effective schema runtime omitted physical schema {} for observation {:?}",
+                        observation.physical_schema_hash, observation.observation_id
+                    ))
+                })?;
+            let projected = project_physical_observation(
+                physical.as_ref(),
+                resource.schema().as_ref(),
+                projection,
+            )?;
+            let hash = cdf_kernel::canonical_arrow_schema_hash(&projected)?;
+            Ok((observation.observation_id.clone(), (hash, projected)))
+        })
+        .collect::<Result<BTreeMap<_, _>>>()?;
     let mut observation_bindings = BTreeMap::new();
     for partition in &mut scan.partitions {
         let observation_id = partition
@@ -614,9 +717,13 @@ where
         }
         match evidence.observation(observation_id) {
             Some(observation) => {
+                let execution_hash = projected_observations
+                    .get(observation_id)
+                    .map(|(hash, _)| hash)
+                    .unwrap_or(&observation.physical_schema_hash);
                 partition.metadata.insert(
                     PLAN_PHYSICAL_SCHEMA_HASH_KEY.to_owned(),
-                    observation.physical_schema_hash.to_string(),
+                    execution_hash.to_string(),
                 );
             }
             None => {
@@ -642,17 +749,24 @@ where
         .observations
         .iter()
         .map(|observation| {
-            let physical_schema = runtime
-                .physical_schema(&observation.physical_schema_hash)
-                .ok_or_else(|| {
-                    CdfError::data(format!(
-                        "effective schema runtime omitted physical schema {} for observation {:?}",
-                        observation.physical_schema_hash, observation.observation_id
-                    ))
-                })?;
+            let physical_schema = if let Some((_, projected)) =
+                projected_observations.get(&observation.observation_id)
+            {
+                projected
+            } else {
+                runtime
+                    .physical_schema(&observation.physical_schema_hash)
+                    .map(AsRef::as_ref)
+                    .ok_or_else(|| {
+                        CdfError::data(format!(
+                            "effective schema runtime omitted physical schema {} for observation {:?}",
+                            observation.physical_schema_hash, observation.observation_id
+                        ))
+                    })?
+            };
             Ok((
-                observation.physical_schema_hash.to_string(),
-                crate::PhysicalObservationEvidence::arrow_schema(physical_schema.as_ref())?,
+                cdf_kernel::canonical_arrow_schema_hash(physical_schema)?.to_string(),
+                crate::PhysicalObservationEvidence::arrow_schema(physical_schema)?,
             ))
         })
         .collect::<Result<BTreeMap<_, _>>>()?;
@@ -665,23 +779,23 @@ where
                 .is_none()
         })
         .map(|observation| {
-            let physical_schema = runtime
-                .physical_schema(&observation.physical_schema_hash)
+            let (physical_schema_hash, physical_schema) = projected_observations
+                .get(&observation.observation_id)
                 .ok_or_else(|| {
-                    CdfError::data(format!(
-                        "effective schema runtime omitted physical schema {} for observation {:?}",
-                        observation.physical_schema_hash, observation.observation_id
+                    CdfError::internal(format!(
+                        "admitted effective schema observation {:?} omitted its execution projection",
+                        observation.observation_id
                     ))
                 })?;
             let reconciliation = reconcile_schema(
-                physical_schema.as_ref(),
-                resource.schema().as_ref(),
+                physical_schema,
+                &admission_constraint,
                 &type_policy,
             )?;
-            validate_reconciliation_target(&reconciliation.schema, resource.schema().as_ref())?;
+            validate_reconciliation_target(&reconciliation.schema, &admission_constraint)?;
             Ok(EffectiveSchemaObservationCoercion {
                 observation_id: observation.observation_id.clone(),
-                physical_schema_hash: observation.physical_schema_hash.clone(),
+                physical_schema_hash: physical_schema_hash.clone(),
                 coercion_plan: reconciliation.plan,
             })
         })
@@ -697,6 +811,45 @@ where
         discovery_executor_budget: runtime.discovery_executor_budget.clone(),
         observation_bindings,
     }))
+}
+
+fn project_physical_observation(
+    physical: &arrow_schema::Schema,
+    effective: &arrow_schema::Schema,
+    projection: Option<&[String]>,
+) -> Result<arrow_schema::Schema> {
+    let Some(projection) = projection.filter(|fields| !fields.is_empty()) else {
+        return Ok(physical.clone());
+    };
+    let fields = projection
+        .iter()
+        .map(|logical_name| {
+            let effective_field = effective.field_with_name(logical_name).map_err(|_| {
+                CdfError::contract(format!(
+                    "compiled scan projection field {logical_name:?} is absent from the effective schema"
+                ))
+            })?;
+            let physical_name = cdf_kernel::source_name(effective_field)
+                .unwrap_or_else(|| effective_field.name());
+            physical
+                .fields()
+                .iter()
+                .find(|field| {
+                    field.name() == physical_name
+                        || cdf_kernel::source_name(field.as_ref()) == Some(physical_name)
+                })
+                .cloned()
+                .ok_or_else(|| {
+                    CdfError::data(format!(
+                        "physical schema observation omitted projected source field {physical_name:?} for effective field {logical_name:?}"
+                    ))
+                })
+        })
+        .collect::<Result<Vec<_>>>()?;
+    Ok(arrow_schema::Schema::new_with_metadata(
+        fields,
+        physical.metadata().clone(),
+    ))
 }
 
 pub(crate) fn schema_authority<R>(
@@ -800,7 +953,7 @@ pub fn negotiate_scan_plan(
     resource_id: ResourceId,
     request: ScanRequest,
     capabilities: &ResourceCapabilities,
-    partitions: Vec<PartitionPlan>,
+    mut partitions: Vec<PartitionPlan>,
     estimated_rows: Option<u64>,
     estimated_bytes: Option<u64>,
     delivery_guarantee: DeliveryGuarantee,
@@ -827,6 +980,30 @@ pub fn negotiate_scan_plan(
         } else {
             unsupported_predicates.push(predicate.clone());
         }
+    }
+
+    let intent = CompiledScanIntent {
+        version: cdf_kernel::COMPILED_SCAN_INTENT_VERSION,
+        projection: if capabilities.projection == CapabilitySupport::Supported {
+            request.projection.clone()
+        } else {
+            None
+        },
+        predicates: pushed_predicates.clone(),
+        limit: if capabilities.limits == CapabilitySupport::Supported {
+            request.limit
+        } else {
+            None
+        },
+        order_by: if capabilities.ordering == CapabilitySupport::Supported {
+            request.order_by.clone()
+        } else {
+            Vec::new()
+        },
+    };
+    intent.validate()?;
+    for partition in &mut partitions {
+        partition.scan_intent = intent.clone();
     }
 
     Ok(ScanPlan {

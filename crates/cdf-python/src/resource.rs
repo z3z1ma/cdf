@@ -176,6 +176,7 @@ impl PythonResource {
             partition_id: PartitionId::new(PARTITION_ID)?,
             scope: self.descriptor.state_scope.clone(),
             start_position: None,
+            scan_intent: cdf_kernel::CompiledScanIntent::full_scan(),
             metadata: BTreeMap::from([
                 ("source_kind".to_owned(), "python".to_owned()),
                 ("module".to_owned(), self.module_relative.clone()),

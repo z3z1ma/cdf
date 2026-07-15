@@ -3609,8 +3609,7 @@ trust = "governed"
     let runtime = prepared
         .resource
         .to_rest_resource(
-            cdf_declarative::RestRuntimeDependencies::new(transport.clone())
-                .with_execution_services(execution.clone())
+            cdf_declarative::RestRuntimeDependencies::new(transport.clone(), execution.clone())
                 .with_prepared_payloads(prepared_payloads.clone()),
         )
         .unwrap();

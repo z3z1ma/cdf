@@ -427,7 +427,115 @@ pub struct PartitionPlan {
     pub partition_id: PartitionId,
     pub scope: ScopeKey,
     pub start_position: Option<SourcePosition>,
+    pub scan_intent: CompiledScanIntent,
     pub metadata: BTreeMap<String, String>,
+}
+
+pub const COMPILED_SCAN_INTENT_VERSION: u16 = 1;
+
+/// Source-neutral physical work already negotiated by the engine and frozen
+/// for one partition. Source and format adapters consume this artifact; they
+/// never reconstruct projection, predicate, limit, or ordering intent from
+/// metadata or from destination-specific behavior.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(try_from = "UncheckedCompiledScanIntent", deny_unknown_fields)]
+pub struct CompiledScanIntent {
+    pub version: u16,
+    pub projection: Option<Vec<String>>,
+    pub predicates: Vec<PushedPredicate>,
+    pub limit: Option<u64>,
+    pub order_by: Vec<OrderBy>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct UncheckedCompiledScanIntent {
+    version: u16,
+    projection: Option<Vec<String>>,
+    predicates: Vec<PushedPredicate>,
+    limit: Option<u64>,
+    order_by: Vec<OrderBy>,
+}
+
+impl TryFrom<UncheckedCompiledScanIntent> for CompiledScanIntent {
+    type Error = CdfError;
+
+    fn try_from(value: UncheckedCompiledScanIntent) -> Result<Self> {
+        let intent = Self {
+            version: value.version,
+            projection: value.projection,
+            predicates: value.predicates,
+            limit: value.limit,
+            order_by: value.order_by,
+        };
+        intent.validate()?;
+        Ok(intent)
+    }
+}
+
+impl CompiledScanIntent {
+    pub const fn full_scan() -> Self {
+        Self {
+            version: COMPILED_SCAN_INTENT_VERSION,
+            projection: None,
+            predicates: Vec::new(),
+            limit: None,
+            order_by: Vec::new(),
+        }
+    }
+
+    pub fn validate(&self) -> Result<()> {
+        if self.version != COMPILED_SCAN_INTENT_VERSION {
+            return Err(CdfError::contract(format!(
+                "compiled scan intent version {} is unsupported; expected version {}",
+                self.version, COMPILED_SCAN_INTENT_VERSION
+            )));
+        }
+        if let Some(projection) = &self.projection
+            && (projection.is_empty()
+                || projection.iter().any(|field| field.trim().is_empty())
+                || projection
+                    .iter()
+                    .collect::<std::collections::BTreeSet<_>>()
+                    .len()
+                    != projection.len())
+        {
+            return Err(CdfError::contract(
+                "compiled scan projection requires unique non-empty fields",
+            ));
+        }
+        let mut predicate_ids = std::collections::BTreeSet::new();
+        for predicate in &self.predicates {
+            if predicate.fidelity == PushdownFidelity::Unsupported {
+                return Err(CdfError::contract(
+                    "compiled scan intent cannot contain an unsupported pushed predicate",
+                ));
+            }
+            predicate.predicate.canonical_expression.validate()?;
+            if !predicate_ids.insert(predicate.predicate.predicate_id.as_str()) {
+                return Err(CdfError::contract(
+                    "compiled scan intent contains a duplicate predicate id",
+                ));
+            }
+        }
+        if self
+            .order_by
+            .iter()
+            .any(|order| order.field.trim().is_empty())
+        {
+            return Err(CdfError::contract(
+                "compiled scan ordering requires non-empty fields",
+            ));
+        }
+        Ok(())
+    }
+
+    pub fn pushed_predicates(&self) -> Vec<ScanPredicate> {
+        self.predicates
+            .iter()
+            .map(|pushed| pushed.predicate.clone())
+            .collect()
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -478,6 +586,53 @@ pub fn validate_scan_partition_observation_identities(scan: &ScanPlan) -> Result
                 partition.partition_id
             )));
         }
+    }
+    Ok(())
+}
+
+/// Validates that every partition carries the same compiled source work and
+/// that the work is an exact subset of the canonical request classified by
+/// the scan plan. This is intentionally source-neutral and is safe to repeat
+/// when loading a recorded plan for execution or replay.
+pub fn validate_compiled_scan_intents(scan: &ScanPlan) -> Result<()> {
+    let mut expected: Option<&CompiledScanIntent> = None;
+    for partition in &scan.partitions {
+        let intent = &partition.scan_intent;
+        intent.validate()?;
+        if let Some(projection) = &intent.projection
+            && scan.request.projection.as_ref() != Some(projection)
+        {
+            return Err(CdfError::contract(format!(
+                "partition {} compiled a projection that differs from the canonical scan request",
+                partition.partition_id
+            )));
+        }
+        if intent.predicates != scan.pushed_predicates {
+            return Err(CdfError::contract(format!(
+                "partition {} compiled predicates that differ from source negotiation",
+                partition.partition_id
+            )));
+        }
+        if intent.limit.is_some() && intent.limit != scan.request.limit {
+            return Err(CdfError::contract(format!(
+                "partition {} compiled a limit that differs from the canonical scan request",
+                partition.partition_id
+            )));
+        }
+        if !intent.order_by.is_empty() && intent.order_by != scan.request.order_by {
+            return Err(CdfError::contract(format!(
+                "partition {} compiled ordering that differs from the canonical scan request",
+                partition.partition_id
+            )));
+        }
+        if let Some(expected) = expected
+            && expected != intent
+        {
+            return Err(CdfError::contract(
+                "source negotiation compiled inconsistent scan intent across partitions",
+            ));
+        }
+        expected = Some(intent);
     }
     Ok(())
 }

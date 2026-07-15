@@ -218,6 +218,7 @@ pub(crate) fn sql_partition_for_plan(
         partition_id: PartitionId::new("sql")?,
         scope: descriptor.state_scope.clone(),
         start_position: None,
+        scan_intent: cdf_kernel::CompiledScanIntent::full_scan(),
         metadata,
     })
 }

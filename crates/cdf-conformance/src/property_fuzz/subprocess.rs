@@ -1,7 +1,6 @@
-use std::{collections::BTreeMap, panic, sync::Arc};
+use std::panic;
 
 use cdf_kernel::{ErrorKind, ForeignState, PartitionId, ResourceId, SourcePosition};
-use cdf_memory::{DeterministicMemoryCoordinator, MemoryCoordinator};
 use cdf_runtime::ReadOptions;
 use cdf_subprocess::{
     AirbyteMessage, AirbyteStateKind, SingerMessage, StreamIdentity, parse_airbyte_ndjson,
@@ -17,10 +16,6 @@ fn read_options() -> ReadOptions {
     )
     .with_batch_size(8)
     .unwrap()
-}
-
-fn memory() -> Arc<dyn MemoryCoordinator> {
-    Arc::new(DeterministicMemoryCoordinator::new(64 * 1024 * 1024, BTreeMap::new()).unwrap())
 }
 
 fn ndjson(values: &[Value]) -> Vec<u8> {
@@ -53,10 +48,10 @@ proptest! {
         prop_assert!(panic::catch_unwind(|| parse_singer_ndjson(&bytes)).is_ok());
         prop_assert!(panic::catch_unwind(|| parse_airbyte_ndjson(&bytes)).is_ok());
         prop_assert!(
-            panic::catch_unwind(|| read_singer_ndjson_bytes(&bytes, &read_options(), memory())).is_ok()
+            panic::catch_unwind(|| read_singer_ndjson_bytes(&bytes, &read_options(), &crate::test_execution_services())).is_ok()
         );
         prop_assert!(
-            panic::catch_unwind(|| read_airbyte_ndjson_bytes(&bytes, &read_options(), memory())).is_ok()
+            panic::catch_unwind(|| read_airbyte_ndjson_bytes(&bytes, &read_options(), &crate::test_execution_services())).is_ok()
         );
     }
 }
@@ -103,7 +98,8 @@ fn property_fuzz_singer_unknown_messages_and_fields_follow_current_contract() {
             if record.raw["extra_record_field"]["retained"] == true
     ));
 
-    let read = read_singer_ndjson_bytes(&bytes, &read_options(), memory()).unwrap();
+    let read = read_singer_ndjson_bytes(&bytes, &read_options(), &crate::test_execution_services())
+        .unwrap();
     assert_eq!(read.messages.len(), 3);
     assert_eq!(read.schemas.len(), 1);
     assert_eq!(read.streams.len(), 1);
@@ -121,7 +117,10 @@ fn property_fuzz_singer_malformed_and_truncated_inputs_error() {
         b"{\"type\":\"RECORD\",\"stream\":\"orders\",\"record\":{\"id\":1}\n",
     ] {
         assert_data_error(parse_singer_ndjson(bytes).unwrap_err());
-        assert_data_error(read_singer_ndjson_bytes(bytes, &read_options(), memory()).unwrap_err());
+        assert_data_error(
+            read_singer_ndjson_bytes(bytes, &read_options(), &crate::test_execution_services())
+                .unwrap_err(),
+        );
     }
 }
 
@@ -137,7 +136,8 @@ fn property_fuzz_singer_foreign_state_payloads_round_trip() {
         "value": state_value
     })]);
 
-    let read = read_singer_ndjson_bytes(&bytes, &read_options(), memory()).unwrap();
+    let read = read_singer_ndjson_bytes(&bytes, &read_options(), &crate::test_execution_services())
+        .unwrap();
 
     assert_eq!(read.states.len(), 1);
     let state = foreign_state(&read.states[0].position);
@@ -183,7 +183,9 @@ fn property_fuzz_airbyte_unknown_messages_and_fields_follow_current_contract() {
                 && record.raw["record"]["extra_record_field"]["retained"] == true
     ));
 
-    let read = read_airbyte_ndjson_bytes(&bytes, &read_options(), memory()).unwrap();
+    let read =
+        read_airbyte_ndjson_bytes(&bytes, &read_options(), &crate::test_execution_services())
+            .unwrap();
     assert_eq!(read.messages.len(), 2);
     assert_eq!(read.streams.len(), 1);
     assert!(read.catalogs.is_empty());
@@ -202,7 +204,7 @@ fn property_fuzz_airbyte_malformed_and_truncated_inputs_error() {
         b"{\"type\":\"RECORD\",\"record\":{\"stream\":\"users\",\"data\":{\"id\":1},\"emitted_at\":",
     ] {
         assert_data_error(parse_airbyte_ndjson(bytes).unwrap_err());
-        assert_data_error(read_airbyte_ndjson_bytes(bytes, &read_options(), memory()).unwrap_err());
+        assert_data_error(read_airbyte_ndjson_bytes(bytes, &read_options(), &crate::test_execution_services()).unwrap_err());
     }
 }
 
@@ -227,7 +229,9 @@ fn property_fuzz_airbyte_foreign_state_payloads_round_trip() {
         json!({ "type": "STATE", "state": stream_state }),
     ]);
 
-    let read = read_airbyte_ndjson_bytes(&bytes, &read_options(), memory()).unwrap();
+    let read =
+        read_airbyte_ndjson_bytes(&bytes, &read_options(), &crate::test_execution_services())
+            .unwrap();
 
     assert_eq!(read.states.len(), 2);
     assert_eq!(read.states[0].kind, "legacy");

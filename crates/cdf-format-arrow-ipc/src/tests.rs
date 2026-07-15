@@ -224,6 +224,64 @@ fn arrow_ipc_file_driver_discovers_projects_and_streams_blocks() {
         let record = batch.batch().record_batch().unwrap();
         record.num_columns() == 1 && record.column(0).as_any().is::<Int64Array>()
     }));
+    assert!(batches.iter().all(|batch| {
+        let record = batch.batch().record_batch().unwrap();
+        batch.batch().header.observed_schema_hash
+            == cdf_kernel::canonical_arrow_schema_hash(record.schema().as_ref()).unwrap()
+    }));
+    drop(batches);
+    drop(session);
+    assert_eq!(memory.snapshot().current_bytes, 0);
+}
+
+#[test]
+fn empty_arrow_ipc_file_emits_the_projected_physical_schema() {
+    let (schema, _) = fixture();
+    let mut bytes = Vec::new();
+    let mut writer = FileWriter::try_new(&mut bytes, schema.as_ref()).unwrap();
+    writer.finish().unwrap();
+    drop(writer);
+    let memory: Arc<dyn MemoryCoordinator> =
+        Arc::new(DeterministicMemoryCoordinator::new(8 * 1024 * 1024, BTreeMap::new()).unwrap());
+    let source: Arc<dyn ByteSource> = MemoryByteSource::new(bytes, Arc::clone(&memory));
+    let driver = ArrowIpcFileFormatDriver::new().unwrap();
+    let session = futures_executor::block_on(driver.prepare_decode(
+        source,
+        DecodePlanningRequest {
+            options: serde_json::json!({}),
+            projection: Some(vec!["id".to_owned()]),
+            predicates: Vec::new(),
+            target_batch_rows: 64 * 1024,
+            target_batch_bytes: 1024 * 1024,
+            cancellation: RunCancellation::default(),
+        },
+    ))
+    .unwrap();
+    let stream = futures_executor::block_on(session.decode(PhysicalDecodeRequest {
+        unit: session.units()[0].clone(),
+        resource_id: ResourceId::new("empty.arrow").unwrap(),
+        partition_id: PartitionId::new("file-000001").unwrap(),
+        batch_id_prefix: "empty".to_owned(),
+        schema: cdf_runtime::DecodeSchemaPlan::verified_physical(schema),
+        source_position: None,
+        projection: Some(vec!["id".to_owned()]),
+        predicates: Vec::new(),
+        target_batch_rows: 64 * 1024,
+        target_batch_bytes: 1024 * 1024,
+        memory: Arc::clone(&memory),
+        cancellation: RunCancellation::default(),
+    }))
+    .unwrap();
+    let batches = futures_executor::block_on(stream.try_collect::<Vec<_>>()).unwrap();
+    assert_eq!(batches.len(), 1);
+    let batch = batches[0].batch();
+    let record = batch.record_batch().unwrap();
+    assert_eq!(record.num_columns(), 1);
+    assert_eq!(record.schema().field(0).name(), "id");
+    assert_eq!(
+        batch.header.observed_schema_hash,
+        cdf_kernel::canonical_arrow_schema_hash(record.schema().as_ref()).unwrap()
+    );
     drop(batches);
     drop(session);
     assert_eq!(memory.snapshot().current_bytes, 0);

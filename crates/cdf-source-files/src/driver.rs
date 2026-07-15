@@ -1,11 +1,7 @@
 use std::{collections::BTreeMap, sync::Arc};
 
 use cdf_http::{AuthScheme, EgressAllowlist, SecretProvider, SecretUri};
-use cdf_kernel::{
-    BackpressureSupport, CapabilitySupport, CdfError, EstimateSupport, FilterCapabilities,
-    IncrementalShape, PartitioningCapabilities, QueryableResource, ReplaySupport,
-    ResourceCapabilities, ResourceStream, Result, ScanRequest, ScopeKind,
-};
+use cdf_kernel::{CdfError, QueryableResource, ResourceStream, Result, ScanRequest};
 use cdf_runtime::{
     CompiledFormatBinding, CompiledSourcePlan, ExecutionServices, FormatDiscoveryKind,
     FormatRegistry, SourceAttestationStrength, SourceCompileRequest, SourceDiscoveryCandidate,
@@ -132,10 +128,10 @@ impl SourceDriver for FileSourceDriver {
             },
             compiled_format,
         };
-        physical.to_runtime_plan()?;
+        physical.validate()?;
         CompiledSourcePlan::new(
             self.descriptor.clone(),
-            file_capabilities(&request.descriptor),
+            crate::file_resource_capabilities(&physical.compiled_format.descriptor),
             execution_capabilities(),
             cdf_runtime::CompiledSourcePlanInput {
                 descriptor: request.descriptor,
@@ -156,13 +152,14 @@ impl SourceDriver for FileSourceDriver {
         plan.validate()?;
         let physical: FilePhysicalPlan = serde_json::from_value(plan.physical_plan.clone())
             .map_err(|error| CdfError::contract(format!("invalid file source plan: {error}")))?;
+        validate_compiled_capabilities(plan, &physical.compiled_format)?;
         let dependencies = (self.runtime_factory)(
             Arc::clone(context.secret_provider()),
             context.execution().clone(),
         )?
         .with_prepared_payloads(context.prepared_payloads().clone());
         physical.compiled_format.verify(dependencies.formats())?;
-        let runtime_plan = physical.to_runtime_plan()?;
+        let runtime_plan = physical.to_runtime_plan(context.project_root())?;
         let entries = file_discovery_entries(
             plan,
             &runtime_plan,
@@ -185,6 +182,7 @@ impl SourceDriver for FileSourceDriver {
     ) -> Result<Arc<dyn QueryableResource>> {
         let physical: FilePhysicalPlan = serde_json::from_value(plan.physical_plan.clone())
             .map_err(|error| CdfError::contract(format!("invalid file source plan: {error}")))?;
+        validate_compiled_capabilities(plan, &physical.compiled_format)?;
         let dependencies = (self.runtime_factory)(
             Arc::clone(context.secret_provider()),
             context.execution().clone(),
@@ -195,8 +193,7 @@ impl SourceDriver for FileSourceDriver {
             FileResourceDefinition {
                 descriptor: plan.descriptor.clone(),
                 schema: Arc::new(plan.schema.clone()),
-                capabilities: plan.resource_capabilities.clone(),
-                plan: physical.to_runtime_plan()?,
+                plan: physical.to_runtime_plan(context.project_root())?,
                 type_policy_allowances: plan.type_policy_allowances,
                 effective_schema_runtime: plan.effective_schema_runtime.clone(),
                 compiled_format: physical.compiled_format,
@@ -204,6 +201,20 @@ impl SourceDriver for FileSourceDriver {
             dependencies,
         )?))
     }
+}
+
+fn validate_compiled_capabilities(
+    plan: &CompiledSourcePlan,
+    format: &CompiledFormatBinding,
+) -> Result<()> {
+    let executable = crate::file_resource_capabilities(&format.descriptor);
+    if plan.resource_capabilities != executable {
+        return Err(CdfError::contract(format!(
+            "compiled file source capabilities do not match format `{}` execution capabilities",
+            format.descriptor.format_id
+        )));
+    }
+    Ok(())
 }
 
 #[derive(Clone)]
@@ -308,7 +319,7 @@ fn file_discovery_entries(
     compiled_format: &CompiledFormatBinding,
     dependencies: &FileRuntimeDependencies,
 ) -> Result<Vec<FileDriverDiscoveryEntry>> {
-    if !uses_transport_inventory(&plan.root) {
+    if !uses_transport_inventory(&plan.root)? {
         return local_file_discovery_candidates(
             &source_plan.descriptor.resource_id,
             plan,
@@ -345,7 +356,6 @@ fn file_discovery_entries(
         FileResourceDefinition {
             descriptor: source_plan.descriptor.clone(),
             schema: Arc::new(source_plan.schema.clone()),
-            capabilities: source_plan.resource_capabilities.clone(),
             plan: plan.clone(),
             type_policy_allowances: source_plan.type_policy_allowances,
             effective_schema_runtime: source_plan.effective_schema_runtime.clone(),
@@ -402,30 +412,33 @@ fn file_discovery_entries(
         .collect()
 }
 
-fn uses_transport_inventory(root: &str) -> bool {
-    ["file://", "http://", "https://", "s3://", "gs://", "az://"]
-        .iter()
-        .any(|prefix| root.starts_with(prefix))
+fn uses_transport_inventory(root: &str) -> Result<bool> {
+    file_transport_scheme(root).map(|scheme| scheme.is_some())
 }
 
 fn transport_resource_for_location(
     location: &str,
     plan: &FileResourcePlan,
 ) -> Result<FileTransportResource> {
-    let mut resource = if location.starts_with("http://") || location.starts_with("https://") {
-        FileTransportResource {
+    let mut resource = match file_transport_scheme(location)? {
+        Some(FileTransportScheme::Http | FileTransportScheme::Https) => FileTransportResource {
             location: FileTransportLocation::HttpUrl {
                 url: location.to_owned(),
             },
             egress_allowlist: plan.allowlist.clone(),
             auth: plan.auth.clone(),
             credentials: plan.credentials.clone(),
+        },
+        Some(FileTransportScheme::File) => FileTransportResource::file_url(location),
+        Some(FileTransportScheme::S3 | FileTransportScheme::Gs | FileTransportScheme::Az) => {
+            FileTransportResource::object_store_url(location)
+                .with_egress_allowlist(plan.allowlist.clone())
         }
-    } else if location.starts_with("file://") {
-        FileTransportResource::file_url(location)
-    } else {
-        FileTransportResource::object_store_url(location)
-            .with_egress_allowlist(plan.allowlist.clone())
+        None => {
+            return Err(CdfError::contract(format!(
+                "file transport location {location:?} does not contain a supported URI scheme"
+            )));
+        }
     };
     if let Some(credentials) = &plan.credentials {
         resource = resource.with_credentials(credentials.clone());
@@ -538,12 +551,17 @@ struct CompiledFileResourceOptions {
 }
 
 impl FilePhysicalPlan {
-    fn to_runtime_plan(&self) -> Result<FileResourcePlan> {
+    fn validate(&self) -> Result<()> {
         self.resource.format.validate()?;
         self.resource.compression.validate()?;
+        validate_portable_root(&self.source.root)
+    }
+
+    fn to_runtime_plan(&self, project_root: &std::path::Path) -> Result<FileResourcePlan> {
+        self.validate()?;
         Ok(FileResourcePlan {
             source: self.source_name.clone(),
-            root: self.source.root.clone(),
+            root: resolve_runtime_root(&self.source.root, project_root)?,
             glob: self.resource.glob.clone(),
             format: Some(self.resource.format.clone()),
             format_declared: self.resource.format_declared,
@@ -568,6 +586,114 @@ impl FilePhysicalPlan {
             },
         })
     }
+}
+
+fn validate_portable_root(root: &str) -> Result<()> {
+    if root.trim().is_empty() {
+        return Err(CdfError::contract("file source root cannot be empty"));
+    }
+    if file_transport_scheme(root)?.is_some() {
+        return Ok(());
+    }
+    if std::path::Path::new(root).is_absolute() {
+        return Ok(());
+    }
+    if std::path::Path::new(root)
+        .components()
+        .any(|component| component == std::path::Component::ParentDir)
+    {
+        return Err(CdfError::contract(
+            "relative file source root must stay under the project root and cannot contain `..`",
+        ));
+    }
+    Ok(())
+}
+
+fn resolve_runtime_root(root: &str, project_root: &std::path::Path) -> Result<String> {
+    validate_portable_root(root)?;
+    if let Some(scheme) = file_transport_scheme(root)? {
+        let colon = root
+            .find(':')
+            .ok_or_else(|| CdfError::internal("parsed file transport scheme has no separator"))?;
+        return Ok(format!("{}{}", scheme.as_str(), &root[colon..]));
+    }
+    if std::path::Path::new(root).is_absolute() {
+        return Ok(root.to_owned());
+    }
+    let project_root = if project_root.is_absolute() {
+        project_root.to_path_buf()
+    } else {
+        std::env::current_dir()
+            .map_err(|error| {
+                CdfError::internal(format!("resolve current project directory: {error}"))
+            })?
+            .join(project_root)
+    };
+    project_root
+        .join(root)
+        .to_str()
+        .map(str::to_owned)
+        .ok_or_else(|| CdfError::data("file source root is not valid UTF-8"))
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum FileTransportScheme {
+    File,
+    Http,
+    Https,
+    S3,
+    Gs,
+    Az,
+}
+
+impl FileTransportScheme {
+    pub(crate) const fn as_str(self) -> &'static str {
+        match self {
+            Self::File => "file",
+            Self::Http => "http",
+            Self::Https => "https",
+            Self::S3 => "s3",
+            Self::Gs => "gs",
+            Self::Az => "az",
+        }
+    }
+}
+
+pub(crate) fn file_transport_scheme(value: &str) -> Result<Option<FileTransportScheme>> {
+    let Some(colon) = value.find(':') else {
+        return Ok(None);
+    };
+    let scheme = &value[..colon];
+    let mut characters = scheme.chars();
+    let Some(first) = characters.next() else {
+        return Ok(None);
+    };
+    if !first.is_ascii_alphabetic()
+        || !characters.all(|character| {
+            character.is_ascii_alphanumeric() || matches!(character, '+' | '-' | '.')
+        })
+        || (colon == 1
+            && value
+                .as_bytes()
+                .get(colon + 1)
+                .is_some_and(|byte| matches!(byte, b'/' | b'\\')))
+    {
+        return Ok(None);
+    }
+    let scheme = match scheme.to_ascii_lowercase().as_str() {
+        "file" => FileTransportScheme::File,
+        "http" => FileTransportScheme::Http,
+        "https" => FileTransportScheme::Https,
+        "s3" => FileTransportScheme::S3,
+        "gs" => FileTransportScheme::Gs,
+        "az" => FileTransportScheme::Az,
+        scheme => {
+            return Err(CdfError::contract(format!(
+                "unsupported file transport scheme {scheme:?}; supported schemes are file, http, https, s3, gs, and az"
+            )));
+        }
+    };
+    Ok(Some(scheme))
 }
 
 pub fn compile_file_resource_plan(
@@ -650,24 +776,6 @@ fn decode_options<T: for<'de> Deserialize<'de>>(
 
 fn serialize_error(error: serde_json::Error) -> CdfError {
     CdfError::internal(format!("serialize file source plan: {error}"))
-}
-
-fn file_capabilities(_descriptor: &cdf_kernel::ResourceDescriptor) -> ResourceCapabilities {
-    ResourceCapabilities {
-        projection: CapabilitySupport::Unsupported,
-        filters: FilterCapabilities::default(),
-        limits: CapabilitySupport::Unsupported,
-        ordering: CapabilitySupport::Unsupported,
-        partitioning: PartitioningCapabilities {
-            parallel_partitions: true,
-            supported_scopes: vec![ScopeKind::File],
-        },
-        incremental: IncrementalShape::File,
-        replay: ReplaySupport::ExactRecordedBatches,
-        idempotent_reads: true,
-        backpressure: BackpressureSupport::Pausable,
-        estimates: EstimateSupport::Bytes,
-    }
 }
 
 fn execution_capabilities() -> SourceExecutionCapabilities {
@@ -818,6 +926,86 @@ mod tests {
             error
                 .message
                 .contains("does not match the registered driver")
+        );
+    }
+
+    #[test]
+    fn compiled_file_capabilities_must_match_the_pinned_format() {
+        let formats = crate::test_format_registry();
+        let driver = FileSourceDriver::new(Arc::clone(&formats), |_, _| {
+            Err(CdfError::internal("compile-only test runtime factory"))
+        })
+        .unwrap();
+        let mut plan = driver.compile(compile_request()).unwrap();
+        let physical: FilePhysicalPlan =
+            serde_json::from_value(plan.physical_plan.clone()).unwrap();
+        plan.resource_capabilities.projection = cdf_kernel::CapabilitySupport::Unsupported;
+
+        let error = validate_compiled_capabilities(&plan, &physical.compiled_format).unwrap_err();
+        assert!(error.message.contains("execution capabilities"));
+    }
+
+    #[test]
+    fn portable_roots_normalize_supported_schemes_and_reject_unknown_schemes() {
+        assert_eq!(
+            file_transport_scheme("HTTPS://example.test/data").unwrap(),
+            Some(FileTransportScheme::Https)
+        );
+        assert_eq!(
+            resolve_runtime_root(
+                "HTTPS://example.test/data",
+                std::path::Path::new("/project")
+            )
+            .unwrap(),
+            "https://example.test/data"
+        );
+        let error =
+            resolve_runtime_root("custom+v1://cluster/data", std::path::Path::new("/project"))
+                .unwrap_err();
+        assert!(error.message.contains("unsupported file transport scheme"));
+        assert_eq!(file_transport_scheme("C:\\data\\events").unwrap(), None);
+    }
+
+    #[test]
+    fn compiled_relative_file_plan_is_portable_across_project_roots() {
+        let formats = crate::test_format_registry();
+        let driver = FileSourceDriver::new(Arc::clone(&formats), |_, _| {
+            Err(CdfError::internal("compile-only test runtime factory"))
+        })
+        .unwrap();
+        let mut first = compile_request();
+        first.source_options.insert(
+            "root".to_owned(),
+            serde_json::Value::String("data".to_owned()),
+        );
+        first.context.project_root = Some("/tmp/first-project".into());
+        let mut second = first.clone();
+        second.context.project_root = Some("/tmp/second-project".into());
+
+        let first = driver.compile(first).unwrap();
+        let second = driver.compile(second).unwrap();
+        assert_eq!(first.physical_plan, second.physical_plan);
+        assert_eq!(first.physical_plan_hash, second.physical_plan_hash);
+        assert_eq!(
+            first.schema_binding_stable_hash().unwrap(),
+            second.schema_binding_stable_hash().unwrap()
+        );
+
+        let physical: FilePhysicalPlan = serde_json::from_value(first.physical_plan).unwrap();
+        assert_eq!(physical.source.root, "data");
+        assert_eq!(
+            physical
+                .to_runtime_plan(std::path::Path::new("/tmp/first-project"))
+                .unwrap()
+                .root,
+            "/tmp/first-project/data"
+        );
+        assert_eq!(
+            physical
+                .to_runtime_plan(std::path::Path::new("/tmp/second-project"))
+                .unwrap()
+                .root,
+            "/tmp/second-project/data"
         );
     }
 

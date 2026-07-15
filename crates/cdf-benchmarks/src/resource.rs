@@ -69,6 +69,7 @@ impl MemoryResource {
             partition_id,
             scope: ScopeKey::Resource,
             start_position: None,
+            scan_intent: cdf_kernel::CompiledScanIntent::full_scan(),
             metadata: BTreeMap::from([("kind".to_owned(), "memory".to_owned())]),
         };
         Ok(Self {

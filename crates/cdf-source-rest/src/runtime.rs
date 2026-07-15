@@ -13,11 +13,13 @@ use cdf_http::{
     SecretUri, send_with_policy,
 };
 use cdf_kernel::{
-    Batch, BatchId, BatchStream, BoxFuture, CdfError, CursorPosition, CursorValue,
-    DeliveryGuarantee, Expression, ExpressionLiteral, OpenedPartitionStream, PartitionId,
-    PartitionPlan, PayloadRetention, PlanId, PreContractResidualCandidate, PushdownFidelity,
-    PushedPredicate, QueryableResource, ResourceCapabilities, ResourceDescriptor, ResourceStream,
-    Result, ScanPlan, ScanRequest, SchemaHash, SchemaSource, SourcePosition, TypePolicyAllowances,
+    BackpressureSupport, Batch, BatchId, BatchStream, BoxFuture, CapabilitySupport, CdfError,
+    CompiledScanIntent, CursorPosition, CursorValue, DeliveryGuarantee, EstimateSupport,
+    Expression, ExpressionLiteral, FilterCapabilities, IncrementalShape, OpenedPartitionStream,
+    PartitionId, PartitionPlan, PartitioningCapabilities, PayloadRetention, PlanId,
+    PreContractResidualCandidate, PushdownFidelity, PushedPredicate, QueryableResource,
+    ReplaySupport, ResourceCapabilities, ResourceDescriptor, ResourceStream, Result, ScanPlan,
+    ScanRequest, SchemaHash, SchemaSource, ScopeKind, SourcePosition, TypePolicyAllowances,
     WriteDisposition, source_name,
 };
 use cdf_memory::{
@@ -33,31 +35,31 @@ use serde_json::{Map, Value};
 
 use crate::RestResourcePlan;
 
-pub const CURSOR_QUERY_PARAM_METADATA: &str = "cursor_query_param";
-pub const CURSOR_QUERY_VALUE_METADATA: &str = "cursor_query_value";
-
 #[derive(Clone)]
 pub struct RestRuntimeDependencies {
     transport: Arc<dyn HttpTransport>,
     secret_provider: Option<Arc<dyn SecretProvider + Send + Sync>>,
     auth_refresh: Option<Arc<Mutex<Box<dyn AuthRefreshHook + Send>>>>,
     retry_policy: RetryPolicy,
-    execution: Option<ExecutionServices>,
+    execution: ExecutionServices,
     prepared_payloads: PreparedSourcePayloads,
 }
 
 impl RestRuntimeDependencies {
-    pub fn new(transport: impl HttpTransport + 'static) -> Self {
-        Self::from_boxed_transport(Box::new(transport))
+    pub fn new(transport: impl HttpTransport + 'static, execution: ExecutionServices) -> Self {
+        Self::from_boxed_transport(Box::new(transport), execution)
     }
 
-    pub fn from_boxed_transport(transport: Box<dyn HttpTransport>) -> Self {
+    pub fn from_boxed_transport(
+        transport: Box<dyn HttpTransport>,
+        execution: ExecutionServices,
+    ) -> Self {
         Self {
             transport: Arc::from(transport),
             secret_provider: None,
             auth_refresh: None,
             retry_policy: RetryPolicy::default(),
-            execution: None,
+            execution,
             prepared_payloads: PreparedSourcePayloads::default(),
         }
     }
@@ -75,11 +77,6 @@ impl RestRuntimeDependencies {
         provider: Arc<dyn SecretProvider + Send + Sync>,
     ) -> Self {
         self.secret_provider = Some(provider);
-        self
-    }
-
-    pub fn with_execution_services(mut self, execution: ExecutionServices) -> Self {
-        self.execution = Some(execution);
         self
     }
 
@@ -111,7 +108,7 @@ impl fmt::Debug for RestRuntimeDependencies {
             .field("secret_provider", &self.secret_provider.is_some())
             .field("auth_refresh", &self.auth_refresh.is_some())
             .field("retry_policy", &self.retry_policy)
-            .field("managed_execution", &self.execution.is_some())
+            .field("managed_execution", &true)
             .field("prepared_payloads", &self.prepared_payloads)
             .finish()
     }
@@ -258,7 +255,10 @@ impl ResourceStream for RestResource {
     }
 
     fn plan_partitions(&self, request: &ScanRequest) -> Result<Vec<PartitionPlan>> {
-        rest_partition(&self.descriptor, &self.plan, request).map(|partition| vec![partition])
+        rest_partition(&self.descriptor, &self.plan, request).map(|mut partition| {
+            partition.scan_intent = CompiledScanIntent::full_scan();
+            vec![partition]
+        })
     }
 
     fn open(&self, partition: PartitionPlan) -> BoxFuture<'_, Result<OpenedPartitionStream>> {
@@ -270,26 +270,16 @@ impl ResourceStream for RestResource {
 
         Box::pin(async move {
             let execution = dependencies.execution.clone();
-            let batches = match execution {
-                Some(execution) => execution.run_blocking("rest-source.sync", move || {
-                    execute_rest(
-                        &descriptor,
-                        schema,
-                        &plan,
-                        &partition,
-                        type_policy_allowances,
-                        dependencies,
-                    )
-                })?,
-                None => execute_rest(
+            let batches = execution.run_blocking("rest-source.sync", move || {
+                execute_rest(
                     &descriptor,
                     schema,
                     &plan,
                     &partition,
                     type_policy_allowances,
                     dependencies,
-                )?,
-            };
+                )
+            })?;
             let stream = Box::pin(stream::iter(batches.into_iter().map(Ok))) as BatchStream;
             Ok(OpenedPartitionStream::without_completion(stream))
         })
@@ -336,10 +326,9 @@ pub fn cursor_pushdown_value(
     expression: &Expression,
 ) -> Option<String> {
     let cursor = descriptor.cursor.as_ref()?;
-    let cursor_param = plan.cursor_param.as_deref();
+    let cursor_param = plan.cursor_param.as_deref()?;
     let (field, operator, literal) = expression.comparison()?;
-    if !matches!(operator, "gte" | "gt" | "eq")
-        || (field != cursor.field && cursor_param.is_none_or(|param| field != param))
+    if !matches!(operator, "gte" | "gt" | "eq") || (field != cursor.field && field != cursor_param)
     {
         return None;
     }
@@ -378,16 +367,27 @@ pub fn rest_partition(
     if let Some(cursor) = &descriptor.cursor {
         metadata.insert("cursor_field".to_owned(), cursor.field.clone());
     }
-    if let Some(cursor_param) = &plan.cursor_param
-        && let Some((_, value)) = selected_cursor_pushdown(descriptor, plan, request)
-    {
-        metadata.insert(CURSOR_QUERY_PARAM_METADATA.to_owned(), cursor_param.clone());
-        metadata.insert(CURSOR_QUERY_VALUE_METADATA.to_owned(), value);
-    }
+    let selected_cursor = selected_cursor_pushdown(descriptor, plan, request);
+    let predicates = selected_cursor
+        .map(|(index, _)| PushedPredicate {
+            predicate: request.filters[index].clone(),
+            fidelity: plan.cursor_filter_fidelity.clone(),
+        })
+        .into_iter()
+        .collect();
+    let scan_intent = CompiledScanIntent {
+        version: cdf_kernel::COMPILED_SCAN_INTENT_VERSION,
+        projection: None,
+        predicates,
+        limit: None,
+        order_by: Vec::new(),
+    };
+    scan_intent.validate()?;
     Ok(PartitionPlan {
         partition_id: PartitionId::new("rest")?,
         scope: descriptor.state_scope.clone(),
         start_position: None,
+        scan_intent,
         metadata,
     })
 }
@@ -397,7 +397,7 @@ fn selected_cursor_pushdown(
     plan: &RestResourcePlan,
     request: &ScanRequest,
 ) -> Option<(usize, String)> {
-    if plan.cursor_filter_fidelity == PushdownFidelity::Unsupported {
+    if plan.cursor_param.is_none() || plan.cursor_filter_fidelity == PushdownFidelity::Unsupported {
         return None;
     }
     request
@@ -408,6 +408,52 @@ fn selected_cursor_pushdown(
             cursor_pushdown_value(descriptor, plan, &predicate.canonical_expression)
                 .map(|value| (index, value))
         })
+}
+
+pub fn rest_resource_capabilities(
+    descriptor: &ResourceDescriptor,
+    plan: &RestResourcePlan,
+) -> ResourceCapabilities {
+    let cursor_pushdown = descriptor.cursor.is_some()
+        && plan.cursor_param.is_some()
+        && plan.cursor_filter_fidelity != PushdownFidelity::Unsupported;
+    ResourceCapabilities {
+        projection: CapabilitySupport::Unsupported,
+        filters: FilterCapabilities {
+            default_fidelity: if cursor_pushdown {
+                plan.cursor_filter_fidelity.clone()
+            } else {
+                PushdownFidelity::Unsupported
+            },
+            supported_operators: if cursor_pushdown {
+                vec![">".to_owned(), ">=".to_owned(), "=".to_owned()]
+            } else {
+                Vec::new()
+            },
+        },
+        limits: CapabilitySupport::Unsupported,
+        ordering: CapabilitySupport::Unsupported,
+        partitioning: match descriptor.state_scope.kind() {
+            ScopeKind::Resource => PartitioningCapabilities::default(),
+            kind => PartitioningCapabilities {
+                parallel_partitions: true,
+                supported_scopes: vec![kind],
+            },
+        },
+        incremental: if descriptor.cursor.is_some() {
+            IncrementalShape::Cursor
+        } else {
+            IncrementalShape::Full
+        },
+        replay: if descriptor.cursor.is_some() {
+            ReplaySupport::FromPosition
+        } else {
+            ReplaySupport::None
+        },
+        idempotent_reads: true,
+        backpressure: BackpressureSupport::CannotPause,
+        estimates: EstimateSupport::None,
+    }
 }
 
 fn delivery_guarantee(descriptor: &ResourceDescriptor) -> DeliveryGuarantee {
@@ -439,7 +485,7 @@ fn execute_rest(
     let mut auth_session = plan.auth.clone().map(AuthSession::new);
     let mut retry_budget = RetryBudget::new(dependencies.retry_policy.clone());
     let mut paginator = plan.pagination.clone().map(Paginator::new);
-    let base_request_url = build_request_url(plan, partition)?;
+    let base_request_url = build_request_url(descriptor, plan, partition)?;
     let mut next_url = Some(match &paginator {
         Some(paginator) => paginator.first_request(&base_request_url).url,
         None => base_request_url,
@@ -489,22 +535,13 @@ fn execute_rest(
         response.page.fields = decoded.pagination_fields;
 
         if !decoded.records.is_empty() {
-            let memory = dependencies
-                .execution
-                .as_ref()
-                .ok_or_else(|| {
-                    CdfError::internal(
-                        "REST execution requires injected execution services for memory authority",
-                    )
-                })?
-                .memory();
             let page = reconcile_rest_page(
                 &schema,
                 descriptor,
                 partition,
                 &decoded.records,
                 type_policy_allowances,
-                memory,
+                &dependencies.execution,
             )?;
             if let Some(page_plan) = &page.schema_coercion_plan {
                 if let Some(previous) = &reconciliation_plan
@@ -564,7 +601,7 @@ pub fn discover_rest_sample_schema(
     let mut auth_session = plan.auth.clone().map(AuthSession::new);
     let mut retry_budget = RetryBudget::new(RetryPolicy::default());
     let mut limiter = RateLimiter::new(plan.rate_limit.clone(), 0);
-    let base_request_url = build_request_url(plan, partition)?;
+    let base_request_url = build_request_url(descriptor, plan, partition)?;
     let paginator = plan.pagination.clone().map(Paginator::new);
     let url = match &paginator {
         Some(paginator) => paginator.first_request(&base_request_url).url,
@@ -1044,8 +1081,9 @@ fn reconcile_rest_page(
     partition: &PartitionPlan,
     records: &[Map<String, Value>],
     type_policy_allowances: TypePolicyAllowances,
-    memory: Arc<dyn MemoryCoordinator>,
+    execution: &ExecutionServices,
 ) -> Result<ReconciledRestPage> {
+    let memory = execution.memory();
     let mut type_policy = ContractPolicy::default().types;
     type_policy.coerce_types = type_policy_allowances.coerce_types;
     type_policy.allow_lossy_mapping = type_policy_allowances.allow_lossy_mapping;
@@ -1068,23 +1106,19 @@ fn reconcile_rest_page(
         partition.partition_id.clone(),
     )
     .with_batch_size(records.len().max(1))?;
-    let read = futures_executor::block_on(async {
-        let source = Arc::new(
-            MemoryByteSource::from_bytes(
-                format!(
-                    "rest-page:{}:{}",
-                    descriptor.resource_id, partition.partition_id
-                ),
-                ndjson,
-                Arc::clone(&memory),
-            )
-            .await?,
-        );
+    let location = format!(
+        "rest-page:{}:{}",
+        descriptor.resource_id, partition.partition_id
+    );
+    let admission_schema = Arc::clone(schema);
+    let read = execution.run_io(async move {
+        let source =
+            Arc::new(MemoryByteSource::from_bytes(location, ndjson, Arc::clone(&memory)).await?);
         decode_bounded_format(
             Arc::new(cdf_format_json::NdjsonFormatDriver::new()?),
             source,
             BoundedFormatRequest::new(read_options, memory)
-                .with_schema(DecodeSchemaPlan::fixed_admission(schema.clone())),
+                .with_schema(DecodeSchemaPlan::fixed_admission(admission_schema)),
         )
         .await
     })?;
@@ -1601,16 +1635,42 @@ fn scalar_marker(value: &Value) -> Option<String> {
     }
 }
 
-fn build_request_url(plan: &RestResourcePlan, partition: &PartitionPlan) -> Result<String> {
+fn build_request_url(
+    descriptor: &ResourceDescriptor,
+    plan: &RestResourcePlan,
+    partition: &PartitionPlan,
+) -> Result<String> {
     let mut url = join_base_url_and_path(&plan.base_url, &plan.path)?;
     for (name, value) in &plan.params {
         url = append_query_param(&url, name, value);
     }
-    if let (Some(param), Some(value)) = (
-        partition.metadata.get(CURSOR_QUERY_PARAM_METADATA),
-        partition.metadata.get(CURSOR_QUERY_VALUE_METADATA),
-    ) {
-        url = append_query_param(&url, param, value);
+    partition.scan_intent.validate()?;
+    if partition.scan_intent.predicates.len() > 1 {
+        return Err(CdfError::contract(
+            "REST compiled scan intent may push at most one cursor predicate",
+        ));
+    }
+    if let Some(pushed) = partition.scan_intent.predicates.first() {
+        if pushed.fidelity != plan.cursor_filter_fidelity
+            || pushed.fidelity == PushdownFidelity::Unsupported
+        {
+            return Err(CdfError::contract(
+                "REST compiled cursor predicate fidelity does not match the adapter plan",
+            ));
+        }
+        let param = plan.cursor_param.as_deref().ok_or_else(|| {
+            CdfError::contract(
+                "REST compiled cursor predicate requires the resource cursor query parameter",
+            )
+        })?;
+        let value = cursor_pushdown_value(descriptor, plan, &pushed.predicate.canonical_expression)
+            .ok_or_else(|| {
+                CdfError::contract(format!(
+                    "REST compiled cursor predicate `{:?}` is not executable by the adapter",
+                    pushed.predicate.canonical_expression
+                ))
+            })?;
+        url = append_query_param(&url, param, &value);
     }
     validate_http_url(&url)?;
     Ok(url)
@@ -1869,14 +1929,14 @@ mod tests {
     fn shared_rest_transport_does_not_serialize_independent_requests() {
         let active = Arc::new(AtomicUsize::new(0));
         let peak = Arc::new(AtomicUsize::new(0));
-        let dependencies = RestRuntimeDependencies::new(ConcurrentProbeTransport {
+        let transport = Arc::new(ConcurrentProbeTransport {
             active: Arc::clone(&active),
             peak: Arc::clone(&peak),
         });
         let start = Arc::new(Barrier::new(3));
         let workers = (0..2)
             .map(|index| {
-                let transport = Arc::clone(&dependencies.transport);
+                let transport = Arc::clone(&transport);
                 let start = Arc::clone(&start);
                 std::thread::spawn(move || {
                     start.wait();
@@ -2065,9 +2125,32 @@ mod tests {
             Some((0, "5".to_owned()))
         );
         let partition = rest_partition(&descriptor, &plan, &request).unwrap();
+        assert!(!partition.metadata.contains_key("cursor_query_value"));
+        assert_eq!(partition.scan_intent.predicates.len(), 1);
+        assert!(
+            build_request_url(&descriptor, &plan, &partition)
+                .unwrap()
+                .contains("since=5")
+        );
+
+        let mut no_parameter = plan.clone();
+        no_parameter.cursor_param = None;
         assert_eq!(
-            partition.metadata.get(CURSOR_QUERY_VALUE_METADATA),
-            Some(&"5".to_owned())
+            rest_resource_capabilities(&descriptor, &no_parameter)
+                .filters
+                .default_fidelity,
+            PushdownFidelity::Unsupported
+        );
+        assert_eq!(
+            selected_cursor_pushdown(&descriptor, &no_parameter, &request),
+            None
+        );
+        assert!(
+            rest_partition(&descriptor, &no_parameter, &request)
+                .unwrap()
+                .scan_intent
+                .predicates
+                .is_empty()
         );
     }
 }

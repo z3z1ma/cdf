@@ -28,7 +28,6 @@ fn build_file_resource(
         FileResourceDefinition {
             descriptor: resource.descriptor().clone(),
             schema: resource.schema(),
-            capabilities: resource.capabilities().clone(),
             plan,
             type_policy_allowances: resource.type_policy_allowances(),
             effective_schema_runtime: resource.effective_schema_runtime().cloned(),

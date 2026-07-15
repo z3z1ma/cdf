@@ -97,7 +97,7 @@ fn test_rest_runtime_dependencies(
             interruption: cdf_runtime::InterruptionSafety::CooperativeOnly,
         }])
         .unwrap();
-    cdf_declarative::RestRuntimeDependencies::new(transport).with_execution_services(execution)
+    cdf_declarative::RestRuntimeDependencies::new(transport, execution)
 }
 
 fn test_file_runtime_dependencies() -> cdf_declarative::FileRuntimeDependencies {
@@ -632,6 +632,7 @@ impl ResourceStream for BackfillMockResource {
             partition_id: PartitionId::new("mock").unwrap(),
             scope: request.scope.clone(),
             start_position: None,
+            scan_intent: cdf_kernel::CompiledScanIntent::full_scan(),
             metadata,
         }])
     }
@@ -1208,6 +1209,7 @@ impl ResourceStream for ArtifactPlanResource {
             partition_id: partition_id.clone(),
             scope: ScopeKey::Partition { partition_id },
             start_position: None,
+            scan_intent: cdf_kernel::CompiledScanIntent::full_scan(),
             metadata: BTreeMap::new(),
         }])
     }
@@ -5136,9 +5138,7 @@ fn general_project_run_rejects_rest_missing_secret_provider_before_writes() {
     let compiled = rest_runtime_resource();
     let transport = RecordingTransport::new([json_response(r#"{ "items": [] }"#)]);
     let resource = compiled
-        .to_rest_resource(cdf_declarative::RestRuntimeDependencies::new(
-            transport.clone(),
-        ))
+        .to_rest_resource(test_rest_runtime_dependencies(transport.clone()))
         .unwrap();
     let package_id = "pkg-general-rest-missing-secret";
     let package_root = temp.path().join(".cdf/packages");
@@ -5220,9 +5220,7 @@ fn general_project_run_rejects_rest_without_cursor_before_writes() {
     let compiled = rest_resource();
     let transport = RecordingTransport::new([json_response(r#"[{ "id": 1 }]"#)]);
     let resource = compiled
-        .to_rest_resource(cdf_declarative::RestRuntimeDependencies::new(
-            transport.clone(),
-        ))
+        .to_rest_resource(test_rest_runtime_dependencies(transport.clone()))
         .unwrap();
     let package_id = "pkg-general-rest-no-cursor";
     let package_root = temp.path().join(".cdf/packages");

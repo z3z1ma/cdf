@@ -1067,6 +1067,7 @@ impl ResourceStream for MockSourceResource {
             partition_id: PartitionId::new("mock-000001")?,
             scope: request.scope.clone(),
             start_position: None,
+            scan_intent: cdf_kernel::CompiledScanIntent::full_scan(),
             metadata: BTreeMap::new(),
         }])
     }

@@ -6,14 +6,17 @@ use std::{
     time::UNIX_EPOCH,
 };
 
-use arrow_schema::SchemaRef;
+use arrow_schema::{Schema, SchemaRef};
 use cdf_kernel::{
-    Batch, BatchStream, BoxFuture, CdfError, DeliveryGuarantee, EffectiveSchemaRuntime,
-    OpenedPartitionStream, PLAN_PHYSICAL_SCHEMA_HASH_KEY, PLAN_SCHEMA_OBSERVATION_BINDING_KEY,
-    PLAN_SCHEMA_OBSERVATION_ID_KEY, PartitionAttestation, PartitionCompletion, PartitionId,
-    PartitionPlan, PayloadRetention, PlanId, QueryableResource, ResourceCapabilities,
-    ResourceDescriptor, ResourceId, ResourceStream, Result, ScanPlan, ScanRequest, SchemaHash,
-    ScopeKey, SourcePosition, SourceReadMode, TypePolicyAllowances, WriteDisposition,
+    BackpressureSupport, Batch, BatchStream, BoxFuture, CapabilitySupport, CdfError,
+    CompiledScanIntent, DeliveryGuarantee, EffectiveSchemaRuntime, EstimateSupport,
+    FilterCapabilities, IncrementalShape, OpenedPartitionStream,
+    PLAN_SCHEMA_OBSERVATION_BINDING_KEY, PLAN_SCHEMA_OBSERVATION_ID_KEY, PartitionAttestation,
+    PartitionCompletion, PartitionId, PartitionPlan, PartitioningCapabilities, PayloadRetention,
+    PlanId, PushdownFidelity, PushedPredicate, QueryableResource, ReplaySupport,
+    ResourceCapabilities, ResourceDescriptor, ResourceId, ResourceStream, Result, ScanPlan,
+    ScanRequest, SchemaHash, ScopeKey, ScopeKind, SourcePosition, SourceReadMode,
+    TypePolicyAllowances, WriteDisposition, source_name,
 };
 use cdf_memory::{ConsumerKey, MemoryClass};
 use cdf_runtime::{
@@ -33,11 +36,15 @@ use futures_util::TryStreamExt;
 use sha2::{Digest, Sha256};
 use tokio::io::AsyncWriteExt;
 
+#[cfg(test)]
+use crate::FileTransportFacade;
 use crate::{
     FileCompressionDeclaration, FileFormatDeclaration, FileIdentityMetadata, FileResourcePlan,
-    FileTransport, FileTransportFacade, FileTransportLocation, FileTransportResource,
-    LocalByteSource, evicting_spool_byte_source::start_evicting_spool,
-    growing_spool_byte_source::start_growing_spool, local_byte_source::local_source_generation,
+    FileTransport, FileTransportLocation, FileTransportResource, LocalByteSource,
+    driver::{FileTransportScheme, file_transport_scheme},
+    evicting_spool_byte_source::start_evicting_spool,
+    growing_spool_byte_source::start_growing_spool,
+    local_byte_source::local_source_generation,
 };
 
 const NATIVE_TARGET_BATCH_ROWS: usize = 64 * 1024;
@@ -723,10 +730,11 @@ pub fn local_file_discovery_candidates(
     formats: &FormatRegistry,
     transforms: &ByteTransformRegistry,
 ) -> Result<Vec<LocalFileDiscoveryCandidate>> {
-    if is_http_root(&plan.root) {
-        return Err(CdfError::contract(
-            "local file discovery candidate enumeration does not support HTTP(S) roots",
-        ));
+    if let Some(scheme) = file_transport_scheme(&plan.root)? {
+        return Err(CdfError::contract(format!(
+            "local file discovery candidate enumeration does not support the {:?} transport scheme",
+            scheme.as_str()
+        )));
     }
 
     let root = PathBuf::from(&plan.root);
@@ -775,7 +783,6 @@ pub struct FileResource {
 pub struct FileResourceDefinition {
     pub descriptor: ResourceDescriptor,
     pub schema: SchemaRef,
-    pub capabilities: ResourceCapabilities,
     pub plan: FileResourcePlan,
     pub type_policy_allowances: TypePolicyAllowances,
     pub effective_schema_runtime: Option<EffectiveSchemaRuntime>,
@@ -790,7 +797,6 @@ impl FileResource {
         let FileResourceDefinition {
             descriptor,
             schema,
-            capabilities,
             mut plan,
             type_policy_allowances,
             effective_schema_runtime,
@@ -806,7 +812,14 @@ impl FileResource {
                 plan.resolved_format()?.as_str()
             )));
         }
+        if compiled_format.descriptor.predicate_pushdown != PushdownFidelity::Unsupported {
+            return Err(CdfError::contract(format!(
+                "format `{}` declares predicate fidelity without the operator vocabulary required for safe file-source negotiation",
+                compiled_format.descriptor.format_id
+            )));
+        }
         compiled_format.verify(dependencies.formats())?;
+        let capabilities = file_resource_capabilities(&compiled_format.descriptor);
         plan.format = Some(FileFormatDeclaration::named(
             compiled_format.descriptor.format_id.as_str().to_owned(),
         )?);
@@ -819,6 +832,22 @@ impl FileResource {
             effective_schema_runtime: effective_schema_runtime.map(Arc::new),
             compiled_format,
             dependencies,
+        })
+    }
+
+    fn partitions_for_intent(
+        &self,
+        scan_intent: &CompiledScanIntent,
+    ) -> Result<Vec<PartitionPlan>> {
+        self.dependencies.with_transport(|transport| {
+            file_partitions_for_plan_with_transport(
+                &self.descriptor,
+                &self.plan,
+                scan_intent,
+                transport,
+                self.dependencies.formats(),
+                self.dependencies.transforms(),
+            )
         })
     }
 
@@ -858,15 +887,7 @@ impl ResourceStream for FileResource {
                 request.resource_id, self.descriptor.resource_id
             )));
         }
-        self.dependencies.with_transport(|transport| {
-            file_partitions_for_plan_with_transport(
-                &self.descriptor,
-                &self.plan,
-                transport,
-                self.dependencies.formats(),
-                self.dependencies.transforms(),
-            )
-        })
+        self.partitions_for_intent(&CompiledScanIntent::full_scan())
     }
 
     fn open(&self, partition: PartitionPlan) -> BoxFuture<'_, Result<OpenedPartitionStream>> {
@@ -921,17 +942,84 @@ impl QueryableResource for FileResource {
     }
 
     fn negotiate(&self, request: &ScanRequest) -> Result<ScanPlan> {
-        let partitions = self.plan_partitions(request)?;
+        if request.resource_id != self.descriptor.resource_id {
+            return Err(CdfError::contract(format!(
+                "scan request resource `{}` does not match compiled file resource `{}`",
+                request.resource_id, self.descriptor.resource_id
+            )));
+        }
+        let negotiation = compile_file_scan(request, &self.compiled_format.descriptor)?;
+        let partitions = self.partitions_for_intent(&negotiation.intent)?;
         Ok(ScanPlan {
             plan_id: PlanId::new(format!("plan-{}", self.descriptor.resource_id))?,
             request: request.clone(),
             partitions,
-            pushed_predicates: Vec::new(),
-            unsupported_predicates: request.filters.clone(),
+            pushed_predicates: negotiation.pushed_predicates,
+            unsupported_predicates: negotiation.unsupported_predicates,
             estimated_rows: None,
             estimated_bytes: None,
             delivery_guarantee: delivery_guarantee(&self.descriptor),
         })
+    }
+}
+
+struct FileScanNegotiation {
+    intent: CompiledScanIntent,
+    pushed_predicates: Vec<PushedPredicate>,
+    unsupported_predicates: Vec<cdf_kernel::ScanPredicate>,
+}
+
+fn compile_file_scan(
+    request: &ScanRequest,
+    descriptor: &cdf_runtime::FormatDriverDescriptor,
+) -> Result<FileScanNegotiation> {
+    let projection = (descriptor.projection_pushdown == PushdownFidelity::Exact)
+        .then(|| request.projection.clone())
+        .flatten();
+    let pushed_predicates = Vec::new();
+    let unsupported_predicates = request.filters.clone();
+    let intent = CompiledScanIntent {
+        version: cdf_kernel::COMPILED_SCAN_INTENT_VERSION,
+        projection,
+        predicates: pushed_predicates.clone(),
+        limit: None,
+        order_by: Vec::new(),
+    };
+    intent.validate()?;
+    Ok(FileScanNegotiation {
+        intent,
+        pushed_predicates,
+        unsupported_predicates,
+    })
+}
+
+pub(crate) fn file_resource_capabilities(
+    descriptor: &cdf_runtime::FormatDriverDescriptor,
+) -> ResourceCapabilities {
+    ResourceCapabilities {
+        projection: if descriptor.projection_pushdown == PushdownFidelity::Exact {
+            CapabilitySupport::Supported
+        } else {
+            CapabilitySupport::Unsupported
+        },
+        filters: FilterCapabilities {
+            // A format fidelity alone cannot safely classify expressions; an
+            // operator vocabulary will become part of the descriptor when a
+            // production codec implements predicate pushdown.
+            default_fidelity: PushdownFidelity::Unsupported,
+            supported_operators: Vec::new(),
+        },
+        limits: CapabilitySupport::Unsupported,
+        ordering: CapabilitySupport::Unsupported,
+        partitioning: PartitioningCapabilities {
+            parallel_partitions: true,
+            supported_scopes: vec![ScopeKind::File],
+        },
+        incremental: IncrementalShape::File,
+        replay: ReplaySupport::ExactRecordedBatches,
+        idempotent_reads: true,
+        backpressure: BackpressureSupport::Pausable,
+        estimates: EstimateSupport::Bytes,
     }
 }
 
@@ -1421,6 +1509,7 @@ impl ByteSource for ReplayThenContinueByteSource {
 struct PreparedFilePartition {
     resolved: ResolvedFileMatch,
     input: PreparedFileInput,
+    scan_intent: CompiledScanIntent,
     options: ReadOptions,
     admission_schema: SchemaRef,
     physical_schema_authority: PhysicalSchemaAuthority,
@@ -1519,19 +1608,10 @@ impl CompressionEvidence {
     }
 }
 
-pub fn file_partitions_for_plan(
-    descriptor: &ResourceDescriptor,
-    plan: &FileResourcePlan,
-    formats: &FormatRegistry,
-    transforms: &ByteTransformRegistry,
-) -> Result<Vec<PartitionPlan>> {
-    let transport = FileTransportFacade::new();
-    file_partitions_for_plan_with_transport(descriptor, plan, &transport, formats, transforms)
-}
-
 pub(crate) fn file_partitions_for_plan_with_transport(
     descriptor: &ResourceDescriptor,
     plan: &FileResourcePlan,
+    scan_intent: &CompiledScanIntent,
     transport: &dyn FileTransport,
     formats: &FormatRegistry,
     transforms: &ByteTransformRegistry,
@@ -1550,7 +1630,7 @@ pub(crate) fn file_partitions_for_plan_with_transport(
     let total_matches = matches.len();
     matches
         .iter()
-        .map(|file| partition_for_file_match(descriptor, plan, file, total_matches))
+        .map(|file| partition_for_file_match(descriptor, plan, scan_intent, file, total_matches))
         .collect()
 }
 
@@ -1688,6 +1768,7 @@ fn prepare_file_partition(
     effective_schema_runtime: Option<&EffectiveSchemaRuntime>,
     compiled_format: &CompiledFormatBinding,
 ) -> Result<PreparedFilePartition> {
+    partition.scan_intent.validate()?;
     let resolved = dependencies.with_transport(|transport| {
         validate_partition(
             descriptor,
@@ -1698,11 +1779,14 @@ fn prepare_file_partition(
             dependencies.transforms(),
         )
     })?;
-    let planned_physical_schema_hash = partition
-        .metadata
-        .get(PLAN_PHYSICAL_SCHEMA_HASH_KEY)
-        .map(|value| SchemaHash::new(value.clone()))
-        .transpose()?;
+    let planned_physical_schema_hash = effective_schema_runtime
+        .and_then(|runtime| {
+            partition
+                .metadata
+                .get(PLAN_SCHEMA_OBSERVATION_ID_KEY)
+                .and_then(|observation_id| runtime.evidence.observation(observation_id))
+        })
+        .map(|observation| observation.physical_schema_hash.clone());
     let planned_physical_schema = planned_physical_schema_hash
         .as_ref()
         .and_then(|hash| effective_schema_runtime.and_then(|runtime| runtime.physical_schema(hash)))
@@ -1724,6 +1808,7 @@ fn prepare_file_partition(
     Ok(PreparedFilePartition {
         resolved,
         input: prepared_input.input,
+        scan_intent: partition.scan_intent.clone(),
         options,
         admission_schema,
         physical_schema_authority: PhysicalSchemaAuthority {
@@ -1913,6 +1998,7 @@ async fn stream_prepared_file_match(
     let PreparedFilePartition {
         resolved,
         input: prepared,
+        scan_intent,
         options,
         admission_schema,
         physical_schema_authority,
@@ -2019,6 +2105,7 @@ async fn stream_prepared_file_match(
             source,
             payload_retention,
             driver,
+            scan_intent,
             options,
             admission_schema,
             canonical_format_options,
@@ -2066,6 +2153,7 @@ fn stream_file_match_blocking(
     let prepared = PreparedFilePartition {
         resolved: resolved.clone(),
         input: prepared_input.input,
+        scan_intent: CompiledScanIntent::full_scan(),
         options,
         admission_schema,
         physical_schema_authority,
@@ -2248,6 +2336,7 @@ struct RegisteredFormatStreamRequest {
     source: Arc<dyn ByteSource>,
     payload_retention: Option<PayloadRetention>,
     driver: Arc<dyn FormatDriver>,
+    scan_intent: CompiledScanIntent,
     options: ReadOptions,
     admission_schema: SchemaRef,
     canonical_format_options: serde_json::Value,
@@ -2263,6 +2352,7 @@ fn stream_registered_format(
         source,
         payload_retention,
         driver,
+        scan_intent,
         options,
         admission_schema,
         canonical_format_options,
@@ -2278,12 +2368,18 @@ fn stream_registered_format(
     );
     let unit_execution = execution.clone();
     let unit_scope_prefix = scope_id.clone();
+    scan_intent.validate()?;
     let stream = execution.spawn_io_stream(
         &scope_id,
         NATIVE_STREAM_ITEMS,
         move |mut sender, cancellation| async move {
             let _payload_retention = payload_retention;
             let options_json = driver.canonical_options(canonical_format_options)?;
+            let projection = physical_projection_names(
+                admission_schema.as_ref(),
+                scan_intent.projection.as_deref(),
+            )?;
+            let predicates = scan_intent.pushed_predicates();
             let decode_schema = match physical_schema_authority.schema {
                 Some(schema) => {
                     let schema_hash =
@@ -2304,8 +2400,8 @@ fn stream_registered_format(
                     source.clone(),
                     DecodePlanningRequest {
                         options: options_json.clone(),
-                        projection: None,
-                        predicates: Vec::new(),
+                        projection: projection.clone(),
+                        predicates: predicates.clone(),
                         target_batch_rows: NATIVE_TARGET_BATCH_ROWS,
                         target_batch_bytes: NATIVE_TARGET_BATCH_BYTES,
                         cancellation: cancellation.clone(),
@@ -2352,8 +2448,8 @@ fn stream_registered_format(
                             batch_id_prefix: options.batch_id_prefix.clone(),
                             schema: decode_schema.clone(),
                             source_position: source_position.clone(),
-                            projection: None,
-                            predicates: Vec::new(),
+                            projection: projection.clone(),
+                            predicates: predicates.clone(),
                             target_batch_rows: NATIVE_TARGET_BATCH_ROWS,
                             target_batch_bytes: NATIVE_TARGET_BATCH_BYTES,
                             memory: Arc::clone(&memory),
@@ -2382,6 +2478,8 @@ fn stream_registered_format(
             let opener_options = options.clone();
             let opener_schema = decode_schema.clone();
             let opener_position = source_position.clone();
+            let opener_projection = projection.clone();
+            let opener_predicates = predicates.clone();
             let opener_scope_prefix = unit_scope_prefix.clone();
             let opener: CanonicalStreamOpener<Batch> = Box::new(move |ordinal| {
                 let unit = opener_units.get(ordinal).cloned().ok_or_else(|| {
@@ -2392,6 +2490,8 @@ fn stream_registered_format(
                 let options = opener_options.clone();
                 let schema = opener_schema.clone();
                 let source_position = opener_position.clone();
+                let projection = opener_projection.clone();
+                let predicates = opener_predicates.clone();
                 let work_execution = opener_execution.clone();
                 let unit_stream = opener_execution.spawn_io_stream(
                     &format!("{opener_scope_prefix}-unit-{ordinal:08}"),
@@ -2408,8 +2508,8 @@ fn stream_registered_format(
                                 batch_id_prefix: options.batch_id_prefix,
                                 schema,
                                 source_position,
-                                projection: None,
-                                predicates: Vec::new(),
+                                projection,
+                                predicates,
                                 target_batch_rows: NATIVE_TARGET_BATCH_ROWS,
                                 target_batch_bytes: NATIVE_TARGET_BATCH_BYTES,
                                 memory,
@@ -2452,6 +2552,27 @@ fn stream_registered_format(
         },
     )?;
     Ok(Box::pin(stream))
+}
+
+fn physical_projection_names(
+    effective_schema: &Schema,
+    projection: Option<&[String]>,
+) -> Result<Option<Vec<String>>> {
+    projection
+        .map(|fields| {
+            fields
+                .iter()
+                .map(|logical_name| {
+                    let field = effective_schema.field_with_name(logical_name).map_err(|_| {
+                        CdfError::contract(format!(
+                            "compiled file projection field {logical_name:?} is absent from the effective schema"
+                        ))
+                    })?;
+                    Ok(source_name(field).unwrap_or_else(|| field.name()).to_owned())
+                })
+                .collect::<Result<Vec<_>>>()
+        })
+        .transpose()
 }
 
 fn validate_partition(
@@ -2687,6 +2808,7 @@ fn validate_partition_metadata_value(
 fn partition_for_file_match(
     descriptor: &ResourceDescriptor,
     plan: &FileResourcePlan,
+    scan_intent: &CompiledScanIntent,
     file: &ResolvedFileMatch,
     total_matches: usize,
 ) -> Result<PartitionPlan> {
@@ -2781,6 +2903,7 @@ fn partition_for_file_match(
             path: file.path_text.clone(),
         },
         start_position: None,
+        scan_intent: scan_intent.clone(),
         metadata,
     })
 }
@@ -2811,11 +2934,22 @@ fn resolve_file_matches(
     formats: &FormatRegistry,
     transforms: &ByteTransformRegistry,
 ) -> Result<Vec<ResolvedFileMatch>> {
-    if is_http_root(&plan.root) {
-        return resolve_http_file_match(resource_id, plan, transport, formats, transforms);
-    }
-    if is_object_store_root(&plan.root) {
-        return resolve_object_store_matches(resource_id, plan, transport, formats, transforms);
+    match file_transport_scheme(&plan.root)? {
+        Some(FileTransportScheme::Http | FileTransportScheme::Https) => {
+            return resolve_http_file_match(resource_id, plan, transport, formats, transforms);
+        }
+        Some(FileTransportScheme::S3 | FileTransportScheme::Gs | FileTransportScheme::Az) => {
+            return resolve_object_store_matches(resource_id, plan, transport, formats, transforms);
+        }
+        Some(FileTransportScheme::File) => {
+            let mut local_plan = plan.clone();
+            local_plan.root = crate::transport::file_url_path(&plan.root)?
+                .to_str()
+                .map(str::to_owned)
+                .ok_or_else(|| CdfError::data("file URL path is not valid UTF-8"))?;
+            return resolve_file_matches(resource_id, &local_plan, transport, formats, transforms);
+        }
+        None => {}
     }
 
     let root = PathBuf::from(&plan.root);
@@ -3621,14 +3755,6 @@ fn join_http_root_and_glob(root: &str, glob: &str) -> String {
     )
 }
 
-fn is_http_root(root: &str) -> bool {
-    root.starts_with("http://") || root.starts_with("https://")
-}
-
-fn is_object_store_root(root: &str) -> bool {
-    root.starts_with("s3://") || root.starts_with("gs://") || root.starts_with("az://")
-}
-
 fn file_partition_id(path: &str) -> String {
     let mut hasher = Sha256::new();
     hasher.update(path.as_bytes());
@@ -4148,6 +4274,7 @@ mod tests {
                 ),
                 payload_retention: None,
                 driver,
+                scan_intent: CompiledScanIntent::full_scan(),
                 options: ReadOptions::new(
                     ResourceId::new("events").unwrap(),
                     PartitionId::new("file-0").unwrap(),
@@ -4183,6 +4310,129 @@ mod tests {
         assert_eq!(
             dependencies.execution().memory().snapshot().current_bytes,
             0
+        );
+    }
+
+    #[test]
+    fn negotiated_parquet_projection_reaches_production_decode() {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int64, false),
+            Field::new("name", DataType::Utf8, false),
+            Field::new("ignored", DataType::Int64, false),
+        ]));
+        let temp = TempDir::new().unwrap();
+        let path = temp.path().join("events.parquet");
+        let mut writer = ArrowWriter::try_new(
+            std::fs::File::create(&path).unwrap(),
+            Arc::clone(&schema),
+            None,
+        )
+        .unwrap();
+        writer
+            .write(
+                &RecordBatch::try_new(
+                    Arc::clone(&schema),
+                    vec![
+                        Arc::new(Int64Array::from(vec![1, 2])) as ArrayRef,
+                        Arc::new(StringArray::from(vec!["one", "two"])) as ArrayRef,
+                        Arc::new(Int64Array::from(vec![10, 20])) as ArrayRef,
+                    ],
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        writer.close().unwrap();
+
+        let formats = crate::test_format_registry();
+        let unresolved = FileResourcePlan {
+            source: "events".to_owned(),
+            root: temp.path().to_string_lossy().into_owned(),
+            glob: "events.parquet".to_owned(),
+            format: Some(FileFormatDeclaration::parquet()),
+            format_declared: true,
+            format_options: serde_json::json!({}),
+            compression: FileCompressionDeclaration::none(),
+            auth: None,
+            credentials: None,
+            allowlist: cdf_http::EgressAllowlist::allow_any(),
+        };
+        let (plan, compiled_format) =
+            crate::compile_file_resource_plan(&unresolved, formats.as_ref()).unwrap();
+        let descriptor = ResourceDescriptor {
+            resource_id: ResourceId::new("events").unwrap(),
+            schema_source: cdf_kernel::SchemaSource::Declared {
+                schema_hash: cdf_kernel::canonical_arrow_schema_hash(schema.as_ref()).unwrap(),
+                source: "test".to_owned(),
+            },
+            primary_key: Vec::new(),
+            merge_key: Vec::new(),
+            cursor: None,
+            write_disposition: WriteDisposition::Append,
+            deduplication: None,
+            contract: None,
+            state_scope: ScopeKey::Resource,
+            freshness: None,
+            trust_level: cdf_kernel::TrustLevel::Governed,
+        };
+        assert_eq!(
+            file_resource_capabilities(&compiled_format.descriptor).projection,
+            CapabilitySupport::Supported
+        );
+        let resource = FileResource::new(
+            FileResourceDefinition {
+                descriptor: descriptor.clone(),
+                schema: Arc::clone(&schema),
+                plan,
+                type_policy_allowances: TypePolicyAllowances::default(),
+                effective_schema_runtime: None,
+                compiled_format,
+            },
+            FileRuntimeDependencies::new(
+                FileTransportFacade::new(),
+                crate::test_execution_services(),
+                formats,
+                crate::test_transform_registry(),
+            ),
+        )
+        .unwrap();
+        let request = ScanRequest {
+            resource_id: descriptor.resource_id,
+            projection: Some(vec!["id".to_owned()]),
+            filters: Vec::new(),
+            limit: None,
+            order_by: Vec::new(),
+            scope: ScopeKey::Resource,
+        };
+        let tier_a = resource.plan_partitions(&request).unwrap();
+        assert_eq!(tier_a[0].scan_intent, CompiledScanIntent::full_scan());
+        let scan = resource.negotiate(&request).unwrap();
+        assert_eq!(
+            scan.partitions[0].scan_intent.projection.as_deref(),
+            Some(["id".to_owned()].as_slice())
+        );
+        cdf_kernel::validate_compiled_scan_intents(&scan).unwrap();
+
+        let opened = futures_executor::block_on(resource.open(scan.partitions[0].clone())).unwrap();
+        let batches = futures_executor::block_on(opened.collect::<Vec<_>>())
+            .into_iter()
+            .collect::<Result<Vec<_>>>()
+            .unwrap();
+        assert_eq!(batches.len(), 1);
+        let projected = batches[0].record_batch().unwrap();
+        assert_eq!(projected.schema().fields().len(), 1);
+        assert_eq!(projected.schema().field(0).name(), "id");
+        assert_eq!(projected.num_rows(), 2);
+    }
+
+    #[test]
+    fn compiled_logical_projection_maps_to_physical_source_names() {
+        let schema = Schema::new(vec![cdf_kernel::with_source_name(
+            Field::new("vendor_id", DataType::Int64, false),
+            "VendorID",
+        )]);
+        assert_eq!(
+            physical_projection_names(&schema, Some(&["vendor_id".to_owned()])).unwrap(),
+            Some(vec!["VendorID".to_owned()])
         );
     }
 
@@ -4251,7 +4501,10 @@ mod tests {
         assert_eq!(probe.schema.as_ref(), schema.as_ref());
         assert_eq!(probe.source_identity.get("compression").unwrap(), "gzip");
         let stable_id = probe.source_identity.get("stable_id").unwrap();
-        assert!(stable_id.ends_with("events.parquet.gz#transform:gzip"));
+        assert!(
+            stable_id.ends_with("events.parquet.gz") && !stable_id.contains('#'),
+            "unexpected transformed stable id: {stable_id}"
+        );
         assert_eq!(dependencies.prepared_payloads().pending_count().unwrap(), 1);
         std::fs::remove_file(root.path().join("events.parquet.gz")).unwrap();
         let stream = stream_file_match_blocking(

@@ -204,7 +204,19 @@ impl FormatDecodeSession for ArrowIpcDecodeSession {
             }
             let projection =
                 projection_indices(self.footer.schema.as_ref(), request.projection.as_deref())?;
-            let physical_schema = Arc::clone(&self.footer.schema);
+            let physical_schema = projection
+                .as_ref()
+                .map(|indices| {
+                    self.footer
+                        .schema
+                        .project(indices)
+                        .map(Arc::new)
+                        .map_err(ipc_error)
+                })
+                .transpose()?
+                .unwrap_or_else(|| Arc::clone(&self.footer.schema));
+            let observed_schema_hash =
+                cdf_kernel::canonical_arrow_schema_hash(physical_schema.as_ref())?;
             let mut decoder =
                 FileDecoder::new(Arc::clone(&self.footer.schema), self.footer.version);
             if let Some(projection) = projection {
@@ -228,7 +240,7 @@ impl FormatDecodeSession for ArrowIpcDecodeSession {
                 blocks: self.footer.record_batches.clone(),
                 decoder,
                 request,
-                observed_schema_hash: actual_hash,
+                observed_schema_hash,
                 physical_schema,
                 emitted_schema: false,
                 next_block: 0,
@@ -289,6 +301,11 @@ impl FormatDecodeSession for ArrowIpcDecodeSession {
                 let record_batch = record_batch.ok_or_else(|| {
                     CdfError::data("Arrow IPC footer record-batch block contained no record batch")
                 })?;
+                let record_batch = RecordBatch::try_new(
+                    Arc::clone(&state.physical_schema),
+                    record_batch.columns().to_vec(),
+                )
+                .map_err(ipc_error)?;
                 state.emitted_schema = true;
                 let batch_id = BatchId::new(format!(
                     "{}-u{:08}-b{:08}",

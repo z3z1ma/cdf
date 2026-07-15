@@ -513,6 +513,7 @@ mod tests {
             partition_id: PartitionId::new("file-part-0").unwrap(),
             scope: scenario.partition_scope,
             start_position: scenario.start_position,
+            scan_intent: cdf_kernel::CompiledScanIntent::full_scan(),
             metadata: BTreeMap::new(),
         };
 
@@ -634,6 +635,7 @@ mod tests {
                             path: format!("fixture/{id}.csv"),
                         },
                         start_position: Some(file_position(id)),
+                        scan_intent: cdf_kernel::CompiledScanIntent::full_scan(),
                         metadata: BTreeMap::from([(
                             "resource_id".to_owned(),
                             self.descriptor.resource_id.as_str().to_owned(),

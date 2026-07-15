@@ -43,5 +43,5 @@ pub(crate) fn test_rest_runtime_dependencies(
             interruption: cdf_runtime::InterruptionSafety::CooperativeOnly,
         }])
         .expect("conformance REST blocking lane");
-    cdf_declarative::RestRuntimeDependencies::new(transport).with_execution_services(services)
+    cdf_declarative::RestRuntimeDependencies::new(transport, services)
 }

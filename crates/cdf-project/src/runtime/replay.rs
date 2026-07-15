@@ -2128,6 +2128,7 @@ mod stream_admission_replay_tests {
                 path: "events.json".to_owned(),
             },
             start_position: None,
+            scan_intent: cdf_kernel::CompiledScanIntent::full_scan(),
             metadata: BTreeMap::from([
                 ("bytes".to_owned(), "12".to_owned()),
                 ("etag".to_owned(), "etag-1".to_owned()),
@@ -2163,6 +2164,7 @@ mod stream_admission_replay_tests {
                 partition_id: PartitionId::new("rest").unwrap(),
             },
             start_position: None,
+            scan_intent: cdf_kernel::CompiledScanIntent::full_scan(),
             metadata: BTreeMap::from([("cursor_field".to_owned(), "updated_at".to_owned())]),
         };
         let cursor_position = |field: &str| {

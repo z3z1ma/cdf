@@ -1273,7 +1273,7 @@ fn postgres_source_schema_hash() -> SchemaHash {
     SchemaHash::new("sha256:postgres-source-live-schema").unwrap()
 }
 
-fn drain_source_batches(mut stream: cdf_kernel::BatchStream) -> Vec<cdf_kernel::Batch> {
+fn drain_source_batches(mut stream: cdf_kernel::OpenedPartitionStream) -> Vec<cdf_kernel::Batch> {
     futures_executor::block_on(async move {
         let mut batches = Vec::new();
         while let Some(batch) = stream.next().await {

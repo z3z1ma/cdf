@@ -844,7 +844,7 @@ fn list_local(path: &Path) -> Result<Vec<FileIdentityMetadata>> {
         .collect()
 }
 
-fn file_url_path(url: &str) -> Result<PathBuf> {
+pub(crate) fn file_url_path(url: &str) -> Result<PathBuf> {
     let rest = url
         .strip_prefix("file://")
         .ok_or_else(|| CdfError::contract("file URL must use the file:// scheme"))?;
