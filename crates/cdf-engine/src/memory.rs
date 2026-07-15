@@ -8,7 +8,7 @@ use std::{
 use cdf_kernel::{CdfError, Result};
 use cdf_memory::{
     BudgetTag, LeaseAccount, MemoryClass, MemoryCoordinator, MemoryEvent, MemoryLease,
-    MemorySnapshot, ReservationRequest,
+    MemorySnapshot, MemoryWaiterSet, ReservationRequest,
 };
 use datafusion::execution::memory_pool::{
     MemoryConsumer, MemoryLimit, MemoryPool, MemoryReservation,
@@ -37,7 +37,7 @@ struct CoordinatorInner {
 struct CoordinatorState {
     snapshot: MemorySnapshot,
     subcap_limits: BTreeMap<BudgetTag, u64>,
-    waiters: Vec<Waker>,
+    waiters: MemoryWaiterSet,
 }
 
 impl DataFusionMemoryCoordinator {
@@ -69,7 +69,7 @@ impl DataFusionMemoryCoordinator {
                         ..MemorySnapshot::default()
                     },
                     subcap_limits,
-                    waiters: Vec::new(),
+                    waiters: MemoryWaiterSet::default(),
                 }),
             }),
         })
@@ -151,7 +151,7 @@ impl DataFusionMemoryCoordinator {
             {
                 usage.current_bytes = usage.current_bytes.saturating_sub(bytes);
             }
-            wake_waiters(&mut state.waiters);
+            state.waiters.wake_all();
         }
     }
 }
@@ -211,23 +211,11 @@ impl MemoryCoordinator for DataFusionMemoryCoordinator {
     }
 
     fn register_waiter(&self, waker: &Waker) {
-        let mut state = self.inner.state.lock().unwrap();
-        if !state
-            .waiters
-            .iter()
-            .any(|existing| existing.will_wake(waker))
-        {
-            state.waiters.push(waker.clone());
-        }
+        self.inner.state.lock().unwrap().waiters.register(waker);
     }
 
     fn unregister_waiter(&self, waker: &Waker) {
-        self.inner
-            .state
-            .lock()
-            .unwrap()
-            .waiters
-            .retain(|existing| !existing.will_wake(waker));
+        self.inner.state.lock().unwrap().waiters.unregister(waker);
     }
 
     fn snapshot(&self) -> MemorySnapshot {
@@ -283,7 +271,7 @@ impl LeaseAccount for DataFusionLeaseAccount {
                 })?,
             );
             apply_release(&mut state.snapshot, &self.request, released);
-            wake_waiters(&mut state.waiters);
+            state.waiters.wake_all();
         }
         Ok(())
     }
@@ -293,7 +281,7 @@ impl LeaseAccount for DataFusionLeaseAccount {
         if let Some(coordinator) = self.coordinator.upgrade() {
             let mut state = coordinator.state.lock().unwrap();
             apply_release(&mut state.snapshot, &self.request, bytes);
-            wake_waiters(&mut state.waiters);
+            state.waiters.wake_all();
         }
     }
 }
@@ -360,12 +348,6 @@ fn apply_release(snapshot: &mut MemorySnapshot, request: &ReservationRequest, by
         && let Some(subcap) = snapshot.subcaps.get_mut(tag)
     {
         subcap.current_bytes = subcap.current_bytes.saturating_sub(bytes);
-    }
-}
-
-fn wake_waiters(waiters: &mut Vec<Waker>) {
-    for waiter in std::mem::take(waiters) {
-        waiter.wake();
     }
 }
 

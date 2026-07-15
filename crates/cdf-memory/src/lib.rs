@@ -467,6 +467,54 @@ pub trait MemoryCoordinator: Send + Sync {
     fn record_event(&self, event: MemoryEvent);
 }
 
+#[derive(Debug, Default)]
+pub struct MemoryWaiterSet {
+    waiters: Vec<RegisteredMemoryWaiter>,
+}
+
+#[derive(Debug)]
+struct RegisteredMemoryWaiter {
+    waker: Waker,
+    registrations: usize,
+}
+
+impl MemoryWaiterSet {
+    pub fn register(&mut self, waker: &Waker) {
+        if let Some(waiter) = self
+            .waiters
+            .iter_mut()
+            .find(|waiter| waiter.waker.will_wake(waker))
+        {
+            waiter.registrations = waiter.registrations.saturating_add(1);
+        } else {
+            self.waiters.push(RegisteredMemoryWaiter {
+                waker: waker.clone(),
+                registrations: 1,
+            });
+        }
+    }
+
+    pub fn unregister(&mut self, waker: &Waker) {
+        if let Some(index) = self
+            .waiters
+            .iter()
+            .position(|waiter| waiter.waker.will_wake(waker))
+        {
+            if self.waiters[index].registrations == 1 {
+                self.waiters.swap_remove(index);
+            } else {
+                self.waiters[index].registrations -= 1;
+            }
+        }
+    }
+
+    pub fn wake_all(&mut self) {
+        for waiter in std::mem::take(&mut self.waiters) {
+            waiter.waker.wake();
+        }
+    }
+}
+
 pub struct ReserveFuture {
     coordinator: Arc<dyn MemoryCoordinator>,
     request: ReservationRequest,
@@ -499,6 +547,9 @@ impl Future for ReserveFuture {
 
     fn poll(mut self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<Self::Output> {
         let this = self.as_mut().get_mut();
+        // A wake consumes the coordinator's registration. Clear any previous local record
+        // before rechecking so a still-blocked future always registers again in this poll.
+        this.clear_waiter();
         match this.coordinator.try_reserve(&this.request) {
             Ok(Some(lease)) => {
                 this.clear_waiter();
@@ -591,7 +642,7 @@ struct CoordinatorInner {
 struct CoordinatorState {
     snapshot: MemorySnapshot,
     subcap_limits: BTreeMap<BudgetTag, u64>,
-    waiters: Vec<Waker>,
+    waiters: MemoryWaiterSet,
 }
 
 impl DeterministicMemoryCoordinator {
@@ -614,7 +665,7 @@ impl DeterministicMemoryCoordinator {
                         ..MemorySnapshot::default()
                     },
                     subcap_limits,
-                    waiters: Vec::new(),
+                    waiters: MemoryWaiterSet::default(),
                 }),
             }),
         })
@@ -676,23 +727,11 @@ impl MemoryCoordinator for DeterministicMemoryCoordinator {
     }
 
     fn register_waiter(&self, waker: &Waker) {
-        let mut state = self.inner.state.lock().unwrap();
-        if !state
-            .waiters
-            .iter()
-            .any(|existing| existing.will_wake(waker))
-        {
-            state.waiters.push(waker.clone());
-        }
+        self.inner.state.lock().unwrap().waiters.register(waker);
     }
 
     fn unregister_waiter(&self, waker: &Waker) {
-        self.inner
-            .state
-            .lock()
-            .unwrap()
-            .waiters
-            .retain(|existing| !existing.will_wake(waker));
+        self.inner.state.lock().unwrap().waiters.unregister(waker);
     }
 
     fn snapshot(&self) -> MemorySnapshot {
@@ -765,7 +804,7 @@ impl LeaseAccount for DeterministicLeaseAccount {
                 &self.request,
                 current_bytes - new_bytes,
             );
-            wake_waiters(&mut state.waiters);
+            state.waiters.wake_all();
         }
         Ok(())
     }
@@ -774,7 +813,7 @@ impl LeaseAccount for DeterministicLeaseAccount {
         if let Some(coordinator) = self.coordinator.upgrade() {
             let mut state = coordinator.state.lock().unwrap();
             apply_release(&mut state.snapshot, &self.request, bytes);
-            wake_waiters(&mut state.waiters);
+            state.waiters.wake_all();
         }
     }
 }
@@ -804,12 +843,6 @@ fn apply_release(snapshot: &mut MemorySnapshot, request: &ReservationRequest, by
         && let Some(subcap) = snapshot.subcaps.get_mut(tag)
     {
         subcap.current_bytes = subcap.current_bytes.saturating_sub(bytes);
-    }
-}
-
-fn wake_waiters(waiters: &mut Vec<Waker>) {
-    for waiter in std::mem::take(waiters) {
-        waiter.wake();
     }
 }
 

@@ -3,7 +3,7 @@ use std::{
     pin::Pin,
     sync::{
         Arc,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicUsize, Ordering},
     },
     task::{Context, Poll, Waker},
 };
@@ -236,6 +236,91 @@ fn cancelling_pending_reservation_unregisters_its_waker() {
 
     drop(future);
     assert!(coordinator.unregistered.load(Ordering::SeqCst));
+}
+
+#[derive(Default)]
+struct WakeCounter(AtomicUsize);
+
+impl std::task::Wake for WakeCounter {
+    fn wake(self: Arc<Self>) {
+        self.0.fetch_add(1, Ordering::SeqCst);
+    }
+
+    fn wake_by_ref(self: &Arc<Self>) {
+        self.0.fetch_add(1, Ordering::SeqCst);
+    }
+}
+
+fn poll_with_waker<F: Future>(future: Pin<&mut F>, waker: &Waker) -> Poll<F::Output> {
+    future.poll(&mut Context::from_waker(waker))
+}
+
+#[test]
+fn shared_task_waker_remains_registered_until_every_reservation_leaves() {
+    let coordinator = Arc::new(DeterministicMemoryCoordinator::new(64, BTreeMap::new()).unwrap());
+    let held = coordinator
+        .try_reserve(&ReservationRequest::new(consumer("held", MemoryClass::Queue), 64).unwrap())
+        .unwrap()
+        .unwrap();
+    let counter = Arc::new(WakeCounter::default());
+    let waker = Waker::from(Arc::clone(&counter));
+    let coordinator_trait: Arc<dyn MemoryCoordinator> = coordinator.clone();
+    let mut first = Box::pin(reserve(
+        Arc::clone(&coordinator_trait),
+        ReservationRequest::new(consumer("first", MemoryClass::Queue), 64).unwrap(),
+    ));
+    let mut second = Box::pin(reserve(
+        coordinator_trait,
+        ReservationRequest::new(consumer("second", MemoryClass::Queue), 64).unwrap(),
+    ));
+    assert!(matches!(
+        poll_with_waker(first.as_mut(), &waker),
+        Poll::Pending
+    ));
+    assert!(matches!(
+        poll_with_waker(second.as_mut(), &waker),
+        Poll::Pending
+    ));
+
+    drop(first);
+    drop(held);
+    assert_eq!(counter.0.load(Ordering::SeqCst), 1);
+    assert!(matches!(
+        poll_with_waker(second.as_mut(), &waker),
+        Poll::Ready(Ok(_))
+    ));
+}
+
+#[test]
+fn reservation_reregisters_when_woken_capacity_is_taken_before_repoll() {
+    let coordinator = Arc::new(DeterministicMemoryCoordinator::new(64, BTreeMap::new()).unwrap());
+    let held = coordinator
+        .try_reserve(&ReservationRequest::new(consumer("held", MemoryClass::Queue), 64).unwrap())
+        .unwrap()
+        .unwrap();
+    let counter = Arc::new(WakeCounter::default());
+    let waker = Waker::from(Arc::clone(&counter));
+    let coordinator_trait: Arc<dyn MemoryCoordinator> = coordinator.clone();
+    let request = ReservationRequest::new(consumer("waiter", MemoryClass::Queue), 64).unwrap();
+    let mut future = Box::pin(reserve(coordinator_trait, request.clone()));
+    assert!(matches!(
+        poll_with_waker(future.as_mut(), &waker),
+        Poll::Pending
+    ));
+
+    drop(held);
+    assert_eq!(counter.0.load(Ordering::SeqCst), 1);
+    let competitor = coordinator.try_reserve(&request).unwrap().unwrap();
+    assert!(matches!(
+        poll_with_waker(future.as_mut(), &waker),
+        Poll::Pending
+    ));
+    drop(competitor);
+    assert_eq!(counter.0.load(Ordering::SeqCst), 2);
+    assert!(matches!(
+        poll_with_waker(future.as_mut(), &waker),
+        Poll::Ready(Ok(_))
+    ));
 }
 
 #[test]
