@@ -134,6 +134,11 @@ impl ProjectExternalMockFormat {
                 discovery_kind: cdf_runtime::FormatDiscoveryKind::BoundedContent,
                 decode_unit_policy: "whole_mock_file".to_owned(),
                 error_isolation: cdf_runtime::FormatErrorIsolation::DecodeUnit,
+                decode_cpu: cdf_runtime::CpuTaskSpec {
+                    task_kind: "format.project_external_mock.decode".to_owned(),
+                    cpu_slot_cost: 1,
+                    native_internal_parallelism: 1,
+                },
                 minimum_working_set_bytes: 64,
                 maximum_working_set_bytes: 1024 * 1024,
             },

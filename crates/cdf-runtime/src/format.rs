@@ -801,6 +801,7 @@ pub struct FormatDriverDescriptor {
     pub discovery_kind: FormatDiscoveryKind,
     pub decode_unit_policy: String,
     pub error_isolation: FormatErrorIsolation,
+    pub decode_cpu: crate::CpuTaskSpec,
     pub minimum_working_set_bytes: u64,
     pub maximum_working_set_bytes: u64,
 }
@@ -867,6 +868,7 @@ impl FormatDriverDescriptor {
                 "format driver requires a decode-unit policy and valid working-set bounds",
             ));
         }
+        self.decode_cpu.validate()?;
         const MAX_DETECTION_PROBE_BYTES: u32 = 1024 * 1024;
         if self.detection_probe.prefix_bytes > MAX_DETECTION_PROBE_BYTES
             || self.detection_probe.suffix_bytes > MAX_DETECTION_PROBE_BYTES
@@ -1919,6 +1921,11 @@ mod tests {
             discovery_kind: FormatDiscoveryKind::BoundedContent,
             decode_unit_policy: "whole_object".to_owned(),
             error_isolation: FormatErrorIsolation::DecodeUnit,
+            decode_cpu: crate::CpuTaskSpec {
+                task_kind: format!("format.{id}.decode"),
+                cpu_slot_cost: 1,
+                native_internal_parallelism: 1,
+            },
             minimum_working_set_bytes: 1,
             maximum_working_set_bytes: 1024,
         }))

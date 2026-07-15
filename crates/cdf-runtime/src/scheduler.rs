@@ -296,7 +296,6 @@ pub struct DecodeUnitConcurrencyResolution {
     pub jobs: u16,
     pub memory_jobs: u16,
     pub cpu_jobs: u16,
-    pub io_jobs: u16,
     pub estimated_bytes_per_job: u64,
     pub limiting_factors: Vec<String>,
 }
@@ -304,18 +303,19 @@ pub struct DecodeUnitConcurrencyResolution {
 pub fn resolve_decode_unit_concurrency(
     units: &[DecodeUnitPlan],
     host: &ExecutionHostCapabilities,
+    cpu: &crate::CpuTaskSpec,
     managed_memory_available_bytes: u64,
     useful_concurrency: u16,
     target_batch_bytes: u64,
     buffered_batches_per_unit: u16,
 ) -> Result<DecodeUnitConcurrencyResolution> {
     host.validate()?;
+    cpu.validate()?;
     if units.is_empty() {
         return Ok(DecodeUnitConcurrencyResolution {
             jobs: 0,
             memory_jobs: 0,
             cpu_jobs: 0,
-            io_jobs: 0,
             estimated_bytes_per_job: 0,
             limiting_factors: vec!["no_units".to_owned()],
         });
@@ -352,12 +352,19 @@ pub fn resolve_decode_unit_concurrency(
             "one decode unit requires an estimated {estimated_bytes_per_job} bytes including bounded handoff, but only {managed_memory_available_bytes} managed bytes are available; raise the memory budget, reduce the codec batch target, or reduce decode concurrency"
         )));
     }
+    let cpu_jobs = host.logical_cpu_slots / cpu.claimed_cpu_slots();
+    if cpu_jobs == 0 {
+        return Err(CdfError::data(format!(
+            "one decode unit claims {} CPU slots but the host provides {}",
+            cpu.claimed_cpu_slots(),
+            host.logical_cpu_slots
+        )));
+    }
     let unit_jobs = u16::try_from(units.len()).unwrap_or(u16::MAX);
     let candidates = [
         ("unit_count", unit_jobs),
         ("source_useful", useful_concurrency),
-        ("container_cpu", host.logical_cpu_slots),
-        ("io_workers", host.io_workers),
+        ("container_cpu", cpu_jobs),
         ("managed_memory", memory_jobs),
     ];
     let jobs = candidates
@@ -373,8 +380,7 @@ pub fn resolve_decode_unit_concurrency(
     Ok(DecodeUnitConcurrencyResolution {
         jobs,
         memory_jobs,
-        cpu_jobs: host.logical_cpu_slots,
-        io_jobs: host.io_workers,
+        cpu_jobs,
         estimated_bytes_per_job,
         limiting_factors,
     })
@@ -507,10 +513,7 @@ pub fn resolve_effective_jobs(
     let cpu_cost = source
         .blocking_lane
         .as_ref()
-        .map(|lane| {
-            lane.cpu_slot_cost
-                .saturating_mul(lane.native_internal_parallelism)
-        })
+        .map(crate::BlockingLaneSpec::claimed_cpu_slots)
         .unwrap_or(1);
     let cpu_jobs = ceilings.container_cpu_slots / cpu_cost;
     if cpu_jobs == 0 {
@@ -915,12 +918,23 @@ mod tests {
             io_workers: 4,
             blocking_lanes: Vec::new(),
         };
-        let resolution = resolve_decode_unit_concurrency(&units, &host, 160, 8, 16, 2).unwrap();
+        let cpu = crate::CpuTaskSpec {
+            task_kind: "format.test.decode".to_owned(),
+            cpu_slot_cost: 1,
+            native_internal_parallelism: 2,
+        };
+        let resolution =
+            resolve_decode_unit_concurrency(&units, &host, &cpu, 160, 8, 16, 2).unwrap();
         assert_eq!(resolution.estimated_bytes_per_job, 48);
         assert_eq!(resolution.memory_jobs, 3);
+        assert_eq!(resolution.cpu_jobs, 6);
         assert_eq!(resolution.jobs, 3);
         assert_eq!(resolution.limiting_factors, vec!["managed_memory"]);
-        assert!(resolve_decode_unit_concurrency(&units, &host, 47, 8, 16, 2).is_err());
+        let cpu_limited =
+            resolve_decode_unit_concurrency(&units, &host, &cpu, 4_800, 8, 16, 2).unwrap();
+        assert_eq!(cpu_limited.jobs, 6);
+        assert_eq!(cpu_limited.limiting_factors, vec!["container_cpu"]);
+        assert!(resolve_decode_unit_concurrency(&units, &host, &cpu, 47, 8, 16, 2).is_err());
     }
 
     #[test]

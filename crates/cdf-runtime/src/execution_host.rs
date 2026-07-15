@@ -17,12 +17,13 @@ use futures_util::{SinkExt, Stream, future::Either};
 use serde::{Deserialize, Serialize};
 
 pub type IoTask = BoxFuture<'static, Result<()>>;
+pub type CpuFutureTask = BoxFuture<'static, Result<()>>;
 pub type IoValue = Box<dyn Any + Send + 'static>;
 pub type IoValueTask = BoxFuture<'static, Result<IoValue>>;
 pub type BlockingTask = Box<dyn FnOnce() -> Result<()> + Send + 'static>;
 pub type BlockingValueTask = Box<dyn FnOnce() -> Result<IoValue> + Send + 'static>;
 
-pub struct IoStreamSender<T> {
+pub struct TaskStreamSender<T> {
     sender: mpsc::Sender<T>,
     cancellation: RunCancellation,
 }
@@ -71,18 +72,18 @@ impl<T> Drop for ScopedBlockingTask<T> {
     }
 }
 
-impl<T> IoStreamSender<T> {
+impl<T> TaskStreamSender<T> {
     pub async fn send(&mut self, item: T) -> Result<()> {
         self.cancellation.check()?;
         self.sender
             .send(item)
             .await
-            .map_err(|_| CdfError::internal("I/O stream receiver closed"))?;
+            .map_err(|_| CdfError::internal("task stream receiver closed"))?;
         self.cancellation.check()
     }
 }
 
-pub struct ScopedIoStream<T> {
+pub struct ScopedTaskStream<T> {
     receiver: mpsc::Receiver<T>,
     termination: InvocationTermination,
     join: Option<BoxFuture<'static, Result<()>>>,
@@ -90,7 +91,7 @@ pub struct ScopedIoStream<T> {
     terminal: bool,
 }
 
-impl<T> ScopedIoStream<T> {
+impl<T> ScopedTaskStream<T> {
     /// Returns the invocation-wide task-scope termination barrier.
     ///
     /// The barrier remains valid after this stream is dropped. Callers that may stop before EOF
@@ -100,9 +101,9 @@ impl<T> ScopedIoStream<T> {
     }
 }
 
-impl<T> Unpin for ScopedIoStream<T> {}
+impl<T> Unpin for ScopedTaskStream<T> {}
 
-impl<T> Stream for ScopedIoStream<T> {
+impl<T> Stream for ScopedTaskStream<T> {
     type Item = Result<T>;
 
     fn poll_next(self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<Option<Self::Item>> {
@@ -122,7 +123,7 @@ impl<T> Stream for ScopedIoStream<T> {
         match stream
             .join
             .as_mut()
-            .expect("I/O stream join future was initialized")
+            .expect("task stream join future was initialized")
             .as_mut()
             .poll(context)
         {
@@ -139,7 +140,7 @@ impl<T> Stream for ScopedIoStream<T> {
     }
 }
 
-impl<T> Drop for ScopedIoStream<T> {
+impl<T> Drop for ScopedTaskStream<T> {
     fn drop(&mut self) {
         if !self.terminal {
             self.cancellation.cancel();
@@ -256,6 +257,10 @@ pub struct BlockingLaneSpec {
 }
 
 impl BlockingLaneSpec {
+    pub fn claimed_cpu_slots(&self) -> u16 {
+        self.cpu_slot_cost.max(self.native_internal_parallelism)
+    }
+
     pub fn validate(&self) -> Result<()> {
         if self.lane_id.is_empty()
             || self.lane_id.len() > 128
@@ -283,13 +288,22 @@ pub struct CpuTaskSpec {
 }
 
 impl CpuTaskSpec {
+    pub fn claimed_cpu_slots(&self) -> u16 {
+        self.cpu_slot_cost.max(self.native_internal_parallelism)
+    }
+
     pub fn validate(&self) -> Result<()> {
         if self.task_kind.is_empty()
+            || self.task_kind.len() > 128
+            || !self
+                .task_kind
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
             || self.cpu_slot_cost == 0
             || self.native_internal_parallelism == 0
         {
             return Err(CdfError::contract(
-                "CPU task requires a kind and nonzero slot/internal-parallelism declarations",
+                "CPU task requires a safe kind and nonzero slot/internal-parallelism declarations",
             ));
         }
         Ok(())
@@ -312,6 +326,14 @@ impl ExecutionHostCapabilities {
         }
         for lane in &self.blocking_lanes {
             lane.validate()?;
+            if lane.claimed_cpu_slots() > self.logical_cpu_slots {
+                return Err(CdfError::contract(format!(
+                    "blocking lane `{}` claims {} CPU slots but the host provides {}",
+                    lane.lane_id,
+                    lane.claimed_cpu_slots(),
+                    self.logical_cpu_slots
+                )));
+            }
         }
         let mut ids = self
             .blocking_lanes
@@ -344,6 +366,9 @@ pub trait ExecutionTaskScope: Send {
     fn cancellation(&self) -> RunCancellation;
     fn spawn_io(&mut self, task: IoTask) -> Result<()>;
     fn spawn_cpu(&mut self, spec: CpuTaskSpec, task: BlockingTask) -> Result<()>;
+    /// Polls an asynchronous CPU-dominant task on the bounded CPU executor while allowing the
+    /// future to await resources driven by the host I/O runtime.
+    fn spawn_cpu_future(&mut self, spec: CpuTaskSpec, task: CpuFutureTask) -> Result<()>;
     fn spawn_blocking(&mut self, lane: &str, task: BlockingTask) -> Result<()>;
     fn cancel(&self);
     /// Starts joining every task owned by this scope and returns its completion future.
@@ -577,10 +602,10 @@ impl ExecutionServices {
         run_id: &str,
         maximum_items: usize,
         producer: F,
-    ) -> Result<ScopedIoStream<T>>
+    ) -> Result<ScopedTaskStream<T>>
     where
         T: Send + 'static,
-        F: FnOnce(IoStreamSender<T>, RunCancellation) -> Fut + Send + 'static,
+        F: FnOnce(TaskStreamSender<T>, RunCancellation) -> Fut + Send + 'static,
         Fut: Future<Output = Result<()>> + Send + 'static,
     {
         if maximum_items == 0 {
@@ -591,7 +616,7 @@ impl ExecutionServices {
         let mut scope = self.open_scope(run_id)?;
         let cancellation = scope.cancellation();
         let (sender, receiver) = mpsc::channel(maximum_items);
-        let stream_sender = IoStreamSender {
+        let stream_sender = TaskStreamSender {
             sender,
             cancellation: cancellation.clone(),
         };
@@ -605,7 +630,7 @@ impl ExecutionServices {
             move || cancel.cancel(),
             Box::pin(async move { scope_join.await.map(|_| ()) }),
         );
-        Ok(ScopedIoStream {
+        Ok(ScopedTaskStream {
             receiver,
             termination,
             join: None,
@@ -627,12 +652,12 @@ impl ExecutionServices {
         maximum_items: usize,
         prepare: Prepare,
         produce: Produce,
-    ) -> Result<ScopedIoStream<T>>
+    ) -> Result<ScopedTaskStream<T>>
     where
         T: Send + 'static,
         P: Send + 'static,
         Prepare: FnOnce(RunCancellation) -> Result<P> + Send + 'static,
-        Produce: FnOnce(P, IoStreamSender<T>, RunCancellation) -> Fut + Send + 'static,
+        Produce: FnOnce(P, TaskStreamSender<T>, RunCancellation) -> Fut + Send + 'static,
         Fut: Future<Output = Result<()>> + Send + 'static,
     {
         if maximum_items == 0 {
@@ -643,7 +668,7 @@ impl ExecutionServices {
         let mut scope = self.open_scope(run_id)?;
         let cancellation = scope.cancellation();
         let (sender, receiver) = mpsc::channel(maximum_items);
-        let stream_sender = IoStreamSender {
+        let stream_sender = TaskStreamSender {
             sender,
             cancellation: cancellation.clone(),
         };
@@ -670,7 +695,55 @@ impl ExecutionServices {
             move || cancel.cancel(),
             Box::pin(async move { scope_join.await.map(|_| ()) }),
         );
-        Ok(ScopedIoStream {
+        Ok(ScopedTaskStream {
+            receiver,
+            termination,
+            join: None,
+            cancellation,
+            terminal: false,
+        })
+    }
+
+    /// Runs one bounded, CPU-dominant asynchronous producer on the host CPU executor. The
+    /// producer may await host-driven I/O, but its polling and native compute consume the exact
+    /// declared shared CPU-slot demand.
+    pub fn spawn_cpu_stream<T, F, Fut>(
+        &self,
+        run_id: &str,
+        spec: CpuTaskSpec,
+        maximum_items: usize,
+        producer: F,
+    ) -> Result<ScopedTaskStream<T>>
+    where
+        T: Send + 'static,
+        F: FnOnce(TaskStreamSender<T>, RunCancellation) -> Fut + Send + 'static,
+        Fut: Future<Output = Result<()>> + Send + 'static,
+    {
+        if maximum_items == 0 {
+            return Err(CdfError::contract(
+                "CPU stream requires a nonzero item bound",
+            ));
+        }
+        spec.validate()?;
+        let mut scope = self.open_scope(run_id)?;
+        let cancellation = scope.cancellation();
+        let (sender, receiver) = mpsc::channel(maximum_items);
+        let stream_sender = TaskStreamSender {
+            sender,
+            cancellation: cancellation.clone(),
+        };
+        let task_cancellation = cancellation.clone();
+        scope.spawn_cpu_future(
+            spec,
+            Box::pin(async move { producer(stream_sender, task_cancellation).await }),
+        )?;
+        let scope_join = scope.join();
+        let cancel = cancellation.clone();
+        let termination = InvocationTermination::new(
+            move || cancel.cancel(),
+            Box::pin(async move { scope_join.await.map(|_| ()) }),
+        );
+        Ok(ScopedTaskStream {
             receiver,
             termination,
             join: None,

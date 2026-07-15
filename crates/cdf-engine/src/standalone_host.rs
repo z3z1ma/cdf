@@ -14,7 +14,7 @@ use std::{
 use cdf_kernel::{CdfError, Result};
 use cdf_memory::MemoryCoordinator;
 use cdf_runtime::{
-    BlockingLaneSpec, BlockingTask, BlockingValueTask, CpuTaskSpec, ExecutionHost,
+    BlockingLaneSpec, BlockingTask, BlockingValueTask, CpuFutureTask, CpuTaskSpec, ExecutionHost,
     ExecutionHostCapabilities, ExecutionTaskScope, IoTask, IoValue, IoValueTask, RunCancellation,
     TaskScopeReport,
 };
@@ -300,11 +300,9 @@ impl StandaloneExecutionHost {
     }
 
     pub fn block_on_root<F: std::future::Future>(&self, future: F) -> F::Output {
-        // The orchestration future is deliberately polled outside Tokio. Some
-        // compatibility drivers are synchronous and still own private runtimes;
-        // entering the host I/O runtime here would make those drivers panic on a
-        // nested runtime. Async operators use the host scope/handle explicitly,
-        // so runtime ownership remains centralized while drivers migrate.
+        // The composition-root future is deliberately polled outside Tokio so embedded callers
+        // never nest runtimes. Production child I/O, CPU, and FFI work enters through the
+        // injected execution services below.
         futures_executor::block_on(future)
     }
 
@@ -343,9 +341,7 @@ impl StandaloneExecutionHost {
             .blocking_lanes
             .iter()
             .map(|lane| {
-                if lane.cpu_slot_cost.max(lane.native_internal_parallelism)
-                    > capabilities.logical_cpu_slots
-                {
+                if lane.claimed_cpu_slots() > capabilities.logical_cpu_slots {
                     return Err(CdfError::contract(format!(
                         "blocking lane `{}` requires more CPU slots than the host provides",
                         lane.lane_id
@@ -466,9 +462,7 @@ impl ExecutionHost for StandaloneExecutionHost {
         let mut capabilities = self.capabilities.lock().unwrap();
         for lane in lanes {
             lane.validate()?;
-            if lane.cpu_slot_cost.max(lane.native_internal_parallelism)
-                > capabilities.logical_cpu_slots
-            {
+            if lane.claimed_cpu_slots() > capabilities.logical_cpu_slots {
                 return Err(CdfError::contract(format!(
                     "blocking lane `{}` requires more CPU slots than the host provides",
                     lane.lane_id
@@ -504,7 +498,7 @@ impl ExecutionHost for StandaloneExecutionHost {
             .ok_or_else(|| CdfError::contract(format!("unknown blocking lane `{lane}`")))?;
         let (sender, receiver) = mpsc::sync_channel(1);
         let released = pool.1.submit_with_release(
-            pool.0.cpu_slot_cost.max(pool.0.native_internal_parallelism),
+            pool.0.claimed_cpu_slots(),
             RunCancellation::default(),
             Box::new(move || {
                 let result = task();
@@ -564,11 +558,28 @@ impl ExecutionTaskScope for StandaloneTaskScope {
 
     fn spawn_cpu(&mut self, spec: CpuTaskSpec, task: BlockingTask) -> Result<()> {
         spec.validate()?;
-        let cost = spec.cpu_slot_cost.max(spec.native_internal_parallelism);
+        let cost = spec.claimed_cpu_slots();
         self.cpu_tasks.push(self.cpu.submit(
             cost,
             self.cancellation.clone(),
             task,
+            Arc::clone(&self.usage),
+        )?);
+        self.report.submitted_cpu += 1;
+        Ok(())
+    }
+
+    fn spawn_cpu_future(&mut self, spec: CpuTaskSpec, task: CpuFutureTask) -> Result<()> {
+        spec.validate()?;
+        let cost = spec.claimed_cpu_slots();
+        let runtime = self.handle.clone();
+        self.cpu_tasks.push(self.cpu.submit(
+            cost,
+            self.cancellation.clone(),
+            Box::new(move || {
+                let _runtime_context = runtime.enter();
+                futures_executor::block_on(task)
+            }),
             Arc::clone(&self.usage),
         )?);
         self.report.submitted_cpu += 1;
@@ -581,7 +592,7 @@ impl ExecutionTaskScope for StandaloneTaskScope {
             .get(lane)
             .ok_or_else(|| CdfError::contract(format!("unknown blocking lane `{lane}`")))?;
         self.blocking_tasks.push(pool.submit(
-            spec.cpu_slot_cost.max(spec.native_internal_parallelism),
+            spec.claimed_cpu_slots(),
             self.cancellation.clone(),
             task,
             Arc::clone(&self.usage),
@@ -766,6 +777,39 @@ mod tests {
     }
 
     #[test]
+    fn asynchronous_cpu_work_stays_on_the_bounded_cpu_executor_across_awaits() {
+        let host = host();
+        let (thread_sender, thread_receiver) = mpsc::sync_channel(2);
+        let mut scope = host.open_scope("async-cpu").unwrap();
+        scope
+            .spawn_cpu_future(
+                CpuTaskSpec {
+                    task_kind: "format.parquet.decode".to_owned(),
+                    cpu_slot_cost: 1,
+                    native_internal_parallelism: 2,
+                },
+                Box::pin(async move {
+                    thread_sender
+                        .send(std::thread::current().name().unwrap_or_default().to_owned())
+                        .unwrap();
+                    tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+                    thread_sender
+                        .send(std::thread::current().name().unwrap_or_default().to_owned())
+                        .unwrap();
+                    Ok(())
+                }),
+            )
+            .unwrap();
+        let report = host.block_on_root(scope.join()).unwrap();
+        let threads = thread_receiver.iter().take(2).collect::<Vec<_>>();
+
+        assert_eq!(threads.len(), 2);
+        assert!(threads.iter().all(|name| name.starts_with("cdf-cpu-")));
+        assert_eq!(report.submitted_cpu, 1);
+        assert_eq!(report.peak_cpu_slots, 2);
+    }
+
+    #[test]
     fn scoped_io_stream_bridges_tokio_without_materializing_and_joins_errors() {
         let services = ExecutionServices::new(Arc::new(host())).unwrap();
         let stream = services
@@ -806,7 +850,7 @@ mod tests {
             .spawn_io_stream(
                 "eager-drop-join",
                 1,
-                move |_sender: cdf_runtime::IoStreamSender<()>, cancellation| async move {
+                move |_sender: cdf_runtime::TaskStreamSender<()>, cancellation| async move {
                     let _producer_guard = producer_guard;
                     cancellation.cancelled().await;
                     Ok(())

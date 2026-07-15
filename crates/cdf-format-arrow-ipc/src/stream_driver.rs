@@ -47,6 +47,11 @@ impl ArrowIpcStreamFormatDriver {
                 discovery_kind: cdf_runtime::FormatDiscoveryKind::FormatMetadata,
                 decode_unit_policy: "ipc_stream_v1".to_owned(),
                 error_isolation: cdf_runtime::FormatErrorIsolation::DecodeUnit,
+                decode_cpu: cdf_runtime::CpuTaskSpec {
+                    task_kind: "format.arrow_ipc_stream.decode".to_owned(),
+                    cpu_slot_cost: 1,
+                    native_internal_parallelism: 1,
+                },
                 minimum_working_set_bytes: 64 * 1024,
                 maximum_working_set_bytes: 4 * 1024 * 1024 * 1024,
             },

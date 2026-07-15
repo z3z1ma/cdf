@@ -1,4 +1,4 @@
-bin/
+/bin/
 target/
 examples/postgres/postgres-dsn
 examples/*/.cdf/

@@ -275,6 +275,7 @@ impl cdf_runtime::ExecutionHost for TestIoHost {
             cancellation: cdf_runtime::RunCancellation::default(),
             tasks: Vec::new(),
             submitted_io: 0,
+            submitted_cpu: 0,
             submitted_blocking: 0,
         }))
     }
@@ -328,6 +329,7 @@ struct TestIoScope {
     cancellation: cdf_runtime::RunCancellation,
     tasks: Vec<tokio::task::JoinHandle<cdf_kernel::Result<()>>>,
     submitted_io: u64,
+    submitted_cpu: u64,
     submitted_blocking: u64,
 }
 
@@ -363,6 +365,17 @@ impl cdf_runtime::ExecutionTaskScope for TestIoScope {
         ))
     }
 
+    fn spawn_cpu_future(
+        &mut self,
+        spec: cdf_runtime::CpuTaskSpec,
+        task: cdf_runtime::CpuFutureTask,
+    ) -> cdf_kernel::Result<()> {
+        spec.validate()?;
+        self.tasks.push(self.handle.spawn(task));
+        self.submitted_cpu += 1;
+        Ok(())
+    }
+
     fn spawn_blocking(
         &mut self,
         _lane: &str,
@@ -383,6 +396,7 @@ impl cdf_runtime::ExecutionTaskScope for TestIoScope {
         Box::pin(async move {
             let mut report = cdf_runtime::TaskScopeReport {
                 submitted_io: self.submitted_io,
+                submitted_cpu: self.submitted_cpu,
                 submitted_blocking: self.submitted_blocking,
                 ..cdf_runtime::TaskScopeReport::default()
             };

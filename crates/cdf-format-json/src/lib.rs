@@ -66,6 +66,11 @@ impl NdjsonFormatDriver {
                 discovery_kind: cdf_runtime::FormatDiscoveryKind::BoundedContent,
                 decode_unit_policy: "ndjson_stream_v1".to_owned(),
                 error_isolation: cdf_runtime::FormatErrorIsolation::Record,
+                decode_cpu: cdf_runtime::CpuTaskSpec {
+                    task_kind: "format.ndjson.decode".to_owned(),
+                    cpu_slot_cost: 1,
+                    native_internal_parallelism: 1,
+                },
                 minimum_working_set_bytes: 1024 * 1024,
                 maximum_working_set_bytes: 64 * 1024 * 1024,
             },
@@ -249,6 +254,11 @@ impl JsonDocumentFormatDriver {
                 discovery_kind: cdf_runtime::FormatDiscoveryKind::BoundedContent,
                 decode_unit_policy: "json_document_stream_v1".to_owned(),
                 error_isolation: cdf_runtime::FormatErrorIsolation::Record,
+                decode_cpu: cdf_runtime::CpuTaskSpec {
+                    task_kind: "format.json.decode".to_owned(),
+                    cpu_slot_cost: 1,
+                    native_internal_parallelism: 1,
+                },
                 minimum_working_set_bytes: 1024 * 1024,
                 maximum_working_set_bytes: 64 * 1024 * 1024,
             },

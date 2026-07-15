@@ -64,6 +64,11 @@ impl ParquetFormatDriver {
                 discovery_kind: cdf_runtime::FormatDiscoveryKind::FormatMetadata,
                 decode_unit_policy: "row_group".to_owned(),
                 error_isolation: cdf_runtime::FormatErrorIsolation::DecodeUnit,
+                decode_cpu: cdf_runtime::CpuTaskSpec {
+                    task_kind: "format.parquet.decode".to_owned(),
+                    cpu_slot_cost: 1,
+                    native_internal_parallelism: 1,
+                },
                 minimum_working_set_bytes: 1024 * 1024,
                 maximum_working_set_bytes: 256 * 1024 * 1024,
             },

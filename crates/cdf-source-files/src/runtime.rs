@@ -2447,6 +2447,7 @@ fn stream_registered_format(
         move |mut sender, cancellation| async move {
             let _payload_retention = payload_retention;
             let options_json = driver.canonical_options(canonical_format_options)?;
+            let decode_cpu = driver.descriptor().decode_cpu.clone();
             let projection = physical_projection_names(
                 admission_schema.as_ref(),
                 scan_intent.projection.as_deref(),
@@ -2491,55 +2492,16 @@ fn stream_registered_format(
             let available_memory = memory_snapshot
                 .budget_bytes
                 .saturating_sub(memory_snapshot.current_bytes);
-            let unit_jobs = if units.len() == 1 {
-                1
-            } else {
-                match resolve_decode_unit_concurrency(
-                    &units,
-                    &unit_execution.capabilities(),
-                    available_memory,
-                    source.capabilities().useful_range_concurrency.max(1),
-                    NATIVE_TARGET_BATCH_BYTES,
-                    NATIVE_UNIT_BUFFERED_BATCHES,
-                ) {
-                    Ok(resolution) => usize::from(resolution.jobs),
-                    Err(error) if error.kind == cdf_kernel::ErrorKind::Data => 1,
-                    Err(error) => return Err(error),
-                }
-            };
-            if unit_jobs == 1 {
-                for (ordinal, unit) in units.into_iter().enumerate() {
-                    let _work = unit_execution
-                        .acquire_run_work(cancellation.clone())
-                        .await?;
-                    let mut decoded = session
-                        .decode(PhysicalDecodeRequest {
-                            unit,
-                            resource_id: options.resource_id.clone(),
-                            partition_id: options.partition_id.clone(),
-                            batch_id_prefix: options.batch_id_prefix.clone(),
-                            schema: decode_schema.clone(),
-                            source_position: source_position.clone(),
-                            projection: projection.clone(),
-                            predicates: predicates.clone(),
-                            target_batch_rows: NATIVE_TARGET_BATCH_ROWS,
-                            target_batch_bytes: NATIVE_TARGET_BATCH_BYTES,
-                            memory: Arc::clone(&memory),
-                            cancellation: cancellation.clone(),
-                        })
-                        .await?;
-                    while let Some(batch) = decoded.try_next().await? {
-                        sender.send(batch.into_batch()?).await?;
-                    }
-                    if let Some(frontiers) = &no_lookback_frontiers {
-                        source.release_before(frontiers[ordinal])?;
-                    }
-                }
-                if let Some(size_bytes) = source.identity().size_bytes {
-                    source.release_before(size_bytes)?;
-                }
-                return Ok(());
-            }
+            let unit_jobs = usize::from(resolve_decode_unit_concurrency(
+                &units,
+                &unit_execution.capabilities(),
+                &decode_cpu,
+                available_memory,
+                source.capabilities().useful_range_concurrency.max(1),
+                NATIVE_TARGET_BATCH_BYTES,
+                NATIVE_UNIT_BUFFERED_BATCHES,
+            )?
+            .jobs);
 
             let units = Arc::new(units);
             let unit_count = units.len();
@@ -2553,6 +2515,7 @@ fn stream_registered_format(
             let opener_projection = projection.clone();
             let opener_predicates = predicates.clone();
             let opener_scope_prefix = unit_scope_prefix.clone();
+            let opener_cpu = decode_cpu;
             let opener: CanonicalStreamOpener<Batch> = Box::new(move |ordinal| {
                 let unit = opener_units.get(ordinal).cloned().ok_or_else(|| {
                     CdfError::internal("decode-unit frontier ordinal is outside its session")
@@ -2565,8 +2528,10 @@ fn stream_registered_format(
                 let projection = opener_projection.clone();
                 let predicates = opener_predicates.clone();
                 let work_execution = opener_execution.clone();
-                let unit_stream = opener_execution.spawn_io_stream(
+                let cpu = opener_cpu.clone();
+                let unit_stream = opener_execution.spawn_cpu_stream(
                     &format!("{opener_scope_prefix}-unit-{ordinal:08}"),
+                    cpu,
                     NATIVE_UNIT_STREAM_ITEMS,
                     move |mut unit_sender, unit_cancellation| async move {
                         let _work = work_execution
@@ -4222,6 +4187,11 @@ mod tests {
                     discovery_kind: cdf_runtime::FormatDiscoveryKind::BoundedContent,
                     decode_unit_policy: "whole_mock_file".to_owned(),
                     error_isolation: cdf_runtime::FormatErrorIsolation::DecodeUnit,
+                    decode_cpu: cdf_runtime::CpuTaskSpec {
+                        task_kind: "format.external_mock.decode".to_owned(),
+                        cpu_slot_cost: 1,
+                        native_internal_parallelism: 1,
+                    },
                     minimum_working_set_bytes: 64,
                     maximum_working_set_bytes: 1024 * 1024,
                 },
