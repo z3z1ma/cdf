@@ -2404,6 +2404,162 @@ fn engine_parallel_frontier_polls_later_partition_while_head_is_stalled() {
     );
 }
 
+fn skewed_resource(seed: usize, terminal_failure_partition: Option<usize>) -> SkewedMockResource {
+    let partition_count = 8;
+    let batches = (0..partition_count)
+        .map(|ordinal| {
+            let row_count = 1 + ((seed * 17 + ordinal * 5) % 7);
+            let first_id = i32::try_from(seed * 10_000 + ordinal * 100).unwrap();
+            let mut batch = batch_for_partition(
+                &format!("skew-{seed}-{ordinal}"),
+                &format!("part-{ordinal}"),
+                (0..row_count)
+                    .map(|row| first_id + i32::try_from(row).unwrap())
+                    .collect(),
+                vec!["skew-value"; row_count],
+                (0..row_count)
+                    .map(|row| !(seed + ordinal + row).is_multiple_of(3))
+                    .collect(),
+            );
+            batch.header.source_position = Some(terminal_file_position());
+            batch
+        })
+        .collect();
+    let inner = MockResource::tier_b(batches).with_partition_count(partition_count);
+    SkewedMockResource {
+        inner,
+        poll_delays: Arc::new(
+            (0..partition_count)
+                .map(|ordinal| (seed * 29 + ordinal * 11) % 9)
+                .collect(),
+        ),
+        terminal_failure_partition,
+    }
+}
+
+fn skewed_plan(
+    resource: &SkewedMockResource,
+    seed: usize,
+) -> (EnginePlan, cdf_runtime::CompiledSourcePlan) {
+    let limits = [None, Some(0), Some(1), Some(3), Some(7), Some(19)];
+    let filters = if seed.is_multiple_of(2) {
+        vec!["active = true"]
+    } else {
+        Vec::new()
+    };
+    let projection = seed
+        .is_multiple_of(3)
+        .then(|| vec!["id".to_owned(), "name".to_owned()]);
+    let mut plan = Planner::new()
+        .plan_tier_b(
+            resource,
+            plan_input(
+                filters,
+                projection,
+                limits[seed % limits.len()],
+                ExecutionExtent::bounded(),
+            ),
+        )
+        .unwrap();
+    for operator in &mut plan.operator_chain {
+        if let OperatorNode::PackageSink { segmentation, .. } = operator {
+            segmentation.target_rows = 1;
+            segmentation.maximum_rows = 1;
+            segmentation.microbatch_minimum_rows = 1;
+            segmentation.microbatch_maximum_rows = 1;
+        }
+    }
+    let source = mock_compiled_source_plan(&resource.inner, None);
+    resource.inner.bind_compiled_source(&source);
+    plan = plan.bind_compiled_source(&source).unwrap();
+    plan = plan
+        .bind_operator_graph(
+            &source,
+            &cdf_runtime::DestinationRuntimeCapabilities::default(),
+        )
+        .unwrap();
+    (plan, source)
+}
+
+fn run_skewed_jobs(
+    resource: &SkewedMockResource,
+    plan: &EnginePlan,
+    source: &cdf_runtime::CompiledSourcePlan,
+    jobs: u16,
+) -> Result<EngineRunOutputWithSegmentPositions> {
+    let (_, services) = StandaloneExecutionHost::default_services(4 * 1024 * 1024 * 1024)?;
+    let services = services.with_run_job_ceiling(jobs)?;
+    let scheduler = cdf_runtime::resolve_runtime_scheduler(
+        plan.scan.partitions.len(),
+        &source.execution_capabilities,
+        &cdf_runtime::DestinationRuntimeCapabilities::default(),
+        &services,
+        Some(jobs),
+    )?;
+    services.tighten_run_job_ceiling(scheduler.effective_jobs.jobs)?;
+    let package = TempDir::new().unwrap();
+    let pre_finalize =
+        |_builder: &cdf_package::PackageBuilder, _draft: EnginePackageDraft<'_>| Ok(());
+    block_on(
+        super::execute_to_package_with_segment_positions_and_pre_finalize(
+            plan,
+            resource,
+            package.path(),
+            &pre_finalize,
+            EngineExecutionOptions::default()
+                .with_execution_services(services)
+                .with_scheduler_resolution(scheduler),
+        ),
+    )
+}
+
+#[test]
+fn randomized_skew_limit_projection_and_filter_matrix_is_jobs_invariant() {
+    for seed in 0..12 {
+        let resource = skewed_resource(seed, None);
+        let (plan, source) = skewed_plan(&resource, seed);
+        let runs = [1, 2, 4, 8]
+            .into_iter()
+            .map(|jobs| run_skewed_jobs(&resource, &plan, &source, jobs).unwrap())
+            .collect::<Vec<_>>();
+        for run in &runs[1..] {
+            assert_eq!(
+                run.output.manifest.package_hash,
+                runs[0].output.manifest.package_hash
+            );
+            assert_eq!(run.output.segments, runs[0].output.segments);
+            assert_eq!(run.output.lineage, runs[0].output.lineage);
+            assert_eq!(run.output.profile, runs[0].output.profile);
+            assert_eq!(run.segment_positions, runs[0].segment_positions);
+            assert_eq!(
+                run.output.terminal_schema_quarantines,
+                runs[0].output.terminal_schema_quarantines
+            );
+        }
+    }
+}
+
+#[test]
+fn randomized_skew_terminal_failure_is_canonical_across_jobs() {
+    for seed in (12..60).step_by(6) {
+        let resource = skewed_resource(seed, Some(2));
+        let (plan, source) = skewed_plan(&resource, seed);
+        let errors = [1, 2, 4, 8]
+            .into_iter()
+            .map(|jobs| run_skewed_jobs(&resource, &plan, &source, jobs).unwrap_err())
+            .collect::<Vec<_>>();
+        for error in &errors[1..] {
+            assert_eq!(error.kind, errors[0].kind);
+            assert_eq!(error.message, errors[0].message);
+        }
+        assert!(
+            errors[0]
+                .message
+                .contains("skew fixture terminal failure at partition 2")
+        );
+    }
+}
+
 fn fast_test_retry_policy() -> cdf_runtime::SourceRetryPolicy {
     cdf_runtime::SourceRetryPolicy {
         max_total_attempts: 3,
@@ -5195,6 +5351,13 @@ struct StalledHeadResource {
 }
 
 #[derive(Clone)]
+struct SkewedMockResource {
+    inner: MockResource,
+    poll_delays: Arc<Vec<usize>>,
+    terminal_failure_partition: Option<usize>,
+}
+
+#[derive(Clone)]
 struct DataFusionMockResource {
     descriptor: ResourceDescriptor,
     schema: SchemaRef,
@@ -5561,6 +5724,87 @@ impl ResourceStream for StalledHeadResource {
 
     fn type_policy_allowances(&self) -> cdf_kernel::TypePolicyAllowances {
         self.inner.type_policy_allowances()
+    }
+}
+
+impl ResourceStream for SkewedMockResource {
+    fn descriptor(&self) -> &ResourceDescriptor {
+        self.inner.descriptor()
+    }
+
+    fn schema(&self) -> SchemaRef {
+        self.inner.schema()
+    }
+
+    fn compiled_source_plan_hash(&self) -> Option<&str> {
+        self.inner.compiled_source_plan_hash()
+    }
+
+    fn plan_partitions(&self, request: &ScanRequest) -> Result<Vec<PartitionPlan>> {
+        self.inner.plan_partitions(request)
+    }
+
+    fn open(&self, partition: PartitionPlan) -> cdf_kernel::PartitionOpenAttempt<'_> {
+        self.inner.open_count.fetch_add(1, Ordering::SeqCst);
+        let ordinal = partition
+            .metadata
+            .get("ordinal")
+            .and_then(|value| value.parse::<usize>().ok())
+            .expect("skew fixture partition has an ordinal");
+        let mut delay = self.poll_delays[ordinal];
+        let mut batches = self
+            .inner
+            .batches
+            .iter()
+            .filter(|batch| batch.header.partition_id == partition.partition_id)
+            .cloned()
+            .map(Ok)
+            .collect::<Vec<Result<Batch>>>()
+            .into_iter();
+        if self.terminal_failure_partition == Some(ordinal) {
+            batches = vec![Err(cdf_kernel::CdfError::data(format!(
+                "skew fixture terminal failure at partition {ordinal}"
+            )))]
+            .into_iter();
+        }
+        cdf_kernel::PartitionOpenAttempt::materialized(Box::pin(async move {
+            let stream = stream::poll_fn(move |context| {
+                if delay > 0 {
+                    delay -= 1;
+                    context.waker().wake_by_ref();
+                    return Poll::Pending;
+                }
+                Poll::Ready(batches.next())
+            });
+            Ok(cdf_kernel::PartitionStreamPayload::batches(Box::pin(
+                stream,
+            )))
+        }))
+    }
+
+    fn attest_partition(
+        &self,
+        partition: PartitionPlan,
+    ) -> cdf_kernel::PartitionAttestationAttempt<'_> {
+        self.inner.attest_partition(partition)
+    }
+
+    fn effective_schema_runtime(&self) -> Option<&EffectiveSchemaRuntime> {
+        self.inner.effective_schema_runtime()
+    }
+
+    fn type_policy_allowances(&self) -> cdf_kernel::TypePolicyAllowances {
+        self.inner.type_policy_allowances()
+    }
+}
+
+impl QueryableResource for SkewedMockResource {
+    fn capabilities(&self) -> &ResourceCapabilities {
+        self.inner.capabilities()
+    }
+
+    fn negotiate(&self, request: &ScanRequest) -> Result<ScanPlan> {
+        self.inner.negotiate(request)
     }
 }
 
