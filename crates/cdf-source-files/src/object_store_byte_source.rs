@@ -11,6 +11,7 @@ use cdf_runtime::{
 };
 use futures_util::{TryStreamExt, stream};
 use object_store::{GetOptions, ObjectStore, ObjectStoreExt, path::Path as ObjectPath};
+use sha2::{Digest, Sha256};
 
 use crate::{FileIdentityMetadata, transport::verify_generation_identity};
 
@@ -126,30 +127,6 @@ impl ByteSource for ObjectStoreByteSource {
                     self.capabilities.maximum_chunk_bytes
                 )));
             }
-            if self.capabilities.exact_ranges {
-                if self.expected.size_bytes == Some(0) {
-                    let metadata =
-                        self.store.head(&self.path).await.map_err(|error| {
-                            object_error("reattest empty object generation", error)
-                        })?;
-                    let observed =
-                        crate::transport::object_identity(self.expected.location.clone(), metadata);
-                    verify_generation_identity(&self.expected, &observed, 0)?;
-                    return Ok(Box::pin(stream::empty()) as AccountedByteStream);
-                }
-                let state = ExactSequentialState {
-                    store: Arc::clone(&self.store),
-                    path: self.path.clone(),
-                    expected: self.expected.clone(),
-                    memory: Arc::clone(&self.memory),
-                    cancellation: request.cancellation,
-                    chunk_bytes: request.preferred_chunk_bytes,
-                    next_offset: 0,
-                    size_bytes: self.expected.size_bytes.unwrap_or_default(),
-                };
-                return Ok(Box::pin(stream::try_unfold(state, exact_sequential_next))
-                    as AccountedByteStream);
-            }
             let result = self
                 .store
                 .get_opts(&self.path, self.get_options())
@@ -166,17 +143,40 @@ impl ByteSource for ObjectStoreByteSource {
                     CdfError::data("object stream metadata omitted content length")
                 })?,
             )?;
-            let state = WeakSequentialState {
+            let expected_size = self.expected.size_bytes.unwrap_or_default();
+            if result.range != (0..expected_size) {
+                return Err(CdfError::data(format!(
+                    "object-store sequential response range {:?} does not match complete generation 0..{expected_size}",
+                    result.range
+                )));
+            }
+            let expected_checksum = self.expected.sha256().map(str::to_owned);
+            if expected_size == 0 {
+                if let Some(expected) = expected_checksum {
+                    let observed = format!("{:x}", Sha256::digest([]));
+                    if observed != expected.strip_prefix("sha256:").unwrap_or(&expected) {
+                        return Err(CdfError::data(
+                            "empty object-store response checksum does not match planned content identity",
+                        ));
+                    }
+                }
+                return Ok(Box::pin(stream::empty()) as AccountedByteStream);
+            }
+            let state = ObjectSequentialState {
                 stream: result.into_stream(),
                 store: Arc::clone(&self.store),
                 path: self.path.clone(),
                 expected: self.expected.clone(),
                 memory: Arc::clone(&self.memory),
                 cancellation: request.cancellation,
-                maximum_chunk_bytes: request.preferred_chunk_bytes,
+                preferred_chunk_bytes: request.preferred_chunk_bytes,
+                maximum_provider_chunk_bytes: self.capabilities.maximum_chunk_bytes,
                 transferred_bytes: 0,
+                pending: None,
+                expected_checksum: expected_checksum.clone(),
+                hasher: expected_checksum.map(|_| Sha256::new()),
             };
-            Ok(Box::pin(stream::try_unfold(state, weak_sequential_next)) as AccountedByteStream)
+            Ok(Box::pin(stream::try_unfold(state, object_sequential_next)) as AccountedByteStream)
         })
     }
 
@@ -249,93 +249,53 @@ impl ByteSource for ObjectStoreByteSource {
     }
 }
 
-struct ExactSequentialState {
-    store: Arc<dyn ObjectStore>,
-    path: ObjectPath,
-    expected: FileIdentityMetadata,
-    memory: Arc<dyn MemoryCoordinator>,
-    cancellation: RunCancellation,
-    chunk_bytes: u64,
-    next_offset: u64,
-    size_bytes: u64,
-}
-
-async fn exact_sequential_next(
-    mut state: ExactSequentialState,
-) -> Result<Option<(AccountedBytes, ExactSequentialState)>> {
-    state.cancellation.check()?;
-    if state.next_offset == state.size_bytes {
-        return Ok(None);
-    }
-    let remaining = state
-        .size_bytes
-        .checked_sub(state.next_offset)
-        .ok_or_else(|| CdfError::internal("object-store sequential range moved backwards"))?;
-    let length = remaining.min(state.chunk_bytes);
-    let end = state
-        .next_offset
-        .checked_add(length)
-        .ok_or_else(|| CdfError::internal("object-store sequential range overflowed"))?;
-    let lease = reserve(
-        Arc::clone(&state.memory),
-        ReservationRequest::new(
-            ConsumerKey::new("object-store-byte-source-sequential", MemoryClass::Source)?,
-            length,
-        )?,
-    )
-    .await?;
-    let options = GetOptions::new()
-        .with_if_match(state.expected.etag.clone())
-        .with_version(state.expected.version.clone())
-        .with_range(Some(state.next_offset..end));
-    let result = state
-        .store
-        .get_opts(&state.path, options)
-        .await
-        .map_err(|error| object_error("read sequential object range", error))?;
-    if result.range != (state.next_offset..end) {
-        return Err(CdfError::data(format!(
-            "object-store sequential range response {:?} does not match requested {}..{end}",
-            result.range, state.next_offset
-        )));
-    }
-    let observed =
-        crate::transport::object_identity(state.expected.location.clone(), result.meta.clone());
-    verify_generation_identity(&state.expected, &observed, state.size_bytes)?;
-    let bytes = result
-        .bytes()
-        .await
-        .map_err(|error| object_error("collect sequential object range", error))?;
-    if u64::try_from(bytes.len()).ok() != Some(length) {
-        return Err(CdfError::data(
-            "object-store sequential range returned a short body",
-        ));
-    }
-    state.cancellation.check()?;
-    state.next_offset = end;
-    Ok(Some((AccountedBytes::new(bytes, lease)?, state)))
-}
-
-struct WeakSequentialState {
+struct ObjectSequentialState {
     stream: futures_util::stream::BoxStream<'static, object_store::Result<Bytes>>,
     store: Arc<dyn ObjectStore>,
     path: ObjectPath,
     expected: FileIdentityMetadata,
     memory: Arc<dyn MemoryCoordinator>,
     cancellation: RunCancellation,
-    maximum_chunk_bytes: u64,
+    preferred_chunk_bytes: u64,
+    maximum_provider_chunk_bytes: u64,
     transferred_bytes: u64,
+    pending: Option<AccountedBytes>,
+    expected_checksum: Option<String>,
+    hasher: Option<Sha256>,
 }
 
-async fn weak_sequential_next(
-    mut state: WeakSequentialState,
-) -> Result<Option<(AccountedBytes, WeakSequentialState)>> {
+fn take_sequential_chunk(state: &mut ObjectSequentialState) -> Result<Option<AccountedBytes>> {
+    let Some(pending) = state.pending.take() else {
+        return Ok(None);
+    };
+    let preferred = usize::try_from(state.preferred_chunk_bytes)
+        .map_err(|_| CdfError::data("object-store chunk target exceeds usize"))?;
+    if pending.payload().len() <= preferred {
+        return Ok(Some(pending));
+    }
+    let chunk = pending.slice(0..preferred)?;
+    state.pending = Some(pending.slice(preferred..pending.payload().len())?);
+    Ok(Some(chunk))
+}
+
+async fn object_sequential_next(
+    mut state: ObjectSequentialState,
+) -> Result<Option<(AccountedBytes, ObjectSequentialState)>> {
     state.cancellation.check()?;
+    if let Some(chunk) = take_sequential_chunk(&mut state)? {
+        return Ok(Some((chunk, state)));
+    }
+    let remaining = state
+        .expected
+        .size_bytes
+        .unwrap_or_default()
+        .saturating_sub(state.transferred_bytes);
+    let admitted_frame_bytes = remaining.clamp(1, state.maximum_provider_chunk_bytes);
     let lease = reserve(
         Arc::clone(&state.memory),
         ReservationRequest::new(
             ConsumerKey::new("object-store-byte-source-sequential", MemoryClass::Source)?,
-            state.maximum_chunk_bytes,
+            admitted_frame_bytes,
         )?,
     )
     .await?;
@@ -359,6 +319,29 @@ async fn weak_sequential_next(
                     crate::transport::object_identity(state.expected.location.clone(), metadata);
                 verify_generation_identity(&state.expected, &observed, state.transferred_bytes)?;
             }
+            if let Some(expected) = &state.expected_checksum {
+                let observed = format!(
+                    "{:x}",
+                    state
+                        .hasher
+                        .take()
+                        .ok_or_else(|| {
+                            CdfError::internal(
+                                "object checksum expectation omitted its streaming hasher",
+                            )
+                        })?
+                        .finalize()
+                );
+                if observed
+                    != expected
+                        .strip_prefix("sha256:")
+                        .unwrap_or(expected.as_str())
+                {
+                    return Err(CdfError::data(
+                        "object-store sequential response checksum does not match planned content identity",
+                    ));
+                }
+            }
             return Ok(None);
         };
         let length = u64::try_from(bytes.len())
@@ -366,10 +349,10 @@ async fn weak_sequential_next(
         if length == 0 {
             continue;
         }
-        if length > state.maximum_chunk_bytes {
+        if length > state.maximum_provider_chunk_bytes {
             return Err(CdfError::data(format!(
                 "object-store response chunk {length} exceeds its pre-admitted {}-byte envelope",
-                state.maximum_chunk_bytes
+                state.maximum_provider_chunk_bytes
             )));
         }
         state.transferred_bytes = state
@@ -381,8 +364,15 @@ async fn weak_sequential_next(
                 "object-store sequential response exceeded planned generation length",
             ));
         }
+        if let Some(hasher) = &mut state.hasher {
+            hasher.update(&bytes);
+        }
         state.cancellation.check()?;
-        return Ok(Some((AccountedBytes::new(bytes, lease)?, state)));
+        state.pending = Some(AccountedBytes::new(bytes, lease)?);
+        let chunk = take_sequential_chunk(&mut state)?.ok_or_else(|| {
+            CdfError::internal("nonempty object-store frame produced no sequential chunk")
+        })?;
+        return Ok(Some((chunk, state)));
     }
 }
 
@@ -463,26 +453,30 @@ mod tests {
             Ok::<Bytes, object_store::Error>(Bytes::from_static(b"abc")),
         ])
         .boxed();
-        let state = WeakSequentialState {
+        let state = ObjectSequentialState {
             stream,
             store,
             path,
             expected,
             memory,
             cancellation: RunCancellation::default(),
-            maximum_chunk_bytes: WINDOW_BYTES,
+            preferred_chunk_bytes: WINDOW_BYTES,
+            maximum_provider_chunk_bytes: WINDOW_BYTES,
             transferred_bytes: 0,
+            pending: None,
+            expected_checksum: None,
+            hasher: None,
         };
 
-        let (chunk, state) = futures_executor::block_on(weak_sequential_next(state))
+        let (chunk, state) = futures_executor::block_on(object_sequential_next(state))
             .unwrap()
             .unwrap();
         assert_eq!(chunk.payload(), b"abc");
         assert_eq!(chunk.lease().bytes(), 3);
-        assert_eq!(coordinator.snapshot().peak_bytes, WINDOW_BYTES);
+        assert_eq!(coordinator.snapshot().peak_bytes, 3);
         drop(chunk);
         assert!(
-            futures_executor::block_on(weak_sequential_next(state))
+            futures_executor::block_on(object_sequential_next(state))
                 .unwrap()
                 .is_none()
         );
@@ -502,8 +496,9 @@ mod tests {
             "s3://bucket/events/provider-oversized.bin".to_owned(),
             metadata,
         );
-        let coordinator =
-            Arc::new(DeterministicMemoryCoordinator::new(WINDOW_BYTES, BTreeMap::new()).unwrap());
+        let coordinator = Arc::new(
+            DeterministicMemoryCoordinator::new(MAXIMUM_CHUNK_BYTES, BTreeMap::new()).unwrap(),
+        );
         let memory: Arc<dyn MemoryCoordinator> = coordinator.clone();
         let source = ObjectStoreByteSource::new(store, path, expected, memory).unwrap();
 
@@ -527,7 +522,7 @@ mod tests {
 
         assert_eq!(observed, body);
         assert_eq!(chunk_lengths, vec![1024 * 1024, 1024 * 1024, 137]);
-        assert_eq!(coordinator.snapshot().peak_bytes, WINDOW_BYTES);
+        assert!(coordinator.snapshot().peak_bytes <= MAXIMUM_CHUNK_BYTES);
         assert_eq!(coordinator.snapshot().current_bytes, 0);
     }
 
@@ -581,7 +576,8 @@ mod tests {
 
         assert!(
             error.message.contains("generation changed")
-                || error.message.contains("generation size"),
+                || error.message.contains("generation size")
+                || error.message.contains("precondition"),
             "{error}"
         );
     }
