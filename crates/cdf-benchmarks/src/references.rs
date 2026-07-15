@@ -8,7 +8,10 @@ use std::{
 
 use arrow_csv::reader::{Format as CsvFormat, ReaderBuilder as CsvReaderBuilder};
 use arrow_json::reader::{ReaderBuilder as JsonReaderBuilder, infer_json_schema};
-use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
+use parquet::{
+    arrow::{ArrowWriter, arrow_reader::ParquetRecordBatchReaderBuilder},
+    file::properties::{EnabledStatistics, WriterProperties},
+};
 use serde::{Deserialize, Serialize};
 
 use crate::{BenchResult, WorkerMeasurement, bench_error};
@@ -161,6 +164,14 @@ pub enum ReferenceWorkload {
         path: PathBuf,
         batch_rows: usize,
     },
+    ArrowParquetRewrite {
+        path: PathBuf,
+        output: PathBuf,
+        read_batch_rows: usize,
+        write_batch_rows: usize,
+        write_batch_bytes: usize,
+        sync: bool,
+    },
     ArrowCsv {
         path: PathBuf,
         batch_rows: usize,
@@ -239,6 +250,50 @@ pub fn run_reference(workload: &ReferenceWorkload) -> BenchResult<WorkerMeasurem
                 .with_batch_size(*batch_rows)
                 .build()?;
             collect_arrow(reader, physical_bytes)
+        }
+        ReferenceWorkload::ArrowParquetRewrite {
+            path,
+            output,
+            read_batch_rows,
+            write_batch_rows,
+            write_batch_bytes,
+            sync,
+        } => {
+            require_batch(*read_batch_rows)?;
+            require_batch(*write_batch_rows)?;
+            require_buffer(*write_batch_bytes)?;
+            let builder = ParquetRecordBatchReaderBuilder::try_new(fs::File::open(path)?)?
+                .with_batch_size(*read_batch_rows);
+            let schema = builder.schema().clone();
+            let reader = builder.build()?;
+            let properties = WriterProperties::builder()
+                .set_created_by("cdf benchmark direct arrow-rs rewrite".to_owned())
+                .set_write_batch_size(*write_batch_rows)
+                .set_data_page_row_count_limit((*write_batch_rows).min(64 * 1024))
+                .set_data_page_size_limit((*write_batch_bytes).min(8 * 1024 * 1024))
+                .set_max_row_group_row_count(Some(*write_batch_rows))
+                .set_max_row_group_bytes(Some(*write_batch_bytes))
+                .set_dictionary_enabled(false)
+                .set_statistics_enabled(EnabledStatistics::None)
+                .build();
+            let file = fs::File::create(output)?;
+            let mut output_writer = BufWriter::with_capacity(1024 * 1024, file);
+            let mut writer = ArrowWriter::try_new(&mut output_writer, schema, Some(properties))?;
+            let mut rows = 0_u64;
+            let mut logical_bytes = 0_u64;
+            for batch in reader {
+                let batch = batch?;
+                rows = rows.saturating_add(batch.num_rows() as u64);
+                logical_bytes =
+                    logical_bytes.saturating_add(u64::try_from(batch.get_array_memory_size())?);
+                writer.write(&batch)?;
+            }
+            writer.close()?;
+            output_writer.flush()?;
+            if *sync {
+                output_writer.get_ref().sync_all()?;
+            }
+            measurement(rows, logical_bytes, fs::metadata(output)?.len())
         }
         ReferenceWorkload::ArrowCsv {
             path,
@@ -332,4 +387,52 @@ fn require_batch(value: usize) -> BenchResult<()> {
         ));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use arrow_array::{Int64Array, RecordBatch, StringArray};
+    use arrow_schema::{DataType, Field, Schema};
+
+    use super::*;
+
+    #[test]
+    fn parquet_rewrite_reference_uses_the_declared_writer_policy() {
+        let temp = tempfile::tempdir().unwrap();
+        let input = temp.path().join("input.parquet");
+        let output = temp.path().join("output.parquet");
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int64, false),
+            Field::new("text", DataType::Utf8, false),
+        ]));
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(Int64Array::from(vec![1, 2, 3])),
+                Arc::new(StringArray::from(vec!["one", "two", "three"])),
+            ],
+        )
+        .unwrap();
+        let mut source =
+            ArrowWriter::try_new(fs::File::create(&input).unwrap(), schema, None).unwrap();
+        source.write(&batch).unwrap();
+        source.close().unwrap();
+
+        let measurement = run_reference(&ReferenceWorkload::ArrowParquetRewrite {
+            path: input,
+            output: output.clone(),
+            read_batch_rows: 1024,
+            write_batch_rows: 8192,
+            write_batch_bytes: 1024 * 1024,
+            sync: true,
+        })
+        .unwrap();
+
+        assert_eq!(measurement.rows, 3);
+        assert_eq!(
+            measurement.physical_bytes,
+            fs::metadata(output).unwrap().len()
+        );
+        assert!(measurement.logical_bytes > 0);
+    }
 }

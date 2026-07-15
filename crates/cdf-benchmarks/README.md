@@ -13,7 +13,7 @@ cargo build -p cdf-benchmarks --bin cdf-p3-lab --release --locked
 target/release/cdf-p3-lab host
 ```
 
-`run-cell REQUEST.json` executes a schema-versioned macro cell with median-of-N sampling, timeout, explicit warm/cold/uncontrolled mode, child-process wall/CPU/RSS observation, reference identity, and bias labels. `reference-worker REQUEST.json` is the isolated worker for sequential read/write, memcpy, Arrow Parquet/CSV/NDJSON, and DuckDB Parquet references.
+`run-cell REQUEST.json` executes a schema-versioned macro cell with median-of-N sampling, timeout, explicit warm/cold/uncontrolled mode, child-process wall/CPU/RSS observation, reference identity, and bias labels. `reference-worker REQUEST.json` is the isolated worker for sequential read/write, memcpy, Arrow Parquet/CSV/NDJSON, direct Arrow Parquet rewrite with explicit writer policy, and DuckDB Parquet references.
 
 Profiling plans record the exact detected tool/version, command, and ignored artifact path without requiring the tool in ordinary tests:
 
