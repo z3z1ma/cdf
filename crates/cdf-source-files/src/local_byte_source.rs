@@ -48,6 +48,12 @@ struct LocalGeneration {
     change_token: String,
 }
 
+impl LocalGeneration {
+    fn evidence_token(&self) -> String {
+        format!("local-metadata-v1:{}:{}", self.size_bytes, self.modified_ns)
+    }
+}
+
 impl LocalByteSource {
     pub fn open(path: impl AsRef<Path>, memory: Arc<dyn MemoryCoordinator>) -> Result<Self> {
         let path = std::fs::canonicalize(path.as_ref()).map_err(|error| {
@@ -64,10 +70,7 @@ impl LocalByteSource {
         let identity = ContentIdentity {
             stable_id,
             size_bytes: Some(generation.size_bytes),
-            generation: Some(format!(
-                "local-v1:{}:{}:{}",
-                generation.size_bytes, generation.modified_ns, generation.change_token
-            )),
+            generation: Some(generation.evidence_token()),
             checksum: None,
             // Metadata generations reattest one planned open, but cannot authorize
             // cross-command observation-cache reuse without a content hash.
@@ -270,11 +273,7 @@ fn local_change_token(metadata: &std::fs::Metadata) -> String {
 }
 
 pub(crate) fn local_source_generation(path: &Path) -> Result<String> {
-    let generation = local_generation(path)?;
-    Ok(format!(
-        "local-v1:{}:{}:{}",
-        generation.size_bytes, generation.modified_ns, generation.change_token
-    ))
+    Ok(local_generation(path)?.evidence_token())
 }
 
 async fn attest_file(file: &File, expected: &LocalGeneration) -> Result<()> {
@@ -293,7 +292,7 @@ async fn attest_file(file: &File, expected: &LocalGeneration) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use std::io::Write;
+    use std::{io::Write, time::Duration};
 
     use cdf_runtime::RunCancellation;
     use futures_util::TryStreamExt;
@@ -352,5 +351,30 @@ mod tests {
                 .is_err()
         );
         assert_eq!(memory.snapshot().current_bytes, 0);
+    }
+
+    #[test]
+    fn serialized_generation_excludes_host_local_attestation_facts() {
+        let first = tempfile::NamedTempFile::new().unwrap();
+        let second = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(first.path(), b"same bytes").unwrap();
+        std::fs::write(second.path(), b"same bytes").unwrap();
+        let modified = UNIX_EPOCH + Duration::from_secs(1_700_000_000);
+        for path in [first.path(), second.path()] {
+            let file = std::fs::OpenOptions::new().write(true).open(path).unwrap();
+            file.set_times(std::fs::FileTimes::new().set_modified(modified))
+                .unwrap();
+        }
+
+        assert_eq!(
+            local_source_generation(first.path()).unwrap(),
+            local_source_generation(second.path()).unwrap()
+        );
+        #[cfg(unix)]
+        assert_ne!(
+            local_generation(first.path()).unwrap(),
+            local_generation(second.path()).unwrap(),
+            "host-local inode/ctime evidence must remain available for open re-attestation"
+        );
     }
 }

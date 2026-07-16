@@ -2,6 +2,7 @@ use std::{
     collections::BTreeMap,
     fs,
     path::{Path, PathBuf},
+    time::{Duration, SystemTime},
 };
 
 use cdf_contract::{ContractPolicy, ObservedSchema, compile_validation_program};
@@ -54,7 +55,7 @@ pub const LIVE_LOCAL_FILE_POSTGRES_SCHEMA: &str = "cdf_live_run_golden";
 pub const LIVE_LOCAL_FILE_V1_SOURCE_PATH: &str = "data/events.ndjson";
 pub const LIVE_LOCAL_FILE_V1_SOURCE_POSITION_PATH: &str = "events.ndjson";
 pub const LIVE_LOCAL_FILE_V1_SOURCE_SHA256: &str =
-    "b8ecb46f86694505cef18e88722db9f4bc3a7c07cfb62230bf7ad123e61c9cb6";
+    "sha256:b8ecb46f86694505cef18e88722db9f4bc3a7c07cfb62230bf7ad123e61c9cb6";
 pub const LIVE_LOCAL_FILE_V1_SOURCE_SIZE_BYTES: u64 = 46;
 pub const LIVE_LOCAL_FILE_V1_ROW_COUNT: u64 = 2;
 pub const LIVE_LOCAL_FILE_V1_SEGMENT_COUNT: usize = 1;
@@ -93,6 +94,7 @@ schema = { fields = [
 "#;
 
 const LIVE_SOURCE_CONTENTS: &str = "{\"id\":1,\"name\":\"ada\"}\n{\"id\":2,\"name\":\"grace\"}\n";
+const LIVE_SOURCE_MODIFIED_SECS: u64 = 1_700_000_000;
 
 #[derive(Clone, Debug)]
 pub struct LiveLocalFileFixtureSpec {
@@ -523,8 +525,16 @@ fn write_live_fixture_files(project_root: &Path) -> Result<()> {
     let data_dir = project_root.join("data");
     fs::create_dir_all(&data_dir)
         .map_err(|error| CdfError::data(format!("create live fixture data dir: {error}")))?;
-    fs::write(data_dir.join("events.ndjson"), LIVE_SOURCE_CONTENTS)
-        .map_err(|error| CdfError::data(format!("write live fixture source file: {error}")))
+    let path = data_dir.join("events.ndjson");
+    fs::write(&path, LIVE_SOURCE_CONTENTS)
+        .map_err(|error| CdfError::data(format!("write live fixture source file: {error}")))?;
+    let file = fs::OpenOptions::new()
+        .write(true)
+        .open(&path)
+        .map_err(|error| CdfError::data(format!("open live fixture source file: {error}")))?;
+    let modified = SystemTime::UNIX_EPOCH + Duration::from_secs(LIVE_SOURCE_MODIFIED_SECS);
+    file.set_times(fs::FileTimes::new().set_modified(modified))
+        .map_err(|error| CdfError::data(format!("stabilize live fixture source time: {error}")))
 }
 
 fn assert_source_position_matches_expected(delta: &StateDelta, expected: &LiveRunGoldenEvidence) {

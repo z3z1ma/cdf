@@ -95,3 +95,64 @@ fn first_party_codec_graphs_are_parser_local_and_mutually_isolated() {
         }
     }
 }
+
+#[test]
+fn generic_source_compiler_graphs_exclude_concrete_drivers() {
+    let concrete_drivers = [
+        "cdf-source-files",
+        "cdf-source-rest",
+        "cdf-source-postgres",
+        "cdf-python",
+    ];
+    for root in ["cdf-runtime", "cdf-declarative", "cdf-project"] {
+        let tree = cargo_tree(root, "normal");
+        let packages = package_names(&tree);
+        for driver in concrete_drivers {
+            assert!(
+                !packages.contains(driver),
+                "generic source compiler package {root} reaches concrete driver {driver}:\n{tree}"
+            );
+        }
+    }
+}
+
+#[test]
+fn first_party_source_driver_graphs_are_sibling_isolated() {
+    let drivers = [
+        "cdf-source-files",
+        "cdf-source-rest",
+        "cdf-source-postgres",
+        "cdf-python",
+    ];
+    let forbidden_upper_layers = [
+        "cdf-cli",
+        "cdf-conformance",
+        "cdf-declarative",
+        "cdf-engine",
+        "cdf-project",
+        "cdf-package",
+        "cdf-dest-duckdb",
+        "cdf-dest-parquet",
+        "cdf-dest-postgres",
+    ];
+    for driver in drivers {
+        let tree = cargo_tree(driver, "normal");
+        let packages = package_names(&tree);
+        assert!(
+            packages.contains(driver),
+            "missing source-driver root {driver}:\n{tree}"
+        );
+        for sibling in drivers.into_iter().filter(|candidate| *candidate != driver) {
+            assert!(
+                !packages.contains(sibling),
+                "source driver {driver} reaches sibling driver {sibling}:\n{tree}"
+            );
+        }
+        for forbidden in forbidden_upper_layers {
+            assert!(
+                !packages.contains(forbidden),
+                "source driver {driver} reaches upper-layer package {forbidden}:\n{tree}"
+            );
+        }
+    }
+}

@@ -1,13 +1,13 @@
 {
   "package_id": "live-local-file-v1",
-  "package_hash": "sha256:49e827ed174a709183a6ac47d663202cf58ca28361ec3a5988a37797baff8dcf",
+  "package_hash": "sha256:bc3bfc9a4e89545e7a4f77f2193ad3c312ffe3a0aabaaa7324e2aae51cb472f2",
   "checkpoint_id": "checkpoint-live-local-file-v1",
   "pipeline_id": "pipeline-live-local-file-v1",
   "resource_id": "local.events",
   "destination": "duckdb",
   "destination_target": "events",
   "source_path_suffix": "events.ndjson",
-  "source_sha256": "b8ecb46f86694505cef18e88722db9f4bc3a7c07cfb62230bf7ad123e61c9cb6",
+  "source_sha256": "sha256:b8ecb46f86694505cef18e88722db9f4bc3a7c07cfb62230bf7ad123e61c9cb6",
   "source_size_bytes": 46,
   "destination_rows": 2,
   "destination_row_counts": {
@@ -21,9 +21,9 @@
   "mirror_state_rows": 1,
   "package": {
     "manifest_version": 1,
-    "package_hash": "sha256:49e827ed174a709183a6ac47d663202cf58ca28361ec3a5988a37797baff8dcf",
+    "package_hash": "sha256:bc3bfc9a4e89545e7a4f77f2193ad3c312ffe3a0aabaaa7324e2aae51cb472f2",
     "package_status": "checkpointed",
-    "signature_signing_input": "sha256:49e827ed174a709183a6ac47d663202cf58ca28361ec3a5988a37797baff8dcf",
+    "signature_signing_input": "sha256:bc3bfc9a4e89545e7a4f77f2193ad3c312ffe3a0aabaaa7324e2aae51cb472f2",
     "signature_value": null,
     "identity_manifest_version": 1,
     "identity_layout": [
@@ -45,33 +45,33 @@
       },
       {
         "path": "destination/commit_plan.json",
-        "byte_count": 511,
-        "sha256": "05109af21ab7ba7a5eaabf095ebdcba4019447948b43168cf5209593970e3bd6"
+        "byte_count": 591,
+        "sha256": "08b30513409520075f32ff44f1b9dd2a76171de838e13c03ec265be7ca05960e"
       },
       {
         "path": "lineage/lineage.json",
-        "byte_count": 87,
-        "sha256": "dd00adbc89b409d969c06c6d4fd37c5fcb366001139a6e5d125b2c1c41f65895"
+        "byte_count": 472,
+        "sha256": "26ea587f8fc9b9d651342b5d70d30c9eef8b1796319f83e944e431ae6ffcec49"
       },
       {
         "path": "plan/explain.json",
-        "byte_count": 1480,
-        "sha256": "075a0522d44e0ae63ba57ac6242e449c79f73641cf9ebe59a965ddef279384e4"
+        "byte_count": 3241,
+        "sha256": "c0648f93599d347aeb576693abbfb33fb4d66753d602516c77a602522aed96a4"
       },
       {
         "path": "plan/scan.json",
-        "byte_count": 690,
-        "sha256": "949cba7ffe7c2b741f3e347fb477bf1af3c9f0d906e655f1fb59a489518366de"
+        "byte_count": 1254,
+        "sha256": "9381b8630417792ae0e03e81d72bdadcb56b2d931056bd17bb596217fa2625f7"
+      },
+      {
+        "path": "plan/schema-admission.json",
+        "byte_count": 2853,
+        "sha256": "2e65c45044caf7a06679fc026978932473f28b244f2fb2aafb97d53c9b748daf"
       },
       {
         "path": "plan/validation-program.json",
-        "byte_count": 2399,
-        "sha256": "21b2333480d834be1f7c4703ad4fd1f25a8aa270f7650cae1b7a719225ac51ec"
-      },
-      {
-        "path": "schema/coercion-plan.json",
-        "byte_count": 434,
-        "sha256": "4c9f5df6b75e7da1810a92afc6d54d13a8b5712921bc2c60c9afc3da5d00b409"
+        "byte_count": 2913,
+        "sha256": "0234edd52b8908bd53722d5b8f83ad1e5b983cad8ca69401e14c80749defd699"
       },
       {
         "path": "schema/contract-evolution.json",
@@ -89,19 +89,24 @@
         "sha256": "16d1adeead5b3ff5af60613d463182eade9bf32a366f1a91ff9b72dcf3ec7e76"
       },
       {
+        "path": "schema/stream-admission-evidence.json",
+        "byte_count": 1727,
+        "sha256": "d6e027c353c6abebd28d350c7c1ae90912346a802095ac47c1a385b70272d4b2"
+      },
+      {
         "path": "state/input_checkpoint.json",
         "byte_count": 4,
         "sha256": "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b"
       },
       {
         "path": "state/processed-observations.json",
-        "byte_count": 519,
-        "sha256": "00ef8db00b22ba621220d617e6e5dbb9cdb90cca4d71bd2fa30f12804a1410cb"
+        "byte_count": 703,
+        "sha256": "7e4e084ac6cd765d2defd51542f3e311d497cc4a7b38344d604bad3fcd8042ca"
       },
       {
         "path": "state/proposed_delta.json",
-        "byte_count": 842,
-        "sha256": "b417a9630cdc6ab97549570bec2e4bdc613b8c37944a4e1c98acd31790a09e78"
+        "byte_count": 1002,
+        "sha256": "8646e445c581f08fcae34a5e4cdac286307142e3fb31a3a34778151c12128c3e"
       },
       {
         "path": "stats/profile.json",

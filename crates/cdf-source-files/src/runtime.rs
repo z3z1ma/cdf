@@ -2693,13 +2693,8 @@ fn validate_partition_plan_shape<'a>(
             partition.partition_id
         )));
     }
-    let expected_path_binding = planned_file_path_binding(
-        &descriptor.resource_id,
-        &plan.root,
-        &plan.glob,
-        path,
-        match_count,
-    )?;
+    let expected_path_binding =
+        planned_file_path_binding(&descriptor.resource_id, &plan.glob, path, match_count)?;
     if partition
         .metadata
         .get("plan_path_binding")
@@ -2896,7 +2891,6 @@ fn partition_for_file_match(
         "plan_path_binding".to_owned(),
         planned_file_path_binding(
             &descriptor.resource_id,
-            &plan.root,
             &plan.glob,
             &file.path_text,
             total_matches,
@@ -3001,14 +2995,12 @@ fn partition_for_file_match(
 
 fn planned_file_path_binding(
     resource_id: &ResourceId,
-    root: &str,
     glob: &str,
     path: &str,
     match_count: usize,
 ) -> Result<String> {
     cdf_runtime::artifact_hash(&serde_json::json!({
         "resource_id": resource_id,
-        "root": root,
         "glob": glob,
         "path": path,
         "match_count": match_count,

@@ -7,7 +7,7 @@
   "destination": "parquet_filesystem",
   "destination_target": "events",
   "source_path_suffix": "events.ndjson",
-  "source_sha256": "b8ecb46f86694505cef18e88722db9f4bc3a7c07cfb62230bf7ad123e61c9cb6",
+  "source_sha256": "sha256:b8ecb46f86694505cef18e88722db9f4bc3a7c07cfb62230bf7ad123e61c9cb6",
   "source_size_bytes": 46,
   "destination_rows": 2,
   "destination_row_counts": {
