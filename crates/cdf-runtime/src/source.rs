@@ -1615,16 +1615,7 @@ impl SourceDiscoveryCandidate {
                 "source discovery candidate evidence location does not match its canonical redaction",
             ));
         }
-        if self.identity.iter().any(|(key, value)| {
-            key.is_empty()
-                || key.chars().any(char::is_control)
-                || value.is_empty()
-                || value.chars().any(char::is_control)
-        }) {
-            return Err(CdfError::contract(
-                "source discovery candidate identity keys and values must be nonempty and control-free",
-            ));
-        }
+        validate_source_evidence_identity(&self.identity)?;
         Ok(())
     }
 
@@ -1702,29 +1693,28 @@ impl SourceSchemaObservation {
 }
 
 pub fn validate_source_evidence_identity(identity: &BTreeMap<String, String>) -> Result<()> {
-    if identity.iter().any(|(key, value)| {
-        key.is_empty()
+    for (key, value) in identity {
+        if key.is_empty()
             || key.chars().any(char::is_control)
+            || value.is_empty()
             || value.chars().any(char::is_control)
-            || contains_unredacted_uri_authority(value)
-    }) {
-        return Err(CdfError::contract(
-            "source evidence identity contains an invalid key, control character, or unredacted URI",
-        ));
+            || compiled_source_key_is_sensitive(key)
+            || value.starts_with("secret://")
+        {
+            return Err(CdfError::contract(
+                "source evidence identity contains an invalid or sensitive key or value",
+            ));
+        }
+        if value.contains("://")
+            && (value.split_whitespace().count() != 1
+                || SourceEvidenceLocation::from_operational(value)?.as_str() != value)
+        {
+            return Err(CdfError::contract(
+                "source evidence identity contains an unredacted or mixed operational URI",
+            ));
+        }
     }
     Ok(())
-}
-
-fn contains_unredacted_uri_authority(value: &str) -> bool {
-    let Some((_, remainder)) = value.split_once("://") else {
-        return false;
-    };
-    let authority_end = remainder.find('/').unwrap_or(remainder.len());
-    let authority = &remainder[..authority_end];
-    let query_is_unredacted = value
-        .split_once('?')
-        .is_some_and(|(_, query)| query != "<redacted>");
-    authority.contains('@') || query_is_unredacted || value.contains('#')
 }
 
 pub trait SourceDiscoverySession: Send + Sync {

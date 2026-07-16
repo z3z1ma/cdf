@@ -577,6 +577,26 @@ mod tests {
     }
 
     #[test]
+    fn cache_hit_with_opaque_secret_evidence_is_rejected_and_removed() {
+        let temp = tempfile::tempdir().unwrap();
+        let store = ObservationCacheStore::new(temp.path());
+        let key = key("v1");
+        let path = store.entry_path(&key).unwrap();
+        let mut unsafe_entry = entry(key.clone());
+        unsafe_entry
+            .source_identity
+            .insert("api_token".to_owned(), "opaque-super-secret".to_owned());
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(&path, serde_json::to_vec(&unsafe_entry).unwrap()).unwrap();
+
+        assert_eq!(
+            store.lookup(&key),
+            ObservationCacheLookup::Miss(ObservationCacheMissReason::CorruptOrUnsupported)
+        );
+        assert!(!path.exists());
+    }
+
+    #[test]
     fn oversized_lookup_is_bounded_before_deserialization() {
         struct CountingReader {
             inner: Cursor<Vec<u8>>,

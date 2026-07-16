@@ -1058,6 +1058,7 @@ fn discover_registered_resource_schema(
 fn namespaced_driver_evidence(
     evidence: &BTreeMap<String, String>,
 ) -> Result<BTreeMap<String, String>> {
+    cdf_runtime::validate_source_evidence_identity(evidence)?;
     evidence
         .iter()
         .map(|(key, value)| {
@@ -1872,6 +1873,13 @@ mod terminal_evidence_tests {
             framework["driver.discovery_manifest_hash"],
             "sha256:attacker"
         );
+
+        let secret = namespaced_driver_evidence(&BTreeMap::from([(
+            "api_token".to_owned(),
+            "opaque-super-secret".to_owned(),
+        )]))
+        .unwrap_err();
+        assert!(!secret.message.contains("opaque-super-secret"));
     }
 
     #[test]
@@ -1885,10 +1893,6 @@ mod terminal_evidence_tests {
         .unwrap();
         candidate.identity.insert("etag".to_owned(), String::new());
         let error = registered_cache_source(&candidate).unwrap_err();
-        assert!(
-            error
-                .message
-                .contains("identity keys and values must be nonempty")
-        );
+        assert!(error.message.contains("invalid or sensitive key or value"));
     }
 }

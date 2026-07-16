@@ -525,7 +525,7 @@ impl SourceDiscoverySession for VerifiedSourceDiscoverySession {
         {
             return Err(CdfError::data(format!(
                 "source discovery observation for `{}` exceeded its compiler budget: read {} of {} bytes and {} of {} records",
-                candidate.canonical_location,
+                candidate.evidence_location.as_str(),
                 observation.bytes_read,
                 request.maximum_bytes,
                 observation.records_read,
@@ -1229,6 +1229,40 @@ mod tests {
         )
         .unwrap_err();
         assert!(error.message.contains("invalid canonical identity"));
+
+        let opaque_secret = SourceSchemaObservation::new(
+            &secret_candidate,
+            Schema::empty(),
+            BTreeMap::from([("api_token".to_owned(), "opaque-super-secret".to_owned())]),
+            1,
+            1,
+        )
+        .unwrap_err();
+        assert!(!opaque_secret.message.contains("opaque-super-secret"));
+
+        let over_budget = VerifiedSourceDiscoverySession {
+            inner: Box::new(BoundaryProbeSession {
+                candidates: vec![secret_candidate.clone()],
+                bytes_read: 2,
+                records_read: 1,
+                replace_location: None,
+                replace_binding: None,
+            }),
+        };
+        let error = over_budget
+            .observe(
+                &secret_candidate,
+                &SourceDiscoveryRequest::new(1, 1).unwrap(),
+            )
+            .unwrap_err();
+        assert!(
+            error
+                .message
+                .contains(secret_candidate.evidence_location.as_str())
+        );
+        assert!(!error.message.contains("alice"));
+        assert!(!error.message.contains("X-Amz-Signature"));
+        assert!(!error.message.contains("fragment"));
     }
 
     #[test]
