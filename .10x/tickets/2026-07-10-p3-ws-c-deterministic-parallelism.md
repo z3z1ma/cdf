@@ -15,7 +15,7 @@ Execute logical file, row-group, window, and other safe partitions concurrently 
 - `.10x/tickets/done/2026-07-11-p3-c1-scheduler-admission-contract.md`
 - `.10x/tickets/done/2026-07-11-p3-c2-parallel-frontier-execution.md`
 - `.10x/tickets/done/2026-07-11-p3-c3-engine-ffi-parallel-integration.md`
-- `.10x/tickets/2026-07-11-p3-c4-jobs-invariance-scaling-matrix.md`
+- `.10x/tickets/done/2026-07-11-p3-c4-jobs-invariance-scaling-matrix.md`
 - `.10x/tickets/2026-07-11-p3-c5-isolated-worker-equivalence.md`
 
 ## Acceptance criteria
@@ -28,7 +28,7 @@ Execute logical file, row-group, window, and other safe partitions concurrently 
 
 ## Blockers
 
-C1–C3, the injected execution host, memory ledger, WS-L baseline, and D8 full-path repair are complete. C4 is active for terminal evidence reconciliation and continues to gate C5, F4, G4, and V3.
+C1–C4, the injected execution host, memory ledger, WS-L baseline, and D8 full-path repair are complete. C5 remains blocked only on WX1 and A8; C4 no longer gates F4, G4, or V3.
 
 ## Progress and notes
 
@@ -36,6 +36,7 @@ C1–C3, the injected execution host, memory ledger, WS-L baseline, and D8 full-
 - 2026-07-14: Closed C3 after 247 affected-graph tests and fresh adversarial pass. Codec, DataFusion, Python, and native/FFI work now share bounded CPU authority with post-release completion, global mixed-cost fairness, and worker-safe teardown. The active-ticket directory fell from 84 to 83 records and done tickets rose from 299 to 300. C4 is activated because it has the highest immediate dependency fanout in P3.
 - 2026-07-15: Fresh C4 review rejected closure. The concrete re-entrant memory-waker hazard is fixed in `b4e7ec6d`; C4 remains blocked on D8 and its own missing exact matrix/telemetry evidence. D8 now depends only on the completed C3 substrate, eliminating the prior dependency cycle.
 - 2026-07-15: D8 closed with full-path FineWeb throughput above its required reference ratio and exact logical destination receipt/manifest identity at jobs 1/2/auto/4. C4 is reactivated as the highest-fanout P3 closure ticket.
+- 2026-07-15: Closed C4 after a fresh staged-path FineWeb jobs 1/2/4 curve named the current jobs=2 knee, generic task/permit/frontier telemetry made scheduler overhead and speculative waste observable without adapter leaks, and complete logical receipts remained invariant across DuckDB, Parquet, PostgreSQL destination, REST, and SQL-source matrices. C5 now waits only on the portable task protocol and drain-epoch executor.
 
 ## References
 

@@ -103,6 +103,8 @@ pub struct PreparedFilePackageRun {
     pub partition_count: usize,
     pub package_hash: String,
     pub segments: Vec<cdf_package_contract::SegmentEntry>,
+    pub runtime_scheduler: cdf_runtime::RuntimeSchedulerReport,
+    pub source_frontier: cdf_runtime::SourceFrontierReport,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -148,6 +150,8 @@ pub struct PreparedFileDestinationRun {
     /// schema, disposition, and counts available to determinism assertions.
     pub logical_manifest: Option<serde_json::Value>,
     pub row_count: u64,
+    pub runtime_scheduler: cdf_runtime::RuntimeSchedulerReport,
+    pub source_frontier: cdf_runtime::SourceFrontierReport,
 }
 
 fn logical_destination_evidence(
@@ -172,6 +176,7 @@ fn logical_destination_evidence(
         values.remove("replace_pointer_sha256");
         values.remove("database_path");
         values.remove("writer_lock");
+        values.remove("xid");
     }
     if let Some(parameters) = receipt_object
         .get_mut("verify")
@@ -465,7 +470,9 @@ pub fn run_prepared_file_to_package(
     };
     let execution = benchmark_execution_services(request.execution_host_jobs)?;
     let host_jobs = execution.capabilities().logical_cpu_slots;
-    let execution = execution.with_run_job_ceiling(request.jobs.unwrap_or(host_jobs))?;
+    let execution = execution
+        .with_run_job_ceiling(request.jobs.unwrap_or(host_jobs))?
+        .with_scheduler_measurement(true)?;
     let source = benchmark_file_resource(
         &request.source_root,
         &request.glob,
@@ -515,7 +522,7 @@ pub fn run_prepared_file_to_package(
         &pre_finalize,
         EngineExecutionOptions::default()
             .with_phase_metrics(true)
-            .with_execution_services(execution)
+            .with_execution_services(execution.clone())
             .with_scheduler_resolution(scheduler.clone()),
     ))?;
     Ok(PreparedFilePackageRun {
@@ -541,6 +548,8 @@ pub fn run_prepared_file_to_package(
         partition_count,
         package_hash: output.output.manifest.package_hash,
         segments: output.output.segments,
+        runtime_scheduler: execution.scheduler_report()?,
+        source_frontier: output.source_frontier,
     })
 }
 
@@ -562,7 +571,9 @@ pub fn run_prepared_file_to_destination(
     };
     let execution = benchmark_execution_services(request.execution_host_jobs)?;
     let host_jobs = execution.capabilities().logical_cpu_slots;
-    let execution = execution.with_run_job_ceiling(request.jobs.unwrap_or(host_jobs))?;
+    let execution = execution
+        .with_run_job_ceiling(request.jobs.unwrap_or(host_jobs))?
+        .with_scheduler_measurement(true)?;
     let source = benchmark_file_resource(
         &request.source_root,
         &request.glob,
@@ -647,7 +658,7 @@ pub fn run_prepared_file_to_destination(
         },
         &execution,
         Some(scheduler.clone()),
-        RunTelemetryConfig::disabled(),
+        RunTelemetryConfig::phase_metrics(),
     ))?;
     let (logical_receipt, logical_manifest_sha256, logical_manifest) =
         logical_destination_evidence(&report.receipt, &request.destination, &request.output_root)?;
@@ -675,6 +686,8 @@ pub fn run_prepared_file_to_destination(
         logical_manifest_sha256,
         logical_manifest,
         row_count: report.row_count,
+        runtime_scheduler: report.runtime_scheduler,
+        source_frontier: report.source_frontier,
     })
 }
 

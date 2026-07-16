@@ -3373,6 +3373,20 @@ fn run_rest_project(root: &Path, run_id: &str) -> (ProjectRunReport, RecordingTr
     (report, transport)
 }
 
+fn assert_jobs_invariant_receipt(actual: &Receipt, expected: &Receipt) {
+    assert_eq!(actual.receipt_id, expected.receipt_id);
+    assert_eq!(actual.destination, expected.destination);
+    assert_eq!(actual.target, expected.target);
+    assert_eq!(actual.package_hash, expected.package_hash);
+    assert_eq!(actual.segment_acks, expected.segment_acks);
+    assert_eq!(actual.disposition, expected.disposition);
+    assert_eq!(actual.idempotency_token, expected.idempotency_token);
+    assert_eq!(actual.counts, expected.counts);
+    assert_eq!(actual.schema_hash, expected.schema_hash);
+    assert_eq!(actual.migrations, expected.migrations);
+    assert_eq!(actual.verify, expected.verify);
+}
+
 fn run_rest_project_with_jobs(
     root: &Path,
     run_id: &str,
@@ -5281,8 +5295,7 @@ fn rest_source_jobs_matrix_preserves_package_receipt_and_checkpoint_identity() {
 
     for report in &runs[1..] {
         assert_eq!(report.package_hash, runs[0].package_hash);
-        assert_eq!(report.receipt.package_hash, runs[0].receipt.package_hash);
-        assert_eq!(report.receipt.segment_acks, runs[0].receipt.segment_acks);
+        assert_jobs_invariant_receipt(&report.receipt, &runs[0].receipt);
         assert_eq!(
             report.checkpoint.delta.segments,
             runs[0].checkpoint.delta.segments
@@ -6110,8 +6123,7 @@ fn general_project_run_executes_table_backed_postgres_sql_resource_stream() {
     }
     for report in &runs[1..] {
         assert_eq!(report.package_hash, runs[0].package_hash);
-        assert_eq!(report.receipt.package_hash, runs[0].receipt.package_hash);
-        assert_eq!(report.receipt.segment_acks, runs[0].receipt.segment_acks);
+        assert_jobs_invariant_receipt(&report.receipt, &runs[0].receipt);
         assert_eq!(
             report.checkpoint.delta.segments,
             runs[0].checkpoint.delta.segments

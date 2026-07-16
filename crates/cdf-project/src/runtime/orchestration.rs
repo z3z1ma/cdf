@@ -84,6 +84,7 @@ async fn run_project_with_context(
     let mut request = request;
     validate_project_run_request(&mut request)?;
     validate_explicit_package_id(&request.package_id)?;
+    let services = services.with_scheduler_measurement(telemetry.phase_metrics)?;
 
     let schema_hash = request
         .destination
@@ -434,6 +435,8 @@ async fn run_project_inner(execution: ProjectRunExecution<'_>) -> Result<Project
         segment_count,
         file_manifest: manifest_plan.summary,
         terminal_schema_quarantines: output.output.terminal_schema_quarantines.clone(),
+        runtime_scheduler: execution.services.scheduler_report()?,
+        source_frontier: output.source_frontier.clone(),
     })
 }
 
@@ -624,6 +627,8 @@ fn no_changed_files_report(
             .effective_schema_evidence()
             .map(|evidence| evidence.terminal_quarantines.clone())
             .unwrap_or_default(),
+        runtime_scheduler: execution.services.scheduler_report()?,
+        source_frontier: cdf_runtime::SourceFrontierReport::default(),
     })
 }
 

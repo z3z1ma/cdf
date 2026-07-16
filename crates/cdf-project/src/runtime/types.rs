@@ -127,6 +127,8 @@ pub struct ProjectRunReport {
     pub segment_count: usize,
     pub file_manifest: Option<FileManifestRunSummary>,
     pub terminal_schema_quarantines: Vec<TerminalSchemaObservationQuarantine>,
+    pub runtime_scheduler: cdf_runtime::RuntimeSchedulerReport,
+    pub source_frontier: cdf_runtime::SourceFrontierReport,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

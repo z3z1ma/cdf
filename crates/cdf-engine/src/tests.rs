@@ -3433,6 +3433,8 @@ fn fused_and_unfused_transform_modes_produce_identical_packages() {
     ))
     .unwrap();
 
+    assert_eq!(fused.source_frontier.wait_ns, 0);
+    assert_eq!(unfused.source_frontier.wait_ns, 0);
     assert_eq!(fused, unfused);
     assert_eq!(
         std::fs::read(fused_dir.path().join("quarantine/part-000001.parquet")).unwrap(),

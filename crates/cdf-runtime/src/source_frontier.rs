@@ -1,4 +1,4 @@
-use std::{collections::BTreeMap, sync::Arc};
+use std::{collections::BTreeMap, sync::Arc, time::Instant};
 
 use cdf_kernel::{
     Batch, BoxFuture, CdfError, OpenedPartitionStream, PartitionCompletion, PayloadRetention,
@@ -20,6 +20,16 @@ pub type SourcePartitionOpener<'a, M> =
     Box<dyn FnMut(usize, RunCancellation) -> Result<SourcePartitionOpenFuture<'a, M>> + Send + 'a>;
 
 type PendingSourceStep<'a, M> = BoxFuture<'a, SourceStepResult<M>>;
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct SourceFrontierReport {
+    pub partition_count: u64,
+    pub maximum_active: u64,
+    pub wait_ns: u64,
+    pub prefetched_batches: u64,
+    pub discarded_prefetched_batches: u64,
+    pub peak_ready_partitions: u64,
+}
 
 struct SourceState<M> {
     metadata: M,
@@ -69,6 +79,11 @@ pub struct CanonicalSourceFrontier<'a, M> {
     admission_stopped: bool,
     primary_failure_ordinal: Option<usize>,
     terminal_failures: BTreeMap<usize, CdfError>,
+    measurement_enabled: bool,
+    wait_ns: u64,
+    prefetched_batches: u64,
+    discarded_prefetched_batches: u64,
+    peak_ready_partitions: usize,
     terminal: bool,
 }
 
@@ -124,10 +139,31 @@ impl<'a, M: Send + 'a> CanonicalSourceFrontier<'a, M> {
             admission_stopped: false,
             primary_failure_ordinal: None,
             terminal_failures: BTreeMap::new(),
+            measurement_enabled: false,
+            wait_ns: 0,
+            prefetched_batches: 0,
+            discarded_prefetched_batches: 0,
+            peak_ready_partitions: 0,
             terminal: false,
         };
         frontier.fill_head();
         Ok(frontier)
+    }
+
+    pub const fn with_measurement(mut self, enabled: bool) -> Self {
+        self.measurement_enabled = enabled;
+        self
+    }
+
+    pub fn report(&self) -> SourceFrontierReport {
+        SourceFrontierReport {
+            partition_count: u64::try_from(self.partition_count).unwrap_or(u64::MAX),
+            maximum_active: u64::try_from(self.maximum_active).unwrap_or(u64::MAX),
+            wait_ns: self.wait_ns,
+            prefetched_batches: self.prefetched_batches,
+            discarded_prefetched_batches: self.discarded_prefetched_batches,
+            peak_ready_partitions: u64::try_from(self.peak_ready_partitions).unwrap_or(u64::MAX),
+        }
     }
 
     pub async fn next_partition(&mut self) -> Result<Option<CanonicalSourcePartition<'_, 'a, M>>> {
@@ -191,7 +227,14 @@ impl<'a, M: Send + 'a> CanonicalSourceFrontier<'a, M> {
                     finished: false,
                 }));
             }
-            let step = self.pending.next().await.ok_or_else(|| {
+            let waiting = self.measurement_enabled.then(Instant::now);
+            let next = self.pending.next().await;
+            if let Some(waiting) = waiting {
+                self.wait_ns = self.wait_ns.saturating_add(
+                    u64::try_from(waiting.elapsed().as_nanos()).unwrap_or(u64::MAX),
+                );
+            }
+            let step = next.ok_or_else(|| {
                 CdfError::internal(
                     "canonical source frontier lost active work before its head opened",
                 )
@@ -229,6 +272,10 @@ impl<'a, M: Send + 'a> CanonicalSourceFrontier<'a, M> {
             );
         }
         for (ordinal, ready) in std::mem::take(&mut self.ready) {
+            if ready.batch.is_some() {
+                self.discarded_prefetched_batches =
+                    self.discarded_prefetched_batches.saturating_add(1);
+            }
             if let Err(error) = &ready.outcome {
                 self.record_terminal_failure(ordinal, error.clone());
             }
@@ -236,7 +283,21 @@ impl<'a, M: Send + 'a> CanonicalSourceFrontier<'a, M> {
                 record_cleanup(&mut cleanup_errors, ordinal, terminate_state(state).await);
             }
         }
-        while let Some(step) = self.pending.next().await {
+        loop {
+            let waiting = self.measurement_enabled.then(Instant::now);
+            let next = self.pending.next().await;
+            if let Some(waiting) = waiting {
+                self.wait_ns = self.wait_ns.saturating_add(
+                    u64::try_from(waiting.elapsed().as_nanos()).unwrap_or(u64::MAX),
+                );
+            }
+            let Some(step) = next else {
+                break;
+            };
+            if step.batch.is_some() {
+                self.discarded_prefetched_batches =
+                    self.discarded_prefetched_batches.saturating_add(1);
+            }
             if let Err(error) = &step.outcome {
                 self.record_terminal_failure(step.ordinal, error.clone());
             }
@@ -446,7 +507,11 @@ impl<'a, M: Send + 'a> CanonicalSourceFrontier<'a, M> {
             );
             return Ok(());
         }
+        if ordinal != self.canonical_ordinal && step.batch.is_some() {
+            self.prefetched_batches = self.prefetched_batches.saturating_add(1);
+        }
         self.ready.insert(ordinal, step);
+        self.peak_ready_partitions = self.peak_ready_partitions.max(self.ready.len());
         Ok(())
     }
 
@@ -481,7 +546,14 @@ impl<'a, M: Send + 'a> CanonicalSourceFrontier<'a, M> {
             self.arm_ready_opened();
         }
         loop {
-            let step = self.pending.next().await.ok_or_else(|| {
+            let waiting = self.measurement_enabled.then(Instant::now);
+            let next = self.pending.next().await;
+            if let Some(waiting) = waiting {
+                self.wait_ns = self.wait_ns.saturating_add(
+                    u64::try_from(waiting.elapsed().as_nanos()).unwrap_or(u64::MAX),
+                );
+            }
+            let step = next.ok_or_else(|| {
                 CdfError::internal("canonical source frontier lost its current poll")
             })?;
             let is_current = step.ordinal == ordinal;
@@ -1155,7 +1227,8 @@ mod tests {
             crate::SourceBatchMemoryContract::FrontierReserved,
             RunCancellation::default(),
         )
-        .unwrap();
+        .unwrap()
+        .with_measurement(true);
         let mut open_head = Box::pin(frontier.next_partition());
         let mut context = Context::from_waker(Waker::noop());
         let mut head = match open_head.as_mut().poll(&mut context) {
@@ -1207,6 +1280,13 @@ mod tests {
         later.finish().unwrap();
         drop(later);
         assert_eq!(memory.snapshot().current_bytes, 0);
+        let report = frontier.report();
+        assert_eq!(report.partition_count, 2);
+        assert_eq!(report.maximum_active, 2);
+        assert_eq!(report.prefetched_batches, 1);
+        assert_eq!(report.discarded_prefetched_batches, 0);
+        assert!(report.peak_ready_partitions >= 1);
+        assert!(report.wait_ns > 0);
     }
 
     #[test]

@@ -2942,7 +2942,8 @@ where
         memory.clone(),
         source_batch_memory,
         run_cancellation.clone(),
-    )?;
+    )?
+    .with_measurement(options.phase_metrics);
 
     let segment_result: Result<()> = async {
     while let Some(mut opened_partition) = source_frontier.next_partition().await? {
@@ -3760,6 +3761,7 @@ where
             )),
         };
     }
+    let source_frontier_report = source_frontier.report();
 
     drop(contract_evaluator);
     builder.write_json_artifact("plan/validation-program.json", &validation_program)?;
@@ -3947,6 +3949,7 @@ where
         },
         segment_positions,
         phase_metrics: phase_measurements.into_metrics(),
+        source_frontier: source_frontier_report,
         execution_evidence,
     })
 }

@@ -5,6 +5,33 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
+fn assert_scheduler_report_is_bounded(
+    report: &cdf_runtime::RuntimeSchedulerReport,
+    frontier: &cdf_runtime::SourceFrontierReport,
+    effective_jobs: u16,
+    partition_count: usize,
+) {
+    let run_work = report
+        .run_work
+        .as_ref()
+        .expect("prepared jobs workload retains run-work authority");
+    assert_eq!(run_work.ceiling, effective_jobs);
+    assert!(run_work.acquired > 0);
+    assert!(run_work.peak_active <= effective_jobs);
+    assert!(
+        report.successful_task_scopes.submitted_io
+            + report.successful_task_scopes.submitted_cpu
+            + report.successful_task_scopes.submitted_blocking
+            > 0
+    );
+    assert!(report.successful_task_scopes.completed > 0);
+    assert!(report.successful_task_scopes.peak_cpu_slots <= 4);
+    assert_eq!(frontier.partition_count, partition_count as u64);
+    assert_eq!(frontier.maximum_active, u64::from(effective_jobs));
+    assert!(frontier.wait_ns > 0);
+    assert_eq!(frontier.discarded_prefetched_batches, 0);
+}
+
 use cdf_benchmarks::{
     BENCHMARK_REPORT_SCHEMA_VERSION, BenchmarkReport, BiasLabel, Capability, ChildCommand,
     ChildObservationStatus, ComparabilityKey, ExternalFileFormat, HostCapabilityProvider,
@@ -354,6 +381,12 @@ fn prepared_multi_file_jobs_matrix_preserves_canonical_package_identity() {
             assert_eq!(run.configured_jobs, jobs);
             assert_eq!(run.partition_count, 4);
             assert_eq!(run.measurement.rows, (spec.rows * 4) as u64);
+            assert_scheduler_report_is_bounded(
+                &run.runtime_scheduler,
+                &run.source_frontier,
+                run.effective_jobs,
+                run.partition_count,
+            );
             runs.push(run);
         }
 
@@ -443,6 +476,12 @@ fn destination_ingress_categories_preserve_jobs_identity() {
         for run in &runs {
             assert_eq!(run.partition_count, 4);
             assert_eq!(run.row_count, (spec.rows * 4) as u64);
+            assert_scheduler_report_is_bounded(
+                &run.runtime_scheduler,
+                &run.source_frontier,
+                run.effective_jobs,
+                run.partition_count,
+            );
         }
         for run in &runs[1..] {
             assert_eq!(run.package_hash, runs[0].package_hash, "{label}");
@@ -530,12 +569,21 @@ fn postgres_destination_preserves_jobs_identity() {
     for run in &runs {
         assert_eq!(run.partition_count, 4);
         assert_eq!(run.row_count, (spec.rows * 4) as u64);
+        assert_scheduler_report_is_bounded(
+            &run.runtime_scheduler,
+            &run.source_frontier,
+            run.effective_jobs,
+            run.partition_count,
+        );
     }
     for run in &runs[1..] {
         assert_eq!(run.package_hash, runs[0].package_hash);
         assert_eq!(run.receipt_package_hash, runs[0].receipt_package_hash);
         assert_eq!(run.receipt_segment_ids, runs[0].receipt_segment_ids);
         assert_eq!(run.state_segment_ids, runs[0].state_segment_ids);
+        assert_eq!(run.logical_receipt, runs[0].logical_receipt);
+        assert_eq!(run.logical_manifest_sha256, None);
+        assert_eq!(run.logical_manifest, None);
     }
 }
 

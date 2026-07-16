@@ -1,6 +1,6 @@
 Status: open
 Created: 2026-07-10
-Updated: 2026-07-12
+Updated: 2026-07-15
 Parent: .10x/tickets/2026-07-05-implement-cdf-system.md
 Depends-On: .10x/tickets/done/2026-07-08-p2-data-onramp-program.md
 
@@ -95,6 +95,7 @@ P3 does not implement a distributed scheduler, remote worker leases, resident st
 - 2026-07-12: Added WS-J under `.10x/decisions/datafusion-analysis-scheduling-identity-boundary.md` and `.10x/specs/datafusion-currency-bridges.md`. DataFusion is the standard currency for pruning, expressions, catalogs, memory/object-store sessions, plans, and metrics, while deterministic native CDF operators exclusively produce identity-bearing bytes and verdicts. The sequence reuses completed A2 memory authority, open FX1/WX1/G1 seams, and prevents P3 APIs from hardening private substitutes.
 - 2026-07-13: Added the P0 fixed-schema discovery and stream-admission program after the 100-remote-JSON-file counterexample exposed runtime pre-observation as a second source execution. The corrected authority requires a fixed schema before final planning, removes current-schema pre-scans from pinned execution, represents file and within-file discovery coverage independently, and reuses materially downloaded payloads during the same command. SA0-SA5 join FX1, G1/G2/G3, B4/B5, and H2/H4 without adding source-format branches.
 - 2026-07-14: Closed WS-D after D7 replaced the superseded per-segment staged-ingress API with one generic bounded acknowledgement stream and completed the reopened wide-string investigation. The exact 2.205 GB package path measures 2.017 seconds; the only public Arrow alternative is 41% slower and unbounded by upstream contract, while TLC remains 9.51M rows/s. All destination-specific behavior remains behind adapter ingress capabilities. Active backlog moved from 89 to 87 in this closure audit; C2 is the next high-impact executable frontier because it unlocks C3/C4, G4, V3, and F4.
+- 2026-07-15: Closed C4 after the current generic staged path completed the 8.59 GB FineWeb workload in 17.56 seconds at its measured jobs=2 knee, down from the former 40.67-second jobs=4 path. Jobs invariance now covers complete logical receipts across file, REST, SQL, DuckDB, Parquet, and live PostgreSQL archetypes, while generic task/permit/frontier reports make scheduler overhead and speculative waste observable without adapter-specific branches. Active tickets fell from 85 to 84 and done tickets rose to 301; C4 no longer blocks F4, G4, or V3.
 
 ## Blockers
 

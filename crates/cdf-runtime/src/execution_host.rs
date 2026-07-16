@@ -8,7 +8,7 @@ use std::{
         atomic::{AtomicBool, Ordering},
     },
     task::{Context, Poll, Waker},
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use cdf_kernel::{BoxFuture, CdfError, InvocationTermination, Result};
@@ -421,6 +421,38 @@ pub struct TaskScopeReport {
     pub queue_wait_ns: u64,
 }
 
+impl TaskScopeReport {
+    fn merge(&mut self, report: &Self) {
+        self.submitted_io = self.submitted_io.saturating_add(report.submitted_io);
+        self.submitted_cpu = self.submitted_cpu.saturating_add(report.submitted_cpu);
+        self.submitted_blocking = self
+            .submitted_blocking
+            .saturating_add(report.submitted_blocking);
+        self.completed = self.completed.saturating_add(report.completed);
+        self.cancelled = self.cancelled.saturating_add(report.cancelled);
+        self.failed = self.failed.saturating_add(report.failed);
+        self.peak_cpu_slots = self.peak_cpu_slots.max(report.peak_cpu_slots);
+        self.queue_wait_ns = self.queue_wait_ns.saturating_add(report.queue_wait_ns);
+    }
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RunWorkReport {
+    pub ceiling: u16,
+    pub acquired: u64,
+    pub peak_active: u16,
+    pub queue_wait_ns: u64,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RuntimeSchedulerReport {
+    /// Aggregate for scopes that reached their successful join barrier. Failed joins return their
+    /// primary error through the execution path and are therefore not misrepresented as a complete
+    /// report here.
+    pub successful_task_scopes: TaskScopeReport,
+    pub run_work: Option<RunWorkReport>,
+}
+
 pub trait ExecutionTaskScope: Send {
     fn cancellation(&self) -> RunCancellation;
     fn spawn_io(&mut self, task: IoTask) -> Result<()>;
@@ -457,11 +489,55 @@ pub trait ExecutionHost: Send + Sync {
     fn run_blocking_value(&self, lane: &str, task: BlockingValueTask) -> Result<IoValue>;
 }
 
+struct ReportingTaskScope {
+    inner: Box<dyn ExecutionTaskScope>,
+    reports: Arc<Mutex<TaskScopeReport>>,
+}
+
+impl ExecutionTaskScope for ReportingTaskScope {
+    fn cancellation(&self) -> RunCancellation {
+        self.inner.cancellation()
+    }
+
+    fn spawn_io(&mut self, task: IoTask) -> Result<()> {
+        self.inner.spawn_io(task)
+    }
+
+    fn spawn_cpu(&mut self, spec: CpuTaskSpec, task: BlockingTask) -> Result<()> {
+        self.inner.spawn_cpu(spec, task)
+    }
+
+    fn spawn_cpu_future(&mut self, spec: CpuTaskSpec, task: CpuFutureTask) -> Result<()> {
+        self.inner.spawn_cpu_future(spec, task)
+    }
+
+    fn spawn_blocking(&mut self, lane: &str, task: BlockingTask) -> Result<()> {
+        self.inner.spawn_blocking(lane, task)
+    }
+
+    fn cancel(&self) {
+        self.inner.cancel();
+    }
+
+    fn join(self: Box<Self>) -> BoxFuture<'static, Result<TaskScopeReport>> {
+        let ReportingTaskScope { inner, reports } = *self;
+        Box::pin(async move {
+            let report = inner.join().await?;
+            reports
+                .lock()
+                .map_err(|_| CdfError::internal("execution task report lock is poisoned"))?
+                .merge(&report);
+            Ok(report)
+        })
+    }
+}
+
 #[derive(Clone)]
 pub struct ExecutionServices {
     host: Arc<dyn ExecutionHost>,
     run_work: Option<Arc<RunWorkAdmission>>,
     staging_leases: Option<Arc<crate::StagingLeaseSupervisor>>,
+    task_reports: Option<Arc<Mutex<TaskScopeReport>>>,
 }
 
 struct RunWorkAdmission {
@@ -471,12 +547,17 @@ struct RunWorkAdmission {
 struct RunWorkAdmissionState {
     ceiling: u16,
     active: u16,
+    acquired: u64,
+    peak_active: u16,
+    queue_wait_ns: u64,
+    measurement_enabled: bool,
     waiters: WakerRegistry,
 }
 
 struct RunWorkAcquisition {
     admission: Arc<RunWorkAdmission>,
     waiter_id: Option<u64>,
+    waiting_since: Option<Instant>,
 }
 
 impl Future for RunWorkAcquisition {
@@ -494,6 +575,13 @@ impl Future for RunWorkAcquisition {
         };
         if state.active < state.ceiling {
             state.active += 1;
+            state.acquired = state.acquired.saturating_add(1);
+            state.peak_active = state.peak_active.max(state.active);
+            if let Some(waiting_since) = acquisition.waiting_since.take() {
+                state.queue_wait_ns = state.queue_wait_ns.saturating_add(
+                    u64::try_from(waiting_since.elapsed().as_nanos()).unwrap_or(u64::MAX),
+                );
+            }
             if let Some(waiter_id) = acquisition.waiter_id.take() {
                 state.waiters.unregister(waiter_id);
             }
@@ -506,6 +594,9 @@ impl Future for RunWorkAcquisition {
             .waiters
             .register(acquisition.waiter_id, context.waker());
         acquisition.waiter_id = Some(waiter_id);
+        if state.measurement_enabled {
+            acquisition.waiting_since.get_or_insert_with(Instant::now);
+        }
         Poll::Pending
     }
 }
@@ -561,6 +652,7 @@ impl ExecutionServices {
             host,
             run_work: None,
             staging_leases: None,
+            task_reports: None,
         })
     }
 
@@ -576,10 +668,15 @@ impl ExecutionServices {
                 state: Mutex::new(RunWorkAdmissionState {
                     ceiling: jobs,
                     active: 0,
+                    acquired: 0,
+                    peak_active: 0,
+                    queue_wait_ns: 0,
+                    measurement_enabled: false,
                     waiters: WakerRegistry::default(),
                 }),
             })),
             staging_leases: self.staging_leases.clone(),
+            task_reports: None,
         })
     }
 
@@ -594,6 +691,7 @@ impl ExecutionServices {
                 authority,
                 Arc::clone(&self.host),
             )?),
+            task_reports: self.task_reports.clone(),
         })
     }
 
@@ -682,6 +780,7 @@ impl ExecutionServices {
                 .await_or_cancel(RunWorkAcquisition {
                     admission,
                     waiter_id: None,
+                    waiting_since: None,
                 })
                 .await
         })
@@ -727,7 +826,73 @@ impl ExecutionServices {
                 "execution run id must contain 1..=256 non-control characters",
             ));
         }
-        self.host.open_scope(run_id)
+        let scope = self.host.open_scope(run_id)?;
+        match &self.task_reports {
+            Some(reports) => Ok(Box::new(ReportingTaskScope {
+                inner: scope,
+                reports: Arc::clone(reports),
+            })),
+            None => Ok(scope),
+        }
+    }
+
+    pub fn with_scheduler_measurement(&self, enabled: bool) -> Result<Self> {
+        if let Some(admission) = &self.run_work {
+            let mut state = admission
+                .state
+                .lock()
+                .map_err(|_| CdfError::internal("run work admission lock is poisoned"))?;
+            if state.measurement_enabled != enabled && (state.active != 0 || state.acquired != 0) {
+                return Err(CdfError::internal(
+                    "scheduler measurement cannot change after leaf work begins",
+                ));
+            }
+            state.measurement_enabled = enabled;
+        }
+        Ok(Self {
+            host: Arc::clone(&self.host),
+            run_work: self.run_work.clone(),
+            staging_leases: self.staging_leases.clone(),
+            task_reports: match (enabled, &self.task_reports) {
+                (true, Some(reports)) => Some(Arc::clone(reports)),
+                (true, None) => Some(Arc::new(Mutex::new(TaskScopeReport::default()))),
+                (false, _) => None,
+            },
+        })
+    }
+
+    pub fn scheduler_report(&self) -> Result<RuntimeSchedulerReport> {
+        let successful_task_scopes = self
+            .task_reports
+            .as_ref()
+            .map(|reports| {
+                reports
+                    .lock()
+                    .map(|report| report.clone())
+                    .map_err(|_| CdfError::internal("execution task report lock is poisoned"))
+            })
+            .transpose()?
+            .unwrap_or_default();
+        let run_work = self
+            .run_work
+            .as_ref()
+            .map(|admission| {
+                admission
+                    .state
+                    .lock()
+                    .map(|state| RunWorkReport {
+                        ceiling: state.ceiling,
+                        acquired: state.acquired,
+                        peak_active: state.peak_active,
+                        queue_wait_ns: state.queue_wait_ns,
+                    })
+                    .map_err(|_| CdfError::internal("run work admission lock is poisoned"))
+            })
+            .transpose()?;
+        Ok(RuntimeSchedulerReport {
+            successful_task_scopes,
+            run_work,
+        })
     }
 
     pub fn spawn_io_stream<T, F, Fut>(
@@ -989,6 +1154,10 @@ mod tests {
                 state: Mutex::new(RunWorkAdmissionState {
                     ceiling: 3,
                     active: 0,
+                    acquired: 0,
+                    peak_active: 0,
+                    queue_wait_ns: 0,
+                    measurement_enabled: true,
                     waiters: WakerRegistry::default(),
                 }),
             });
@@ -996,6 +1165,7 @@ mod tests {
                 host: Arc::new(TestHost),
                 run_work: Some(Arc::clone(&admission)),
                 staging_leases: None,
+                task_reports: Some(Arc::new(Mutex::new(TaskScopeReport::default()))),
             };
             services.tighten_run_job_ceiling(2).unwrap();
             assert_eq!(services.run_job_ceiling().unwrap(), Some(2));
@@ -1029,6 +1199,11 @@ mod tests {
             drop(second);
             drop(third);
             services.tighten_run_job_ceiling(1).unwrap();
+            let report = services.scheduler_report().unwrap().run_work.unwrap();
+            assert_eq!(report.ceiling, 1);
+            assert_eq!(report.acquired, 3);
+            assert_eq!(report.peak_active, 2);
+            assert!(report.queue_wait_ns > 0);
         });
     }
 

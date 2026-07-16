@@ -1,8 +1,8 @@
 Status: open
 Created: 2026-07-11
-Updated: 2026-07-11
+Updated: 2026-07-15
 Parent: .10x/tickets/2026-07-10-p3-ws-f-constant-memory-guarantee.md
-Depends-On: .10x/tickets/2026-07-11-p3-f3-stress-generators-laws.md, .10x/tickets/2026-07-11-p3-c4-jobs-invariance-scaling-matrix.md, .10x/tickets/done/2026-07-11-p3-d4-parquet-streaming-writer.md
+Depends-On: .10x/tickets/2026-07-11-p3-f3-stress-generators-laws.md, .10x/tickets/done/2026-07-11-p3-c4-jobs-invariance-scaling-matrix.md, .10x/tickets/done/2026-07-11-p3-d4-parquet-streaming-writer.md
 
 # P3 F4: 1 TB constant-memory and scaling closeout
 
@@ -27,7 +27,7 @@ No distributed execution claim.
 
 ## Blockers
 
-Depends on F3, C4, and Parquet streaming destination.
+Depends on F3; C4 and the Parquet streaming destination are complete.
 
 ## References
 

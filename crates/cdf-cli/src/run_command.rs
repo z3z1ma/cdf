@@ -72,7 +72,9 @@ pub(crate) fn run(
     let explicit = resolved_run_args(args)?;
     let host_jobs = services.capabilities().logical_cpu_slots;
     let provisional_jobs = explicit.jobs.unwrap_or(host_jobs).min(host_jobs);
-    let run_services = services.with_run_job_ceiling(provisional_jobs)?;
+    let run_services = services
+        .with_run_job_ceiling(provisional_jobs)?
+        .with_scheduler_measurement(true)?;
     let prepared = prepare_runtime_resource_for_cli(
         destinations,
         &context,

@@ -1595,6 +1595,7 @@ pub struct EngineRunOutputWithSegmentPositions {
     pub output: EngineRunOutput,
     pub segment_positions: Vec<EngineSegmentPosition>,
     pub phase_metrics: Vec<RunPhaseMetric>,
+    pub source_frontier: cdf_runtime::SourceFrontierReport,
     pub(crate) execution_evidence: EngineExecutionEvidence,
 }
 
@@ -1608,6 +1609,7 @@ impl EngineRunOutputWithSegmentPositions {
             output,
             segment_positions,
             phase_metrics: Vec::new(),
+            source_frontier: cdf_runtime::SourceFrontierReport::default(),
             execution_evidence,
         }
     }
