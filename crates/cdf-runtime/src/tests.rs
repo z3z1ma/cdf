@@ -1342,6 +1342,18 @@ fn source_registry_compiles_hashes_and_resolves_mock_without_order_authority() {
     let error = registry.compile(invalid_request).unwrap_err();
     assert!(error.message.contains("requires a source name"));
 
+    let mut invalid_options = request.clone();
+    invalid_options.source_options.insert(
+        "driver_would_ignore_this".to_owned(),
+        serde_json::json!(true),
+    );
+    let error = registry.compile(invalid_options).unwrap_err();
+    assert!(
+        error
+            .message
+            .contains("does not allow field `driver_would_ignore_this`")
+    );
+
     let plan = registry.compile(request.clone()).unwrap();
     let mut tampering_registry = SourceRegistry::new();
     tampering_registry

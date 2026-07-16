@@ -602,6 +602,44 @@ pub struct SourceHealthResult {
     pub details: serde_json::Value,
 }
 
+impl SourceHealthResult {
+    pub fn validate(&self) -> Result<()> {
+        const MAX_PROBE_ID_BYTES: usize = 192;
+        const MAX_MESSAGE_BYTES: usize = 4 * 1024;
+        const MAX_DETAILS_BYTES: usize = 64 * 1024;
+
+        if self.probe_id.is_empty()
+            || self.probe_id.len() > MAX_PROBE_ID_BYTES
+            || !self
+                .probe_id
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
+        {
+            return Err(CdfError::contract(
+                "source health probe id must be bounded and contain only ASCII letters, digits, `.`, `_`, or `-`",
+            ));
+        }
+        if self.message.is_empty()
+            || self.message.len() > MAX_MESSAGE_BYTES
+            || self.message.chars().any(char::is_control)
+            || self.message.contains("://")
+        {
+            return Err(CdfError::contract(
+                "source health message must be bounded, control-free, and contain no URI; put redacted locations in details",
+            ));
+        }
+        let encoded = serde_json::to_vec(&self.details).map_err(|error| {
+            CdfError::internal(format!("serialize source health details: {error}"))
+        })?;
+        if encoded.len() > MAX_DETAILS_BYTES {
+            return Err(CdfError::contract(format!(
+                "source health details exceed the {MAX_DETAILS_BYTES}-byte boundary"
+            )));
+        }
+        Ok(())
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct SourceHealthRequest {
     pub project_root: PathBuf,
@@ -1040,6 +1078,22 @@ impl SourceDiscoveryCandidate {
         }
         Ok(())
     }
+
+    /// Framework-owned binding between inventory evidence and a later schema observation.
+    /// The raw operational location is never retained: its hash plus the canonical redacted
+    /// location, generation, size, and time reject cross-candidate observations without
+    /// persisting credentials.
+    pub fn discovery_binding(&self) -> Result<String> {
+        self.validate()?;
+        artifact_hash(&serde_json::json!({
+            "version": 1,
+            "operational_location_hash": artifact_hash(&self.canonical_location)?,
+            "location": self.evidence_location.as_str(),
+            "size_bytes": self.size_bytes,
+            "modified_at_ms": self.modified_at_ms,
+            "identity": self.identity,
+        }))
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -1050,6 +1104,7 @@ pub struct SourceSchemaObservation {
     pub source_identity: BTreeMap<String, String>,
     pub bytes_read: u64,
     pub records_read: u64,
+    pub(crate) candidate_binding: String,
 }
 
 impl SourceSchemaObservation {
@@ -1069,6 +1124,7 @@ impl SourceSchemaObservation {
             source_identity,
             bytes_read,
             records_read,
+            candidate_binding: candidate.discovery_binding()?,
         };
         observation.validate()?;
         Ok(observation)
@@ -1077,6 +1133,11 @@ impl SourceSchemaObservation {
     pub fn validate(&self) -> Result<()> {
         if self.evidence_location.as_str().is_empty()
             || validate_source_evidence_identity(&self.source_identity).is_err()
+            || validate_hash(
+                "source discovery candidate binding",
+                &self.candidate_binding,
+            )
+            .is_err()
             || cdf_kernel::canonical_arrow_schema_hash(&self.schema)? != self.physical_schema_hash
         {
             return Err(CdfError::contract(
@@ -1084,6 +1145,10 @@ impl SourceSchemaObservation {
             ));
         }
         Ok(())
+    }
+
+    pub fn candidate_binding(&self) -> &str {
+        &self.candidate_binding
     }
 }
 

@@ -77,6 +77,11 @@ impl SourceRegistry {
     pub fn compile(&self, request: SourceCompileRequest) -> Result<CompiledSourcePlan> {
         request.context.validate()?;
         let driver = self.driver_for_kind(&request.source_kind)?;
+        validate_driver_options(
+            driver.as_ref(),
+            &request.source_options,
+            &request.resource_options,
+        )?;
         let expected_descriptor = request.descriptor.clone();
         let expected_schema = request.schema.clone();
         let expected_type_policy_allowances = request.type_policy_allowances;
@@ -244,6 +249,11 @@ impl SourceRegistry {
             driver_request.project_options = driver_options.get(driver_id.as_str()).cloned();
             if let Some(proposal) = planner.propose_add(&driver_request)? {
                 proposal.validate()?;
+                validate_driver_options(
+                    driver.as_ref(),
+                    &proposal.source_options,
+                    &proposal.resource_options,
+                )?;
                 if !driver.descriptor().kinds.contains(&proposal.source_kind) {
                     return Err(CdfError::contract(format!(
                         "source driver `{}` proposed unowned source kind `{}`",
@@ -289,17 +299,30 @@ impl SourceRegistry {
         }
         let mut results = Vec::new();
         for (driver_id, driver) in &self.drivers {
-            let Some(probe) = driver.health_probe() else {
-                continue;
-            };
             let mut uris = references.remove(driver_id).unwrap_or_default();
             uris.sort();
             uris.dedup();
-            results.extend(probe.health(SourceHealthRequest {
-                project_root: project_root.to_path_buf(),
-                project_options: driver_options.get(driver_id.as_str()).cloned(),
-                referenced_uris: uris,
-            })?);
+            let project_options = driver_options.get(driver_id.as_str()).cloned();
+            if let Some(options) = &project_options {
+                driver.validate_project_options(options)?;
+            }
+            let driver_results = if let Some(probe) = driver.health_probe() {
+                probe.health(SourceHealthRequest {
+                    project_root: project_root.to_path_buf(),
+                    project_options,
+                    referenced_uris: uris,
+                })?
+            } else {
+                vec![SourceHealthResult {
+                    probe_id: "health".to_owned(),
+                    status: crate::SourceHealthStatus::Unsupported,
+                    message: "driver does not expose a bounded health probe".to_owned(),
+                    details: serde_json::json!({}),
+                }]
+            };
+            for result in driver_results {
+                results.push(verify_health_result(driver_id, result)?);
+            }
         }
         Ok(results)
     }
@@ -479,6 +502,12 @@ impl SourceDiscoverySession for VerifiedSourceDiscoverySession {
                 candidate.evidence_location.as_str()
             )));
         }
+        if observation.candidate_binding() != candidate.discovery_binding()? {
+            return Err(CdfError::contract(format!(
+                "source discovery observation generation for `{}` does not match the inventoried candidate",
+                candidate.evidence_location.as_str()
+            )));
+        }
         if observation.bytes_read > request.maximum_bytes
             || observation.records_read > request.maximum_records
         {
@@ -499,6 +528,14 @@ fn validate_option_schema(schema: &serde_json::Value) -> Result<()> {
     let object = schema
         .as_object()
         .ok_or_else(|| CdfError::contract("source driver option schema must be a JSON object"))?;
+    if let Some(keyword) = object
+        .keys()
+        .find(|keyword| !matches!(keyword.as_str(), "$schema" | "source" | "resource"))
+    {
+        return Err(CdfError::contract(format!(
+            "source driver option schema root uses unsupported member `{keyword}`"
+        )));
+    }
     if object.get("$schema").and_then(serde_json::Value::as_str)
         != Some("https://json-schema.org/draft/2020-12/schema")
     {
@@ -531,8 +568,504 @@ fn validate_option_schema(schema: &serde_json::Value) -> Result<()> {
                 "source driver option schema `{section}` must be a closed object with properties"
             )));
         }
+        validate_option_schema_node(
+            object
+                .get(section)
+                .expect("validated source option schema section"),
+            &format!("$.{section}"),
+        )?;
     }
     Ok(())
+}
+
+fn validate_driver_options(
+    driver: &dyn SourceDriver,
+    source: &BTreeMap<String, serde_json::Value>,
+    resource: &BTreeMap<String, serde_json::Value>,
+) -> Result<()> {
+    let schema = driver.option_schema();
+    validate_option_instance(
+        schema
+            .get("source")
+            .expect("registered source driver has a source option schema"),
+        &serde_json::to_value(source)
+            .map_err(|error| CdfError::internal(format!("serialize source options: {error}")))?,
+        "$.source",
+    )?;
+    validate_option_instance(
+        schema
+            .get("resource")
+            .expect("registered source driver has a resource option schema"),
+        &serde_json::to_value(resource)
+            .map_err(|error| CdfError::internal(format!("serialize resource options: {error}")))?,
+        "$.resource",
+    )
+}
+
+fn validate_option_schema_node(schema: &serde_json::Value, path: &str) -> Result<()> {
+    const SUPPORTED: &[&str] = &[
+        "type",
+        "additionalProperties",
+        "required",
+        "properties",
+        "oneOf",
+        "const",
+        "default",
+        "pattern",
+        "minLength",
+        "format",
+        "items",
+        "uniqueItems",
+        "minimum",
+        "enum",
+    ];
+    const TYPES: &[&str] = &[
+        "object", "array", "string", "number", "integer", "boolean", "null",
+    ];
+
+    let object = schema.as_object().ok_or_else(|| {
+        CdfError::contract(format!("source option schema `{path}` must be an object"))
+    })?;
+    if let Some(keyword) = object
+        .keys()
+        .find(|keyword| !SUPPORTED.contains(&keyword.as_str()))
+    {
+        return Err(CdfError::contract(format!(
+            "source option schema `{path}` uses unsupported keyword `{keyword}`"
+        )));
+    }
+    if let Some(types) = object.get("type") {
+        let declared = match types {
+            serde_json::Value::String(value) => vec![value.as_str()],
+            serde_json::Value::Array(values) if !values.is_empty() => values
+                .iter()
+                .map(|value| {
+                    value.as_str().ok_or_else(|| {
+                        CdfError::contract(format!(
+                            "source option schema `{path}.type` entries must be strings"
+                        ))
+                    })
+                })
+                .collect::<Result<Vec<_>>>()?,
+            _ => {
+                return Err(CdfError::contract(format!(
+                    "source option schema `{path}.type` must be a type name or nonempty array"
+                )));
+            }
+        };
+        if declared.iter().any(|value| !TYPES.contains(value)) {
+            return Err(CdfError::contract(format!(
+                "source option schema `{path}.type` contains an unsupported JSON type"
+            )));
+        }
+    }
+    if let Some(properties) = object.get("properties") {
+        let properties = properties.as_object().ok_or_else(|| {
+            CdfError::contract(format!(
+                "source option schema `{path}.properties` must be an object"
+            ))
+        })?;
+        for (name, child) in properties {
+            validate_option_schema_node(child, &format!("{path}.properties.{name}"))?;
+        }
+    }
+    if let Some(additional) = object.get("additionalProperties")
+        && !additional.is_boolean()
+    {
+        validate_option_schema_node(additional, &format!("{path}.additionalProperties"))?;
+    }
+    if let Some(required) = object.get("required") {
+        let required = required.as_array().ok_or_else(|| {
+            CdfError::contract(format!(
+                "source option schema `{path}.required` must be an array"
+            ))
+        })?;
+        let mut names = std::collections::BTreeSet::new();
+        for value in required {
+            let name = value
+                .as_str()
+                .filter(|value| !value.is_empty())
+                .ok_or_else(|| {
+                    CdfError::contract(format!(
+                        "source option schema `{path}.required` entries must be nonempty strings"
+                    ))
+                })?;
+            if !names.insert(name) {
+                return Err(CdfError::contract(format!(
+                    "source option schema `{path}.required` contains duplicate `{name}`"
+                )));
+            }
+            if object
+                .get("properties")
+                .and_then(serde_json::Value::as_object)
+                .is_none_or(|properties| !properties.contains_key(name))
+            {
+                return Err(CdfError::contract(format!(
+                    "source option schema `{path}.required` names undeclared property `{name}`"
+                )));
+            }
+        }
+    }
+    if let Some(branches) = object.get("oneOf") {
+        let branches = branches
+            .as_array()
+            .filter(|branches| !branches.is_empty())
+            .ok_or_else(|| {
+                CdfError::contract(format!(
+                    "source option schema `{path}.oneOf` must be a nonempty array"
+                ))
+            })?;
+        for (index, branch) in branches.iter().enumerate() {
+            validate_option_schema_node(branch, &format!("{path}.oneOf[{index}]"))?;
+        }
+    }
+    if let Some(values) = object.get("enum") {
+        let values = values
+            .as_array()
+            .filter(|values| !values.is_empty())
+            .ok_or_else(|| {
+                CdfError::contract(format!(
+                    "source option schema `{path}.enum` must be a nonempty array"
+                ))
+            })?;
+        let unique = values
+            .iter()
+            .map(serde_json::to_string)
+            .collect::<std::result::Result<std::collections::BTreeSet<_>, _>>()
+            .map_err(|error| CdfError::internal(format!("serialize option enum value: {error}")))?;
+        if unique.len() != values.len() {
+            return Err(CdfError::contract(format!(
+                "source option schema `{path}.enum` contains duplicate values"
+            )));
+        }
+    }
+    if let Some(pattern) = object.get("pattern") {
+        let pattern = pattern.as_str().ok_or_else(|| {
+            CdfError::contract(format!(
+                "source option schema `{path}.pattern` must be a string"
+            ))
+        })?;
+        if !pattern.starts_with('^')
+            || pattern.len() == 1
+            || pattern[1..].chars().any(|character| {
+                matches!(
+                    character,
+                    '^' | '$' | '*' | '+' | '?' | '[' | ']' | '(' | ')' | '{' | '}' | '\\' | '|'
+                )
+            })
+        {
+            return Err(CdfError::contract(format!(
+                "source option schema `{path}.pattern` must be a literal prefix pattern"
+            )));
+        }
+    }
+    if object
+        .get("format")
+        .is_some_and(|format| format.as_str() != Some("uri"))
+    {
+        return Err(CdfError::contract(format!(
+            "source option schema `{path}.format` supports only `uri`"
+        )));
+    }
+    if object.get("minLength").is_some_and(|value| !value.is_u64()) {
+        return Err(CdfError::contract(format!(
+            "source option schema `{path}.minLength` must be a nonnegative integer"
+        )));
+    }
+    if object
+        .get("minimum")
+        .is_some_and(|value| !value.is_u64() && !value.is_i64() && !value.is_f64())
+    {
+        return Err(CdfError::contract(format!(
+            "source option schema `{path}.minimum` must be numeric"
+        )));
+    }
+    if let Some(items) = object.get("items") {
+        validate_option_schema_node(items, &format!("{path}.items"))?;
+    }
+    if object
+        .get("uniqueItems")
+        .is_some_and(|value| !value.is_boolean())
+    {
+        return Err(CdfError::contract(format!(
+            "source option schema `{path}.uniqueItems` must be boolean"
+        )));
+    }
+    if ["properties", "required", "additionalProperties"]
+        .iter()
+        .any(|keyword| object.contains_key(*keyword))
+        && !schema_declares_type(object, "object")
+    {
+        return Err(CdfError::contract(format!(
+            "source option schema `{path}` uses object keywords without declaring object type"
+        )));
+    }
+    if ["items", "uniqueItems"]
+        .iter()
+        .any(|keyword| object.contains_key(*keyword))
+        && !schema_declares_type(object, "array")
+    {
+        return Err(CdfError::contract(format!(
+            "source option schema `{path}` uses array keywords without declaring array type"
+        )));
+    }
+    if ["pattern", "minLength", "format"]
+        .iter()
+        .any(|keyword| object.contains_key(*keyword))
+        && !schema_declares_type(object, "string")
+    {
+        return Err(CdfError::contract(format!(
+            "source option schema `{path}` uses string keywords without declaring string type"
+        )));
+    }
+    if object.contains_key("minimum")
+        && !schema_declares_type(object, "integer")
+        && !schema_declares_type(object, "number")
+    {
+        return Err(CdfError::contract(format!(
+            "source option schema `{path}` uses `minimum` without declaring numeric type"
+        )));
+    }
+    Ok(())
+}
+
+fn schema_declares_type(
+    schema: &serde_json::Map<String, serde_json::Value>,
+    expected: &str,
+) -> bool {
+    match schema.get("type") {
+        Some(serde_json::Value::String(value)) => value == expected,
+        Some(serde_json::Value::Array(values)) => values.iter().any(|value| value == expected),
+        _ => false,
+    }
+}
+
+fn validate_option_instance(
+    schema: &serde_json::Value,
+    instance: &serde_json::Value,
+    path: &str,
+) -> Result<()> {
+    let schema = schema
+        .as_object()
+        .expect("registered option schema nodes are objects");
+    if let Some(branches) = schema.get("oneOf").and_then(serde_json::Value::as_array) {
+        let matching = branches
+            .iter()
+            .filter(|branch| validate_option_instance(branch, instance, path).is_ok())
+            .count();
+        if matching != 1 {
+            return Err(CdfError::contract(format!(
+                "source option `{path}` must match exactly one declared alternative (matched {matching})"
+            )));
+        }
+    }
+    if let Some(types) = schema.get("type") {
+        let matches = match types {
+            serde_json::Value::String(value) => instance_matches_type(instance, value),
+            serde_json::Value::Array(values) => values
+                .iter()
+                .filter_map(serde_json::Value::as_str)
+                .any(|value| instance_matches_type(instance, value)),
+            _ => false,
+        };
+        if !matches {
+            return Err(CdfError::contract(format!(
+                "source option `{path}` does not match its declared JSON type"
+            )));
+        }
+    }
+    if let Some(expected) = schema.get("const")
+        && instance != expected
+    {
+        return Err(CdfError::contract(format!(
+            "source option `{path}` does not match its required constant"
+        )));
+    }
+    if let Some(values) = schema.get("enum").and_then(serde_json::Value::as_array)
+        && !values.contains(instance)
+    {
+        return Err(CdfError::contract(format!(
+            "source option `{path}` is not one of its allowed values"
+        )));
+    }
+    if let Some(object) = instance.as_object() {
+        let properties = schema
+            .get("properties")
+            .and_then(serde_json::Value::as_object);
+        if let Some(required) = schema.get("required").and_then(serde_json::Value::as_array) {
+            for required in required.iter().filter_map(serde_json::Value::as_str) {
+                if !object.contains_key(required) {
+                    return Err(CdfError::contract(format!(
+                        "source option `{path}` requires field `{required}`"
+                    )));
+                }
+            }
+        }
+        for (name, value) in object {
+            if let Some(child) = properties.and_then(|properties| properties.get(name)) {
+                validate_option_instance(child, value, &format!("{path}.{name}"))?;
+                continue;
+            }
+            match schema.get("additionalProperties") {
+                Some(serde_json::Value::Bool(false)) => {
+                    return Err(CdfError::contract(format!(
+                        "source option `{path}` does not allow field `{name}`"
+                    )));
+                }
+                Some(additional) if additional.is_object() => {
+                    validate_option_instance(additional, value, &format!("{path}.{name}"))?;
+                }
+                _ => {}
+            }
+        }
+    }
+    if let Some(array) = instance.as_array() {
+        if let Some(items) = schema.get("items") {
+            for (index, value) in array.iter().enumerate() {
+                validate_option_instance(items, value, &format!("{path}[{index}]"))?;
+            }
+        }
+        if schema
+            .get("uniqueItems")
+            .and_then(serde_json::Value::as_bool)
+            == Some(true)
+        {
+            let unique = array
+                .iter()
+                .map(serde_json::to_string)
+                .collect::<std::result::Result<std::collections::BTreeSet<_>, _>>()
+                .map_err(|error| CdfError::internal(format!("serialize source option: {error}")))?;
+            if unique.len() != array.len() {
+                return Err(CdfError::contract(format!(
+                    "source option `{path}` requires unique array values"
+                )));
+            }
+        }
+    }
+    if let Some(value) = instance.as_str() {
+        if schema
+            .get("minLength")
+            .and_then(serde_json::Value::as_u64)
+            .is_some_and(|minimum| value.chars().count() < minimum as usize)
+        {
+            return Err(CdfError::contract(format!(
+                "source option `{path}` is shorter than its declared minimum"
+            )));
+        }
+        if let Some(prefix) = schema.get("pattern").and_then(serde_json::Value::as_str) {
+            let prefix = &prefix[1..];
+            if !value.starts_with(prefix) {
+                return Err(CdfError::contract(format!(
+                    "source option `{path}` does not match required prefix `{prefix}`"
+                )));
+            }
+        }
+        if schema.get("format").and_then(serde_json::Value::as_str) == Some("uri")
+            && (value.chars().any(char::is_control)
+                || value
+                    .split_once("://")
+                    .is_none_or(|(scheme, rest)| scheme.is_empty() || rest.is_empty()))
+        {
+            return Err(CdfError::contract(format!(
+                "source option `{path}` must be an absolute URI"
+            )));
+        }
+    }
+    if let Some(minimum) = schema.get("minimum").and_then(serde_json::Value::as_f64)
+        && instance.as_f64().is_some_and(|value| value < minimum)
+    {
+        return Err(CdfError::contract(format!(
+            "source option `{path}` is below its declared minimum"
+        )));
+    }
+    Ok(())
+}
+
+fn instance_matches_type(instance: &serde_json::Value, expected: &str) -> bool {
+    match expected {
+        "object" => instance.is_object(),
+        "array" => instance.is_array(),
+        "string" => instance.is_string(),
+        "number" => instance.is_number(),
+        "integer" => instance.as_i64().is_some() || instance.as_u64().is_some(),
+        "boolean" => instance.is_boolean(),
+        "null" => instance.is_null(),
+        _ => false,
+    }
+}
+
+fn verify_health_result(
+    driver_id: &SourceDriverId,
+    mut result: SourceHealthResult,
+) -> Result<SourceHealthResult> {
+    result.probe_id = format!("source.{}.{}", driver_id.as_str(), result.probe_id);
+    sanitize_health_details(&mut result.details, 0)?;
+    result.validate()?;
+    Ok(result)
+}
+
+fn sanitize_health_details(value: &mut serde_json::Value, depth: usize) -> Result<()> {
+    const MAX_DEPTH: usize = 16;
+    if depth > MAX_DEPTH {
+        return Err(CdfError::contract(format!(
+            "source health details exceed the {MAX_DEPTH}-level nesting boundary"
+        )));
+    }
+    match value {
+        serde_json::Value::Object(object) => {
+            for (key, value) in object {
+                if key.is_empty() || key.len() > 128 || key.chars().any(char::is_control) {
+                    return Err(CdfError::contract(
+                        "source health detail keys must be nonempty, bounded, and control-free",
+                    ));
+                }
+                if is_sensitive_health_key(key) {
+                    *value = serde_json::Value::String("<redacted>".to_owned());
+                } else {
+                    sanitize_health_details(value, depth + 1)?;
+                }
+            }
+        }
+        serde_json::Value::Array(values) => {
+            for value in values {
+                sanitize_health_details(value, depth + 1)?;
+            }
+        }
+        serde_json::Value::String(text) => {
+            if text.chars().any(char::is_control) {
+                return Err(CdfError::contract(
+                    "source health detail strings must be control-free",
+                ));
+            }
+            if text.contains("://") {
+                *text = crate::SourceEvidenceLocation::from_operational(text)?
+                    .as_str()
+                    .to_owned();
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+fn is_sensitive_health_key(key: &str) -> bool {
+    let normalized = key.to_ascii_lowercase().replace(['-', '.'], "_");
+    [
+        "authorization",
+        "credential",
+        "password",
+        "secret",
+        "token",
+        "api_key",
+        "cookie",
+        "connection",
+        "dsn",
+        "private_key",
+        "access_key",
+        "session_key",
+    ]
+    .iter()
+    .any(|sensitive| normalized.contains(sensitive))
 }
 
 #[cfg(test)]
@@ -547,6 +1080,7 @@ mod tests {
         bytes_read: u64,
         records_read: u64,
         replace_location: Option<String>,
+        replace_binding: Option<String>,
     }
 
     impl SourceDiscoverySession for BoundaryProbeSession {
@@ -573,6 +1107,9 @@ mod tests {
             if let Some(location) = &self.replace_location {
                 observation.evidence_location = SourceEvidenceLocation::from_operational(location)?;
             }
+            if let Some(binding) = &self.replace_binding {
+                observation.candidate_binding.clone_from(binding);
+            }
             Ok(observation)
         }
     }
@@ -589,6 +1126,7 @@ mod tests {
                 bytes_read: 1,
                 records_read: 1,
                 replace_location: None,
+                replace_binding: None,
             }),
         };
         assert_eq!(
@@ -607,6 +1145,7 @@ mod tests {
                 bytes_read: 1,
                 records_read: 1,
                 replace_location: None,
+                replace_binding: None,
             }),
         };
         assert!(
@@ -650,6 +1189,7 @@ mod tests {
                 bytes_read: 1,
                 records_read: 1,
                 replace_location: None,
+                replace_binding: None,
             }),
         };
         assert!(
@@ -683,6 +1223,7 @@ mod tests {
                 bytes_read: 11,
                 records_read: 3,
                 replace_location: None,
+                replace_binding: None,
             }),
         };
         let request = SourceDiscoveryRequest::new(10, 2).unwrap();
@@ -700,6 +1241,7 @@ mod tests {
                 bytes_read: 1,
                 records_read: 1,
                 replace_location: Some("mock://other".to_owned()),
+                replace_binding: None,
             }),
         };
         assert!(
@@ -709,5 +1251,159 @@ mod tests {
                 .message
                 .contains("does not match candidate")
         );
+
+        let wrong_generation = VerifiedSourceDiscoverySession {
+            inner: Box::new(BoundaryProbeSession {
+                candidates: vec![candidate.clone()],
+                bytes_read: 1,
+                records_read: 1,
+                replace_location: None,
+                replace_binding: Some(
+                    artifact_hash(&serde_json::json!({"wrong_generation": true})).unwrap(),
+                ),
+            }),
+        };
+        assert!(
+            wrong_generation
+                .observe(&candidate, &request)
+                .unwrap_err()
+                .message
+                .contains("does not match the inventoried candidate")
+        );
+    }
+
+    #[test]
+    fn option_schema_dialect_validates_nested_instances_before_drivers() {
+        let schema = serde_json::json!({
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "source": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["endpoint", "auth"],
+                "properties": {
+                    "endpoint": {"type": "string", "format": "uri"},
+                    "auth": {
+                        "oneOf": [
+                            {
+                                "type": "object",
+                                "additionalProperties": false,
+                                "required": ["kind", "token"],
+                                "properties": {
+                                    "kind": {"const": "bearer"},
+                                    "token": {"type": "string", "pattern": "^secret://"}
+                                }
+                            },
+                            {
+                                "type": "object",
+                                "additionalProperties": false,
+                                "required": ["kind"],
+                                "properties": {"kind": {"const": "anonymous"}}
+                            }
+                        ]
+                    }
+                }
+            },
+            "resource": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["path", "limit"],
+                "properties": {
+                    "path": {"type": "string", "minLength": 1},
+                    "limit": {"type": "integer", "minimum": 1},
+                    "fields": {"type": "array", "items": {"type": "string"}, "uniqueItems": true}
+                }
+            }
+        });
+        validate_option_schema(&schema).unwrap();
+        validate_option_instance(
+            &schema["source"],
+            &serde_json::json!({
+                "endpoint": "https://example.test",
+                "auth": {"kind": "bearer", "token": "secret://env/API_TOKEN"}
+            }),
+            "$.source",
+        )
+        .unwrap();
+        let error = validate_option_instance(
+            &schema["resource"],
+            &serde_json::json!({"path": "", "limit": 1, "fields": ["id"]}),
+            "$.resource",
+        )
+        .unwrap_err();
+        assert!(
+            error.message.contains("$.resource.path"),
+            "{}",
+            error.message
+        );
+        let error = validate_option_instance(
+            &schema["resource"],
+            &serde_json::json!({"path": "events", "limit": 1, "fields": ["id", "id"]}),
+            "$.resource",
+        )
+        .unwrap_err();
+        assert!(error.message.contains("$.resource.fields"));
+        let error = validate_option_instance(
+            &schema["source"],
+            &serde_json::json!({
+                "endpoint": "not-a-uri",
+                "auth": {"kind": "anonymous"}
+            }),
+            "$.source",
+        )
+        .unwrap_err();
+        assert!(error.message.contains("$.source.endpoint"));
+        let error = validate_option_instance(
+            &schema["source"],
+            &serde_json::json!({
+                "endpoint": "https://example.test",
+                "auth": {"kind": "bearer", "token": "plain-text"}
+            }),
+            "$.source",
+        )
+        .unwrap_err();
+        assert!(error.message.contains("exactly one declared alternative"));
+
+        let mut unsupported = schema;
+        unsupported["resource"]["properties"]["path"]["if"] = serde_json::json!({});
+        let error = validate_option_schema(&unsupported).unwrap_err();
+        assert!(error.message.contains("unsupported keyword `if`"));
+    }
+
+    #[test]
+    fn health_boundary_namespaces_bounds_and_redacts_driver_output() {
+        let driver = SourceDriverId::new("mock").unwrap();
+        let verified = verify_health_result(
+            &driver,
+            SourceHealthResult {
+                probe_id: "reachable".to_owned(),
+                status: crate::SourceHealthStatus::Passed,
+                message: "endpoint responded successfully".to_owned(),
+                details: serde_json::json!({
+                    "endpoint": "https://alice:secret@example.test/data?token=secret",
+                    "credentials": {"value": "do-not-render"},
+                    "nested": [{"session_key": "do-not-render"}],
+                }),
+            },
+        )
+        .unwrap();
+        assert_eq!(verified.probe_id, "source.mock.reachable");
+        assert_eq!(
+            verified.details["endpoint"],
+            "https://example.test/data?<redacted>"
+        );
+        assert_eq!(verified.details["credentials"], "<redacted>");
+        assert_eq!(verified.details["nested"][0]["session_key"], "<redacted>");
+
+        let error = verify_health_result(
+            &driver,
+            SourceHealthResult {
+                probe_id: "unsafe".to_owned(),
+                status: crate::SourceHealthStatus::Failed,
+                message: "failed at https://alice:secret@example.test".to_owned(),
+                details: serde_json::json!({}),
+            },
+        )
+        .unwrap_err();
+        assert!(error.message.contains("contain no URI"));
     }
 }
