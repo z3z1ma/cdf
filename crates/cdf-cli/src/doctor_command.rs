@@ -93,6 +93,7 @@ fn source_runtime_checks(
         &context.root,
         std::sync::Arc::new(context.secret_provider()),
         execution,
+        std::sync::Arc::new(cdf_http::EgressAllowlist::allow_any()),
     );
     context
         .resources

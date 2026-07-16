@@ -162,6 +162,14 @@ pub(crate) fn test_execution_services() -> cdf_runtime::ExecutionServices {
 }
 
 #[cfg(test)]
+pub(crate) fn test_egress_scope() -> cdf_runtime::SourceEgressScope {
+    cdf_runtime::SourceEgressScope::new(
+        cdf_runtime::SourceDriverId::new("files").expect("file source test driver id"),
+        std::sync::Arc::new(cdf_http::EgressAllowlist::allow_any()),
+    )
+}
+
+#[cfg(test)]
 pub(crate) fn test_format_registry() -> std::sync::Arc<cdf_runtime::FormatRegistry> {
     static REGISTRY: std::sync::OnceLock<std::sync::Arc<cdf_runtime::FormatRegistry>> =
         std::sync::OnceLock::new();

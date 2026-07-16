@@ -171,10 +171,14 @@ pub(crate) fn build_project_run_resource(
         resource.baseline_observation_schema_catalog(),
     )?;
     let secrets = context.secret_provider();
-    let resolution =
-        cdf_runtime::SourceResolutionContext::new(&context.root, Arc::new(secrets), execution)
-            .with_prepared_payloads(prepared_payloads)
-            .with_driver_options(context.config.driver_options.clone());
+    let resolution = cdf_runtime::SourceResolutionContext::new(
+        &context.root,
+        Arc::new(secrets),
+        execution,
+        Arc::new(cdf_http::EgressAllowlist::allow_any()),
+    )
+    .with_prepared_payloads(prepared_payloads)
+    .with_driver_options(context.config.driver_options.clone());
     Ok(CliProjectRunSource::from_shared(
         registry.resolve(&source_plan, &resolution)?,
         source_plan,
@@ -219,6 +223,7 @@ pub(crate) fn discover_source_schema_with_plan_for_cli(
         &context.root,
         Arc::new(context.secret_provider()),
         execution,
+        Arc::new(cdf_http::EgressAllowlist::allow_any()),
     )
     .with_prepared_payloads(prepared_payloads)
     .with_driver_options(context.config.driver_options.clone());
@@ -243,6 +248,7 @@ pub(crate) fn preflight_fixed_source_schema_with_plan_for_cli(
         &context.root,
         Arc::new(context.secret_provider()),
         execution,
+        Arc::new(cdf_http::EgressAllowlist::allow_any()),
     )
     .with_driver_options(context.config.driver_options.clone());
     cdf_project::preflight_fixed_resource_schema_with_source_registry(

@@ -133,6 +133,7 @@ impl SourceDriver for PostgresSourceDriver {
             resource_id: plan.descriptor.resource_id.clone(),
             target: PostgresTarget::parse(&physical.target)?,
             execution: context.execution().clone(),
+            egress: context.egress_scope(&plan.driver.driver_id),
         }))
     }
 
@@ -152,6 +153,7 @@ impl SourceDriver for PostgresSourceDriver {
             plan.descriptor.clone(),
             Arc::new(plan.schema.clone()),
             target,
+            context.egress_scope(&plan.driver.driver_id),
             move |cancellation| {
                 cancellation.check()?;
                 let secret = secret_provider.resolve(&connection)?;
@@ -234,6 +236,7 @@ struct PostgresDiscoverySession {
     resource_id: cdf_kernel::ResourceId,
     target: PostgresTarget,
     execution: cdf_runtime::ExecutionServices,
+    egress: cdf_runtime::SourceEgressScope,
 }
 
 impl SourceDiscoverySession for PostgresDiscoverySession {
@@ -269,10 +272,16 @@ impl SourceDiscoverySession for PostgresDiscoverySession {
         let database_url = self.database_url.clone();
         let resource_id = self.resource_id.clone();
         let target = self.target.clone();
+        let egress = self.egress.clone();
         let discovery = self
             .execution
             .run_blocking("postgres-source.sync", move || {
-                discover_postgres_table_catalog_schema(&database_url, &resource_id, &target)
+                discover_postgres_table_catalog_schema(
+                    &database_url,
+                    &resource_id,
+                    &target,
+                    &egress,
+                )
             })?;
         let column_count = u64::try_from(discovery.schema.fields().len())
             .map_err(|_| CdfError::data("Postgres discovery column count exceeds u64"))?;

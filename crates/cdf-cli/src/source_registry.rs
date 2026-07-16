@@ -18,7 +18,7 @@ pub(crate) fn builtin_source_registry() -> Result<SourceRegistry> {
     let runtime_formats = std::sync::Arc::clone(&formats);
     registry.register(FileSourceDriver::new(
         formats,
-        move |secrets, execution| {
+        move |secrets, execution, egress| {
             Ok(FileRuntimeDependencies::new(
                 FileTransportFacade::new()
                     .with_http_transport(ReqwestHttpTransport::new()?)
@@ -27,6 +27,7 @@ pub(crate) fn builtin_source_registry() -> Result<SourceRegistry> {
                 execution,
                 std::sync::Arc::clone(&runtime_formats),
                 builtin_transform_registry()?,
+                egress,
             ))
         },
     )?)?;

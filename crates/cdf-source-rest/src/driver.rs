@@ -121,6 +121,7 @@ impl SourceDriver for RestSourceDriver {
             memory: context.execution().memory(),
             prepared_payloads: context.prepared_payloads().clone(),
             execution: context.execution().clone(),
+            egress: context.egress_scope(&plan.driver.driver_id),
         }))
     }
 
@@ -135,10 +136,13 @@ impl SourceDriver for RestSourceDriver {
         let runtime_plan = physical.to_runtime_plan()?;
         validate_compiled_capabilities(plan, &runtime_plan)?;
         let transport = (self.transport_factory)()?;
-        let dependencies =
-            RestRuntimeDependencies::from_boxed_transport(transport, context.execution().clone())
-                .with_shared_secret_provider(Arc::clone(context.secret_provider()))
-                .with_prepared_payloads(context.prepared_payloads().clone());
+        let dependencies = RestRuntimeDependencies::from_boxed_transport(
+            transport,
+            context.execution().clone(),
+            context.egress_scope(&plan.driver.driver_id),
+        )
+        .with_shared_secret_provider(Arc::clone(context.secret_provider()))
+        .with_prepared_payloads(context.prepared_payloads().clone());
         Ok(Arc::new(
             RestResource::new(
                 plan.descriptor.clone(),
@@ -274,6 +278,7 @@ struct RestDriverDiscoverySession {
     memory: Arc<dyn cdf_memory::MemoryCoordinator>,
     prepared_payloads: cdf_runtime::PreparedSourcePayloads,
     execution: cdf_runtime::ExecutionServices,
+    egress: cdf_runtime::SourceEgressScope,
 }
 
 impl SourceDiscoverySession for RestDriverDiscoverySession {
@@ -304,6 +309,7 @@ impl SourceDiscoverySession for RestDriverDiscoverySession {
         let secret_provider = Arc::clone(&self.secret_provider);
         let memory = Arc::clone(&self.memory);
         let prepared_payloads = self.prepared_payloads.clone();
+        let egress = self.egress.clone();
         let candidate = candidate.clone();
         let request = request.clone();
         self.execution.run_blocking("rest-source.sync", move || {
@@ -329,6 +335,7 @@ impl SourceDiscoverySession for RestDriverDiscoverySession {
                 transport.as_ref(),
                 secret_provider.as_ref(),
                 memory,
+                egress,
             )
             .with_prepared_payloads(prepared_payloads);
             let discovery = discover_rest_sample_schema(
@@ -978,6 +985,7 @@ mod tests {
             std::path::Path::new("."),
             Arc::new(NoopSecretProvider),
             &execution,
+            Arc::new(cdf_http::EgressAllowlist::allow_any()),
         );
         let session = registry.discovery_session(&plan, &context).unwrap();
 

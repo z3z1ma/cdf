@@ -24,7 +24,7 @@ use postgres::{Client, NoTls, Row, types::ToSql};
 use cdf_postgres::{PostgresIdentifier, PostgresTarget};
 use cdf_runtime::{
     BlockingLaneSpec, BlockingTaskStreamSender, ExecutionServices, InterruptionSafety,
-    LaneAffinity, RunCancellation,
+    LaneAffinity, RunCancellation, SourceEgressScope,
 };
 
 use cdf_memory::{
@@ -56,6 +56,7 @@ pub struct PostgresTableResource {
     connection: PostgresConnection,
     capabilities: ResourceCapabilities,
     execution: Option<ExecutionServices>,
+    egress: SourceEgressScope,
     type_policy_allowances: cdf_kernel::TypePolicyAllowances,
     compiled_source_plan_hash: Option<String>,
 }
@@ -72,6 +73,7 @@ impl PostgresTableResource {
         descriptor: ResourceDescriptor,
         schema: SchemaRef,
         target: PostgresTarget,
+        egress: SourceEgressScope,
     ) -> Result<Self> {
         let database_url = database_url.into();
         if database_url.trim().is_empty() {
@@ -88,6 +90,7 @@ impl PostgresTableResource {
             connection: PostgresConnection::Resolved(database_url),
             capabilities,
             execution: None,
+            egress,
             type_policy_allowances: Default::default(),
             compiled_source_plan_hash: None,
         })
@@ -97,6 +100,7 @@ impl PostgresTableResource {
         descriptor: ResourceDescriptor,
         schema: SchemaRef,
         target: PostgresTarget,
+        egress: SourceEgressScope,
         resolver: F,
     ) -> Result<Self>
     where
@@ -111,6 +115,7 @@ impl PostgresTableResource {
             connection: PostgresConnection::Deferred(Arc::new(resolver)),
             capabilities,
             execution: None,
+            egress,
             type_policy_allowances: Default::default(),
             compiled_source_plan_hash: None,
         })
@@ -139,6 +144,7 @@ impl PostgresTableResource {
         let schema = self.schema;
         let target = self.target;
         let connection = self.connection;
+        let egress = self.egress;
         let Some(execution) = self.execution else {
             return cdf_kernel::PartitionOpenAttempt::materialized(Box::pin(async {
                 Err(CdfError::contract(
@@ -152,6 +158,7 @@ impl PostgresTableResource {
             target,
             partition,
             execution,
+            egress,
             move |cancellation| match connection {
                 PostgresConnection::Resolved(database_url) => Ok(database_url),
                 PostgresConnection::Deferred(resolver) => resolver(cancellation),
@@ -171,6 +178,7 @@ pub fn open_postgres_table_with_connection<F>(
     target: PostgresTarget,
     partition: PartitionPlan,
     execution: ExecutionServices,
+    egress: SourceEgressScope,
     resolve_connection: F,
 ) -> cdf_kernel::PartitionOpenAttempt<'static>
 where
@@ -206,6 +214,7 @@ where
                     target,
                     partition,
                     memory,
+                    egress,
                 },
                 sender,
                 cancellation.clone(),
@@ -465,6 +474,7 @@ struct PostgresExecutionInput {
     target: PostgresTarget,
     partition: PartitionPlan,
     memory: Arc<dyn MemoryCoordinator>,
+    egress: SourceEgressScope,
 }
 
 fn execute_postgres_table(
@@ -479,11 +489,13 @@ fn execute_postgres_table(
         target,
         partition,
         memory,
+        egress,
     } = input;
     validate_postgres_table_resource_shape(&descriptor, &schema, &target)?;
     let scan = scan_from_partition(&descriptor, &schema, &target, &partition)?;
     let query = build_query(&schema, &target, &scan)?;
 
+    egress.authorize(&database_url)?;
     let mut client = Client::connect(&database_url, NoTls)
         .map_err(|error| CdfError::transient(format!("connect to Postgres source: {error}")))?;
     let params = query
@@ -1508,6 +1520,13 @@ mod tests {
         WriteDisposition, with_source_name,
     };
 
+    fn test_egress() -> SourceEgressScope {
+        SourceEgressScope::new(
+            cdf_runtime::SourceDriverId::new("postgres").unwrap(),
+            Arc::new(cdf_http::EgressAllowlist::allow_any()),
+        )
+    }
+
     #[test]
     fn predicate_parser_accepts_only_structured_literals() {
         let schema = schema();
@@ -1581,6 +1600,7 @@ mod tests {
                 descriptor(None),
                 empty_schema,
                 target.clone(),
+                test_egress(),
             )
             .is_err()
         );
@@ -1593,6 +1613,7 @@ mod tests {
                 descriptor(None),
                 unsupported_schema,
                 target,
+                test_egress(),
             )
             .is_err()
         );
@@ -1615,6 +1636,7 @@ mod tests {
             discovered,
             schema(),
             target.clone(),
+            test_egress(),
         )
         .unwrap();
 
@@ -1637,6 +1659,7 @@ mod tests {
                 descriptor,
                 schema(),
                 target.clone(),
+                test_egress(),
             )
             .unwrap_err();
             assert!(
@@ -1684,6 +1707,7 @@ mod tests {
             descriptor(None),
             schema(),
             target,
+            test_egress(),
         )
         .unwrap();
         let debug = format!("{resource:?}");
@@ -1701,6 +1725,7 @@ mod tests {
             descriptor.clone(),
             Arc::clone(&schema),
             target.clone(),
+            test_egress(),
         )
         .unwrap();
         let request = ScanRequest {
@@ -1760,6 +1785,7 @@ mod tests {
             descriptor.clone(),
             Arc::clone(&schema),
             target,
+            test_egress(),
         )
         .unwrap();
         let request = ScanRequest {

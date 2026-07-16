@@ -110,13 +110,6 @@ pub struct PostgresDriftHooks {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct PostgresSourceExerciseHooks {
-    pub snapshot_count: PostgresStatement,
-    pub snapshot_page: PostgresStatement,
-    pub incremental_page: Option<PostgresStatement>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PostgresReceiptInput {
     pub receipt_id: ReceiptId,
     pub xid: String,

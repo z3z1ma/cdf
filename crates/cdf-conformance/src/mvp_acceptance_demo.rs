@@ -519,6 +519,7 @@ fn github_issues_resource() -> Result<(
         std::path::Path::new("."),
         std::sync::Arc::new(StaticSecretProvider::new([(SECRET_REF, SECRET_VALUE)])),
         &execution,
+        std::sync::Arc::new(cdf_http::EgressAllowlist::allow_any()),
     );
     let resource =
         crate::source_fixture::ResolvedSourceFixture::resolve(&compiled, &registry, &context)?;

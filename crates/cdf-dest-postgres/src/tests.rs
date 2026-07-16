@@ -624,35 +624,6 @@ fn existing_table_migrations_add_only_safe_missing_columns() {
 }
 
 #[test]
-fn source_exercise_hooks_require_deterministic_ordering() {
-    let target = PostgresTarget::parse("raw.orders").unwrap();
-    let columns = vec![
-        PostgresIdentifier::user("id").unwrap(),
-        PostgresIdentifier::user("name").unwrap(),
-    ];
-    assert!(source_exercise_hooks(&target, &columns, &[], None).is_err());
-
-    let hooks = source_exercise_hooks(
-        &target,
-        &columns,
-        &[PostgresIdentifier::user("id").unwrap()],
-        Some(&PostgresIdentifier::user("updated_at").unwrap()),
-    )
-    .unwrap();
-    assert_eq!(
-        hooks.snapshot_page.sql,
-        "SELECT \"id\", \"name\" FROM \"raw\".\"orders\" ORDER BY \"id\" LIMIT $1 OFFSET $2"
-    );
-    assert!(
-        hooks
-            .incremental_page
-            .unwrap()
-            .sql
-            .contains("WHERE \"updated_at\" > $1")
-    );
-}
-
-#[test]
 fn merge_requires_keys_and_rejects_existing_key_drift() {
     let destination = PostgresDestination::new();
     let mut no_keys = input(WriteDisposition::Merge, MergeDedupPolicy::Last);

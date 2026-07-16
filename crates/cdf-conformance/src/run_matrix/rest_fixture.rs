@@ -37,6 +37,7 @@ pub(crate) fn resource(
             "run-matrix-token",
         )])),
         &execution,
+        Arc::new(cdf_http::EgressAllowlist::allow_any()),
     );
     let resource =
         crate::source_fixture::ResolvedSourceFixture::resolve(&compiled, &registry, &context)?;

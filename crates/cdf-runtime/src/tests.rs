@@ -1436,7 +1436,12 @@ fn source_registry_compiles_hashes_and_resolves_mock_without_order_authority() {
     .unwrap();
     let secrets: Arc<dyn cdf_http::SecretProvider + Send + Sync> = Arc::new(NoopSecretProvider);
     let root = tempfile::tempdir().unwrap();
-    let context = SourceResolutionContext::new(root.path(), secrets, &services);
+    let context = SourceResolutionContext::new(
+        root.path(),
+        secrets,
+        &services,
+        Arc::new(cdf_http::EgressAllowlist::allow_any()),
+    );
     let discovery = registry.discovery_session(&plan, &context).unwrap();
     assert_eq!(discovery.kind(), SourceDiscoveryKind::BoundedContent);
     let candidates = discovery.candidates().unwrap();
@@ -2466,4 +2471,47 @@ fn execution_host_capabilities_validate_generic_cpu_and_blocking_lanes() {
         .validate()
         .is_err()
     );
+}
+
+#[test]
+fn source_egress_scope_exposes_only_normalized_credential_free_authority() {
+    #[derive(Default)]
+    struct RecordingAuthorizer {
+        requests: Mutex<Vec<SourceEgressRequest>>,
+    }
+
+    impl SourceEgressAuthorizer for RecordingAuthorizer {
+        fn authorize(&self, request: &SourceEgressRequest) -> Result<()> {
+            self.requests.lock().unwrap().push(request.clone());
+            Ok(())
+        }
+    }
+
+    let authorizer = Arc::new(RecordingAuthorizer::default());
+    let scope =
+        SourceEgressScope::new(SourceDriverId::new("postgres").unwrap(), authorizer.clone());
+    scope
+        .authorize("postgres://operator:secret@[2001:db8::1]:5432/catalog?token=hidden")
+        .unwrap();
+
+    let requests = authorizer.requests.lock().unwrap();
+    let [request] = requests.as_slice() else {
+        panic!("expected one source-egress request")
+    };
+    assert_eq!(request.driver_id.as_str(), "postgres");
+    assert_eq!(request.target.scheme(), "postgres");
+    assert_eq!(request.target.host(), "2001:db8::1");
+    assert_eq!(request.target.port(), Some(5432));
+    assert!(!format!("{request:?}").contains("operator"));
+    assert!(!format!("{request:?}").contains("secret"));
+    assert!(!format!("{request:?}").contains("hidden"));
+
+    assert_eq!(
+        SourceEgressTarget::parse("HTTPS://EXAMPLE.TEST./data")
+            .unwrap()
+            .host(),
+        "example.test"
+    );
+    assert!(SourceEgressTarget::parse("https://2001:db8::1/data").is_err());
+    assert!(SourceEgressTarget::parse("https://example.test:0/data").is_err());
 }

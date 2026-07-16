@@ -326,7 +326,12 @@ fn resolve_benchmark_file_resource(
         std::iter::empty::<(&str, &str)>(),
     ));
     let source_plan = compiled.source_plan().clone();
-    let resolution = SourceResolutionContext::new(project_root, secrets, execution);
+    let resolution = SourceResolutionContext::new(
+        project_root,
+        secrets,
+        execution,
+        Arc::new(cdf_http::EgressAllowlist::allow_any()),
+    );
     let resource = registry.resolve(&source_plan, &resolution)?;
     Ok(BenchmarkFileSource {
         resource,
@@ -362,7 +367,7 @@ fn benchmark_source_registry() -> BenchResult<SourceRegistry> {
     let runtime_formats = Arc::clone(&formats);
     registry.register(FileSourceDriver::new(
         formats,
-        move |secrets, execution| {
+        move |secrets, execution, egress| {
             Ok(FileRuntimeDependencies::new(
                 FileTransportFacade::new()
                     .with_shared_secret_provider(secrets)
@@ -370,6 +375,7 @@ fn benchmark_source_registry() -> BenchResult<SourceRegistry> {
                 execution,
                 Arc::clone(&runtime_formats),
                 Arc::new(ByteTransformRegistry::default()),
+                egress,
             ))
         },
     )?)?;
@@ -836,6 +842,7 @@ schema = { fields = [
             std::iter::empty::<(&str, &str)>(),
         )),
         &execution,
+        Arc::new(cdf_http::EgressAllowlist::allow_any()),
     );
     let resource = registry.resolve(compiled.source_plan(), &resolution)?;
     let request = ScanRequest {

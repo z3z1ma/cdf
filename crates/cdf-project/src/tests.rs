@@ -118,7 +118,7 @@ fn test_source_registry() -> cdf_runtime::SourceRegistry {
     let mut registry = cdf_runtime::SourceRegistry::new();
     registry
         .register(
-            FileSourceDriver::new(formats, move |secrets, execution| {
+            FileSourceDriver::new(formats, move |secrets, execution, egress| {
                 Ok(FileRuntimeDependencies::new(
                     FileTransportFacade::new()
                         .with_shared_secret_provider(secrets)
@@ -126,6 +126,7 @@ fn test_source_registry() -> cdf_runtime::SourceRegistry {
                     execution,
                     Arc::clone(&runtime_formats),
                     Arc::new(cdf_runtime::ByteTransformRegistry::default()),
+                    egress,
                 ))
             })
             .unwrap(),
@@ -444,6 +445,10 @@ fn file_dependencies(transport: FileTransportFacade) -> FileRuntimeDependencies 
         execution,
         test_format_registry(),
         Arc::new(transforms),
+        cdf_runtime::SourceEgressScope::new(
+            cdf_runtime::SourceDriverId::new("files").unwrap(),
+            Arc::new(cdf_http::EgressAllowlist::allow_any()),
+        ),
     )
 }
 
@@ -457,8 +462,10 @@ fn resolve_file_resource_for_test(
     let mut registry = cdf_runtime::SourceRegistry::new();
     registry
         .register(
-            FileSourceDriver::new(formats, move |_secrets, _execution| Ok(installed.clone()))
-                .unwrap(),
+            FileSourceDriver::new(formats, move |_secrets, _execution, _egress| {
+                Ok(installed.clone())
+            })
+            .unwrap(),
         )
         .unwrap();
     let execution = test_execution_services();
@@ -469,6 +476,7 @@ fn resolve_file_resource_for_test(
             std::iter::empty::<(&str, &str)>(),
         )),
         &execution,
+        Arc::new(cdf_http::EgressAllowlist::allow_any()),
     )
     .with_prepared_payloads(prepared_payloads);
     registry
@@ -488,7 +496,7 @@ fn external_mock_source_registry(
     let mut registry = cdf_runtime::SourceRegistry::new();
     registry
         .register(
-            FileSourceDriver::new(formats, move |secrets, execution| {
+            FileSourceDriver::new(formats, move |secrets, execution, egress| {
                 Ok(FileRuntimeDependencies::new(
                     FileTransportFacade::new()
                         .with_http_transport(transport.clone())
@@ -497,6 +505,7 @@ fn external_mock_source_registry(
                     execution,
                     Arc::clone(&runtime_formats),
                     Arc::new(cdf_runtime::ByteTransformRegistry::default()),
+                    egress,
                 ))
             })
             .unwrap(),
@@ -515,7 +524,7 @@ fn discover_file_schema_artifacts_for_test(
     let installed_dependencies = dependencies.clone();
     let mut registry = cdf_runtime::SourceRegistry::new();
     registry.register(
-        FileSourceDriver::new(formats, move |_secrets, _execution| {
+        FileSourceDriver::new(formats, move |_secrets, _execution, _egress| {
             Ok(installed_dependencies.clone())
         })
         .unwrap(),
@@ -533,6 +542,7 @@ fn discover_file_schema_artifacts_for_test(
             std::iter::empty::<(&str, &str)>(),
         )),
         &execution,
+        Arc::new(cdf_http::EgressAllowlist::allow_any()),
     )
     .with_prepared_payloads(prepared_payloads);
     super::discover_resource_schema_with_source_registry(
@@ -628,9 +638,13 @@ fn discover_rest_schema_artifacts_for_test(
     })?)?;
     let plan = resource.source_plan().clone();
     let execution = test_execution_services();
-    let resolution =
-        cdf_runtime::SourceResolutionContext::new(project_root, secret_provider, &execution)
-            .with_prepared_payloads(prepared_payloads);
+    let resolution = cdf_runtime::SourceResolutionContext::new(
+        project_root,
+        secret_provider,
+        &execution,
+        Arc::new(cdf_http::EgressAllowlist::allow_any()),
+    )
+    .with_prepared_payloads(prepared_payloads);
     discover_resource_schema_with_source_registry(
         resource,
         &registry,
@@ -2002,7 +2016,12 @@ fn project_external_codec_discovers_pins_previews_and_runs_over_remote_provider(
     let secrets = Arc::new(EnvSecretProvider::from_map(
         std::iter::empty::<(&str, &str)>(),
     ));
-    let resolution = cdf_runtime::SourceResolutionContext::new(temp.path(), secrets, &execution);
+    let resolution = cdf_runtime::SourceResolutionContext::new(
+        temp.path(),
+        secrets,
+        &execution,
+        Arc::new(cdf_http::EgressAllowlist::allow_any()),
+    );
     let source_plan = resource.source_plan().clone();
     let mut artifacts = discover_resource_schema_with_source_registry(
         &resource,
@@ -3967,6 +3986,7 @@ trust = "governed"
             std::iter::empty::<(&str, &str)>(),
         )),
         &execution,
+        Arc::new(cdf_http::EgressAllowlist::allow_any()),
     )
     .with_prepared_payloads(prepared_payloads.clone());
     let runtime = registry.resolve(&source_plan, &resolution).unwrap();

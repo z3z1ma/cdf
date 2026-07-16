@@ -184,6 +184,7 @@ fn discover_for_add(
         &context.root,
         Arc::new(secret_provider),
         execution,
+        Arc::new(cdf_http::EgressAllowlist::allow_any()),
     )
     .with_driver_options(context.config.driver_options.clone());
     Ok(cdf_project::discover_resource_schema_with_source_registry(

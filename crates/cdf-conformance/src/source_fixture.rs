@@ -54,7 +54,12 @@ pub(crate) fn resolve_local_file(
 ) -> Result<ResolvedSourceFixture> {
     let execution = crate::test_execution_services();
     let registry = local_file_registry()?;
-    let context = SourceResolutionContext::new(project_root, Arc::new(NoSecrets), &execution);
+    let context = SourceResolutionContext::new(
+        project_root,
+        Arc::new(NoSecrets),
+        &execution,
+        Arc::new(cdf_http::EgressAllowlist::allow_any()),
+    );
     ResolvedSourceFixture::resolve(resource, &registry, &context)
 }
 
@@ -66,8 +71,13 @@ pub(crate) fn resolve_with_registry(
     driver_options: BTreeMap<String, serde_json::Value>,
 ) -> Result<ResolvedSourceFixture> {
     let execution = crate::test_execution_services();
-    let context = SourceResolutionContext::new(project_root, Arc::new(NoSecrets), &execution)
-        .with_driver_options(driver_options);
+    let context = SourceResolutionContext::new(
+        project_root,
+        Arc::new(NoSecrets),
+        &execution,
+        Arc::new(cdf_http::EgressAllowlist::allow_any()),
+    )
+    .with_driver_options(driver_options);
     ResolvedSourceFixture::resolve(resource, registry, &context)
 }
 
@@ -79,7 +89,7 @@ pub(crate) fn local_file_registry() -> Result<SourceRegistry> {
     let compile_formats = Arc::clone(&formats);
     registry.register(FileSourceDriver::new(
         compile_formats,
-        move |secrets, execution| {
+        move |secrets, execution, egress| {
             Ok(FileRuntimeDependencies::new(
                 FileTransportFacade::new()
                     .with_shared_secret_provider(secrets)
@@ -87,6 +97,7 @@ pub(crate) fn local_file_registry() -> Result<SourceRegistry> {
                 execution,
                 formats.clone(),
                 Arc::new(ByteTransformRegistry::default()),
+                egress,
             ))
         },
     )?)?;

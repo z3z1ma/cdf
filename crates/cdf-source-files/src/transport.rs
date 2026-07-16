@@ -12,7 +12,7 @@ use cdf_http::{
 };
 use cdf_kernel::{BoxFuture, CdfError, ErrorKind, FilePosition, Result};
 use cdf_memory::MemoryCoordinator;
-use cdf_runtime::{ByteSource, GenerationStrength};
+use cdf_runtime::{ByteSource, GenerationStrength, SourceEgressScope};
 use futures_util::TryStreamExt;
 use object_store::{ObjectStore, ObjectStoreExt, path::Path as ObjectPath};
 use serde::{Deserialize, Serialize};
@@ -255,16 +255,26 @@ pub struct FileChecksum {
 }
 
 pub trait FileTransport: Send + Sync {
-    fn metadata(&self, resource: &FileTransportResource) -> Result<FileMetadataObservation>;
+    fn metadata(
+        &self,
+        egress: &SourceEgressScope,
+        resource: &FileTransportResource,
+    ) -> Result<FileMetadataObservation>;
     fn metadata_if_exists(
         &self,
+        egress: &SourceEgressScope,
         resource: &FileTransportResource,
     ) -> Result<Option<FileMetadataObservation>> {
-        self.metadata(resource).map(Some)
+        self.metadata(egress, resource).map(Some)
     }
-    fn list(&self, resource: &FileTransportResource) -> Result<Vec<FileIdentityMetadata>>;
+    fn list(
+        &self,
+        egress: &SourceEgressScope,
+        resource: &FileTransportResource,
+    ) -> Result<Vec<FileIdentityMetadata>>;
     fn open_byte_source(
         &self,
+        egress: &SourceEgressScope,
         resource: &FileTransportResource,
         expected: &FileIdentityMetadata,
         memory: Arc<dyn MemoryCoordinator>,
@@ -414,42 +424,56 @@ impl fmt::Debug for FileTransportFacade {
 }
 
 impl FileTransport for FileTransportFacade {
-    fn metadata(&self, resource: &FileTransportResource) -> Result<FileMetadataObservation> {
+    fn metadata(
+        &self,
+        egress: &SourceEgressScope,
+        resource: &FileTransportResource,
+    ) -> Result<FileMetadataObservation> {
         match &resource.location {
             FileTransportLocation::LocalPath { path } => local_metadata(Path::new(path))
                 .map(|identity| FileMetadataObservation::direct(resource, identity)),
             FileTransportLocation::FileUrl { url } => local_metadata(&file_url_path(url)?)
                 .map(|identity| FileMetadataObservation::direct(resource, identity)),
-            FileTransportLocation::HttpUrl { url } => self.http_metadata(resource, url),
+            FileTransportLocation::HttpUrl { url } => self.http_metadata(egress, resource, url),
             FileTransportLocation::ObjectStoreUrl { url } => self
-                .object_store_metadata(resource, url)
+                .object_store_metadata(egress, resource, url)
                 .map(|identity| FileMetadataObservation::direct(resource, identity)),
         }
     }
 
     fn metadata_if_exists(
         &self,
+        egress: &SourceEgressScope,
         resource: &FileTransportResource,
     ) -> Result<Option<FileMetadataObservation>> {
         match &resource.location {
-            FileTransportLocation::HttpUrl { url } => self.http_metadata_if_exists(resource, url),
-            _ => self.metadata(resource).map(Some),
+            FileTransportLocation::HttpUrl { url } => {
+                self.http_metadata_if_exists(egress, resource, url)
+            }
+            _ => self.metadata(egress, resource).map(Some),
         }
     }
 
-    fn list(&self, resource: &FileTransportResource) -> Result<Vec<FileIdentityMetadata>> {
+    fn list(
+        &self,
+        egress: &SourceEgressScope,
+        resource: &FileTransportResource,
+    ) -> Result<Vec<FileIdentityMetadata>> {
         match &resource.location {
             FileTransportLocation::LocalPath { path } => list_local(Path::new(path)),
             FileTransportLocation::FileUrl { url } => list_local(&file_url_path(url)?),
             FileTransportLocation::HttpUrl { .. } => Err(CdfError::contract(
                 "HTTP(S) file transport does not support arbitrary directory listing; use an explicit URL or a ratified template/range enumerator",
             )),
-            FileTransportLocation::ObjectStoreUrl { url } => self.list_object_store(resource, url),
+            FileTransportLocation::ObjectStoreUrl { url } => {
+                self.list_object_store(egress, resource, url)
+            }
         }
     }
 
     fn open_byte_source(
         &self,
+        egress: &SourceEgressScope,
         resource: &FileTransportResource,
         expected: &FileIdentityMetadata,
         memory: Arc<dyn MemoryCoordinator>,
@@ -463,7 +487,7 @@ impl FileTransport for FileTransportFacade {
                 memory,
             )?)),
             FileTransportLocation::ObjectStoreUrl { url } => {
-                let (store, path, _) = self.resolve_object_store(resource, url)?;
+                let (store, path, _) = self.resolve_object_store(egress, resource, url)?;
                 Ok(Arc::new(crate::ObjectStoreByteSource::new(
                     store,
                     path,
@@ -471,9 +495,11 @@ impl FileTransport for FileTransportFacade {
                     memory,
                 )?))
             }
-            FileTransportLocation::HttpUrl { .. } => self
-                .http_transport()?
-                .open_byte_source(resource, expected, memory),
+            FileTransportLocation::HttpUrl { url } => {
+                egress.authorize(url)?;
+                self.http_transport()?
+                    .open_byte_source(resource, expected, memory)
+            }
         }
     }
 }
@@ -481,18 +507,20 @@ impl FileTransport for FileTransportFacade {
 impl FileTransportFacade {
     fn http_metadata_if_exists(
         &self,
+        egress: &SourceEgressScope,
         resource: &FileTransportResource,
         url: &str,
     ) -> Result<Option<FileMetadataObservation>> {
-        self.probe_http_metadata(resource, url, true)
+        self.probe_http_metadata(egress, resource, url, true)
     }
 
     fn object_store_metadata(
         &self,
+        egress: &SourceEgressScope,
         resource: &FileTransportResource,
         url: &str,
     ) -> Result<FileIdentityMetadata> {
-        let (store, path, _) = self.resolve_object_store(resource, url)?;
+        let (store, path, _) = self.resolve_object_store(egress, resource, url)?;
         let metadata = self
             .object_store_io(async move { Ok(store.head(&path).await) })?
             .map_err(|error| object_store_error("read object metadata", error))?;
@@ -501,10 +529,11 @@ impl FileTransportFacade {
 
     fn list_object_store(
         &self,
+        egress: &SourceEgressScope,
         resource: &FileTransportResource,
         url: &str,
     ) -> Result<Vec<FileIdentityMetadata>> {
-        let (store, prefix, origin) = self.resolve_object_store(resource, url)?;
+        let (store, prefix, origin) = self.resolve_object_store(egress, resource, url)?;
         let objects = self
             .object_store_io(
                 async move { Ok(store.list(Some(&prefix)).try_collect::<Vec<_>>().await) },
@@ -527,6 +556,7 @@ impl FileTransportFacade {
 
     fn resolve_object_store(
         &self,
+        egress: &SourceEgressScope,
         resource: &FileTransportResource,
         url: &str,
     ) -> Result<(Arc<dyn ObjectStore>, ObjectPath, String)> {
@@ -541,6 +571,7 @@ impl FileTransportFacade {
             .host_str()
             .ok_or_else(|| CdfError::contract("object-store URL must name a bucket/account"))?;
         let origin = format!("{}://{}", parsed.scheme(), host);
+        egress.authorize(url)?;
         let policy = HttpRequest::new(HttpMethod::Get, format!("https://{host}/"));
         resource.egress_allowlist.check(&policy)?;
         if let Some(store) = self.object_stores.get(&origin) {
@@ -600,15 +631,17 @@ impl FileTransportFacade {
 
     fn http_metadata(
         &self,
+        egress: &SourceEgressScope,
         resource: &FileTransportResource,
         url: &str,
     ) -> Result<FileMetadataObservation> {
-        self.probe_http_metadata(resource, url, false)?
+        self.probe_http_metadata(egress, resource, url, false)?
             .ok_or_else(|| CdfError::data("HTTP file transport resource does not exist"))
     }
 
     fn probe_http_metadata(
         &self,
+        egress: &SourceEgressScope,
         resource: &FileTransportResource,
         logical_url: &str,
         missing_is_none: bool,
@@ -619,7 +652,7 @@ impl FileTransportFacade {
         self.reject_unimplemented_auth(resource)?;
         let head = HttpFileRequest::new(HttpMethod::Head, logical_url.to_owned());
         let (mut access_url, mut response) =
-            self.send_headers_following_redirects(resource, head, MAX_REDIRECTS)?;
+            self.send_headers_following_redirects(egress, resource, head, MAX_REDIRECTS)?;
         if response.status == 404 && missing_is_none {
             return Ok(None);
         }
@@ -635,7 +668,7 @@ impl FileTransportFacade {
             set_header(&mut get.headers, "range", "bytes=0-0");
             set_header(&mut get.headers, "accept-encoding", "identity");
             (access_url, response) =
-                self.send_headers_following_redirects(resource, get, MAX_REDIRECTS)?;
+                self.send_headers_following_redirects(egress, resource, get, MAX_REDIRECTS)?;
             if response.status == 404 && missing_is_none {
                 return Ok(None);
             }
@@ -655,12 +688,14 @@ impl FileTransportFacade {
 
     fn send_headers_following_redirects(
         &self,
+        egress: &SourceEgressScope,
         resource: &FileTransportResource,
         mut request: HttpFileRequest,
         maximum_redirects: usize,
     ) -> Result<(String, HttpFileResponse)> {
         for redirect_count in 0..=maximum_redirects {
             validate_http_file_url(&request.url)?;
+            egress.authorize(&request.url)?;
             resource.egress_allowlist.check(&policy_request(&request))?;
             let response = self.http_io(self.http_transport()?.send_headers(request.clone()))?;
             if !matches!(response.status, 301 | 302 | 303 | 307 | 308) {
@@ -1081,7 +1116,7 @@ mod tests {
             .with_object_store("s3://acme-events", store)
             .with_execution_services(crate::test_execution_services());
         let root = FileTransportResource::object_store_url("s3://acme-events/prod/");
-        let listed = transport.list(&root).unwrap();
+        let listed = transport.list(&crate::test_egress_scope(), &root).unwrap();
         assert_eq!(listed.len(), 1);
         assert_eq!(
             listed[0].location,
@@ -1089,7 +1124,9 @@ mod tests {
         );
         assert_eq!(listed[0].size_bytes, Some(15));
         let object = FileTransportResource::object_store_url(&listed[0].location);
-        let head = transport.metadata(&object).unwrap();
+        let head = transport
+            .metadata(&crate::test_egress_scope(), &object)
+            .unwrap();
         assert_eq!(head.identity.size_bytes, Some(15));
     }
 
@@ -1126,7 +1163,9 @@ mod tests {
             .with_credentials(credential)
             .with_egress_allowlist(EgressAllowlist::from_hosts(["allowed-bucket"]));
         let transport = FileTransportFacade::new();
-        let error = transport.metadata(&resource).unwrap_err();
+        let error = transport
+            .metadata(&crate::test_egress_scope(), &resource)
+            .unwrap_err();
         assert_eq!(error.kind, ErrorKind::Auth);
         assert!(!error.message.contains("cloud-options"));
         assert!(!format!("{resource:?}").contains("cloud-options"));
@@ -1140,7 +1179,10 @@ mod tests {
         let transport = FileTransportFacade::new();
 
         let metadata = transport
-            .metadata(&FileTransportResource::local_path(&path))
+            .metadata(
+                &crate::test_egress_scope(),
+                &FileTransportResource::local_path(&path),
+            )
             .unwrap()
             .identity;
         assert!(metadata.location.ends_with("sample.bin"));
@@ -1169,7 +1211,10 @@ mod tests {
             .with_egress_allowlist(EgressAllowlist::from_hosts(["data.example.org"]));
         let transport = http_facade(client);
 
-        let metadata = transport.metadata(&resource).unwrap().identity;
+        let metadata = transport
+            .metadata(&crate::test_egress_scope(), &resource)
+            .unwrap()
+            .identity;
         assert_eq!(metadata.location, "https://data.example.org/events.parquet");
         assert_eq!(metadata.size_bytes, Some(12345));
         assert_eq!(metadata.etag.as_deref(), Some("\"etag-1\""));
@@ -1217,7 +1262,9 @@ mod tests {
             );
             let transport = http_facade(client);
 
-            let observation = transport.metadata(&resource).unwrap();
+            let observation = transport
+                .metadata(&crate::test_egress_scope(), &resource)
+                .unwrap();
 
             assert_eq!(observation.identity.location, logical);
             assert_eq!(observation.identity.size_bytes, Some(987654));
@@ -1255,7 +1302,10 @@ mod tests {
             .with_egress_allowlist(EgressAllowlist::from_hosts(["data.example.org"]));
         let transport = http_facade(client);
 
-        let identity = transport.metadata(&resource).unwrap().identity;
+        let identity = transport
+            .metadata(&crate::test_egress_scope(), &resource)
+            .unwrap()
+            .identity;
 
         assert_eq!(identity.etag, None);
         assert_eq!(identity.generation_strength(), GenerationStrength::Weak);
@@ -1271,7 +1321,9 @@ mod tests {
             .with_egress_allowlist(EgressAllowlist::from_hosts(["catalog.example.org"]));
         let transport = http_facade(client);
 
-        let error = transport.metadata(&resource).unwrap_err();
+        let error = transport
+            .metadata(&crate::test_egress_scope(), &resource)
+            .unwrap_err();
 
         assert_eq!(error.kind, ErrorKind::Auth);
         assert!(error.message.contains("blocked.example.org"));
@@ -1289,8 +1341,15 @@ mod tests {
             .with_egress_allowlist(EgressAllowlist::from_hosts(["data.example.org"]));
         let transport = http_facade(client);
 
-        assert_eq!(transport.metadata_if_exists(&resource).unwrap(), None);
-        let forbidden = transport.metadata_if_exists(&resource).unwrap_err();
+        assert_eq!(
+            transport
+                .metadata_if_exists(&crate::test_egress_scope(), &resource)
+                .unwrap(),
+            None
+        );
+        let forbidden = transport
+            .metadata_if_exists(&crate::test_egress_scope(), &resource)
+            .unwrap_err();
         assert_eq!(forbidden.kind, ErrorKind::Auth);
     }
 
@@ -1301,7 +1360,9 @@ mod tests {
         let resource = FileTransportResource::http_url("https://data.example.org/");
         let transport = http_facade(client);
 
-        let error = transport.list(&resource).unwrap_err();
+        let error = transport
+            .list(&crate::test_egress_scope(), &resource)
+            .unwrap_err();
         assert_eq!(error.kind, ErrorKind::Contract);
         assert!(
             error
@@ -1320,7 +1381,9 @@ mod tests {
                 .with_egress_allowlist(EgressAllowlist::from_hosts(["data.example.org"]));
         let blocked_transport = http_facade(blocked_client);
 
-        let error = blocked_transport.metadata(&blocked_resource).unwrap_err();
+        let error = blocked_transport
+            .metadata(&crate::test_egress_scope(), &blocked_resource)
+            .unwrap_err();
         assert_eq!(error.kind, ErrorKind::Auth);
         assert_eq!(blocked_recorder.requests().len(), 0);
 
@@ -1340,7 +1403,9 @@ mod tests {
             StaticSecretProvider::new([("secret://env/FILE_TOKEN", "secret-value")]),
         );
 
-        let error = auth_transport.metadata(&auth_resource).unwrap_err();
+        let error = auth_transport
+            .metadata(&crate::test_egress_scope(), &auth_resource)
+            .unwrap_err();
         assert_eq!(error.kind, ErrorKind::Auth);
         assert!(
             error
@@ -1349,6 +1414,26 @@ mod tests {
         );
         assert_eq!(auth_recorder.requests().len(), 0);
         assert!(!format!("{auth_transport:?}").contains("secret-value"));
+    }
+
+    #[test]
+    fn host_egress_denial_precedes_resource_policy_and_transport_contact() {
+        let client = RecordingHttpFileTransport::new([]);
+        let recorder = client.clone();
+        let resource =
+            FileTransportResource::http_url("https://adapter-permitted.example.org/events.parquet")
+                .with_egress_allowlist(EgressAllowlist::allow_any());
+        let host_scope = cdf_runtime::SourceEgressScope::new(
+            cdf_runtime::SourceDriverId::new("files").unwrap(),
+            Arc::new(EgressAllowlist::from_hosts(["host-permitted.example.org"])),
+        );
+        let transport = http_facade(client);
+
+        let error = transport.metadata(&host_scope, &resource).unwrap_err();
+
+        assert_eq!(error.kind, ErrorKind::Auth);
+        assert!(error.message.contains("adapter-permitted.example.org"));
+        assert_eq!(recorder.requests().len(), 0);
     }
 
     #[test]

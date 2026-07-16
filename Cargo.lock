@@ -944,7 +944,6 @@ dependencies = [
  "arrow-schema 59.1.0",
  "cdf-conformance",
  "cdf-contract",
- "cdf-engine",
  "cdf-http",
  "cdf-kernel",
  "cdf-memory",
@@ -952,8 +951,6 @@ dependencies = [
  "cdf-package-contract",
  "cdf-postgres",
  "cdf-runtime",
- "cdf-source-postgres",
- "futures-executor",
  "futures-util",
  "hex",
  "postgres",
@@ -1214,6 +1211,7 @@ dependencies = [
  "serde_json",
  "sha2 0.10.9",
  "tempfile",
+ "url",
 ]
 
 [[package]]

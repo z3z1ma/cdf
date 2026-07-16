@@ -2,6 +2,7 @@ use std::collections::BTreeMap;
 
 use arrow_schema::{DataType, Field, Schema, TimeUnit};
 use cdf_kernel::{CdfError, ResourceId, Result, with_physical_type};
+use cdf_runtime::SourceEgressScope;
 use postgres::{Client, NoTls, Row};
 
 use cdf_postgres::PostgresTarget;
@@ -25,6 +26,7 @@ pub fn discover_postgres_table_catalog_schema(
     database_url: &str,
     resource_id: &ResourceId,
     target: &PostgresTarget,
+    egress: &SourceEgressScope,
 ) -> Result<PostgresCatalogDiscovery> {
     if database_url.trim().is_empty() {
         return Err(CdfError::auth(
@@ -32,6 +34,7 @@ pub fn discover_postgres_table_catalog_schema(
         ));
     }
 
+    egress.authorize(database_url)?;
     let mut client = Client::connect(database_url, NoTls)
         .map_err(|_| CdfError::transient("connect to Postgres catalog for schema discovery"))?;
     let columns = read_catalog_columns(&mut client, target)?;
@@ -145,6 +148,8 @@ fn unsupported_catalog_type(
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
     use super::*;
 
     #[test]
@@ -227,5 +232,26 @@ mod tests {
         assert!(message.contains("amount"));
         assert!(message.contains("numeric"));
         assert!(message.contains("not yet supported by the Postgres discovery/execution slice"));
+    }
+
+    #[test]
+    fn host_egress_denial_precedes_postgres_connection_attempt() {
+        let egress = SourceEgressScope::new(
+            cdf_runtime::SourceDriverId::new("postgres").unwrap(),
+            Arc::new(cdf_http::EgressAllowlist::from_hosts([
+                "host-permitted.example.org",
+            ])),
+        );
+
+        let error = discover_postgres_table_catalog_schema(
+            "postgres://operator:secret@127.0.0.1:1/catalog",
+            &ResourceId::new("warehouse.orders").unwrap(),
+            &PostgresTarget::parse("raw.orders").unwrap(),
+            &egress,
+        )
+        .unwrap_err();
+
+        assert_eq!(error.kind, cdf_kernel::ErrorKind::Auth);
+        assert!(!error.to_string().contains("secret"));
     }
 }

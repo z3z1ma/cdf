@@ -26,7 +26,4 @@ sha2 = "0.10.9"
 
 [dev-dependencies]
 cdf-conformance = { path = "../cdf-conformance" }
-cdf-engine = { path = "../cdf-engine" }
-cdf-source-postgres = { path = "../cdf-source-postgres" }
-futures-executor = "0.3.32"
 tempfile = "3.27.0"

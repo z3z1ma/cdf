@@ -340,6 +340,10 @@ fn test_file_runtime_dependencies() -> FileRuntimeDependencies {
         execution,
         Arc::new(formats),
         Arc::new(transforms),
+        cdf_runtime::SourceEgressScope::new(
+            cdf_runtime::SourceDriverId::new("files").unwrap(),
+            Arc::new(cdf_http::EgressAllowlist::allow_any()),
+        ),
     )
 }
 
@@ -411,8 +415,10 @@ fn compile_test_file_resource(root: &Path, document: &str) -> OwnedTestResource 
     let mut registry = cdf_runtime::SourceRegistry::new();
     registry
         .register(
-            FileSourceDriver::new(formats, move |_secrets, _execution| Ok(installed.clone()))
-                .unwrap(),
+            FileSourceDriver::new(formats, move |_secrets, _execution, _egress| {
+                Ok(installed.clone())
+            })
+            .unwrap(),
         )
         .unwrap();
     let resource = cdf_declarative::compile_document_with_project_root(&registry, &document, root)
@@ -423,6 +429,7 @@ fn compile_test_file_resource(root: &Path, document: &str) -> OwnedTestResource 
         root,
         Arc::new(StaticSecretProvider::new(std::iter::empty::<(&str, &str)>())),
         &execution,
+        Arc::new(cdf_http::EgressAllowlist::allow_any()),
     );
     OwnedTestResource {
         source_plan: resource.source_plan().clone(),
@@ -2626,8 +2633,12 @@ fn resolve_rest_resource(
     registry
         .register(RestSourceDriver::new(move || Ok(Box::new(transport.clone()))).unwrap())
         .unwrap();
-    let resolution =
-        cdf_runtime::SourceResolutionContext::new(Path::new("."), secret_provider, execution);
+    let resolution = cdf_runtime::SourceResolutionContext::new(
+        Path::new("."),
+        secret_provider,
+        execution,
+        Arc::new(cdf_http::EgressAllowlist::allow_any()),
+    );
     OwnedTestResource {
         source_plan: compiled.source_plan().clone(),
         inner: registry
@@ -2649,6 +2660,7 @@ fn resolve_postgres_resource(
             database_url,
         )])),
         execution,
+        Arc::new(cdf_http::EgressAllowlist::allow_any()),
     );
     OwnedTestResource {
         source_plan: compiled.source_plan().clone(),

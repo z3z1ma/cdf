@@ -35,6 +35,7 @@ pub(crate) fn resource(
             postgres.url().to_owned(),
         )])),
         &execution,
+        Arc::new(cdf_http::EgressAllowlist::allow_any()),
     );
     crate::source_fixture::ResolvedSourceFixture::resolve(&compiled, &registry, &context)
 }

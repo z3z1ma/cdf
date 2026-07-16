@@ -28,7 +28,8 @@ use cdf_memory::{
 use cdf_runtime::{
     BoundedFormatRequest, DecodeSchemaPlan, ExecutionServices, MemoryByteSource,
     PreparedSourcePayload, PreparedSourcePayloadKey, PreparedSourcePayloads, ReadOptions,
-    SourceDiscoveryRequest, SourceDriverId, artifact_hash, decode_bounded_format,
+    SourceDiscoveryRequest, SourceDriverId, SourceEgressScope, artifact_hash,
+    decode_bounded_format,
 };
 use serde_json::{Map, Value};
 
@@ -42,23 +43,30 @@ pub struct RestRuntimeDependencies {
     secret_provider: Option<Arc<dyn SecretProvider + Send + Sync>>,
     auth_refresh: Option<Arc<Mutex<Box<dyn AuthRefreshHook + Send>>>>,
     execution: ExecutionServices,
+    egress: SourceEgressScope,
     prepared_payloads: PreparedSourcePayloads,
 }
 
 impl RestRuntimeDependencies {
-    pub fn new(transport: impl HttpTransport + 'static, execution: ExecutionServices) -> Self {
-        Self::from_boxed_transport(Box::new(transport), execution)
+    pub fn new(
+        transport: impl HttpTransport + 'static,
+        execution: ExecutionServices,
+        egress: SourceEgressScope,
+    ) -> Self {
+        Self::from_boxed_transport(Box::new(transport), execution, egress)
     }
 
     pub fn from_boxed_transport(
         transport: Box<dyn HttpTransport>,
         execution: ExecutionServices,
+        egress: SourceEgressScope,
     ) -> Self {
         Self {
             transport: Arc::from(transport),
             secret_provider: None,
             auth_refresh: None,
             execution,
+            egress,
             prepared_payloads: PreparedSourcePayloads::default(),
         }
     }
@@ -102,6 +110,7 @@ impl fmt::Debug for RestRuntimeDependencies {
             .field("secret_provider", &self.secret_provider.is_some())
             .field("auth_refresh", &self.auth_refresh.is_some())
             .field("managed_execution", &true)
+            .field("egress", &self.egress)
             .field("prepared_payloads", &self.prepared_payloads)
             .finish()
     }
@@ -112,6 +121,7 @@ pub struct RestDiscoveryDependencies<'a> {
     transport: &'a dyn HttpTransport,
     secret_provider: &'a dyn SecretProvider,
     memory: Arc<dyn MemoryCoordinator>,
+    egress: SourceEgressScope,
     prepared_payloads: PreparedSourcePayloads,
 }
 
@@ -120,11 +130,13 @@ impl<'a> RestDiscoveryDependencies<'a> {
         transport: &'a dyn HttpTransport,
         secret_provider: &'a dyn SecretProvider,
         memory: Arc<dyn MemoryCoordinator>,
+        egress: SourceEgressScope,
     ) -> Self {
         Self {
             transport,
             secret_provider,
             memory,
+            egress,
             prepared_payloads: PreparedSourcePayloads::default(),
         }
     }
@@ -145,6 +157,7 @@ impl fmt::Debug for RestDiscoveryDependencies<'_> {
             .debug_struct("RestDiscoveryDependencies")
             .field("transport", &"<explicit>")
             .field("secret_provider", &"<explicit>")
+            .field("egress", &self.egress)
             .field("prepared_payloads", &self.prepared_payloads)
             .finish()
     }
@@ -661,6 +674,7 @@ pub fn discover_rest_sample_schema(
         transport: dependencies.transport,
         secret_provider: Some(dependencies.secret_provider),
         auth_refresh: None,
+        egress: &dependencies.egress,
     };
     let response = send_page_with_transport(
         &mut send_context,
@@ -801,6 +815,7 @@ struct RestSendContext<'a> {
     transport: &'a dyn HttpTransport,
     secret_provider: Option<&'a dyn SecretProvider>,
     auth_refresh: Option<&'a Arc<Mutex<Box<dyn AuthRefreshHook + Send>>>>,
+    egress: &'a SourceEgressScope,
 }
 
 fn send_page(
@@ -817,6 +832,7 @@ fn send_page(
             .as_deref()
             .map(|provider| provider as &dyn SecretProvider),
         auth_refresh: dependencies.auth_refresh.as_ref(),
+        egress: &dependencies.egress,
     };
     send_page_with_transport(&mut send_context, plan, url, auth_session, limiter)
 }
@@ -847,6 +863,7 @@ fn send_page_with_transport(
         let response = send_page_once(
             context.transport,
             context.secret_provider,
+            context.egress,
             plan,
             url,
             auth_session,
@@ -885,12 +902,14 @@ fn send_page_with_transport(
 fn send_page_once(
     transport: &dyn HttpTransport,
     secret_provider: Option<&dyn SecretProvider>,
+    egress: &SourceEgressScope,
     plan: &RestResourcePlan,
     url: &str,
     auth_session: &mut Option<AuthSession>,
 ) -> Result<HttpResponse> {
     let mut request = HttpRequest::new(HttpMethod::Get, url.to_owned());
     validate_http_url(&request.url)?;
+    egress.authorize(&request.url)?;
     plan.allowlist.check(&request)?;
     if let Some(session) = auth_session {
         let provider = secret_provider.ok_or_else(|| {
@@ -1988,6 +2007,56 @@ mod tests {
             worker.join().unwrap();
         }
         assert_eq!(peak.load(Ordering::SeqCst), 2);
+    }
+
+    #[test]
+    fn host_egress_denial_precedes_rest_policy_and_transport_contact() {
+        struct CountingTransport(Arc<AtomicUsize>);
+
+        impl HttpTransport for CountingTransport {
+            fn send(&self, _request: HttpRequest) -> Result<HttpResponse> {
+                self.0.fetch_add(1, Ordering::SeqCst);
+                Ok(HttpResponse::new(200))
+            }
+        }
+
+        let sends = Arc::new(AtomicUsize::new(0));
+        let transport = CountingTransport(Arc::clone(&sends));
+        let egress = SourceEgressScope::new(
+            SourceDriverId::new("rest").unwrap(),
+            Arc::new(cdf_http::EgressAllowlist::from_hosts([
+                "host-permitted.example.org",
+            ])),
+        );
+        let plan = RestResourcePlan {
+            source: "api".to_owned(),
+            base_url: "https://adapter-permitted.example.org".to_owned(),
+            path: "/items".to_owned(),
+            params: BTreeMap::new(),
+            record_selector: "$".to_owned(),
+            pagination: None,
+            auth: None,
+            rate_limit: cdf_http::RateLimitPolicy::unrestricted(),
+            respect_headers: Vec::new(),
+            allowlist: cdf_http::EgressAllowlist::allow_any(),
+            cursor_param: None,
+            cursor_filter_fidelity: PushdownFidelity::Unsupported,
+            records_transform: None,
+        };
+        let mut auth_session = None;
+
+        let error = send_page_once(
+            &transport,
+            None,
+            &egress,
+            &plan,
+            "https://adapter-permitted.example.org/items",
+            &mut auth_session,
+        )
+        .unwrap_err();
+
+        assert_eq!(error.kind, cdf_kernel::ErrorKind::Auth);
+        assert_eq!(sends.load(Ordering::SeqCst), 0);
     }
 
     #[test]

@@ -13,21 +13,14 @@ use std::{
 };
 
 use arrow_array::{
-    Array, ArrayRef, BooleanArray, Date32Array, Decimal128Array, Float64Array, Int64Array,
-    RecordBatch, StringArray, TimestampMicrosecondArray,
+    Array, ArrayRef, Decimal128Array, Float64Array, Int64Array, RecordBatch, StringArray,
 };
-use arrow_schema::{DataType, Field, Schema, TimeUnit};
-use cdf_conformance::resource::{
-    PredicateExpectation, ResourceConformanceCase, ResourceExecutionConformanceCase,
-    assert_queryable_resource_conformance, assert_resource_stream_execution_conformance,
-};
+use arrow_schema::{DataType, Field, Schema};
 use cdf_kernel::{
-    CHECKPOINT_STATE_VERSION, CanonicalArrowField, CheckpointId, ContractRef, CursorOrderingClaim,
-    CursorPosition, CursorSpec, CursorValue, DestinationCorrectionOperation,
-    DestinationCorrectionPlan, DestinationCorrectionRequest, PartitionId, PipelineId, PredicateId,
-    PromotionId, QueryableResource, ResidualCorrectionOperation, ResourceDescriptor, ResourceId,
-    ResourceStream, RowProvenanceAddress, ScanPredicate, ScanRequest, SchemaSnapshotReference,
-    SchemaSource, ScopeKey, SegmentId, SortDirection, SourcePosition, TrustLevel, with_source_name,
+    CHECKPOINT_STATE_VERSION, CanonicalArrowField, CheckpointId, CursorPosition, CursorValue,
+    DestinationCorrectionOperation, DestinationCorrectionPlan, DestinationCorrectionRequest,
+    PartitionId, PipelineId, PromotionId, ResidualCorrectionOperation, ResourceId,
+    RowProvenanceAddress, ScopeKey, SegmentId, SourcePosition,
 };
 use cdf_package::{PackageBuilder, PackageReader};
 use cdf_package_contract::{
@@ -35,8 +28,6 @@ use cdf_package_contract::{
     SegmentEntry, StateDeltaPreimage,
 };
 use cdf_runtime::DestinationRuntime;
-use cdf_source_postgres::{PostgresTableResource, discover_postgres_table_catalog_schema};
-use futures_util::StreamExt;
 use postgres::{Client, NoTls};
 use tempfile::TempDir;
 
@@ -45,12 +36,6 @@ use crate::{
     commit::validate_session_begin_inputs, ddl::target_migrations,
     identifiers::quote_identifier_unchecked,
 };
-
-fn source_execution_services() -> cdf_runtime::ExecutionServices {
-    cdf_engine::StandaloneExecutionHost::default_services(64 * 1024 * 1024)
-        .expect("Postgres source live-test execution host")
-        .1
-}
 
 #[test]
 #[ignore = "release-mode local PostgreSQL binary-vs-CSV COPY benchmark"]
@@ -844,291 +829,6 @@ fn try_correction_commit(
 }
 
 #[test]
-fn live_postgres_catalog_discovery_reads_empty_table_metadata_only() {
-    let Some(env) = LivePostgres::start() else {
-        return;
-    };
-    let target = env.target("catalog_discovery_types");
-    let mut client = env.client();
-    client
-        .batch_execute(&format!(
-            "CREATE TABLE {} (
-                \"VendorID\" INTEGER NOT NULL,
-                \"is_active\" BOOLEAN,
-                \"ratio\" DOUBLE PRECISION NOT NULL,
-                \"name\" TEXT,
-                \"service_date\" DATE NOT NULL,
-                \"created_at\" TIMESTAMP WITHOUT TIME ZONE,
-                \"updated_at\" TIMESTAMP WITH TIME ZONE,
-                \"request_uuid\" UUID
-            )",
-            target.sql()
-        ))
-        .unwrap();
-
-    let discovery = discover_postgres_table_catalog_schema(
-        &env.url,
-        &ResourceId::new("warehouse.orders").unwrap(),
-        &target,
-    )
-    .unwrap();
-
-    assert_eq!(discovery.source_identity["source_kind"], "sql");
-    assert_eq!(discovery.source_identity["dialect"], "postgres");
-    assert_eq!(discovery.source_identity["table"], target.display_name());
-    assert!(!format!("{discovery:?}").contains(&env.url));
-    let schema = discovery.schema;
-    let fields = schema.fields();
-    assert_eq!(fields.len(), 8);
-    assert_eq!(fields[0].name(), "VendorID");
-    assert_eq!(fields[0].data_type(), &DataType::Int64);
-    assert!(!fields[0].is_nullable());
-    assert_eq!(fields[0].metadata()["cdf:physical_type"], "integer");
-    assert_eq!(fields[1].data_type(), &DataType::Boolean);
-    assert!(fields[1].is_nullable());
-    assert_eq!(fields[2].data_type(), &DataType::Float64);
-    assert_eq!(fields[3].data_type(), &DataType::Utf8);
-    assert_eq!(fields[4].data_type(), &DataType::Date32);
-    assert_eq!(
-        fields[5].data_type(),
-        &DataType::Timestamp(TimeUnit::Microsecond, None)
-    );
-    assert_eq!(
-        fields[6].data_type(),
-        &DataType::Timestamp(TimeUnit::Microsecond, Some("UTC".into()))
-    );
-    assert_eq!(fields[7].data_type(), &DataType::Utf8);
-}
-
-#[test]
-fn live_postgres_table_resource_executes_scan_and_cursor_conformance() {
-    let Some(env) = LivePostgres::start() else {
-        return;
-    };
-    let target = env.target("source_orders");
-    let mut client = env.client();
-    client
-        .batch_execute(&format!(
-            "CREATE TABLE {} (
-                \"id\" BIGINT NOT NULL,
-                \"name\" TEXT,
-                \"updated_at\" BIGINT NOT NULL,
-                \"active\" BOOLEAN NOT NULL,
-                \"score\" DOUBLE PRECISION,
-                \"created_on\" DATE,
-                \"touched_at\" TIMESTAMPTZ
-            );
-            INSERT INTO {} (\"id\", \"name\", \"updated_at\", \"active\", \"score\", \"created_on\", \"touched_at\") VALUES
-                (1, 'ada', 10, true, 1.5, DATE '2026-07-01', TIMESTAMPTZ '2026-07-01T00:00:00Z'),
-                (2, 'grace', 20, false, NULL, DATE '2026-07-02', TIMESTAMPTZ '2026-07-02T01:00:00Z'),
-                (3, 'katherine', 30, true, 3.25, DATE '2026-07-03', TIMESTAMPTZ '2026-07-03T02:30:00Z')",
-            target.sql(),
-            target.sql()
-        ))
-        .unwrap();
-
-    let descriptor = postgres_source_descriptor();
-    let schema = postgres_source_schema();
-    let resource =
-        PostgresTableResource::new(env.url.clone(), descriptor.clone(), schema.clone(), target)
-            .unwrap()
-            .with_execution(source_execution_services())
-            .unwrap();
-    let predicate_id = PredicateId::new("updated-at").unwrap();
-    let request = ScanRequest {
-        resource_id: descriptor.resource_id.clone(),
-        projection: Some(vec![
-            "id".to_owned(),
-            "name".to_owned(),
-            "updated_at".to_owned(),
-            "active".to_owned(),
-            "score".to_owned(),
-            "created_on".to_owned(),
-            "touched_at".to_owned(),
-        ]),
-        filters: vec![ScanPredicate::new(predicate_id.clone(), "updated_at >= 20").unwrap()],
-        limit: Some(10),
-        order_by: vec![cdf_kernel::OrderBy {
-            field: "updated_at".to_owned(),
-            direction: SortDirection::Asc,
-        }],
-        scope: ScopeKey::Resource,
-    };
-
-    assert_queryable_resource_conformance(
-        &resource,
-        [ResourceConformanceCase::new(request.clone())
-            .with_expected_predicates([PredicateExpectation::exact(predicate_id)])],
-    );
-    let partition = PartitionId::new("sql").unwrap();
-    let execution_case = ResourceExecutionConformanceCase::new(
-        request.clone(),
-        postgres_source_schema_hash(),
-        [partition.clone()],
-        3,
-    )
-    .with_expected_partition_rows([(partition, 3)]);
-    futures_executor::block_on(assert_resource_stream_execution_conformance(
-        &resource,
-        [execution_case],
-    ));
-
-    let plan = resource.negotiate(&request).unwrap();
-    let batches = drain_source_batches(
-        futures_executor::block_on(resource.open(plan.partitions[0].clone())).unwrap(),
-    );
-    assert_eq!(batches.len(), 1);
-    assert_eq!(
-        batches[0].header.observed_schema_hash,
-        postgres_source_schema_hash()
-    );
-    let batch = batches[0].record_batch().unwrap();
-    assert_eq!(
-        batch
-            .schema()
-            .fields()
-            .iter()
-            .map(|field| field.name().as_str())
-            .collect::<Vec<_>>(),
-        vec![
-            "id",
-            "name",
-            "updated_at",
-            "active",
-            "score",
-            "created_on",
-            "touched_at",
-        ]
-    );
-    let ids = batch
-        .column(0)
-        .as_any()
-        .downcast_ref::<Int64Array>()
-        .unwrap();
-    assert_eq!(ids.values(), &[2, 3]);
-    let active = batch
-        .column(3)
-        .as_any()
-        .downcast_ref::<BooleanArray>()
-        .unwrap();
-    assert!(!active.value(0));
-    assert!(active.value(1));
-    let score = batch
-        .column(4)
-        .as_any()
-        .downcast_ref::<Float64Array>()
-        .unwrap();
-    assert!(score.is_null(0));
-    assert_eq!(score.value(1), 3.25);
-    let created_on = batch
-        .column(5)
-        .as_any()
-        .downcast_ref::<Date32Array>()
-        .unwrap();
-    assert!(created_on.value(1) > created_on.value(0));
-    let touched_at = batch
-        .column(6)
-        .as_any()
-        .downcast_ref::<TimestampMicrosecondArray>()
-        .unwrap();
-    assert!(touched_at.value(1) > touched_at.value(0));
-    let Some(SourcePosition::Cursor(cursor)) = &batches[0].header.source_position else {
-        panic!("expected cursor source position");
-    };
-    assert_eq!(cursor.field, "updated_at");
-    assert_eq!(cursor.value, CursorValue::I64(30));
-}
-
-#[test]
-fn live_postgres_table_resource_reads_source_name_physical_columns() {
-    let Some(env) = LivePostgres::start() else {
-        return;
-    };
-    let target = env.target("source_name_orders");
-    let mut client = env.client();
-    client
-        .batch_execute(&format!(
-            "CREATE TABLE {} (
-                \"VendorID\" BIGINT NOT NULL,
-                \"updated_at\" BIGINT NOT NULL
-            );
-            INSERT INTO {} (\"VendorID\", \"updated_at\") VALUES (1, 10), (2, 20), (3, 30)",
-            target.sql(),
-            target.sql()
-        ))
-        .unwrap();
-
-    let mut descriptor = postgres_source_descriptor();
-    descriptor.schema_source = SchemaSource::Discovered {
-        snapshot: SchemaSnapshotReference {
-            schema_hash: SchemaHash::new("sha256:postgres-source-name-discovered").unwrap(),
-            path:
-                ".cdf/schemas/warehouse.source_orders@sha256:postgres-source-name-discovered.json"
-                    .to_owned(),
-            metadata: BTreeMap::new(),
-        },
-    };
-    descriptor.primary_key = vec!["vendor_id".to_owned()];
-    descriptor.merge_key = vec!["vendor_id".to_owned()];
-    descriptor.cursor = Some(CursorSpec {
-        field: "vendor_id".to_owned(),
-        ordering: CursorOrderingClaim::Exact,
-        lag_tolerance_ms: 0,
-    });
-    let schema = Arc::new(Schema::new(vec![
-        with_source_name(Field::new("vendor_id", DataType::Int64, false), "VendorID"),
-        Field::new("updated_at", DataType::Int64, false),
-    ]));
-    let expected_schema_hash = cdf_kernel::canonical_arrow_schema_hash(schema.as_ref()).unwrap();
-    let resource = PostgresTableResource::new(env.url.clone(), descriptor.clone(), schema, target)
-        .unwrap()
-        .with_execution(source_execution_services())
-        .unwrap();
-    let request = ScanRequest {
-        resource_id: descriptor.resource_id.clone(),
-        projection: Some(vec!["vendor_id".to_owned(), "updated_at".to_owned()]),
-        filters: vec![
-            ScanPredicate::new(PredicateId::new("vendor").unwrap(), "vendor_id >= 2").unwrap(),
-        ],
-        limit: None,
-        order_by: vec![cdf_kernel::OrderBy {
-            field: "vendor_id".to_owned(),
-            direction: SortDirection::Desc,
-        }],
-        scope: ScopeKey::Resource,
-    };
-
-    let plan = resource.negotiate(&request).unwrap();
-    let batches = drain_source_batches(
-        futures_executor::block_on(resource.open(plan.partitions[0].clone())).unwrap(),
-    );
-
-    assert_eq!(batches.len(), 1);
-    assert_eq!(batches[0].header.observed_schema_hash, expected_schema_hash);
-    let batch = batches[0].record_batch().unwrap();
-    assert_eq!(
-        batch
-            .schema()
-            .fields()
-            .iter()
-            .map(|field| field.name().as_str())
-            .collect::<Vec<_>>(),
-        vec!["vendor_id", "updated_at"]
-    );
-    let vendor_ids = batch
-        .column(0)
-        .as_any()
-        .downcast_ref::<Int64Array>()
-        .unwrap();
-    assert_eq!(vendor_ids.values(), &[3, 2]);
-    let Some(SourcePosition::Cursor(cursor)) = &batches[0].header.source_position else {
-        panic!("expected source-name cursor source position");
-    };
-    assert_eq!(cursor.field, "vendor_id");
-    assert_eq!(cursor.value, CursorValue::I64(3));
-}
-
-#[test]
 fn live_begin_session_returns_verifiable_receipt_and_preserves_duplicate_noop() {
     let Some(env) = LivePostgres::start() else {
         return;
@@ -1236,60 +936,6 @@ fn live_begin_session_abort_rolls_back_system_migrations() {
         .unwrap()
         .get(0);
     assert!(!loads_exists);
-}
-
-fn postgres_source_descriptor() -> ResourceDescriptor {
-    ResourceDescriptor {
-        resource_id: ResourceId::new("warehouse.source_orders").unwrap(),
-        schema_source: SchemaSource::Declared {
-            schema_hash: postgres_source_schema_hash(),
-            source: "test:postgres-source-live".to_owned(),
-        },
-        primary_key: vec!["id".to_owned()],
-        merge_key: vec!["id".to_owned()],
-        cursor: Some(CursorSpec {
-            field: "updated_at".to_owned(),
-            ordering: CursorOrderingClaim::Exact,
-            lag_tolerance_ms: 0,
-        }),
-        write_disposition: WriteDisposition::Merge,
-        deduplication: None,
-        contract: Some(ContractRef::new("orders").unwrap()),
-        state_scope: ScopeKey::Resource,
-        freshness: None,
-        trust_level: TrustLevel::Governed,
-    }
-}
-
-fn postgres_source_schema() -> std::sync::Arc<Schema> {
-    std::sync::Arc::new(Schema::new(vec![
-        Field::new("id", DataType::Int64, false),
-        Field::new("name", DataType::Utf8, true),
-        Field::new("updated_at", DataType::Int64, false),
-        Field::new("active", DataType::Boolean, false),
-        Field::new("score", DataType::Float64, true),
-        Field::new("created_on", DataType::Date32, true),
-        Field::new(
-            "touched_at",
-            DataType::Timestamp(TimeUnit::Microsecond, Some("UTC".into())),
-            true,
-        ),
-    ]))
-}
-
-fn postgres_source_schema_hash() -> SchemaHash {
-    cdf_kernel::canonical_arrow_schema_hash(postgres_source_schema().as_ref()).unwrap()
-}
-
-fn drain_source_batches(mut stream: cdf_kernel::OpenedPartitionStream) -> Vec<cdf_kernel::Batch> {
-    futures_executor::block_on(async move {
-        let mut batches = Vec::new();
-        while let Some(batch) = stream.next().await {
-            batches.push(batch.unwrap());
-        }
-        stream.completion().await.unwrap();
-        batches
-    })
 }
 
 #[test]

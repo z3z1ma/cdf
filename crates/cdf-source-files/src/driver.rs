@@ -25,7 +25,11 @@ use crate::{
     local_file_discovery_candidates,
 };
 
-type RuntimeFactory = dyn Fn(Arc<dyn SecretProvider + Send + Sync>, ExecutionServices) -> Result<FileRuntimeDependencies>
+type RuntimeFactory = dyn Fn(
+        Arc<dyn SecretProvider + Send + Sync>,
+        ExecutionServices,
+        cdf_runtime::SourceEgressScope,
+    ) -> Result<FileRuntimeDependencies>
     + Send
     + Sync
     + 'static;
@@ -53,6 +57,7 @@ impl FileSourceDriver {
         F: Fn(
                 Arc<dyn SecretProvider + Send + Sync>,
                 ExecutionServices,
+                cdf_runtime::SourceEgressScope,
             ) -> Result<FileRuntimeDependencies>
             + Send
             + Sync
@@ -168,6 +173,7 @@ impl SourceDriver for FileSourceDriver {
         let dependencies = (self.runtime_factory)(
             Arc::clone(context.secret_provider()),
             context.execution().clone(),
+            context.egress_scope(&plan.driver.driver_id),
         )?
         .with_prepared_payloads(context.prepared_payloads().clone());
         physical.compiled_format.verify(dependencies.formats())?;
@@ -198,6 +204,7 @@ impl SourceDriver for FileSourceDriver {
         let dependencies = (self.runtime_factory)(
             Arc::clone(context.secret_provider()),
             context.execution().clone(),
+            context.egress_scope(&plan.driver.driver_id),
         )?
         .with_prepared_payloads(context.prepared_payloads().clone());
         physical.compiled_format.verify(dependencies.formats())?;
@@ -1105,7 +1112,7 @@ mod tests {
     #[test]
     fn compiled_file_plan_pins_complete_format_driver_semantics() {
         let formats = crate::test_format_registry();
-        let driver = FileSourceDriver::new(Arc::clone(&formats), |_, _| {
+        let driver = FileSourceDriver::new(Arc::clone(&formats), |_, _, _| {
             Err(CdfError::internal("compile-only test runtime factory"))
         })
         .unwrap();
@@ -1160,7 +1167,7 @@ mod tests {
     #[test]
     fn compiled_file_capabilities_must_match_the_pinned_format() {
         let formats = crate::test_format_registry();
-        let driver = FileSourceDriver::new(Arc::clone(&formats), |_, _| {
+        let driver = FileSourceDriver::new(Arc::clone(&formats), |_, _, _| {
             Err(CdfError::internal("compile-only test runtime factory"))
         })
         .unwrap();
@@ -1197,7 +1204,7 @@ mod tests {
     #[test]
     fn compiled_relative_file_plan_is_portable_across_project_roots() {
         let formats = crate::test_format_registry();
-        let driver = FileSourceDriver::new(Arc::clone(&formats), |_, _| {
+        let driver = FileSourceDriver::new(Arc::clone(&formats), |_, _, _| {
             Err(CdfError::internal("compile-only test runtime factory"))
         })
         .unwrap();
@@ -1240,7 +1247,7 @@ mod tests {
     #[test]
     fn registry_descriptors_own_undeclared_format_inference() {
         let formats = crate::test_format_registry();
-        let driver = FileSourceDriver::new(Arc::clone(&formats), |_, _| {
+        let driver = FileSourceDriver::new(Arc::clone(&formats), |_, _, _| {
             Err(CdfError::internal("compile-only test runtime factory"))
         })
         .unwrap();
@@ -1306,12 +1313,13 @@ mod tests {
         let formats = crate::test_format_registry();
         let runtime_formats = Arc::clone(&formats);
         let transforms = crate::test_transform_registry();
-        let driver = FileSourceDriver::new(Arc::clone(&formats), move |_, execution| {
+        let driver = FileSourceDriver::new(Arc::clone(&formats), move |_, execution, egress| {
             Ok(FileRuntimeDependencies::new(
                 FileTransportFacade::new().with_execution_services(execution.clone()),
                 execution,
                 Arc::clone(&runtime_formats),
                 Arc::clone(&transforms),
+                egress,
             ))
         })
         .unwrap();
@@ -1331,8 +1339,12 @@ mod tests {
             .insert("compression".to_owned(), serde_json::json!("none"));
         let plan = driver.compile(request).unwrap();
         let execution = crate::test_execution_services();
-        let context =
-            SourceResolutionContext::new(root.path(), Arc::new(NoopSecretProvider), &execution);
+        let context = SourceResolutionContext::new(
+            root.path(),
+            Arc::new(NoopSecretProvider),
+            &execution,
+            Arc::new(cdf_http::EgressAllowlist::allow_any()),
+        );
         let session = driver.discovery_session(&plan, &context).unwrap();
 
         assert_eq!(session.kind(), SourceDiscoveryKind::BoundedContent);

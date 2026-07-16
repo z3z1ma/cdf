@@ -6,7 +6,7 @@ use std::{
 };
 
 use arrow_schema::Schema;
-use cdf_http::SecretProvider;
+use cdf_http::{EgressAllowlist, HttpMethod, HttpRequest, SecretProvider};
 use cdf_kernel::{
     CdfError, EffectiveSchemaCatalogEntry, EffectiveSchemaRuntime, ErrorKind, FreshnessSpec,
     PayloadRetention, PushdownFidelity, QueryableResource, ResourceCapabilities,
@@ -193,6 +193,120 @@ impl SourceDriverId {
 
     pub fn as_str(&self) -> &str {
         &self.0
+    }
+}
+
+/// Credential-free network target presented to the host's source-egress policy.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct SourceEgressTarget {
+    scheme: String,
+    host: String,
+    port: Option<u16>,
+}
+
+impl SourceEgressTarget {
+    pub fn parse(operational_uri: &str) -> Result<Self> {
+        let parsed = url::Url::parse(operational_uri)
+            .map_err(|_| CdfError::contract("source egress target must be a valid absolute URI"))?;
+        let parsed_host = parsed
+            .host_str()
+            .filter(|host| !host.is_empty())
+            .ok_or_else(|| CdfError::contract("source egress target must name a host"))?;
+        let host = parsed_host
+            .strip_prefix('[')
+            .and_then(|host| host.strip_suffix(']'))
+            .unwrap_or(parsed_host)
+            .trim_end_matches('.')
+            .to_ascii_lowercase();
+        let port = parsed.port();
+        if port == Some(0) {
+            return Err(CdfError::contract(
+                "source egress target port must be in 1..=65535",
+            ));
+        }
+        Ok(Self {
+            scheme: parsed.scheme().to_owned(),
+            host,
+            port,
+        })
+    }
+
+    pub fn scheme(&self) -> &str {
+        &self.scheme
+    }
+
+    pub fn host(&self) -> &str {
+        &self.host
+    }
+
+    pub fn port(&self) -> Option<u16> {
+        self.port
+    }
+
+    fn policy_uri(&self) -> String {
+        let host = if self.host.contains(':') {
+            format!("[{}]", self.host)
+        } else {
+            self.host.clone()
+        };
+        match self.port {
+            Some(port) => format!("{}://{host}:{port}/", self.scheme),
+            None => format!("{}://{host}/", self.scheme),
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SourceEgressRequest {
+    pub driver_id: SourceDriverId,
+    pub target: SourceEgressTarget,
+}
+
+pub trait SourceEgressAuthorizer: Send + Sync {
+    fn authorize(&self, request: &SourceEgressRequest) -> Result<()>;
+}
+
+impl SourceEgressAuthorizer for EgressAllowlist {
+    fn authorize(&self, request: &SourceEgressRequest) -> Result<()> {
+        self.check(&HttpRequest::new(
+            HttpMethod::Get,
+            request.target.policy_uri(),
+        ))
+    }
+}
+
+#[derive(Clone)]
+pub struct SourceEgressScope {
+    driver_id: SourceDriverId,
+    authorizer: Arc<dyn SourceEgressAuthorizer>,
+}
+
+impl SourceEgressScope {
+    pub fn new(driver_id: SourceDriverId, authorizer: Arc<dyn SourceEgressAuthorizer>) -> Self {
+        Self {
+            driver_id,
+            authorizer,
+        }
+    }
+
+    pub fn authorize(&self, operational_uri: &str) -> Result<()> {
+        self.authorizer.authorize(&SourceEgressRequest {
+            driver_id: self.driver_id.clone(),
+            target: SourceEgressTarget::parse(operational_uri)?,
+        })
+    }
+
+    pub fn driver_id(&self) -> &SourceDriverId {
+        &self.driver_id
+    }
+}
+
+impl std::fmt::Debug for SourceEgressScope {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("SourceEgressScope")
+            .field("driver_id", &self.driver_id)
+            .finish_non_exhaustive()
     }
 }
 
@@ -1193,6 +1307,7 @@ pub struct SourceResolutionContext<'a> {
     project_root: &'a Path,
     secret_provider: Arc<dyn SecretProvider + Send + Sync>,
     execution: &'a ExecutionServices,
+    egress_authorizer: Arc<dyn SourceEgressAuthorizer>,
     prepared_payloads: PreparedSourcePayloads,
     driver_options: BTreeMap<String, serde_json::Value>,
 }
@@ -1202,11 +1317,13 @@ impl<'a> SourceResolutionContext<'a> {
         project_root: &'a Path,
         secret_provider: Arc<dyn SecretProvider + Send + Sync>,
         execution: &'a ExecutionServices,
+        egress_authorizer: Arc<dyn SourceEgressAuthorizer>,
     ) -> Self {
         Self {
             project_root,
             secret_provider,
             execution,
+            egress_authorizer,
             prepared_payloads: PreparedSourcePayloads::default(),
             driver_options: BTreeMap::new(),
         }
@@ -1235,6 +1352,10 @@ impl<'a> SourceResolutionContext<'a> {
 
     pub fn execution(&self) -> &'a ExecutionServices {
         self.execution
+    }
+
+    pub fn egress_scope(&self, driver_id: &SourceDriverId) -> SourceEgressScope {
+        SourceEgressScope::new(driver_id.clone(), Arc::clone(&self.egress_authorizer))
     }
 
     pub fn prepared_payloads(&self) -> &PreparedSourcePayloads {
