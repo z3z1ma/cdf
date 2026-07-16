@@ -68,6 +68,7 @@ impl MemoryResource {
         let partition = PartitionPlan {
             partition_id,
             scope: ScopeKey::Resource,
+            planned_position: None,
             start_position: None,
             scan_intent: cdf_kernel::CompiledScanIntent::full_scan(),
             retry_safety: cdf_kernel::PartitionRetrySafety::Forbidden,

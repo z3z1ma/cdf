@@ -1076,6 +1076,7 @@ mod tests {
                 scope: ScopeKey::Partition {
                     partition_id: partition_id.clone(),
                 },
+                planned_position: None,
                 start_position: None,
                 scan_intent: cdf_kernel::CompiledScanIntent::full_scan(),
                 retry_safety: cdf_kernel::PartitionRetrySafety::ImmutableContent,

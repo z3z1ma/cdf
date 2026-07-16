@@ -1298,23 +1298,30 @@ mod tests {
                 let partition_id = cdf_kernel::PartitionId::new(format!("part-{index}")).unwrap();
                 let partition = cdf_kernel::PartitionPlan {
                     partition_id: partition_id.clone(),
-                    scope: cdf_kernel::ScopeKey::Partition { partition_id },
+                    scope: cdf_kernel::ScopeKey::File {
+                        path: (*location).to_owned(),
+                    },
+                    planned_position: Some(cdf_kernel::SourcePosition::FileManifest(
+                        cdf_kernel::FileManifest {
+                            version: 1,
+                            files: vec![cdf_kernel::FilePosition {
+                                path: (*location).to_owned(),
+                                size_bytes: 42 + index as u64,
+                                source_generation: None,
+                                etag: Some(if index == 0 {
+                                    "etag-value".to_owned()
+                                } else {
+                                    format!("etagvalue{index}")
+                                }),
+                                object_version: None,
+                                sha256: None,
+                            }],
+                        },
+                    )),
                     start_position: None,
                     scan_intent: cdf_kernel::CompiledScanIntent::full_scan(),
                     retry_safety: cdf_kernel::PartitionRetrySafety::Forbidden,
-                    metadata: BTreeMap::from([
-                        ("kind".to_owned(), "files".to_owned()),
-                        ("path".to_owned(), (*location).to_owned()),
-                        ("bytes".to_owned(), (42 + index as u64).to_string()),
-                        (
-                            "etag".to_owned(),
-                            if index == 0 {
-                                "etag-value".to_owned()
-                            } else {
-                                format!("etagvalue{index}")
-                            },
-                        ),
-                    ]),
+                    metadata: BTreeMap::new(),
                 };
                 cdf_engine::preview_partition_selector_candidate(&partition).unwrap()
             })

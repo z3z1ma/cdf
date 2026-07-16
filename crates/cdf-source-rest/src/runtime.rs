@@ -449,6 +449,7 @@ pub fn rest_partition(
     Ok(PartitionPlan {
         partition_id: PartitionId::new("rest")?,
         scope: descriptor.state_scope.clone(),
+        planned_position: None,
         start_position: None,
         scan_intent,
         retry_safety: cdf_kernel::PartitionRetrySafety::Forbidden,

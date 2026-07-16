@@ -470,13 +470,9 @@ fn plan_file_manifest_incrementality(
         .scan
         .partitions
         .iter()
-        .filter(|partition| {
-            partition
-                .metadata
-                .get("path")
-                .is_some_and(|path| changed_paths.contains(path))
-        })
-        .map(|partition| partition.partition_id.clone())
+        .zip(&current_files)
+        .filter(|(_, file)| changed_paths.contains(&file.path))
+        .map(|(partition, _)| partition.partition_id.clone())
         .collect::<BTreeSet<_>>();
     let filtered = plan.clone().select_partitions(&selected)?;
 
@@ -493,46 +489,25 @@ fn plan_file_manifest_incrementality(
 fn file_positions_from_partitions(
     partitions: &[PartitionPlan],
 ) -> Result<Option<Vec<FilePosition>>> {
-    if partitions
-        .iter()
-        .all(|partition| partition.metadata.get("kind").map(String::as_str) != Some("files"))
-    {
-        return Ok(None);
-    }
     let mut files = Vec::with_capacity(partitions.len());
     for partition in partitions {
-        if partition.metadata.get("kind").map(String::as_str) != Some("files") {
-            return Ok(None);
-        }
-        let path = partition.metadata.get("path").cloned().ok_or_else(|| {
-            CdfError::contract("file partition manifest comparison requires path metadata")
-        })?;
-        let size_bytes = partition
-            .metadata
-            .get("bytes")
-            .ok_or_else(|| {
-                CdfError::contract(format!(
-                    "file partition `{path}` manifest comparison requires bytes metadata"
-                ))
-            })?
-            .parse::<u64>()
-            .map_err(|error| {
-                CdfError::contract(format!(
-                    "file partition `{path}` has invalid bytes metadata: {error}"
-                ))
-            })?;
-        let sha256 = partition.metadata.get("sha256").cloned();
-        let source_generation = partition.metadata.get("source_generation").cloned();
-        let etag = partition.metadata.get("etag").cloned();
-        let object_version = partition.metadata.get("version").cloned();
-        files.push(FilePosition {
-            path,
-            size_bytes,
-            source_generation,
-            etag,
-            object_version,
-            sha256,
-        });
+        let Some(file) = partition.planned_file()? else {
+            if files.is_empty() {
+                continue;
+            }
+            return Err(CdfError::contract(
+                "one scan plan cannot mix file-manifest and non-file planned positions",
+            ));
+        };
+        files.push(file.clone());
+    }
+    if files.is_empty() {
+        return Ok(None);
+    }
+    if files.len() != partitions.len() {
+        return Err(CdfError::contract(
+            "one scan plan cannot mix file-manifest and non-file planned positions",
+        ));
     }
     Ok(Some(files))
 }

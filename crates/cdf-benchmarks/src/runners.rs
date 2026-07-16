@@ -480,12 +480,11 @@ pub fn run_prepared_file_to_package(
         .iter()
         .try_fold(0_u64, |total, partition| {
             let bytes = partition
-                .metadata
-                .get("bytes")
+                .planned_file()?
                 .ok_or_else(|| {
                     bench_error("prepared file partition omitted its physical byte count")
                 })?
-                .parse::<u64>()?;
+                .size_bytes;
             total
                 .checked_add(bytes)
                 .ok_or_else(|| bench_error("prepared file physical byte count overflowed"))

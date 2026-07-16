@@ -5630,6 +5630,7 @@ impl QueryableResource for DataFusionMockResource {
                 Ok(PartitionPlan {
                     partition_id: partition_id.clone(),
                     scope: ScopeKey::Partition { partition_id },
+                    planned_position: None,
                     start_position: None,
                     scan_intent: scan_intent.clone(),
                     retry_safety: cdf_kernel::PartitionRetrySafety::Forbidden,
@@ -6013,6 +6014,7 @@ impl ResourceStream for MockResource {
                     scope: ScopeKey::Partition {
                         partition_id: PartitionId::new(format!("part-{index}"))?,
                     },
+                    planned_position: None,
                     start_position: None,
                     scan_intent: self.tier_a_intent.clone(),
                     retry_safety: self.retry_safety,

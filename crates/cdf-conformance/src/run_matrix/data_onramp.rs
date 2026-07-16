@@ -733,7 +733,18 @@ fn p2_s8_multifile_preview_traverses_the_same_planned_partitions_as_run() {
     .unwrap();
     let plan = resource.bind_plan(plan).unwrap();
     assert_eq!(plan.scan.partitions.len(), 2);
-    assert!(plan.scan.partitions[0].metadata["path"] < plan.scan.partitions[1].metadata["path"]);
+    assert!(
+        plan.scan.partitions[0]
+            .planned_file()
+            .unwrap()
+            .unwrap()
+            .path
+            < plan.scan.partitions[1]
+                .planned_file()
+                .unwrap()
+                .unwrap()
+                .path
+    );
     let before_preview = project_tree_snapshot(temp.path());
 
     let preview = futures_executor::block_on(cdf_engine::preview_resource(

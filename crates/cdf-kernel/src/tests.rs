@@ -19,6 +19,7 @@ fn schema_observation_identity_is_partition_scoped_for_file_partitions() {
         scope: ScopeKey::File {
             path: "s3://bucket/object.parquet".to_owned(),
         },
+        planned_position: None,
         start_position: None,
         scan_intent: CompiledScanIntent::full_scan(),
         retry_safety: PartitionRetrySafety::Forbidden,
@@ -39,6 +40,50 @@ fn schema_observation_identity_is_partition_scoped_for_file_partitions() {
         partition_schema_observation_id(&explicit),
         "planned-observation-7"
     );
+}
+
+#[test]
+fn planned_file_position_is_required_typed_authority() {
+    let file = FilePosition {
+        path: "s3://bucket/object.parquet".to_owned(),
+        size_bytes: 42,
+        source_generation: None,
+        etag: Some("etag-1".to_owned()),
+        object_version: None,
+        sha256: None,
+    };
+    let partition = PartitionPlan {
+        partition_id: PartitionId::new("file-object").unwrap(),
+        scope: ScopeKey::File {
+            path: file.path.clone(),
+        },
+        planned_position: Some(SourcePosition::FileManifest(FileManifest {
+            version: 1,
+            files: vec![file.clone()],
+        })),
+        start_position: None,
+        scan_intent: CompiledScanIntent::full_scan(),
+        retry_safety: PartitionRetrySafety::ImmutableContent,
+        metadata: BTreeMap::new(),
+    };
+
+    assert_eq!(partition.planned_file().unwrap(), Some(&file));
+    let mut missing = serde_json::to_value(&partition).unwrap();
+    missing.as_object_mut().unwrap().remove("planned_position");
+    assert!(serde_json::from_value::<PartitionPlan>(missing).is_err());
+
+    let mut multiple = partition.clone();
+    let Some(SourcePosition::FileManifest(manifest)) = &mut multiple.planned_position else {
+        unreachable!();
+    };
+    manifest.files.push(file.clone());
+    assert!(multiple.planned_file().is_err());
+
+    let mut wrong_scope = partition;
+    wrong_scope.scope = ScopeKey::File {
+        path: "s3://bucket/other.parquet".to_owned(),
+    };
+    assert!(wrong_scope.planned_file().is_err());
 }
 
 #[test]

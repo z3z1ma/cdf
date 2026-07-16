@@ -720,25 +720,18 @@ struct PreviewPayloadCandidate {
 fn preview_partition_identity(
     partition: &cdf_kernel::PartitionPlan,
 ) -> Result<(String, StratifiedHashBoundedIdentity)> {
-    let location = partition
-        .metadata
-        .get("path")
-        .or_else(|| partition.metadata.get(PLAN_SCHEMA_OBSERVATION_ID_KEY))
-        .cloned()
-        .unwrap_or_else(|| partition.partition_id.to_string());
-    let is_file = partition.metadata.get("kind").map(String::as_str) == Some("files");
-    let size_bytes = partition
-        .metadata
-        .get("bytes")
-        .map(|value| {
-            value.parse::<u64>().map_err(|error| {
-                CdfError::data(format!(
-                    "preview partition {} has invalid byte-size identity {value:?}: {error}",
-                    partition.partition_id
-                ))
-            })
-        })
-        .transpose()?;
+    let planned_file = partition.planned_file()?;
+    let location = planned_file.map_or_else(
+        || {
+            partition
+                .metadata
+                .get(PLAN_SCHEMA_OBSERVATION_ID_KEY)
+                .cloned()
+                .unwrap_or_else(|| partition.partition_id.to_string())
+        },
+        |file| file.path.clone(),
+    );
+    let size_bytes = planned_file.map(|file| file.size_bytes);
     let modified_at_ms = partition
         .metadata
         .get("modified_ms")
@@ -751,13 +744,13 @@ fn preview_partition_identity(
             })
         })
         .transpose()?;
-    let (value, strength) = if is_file {
-        if let Some(sha256) = partition.metadata.get("sha256") {
+    let (value, strength) = if let Some(file) = planned_file {
+        if let Some(sha256) = &file.sha256 {
             (
                 Some(sha256.clone()),
                 StratifiedHashIdentityStrength::StrongChecksum,
             )
-        } else if let Some(etag) = partition.metadata.get("etag") {
+        } else if let Some(etag) = &file.etag {
             let strength = if etag.trim_start().starts_with("W/") {
                 StratifiedHashIdentityStrength::WeakEtag
             } else if etag
@@ -772,6 +765,11 @@ fn preview_partition_identity(
                 StratifiedHashIdentityStrength::StableEtag
             };
             (Some(etag.clone()), strength)
+        } else if file.object_version.is_some() || file.source_generation.is_some() {
+            (
+                Some(cdf_kernel::partition_source_identity_binding(partition)?),
+                StratifiedHashIdentityStrength::BoundedObservation,
+            )
         } else {
             (None, StratifiedHashIdentityStrength::Unavailable)
         }

@@ -2644,12 +2644,21 @@ fn validate_partition(
     let resolved = resolve_planned_file_match(
         descriptor, plan, path, transport, egress, formats, transforms,
     )?;
-    let expected_size = resolved.size_bytes.to_string();
-    if partition.metadata.get("bytes").map(String::as_str) != Some(expected_size.as_str()) {
-        return Err(CdfError::data(format!(
-            "declarative file partition `{path}` changed size after planning"
-        )));
-    }
+    let planned = partition.planned_file()?.ok_or_else(|| {
+        CdfError::contract(format!(
+            "file partition `{}` omitted its typed planned position",
+            partition.partition_id
+        ))
+    })?;
+    let observed = cdf_kernel::FilePosition {
+        path: resolved.path_text.clone(),
+        size_bytes: resolved.size_bytes,
+        source_generation: resolved.source_generation.clone(),
+        etag: resolved.etag.clone(),
+        object_version: resolved.version.clone(),
+        sha256: resolved.sha256.clone(),
+    };
+    cdf_kernel::merge_file_position_evidence(planned, &observed)?;
     debug_assert!(match_count > 0);
     validate_resolved_partition_metadata(partition, &resolved, plan, path)?;
     Ok(resolved)
@@ -2680,13 +2689,19 @@ fn validate_partition_plan_shape<'a>(
             plan.glob
         )));
     }
-    let path = partition.metadata.get("path").ok_or_else(|| {
-        CdfError::contract(format!(
-            "declarative file resource `{}` expected file partition path metadata",
-            descriptor.resource_id
-        ))
-    })?;
-    let expected_scope = ScopeKey::File { path: path.clone() };
+    let path = partition
+        .planned_file()?
+        .ok_or_else(|| {
+            CdfError::contract(format!(
+                "file partition `{}` omitted its typed planned position",
+                partition.partition_id
+            ))
+        })?
+        .path
+        .as_str();
+    let expected_scope = ScopeKey::File {
+        path: path.to_owned(),
+    };
     if partition.scope != expected_scope {
         return Err(CdfError::contract(format!(
             "declarative file partition scope does not match file path `{path}`",
@@ -2736,59 +2751,15 @@ fn validate_resolved_partition_metadata(
     plan: &FileResourcePlan,
     path: &str,
 ) -> Result<()> {
-    match (
-        &resolved.sha256,
-        &resolved.etag,
-        &resolved.version,
-        &resolved.source_generation,
-    ) {
-        (Some(sha256), _, _, _) => {
-            if partition.metadata.get("sha256").map(String::as_str) != Some(sha256.as_str()) {
-                return Err(CdfError::data(format!(
-                    "declarative file partition `{path}` changed checksum after planning"
-                )));
-            }
-        }
-        (None, Some(etag), _, _) => {
-            if partition.metadata.get("etag").map(String::as_str) != Some(etag.as_str()) {
-                return Err(CdfError::data(format!(
-                    "declarative file partition `{path}` changed ETag after planning"
-                )));
-            }
-        }
-        (None, None, Some(version), _) => {
-            if partition.metadata.get("version").map(String::as_str) != Some(version.as_str()) {
-                return Err(CdfError::data(format!(
-                    "declarative file partition `{path}` changed object version after planning"
-                )));
-            }
-        }
-        (None, None, None, Some(source_generation)) => {
-            if partition
-                .metadata
-                .get("source_generation")
-                .map(String::as_str)
-                != Some(source_generation.as_str())
-            {
-                return Err(CdfError::data(format!(
-                    "declarative file partition `{path}` changed source generation after planning"
-                )));
-            }
-        }
-        (None, None, None, None) => {
-            if resolved.identity_strength != GenerationStrength::Weak {
-                return Err(CdfError::internal(format!(
-                    "declarative file partition `{path}` omitted generation evidence despite non-weak identity"
-                )));
-            }
-            for forbidden in ["sha256", "etag", "version", "source_generation"] {
-                if partition.metadata.contains_key(forbidden) {
-                    return Err(CdfError::data(format!(
-                        "declarative file partition `{path}` retained stale `{forbidden}` identity metadata"
-                    )));
-                }
-            }
-        }
+    if resolved.identity_strength != GenerationStrength::Weak
+        && resolved.sha256.is_none()
+        && resolved.etag.is_none()
+        && resolved.version.is_none()
+        && resolved.source_generation.is_none()
+    {
+        return Err(CdfError::internal(format!(
+            "declarative file partition `{path}` omitted generation evidence despite non-weak identity"
+        )));
     }
     validate_partition_metadata_value(
         partition,
@@ -2906,7 +2877,6 @@ fn partition_for_file_match(
     metadata.insert("kind".to_owned(), "files".to_owned());
     metadata.insert("glob".to_owned(), plan.glob.clone());
     metadata.insert("resource_id".to_owned(), descriptor.resource_id.to_string());
-    metadata.insert("path".to_owned(), file.path_text.clone());
     metadata.insert("match_count".to_owned(), total_matches.to_string());
     metadata.insert(
         "plan_path_binding".to_owned(),
@@ -2925,23 +2895,10 @@ fn partition_for_file_match(
         PLAN_SCHEMA_OBSERVATION_BINDING_KEY.to_owned(),
         file_schema_observation_binding(file),
     );
-    metadata.insert("bytes".to_owned(), file.size_bytes.to_string());
     metadata.insert(
         "identity_strength".to_owned(),
         identity_strength_name(file.identity_strength).to_owned(),
     );
-    if let Some(source_generation) = &file.source_generation {
-        metadata.insert("source_generation".to_owned(), source_generation.clone());
-    }
-    if let Some(sha256) = &file.sha256 {
-        metadata.insert("sha256".to_owned(), sha256.clone());
-    }
-    if let Some(etag) = &file.etag {
-        metadata.insert("etag".to_owned(), etag.clone());
-    }
-    if let Some(version) = &file.version {
-        metadata.insert("version".to_owned(), version.clone());
-    }
     if let Some(modified_ms) = &file.modified_ms {
         metadata.insert("modified_ms".to_owned(), modified_ms.clone());
     }
@@ -3002,6 +2959,17 @@ fn partition_for_file_match(
         scope: ScopeKey::File {
             path: file.path_text.clone(),
         },
+        planned_position: Some(SourcePosition::FileManifest(cdf_kernel::FileManifest {
+            version: 1,
+            files: vec![cdf_kernel::FilePosition {
+                path: file.path_text.clone(),
+                size_bytes: file.size_bytes,
+                source_generation: file.source_generation.clone(),
+                etag: file.etag.clone(),
+                object_version: file.version.clone(),
+                sha256: file.sha256.clone(),
+            }],
+        })),
         start_position: None,
         scan_intent: scan_intent.clone(),
         retry_safety: match file.identity_strength {

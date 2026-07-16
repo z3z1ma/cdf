@@ -602,15 +602,12 @@ fn file_discovery_entries(
     partitions
         .into_iter()
         .map(|partition| {
-            let location = partition.metadata.get("path").cloned().ok_or_else(|| {
-                CdfError::internal("file discovery partition omitted path metadata")
-            })?;
-            let size_bytes = partition
-                .metadata
-                .get("bytes")
-                .ok_or_else(|| CdfError::internal("file discovery partition omitted bytes"))?
-                .parse::<u64>()
-                .map_err(|error| CdfError::data(format!("invalid file size: {error}")))?;
+            let file = partition
+                .planned_file()?
+                .ok_or_else(|| {
+                    CdfError::internal("file discovery partition omitted typed file position")
+                })?
+                .clone();
             let modified_at_ms = partition
                 .metadata
                 .get("modified_ms")
@@ -625,13 +622,26 @@ fn file_discovery_entries(
                 .get("compression")
                 .cloned()
                 .unwrap_or_else(|| "none".to_owned());
-            let resource = transport_resource_for_location(&location, plan)?;
+            let resource = transport_resource_for_location(&file.path, plan)?;
+            let mut identity = partition.metadata;
+            if let Some(source_generation) = file.source_generation {
+                identity.insert("source_generation".to_owned(), source_generation);
+            }
+            if let Some(etag) = file.etag {
+                identity.insert("etag".to_owned(), etag);
+            }
+            if let Some(version) = file.object_version {
+                identity.insert("version".to_owned(), version);
+            }
+            if let Some(sha256) = file.sha256 {
+                identity.insert("sha256".to_owned(), sha256);
+            }
             Ok(FileDriverDiscoveryEntry {
                 candidate: SourceDiscoveryCandidate::new(
-                    location,
-                    Some(size_bytes),
+                    file.path,
+                    Some(file.size_bytes),
                     modified_at_ms,
-                    partition.metadata,
+                    identity,
                 )?,
                 compression,
                 source: FileDriverDiscoverySource::Transport(resource),

@@ -1197,18 +1197,19 @@ fn partial_position_matches_partition_scope(
             cdf_kernel::SourcePosition::FileManifest(manifest),
             cdf_kernel::ScopeKey::File { path },
         ) => {
-            manifest.files.len() == 1
-                && manifest.files.iter().all(|file| {
-                    file.path.as_str() == path.as_str()
-                        && partition
-                            .metadata
-                            .get("bytes")
-                            .and_then(|bytes| bytes.parse::<u64>().ok())
-                            == Some(file.size_bytes)
-                        && partition.metadata.get("etag") == file.etag.as_ref()
-                        && partition.metadata.get("version") == file.object_version.as_ref()
-                        && partition.metadata.get("sha256") == file.sha256.as_ref()
-                })
+            let Some(cdf_kernel::SourcePosition::FileManifest(planned)) =
+                partition.planned_position.as_ref()
+            else {
+                return false;
+            };
+            let ([file], [planned_file]) = (manifest.files.as_slice(), planned.files.as_slice())
+            else {
+                return false;
+            };
+            file.path.as_str() == path.as_str()
+                && planned.version == manifest.version
+                && cdf_kernel::merge_file_position_evidence(planned_file, file)
+                    .is_ok_and(|merged| merged == *file)
         }
         (_, cdf_kernel::ScopeKey::File { .. }) => false,
         (cdf_kernel::SourcePosition::Cursor(cursor), _) => partition
@@ -2402,21 +2403,6 @@ mod stream_admission_replay_tests {
 
     #[test]
     fn partial_position_binding_rejects_wrong_file_generation_and_cursor_field() {
-        let file_partition = PartitionPlan {
-            partition_id: PartitionId::new("file").unwrap(),
-            scope: ScopeKey::File {
-                path: "events.json".to_owned(),
-            },
-            start_position: None,
-            scan_intent: cdf_kernel::CompiledScanIntent::full_scan(),
-            retry_safety: cdf_kernel::PartitionRetrySafety::ImmutableContent,
-            metadata: BTreeMap::from([
-                ("bytes".to_owned(), "12".to_owned()),
-                ("etag".to_owned(), "etag-1".to_owned()),
-                ("version".to_owned(), "v1".to_owned()),
-                ("sha256".to_owned(), "abc".to_owned()),
-            ]),
-        };
         let file_position = |etag: &str| {
             SourcePosition::FileManifest(FileManifest {
                 version: 1,
@@ -2429,6 +2415,17 @@ mod stream_admission_replay_tests {
                     sha256: Some("abc".to_owned()),
                 }],
             })
+        };
+        let file_partition = PartitionPlan {
+            partition_id: PartitionId::new("file").unwrap(),
+            scope: ScopeKey::File {
+                path: "events.json".to_owned(),
+            },
+            planned_position: Some(file_position("etag-1")),
+            start_position: None,
+            scan_intent: cdf_kernel::CompiledScanIntent::full_scan(),
+            retry_safety: cdf_kernel::PartitionRetrySafety::ImmutableContent,
+            metadata: BTreeMap::new(),
         };
         assert!(partial_position_matches_partition_scope(
             &file_position("etag-1"),
@@ -2444,6 +2441,7 @@ mod stream_admission_replay_tests {
             scope: ScopeKey::Partition {
                 partition_id: PartitionId::new("rest").unwrap(),
             },
+            planned_position: None,
             start_position: None,
             scan_intent: cdf_kernel::CompiledScanIntent::full_scan(),
             retry_safety: cdf_kernel::PartitionRetrySafety::Forbidden,

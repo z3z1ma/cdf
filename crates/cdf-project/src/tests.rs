@@ -2499,7 +2499,7 @@ fn http_numeric_template_discovers_and_plans_every_file() {
     assert_eq!(
         partitions
             .iter()
-            .map(|partition| partition.metadata["path"].as_str())
+            .map(|partition| { partition.planned_file().unwrap().unwrap().path.as_str() })
             .collect::<Vec<_>>(),
         vec![
             "https://data.example.test/trip-data/yellow_tripdata_2024-01.parquet",
@@ -2553,8 +2553,22 @@ fn http_year_month_glob_skips_absent_candidates_without_hiding_other_failures() 
         })
         .unwrap();
     assert_eq!(partitions.len(), 2);
-    assert!(partitions[0].metadata["path"].ends_with("2024-01.parquet"));
-    assert!(partitions[1].metadata["path"].ends_with("2024-02.parquet"));
+    assert!(
+        partitions[0]
+            .planned_file()
+            .unwrap()
+            .unwrap()
+            .path
+            .ends_with("2024-01.parquet")
+    );
+    assert!(
+        partitions[1]
+            .planned_file()
+            .unwrap()
+            .unwrap()
+            .path
+            .ends_with("2024-02.parquet")
+    );
 }
 
 #[test]
@@ -2611,12 +2625,23 @@ fn http_parquet_auto_pin_plan_preview_and_run_use_file_runtime() {
     );
     assert_eq!(plan.scan.partitions.len(), 1);
     let partition = plan.scan.partitions[0].clone();
+    let planned_file = partition.planned_file().unwrap().unwrap();
     assert_eq!(
-        partition.metadata["path"],
+        planned_file.path,
         "https://data.example.test/trip-data/vendors.parquet"
     );
-    assert_eq!(partition.metadata["bytes"], parquet.len().to_string());
-    assert_eq!(partition.metadata["etag"], "\"fixture-etag\"");
+    assert_eq!(planned_file.size_bytes, parquet.len() as u64);
+    assert_eq!(planned_file.etag.as_deref(), Some("\"fixture-etag\""));
+    for legacy_key in [
+        "path",
+        "bytes",
+        "etag",
+        "version",
+        "sha256",
+        "source_generation",
+    ] {
+        assert!(!partition.metadata.contains_key(legacy_key));
+    }
     assert!(!partition.metadata.contains_key("bytes_loaded"));
 
     let preview_stream =
@@ -2801,9 +2826,10 @@ fn unversioned_http_parquet_runs_and_commits_terminal_content_identity() {
     );
     let partition = &plan.scan.partitions[0];
     assert_eq!(partition.metadata["identity_strength"], "weak");
-    assert!(!partition.metadata.contains_key("etag"));
-    assert!(!partition.metadata.contains_key("source_generation"));
-    assert!(!partition.metadata.contains_key("sha256"));
+    let planned_file = partition.planned_file().unwrap().unwrap();
+    assert_eq!(planned_file.etag, None);
+    assert_eq!(planned_file.source_generation, None);
+    assert_eq!(planned_file.sha256, None);
     let request_count_before_run = transport.requests().len();
     let discovery_payload_gets = transport
         .requests()

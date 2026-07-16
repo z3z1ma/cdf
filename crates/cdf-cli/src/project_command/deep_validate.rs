@@ -215,7 +215,10 @@ fn partition_check(
             count: partitions.len(),
             files: partitions
                 .iter()
-                .filter_map(|partition| partition.metadata.get("path").cloned())
+                .filter_map(|partition| match &partition.scope {
+                    cdf_kernel::ScopeKey::File { path } => Some(path.clone()),
+                    _ => None,
+                })
                 .collect(),
             detail: "resolved without extraction".to_owned(),
         },

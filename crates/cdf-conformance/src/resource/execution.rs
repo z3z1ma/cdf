@@ -512,6 +512,7 @@ mod tests {
         let partition = PartitionPlan {
             partition_id: PartitionId::new("file-part-0").unwrap(),
             scope: scenario.partition_scope,
+            planned_position: None,
             start_position: scenario.start_position,
             scan_intent: cdf_kernel::CompiledScanIntent::full_scan(),
             retry_safety: cdf_kernel::PartitionRetrySafety::Forbidden,
@@ -635,6 +636,7 @@ mod tests {
                         scope: ScopeKey::File {
                             path: format!("fixture/{id}.csv"),
                         },
+                        planned_position: None,
                         start_position: Some(file_position(id)),
                         scan_intent: cdf_kernel::CompiledScanIntent::full_scan(),
                         retry_safety: cdf_kernel::PartitionRetrySafety::Forbidden,

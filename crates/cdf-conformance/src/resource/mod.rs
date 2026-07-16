@@ -881,6 +881,7 @@ mod tests {
                         start: String::new(),
                         end: String::new(),
                     },
+                    planned_position: None,
                     start_position: None::<SourcePosition>,
                     scan_intent: cdf_kernel::CompiledScanIntent::full_scan(),
                     retry_safety: cdf_kernel::PartitionRetrySafety::Forbidden,
@@ -893,6 +894,7 @@ mod tests {
                     scope: ScopeKey::Partition {
                         partition_id: PartitionId::new("p1").unwrap(),
                     },
+                    planned_position: None,
                     start_position: None::<SourcePosition>,
                     scan_intent: cdf_kernel::CompiledScanIntent::full_scan(),
                     retry_safety: cdf_kernel::PartitionRetrySafety::Forbidden,
@@ -1040,6 +1042,7 @@ mod tests {
             scope: ScopeKey::Partition {
                 partition_id: PartitionId::new(id).unwrap(),
             },
+            planned_position: None,
             start_position: None::<SourcePosition>,
             scan_intent: cdf_kernel::CompiledScanIntent::full_scan(),
             retry_safety: cdf_kernel::PartitionRetrySafety::Forbidden,
@@ -1053,6 +1056,7 @@ mod tests {
             scope: ScopeKey::Partition {
                 partition_id: PartitionId::new(id).unwrap(),
             },
+            planned_position: None,
             start_position: None::<SourcePosition>,
             scan_intent: cdf_kernel::CompiledScanIntent::full_scan(),
             retry_safety: cdf_kernel::PartitionRetrySafety::Forbidden,

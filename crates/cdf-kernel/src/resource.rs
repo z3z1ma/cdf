@@ -17,7 +17,7 @@ use crate::{
     destination::DeliveryGuarantee,
     error::{CdfError, Result},
     ids::{ContractRef, PartitionId, PlanId, PredicateId, ResourceId, SchemaHash},
-    position::SourcePosition,
+    position::{FilePosition, SourcePosition},
     scope::{ScopeKey, ScopeKind},
 };
 
@@ -605,11 +605,66 @@ pub enum SortDirection {
 pub struct PartitionPlan {
     pub partition_id: PartitionId,
     pub scope: ScopeKey,
+    /// Position authority from which this exact planned source unit is opened.
+    ///
+    /// This is distinct from `start_position`: the latter is a resume boundary supplied by
+    /// prior state, while this value identifies the complete unit selected by this plan.
+    /// Completion may enrich it with terminal evidence but may not change its generation.
+    #[serde(deserialize_with = "deserialize_planned_position")]
+    pub planned_position: Option<SourcePosition>,
     pub start_position: Option<SourcePosition>,
     pub scan_intent: CompiledScanIntent,
     /// The strongest identity proof available for restarting this exact planned partition.
     pub retry_safety: PartitionRetrySafety,
     pub metadata: BTreeMap<String, String>,
+}
+
+fn deserialize_planned_position<'de, D>(
+    deserializer: D,
+) -> std::result::Result<Option<SourcePosition>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Option::<SourcePosition>::deserialize(deserializer)
+}
+
+impl PartitionPlan {
+    /// Returns the single file selected by this partition when it is file-positioned.
+    ///
+    /// A file partition is one retry/checkpoint unit. Multi-file manifests belong to aggregate
+    /// state after execution, never to one planned partition.
+    pub fn planned_file(&self) -> Result<Option<&FilePosition>> {
+        let Some(position) = self.planned_position.as_ref() else {
+            return Ok(None);
+        };
+        let SourcePosition::FileManifest(manifest) = position else {
+            return Ok(None);
+        };
+        if manifest.version != 1 {
+            return Err(CdfError::contract(format!(
+                "partition `{}` uses unsupported file-manifest version {}",
+                self.partition_id, manifest.version
+            )));
+        }
+        let [file] = manifest.files.as_slice() else {
+            return Err(CdfError::contract(format!(
+                "partition `{}` must plan exactly one file position, found {}",
+                self.partition_id,
+                manifest.files.len()
+            )));
+        };
+        if self.scope
+            != (ScopeKey::File {
+                path: file.path.clone(),
+            })
+        {
+            return Err(CdfError::contract(format!(
+                "partition `{}` scope does not match planned file `{}`",
+                self.partition_id, file.path
+            )));
+        }
+        Ok(Some(file))
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -841,6 +896,7 @@ pub fn partition_source_identity_binding(partition: &PartitionPlan) -> Result<St
     let bytes = serde_json::to_vec(&(
         &partition.partition_id,
         &partition.scope,
+        &partition.planned_position,
         &partition.start_position,
         &partition.metadata,
     ))

@@ -1,6 +1,6 @@
 {
   "package_id": "live-local-file-v1",
-  "package_hash": "sha256:bc3bfc9a4e89545e7a4f77f2193ad3c312ffe3a0aabaaa7324e2aae51cb472f2",
+  "package_hash": "sha256:1af4513e327e12d9449cc5e72620d1e02253166ec08f61297218a7c621e6faab",
   "checkpoint_id": "checkpoint-live-local-file-v1",
   "pipeline_id": "pipeline-live-local-file-v1",
   "resource_id": "local.events",
@@ -21,9 +21,9 @@
   "mirror_state_rows": 1,
   "package": {
     "manifest_version": 1,
-    "package_hash": "sha256:bc3bfc9a4e89545e7a4f77f2193ad3c312ffe3a0aabaaa7324e2aae51cb472f2",
+    "package_hash": "sha256:1af4513e327e12d9449cc5e72620d1e02253166ec08f61297218a7c621e6faab",
     "package_status": "checkpointed",
-    "signature_signing_input": "sha256:bc3bfc9a4e89545e7a4f77f2193ad3c312ffe3a0aabaaa7324e2aae51cb472f2",
+    "signature_signing_input": "sha256:1af4513e327e12d9449cc5e72620d1e02253166ec08f61297218a7c621e6faab",
     "signature_value": null,
     "identity_manifest_version": 1,
     "identity_layout": [
@@ -55,13 +55,13 @@
       },
       {
         "path": "plan/explain.json",
-        "byte_count": 3241,
-        "sha256": "c0648f93599d347aeb576693abbfb33fb4d66753d602516c77a602522aed96a4"
+        "byte_count": 3261,
+        "sha256": "e2def49448e8b80210d6453cb806099dc0001091e29a924f501e37a2036c3cd0"
       },
       {
         "path": "plan/scan.json",
-        "byte_count": 1254,
-        "sha256": "9381b8630417792ae0e03e81d72bdadcb56b2d931056bd17bb596217fa2625f7"
+        "byte_count": 1373,
+        "sha256": "a453748e892992b35f56565f570bd9bb4a303ad2d4de1fb9e35ad63298c77dec"
       },
       {
         "path": "plan/schema-admission.json",
