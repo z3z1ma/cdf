@@ -126,7 +126,7 @@ impl FileRuntimeDependencies {
         self.max_spool_bytes
     }
 
-    fn execution(&self) -> &ExecutionServices {
+    pub(crate) fn execution(&self) -> &ExecutionServices {
         &self.execution
     }
 
@@ -800,6 +800,7 @@ pub struct FileResource {
     effective_schema_runtime: Option<Arc<EffectiveSchemaRuntime>>,
     compiled_format: CompiledFormatBinding,
     dependencies: FileRuntimeDependencies,
+    prepared_inventory_key: Option<PreparedSourcePayloadKey>,
     compiled_source_plan_hash: Option<String>,
 }
 
@@ -856,8 +857,14 @@ impl FileResource {
             effective_schema_runtime: effective_schema_runtime.map(Arc::new),
             compiled_format,
             dependencies,
+            prepared_inventory_key: None,
             compiled_source_plan_hash: None,
         })
+    }
+
+    pub(crate) fn with_prepared_inventory_key(mut self, key: PreparedSourcePayloadKey) -> Self {
+        self.prepared_inventory_key = Some(key);
+        self
     }
 
     pub fn with_compiled_source_plan_hash(mut self, hash: String) -> Self {
@@ -877,6 +884,39 @@ impl FileResource {
         scan_intent: &CompiledScanIntent,
         maximum_matches: usize,
     ) -> Result<Vec<PartitionPlan>> {
+        if let Some(key) = &self.prepared_inventory_key
+            && let Some(payload) = self.dependencies.prepared_payloads().take(key)?
+        {
+            let (encoded, _retention) =
+                payload.into_typed::<Vec<u8>>("file partition inventory")?;
+            let mut partitions: Vec<PartitionPlan> =
+                serde_json::from_slice(&encoded).map_err(|error| {
+                    CdfError::internal(format!("decode prepared file inventory: {error}"))
+                })?;
+            if partitions.is_empty() {
+                return Err(CdfError::internal(
+                    "prepared file inventory did not contain any partitions",
+                ));
+            }
+            if partitions.len() > maximum_matches {
+                return Err(CdfError::data(format!(
+                    "file inventory exceeds the {maximum_matches}-entry boundary"
+                )));
+            }
+            for partition in &mut partitions {
+                if partition.metadata.get("resource_id").map(String::as_str)
+                    != Some(self.descriptor.resource_id.as_str())
+                    || partition.metadata.get("glob").map(String::as_str)
+                        != Some(self.plan.glob.as_str())
+                {
+                    return Err(CdfError::internal(
+                        "prepared file inventory does not match its compiled resource plan",
+                    ));
+                }
+                partition.scan_intent = scan_intent.clone();
+            }
+            return Ok(partitions);
+        }
         self.dependencies.with_transport(|transport, egress| {
             file_partitions_for_plan_with_transport(
                 &self.descriptor,
@@ -1728,6 +1768,7 @@ fn open_file_resource_with_dependencies(
         effective_schema_runtime,
         compiled_format,
         dependencies,
+        prepared_inventory_key: _,
         compiled_source_plan_hash: _,
     } = resource;
     if let Err(error) = validate_partition_plan_shape(&descriptor, &plan, &partition) {

@@ -180,6 +180,10 @@ impl cdf_runtime::ExecutionHost for RejectMockStagingSubmissionHost {
         self.inner.monotonic_now()
     }
 
+    fn unix_now(&self) -> std::time::Duration {
+        self.inner.unix_now()
+    }
+
     fn entropy_u64(&self) -> u64 {
         self.inner.entropy_u64()
     }

@@ -1,20 +1,23 @@
 use std::{
     collections::BTreeMap,
     fs,
+    io::Write,
     path::{Path, PathBuf},
     sync::Arc,
 };
 
 use cdf_http::{AuthScheme, EgressAllowlist, SecretProvider, SecretUri};
-use cdf_kernel::{CdfError, CompiledScanIntent, QueryableResource, Result};
+use cdf_kernel::{CdfError, CompiledScanIntent, PayloadRetention, QueryableResource, Result};
+use cdf_memory::{ConsumerKey, MemoryClass, ReservationRequest};
 use cdf_runtime::{
     CompiledFormatBinding, CompiledSourcePlan, ExecutionServices, FormatDiscoveryKind,
-    FormatRegistry, SourceAddPlanner, SourceAddProposal, SourceAddRequest,
-    SourceAttestationStrength, SourceCompileRequest, SourceDiscoveryCandidate, SourceDiscoveryKind,
-    SourceDiscoveryRequest, SourceDiscoverySession, SourceDriver, SourceDriverDescriptor,
-    SourceDriverId, SourceEvidenceLocation, SourceExecutionCapabilities, SourceExecutorClass,
-    SourceHealthRequest, SourceHealthResult, SourceHealthStatus, SourceResolutionContext,
-    SourceRetryGranularity, SourceSchemaObservation, artifact_hash,
+    FormatRegistry, PreparedSourcePayload, PreparedSourcePayloadKey, SourceAddPlanner,
+    SourceAddProposal, SourceAddRequest, SourceAttestationStrength, SourceCompileRequest,
+    SourceDiscoveryCandidate, SourceDiscoveryKind, SourceDiscoveryRequest, SourceDiscoverySession,
+    SourceDriver, SourceDriverDescriptor, SourceDriverId, SourceEvidenceLocation,
+    SourceExecutionCapabilities, SourceExecutorClass, SourceHealthRequest, SourceHealthResult,
+    SourceHealthStatus, SourceResolutionContext, SourceRetryGranularity, SourceSchemaObservation,
+    artifact_hash,
 };
 use serde::{Deserialize, Serialize};
 
@@ -23,7 +26,6 @@ use crate::{
     FileResourceDefinition, FileResourcePlan, FileRuntimeDependencies, FileTransportLocation,
     FileTransportResource, discover_local_binary_schema_bounded,
     discover_transport_binary_schema_bounded, file_source_blocking_lane,
-    local_file_discovery_candidates,
 };
 
 type RuntimeFactory = dyn Fn(
@@ -122,7 +124,7 @@ impl SourceDriver for FileSourceDriver {
                 let maximum_entries =
                     usize::try_from(request.budget.remaining_list_entries()?).unwrap_or(usize::MAX);
                 match self
-                    .discovery_session_with_limit(plan, context, maximum_entries)
+                    .discovery_session_with_limit(plan, context, maximum_entries, false)
                     .and_then(|session| session.candidates())
                 {
                     Ok(candidates) => {
@@ -229,6 +231,7 @@ impl SourceDriver for FileSourceDriver {
             plan,
             context,
             usize::MAX,
+            true,
         )?))
     }
 
@@ -246,6 +249,7 @@ impl SourceDriver for FileSourceDriver {
             context.egress_scope(&plan.driver.driver_id),
         )?
         .with_prepared_payloads(context.prepared_payloads().clone());
+        let prepared_inventory_key = prepared_file_inventory_key(plan)?;
         physical.compiled_format.verify(dependencies.formats())?;
         Ok(Arc::new(
             FileResource::new(
@@ -259,6 +263,7 @@ impl SourceDriver for FileSourceDriver {
                 },
                 dependencies,
             )?
+            .with_prepared_inventory_key(prepared_inventory_key)
             .with_compiled_source_plan_hash(cdf_runtime::artifact_hash(plan)?),
         ))
     }
@@ -270,6 +275,7 @@ impl FileSourceDriver {
         plan: &CompiledSourcePlan,
         context: &SourceResolutionContext<'_>,
         maximum_entries: usize,
+        retain_inventory: bool,
     ) -> Result<FileDriverDiscoverySession> {
         plan.validate()?;
         let physical: FilePhysicalPlan = serde_json::from_value(plan.physical_plan.clone())
@@ -289,6 +295,7 @@ impl FileSourceDriver {
             &physical.compiled_format,
             &dependencies,
             maximum_entries,
+            retain_inventory,
         )?;
         Ok(FileDriverDiscoverySession {
             resource_id: plan.descriptor.resource_id.clone(),
@@ -622,41 +629,8 @@ fn file_discovery_entries(
     compiled_format: &CompiledFormatBinding,
     dependencies: &FileRuntimeDependencies,
     maximum_entries: usize,
+    retain_inventory: bool,
 ) -> Result<Vec<FileDriverDiscoveryEntry>> {
-    if !uses_transport_inventory(&plan.root)? {
-        return local_file_discovery_candidates(
-            &source_plan.descriptor.resource_id,
-            plan,
-            dependencies.formats(),
-            dependencies.transforms(),
-            maximum_entries,
-        )?
-        .into_iter()
-        .map(|candidate| {
-            let modified_at_ms = candidate.modified_at_ms();
-            let mut identity =
-                BTreeMap::from([("compression".to_owned(), candidate.compression.clone())]);
-            identity.insert(
-                "selection_bytes_read".to_owned(),
-                candidate.selection_bytes_read.to_string(),
-            );
-            Ok(FileDriverDiscoveryEntry {
-                candidate: SourceDiscoveryCandidate::new(
-                    candidate.relative_path,
-                    Some(candidate.size_bytes),
-                    modified_at_ms,
-                    identity,
-                )?,
-                compression: candidate.compression,
-                source: FileDriverDiscoverySource::Local {
-                    path: candidate.path,
-                    selection_bytes_read: candidate.selection_bytes_read,
-                },
-            })
-        })
-        .collect();
-    }
-
     let runtime = FileResource::new(
         FileResourceDefinition {
             descriptor: source_plan.descriptor.clone(),
@@ -672,8 +646,23 @@ fn file_discovery_entries(
         &CompiledScanIntent::full_scan(),
         maximum_entries,
     )?;
+    if retain_inventory {
+        install_prepared_file_inventory(source_plan, dependencies, &partitions)?;
+    }
+    let local_root = match file_transport_scheme(&plan.root)? {
+        None => Some(PathBuf::from(&plan.root)),
+        Some(FileTransportScheme::File) => Some(crate::transport::file_url_path(&plan.root)?),
+        Some(
+            FileTransportScheme::Http
+            | FileTransportScheme::Https
+            | FileTransportScheme::S3
+            | FileTransportScheme::Gs
+            | FileTransportScheme::Az,
+        ) => None,
+    };
+    let transport_inventory = local_root.is_none();
     partitions
-        .into_iter()
+        .iter()
         .map(|partition| {
             let file = partition
                 .planned_file()?
@@ -695,36 +684,129 @@ fn file_discovery_entries(
                 .get("compression")
                 .cloned()
                 .unwrap_or_else(|| "none".to_owned());
-            let resource = transport_resource_for_location(&file.path, plan)?;
-            let mut identity = partition.metadata;
-            if let Some(source_generation) = file.source_generation {
-                identity.insert("source_generation".to_owned(), source_generation);
-            }
-            if let Some(etag) = file.etag {
-                identity.insert("etag".to_owned(), etag);
-            }
-            if let Some(version) = file.object_version {
-                identity.insert("version".to_owned(), version);
-            }
-            if let Some(sha256) = file.sha256 {
-                identity.insert("sha256".to_owned(), sha256);
+            let source = if transport_inventory {
+                FileDriverDiscoverySource::Transport(transport_resource_for_location(
+                    &file.path, plan,
+                )?)
+            } else {
+                FileDriverDiscoverySource::Local {
+                    path: local_root
+                        .as_ref()
+                        .expect("local inventory has a local root")
+                        .join(&file.path),
+                    selection_bytes_read: 0,
+                }
+            };
+            let mut identity = if transport_inventory {
+                partition.metadata.clone()
+            } else {
+                BTreeMap::from([
+                    ("compression".to_owned(), compression.clone()),
+                    ("selection_bytes_read".to_owned(), "0".to_owned()),
+                ])
+            };
+            if transport_inventory {
+                if let Some(source_generation) = &file.source_generation {
+                    identity.insert("source_generation".to_owned(), source_generation.clone());
+                }
+                if let Some(etag) = &file.etag {
+                    identity.insert("etag".to_owned(), etag.clone());
+                }
+                if let Some(version) = &file.object_version {
+                    identity.insert("version".to_owned(), version.clone());
+                }
+                if let Some(sha256) = &file.sha256 {
+                    identity.insert("sha256".to_owned(), sha256.clone());
+                }
             }
             Ok(FileDriverDiscoveryEntry {
                 candidate: SourceDiscoveryCandidate::new(
-                    file.path,
+                    file.path.clone(),
                     Some(file.size_bytes),
                     modified_at_ms,
                     identity,
                 )?,
                 compression,
-                source: FileDriverDiscoverySource::Transport(resource),
+                source,
             })
         })
         .collect()
 }
 
-fn uses_transport_inventory(root: &str) -> Result<bool> {
-    file_transport_scheme(root).map(|scheme| scheme.is_some())
+fn prepared_file_inventory_key(plan: &CompiledSourcePlan) -> Result<PreparedSourcePayloadKey> {
+    PreparedSourcePayloadKey::new(
+        plan.descriptor.resource_id.clone(),
+        plan.driver.driver_id.clone(),
+        artifact_hash(&serde_json::json!({
+            "kind": "file_partition_inventory_v1",
+            "source_discovery_binding": plan.discovery_binding_hash()?,
+        }))?,
+    )
+}
+
+fn install_prepared_file_inventory(
+    plan: &CompiledSourcePlan,
+    dependencies: &FileRuntimeDependencies,
+    partitions: &[cdf_kernel::PartitionPlan],
+) -> Result<()> {
+    let mut counter = CountingWriter::default();
+    serde_json::to_writer(&mut counter, partitions)
+        .map_err(|error| CdfError::internal(format!("size prepared file inventory: {error}")))?;
+    let encoded_bytes = counter.bytes;
+    if encoded_bytes == 0 {
+        return Err(CdfError::internal(
+            "prepared file inventory encoded to zero bytes",
+        ));
+    }
+    let request = ReservationRequest::new(
+        ConsumerKey::new("prepared-file-inventory", MemoryClass::Discovery)?,
+        encoded_bytes,
+    )?;
+    let lease = dependencies
+        .execution()
+        .memory()
+        .try_reserve(&request)?
+        .ok_or_else(|| {
+            CdfError::data(format!(
+                "prepared file inventory requires {encoded_bytes} bytes but the discovery memory budget cannot admit it"
+            ))
+        })?;
+    let capacity = usize::try_from(encoded_bytes)
+        .map_err(|_| CdfError::data("prepared file inventory length exceeds usize"))?;
+    let mut encoded = Vec::with_capacity(capacity);
+    serde_json::to_writer(&mut encoded, partitions)
+        .map_err(|error| CdfError::internal(format!("encode prepared file inventory: {error}")))?;
+    let observed = u64::try_from(encoded.len())
+        .map_err(|_| CdfError::data("prepared file inventory length exceeds u64"))?;
+    if observed != encoded_bytes {
+        return Err(CdfError::internal(
+            "prepared file inventory sizing pass was not deterministic",
+        ));
+    }
+    let retention = PayloadRetention::new(Arc::new(lease), encoded_bytes)?;
+    dependencies.prepared_payloads().install(
+        prepared_file_inventory_key(plan)?,
+        PreparedSourcePayload::new(encoded, retention),
+    )
+}
+
+#[derive(Default)]
+struct CountingWriter {
+    bytes: u64,
+}
+
+impl Write for CountingWriter {
+    fn write(&mut self, buffer: &[u8]) -> std::io::Result<usize> {
+        self.bytes = self
+            .bytes
+            .checked_add(u64::try_from(buffer.len()).unwrap_or(u64::MAX))
+            .ok_or_else(|| std::io::Error::other("prepared file inventory length overflow"))?;
+        Ok(buffer.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
 }
 
 fn transport_resource_for_location(

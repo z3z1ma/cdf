@@ -2640,6 +2640,12 @@ fn http_parquet_auto_pin_plan_preview_and_run_use_file_runtime() {
         prepared.resource.source_plan(),
         "pkg-http-parquet-runtime",
     );
+    assert_eq!(
+        transport.requests(),
+        expected_discovery_requests,
+        "planning must consume the cold-discovery inventory without a second transport inventory"
+    );
+    assert_eq!(dependencies.prepared_payloads().pending_count().unwrap(), 0);
     assert_eq!(plan.scan.partitions.len(), 1);
     let partition = plan.scan.partitions[0].clone();
     let planned_file = partition.planned_file().unwrap().unwrap();
