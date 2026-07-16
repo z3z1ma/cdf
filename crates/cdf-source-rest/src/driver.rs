@@ -772,7 +772,7 @@ fn execution_capabilities(plan: &RestResourcePlan) -> Result<SourceExecutionCapa
         minimum_poll_bytes: 8 * 1024,
         maximum_poll_bytes: crate::REST_MAXIMUM_BATCH_BYTES,
         minimum_decode_bytes: 8 * 1024,
-        maximum_decode_bytes: crate::REST_MAXIMUM_BATCH_BYTES,
+        maximum_decode_bytes: crate::REST_MAXIMUM_DECODE_BYTES,
         maximum_concurrency: 8,
         useful_concurrency: 8,
         executor_class: SourceExecutorClass::BlockingLane,
@@ -827,8 +827,13 @@ mod tests {
     struct StaticDiscoveryTransport;
 
     impl HttpTransport for StaticDiscoveryTransport {
-        fn send(&self, _request: HttpRequest) -> Result<HttpResponse> {
-            Ok(HttpResponse::new(200).with_body(br#"{"items":[{"id":1},{"id":2}]}"#))
+        fn send(
+            &self,
+            _request: HttpRequest,
+            budget: cdf_http::HttpResponseBudget,
+        ) -> Result<HttpResponse> {
+            Ok(HttpResponse::new(200)
+                .with_body(budget.account_body(br#"{"items":[{"id":1},{"id":2}]}"#.to_vec())?))
         }
     }
 

@@ -3,7 +3,7 @@ use std::collections::BTreeSet;
 use cdf_kernel::{CdfError, Result};
 
 use crate::{
-    message::{HttpRequest, HttpResponse},
+    message::{HttpRequest, HttpResponse, HttpResponseBudget},
     support::{host_from_url, host_matches, normalize_host},
 };
 
@@ -37,14 +37,15 @@ impl EgressAllowlist {
 }
 
 pub trait HttpTransport: Send + Sync {
-    fn send(&self, request: HttpRequest) -> Result<HttpResponse>;
+    fn send(&self, request: HttpRequest, budget: HttpResponseBudget) -> Result<HttpResponse>;
 }
 
 pub fn send_with_policy(
     transport: &dyn HttpTransport,
     allowlist: &EgressAllowlist,
     request: HttpRequest,
+    budget: HttpResponseBudget,
 ) -> Result<HttpResponse> {
     allowlist.check(&request)?;
-    transport.send(request)
+    transport.send(request, budget)
 }

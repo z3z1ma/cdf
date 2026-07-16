@@ -117,25 +117,29 @@ impl ResourceStream for MemoryResource {
 
 #[derive(Clone)]
 pub(crate) struct FixtureTransport {
-    state: Arc<Mutex<VecDeque<HttpResponse>>>,
+    state: Arc<Mutex<VecDeque<Vec<u8>>>>,
 }
 
 impl FixtureTransport {
     pub(crate) fn new(response_body: Vec<u8>) -> Self {
         Self {
-            state: Arc::new(Mutex::new(VecDeque::from([
-                HttpResponse::new(200).with_body(response_body)
-            ]))),
+            state: Arc::new(Mutex::new(VecDeque::from([response_body]))),
         }
     }
 }
 
 impl HttpTransport for FixtureTransport {
-    fn send(&self, _request: HttpRequest) -> CdfResult<HttpResponse> {
-        self.state
+    fn send(
+        &self,
+        _request: HttpRequest,
+        budget: cdf_http::HttpResponseBudget,
+    ) -> CdfResult<HttpResponse> {
+        let body = self
+            .state
             .lock()
             .map_err(|_| CdfError::internal("fixture transport mutex poisoned"))?
             .pop_front()
-            .ok_or_else(|| CdfError::internal("fixture transport exhausted responses"))
+            .ok_or_else(|| CdfError::internal("fixture transport exhausted responses"))?;
+        Ok(HttpResponse::new(200).with_body(budget.account_body(body)?))
     }
 }

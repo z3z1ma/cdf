@@ -1059,7 +1059,9 @@ dependencies = [
 name = "cdf-http"
 version = "0.1.0"
 dependencies = [
+ "bytes",
  "cdf-kernel",
+ "cdf-memory",
 ]
 
 [[package]]

@@ -8,8 +8,9 @@ use arrow_array::{RecordBatch, new_null_array};
 use arrow_schema::{DataType, Field, Schema, SchemaRef, TimeUnit};
 use cdf_contract::{ContractPolicy, TypePolicy, reconcile_schema};
 use cdf_http::{
-    AuthRefreshHook, AuthScheme, AuthSession, HttpMethod, HttpRequest, HttpResponse, HttpTransport,
-    Paginator, RateLimiter, SecretProvider, SecretUri, classify_response, send_with_policy,
+    AuthRefreshHook, AuthScheme, AuthSession, HttpMethod, HttpRequest, HttpResponse,
+    HttpResponseBudget, HttpTransport, Paginator, RateLimiter, SecretProvider, SecretUri,
+    classify_response, send_with_policy,
 };
 use cdf_kernel::{
     BackpressureSupport, Batch, BatchId, BatchStream, CapabilitySupport, CdfError,
@@ -28,12 +29,12 @@ use cdf_memory::{
 use cdf_runtime::{
     BoundedFormatRequest, DecodeSchemaPlan, ExecutionServices, MemoryByteSource,
     PreparedSourcePayload, PreparedSourcePayloadKey, PreparedSourcePayloads, ReadOptions,
-    SourceDiscoveryRequest, SourceDriverId, SourceEgressScope, artifact_hash,
+    RunCancellation, SourceDiscoveryRequest, SourceDriverId, SourceEgressScope, artifact_hash,
     decode_bounded_format,
 };
 use serde_json::{Map, Value};
 
-use crate::{REST_MAXIMUM_BATCH_BYTES, RestResourcePlan};
+use crate::{REST_JSON_SCRATCH_MULTIPLIER, REST_MAXIMUM_BATCH_BYTES, RestResourcePlan};
 
 const REST_SOURCE_BLOCKING_LANE_ID: &str = "rest-source.sync";
 
@@ -189,7 +190,6 @@ struct PreparedRestPage {
 
 struct PreparedRestPageState {
     response: Mutex<Option<HttpResponse>>,
-    _lease: MemoryLease,
 }
 
 impl RestResource {
@@ -306,12 +306,15 @@ impl ResourceStream for RestResource {
             move |sender, cancellation| {
                 cancellation.check()?;
                 execute_rest(
-                    &descriptor,
-                    schema,
-                    &plan,
-                    &partition,
-                    type_policy_allowances,
-                    dependencies,
+                    RestExecutionInvocation {
+                        descriptor,
+                        schema,
+                        plan,
+                        partition,
+                        type_policy_allowances,
+                        dependencies,
+                        cancellation: cancellation.clone(),
+                    },
                     sender,
                 )?;
                 cancellation.check()?;
@@ -530,15 +533,32 @@ fn delivery_guarantee(descriptor: &ResourceDescriptor) -> DeliveryGuarantee {
     }
 }
 
-fn execute_rest(
-    descriptor: &ResourceDescriptor,
+struct RestExecutionInvocation {
+    descriptor: ResourceDescriptor,
     schema: SchemaRef,
-    plan: &RestResourcePlan,
-    partition: &PartitionPlan,
+    plan: RestResourcePlan,
+    partition: PartitionPlan,
     type_policy_allowances: TypePolicyAllowances,
     dependencies: RestRuntimeDependencies,
+    cancellation: RunCancellation,
+}
+
+fn execute_rest(
+    invocation: RestExecutionInvocation,
     mut sender: cdf_runtime::BlockingTaskStreamSender<Batch>,
 ) -> Result<()> {
+    let RestExecutionInvocation {
+        descriptor,
+        schema,
+        plan,
+        partition,
+        type_policy_allowances,
+        dependencies,
+        cancellation,
+    } = invocation;
+    let descriptor = &descriptor;
+    let plan = &plan;
+    let partition = &partition;
     validate_partition(descriptor, plan, partition)?;
     execution_schema_hash(descriptor)?;
     if schema.fields().is_empty() {
@@ -577,7 +597,14 @@ fn execute_rest(
                 (response, Some(retention))
             }
             None => (
-                send_page(&dependencies, plan, &url, &mut auth_session, &mut limiter)?,
+                send_page(
+                    &dependencies,
+                    plan,
+                    &url,
+                    &mut auth_session,
+                    &mut limiter,
+                    &cancellation,
+                )?,
                 None,
             ),
         };
@@ -594,7 +621,8 @@ fn execute_rest(
                 "REST response page contains {body_bytes} bytes above the compiled {REST_MAXIMUM_BATCH_BYTES}-byte page limit; configure smaller pages on the source endpoint"
             )));
         }
-        let decoded = decode_response_page(body, &plan.record_selector)?;
+        let decoded =
+            decode_response_page(body, &plan.record_selector, dependencies.execution.memory())?;
         response.page.item_count = decoded.records.len();
         response.page.fields = decoded.pagination_fields;
 
@@ -676,6 +704,9 @@ pub fn discover_rest_sample_schema(
         secret_provider: Some(dependencies.secret_provider),
         auth_refresh: None,
         egress: &dependencies.egress,
+        maximum_response_bytes: request.maximum_bytes,
+        memory: Arc::clone(&dependencies.memory),
+        cancellation: request.cancellation.clone(),
     };
     let response = send_page_with_transport(
         &mut send_context,
@@ -695,7 +726,11 @@ pub fn discover_rest_sample_schema(
             request.maximum_bytes
         )));
     }
-    let decoded = decode_response_page(body, &plan.record_selector)?;
+    let decoded = decode_response_page(
+        body,
+        &plan.record_selector,
+        Arc::clone(&dependencies.memory),
+    )?;
     let sampled_records = decoded.records.len().min(
         usize::try_from(request.maximum_records)
             .map_err(|_| CdfError::data("REST discovery record limit exceeds usize"))?,
@@ -704,16 +739,8 @@ pub fn discover_rest_sample_schema(
         &decoded.records[..sampled_records],
     )?);
     let retained_bytes = body_bytes;
-    let lease = reserve_blocking(
-        Arc::clone(&dependencies.memory),
-        &ReservationRequest::new(
-            ConsumerKey::new("rest-discovery-retained-page", MemoryClass::Source)?,
-            retained_bytes,
-        )?,
-    )?;
     let state = Arc::new(PreparedRestPageState {
         response: Mutex::new(Some(response)),
-        _lease: lease,
     });
     let owner: Arc<dyn std::any::Any + Send + Sync> = state.clone();
     dependencies.prepared_payloads.install(
@@ -817,6 +844,9 @@ struct RestSendContext<'a> {
     secret_provider: Option<&'a dyn SecretProvider>,
     auth_refresh: Option<&'a Arc<Mutex<Box<dyn AuthRefreshHook + Send>>>>,
     egress: &'a SourceEgressScope,
+    maximum_response_bytes: u64,
+    memory: Arc<dyn MemoryCoordinator>,
+    cancellation: RunCancellation,
 }
 
 fn send_page(
@@ -825,6 +855,7 @@ fn send_page(
     url: &str,
     auth_session: &mut Option<AuthSession>,
     limiter: &mut RateLimiter,
+    cancellation: &RunCancellation,
 ) -> Result<HttpResponse> {
     let mut send_context = RestSendContext {
         transport: dependencies.transport.as_ref(),
@@ -834,6 +865,9 @@ fn send_page(
             .map(|provider| provider as &dyn SecretProvider),
         auth_refresh: dependencies.auth_refresh.as_ref(),
         egress: &dependencies.egress,
+        maximum_response_bytes: REST_MAXIMUM_BATCH_BYTES,
+        memory: dependencies.execution.memory(),
+        cancellation: cancellation.clone(),
     };
     send_page_with_transport(&mut send_context, plan, url, auth_session, limiter)
 }
@@ -861,14 +895,7 @@ fn send_page_with_transport(
                 Some(decision.wait_ms),
             ));
         }
-        let response = send_page_once(
-            context.transport,
-            context.secret_provider,
-            context.egress,
-            plan,
-            url,
-            auth_session,
-        )?;
+        let response = send_page_once(context, plan, url, auth_session)?;
         limiter.observe_response(&response, 0);
         Ok(response)
     }
@@ -901,59 +928,85 @@ fn send_page_with_transport(
 }
 
 fn send_page_once(
-    transport: &dyn HttpTransport,
-    secret_provider: Option<&dyn SecretProvider>,
-    egress: &SourceEgressScope,
+    context: &RestSendContext<'_>,
     plan: &RestResourcePlan,
     url: &str,
     auth_session: &mut Option<AuthSession>,
 ) -> Result<HttpResponse> {
     let mut request = HttpRequest::new(HttpMethod::Get, url.to_owned());
     validate_http_url(&request.url)?;
-    egress.authorize(&request.url)?;
+    context.egress.authorize(&request.url)?;
     plan.allowlist.check(&request)?;
     if let Some(session) = auth_session {
-        let provider = secret_provider.ok_or_else(|| {
+        let provider = context.secret_provider.ok_or_else(|| {
             CdfError::auth(
                 "REST resource auth requires an explicit SecretProvider runtime dependency",
             )
         })?;
         session.apply(provider, &mut request)?;
     }
-    send_with_policy(transport, &plan.allowlist, request)
+    let run_cancellation = context.cancellation.clone();
+    let cancellation: Arc<dyn cdf_http::HttpCancellation> =
+        Arc::new(move || run_cancellation.check());
+    let budget = HttpResponseBudget::new(
+        context.maximum_response_bytes,
+        Arc::clone(&context.memory),
+        cancellation,
+    )?;
+    send_with_policy(context.transport, &plan.allowlist, request, budget)
 }
 
 #[derive(Debug)]
 struct DecodedPage {
     records: Vec<Map<String, Value>>,
     pagination_fields: BTreeMap<String, String>,
+    _scratch: MemoryLease,
 }
 
-fn decode_response_page(bytes: &[u8], selector: &str) -> Result<DecodedPage> {
-    let root: Value = serde_json::from_slice(bytes).map_err(|error| {
+fn decode_response_page(
+    bytes: &[u8],
+    selector: &str,
+    memory: Arc<dyn MemoryCoordinator>,
+) -> Result<DecodedPage> {
+    let body_bytes = u64::try_from(bytes.len())
+        .map_err(|_| CdfError::data("REST JSON body length exceeds u64"))?;
+    let scratch_bytes = body_bytes
+        .checked_mul(REST_JSON_SCRATCH_MULTIPLIER)
+        .ok_or_else(|| CdfError::data("REST JSON scratch bound overflowed"))?;
+    let scratch = reserve_blocking(
+        memory,
+        &ReservationRequest::new(
+            ConsumerKey::new("rest-json-page-scratch", MemoryClass::Decode)?,
+            scratch_bytes,
+        )?,
+    )?;
+    let mut root: Value = serde_json::from_slice(bytes).map_err(|error| {
         CdfError::data(format!("REST response body is not valid JSON: {error}"))
     })?;
-    let records = select_records(&root, selector)?;
+    let pagination_fields = top_level_pagination_fields(&root);
+    let records = take_records(&mut root, selector)?;
     let mut objects = Vec::with_capacity(records.len());
     for record in records {
-        let Some(object) = record.as_object() else {
+        let Value::Object(object) = record else {
             return Err(CdfError::data(
                 "REST record selector yielded a non-object array entry",
             ));
         };
-        objects.push(object.clone());
+        objects.push(object);
     }
 
     Ok(DecodedPage {
         records: objects,
-        pagination_fields: top_level_pagination_fields(&root),
+        pagination_fields,
+        _scratch: scratch,
     })
 }
 
-fn select_records<'a>(root: &'a Value, selector: &str) -> Result<&'a Vec<Value>> {
+fn take_records(root: &mut Value, selector: &str) -> Result<Vec<Value>> {
     if selector == "$" {
         return root
-            .as_array()
+            .as_array_mut()
+            .map(std::mem::take)
             .ok_or_else(|| CdfError::data("REST record selector `$` requires a top-level array"));
     }
     let Some(field) = selector.strip_prefix("$.") else {
@@ -966,13 +1019,14 @@ fn select_records<'a>(root: &'a Value, selector: &str) -> Result<&'a Vec<Value>>
             "REST record selector supports only one object field after `$.`",
         ));
     }
-    root.get(field)
+    root.get_mut(field)
         .ok_or_else(|| {
             CdfError::data(format!(
                 "REST record selector target `{field}` is missing from response"
             ))
         })?
-        .as_array()
+        .as_array_mut()
+        .map(std::mem::take)
         .ok_or_else(|| {
             CdfError::data(format!(
                 "REST record selector target `{field}` is not an array"
@@ -1964,13 +2018,24 @@ mod tests {
 
     use super::*;
 
+    fn test_http_budget() -> HttpResponseBudget {
+        let memory: Arc<dyn MemoryCoordinator> = Arc::new(
+            cdf_memory::DeterministicMemoryCoordinator::new(
+                REST_MAXIMUM_BATCH_BYTES,
+                BTreeMap::new(),
+            )
+            .unwrap(),
+        );
+        HttpResponseBudget::new(REST_MAXIMUM_BATCH_BYTES, memory, Arc::new(|| Ok(()))).unwrap()
+    }
+
     struct ConcurrentProbeTransport {
         active: Arc<AtomicUsize>,
         peak: Arc<AtomicUsize>,
     }
 
     impl HttpTransport for ConcurrentProbeTransport {
-        fn send(&self, _request: HttpRequest) -> Result<HttpResponse> {
+        fn send(&self, _request: HttpRequest, _budget: HttpResponseBudget) -> Result<HttpResponse> {
             let current = self.active.fetch_add(1, Ordering::SeqCst) + 1;
             self.peak.fetch_max(current, Ordering::SeqCst);
             std::thread::sleep(Duration::from_millis(50));
@@ -1995,10 +2060,13 @@ mod tests {
                 std::thread::spawn(move || {
                     start.wait();
                     transport
-                        .send(HttpRequest::new(
-                            HttpMethod::Get,
-                            format!("https://api.example.test/{index}"),
-                        ))
+                        .send(
+                            HttpRequest::new(
+                                HttpMethod::Get,
+                                format!("https://api.example.test/{index}"),
+                            ),
+                            test_http_budget(),
+                        )
                         .unwrap();
                 })
             })
@@ -2015,7 +2083,11 @@ mod tests {
         struct CountingTransport(Arc<AtomicUsize>);
 
         impl HttpTransport for CountingTransport {
-            fn send(&self, _request: HttpRequest) -> Result<HttpResponse> {
+            fn send(
+                &self,
+                _request: HttpRequest,
+                _budget: HttpResponseBudget,
+            ) -> Result<HttpResponse> {
                 self.0.fetch_add(1, Ordering::SeqCst);
                 Ok(HttpResponse::new(200))
             }
@@ -2045,11 +2117,20 @@ mod tests {
             records_transform: None,
         };
         let mut auth_session = None;
+        let context = RestSendContext {
+            transport: &transport,
+            secret_provider: None,
+            auth_refresh: None,
+            egress: &egress,
+            maximum_response_bytes: 1024,
+            memory: Arc::new(
+                cdf_memory::DeterministicMemoryCoordinator::new(1024, BTreeMap::new()).unwrap(),
+            ),
+            cancellation: RunCancellation::default(),
+        };
 
         let error = send_page_once(
-            &transport,
-            None,
-            &egress,
+            &context,
             &plan,
             "https://adapter-permitted.example.org/items",
             &mut auth_session,

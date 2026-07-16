@@ -309,6 +309,23 @@ impl AccountedBytes {
         Ok(Self { payload, lease })
     }
 
+    /// Creates an accounted payload while deliberately retaining a conservative reservation.
+    ///
+    /// Streaming transports use this when the provider does not declare a body length before
+    /// allocation. The complete configured receive window remains charged for the payload's
+    /// lifetime because `Bytes` does not expose the capacity of its backing allocation.
+    pub fn new_conservative(payload: Bytes, lease: MemoryLease) -> Result<Self> {
+        let observed = u64::try_from(payload.len())
+            .map_err(|_| CdfError::data("byte payload length exceeds u64"))?;
+        if observed == 0 || lease.bytes() < observed {
+            return Err(CdfError::data(format!(
+                "byte payload requires {observed} accounted bytes but lease holds {}",
+                lease.bytes()
+            )));
+        }
+        Ok(Self { payload, lease })
+    }
+
     pub fn payload(&self) -> &[u8] {
         self.payload.as_ref()
     }

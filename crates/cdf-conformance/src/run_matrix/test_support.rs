@@ -16,13 +16,18 @@ pub(crate) struct RecordingTransport {
 #[derive(Default)]
 struct RecordingTransportState {
     requests: Vec<HttpRequest>,
-    responses: VecDeque<HttpResponse>,
+    responses: VecDeque<RecordingResponse>,
+}
+
+pub(crate) struct RecordingResponse {
+    response: HttpResponse,
+    body: Vec<u8>,
 }
 
 impl RecordingTransport {
     pub(crate) fn new<I>(responses: I) -> Self
     where
-        I: IntoIterator<Item = HttpResponse>,
+        I: IntoIterator<Item = RecordingResponse>,
     {
         Self {
             state: Arc::new(Mutex::new(RecordingTransportState {
@@ -38,13 +43,20 @@ impl RecordingTransport {
 }
 
 impl HttpTransport for RecordingTransport {
-    fn send(&self, request: HttpRequest) -> Result<HttpResponse> {
+    fn send(
+        &self,
+        request: HttpRequest,
+        budget: cdf_http::HttpResponseBudget,
+    ) -> Result<HttpResponse> {
         let mut state = self.state.lock().unwrap();
         state.requests.push(request);
-        state
+        let template = state
             .responses
             .pop_front()
-            .ok_or_else(|| CdfError::internal("run matrix REST transport exhausted responses"))
+            .ok_or_else(|| CdfError::internal("run matrix REST transport exhausted responses"))?;
+        Ok(template
+            .response
+            .with_body(budget.account_body(template.body)?))
     }
 }
 
@@ -77,10 +89,11 @@ impl SecretProvider for StaticSecretProvider {
     }
 }
 
-pub(crate) fn json_response(body: &str) -> HttpResponse {
-    HttpResponse::new(200)
-        .with_header("content-type", "application/json")
-        .with_body(body)
+pub(crate) fn json_response(body: &str) -> RecordingResponse {
+    RecordingResponse {
+        response: HttpResponse::new(200).with_header("content-type", "application/json"),
+        body: body.as_bytes().to_vec(),
+    }
 }
 
 pub(crate) fn copy_dir_all(source: &Path, destination: &Path) -> Result<()> {

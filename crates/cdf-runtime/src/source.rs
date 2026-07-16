@@ -1161,10 +1161,11 @@ pub enum SourceDiscoveryKind {
     FullContent,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug)]
 pub struct SourceDiscoveryRequest {
     pub maximum_bytes: u64,
     pub maximum_records: u64,
+    pub cancellation: crate::RunCancellation,
 }
 
 impl SourceDiscoveryRequest {
@@ -1172,9 +1173,15 @@ impl SourceDiscoveryRequest {
         let request = Self {
             maximum_bytes,
             maximum_records,
+            cancellation: crate::RunCancellation::default(),
         };
         request.validate()?;
         Ok(request)
+    }
+
+    pub fn with_cancellation(mut self, cancellation: crate::RunCancellation) -> Self {
+        self.cancellation = cancellation;
+        self
     }
 
     pub fn validate(&self) -> Result<()> {

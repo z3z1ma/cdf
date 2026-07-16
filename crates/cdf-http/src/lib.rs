@@ -18,7 +18,10 @@ pub use auth::{
     SecretValue,
 };
 pub use egress::{EgressAllowlist, HttpTransport, send_with_policy};
-pub use message::{HeaderMap, HttpMethod, HttpRequest, HttpResponse, ResponsePage};
+pub use message::{
+    HeaderMap, HttpCancellation, HttpMethod, HttpRequest, HttpResponse, HttpResponseBudget,
+    ResponsePage,
+};
 pub use pagination::{
     AutoDetectionResult, PageRequest, PaginationConfig, PaginationKind, Paginator,
     detect_pagination,

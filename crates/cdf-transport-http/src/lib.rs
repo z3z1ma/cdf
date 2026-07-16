@@ -1,12 +1,15 @@
 #![doc = "Pooled HTTP transport provider for cdf."]
 
 use std::{
+    io::Read,
     pin::Pin,
     sync::{Arc, Mutex},
 };
 
 use bytes::Bytes;
-use cdf_http::{HeaderMap, HttpMethod, HttpRequest, HttpResponse, HttpTransport};
+use cdf_http::{
+    HeaderMap, HttpMethod, HttpRequest, HttpResponse, HttpResponseBudget, HttpTransport,
+};
 use cdf_kernel::{BoxFuture, CdfError, Result};
 use cdf_memory::{
     AccountedBytes, ConsumerKey, MemoryClass, MemoryCoordinator, ReservationRequest, reserve,
@@ -46,8 +49,14 @@ impl ReqwestHttpTransport {
 }
 
 impl HttpTransport for ReqwestHttpTransport {
-    fn send(&self, request: HttpRequest) -> Result<HttpResponse> {
-        let raw = self.send_raw(&request.method, &request.url, &request.headers, "REST")?;
+    fn send(&self, request: HttpRequest, budget: HttpResponseBudget) -> Result<HttpResponse> {
+        let raw = self.send_raw(
+            &request.method,
+            &request.url,
+            &request.headers,
+            "REST",
+            &budget,
+        )?;
         let mut response = HttpResponse::new(raw.status).with_body(raw.body);
         for (name, value) in raw.headers {
             response = response.with_header(name, value);
@@ -120,14 +129,16 @@ impl ReqwestHttpTransport {
         url: &str,
         headers: &HeaderMap,
         context: &str,
+        budget: &HttpResponseBudget,
     ) -> Result<RawHttpResponse> {
+        budget.check_cancellation()?;
         let method = reqwest_method(method)?;
         let client = self.blocking_client()?;
         let mut builder = client.request(method, url);
         for (name, value) in headers {
             builder = builder.header(name.as_str(), value.as_str());
         }
-        let response = builder.send().map_err(|error| {
+        let mut response = builder.send().map_err(|error| {
             CdfError::transient(format!(
                 "send {context} HTTP request: {}",
                 sanitized_reqwest_error(error)
@@ -135,16 +146,12 @@ impl ReqwestHttpTransport {
         })?;
         let status = response.status().as_u16();
         let headers = response_headers(response.headers());
-        let body = response.bytes().map_err(|error| {
-            CdfError::transient(format!(
-                "read {context} HTTP response body: {}",
-                sanitized_reqwest_error(error)
-            ))
-        })?;
+        let declared_length = response.content_length();
+        let body = read_bounded_response_body(&mut response, declared_length, context, budget)?;
         Ok(RawHttpResponse {
             status,
             headers,
-            body: body.to_vec(),
+            body,
         })
     }
 
@@ -167,6 +174,72 @@ impl ReqwestHttpTransport {
             .as_ref()
             .cloned()
             .ok_or_else(|| CdfError::internal("blocking HTTP client initialization failed"))
+    }
+}
+
+fn read_bounded_response_body(
+    reader: &mut impl Read,
+    declared_length: Option<u64>,
+    context: &str,
+    budget: &HttpResponseBudget,
+) -> Result<Option<AccountedBytes>> {
+    if let Some(bytes) = declared_length
+        && bytes > budget.maximum_body_bytes()
+    {
+        return Err(CdfError::data(format!(
+            "{context} HTTP response declares {bytes} body bytes above its {}-byte limit",
+            budget.maximum_body_bytes()
+        )));
+    }
+    let reservation_bytes = declared_length.unwrap_or(budget.maximum_body_bytes());
+    let lease = budget.reserve_body(reservation_bytes)?;
+    let capacity = usize::try_from(reservation_bytes)
+        .map_err(|_| CdfError::data("HTTP response body limit exceeds usize"))?;
+    let mut body = Vec::with_capacity(capacity);
+    let mut remaining = reservation_bytes;
+    let mut chunk = [0_u8; 64 * 1024];
+    while remaining > 0 {
+        budget.check_cancellation()?;
+        let read_limit = usize::try_from(remaining.min(chunk.len() as u64))
+            .expect("bounded by fixed response chunk");
+        let count = reader.read(&mut chunk[..read_limit]).map_err(|error| {
+            CdfError::transient(format!("read {context} HTTP response body: {error}"))
+        })?;
+        if count == 0 {
+            break;
+        }
+        body.extend_from_slice(&chunk[..count]);
+        remaining -= u64::try_from(count).expect("usize chunk fits u64");
+    }
+    budget.check_cancellation()?;
+    let mut excess = [0_u8; 1];
+    if reader.read(&mut excess).map_err(|error| {
+        CdfError::transient(format!(
+            "read {context} HTTP response body boundary: {error}"
+        ))
+    })? != 0
+    {
+        return Err(CdfError::data(format!(
+            "{context} HTTP response exceeds its {}-byte body limit",
+            budget.maximum_body_bytes()
+        )));
+    }
+    if let Some(declared) = declared_length
+        && declared != body.len() as u64
+    {
+        return Err(CdfError::data(format!(
+            "{context} HTTP response declared {declared} body bytes but transferred {}",
+            body.len()
+        )));
+    }
+    match (lease, body.is_empty()) {
+        (Some(lease), false) => budget
+            .account_reserved_body(Bytes::from(body), lease)
+            .map(Some),
+        (Some(_), true) | (None, true) => Ok(None),
+        (None, false) => Err(CdfError::internal(
+            "nonempty HTTP response body has no memory reservation",
+        )),
     }
 }
 
@@ -495,7 +568,7 @@ fn validate_response(
 struct RawHttpResponse {
     status: u16,
     headers: Vec<(String, String)>,
-    body: Vec<u8>,
+    body: Option<AccountedBytes>,
 }
 
 fn response_headers(headers: &reqwest::header::HeaderMap) -> Vec<(String, String)> {
@@ -559,12 +632,59 @@ mod tests {
 
     use super::*;
 
+    fn rest_response_budget(
+        maximum_body_bytes: u64,
+        coordinator: Arc<DeterministicMemoryCoordinator>,
+    ) -> HttpResponseBudget {
+        let memory: Arc<dyn MemoryCoordinator> = coordinator;
+        HttpResponseBudget::new(maximum_body_bytes, memory, Arc::new(|| Ok(()))).unwrap()
+    }
+
     #[test]
     fn cloned_transport_shares_the_lazy_blocking_pool() {
         let transport = ReqwestHttpTransport::new().unwrap();
         let clone = transport.clone();
 
         assert!(Arc::ptr_eq(&transport.blocking, &clone.blocking));
+    }
+
+    #[test]
+    fn rest_rejects_oversized_content_length_before_body_allocation() {
+        let coordinator =
+            Arc::new(DeterministicMemoryCoordinator::new(1024, BTreeMap::new()).unwrap());
+        let mut body = std::io::Cursor::new(b"12345678".as_slice());
+        let error = read_bounded_response_body(
+            &mut body,
+            Some(8),
+            "REST",
+            &rest_response_budget(4, Arc::clone(&coordinator)),
+        )
+        .unwrap_err();
+
+        assert_eq!(error.kind, cdf_kernel::ErrorKind::Data);
+        assert!(error.message.contains("declares 8 body bytes"));
+        assert_eq!(coordinator.snapshot().peak_bytes, 0);
+    }
+
+    #[test]
+    fn rest_stops_chunked_body_exactly_at_the_accounted_limit() {
+        let coordinator =
+            Arc::new(DeterministicMemoryCoordinator::new(1024, BTreeMap::new()).unwrap());
+        // Reqwest removes transfer framing before exposing `Read`; an unknown-length cursor is
+        // therefore the exact transport boundary this helper receives for chunked bodies.
+        let mut body = std::io::Cursor::new(b"abcdef".as_slice());
+        let error = read_bounded_response_body(
+            &mut body,
+            None,
+            "REST",
+            &rest_response_budget(4, Arc::clone(&coordinator)),
+        )
+        .unwrap_err();
+
+        assert_eq!(error.kind, cdf_kernel::ErrorKind::Data);
+        assert!(error.message.contains("exceeds its 4-byte body limit"));
+        assert_eq!(coordinator.snapshot().peak_bytes, 4);
+        assert_eq!(coordinator.snapshot().current_bytes, 0);
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

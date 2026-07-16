@@ -3202,8 +3202,16 @@ fn file_position_with_identity(
     })
 }
 
-fn json_response(body: &str) -> HttpResponse {
-    HttpResponse::new(200).with_body(body.as_bytes().to_vec())
+struct RecordingResponse {
+    response: HttpResponse,
+    body: Vec<u8>,
+}
+
+fn json_response(body: &str) -> RecordingResponse {
+    RecordingResponse {
+        response: HttpResponse::new(200),
+        body: body.as_bytes().to_vec(),
+    }
 }
 
 #[derive(Clone, Default)]
@@ -3214,13 +3222,13 @@ struct RecordingTransport {
 #[derive(Default)]
 struct RecordingTransportState {
     requests: Vec<HttpRequest>,
-    responses: VecDeque<HttpResponse>,
+    responses: VecDeque<RecordingResponse>,
 }
 
 impl RecordingTransport {
     fn new<I>(responses: I) -> Self
     where
-        I: IntoIterator<Item = HttpResponse>,
+        I: IntoIterator<Item = RecordingResponse>,
     {
         Self {
             state: Arc::new(Mutex::new(RecordingTransportState {
@@ -3236,13 +3244,20 @@ impl RecordingTransport {
 }
 
 impl HttpTransport for RecordingTransport {
-    fn send(&self, request: HttpRequest) -> Result<HttpResponse> {
+    fn send(
+        &self,
+        request: HttpRequest,
+        budget: cdf_http::HttpResponseBudget,
+    ) -> Result<HttpResponse> {
         let mut state = self.state.lock().unwrap();
         state.requests.push(request);
-        state
+        let template = state
             .responses
             .pop_front()
-            .ok_or_else(|| CdfError::internal("test transport exhausted responses"))
+            .ok_or_else(|| CdfError::internal("test transport exhausted responses"))?;
+        Ok(template
+            .response
+            .with_body(budget.account_body(template.body)?))
     }
 }
 

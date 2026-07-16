@@ -7,4 +7,6 @@ publish = false
 description = "HTTP resource toolkit boundary for cdf."
 
 [dependencies]
+bytes = "1.11.0"
 cdf-kernel = { path = "../cdf-kernel" }
+cdf-memory = { path = "../cdf-memory" }

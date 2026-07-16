@@ -1,6 +1,15 @@
+use std::sync::Arc;
+
 use cdf_kernel::{ErrorKind, Result};
+use cdf_memory::{DeterministicMemoryCoordinator, MemoryCoordinator};
 
 use super::*;
+
+fn test_response_budget() -> HttpResponseBudget {
+    let memory: Arc<dyn MemoryCoordinator> =
+        Arc::new(DeterministicMemoryCoordinator::new(1024 * 1024, Default::default()).unwrap());
+    HttpResponseBudget::new(1024 * 1024, memory, Arc::new(|| Ok(()))).unwrap()
+}
 
 #[test]
 fn paginators_cover_cursor_page_offset_link_and_next_token() {
@@ -189,7 +198,7 @@ fn allowlist_denies_before_transport_send() {
     }
 
     impl HttpTransport for CountingTransport {
-        fn send(&self, _request: HttpRequest) -> Result<HttpResponse> {
+        fn send(&self, _request: HttpRequest, _budget: HttpResponseBudget) -> Result<HttpResponse> {
             self.sends.fetch_add(1, Ordering::SeqCst);
             Ok(HttpResponse::new(200))
         }
@@ -201,6 +210,7 @@ fn allowlist_denies_before_transport_send() {
         &transport,
         &allowlist,
         HttpRequest::new(HttpMethod::Get, "https://evil.example.net/items"),
+        test_response_budget(),
     )
     .unwrap_err();
     assert_eq!(denied.kind, ErrorKind::Auth);
@@ -210,6 +220,7 @@ fn allowlist_denies_before_transport_send() {
         &transport,
         &allowlist,
         HttpRequest::new(HttpMethod::Get, "https://api.example.com/items"),
+        test_response_budget(),
     )
     .unwrap();
     assert_eq!(transport.sends.load(Ordering::SeqCst), 1);

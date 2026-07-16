@@ -1,9 +1,115 @@
-use std::{collections::BTreeMap, fmt};
+use std::{collections::BTreeMap, fmt, sync::Arc};
+
+use bytes::Bytes;
+use cdf_kernel::{CdfError, Result};
+use cdf_memory::{
+    AccountedBytes, ConsumerKey, MemoryClass, MemoryCoordinator, MemoryLease, ReservationRequest,
+    reserve_blocking,
+};
 
 use crate::{redaction::Redactor, support::set_header};
 
 pub type HeaderMap = BTreeMap<String, String>;
-const RESPONSE_BODY_FIELD: &str = "__cdf_response_body";
+
+pub trait HttpCancellation: Send + Sync {
+    fn check(&self) -> Result<()>;
+}
+
+impl<F> HttpCancellation for F
+where
+    F: Fn() -> Result<()> + Send + Sync,
+{
+    fn check(&self) -> Result<()> {
+        self()
+    }
+}
+
+#[derive(Clone)]
+pub struct HttpResponseBudget {
+    maximum_body_bytes: u64,
+    memory: Arc<dyn MemoryCoordinator>,
+    cancellation: Arc<dyn HttpCancellation>,
+}
+
+impl HttpResponseBudget {
+    pub fn new(
+        maximum_body_bytes: u64,
+        memory: Arc<dyn MemoryCoordinator>,
+        cancellation: Arc<dyn HttpCancellation>,
+    ) -> Result<Self> {
+        if maximum_body_bytes == 0 {
+            return Err(CdfError::contract(
+                "HTTP response budget requires a nonzero body limit",
+            ));
+        }
+        Ok(Self {
+            maximum_body_bytes,
+            memory,
+            cancellation,
+        })
+    }
+
+    pub fn maximum_body_bytes(&self) -> u64 {
+        self.maximum_body_bytes
+    }
+
+    pub fn check_cancellation(&self) -> Result<()> {
+        self.cancellation.check()
+    }
+
+    pub fn reserve_body(&self, bytes: u64) -> Result<Option<MemoryLease>> {
+        self.check_cancellation()?;
+        if bytes > self.maximum_body_bytes {
+            return Err(CdfError::data(format!(
+                "HTTP response declares {bytes} body bytes above its {}-byte limit",
+                self.maximum_body_bytes
+            )));
+        }
+        if bytes == 0 {
+            return Ok(None);
+        }
+        reserve_blocking(
+            Arc::clone(&self.memory),
+            &ReservationRequest::new(
+                ConsumerKey::new("http-response-body", MemoryClass::Source)?,
+                bytes,
+            )?,
+        )
+        .map(Some)
+    }
+
+    pub fn account_body(&self, body: impl Into<Bytes>) -> Result<Option<AccountedBytes>> {
+        let body = body.into();
+        let bytes = u64::try_from(body.len())
+            .map_err(|_| CdfError::data("HTTP response body length exceeds u64"))?;
+        let Some(lease) = self.reserve_body(bytes)? else {
+            return Ok(None);
+        };
+        self.account_reserved_body(body, lease).map(Some)
+    }
+
+    pub fn account_reserved_body(&self, body: Bytes, lease: MemoryLease) -> Result<AccountedBytes> {
+        self.check_cancellation()?;
+        let bytes = u64::try_from(body.len())
+            .map_err(|_| CdfError::data("HTTP response body length exceeds u64"))?;
+        if bytes == 0 || bytes > self.maximum_body_bytes {
+            return Err(CdfError::data(format!(
+                "HTTP response contains {bytes} body bytes outside its 1..={}-byte limit",
+                self.maximum_body_bytes
+            )));
+        }
+        AccountedBytes::new_conservative(body, lease)
+    }
+}
+
+impl fmt::Debug for HttpResponseBudget {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("HttpResponseBudget")
+            .field("maximum_body_bytes", &self.maximum_body_bytes)
+            .finish_non_exhaustive()
+    }
+}
 
 #[derive(Clone, PartialEq, Eq)]
 pub struct HttpRequest {
@@ -38,11 +144,12 @@ impl fmt::Debug for HttpRequest {
     }
 }
 
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Clone)]
 pub struct HttpResponse {
     pub status: u16,
     pub headers: HeaderMap,
     pub page: ResponsePage,
+    body: Option<AccountedBytes>,
 }
 
 impl HttpResponse {
@@ -51,6 +158,7 @@ impl HttpResponse {
             status,
             headers: HeaderMap::new(),
             page: ResponsePage::default(),
+            body: None,
         }
     }
 
@@ -59,19 +167,13 @@ impl HttpResponse {
         self
     }
 
-    pub fn with_body(mut self, body: impl Into<Vec<u8>>) -> Self {
-        self.page.fields.insert(
-            RESPONSE_BODY_FIELD.to_owned(),
-            String::from_utf8_lossy(&body.into()).into_owned(),
-        );
+    pub fn with_body(mut self, body: Option<AccountedBytes>) -> Self {
+        self.body = body;
         self
     }
 
     pub fn body(&self) -> Option<&[u8]> {
-        self.page
-            .fields
-            .get(RESPONSE_BODY_FIELD)
-            .map(String::as_bytes)
+        self.body.as_ref().map(AccountedBytes::payload)
     }
 
     pub fn with_field(mut self, name: impl Into<String>, value: impl Into<String>) -> Self {
@@ -84,6 +186,17 @@ impl HttpResponse {
         self
     }
 }
+
+impl PartialEq for HttpResponse {
+    fn eq(&self, other: &Self) -> bool {
+        self.status == other.status
+            && self.headers == other.headers
+            && self.page == other.page
+            && self.body() == other.body()
+    }
+}
+
+impl Eq for HttpResponse {}
 
 impl fmt::Debug for HttpResponse {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -105,12 +218,8 @@ pub struct ResponsePage {
 
 impl fmt::Debug for ResponsePage {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let mut fields = self.fields.clone();
-        if let Some(body) = fields.get_mut(RESPONSE_BODY_FIELD) {
-            *body = format!("<{} bytes>", body.len());
-        }
         f.debug_struct("ResponsePage")
-            .field("fields", &fields)
+            .field("fields", &self.fields)
             .field("item_count", &self.item_count)
             .finish()
     }
