@@ -2130,6 +2130,14 @@ fn mock_compiled_source_plan(
     resource: &MockResource,
     retry_policy: Option<cdf_runtime::SourceRetryPolicy>,
 ) -> cdf_runtime::CompiledSourcePlan {
+    mock_compiled_source_plan_with_speculation(resource, retry_policy, true)
+}
+
+fn mock_compiled_source_plan_with_speculation(
+    resource: &MockResource,
+    retry_policy: Option<cdf_runtime::SourceRetryPolicy>,
+    speculative_safe: bool,
+) -> cdf_runtime::CompiledSourcePlan {
     let retry_enabled = retry_policy.is_some();
     cdf_runtime::CompiledSourcePlan::new(
         cdf_runtime::SourceDriverDescriptor {
@@ -2156,7 +2164,7 @@ fn mock_compiled_source_plan(
             idempotent_reads: true,
             reopenable: true,
             resumable: true,
-            speculative_safe: retry_enabled,
+            speculative_safe,
             retry_granularity: if retry_enabled {
                 cdf_runtime::SourceRetryGranularity::Partition
             } else {
@@ -2167,7 +2175,7 @@ fn mock_compiled_source_plan(
                 .into_iter()
                 .collect(),
             retry_policy,
-            attestation: if retry_enabled {
+            attestation: if retry_enabled || speculative_safe {
                 cdf_runtime::SourceAttestationStrength::ImmutableContent
             } else {
                 cdf_runtime::SourceAttestationStrength::None
@@ -2452,6 +2460,44 @@ fn engine_parallel_frontier_polls_later_partition_while_head_is_stalled() {
         parallel.output.profile.statistics,
         serial.profile.statistics
     );
+}
+
+#[test]
+fn engine_keeps_non_speculative_source_frontier_serial() {
+    let resource = MockResource::tier_b(sample_batches());
+    let mut plan = Planner::new()
+        .plan_tier_b(
+            &resource,
+            plan_input(Vec::new(), None, None, ExecutionExtent::bounded()),
+        )
+        .unwrap();
+    let source = mock_compiled_source_plan_with_speculation(&resource, None, false);
+    resource.bind_compiled_source(&source);
+    plan = plan.bind_compiled_source(&source).unwrap();
+    plan.operator_graph = Some(
+        compile_operator_graph(
+            &plan,
+            &source,
+            &cdf_runtime::DestinationRuntimeCapabilities::default(),
+        )
+        .unwrap(),
+    );
+
+    let (_, services) = StandaloneExecutionHost::default_services(512 * 1024 * 1024).unwrap();
+    let scheduler = cdf_runtime::resolve_runtime_scheduler(
+        plan.scan.partitions.len(),
+        &source.execution_capabilities,
+        &cdf_runtime::DestinationRuntimeCapabilities::default(),
+        &services,
+        Some(4),
+    )
+    .unwrap();
+    assert!(scheduler.effective_jobs.jobs > 1);
+    let options = EngineExecutionOptions::default()
+        .with_execution_services(services)
+        .with_scheduler_resolution(scheduler);
+
+    assert_eq!(crate::execution::partition_open_jobs(&plan, &options), 1);
 }
 
 fn skewed_resource(

@@ -733,13 +733,69 @@ fn run_event_for_tracing_details(details: RunEventDetails) -> RunEvent {
     }
 }
 
+fn compiled_backfill_source(resource: &BackfillMockResource) -> cdf_runtime::CompiledSourcePlan {
+    cdf_runtime::CompiledSourcePlan::new(
+        cdf_runtime::SourceDriverDescriptor {
+            driver_id: cdf_runtime::SourceDriverId::new("backfill_mock").unwrap(),
+            driver_version: "1.0.0".to_owned(),
+            option_schema_hash: cdf_runtime::artifact_hash(&serde_json::json!({})).unwrap(),
+            kinds: vec!["mock".to_owned()],
+            schemes: Vec::new(),
+        },
+        resource.capabilities.clone(),
+        cdf_runtime::SourceExecutionCapabilities {
+            minimum_poll_bytes: 1,
+            maximum_poll_bytes: 1024,
+            minimum_decode_bytes: 1,
+            maximum_decode_bytes: 4096,
+            maximum_concurrency: 2,
+            useful_concurrency: 2,
+            executor_class: cdf_runtime::SourceExecutorClass::Io,
+            blocking_lane: None,
+            pausable: true,
+            spillable: false,
+            idempotent_reads: true,
+            reopenable: true,
+            resumable: false,
+            speculative_safe: false,
+            retry_granularity: cdf_runtime::SourceRetryGranularity::None,
+            retryable_errors: Vec::new(),
+            retry_policy: None,
+            attestation: cdf_runtime::SourceAttestationStrength::None,
+            rate_limit_per_second: None,
+            quota_authority: None,
+            canonical_order: true,
+            bounded: true,
+            batch_memory: if resource.capabilities().incremental == IncrementalShape::File {
+                cdf_runtime::SourceBatchMemoryContract::Preaccounted
+            } else {
+                cdf_runtime::SourceBatchMemoryContract::FrontierReserved
+            },
+            telemetry_version: "backfill-mock-v1".to_owned(),
+        },
+        cdf_runtime::CompiledSourcePlanInput {
+            descriptor: resource.descriptor.clone(),
+            schema: resource.schema.as_ref().clone(),
+            type_policy_allowances: resource.type_policy_allowances(),
+            effective_schema_runtime: resource.effective_schema_runtime().cloned(),
+            baseline_observation_schema_catalog: resource
+                .baseline_observation_schema_catalog()
+                .to_vec(),
+            redacted_options: serde_json::json!({}),
+            physical_plan: serde_json::json!({"partitions": 1}),
+        },
+    )
+    .unwrap()
+}
+
 #[test]
 fn backfill_planner_splits_numeric_windows_with_window_scopes_and_ids() {
     let resource = BackfillMockResource::cursor();
+    let source = compiled_backfill_source(&resource);
 
     let plan = plan_backfill(
         &resource,
-        None,
+        &source,
         BackfillPlanRequest {
             target: TargetName::new("events").unwrap(),
             from: "0".to_owned(),
@@ -795,63 +851,12 @@ fn backfill_planner_splits_numeric_windows_with_window_scopes_and_ids() {
 #[test]
 fn backfill_planner_binds_every_slice_to_the_compiled_source_artifact() {
     let resource = BackfillMockResource::cursor();
-    let source = cdf_runtime::CompiledSourcePlan::new(
-        cdf_runtime::SourceDriverDescriptor {
-            driver_id: cdf_runtime::SourceDriverId::new("backfill_mock").unwrap(),
-            driver_version: "1.0.0".to_owned(),
-            option_schema_hash: cdf_runtime::artifact_hash(&serde_json::json!({})).unwrap(),
-            kinds: vec!["mock".to_owned()],
-            schemes: Vec::new(),
-        },
-        resource.capabilities.clone(),
-        cdf_runtime::SourceExecutionCapabilities {
-            minimum_poll_bytes: 1,
-            maximum_poll_bytes: 1024,
-            minimum_decode_bytes: 1,
-            maximum_decode_bytes: 4096,
-            maximum_concurrency: 2,
-            useful_concurrency: 2,
-            executor_class: cdf_runtime::SourceExecutorClass::Io,
-            blocking_lane: None,
-            pausable: true,
-            spillable: false,
-            idempotent_reads: true,
-            reopenable: true,
-            resumable: false,
-            speculative_safe: false,
-            retry_granularity: cdf_runtime::SourceRetryGranularity::None,
-            retryable_errors: Vec::new(),
-            retry_policy: None,
-            attestation: cdf_runtime::SourceAttestationStrength::None,
-            rate_limit_per_second: None,
-            quota_authority: None,
-            canonical_order: true,
-            bounded: true,
-            batch_memory: if resource.capabilities().incremental == IncrementalShape::File {
-                cdf_runtime::SourceBatchMemoryContract::Preaccounted
-            } else {
-                cdf_runtime::SourceBatchMemoryContract::FrontierReserved
-            },
-            telemetry_version: "backfill-mock-v1".to_owned(),
-        },
-        cdf_runtime::CompiledSourcePlanInput {
-            descriptor: resource.descriptor.clone(),
-            schema: resource.schema.as_ref().clone(),
-            type_policy_allowances: resource.type_policy_allowances(),
-            effective_schema_runtime: resource.effective_schema_runtime().cloned(),
-            baseline_observation_schema_catalog: resource
-                .baseline_observation_schema_catalog()
-                .to_vec(),
-            redacted_options: serde_json::json!({}),
-            physical_plan: serde_json::json!({"partitions": 1}),
-        },
-    )
-    .unwrap();
+    let source = compiled_backfill_source(&resource);
     let expected_hash = cdf_runtime::artifact_hash(&source).unwrap();
 
     let plan = plan_backfill(
         &resource,
-        Some(&source),
+        &source,
         BackfillPlanRequest {
             target: TargetName::new("events").unwrap(),
             from: "0".to_owned(),
@@ -887,10 +892,11 @@ fn backfill_planner_binds_every_slice_to_the_compiled_source_artifact() {
 #[test]
 fn backfill_planner_rejects_file_incremental_resource_without_opening_source() {
     let resource = BackfillMockResource::file_incremental();
+    let source = compiled_backfill_source(&resource);
 
     let error = plan_backfill(
         &resource,
-        None,
+        &source,
         BackfillPlanRequest {
             target: TargetName::new("events").unwrap(),
             from: "0".to_owned(),
@@ -907,10 +913,11 @@ fn backfill_planner_rejects_file_incremental_resource_without_opening_source() {
 #[test]
 fn backfill_planner_rejects_inverted_numeric_bounds_without_opening_source() {
     let resource = BackfillMockResource::cursor();
+    let source = compiled_backfill_source(&resource);
 
     let error = plan_backfill(
         &resource,
-        None,
+        &source,
         BackfillPlanRequest {
             target: TargetName::new("events").unwrap(),
             from: "10".to_owned(),

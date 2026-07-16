@@ -51,7 +51,7 @@ impl BackfillSlice {
 
 pub fn plan_backfill(
     resource: &dyn QueryableResource,
-    source_plan: Option<&cdf_runtime::CompiledSourcePlan>,
+    source_plan: &cdf_runtime::CompiledSourcePlan,
     request: BackfillPlanRequest,
 ) -> Result<BackfillPlan> {
     validate_backfill_eligible(resource)?;
@@ -107,10 +107,7 @@ pub fn plan_backfill(
                 package_id: package_id.clone(),
             },
         )?;
-        let engine_plan = match source_plan {
-            Some(source_plan) => engine_plan.bind_compiled_source(source_plan)?,
-            None => engine_plan,
-        };
+        let engine_plan = engine_plan.bind_compiled_source(source_plan)?;
         validate_exact_cursor_window(&engine_plan)?;
         planned.push(BackfillSlice {
             ordinal: index + 1,

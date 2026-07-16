@@ -110,22 +110,15 @@ pub(crate) fn run(
         &resolved.destination.runtime_capabilities(),
     )?;
     let destination = resolved.destination;
-    let scheduler = prepared
-        .resource
-        .source_plan()
-        .map(|source| {
-            cdf_runtime::resolve_runtime_scheduler(
-                plan.scan.partitions.len(),
-                &source.execution_capabilities,
-                &destination.runtime_capabilities(),
-                &run_services,
-                explicit.jobs,
-            )
-        })
-        .transpose()?;
-    if let Some(scheduler) = &scheduler {
-        run_services.tighten_run_job_ceiling(scheduler.effective_jobs.jobs)?;
-    }
+    let source = prepared.resource.source_plan();
+    let scheduler = cdf_runtime::resolve_runtime_scheduler(
+        plan.scan.partitions.len(),
+        &source.execution_capabilities,
+        &destination.runtime_capabilities(),
+        &run_services,
+        explicit.jobs,
+    )?;
+    run_services.tighten_run_job_ceiling(scheduler.effective_jobs.jobs)?;
     let destination_report =
         RunDestinationReport::from_project(&destination.describe(), destination.target());
     let progress = human_progress_sink(cli.json, &cli.terminal);
@@ -146,7 +139,7 @@ pub(crate) fn run(
                 after_receipt_verified: None,
             },
             &run_services,
-            scheduler,
+            Some(scheduler),
             RunTelemetryConfig::phase_metrics(),
         ))
         .map_err(|error| redact_error_value(error, resolved.secret_redaction.as_deref()))

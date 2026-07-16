@@ -12,7 +12,7 @@ pub(crate) struct PreparedRuntimeResourceForCli {
 
 pub(crate) struct CliProjectRunSource {
     resource: Arc<dyn QueryableResource>,
-    source_plan: Option<cdf_runtime::CompiledSourcePlan>,
+    source_plan: cdf_runtime::CompiledSourcePlan,
 }
 
 impl CliProjectRunSource {
@@ -22,7 +22,7 @@ impl CliProjectRunSource {
     ) -> Self {
         Self {
             resource,
-            source_plan: Some(source_plan),
+            source_plan,
         }
     }
 
@@ -34,8 +34,8 @@ impl CliProjectRunSource {
         self.resource.as_ref()
     }
 
-    pub(crate) fn source_plan(&self) -> Option<&cdf_runtime::CompiledSourcePlan> {
-        self.source_plan.as_ref()
+    pub(crate) fn source_plan(&self) -> &cdf_runtime::CompiledSourcePlan {
+        &self.source_plan
     }
 }
 

@@ -52,7 +52,7 @@ pub(crate) fn backfill(
     let source = run_resource.as_project_resource();
     let plan = plan_backfill(
         source.queryable(),
-        Some(&source_plan),
+        &source_plan,
         BackfillPlanRequest {
             target: target.clone(),
             from: args.from.clone(),

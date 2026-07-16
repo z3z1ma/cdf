@@ -363,13 +363,10 @@ pub(crate) fn build_engine_plan_for_resource(
     let plan = Planner::new()
         .plan_tier_b(resource, input)
         .map_err(CliError::from)?;
-    match source.source_plan() {
-        Some(source_plan) => plan
-            .bind_compiled_source(source_plan)
-            .and_then(|plan| plan.bind_operator_graph(source_plan, destination_capabilities))
-            .map_err(CliError::from),
-        None => Ok(plan),
-    }
+    let source_plan = source.source_plan();
+    plan.bind_compiled_source(source_plan)
+        .and_then(|plan| plan.bind_operator_graph(source_plan, destination_capabilities))
+        .map_err(CliError::from)
 }
 
 fn scan_request(
@@ -428,18 +425,14 @@ fn scan_report(
     execution: &cdf_runtime::ExecutionServices,
     schema_snapshot: Option<SchemaSnapshotActionReport>,
 ) -> Result<ScanPlanReport, CliError> {
-    let scheduler = resource
-        .source_plan()
-        .map(|source| {
-            cdf_runtime::resolve_runtime_scheduler(
-                plan.scan.partitions.len(),
-                &source.execution_capabilities,
-                &resolved.destination.runtime_capabilities(),
-                execution,
-                None,
-            )
-        })
-        .transpose()?;
+    let source = resource.source_plan();
+    let scheduler = Some(cdf_runtime::resolve_runtime_scheduler(
+        plan.scan.partitions.len(),
+        &source.execution_capabilities,
+        &resolved.destination.runtime_capabilities(),
+        execution,
+        None,
+    )?);
     let queryable = resource.as_queryable();
     let destination_plan = destination_plan_report(resolved, queryable, plan, command)?;
     Ok(ScanPlanReport {

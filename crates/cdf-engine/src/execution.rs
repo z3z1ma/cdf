@@ -2721,7 +2721,7 @@ fn source_frontier_batch_bounds(plan: &EnginePlan, partition_count: usize) -> Re
     Ok(vec![maximum_batch_bytes; partition_count])
 }
 
-fn partition_open_jobs(plan: &EnginePlan, options: &EngineExecutionOptions) -> usize {
+pub(crate) fn partition_open_jobs(plan: &EnginePlan, options: &EngineExecutionOptions) -> usize {
     let partition_count = plan.scan.partitions.len();
     if partition_count <= 1 {
         return partition_count.max(1);
@@ -2738,6 +2738,13 @@ fn partition_open_jobs(plan: &EnginePlan, options: &EngineExecutionOptions) -> u
     // Keep the frontier serial until the planner can assign an explicit speculative byte budget
     // and the source can prove that opening is side-effect free.
     if plan.scan.request.limit.is_some() {
+        return 1;
+    }
+    let speculative_safe = plan
+        .compiled_source_execution
+        .as_ref()
+        .is_some_and(|source| source.execution_capabilities().speculative_safe);
+    if !speculative_safe {
         return 1;
     }
     usize::from(scheduler.effective_jobs.jobs.max(1)).min(partition_count)
