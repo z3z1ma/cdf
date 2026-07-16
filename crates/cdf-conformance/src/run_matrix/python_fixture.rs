@@ -1,8 +1,7 @@
-use std::{fs, path::Path};
+use std::{collections::BTreeMap, fs, path::Path};
 
 use cdf_kernel::{CursorValue, ResourceId, Result, SourcePosition, TrustLevel};
 use cdf_project::ProjectRunReport;
-use cdf_python::PythonResource;
 
 use super::MatrixDisposition;
 
@@ -11,7 +10,7 @@ const RESOURCE_ID: &str = "python.events";
 pub(crate) fn resource(
     project_root: &Path,
     disposition: MatrixDisposition,
-) -> Result<PythonResource> {
+) -> Result<crate::source_fixture::ResolvedSourceFixture> {
     let source = project_root.join("python_events.py");
     fs::write(
         &source,
@@ -33,13 +32,33 @@ events.__cdf_write_disposition__ = "{}"
         ),
     )
     .map_err(|error| cdf_kernel::CdfError::data(format!("write Python fixture: {error}")))?;
-    PythonResource::load(
+    let interpreter = cdf_python::attached_interpreter_report()?.executable;
+    let project_options = serde_json::json!({
+        "interpreter": interpreter,
+        "require_free_threaded": false,
+    });
+    let mut registry = cdf_runtime::SourceRegistry::new();
+    registry.register(cdf_python::PythonSourceDriver::new()?)?;
+    let source_plan = registry.compile_reference(cdf_runtime::SourceReferenceCompileRequest {
+        uri: "python://python_events.py#events".to_owned(),
+        resource_id: ResourceId::new(RESOURCE_ID)?,
+        project_root: project_root.to_path_buf(),
+        trust_level: TrustLevel::Governed,
+        freshness: None,
+        project_options: project_options.clone(),
+    })?;
+    let resource = cdf_declarative::CompiledResource::from_compiled_source(
+        "python",
+        "events",
+        Some(project_root.to_path_buf()),
+        source_plan,
+    )?;
+    crate::source_fixture::resolve_with_registry(
+        &resource,
+        &registry,
         project_root,
-        "python://python_events.py#events",
-        ResourceId::new(RESOURCE_ID)?,
-        TrustLevel::Governed,
-    )?
-    .with_execution_services(crate::test_execution_services())
+        BTreeMap::from([("python".to_owned(), project_options)]),
+    )
 }
 
 pub(crate) fn assert_source_position(report: &ProjectRunReport) {

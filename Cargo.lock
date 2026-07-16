@@ -1180,7 +1180,6 @@ dependencies = [
  "arrow-ipc",
  "arrow-json",
  "arrow-schema 59.1.0",
- "cdf-declarative",
  "cdf-engine",
  "cdf-http",
  "cdf-kernel",

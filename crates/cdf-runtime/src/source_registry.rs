@@ -1,4 +1,4 @@
-use std::{collections::BTreeMap, sync::Arc};
+use std::{collections::BTreeMap, path::Path, sync::Arc};
 
 use cdf_kernel::{
     CdfError, EffectiveSchemaCatalogEntry, EffectiveSchemaRuntime, PartitionAttestationAttempt,
@@ -9,7 +9,8 @@ use cdf_kernel::{
 use crate::{
     CompiledSourcePlan, SourceCompileRequest, SourceDiscoveryCandidate, SourceDiscoveryKind,
     SourceDiscoveryRequest, SourceDiscoverySession, SourceDriver, SourceDriverDescriptor,
-    SourceDriverId, SourceResolutionContext, SourceSchemaObservation, artifact_hash,
+    SourceDriverId, SourceHealthRequest, SourceHealthResult, SourceReferenceCompileRequest,
+    SourceResolutionContext, SourceSchemaObservation, artifact_hash,
 };
 
 #[derive(Default)]
@@ -100,6 +101,36 @@ impl SourceRegistry {
         Ok(plan)
     }
 
+    pub fn compile_reference(
+        &self,
+        request: SourceReferenceCompileRequest,
+    ) -> Result<CompiledSourcePlan> {
+        request.validate()?;
+        let expected_resource_id = request.resource_id.clone();
+        let expected_trust = request.trust_level.clone();
+        let expected_freshness = request.freshness.clone();
+        let driver = self.driver_for_uri(&request.uri)?;
+        let compiler = driver.reference_compiler().ok_or_else(|| {
+            CdfError::contract(format!(
+                "source driver `{}` does not support direct project references",
+                driver.descriptor().driver_id.as_str()
+            ))
+        })?;
+        let plan = compiler.compile_reference(request)?;
+        self.verify_plan_driver(&plan, driver.descriptor())?;
+        plan.validate()?;
+        if plan.descriptor.resource_id != expected_resource_id
+            || plan.descriptor.trust_level != expected_trust
+            || plan.descriptor.freshness != expected_freshness
+        {
+            return Err(CdfError::contract(format!(
+                "source driver `{}` changed framework-owned project reference authority",
+                driver.descriptor().driver_id.as_str()
+            )));
+        }
+        Ok(plan)
+    }
+
     pub fn resolve(
         &self,
         plan: &CompiledSourcePlan,
@@ -166,6 +197,67 @@ impl SourceRegistry {
                 )
             })
             .collect()
+    }
+
+    pub fn validate_project_options(
+        &self,
+        options: &BTreeMap<String, serde_json::Value>,
+    ) -> Result<()> {
+        for (driver_id, value) in options {
+            let driver_id = SourceDriverId::new(driver_id.clone())?;
+            let driver = self.drivers.get(&driver_id).ok_or_else(|| {
+                CdfError::contract(format!(
+                    "project config declares options for unregistered source driver `{}`",
+                    driver_id.as_str()
+                ))
+            })?;
+            driver.validate_project_options(value)?;
+        }
+        Ok(())
+    }
+
+    pub fn validate_reference_project_options(
+        &self,
+        uri: &str,
+        options: &BTreeMap<String, serde_json::Value>,
+    ) -> Result<()> {
+        let driver = self.driver_for_uri(uri)?;
+        let value = options
+            .get(driver.descriptor().driver_id.as_str())
+            .cloned()
+            .unwrap_or_else(|| serde_json::json!({}));
+        driver.validate_project_options(&value)
+    }
+
+    pub fn health_checks(
+        &self,
+        project_root: &Path,
+        driver_options: &BTreeMap<String, serde_json::Value>,
+        referenced_uris: &[String],
+    ) -> Result<Vec<SourceHealthResult>> {
+        let mut references = BTreeMap::<SourceDriverId, Vec<String>>::new();
+        for uri in referenced_uris {
+            let driver = self.driver_for_uri(uri)?;
+            references
+                .entry(driver.descriptor().driver_id.clone())
+                .or_default()
+                .push(uri.clone());
+        }
+        let mut results = Vec::new();
+        for (driver_id, driver) in &self.drivers {
+            let Some(probe) = driver.health_probe() else {
+                continue;
+            };
+            let mut uris = references.remove(driver_id).unwrap_or_default();
+            uris.sort();
+            uris.dedup();
+            results.extend(probe.health(SourceHealthRequest {
+                project_root: project_root.to_path_buf(),
+                project_options: driver_options.get(driver_id.as_str()).cloned(),
+                referenced_uris: uris,
+            })?);
+        }
+        Ok(results)
     }
 
     fn driver_for_kind(&self, kind: &str) -> Result<&Arc<dyn SourceDriver>> {

@@ -117,25 +117,6 @@ struct ResourceSummary {
 }
 
 impl ResourceSummary {
-    fn from_queryable(
-        resource: &dyn cdf_kernel::QueryableResource,
-        source_name: &str,
-        resource_name: &str,
-        source_file: Option<String>,
-        mapping_pattern: Option<String>,
-        mapping_status: Option<String>,
-    ) -> Self {
-        Self {
-            descriptor: resource.descriptor().clone(),
-            source_name: source_name.to_owned(),
-            resource_name: resource_name.to_owned(),
-            source_file,
-            mapping_pattern,
-            mapping_status,
-            capabilities: resource.capabilities().clone(),
-        }
-    }
-
     fn from_compiled(
         resource: &cdf_declarative::CompiledResource,
         source_name: &str,
@@ -178,8 +159,8 @@ fn resource_summary(context: &ProjectContext, id: &str) -> Result<ResourceSummar
     if let Some(resource) =
         crate::project_run_resource::build_project_resource_for_inspection(context, id)?
     {
-        return Ok(ResourceSummary::from_queryable(
-            resource.as_queryable(),
+        return Ok(ResourceSummary::from_compiled(
+            &resource,
             &source_name,
             &resource_name,
             source_file,

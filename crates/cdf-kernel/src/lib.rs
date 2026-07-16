@@ -1,5 +1,6 @@
 #![doc = "Core types, traits, and artifact contracts for cdf."]
 
+mod arrow_type;
 mod async_types;
 mod batch;
 mod canonical_arrow;
@@ -23,6 +24,7 @@ mod scope;
 mod statistics;
 mod stratified_selection;
 
+pub use arrow_type::*;
 pub use async_types::*;
 pub use batch::*;
 pub use canonical_arrow::*;

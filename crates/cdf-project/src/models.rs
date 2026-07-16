@@ -7,11 +7,11 @@ pub struct ProjectConfig {
     #[serde(default)]
     pub environments: BTreeMap<String, EnvironmentConfig>,
     #[serde(default)]
-    pub python: PythonConfig,
-    #[serde(default)]
     pub defaults: DefaultsConfig,
     #[serde(default)]
     pub resources: BTreeMap<String, ProjectResource>,
+    #[serde(default, flatten)]
+    pub driver_options: BTreeMap<String, serde_json::Value>,
 }
 
 impl ProjectConfig {
@@ -132,12 +132,6 @@ pub enum PostgresMergeDedupPolicy {
 }
 
 #[derive(Clone, Default, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct PythonConfig {
-    pub interpreter: Option<String>,
-    pub require_free_threaded: Option<bool>,
-}
-
-#[derive(Clone, Default, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DefaultsConfig {
     pub contract: Option<String>,
     pub trust: Option<TrustPreset>,
@@ -154,16 +148,8 @@ pub struct ProjectResource {
 
 impl ProjectResource {
     pub fn source_kind(&self) -> ResourceSourceKind {
-        if self.source.starts_with("python://") {
-            ResourceSourceKind::Python {
-                uri: self.source.clone(),
-            }
-        } else if self.source.starts_with("rust://") {
-            ResourceSourceKind::Rust {
-                uri: self.source.clone(),
-            }
-        } else if self.source.contains("://") {
-            ResourceSourceKind::External {
+        if self.source.contains("://") {
+            ResourceSourceKind::Reference {
                 uri: self.source.clone(),
             }
         } else {
@@ -177,9 +163,7 @@ impl ProjectResource {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ResourceSourceKind {
     DeclarativeFile { path: String },
-    Python { uri: String },
-    Rust { uri: String },
-    External { uri: String },
+    Reference { uri: String },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

@@ -8,9 +8,9 @@ use std::{
 use arrow_schema::Schema;
 use cdf_http::SecretProvider;
 use cdf_kernel::{
-    CdfError, EffectiveSchemaCatalogEntry, EffectiveSchemaRuntime, ErrorKind, PayloadRetention,
-    PushdownFidelity, QueryableResource, ResourceCapabilities, ResourceDescriptor, ResourceId,
-    Result, SchemaSource, TypePolicyAllowances,
+    CdfError, EffectiveSchemaCatalogEntry, EffectiveSchemaRuntime, ErrorKind, FreshnessSpec,
+    PayloadRetention, PushdownFidelity, QueryableResource, ResourceCapabilities,
+    ResourceDescriptor, ResourceId, Result, SchemaSource, TrustLevel, TypePolicyAllowances,
 };
 use serde::{Deserialize, Serialize};
 
@@ -544,6 +544,75 @@ pub struct SourceCompileRequest {
     pub baseline_observation_schema_catalog: Vec<EffectiveSchemaCatalogEntry>,
 }
 
+/// A project mapping whose URI is compiled by the driver that owns its scheme.
+///
+/// Unlike a declarative resource, the source may own plan-time metadata extraction needed to
+/// produce the descriptor and Arrow schema. Framework-owned identity, trust, and freshness remain
+/// explicit inputs and are revalidated by `SourceRegistry` after the driver returns.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct SourceReferenceCompileRequest {
+    pub uri: String,
+    pub resource_id: ResourceId,
+    pub project_root: PathBuf,
+    pub trust_level: TrustLevel,
+    pub freshness: Option<FreshnessSpec>,
+    pub project_options: serde_json::Value,
+}
+
+impl SourceReferenceCompileRequest {
+    pub fn validate(&self) -> Result<()> {
+        if self.uri.is_empty()
+            || self.uri.chars().any(char::is_control)
+            || !self.uri.contains("://")
+        {
+            return Err(CdfError::contract(
+                "source project reference requires a nonempty control-free URI with an explicit scheme",
+            ));
+        }
+        if !self.project_options.is_object() {
+            return Err(CdfError::contract(
+                "source project reference options must be a JSON object",
+            ));
+        }
+        Ok(())
+    }
+}
+
+pub trait SourceReferenceCompiler: Send + Sync {
+    fn compile_reference(
+        &self,
+        request: SourceReferenceCompileRequest,
+    ) -> Result<CompiledSourcePlan>;
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SourceHealthStatus {
+    Passed,
+    Failed,
+    Skipped,
+    Unsupported,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct SourceHealthResult {
+    pub probe_id: String,
+    pub status: SourceHealthStatus,
+    pub message: String,
+    pub details: serde_json::Value,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct SourceHealthRequest {
+    pub project_root: PathBuf,
+    pub project_options: Option<serde_json::Value>,
+    pub referenced_uris: Vec<String>,
+}
+
+pub trait SourceHealthProbe: Send + Sync {
+    fn health(&self, request: SourceHealthRequest) -> Result<Vec<SourceHealthResult>>;
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct CompiledSourcePlan {
     pub driver: SourceDriverDescriptor,
@@ -1060,6 +1129,7 @@ pub struct SourceResolutionContext<'a> {
     secret_provider: Arc<dyn SecretProvider + Send + Sync>,
     execution: &'a ExecutionServices,
     prepared_payloads: PreparedSourcePayloads,
+    driver_options: BTreeMap<String, serde_json::Value>,
 }
 
 impl<'a> SourceResolutionContext<'a> {
@@ -1073,11 +1143,20 @@ impl<'a> SourceResolutionContext<'a> {
             secret_provider,
             execution,
             prepared_payloads: PreparedSourcePayloads::default(),
+            driver_options: BTreeMap::new(),
         }
     }
 
     pub fn with_prepared_payloads(mut self, prepared_payloads: PreparedSourcePayloads) -> Self {
         self.prepared_payloads = prepared_payloads;
+        self
+    }
+
+    pub fn with_driver_options(
+        mut self,
+        driver_options: BTreeMap<String, serde_json::Value>,
+    ) -> Self {
+        self.driver_options = driver_options;
         self
     }
 
@@ -1096,12 +1175,34 @@ impl<'a> SourceResolutionContext<'a> {
     pub fn prepared_payloads(&self) -> &PreparedSourcePayloads {
         &self.prepared_payloads
     }
+
+    pub fn driver_options(&self, driver_id: &SourceDriverId) -> Option<&serde_json::Value> {
+        self.driver_options.get(driver_id.as_str())
+    }
 }
 
 pub trait SourceDriver: Send + Sync {
     fn descriptor(&self) -> &SourceDriverDescriptor;
     fn option_schema(&self) -> &serde_json::Value;
+    fn validate_project_options(&self, options: &serde_json::Value) -> Result<()> {
+        match options.as_object() {
+            Some(options) if options.is_empty() => Ok(()),
+            Some(_) => Err(CdfError::contract(format!(
+                "source driver `{}` does not accept project-level options",
+                self.descriptor().driver_id.as_str()
+            ))),
+            None => Err(CdfError::contract(
+                "source driver project options must be a JSON object",
+            )),
+        }
+    }
     fn compile(&self, request: SourceCompileRequest) -> Result<CompiledSourcePlan>;
+    fn reference_compiler(&self) -> Option<&dyn SourceReferenceCompiler> {
+        None
+    }
+    fn health_probe(&self) -> Option<&dyn SourceHealthProbe> {
+        None
+    }
     fn discovery_session(
         &self,
         plan: &CompiledSourcePlan,

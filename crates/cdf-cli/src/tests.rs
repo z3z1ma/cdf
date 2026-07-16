@@ -12238,7 +12238,8 @@ fn doctor_skips_python_without_interpreter_or_python_resources() {
     let json = stderr_or_stdout_json(&result.stdout);
     let python = named_check(&json, "python");
     assert_eq!(python["status"], "skipped");
-    assert!(python.as_object().unwrap().get("details").is_none());
+    assert_eq!(python["details"]["python_resources"], 0);
+    assert_eq!(python["details"]["require_free_threaded"], false);
 }
 
 #[test]
@@ -12584,6 +12585,10 @@ fn python_resource_plan_preview_run_and_replay_use_the_product_spine() {
     let inspected = stderr_or_stdout_json(&inspected.stdout);
     assert_eq!(inspected["result"]["source_name"], "events");
     assert_eq!(inspected["result"]["resource_name"], "raw");
+    assert_eq!(
+        inspected["result"]["descriptor"]["freshness"]["max_age_ms"],
+        2_700_000
+    );
     assert!(!marker.exists(), "inspect executed the Python row callable");
 
     let before = project_tree_snapshot(&project.root);
@@ -12705,7 +12710,7 @@ fn python_resource_errors_route_to_doctor_without_path_escape() {
     ]);
     assert_eq!(result.exit_code, 3);
     let error = stderr_or_stdout_json(&result.stderr);
-    assert_eq!(error["error"]["code"], "CDF-PYTHON-RESOURCE");
+    assert_eq!(error["error"]["code"], "CDF-SOURCE-REFERENCE");
     assert!(
         error["error"]["message"]
             .as_str()
@@ -16645,6 +16650,7 @@ interpreter = {}
 [resources."events.raw"]
 source = "python://src/events.py#raw_events"
 trust = "governed"
+freshness = {{ expect_every = "15m", alert_after = "45m" }}
 "#,
             serde_json::to_string(interpreter.to_str().unwrap()).unwrap()
         ),

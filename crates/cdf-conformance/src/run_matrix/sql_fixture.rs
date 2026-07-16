@@ -10,7 +10,7 @@ use super::{
     test_support::StaticSecretProvider,
 };
 
-const RESOURCE_ID: &str = "postgres.events";
+const RESOURCE_ID: &str = "warehouse.events";
 const SECRET_REF: &str = "secret://env/POSTGRES_URL";
 
 pub(crate) fn resource(

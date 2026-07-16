@@ -1,5 +1,8 @@
 use std::{path::Path, sync::Arc};
 
+#[cfg(test)]
+use std::collections::BTreeMap;
+
 use cdf_declarative::CompiledResource;
 use cdf_http::{SecretProvider, SecretUri, SecretValue};
 use cdf_kernel::{CdfError, QueryableResource, Result};
@@ -53,6 +56,19 @@ pub(crate) fn resolve_local_file(
     let registry = local_file_registry()?;
     let context = SourceResolutionContext::new(project_root, Arc::new(NoSecrets), &execution);
     ResolvedSourceFixture::resolve(resource, &registry, &context)
+}
+
+#[cfg(test)]
+pub(crate) fn resolve_with_registry(
+    resource: &CompiledResource,
+    registry: &SourceRegistry,
+    project_root: &Path,
+    driver_options: BTreeMap<String, serde_json::Value>,
+) -> Result<ResolvedSourceFixture> {
+    let execution = crate::test_execution_services();
+    let context = SourceResolutionContext::new(project_root, Arc::new(NoSecrets), &execution)
+        .with_driver_options(driver_options);
+    ResolvedSourceFixture::resolve(resource, registry, &context)
 }
 
 pub(crate) fn local_file_registry() -> Result<SourceRegistry> {

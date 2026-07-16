@@ -137,18 +137,18 @@ impl ProjectContext {
             .map(|(_, origin)| origin)
     }
 
-    pub fn python_resource_mapping(&self, id: &str) -> Option<&ProjectResource> {
+    pub fn source_reference_mapping(&self, id: &str) -> Option<&ProjectResource> {
         self.config
             .resources
             .get(id)
-            .filter(|mapping| matches!(mapping.source_kind(), ResourceSourceKind::Python { .. }))
+            .filter(|mapping| matches!(mapping.source_kind(), ResourceSourceKind::Reference { .. }))
     }
 
     pub fn has_resource(&self, id: &str) -> bool {
         self.resources
             .iter()
             .any(|resource| resource.descriptor().resource_id.as_str() == id)
-            || self.python_resource_mapping(id).is_some()
+            || self.source_reference_mapping(id).is_some()
     }
 
     pub fn resource_ids(&self) -> Vec<String> {
@@ -161,7 +161,7 @@ impl ProjectContext {
                     .resources
                     .iter()
                     .filter(|(_, mapping)| {
-                        matches!(mapping.source_kind(), ResourceSourceKind::Python { .. })
+                        matches!(mapping.source_kind(), ResourceSourceKind::Reference { .. })
                     })
                     .map(|(id, _)| id.clone()),
             )
@@ -227,7 +227,7 @@ impl ProjectContext {
                         .resources
                         .iter()
                         .filter(|(_, mapping)| {
-                            matches!(mapping.source_kind(), ResourceSourceKind::Python { .. })
+                            matches!(mapping.source_kind(), ResourceSourceKind::Reference { .. })
                         })
                         .map(|(id, _)| id.clone()),
                 ),
@@ -331,10 +331,10 @@ fn resource_not_compiled_message(
             .resources
             .iter()
             .filter(|(_, mapping)| {
-                matches!(mapping.source_kind(), ResourceSourceKind::Python { .. })
+                matches!(mapping.source_kind(), ResourceSourceKind::Reference { .. })
             })
             .map(|(id, mapping)| {
-                format!("`{id}` from {} (Python mapping matched)", mapping.source)
+                format!("`{id}` from {} (source reference matched)", mapping.source)
             }),
     );
     let compiled = if compiled.is_empty() {

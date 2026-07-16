@@ -1,4 +1,5 @@
 use cdf_kernel::Result;
+use cdf_python::PythonSourceDriver;
 use cdf_runtime::{ByteTransformRegistry, FormatRegistry, SourceRegistry};
 use cdf_source_files::{FileRuntimeDependencies, FileSourceDriver, FileTransportFacade};
 use cdf_source_postgres::PostgresSourceDriver;
@@ -8,6 +9,7 @@ use crate::http_transport::ReqwestHttpTransport;
 
 pub(crate) fn builtin_source_registry() -> Result<SourceRegistry> {
     let mut registry = SourceRegistry::new();
+    registry.register(PythonSourceDriver::new()?)?;
     registry.register(PostgresSourceDriver::new()?)?;
     registry.register(RestSourceDriver::new(|| {
         Ok(Box::new(ReqwestHttpTransport::new()?))

@@ -99,13 +99,13 @@ pub(crate) const PROJECT_MERGE_KEY: ErrorMapping = ErrorMapping {
     }),
 };
 
-pub(crate) const PYTHON_RESOURCE: ErrorMapping = ErrorMapping {
-    code: "CDF-PYTHON-RESOURCE",
+pub(crate) const SOURCE_REFERENCE: ErrorMapping = ErrorMapping {
+    code: "CDF-SOURCE-REFERENCE",
     exit_code: 3,
     remediation: Some(RemediationTemplate {
-        summary: "Repair the configured Python interpreter or resource target, then retry.",
+        summary: "Repair the registered source-driver configuration or resource target, then retry.",
         steps: &[
-            "Run `cdf doctor` to verify the configured interpreter without executing resource code.",
+            "Run `cdf doctor` to execute the source driver's bounded health probe without reading resource payloads.",
         ],
     }),
 };
@@ -325,7 +325,7 @@ pub(crate) fn reference_entries() -> Vec<(&'static str, ErrorMapping)> {
         ("PROJECT_IO", PROJECT_IO),
         ("PROJECT_RESOURCE_MAPPING", PROJECT_RESOURCE_MAPPING),
         ("PROJECT_MERGE_KEY", PROJECT_MERGE_KEY),
-        ("PYTHON_RESOURCE", PYTHON_RESOURCE),
+        ("SOURCE_REFERENCE", SOURCE_REFERENCE),
         ("RESOURCE_NOT_COMPILED", RESOURCE_NOT_COMPILED),
         ("CONTRACT_ARGUMENT", CONTRACT_ARGUMENT),
         ("CONTRACT_LOCKFILE", CONTRACT_LOCKFILE),

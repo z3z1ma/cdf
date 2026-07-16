@@ -150,7 +150,7 @@ pub(crate) fn excluded_for_source<'a>(
 
 enum MatrixSource {
     File(crate::source_fixture::ResolvedSourceFixture),
-    Python(Box<cdf_python::PythonResource>),
+    Python(crate::source_fixture::ResolvedSourceFixture),
     Rest {
         resource: crate::source_fixture::ResolvedSourceFixture,
         transport: RecordingTransport,
@@ -172,10 +172,10 @@ impl MatrixSource {
                     project_root,
                 )?))
             }
-            SourceArchetype::Python => Ok(Self::Python(Box::new(python_fixture::resource(
+            SourceArchetype::Python => Ok(Self::Python(python_fixture::resource(
                 project_root,
                 cell.disposition,
-            )?))),
+            )?)),
             SourceArchetype::Rest => {
                 let (resource, transport) = rest_fixture::resource(cell.disposition)?;
                 Ok(Self::Rest {
@@ -190,7 +190,7 @@ impl MatrixSource {
     fn queryable(&self) -> &dyn QueryableResource {
         match self {
             Self::File(resource) => resource.queryable(),
-            Self::Python(resource) => resource.as_ref(),
+            Self::Python(resource) => resource.queryable(),
             Self::Rest { resource, .. } => resource.queryable(),
             Self::Sql(resource) => resource.queryable(),
         }
@@ -209,9 +209,11 @@ impl MatrixSource {
                 disposition,
                 identifier_policy,
             )?),
-            Self::Python(resource) => {
-                plan_json::planned_engine_plan(resource.as_ref(), package_id, identifier_policy)
-            }
+            Self::Python(resource) => resource.bind_plan(plan_json::planned_engine_plan(
+                resource.queryable(),
+                package_id,
+                identifier_policy,
+            )?),
             Self::Rest { resource, .. } => resource.bind_plan(plan_json::planned_engine_plan(
                 resource.queryable(),
                 package_id,
@@ -228,7 +230,7 @@ impl MatrixSource {
     fn project_run_source(&self) -> ProjectRunSource<'_> {
         match self {
             Self::File(resource) => ProjectRunSource::new(resource.queryable()),
-            Self::Python(resource) => ProjectRunSource::new(resource.as_ref()),
+            Self::Python(resource) => ProjectRunSource::new(resource.queryable()),
             Self::Rest { resource, .. } => ProjectRunSource::new(resource.queryable()),
             Self::Sql(resource) => ProjectRunSource::new(resource.queryable()),
         }

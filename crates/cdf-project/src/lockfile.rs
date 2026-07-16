@@ -349,6 +349,12 @@ pub fn validate_project(
     provider: &dyn SecretProvider,
 ) -> Result<ProjectValidationReport> {
     validate_project_shape(config)?;
+    registry.validate_project_options(&config.driver_options)?;
+    for mapping in config.resources.values() {
+        if let ResourceSourceKind::Reference { uri } = mapping.source_kind() {
+            registry.validate_reference_project_options(&uri, &config.driver_options)?;
+        }
+    }
     let env_name = env_name.unwrap_or(&config.project.default_environment);
     let environment = config.effective_environment(env_name)?;
     validate_environment_uri_fields(&environment)?;
@@ -362,9 +368,7 @@ pub fn validate_project(
     for mapping in config.resources.values() {
         match mapping.source_kind() {
             ResourceSourceKind::DeclarativeFile { .. } => {}
-            ResourceSourceKind::Python { .. }
-            | ResourceSourceKind::Rust { .. }
-            | ResourceSourceKind::External { .. } => external_resources += 1,
+            ResourceSourceKind::Reference { .. } => external_resources += 1,
         }
     }
     let compiled = compiled_entries

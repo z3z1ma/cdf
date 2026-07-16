@@ -8,20 +8,20 @@ use std::{
 
 use arrow_array::{Array, Int64Array, TimestampMicrosecondArray, UInt64Array};
 use arrow_schema::{DataType, Field, Schema, SchemaRef, TimeUnit};
-use cdf_declarative::parse_arrow_field_type;
 use cdf_kernel::{
     BackpressureSupport, BatchStream, CapabilitySupport, CursorOrderingClaim, CursorPosition,
     CursorSpec, CursorValue, DeliveryGuarantee, EstimateSupport, FilterCapabilities, ForeignState,
     IncrementalShape, PartitionId, PartitionPlan, PartitioningCapabilities, PlanId,
     QueryableResource, ReplaySupport, ResourceCapabilities, ResourceDescriptor, ResourceId,
     ResourceStream, Result, ScanPlan, ScanRequest, SchemaSource, ScopeKey, SourcePosition,
-    TrustLevel, WriteDisposition,
+    TrustLevel, WriteDisposition, parse_arrow_field_type,
 };
 use futures_util::stream;
 use pyo3::{
     Python,
     types::{PyAnyMethods, PyModule},
 };
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::{PythonBridgeOptions, PythonResourceBridge, internal::py_error};
@@ -39,6 +39,15 @@ pub struct PythonResource {
     content_hash: String,
     execution: Option<cdf_runtime::ExecutionServices>,
     blocking_lane: Option<String>,
+    compiled_source_plan_hash: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct PythonPhysicalPlan {
+    pub(crate) module_relative: String,
+    pub(crate) callable: String,
+    pub(crate) content_hash: String,
 }
 
 impl PythonResource {
@@ -136,6 +145,38 @@ impl PythonResource {
             content_hash,
             execution: None,
             blocking_lane: None,
+            compiled_source_plan_hash: None,
+        })
+    }
+
+    pub(crate) fn physical_plan(&self) -> PythonPhysicalPlan {
+        PythonPhysicalPlan {
+            module_relative: self.module_relative.clone(),
+            callable: self.callable.clone(),
+            content_hash: self.content_hash.clone(),
+        }
+    }
+
+    pub(crate) fn from_compiled(
+        project_root: &Path,
+        descriptor: ResourceDescriptor,
+        schema: SchemaRef,
+        capabilities: ResourceCapabilities,
+        physical: PythonPhysicalPlan,
+        compiled_source_plan_hash: String,
+    ) -> Result<Self> {
+        let module_path = resolve_module_path(project_root, &physical.module_relative)?;
+        Ok(Self {
+            descriptor,
+            schema,
+            capabilities,
+            module_path,
+            module_relative: physical.module_relative,
+            callable: physical.callable,
+            content_hash: physical.content_hash,
+            execution: None,
+            blocking_lane: None,
+            compiled_source_plan_hash: Some(compiled_source_plan_hash),
         })
     }
 
@@ -154,6 +195,21 @@ impl PythonResource {
         execution.ensure_blocking_lanes(std::slice::from_ref(&lane))?;
         self.execution = Some(execution);
         self.blocking_lane = Some(lane.lane_id);
+        Ok(self)
+    }
+
+    pub(crate) fn with_execution_services_and_lane(
+        mut self,
+        execution: cdf_runtime::ExecutionServices,
+        lane_id: String,
+    ) -> Result<Self> {
+        if lane_id.is_empty() {
+            return Err(cdf_kernel::CdfError::contract(
+                "compiled Python source requires a nonempty blocking lane",
+            ));
+        }
+        self.execution = Some(execution);
+        self.blocking_lane = Some(lane_id);
         Ok(self)
     }
 
@@ -186,6 +242,14 @@ impl PythonResource {
                 self.module_path.display()
             ))
         })?;
+        let observed_content_hash =
+            format!("sha256:{}", hex::encode(Sha256::digest(source.as_bytes())));
+        if observed_content_hash != self.content_hash {
+            return Err(cdf_kernel::CdfError::data(format!(
+                "Python resource module `{}` changed after planning; replan before execution",
+                self.module_relative
+            )));
+        }
         let mut read = Python::attach(|py| -> Result<_> {
             let module = load_module(py, &source, &self.module_relative)?;
             let callable = module.getattr(self.callable.as_str()).map_err(|_| {
@@ -313,6 +377,10 @@ impl ResourceStream for PythonResource {
 
     fn schema(&self) -> SchemaRef {
         Arc::clone(&self.schema)
+    }
+
+    fn compiled_source_plan_hash(&self) -> Option<&str> {
+        self.compiled_source_plan_hash.as_deref()
     }
 
     fn plan_partitions(&self, request: &ScanRequest) -> Result<Vec<PartitionPlan>> {

@@ -16,13 +16,6 @@ pub(crate) struct CliProjectRunSource {
 }
 
 impl CliProjectRunSource {
-    fn new(resource: impl QueryableResource + 'static) -> Self {
-        Self {
-            resource: Arc::new(resource),
-            source_plan: None,
-        }
-    }
-
     fn from_shared(
         resource: Arc<dyn QueryableResource>,
         source_plan: cdf_runtime::CompiledSourcePlan,
@@ -46,74 +39,69 @@ impl CliProjectRunSource {
     }
 }
 
-fn build_python_project_run_resource(
+fn compile_project_source_reference(
     context: &ProjectContext,
     resource_id: &str,
-    execution: Option<&cdf_runtime::ExecutionServices>,
-) -> Result<Option<CliProjectRunSource>, CliError> {
-    let Some(mapping) = context.python_resource_mapping(resource_id) else {
+) -> Result<Option<CompiledResource>, CliError> {
+    let Some(mapping) = context.source_reference_mapping(resource_id) else {
         return Ok(None);
     };
     if resource_id.contains('*') {
-        return Err(python_resource_error(cdf_kernel::CdfError::contract(
-            "Python resource mappings must use one exact resource id, not a wildcard",
+        return Err(source_reference_error(cdf_kernel::CdfError::contract(
+            "source reference mappings must use one exact resource id, not a wildcard",
         )));
     }
-    let ResourceSourceKind::Python { uri } = mapping.source_kind() else {
-        unreachable!("python_resource_mapping returned a non-Python mapping");
+    let ResourceSourceKind::Reference { uri } = mapping.source_kind() else {
+        unreachable!("source_reference_mapping returned a declarative mapping");
     };
-    let interpreter = context
+    let registry = crate::source_registry::builtin_source_registry()?;
+    let driver = registry.driver_for_uri(&uri)?;
+    let project_options = context
         .config
-        .python
-        .interpreter
-        .as_deref()
-        .ok_or_else(|| {
-            python_resource_error(cdf_kernel::CdfError::contract(
-                "python.interpreter is required for Python plan, preview, and run",
-            ))
-        })?;
-    let configured = if std::path::Path::new(interpreter).is_absolute() {
-        std::path::PathBuf::from(interpreter)
-    } else {
-        context.root.join(interpreter)
-    };
-    let configured = configured.canonicalize().map_err(|error| {
-        python_resource_error(cdf_kernel::CdfError::contract(format!(
-            "configured Python interpreter is missing or inaccessible at {}: {error}",
-            configured.display()
-        )))
-    })?;
-    cdf_python::validate_attached_interpreter(
-        configured,
-        context.config.python.require_free_threaded.unwrap_or(false),
-    )
-    .map_err(python_resource_error)?;
+        .driver_options
+        .get(driver.descriptor().driver_id.as_str())
+        .cloned()
+        .unwrap_or_else(|| serde_json::json!({}));
     let trust = mapping
         .trust
         .as_ref()
         .or(context.config.defaults.trust.as_ref())
         .map(trust_level)
         .unwrap_or(cdf_kernel::TrustLevel::Experimental);
-    let mut resource = cdf_python::PythonResource::load(
-        &context.root,
-        &uri,
-        cdf_kernel::ResourceId::new(resource_id)?,
-        trust,
-    )
-    .map_err(python_resource_error)?;
-    if let Some(execution) = execution {
-        resource = resource
-            .with_execution_services(execution.clone())
-            .map_err(python_resource_error)?;
-    }
-    Ok(Some(CliProjectRunSource::new(resource)))
+    let source_plan = registry
+        .compile_reference(cdf_runtime::SourceReferenceCompileRequest {
+            uri,
+            resource_id: cdf_kernel::ResourceId::new(resource_id)?,
+            project_root: context.root.clone(),
+            trust_level: trust,
+            freshness: mapping
+                .freshness
+                .as_ref()
+                .and_then(|freshness| freshness.alert_after)
+                .map(|alert_after| cdf_kernel::FreshnessSpec {
+                    max_age_ms: alert_after.millis(),
+                }),
+            project_options,
+        })
+        .map_err(source_reference_error)?;
+    let (source_name, resource_name) = resource_id.split_once('.').ok_or_else(|| {
+        source_reference_error(cdf_kernel::CdfError::contract(
+            "source reference resource ids must use `<source>.<resource>`",
+        ))
+    })?;
+    Ok(Some(CompiledResource::from_compiled_source(
+        source_name,
+        resource_name,
+        Some(context.root.clone()),
+        source_plan,
+    )?))
 }
 
 pub(crate) fn build_project_resource_for_inspection(
     context: &ProjectContext,
     resource_id: &str,
-) -> Result<Option<CliProjectRunSource>, CliError> {
-    build_python_project_run_resource(context, resource_id, None)
+) -> Result<Option<CompiledResource>, CliError> {
+    compile_project_source_reference(context, resource_id)
 }
 
 pub(crate) fn prepare_runtime_resource_for_cli(
@@ -123,13 +111,11 @@ pub(crate) fn prepare_runtime_resource_for_cli(
     no_pin: bool,
     execution: Option<&cdf_runtime::ExecutionServices>,
 ) -> Result<PreparedRuntimeResourceForCli, CliError> {
-    if let Some(resource) = build_python_project_run_resource(context, resource_id, execution)? {
-        return Ok(PreparedRuntimeResourceForCli {
-            resource,
-            schema_snapshot: None,
-        });
-    }
-    let compiled = context.resource(resource_id)?;
+    let referenced = compile_project_source_reference(context, resource_id)?;
+    let compiled = match referenced.as_ref() {
+        Some(resource) => resource,
+        None => context.resource(resource_id)?,
+    };
     let prepared = crate::scan_command::prepare_resource_schema_for_cli(
         destinations,
         context,
@@ -158,13 +144,13 @@ fn trust_level(trust: &TrustPreset) -> cdf_kernel::TrustLevel {
     }
 }
 
-fn python_resource_error(mut error: cdf_kernel::CdfError) -> CliError {
+fn source_reference_error(mut error: cdf_kernel::CdfError) -> CliError {
     if !error.message.contains("cdf doctor") {
         error
             .message
-            .push_str("; run `cdf doctor` for interpreter diagnostics");
+            .push_str("; run `cdf doctor` for source-driver diagnostics");
     }
-    CliError::mapped(error, crate::error_catalog::PYTHON_RESOURCE)
+    CliError::mapped(error, crate::error_catalog::SOURCE_REFERENCE)
 }
 
 pub(crate) fn build_project_run_resource(
@@ -187,7 +173,8 @@ pub(crate) fn build_project_run_resource(
     let secrets = context.secret_provider();
     let resolution =
         cdf_runtime::SourceResolutionContext::new(&context.root, Arc::new(secrets), execution)
-            .with_prepared_payloads(prepared_payloads);
+            .with_prepared_payloads(prepared_payloads)
+            .with_driver_options(context.config.driver_options.clone());
     Ok(CliProjectRunSource::from_shared(
         registry.resolve(&source_plan, &resolution)?,
         source_plan,
@@ -233,7 +220,8 @@ pub(crate) fn discover_source_schema_with_plan_for_cli(
         Arc::new(context.secret_provider()),
         execution,
     )
-    .with_prepared_payloads(prepared_payloads);
+    .with_prepared_payloads(prepared_payloads)
+    .with_driver_options(context.config.driver_options.clone());
     cdf_project::discover_resource_schema_with_source_registry(
         resource,
         &registry,
@@ -255,7 +243,8 @@ pub(crate) fn preflight_fixed_source_schema_with_plan_for_cli(
         &context.root,
         Arc::new(context.secret_provider()),
         execution,
-    );
+    )
+    .with_driver_options(context.config.driver_options.clone());
     cdf_project::preflight_fixed_resource_schema_with_source_registry(
         &context.root,
         resource,

@@ -1,7 +1,7 @@
 use cdf_dest_duckdb::DuckDbDestination;
 use cdf_kernel::{
-    CheckpointStore, CursorValue, PipelineId, ResourceId, ResourceStream, Result, ScopeKey,
-    SourcePosition, WriteDisposition, source_name,
+    CheckpointStore, CursorValue, PipelineId, ResourceId, Result, ScopeKey, SourcePosition,
+    WriteDisposition, source_name,
 };
 use cdf_package::PackageReader;
 use cdf_state_sqlite::SqliteCheckpointStore;
@@ -882,12 +882,13 @@ fn preview_fingerprint(cell: RunMatrixCell, postgres: &LivePostgres) -> Result<P
         }
         SourceArchetype::Python => {
             let resource = python_fixture::resource(temp.path(), cell.disposition)?;
-            let plan = plan_json::planned_engine_plan(&resource, &package_id, None)?;
-            let partitions = resource.plan_partitions(&plan.scan.request)?;
+            let plan = plan_json::planned_engine_plan(resource.queryable(), &package_id, None)?;
+            let plan = resource.bind_plan(plan)?;
+            let partitions = resource.queryable().plan_partitions(&plan.scan.request)?;
             assert_eq!(partitions, plan.scan.partitions);
             let preview = futures_executor::block_on(cdf_engine::preview_resource(
                 &plan,
-                &resource,
+                resource.queryable(),
                 cdf_engine::EnginePreviewLimits::default(),
             ))?;
             (preview, partitions.len())

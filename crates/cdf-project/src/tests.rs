@@ -141,6 +141,103 @@ fn test_source_registry() -> cdf_runtime::SourceRegistry {
         .register(cdf_source_postgres::PostgresSourceDriver::new().unwrap())
         .unwrap();
     registry
+        .register(ProjectReferenceTestDriver::new())
+        .unwrap();
+    registry
+}
+
+#[derive(Debug)]
+struct ProjectReferenceTestDriver {
+    descriptor: cdf_runtime::SourceDriverDescriptor,
+    option_schema: serde_json::Value,
+}
+
+impl ProjectReferenceTestDriver {
+    fn new() -> Self {
+        let option_schema = serde_json::json!({
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "source": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {"uri": {"type": "string"}}
+            },
+            "resource": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {}
+            },
+        });
+        Self {
+            descriptor: cdf_runtime::SourceDriverDescriptor {
+                driver_id: cdf_runtime::SourceDriverId::new("python").unwrap(),
+                driver_version: "test-v1".to_owned(),
+                option_schema_hash: cdf_runtime::artifact_hash(&option_schema).unwrap(),
+                kinds: vec!["python".to_owned()],
+                schemes: vec!["python".to_owned()],
+            },
+            option_schema,
+        }
+    }
+}
+
+impl cdf_runtime::SourceDriver for ProjectReferenceTestDriver {
+    fn descriptor(&self) -> &cdf_runtime::SourceDriverDescriptor {
+        &self.descriptor
+    }
+
+    fn option_schema(&self) -> &serde_json::Value {
+        &self.option_schema
+    }
+
+    fn validate_project_options(&self, options: &serde_json::Value) -> Result<()> {
+        let options = options
+            .as_object()
+            .ok_or_else(|| CdfError::contract("test reference source options must be an object"))?;
+        if !options
+            .get("interpreter")
+            .is_some_and(serde_json::Value::is_string)
+            || options
+                .get("require_free_threaded")
+                .is_some_and(|value| !value.is_boolean())
+            || options
+                .keys()
+                .any(|key| !matches!(key.as_str(), "interpreter" | "require_free_threaded"))
+        {
+            return Err(CdfError::contract(
+                "test reference source options require interpreter and optional require_free_threaded",
+            ));
+        }
+        Ok(())
+    }
+
+    fn compile(
+        &self,
+        _request: cdf_runtime::SourceCompileRequest,
+    ) -> Result<cdf_runtime::CompiledSourcePlan> {
+        Err(CdfError::internal(
+            "project validation fixture does not compile reference sources",
+        ))
+    }
+
+    fn discovery_session(
+        &self,
+        _plan: &cdf_runtime::CompiledSourcePlan,
+        _context: &cdf_runtime::SourceResolutionContext<'_>,
+    ) -> Result<Box<dyn cdf_runtime::SourceDiscoverySession>> {
+        Err(CdfError::internal(
+            "project validation fixture does not discover reference sources",
+        ))
+    }
+
+    fn resolve(
+        &self,
+        _plan: &cdf_runtime::CompiledSourcePlan,
+        _context: &cdf_runtime::SourceResolutionContext<'_>,
+    ) -> Result<Arc<dyn QueryableResource>> {
+        Err(CdfError::internal(
+            "project validation fixture does not resolve reference sources",
+        ))
+    }
 }
 
 #[derive(Debug)]
@@ -603,8 +700,8 @@ fn book_project_shape_parses_into_typed_models() {
 
     assert_eq!(config.project.name, "acme_data");
     assert_eq!(
-        config.python.interpreter.as_deref(),
-        Some(".venv/bin/python")
+        config.driver_options["python"]["interpreter"],
+        ".venv/bin/python"
     );
     assert_eq!(config.defaults.contract.as_deref(), Some("governed"));
     assert_eq!(
