@@ -227,9 +227,15 @@ impl RestResource {
     }
 
     pub fn validate_runtime_dependencies(&self) -> Result<()> {
-        if self.plan.auth.is_some() && self.dependencies.secret_provider.is_none() {
+        let requires_secrets = self.plan.auth.is_some()
+            || self
+                .plan
+                .params
+                .values()
+                .any(|value| matches!(value, crate::RestParameterValue::Secret(_)));
+        if requires_secrets && self.dependencies.secret_provider.is_none() {
             return Err(CdfError::auth(
-                "REST resource auth requires an explicit SecretProvider runtime dependency",
+                "REST resource secrets require an explicit SecretProvider runtime dependency",
             ));
         }
         if let Some(auth) = &self.plan.auth {
@@ -570,7 +576,15 @@ fn execute_rest(
     let mut limiter = RateLimiter::new(plan.rate_limit.clone(), 0);
     let mut auth_session = plan.auth.clone().map(AuthSession::new);
     let mut paginator = plan.pagination.clone().map(Paginator::new);
-    let base_request_url = build_request_url(descriptor, plan, partition)?;
+    let base_request_url = build_request_url(
+        descriptor,
+        plan,
+        partition,
+        dependencies
+            .secret_provider
+            .as_deref()
+            .map(|provider| provider as &dyn SecretProvider),
+    )?;
     let mut next_url = Some(match &paginator {
         Some(paginator) => paginator.first_request(&base_request_url).url,
         None => base_request_url,
@@ -693,7 +707,12 @@ pub fn discover_rest_sample_schema(
 
     let mut auth_session = plan.auth.clone().map(AuthSession::new);
     let mut limiter = RateLimiter::new(plan.rate_limit.clone(), 0);
-    let base_request_url = build_request_url(descriptor, plan, partition)?;
+    let base_request_url = build_request_url(
+        descriptor,
+        plan,
+        partition,
+        Some(dependencies.secret_provider),
+    )?;
     let paginator = plan.pagination.clone().map(Paginator::new);
     let url = match &paginator {
         Some(paginator) => paginator.first_request(&base_request_url).url,
@@ -1747,10 +1766,24 @@ fn build_request_url(
     descriptor: &ResourceDescriptor,
     plan: &RestResourcePlan,
     partition: &PartitionPlan,
+    secret_provider: Option<&dyn SecretProvider>,
 ) -> Result<String> {
     let mut url = join_base_url_and_path(&plan.base_url, &plan.path)?;
     for (name, value) in &plan.params {
-        url = append_query_param(&url, name, value);
+        match value {
+            crate::RestParameterValue::Literal(value) => {
+                url = append_query_param(&url, name, value);
+            }
+            crate::RestParameterValue::Secret(uri) => {
+                let provider = secret_provider.ok_or_else(|| {
+                    CdfError::auth(format!(
+                        "REST parameter `{name}` requires an explicit SecretProvider runtime dependency"
+                    ))
+                })?;
+                let value = provider.resolve(uri)?;
+                url = append_query_param(&url, name, value.as_str()?);
+            }
+        }
     }
     partition.scan_intent.validate()?;
     if partition.scan_intent.predicates.len() > 1 {
@@ -1791,37 +1824,28 @@ fn join_base_url_and_path(base_url: &str, path: &str) -> Result<String> {
             "REST resource path must be relative to the source base_url",
         ));
     }
-
-    let (base_without_query, base_query) = split_query(base_url);
-    let (path_without_query, path_query) = split_query(path);
-    let joined = if path_without_query.is_empty() {
-        base_without_query.to_owned()
-    } else if path_without_query.starts_with('/') {
-        format!("{}{}", origin(base_without_query)?, path_without_query)
-    } else {
-        format!(
-            "{}/{}",
-            base_without_query.trim_end_matches('/'),
-            path_without_query.trim_start_matches('/')
-        )
-    };
-
-    let query = [base_query, path_query]
-        .into_iter()
-        .flatten()
-        .filter(|query| !query.is_empty())
-        .collect::<Vec<_>>();
-    if query.is_empty() {
-        Ok(joined)
-    } else {
-        Ok(format!("{joined}?{}", query.join("&")))
+    if path.contains(['?', '#']) {
+        return Err(CdfError::contract(
+            "REST resource path must not include query parameters or a fragment",
+        ));
     }
-}
+    if url::Url::parse(base_url).is_ok_and(|url| url.query().is_some()) {
+        return Err(CdfError::contract(
+            "REST base_url must not include query parameters",
+        ));
+    }
 
-fn split_query(value: &str) -> (&str, Option<&str>) {
-    value
-        .split_once('?')
-        .map_or((value, None), |(head, query)| (head, Some(query)))
+    if path.is_empty() {
+        Ok(base_url.to_owned())
+    } else if path.starts_with('/') {
+        Ok(format!("{}{}", origin(base_url)?, path))
+    } else {
+        Ok(format!(
+            "{}/{}",
+            base_url.trim_end_matches('/'),
+            path.trim_start_matches('/')
+        ))
+    }
 }
 
 fn origin(url: &str) -> Result<&str> {
@@ -1856,20 +1880,20 @@ fn validate_http_url(url: &str) -> Result<()> {
             "REST request URL must not include a fragment",
         ));
     }
-    let (scheme, rest) = url
-        .split_once("://")
-        .ok_or_else(|| CdfError::contract("REST request URL must include a scheme"))?;
-    if !matches!(scheme, "http" | "https") {
+    let parsed = url::Url::parse(url)
+        .map_err(|error| CdfError::contract(format!("invalid REST request URL: {error}")))?;
+    if !matches!(parsed.scheme(), "http" | "https") {
         return Err(CdfError::contract(
             "REST request URL must use the http or https scheme",
         ));
     }
-    let authority = rest
-        .split(['/', '?', '#'])
-        .next()
-        .ok_or_else(|| CdfError::contract("REST request URL must include a host"))?;
-    if authority.trim().is_empty() || authority.contains(char::is_whitespace) {
+    if parsed.host_str().is_none() {
         return Err(CdfError::contract("REST request URL must include a host"));
+    }
+    if !parsed.username().is_empty() || parsed.password().is_some() {
+        return Err(CdfError::contract(
+            "REST request URL must not contain user information",
+        ));
     }
     Ok(())
 }
@@ -2313,7 +2337,7 @@ mod tests {
         assert!(!partition.metadata.contains_key("cursor_query_value"));
         assert_eq!(partition.scan_intent.predicates.len(), 1);
         assert!(
-            build_request_url(&descriptor, &plan, &partition)
+            build_request_url(&descriptor, &plan, &partition, None)
                 .unwrap()
                 .contains("since=5")
         );

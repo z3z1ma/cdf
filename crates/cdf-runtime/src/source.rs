@@ -771,6 +771,23 @@ pub struct SourceHealthResult {
 }
 
 impl SourceHealthResult {
+    pub fn failed(
+        probe_id: impl Into<String>,
+        message: impl Into<String>,
+        resource_id: &ResourceId,
+        error: &CdfError,
+    ) -> Self {
+        Self {
+            probe_id: probe_id.into(),
+            status: SourceHealthStatus::Failed,
+            message: message.into(),
+            details: serde_json::json!({
+                "resource_id": resource_id.as_str(),
+                "error_kind": error_kind_code(&error.kind),
+            }),
+        }
+    }
+
     pub fn validate(&self) -> Result<()> {
         const MAX_PROBE_ID_BYTES: usize = 192;
         const MAX_MESSAGE_BYTES: usize = 4 * 1024;
@@ -1021,6 +1038,8 @@ impl CompiledSourcePlan {
                 "compiled source options and physical plan must be JSON objects",
             ));
         }
+        validate_compiled_source_artifact(&self.redacted_options, "compiled source options", 0)?;
+        validate_compiled_source_artifact(&self.physical_plan, "compiled source physical plan", 0)?;
         validate_hash("compiled source options", &self.redacted_options_hash)?;
         validate_hash("compiled source physical plan", &self.physical_plan_hash)?;
         if artifact_hash(&self.redacted_options)? != self.redacted_options_hash
@@ -1151,6 +1170,92 @@ impl CompiledSourcePlan {
             "physical_plan_hash": self.physical_plan_hash,
         }))
     }
+}
+
+fn error_kind_code(kind: &ErrorKind) -> &'static str {
+    match kind {
+        ErrorKind::Transient => "transient",
+        ErrorKind::RateLimited => "rate_limited",
+        ErrorKind::Auth => "auth",
+        ErrorKind::Contract => "contract",
+        ErrorKind::Data => "data",
+        ErrorKind::Destination => "destination",
+        ErrorKind::Internal => "internal",
+    }
+}
+
+fn validate_compiled_source_artifact(
+    value: &serde_json::Value,
+    label: &str,
+    depth: usize,
+) -> Result<()> {
+    const MAX_DEPTH: usize = 64;
+    if depth > MAX_DEPTH {
+        return Err(CdfError::contract(format!(
+            "{label} exceeds the {MAX_DEPTH}-level nesting boundary"
+        )));
+    }
+    match value {
+        serde_json::Value::Object(object) => {
+            for (key, value) in object {
+                if compiled_source_key_is_sensitive(key)
+                    && !matches!(value, serde_json::Value::Null)
+                    && value
+                        .as_str()
+                        .is_none_or(|text| text != "<redacted>" && !text.starts_with("secret://"))
+                {
+                    return Err(CdfError::contract(format!(
+                        "{label} field `{key}` must contain a secret:// reference or redacted marker"
+                    )));
+                }
+                validate_compiled_source_artifact(value, label, depth + 1)?;
+            }
+        }
+        serde_json::Value::Array(values) => {
+            for value in values {
+                validate_compiled_source_artifact(value, label, depth + 1)?;
+            }
+        }
+        serde_json::Value::String(text) if text.starts_with("secret://") => {
+            cdf_http::SecretUri::new(text.clone())?;
+        }
+        serde_json::Value::String(text) if text.contains("://") => {
+            let url = url::Url::parse(text).map_err(|_| {
+                CdfError::contract(format!("{label} contains a malformed absolute URI"))
+            })?;
+            if !url.username().is_empty()
+                || url.password().is_some()
+                || url.query().is_some()
+                || url.fragment().is_some()
+            {
+                return Err(CdfError::contract(format!(
+                    "{label} URI must not contain user information, query parameters, or a fragment"
+                )));
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+fn compiled_source_key_is_sensitive(key: &str) -> bool {
+    let normalized = key.to_ascii_lowercase().replace(['-', '.'], "_");
+    [
+        "authorization",
+        "credential",
+        "password",
+        "secret",
+        "token",
+        "api_key",
+        "cookie",
+        "connection",
+        "dsn",
+        "private_key",
+        "access_key",
+        "session_key",
+    ]
+    .iter()
+    .any(|sensitive| normalized.contains(sensitive))
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]

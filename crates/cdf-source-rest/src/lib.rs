@@ -2,7 +2,7 @@
 
 use std::collections::BTreeMap;
 
-use cdf_http::{AuthScheme, EgressAllowlist, PaginationConfig, RateLimitPolicy};
+use cdf_http::{AuthScheme, EgressAllowlist, PaginationConfig, RateLimitPolicy, SecretUri};
 use cdf_kernel::PushdownFidelity;
 
 mod driver;
@@ -19,11 +19,17 @@ pub(crate) const REST_MAXIMUM_DECODE_BYTES: u64 =
     REST_MAXIMUM_BATCH_BYTES * (REST_JSON_SCRATCH_MULTIPLIER + 2);
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+pub enum RestParameterValue {
+    Literal(String),
+    Secret(SecretUri),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RestResourcePlan {
     pub source: String,
     pub base_url: String,
     pub path: String,
-    pub params: BTreeMap<String, String>,
+    pub params: BTreeMap<String, RestParameterValue>,
     pub record_selector: String,
     pub pagination: Option<PaginationConfig>,
     pub auth: Option<AuthScheme>,

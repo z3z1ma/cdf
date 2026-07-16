@@ -108,15 +108,12 @@ impl SourceDriver for PostgresSourceDriver {
                             "columns": observation.schema.fields().len(),
                         }),
                     },
-                    Err(error) => SourceHealthResult {
-                        probe_id: resource_id.to_owned(),
-                        status: SourceHealthStatus::Failed,
-                        message: "Postgres catalog probe failed".to_owned(),
-                        details: serde_json::json!({
-                            "resource_id": resource_id,
-                            "error": error.to_string(),
-                        }),
-                    },
+                    Err(error) => SourceHealthResult::failed(
+                        resource_id,
+                        "Postgres catalog probe failed",
+                        &plan.descriptor.resource_id,
+                        &error,
+                    ),
                 }
             })
             .collect())

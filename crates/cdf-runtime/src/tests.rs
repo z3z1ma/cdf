@@ -1482,6 +1482,20 @@ fn source_registry_compiles_hashes_and_resolves_mock_without_order_authority() {
             .contains("must be JSON objects")
     );
 
+    let mut credential_uri = plan.clone();
+    credential_uri.physical_plan = serde_json::json!({
+        "endpoint": "https://alice:secret@example.test/items?token=secret#fragment"
+    });
+    credential_uri.physical_plan_hash = artifact_hash(&credential_uri.physical_plan).unwrap();
+    let error = credential_uri.validate().unwrap_err();
+    assert!(error.message.contains("must not contain user information"));
+
+    let mut raw_secret = plan.clone();
+    raw_secret.physical_plan = serde_json::json!({"api_key": "plain-text-secret"});
+    raw_secret.physical_plan_hash = artifact_hash(&raw_secret.physical_plan).unwrap();
+    let error = raw_secret.validate().unwrap_err();
+    assert!(error.message.contains("must contain a secret:// reference"));
+
     let mut invalid_snapshot = serde_json::to_value(&plan).unwrap();
     invalid_snapshot["descriptor"]["schema_source"] = serde_json::json!({
         "kind": "discovered",

@@ -1,4 +1,7 @@
-use std::{collections::BTreeMap, sync::Arc};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    sync::Arc,
+};
 
 use cdf_kernel::{
     CdfError, EffectiveSchemaCatalogEntry, EffectiveSchemaRuntime, PartitionAttestationAttempt,
@@ -297,6 +300,7 @@ impl SourceRegistry {
                 .push(plan.clone());
         }
         let mut results = Vec::new();
+        let mut probe_ids = BTreeSet::new();
         for (driver_id, driver) in &self.drivers {
             let project_options = context.driver_options(driver_id).cloned();
             if let Some(options) = &project_options {
@@ -316,7 +320,14 @@ impl SourceRegistry {
                 context,
             )?;
             for result in driver_results {
-                results.push(verify_health_result(driver_id, result)?);
+                let result = verify_health_result(driver_id, result)?;
+                if !probe_ids.insert(result.probe_id.clone()) {
+                    return Err(CdfError::contract(format!(
+                        "source health probe id `{}` was emitted more than once",
+                        result.probe_id
+                    )));
+                }
+                results.push(result);
             }
         }
         Ok(results)
@@ -1033,6 +1044,11 @@ fn sanitize_health_details(value: &mut serde_json::Value, depth: usize) -> Resul
                 ));
             }
             if text.contains("://") {
+                if text.split_whitespace().count() != 1 || url::Url::parse(text).is_err() {
+                    return Err(CdfError::contract(
+                        "source health detail URI must be the complete string; mixed operational text is forbidden",
+                    ));
+                }
                 *text = crate::SourceEvidenceLocation::from_operational(text)?
                     .as_str()
                     .to_owned();
@@ -1400,5 +1416,19 @@ mod tests {
         )
         .unwrap_err();
         assert!(error.message.contains("contain no URI"));
+
+        let error = verify_health_result(
+            &driver,
+            SourceHealthResult {
+                probe_id: "mixed-uri".to_owned(),
+                status: crate::SourceHealthStatus::Failed,
+                message: "endpoint probe failed".to_owned(),
+                details: serde_json::json!({
+                    "context": "primary https://alice:secret@example.test and fallback https://bob:secret@example.test"
+                }),
+            },
+        )
+        .unwrap_err();
+        assert!(error.message.contains("complete string"));
     }
 }

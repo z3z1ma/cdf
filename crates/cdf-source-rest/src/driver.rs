@@ -18,8 +18,9 @@ use cdf_runtime::{
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    RestDiscoveryDependencies, RestResource, RestResourcePlan, RestRuntimeDependencies,
-    discover_rest_sample_schema, rest_partition, rest_resource_capabilities,
+    RestDiscoveryDependencies, RestParameterValue, RestResource, RestResourcePlan,
+    RestRuntimeDependencies, discover_rest_sample_schema, rest_partition,
+    rest_resource_capabilities,
 };
 
 type TransportFactory = dyn Fn() -> Result<Box<dyn HttpTransport>> + Send + Sync + 'static;
@@ -115,15 +116,12 @@ impl SourceDriver for RestSourceDriver {
                             "records_read": observation.records_read,
                         }),
                     },
-                    Err(error) => SourceHealthResult {
-                        probe_id: resource_id.to_owned(),
-                        status: SourceHealthStatus::Failed,
-                        message: "REST endpoint probe failed".to_owned(),
-                        details: serde_json::json!({
-                            "resource_id": resource_id,
-                            "error": error.to_string(),
-                        }),
-                    },
+                    Err(error) => SourceHealthResult::failed(
+                        resource_id,
+                        "REST endpoint probe failed",
+                        &plan.descriptor.resource_id,
+                        &error,
+                    ),
                 }
             })
             .collect())
@@ -614,6 +612,28 @@ struct RestPhysicalPlan {
 
 impl RestPhysicalPlan {
     fn to_runtime_plan(&self) -> Result<RestResourcePlan> {
+        let base_url = url::Url::parse(&self.source.base_url)
+            .map_err(|error| CdfError::contract(format!("invalid REST base_url: {error}")))?;
+        if !matches!(base_url.scheme(), "http" | "https") || base_url.host_str().is_none() {
+            return Err(CdfError::contract(
+                "REST base_url must be an absolute http or https URL with a host",
+            ));
+        }
+        if !base_url.username().is_empty() || base_url.password().is_some() {
+            return Err(CdfError::contract(
+                "REST base_url must not contain user information; use secret:// auth or parameters",
+            ));
+        }
+        if base_url.query().is_some() || base_url.fragment().is_some() {
+            return Err(CdfError::contract(
+                "REST base_url must not contain query parameters or a fragment; declare static parameters in resource.params",
+            ));
+        }
+        if self.resource.path.contains(['?', '#']) {
+            return Err(CdfError::contract(
+                "REST resource path must not contain query parameters or a fragment; declare static parameters in resource.params",
+            ));
+        }
         let auth = self
             .source
             .auth
@@ -754,15 +774,47 @@ fn serialize_error(error: serde_json::Error) -> CdfError {
     CdfError::internal(format!("serialize REST source plan: {error}"))
 }
 
-fn scalar_param(name: &str, value: &serde_json::Value) -> Result<String> {
+fn scalar_param(name: &str, value: &serde_json::Value) -> Result<RestParameterValue> {
+    if let Some(value) = value.as_str()
+        && value.starts_with("secret://")
+    {
+        return SecretUri::new(value.to_owned()).map(RestParameterValue::Secret);
+    }
+    if is_sensitive_parameter_name(name) {
+        return Err(CdfError::contract(format!(
+            "REST parameter `{name}` is credential-bearing and must use a secret:// reference"
+        )));
+    }
     match value {
-        serde_json::Value::String(value) => Ok(value.clone()),
-        serde_json::Value::Number(value) => Ok(value.to_string()),
-        serde_json::Value::Bool(value) => Ok(value.to_string()),
+        serde_json::Value::String(value) => Ok(RestParameterValue::Literal(value.clone())),
+        serde_json::Value::Number(value) => Ok(RestParameterValue::Literal(value.to_string())),
+        serde_json::Value::Bool(value) => Ok(RestParameterValue::Literal(value.to_string())),
         _ => Err(CdfError::contract(format!(
             "REST parameter `{name}` must be a string, number, or boolean"
         ))),
     }
+}
+
+fn is_sensitive_parameter_name(name: &str) -> bool {
+    let normalized = name.to_ascii_lowercase().replace(['-', '.'], "_");
+    matches!(
+        normalized.as_str(),
+        "api_key"
+            | "apikey"
+            | "access_key"
+            | "access_token"
+            | "auth_token"
+            | "authorization"
+            | "credential"
+            | "credentials"
+            | "password"
+            | "secret"
+            | "signature"
+            | "sig"
+            | "token"
+    ) || normalized
+        .split('_')
+        .any(|part| matches!(part, "password" | "secret" | "signature" | "token"))
 }
 
 fn execution_capabilities(plan: &RestResourcePlan) -> Result<SourceExecutionCapabilities> {
@@ -1000,6 +1052,50 @@ mod tests {
             plan.execution_capabilities.quota_authority.as_deref(),
             Some("https://api.example.com:443")
         );
+
+        let mut credential_url = physical.clone();
+        credential_url.source.base_url = "https://alice:secret@api.example.com/items".to_owned();
+        assert!(
+            credential_url
+                .to_runtime_plan()
+                .unwrap_err()
+                .message
+                .contains("must not contain user information")
+        );
+        let mut query_url = physical.clone();
+        query_url.source.base_url = "https://api.example.com?token=secret".to_owned();
+        assert!(
+            query_url
+                .to_runtime_plan()
+                .unwrap_err()
+                .message
+                .contains("must not contain query parameters")
+        );
+        let mut raw_parameter = physical.clone();
+        raw_parameter
+            .resource
+            .params
+            .insert("api_key".to_owned(), serde_json::json!("plain-text-secret"));
+        assert!(
+            raw_parameter
+                .to_runtime_plan()
+                .unwrap_err()
+                .message
+                .contains("must use a secret:// reference")
+        );
+        let mut secret_parameter = physical.clone();
+        secret_parameter.resource.params.insert(
+            "api_key".to_owned(),
+            serde_json::json!("secret://env/API_KEY"),
+        );
+        assert!(matches!(
+            secret_parameter
+                .to_runtime_plan()
+                .unwrap()
+                .params
+                .get("api_key"),
+            Some(RestParameterValue::Secret(_))
+        ));
 
         let mut drifted = plan;
         drifted.resource_capabilities.filters.default_fidelity = PushdownFidelity::Unsupported;

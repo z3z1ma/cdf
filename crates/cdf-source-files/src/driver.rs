@@ -131,15 +131,12 @@ impl SourceDriver for FileSourceDriver {
                             "candidates": candidates.len(),
                         }),
                     }),
-                    Err(error) => Ok(SourceHealthResult {
-                        probe_id: resource_id.to_owned(),
-                        status: SourceHealthStatus::Failed,
-                        message: "file source inventory probe failed".to_owned(),
-                        details: serde_json::json!({
-                            "resource_id": resource_id,
-                            "error": error.to_string(),
-                        }),
-                    }),
+                    Err(error) => Ok(SourceHealthResult::failed(
+                        resource_id,
+                        "file source inventory probe failed",
+                        &plan.descriptor.resource_id,
+                        &error,
+                    )),
                 }
             })
             .collect()
@@ -878,6 +875,18 @@ fn validate_portable_root(root: &str) -> Result<()> {
         return Err(CdfError::contract("file source root cannot be empty"));
     }
     if file_transport_scheme(root)?.is_some() {
+        let url = url::Url::parse(root)
+            .map_err(|error| CdfError::contract(format!("invalid file source URL: {error}")))?;
+        if !url.username().is_empty() || url.password().is_some() {
+            return Err(CdfError::contract(
+                "file source URL must not contain user information; use secret:// credentials",
+            ));
+        }
+        if url.query().is_some() || url.fragment().is_some() {
+            return Err(CdfError::contract(
+                "file source URL must not contain query parameters or a fragment; use transport credentials and resource selection fields",
+            ));
+        }
         return Ok(());
     }
     if std::path::Path::new(root).is_absolute() {
@@ -1254,6 +1263,24 @@ mod tests {
             resolve_runtime_root("custom+v1://cluster/data", std::path::Path::new("/project"))
                 .unwrap_err();
         assert!(error.message.contains("unsupported file transport scheme"));
+        assert!(
+            resolve_runtime_root(
+                "https://alice:secret@example.test/data",
+                std::path::Path::new("/project")
+            )
+            .unwrap_err()
+            .message
+            .contains("must not contain user information")
+        );
+        assert!(
+            resolve_runtime_root(
+                "https://example.test/data?token=secret",
+                std::path::Path::new("/project")
+            )
+            .unwrap_err()
+            .message
+            .contains("must not contain query parameters")
+        );
         assert_eq!(file_transport_scheme("C:\\data\\events").unwrap(), None);
     }
 
