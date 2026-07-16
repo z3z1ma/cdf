@@ -1203,6 +1203,9 @@ pub trait SourceDriver: Send + Sync {
     fn health_probe(&self) -> Option<&dyn SourceHealthProbe> {
         None
     }
+    fn add_planner(&self) -> Option<&dyn crate::SourceAddPlanner> {
+        None
+    }
     fn discovery_session(
         &self,
         plan: &CompiledSourcePlan,

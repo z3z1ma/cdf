@@ -1,4 +1,5 @@
 use std::{
+    collections::BTreeMap,
     ffi::OsString,
     path::PathBuf,
     time::{SystemTime, UNIX_EPOCH},
@@ -80,9 +81,7 @@ pub struct AddArgs {
     pub resource_id: String,
     pub location: String,
     pub dry_run: bool,
-    pub records: Option<String>,
-    pub cursor: Option<String>,
-    pub cursor_param: Option<String>,
+    pub options: BTreeMap<String, String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -444,19 +443,37 @@ fn parse_init(matches: &ArgMatches) -> Result<InitArgs, CliError> {
 }
 
 fn parse_add(matches: &ArgMatches) -> Result<AddArgs, CliError> {
-    let values = values(matches, "values");
-    if values.len() != 2 {
+    let operands = values(matches, "values");
+    if operands.len() != 2 {
         return Err(CliError::usage(
             "add requires RESOURCE_ID and URL_OR_PATH arguments",
         ));
     }
+    let mut options = BTreeMap::new();
+    for option in values(matches, "source_option") {
+        let (key, value) = option
+            .split_once('=')
+            .ok_or_else(|| CliError::usage("add --option requires KEY=VALUE"))?;
+        if key.is_empty()
+            || value.is_empty()
+            || key.chars().any(char::is_control)
+            || value.chars().any(char::is_control)
+        {
+            return Err(CliError::usage(
+                "add --option requires a nonempty control-free KEY=VALUE",
+            ));
+        }
+        if options.insert(key.to_owned(), value.to_owned()).is_some() {
+            return Err(CliError::usage(format!(
+                "add --option `{key}` was supplied more than once"
+            )));
+        }
+    }
     Ok(AddArgs {
-        resource_id: values[0].clone(),
-        location: values[1].clone(),
+        resource_id: operands[0].clone(),
+        location: operands[1].clone(),
         dry_run: matches.get_flag("dry_run"),
-        records: string_value(matches, "records"),
-        cursor: string_value(matches, "cursor"),
-        cursor_param: string_value(matches, "cursor_param"),
+        options,
     })
 }
 
@@ -845,9 +862,7 @@ pub(crate) fn cli_command() -> ClapCommand {
             cmd("add")
                 .arg(values_arg("values").value_names(["RESOURCE_ID", "URL_OR_PATH"]))
                 .arg(flag("dry_run", "dry-run"))
-                .arg(option("records", "records", "SELECTOR"))
-                .arg(option("cursor", "cursor", "FIELD"))
-                .arg(option("cursor_param", "cursor-param", "PARAM")),
+                .arg(append_option("source_option", "option", "KEY=VALUE")),
         )
         .subcommand(
             cmd("validate")
@@ -1125,9 +1140,7 @@ fn option_help(long: &str) -> &'static str {
         "name" => "Project name",
         "package" => "Package directory",
         "receipt" => "Receipt identifier",
-        "records" => "Record selector within the source",
-        "cursor" => "Cursor field",
-        "cursor-param" => "Request parameter carrying the cursor",
+        "option" => "Source-driver option as KEY=VALUE; may be repeated",
         "color" => "Color policy: auto, always, or never",
         "progress" => "Progress policy: auto, always, or never",
         "unicode" => "Unicode policy: auto, always, or never",

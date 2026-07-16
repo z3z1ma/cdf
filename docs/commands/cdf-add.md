@@ -11,14 +11,12 @@ Arguments:
   [RESOURCE_ID] [URL_OR_PATH]...  Identifiers or paths shown in usage
 
 Options:
-      --dry-run               Show the proposed change without writing it
-  -q, --quiet                 Suppress progress and non-primary success narration
-      --records <SELECTOR>    Record selector within the source
-  -v, --verbose...            Show evidence detail; repeat for diagnostics
-      --color <WHEN>          Color policy: auto, always, or never [possible values: auto, always, never]
-      --cursor <FIELD>        Cursor field
-      --cursor-param <PARAM>  Request parameter carrying the cursor
-      --progress <WHEN>       Progress policy: auto, always, or never [possible values: auto, always, never]
-      --unicode <WHEN>        Unicode policy: auto, always, or never [possible values: auto, always, never]
-  -h, --help                  Print help
+      --dry-run             Show the proposed change without writing it
+  -q, --quiet               Suppress progress and non-primary success narration
+      --option <KEY=VALUE>  Source-driver option as KEY=VALUE; may be repeated
+  -v, --verbose...          Show evidence detail; repeat for diagnostics
+      --color <WHEN>        Color policy: auto, always, or never [possible values: auto, always, never]
+      --progress <WHEN>     Progress policy: auto, always, or never [possible values: auto, always, never]
+      --unicode <WHEN>      Unicode policy: auto, always, or never [possible values: auto, always, never]
+  -h, --help                Print help
 ```

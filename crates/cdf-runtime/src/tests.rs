@@ -961,6 +961,10 @@ impl SourceDriver for MockSourceDriver {
         &self.option_schema
     }
 
+    fn add_planner(&self) -> Option<&dyn SourceAddPlanner> {
+        Some(self)
+    }
+
     fn compile(&self, request: SourceCompileRequest) -> Result<CompiledSourcePlan> {
         let mut baseline_observation_schema_catalog = request.baseline_observation_schema_catalog;
         if self.tamper_baseline {
@@ -1044,6 +1048,23 @@ impl SourceDriver for MockSourceDriver {
             type_policy_allowances: plan.type_policy_allowances,
             effective_schema_runtime: plan.effective_schema_runtime.clone(),
             compiled_source_plan_hash: artifact_hash(plan)?,
+        }))
+    }
+}
+
+impl SourceAddPlanner for MockSourceDriver {
+    fn propose_add(&self, request: &SourceAddRequest) -> Result<Option<SourceAddProposal>> {
+        if request.location != "mock://add" {
+            return Ok(None);
+        }
+        Ok(Some(SourceAddProposal {
+            source_kind: self.descriptor.kinds[0].clone(),
+            source_options: BTreeMap::new(),
+            resource_options: BTreeMap::new(),
+            cursor: None,
+            display_location: SourceEvidenceLocation::from_operational(&request.location)?,
+            display_selection: request.resource_name.clone(),
+            private_files: Vec::new(),
         }))
     }
 }
@@ -1213,6 +1234,48 @@ impl cdf_http::SecretProvider for NoopSecretProvider {
     fn resolve(&self, _uri: &cdf_http::SecretUri) -> Result<cdf_http::SecretValue> {
         Err(CdfError::auth("mock secret resolution is not used"))
     }
+}
+
+#[test]
+fn source_registry_add_hook_selects_one_driver_and_rejects_ambiguity() {
+    let option_schema = serde_json::json!({
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "source": {"type": "object", "additionalProperties": false, "properties": {}},
+        "resource": {"type": "object", "additionalProperties": false, "properties": {}}
+    });
+    let driver = |id: &str, kind: &str| MockSourceDriver {
+        descriptor: SourceDriverDescriptor {
+            driver_id: SourceDriverId::new(id).unwrap(),
+            driver_version: "1.0.0".to_owned(),
+            option_schema_hash: artifact_hash(&option_schema).unwrap(),
+            kinds: vec![kind.to_owned()],
+            schemes: vec![id.to_owned()],
+        },
+        option_schema: option_schema.clone(),
+        tamper_baseline: false,
+        tamper_resolve: false,
+    };
+    let request = SourceAddRequest {
+        source_name: "mock".to_owned(),
+        resource_name: "events".to_owned(),
+        location: "mock://add".to_owned(),
+        project_root: std::path::PathBuf::from("/project"),
+        current_dir: std::path::PathBuf::from("/working"),
+        options: BTreeMap::new(),
+        project_options: None,
+    };
+    let mut registry = SourceRegistry::new();
+    registry.register(driver("mock_one", "mock")).unwrap();
+    let planned = registry
+        .plan_add(request.clone(), &BTreeMap::new())
+        .unwrap();
+    assert_eq!(planned.driver.driver_id.as_str(), "mock_one");
+    assert_eq!(planned.proposal.source_kind, "mock");
+
+    registry.register(driver("mock_two", "mock_two")).unwrap();
+    let error = registry.plan_add(request, &BTreeMap::new()).unwrap_err();
+    assert!(error.message.contains("ambiguous"));
+    assert!(error.message.contains("mock_one, mock_two"));
 }
 
 #[test]

@@ -187,21 +187,13 @@ _cdf() {
             return 0
             ;;
         cdf__subcmd__add)
-            opts="-q -v -h --dry-run --records --cursor --cursor-param --quiet --verbose --color --progress --unicode --help"
+            opts="-q -v -h --dry-run --option --quiet --verbose --color --progress --unicode --help"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 2 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
             fi
             case "${prev}" in
-                --records)
-                    COMPREPLY=($(compgen -f "${cur}"))
-                    return 0
-                    ;;
-                --cursor)
-                    COMPREPLY=($(compgen -f "${cur}"))
-                    return 0
-                    ;;
-                --cursor-param)
+                --option)
                     COMPREPLY=($(compgen -f "${cur}"))
                     return 0
                     ;;

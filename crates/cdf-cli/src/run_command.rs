@@ -16,7 +16,7 @@ use cdf_project::{
 use sha2::{Digest, Sha256};
 
 use crate::{
-    add_command::{AddTarget, parquet_resource_toml},
+    add_command::registered_source_resource_toml,
     args::{Cli, RunArgs, ScanArgs},
     context::ProjectContext,
     destination_uri::{
@@ -63,7 +63,7 @@ pub(crate) fn run(
                 error_catalog::RUN_ARGUMENT,
             ));
         }
-        let synthesized = synthesize_adhoc_parquet(&mut context, &requested)?;
+        let synthesized = synthesize_adhoc_source(&mut context, &requested)?;
         args.resource_id = Some(synthesized.resource_id.clone());
         Some(synthesized.report)
     } else {
@@ -211,23 +211,77 @@ fn looks_like_adhoc_location(value: &str) -> bool {
         || Path::new(value).is_file()
 }
 
-fn synthesize_adhoc_parquet(
+fn synthesize_adhoc_source(
     context: &mut ProjectContext,
     location: &str,
 ) -> Result<SynthesizedAdhoc, CliError> {
-    if location.contains("://")
-        && !location.starts_with("https://")
-        && !location.starts_with("http://")
-    {
-        return Err(CliError::not_supported(
-            "cdf run ad-hoc",
-            "only local paths and stable HTTPS Parquet URLs are supported in this slice",
-            ".10x/tickets/2026-07-09-p2-ws-h3-adhoc-parquet-run.md",
-        ));
-    }
-    let target = AddTarget::from_adhoc_location(context, location)?;
-    let digest = stable_adhoc_digest(&target.canonical_location);
-    let resource_name = format!("parquet_{}", &digest[..24]);
+    let current_dir = std::env::current_dir().map_err(|error| {
+        CliError::mapped(
+            CdfError::internal(format!("read current directory: {error}")),
+            error_catalog::PROJECT_IO,
+        )
+    })?;
+    let is_remote = location.contains("://");
+    let canonical_location = if is_remote {
+        location.to_owned()
+    } else {
+        let input = Path::new(location);
+        let candidates = if input.is_absolute() {
+            vec![input.to_path_buf()]
+        } else {
+            vec![current_dir.join(input), context.root.join(input)]
+        };
+        let source = candidates
+            .into_iter()
+            .find(|candidate| candidate.is_file())
+            .ok_or_else(|| {
+                CliError::usage_with(
+                    "cdf run ad-hoc could not find local source `[redacted-local-source-path]`",
+                    error_catalog::USAGE,
+                )
+            })?;
+        fs::canonicalize(source)
+            .map_err(|error| {
+                CdfError::data(format!(
+                    "canonicalize ad-hoc source `[redacted-local-source-path]`: {error}"
+                ))
+            })?
+            .to_str()
+            .ok_or_else(|| CdfError::data("ad-hoc source path must be valid UTF-8"))?
+            .to_owned()
+    };
+    let source_registry = crate::source_registry::builtin_source_registry()?;
+    let initial_plan = source_registry
+        .plan_add(
+            cdf_runtime::SourceAddRequest {
+                source_name: "adhoc".to_owned(),
+                resource_name: "candidate".to_owned(),
+                location: canonical_location.clone(),
+                project_root: context.root.clone(),
+                current_dir: current_dir.clone(),
+                options: std::collections::BTreeMap::new(),
+                project_options: None,
+            },
+            &context.config.driver_options,
+        )
+        .map_err(|error| {
+            if is_remote {
+                CliError::from(error)
+            } else {
+                CliError::usage_with(
+                    "cdf run ad-hoc could not compile local source `[redacted-local-source-path]`",
+                    error_catalog::USAGE,
+                )
+            }
+        })?;
+    let identity_prefix = initial_plan
+        .proposal
+        .resource_options
+        .get("format")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or_else(|| initial_plan.driver.driver_id.as_str());
+    let digest = stable_adhoc_digest(&canonical_location);
+    let resource_name = format!("{identity_prefix}_{}", &digest[..24]);
     let resource_id = format!("adhoc.{resource_name}");
     if context
         .resources
@@ -244,27 +298,39 @@ fn synthesize_adhoc_parquet(
     let config_path = format!(".cdf/adhoc/{resource_name}.toml");
     let config_path_abs = context.root.join(&config_path);
 
-    let (compiled_target, source_artifact_path, permanent_location) = if target.is_http {
-        (target.clone(), None, target.canonical_location.clone())
+    let (compiled_location, source_artifact_path, permanent_location) = if is_remote {
+        (canonical_location.clone(), None, canonical_location.clone())
     } else {
-        let staged_path = format!(".cdf/adhoc/data/{resource_name}.parquet");
+        let file_name = Path::new(&canonical_location)
+            .file_name()
+            .and_then(|name| name.to_str())
+            .ok_or_else(|| CdfError::data("ad-hoc source requires a UTF-8 file name"))?;
+        let staged_path = format!(".cdf/adhoc/data/{resource_name}/{file_name}");
         persist_local_adhoc_source(
-            Path::new(&target.canonical_location),
+            Path::new(&canonical_location),
             &context.root.join(&staged_path),
         )?;
-        (
-            AddTarget {
-                source_root: ".cdf/adhoc/data".to_owned(),
-                display_source_root: ".cdf/adhoc/data".to_owned(),
-                glob: format!("{resource_name}.parquet"),
-                canonical_location: staged_path.clone(),
-                is_http: false,
-            },
-            Some(staged_path.clone()),
-            staged_path,
-        )
+        (staged_path.clone(), Some(staged_path.clone()), staged_path)
     };
-    let resource_toml = parquet_resource_toml("adhoc", &resource_name, &compiled_target)?;
+    let add_plan = source_registry.plan_add(
+        cdf_runtime::SourceAddRequest {
+            source_name: "adhoc".to_owned(),
+            resource_name: resource_name.clone(),
+            location: compiled_location,
+            project_root: context.root.clone(),
+            current_dir,
+            options: std::collections::BTreeMap::new(),
+            project_options: None,
+        },
+        &context.config.driver_options,
+    )?;
+    if !add_plan.proposal.private_files.is_empty() {
+        return Err(CliError::usage_with(
+            "cdf run ad-hoc cannot synthesize a source that requires private-file materialization; use cdf add",
+            error_catalog::USAGE,
+        ));
+    }
+    let resource_toml = registered_source_resource_toml("adhoc", &resource_name, &add_plan)?;
     let reused = fs::read_to_string(&config_path_abs).ok().as_deref() == Some(&resource_toml);
     if !reused {
         let parent = config_path_abs.parent().ok_or_else(|| {
@@ -288,7 +354,6 @@ fn synthesize_adhoc_parquet(
     }
 
     let document = parse_declarative_toml(&resource_toml)?;
-    let source_registry = crate::source_registry::builtin_source_registry()?;
     let mut resources =
         compile_document_with_project_root(&source_registry, &document, &context.root)?;
     if resources.len() != 1 {
@@ -397,7 +462,7 @@ fn persist_local_adhoc_source(source: &Path, destination: &Path) -> Result<(), C
     if fs::hard_link(source, &temporary).is_err() {
         fs::copy(source, &temporary).map_err(|error| {
             CliError::mapped(
-                CdfError::data(format!("stage local ad-hoc Parquet input: {error}")),
+                CdfError::data(format!("stage local ad-hoc source input: {error}")),
                 error_catalog::PROJECT_IO,
             )
         })?;
@@ -405,14 +470,14 @@ fn persist_local_adhoc_source(source: &Path, destination: &Path) -> Result<(), C
     if destination.exists() {
         fs::remove_file(destination).map_err(|error| {
             CliError::mapped(
-                CdfError::data(format!("refresh staged ad-hoc Parquet input: {error}")),
+                CdfError::data(format!("refresh staged ad-hoc source input: {error}")),
                 error_catalog::PROJECT_IO,
             )
         })?;
     }
     fs::rename(&temporary, destination).map_err(|error| {
         CliError::mapped(
-            CdfError::data(format!("publish staged ad-hoc Parquet input: {error}")),
+            CdfError::data(format!("publish staged ad-hoc source input: {error}")),
             error_catalog::PROJECT_IO,
         )
     })?;

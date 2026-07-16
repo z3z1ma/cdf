@@ -96,9 +96,7 @@ complete -c cdf -n "__fish_cdf_using_subcommand init" -l force -d 'Replace an ex
 complete -c cdf -n "__fish_cdf_using_subcommand init" -s q -l quiet -d 'Suppress progress and non-primary success narration'
 complete -c cdf -n "__fish_cdf_using_subcommand init" -s v -l verbose -d 'Show evidence detail; repeat for diagnostics'
 complete -c cdf -n "__fish_cdf_using_subcommand init" -s h -l help -d 'Print help'
-complete -c cdf -n "__fish_cdf_using_subcommand add" -l records -d 'Record selector within the source' -r
-complete -c cdf -n "__fish_cdf_using_subcommand add" -l cursor -d 'Cursor field' -r
-complete -c cdf -n "__fish_cdf_using_subcommand add" -l cursor-param -d 'Request parameter carrying the cursor' -r
+complete -c cdf -n "__fish_cdf_using_subcommand add" -l option -d 'Source-driver option as KEY=VALUE; may be repeated' -r
 complete -c cdf -n "__fish_cdf_using_subcommand add" -l color -d 'Color policy: auto, always, or never' -r -f -a "auto\t''
 always\t''
 never\t''"

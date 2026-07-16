@@ -94,9 +94,7 @@ Register-ArgumentCompleter -Native -CommandName 'cdf' -ScriptBlock {
             break
         }
         'cdf;add' {
-            [CompletionResult]::new('--records', '--records', [CompletionResultType]::ParameterName, 'Record selector within the source')
-            [CompletionResult]::new('--cursor', '--cursor', [CompletionResultType]::ParameterName, 'Cursor field')
-            [CompletionResult]::new('--cursor-param', '--cursor-param', [CompletionResultType]::ParameterName, 'Request parameter carrying the cursor')
+            [CompletionResult]::new('--option', '--option', [CompletionResultType]::ParameterName, 'Source-driver option as KEY=VALUE; may be repeated')
             [CompletionResult]::new('--color', '--color', [CompletionResultType]::ParameterName, 'Color policy: auto, always, or never')
             [CompletionResult]::new('--progress', '--progress', [CompletionResultType]::ParameterName, 'Progress policy: auto, always, or never')
             [CompletionResult]::new('--unicode', '--unicode', [CompletionResultType]::ParameterName, 'Unicode policy: auto, always, or never')

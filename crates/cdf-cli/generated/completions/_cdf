@@ -81,9 +81,7 @@ _arguments "${_arguments_options[@]}" : \
 ;;
 (add)
 _arguments "${_arguments_options[@]}" : \
-'--records=[Record selector within the source]:SELECTOR:_default' \
-'--cursor=[Cursor field]:FIELD:_default' \
-'--cursor-param=[Request parameter carrying the cursor]:PARAM:_default' \
+'*--option=[Source-driver option as KEY=VALUE; may be repeated]:KEY=VALUE:_default' \
 '--color=[Color policy\: auto, always, or never]:WHEN:(auto always never)' \
 '--progress=[Progress policy\: auto, always, or never]:WHEN:(auto always never)' \
 '--unicode=[Unicode policy\: auto, always, or never]:WHEN:(auto always never)' \

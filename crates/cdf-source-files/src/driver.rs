@@ -1,12 +1,18 @@
-use std::{collections::BTreeMap, sync::Arc};
+use std::{
+    collections::BTreeMap,
+    fs,
+    path::{Path, PathBuf},
+    sync::Arc,
+};
 
 use cdf_http::{AuthScheme, EgressAllowlist, SecretProvider, SecretUri};
 use cdf_kernel::{CdfError, QueryableResource, ResourceStream, Result, ScanRequest};
 use cdf_runtime::{
     CompiledFormatBinding, CompiledSourcePlan, ExecutionServices, FormatDiscoveryKind,
-    FormatRegistry, SourceAttestationStrength, SourceCompileRequest, SourceDiscoveryCandidate,
-    SourceDiscoveryKind, SourceDiscoveryRequest, SourceDiscoverySession, SourceDriver,
-    SourceDriverDescriptor, SourceDriverId, SourceExecutionCapabilities, SourceExecutorClass,
+    FormatRegistry, SourceAddPlanner, SourceAddProposal, SourceAddRequest,
+    SourceAttestationStrength, SourceCompileRequest, SourceDiscoveryCandidate, SourceDiscoveryKind,
+    SourceDiscoveryRequest, SourceDiscoverySession, SourceDriver, SourceDriverDescriptor,
+    SourceDriverId, SourceEvidenceLocation, SourceExecutionCapabilities, SourceExecutorClass,
     SourceResolutionContext, SourceRetryGranularity, SourceSchemaObservation, artifact_hash,
 };
 use serde::{Deserialize, Serialize};
@@ -82,6 +88,10 @@ impl SourceDriver for FileSourceDriver {
 
     fn option_schema(&self) -> &serde_json::Value {
         &self.option_schema
+    }
+
+    fn add_planner(&self) -> Option<&dyn SourceAddPlanner> {
+        Some(self)
     }
 
     fn compile(&self, request: SourceCompileRequest) -> Result<CompiledSourcePlan> {
@@ -206,6 +216,212 @@ impl SourceDriver for FileSourceDriver {
             .with_compiled_source_plan_hash(cdf_runtime::artifact_hash(plan)?),
         ))
     }
+}
+
+impl SourceAddPlanner for FileSourceDriver {
+    fn propose_add(&self, request: &SourceAddRequest) -> Result<Option<SourceAddProposal>> {
+        request.validate()?;
+        if !request.options.is_empty() {
+            return Ok(None);
+        }
+        let target = if request.location.contains("://") {
+            let parsed = url::Url::parse(&request.location).map_err(|error| {
+                CdfError::contract(format!(
+                    "cdf add could not parse file URL `[redacted-url]`: {error}"
+                ))
+            })?;
+            if !self
+                .descriptor
+                .schemes
+                .iter()
+                .any(|scheme| scheme == parsed.scheme())
+            {
+                return Ok(None);
+            }
+            AddFileTarget::from_url(parsed)?
+        } else {
+            AddFileTarget::from_local(request)?
+        };
+        let mut source_options = BTreeMap::from([(
+            "root".to_owned(),
+            serde_json::Value::String(target.root.clone()),
+        )]);
+        if let Some(host) = target.egress_host {
+            source_options.insert("egress_allowlist".to_owned(), serde_json::json!([host]));
+        }
+        Ok(Some(SourceAddProposal {
+            source_kind: "files".to_owned(),
+            source_options,
+            resource_options: BTreeMap::from([
+                (
+                    "glob".to_owned(),
+                    serde_json::Value::String(target.file_name.clone()),
+                ),
+                (
+                    "format".to_owned(),
+                    serde_json::Value::String(infer_add_format(&target.file_name)?.to_owned()),
+                ),
+            ]),
+            cursor: None,
+            display_location: SourceEvidenceLocation::from_operational(&target.root)?,
+            display_selection: target.file_name,
+            private_files: Vec::new(),
+        }))
+    }
+}
+
+struct AddFileTarget {
+    root: String,
+    file_name: String,
+    egress_host: Option<String>,
+}
+
+impl AddFileTarget {
+    fn from_url(parsed: url::Url) -> Result<Self> {
+        let display = SourceEvidenceLocation::from_operational(parsed.as_str())?;
+        match parsed.scheme() {
+            "https" | "s3" | "gs" | "az" => {}
+            "http" if is_loopback(&parsed) => {}
+            "file" => {
+                return Err(CdfError::contract(
+                    "cdf add file:// URLs are not accepted; pass the local path directly",
+                ));
+            }
+            scheme => {
+                return Err(CdfError::contract(format!(
+                    "cdf add does not accept `{scheme}` file URLs"
+                )));
+            }
+        }
+        if !parsed.username().is_empty() || parsed.password().is_some() {
+            return Err(CdfError::contract(format!(
+                "cdf add does not accept URL userinfo credentials in `{}`; configure credentials through secret references",
+                display.as_str()
+            )));
+        }
+        if parsed.query().is_some() || parsed.fragment().is_some() {
+            return Err(CdfError::contract(format!(
+                "cdf add file URL `{}` must not contain query secrets or fragments; configure credentials through secret references",
+                display.as_str()
+            )));
+        }
+        let file_name = parsed
+            .path_segments()
+            .and_then(|mut segments| segments.next_back())
+            .filter(|segment| !segment.is_empty())
+            .ok_or_else(|| CdfError::contract("cdf add file URL must name a file"))?
+            .to_owned();
+        infer_add_format(&file_name)?;
+        let egress_host = matches!(parsed.scheme(), "http" | "https")
+            .then(|| parsed.host_str().map(ToOwned::to_owned))
+            .flatten();
+        let mut root = parsed;
+        let mut segments = root
+            .path_segments()
+            .map(|segments| segments.collect::<Vec<_>>())
+            .unwrap_or_default();
+        segments.pop();
+        let parent = if segments.is_empty() {
+            "/".to_owned()
+        } else {
+            format!("/{}", segments.join("/"))
+        };
+        root.set_path(&parent);
+        let root = root.as_str().trim_end_matches('/').to_owned();
+        let root = if root.ends_with(":/") {
+            format!("{root}/")
+        } else {
+            root
+        };
+        Ok(Self {
+            root,
+            file_name,
+            egress_host,
+        })
+    }
+
+    fn from_local(request: &SourceAddRequest) -> Result<Self> {
+        let path = PathBuf::from(&request.location);
+        let candidates = if path.is_absolute() {
+            vec![path]
+        } else {
+            vec![
+                request.current_dir.join(&path),
+                request.project_root.join(&path),
+            ]
+        };
+        let file = candidates
+            .into_iter()
+            .find(|candidate| candidate.is_file())
+            .ok_or_else(|| {
+                CdfError::contract(format!(
+                    "cdf add could not find local file `{}`",
+                    request.location
+                ))
+            })?;
+        let file = fs::canonicalize(file)
+            .map_err(|error| CdfError::contract(format!("canonicalize add source: {error}")))?;
+        let file_name = file
+            .file_name()
+            .and_then(|name| name.to_str())
+            .ok_or_else(|| CdfError::contract("cdf add local source requires a UTF-8 file name"))?
+            .to_owned();
+        infer_add_format(&file_name)?;
+        let parent = file
+            .parent()
+            .ok_or_else(|| CdfError::contract("cdf add local source has no parent directory"))?;
+        let project_root = fs::canonicalize(&request.project_root).map_err(|error| {
+            CdfError::contract(format!("canonicalize cdf project root: {error}"))
+        })?;
+        let root = parent.strip_prefix(&project_root).map_or_else(
+            |_| portable_path(parent),
+            |relative| {
+                if relative.as_os_str().is_empty() {
+                    Ok(".".to_owned())
+                } else {
+                    portable_path(relative)
+                }
+            },
+        )?;
+        Ok(Self {
+            root,
+            file_name,
+            egress_host: None,
+        })
+    }
+}
+
+fn portable_path(path: &Path) -> Result<String> {
+    path.to_str()
+        .map(|value| value.replace(std::path::MAIN_SEPARATOR, "/"))
+        .ok_or_else(|| CdfError::contract("cdf add local source path must be valid UTF-8"))
+}
+
+fn infer_add_format(file_name: &str) -> Result<&'static str> {
+    let lower = file_name.to_ascii_lowercase();
+    let stem = [".gz", ".zst", ".zstd", ".bz2", ".xz", ".lz4", ".snappy"]
+        .iter()
+        .find_map(|suffix| lower.strip_suffix(suffix))
+        .unwrap_or(&lower);
+    if stem.ends_with(".parquet") || stem.ends_with(".pq") {
+        Ok("parquet")
+    } else if stem.ends_with(".ndjson") || stem.ends_with(".jsonl") {
+        Ok("ndjson")
+    } else if stem.ends_with(".json") {
+        Ok("json")
+    } else if stem.ends_with(".csv") || stem.ends_with(".tsv") {
+        Ok("csv")
+    } else if stem.ends_with(".arrow") || stem.ends_with(".ipc") || stem.ends_with(".feather") {
+        Ok("arrow_ipc")
+    } else {
+        Err(CdfError::contract(format!(
+            "cdf add cannot infer a registered file format from `{file_name}`"
+        )))
+    }
+}
+
+fn is_loopback(url: &url::Url) -> bool {
+    matches!(url.host_str(), Some("localhost" | "127.0.0.1" | "::1"))
 }
 
 fn validate_compiled_capabilities(

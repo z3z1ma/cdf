@@ -1,12 +1,14 @@
 use std::{collections::BTreeMap, sync::Arc};
 
-use cdf_http::SecretUri;
+use cdf_http::{SecretUri, SecretValue};
 use cdf_kernel::{CdfError, QueryableResource, Result};
 use cdf_runtime::{
-    CompiledSourcePlan, SourceAttestationStrength, SourceCompileRequest, SourceDiscoveryCandidate,
+    CompiledSourcePlan, SourceAddPlanner, SourceAddPrivateFile, SourceAddProposal,
+    SourceAddRequest, SourceAttestationStrength, SourceCompileRequest, SourceDiscoveryCandidate,
     SourceDiscoveryKind, SourceDiscoveryRequest, SourceDiscoverySession, SourceDriver,
-    SourceDriverDescriptor, SourceDriverId, SourceExecutionCapabilities, SourceExecutorClass,
-    SourceResolutionContext, SourceRetryGranularity, SourceSchemaObservation, artifact_hash,
+    SourceDriverDescriptor, SourceDriverId, SourceEvidenceLocation, SourceExecutionCapabilities,
+    SourceExecutorClass, SourceResolutionContext, SourceRetryGranularity, SourceSchemaObservation,
+    artifact_hash,
 };
 use serde::{Deserialize, Serialize};
 
@@ -63,6 +65,10 @@ impl SourceDriver for PostgresSourceDriver {
 
     fn option_schema(&self) -> &serde_json::Value {
         &self.option_schema
+    }
+
+    fn add_planner(&self) -> Option<&dyn SourceAddPlanner> {
+        Some(self)
     }
 
     fn compile(&self, request: SourceCompileRequest) -> Result<CompiledSourcePlan> {
@@ -157,6 +163,68 @@ impl SourceDriver for PostgresSourceDriver {
         .with_compiled_source_plan_hash(cdf_runtime::artifact_hash(plan)?)
         .with_execution(context.execution().clone())?;
         Ok(Arc::new(resource))
+    }
+}
+
+impl SourceAddPlanner for PostgresSourceDriver {
+    fn propose_add(&self, request: &SourceAddRequest) -> Result<Option<SourceAddProposal>> {
+        request.validate()?;
+        let Some((scheme, _)) = request.location.split_once("://") else {
+            return Ok(None);
+        };
+        if !matches!(scheme, "postgres" | "postgresql") {
+            return Ok(None);
+        }
+        if !request.options.is_empty() {
+            return Err(CdfError::contract(
+                "Postgres cdf add does not accept source options; encode connection parameters in the DSN and edit generated resource configuration for table semantics",
+            ));
+        }
+        let mut parsed = url::Url::parse(&request.location).map_err(|error| {
+            CdfError::contract(format!("cdf add could not parse Postgres DSN: {error}"))
+        })?;
+        let mut segments = parsed
+            .path_segments()
+            .map(|segments| {
+                segments
+                    .filter(|segment| !segment.is_empty())
+                    .map(str::to_owned)
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        if segments.len() < 2 {
+            return Err(CdfError::contract(
+                "cdf add Postgres DSN must end with `/database/table`",
+            ));
+        }
+        let table = segments.pop().expect("length checked");
+        parsed.set_path(&format!("/{}", segments.join("/")));
+        let dsn = parsed.to_string();
+        let relative_path =
+            std::path::PathBuf::from(format!(".cdf/secrets/sources/{}.dsn", request.source_name));
+        let reference = SecretUri::new(format!(
+            "secret://file/.cdf/secrets/sources/{}.dsn",
+            request.source_name
+        ))?;
+        Ok(Some(SourceAddProposal {
+            source_kind: "sql".to_owned(),
+            source_options: BTreeMap::from([(
+                "connection".to_owned(),
+                serde_json::Value::String(reference.as_str().to_owned()),
+            )]),
+            resource_options: BTreeMap::from([(
+                "table".to_owned(),
+                serde_json::Value::String(table.clone()),
+            )]),
+            cursor: None,
+            display_location: SourceEvidenceLocation::from_operational(&dsn)?,
+            display_selection: table,
+            private_files: vec![SourceAddPrivateFile {
+                reference,
+                relative_path,
+                value: SecretValue::new(dsn),
+            }],
+        }))
     }
 }
 

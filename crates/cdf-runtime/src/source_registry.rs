@@ -7,10 +7,10 @@ use cdf_kernel::{
 };
 
 use crate::{
-    CompiledSourcePlan, SourceCompileRequest, SourceDiscoveryCandidate, SourceDiscoveryKind,
-    SourceDiscoveryRequest, SourceDiscoverySession, SourceDriver, SourceDriverDescriptor,
-    SourceDriverId, SourceHealthRequest, SourceHealthResult, SourceReferenceCompileRequest,
-    SourceResolutionContext, SourceSchemaObservation, artifact_hash,
+    CompiledSourcePlan, PlannedSourceAdd, SourceAddRequest, SourceCompileRequest,
+    SourceDiscoveryCandidate, SourceDiscoveryKind, SourceDiscoveryRequest, SourceDiscoverySession,
+    SourceDriver, SourceDriverDescriptor, SourceDriverId, SourceHealthRequest, SourceHealthResult,
+    SourceReferenceCompileRequest, SourceResolutionContext, SourceSchemaObservation, artifact_hash,
 };
 
 #[derive(Default)]
@@ -227,6 +227,50 @@ impl SourceRegistry {
             .cloned()
             .unwrap_or_else(|| serde_json::json!({}));
         driver.validate_project_options(&value)
+    }
+
+    pub fn plan_add(
+        &self,
+        request: SourceAddRequest,
+        driver_options: &BTreeMap<String, serde_json::Value>,
+    ) -> Result<PlannedSourceAdd> {
+        request.validate()?;
+        let mut candidates = Vec::new();
+        for (driver_id, driver) in &self.drivers {
+            let Some(planner) = driver.add_planner() else {
+                continue;
+            };
+            let mut driver_request = request.clone();
+            driver_request.project_options = driver_options.get(driver_id.as_str()).cloned();
+            if let Some(proposal) = planner.propose_add(&driver_request)? {
+                proposal.validate()?;
+                if !driver.descriptor().kinds.contains(&proposal.source_kind) {
+                    return Err(CdfError::contract(format!(
+                        "source driver `{}` proposed unowned source kind `{}`",
+                        driver_id.as_str(),
+                        proposal.source_kind
+                    )));
+                }
+                candidates.push(PlannedSourceAdd {
+                    driver: driver.descriptor().clone(),
+                    proposal,
+                });
+            }
+        }
+        match candidates.len() {
+            0 => Err(CdfError::contract(
+                "no registered source driver can add the supplied location and options",
+            )),
+            1 => Ok(candidates.remove(0)),
+            _ => Err(CdfError::contract(format!(
+                "source add request is ambiguous across registered drivers: {}",
+                candidates
+                    .iter()
+                    .map(|candidate| candidate.driver.driver_id.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ))),
+        }
     }
 
     pub fn health_checks(

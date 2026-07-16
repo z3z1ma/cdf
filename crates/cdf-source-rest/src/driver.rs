@@ -6,12 +6,13 @@ use cdf_http::{
 };
 use cdf_kernel::{CdfError, PushdownFidelity, QueryableResource, Result, ScanRequest};
 use cdf_runtime::{
-    BlockingLaneSpec, CompiledSourcePlan, InterruptionSafety, LaneAffinity,
+    BlockingLaneSpec, CompiledSourcePlan, InterruptionSafety, LaneAffinity, SourceAddCursor,
+    SourceAddCursorOrdering, SourceAddPlanner, SourceAddProposal, SourceAddRequest,
     SourceAttestationStrength, SourceCompileRequest, SourceCursorPushdown,
     SourceDiscoveryCandidate, SourceDiscoveryKind, SourceDiscoveryRequest, SourceDiscoverySession,
-    SourceDriver, SourceDriverDescriptor, SourceDriverId, SourceExecutionCapabilities,
-    SourceExecutorClass, SourceResolutionContext, SourceRetryGranularity, SourceSchemaObservation,
-    artifact_hash,
+    SourceDriver, SourceDriverDescriptor, SourceDriverId, SourceEvidenceLocation,
+    SourceExecutionCapabilities, SourceExecutorClass, SourceResolutionContext,
+    SourceRetryGranularity, SourceSchemaObservation, artifact_hash,
 };
 use serde::{Deserialize, Serialize};
 
@@ -65,6 +66,10 @@ impl SourceDriver for RestSourceDriver {
 
     fn option_schema(&self) -> &serde_json::Value {
         &self.option_schema
+    }
+
+    fn add_planner(&self) -> Option<&dyn SourceAddPlanner> {
+        Some(self)
     }
 
     fn compile(&self, request: SourceCompileRequest) -> Result<CompiledSourcePlan> {
@@ -147,6 +152,105 @@ impl SourceDriver for RestSourceDriver {
             .with_compiled_source_plan_hash(cdf_runtime::artifact_hash(plan)?),
         ))
     }
+}
+
+impl SourceAddPlanner for RestSourceDriver {
+    fn propose_add(&self, request: &SourceAddRequest) -> Result<Option<SourceAddProposal>> {
+        request.validate()?;
+        const KEYS: [&str; 3] = ["records", "cursor", "cursor_param"];
+        if !request
+            .options
+            .keys()
+            .any(|key| KEYS.contains(&key.as_str()))
+        {
+            return Ok(None);
+        }
+        let unknown = request
+            .options
+            .keys()
+            .filter(|key| !KEYS.contains(&key.as_str()))
+            .cloned()
+            .collect::<Vec<_>>();
+        if !unknown.is_empty() {
+            return Err(CdfError::contract(format!(
+                "REST cdf add received unknown options: {}",
+                unknown.join(", ")
+            )));
+        }
+        let missing = KEYS
+            .iter()
+            .filter(|key| !request.options.contains_key(**key))
+            .copied()
+            .collect::<Vec<_>>();
+        if !missing.is_empty() {
+            return Err(CdfError::contract(
+                "REST cdf add requires options `records`, `cursor`, and `cursor_param` together",
+            ));
+        }
+        let parsed = url::Url::parse(&request.location).map_err(|error| {
+            CdfError::contract(format!("cdf add could not parse REST URL: {error}"))
+        })?;
+        match parsed.scheme() {
+            "https" => {}
+            "http" if is_loopback(&parsed) => {}
+            scheme => {
+                return Err(CdfError::contract(format!(
+                    "cdf add REST endpoints require HTTPS or loopback HTTP; `{scheme}` is not supported"
+                )));
+            }
+        }
+        if !parsed.username().is_empty()
+            || parsed.password().is_some()
+            || parsed.query().is_some()
+            || parsed.fragment().is_some()
+        {
+            return Err(CdfError::contract(
+                "cdf add REST URL must not contain userinfo, query secrets, or fragments; declare stable parameters and authentication in source configuration",
+            ));
+        }
+        let host = parsed
+            .host_str()
+            .ok_or_else(|| CdfError::contract("cdf add REST URL must contain a host"))?
+            .to_owned();
+        let path = if parsed.path().is_empty() {
+            "/".to_owned()
+        } else {
+            parsed.path().to_owned()
+        };
+        let mut origin = parsed;
+        origin.set_path("");
+        let base_url = origin.as_str().trim_end_matches('/').to_owned();
+        let records = request.options["records"].clone();
+        let cursor = request.options["cursor"].clone();
+        let cursor_param = request.options["cursor_param"].clone();
+        Ok(Some(SourceAddProposal {
+            source_kind: "rest".to_owned(),
+            source_options: BTreeMap::from([
+                (
+                    "base_url".to_owned(),
+                    serde_json::Value::String(base_url.clone()),
+                ),
+                ("egress_allowlist".to_owned(), serde_json::json!([host])),
+            ]),
+            resource_options: BTreeMap::from([
+                ("path".to_owned(), serde_json::Value::String(path.clone())),
+                ("records".to_owned(), serde_json::Value::String(records)),
+            ]),
+            cursor: Some(SourceAddCursor {
+                field: cursor,
+                parameter: Some(cursor_param),
+                ordering: SourceAddCursorOrdering::BestEffort,
+                lag_tolerance_ms: 0,
+            }),
+            display_location: SourceEvidenceLocation::from_operational(&base_url)?,
+            display_selection: path,
+            private_files: Vec::new(),
+        }))
+    }
+}
+
+fn is_loopback(url: &url::Url) -> bool {
+    matches!(url.host_str(), Some("localhost" | "127.0.0.1" | "::1"))
 }
 
 fn validate_compiled_capabilities(

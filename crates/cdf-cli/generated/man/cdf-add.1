@@ -4,7 +4,7 @@
 .SH NAME
 cdf\-add \- Add a source resource to the project
 .SH SYNOPSIS
-\fBcdf add\fR [\fB\-\-dry\-run\fR] [\fB\-q\fR|\fB\-\-quiet\fR] [\fB\-\-records\fR] [\fB\-v\fR|\fB\-\-verbose\fR]... [\fB\-\-color\fR] [\fB\-\-cursor\fR] [\fB\-\-cursor\-param\fR] [\fB\-\-progress\fR] [\fB\-\-unicode\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fIRESOURCE_ID URL_OR_PATH\fR]
+\fBcdf add\fR [\fB\-\-dry\-run\fR] [\fB\-q\fR|\fB\-\-quiet\fR] [\fB\-\-option\fR] [\fB\-v\fR|\fB\-\-verbose\fR]... [\fB\-\-color\fR] [\fB\-\-progress\fR] [\fB\-\-unicode\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fIRESOURCE_ID URL_OR_PATH\fR]
 .SH DESCRIPTION
 Add a source resource to the project
 .SH OPTIONS
@@ -15,8 +15,8 @@ Show the proposed change without writing it
 \fB\-q\fR, \fB\-\-quiet\fR
 Suppress progress and non\-primary success narration
 .TP
-\fB\-\-records\fR \fI<SELECTOR>\fR
-Record selector within the source
+\fB\-\-option\fR \fI<KEY=VALUE>\fR
+Source\-driver option as KEY=VALUE; may be repeated
 .TP
 \fB\-v\fR, \fB\-\-verbose\fR
 Show evidence detail; repeat for diagnostics
@@ -35,12 +35,6 @@ always
 .IP \(bu 2
 never
 .RE
-.TP
-\fB\-\-cursor\fR \fI<FIELD>\fR
-Cursor field
-.TP
-\fB\-\-cursor\-param\fR \fI<PARAM>\fR
-Request parameter carrying the cursor
 .TP
 \fB\-\-progress\fR \fI<WHEN>\fR
 Progress policy: auto, always, or never

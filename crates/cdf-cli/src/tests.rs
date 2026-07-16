@@ -1360,8 +1360,8 @@ fn add_local_parquet_pins_schema_and_writes_resource_config() {
     assert_eq!(json["command"], "add");
     assert_eq!(report["resource_id"], "tlc.yellow");
     assert_eq!(report["config_path"], "resources/tlc.toml");
-    assert_eq!(report["source_root"], "data");
-    assert_eq!(report["glob"], "yellow.parquet");
+    assert_eq!(report["location"], "data");
+    assert_eq!(report["selection"], "yellow.parquet");
     assert_eq!(report["write_disposition"], "append");
     assert_eq!(report["schema_source"], "discovered");
     assert_eq!(report["next_command"], "cdf run tlc.yellow");
@@ -1463,6 +1463,42 @@ fn add_local_parquet_dry_run_writes_nothing() {
 }
 
 #[test]
+fn add_local_ndjson_uses_the_registered_file_driver_without_cli_format_wiring() {
+    let project = TestProject::new();
+    let source = project.root.join("data/events.ndjson");
+    fs::write(
+        &source,
+        "{\"id\":1,\"occurred_at\":1783296000000000}\n{\"id\":2,\"occurred_at\":1783296000000001}\n",
+    )
+    .unwrap();
+
+    let result = run([
+        "cdf",
+        "--json",
+        "--project",
+        project.root_str(),
+        "add",
+        "ingest.events",
+        source.to_str().unwrap(),
+    ]);
+
+    assert_eq!(result.exit_code, 0, "stderr: {}", result.stderr);
+    let report = stderr_or_stdout_json(&result.stdout);
+    assert_eq!(report["result"]["source_driver"], "files");
+    assert_eq!(report["result"]["selection"], "events.ndjson");
+    assert!(
+        report["result"]["cursor_candidates"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|candidate| candidate == "occurred_at")
+    );
+    let resource = fs::read_to_string(project.root.join("resources/ingest.toml")).unwrap();
+    assert!(resource.contains("format = \"ndjson\""));
+    assert!(resource.contains("write_disposition = \"append\""));
+}
+
+#[test]
 fn add_rest_requires_explicit_selector_and_cursor_then_pins_sample() {
     let project = TestProject::new();
     let base_url =
@@ -1477,25 +1513,20 @@ fn add_rest_requires_explicit_selector_and_cursor_then_pins_sample() {
         "add",
         "api.items",
         &endpoint,
-        "--records",
-        "$.items",
-        "--cursor",
-        "updated_at",
-        "--cursor-param",
-        "since",
+        "--option",
+        "records=$.items",
+        "--option",
+        "cursor=updated_at",
+        "--option",
+        "cursor_param=since",
     ]);
 
     assert_eq!(result.exit_code, 0, "stderr: {}", result.stderr);
     let json = stderr_or_stdout_json(&result.stdout);
     assert_eq!(json["result"]["resource_id"], "api.items");
-    assert_eq!(json["result"]["glob"], "/items");
+    assert_eq!(json["result"]["selection"], "/items");
     assert_eq!(json["result"]["cursor"], "updated_at");
-    assert!(
-        json["result"]["cursor_candidates"]
-            .as_array()
-            .unwrap()
-            .is_empty()
-    );
+    assert_eq!(json["result"]["cursor_candidates"][0], "id");
     assert_eq!(json["result"]["writes"]["schema_snapshot"], true);
     let resource = fs::read_to_string(project.root.join("resources/api.toml")).unwrap();
     assert!(resource.contains("kind = \"rest\""));
@@ -1529,8 +1560,8 @@ fn add_rest_rejects_partial_semantics_before_network_or_writes() {
         "add",
         "api.items",
         "https://api.example.test/items",
-        "--records",
-        "$.items",
+        "--option",
+        "records=$.items",
     ]);
 
     assert_eq!(result.exit_code, 2);
@@ -1539,7 +1570,7 @@ fn add_rest_rejects_partial_semantics_before_network_or_writes() {
         json["error"]["message"]
             .as_str()
             .unwrap()
-            .contains("requires --records, --cursor, and --cursor-param together")
+            .contains("requires options `records`, `cursor`, and `cursor_param` together")
     );
     assert!(!project.root.join("resources/api.toml").exists());
     assert!(!project.root.join("cdf.lock").exists());
@@ -1567,7 +1598,7 @@ fn p2_s1_add_http_parquet_pins_and_runs_with_zero_typed_fields() {
     let json = stderr_or_stdout_json(&result.stdout);
     let report = &json["result"];
     assert_eq!(report["resource_id"], "remote.yellow");
-    assert_eq!(report["glob"], "yellow.parquet");
+    assert_eq!(report["selection"], "yellow.parquet");
     assert_eq!(report["write_disposition"], "append");
     assert!(project.root.join("resources/remote.toml").is_file());
     let resource_toml = fs::read_to_string(project.root.join("resources/remote.toml")).unwrap();
@@ -1785,7 +1816,7 @@ fn add_rejects_signed_url_without_leaking_secret_query() {
         json["error"]["message"]
             .as_str()
             .unwrap()
-            .contains("[redacted]")
+            .contains("<redacted>")
     );
     assert!(!project.root.join("resources/remote.toml").exists());
     assert!(!project.root.join("cdf.lock").exists());
@@ -7634,7 +7665,8 @@ fn run_adhoc_local_parquet_reuses_identity_and_ordinary_evidence_spine() {
     );
 
     let resource_toml = fs::read_to_string(project.root.join(config_path)).unwrap();
-    assert!(resource_toml.contains("root = \".cdf/adhoc/data\""));
+    let staged_root = Path::new(staged_path).parent().unwrap().to_str().unwrap();
+    assert!(resource_toml.contains(&format!("root = {staged_root:?}")));
     assert!(!resource_toml.contains(PATH_SECRET));
     let lock = parse_lock(&fs::read_to_string(project.root.join("cdf.lock")).unwrap()).unwrap();
     let locked = &lock.resources[resource_id];
@@ -7998,7 +8030,7 @@ fn run_adhoc_rejected_local_paths_redact_details_without_writes() {
     let wrong_extension = project
         .root
         .join("data")
-        .join(format!("{EXTENSION_SECRET}.csv"));
+        .join(format!("{EXTENSION_SECRET}.unknown"));
     fs::write(&wrong_extension, "not parquet").unwrap();
     let directory = project
         .root
@@ -8023,7 +8055,7 @@ fn run_adhoc_rejected_local_paths_redact_details_without_writes() {
             "duckdb://.cdf/adhoc-rejected-local.duckdb".to_owned(),
         ]);
         assert_ne!(result.exit_code, 0);
-        assert!(result.stderr.contains("[redacted-local-parquet-path]"));
+        assert!(result.stderr.contains("[redacted-local-source-path]"));
         assert_secret_absent(&result, secret);
         assert_eq!(project_tree_snapshot(&project.root), before);
     }
