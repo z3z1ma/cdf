@@ -109,6 +109,10 @@ impl cdf_runtime::ExecutionHost for TestIoHost {
         Duration::ZERO
     }
 
+    fn unix_now(&self) -> Duration {
+        Duration::ZERO
+    }
+
     fn entropy_u64(&self) -> u64 {
         0
     }
@@ -221,7 +225,7 @@ async fn ndjson_stdout_adapter_captures_stderr_and_packages_output() {
     .await
     .unwrap();
 
-    assert_eq!(output.stderr.lines, vec!["fetch trace"]);
+    assert_eq!(output.stderr.lines(), vec!["fetch trace"]);
     assert_eq!(output.read.batches[0].header.row_count, 1);
 
     let package =
@@ -311,6 +315,7 @@ async fn timeout_maps_to_transient() {
         &SupervisionOptions {
             timeout: Some(Duration::from_millis(10)),
             stderr_line_limit: DEFAULT_STDERR_LINE_LIMIT,
+            ..SupervisionOptions::default()
         },
         memory(),
     )
@@ -319,6 +324,54 @@ async fn timeout_maps_to_transient() {
 
     assert_eq!(error.kind, ErrorKind::Transient);
     assert!(error.message.contains("timed out"));
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn command_supervisor_bounds_output_and_observes_cancellation() {
+    let constrained: Arc<dyn MemoryCoordinator> =
+        Arc::new(DeterministicMemoryCoordinator::new(8, BTreeMap::new()).unwrap());
+    let error = run_bounded_command(
+        shell(["-c", "printf ok"]),
+        SupervisionOptions {
+            maximum_stdout_bytes: 7,
+            maximum_stderr_bytes: 1,
+            ..SupervisionOptions::default()
+        },
+        cdf_runtime::RunCancellation::default(),
+        constrained,
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(error.kind, ErrorKind::Data);
+    assert!(error.message.contains("memory budget cannot admit"));
+
+    let error = run_bounded_command(
+        shell(["-c", "printf '0123456789abcdef'"]),
+        SupervisionOptions {
+            maximum_stdout_bytes: 8,
+            ..SupervisionOptions::default()
+        },
+        cdf_runtime::RunCancellation::default(),
+        memory(),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(error.kind, ErrorKind::Data);
+    assert!(error.message.contains("stdout"));
+    assert!(error.message.contains("8-byte boundary"));
+
+    let cancellation = cdf_runtime::RunCancellation::default();
+    cancellation.cancel();
+    let error = run_bounded_command(
+        shell(["-c", "sleep 5"]),
+        SupervisionOptions::default(),
+        cancellation,
+        memory(),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(error.kind, ErrorKind::Internal);
+    assert!(error.message.contains("cancelled"));
 }
 
 #[tokio::test(flavor = "current_thread")]

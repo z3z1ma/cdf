@@ -87,14 +87,22 @@ impl SourceDriver for RestSourceDriver {
                 details: serde_json::json!({"resources": 0}),
             }]);
         }
-        let probe_request = SourceDiscoveryRequest::new(1024 * 1024, 1)?;
+        let probe_request = SourceDiscoveryRequest::new(
+            (1024 * 1024).min(request.budget.limits().maximum_payload_bytes),
+            1,
+        )?
+        .with_cancellation(request.budget.cancellation());
         let health_context = context
             .clone()
             .with_prepared_payloads(cdf_runtime::PreparedSourcePayloads::default());
-        Ok(request
+        request
             .compiled_plans
             .iter()
             .map(|plan| {
+                request.budget.consume_work(1)?;
+                request
+                    .budget
+                    .consume_payload_bytes(probe_request.maximum_bytes)?;
                 let resource_id = plan.descriptor.resource_id.as_str();
                 let probe = self
                     .discovery_session(plan, &health_context)
@@ -106,25 +114,28 @@ impl SourceDriver for RestSourceDriver {
                         session.observe(candidate, &probe_request)
                     });
                 match probe {
-                    Ok(observation) => SourceHealthResult {
-                        probe_id: resource_id.to_owned(),
-                        status: SourceHealthStatus::Passed,
-                        message: "REST endpoint probe passed".to_owned(),
-                        details: serde_json::json!({
-                            "resource_id": resource_id,
-                            "bytes_read": observation.bytes_read,
-                            "records_read": observation.records_read,
-                        }),
-                    },
-                    Err(error) => SourceHealthResult::failed(
+                    Ok(observation) => {
+                        request.budget.consume_list_entries(1)?;
+                        Ok(SourceHealthResult {
+                            probe_id: resource_id.to_owned(),
+                            status: SourceHealthStatus::Passed,
+                            message: "REST endpoint probe passed".to_owned(),
+                            details: serde_json::json!({
+                                "resource_id": resource_id,
+                                "bytes_read": observation.bytes_read,
+                                "records_read": observation.records_read,
+                            }),
+                        })
+                    }
+                    Err(error) => Ok(SourceHealthResult::failed(
                         resource_id,
                         "REST endpoint probe failed",
                         &plan.descriptor.resource_id,
                         &error,
-                    ),
+                    )),
                 }
             })
-            .collect())
+            .collect::<Result<Vec<_>>>()
     }
 
     fn compile(&self, request: SourceCompileRequest) -> Result<CompiledSourcePlan> {
@@ -1172,7 +1183,12 @@ mod tests {
             Arc::new(cdf_http::EgressAllowlist::allow_any()),
         );
         let health = registry
-            .health_checks(&context, std::slice::from_ref(&plan))
+            .health_checks(
+                &context,
+                std::slice::from_ref(&plan),
+                cdf_runtime::SourceHealthLimits::default(),
+                cdf_runtime::RunCancellation::default(),
+            )
             .unwrap();
         assert_eq!(health.len(), 1);
         assert_eq!(health[0].status, SourceHealthStatus::Passed);

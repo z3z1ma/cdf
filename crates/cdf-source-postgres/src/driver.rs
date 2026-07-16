@@ -85,11 +85,14 @@ impl SourceDriver for PostgresSourceDriver {
                 details: serde_json::json!({"resources": 0}),
             }]);
         }
-        let probe_request = SourceDiscoveryRequest::new(1, 1)?;
-        Ok(request
+        let probe_request =
+            SourceDiscoveryRequest::new(1, 1)?.with_cancellation(request.budget.cancellation());
+        request
             .compiled_plans
             .iter()
             .map(|plan| {
+                request.budget.consume_work(1)?;
+                request.budget.consume_list_entries(1)?;
                 let resource_id = plan.descriptor.resource_id.as_str();
                 let probe = self.discovery_session(plan, context).and_then(|session| {
                     let candidates = session.candidates()?;
@@ -99,7 +102,7 @@ impl SourceDriver for PostgresSourceDriver {
                     session.observe(candidate, &probe_request)
                 });
                 match probe {
-                    Ok(observation) => SourceHealthResult {
+                    Ok(observation) => Ok(SourceHealthResult {
                         probe_id: resource_id.to_owned(),
                         status: SourceHealthStatus::Passed,
                         message: "Postgres catalog probe passed".to_owned(),
@@ -107,16 +110,16 @@ impl SourceDriver for PostgresSourceDriver {
                             "resource_id": resource_id,
                             "columns": observation.schema.fields().len(),
                         }),
-                    },
-                    Err(error) => SourceHealthResult::failed(
+                    }),
+                    Err(error) => Ok(SourceHealthResult::failed(
                         resource_id,
                         "Postgres catalog probe failed",
                         &plan.descriptor.resource_id,
                         &error,
-                    ),
+                    )),
                 }
             })
-            .collect())
+            .collect::<Result<Vec<_>>>()
     }
 
     fn compile(&self, request: SourceCompileRequest) -> Result<CompiledSourcePlan> {

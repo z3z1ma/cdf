@@ -28,28 +28,18 @@ pub struct MemoryByteSource {
 }
 
 impl MemoryByteSource {
-    pub async fn from_bytes(
+    pub fn from_accounted_bytes(
         stable_id: impl Into<String>,
-        payload: Vec<u8>,
-        memory: Arc<dyn MemoryCoordinator>,
+        payload: AccountedBytes,
     ) -> Result<Self> {
-        if payload.is_empty() {
+        let size_bytes = u64::try_from(payload.payload().len())
+            .map_err(|_| CdfError::data("bounded format payload length exceeds u64"))?;
+        if size_bytes == 0 {
             return Err(CdfError::data(
                 "bounded format payload must contain at least one byte",
             ));
         }
-        let size_bytes = u64::try_from(payload.len())
-            .map_err(|_| CdfError::data("bounded format payload length exceeds u64"))?;
-        let checksum = format!("sha256:{}", hex::encode(Sha256::digest(&payload)));
-        let lease = reserve(
-            memory,
-            ReservationRequest::new(
-                ConsumerKey::new("bounded-format-input", MemoryClass::Source)?,
-                size_bytes,
-            )?,
-        )
-        .await?;
-        let payload = AccountedBytes::new(Bytes::from(payload), lease)?;
+        let checksum = format!("sha256:{}", hex::encode(Sha256::digest(payload.payload())));
         let identity = ContentIdentity {
             stable_id: stable_id.into(),
             size_bytes: Some(size_bytes),
@@ -73,6 +63,30 @@ impl MemoryByteSource {
             capabilities,
             payload,
         })
+    }
+
+    pub async fn from_bytes(
+        stable_id: impl Into<String>,
+        payload: Vec<u8>,
+        memory: Arc<dyn MemoryCoordinator>,
+    ) -> Result<Self> {
+        if payload.is_empty() {
+            return Err(CdfError::data(
+                "bounded format payload must contain at least one byte",
+            ));
+        }
+        let size_bytes = u64::try_from(payload.len())
+            .map_err(|_| CdfError::data("bounded format payload length exceeds u64"))?;
+        let lease = reserve(
+            memory,
+            ReservationRequest::new(
+                ConsumerKey::new("bounded-format-input", MemoryClass::Source)?,
+                size_bytes,
+            )?,
+        )
+        .await?;
+        let payload = AccountedBytes::new(Bytes::from(payload), lease)?;
+        Self::from_accounted_bytes(stable_id, payload)
     }
 }
 

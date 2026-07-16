@@ -1613,6 +1613,127 @@ mod tests {
         );
     }
 
+    #[test]
+    fn source_health_budget_is_aggregate_and_deadline_bound() {
+        struct VirtualHealthHost {
+            now_ms: std::sync::atomic::AtomicU64,
+        }
+
+        impl ExecutionHost for VirtualHealthHost {
+            fn capabilities(&self) -> ExecutionHostCapabilities {
+                ExecutionHostCapabilities {
+                    logical_cpu_slots: 1,
+                    io_workers: 1,
+                    blocking_lanes: Vec::new(),
+                }
+            }
+
+            fn memory(&self) -> Arc<dyn MemoryCoordinator> {
+                panic!("health-budget test does not use memory")
+            }
+
+            fn spill(&self) -> Arc<dyn crate::SpillBudgetCoordinator> {
+                panic!("health-budget test does not use spill")
+            }
+
+            fn open_scope(&self, _run_id: &str) -> Result<Box<dyn ExecutionTaskScope>> {
+                panic!("health-budget test does not open scopes")
+            }
+
+            fn run_io_blocking(&self, _task: IoValueTask) -> Result<IoValue> {
+                panic!("health-budget test does not run I/O")
+            }
+
+            fn delay(
+                &self,
+                duration: Duration,
+                cancellation: RunCancellation,
+            ) -> BoxFuture<'static, Result<()>> {
+                self.now_ms.fetch_add(
+                    u64::try_from(duration.as_millis()).unwrap_or(u64::MAX),
+                    Ordering::SeqCst,
+                );
+                Box::pin(async move { cancellation.check() })
+            }
+
+            fn monotonic_now(&self) -> Duration {
+                Duration::from_millis(self.now_ms.load(Ordering::SeqCst))
+            }
+
+            fn unix_now(&self) -> Duration {
+                self.monotonic_now()
+            }
+
+            fn entropy_u64(&self) -> u64 {
+                0
+            }
+
+            fn ensure_blocking_lanes(&self, _lanes: &[BlockingLaneSpec]) -> Result<()> {
+                Ok(())
+            }
+
+            fn run_blocking_value(&self, _lane: &str, task: BlockingValueTask) -> Result<IoValue> {
+                task()
+            }
+        }
+
+        let host = Arc::new(VirtualHealthHost {
+            now_ms: std::sync::atomic::AtomicU64::new(0),
+        });
+        let services = ExecutionServices::new(host).unwrap();
+        let budget = crate::SourceHealthBudget::new(
+            crate::SourceHealthLimits {
+                maximum_duration_ms: 100,
+                maximum_work_units: 2,
+                maximum_results: 1,
+                maximum_details_bytes: 2,
+                maximum_list_entries: 3,
+                maximum_payload_bytes: 4,
+                maximum_subprocess_output_bytes: 5,
+            },
+            services,
+            RunCancellation::default(),
+        )
+        .unwrap();
+        budget.consume_work(2).unwrap();
+        assert!(
+            budget
+                .consume_work(1)
+                .unwrap_err()
+                .message
+                .contains("work-unit")
+        );
+        budget.consume_list_entries(3).unwrap();
+        budget.consume_payload_bytes(4).unwrap();
+        budget
+            .record_result(&crate::SourceHealthResult {
+                probe_id: "health".to_owned(),
+                status: crate::SourceHealthStatus::Passed,
+                message: "passed".to_owned(),
+                details: serde_json::json!({}),
+            })
+            .unwrap();
+        assert!(
+            budget
+                .record_result(&crate::SourceHealthResult {
+                    probe_id: "again".to_owned(),
+                    status: crate::SourceHealthStatus::Passed,
+                    message: "passed".to_owned(),
+                    details: serde_json::json!({}),
+                })
+                .unwrap_err()
+                .message
+                .contains("result")
+        );
+        assert!(
+            budget
+                .delay(Duration::from_millis(100))
+                .unwrap_err()
+                .message
+                .contains("deadline")
+        );
+    }
+
     struct TestHost;
 
     impl ExecutionHost for TestHost {

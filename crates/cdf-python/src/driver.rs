@@ -2,7 +2,6 @@ use std::{
     collections::BTreeMap,
     fs,
     path::{Path, PathBuf},
-    process::Command,
     sync::Arc,
 };
 
@@ -216,6 +215,7 @@ impl PythonSourceDriver {
         request: SourceHealthRequest,
         context: &SourceResolutionContext<'_>,
     ) -> Result<Vec<SourceHealthResult>> {
+        request.budget.consume_work(1)?;
         let resource_count = request.compiled_plans.len();
         let Some(options) = context.driver_options(&self.descriptor.driver_id) else {
             let (status, message) = if resource_count == 0 {
@@ -242,8 +242,9 @@ impl PythonSourceDriver {
         };
         let options = decode_project_options(options)?;
         let path = configured_interpreter_path(context.project_root(), &options.interpreter);
-        let result = match probe_interpreter(&path) {
-            Err(message) => SourceHealthResult {
+        let result = match probe_interpreter(&path, &request.budget, context.execution()) {
+            Err(InterpreterProbeError::Budget(error)) => return Err(error),
+            Err(InterpreterProbeError::Diagnostic(message)) => SourceHealthResult {
                 probe_id: "interpreter".to_owned(),
                 status: SourceHealthStatus::Failed,
                 message,
@@ -425,53 +426,100 @@ struct PythonProbeReport {
     can_parallelize_python: bool,
 }
 
-fn probe_interpreter(path: &Path) -> std::result::Result<(PathBuf, PythonProbeReport), String> {
+#[derive(Debug)]
+enum InterpreterProbeError {
+    Diagnostic(String),
+    Budget(CdfError),
+}
+
+fn probe_interpreter(
+    path: &Path,
+    budget: &cdf_runtime::SourceHealthBudget,
+    execution: &cdf_runtime::ExecutionServices,
+) -> std::result::Result<(PathBuf, PythonProbeReport), InterpreterProbeError> {
+    budget.check().map_err(InterpreterProbeError::Budget)?;
     let metadata = fs::metadata(path).map_err(|error| {
         if error.kind() == std::io::ErrorKind::NotFound {
-            format!("configured interpreter is missing at {}", path.display())
+            InterpreterProbeError::Diagnostic(format!(
+                "configured interpreter is missing at {}",
+                path.display()
+            ))
         } else {
-            format!(
+            InterpreterProbeError::Diagnostic(format!(
                 "configured interpreter metadata could not be read at {}: {error}",
                 path.display()
-            )
+            ))
         }
     })?;
     if !metadata.is_file() {
-        return Err(format!(
+        return Err(InterpreterProbeError::Diagnostic(format!(
             "configured interpreter is not a file at {}",
             path.display()
-        ));
+        )));
     }
     if !is_executable(&metadata) {
-        return Err(format!(
+        return Err(InterpreterProbeError::Diagnostic(format!(
             "configured interpreter is not executable at {}",
             path.display()
-        ));
+        )));
     }
     let executable = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
-    let output = Command::new(&executable)
-        .arg("-I")
-        .arg("-c")
-        .arg(INTERPRETER_PROBE)
-        .output()
-        .map_err(|error| format!("configured interpreter could not be executed: {error}"))?;
-    if !output.status.success() {
-        return Err(match output.status.code() {
-            Some(code) => {
-                format!("configured interpreter inspection exited unsuccessfully with code {code}")
-            }
-            None => "configured interpreter inspection exited unsuccessfully".to_owned(),
-        });
+    let command = cdf_subprocess::CommandSpec::new(executable.to_string_lossy()).with_args([
+        "-I",
+        "-c",
+        INTERPRETER_PROBE,
+    ]);
+    let supervision = cdf_subprocess::SupervisionOptions {
+        timeout: Some(
+            budget
+                .remaining_duration()
+                .map_err(InterpreterProbeError::Budget)?,
+        ),
+        stderr_line_limit: 1,
+        maximum_stdout_bytes: budget.limits().maximum_subprocess_output_bytes,
+        maximum_stderr_bytes: 1024,
+    };
+    let output = match execution.run_io(cdf_subprocess::run_bounded_command(
+        command,
+        supervision,
+        budget.cancellation(),
+        execution.memory(),
+    )) {
+        Ok(output) => output,
+        Err(error) => {
+            return match budget.check() {
+                Err(budget_error) => Err(InterpreterProbeError::Budget(budget_error)),
+                Ok(()) => Err(InterpreterProbeError::Diagnostic(format!(
+                    "configured interpreter inspection failed: {}",
+                    error.message
+                ))),
+            };
+        }
+    };
+    if !output.exit_status.success() {
+        return Err(InterpreterProbeError::Diagnostic(
+            match output.exit_status.code() {
+                Some(code) => {
+                    format!(
+                        "configured interpreter inspection exited unsuccessfully with code {code}"
+                    )
+                }
+                None => "configured interpreter inspection exited unsuccessfully".to_owned(),
+            },
+        ));
     }
-    let report: PythonProbeReport = serde_json::from_slice(&output.stdout).map_err(|error| {
-        format!("configured interpreter did not emit valid inspection JSON: {error}")
-    })?;
+    let report: PythonProbeReport =
+        serde_json::from_slice(output.stdout.as_bytes()).map_err(|error| {
+            InterpreterProbeError::Diagnostic(format!(
+                "configured interpreter did not emit valid inspection JSON: {error}"
+            ))
+        })?;
     if report.version != format!("{}.{}.{}", report.major, report.minor, report.micro)
         || report.can_parallelize_python != (report.free_threaded_build && !report.gil_enabled)
     {
-        return Err(
+        return Err(InterpreterProbeError::Diagnostic(
             "configured interpreter emitted inconsistent version or GIL metadata".to_owned(),
-        );
+        ));
     }
     Ok((executable, report))
 }
@@ -486,6 +534,69 @@ fn is_executable(metadata: &fs::Metadata) -> bool {
 #[cfg(not(unix))]
 fn is_executable(_metadata: &fs::Metadata) -> bool {
     true
+}
+
+#[cfg(all(test, unix))]
+mod health_tests {
+    use std::{
+        io::Write,
+        os::unix::fs::PermissionsExt,
+        time::{Duration, Instant},
+    };
+
+    use super::*;
+
+    fn health_budget(
+        maximum_duration_ms: u64,
+        maximum_output_bytes: u64,
+    ) -> (
+        cdf_runtime::SourceHealthBudget,
+        cdf_runtime::ExecutionServices,
+    ) {
+        let (_host, execution) =
+            cdf_engine::StandaloneExecutionHost::default_services(16 * 1024 * 1024).unwrap();
+        let limits = cdf_runtime::SourceHealthLimits {
+            maximum_duration_ms,
+            maximum_subprocess_output_bytes: maximum_output_bytes,
+            ..cdf_runtime::SourceHealthLimits::default()
+        };
+        let budget = cdf_runtime::SourceHealthBudget::new(
+            limits,
+            execution.clone(),
+            cdf_runtime::RunCancellation::default(),
+        )
+        .unwrap();
+        (budget, execution)
+    }
+
+    #[test]
+    fn interpreter_health_probe_bounds_output_and_kills_at_deadline() {
+        let (budget, execution) = health_budget(1_000, 8);
+        let oversized = probe_interpreter(Path::new("/bin/echo"), &budget, &execution);
+        assert!(
+            matches!(
+            &oversized,
+            Err(InterpreterProbeError::Diagnostic(message))
+                if message.contains("stdout exceeded the 8-byte boundary")
+            ),
+            "unexpected oversized-probe result: {oversized:?}"
+        );
+
+        let script_path =
+            std::env::temp_dir().join(format!("cdf-python-health-hang-{}", std::process::id()));
+        let mut script = fs::File::create(&script_path).unwrap();
+        writeln!(script, "#!/bin/sh\nexec sleep 5").unwrap();
+        drop(script);
+        let mut permissions = fs::metadata(&script_path).unwrap().permissions();
+        permissions.set_mode(0o700);
+        fs::set_permissions(&script_path, permissions).unwrap();
+        let started = Instant::now();
+        let (budget, execution) = health_budget(20, 1024);
+        let timed_out = probe_interpreter(&script_path, &budget, &execution);
+        let _ = fs::remove_file(&script_path);
+        assert!(matches!(timed_out, Err(InterpreterProbeError::Budget(_))));
+        assert!(started.elapsed() < Duration::from_secs(1));
+    }
 }
 
 fn execution_capabilities(parallel: bool, bounded: bool) -> SourceExecutionCapabilities {

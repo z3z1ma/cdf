@@ -311,6 +311,10 @@ impl cdf_runtime::ExecutionHost for TestIoHost {
         std::time::Duration::ZERO
     }
 
+    fn unix_now(&self) -> std::time::Duration {
+        std::time::Duration::ZERO
+    }
+
     fn entropy_u64(&self) -> u64 {
         0
     }

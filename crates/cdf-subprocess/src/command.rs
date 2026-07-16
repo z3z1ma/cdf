@@ -4,6 +4,7 @@ use cdf_kernel::{
     Batch, ResourceDescriptor, SchemaSnapshotReference, SchemaSource, ScopeKey, TrustLevel,
     WriteDisposition,
 };
+use cdf_memory::{AccountedBytes, MemoryLease};
 use cdf_runtime::BoundedFormatRead;
 use serde::{Deserialize, Serialize};
 
@@ -54,6 +55,8 @@ pub enum StdoutFormat {
 pub struct SupervisionOptions {
     pub timeout: Option<Duration>,
     pub stderr_line_limit: usize,
+    pub maximum_stdout_bytes: u64,
+    pub maximum_stderr_bytes: u64,
 }
 
 impl Default for SupervisionOptions {
@@ -61,17 +64,63 @@ impl Default for SupervisionOptions {
         Self {
             timeout: None,
             stderr_line_limit: DEFAULT_STDERR_LINE_LIMIT,
+            maximum_stdout_bytes: 64 * 1024 * 1024,
+            maximum_stderr_bytes: 256 * 1024,
         }
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct StderrTrace {
-    pub lines: Vec<String>,
-    pub truncated: bool,
+#[derive(Debug)]
+pub struct BoundedCommandOutput {
+    pub stdout: BoundedCommandBytes,
+    pub stderr: StderrTrace,
+    pub exit_status: ExitStatus,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Debug)]
+pub struct BoundedCommandBytes {
+    bytes: Vec<u8>,
+    lease: Option<MemoryLease>,
+}
+
+impl BoundedCommandBytes {
+    pub(crate) fn new(bytes: Vec<u8>, lease: MemoryLease) -> cdf_kernel::Result<Self> {
+        let lease = if bytes.is_empty() {
+            None
+        } else {
+            lease.reconcile(u64::try_from(bytes.len()).map_err(|_| {
+                cdf_kernel::CdfError::data("subprocess output length exceeds u64")
+            })?)?;
+            Some(lease)
+        };
+        Ok(Self { bytes, lease })
+    }
+
+    pub fn as_bytes(&self) -> &[u8] {
+        &self.bytes
+    }
+
+    pub fn into_accounted(self) -> cdf_kernel::Result<AccountedBytes> {
+        let lease = self.lease.ok_or_else(|| {
+            cdf_kernel::CdfError::data("subprocess stdout did not contain any bytes")
+        })?;
+        AccountedBytes::new(bytes::Bytes::from(self.bytes), lease)
+    }
+}
+
+impl AsRef<[u8]> for BoundedCommandBytes {
+    fn as_ref(&self) -> &[u8] {
+        self.as_bytes()
+    }
+}
+
+#[derive(Debug)]
+pub struct StderrTrace {
+    bytes: BoundedCommandBytes,
+    line_limit: usize,
+}
+
+#[derive(Debug)]
 pub struct SubprocessOutput {
     pub read: SubprocessRead,
     pub stderr: StderrTrace,
@@ -126,26 +175,36 @@ impl SubprocessRead {
 }
 
 impl StderrTrace {
-    pub fn from_bytes(bytes: &[u8], line_limit: usize) -> Self {
-        let text = String::from_utf8_lossy(bytes);
+    pub(crate) fn new(bytes: BoundedCommandBytes, line_limit: usize) -> Self {
+        Self { bytes, line_limit }
+    }
+
+    pub fn lines(&self) -> Vec<String> {
+        let text = String::from_utf8_lossy(self.bytes.as_bytes());
         let mut lines = Vec::new();
-        let mut truncated = false;
         for line in text.lines() {
-            if lines.len() == line_limit {
-                truncated = true;
+            if lines.len() == self.line_limit {
                 break;
             }
             lines.push(line.to_owned());
         }
-        Self { lines, truncated }
+        lines
+    }
+
+    pub fn is_truncated(&self) -> bool {
+        String::from_utf8_lossy(self.bytes.as_bytes())
+            .lines()
+            .nth(self.line_limit)
+            .is_some()
     }
 
     pub fn summary(&self) -> String {
-        if self.lines.is_empty() {
+        let lines = self.lines();
+        if lines.is_empty() {
             return "<empty>".to_owned();
         }
-        let mut summary = self.lines.join(" | ");
-        if self.truncated {
+        let mut summary = lines.join(" | ");
+        if self.is_truncated() {
             summary.push_str(" | <truncated>");
         }
         summary

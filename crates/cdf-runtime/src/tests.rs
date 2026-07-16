@@ -966,6 +966,7 @@ impl SourceDriver for MockSourceDriver {
         request: SourceHealthRequest,
         _context: &SourceResolutionContext<'_>,
     ) -> Result<Vec<SourceHealthResult>> {
+        request.budget.consume_work(1)?;
         Ok(vec![SourceHealthResult {
             probe_id: "mock".to_owned(),
             status: SourceHealthStatus::Passed,

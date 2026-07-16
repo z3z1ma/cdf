@@ -750,6 +750,7 @@ pub fn local_file_discovery_candidates(
     plan: &FileResourcePlan,
     formats: &FormatRegistry,
     transforms: &ByteTransformRegistry,
+    maximum_candidates: usize,
 ) -> Result<Vec<LocalFileDiscoveryCandidate>> {
     if let Some(scheme) = file_transport_scheme(&plan.root)? {
         return Err(CdfError::contract(format!(
@@ -767,7 +768,8 @@ pub fn local_file_discovery_candidates(
     }
     let components = pattern_components(&plan.glob)?;
     let mut matches = Vec::new();
-    collect_matches(&root, &components, &mut matches)?;
+    let mut budget = LocalInventoryBudget::new(maximum_candidates);
+    collect_matches(&root, &components, &mut matches, &mut budget)?;
     matches.sort();
     matches.dedup();
 
@@ -867,15 +869,26 @@ impl FileResource {
         &self,
         scan_intent: &CompiledScanIntent,
     ) -> Result<Vec<PartitionPlan>> {
+        self.partitions_for_intent_with_inventory_limit(scan_intent, usize::MAX)
+    }
+
+    pub(crate) fn partitions_for_intent_with_inventory_limit(
+        &self,
+        scan_intent: &CompiledScanIntent,
+        maximum_matches: usize,
+    ) -> Result<Vec<PartitionPlan>> {
         self.dependencies.with_transport(|transport, egress| {
             file_partitions_for_plan_with_transport(
                 &self.descriptor,
                 &self.plan,
                 scan_intent,
-                transport,
-                egress,
-                self.dependencies.formats(),
-                self.dependencies.transforms(),
+                FilePlanningContext {
+                    transport,
+                    egress,
+                    formats: self.dependencies.formats(),
+                    transforms: self.dependencies.transforms(),
+                    maximum_matches,
+                },
             )
         })
     }
@@ -1668,22 +1681,28 @@ impl CompressionEvidence {
     }
 }
 
-pub(crate) fn file_partitions_for_plan_with_transport(
+struct FilePlanningContext<'a> {
+    transport: &'a dyn FileTransport,
+    egress: &'a SourceEgressScope,
+    formats: &'a FormatRegistry,
+    transforms: &'a ByteTransformRegistry,
+    maximum_matches: usize,
+}
+
+fn file_partitions_for_plan_with_transport(
     descriptor: &ResourceDescriptor,
     plan: &FileResourcePlan,
     scan_intent: &CompiledScanIntent,
-    transport: &dyn FileTransport,
-    egress: &SourceEgressScope,
-    formats: &FormatRegistry,
-    transforms: &ByteTransformRegistry,
+    context: FilePlanningContext<'_>,
 ) -> Result<Vec<PartitionPlan>> {
-    let matches = resolve_file_matches(
+    let matches = resolve_file_matches_bounded(
         &descriptor.resource_id,
         plan,
-        transport,
-        egress,
-        formats,
-        transforms,
+        context.transport,
+        context.egress,
+        context.formats,
+        context.transforms,
+        context.maximum_matches,
     )?;
     if matches.is_empty() {
         return Err(no_file_matches_error(&descriptor.resource_id, plan));
@@ -3169,6 +3188,7 @@ fn file_schema_observation_binding(file: &ResolvedFileMatch) -> String {
     format!("sha256:{:x}", hasher.finalize())
 }
 
+#[cfg(test)]
 fn resolve_file_matches(
     resource_id: &ResourceId,
     plan: &FileResourcePlan,
@@ -3177,8 +3197,33 @@ fn resolve_file_matches(
     formats: &FormatRegistry,
     transforms: &ByteTransformRegistry,
 ) -> Result<Vec<ResolvedFileMatch>> {
+    resolve_file_matches_bounded(
+        resource_id,
+        plan,
+        transport,
+        egress,
+        formats,
+        transforms,
+        usize::MAX,
+    )
+}
+
+fn resolve_file_matches_bounded(
+    resource_id: &ResourceId,
+    plan: &FileResourcePlan,
+    transport: &dyn FileTransport,
+    egress: &SourceEgressScope,
+    formats: &FormatRegistry,
+    transforms: &ByteTransformRegistry,
+    maximum_matches: usize,
+) -> Result<Vec<ResolvedFileMatch>> {
     match file_transport_scheme(&plan.root)? {
         Some(FileTransportScheme::Http | FileTransportScheme::Https) => {
+            if maximum_matches == 0 {
+                return Err(CdfError::data(
+                    "file inventory exceeds the 0-entry boundary",
+                ));
+            }
             return resolve_http_file_match(
                 resource_id,
                 plan,
@@ -3189,13 +3234,14 @@ fn resolve_file_matches(
             );
         }
         Some(FileTransportScheme::S3 | FileTransportScheme::Gs | FileTransportScheme::Az) => {
-            return resolve_object_store_matches(
+            return resolve_object_store_matches_bounded(
                 resource_id,
                 plan,
                 transport,
                 egress,
                 formats,
                 transforms,
+                maximum_matches,
             );
         }
         Some(FileTransportScheme::File) => {
@@ -3204,13 +3250,14 @@ fn resolve_file_matches(
                 .to_str()
                 .map(str::to_owned)
                 .ok_or_else(|| CdfError::data("file URL path is not valid UTF-8"))?;
-            return resolve_file_matches(
+            return resolve_file_matches_bounded(
                 resource_id,
                 &local_plan,
                 transport,
                 egress,
                 formats,
                 transforms,
+                maximum_matches,
             );
         }
         None => {}
@@ -3226,7 +3273,8 @@ fn resolve_file_matches(
 
     let components = pattern_components(&plan.glob)?;
     let mut matches = Vec::new();
-    collect_matches(&root, &components, &mut matches)?;
+    let mut budget = LocalInventoryBudget::new(maximum_matches);
+    collect_matches(&root, &components, &mut matches, &mut budget)?;
     matches.sort();
     matches.dedup();
 
@@ -3237,6 +3285,7 @@ fn resolve_file_matches(
         .collect()
 }
 
+#[cfg(test)]
 fn resolve_object_store_matches(
     resource_id: &ResourceId,
     plan: &FileResourcePlan,
@@ -3244,6 +3293,26 @@ fn resolve_object_store_matches(
     egress: &SourceEgressScope,
     formats: &FormatRegistry,
     transforms: &ByteTransformRegistry,
+) -> Result<Vec<ResolvedFileMatch>> {
+    resolve_object_store_matches_bounded(
+        resource_id,
+        plan,
+        transport,
+        egress,
+        formats,
+        transforms,
+        usize::MAX,
+    )
+}
+
+fn resolve_object_store_matches_bounded(
+    resource_id: &ResourceId,
+    plan: &FileResourcePlan,
+    transport: &dyn FileTransport,
+    egress: &SourceEgressScope,
+    formats: &FormatRegistry,
+    transforms: &ByteTransformRegistry,
+    maximum_matches: usize,
 ) -> Result<Vec<ResolvedFileMatch>> {
     let root_resource = FileTransportResource::object_store_url(plan.root.clone())
         .with_egress_allowlist(plan.allowlist.clone());
@@ -3253,7 +3322,7 @@ fn resolve_object_store_matches(
     };
     let components = pattern_components(&plan.glob)?;
     let mut matches = Vec::new();
-    for metadata in transport.list(egress, &root_resource)? {
+    for metadata in transport.list(egress, &root_resource, maximum_matches)? {
         let relative = object_store_relative_path(&plan.root, &metadata.location)?;
         if !glob_path_matches(&components, &relative) {
             continue;
@@ -3374,28 +3443,69 @@ fn pattern_components(pattern: &str) -> Result<Vec<String>> {
     Ok(components.into_iter().map(str::to_owned).collect())
 }
 
+struct LocalInventoryBudget {
+    maximum_entries: usize,
+    observed_entries: usize,
+}
+
+impl LocalInventoryBudget {
+    fn new(maximum_entries: usize) -> Self {
+        Self {
+            maximum_entries,
+            observed_entries: 0,
+        }
+    }
+
+    fn observe_entry(&mut self) -> Result<()> {
+        if self.observed_entries >= self.maximum_entries {
+            return Err(CdfError::data(format!(
+                "file inventory exceeds the {}-entry boundary",
+                self.maximum_entries
+            )));
+        }
+        self.observed_entries = self.observed_entries.saturating_add(1);
+        Ok(())
+    }
+
+    fn admit_match(&self, matches: &[PathBuf]) -> Result<()> {
+        if matches.len() >= self.maximum_entries {
+            return Err(CdfError::data(format!(
+                "file inventory exceeds the {}-entry boundary",
+                self.maximum_entries
+            )));
+        }
+        Ok(())
+    }
+}
+
 fn collect_matches(
     current: &Path,
     components: &[String],
     matches: &mut Vec<PathBuf>,
+    budget: &mut LocalInventoryBudget,
 ) -> Result<()> {
     let Some((component, rest)) = components.split_first() else {
-        return collect_leaf_match(current, matches);
+        return collect_leaf_match(current, matches, budget);
     };
 
     if component == "**" {
-        return collect_recursive_matches(current, components, rest, matches);
+        return collect_recursive_matches(current, components, rest, matches, budget);
     }
 
     if has_wildcards(component) {
-        return collect_wildcard_matches(current, component, rest, matches);
+        return collect_wildcard_matches(current, component, rest, matches, budget);
     }
 
-    collect_literal_matches(current, component, rest, matches)
+    collect_literal_matches(current, component, rest, matches, budget)
 }
 
-fn collect_leaf_match(current: &Path, matches: &mut Vec<PathBuf>) -> Result<()> {
+fn collect_leaf_match(
+    current: &Path,
+    matches: &mut Vec<PathBuf>,
+    budget: &LocalInventoryBudget,
+) -> Result<()> {
     if current.is_file() {
+        budget.admit_match(matches)?;
         matches.push(current.to_path_buf());
     }
     Ok(())
@@ -3406,11 +3516,12 @@ fn collect_recursive_matches(
     components: &[String],
     rest: &[String],
     matches: &mut Vec<PathBuf>,
+    budget: &mut LocalInventoryBudget,
 ) -> Result<()> {
-    collect_matches(current, rest, matches)?;
-    for path in read_dir_paths(current)? {
+    collect_matches(current, rest, matches, budget)?;
+    for path in read_dir_paths(current, budget)? {
         if is_physical_dir(&path)? {
-            collect_matches(&path, components, matches)?;
+            collect_matches(&path, components, matches, budget)?;
         }
     }
     Ok(())
@@ -3421,13 +3532,14 @@ fn collect_wildcard_matches(
     component: &str,
     rest: &[String],
     matches: &mut Vec<PathBuf>,
+    budget: &mut LocalInventoryBudget,
 ) -> Result<()> {
-    for path in read_dir_paths(current)? {
+    for path in read_dir_paths(current, budget)? {
         let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
             continue;
         };
         if glob_component_matches(component, name) && can_descend_for_rest(&path, rest)? {
-            collect_matches(&path, rest, matches)?;
+            collect_matches(&path, rest, matches, budget)?;
         }
     }
     Ok(())
@@ -3438,10 +3550,11 @@ fn collect_literal_matches(
     component: &str,
     rest: &[String],
     matches: &mut Vec<PathBuf>,
+    budget: &mut LocalInventoryBudget,
 ) -> Result<()> {
     let next = current.join(component);
     if can_descend_for_rest(&next, rest)? {
-        collect_matches(&next, rest, matches)
+        collect_matches(&next, rest, matches, budget)
     } else {
         Ok(())
     }
@@ -3451,7 +3564,7 @@ fn can_descend_for_rest(path: &Path, rest: &[String]) -> Result<bool> {
     Ok(rest.is_empty() || is_physical_dir(path)?)
 }
 
-fn read_dir_paths(path: &Path) -> Result<Vec<PathBuf>> {
+fn read_dir_paths(path: &Path, budget: &mut LocalInventoryBudget) -> Result<Vec<PathBuf>> {
     let entries = match fs::read_dir(path) {
         Ok(entries) => entries,
         Err(error)
@@ -3470,15 +3583,20 @@ fn read_dir_paths(path: &Path) -> Result<Vec<PathBuf>> {
         }
     };
 
-    let mut paths = entries
-        .map(|entry| entry.map(|entry| entry.path()))
-        .collect::<std::io::Result<Vec<_>>>()
-        .map_err(|error| {
-            CdfError::data(format!(
-                "read file source directory {}: {error}",
-                path.display()
-            ))
-        })?;
+    let mut paths = Vec::new();
+    for entry in entries {
+        budget.observe_entry()?;
+        paths.push(
+            entry
+                .map_err(|error| {
+                    CdfError::data(format!(
+                        "read file source directory {}: {error}",
+                        path.display()
+                    ))
+                })?
+                .path(),
+        );
+    }
     paths.sort();
     Ok(paths)
 }
@@ -4422,9 +4540,10 @@ mod tests {
             &self,
             egress: &cdf_runtime::SourceEgressScope,
             resource: &FileTransportResource,
+            maximum_results: usize,
         ) -> Result<Vec<FileIdentityMetadata>> {
             self.listings.fetch_add(1, Ordering::Relaxed);
-            self.inner.list(egress, resource)
+            self.inner.list(egress, resource, maximum_results)
         }
 
         fn open_byte_source(
@@ -5393,10 +5512,13 @@ mod tests {
             &descriptor,
             &plan,
             &CompiledScanIntent::full_scan(),
-            &transport,
-            &crate::test_egress_scope(),
-            formats.as_ref(),
-            transforms.as_ref(),
+            FilePlanningContext {
+                transport: &transport,
+                egress: &crate::test_egress_scope(),
+                formats: formats.as_ref(),
+                transforms: transforms.as_ref(),
+                maximum_matches: usize::MAX,
+            },
         )
         .unwrap();
         assert_eq!(partitions.len(), 2);

@@ -3,6 +3,7 @@ use std::{
     collections::BTreeMap,
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
+    time::Duration,
 };
 
 use arrow_schema::Schema;
@@ -825,9 +826,240 @@ impl SourceHealthResult {
     }
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SourceHealthLimits {
+    pub maximum_duration_ms: u64,
+    pub maximum_work_units: u64,
+    pub maximum_results: u64,
+    pub maximum_details_bytes: u64,
+    pub maximum_list_entries: u64,
+    pub maximum_payload_bytes: u64,
+    pub maximum_subprocess_output_bytes: u64,
+}
+
+impl SourceHealthLimits {
+    pub fn validate(&self) -> Result<()> {
+        if self.maximum_duration_ms == 0
+            || self.maximum_work_units == 0
+            || self.maximum_results == 0
+            || self.maximum_details_bytes == 0
+            || self.maximum_list_entries == 0
+            || self.maximum_payload_bytes == 0
+            || self.maximum_subprocess_output_bytes == 0
+        {
+            return Err(CdfError::contract(
+                "source health limits must all be greater than zero",
+            ));
+        }
+        Ok(())
+    }
+}
+
+impl Default for SourceHealthLimits {
+    fn default() -> Self {
+        Self {
+            maximum_duration_ms: 30_000,
+            maximum_work_units: 10_000,
+            maximum_results: 4_096,
+            maximum_details_bytes: 8 * 1024 * 1024,
+            maximum_list_entries: 10_000,
+            maximum_payload_bytes: 8 * 1024 * 1024,
+            maximum_subprocess_output_bytes: 64 * 1024,
+        }
+    }
+}
+
+#[derive(Clone)]
+pub struct SourceHealthBudget {
+    limits: SourceHealthLimits,
+    started_ms: u64,
+    execution: ExecutionServices,
+    cancellation: crate::RunCancellation,
+    state: Arc<Mutex<SourceHealthBudgetState>>,
+}
+
+#[derive(Default)]
+struct SourceHealthBudgetState {
+    work_units: u64,
+    results: u64,
+    details_bytes: u64,
+    list_entries: u64,
+    payload_bytes: u64,
+}
+
+impl std::fmt::Debug for SourceHealthBudget {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("SourceHealthBudget")
+            .field("limits", &self.limits)
+            .field("started_ms", &self.started_ms)
+            .finish_non_exhaustive()
+    }
+}
+
+impl SourceHealthBudget {
+    pub fn new(
+        limits: SourceHealthLimits,
+        execution: ExecutionServices,
+        cancellation: crate::RunCancellation,
+    ) -> Result<Self> {
+        limits.validate()?;
+        let started_ms = duration_millis(execution.monotonic_now());
+        Ok(Self {
+            limits,
+            started_ms,
+            execution,
+            cancellation,
+            state: Arc::new(Mutex::new(SourceHealthBudgetState::default())),
+        })
+    }
+
+    pub fn limits(&self) -> SourceHealthLimits {
+        self.limits
+    }
+
+    pub fn cancellation(&self) -> crate::RunCancellation {
+        self.cancellation.clone()
+    }
+
+    pub fn check(&self) -> Result<()> {
+        self.cancellation.check()?;
+        let elapsed_ms =
+            duration_millis(self.execution.monotonic_now()).saturating_sub(self.started_ms);
+        if elapsed_ms >= self.limits.maximum_duration_ms {
+            return Err(CdfError::data(format!(
+                "source health deadline of {} ms was exhausted",
+                self.limits.maximum_duration_ms
+            )));
+        }
+        Ok(())
+    }
+
+    pub fn remaining_duration(&self) -> Result<Duration> {
+        self.check()?;
+        let elapsed_ms =
+            duration_millis(self.execution.monotonic_now()).saturating_sub(self.started_ms);
+        Ok(Duration::from_millis(
+            self.limits.maximum_duration_ms.saturating_sub(elapsed_ms),
+        ))
+    }
+
+    pub fn consume_work(&self, units: u64) -> Result<()> {
+        self.consume_counter(
+            units,
+            self.limits.maximum_work_units,
+            "work-unit",
+            |state| &mut state.work_units,
+        )
+    }
+
+    pub fn consume_list_entries(&self, entries: u64) -> Result<()> {
+        self.consume_counter(
+            entries,
+            self.limits.maximum_list_entries,
+            "list-entry",
+            |state| &mut state.list_entries,
+        )
+    }
+
+    pub fn remaining_list_entries(&self) -> Result<u64> {
+        self.check()?;
+        let state = self
+            .state
+            .lock()
+            .map_err(|_| CdfError::internal("source health budget lock is poisoned"))?;
+        Ok(self
+            .limits
+            .maximum_list_entries
+            .saturating_sub(state.list_entries))
+    }
+
+    pub fn consume_payload_bytes(&self, bytes: u64) -> Result<()> {
+        self.consume_counter(
+            bytes,
+            self.limits.maximum_payload_bytes,
+            "payload-byte",
+            |state| &mut state.payload_bytes,
+        )
+    }
+
+    pub fn record_result(&self, result: &SourceHealthResult) -> Result<()> {
+        let details_bytes = u64::try_from(
+            serde_json::to_vec(&result.details)
+                .map_err(|error| CdfError::internal(format!("serialize health details: {error}")))?
+                .len(),
+        )
+        .unwrap_or(u64::MAX);
+        self.check()?;
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| CdfError::internal("source health budget lock is poisoned"))?;
+        let next_results = state
+            .results
+            .checked_add(1)
+            .ok_or_else(|| CdfError::data("source health result budget overflowed"))?;
+        let next_details = state
+            .details_bytes
+            .checked_add(details_bytes)
+            .ok_or_else(|| CdfError::data("source health detail-byte budget overflowed"))?;
+        if next_results > self.limits.maximum_results {
+            return Err(CdfError::data(format!(
+                "source health result budget of {} was exhausted",
+                self.limits.maximum_results
+            )));
+        }
+        if next_details > self.limits.maximum_details_bytes {
+            return Err(CdfError::data(format!(
+                "source health detail-byte budget of {} was exhausted",
+                self.limits.maximum_details_bytes
+            )));
+        }
+        state.results = next_results;
+        state.details_bytes = next_details;
+        Ok(())
+    }
+
+    pub fn delay(&self, duration: Duration) -> Result<()> {
+        self.check()?;
+        futures_executor::block_on(self.execution.delay(duration, self.cancellation.clone()))?;
+        self.check()
+    }
+
+    fn consume_counter(
+        &self,
+        amount: u64,
+        maximum: u64,
+        label: &str,
+        select: impl FnOnce(&mut SourceHealthBudgetState) -> &mut u64,
+    ) -> Result<()> {
+        self.check()?;
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| CdfError::internal("source health budget lock is poisoned"))?;
+        let counter = select(&mut state);
+        let next = counter
+            .checked_add(amount)
+            .ok_or_else(|| CdfError::data(format!("source health {label} budget overflowed")))?;
+        if next > maximum {
+            return Err(CdfError::data(format!(
+                "source health {label} budget of {maximum} was exhausted"
+            )));
+        }
+        *counter = next;
+        Ok(())
+    }
+}
+
+fn duration_millis(duration: Duration) -> u64 {
+    u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
+}
+
+#[derive(Clone, Debug)]
 pub struct SourceHealthRequest {
     pub compiled_plans: Vec<CompiledSourcePlan>,
+    pub budget: SourceHealthBudget,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

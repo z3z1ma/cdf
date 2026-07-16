@@ -115,7 +115,12 @@ fn source_driver_health_checks(
         std::sync::Arc::new(cdf_http::EgressAllowlist::allow_any()),
     )
     .with_driver_options(context.config.driver_options.clone());
-    match registry.health_checks(&resolution, &plans) {
+    match registry.health_checks(
+        &resolution,
+        &plans,
+        cdf_runtime::SourceHealthLimits::default(),
+        cdf_runtime::RunCancellation::default(),
+    ) {
         Ok(results) => results
             .into_iter()
             .map(|result| {

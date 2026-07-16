@@ -6,7 +6,7 @@ use std::{
 };
 
 use cdf_http::{AuthScheme, EgressAllowlist, SecretProvider, SecretUri};
-use cdf_kernel::{CdfError, QueryableResource, ResourceStream, Result, ScanRequest};
+use cdf_kernel::{CdfError, CompiledScanIntent, QueryableResource, Result};
 use cdf_runtime::{
     CompiledFormatBinding, CompiledSourcePlan, ExecutionServices, FormatDiscoveryKind,
     FormatRegistry, SourceAddPlanner, SourceAddProposal, SourceAddRequest,
@@ -117,20 +117,36 @@ impl SourceDriver for FileSourceDriver {
             .compiled_plans
             .iter()
             .map(|plan| {
+                request.budget.consume_work(1)?;
                 let resource_id = plan.descriptor.resource_id.as_str();
+                let maximum_entries =
+                    usize::try_from(request.budget.remaining_list_entries()?).unwrap_or(usize::MAX);
                 match self
-                    .discovery_session(plan, context)
+                    .discovery_session_with_limit(plan, context, maximum_entries)
                     .and_then(|session| session.candidates())
                 {
-                    Ok(candidates) => Ok(SourceHealthResult {
-                        probe_id: resource_id.to_owned(),
-                        status: SourceHealthStatus::Passed,
-                        message: "file source inventory probe passed".to_owned(),
-                        details: serde_json::json!({
-                            "resource_id": resource_id,
-                            "candidates": candidates.len(),
-                        }),
-                    }),
+                    Ok(candidates) => {
+                        if candidates.is_empty() {
+                            return Ok(SourceHealthResult::failed(
+                                resource_id,
+                                "file source inventory matched no candidates",
+                                &plan.descriptor.resource_id,
+                                &CdfError::data("configured file resource matched no files"),
+                            ));
+                        }
+                        request.budget.consume_list_entries(
+                            u64::try_from(candidates.len()).unwrap_or(u64::MAX),
+                        )?;
+                        Ok(SourceHealthResult {
+                            probe_id: resource_id.to_owned(),
+                            status: SourceHealthStatus::Passed,
+                            message: "file source inventory probe passed".to_owned(),
+                            details: serde_json::json!({
+                                "resource_id": resource_id,
+                                "candidates": candidates.len(),
+                            }),
+                        })
+                    }
                     Err(error) => Ok(SourceHealthResult::failed(
                         resource_id,
                         "file source inventory probe failed",
@@ -209,31 +225,11 @@ impl SourceDriver for FileSourceDriver {
         plan: &CompiledSourcePlan,
         context: &SourceResolutionContext<'_>,
     ) -> Result<Box<dyn SourceDiscoverySession>> {
-        plan.validate()?;
-        let physical: FilePhysicalPlan = serde_json::from_value(plan.physical_plan.clone())
-            .map_err(|error| CdfError::contract(format!("invalid file source plan: {error}")))?;
-        validate_compiled_capabilities(plan, &physical.compiled_format)?;
-        let dependencies = (self.runtime_factory)(
-            Arc::clone(context.secret_provider()),
-            context.execution().clone(),
-            context.egress_scope(&plan.driver.driver_id),
-        )?
-        .with_prepared_payloads(context.prepared_payloads().clone());
-        physical.compiled_format.verify(dependencies.formats())?;
-        let runtime_plan = physical.to_runtime_plan(context.project_root())?;
-        let entries = file_discovery_entries(
+        Ok(Box::new(self.discovery_session_with_limit(
             plan,
-            &runtime_plan,
-            &physical.compiled_format,
-            &dependencies,
-        )?;
-        Ok(Box::new(FileDriverDiscoverySession {
-            resource_id: plan.descriptor.resource_id.clone(),
-            plan: runtime_plan,
-            compiled_format: physical.compiled_format,
-            dependencies,
-            entries,
-        }))
+            context,
+            usize::MAX,
+        )?))
     }
 
     fn resolve(
@@ -265,6 +261,42 @@ impl SourceDriver for FileSourceDriver {
             )?
             .with_compiled_source_plan_hash(cdf_runtime::artifact_hash(plan)?),
         ))
+    }
+}
+
+impl FileSourceDriver {
+    fn discovery_session_with_limit(
+        &self,
+        plan: &CompiledSourcePlan,
+        context: &SourceResolutionContext<'_>,
+        maximum_entries: usize,
+    ) -> Result<FileDriverDiscoverySession> {
+        plan.validate()?;
+        let physical: FilePhysicalPlan = serde_json::from_value(plan.physical_plan.clone())
+            .map_err(|error| CdfError::contract(format!("invalid file source plan: {error}")))?;
+        validate_compiled_capabilities(plan, &physical.compiled_format)?;
+        let dependencies = (self.runtime_factory)(
+            Arc::clone(context.secret_provider()),
+            context.execution().clone(),
+            context.egress_scope(&plan.driver.driver_id),
+        )?
+        .with_prepared_payloads(context.prepared_payloads().clone());
+        physical.compiled_format.verify(dependencies.formats())?;
+        let runtime_plan = physical.to_runtime_plan(context.project_root())?;
+        let entries = file_discovery_entries(
+            plan,
+            &runtime_plan,
+            &physical.compiled_format,
+            &dependencies,
+            maximum_entries,
+        )?;
+        Ok(FileDriverDiscoverySession {
+            resource_id: plan.descriptor.resource_id.clone(),
+            plan: runtime_plan,
+            compiled_format: physical.compiled_format,
+            dependencies,
+            entries,
+        })
     }
 }
 
@@ -589,6 +621,7 @@ fn file_discovery_entries(
     plan: &FileResourcePlan,
     compiled_format: &CompiledFormatBinding,
     dependencies: &FileRuntimeDependencies,
+    maximum_entries: usize,
 ) -> Result<Vec<FileDriverDiscoveryEntry>> {
     if !uses_transport_inventory(&plan.root)? {
         return local_file_discovery_candidates(
@@ -596,6 +629,7 @@ fn file_discovery_entries(
             plan,
             dependencies.formats(),
             dependencies.transforms(),
+            maximum_entries,
         )?
         .into_iter()
         .map(|candidate| {
@@ -634,14 +668,10 @@ fn file_discovery_entries(
         },
         dependencies.clone(),
     )?;
-    let partitions = runtime.plan_partitions(&ScanRequest {
-        resource_id: source_plan.descriptor.resource_id.clone(),
-        projection: None,
-        filters: Vec::new(),
-        limit: None,
-        order_by: Vec::new(),
-        scope: source_plan.descriptor.state_scope.clone(),
-    })?;
+    let partitions = runtime.partitions_for_intent_with_inventory_limit(
+        &CompiledScanIntent::full_scan(),
+        maximum_entries,
+    )?;
     partitions
         .into_iter()
         .map(|partition| {
@@ -1413,7 +1443,7 @@ mod tests {
         );
         request
             .resource_options
-            .insert("glob".to_owned(), serde_json::json!("events.ndjson"));
+            .insert("glob".to_owned(), serde_json::json!("*.ndjson"));
         request
             .resource_options
             .insert("format".to_owned(), serde_json::json!("ndjson"));
@@ -1432,6 +1462,12 @@ mod tests {
             .health(
                 SourceHealthRequest {
                     compiled_plans: vec![plan.clone()],
+                    budget: cdf_runtime::SourceHealthBudget::new(
+                        cdf_runtime::SourceHealthLimits::default(),
+                        execution.clone(),
+                        cdf_runtime::RunCancellation::default(),
+                    )
+                    .unwrap(),
                 },
                 &context,
             )
@@ -1455,5 +1491,26 @@ mod tests {
         assert_eq!(observation.bytes_read, payload.len() as u64);
         assert_eq!(observation.records_read, 2);
         assert_eq!(observation.schema.fields()[0].name(), "id");
+
+        std::fs::write(root.path().join("later.ndjson"), payload).unwrap();
+        let bounded_health = driver
+            .health(
+                SourceHealthRequest {
+                    compiled_plans: vec![plan],
+                    budget: cdf_runtime::SourceHealthBudget::new(
+                        cdf_runtime::SourceHealthLimits {
+                            maximum_list_entries: 1,
+                            ..cdf_runtime::SourceHealthLimits::default()
+                        },
+                        execution.clone(),
+                        cdf_runtime::RunCancellation::default(),
+                    )
+                    .unwrap(),
+                },
+                &context,
+            )
+            .unwrap();
+        assert_eq!(bounded_health.len(), 1);
+        assert_eq!(bounded_health[0].status, SourceHealthStatus::Failed);
     }
 }

@@ -145,6 +145,7 @@ impl SourceDriver for ExternalMockSourceDriver {
         request: SourceHealthRequest,
         _context: &SourceResolutionContext<'_>,
     ) -> Result<Vec<SourceHealthResult>> {
+        request.budget.consume_work(1)?;
         Ok(vec![SourceHealthResult {
             probe_id: "health".to_owned(),
             status: SourceHealthStatus::Passed,
@@ -452,7 +453,12 @@ fn external_source_inherits_registry_schema_add_discovery_and_doctor_laws() {
     assert_eq!(observation.schema, *compiled.schema().as_ref());
 
     let health = registry
-        .health_checks(&context, &[compiled.source_plan().clone()])
+        .health_checks(
+            &context,
+            &[compiled.source_plan().clone()],
+            cdf_runtime::SourceHealthLimits::default(),
+            cdf_runtime::RunCancellation::default(),
+        )
         .unwrap();
     assert_eq!(health.len(), 1);
     assert_eq!(health[0].status, SourceHealthStatus::Passed);

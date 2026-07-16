@@ -13,7 +13,7 @@ use cdf_http::{
 use cdf_kernel::{BoxFuture, CdfError, ErrorKind, FilePosition, Result};
 use cdf_memory::MemoryCoordinator;
 use cdf_runtime::{ByteSource, GenerationStrength, SourceEgressScope};
-use futures_util::TryStreamExt;
+use futures_util::{StreamExt, TryStreamExt};
 use object_store::{ObjectStore, ObjectStoreExt, path::Path as ObjectPath};
 use serde::{Deserialize, Serialize};
 use url::Url;
@@ -271,6 +271,7 @@ pub trait FileTransport: Send + Sync {
         &self,
         egress: &SourceEgressScope,
         resource: &FileTransportResource,
+        maximum_results: usize,
     ) -> Result<Vec<FileIdentityMetadata>>;
     fn open_byte_source(
         &self,
@@ -458,15 +459,20 @@ impl FileTransport for FileTransportFacade {
         &self,
         egress: &SourceEgressScope,
         resource: &FileTransportResource,
+        maximum_results: usize,
     ) -> Result<Vec<FileIdentityMetadata>> {
         match &resource.location {
-            FileTransportLocation::LocalPath { path } => list_local(Path::new(path)),
-            FileTransportLocation::FileUrl { url } => list_local(&file_url_path(url)?),
+            FileTransportLocation::LocalPath { path } => {
+                list_local(Path::new(path), maximum_results)
+            }
+            FileTransportLocation::FileUrl { url } => {
+                list_local(&file_url_path(url)?, maximum_results)
+            }
             FileTransportLocation::HttpUrl { .. } => Err(CdfError::contract(
                 "HTTP(S) file transport does not support arbitrary directory listing; use an explicit URL or a ratified template/range enumerator",
             )),
             FileTransportLocation::ObjectStoreUrl { url } => {
-                self.list_object_store(egress, resource, url)
+                self.list_object_store(egress, resource, url, maximum_results)
             }
         }
     }
@@ -532,13 +538,24 @@ impl FileTransportFacade {
         egress: &SourceEgressScope,
         resource: &FileTransportResource,
         url: &str,
+        maximum_results: usize,
     ) -> Result<Vec<FileIdentityMetadata>> {
         let (store, prefix, origin) = self.resolve_object_store(egress, resource, url)?;
+        let boundary = maximum_results.saturating_add(1);
         let objects = self
-            .object_store_io(
-                async move { Ok(store.list(Some(&prefix)).try_collect::<Vec<_>>().await) },
-            )?
+            .object_store_io(async move {
+                Ok(store
+                    .list(Some(&prefix))
+                    .take(boundary)
+                    .try_collect::<Vec<_>>()
+                    .await)
+            })?
             .map_err(|error| object_store_error("list object prefix", error))?;
+        if objects.len() > maximum_results {
+            return Err(CdfError::data(format!(
+                "file inventory exceeds the {maximum_results}-entry boundary"
+            )));
+        }
         let mut identities = objects
             .into_iter()
             .map(|metadata| {
@@ -840,7 +857,7 @@ pub(crate) fn verify_generation_identity(
     Ok(())
 }
 
-fn list_local(path: &Path) -> Result<Vec<FileIdentityMetadata>> {
+fn list_local(path: &Path, maximum_results: usize) -> Result<Vec<FileIdentityMetadata>> {
     let metadata = fs::metadata(path).map_err(|error| {
         CdfError::data(format!(
             "stat local file source {}: {error}",
@@ -863,7 +880,12 @@ fn list_local(path: &Path) -> Result<Vec<FileIdentityMetadata>> {
                 path.display()
             ))
         })?
-        .map(|entry| entry.map(|entry| entry.path()))
+        .filter_map(|entry| match entry {
+            Ok(entry) if entry.path().is_file() => Some(Ok(entry.path())),
+            Ok(_) => None,
+            Err(error) => Some(Err(error)),
+        })
+        .take(maximum_results.saturating_add(1))
         .collect::<std::io::Result<Vec<_>>>()
         .map_err(|error| {
             CdfError::data(format!(
@@ -871,10 +893,14 @@ fn list_local(path: &Path) -> Result<Vec<FileIdentityMetadata>> {
                 path.display()
             ))
         })?;
+    if entries.len() > maximum_results {
+        return Err(CdfError::data(format!(
+            "file inventory exceeds the {maximum_results}-entry boundary"
+        )));
+    }
     entries.sort();
     entries
         .into_iter()
-        .filter(|entry| entry.is_file())
         .map(|entry| local_metadata(&entry))
         .collect()
 }
@@ -1116,7 +1142,9 @@ mod tests {
             .with_object_store("s3://acme-events", store)
             .with_execution_services(crate::test_execution_services());
         let root = FileTransportResource::object_store_url("s3://acme-events/prod/");
-        let listed = transport.list(&crate::test_egress_scope(), &root).unwrap();
+        let listed = transport
+            .list(&crate::test_egress_scope(), &root, usize::MAX)
+            .unwrap();
         assert_eq!(listed.len(), 1);
         assert_eq!(
             listed[0].location,
@@ -1128,6 +1156,32 @@ mod tests {
             .metadata(&crate::test_egress_scope(), &object)
             .unwrap();
         assert_eq!(head.identity.size_bytes, Some(15));
+    }
+
+    #[test]
+    fn file_transport_inventory_stops_at_the_caller_boundary() {
+        let store = Arc::new(InMemory::new());
+        for path in ["prod/a.parquet", "prod/b.parquet"] {
+            futures_executor::block_on(
+                store.put(&ObjectPath::from(path), PutPayload::from_static(b"PAR1")),
+            )
+            .unwrap();
+        }
+        let transport = FileTransportFacade::new()
+            .with_object_store("s3://bounded", store)
+            .with_execution_services(crate::test_execution_services());
+        let root = FileTransportResource::object_store_url("s3://bounded/prod/");
+        let error = transport
+            .list(&crate::test_egress_scope(), &root, 1)
+            .unwrap_err();
+        assert!(error.message.contains("1-entry boundary"));
+        assert_eq!(
+            transport
+                .list(&crate::test_egress_scope(), &root, 2)
+                .unwrap()
+                .len(),
+            2
+        );
     }
 
     #[test]
@@ -1361,7 +1415,7 @@ mod tests {
         let transport = http_facade(client);
 
         let error = transport
-            .list(&crate::test_egress_scope(), &resource)
+            .list(&crate::test_egress_scope(), &resource, usize::MAX)
             .unwrap_err();
         assert_eq!(error.kind, ErrorKind::Contract);
         assert!(

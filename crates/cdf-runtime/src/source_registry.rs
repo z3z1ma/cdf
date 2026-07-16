@@ -290,7 +290,11 @@ impl SourceRegistry {
         &self,
         context: &SourceResolutionContext<'_>,
         compiled_plans: &[CompiledSourcePlan],
+        limits: crate::SourceHealthLimits,
+        cancellation: crate::RunCancellation,
     ) -> Result<Vec<SourceHealthResult>> {
+        let budget =
+            crate::SourceHealthBudget::new(limits, context.execution().clone(), cancellation)?;
         let mut plans = BTreeMap::<SourceDriverId, Vec<CompiledSourcePlan>>::new();
         for plan in compiled_plans {
             let driver = self.driver_for_plan(plan)?;
@@ -316,11 +320,13 @@ impl SourceRegistry {
             let driver_results = driver.health(
                 SourceHealthRequest {
                     compiled_plans: driver_plans,
+                    budget: budget.clone(),
                 },
                 context,
             )?;
             for result in driver_results {
                 let result = verify_health_result(driver_id, result)?;
+                budget.record_result(&result)?;
                 if !probe_ids.insert(result.probe_id.clone()) {
                     return Err(CdfError::contract(format!(
                         "source health probe id `{}` was emitted more than once",
