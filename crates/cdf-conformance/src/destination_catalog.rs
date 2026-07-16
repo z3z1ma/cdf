@@ -87,7 +87,7 @@ pub(crate) fn resolve(
         .with_destination_policy(&POLICY)
         .with_execution_services(&execution);
     let runtime = registry()?.resolve(uri, &context)?;
-    Ok(ResolvedProjectDestination::new(runtime, target))
+    Ok(ResolvedProjectDestination::new(runtime, target).with_execution_services(execution))
 }
 
 pub(crate) fn local_uri(scheme: &str, path: &Path) -> String {

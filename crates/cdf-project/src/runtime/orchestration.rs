@@ -21,29 +21,6 @@ use super::{
 use cdf_contract::{AnomalyFact, ValidationDepth, ValidationProgram, ValidationTransitionTrigger};
 use cdf_kernel::ScopeLeaseStore;
 use std::sync::Arc;
-#[cfg(test)]
-pub(crate) async fn run_local_file_to_duckdb_checkpoint(
-    request: LocalFileDuckDbRunRequest<'_>,
-) -> Result<LocalFileDuckDbRunReport> {
-    let services = request.services;
-    let destination = ResolvedProjectDestination::duckdb(request.destination_path, request.target)?;
-    let request = ProjectRunRequest {
-        resource: ProjectRunSource::new(request.resource),
-        plan: request.plan,
-        package_root: request.package_root,
-        state_store_path: request.state_store_path,
-        pipeline_id: request.pipeline_id,
-        package_id: request.package_id,
-        checkpoint_id: request.checkpoint_id,
-        destination,
-        run_id: None,
-        event_sink: None,
-        after_receipt_verified: request.after_receipt_verified,
-    };
-    Ok(run_project(request, &services)
-        .await?
-        .into_local_file_duckdb_report())
-}
 
 pub async fn run_project(
     request: ProjectRunRequest<'_>,

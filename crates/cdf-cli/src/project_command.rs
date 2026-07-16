@@ -64,7 +64,9 @@ pub(crate) fn validate(
         ProjectContext::load_for_command("validate", cli.project.as_ref(), cli.env.as_deref())?;
     let resolver = FileResourceSourceResolver::new(&context.root);
     let provider = context.secret_provider();
+    let source_registry = crate::source_registry::builtin_source_registry()?;
     let report = validate_project(
+        &source_registry,
         &context.config,
         Some(&context.environment.name),
         &resolver,

@@ -1,6 +1,4 @@
 use super::prelude::*;
-#[cfg(test)]
-use super::types::LocalFileDuckDbRunRequest;
 use cdf_kernel::CapabilitySupport;
 use cdf_package_contract::{PROCESSED_OBSERVATIONS_FILE, ProcessedObservationEvidenceArtifact};
 
@@ -147,8 +145,16 @@ fn capability_support_name(support: &CapabilitySupport) -> &'static str {
 }
 
 #[cfg(test)]
+pub(crate) struct StateDeltaTestRequest<'a> {
+    pub resource: &'a dyn QueryableResource,
+    pub pipeline_id: PipelineId,
+    pub checkpoint_id: CheckpointId,
+    pub target: TargetName,
+}
+
+#[cfg(test)]
 pub(crate) fn state_delta_from_run(
-    request: &LocalFileDuckDbRunRequest<'_>,
+    request: &StateDeltaTestRequest<'_>,
     output: &EngineRunOutputWithSegmentPositions,
     schema_hash: &SchemaHash,
     scope: &ScopeKey,
@@ -209,7 +215,6 @@ fn state_delta_preimage_from_run_draft(
                     segment.segment_id
                 ))
             })?;
-        let segment_position = normalize_source_position_for_scope(segment_position, scope);
         segment_evidence.push((segment, segment_position));
     }
 
@@ -221,9 +226,7 @@ fn state_delta_preimage_from_run_draft(
     let observed_positions = execution_evidence
         .processed_observations()
         .iter()
-        .map(|observation| {
-            normalize_source_position_for_scope(observation.source_position.clone(), scope)
-        })
+        .map(|observation| observation.source_position.clone())
         .collect::<Vec<_>>();
     let output_position = cdf_kernel::aggregate_resource_closed_output_position(
         context.descriptor,
@@ -253,21 +256,6 @@ fn state_delta_preimage_from_run_draft(
         schema_hash: schema_hash.clone(),
         segments: state_segments,
     })
-}
-
-fn normalize_source_position_for_scope(
-    position: SourcePosition,
-    scope: &ScopeKey,
-) -> SourcePosition {
-    match (scope, position) {
-        (ScopeKey::File { path }, SourcePosition::FileManifest(mut manifest)) => {
-            for file in &mut manifest.files {
-                file.path = path.clone();
-            }
-            SourcePosition::FileManifest(manifest)
-        }
-        (_, position) => position,
-    }
 }
 
 fn segment_positions_by_id(

@@ -346,7 +346,7 @@ fn option_schema() -> serde_json::Value {
         "resource": {
             "type": "object",
             "additionalProperties": false,
-            "required": ["path", "params", "records"],
+            "required": ["path", "records"],
             "properties": {
                 "path": {"type": "string"},
                 "params": {"type": "object", "additionalProperties": {"type": ["string", "number", "boolean"]}},

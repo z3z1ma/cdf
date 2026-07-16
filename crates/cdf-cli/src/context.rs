@@ -98,8 +98,12 @@ impl ProjectContext {
         let env_name = env_arg.unwrap_or(&config.project.default_environment);
         let environment = config.effective_environment(env_name)?;
         let resolver = FileResourceSourceResolver::new(&root);
+        let source_registry = crate::source_registry::builtin_source_registry()?;
         let entries = cdf_project::compile_project_declarative_resource_entries_with_root(
-            &config, &resolver, &root,
+            &source_registry,
+            &config,
+            &resolver,
+            &root,
         )?;
         let (resources, resource_origins) = entries
             .into_iter()

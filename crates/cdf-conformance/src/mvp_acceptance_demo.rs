@@ -6,13 +6,12 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use cdf_declarative::RestResource;
 use cdf_dest_duckdb::DuckDbDestination;
 use cdf_engine::{EnginePlan, EnginePlanInput, Planner};
 use cdf_kernel::ExecutionExtent;
 use cdf_kernel::{
     CdfError, CheckpointId, CheckpointStatus, CheckpointStore, CursorValue, DestinationProtocol,
-    PipelineId, Receipt, ResourceId, ResourceStream, Result, RunId, ScanRequest, ScopeKey,
+    PipelineId, QueryableResource, Receipt, ResourceId, Result, RunId, ScanRequest, ScopeKey,
     SourcePosition, TargetName,
 };
 use cdf_package::PackageReader;
@@ -105,7 +104,8 @@ fn mvp_acceptance_demo_fixture_proves_rest_duckdb_recovery_replay_and_drift() {
         TargetName::new(TARGET).unwrap(),
     )
     .unwrap();
-    let plan = engine_plan(&resource, PACKAGE_ID, &destination).unwrap();
+    let plan = engine_plan(resource.queryable(), PACKAGE_ID, &destination).unwrap();
+    let plan = resource.bind_plan(plan).unwrap();
     assert_plan_matches_github_issues(&plan);
 
     let receipt_gate_observed = Cell::new(false);
@@ -126,7 +126,7 @@ fn mvp_acceptance_demo_fixture_proves_rest_duckdb_recovery_replay_and_drift() {
     let crashed = panic::catch_unwind(AssertUnwindSafe(|| {
         futures_executor::block_on(run_project(
             ProjectRunRequest {
-                resource: ProjectRunSource::rest(&resource),
+                resource: ProjectRunSource::new(resource.queryable()),
                 plan,
                 package_root: project.package_root(),
                 state_store_path: project.state_store_path(),
@@ -493,9 +493,14 @@ source = "resources/github.toml"
     }
 }
 
-fn github_issues_resource() -> Result<(RestResource, RecordingTransport)> {
+fn github_issues_resource() -> Result<(
+    crate::source_fixture::ResolvedSourceFixture,
+    RecordingTransport,
+)> {
+    let transport = RecordingTransport::new([json_response(GITHUB_ISSUES_RESPONSE)]);
+    let registry = crate::test_rest_source_registry(transport.clone())?;
     let document = cdf_declarative::parse_toml(GITHUB_ISSUES_TOML)?;
-    let mut resources = cdf_declarative::compile_document(&document)?;
+    let mut resources = cdf_declarative::compile_document(&registry, &document)?;
     if resources.len() != 1 {
         return Err(CdfError::contract(format!(
             "MVP acceptance proof expected one GitHub issues resource, found {}",
@@ -509,16 +514,19 @@ fn github_issues_resource() -> Result<(RestResource, RecordingTransport)> {
             compiled.descriptor().resource_id
         )));
     }
-    let transport = RecordingTransport::new([json_response(GITHUB_ISSUES_RESPONSE)]);
-    let resource = compiled.to_rest_resource(
-        crate::test_rest_runtime_dependencies(transport.clone())
-            .with_secret_provider(StaticSecretProvider::new([(SECRET_REF, SECRET_VALUE)])),
-    )?;
+    let execution = crate::test_execution_services();
+    let context = cdf_runtime::SourceResolutionContext::new(
+        std::path::Path::new("."),
+        std::sync::Arc::new(StaticSecretProvider::new([(SECRET_REF, SECRET_VALUE)])),
+        &execution,
+    );
+    let resource =
+        crate::source_fixture::ResolvedSourceFixture::resolve(&compiled, &registry, &context)?;
     Ok((resource, transport))
 }
 
 fn engine_plan(
-    resource: &RestResource,
+    resource: &dyn QueryableResource,
     package_id: &str,
     destination: &ResolvedProjectDestination,
 ) -> Result<EnginePlan> {

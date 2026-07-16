@@ -4,7 +4,7 @@ use cdf_contract::{ContractPolicy, ObservedSchema, compile_resource_validation_p
 use cdf_declarative::CompiledResource;
 use cdf_engine::{EnginePlanInput, Planner};
 use cdf_kernel::ExecutionExtent;
-use cdf_kernel::{ResourceDescriptor, ResourceStream, ScanRequest, SchemaSource};
+use cdf_kernel::{ResourceDescriptor, ScanRequest, SchemaSource};
 use cdf_project::{
     FileResourceSourceResolver, ProjectResourceOrigin, ResourceSchemaDiscovery, validate_project,
 };
@@ -39,7 +39,9 @@ pub(super) fn run(
     )?;
     let resolver = FileResourceSourceResolver::new(&context.root);
     let provider = context.secret_provider();
+    let source_registry = crate::source_registry::builtin_source_registry()?;
     let validation = validate_project(
+        &source_registry,
         &context.config,
         Some(&context.environment.name),
         &resolver,
@@ -557,10 +559,7 @@ fn deep_scan_request(descriptor: &ResourceDescriptor) -> cdf_kernel::Result<Scan
 }
 
 fn resource_kind_name(resource: &CompiledResource) -> &str {
-    resource
-        .source_compile_request()
-        .map(|request| request.source_kind.as_str())
-        .unwrap_or("unregistered")
+    resource.source_plan().driver.driver_id.as_str()
 }
 
 fn schema_source_name(source: &SchemaSource) -> &'static str {

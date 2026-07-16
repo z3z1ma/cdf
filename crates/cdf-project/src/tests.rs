@@ -19,11 +19,7 @@ use arrow_schema::{
 };
 use bytes::Bytes;
 use cdf_contract::{ContractPolicy, ObservedSchema, compile_validation_program};
-use cdf_declarative::{
-    AuthDeclaration, CompiledResourcePlan, FileIdentityMetadata, FileRuntimeDependencies,
-    FileTransportFacade, FileTransportLocation, FileTransportResource, HttpFileRequest,
-    HttpFileResponse, HttpFileTransport, SourceDeclaration,
-};
+use cdf_declarative::SourceDeclaration;
 use cdf_engine::{EnginePlan, EnginePlanInput, Planner};
 use cdf_http::{
     HttpMethod, HttpRequest, HttpResponse, HttpTransport, SecretProvider, SecretUri, SecretValue,
@@ -34,8 +30,8 @@ use cdf_kernel::{
     DestinationId, DestinationProtocol, DestinationProtocolCapabilities, DestinationSheet,
     DestinationSheetArtifact, DiscoveryManifestHash, DiscoveryManifestReference,
     IdempotencySupport, IdentifierRules, LeaseOwnerId, PipelineId, QueryableResource, ResourceId,
-    ResourceStream, RunId, ScanRequest, SchemaHash, SchemaSource, ScopeKey, ScopeLease,
-    ScopeLeaseClock, ScopeLeaseStore, SourcePosition, TargetName, TransactionSupport, TypeMapping,
+    RunId, ScanRequest, SchemaHash, SchemaSource, ScopeKey, ScopeLease, ScopeLeaseClock,
+    ScopeLeaseStore, SourcePosition, TargetName, TransactionSupport, TypeMapping,
     TypeMappingFidelity, WriteDisposition, source_name,
 };
 use cdf_memory::{
@@ -44,6 +40,11 @@ use cdf_memory::{
 use cdf_runtime::{
     AccountedByteStream, ByteExtent, ByteSource, ByteSourceCapabilities, ContentIdentity,
     GenerationStrength, RunCancellation, SequentialReadRequest,
+};
+use cdf_source_files::{
+    FileIdentityMetadata, FileRuntimeDependencies, FileSourceDriver, FileTransportFacade,
+    FileTransportLocation, FileTransportResource, HttpFileRequest, HttpFileResponse,
+    HttpFileTransport,
 };
 use cdf_state_sqlite::InMemoryScopeLeaseStore;
 use flate2::{Compression, write::GzEncoder};
@@ -109,6 +110,37 @@ fn test_format_registry() -> Arc<cdf_runtime::FormatRegistry> {
         ))
         .unwrap();
     Arc::new(registry)
+}
+
+fn test_source_registry() -> cdf_runtime::SourceRegistry {
+    let formats = test_format_registry();
+    let runtime_formats = Arc::clone(&formats);
+    let mut registry = cdf_runtime::SourceRegistry::new();
+    registry
+        .register(
+            FileSourceDriver::new(formats, move |secrets, execution| {
+                Ok(FileRuntimeDependencies::new(
+                    FileTransportFacade::new()
+                        .with_shared_secret_provider(secrets)
+                        .with_execution_services(execution.clone()),
+                    execution,
+                    Arc::clone(&runtime_formats),
+                    Arc::new(cdf_runtime::ByteTransformRegistry::default()),
+                ))
+            })
+            .unwrap(),
+        )
+        .unwrap();
+    registry
+        .register(
+            cdf_source_rest::RestSourceDriver::new(|| Ok(Box::new(RecordingTransport::default())))
+                .unwrap(),
+        )
+        .unwrap();
+    registry
+        .register(cdf_source_postgres::PostgresSourceDriver::new().unwrap())
+        .unwrap();
+    registry
 }
 
 #[derive(Debug)]
@@ -318,6 +350,35 @@ fn file_dependencies(transport: FileTransportFacade) -> FileRuntimeDependencies 
     )
 }
 
+fn resolve_file_resource_for_test(
+    resource: &cdf_declarative::CompiledResource,
+    dependencies: FileRuntimeDependencies,
+) -> Arc<dyn QueryableResource> {
+    let formats = Arc::clone(dependencies.formats());
+    let installed = dependencies.clone();
+    let prepared_payloads = dependencies.prepared_payloads().clone();
+    let mut registry = cdf_runtime::SourceRegistry::new();
+    registry
+        .register(
+            FileSourceDriver::new(formats, move |_secrets, _execution| Ok(installed.clone()))
+                .unwrap(),
+        )
+        .unwrap();
+    let execution = test_execution_services();
+    let project_root = resource.project_root().unwrap_or_else(|| Path::new("."));
+    let resolution = cdf_runtime::SourceResolutionContext::new(
+        project_root,
+        Arc::new(EnvSecretProvider::from_map(
+            std::iter::empty::<(&str, &str)>(),
+        )),
+        &execution,
+    )
+    .with_prepared_payloads(prepared_payloads);
+    registry
+        .resolve(resource.source_plan(), &resolution)
+        .unwrap()
+}
+
 fn external_mock_source_registry(
     transport: RecordingHttpFileTransport,
 ) -> cdf_runtime::SourceRegistry {
@@ -330,7 +391,7 @@ fn external_mock_source_registry(
     let mut registry = cdf_runtime::SourceRegistry::new();
     registry
         .register(
-            cdf_declarative::FileSourceDriver::new(formats, move |secrets, execution| {
+            FileSourceDriver::new(formats, move |secrets, execution| {
                 Ok(FileRuntimeDependencies::new(
                     FileTransportFacade::new()
                         .with_http_transport(transport.clone())
@@ -357,18 +418,16 @@ fn discover_file_schema_artifacts_for_test(
     let installed_dependencies = dependencies.clone();
     let mut registry = cdf_runtime::SourceRegistry::new();
     registry.register(
-        cdf_declarative::FileSourceDriver::new(formats, move |_secrets, _execution| {
+        FileSourceDriver::new(formats, move |_secrets, _execution| {
             Ok(installed_dependencies.clone())
         })
         .unwrap(),
     )?;
-    let request = resource.source_compile_request().cloned().unwrap();
-    let project_root = request
-        .context
-        .project_root
-        .clone()
+    let project_root = resource
+        .project_root()
+        .map(Path::to_path_buf)
         .unwrap_or_else(|| Path::new(".").to_path_buf());
-    let plan = registry.compile(request)?;
+    let plan = resource.source_plan().clone();
     let execution = test_execution_services();
     let prepared_payloads = dependencies.prepared_payloads().clone();
     let resolution = cdf_runtime::SourceResolutionContext::new(
@@ -470,7 +529,7 @@ fn discover_rest_schema_artifacts_for_test(
     registry.register(cdf_source_rest::RestSourceDriver::new(move || {
         Ok(Box::new(transport.clone()))
     })?)?;
-    let plan = registry.compile(resource.source_compile_request().cloned().unwrap())?;
+    let plan = resource.source_plan().clone();
     let execution = test_execution_services();
     let resolution =
         cdf_runtime::SourceResolutionContext::new(project_root, secret_provider, &execution)
@@ -635,7 +694,14 @@ fn validation_resolves_declarative_sources_and_redacts_secret_values() {
         FileSecretProvider::without_root(),
     );
 
-    let report = validate_project(&config, Some("prod"), &resolver, &provider).unwrap();
+    let report = validate_project(
+        &test_source_registry(),
+        &config,
+        Some("prod"),
+        &resolver,
+        &provider,
+    )
+    .unwrap();
 
     assert_eq!(report.declarative_resources, 1);
     assert_eq!(report.external_resources, 1);
@@ -653,7 +719,14 @@ fn validation_checks_missing_secret_without_printing_values() {
         InMemoryResourceSourceResolver::new().with_toml("resources/github.toml", GITHUB_RESOURCE);
     let provider = EnvSecretProvider::from_map([("GITHUB_TOKEN", "github-token-value")]);
 
-    let error = validate_project(&config, Some("prod"), &resolver, &provider).unwrap_err();
+    let error = validate_project(
+        &test_source_registry(),
+        &config,
+        Some("prod"),
+        &resolver,
+        &provider,
+    )
+    .unwrap_err();
 
     assert!(error.to_string().contains("secret://env/PROD_DWH"));
     assert!(!error.to_string().contains("github-token-value"));
@@ -667,7 +740,14 @@ fn plaintext_secret_values_are_rejected_where_references_are_required() {
         InMemoryResourceSourceResolver::new().with_toml("resources/github.toml", bad_resource);
     let provider = EnvSecretProvider::from_map([("PROD_DWH", "postgres-dsn-value")]);
 
-    let error = validate_project(&config, Some("prod"), &resolver, &provider).unwrap_err();
+    let error = validate_project(
+        &test_source_registry(),
+        &config,
+        Some("prod"),
+        &resolver,
+        &provider,
+    )
+    .unwrap_err();
 
     assert!(error.to_string().contains("secret://"));
     assert!(!error.to_string().contains("plain-token-value"));
@@ -695,7 +775,8 @@ fn lockfile_generation_round_trips_and_diffs_semantic_changes() {
     let config = parse_cdf_toml(BOOK_PROJECT).unwrap();
     let resolver =
         InMemoryResourceSourceResolver::new().with_toml("resources/github.toml", GITHUB_RESOURCE);
-    let resources = compile_project_declarative_resources(&config, &resolver).unwrap();
+    let resources =
+        compile_project_declarative_resources(&test_source_registry(), &config, &resolver).unwrap();
     let sheet = destination_sheet("duckdb", TypeMappingFidelity::Lossless);
     let sheet_artifact =
         DestinationSheetArtifact::new(sheet.clone(), DestinationProtocolCapabilities::default())
@@ -1811,17 +1892,21 @@ fn generic_discover_prepare_preserves_local_parquet_autopin_behavior() {
 fn project_external_codec_discovers_pins_previews_and_runs_over_remote_provider() {
     let temp = tempfile::tempdir().unwrap();
     write_http_external_mock_project(temp.path());
-    let resource = compile_single_project_resource(temp.path());
     let transport = RecordingHttpFileTransport::new(b"MOCK\n".to_vec());
     let registry = external_mock_source_registry(transport.clone());
+    let config =
+        parse_cdf_toml(&fs::read_to_string(temp.path().join("cdf.toml")).unwrap()).unwrap();
+    let resolver = FileResourceSourceResolver::new(temp.path());
+    let resource =
+        compile_project_declarative_resources_with_root(&registry, &config, &resolver, temp.path())
+            .unwrap()
+            .remove(0);
     let execution = test_execution_services();
     let secrets = Arc::new(EnvSecretProvider::from_map(
         std::iter::empty::<(&str, &str)>(),
     ));
     let resolution = cdf_runtime::SourceResolutionContext::new(temp.path(), secrets, &execution);
-    let source_plan = registry
-        .compile(resource.source_compile_request().unwrap().clone())
-        .unwrap();
+    let source_plan = resource.source_plan().clone();
     let mut artifacts = discover_resource_schema_with_source_registry(
         &resource,
         &registry,
@@ -1868,9 +1953,11 @@ fn project_external_codec_discovers_pins_previews_and_runs_over_remote_provider(
         )
         .unwrap();
     let runtime = registry.resolve(&source_plan, &resolution).unwrap();
-    let plan = live_plan_for_stream(runtime.as_ref(), "pkg-project-external-remote")
-        .bind_compiled_source(&source_plan)
-        .unwrap();
+    let plan = live_plan_for_stream(
+        runtime.as_ref(),
+        &source_plan,
+        "pkg-project-external-remote",
+    );
     assert_eq!(plan.scan.partitions.len(), 1);
     assert_eq!(
         plan.scan.partitions[0].metadata["format"],
@@ -2162,8 +2249,12 @@ schema = { fields = [
     let dependencies = file_dependencies(FileTransportFacade::new());
 
     assert!(resource.effective_schema_runtime().is_none());
-    let runtime = resource.to_file_resource(dependencies).unwrap();
-    let plan = live_plan_for_stream(&runtime, "pkg-declared-multi-file");
+    let runtime = resolve_file_resource_for_test(&resource, dependencies);
+    let plan = live_plan_for_stream(
+        runtime.as_ref(),
+        resource.source_plan(),
+        "pkg-declared-multi-file",
+    );
     assert_eq!(plan.scan.partitions.len(), 2);
     assert!(plan.effective_schema_evidence().is_none());
     assert!(!temp.path().join(".cdf").exists());
@@ -2219,12 +2310,12 @@ fn object_store_gzip_ndjson_discovers_pins_and_executes_through_one_transport() 
     assert!(manifest.candidates[0].probe_bytes.unwrap() <= 8 * 1024 * 1024);
 
     let prepared = apply_discovered_schema(&resource, artifacts.discovery.clone());
-    let runtime = prepared.to_file_resource(dependencies).unwrap();
-    let plan = live_plan_for_stream(&runtime, "pkg-cloud-ndjson");
+    let runtime = resolve_file_resource_for_test(&prepared, dependencies);
+    let plan = live_plan_for_stream(runtime.as_ref(), prepared.source_plan(), "pkg-cloud-ndjson");
     assert_eq!(plan.scan.partitions.len(), 1);
     let preview = futures_executor::block_on(cdf_engine::preview_resource(
         &plan,
-        &runtime,
+        runtime.as_ref(),
         cdf_engine::EnginePreviewLimits::default(),
     ))
     .unwrap();
@@ -2277,7 +2368,7 @@ fn http_numeric_template_discovers_and_plans_every_file() {
     .unwrap();
     assert_eq!(artifacts.discovery_manifest.unwrap().candidates.len(), 3);
 
-    let runtime = resource.to_file_resource(dependencies).unwrap();
+    let runtime = resolve_file_resource_for_test(&resource, dependencies);
     let partitions = runtime
         .plan_partitions(&ScanRequest {
             resource_id: resource.descriptor().resource_id.clone(),
@@ -2334,7 +2425,7 @@ fn http_year_month_glob_skips_absent_candidates_without_hiding_other_failures() 
     )
     .unwrap();
     assert_eq!(artifacts.discovery_manifest.unwrap().candidates.len(), 2);
-    let runtime = resource.to_file_resource(dependencies).unwrap();
+    let runtime = resolve_file_resource_for_test(&resource, dependencies);
     let partitions = runtime
         .plan_partitions(&ScanRequest {
             resource_id: resource.descriptor().resource_id.clone(),
@@ -2396,11 +2487,12 @@ fn http_parquet_auto_pin_plan_preview_and_run_use_file_runtime() {
         discovery.snapshot.artifact.schema_hash
     );
 
-    let file_resource = prepared
-        .resource
-        .to_file_resource(dependencies.clone())
-        .unwrap();
-    let plan = live_plan_for_stream(&file_resource, "pkg-http-parquet-runtime");
+    let file_resource = resolve_file_resource_for_test(&prepared.resource, dependencies.clone());
+    let plan = live_plan_for_stream(
+        file_resource.as_ref(),
+        prepared.resource.source_plan(),
+        "pkg-http-parquet-runtime",
+    );
     assert_eq!(plan.scan.partitions.len(), 1);
     let partition = plan.scan.partitions[0].clone();
     assert_eq!(
@@ -2411,17 +2503,16 @@ fn http_parquet_auto_pin_plan_preview_and_run_use_file_runtime() {
     assert_eq!(partition.metadata["etag"], "\"fixture-etag\"");
     assert!(!partition.metadata.contains_key("bytes_loaded"));
 
-    let preview_stream = futures_executor::block_on(file_resource.open_preview(partition)).unwrap();
+    let preview_stream =
+        futures_executor::block_on(file_resource.as_ref().open(partition)).unwrap();
     let preview_rows = futures_executor::block_on_stream(preview_stream)
         .map(|batch| batch.unwrap().header.row_count)
         .sum::<u64>();
     assert_eq!(preview_rows, 2);
-    let (run_resource, plan) = bind_project_test_source(&file_resource, plan);
-
     let duckdb_path = temp.path().join(".cdf/dev.duckdb");
     let report = futures_executor::block_on(run_project(
         ProjectRunRequest {
-            resource: ProjectRunSource::new(&run_resource),
+            resource: ProjectRunSource::new(file_resource.as_ref()),
             plan,
             package_root: temp.path().join(".cdf/packages"),
             state_store_path: temp.path().join(".cdf/state.db"),
@@ -2494,16 +2585,16 @@ fn http_parquet_auto_pin_plan_preview_and_run_use_file_runtime() {
         "pinned preparation must not contact the source"
     );
     let (pinned_resource, _) = pinned.into_parts();
-    let pinned_file_resource = pinned_resource
-        .to_file_resource(dependencies.clone())
-        .unwrap();
-    let pinned_plan =
-        live_plan_for_stream(&pinned_file_resource, "pkg-http-parquet-pinned-runtime");
-    let (pinned_run_resource, pinned_plan) =
-        bind_project_test_source(&pinned_file_resource, pinned_plan);
+    let pinned_file_resource =
+        resolve_file_resource_for_test(&pinned_resource, dependencies.clone());
+    let pinned_plan = live_plan_for_stream(
+        pinned_file_resource.as_ref(),
+        pinned_resource.source_plan(),
+        "pkg-http-parquet-pinned-runtime",
+    );
     let pinned_report = futures_executor::block_on(run_project(
         ProjectRunRequest {
-            resource: ProjectRunSource::new(&pinned_run_resource),
+            resource: ProjectRunSource::new(pinned_file_resource.as_ref()),
             plan: pinned_plan,
             package_root: temp.path().join(".cdf/packages"),
             state_store_path: temp.path().join(".cdf/state-pinned.db"),
@@ -2586,11 +2677,12 @@ fn unversioned_http_parquet_runs_and_commits_terminal_content_identity() {
         dependencies.clone(),
     )
     .unwrap();
-    let file_resource = prepared
-        .resource
-        .to_file_resource(dependencies.clone())
-        .unwrap();
-    let plan = live_plan_for_stream(&file_resource, "pkg-http-unversioned");
+    let file_resource = resolve_file_resource_for_test(&prepared.resource, dependencies.clone());
+    let plan = live_plan_for_stream(
+        file_resource.as_ref(),
+        prepared.resource.source_plan(),
+        "pkg-http-unversioned",
+    );
     let partition = &plan.scan.partitions[0];
     assert_eq!(partition.metadata["identity_strength"], "weak");
     assert!(!partition.metadata.contains_key("etag"));
@@ -2609,11 +2701,9 @@ fn unversioned_http_parquet_runs_and_commits_terminal_content_identity() {
         "cold discovery must materialize the unversioned payload exactly once"
     );
     assert_eq!(dependencies.prepared_payloads().pending_count().unwrap(), 1);
-    let (run_resource, plan) = bind_project_test_source(&file_resource, plan);
-
     let report = futures_executor::block_on(run_project(
         ProjectRunRequest {
-            resource: ProjectRunSource::new(&run_resource),
+            resource: ProjectRunSource::new(file_resource.as_ref()),
             plan,
             package_root: temp.path().join(".cdf/packages"),
             state_store_path: temp.path().join(".cdf/state.db"),
@@ -3586,7 +3676,8 @@ trust = "governed"
 "#;
     let config = parse_cdf_toml(project).unwrap();
     let resolver = InMemoryResourceSourceResolver::new().with_toml("resources/api.toml", rest);
-    let mut resources = compile_project_declarative_resources(&config, &resolver).unwrap();
+    let mut resources =
+        compile_project_declarative_resources(&test_source_registry(), &config, &resolver).unwrap();
     let resource = resources.remove(0);
     let transport = RecordingTransport::new([json_response(
         r#"{ "items": [
@@ -3713,7 +3804,8 @@ trust = "governed"
 "#;
     let config = parse_cdf_toml(project).unwrap();
     let resolver = InMemoryResourceSourceResolver::new().with_toml("resources/api.toml", rest);
-    let mut resources = compile_project_declarative_resources(&config, &resolver).unwrap();
+    let mut resources =
+        compile_project_declarative_resources(&test_source_registry(), &config, &resolver).unwrap();
     let resource = resources.remove(0);
     let transport = RecordingTransport::new([json_response(
         r#"{ "items": [
@@ -3771,9 +3863,7 @@ trust = "governed"
                 .unwrap(),
         )
         .unwrap();
-    let source_plan = registry
-        .compile(prepared.resource.source_compile_request().cloned().unwrap())
-        .unwrap();
+    let source_plan = prepared.resource.source_plan().clone();
     let resolution = cdf_runtime::SourceResolutionContext::new(
         temp.path(),
         Arc::new(EnvSecretProvider::from_map(
@@ -3783,7 +3873,7 @@ trust = "governed"
     )
     .with_prepared_payloads(prepared_payloads.clone());
     let runtime = registry.resolve(&source_plan, &resolution).unwrap();
-    let plan = live_plan_for_stream(runtime.as_ref(), "pkg-rest-discovery-handoff");
+    let plan = live_plan_for_stream(runtime.as_ref(), &source_plan, "pkg-rest-discovery-handoff");
     let stream = futures_executor::block_on(runtime.open(plan.scan.partitions[0].clone())).unwrap();
     let batches = futures_executor::block_on_stream(stream)
         .collect::<Result<Vec<_>>>()
@@ -3859,14 +3949,7 @@ trust = "governed"
 "#;
     let config = parse_cdf_toml(project).unwrap();
     let resolver = InMemoryResourceSourceResolver::new().with_toml("resources/sql.toml", sql);
-    let mut resources = compile_project_declarative_resources(&config, &resolver).unwrap();
-    let resource = resources.remove(0);
-    let mut registry = cdf_runtime::SourceRegistry::new();
-    registry
-        .register(cdf_source_postgres::PostgresSourceDriver::new().unwrap())
-        .unwrap();
-    let error = registry
-        .compile(resource.source_compile_request().cloned().unwrap())
+    let error = compile_project_declarative_resources(&test_source_registry(), &config, &resolver)
         .unwrap_err();
     let message = error.to_string();
     assert!(message.contains("dialect must be `postgres`"), "{message}");
@@ -4372,7 +4455,11 @@ fn http_file_dependencies(transport: RecordingHttpFileTransport) -> FileRuntimeD
     file_dependencies(FileTransportFacade::new().with_http_transport(transport))
 }
 
-fn live_plan_for_stream(resource: &dyn QueryableResource, package_id: &str) -> EnginePlan {
+fn live_plan_for_stream(
+    resource: &dyn QueryableResource,
+    source_plan: &cdf_runtime::CompiledSourcePlan,
+    package_id: &str,
+) -> EnginePlan {
     let observed_schema = ObservedSchema::from_arrow(resource.schema().as_ref());
     let destination = ResolvedProjectDestination::duckdb(
         "/tmp/cdf-project-plan-policy-only.duckdb",
@@ -4400,131 +4487,8 @@ fn live_plan_for_stream(resource: &dyn QueryableResource, package_id: &str) -> E
             },
         )
         .unwrap()
-}
-
-struct BoundProjectTestResource<'a> {
-    inner: &'a dyn QueryableResource,
-    compiled_source_plan_hash: String,
-}
-
-impl ResourceStream for BoundProjectTestResource<'_> {
-    fn descriptor(&self) -> &cdf_kernel::ResourceDescriptor {
-        self.inner.descriptor()
-    }
-
-    fn schema(&self) -> arrow_schema::SchemaRef {
-        self.inner.schema()
-    }
-
-    fn compiled_source_plan_hash(&self) -> Option<&str> {
-        Some(&self.compiled_source_plan_hash)
-    }
-
-    fn validate_runtime_dependencies(&self) -> cdf_kernel::Result<()> {
-        self.inner.validate_runtime_dependencies()
-    }
-
-    fn plan_partitions(
-        &self,
-        request: &ScanRequest,
-    ) -> cdf_kernel::Result<Vec<cdf_kernel::PartitionPlan>> {
-        self.inner.plan_partitions(request)
-    }
-
-    fn open(&self, partition: cdf_kernel::PartitionPlan) -> cdf_kernel::PartitionOpenAttempt<'_> {
-        self.inner.open(partition)
-    }
-
-    fn attest_partition(
-        &self,
-        partition: cdf_kernel::PartitionPlan,
-    ) -> cdf_kernel::PartitionAttestationAttempt<'_> {
-        self.inner.attest_partition(partition)
-    }
-
-    fn effective_schema_runtime(&self) -> Option<&cdf_kernel::EffectiveSchemaRuntime> {
-        self.inner.effective_schema_runtime()
-    }
-
-    fn type_policy_allowances(&self) -> cdf_kernel::TypePolicyAllowances {
-        self.inner.type_policy_allowances()
-    }
-}
-
-impl QueryableResource for BoundProjectTestResource<'_> {
-    fn capabilities(&self) -> &cdf_kernel::ResourceCapabilities {
-        self.inner.capabilities()
-    }
-
-    fn negotiate(&self, request: &ScanRequest) -> cdf_kernel::Result<cdf_kernel::ScanPlan> {
-        self.inner.negotiate(request)
-    }
-}
-
-fn bind_project_test_source<'a>(
-    resource: &'a dyn QueryableResource,
-    plan: EnginePlan,
-) -> (BoundProjectTestResource<'a>, EnginePlan) {
-    let source = cdf_runtime::CompiledSourcePlan::new(
-        cdf_runtime::SourceDriverDescriptor {
-            driver_id: cdf_runtime::SourceDriverId::new("project_test").unwrap(),
-            driver_version: "1.0.0".to_owned(),
-            option_schema_hash: cdf_runtime::artifact_hash(&serde_json::json!({})).unwrap(),
-            kinds: vec!["project_test".to_owned()],
-            schemes: Vec::new(),
-        },
-        resource.capabilities().clone(),
-        cdf_runtime::SourceExecutionCapabilities {
-            minimum_poll_bytes: 1,
-            maximum_poll_bytes: 4 * 1024 * 1024,
-            minimum_decode_bytes: 1,
-            maximum_decode_bytes: 32 * 1024 * 1024,
-            maximum_concurrency: 1,
-            useful_concurrency: 1,
-            executor_class: cdf_runtime::SourceExecutorClass::Io,
-            blocking_lane: None,
-            pausable: true,
-            spillable: true,
-            idempotent_reads: true,
-            reopenable: true,
-            resumable: false,
-            speculative_safe: true,
-            retry_granularity: cdf_runtime::SourceRetryGranularity::Partition,
-            retryable_errors: vec![
-                cdf_kernel::ErrorKind::Transient,
-                cdf_kernel::ErrorKind::RateLimited,
-            ],
-            retry_policy: Some(cdf_runtime::SourceRetryPolicy::default()),
-            attestation: cdf_runtime::SourceAttestationStrength::ImmutableContent,
-            rate_limit_per_second: None,
-            quota_authority: None,
-            canonical_order: true,
-            bounded: true,
-            batch_memory: cdf_runtime::SourceBatchMemoryContract::Preaccounted,
-            telemetry_version: "project-test-v1".to_owned(),
-        },
-        cdf_runtime::CompiledSourcePlanInput {
-            descriptor: resource.descriptor().clone(),
-            schema: resource.schema().as_ref().clone(),
-            type_policy_allowances: resource.type_policy_allowances(),
-            effective_schema_runtime: resource.effective_schema_runtime().cloned(),
-            baseline_observation_schema_catalog: resource
-                .baseline_observation_schema_catalog()
-                .to_vec(),
-            redacted_options: serde_json::json!({}),
-            physical_plan: serde_json::json!({"fixture": "project-file-runtime"}),
-        },
-    )
-    .unwrap();
-    let compiled_source_plan_hash = cdf_runtime::artifact_hash(&source).unwrap();
-    let plan = plan.bind_compiled_source(&source).unwrap();
-    (
-        BoundProjectTestResource {
-            inner: resource,
-            compiled_source_plan_hash,
-        },
-        plan,
-    )
+        .bind_compiled_source(source_plan)
+        .unwrap()
 }
 
 fn assert_only_bounded_http_file_gets(requests: &[HttpFileRequest]) {
@@ -4662,8 +4626,13 @@ fn write_sampled_discover_project(root: &Path, format: &str, glob: &str, sample_
 fn compile_single_project_resource(root: &Path) -> cdf_declarative::CompiledResource {
     let config = parse_cdf_toml(&fs::read_to_string(root.join("cdf.toml")).unwrap()).unwrap();
     let resolver = FileResourceSourceResolver::new(root);
-    let mut resources =
-        compile_project_declarative_resources_with_root(&config, &resolver, root).unwrap();
+    let mut resources = compile_project_declarative_resources_with_root(
+        &test_source_registry(),
+        &config,
+        &resolver,
+        root,
+    )
+    .unwrap();
     assert_eq!(resources.len(), 1);
     resources.remove(0)
 }
@@ -4699,7 +4668,8 @@ fn contract_freeze_preserves_existing_dependency_and_destination_data() {
     let config = parse_cdf_toml(BOOK_PROJECT).unwrap();
     let resolver =
         InMemoryResourceSourceResolver::new().with_toml("resources/github.toml", GITHUB_RESOURCE);
-    let resources = compile_project_declarative_resources(&config, &resolver).unwrap();
+    let resources =
+        compile_project_declarative_resources(&test_source_registry(), &config, &resolver).unwrap();
     let sheet = destination_sheet("duckdb", TypeMappingFidelity::Lossless);
     let sheet_artifact =
         DestinationSheetArtifact::new(sheet, DestinationProtocolCapabilities::default()).unwrap();
@@ -4754,7 +4724,8 @@ fn contract_test_reports_field_level_snapshot_drift() {
     let config = parse_cdf_toml(BOOK_PROJECT).unwrap();
     let resolver =
         InMemoryResourceSourceResolver::new().with_toml("resources/github.toml", GITHUB_RESOURCE);
-    let resources = compile_project_declarative_resources(&config, &resolver).unwrap();
+    let resources =
+        compile_project_declarative_resources(&test_source_registry(), &config, &resolver).unwrap();
     let artifact = cdf_kernel::DestinationSheetArtifact::new(
         destination_sheet("duckdb", TypeMappingFidelity::Lossless),
         cdf_kernel::DestinationProtocolCapabilities::default(),
@@ -4772,7 +4743,8 @@ fn contract_test_reports_field_level_snapshot_drift() {
     let changed_resolver =
         InMemoryResourceSourceResolver::new().with_toml("resources/github.toml", &changed_resource);
     let changed_resources =
-        compile_project_declarative_resources(&config, &changed_resolver).unwrap();
+        compile_project_declarative_resources(&test_source_registry(), &config, &changed_resolver)
+            .unwrap();
 
     let report = test_contract_snapshots(&lock, &changed_resources, Some("github.issues")).unwrap();
 
@@ -4845,7 +4817,8 @@ fn declarative_resource_compilation_hook_uses_cdf_declarative() {
     let resolver =
         InMemoryResourceSourceResolver::new().with_toml("resources/github.toml", GITHUB_RESOURCE);
 
-    let resources = compile_project_declarative_resources(&config, &resolver).unwrap();
+    let resources =
+        compile_project_declarative_resources(&test_source_registry(), &config, &resolver).unwrap();
 
     assert_eq!(resources.len(), 1);
     assert_eq!(
@@ -4884,7 +4857,8 @@ trust = "governed"
     let config = parse_cdf_toml(project).unwrap();
     let resolver = InMemoryResourceSourceResolver::new().with_toml("resources/tlc.toml", resource);
 
-    let error = compile_project_declarative_resources(&config, &resolver).unwrap_err();
+    let error = compile_project_declarative_resources(&test_source_registry(), &config, &resolver)
+        .unwrap_err();
 
     let message = error.to_string();
     assert!(message.contains("resource mapping pattern `yellow`"));
@@ -4927,16 +4901,19 @@ trust = "governed"
     let config = parse_cdf_toml(project).unwrap();
     let resolver = FileResourceSourceResolver::new(temp.path());
 
-    let resources =
-        compile_project_declarative_resources_with_root(&config, &resolver, temp.path()).unwrap();
+    let resources = compile_project_declarative_resources_with_root(
+        &test_source_registry(),
+        &config,
+        &resolver,
+        temp.path(),
+    )
+    .unwrap();
 
-    let CompiledResourcePlan::Files(plan) = resources[0].plan() else {
-        panic!("expected file resource plan");
-    };
     assert_eq!(
-        plan.root,
-        temp.path().join("data").to_str().unwrap().to_owned()
+        resources[0].source_plan().physical_plan["source"]["root"],
+        "data"
     );
+    assert_eq!(resources[0].project_root(), Some(temp.path()));
 }
 
 #[test]
@@ -4983,7 +4960,14 @@ fn local_project_scaffold_writes_valid_project_without_runtime_artifacts() {
     assert!(!resource.contains("merge_key"));
     let resolver = FileResourceSourceResolver::new(&root);
     let provider = EnvSecretProvider::from_map(std::iter::empty::<(&str, &str)>());
-    let validation = validate_project(&config, Some("dev"), &resolver, &provider).unwrap();
+    let validation = validate_project(
+        &test_source_registry(),
+        &config,
+        Some("dev"),
+        &resolver,
+        &provider,
+    )
+    .unwrap();
 
     assert_eq!(validation.declarative_resources, 1);
     assert!(validation.checked_secrets.is_empty());
@@ -5015,7 +4999,14 @@ trust = "governed"
         ("PROD_DWH", "postgres-dsn-value"),
     ]);
 
-    let report = validate_project(&config, Some("prod"), &resolver, &provider).unwrap();
+    let report = validate_project(
+        &test_source_registry(),
+        &config,
+        Some("prod"),
+        &resolver,
+        &provider,
+    )
+    .unwrap();
 
     assert!(
         report
@@ -5037,16 +5028,15 @@ fn unsupported_keychain_provider_is_explicit_not_guessy() {
 }
 
 #[test]
-fn auth_declaration_secret_uri_model_still_rejects_values() {
-    let auth = AuthDeclaration::Bearer {
-        token: "secret://env/TOKEN".to_owned(),
+fn source_declaration_is_registry_open_and_preserves_secret_references() {
+    let source = SourceDeclaration {
+        kind: "external_api".to_owned(),
+        options: BTreeMap::from([(
+            "token".to_owned(),
+            serde_json::Value::String("secret://env/TOKEN".to_owned()),
+        )]),
     };
-    let source = SourceDeclaration::Rest(cdf_declarative::RestSourceDeclaration {
-        base_url: "https://api.example.com".to_owned(),
-        auth: Some(auth),
-        rate_limit: None,
-        egress_allowlist: Vec::new(),
-    });
 
-    assert!(matches!(source, SourceDeclaration::Rest(_)));
+    assert_eq!(source.kind, "external_api");
+    assert_eq!(source.options["token"], "secret://env/TOKEN");
 }

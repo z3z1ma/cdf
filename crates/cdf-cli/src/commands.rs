@@ -99,18 +99,10 @@ fn dispatch(
                 cdf_engine::StandaloneExecutionHost::default_services(cdf_memory_budget()?)?;
             crate::replay_command::replay_package(&cli, args, &services, destinations)
         }
-        Command::Backfill(args) if args.execute => {
+        Command::Backfill(args) => {
             let (host, services) =
                 cdf_engine::StandaloneExecutionHost::default_services(cdf_memory_budget()?)?;
-            crate::backfill_command::backfill(
-                &cli,
-                args,
-                Some((host.as_ref(), &services)),
-                destinations,
-            )
-        }
-        Command::Backfill(args) => {
-            crate::backfill_command::backfill(&cli, args, None, destinations)
+            crate::backfill_command::backfill(&cli, args, (host.as_ref(), &services), destinations)
         }
         Command::Package(command) => crate::package_command::package(&cli, command),
         Command::Doctor => {

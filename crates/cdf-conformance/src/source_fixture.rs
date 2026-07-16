@@ -3,7 +3,10 @@ use std::{path::Path, sync::Arc};
 use cdf_declarative::CompiledResource;
 use cdf_http::{SecretProvider, SecretUri, SecretValue};
 use cdf_kernel::{CdfError, QueryableResource, Result};
-use cdf_runtime::{ByteTransformRegistry, FormatRegistry, SourceRegistry, SourceResolutionContext};
+use cdf_runtime::{
+    ByteTransformRegistry, CompiledSourcePlan, FormatRegistry, SourceRegistry,
+    SourceResolutionContext,
+};
 use cdf_source_files::{FileRuntimeDependencies, FileSourceDriver, FileTransportFacade};
 
 struct NoSecrets;
@@ -16,11 +19,43 @@ impl SecretProvider for NoSecrets {
     }
 }
 
+pub(crate) struct ResolvedSourceFixture {
+    resource: Arc<dyn QueryableResource>,
+    source_plan: CompiledSourcePlan,
+}
+
+impl ResolvedSourceFixture {
+    pub(crate) fn resolve(
+        compiled: &CompiledResource,
+        registry: &SourceRegistry,
+        context: &SourceResolutionContext<'_>,
+    ) -> Result<Self> {
+        Ok(Self {
+            resource: registry.resolve(compiled.source_plan(), context)?,
+            source_plan: compiled.source_plan().clone(),
+        })
+    }
+
+    pub(crate) fn queryable(&self) -> &dyn QueryableResource {
+        self.resource.as_ref()
+    }
+
+    pub(crate) fn bind_plan(&self, plan: cdf_engine::EnginePlan) -> Result<cdf_engine::EnginePlan> {
+        plan.bind_compiled_source(&self.source_plan)
+    }
+}
+
 pub(crate) fn resolve_local_file(
     resource: &CompiledResource,
     project_root: &Path,
-) -> Result<Arc<dyn QueryableResource>> {
+) -> Result<ResolvedSourceFixture> {
     let execution = crate::test_execution_services();
+    let registry = local_file_registry()?;
+    let context = SourceResolutionContext::new(project_root, Arc::new(NoSecrets), &execution);
+    ResolvedSourceFixture::resolve(resource, &registry, &context)
+}
+
+pub(crate) fn local_file_registry() -> Result<SourceRegistry> {
     let mut formats = FormatRegistry::default();
     formats.register(Arc::new(cdf_format_json::NdjsonFormatDriver::new()?))?;
     let formats = Arc::new(formats);
@@ -39,13 +74,5 @@ pub(crate) fn resolve_local_file(
             ))
         },
     )?)?;
-    let request = resource.source_compile_request().ok_or_else(|| {
-        CdfError::contract(format!(
-            "conformance resource `{}` has no source compile request",
-            resource.descriptor().resource_id
-        ))
-    })?;
-    let plan = registry.compile(request.clone())?;
-    let context = SourceResolutionContext::new(project_root, Arc::new(NoSecrets), &execution);
-    registry.resolve(&plan, &context)
+    Ok(registry)
 }

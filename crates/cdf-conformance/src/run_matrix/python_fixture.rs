@@ -38,7 +38,8 @@ events.__cdf_write_disposition__ = "{}"
         "python://python_events.py#events",
         ResourceId::new(RESOURCE_ID)?,
         TrustLevel::Governed,
-    )
+    )?
+    .with_execution_services(crate::test_execution_services())
 }
 
 pub(crate) fn assert_source_position(report: &ProjectRunReport) {

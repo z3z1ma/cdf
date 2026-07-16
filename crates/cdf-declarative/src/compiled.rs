@@ -1,6 +1,6 @@
 use std::{
-    collections::{BTreeMap, BTreeSet},
-    path::{Component, Path, PathBuf},
+    collections::BTreeSet,
+    path::{Path, PathBuf},
     sync::Arc,
 };
 
@@ -9,40 +9,29 @@ use arrow_schema::{
     DataType, Field, Fields, Schema, SchemaRef, TimeUnit,
 };
 use cdf_contract::{IdentifierPolicy, normalize_arrow_schema};
-use cdf_http::{
-    AuthScheme, EgressAllowlist, PaginationConfig, QuotaHeaderPolicy, RateLimitPolicy,
-    ResetHeaderSemantics, SecretUri,
-};
 use cdf_kernel::{
-    BackpressureSupport, BoxFuture, CapabilitySupport, CdfError, ContractRef, CursorOrderingClaim,
-    CursorSpec, DeduplicationSpec, DeliveryGuarantee, EffectiveSchemaCatalogEntry,
-    EffectiveSchemaRuntime, EstimateSupport, FilterCapabilities, FreshnessSpec, IncrementalShape,
-    OpenedPartitionStream, PartitionPlan, PartitioningCapabilities, PlanId, PushdownFidelity,
-    PushedPredicate, QueryableResource, ReplaySupport, ResourceCapabilities, ResourceDescriptor,
-    ResourceId, ResourceStream, Result, ScanPlan, ScanRequest, SchemaHash, SchemaSource, ScopeKey,
-    ScopeKind, TrustLevel, TypePolicyAllowances, WriteDisposition, with_cdf_metadata,
+    CdfError, ContractRef, CursorOrderingClaim, CursorSpec, DeduplicationSpec,
+    EffectiveSchemaCatalogEntry, EffectiveSchemaRuntime, FreshnessSpec, PushdownFidelity,
+    ResourceCapabilities, ResourceDescriptor, ResourceId, Result, SchemaHash, SchemaSource,
+    ScopeKey, TrustLevel, TypePolicyAllowances, WriteDisposition, with_cdf_metadata,
 };
-use cdf_runtime::{SourceCompileContext, SourceCompileRequest, SourceCursorPushdown};
-use cdf_source_files::FileResourcePlan;
-use cdf_source_rest::{
-    RestResourcePlan, cursor_pushdown_value, rest_partition, rest_resource_capabilities,
+use cdf_runtime::{
+    CompiledSourcePlan, SourceCompileContext, SourceCompileRequest, SourceCursorPushdown,
+    SourceRegistry,
 };
 use sha2::{Digest, Sha256};
 
 use crate::declarations::*;
-use crate::sql_runtime::{
-    sql_capabilities_for, sql_partition_for_plan, sql_predicate_fidelity_for,
-};
 
 #[derive(Clone, Debug)]
 pub struct CompiledResource {
     descriptor: ResourceDescriptor,
     source_name: String,
     resource_name: String,
+    project_root: Option<PathBuf>,
     schema: SchemaRef,
     capabilities: ResourceCapabilities,
-    plan: CompiledResourcePlan,
-    source_compile_request: Option<SourceCompileRequest>,
+    source_plan: CompiledSourcePlan,
     effective_schema_runtime: Option<EffectiveSchemaRuntime>,
     baseline_observation_schema_catalog: Vec<EffectiveSchemaCatalogEntry>,
     schema_discovery_sample_files: Option<u64>,
@@ -66,12 +55,24 @@ impl CompiledResource {
         &self.resource_name
     }
 
-    pub fn plan(&self) -> &CompiledResourcePlan {
-        &self.plan
+    pub fn project_root(&self) -> Option<&Path> {
+        self.project_root.as_deref()
     }
 
-    pub fn source_compile_request(&self) -> Option<&SourceCompileRequest> {
-        self.source_compile_request.as_ref()
+    pub fn schema(&self) -> SchemaRef {
+        Arc::clone(&self.schema)
+    }
+
+    pub fn source_plan(&self) -> &CompiledSourcePlan {
+        &self.source_plan
+    }
+
+    pub fn effective_schema_runtime(&self) -> Option<&EffectiveSchemaRuntime> {
+        self.effective_schema_runtime.as_ref()
+    }
+
+    pub fn baseline_observation_schema_catalog(&self) -> &[EffectiveSchemaCatalogEntry] {
+        &self.baseline_observation_schema_catalog
     }
 
     pub fn schema_discovery_sample_files(&self) -> Option<u64> {
@@ -82,18 +83,6 @@ impl CompiledResource {
         self.type_policy_allowances
     }
 
-    pub fn open_preview(
-        &self,
-        partition: PartitionPlan,
-    ) -> BoxFuture<'_, Result<OpenedPartitionStream>> {
-        let _ = partition;
-        Box::pin(async {
-            Err(CdfError::internal(
-                "compiled declarations are not executable; resolve their typed source driver",
-            ))
-        })
-    }
-
     pub fn with_schema_source_and_schema(
         &self,
         schema_source: SchemaSource,
@@ -102,10 +91,8 @@ impl CompiledResource {
         let mut resource = self.clone();
         resource.descriptor.schema_source = schema_source.clone();
         resource.schema = Arc::clone(&schema);
-        if let Some(request) = &mut resource.source_compile_request {
-            request.descriptor.schema_source = schema_source;
-            request.schema = schema.as_ref().clone();
-        }
+        resource.source_plan.descriptor.schema_source = schema_source;
+        resource.source_plan.schema = schema.as_ref().clone();
         resource
     }
 
@@ -117,10 +104,8 @@ impl CompiledResource {
         runtime.validate_for_resource(&self.descriptor)?;
         let mut resource = self.clone();
         resource.schema = Arc::clone(&schema);
-        if let Some(request) = &mut resource.source_compile_request {
-            request.schema = schema.as_ref().clone();
-            request.effective_schema_runtime = Some(runtime.clone());
-        }
+        resource.source_plan.schema = schema.as_ref().clone();
+        resource.source_plan.effective_schema_runtime = Some(runtime.clone());
         resource.effective_schema_runtime = Some(runtime);
         Ok(resource)
     }
@@ -133,41 +118,28 @@ impl CompiledResource {
         catalog.dedup_by(|left, right| left.physical_schema_hash == right.physical_schema_hash);
         let mut resource = self.clone();
         resource.baseline_observation_schema_catalog = catalog.clone();
-        if let Some(request) = &mut resource.source_compile_request {
-            request.baseline_observation_schema_catalog = catalog;
-        }
+        resource.source_plan.baseline_observation_schema_catalog = catalog;
         resource
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum CompiledResourcePlan {
-    Rest(Box<RestResourcePlan>),
-    Sql(SqlResourcePlan),
-    Files(FileResourcePlan),
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct SqlResourcePlan {
-    pub source: String,
-    pub dialect: Option<String>,
-    pub connection: SecretUri,
-    pub query: Option<String>,
-    pub table: Option<String>,
-}
-
-pub fn compile_document(document: &DeclarativeDocument) -> Result<Vec<CompiledResource>> {
-    compile_document_inner(document, None)
+pub fn compile_document(
+    registry: &SourceRegistry,
+    document: &DeclarativeDocument,
+) -> Result<Vec<CompiledResource>> {
+    compile_document_inner(registry, document, None)
 }
 
 pub fn compile_document_with_project_root(
+    registry: &SourceRegistry,
     document: &DeclarativeDocument,
     project_root: impl AsRef<Path>,
 ) -> Result<Vec<CompiledResource>> {
-    compile_document_inner(document, Some(project_root.as_ref()))
+    compile_document_inner(registry, document, Some(project_root.as_ref()))
 }
 
 fn compile_document_inner(
+    registry: &SourceRegistry,
     document: &DeclarativeDocument,
     project_root: Option<&Path>,
 ) -> Result<Vec<CompiledResource>> {
@@ -192,136 +164,17 @@ fn compile_document_inner(
                     "resource `{name}` references unknown source `{source_name}`"
                 ))
             })?;
-            compile_resource(name, &source_name, source, resource, project_root)
+            compile_resource(registry, name, &source_name, source, resource, project_root)
         })
         .collect()
 }
 
-pub fn validate_document(document: &DeclarativeDocument) -> Result<()> {
-    compile_document(document).map(drop)
+pub fn validate_document(registry: &SourceRegistry, document: &DeclarativeDocument) -> Result<()> {
+    compile_document(registry, document).map(drop)
 }
 
 pub fn physical_arrow_schema_hash(schema: &Schema) -> Result<SchemaHash> {
     cdf_kernel::canonical_arrow_schema_hash(schema)
-}
-
-impl ResourceStream for CompiledResource {
-    fn descriptor(&self) -> &ResourceDescriptor {
-        &self.descriptor
-    }
-
-    fn schema(&self) -> SchemaRef {
-        Arc::clone(&self.schema)
-    }
-
-    fn validate_runtime_dependencies(&self) -> Result<()> {
-        match self.plan() {
-            CompiledResourcePlan::Files(_) => Ok(()),
-            CompiledResourcePlan::Rest(_) => Err(CdfError::contract(
-                "cdf run local-file resource input supports only declarative local file resources; use RestResource for REST execution",
-            )),
-            CompiledResourcePlan::Sql(_) => Err(CdfError::contract(
-                "cdf run local-file resource input supports only declarative local file resources; use SqlResource for SQL execution",
-            )),
-        }
-    }
-
-    fn plan_partitions(&self, request: &ScanRequest) -> Result<Vec<PartitionPlan>> {
-        let mut partitions =
-            partitions_for_plan(&self.descriptor, &self.schema, &self.plan, Some(request))?;
-        for partition in &mut partitions {
-            partition.scan_intent = cdf_kernel::CompiledScanIntent::full_scan();
-        }
-        Ok(partitions)
-    }
-
-    fn open(&self, partition: PartitionPlan) -> cdf_kernel::PartitionOpenAttempt<'_> {
-        let _ = partition;
-        cdf_kernel::PartitionOpenAttempt::materialized(Box::pin(async {
-            Err(CdfError::internal(
-                "compiled declarations are not executable; resolve their typed source driver",
-            ))
-        }))
-    }
-
-    fn effective_schema_runtime(&self) -> Option<&EffectiveSchemaRuntime> {
-        self.effective_schema_runtime.as_ref()
-    }
-
-    fn baseline_observation_schema_catalog(&self) -> &[EffectiveSchemaCatalogEntry] {
-        &self.baseline_observation_schema_catalog
-    }
-
-    fn type_policy_allowances(&self) -> TypePolicyAllowances {
-        self.type_policy_allowances
-    }
-}
-
-impl QueryableResource for CompiledResource {
-    fn capabilities(&self) -> &ResourceCapabilities {
-        &self.capabilities
-    }
-
-    fn negotiate(&self, request: &ScanRequest) -> Result<ScanPlan> {
-        if request.resource_id != self.descriptor.resource_id {
-            return Err(CdfError::contract(format!(
-                "scan request resource `{}` does not match compiled resource `{}`",
-                request.resource_id, self.descriptor.resource_id
-            )));
-        }
-        let partitions =
-            partitions_for_plan(&self.descriptor, &self.schema, &self.plan, Some(request))?;
-        self.negotiate_with_partitions(request, partitions)
-    }
-}
-
-impl CompiledResource {
-    pub(crate) fn negotiate_with_partitions(
-        &self,
-        request: &ScanRequest,
-        partitions: Vec<PartitionPlan>,
-    ) -> Result<ScanPlan> {
-        let mut pushed_predicates = Vec::new();
-        let mut unsupported_predicates = Vec::new();
-        for predicate in &request.filters {
-            match self.predicate_fidelity(&predicate.canonical_expression) {
-                PushdownFidelity::Unsupported => unsupported_predicates.push(predicate.clone()),
-                fidelity => pushed_predicates.push(PushedPredicate {
-                    predicate: predicate.clone(),
-                    fidelity,
-                }),
-            }
-        }
-
-        Ok(ScanPlan {
-            plan_id: PlanId::new(format!("plan-{}", self.descriptor.resource_id))?,
-            request: request.clone(),
-            partitions,
-            pushed_predicates,
-            unsupported_predicates,
-            estimated_rows: None,
-            estimated_bytes: None,
-            delivery_guarantee: delivery_guarantee(&self.descriptor),
-        })
-    }
-}
-
-impl CompiledResource {
-    fn predicate_fidelity(&self, expression: &cdf_kernel::Expression) -> PushdownFidelity {
-        match &self.plan {
-            CompiledResourcePlan::Rest(plan) => {
-                if cursor_pushdown_value(&self.descriptor, plan, expression).is_some() {
-                    plan.cursor_filter_fidelity.clone()
-                } else {
-                    PushdownFidelity::Unsupported
-                }
-            }
-            CompiledResourcePlan::Sql(plan) => {
-                sql_predicate_fidelity_for(&self.schema, plan, expression)
-            }
-            CompiledResourcePlan::Files(_) => PushdownFidelity::Unsupported,
-        }
-    }
 }
 
 fn resolve_source_name(
@@ -345,19 +198,13 @@ fn resolve_source_name(
 }
 
 fn compile_resource(
+    registry: &SourceRegistry,
     name: &str,
     source_name: &str,
     source: &SourceDeclaration,
     resource: &ResourceDeclaration,
     project_root: Option<&Path>,
 ) -> Result<CompiledResource> {
-    validate_escape_hatch(resource)?;
-    if resource.sample_files.is_some() && !matches!(source, SourceDeclaration::Files(_)) {
-        return Err(CdfError::contract(format!(
-            "resource `{name}` declares sample_files, but sampled schema discovery is only valid for file resources"
-        )));
-    }
-
     let resource_id = format!("{source_name}.{name}");
     let descriptor_resource_id = ResourceId::new(resource_id.clone())?;
     let schema = compile_schema(resource)?;
@@ -392,22 +239,6 @@ fn compile_resource(
         trust_level,
     };
 
-    let plan = match source {
-        SourceDeclaration::Rest(rest) => {
-            CompiledResourcePlan::Rest(Box::new(compile_rest_plan(source_name, rest, resource)?))
-        }
-        SourceDeclaration::Sql(sql) => {
-            CompiledResourcePlan::Sql(compile_sql_plan(source_name, sql, resource)?)
-        }
-        SourceDeclaration::Files(files) => CompiledResourcePlan::Files(compile_file_plan(
-            &resource_id,
-            source_name,
-            files,
-            resource,
-            project_root,
-        )?),
-    };
-    let capabilities = capabilities_for(&descriptor, &plan);
     let type_policy_allowances = resource
         .types
         .as_ref()
@@ -416,208 +247,43 @@ fn compile_resource(
             allow_lossy_mapping: types.allow_lossy_mapping,
         })
         .unwrap_or_default();
-    let source_compile_request = build_source_compile_request(SourceCompileRequestInput {
-        source_name,
-        source,
-        resource,
-        typed_plan: &plan,
-        descriptor: &descriptor,
-        schema: &schema,
+    let source_plan = registry.compile(SourceCompileRequest {
+        source_kind: source.kind.clone(),
+        context: SourceCompileContext {
+            source_name: source_name.to_owned(),
+            project_root: project_root.map(Path::to_path_buf),
+            cursor_pushdown: resource.cursor.as_ref().map(|cursor| SourceCursorPushdown {
+                parameter: cursor.param.clone(),
+                fidelity: cursor
+                    .filter_fidelity
+                    .as_ref()
+                    .map(to_pushdown_fidelity)
+                    .unwrap_or(PushdownFidelity::Inexact),
+            }),
+        },
+        source_options: source.options.clone(),
+        resource_options: resource.options.clone(),
+        descriptor: descriptor.clone(),
+        schema: schema.clone(),
         type_policy_allowances,
-        project_root,
+        effective_schema_runtime: None,
+        baseline_observation_schema_catalog: Vec::new(),
     })?;
+    let capabilities = source_plan.resource_capabilities.clone();
 
     Ok(CompiledResource {
         descriptor,
         source_name: source_name.to_owned(),
         resource_name: name.to_owned(),
+        project_root: project_root.map(Path::to_path_buf),
         schema: Arc::new(schema),
         capabilities,
-        plan,
-        source_compile_request,
+        source_plan,
         effective_schema_runtime: None,
         baseline_observation_schema_catalog: Vec::new(),
         schema_discovery_sample_files: resource.sample_files,
         type_policy_allowances,
     })
-}
-
-struct SourceCompileRequestInput<'a> {
-    source_name: &'a str,
-    source: &'a SourceDeclaration,
-    resource: &'a ResourceDeclaration,
-    typed_plan: &'a CompiledResourcePlan,
-    descriptor: &'a ResourceDescriptor,
-    schema: &'a Schema,
-    type_policy_allowances: TypePolicyAllowances,
-    project_root: Option<&'a Path>,
-}
-
-fn build_source_compile_request(
-    input: SourceCompileRequestInput<'_>,
-) -> Result<Option<SourceCompileRequest>> {
-    let SourceCompileRequestInput {
-        source_name,
-        source,
-        resource,
-        typed_plan,
-        descriptor,
-        schema,
-        type_policy_allowances,
-        project_root,
-    } = input;
-    let context = SourceCompileContext {
-        source_name: source_name.to_owned(),
-        project_root: project_root.map(Path::to_path_buf),
-        cursor_pushdown: resource.cursor.as_ref().map(|cursor| SourceCursorPushdown {
-            parameter: cursor.param.clone(),
-            fidelity: cursor
-                .filter_fidelity
-                .as_ref()
-                .map(to_pushdown_fidelity)
-                .unwrap_or(PushdownFidelity::Inexact),
-        }),
-    };
-    let request = match source {
-        SourceDeclaration::Sql(sql) => {
-            let Some(table) = &resource.table else {
-                return Ok(None);
-            };
-            SourceCompileRequest {
-                source_kind: "sql".to_owned(),
-                context: context.clone(),
-                source_options: BTreeMap::from([
-                    (
-                        "connection".to_owned(),
-                        serde_json::Value::String(sql.connection.clone()),
-                    ),
-                    (
-                        "dialect".to_owned(),
-                        serde_json::Value::String(
-                            sql.dialect.clone().unwrap_or_else(|| "postgres".to_owned()),
-                        ),
-                    ),
-                ]),
-                resource_options: BTreeMap::from([(
-                    "table".to_owned(),
-                    serde_json::Value::String(table.clone()),
-                )]),
-                descriptor: descriptor.clone(),
-                schema: schema.clone(),
-                type_policy_allowances,
-                effective_schema_runtime: None,
-                baseline_observation_schema_catalog: Vec::new(),
-            }
-        }
-        SourceDeclaration::Rest(rest) => {
-            let mut source_options = BTreeMap::from([
-                (
-                    "base_url".to_owned(),
-                    serde_json::Value::String(rest.base_url.clone()),
-                ),
-                (
-                    "egress_allowlist".to_owned(),
-                    json_value(&rest.egress_allowlist)?,
-                ),
-            ]);
-            if let Some(auth) = &rest.auth {
-                source_options.insert("auth".to_owned(), json_value(auth)?);
-            }
-            if let Some(rate_limit) = &rest.rate_limit {
-                source_options.insert("rate_limit".to_owned(), json_value(rate_limit)?);
-            }
-            let mut resource_options = BTreeMap::from([
-                (
-                    "path".to_owned(),
-                    serde_json::Value::String(resource.path.clone().unwrap_or_default()),
-                ),
-                (
-                    "records".to_owned(),
-                    serde_json::Value::String(resource.records.clone().unwrap_or_default()),
-                ),
-                ("params".to_owned(), json_value(&resource.params)?),
-            ]);
-            if let Some(paginate) = &resource.paginate {
-                resource_options.insert("paginate".to_owned(), json_value(paginate)?);
-            }
-            if let Some(transform) = &resource.records_transform {
-                resource_options.insert(
-                    "records_transform".to_owned(),
-                    serde_json::Value::String(transform.clone()),
-                );
-            }
-            SourceCompileRequest {
-                source_kind: "rest".to_owned(),
-                context: context.clone(),
-                source_options,
-                resource_options,
-                descriptor: descriptor.clone(),
-                schema: schema.clone(),
-                type_policy_allowances,
-                effective_schema_runtime: None,
-                baseline_observation_schema_catalog: Vec::new(),
-            }
-        }
-        SourceDeclaration::Files(files) => {
-            let CompiledResourcePlan::Files(file_plan) = typed_plan else {
-                return Err(CdfError::internal(
-                    "file declaration compiled to a non-file typed plan",
-                ));
-            };
-            let mut source_options = BTreeMap::from([
-                (
-                    "root".to_owned(),
-                    serde_json::Value::String(files.root.clone()),
-                ),
-                (
-                    "egress_allowlist".to_owned(),
-                    json_value(&files.egress_allowlist)?,
-                ),
-            ]);
-            if let Some(auth) = &files.auth {
-                source_options.insert("auth".to_owned(), json_value(auth)?);
-            }
-            if let Some(credentials) = &files.credentials {
-                source_options.insert(
-                    "credentials".to_owned(),
-                    serde_json::Value::String(credentials.clone()),
-                );
-            }
-            let mut resource_options = BTreeMap::from([
-                (
-                    "glob".to_owned(),
-                    serde_json::Value::String(file_plan.glob.clone()),
-                ),
-                (
-                    "format_options".to_owned(),
-                    file_plan.format_options.clone(),
-                ),
-                (
-                    "compression".to_owned(),
-                    json_value(&file_plan.compression)?,
-                ),
-            ]);
-            if let Some(format) = &file_plan.format {
-                resource_options.insert("format".to_owned(), json_value(format)?);
-            }
-            SourceCompileRequest {
-                source_kind: "files".to_owned(),
-                context,
-                source_options,
-                resource_options,
-                descriptor: descriptor.clone(),
-                schema: schema.clone(),
-                type_policy_allowances,
-                effective_schema_runtime: None,
-                baseline_observation_schema_catalog: Vec::new(),
-            }
-        }
-    };
-    Ok(Some(request))
-}
-
-fn json_value(value: &impl serde::Serialize) -> Result<serde_json::Value> {
-    serde_json::to_value(value).map_err(|error| CdfError::internal(error.to_string()))
 }
 
 fn compile_deduplication(
@@ -730,332 +396,6 @@ fn compile_trust(resource: &ResourceDeclaration) -> Result<TrustLevel> {
     }
 }
 
-fn compile_rest_plan(
-    source_name: &str,
-    source: &RestSourceDeclaration,
-    resource: &ResourceDeclaration,
-) -> Result<RestResourcePlan> {
-    let path = resource
-        .path
-        .clone()
-        .ok_or_else(|| CdfError::contract("REST resources must declare path before compilation"))?;
-    let record_selector = resource.records.clone().ok_or_else(|| {
-        CdfError::contract("REST resources must declare records before compilation")
-    })?;
-    let auth = source.auth.as_ref().map(compile_auth).transpose()?;
-    let (rate_limit, respect_headers) = compile_rate_limit(source.rate_limit.as_ref())?;
-    let allowlist = if source.egress_allowlist.is_empty() {
-        EgressAllowlist::allow_any()
-    } else {
-        EgressAllowlist::from_hosts(source.egress_allowlist.clone())
-    };
-    let cursor_filter_fidelity = resource
-        .cursor
-        .as_ref()
-        .and_then(|cursor| cursor.filter_fidelity.as_ref())
-        .map(to_pushdown_fidelity)
-        .unwrap_or(PushdownFidelity::Inexact);
-
-    Ok(RestResourcePlan {
-        source: source_name.to_owned(),
-        base_url: source.base_url.clone(),
-        path,
-        params: resource
-            .params
-            .iter()
-            .map(|(name, value)| (name.clone(), value.as_query_value()))
-            .collect(),
-        record_selector,
-        pagination: resource
-            .paginate
-            .as_ref()
-            .map(compile_pagination)
-            .transpose()?,
-        auth,
-        rate_limit,
-        respect_headers,
-        allowlist,
-        cursor_param: resource
-            .cursor
-            .as_ref()
-            .and_then(|cursor| cursor.param.clone()),
-        cursor_filter_fidelity,
-        records_transform: resource.records_transform.clone(),
-    })
-}
-
-fn compile_sql_plan(
-    source_name: &str,
-    source: &SqlSourceDeclaration,
-    resource: &ResourceDeclaration,
-) -> Result<SqlResourcePlan> {
-    if resource.query.is_none() && resource.table.is_none() {
-        return Err(CdfError::contract(
-            "SQL resources must declare query or table before compilation",
-        ));
-    }
-    if resource.query.is_some() && resource.table.is_some() {
-        return Err(CdfError::contract(
-            "SQL resources must declare only one of query or table",
-        ));
-    }
-
-    Ok(SqlResourcePlan {
-        source: source_name.to_owned(),
-        dialect: source.dialect.clone(),
-        connection: SecretUri::new(source.connection.clone())?,
-        query: resource.query.clone(),
-        table: resource.table.clone(),
-    })
-}
-
-fn compile_file_plan(
-    resource_id: &str,
-    source_name: &str,
-    source: &FileSourceDeclaration,
-    resource: &ResourceDeclaration,
-    project_root: Option<&Path>,
-) -> Result<FileResourcePlan> {
-    if resource.sample_files == Some(0) {
-        return Err(CdfError::contract(format!(
-            "file resource `{resource_id}` sample_files must be greater than zero"
-        )));
-    }
-    let allowlist = if source.egress_allowlist.is_empty() {
-        EgressAllowlist::allow_any()
-    } else {
-        EgressAllowlist::from_hosts(source.egress_allowlist.clone())
-    };
-    let format = resource.format.clone();
-    let format_declared = format.is_some();
-    let compression = resource.compression.clone().unwrap_or_default();
-    if let Some(format) = &format {
-        format.validate()?;
-    }
-    compression.validate()?;
-    Ok(FileResourcePlan {
-        source: source_name.to_owned(),
-        root: compile_file_root(&source.root, project_root)?,
-        glob: resource.glob.clone().ok_or_else(|| {
-            CdfError::contract("file resources must declare glob before compilation")
-        })?,
-        format,
-        format_declared,
-        format_options: serde_json::Value::Object(
-            resource.format_options.clone().into_iter().collect(),
-        ),
-        compression,
-        auth: source.auth.as_ref().map(compile_auth).transpose()?,
-        credentials: source
-            .credentials
-            .as_ref()
-            .map(|value| SecretUri::new(value.clone()))
-            .transpose()?,
-        allowlist,
-    })
-}
-
-fn compile_file_root(root: &str, project_root: Option<&Path>) -> Result<String> {
-    if is_remote_file_root(root) || root.starts_with("file://") {
-        return Ok(root.to_owned());
-    }
-    let root_path = PathBuf::from(root);
-    if root_path.is_absolute() {
-        return path_to_string(&root_path);
-    }
-    if path_contains_parent_dir(&root_path) {
-        return Err(CdfError::contract(
-            "relative file source root must stay under the project root and cannot contain `..`",
-        ));
-    }
-    match project_root {
-        Some(project_root) => path_to_string(&absolute_project_root(project_root)?.join(root_path)),
-        None => Ok(root.to_owned()),
-    }
-}
-
-fn is_remote_file_root(root: &str) -> bool {
-    root.starts_with("http://")
-        || root.starts_with("https://")
-        || root.starts_with("s3://")
-        || root.starts_with("gs://")
-        || root.starts_with("az://")
-}
-
-fn absolute_project_root(project_root: &Path) -> Result<PathBuf> {
-    if project_root.is_absolute() {
-        return Ok(project_root.to_path_buf());
-    }
-    let current_dir = std::env::current_dir().map_err(|error| {
-        CdfError::internal(format!(
-            "resolve current directory for project root: {error}"
-        ))
-    })?;
-    Ok(current_dir.join(project_root))
-}
-
-fn path_contains_parent_dir(path: &Path) -> bool {
-    path.components()
-        .any(|component| matches!(component, Component::ParentDir))
-}
-
-fn path_to_string(path: &Path) -> Result<String> {
-    path.to_str().map(str::to_owned).ok_or_else(|| {
-        CdfError::contract(format!(
-            "file source root path is not valid UTF-8: {}",
-            path.display()
-        ))
-    })
-}
-
-fn compile_auth(auth: &AuthDeclaration) -> Result<AuthScheme> {
-    match auth {
-        AuthDeclaration::Bearer { token } => Ok(AuthScheme::Bearer {
-            token_uri: SecretUri::new(token.clone())?,
-        }),
-        AuthDeclaration::Header { name, value } => Ok(AuthScheme::Header {
-            name: name.clone(),
-            value_uri: SecretUri::new(value.clone())?,
-        }),
-    }
-}
-
-fn compile_rate_limit(
-    rate_limit: Option<&RateLimitDeclaration>,
-) -> Result<(RateLimitPolicy, Vec<String>)> {
-    let Some(rate_limit) = rate_limit else {
-        return Ok((RateLimitPolicy::unrestricted(), Vec::new()));
-    };
-
-    Ok((
-        RateLimitPolicy {
-            requests_per_minute: rate_limit.requests_per_minute,
-            quota_headers: rate_limit
-                .quota_headers
-                .iter()
-                .map(|quota| {
-                    QuotaHeaderPolicy::remaining_until_reset(
-                        quota.remaining_header.clone(),
-                        quota.reset_header.clone(),
-                        match quota.reset {
-                            ResetSemanticsDeclaration::DelaySeconds => {
-                                ResetHeaderSemantics::DelaySeconds
-                            }
-                            ResetSemanticsDeclaration::EpochSeconds => {
-                                ResetHeaderSemantics::EpochSeconds
-                            }
-                        },
-                    )
-                })
-                .collect(),
-        },
-        rate_limit.respect_headers.clone(),
-    ))
-}
-
-fn compile_pagination(pagination: &PaginationDeclaration) -> Result<PaginationConfig> {
-    Ok(match pagination {
-        PaginationDeclaration::LinkHeader => PaginationConfig::LinkHeader,
-        PaginationDeclaration::CursorParam {
-            query_param,
-            response_field,
-            initial,
-        } => PaginationConfig::Cursor {
-            query_param: query_param.clone(),
-            response_field: response_field.clone(),
-            initial: initial.clone(),
-        },
-        PaginationDeclaration::PageNumber {
-            query_param,
-            start_page,
-        } => PaginationConfig::Page {
-            query_param: query_param.clone(),
-            start_page: start_page.unwrap_or(1),
-        },
-        PaginationDeclaration::Offset {
-            offset_param,
-            limit_param,
-            start_offset,
-            limit,
-        } => PaginationConfig::Offset {
-            offset_param: offset_param.clone(),
-            limit_param: limit_param.clone(),
-            start_offset: start_offset.unwrap_or(0),
-            limit: *limit,
-        },
-        PaginationDeclaration::NextToken {
-            query_param,
-            response_field,
-            initial,
-        } => PaginationConfig::NextToken {
-            query_param: query_param.clone(),
-            response_field: response_field.clone(),
-            initial: initial.clone(),
-        },
-    })
-}
-
-fn capabilities_for(
-    descriptor: &ResourceDescriptor,
-    plan: &CompiledResourcePlan,
-) -> ResourceCapabilities {
-    match plan {
-        CompiledResourcePlan::Rest(rest) => rest_resource_capabilities(descriptor, rest),
-        CompiledResourcePlan::Sql(sql) => sql_capabilities_for(descriptor, sql),
-        CompiledResourcePlan::Files(_) => ResourceCapabilities {
-            projection: CapabilitySupport::Unsupported,
-            filters: FilterCapabilities::default(),
-            limits: CapabilitySupport::Unsupported,
-            ordering: CapabilitySupport::Unsupported,
-            partitioning: PartitioningCapabilities {
-                parallel_partitions: true,
-                supported_scopes: vec![ScopeKind::File],
-            },
-            incremental: IncrementalShape::File,
-            replay: ReplaySupport::ExactRecordedBatches,
-            idempotent_reads: true,
-            backpressure: BackpressureSupport::Pausable,
-            estimates: EstimateSupport::Bytes,
-        },
-    }
-}
-
-fn partition_for_plan(
-    descriptor: &ResourceDescriptor,
-    schema: &SchemaRef,
-    plan: &CompiledResourcePlan,
-    request: Option<&ScanRequest>,
-) -> Result<PartitionPlan> {
-    match plan {
-        CompiledResourcePlan::Rest(rest) => {
-            let request = request.ok_or_else(|| {
-                CdfError::internal("compiled REST partition requires its canonical scan request")
-            })?;
-            rest_partition(descriptor, rest, request)
-        }
-        CompiledResourcePlan::Sql(sql) => sql_partition_for_plan(descriptor, schema, sql, request),
-        CompiledResourcePlan::Files(_) => Err(CdfError::internal(
-            "file resources must plan through the file partition resolver",
-        )),
-    }
-}
-
-fn partitions_for_plan(
-    descriptor: &ResourceDescriptor,
-    schema: &SchemaRef,
-    plan: &CompiledResourcePlan,
-    request: Option<&ScanRequest>,
-) -> Result<Vec<PartitionPlan>> {
-    match plan {
-        CompiledResourcePlan::Files(_) => Err(CdfError::internal(
-            "file resources require a resolved file runtime with transport, format, and transform registries",
-        )),
-        CompiledResourcePlan::Rest(_) | CompiledResourcePlan::Sql(_) => {
-            Ok(vec![partition_for_plan(descriptor, schema, plan, request)?])
-        }
-    }
-}
-
 fn state_scope(resource: &ResourceDeclaration) -> Result<ScopeKey> {
     match &resource.partition {
         Some(PartitionDeclaration {
@@ -1075,26 +415,13 @@ fn state_scope(resource: &ResourceDeclaration) -> Result<ScopeKey> {
             by: PartitionByDeclaration::File,
             ..
         }) => Ok(ScopeKey::File {
-            path: resource.glob.clone().unwrap_or_else(|| "*".to_owned()),
+            path: "*".to_owned(),
         }),
         Some(PartitionDeclaration {
             by: PartitionByDeclaration::Resource,
             ..
         })
         | None => Ok(ScopeKey::Resource),
-    }
-}
-
-fn delivery_guarantee(descriptor: &ResourceDescriptor) -> DeliveryGuarantee {
-    match descriptor.write_disposition {
-        WriteDisposition::Merge if !descriptor.merge_key.is_empty() => {
-            DeliveryGuarantee::EffectivelyOncePerKey
-        }
-        WriteDisposition::Replace => DeliveryGuarantee::EffectivelyOncePerTarget,
-        WriteDisposition::CdcApply => DeliveryGuarantee::EffectivelyOncePerPosition,
-        WriteDisposition::Append | WriteDisposition::Merge => {
-            DeliveryGuarantee::AtLeastOnceDuplicateRisk
-        }
     }
 }
 
@@ -1153,19 +480,6 @@ fn ensure_fields_exist(
         "resource `{resource_name}` is missing required field(s) {} in {field_set_name}",
         missing.join(", ")
     )))
-}
-
-fn validate_escape_hatch(resource: &ResourceDeclaration) -> Result<()> {
-    let Some(transform) = &resource.records_transform else {
-        return Ok(());
-    };
-    if transform.starts_with("python://") || transform.starts_with("rust://") {
-        Ok(())
-    } else {
-        Err(CdfError::contract(
-            "records_transform must use python:// or rust://",
-        ))
-    }
 }
 
 fn schema_hash(schema: &SchemaDeclaration) -> Result<SchemaHash> {

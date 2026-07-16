@@ -81,7 +81,8 @@ fn build_proposed_resource(
 ) -> Result<ProposedResource, CliError> {
     let resource_toml = resource_toml(request)?;
     let document = parse_declarative_toml(&resource_toml)?;
-    let mut resources = compile_document_with_project_root(&document, &context.root)?;
+    let registry = crate::source_registry::builtin_source_registry()?;
+    let mut resources = compile_document_with_project_root(&registry, &document, &context.root)?;
     if resources.len() != 1 {
         return Err(CliError::mapped(
             CdfError::internal(format!(
@@ -169,13 +170,7 @@ fn discover_for_add(
     let options = cdf_project::SchemaDiscoveryExecutionOptions::new()
         .with_observation_cache(cdf_project::ObservationCacheStore::new(&context.root));
     let registry = crate::source_registry::builtin_source_registry()?;
-    let request = resource.source_compile_request().ok_or_else(|| {
-        CdfError::contract(format!(
-            "resource `{}` has no source compile request",
-            resource.descriptor().resource_id
-        ))
-    })?;
-    let source_plan = registry.compile(request.clone())?;
+    let source_plan = resource.source_plan().clone();
     let resolution = cdf_runtime::SourceResolutionContext::new(
         &context.root,
         Arc::new(secret_provider),

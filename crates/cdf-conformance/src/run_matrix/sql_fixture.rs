@@ -1,6 +1,9 @@
-use cdf_declarative::{CompiledResource, SqlResource, SqlRuntimeDependencies};
+use std::{path::Path, sync::Arc};
+
+use cdf_declarative::CompiledResource;
 use cdf_kernel::{CdfError, CursorValue, Result, SourcePosition};
 use cdf_project::ProjectRunReport;
+use cdf_runtime::{SourceRegistry, SourceResolutionContext};
 
 use super::{
     MatrixDisposition, RunMatrixCell, local_postgres::LivePostgres,
@@ -10,23 +13,30 @@ use super::{
 const RESOURCE_ID: &str = "postgres.events";
 const SECRET_REF: &str = "secret://env/POSTGRES_URL";
 
-pub(crate) fn resource(cell: RunMatrixCell, postgres: &LivePostgres) -> Result<SqlResource> {
+pub(crate) fn resource(
+    cell: RunMatrixCell,
+    postgres: &LivePostgres,
+) -> Result<crate::source_fixture::ResolvedSourceFixture> {
     let table = format!(
         "sql_source_{}_{}",
         cell.destination.as_str(),
         cell.disposition.as_str()
     );
     let source_table = postgres.create_source_events_table(&table)?;
+    let mut registry = SourceRegistry::new();
+    registry.register(cdf_source_postgres::PostgresSourceDriver::new()?)?;
     let document = cdf_declarative::parse_toml(&resource_toml(cell.disposition, &source_table))?;
-    let compiled = one_resource(cdf_declarative::compile_document(&document)?)?;
-    compiled.to_sql_resource(
-        SqlRuntimeDependencies::new()
-            .with_secret_provider(StaticSecretProvider::new([(
-                SECRET_REF,
-                postgres.url().to_owned(),
-            )]))
-            .with_execution(crate::test_execution_services()),
-    )
+    let compiled = one_resource(cdf_declarative::compile_document(&registry, &document)?)?;
+    let execution = crate::test_execution_services();
+    let context = SourceResolutionContext::new(
+        Path::new("."),
+        Arc::new(StaticSecretProvider::new([(
+            SECRET_REF,
+            postgres.url().to_owned(),
+        )])),
+        &execution,
+    );
+    crate::source_fixture::ResolvedSourceFixture::resolve(&compiled, &registry, &context)
 }
 
 pub(crate) fn assert_source_position(report: &ProjectRunReport) {

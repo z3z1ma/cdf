@@ -8,14 +8,14 @@ use std::{
 
 use cdf_contract::NORMALIZER_NAMECASE_V1;
 use cdf_declarative::{
-    CompiledResource, CompiledResourcePlan, DeclarativeDocument, compile_document,
-    compile_document_with_project_root, parse_toml as parse_declarative_toml,
-    parse_yaml as parse_declarative_yaml,
+    CompiledResource, DeclarativeDocument, compile_document, compile_document_with_project_root,
+    parse_toml as parse_declarative_toml, parse_yaml as parse_declarative_yaml,
 };
-use cdf_http::{AuthScheme, SecretProvider, SecretUri, SecretValue};
+use cdf_http::{SecretProvider, SecretUri, SecretValue};
 use cdf_kernel::{
     CdfError, DestinationSheet, ResourceCapabilities, ResourceDescriptor, Result, SchemaSource,
 };
+use cdf_runtime::SourceRegistry;
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
 use sha2::{Digest, Sha256};
 

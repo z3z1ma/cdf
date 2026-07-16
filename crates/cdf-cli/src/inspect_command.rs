@@ -51,12 +51,7 @@ pub(crate) fn inspect(
                     )
                 }
                 InspectNoun::Resource(id) => {
-                    let resource =
-                        crate::project_run_resource::build_project_resource_for_inspection(
-                            &context, &id,
-                        )?;
-                    let report =
-                        ResourceSummary::from_context(&context, &id, resource.as_queryable());
+                    let report = resource_summary(&context, &id)?;
                     CommandOutput::rendered(
                         "inspect resource",
                         inspect_resource_document(&report),
@@ -122,34 +117,6 @@ struct ResourceSummary {
 }
 
 impl ResourceSummary {
-    fn from_context(
-        context: &ProjectContext,
-        id: &str,
-        resource: &dyn cdf_kernel::QueryableResource,
-    ) -> Self {
-        let origin = context.resource_origin(id);
-        let mapping = context.config.resources.get(id);
-        let (default_source, default_resource) = id.split_once('.').unwrap_or((id, id));
-        Self::from_queryable(
-            resource,
-            &origin
-                .map(|origin| origin.source_name.clone())
-                .unwrap_or_else(|| default_source.to_owned()),
-            &origin
-                .map(|origin| origin.resource_name.clone())
-                .unwrap_or_else(|| default_resource.to_owned()),
-            origin
-                .and_then(|origin| origin.source_file.clone())
-                .or_else(|| mapping.map(|mapping| mapping.source.clone())),
-            origin
-                .map(|origin| origin.mapping_pattern.clone())
-                .or_else(|| mapping.map(|_| id.to_owned())),
-            origin
-                .map(|origin| origin.mapping_status.clone())
-                .or_else(|| mapping.map(|_| "matched".to_owned())),
-        )
-    }
-
     fn from_queryable(
         resource: &dyn cdf_kernel::QueryableResource,
         source_name: &str,
@@ -168,21 +135,74 @@ impl ResourceSummary {
             capabilities: resource.capabilities().clone(),
         }
     }
+
+    fn from_compiled(
+        resource: &cdf_declarative::CompiledResource,
+        source_name: &str,
+        resource_name: &str,
+        source_file: Option<String>,
+        mapping_pattern: Option<String>,
+        mapping_status: Option<String>,
+    ) -> Self {
+        Self {
+            descriptor: resource.descriptor().clone(),
+            source_name: source_name.to_owned(),
+            resource_name: resource_name.to_owned(),
+            source_file,
+            mapping_pattern,
+            mapping_status,
+            capabilities: resource.capabilities().clone(),
+        }
+    }
+}
+
+fn resource_summary(context: &ProjectContext, id: &str) -> Result<ResourceSummary, CliError> {
+    let origin = context.resource_origin(id);
+    let mapping = context.config.resources.get(id);
+    let (default_source, default_resource) = id.split_once('.').unwrap_or((id, id));
+    let source_name = origin
+        .map(|origin| origin.source_name.clone())
+        .unwrap_or_else(|| default_source.to_owned());
+    let resource_name = origin
+        .map(|origin| origin.resource_name.clone())
+        .unwrap_or_else(|| default_resource.to_owned());
+    let source_file = origin
+        .and_then(|origin| origin.source_file.clone())
+        .or_else(|| mapping.map(|mapping| mapping.source.clone()));
+    let mapping_pattern = origin
+        .map(|origin| origin.mapping_pattern.clone())
+        .or_else(|| mapping.map(|_| id.to_owned()));
+    let mapping_status = origin
+        .map(|origin| origin.mapping_status.clone())
+        .or_else(|| mapping.map(|_| "matched".to_owned()));
+    if let Some(resource) =
+        crate::project_run_resource::build_project_resource_for_inspection(context, id)?
+    {
+        return Ok(ResourceSummary::from_queryable(
+            resource.as_queryable(),
+            &source_name,
+            &resource_name,
+            source_file,
+            mapping_pattern,
+            mapping_status,
+        ));
+    }
+    let resource = context.resource(id)?;
+    Ok(ResourceSummary::from_compiled(
+        resource,
+        &source_name,
+        &resource_name,
+        source_file,
+        mapping_pattern,
+        mapping_status,
+    ))
 }
 
 fn resource_summaries(context: &ProjectContext) -> Result<Vec<ResourceSummary>, CliError> {
     let mut summaries = context
         .resource_ids()
         .into_iter()
-        .map(|id| {
-            let resource =
-                crate::project_run_resource::build_project_resource_for_inspection(context, &id)?;
-            Ok(ResourceSummary::from_context(
-                context,
-                &id,
-                resource.as_queryable(),
-            ))
-        })
+        .map(|id| resource_summary(context, &id))
         .collect::<Result<Vec<_>, CliError>>()?;
     summaries.sort_by(|left, right| {
         left.descriptor

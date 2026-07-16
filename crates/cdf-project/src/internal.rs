@@ -195,30 +195,30 @@ pub(crate) fn collect_secret_refs_from_declarative(
 ) -> Result<Vec<SecretRef>> {
     let mut refs = Vec::new();
     for resource in resources {
-        match resource.plan() {
-            CompiledResourcePlan::Rest(plan) => {
-                if let Some(auth) = &plan.auth {
-                    match auth {
-                        AuthScheme::Bearer { token_uri } => {
-                            refs.push(secret_ref_from_uri(token_uri)?);
-                        }
-                        AuthScheme::Header { value_uri, .. } => {
-                            refs.push(secret_ref_from_uri(value_uri)?);
-                        }
-                    }
-                }
-            }
-            CompiledResourcePlan::Sql(plan) => {
-                refs.push(secret_ref_from_uri(&plan.connection)?);
-            }
-            CompiledResourcePlan::Files(_) => {}
-        }
+        collect_secret_refs_from_json(&resource.source_plan().redacted_options, &mut refs)?;
     }
     Ok(refs)
 }
 
-pub(crate) fn secret_ref_from_uri(uri: &SecretUri) -> Result<SecretRef> {
-    SecretRef::new(uri.as_str().to_owned())
+fn collect_secret_refs_from_json(
+    value: &serde_json::Value,
+    refs: &mut Vec<SecretRef>,
+) -> Result<()> {
+    match value {
+        serde_json::Value::String(value) => refs.extend(secret_refs_in_text(value)?),
+        serde_json::Value::Array(values) => {
+            for value in values {
+                collect_secret_refs_from_json(value, refs)?;
+            }
+        }
+        serde_json::Value::Object(values) => {
+            for value in values.values() {
+                collect_secret_refs_from_json(value, refs)?;
+            }
+        }
+        serde_json::Value::Null | serde_json::Value::Bool(_) | serde_json::Value::Number(_) => {}
+    }
+    Ok(())
 }
 
 pub(crate) fn secret_refs_in_text(value: &str) -> Result<Vec<SecretRef>> {

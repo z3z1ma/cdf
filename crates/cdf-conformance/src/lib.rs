@@ -36,9 +36,9 @@ pub fn test_execution_services() -> cdf_runtime::ExecutionServices {
 }
 
 #[cfg(test)]
-pub(crate) fn test_rest_runtime_dependencies(
-    transport: impl cdf_http::HttpTransport + 'static,
-) -> cdf_declarative::RestRuntimeDependencies {
+pub(crate) fn test_rest_source_registry(
+    transport: impl cdf_http::HttpTransport + Clone + 'static,
+) -> cdf_kernel::Result<cdf_runtime::SourceRegistry> {
     let services = test_execution_services();
     services
         .ensure_blocking_lanes(&[cdf_runtime::BlockingLaneSpec {
@@ -50,5 +50,9 @@ pub(crate) fn test_rest_runtime_dependencies(
             interruption: cdf_runtime::InterruptionSafety::CooperativeOnly,
         }])
         .expect("conformance REST blocking lane");
-    cdf_declarative::RestRuntimeDependencies::new(transport, services)
+    let mut registry = cdf_runtime::SourceRegistry::new();
+    registry.register(cdf_source_rest::RestSourceDriver::new(move || {
+        Ok(Box::new(transport.clone()))
+    })?)?;
+    Ok(registry)
 }

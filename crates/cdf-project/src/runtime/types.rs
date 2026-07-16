@@ -68,21 +68,6 @@ pub enum ProjectReceiptSource {
     SuppliedDurableReceipt,
 }
 
-#[cfg(test)]
-pub struct LocalFileDuckDbRunRequest<'a> {
-    pub resource: &'a dyn QueryableResource,
-    pub services: cdf_runtime::ExecutionServices,
-    pub plan: EnginePlan,
-    pub package_root: PathBuf,
-    pub destination_path: PathBuf,
-    pub state_store_path: PathBuf,
-    pub pipeline_id: PipelineId,
-    pub target: TargetName,
-    pub package_id: String,
-    pub checkpoint_id: CheckpointId,
-    pub after_receipt_verified: Option<ReceiptVerifiedHook<'a>>,
-}
-
 pub struct ProjectRunRequest<'a> {
     pub resource: ProjectRunSource<'a>,
     pub plan: EnginePlan,
@@ -95,21 +80,6 @@ pub struct ProjectRunRequest<'a> {
     pub run_id: Option<RunId>,
     pub event_sink: Option<&'a dyn RunEventSink>,
     pub after_receipt_verified: Option<ReceiptVerifiedHook<'a>>,
-}
-
-#[cfg(test)]
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct LocalFileDuckDbRunReport {
-    pub package_dir: PathBuf,
-    pub package_id: String,
-    pub package_hash: PackageHash,
-    pub package_status: PackageStatus,
-    pub checkpoint: Checkpoint,
-    pub receipt: Receipt,
-    pub receipt_source: ProjectReceiptSource,
-    pub row_count: u64,
-    pub segment_count: usize,
-    pub file_manifest: Option<FileManifestRunSummary>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -136,22 +106,4 @@ pub struct FileManifestRunSummary {
     pub total_file_count: usize,
     pub changed_file_count: usize,
     pub unchanged_file_count: usize,
-}
-
-impl ProjectRunReport {
-    #[cfg(test)]
-    pub(super) fn into_local_file_duckdb_report(self) -> LocalFileDuckDbRunReport {
-        LocalFileDuckDbRunReport {
-            package_dir: self.package_dir,
-            package_id: self.package_id,
-            package_hash: self.package_hash,
-            package_status: self.package_status,
-            checkpoint: self.checkpoint,
-            receipt: self.receipt,
-            receipt_source: self.receipt_source,
-            row_count: self.row_count,
-            segment_count: self.segment_count,
-            file_manifest: self.file_manifest,
-        }
-    }
 }

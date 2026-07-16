@@ -28,9 +28,7 @@ pub use tracing_bridge::TracingRunEventSink;
 pub use types::*;
 
 #[cfg(test)]
-pub(crate) use artifacts::state_delta_from_run;
-#[cfg(test)]
-pub(crate) use orchestration::run_local_file_to_duckdb_checkpoint;
+pub(crate) use artifacts::{StateDeltaTestRequest, state_delta_from_run};
 #[cfg(test)]
 pub(crate) use replay::{
     PackageReplayHooks, PackageReplayStage, record_package_receipt_once,
@@ -45,7 +43,6 @@ mod prelude {
     };
 
     pub(super) use arrow_schema::Schema;
-    pub(super) use cdf_declarative::{CompiledResource, FileResource, RestResource, SqlResource};
     #[cfg(test)]
     pub(super) use cdf_engine::EngineRunOutputWithSegmentPositions;
     pub(super) use cdf_engine::{

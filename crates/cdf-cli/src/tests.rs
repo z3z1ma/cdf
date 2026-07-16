@@ -2326,6 +2326,8 @@ fn backfill_human_rich_render_uses_plan_panels_and_slice_table() {
     )
     .unwrap();
 
+    let (host, services) =
+        cdf_engine::StandaloneExecutionHost::default_services(64 * 1024 * 1024).unwrap();
     let output = crate::backfill_command::backfill(
         &test_cli(&project),
         crate::args::BackfillArgs {
@@ -2336,7 +2338,7 @@ fn backfill_human_rich_render_uses_plan_panels_and_slice_table() {
             execute: false,
             slice_size: Some(10),
         },
-        None,
+        (host.as_ref(), &services),
         &test_destination_registry(),
     )
     .unwrap();
@@ -7412,7 +7414,7 @@ fn preview_inaccessible_literal_child_reports_path_inspection_error() {
 }
 
 #[test]
-fn run_local_file_to_duckdb_commits_package_rows_mirrors_and_checkpoint() {
+fn run_command_commits_package_rows_mirrors_and_checkpoint() {
     let project = TestProject::new();
     let result = run([
         "cdf",
@@ -12047,7 +12049,7 @@ fn doctor_reports_lockfile_presence_when_lock_exists() {
 }
 
 #[test]
-fn doctor_remote_transport_probe_fails_independently_before_network_or_writes() {
+fn doctor_registered_source_probe_fails_independently_before_network_or_writes() {
     let project = TestProject::new();
     fs::write(
         project.root.join("resources/files.toml"),
@@ -12073,12 +12075,12 @@ schema = { fields = [
 
     assert_eq!(result.exit_code, 1, "stdout: {}", result.stdout);
     let json = stderr_or_stdout_json(&result.stdout);
-    let transport = named_check(&json, "file_transport:local.events");
-    assert_eq!(transport["status"], "failed");
-    assert_eq!(transport["details"]["resource_id"], "local.events");
-    assert_eq!(transport["details"]["transport"], "https");
-    assert_eq!(transport["details"]["matched_files"], 0);
-    assert!(transport["message"].as_str().unwrap().contains("egress"));
+    let source = named_check(&json, "source:local.events");
+    assert_eq!(source["status"], "failed");
+    assert_eq!(source["details"]["resource_id"], "local.events");
+    assert_eq!(source["details"]["driver"], "files");
+    assert_eq!(source["details"]["partitions"], 0);
+    assert!(source["message"].as_str().unwrap().contains("egress"));
     assert!(!project.root.join(".cdf/state.db").exists());
     assert!(!project.root.join(".cdf/packages").exists());
     assert!(!project.root.join(".cdf/dev.duckdb").exists());

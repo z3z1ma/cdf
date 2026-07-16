@@ -1,11 +1,11 @@
 use std::collections::BTreeMap;
 
 use cdf_kernel::{CdfError, Result};
-use cdf_source_files::{FileCompressionDeclaration, FileFormatDeclaration};
+use cdf_runtime::SourceRegistry;
 use schemars::{JsonSchema, schema_for};
 use serde::{Deserialize, Serialize};
 
-pub const DECLARATIVE_SCHEMA_VERSION: &str = "cdf-declarative-v2";
+pub const DECLARATIVE_SCHEMA_VERSION: &str = "cdf-declarative-v3";
 pub const DECLARATIVE_SCHEMA_ARTIFACT_PATH: &str = "schemas/cdf-declarative.schema.json";
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -17,86 +17,17 @@ pub struct DeclarativeDocument {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[serde(tag = "kind", rename_all = "snake_case")]
-pub enum SourceDeclaration {
-    Rest(RestSourceDeclaration),
-    Sql(SqlSourceDeclaration),
-    Files(FileSourceDeclaration),
+pub struct SourceDeclaration {
+    pub kind: String,
+    #[serde(default, flatten)]
+    pub options: BTreeMap<String, serde_json::Value>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-pub struct RestSourceDeclaration {
-    pub base_url: String,
-    pub auth: Option<AuthDeclaration>,
-    pub rate_limit: Option<RateLimitDeclaration>,
-    #[serde(default)]
-    pub egress_allowlist: Vec<String>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-pub struct SqlSourceDeclaration {
-    pub connection: String,
-    pub dialect: Option<String>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-pub struct FileSourceDeclaration {
-    pub root: String,
-    pub auth: Option<AuthDeclaration>,
-    pub credentials: Option<String>,
-    #[serde(default)]
-    pub egress_allowlist: Vec<String>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[serde(tag = "kind", rename_all = "snake_case")]
-pub enum AuthDeclaration {
-    Bearer { token: String },
-    Header { name: String, value: String },
-}
-
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-pub struct RateLimitDeclaration {
-    pub requests_per_minute: Option<u32>,
-    #[serde(default)]
-    pub respect_headers: Vec<String>,
-    #[serde(default)]
-    pub quota_headers: Vec<QuotaHeaderDeclaration>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-pub struct QuotaHeaderDeclaration {
-    pub remaining_header: String,
-    pub reset_header: String,
-    pub reset: ResetSemanticsDeclaration,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "snake_case")]
-pub enum ResetSemanticsDeclaration {
-    DelaySeconds,
-    EpochSeconds,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
 pub struct ResourceDeclaration {
     pub source: Option<String>,
-    pub path: Option<String>,
-    pub query: Option<String>,
-    pub table: Option<String>,
-    pub glob: Option<String>,
     #[schemars(range(min = 1))]
     pub sample_files: Option<u64>,
-    pub format: Option<FileFormatDeclaration>,
-    #[serde(default)]
-    pub format_options: BTreeMap<String, serde_json::Value>,
-    pub compression: Option<FileCompressionDeclaration>,
-    #[serde(default)]
-    pub params: BTreeMap<String, ParamValueDeclaration>,
-    pub paginate: Option<PaginationDeclaration>,
-    pub records: Option<String>,
-    pub records_transform: Option<String>,
     #[serde(default)]
     pub primary_key: Vec<String>,
     pub merge_key: Option<Vec<String>>,
@@ -111,6 +42,8 @@ pub struct ResourceDeclaration {
     pub schema_mode: Option<SchemaModeDeclaration>,
     pub sample: Option<SampleDeclaration>,
     pub types: Option<TypePolicyDeclaration>,
+    #[serde(default, flatten)]
+    pub options: BTreeMap<String, serde_json::Value>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -133,52 +66,6 @@ pub struct TypePolicyDeclaration {
     pub coerce_types: bool,
     #[serde(default)]
     pub allow_lossy_mapping: bool,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[serde(tag = "kind", rename_all = "snake_case")]
-pub enum PaginationDeclaration {
-    LinkHeader,
-    CursorParam {
-        query_param: String,
-        response_field: String,
-        initial: Option<String>,
-    },
-    PageNumber {
-        query_param: String,
-        start_page: Option<u64>,
-    },
-    Offset {
-        offset_param: String,
-        limit_param: String,
-        start_offset: Option<u64>,
-        limit: u64,
-    },
-    NextToken {
-        query_param: String,
-        response_field: String,
-        initial: Option<String>,
-    },
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[serde(untagged)]
-pub enum ParamValueDeclaration {
-    String(String),
-    Integer(i64),
-    Unsigned(u64),
-    Boolean(bool),
-}
-
-impl ParamValueDeclaration {
-    pub(crate) fn as_query_value(&self) -> String {
-        match self {
-            Self::String(value) => value.clone(),
-            Self::Integer(value) => value.to_string(),
-            Self::Unsigned(value) => value.to_string(),
-            Self::Boolean(value) => value.to_string(),
-        }
-    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -293,15 +180,138 @@ pub fn parse_yaml(input: &str) -> Result<DeclarativeDocument> {
     serde_yaml::from_str(input).map_err(|error| CdfError::contract(error.to_string()))
 }
 
-pub fn declarative_json_schema() -> serde_json::Value {
-    serde_json::to_value(schema_for!(DeclarativeDocument))
-        .expect("declarative schema generation must serialize")
+pub fn declarative_json_schema(registry: &SourceRegistry) -> Result<serde_json::Value> {
+    let mut schema = serde_json::to_value(schema_for!(DeclarativeDocument))
+        .expect("declarative schema generation must serialize");
+    merge_source_driver_schemas(&mut schema, registry)?;
+    Ok(schema)
 }
 
-pub fn declarative_json_schema_artifact() -> JsonSchemaArtifact {
-    JsonSchemaArtifact {
+pub fn declarative_json_schema_artifact(registry: &SourceRegistry) -> Result<JsonSchemaArtifact> {
+    Ok(JsonSchemaArtifact {
         version: DECLARATIVE_SCHEMA_VERSION,
         path: DECLARATIVE_SCHEMA_ARTIFACT_PATH,
-        schema: declarative_json_schema(),
+        schema: declarative_json_schema(registry)?,
+    })
+}
+
+fn merge_source_driver_schemas(
+    schema: &mut serde_json::Value,
+    registry: &SourceRegistry,
+) -> Result<()> {
+    let definitions = schema
+        .get_mut("$defs")
+        .and_then(serde_json::Value::as_object_mut)
+        .ok_or_else(|| CdfError::internal("declarative JSON Schema has no $defs object"))?;
+    let common_source = definitions
+        .get("SourceDeclaration")
+        .cloned()
+        .ok_or_else(|| CdfError::internal("declarative JSON Schema has no source definition"))?;
+    let common_resource = definitions
+        .get("ResourceDeclaration")
+        .cloned()
+        .ok_or_else(|| CdfError::internal("declarative JSON Schema has no resource definition"))?;
+
+    let option_schemas = registry.option_schemas();
+    let descriptors = registry.descriptors();
+    let mut source_variants = Vec::new();
+    let mut resource_variants = Vec::new();
+    for descriptor in descriptors {
+        let driver_schema = option_schemas
+            .get(descriptor.driver_id.as_str())
+            .ok_or_else(|| CdfError::internal("registered source has no option schema"))?;
+        let source_options = driver_schema.get("source").cloned().ok_or_else(|| {
+            CdfError::internal("registered source option schema has no source section")
+        })?;
+        let resource_options = driver_schema.get("resource").cloned().ok_or_else(|| {
+            CdfError::internal("registered source option schema has no resource section")
+        })?;
+        for kind in descriptor.kinds {
+            let mut variant = merge_closed_object_schemas(&common_source, &source_options)?;
+            let object = variant.as_object_mut().expect("merged schema is an object");
+            object
+                .get_mut("properties")
+                .and_then(serde_json::Value::as_object_mut)
+                .expect("merged object schema has properties")
+                .insert("kind".to_owned(), serde_json::json!({"const": kind}));
+            require_property(object, "kind");
+            source_variants.push(variant);
+        }
+        resource_variants.push(merge_closed_object_schemas(
+            &common_resource,
+            &resource_options,
+        )?);
+    }
+    definitions.insert(
+        "SourceDeclaration".to_owned(),
+        serde_json::json!({"oneOf": source_variants}),
+    );
+    definitions.insert(
+        "ResourceDeclaration".to_owned(),
+        serde_json::json!({"anyOf": resource_variants}),
+    );
+    Ok(())
+}
+
+fn merge_closed_object_schemas(
+    common: &serde_json::Value,
+    driver: &serde_json::Value,
+) -> Result<serde_json::Value> {
+    let common = common
+        .as_object()
+        .ok_or_else(|| CdfError::internal("common declaration schema is not an object"))?;
+    let driver = driver
+        .as_object()
+        .ok_or_else(|| CdfError::internal("source driver option schema is not an object"))?;
+    if common.get("type").and_then(serde_json::Value::as_str) != Some("object")
+        || driver.get("type").and_then(serde_json::Value::as_str) != Some("object")
+    {
+        return Err(CdfError::internal(
+            "declarative and source-driver option schemas must describe objects",
+        ));
+    }
+
+    let mut merged = common.clone();
+    merged.insert("additionalProperties".to_owned(), serde_json::json!(false));
+    let properties = merged
+        .entry("properties".to_owned())
+        .or_insert_with(|| serde_json::json!({}))
+        .as_object_mut()
+        .ok_or_else(|| CdfError::internal("common object schema properties are not an object"))?;
+    for (name, property) in driver
+        .get("properties")
+        .and_then(serde_json::Value::as_object)
+        .into_iter()
+        .flatten()
+    {
+        if properties.insert(name.clone(), property.clone()).is_some() {
+            return Err(CdfError::internal(format!(
+                "source driver option `{name}` conflicts with a common declarative field"
+            )));
+        }
+    }
+    for required in driver
+        .get("required")
+        .and_then(serde_json::Value::as_array)
+        .into_iter()
+        .flatten()
+    {
+        let name = required.as_str().ok_or_else(|| {
+            CdfError::internal("source driver required option name is not a string")
+        })?;
+        require_property(&mut merged, name);
+    }
+    Ok(serde_json::Value::Object(merged))
+}
+
+fn require_property(schema: &mut serde_json::Map<String, serde_json::Value>, name: &str) {
+    let required = schema
+        .entry("required".to_owned())
+        .or_insert_with(|| serde_json::json!([]))
+        .as_array_mut()
+        .expect("object schema required list must be an array");
+    if !required.iter().any(|entry| entry.as_str() == Some(name)) {
+        required.push(serde_json::json!(name));
+        required.sort_by(|left, right| left.as_str().cmp(&right.as_str()));
     }
 }

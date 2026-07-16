@@ -49,6 +49,8 @@ use cdf_package_contract::{
     ProcessedObservationEvidenceArtifact, RECEIPTS_FILE, STATE_INPUT_CHECKPOINT_FILE,
     STATE_PROPOSED_DELTA_FILE, SegmentEntry, StateDeltaPreimage,
 };
+use cdf_source_files::{FileRuntimeDependencies, FileSourceDriver, FileTransportFacade};
+use cdf_source_rest::RestSourceDriver;
 use cdf_state_sqlite::{
     InMemoryScopeLeaseStore, RunEventDetails, RunEventKind, RunEventValue, SecretReference,
     SqliteCheckpointStore, SqliteRunLedger,
@@ -63,19 +65,18 @@ use tracing::{
 
 use crate::{
     BackfillPlanRequest, DependencyTuple, DestinationReceiptReportingPolicy,
-    FileManifestRunSummary, LocalFileDuckDbRunRequest, PackageArtifactRecoveryRequest,
-    PackageArtifactReplayRequest, PackageReplayHooks, PackageReplayStage,
-    PreparedDestinationCommit, ProjectDestinationDescription, ProjectDestinationDriver,
-    ProjectDestinationRegistry, ProjectDestinationRuntime, ProjectReceiptSource,
-    ProjectResolutionContext, ProjectRunReport, ProjectRunRequest, ProjectRunSource,
-    ResolvedProjectDestination, RunTelemetryConfig, RuntimeStage, TracingRunEventSink,
-    backfill_pipeline_id, generate_lockfile_with_destination_artifacts, parse_cdf_toml,
-    plan_backfill, recover_package_from_artifacts, replay_package_from_artifacts,
+    FileManifestRunSummary, PackageArtifactRecoveryRequest, PackageArtifactReplayRequest,
+    PackageReplayHooks, PackageReplayStage, PreparedDestinationCommit,
+    ProjectDestinationDescription, ProjectDestinationDriver, ProjectDestinationRegistry,
+    ProjectDestinationRuntime, ProjectReceiptSource, ProjectResolutionContext, ProjectRunReport,
+    ProjectRunRequest, ProjectRunSource, ResolvedProjectDestination, RunTelemetryConfig,
+    RuntimeStage, TracingRunEventSink, backfill_pipeline_id,
+    generate_lockfile_with_destination_artifacts, parse_cdf_toml, plan_backfill,
+    recover_package_from_artifacts, replay_package_from_artifacts,
     replay_package_from_artifacts_with_stage_hook, replay_package_with_runtime,
-    resolve_project_run_destination, run_local_file_to_duckdb_checkpoint,
-    run_project_with_scheduler_and_telemetry,
+    resolve_project_run_destination, run_project_with_scheduler_and_telemetry,
     run_project_with_telemetry as run_project_with_execution_services_and_telemetry,
-    runtime::{record_package_receipt_once, state_delta_from_run},
+    runtime::{StateDeltaTestRequest, record_package_receipt_once, state_delta_from_run},
 };
 
 fn test_execution_services() -> cdf_runtime::ExecutionServices {
@@ -300,30 +301,7 @@ impl QueryableResource for BoundTestResource<'_> {
     }
 }
 
-fn test_rest_runtime_dependencies(
-    transport: impl HttpTransport + 'static,
-) -> cdf_declarative::RestRuntimeDependencies {
-    test_rest_runtime_dependencies_with_execution(transport, test_execution_services())
-}
-
-fn test_rest_runtime_dependencies_with_execution(
-    transport: impl HttpTransport + 'static,
-    execution: cdf_runtime::ExecutionServices,
-) -> cdf_declarative::RestRuntimeDependencies {
-    execution
-        .ensure_blocking_lanes(&[cdf_runtime::BlockingLaneSpec {
-            lane_id: "rest-source.sync".to_owned(),
-            maximum_concurrency: 8,
-            cpu_slot_cost: 1,
-            native_internal_parallelism: 1,
-            affinity: cdf_runtime::LaneAffinity::Shared,
-            interruption: cdf_runtime::InterruptionSafety::CooperativeOnly,
-        }])
-        .unwrap();
-    cdf_declarative::RestRuntimeDependencies::new(transport, execution)
-}
-
-fn test_file_runtime_dependencies() -> cdf_declarative::FileRuntimeDependencies {
+fn test_file_runtime_dependencies() -> FileRuntimeDependencies {
     let execution = test_execution_services();
     let mut formats = cdf_runtime::FormatRegistry::default();
     formats
@@ -357,27 +335,101 @@ fn test_file_runtime_dependencies() -> cdf_declarative::FileRuntimeDependencies 
             cdf_transform_gzip::GzipTransformDriver::new().unwrap(),
         ))
         .unwrap();
-    cdf_declarative::FileRuntimeDependencies::new(
-        cdf_declarative::FileTransportFacade::new().with_execution_services(execution.clone()),
+    FileRuntimeDependencies::new(
+        FileTransportFacade::new().with_execution_services(execution.clone()),
         execution,
         Arc::new(formats),
         Arc::new(transforms),
     )
 }
 
-fn resolved_test_file_resource(
-    resource: &cdf_declarative::CompiledResource,
-) -> cdf_declarative::FileResource {
-    let dependencies = test_file_runtime_dependencies();
-    resource.to_file_resource(dependencies).unwrap()
+struct OwnedTestResource {
+    inner: Arc<dyn QueryableResource>,
+    source_plan: cdf_runtime::CompiledSourcePlan,
 }
 
-fn compile_test_file_resource(root: &Path, document: &str) -> cdf_declarative::FileResource {
+impl ResourceStream for OwnedTestResource {
+    fn descriptor(&self) -> &ResourceDescriptor {
+        self.inner.descriptor()
+    }
+
+    fn schema(&self) -> arrow_schema::SchemaRef {
+        self.inner.schema()
+    }
+
+    fn compiled_source_plan_hash(&self) -> Option<&str> {
+        self.inner.compiled_source_plan_hash()
+    }
+
+    fn validate_runtime_dependencies(&self) -> Result<()> {
+        self.inner.validate_runtime_dependencies()
+    }
+
+    fn plan_partitions(&self, request: &ScanRequest) -> Result<Vec<cdf_kernel::PartitionPlan>> {
+        self.inner.plan_partitions(request)
+    }
+
+    fn open(&self, partition: cdf_kernel::PartitionPlan) -> cdf_kernel::PartitionOpenAttempt<'_> {
+        self.inner.open(partition)
+    }
+
+    fn attest_partition(
+        &self,
+        partition: cdf_kernel::PartitionPlan,
+    ) -> cdf_kernel::PartitionAttestationAttempt<'_> {
+        self.inner.attest_partition(partition)
+    }
+
+    fn effective_schema_runtime(&self) -> Option<&cdf_kernel::EffectiveSchemaRuntime> {
+        self.inner.effective_schema_runtime()
+    }
+
+    fn baseline_observation_schema_catalog(&self) -> &[cdf_kernel::EffectiveSchemaCatalogEntry] {
+        self.inner.baseline_observation_schema_catalog()
+    }
+
+    fn type_policy_allowances(&self) -> cdf_kernel::TypePolicyAllowances {
+        self.inner.type_policy_allowances()
+    }
+}
+
+impl QueryableResource for OwnedTestResource {
+    fn capabilities(&self) -> &ResourceCapabilities {
+        self.inner.capabilities()
+    }
+
+    fn negotiate(&self, request: &ScanRequest) -> Result<cdf_kernel::ScanPlan> {
+        self.inner.negotiate(request)
+    }
+}
+
+fn compile_test_file_resource(root: &Path, document: &str) -> OwnedTestResource {
     let document = cdf_declarative::parse_toml(document).unwrap();
-    let resource = cdf_declarative::compile_document_with_project_root(&document, root)
+    let dependencies = test_file_runtime_dependencies();
+    let formats = Arc::clone(dependencies.formats());
+    let installed = dependencies.clone();
+    let mut registry = cdf_runtime::SourceRegistry::new();
+    registry
+        .register(
+            FileSourceDriver::new(formats, move |_secrets, _execution| Ok(installed.clone()))
+                .unwrap(),
+        )
+        .unwrap();
+    let resource = cdf_declarative::compile_document_with_project_root(&registry, &document, root)
         .unwrap()
         .remove(0);
-    resolved_test_file_resource(&resource)
+    let execution = test_execution_services();
+    let resolution = cdf_runtime::SourceResolutionContext::new(
+        root,
+        Arc::new(StaticSecretProvider::new(std::iter::empty::<(&str, &str)>())),
+        &execution,
+    );
+    OwnedTestResource {
+        source_plan: resource.source_plan().clone(),
+        inner: registry
+            .resolve(resource.source_plan(), &resolution)
+            .unwrap(),
+    }
 }
 
 const SCHEMA_HASH: &str = "sha256:f3e5592a1a5159773a70d3dfc1255d47a98be505b2ce6e57218e5c879c4eaeef";
@@ -2407,7 +2459,7 @@ fn remove_package_receipts(package_dir: &Path) {
     }
 }
 
-fn live_file_resource(root: &Path) -> cdf_declarative::FileResource {
+fn live_file_resource(root: &Path) -> OwnedTestResource {
     fs::create_dir_all(root.join("data")).unwrap();
     fs::write(
         root.join("data/events.ndjson"),
@@ -2418,7 +2470,7 @@ fn live_file_resource(root: &Path) -> cdf_declarative::FileResource {
     compile_test_file_resource(root, LIVE_FILE_RESOURCE)
 }
 
-fn simple_file_resource(root: &Path, document: &str) -> cdf_declarative::FileResource {
+fn simple_file_resource(root: &Path, document: &str) -> OwnedTestResource {
     fs::create_dir_all(root.join("data")).unwrap();
     fs::write(
         root.join("data/events.ndjson"),
@@ -2429,7 +2481,7 @@ fn simple_file_resource(root: &Path, document: &str) -> cdf_declarative::FileRes
     compile_test_file_resource(root, document)
 }
 
-fn long_identifier_file_resource(root: &Path, source_name: &str) -> cdf_declarative::FileResource {
+fn long_identifier_file_resource(root: &Path, source_name: &str) -> OwnedTestResource {
     fs::create_dir_all(root.join("data")).unwrap();
     fs::write(
         root.join("data/events.ndjson"),
@@ -2456,7 +2508,7 @@ schema = {{ fields = [
     compile_test_file_resource(root, &document)
 }
 
-fn multi_file_resource(root: &Path) -> cdf_declarative::FileResource {
+fn multi_file_resource(root: &Path) -> OwnedTestResource {
     multi_file_resource_with_document(root, MULTI_FILE_RESOURCE_APPEND)
 }
 
@@ -2515,11 +2567,11 @@ fn compiled_test_source_plan(resource: &dyn QueryableResource) -> cdf_runtime::C
     .unwrap()
 }
 
-fn replace_multi_file_resource(root: &Path) -> cdf_declarative::FileResource {
+fn replace_multi_file_resource(root: &Path) -> OwnedTestResource {
     multi_file_resource_with_document(root, MULTI_FILE_RESOURCE_REPLACE)
 }
 
-fn multi_file_resource_with_document(root: &Path, document: &str) -> cdf_declarative::FileResource {
+fn multi_file_resource_with_document(root: &Path, document: &str) -> OwnedTestResource {
     fs::create_dir_all(root.join("data")).unwrap();
     fs::write(
         root.join("data/events-a.ndjson"),
@@ -2536,16 +2588,74 @@ fn multi_file_resource_with_document(root: &Path, document: &str) -> cdf_declara
 
 fn rest_resource() -> cdf_declarative::CompiledResource {
     let document = cdf_declarative::parse_toml(REST_RESOURCE).unwrap();
-    cdf_declarative::compile_document(&document)
+    cdf_declarative::compile_document(&rest_compile_registry(), &document)
         .unwrap()
         .remove(0)
 }
 
 fn rest_runtime_resource() -> cdf_declarative::CompiledResource {
     let document = cdf_declarative::parse_toml(REST_RUNTIME_RESOURCE).unwrap();
-    cdf_declarative::compile_document(&document)
+    cdf_declarative::compile_document(&rest_compile_registry(), &document)
         .unwrap()
         .remove(0)
+}
+
+fn rest_compile_registry() -> cdf_runtime::SourceRegistry {
+    let mut registry = cdf_runtime::SourceRegistry::new();
+    registry
+        .register(RestSourceDriver::new(|| Ok(Box::new(RecordingTransport::default()))).unwrap())
+        .unwrap();
+    registry
+}
+
+fn postgres_compile_registry() -> cdf_runtime::SourceRegistry {
+    let mut registry = cdf_runtime::SourceRegistry::new();
+    registry
+        .register(cdf_source_postgres::PostgresSourceDriver::new().unwrap())
+        .unwrap();
+    registry
+}
+
+fn resolve_rest_resource(
+    compiled: &cdf_declarative::CompiledResource,
+    transport: RecordingTransport,
+    secret_provider: Arc<dyn SecretProvider + Send + Sync>,
+    execution: &cdf_runtime::ExecutionServices,
+) -> OwnedTestResource {
+    let mut registry = cdf_runtime::SourceRegistry::new();
+    registry
+        .register(RestSourceDriver::new(move || Ok(Box::new(transport.clone()))).unwrap())
+        .unwrap();
+    let resolution =
+        cdf_runtime::SourceResolutionContext::new(Path::new("."), secret_provider, execution);
+    OwnedTestResource {
+        source_plan: compiled.source_plan().clone(),
+        inner: registry
+            .resolve(compiled.source_plan(), &resolution)
+            .unwrap(),
+    }
+}
+
+fn resolve_postgres_resource(
+    compiled: &cdf_declarative::CompiledResource,
+    database_url: &str,
+    execution: &cdf_runtime::ExecutionServices,
+) -> OwnedTestResource {
+    let registry = postgres_compile_registry();
+    let resolution = cdf_runtime::SourceResolutionContext::new(
+        Path::new("."),
+        Arc::new(StaticSecretProvider::new([(
+            "secret://env/POSTGRES_URL",
+            database_url,
+        )])),
+        execution,
+    );
+    OwnedTestResource {
+        source_plan: compiled.source_plan().clone(),
+        inner: registry
+            .resolve(compiled.source_plan(), &resolution)
+            .unwrap(),
+    }
 }
 
 fn rest_cursor_runtime_resource(
@@ -2553,7 +2663,7 @@ fn rest_cursor_runtime_resource(
     cursor_field_decl: &str,
     ordering: &str,
     lag: &str,
-) -> cdf_declarative::CompiledResource {
+) -> OwnedTestResource {
     let input = format!(
         r#"
 [source.api]
@@ -2577,9 +2687,19 @@ schema = {{ fields = [
 "#
     );
     let document = cdf_declarative::parse_toml(&input).unwrap();
-    cdf_declarative::compile_document(&document)
+    let compiled = cdf_declarative::compile_document(&rest_compile_registry(), &document)
         .unwrap()
-        .remove(0)
+        .remove(0);
+    let execution = test_execution_services();
+    resolve_rest_resource(
+        &compiled,
+        RecordingTransport::default(),
+        Arc::new(StaticSecretProvider::new([(
+            "secret://env/API_TOKEN",
+            "token",
+        )])),
+        &execution,
+    )
 }
 
 fn sql_runtime_resource(table: &str) -> cdf_declarative::CompiledResource {
@@ -2588,7 +2708,7 @@ fn sql_runtime_resource(table: &str) -> cdf_declarative::CompiledResource {
         &format!(r#"table = "{table}""#),
     ))
     .unwrap();
-    cdf_declarative::compile_document(&document)
+    cdf_declarative::compile_document(&postgres_compile_registry(), &document)
         .unwrap()
         .remove(0)
 }
@@ -2668,10 +2788,6 @@ fn live_plan_for_queryable_with_exact_policy(
         .unwrap()
 }
 
-fn default_live_plan(resource: &dyn QueryableResource, package_id: &str) -> EnginePlan {
-    live_plan_for_queryable(resource, package_id)
-}
-
 fn live_plan_with_policy(
     resource: &dyn QueryableResource,
     package_id: &str,
@@ -2708,20 +2824,12 @@ fn live_plan_for_identifier_rules(
 fn state_delta_request<'a>(
     resource: &'a dyn QueryableResource,
     package_id: &str,
-    root: &Path,
-) -> LocalFileDuckDbRunRequest<'a> {
-    LocalFileDuckDbRunRequest {
-        services: test_execution_services(),
+) -> StateDeltaTestRequest<'a> {
+    StateDeltaTestRequest {
         resource,
-        plan: default_live_plan(resource, package_id),
-        package_root: root.to_path_buf(),
-        destination_path: root.join("dev.duckdb"),
-        state_store_path: root.join("state.db"),
         pipeline_id: PipelineId::new("pipeline-live").unwrap(),
         target: TargetName::new("items").unwrap(),
-        package_id: package_id.to_owned(),
         checkpoint_id: CheckpointId::new(format!("checkpoint-{package_id}")).unwrap(),
-        after_receipt_verified: None,
     }
 }
 
@@ -2812,7 +2920,7 @@ fn state_delta_for_positions(
     positions: Vec<SourcePosition>,
 ) -> Result<StateDelta> {
     let output = engine_output_with_positions(&root.join(package_id), package_id, positions);
-    let request = state_delta_request(resource, package_id, root);
+    let request = state_delta_request(resource, package_id);
     state_delta_from_run(
         &request,
         &output,
@@ -3404,24 +3512,24 @@ fn run_rest_project_with_jobs(
             { "id": 2, "updated_at": 20 }
         ] }"#,
     )]);
-    let resource = compiled
-        .to_rest_resource(
-            test_rest_runtime_dependencies_with_execution(transport.clone(), services.clone())
-                .with_secret_provider(StaticSecretProvider::new([(
-                    "secret://env/API_TOKEN",
-                    "token-1",
-                )])),
-        )
-        .unwrap();
+    let resource = resolve_rest_resource(
+        &compiled,
+        transport.clone(),
+        Arc::new(StaticSecretProvider::new([(
+            "secret://env/API_TOKEN",
+            "token-1",
+        )])),
+        &services,
+    );
     let package_id = "pkg-general-rest-runtime";
     let package_root = root.join(".cdf/packages");
     let state_path = root.join(".cdf/state.db");
     let duckdb_path = root.join(".cdf/dev.duckdb");
 
-    let source = compiled_test_source_plan(&resource);
+    let source = compiled.source_plan().clone();
     let destination =
         ResolvedProjectDestination::duckdb(duckdb_path, TargetName::new("items").unwrap()).unwrap();
-    let plan = live_plan(&compiled, package_id)
+    let plan = live_plan(&resource, package_id)
         .bind_compiled_source(&source)
         .unwrap()
         .bind_operator_graph(&source, &destination.runtime_capabilities())
@@ -3438,13 +3546,9 @@ fn run_rest_project_with_jobs(
         .tighten_run_job_ceiling(scheduler.effective_jobs.jobs)
         .unwrap();
     let effective_jobs = scheduler.effective_jobs.jobs;
-    let bound = BoundTestResource {
-        inner: &resource,
-        compiled_source_plan_hash: cdf_runtime::artifact_hash(&source).unwrap(),
-    };
     let report = futures_executor::block_on(run_project_with_scheduler_and_telemetry(
         ProjectRunRequest {
-            resource: ProjectRunSource::new(&bound),
+            resource: ProjectRunSource::new(&resource),
             plan,
             package_root,
             state_store_path: state_path,
@@ -3475,23 +3579,14 @@ fn run_sql_project_with_jobs(
     let services = services
         .with_run_job_ceiling(jobs.unwrap_or(host_jobs))
         .unwrap();
-    let resource = compiled
-        .to_sql_resource(
-            cdf_declarative::SqlRuntimeDependencies::new()
-                .with_secret_provider(StaticSecretProvider::new([(
-                    "secret://env/POSTGRES_URL",
-                    database_url,
-                )]))
-                .with_execution(services.clone()),
-        )
-        .unwrap();
+    let resource = resolve_postgres_resource(compiled, database_url, &services);
     let package_id = "pkg-general-sql-runtime";
     let destination = ResolvedProjectDestination::duckdb(
         root.join(".cdf/dev.duckdb"),
         TargetName::new("orders").unwrap(),
     )
     .unwrap();
-    let source = compiled_test_source_plan(&resource);
+    let source = compiled.source_plan().clone();
     let plan = live_plan(&resource, package_id)
         .bind_compiled_source(&source)
         .unwrap()
@@ -3509,13 +3604,9 @@ fn run_sql_project_with_jobs(
         .tighten_run_job_ceiling(scheduler.effective_jobs.jobs)
         .unwrap();
     let effective_jobs = scheduler.effective_jobs.jobs;
-    let bound = BoundTestResource {
-        inner: &resource,
-        compiled_source_plan_hash: cdf_runtime::artifact_hash(&source).unwrap(),
-    };
     let report = futures_executor::block_on(run_project_with_scheduler_and_telemetry(
         ProjectRunRequest {
-            resource: ProjectRunSource::new(&bound),
+            resource: ProjectRunSource::new(&resource),
             plan,
             package_root: root.join(".cdf/packages"),
             state_store_path: root.join(".cdf/state.db"),
@@ -3555,21 +3646,23 @@ fn live_file_run_post_receipt_failure_keeps_checkpoint_uncommitted_and_receipt_r
         compiled_source_plan_hash: cdf_runtime::artifact_hash(&source).unwrap(),
     };
 
-    let error = futures_executor::block_on(run_local_file_to_duckdb_checkpoint(
-        LocalFileDuckDbRunRequest {
-            services: test_execution_services(),
-            resource: &bound,
-            plan,
-            package_root: package_root.clone(),
-            destination_path: duckdb_path.clone(),
-            state_store_path: state_path.clone(),
-            pipeline_id: pipeline_id.clone(),
-            target: TargetName::new("events").unwrap(),
-            package_id: package_id.to_owned(),
-            checkpoint_id: CheckpointId::new("checkpoint-live-hook-failure").unwrap(),
-            after_receipt_verified: Some(&hook),
-        },
-    ))
+    let error = futures_executor::block_on(run_project(ProjectRunRequest {
+        resource: ProjectRunSource::new(&bound),
+        plan,
+        package_root: package_root.clone(),
+        state_store_path: state_path.clone(),
+        pipeline_id: pipeline_id.clone(),
+        package_id: package_id.to_owned(),
+        checkpoint_id: CheckpointId::new("checkpoint-live-hook-failure").unwrap(),
+        destination: ResolvedProjectDestination::duckdb(
+            duckdb_path.clone(),
+            TargetName::new("events").unwrap(),
+        )
+        .unwrap(),
+        run_id: None,
+        event_sink: None,
+        after_receipt_verified: Some(&hook),
+    }))
     .unwrap_err();
 
     assert!(
@@ -3619,7 +3712,7 @@ fn general_project_run_records_ledger_events_in_commit_gate_order() {
         &state_path,
         "run-general-ledger-order",
     );
-    request.resource = ProjectRunSource::file(&resource);
+    request.resource = ProjectRunSource::new(&resource);
     request.plan = live_plan_for_queryable(&resource, package_id);
 
     let report = futures_executor::block_on(run_project(request)).unwrap();
@@ -3997,7 +4090,7 @@ fn file_manifest_append_run_skips_unchanged_files_and_loads_only_changes() {
 }
 
 #[test]
-fn file_manifest_noop_rejects_source_and_schedule_tampering_before_subsetting() {
+fn file_manifest_noop_rejects_source_binding_and_schedule_tampering_before_subsetting() {
     let temp = tempfile::tempdir().unwrap();
     let resource = multi_file_resource(temp.path());
     let package_root = temp.path().join(".cdf/packages");
@@ -4031,7 +4124,7 @@ fn file_manifest_noop_rejects_source_and_schedule_tampering_before_subsetting() 
     assert!(
         error
             .to_string()
-            .contains("compiled engine source has no independently resolved source binding"),
+            .contains("resolved source does not match the compiler source artifact"),
         "{error}"
     );
     assert!(!package_root.join("pkg-file-manifest-authority-2").exists());
@@ -4046,7 +4139,7 @@ fn file_manifest_noop_rejects_source_and_schedule_tampering_before_subsetting() 
     );
     schedule_tamper.plan = schedule_tamper
         .plan
-        .bind_compiled_source(&source_plan)
+        .bind_compiled_source(&resource.source_plan)
         .unwrap();
     schedule_tamper.plan.explain.partition_schedule = None;
     let error = futures_executor::block_on(run_project(schedule_tamper)).unwrap_err();
@@ -4957,21 +5050,23 @@ fn project_run_records_non_mirror_outcome_for_unsupported_quarantine_sheet() {
         compiled_source_plan_hash: cdf_runtime::artifact_hash(&source).unwrap(),
     };
 
-    let report = futures_executor::block_on(run_local_file_to_duckdb_checkpoint(
-        LocalFileDuckDbRunRequest {
-            services: test_execution_services(),
-            resource: &bound,
-            plan,
-            package_root: package_root.clone(),
-            destination_path: duckdb_path,
-            state_store_path: state_path,
-            pipeline_id: PipelineId::new("pipeline-live").unwrap(),
-            target: TargetName::new("events").unwrap(),
-            package_id: package_id.to_owned(),
-            checkpoint_id: CheckpointId::new("checkpoint-quarantine-duckdb-unsupported").unwrap(),
-            after_receipt_verified: None,
-        },
-    ))
+    let report = futures_executor::block_on(run_project(ProjectRunRequest {
+        resource: ProjectRunSource::new(&bound),
+        plan,
+        package_root: package_root.clone(),
+        state_store_path: state_path,
+        pipeline_id: PipelineId::new("pipeline-live").unwrap(),
+        package_id: package_id.to_owned(),
+        checkpoint_id: CheckpointId::new("checkpoint-quarantine-duckdb-unsupported").unwrap(),
+        destination: ResolvedProjectDestination::duckdb(
+            duckdb_path,
+            TargetName::new("events").unwrap(),
+        )
+        .unwrap(),
+        run_id: None,
+        event_sink: None,
+        after_receipt_verified: None,
+    }))
     .unwrap();
 
     assert_eq!(report.row_count, 1);
@@ -5170,7 +5265,7 @@ fn postgres_destination_policy_truncates_package_and_committed_column_identicall
     contract.normalization.identifier = identifier_policy.clone();
 
     let report = futures_executor::block_on(run_project(ProjectRunRequest {
-        resource: ProjectRunSource::file(&resource),
+        resource: ProjectRunSource::new(&resource),
         plan: live_plan_with_exact_policy(&resource, package_id, &contract),
         package_root,
         state_store_path: state_path,
@@ -5224,7 +5319,7 @@ fn stale_normalizer_version_fails_before_writes() {
     plan.validation_program.normalizer_version = "namecase-v0-stale".to_owned();
 
     let error = futures_executor::block_on(run_project(ProjectRunRequest {
-        resource: ProjectRunSource::file(&resource),
+        resource: ProjectRunSource::new(&resource),
         plan,
         package_root: package_root.clone(),
         state_store_path: state_path.clone(),
@@ -5329,20 +5424,23 @@ fn general_project_run_executes_rest_with_discovered_snapshot_hash() {
             { "id": 2, "updated_at": 20 }
         ] }"#,
     )]);
-    let resource = compiled
-        .to_rest_resource(
-            test_rest_runtime_dependencies(transport.clone()).with_secret_provider(
-                StaticSecretProvider::new([("secret://env/API_TOKEN", "token-1")]),
-            ),
-        )
-        .unwrap();
+    let services = test_execution_services();
+    let resource = resolve_rest_resource(
+        &compiled,
+        transport.clone(),
+        Arc::new(StaticSecretProvider::new([(
+            "secret://env/API_TOKEN",
+            "token-1",
+        )])),
+        &services,
+    );
     let package_id = "pkg-general-rest-discovered-runtime";
     let state_path = temp.path().join(".cdf/state.db");
     let duckdb_path = temp.path().join(".cdf/dev.duckdb");
 
     let report = futures_executor::block_on(run_project(ProjectRunRequest {
-        resource: ProjectRunSource::rest(&resource),
-        plan: live_plan(&compiled, package_id),
+        resource: ProjectRunSource::new(&resource),
+        plan: live_plan(&resource, package_id),
         package_root: temp.path().join(".cdf/packages"),
         state_store_path: state_path,
         pipeline_id: PipelineId::new("pipeline-live").unwrap(),
@@ -5779,98 +5877,25 @@ fn postgres_artifact_replay_rejects_mismatched_explicit_target_before_mutation()
 }
 
 #[test]
-fn general_project_run_rejects_raw_compiled_rest_before_writes() {
-    let temp = tempfile::tempdir().unwrap();
-    let rest_resource = rest_resource();
-    let package_id = "pkg-general-rest-rejected";
-    let package_root = temp.path().join(".cdf/packages");
-    let duckdb_path = temp.path().join(".cdf/dev.duckdb");
-    let state_path = temp.path().join(".cdf/state.db");
-
-    let error = futures_executor::block_on(run_project(ProjectRunRequest {
-        resource: ProjectRunSource::local_file(&rest_resource),
-        plan: live_plan(&rest_resource, package_id),
-        package_root: package_root.clone(),
-        state_store_path: state_path.clone(),
-        pipeline_id: PipelineId::new("pipeline-live").unwrap(),
-        package_id: package_id.to_owned(),
-        checkpoint_id: CheckpointId::new("checkpoint-general-rest-rejected").unwrap(),
-        destination: ResolvedProjectDestination::duckdb(
-            duckdb_path.clone(),
-            TargetName::new("items").unwrap(),
-        )
-        .unwrap(),
-        run_id: Some(RunId::new("run-general-rest-rejected").unwrap()),
-        event_sink: None,
-        after_receipt_verified: None,
-    }))
-    .unwrap_err();
-
-    assert!(error.to_string().contains("local file resources"));
-    assert!(!package_root.join(package_id).exists());
-    assert!(!duckdb_path.exists());
-    assert!(!state_path.exists());
-}
-
-#[test]
-fn general_project_run_rejects_rest_missing_secret_provider_before_writes() {
-    let temp = tempfile::tempdir().unwrap();
-    let compiled = rest_runtime_resource();
-    let transport = RecordingTransport::new([json_response(r#"{ "items": [] }"#)]);
-    let resource = compiled
-        .to_rest_resource(test_rest_runtime_dependencies(transport.clone()))
-        .unwrap();
-    let package_id = "pkg-general-rest-missing-secret";
-    let package_root = temp.path().join(".cdf/packages");
-    let duckdb_path = temp.path().join(".cdf/dev.duckdb");
-    let state_path = temp.path().join(".cdf/state.db");
-
-    let error = futures_executor::block_on(run_project(ProjectRunRequest {
-        resource: ProjectRunSource::rest(&resource),
-        plan: live_plan(&compiled, package_id),
-        package_root: package_root.clone(),
-        state_store_path: state_path.clone(),
-        pipeline_id: PipelineId::new("pipeline-live").unwrap(),
-        package_id: package_id.to_owned(),
-        checkpoint_id: CheckpointId::new("checkpoint-general-rest-missing-secret").unwrap(),
-        destination: ResolvedProjectDestination::duckdb(
-            duckdb_path.clone(),
-            TargetName::new("items").unwrap(),
-        )
-        .unwrap(),
-        run_id: Some(RunId::new("run-general-rest-missing-secret").unwrap()),
-        event_sink: None,
-        after_receipt_verified: None,
-    }))
-    .unwrap_err();
-
-    assert!(error.to_string().contains("SecretProvider"));
-    assert_eq!(transport.requests().len(), 0);
-    assert!(!package_root.join(package_id).exists());
-    assert!(!duckdb_path.exists());
-    assert!(!state_path.exists());
-}
-
-#[test]
 fn general_project_run_rejects_rest_missing_secret_value_before_writes() {
     let temp = tempfile::tempdir().unwrap();
     let compiled = rest_runtime_resource();
     let transport = RecordingTransport::new([json_response(r#"{ "items": [] }"#)]);
-    let resource = compiled
-        .to_rest_resource(
-            test_rest_runtime_dependencies(transport.clone()).with_secret_provider(
-                StaticSecretProvider::new(std::iter::empty::<(&str, &str)>()),
-            ),
-        )
-        .unwrap();
+    let services = test_execution_services();
+    let resource = resolve_rest_resource(
+        &compiled,
+        transport.clone(),
+        Arc::new(StaticSecretProvider::new(std::iter::empty::<(&str, &str)>())),
+        &services,
+    );
     let package_id = "pkg-general-rest-missing-secret-value";
     let package_root = temp.path().join(".cdf/packages");
     let duckdb_path = temp.path().join(".cdf/dev.duckdb");
     let state_path = temp.path().join(".cdf/state.db");
 
     let error = futures_executor::block_on(run_project(ProjectRunRequest {
-        resource: ProjectRunSource::rest(&resource),
-        plan: live_plan(&compiled, package_id),
+        resource: ProjectRunSource::new(&resource),
+        plan: live_plan(&resource, package_id),
         package_root: package_root.clone(),
         state_store_path: state_path.clone(),
         pipeline_id: PipelineId::new("pipeline-live").unwrap(),
@@ -5899,17 +5924,21 @@ fn general_project_run_rejects_rest_without_cursor_before_writes() {
     let temp = tempfile::tempdir().unwrap();
     let compiled = rest_resource();
     let transport = RecordingTransport::new([json_response(r#"[{ "id": 1 }]"#)]);
-    let resource = compiled
-        .to_rest_resource(test_rest_runtime_dependencies(transport.clone()))
-        .unwrap();
+    let services = test_execution_services();
+    let resource = resolve_rest_resource(
+        &compiled,
+        transport.clone(),
+        Arc::new(StaticSecretProvider::new(std::iter::empty::<(&str, &str)>())),
+        &services,
+    );
     let package_id = "pkg-general-rest-no-cursor";
     let package_root = temp.path().join(".cdf/packages");
     let duckdb_path = temp.path().join(".cdf/dev.duckdb");
     let state_path = temp.path().join(".cdf/state.db");
 
     let error = futures_executor::block_on(run_project(ProjectRunRequest {
-        resource: ProjectRunSource::rest(&resource),
-        plan: live_plan(&compiled, package_id),
+        resource: ProjectRunSource::new(&resource),
+        plan: live_plan(&resource, package_id),
         package_root: package_root.clone(),
         state_store_path: state_path.clone(),
         pipeline_id: PipelineId::new("pipeline-live").unwrap(),
@@ -5942,7 +5971,7 @@ fn general_project_run_window_closes_inexact_numeric_rest_cursor() {
             .replace(r#"lag = "0ms""#, r#"lag = "5ms""#),
     )
     .unwrap();
-    let compiled = cdf_declarative::compile_document(&document)
+    let compiled = cdf_declarative::compile_document(&rest_compile_registry(), &document)
         .unwrap()
         .remove(0);
     let transport = RecordingTransport::new([json_response(
@@ -5951,21 +5980,24 @@ fn general_project_run_window_closes_inexact_numeric_rest_cursor() {
             { "id": 2, "updated_at": 20 }
         ] }"#,
     )]);
-    let resource = compiled
-        .to_rest_resource(
-            test_rest_runtime_dependencies(transport.clone()).with_secret_provider(
-                StaticSecretProvider::new([("secret://env/API_TOKEN", "token-1")]),
-            ),
-        )
-        .unwrap();
+    let services = test_execution_services();
+    let resource = resolve_rest_resource(
+        &compiled,
+        transport.clone(),
+        Arc::new(StaticSecretProvider::new([(
+            "secret://env/API_TOKEN",
+            "token-1",
+        )])),
+        &services,
+    );
     let package_id = "pkg-general-rest-window-close-numeric";
     let package_root = temp.path().join(".cdf/packages");
     let duckdb_path = temp.path().join(".cdf/dev.duckdb");
     let state_path = temp.path().join(".cdf/state.db");
 
     let report = futures_executor::block_on(run_project(ProjectRunRequest {
-        resource: ProjectRunSource::rest(&resource),
-        plan: live_plan(&compiled, package_id),
+        resource: ProjectRunSource::new(&resource),
+        plan: live_plan(&resource, package_id),
         package_root: package_root.clone(),
         state_store_path: state_path.clone(),
         pipeline_id: PipelineId::new("pipeline-live").unwrap(),
@@ -5992,57 +6024,11 @@ fn general_project_run_window_closes_inexact_numeric_rest_cursor() {
 }
 
 #[test]
-fn general_project_run_rejects_sql_missing_secret_provider_before_writes() {
-    let temp = tempfile::tempdir().unwrap();
-    let compiled = sql_runtime_resource("public.orders");
-    let resource = compiled
-        .to_sql_resource(cdf_declarative::SqlRuntimeDependencies::new())
-        .unwrap();
-    let package_id = "pkg-general-sql-missing-secret";
-    let package_root = temp.path().join(".cdf/packages");
-    let duckdb_path = temp.path().join(".cdf/dev.duckdb");
-    let state_path = temp.path().join(".cdf/state.db");
-
-    let error = futures_executor::block_on(run_project(ProjectRunRequest {
-        resource: ProjectRunSource::sql(&resource),
-        plan: live_plan(resource.compiled(), package_id),
-        package_root: package_root.clone(),
-        state_store_path: state_path.clone(),
-        pipeline_id: PipelineId::new("pipeline-live").unwrap(),
-        package_id: package_id.to_owned(),
-        checkpoint_id: CheckpointId::new("checkpoint-general-sql-missing-secret").unwrap(),
-        destination: ResolvedProjectDestination::duckdb(
-            duckdb_path.clone(),
-            TargetName::new("orders").unwrap(),
-        )
-        .unwrap(),
-        run_id: Some(RunId::new("run-general-sql-missing-secret").unwrap()),
-        event_sink: None,
-        after_receipt_verified: None,
-    }))
-    .unwrap_err();
-
-    assert!(error.to_string().contains("SecretProvider"));
-    assert!(!package_root.join(package_id).exists());
-    assert!(!duckdb_path.exists());
-    assert!(!state_path.exists());
-}
-
-#[test]
 fn general_project_run_rejects_sql_empty_secret_inside_source_lifecycle_before_destination() {
     let temp = tempfile::tempdir().unwrap();
     let compiled = sql_runtime_resource("public.orders");
     let services = test_execution_services();
-    let resource = compiled
-        .to_sql_resource(
-            cdf_declarative::SqlRuntimeDependencies::new()
-                .with_secret_provider(StaticSecretProvider::new([(
-                    "secret://env/POSTGRES_URL",
-                    "",
-                )]))
-                .with_execution(services.clone()),
-        )
-        .unwrap();
+    let resource = resolve_postgres_resource(&compiled, "", &services);
     let package_id = "pkg-general-sql-empty-secret";
     let package_root = temp.path().join(".cdf/packages");
     let duckdb_path = temp.path().join(".cdf/dev.duckdb");
@@ -6050,8 +6036,8 @@ fn general_project_run_rejects_sql_empty_secret_inside_source_lifecycle_before_d
 
     let error = futures_executor::block_on(run_project_fixture(
         ProjectRunRequest {
-            resource: ProjectRunSource::sql(&resource),
-            plan: live_plan(resource.compiled(), package_id),
+            resource: ProjectRunSource::new(&resource),
+            plan: live_plan(&resource, package_id),
             package_root: package_root.clone(),
             state_store_path: state_path.clone(),
             pipeline_id: PipelineId::new("pipeline-live").unwrap(),
@@ -6270,56 +6256,22 @@ fn package_artifact_recovery_after_general_run_failure_does_not_need_source() {
 }
 
 #[test]
-fn live_file_run_rejects_non_file_resource_before_writes() {
-    let temp = tempfile::tempdir().unwrap();
-    let file_resource = live_file_resource(temp.path());
-    let rest_resource = rest_resource();
-    let package_id = "pkg-live-rest-rejected";
-    let package_root = temp.path().join(".cdf/packages");
-    let error = futures_executor::block_on(run_local_file_to_duckdb_checkpoint(
-        LocalFileDuckDbRunRequest {
-            services: test_execution_services(),
-            resource: &rest_resource,
-            plan: live_plan(&file_resource, package_id),
-            package_root: package_root.clone(),
-            destination_path: temp.path().join(".cdf/dev.duckdb"),
-            state_store_path: temp.path().join(".cdf/state.db"),
-            pipeline_id: PipelineId::new("pipeline-live").unwrap(),
-            target: TargetName::new("items").unwrap(),
-            package_id: package_id.to_owned(),
-            checkpoint_id: CheckpointId::new("checkpoint-live-rest-rejected").unwrap(),
-            after_receipt_verified: None,
-        },
-    ))
-    .unwrap_err();
-
-    assert!(error.to_string().contains("local file resources"));
-    assert!(!package_root.join(package_id).exists());
-    assert!(!temp.path().join(".cdf/dev.duckdb").exists());
-    assert!(!temp.path().join(".cdf/state.db").exists());
-}
-
-#[test]
-fn live_file_run_rejects_plan_package_id_mismatch_before_writes() {
+fn project_run_rejects_plan_package_id_mismatch_before_writes() {
     let temp = tempfile::tempdir().unwrap();
     let resource = live_file_resource(temp.path());
     let package_root = temp.path().join(".cdf/packages");
-    let error = futures_executor::block_on(run_local_file_to_duckdb_checkpoint(
-        LocalFileDuckDbRunRequest {
-            services: test_execution_services(),
-            resource: &resource,
-            plan: live_plan(&resource, "pkg-live-plan-id"),
-            package_root: package_root.clone(),
-            destination_path: temp.path().join(".cdf/dev.duckdb"),
-            state_store_path: temp.path().join(".cdf/state.db"),
-            pipeline_id: PipelineId::new("pipeline-live").unwrap(),
-            target: TargetName::new("events").unwrap(),
-            package_id: "pkg-live-request-id".to_owned(),
-            checkpoint_id: CheckpointId::new("checkpoint-live-plan-id").unwrap(),
-            after_receipt_verified: None,
-        },
-    ))
-    .unwrap_err();
+    let duckdb_path = temp.path().join(".cdf/dev.duckdb");
+    let state_path = temp.path().join(".cdf/state.db");
+    let mut request = project_run_request(
+        &resource,
+        "pkg-live-request-id",
+        &package_root,
+        &duckdb_path,
+        &state_path,
+        "run-live-plan-id",
+    );
+    request.plan = live_plan(&resource, "pkg-live-plan-id");
+    let error = futures_executor::block_on(run_project(request)).unwrap_err();
 
     assert!(
         error
@@ -6328,8 +6280,8 @@ fn live_file_run_rejects_plan_package_id_mismatch_before_writes() {
     );
     assert!(!package_root.join("pkg-live-request-id").exists());
     assert!(!package_root.join("pkg-live-plan-id").exists());
-    assert!(!temp.path().join(".cdf/dev.duckdb").exists());
-    assert!(!temp.path().join(".cdf/state.db").exists());
+    assert!(!duckdb_path.exists());
+    assert!(!state_path.exists());
 }
 
 #[test]
@@ -6342,7 +6294,7 @@ fn state_delta_rejects_partial_execution_even_with_an_earlier_complete_observati
         vec![file_position("/tmp/cdf/partial.ndjson")],
         false,
     );
-    let request = state_delta_request(&resource, "pkg-partial-state", temp.path());
+    let request = state_delta_request(&resource, "pkg-partial-state");
 
     let error = state_delta_from_run(
         &request,
@@ -6431,7 +6383,7 @@ fn state_delta_merges_append_file_manifest_output_with_head() {
             file_position_with_identity("events-c.ndjson", 13, Some("sha256:c".to_owned())),
         ],
     );
-    let request = state_delta_request(&resource, package_id, temp.path());
+    let request = state_delta_request(&resource, package_id);
 
     let delta = state_delta_from_run(
         &request,
@@ -6525,16 +6477,16 @@ fn state_delta_rejects_mixed_file_and_non_file_source_positions() {
 }
 
 #[test]
-fn state_delta_normalizes_file_manifest_entries_for_file_scope() {
+fn state_delta_preserves_engine_canonical_file_manifest_entries() {
     let temp = tempfile::tempdir().unwrap();
     let resource = live_file_resource(temp.path());
     let package_id = "pkg-state-delta-file-scope-normalize";
     let output = engine_output_with_positions(
         &temp.path().join(package_id),
         package_id,
-        vec![file_position("/tmp/cdf/events-a.ndjson")],
+        vec![file_position("events-a.ndjson")],
     );
-    let request = state_delta_request(&resource, package_id, temp.path());
+    let request = state_delta_request(&resource, package_id);
     let scope = ScopeKey::File {
         path: "events-a.ndjson".to_owned(),
     };
@@ -6554,7 +6506,7 @@ fn state_delta_normalizes_file_manifest_entries_for_file_scope() {
     assert_eq!(output_manifest.files[0].path, "events-a.ndjson");
     assert_eq!(
         output_manifest.files[0].sha256.as_deref(),
-        Some("sha256:/tmp/cdf/events-a.ndjson")
+        Some("sha256:events-a.ndjson")
     );
     let SourcePosition::FileManifest(segment_manifest) = &delta.segments[0].output_position else {
         panic!("state segment should retain file manifest evidence");
@@ -7002,7 +6954,13 @@ source = "resources/mock.toml"
         cdf_runtime::DestinationHealthStatus::Passed
     );
     assert_eq!(destination.write_count(), 0, "health must not mutate");
-    let resource = sql_runtime_resource("public.events");
+    let compiled = sql_runtime_resource("public.events");
+    let execution = test_execution_services();
+    let resource = resolve_postgres_resource(
+        &compiled,
+        "postgres://user:password@example.invalid/database",
+        &execution,
+    );
     let mut planned_destination =
         resolve_project_run_destination(&registry, "mock://registered", &context).unwrap();
     let mut plan_policy = ContractPolicy::for_trust(resource.descriptor().trust_level.clone());
@@ -7179,7 +7137,7 @@ fn ordinary_run_stages_each_segment_at_durable_publish_before_final_binding() {
     let plan =
         live_plan_for_identifier_rules(&resource, package_id, &destination.sheet.identifier_rules);
     let request = ProjectRunRequest {
-        resource: ProjectRunSource::file(&resource),
+        resource: ProjectRunSource::new(&resource),
         plan,
         package_root: temp.path().join(".cdf/packages"),
         state_store_path: temp.path().join(".cdf/state.db"),
@@ -7230,7 +7188,7 @@ fn rejected_background_submission_aborts_staged_session_before_lease_release() {
     let plan =
         live_plan_for_identifier_rules(&resource, package_id, &destination.sheet.identifier_rules);
     let request = ProjectRunRequest {
-        resource: ProjectRunSource::file(&resource),
+        resource: ProjectRunSource::new(&resource),
         plan,
         package_root: package_root.clone(),
         state_store_path: temp.path().join(".cdf/state.db"),
@@ -7279,7 +7237,7 @@ fn staged_publish_failure_aborts_attempt_and_never_proposes_checkpoint() {
     let plan =
         live_plan_for_identifier_rules(&resource, package_id, &destination.sheet.identifier_rules);
     let request = ProjectRunRequest {
-        resource: ProjectRunSource::file(&resource),
+        resource: ProjectRunSource::new(&resource),
         plan,
         package_root: package_root.clone(),
         state_store_path: state_path.clone(),

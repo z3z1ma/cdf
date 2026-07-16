@@ -2,8 +2,7 @@ use crate::internal::*;
 use crate::*;
 use cdf_contract::{ContractPolicy, ObservedSchema, compile_resource_validation_program};
 use cdf_kernel::{
-    DestinationProtocolCapabilities, DestinationSheetArtifact, ResourceStream,
-    SchemaSnapshotReference,
+    DestinationProtocolCapabilities, DestinationSheetArtifact, SchemaSnapshotReference,
 };
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -193,18 +192,22 @@ pub fn lock_to_toml(lock: &CdfLock) -> Result<String> {
 }
 
 pub fn compile_project_declarative_resources(
+    registry: &SourceRegistry,
     config: &ProjectConfig,
     resolver: &dyn ResourceSourceResolver,
 ) -> Result<Vec<CompiledResource>> {
-    compile_project_declarative_resource_entries_inner(config, resolver, None).map(resource_entries)
+    compile_project_declarative_resource_entries_inner(registry, config, resolver, None)
+        .map(resource_entries)
 }
 
 pub fn compile_project_declarative_resources_with_root(
+    registry: &SourceRegistry,
     config: &ProjectConfig,
     resolver: &dyn ResourceSourceResolver,
     project_root: impl AsRef<Path>,
 ) -> Result<Vec<CompiledResource>> {
     compile_project_declarative_resource_entries_inner(
+        registry,
         config,
         resolver,
         Some(project_root.as_ref()),
@@ -213,11 +216,13 @@ pub fn compile_project_declarative_resources_with_root(
 }
 
 pub fn compile_project_declarative_resource_entries_with_root(
+    registry: &SourceRegistry,
     config: &ProjectConfig,
     resolver: &dyn ResourceSourceResolver,
     project_root: impl AsRef<Path>,
 ) -> Result<Vec<CompiledProjectResource>> {
     compile_project_declarative_resource_entries_inner(
+        registry,
         config,
         resolver,
         Some(project_root.as_ref()),
@@ -225,6 +230,7 @@ pub fn compile_project_declarative_resource_entries_with_root(
 }
 
 fn compile_project_declarative_resource_entries_inner(
+    registry: &SourceRegistry,
     config: &ProjectConfig,
     resolver: &dyn ResourceSourceResolver,
     project_root: Option<&Path>,
@@ -236,8 +242,10 @@ fn compile_project_declarative_resource_entries_inner(
         };
         let document = parse_resolved_declarative_source(&resolver.resolve(&path)?)?;
         let compiled = match project_root {
-            Some(project_root) => compile_document_with_project_root(&document, project_root)?,
-            None => compile_document(&document)?,
+            Some(project_root) => {
+                compile_document_with_project_root(registry, &document, project_root)?
+            }
+            None => compile_document(registry, &document)?,
         };
         validate_mapping_pattern(pattern, &path, &compiled)?;
         entries.extend(
@@ -334,6 +342,7 @@ fn list_or_none(items: Vec<String>) -> String {
 }
 
 pub fn validate_project(
+    registry: &SourceRegistry,
     config: &ProjectConfig,
     env_name: Option<&str>,
     resolver: &dyn ResourceSourceResolver,
@@ -346,7 +355,7 @@ pub fn validate_project(
 
     let mut secret_refs = collect_secret_refs_from_environment(&environment)?;
     let compiled_entries =
-        compile_project_declarative_resource_entries_inner(config, resolver, None)?;
+        compile_project_declarative_resource_entries_inner(registry, config, resolver, None)?;
     let declarative_resources = compiled_entries.len();
     let mut external_resources = 0;
 

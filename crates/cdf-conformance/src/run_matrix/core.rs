@@ -1,6 +1,5 @@
-use std::{cell::Cell, sync::Arc};
+use std::cell::Cell;
 
-use cdf_declarative::{RestResource, SqlResource};
 use cdf_dest_parquet::ParquetDestination;
 use cdf_kernel::{
     CdfError, DestinationProtocol, PipelineId, QueryableResource, Result, RunId, SourcePosition,
@@ -150,13 +149,13 @@ pub(crate) fn excluded_for_source<'a>(
 }
 
 enum MatrixSource {
-    File(Arc<dyn QueryableResource>),
+    File(crate::source_fixture::ResolvedSourceFixture),
     Python(Box<cdf_python::PythonResource>),
     Rest {
-        resource: Box<RestResource>,
+        resource: crate::source_fixture::ResolvedSourceFixture,
         transport: RecordingTransport,
     },
-    Sql(Box<SqlResource>),
+    Sql(crate::source_fixture::ResolvedSourceFixture),
 }
 
 impl MatrixSource {
@@ -180,20 +179,20 @@ impl MatrixSource {
             SourceArchetype::Rest => {
                 let (resource, transport) = rest_fixture::resource(cell.disposition)?;
                 Ok(Self::Rest {
-                    resource: Box::new(resource),
+                    resource,
                     transport,
                 })
             }
-            SourceArchetype::Sql => Ok(Self::Sql(Box::new(sql_fixture::resource(cell, postgres)?))),
+            SourceArchetype::Sql => Ok(Self::Sql(sql_fixture::resource(cell, postgres)?)),
         }
     }
 
     fn queryable(&self) -> &dyn QueryableResource {
         match self {
-            Self::File(resource) => resource.as_ref(),
+            Self::File(resource) => resource.queryable(),
             Self::Python(resource) => resource.as_ref(),
-            Self::Rest { resource, .. } => resource.as_ref(),
-            Self::Sql(resource) => resource.compiled(),
+            Self::Rest { resource, .. } => resource.queryable(),
+            Self::Sql(resource) => resource.queryable(),
         }
     }
 
@@ -204,30 +203,34 @@ impl MatrixSource {
         identifier_policy: Option<&cdf_contract::IdentifierPolicy>,
     ) -> Result<cdf_engine::EnginePlan> {
         match self {
-            Self::File(resource) => plan_json::file_engine_plan(
-                resource.as_ref(),
+            Self::File(resource) => resource.bind_plan(plan_json::file_engine_plan(
+                resource.queryable(),
                 package_id,
                 disposition,
                 identifier_policy,
-            ),
+            )?),
             Self::Python(resource) => {
                 plan_json::planned_engine_plan(resource.as_ref(), package_id, identifier_policy)
             }
-            Self::Rest { resource, .. } => {
-                plan_json::planned_engine_plan(resource.as_ref(), package_id, identifier_policy)
-            }
-            Self::Sql(resource) => {
-                plan_json::planned_engine_plan(resource.as_ref(), package_id, identifier_policy)
-            }
+            Self::Rest { resource, .. } => resource.bind_plan(plan_json::planned_engine_plan(
+                resource.queryable(),
+                package_id,
+                identifier_policy,
+            )?),
+            Self::Sql(resource) => resource.bind_plan(plan_json::planned_engine_plan(
+                resource.queryable(),
+                package_id,
+                identifier_policy,
+            )?),
         }
     }
 
     fn project_run_source(&self) -> ProjectRunSource<'_> {
         match self {
-            Self::File(resource) => ProjectRunSource::new(resource.as_ref()),
+            Self::File(resource) => ProjectRunSource::new(resource.queryable()),
             Self::Python(resource) => ProjectRunSource::new(resource.as_ref()),
-            Self::Rest { resource, .. } => ProjectRunSource::rest(resource.as_ref()),
-            Self::Sql(resource) => ProjectRunSource::sql(resource.as_ref()),
+            Self::Rest { resource, .. } => ProjectRunSource::new(resource.queryable()),
+            Self::Sql(resource) => ProjectRunSource::new(resource.queryable()),
         }
     }
 

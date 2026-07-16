@@ -2,7 +2,6 @@ use std::{
     cell::Cell,
     fs,
     path::{Path, PathBuf},
-    sync::Arc,
 };
 
 use cdf_contract::{
@@ -59,7 +58,6 @@ schema = { fields = [
 
 const RESOURCE_ID: &str = "local.events";
 const SOURCE_FILE: &str = "data/events.ndjson";
-const SOURCE_SCOPE: &str = "events.ndjson";
 
 pub(super) const TARGET: &str = "drift_events";
 pub(super) const ALLOWED_EVENT_TYPE: &str = "order.created";
@@ -112,7 +110,12 @@ pub(super) fn run_scenario(
     let checkpoint_id = CheckpointId::new(format!("checkpoint-e6-drift-quarantine-{run_label}"))?;
     let run_id = RunId::new(format!("run-e6-drift-quarantine-{run_label}"))?;
     let identifier_policy = destination.column_identifier_policy()?;
-    let plan = drift_quarantine_plan(resource.as_ref(), &package_id, identifier_policy.as_ref())?;
+    let plan = drift_quarantine_plan(
+        resource.queryable(),
+        &package_id,
+        identifier_policy.as_ref(),
+    )?;
+    let plan = resource.bind_plan(plan)?;
     assert_frozen_contract_program(&plan);
 
     fs::create_dir_all(&spec.package_root)
@@ -127,8 +130,8 @@ pub(super) fn run_scenario(
     }
 
     let gate_observed = Cell::new(false);
-    let resource_id = resource.descriptor().resource_id.clone();
-    let scope = resource.descriptor().state_scope.clone();
+    let resource_id = resource.queryable().descriptor().resource_id.clone();
+    let scope = resource.queryable().descriptor().state_scope.clone();
     let gate = |_: &Receipt| {
         assert_checkpoint_not_committed_at_receipt_gate(
             &spec.state_store_path,
@@ -144,7 +147,7 @@ pub(super) fn run_scenario(
     let services = crate::test_execution_services();
     let report = futures_executor::block_on(run_project(
         ProjectRunRequest {
-            resource: ProjectRunSource::new(resource.as_ref()),
+            resource: ProjectRunSource::new(resource.queryable()),
             plan,
             package_root: spec.package_root.clone(),
             state_store_path: spec.state_store_path.clone(),
@@ -173,12 +176,17 @@ fn write_source(project_root: &Path, source: &str) -> Result<()> {
         .map_err(|error| CdfError::data(format!("write drift fixture source: {error}")))
 }
 
-fn compile_resource(project_root: &Path) -> Result<Arc<dyn QueryableResource>> {
+fn compile_resource(project_root: &Path) -> Result<crate::source_fixture::ResolvedSourceFixture> {
     let config = parse_cdf_toml(PROJECT_TOML)?;
     let resolver =
         InMemoryResourceSourceResolver::new().with_toml("resources/live.toml", RESOURCE_TOML);
-    let mut resources =
-        compile_project_declarative_resources_with_root(&config, &resolver, project_root)?;
+    let source_registry = crate::source_fixture::local_file_registry()?;
+    let mut resources = compile_project_declarative_resources_with_root(
+        &source_registry,
+        &config,
+        &resolver,
+        project_root,
+    )?;
     if resources.len() != 1 {
         return Err(CdfError::contract(format!(
             "E6 drift-quarantine fixture expected one resource, found {}",
@@ -230,9 +238,7 @@ fn drift_quarantine_plan(
                 filters: Vec::new(),
                 limit: None,
                 order_by: Vec::new(),
-                scope: ScopeKey::File {
-                    path: SOURCE_SCOPE.to_owned(),
-                },
+                scope: resource.descriptor().state_scope.clone(),
             },
             validation_program,
             execution_extent: ExecutionExtent::bounded(),

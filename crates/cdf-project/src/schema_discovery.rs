@@ -28,7 +28,7 @@ use cdf_kernel::{
     CdfError, DISCOVERY_MANIFEST_HASH_METADATA_KEY, DISCOVERY_MANIFEST_PATH_METADATA_KEY,
     DiscoveryCoverageEvidence, DiscoveryCoverageEvidenceInput, DiscoveryExecutorBudgetEvidence,
     EffectiveSchemaCatalogEntry, EffectiveSchemaEvidence, EffectiveSchemaObservationEvidence,
-    EffectiveSchemaRuntime, ResourceStream, Result, SchemaBaselineReference, SchemaHash,
+    EffectiveSchemaRuntime, Result, SchemaBaselineReference, SchemaHash,
     SchemaObservationFieldQuarantine, SchemaObservationPolicy, SchemaSource,
     TerminalSchemaObservationQuarantine,
 };

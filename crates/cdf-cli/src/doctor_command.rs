@@ -4,8 +4,7 @@ use std::{
     process::Command as ProcessCommand,
 };
 
-use cdf_declarative::CompiledResourcePlan;
-use cdf_kernel::{ResourceStream, ScanRequest};
+use cdf_kernel::ScanRequest;
 use cdf_project::{FileResourceSourceResolver, ResourceSourceKind, validate_project};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -66,7 +65,9 @@ pub(crate) fn doctor(
 
     let resolver = FileResourceSourceResolver::new(&context.root);
     let provider = context.secret_provider();
+    let source_registry = crate::source_registry::builtin_source_registry()?;
     match validate_project(
+        &source_registry,
         &context.config,
         Some(&context.environment.name),
         &resolver,
@@ -86,7 +87,7 @@ pub(crate) fn doctor(
     }
 
     checks.push(python_check(&context));
-    checks.extend(file_transport_checks(&context, execution));
+    checks.extend(source_runtime_checks(&context, execution));
     checks.extend(destination_checks(
         context.destination_runtime(destinations),
     ));
@@ -109,43 +110,32 @@ pub(crate) fn doctor(
     CommandOutput::rendered_with_exit_code("doctor", report.render_document(), report, exit_code)
 }
 
-fn file_transport_checks(
+fn source_runtime_checks(
     context: &ProjectContext,
     execution: &cdf_runtime::ExecutionServices,
 ) -> Vec<DoctorCheck> {
-    let remote_resources = context
+    let registry = match crate::source_registry::builtin_source_registry() {
+        Ok(registry) => registry,
+        Err(error) => {
+            return vec![DoctorCheck::failed(
+                "source_registry",
+                format!("source registry initialization failed: {}", error.message),
+            )];
+        }
+    };
+    let resolution = cdf_runtime::SourceResolutionContext::new(
+        &context.root,
+        std::sync::Arc::new(context.secret_provider()),
+        execution,
+    );
+    context
         .resources
         .iter()
-        .filter(|resource| {
-            matches!(resource.plan(), CompiledResourcePlan::Files(plan) if remote_transport_kind(&plan.root).is_some())
-        })
-        .collect::<Vec<_>>();
-    if remote_resources.is_empty() {
-        return Vec::new();
-    }
-    let dependencies =
-        match crate::project_run_resource::file_runtime_dependencies(context, Some(execution)) {
-            Ok(dependencies) => dependencies,
-            Err(error) => {
-                return vec![DoctorCheck::failed(
-                    "file_transport",
-                    format!(
-                        "remote file transport initialization failed: {}",
-                        error.message
-                    ),
-                )];
-            }
-        };
-    remote_resources
-        .into_iter()
         .map(|resource| {
             let resource_id = resource.descriptor().resource_id.to_string();
-            let CompiledResourcePlan::Files(plan) = resource.plan() else {
-                unreachable!("remote_resources contains only file plans")
-            };
-            let transport = remote_transport_kind(&plan.root).unwrap_or("remote");
-            let probe = resource
-                .to_file_resource(dependencies.clone())
+            let driver = resource.source_plan().driver.driver_id.as_str();
+            let probe = registry
+                .resolve(resource.source_plan(), &resolution)
                 .and_then(|runtime| {
                     runtime.plan_partitions(&ScanRequest {
                         resource_id: resource.descriptor().resource_id.clone(),
@@ -158,43 +148,26 @@ fn file_transport_checks(
                 });
             match probe {
                 Ok(partitions) => DoctorCheck::passed(
-                    format!("file_transport:{resource_id}"),
-                    format!(
-                        "{transport} transport resolved {} matched file(s)",
-                        partitions.len()
-                    ),
+                    format!("source:{resource_id}"),
+                    format!("{driver} source resolved {} partition(s)", partitions.len()),
                 )
                 .with_details(json!({
                     "resource_id": resource_id,
-                    "transport": transport,
-                    "matched_files": partitions.len(),
+                    "driver": driver,
+                    "partitions": partitions.len(),
                 })),
                 Err(error) => DoctorCheck::failed(
-                    format!("file_transport:{resource_id}"),
-                    format!("{transport} transport probe failed: {}", error.message),
+                    format!("source:{resource_id}"),
+                    format!("{driver} source probe failed: {}", error.message),
                 )
                 .with_details(json!({
                     "resource_id": resource_id,
-                    "transport": transport,
-                    "matched_files": 0,
+                    "driver": driver,
+                    "partitions": 0,
                 })),
             }
         })
         .collect()
-}
-
-fn remote_transport_kind(root: &str) -> Option<&'static str> {
-    if root.starts_with("http://") || root.starts_with("https://") {
-        Some("https")
-    } else if root.starts_with("s3://") {
-        Some("s3")
-    } else if root.starts_with("gs://") {
-        Some("gcs")
-    } else if root.starts_with("az://") {
-        Some("azure")
-    } else {
-        None
-    }
 }
 
 fn project_health_details(context: &ProjectContext) -> serde_json::Value {

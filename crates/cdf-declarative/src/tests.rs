@@ -1,3813 +1,546 @@
-use super::*;
-use std::{
-    collections::{BTreeMap, VecDeque},
-    fs,
-    io::{Cursor, Write},
-    path::Path,
-    sync::{
-        Arc, Mutex,
-        atomic::{AtomicUsize, Ordering},
-    },
-};
+use std::{collections::HashMap, path::Path, sync::Arc};
 
-use arrow_array::{
-    Array, BooleanArray, Decimal128Array, Float64Array, Int64Array, RecordBatch, StringArray,
-};
-use arrow_ipc::writer::FileWriter;
-use arrow_schema::{DataType, Field, Fields, TimeUnit};
-use cdf_conformance::resource::{
-    PredicateExpectation, ResourceConformanceCase, ResourceExecutionConformanceCase,
-    assert_queryable_resource_conformance, assert_resource_stream_execution_conformance,
-};
-use cdf_http::{
-    HttpRequest, HttpResponse, HttpTransport, ProviderRefreshHook, SecretProvider, SecretUri,
-    SecretValue,
-};
+use arrow_schema::{DataType, Field, Schema, TimeUnit};
 use cdf_kernel::{
-    CdfError, CursorOrderingClaim, CursorValue, DeduplicationSpec, DeliveryGuarantee, ErrorKind,
-    Expression, ExpressionNode, IncrementalShape, PartitionId, PredicateId, PushdownFidelity,
-    QueryableResource, ResourceStream, ScanPredicate, ScanRequest, SchemaHash, SchemaSource,
-    ScopeKey, SortDirection, SourcePosition, WriteDisposition, physical_type, source_name,
+    CdfError, DeduplicationSpec, QueryableResource, ResourceCapabilities, Result, SchemaSource,
+    ScopeKey, TrustLevel, WriteDisposition,
 };
-use futures_util::StreamExt;
-use tempfile::TempDir;
+use cdf_runtime::{
+    CompiledSourcePlan, CompiledSourcePlanInput, SourceAttestationStrength,
+    SourceBatchMemoryContract, SourceCompileRequest, SourceDiscoverySession, SourceDriver,
+    SourceDriverDescriptor, SourceDriverId, SourceExecutionCapabilities, SourceExecutorClass,
+    SourceRegistry, SourceResolutionContext, SourceRetryGranularity, artifact_hash,
+};
 
-fn scan_predicate(id: PredicateId, expression: &str) -> ScanPredicate {
-    ScanPredicate::new(id, expression).unwrap()
+use crate::*;
+
+#[derive(Clone)]
+struct TestSourceDriver {
+    descriptor: SourceDriverDescriptor,
+    option_schema: serde_json::Value,
 }
 
-fn test_file_dependencies(
-    transport: impl cdf_source_files::FileTransport + 'static,
-) -> FileRuntimeDependencies {
-    let execution = cdf_engine::StandaloneExecutionHost::default_services(64 * 1024 * 1024)
-        .unwrap()
-        .1;
-    let mut formats = cdf_runtime::FormatRegistry::default();
-    formats
-        .register(Arc::new(
-            cdf_format_arrow_ipc::ArrowIpcFileFormatDriver::new().unwrap(),
-        ))
-        .unwrap();
-    formats
-        .register(Arc::new(
-            cdf_format_parquet::ParquetFormatDriver::new().unwrap(),
-        ))
-        .unwrap();
-    formats
-        .register(Arc::new(
-            cdf_format_delimited::CsvFormatDriver::new().unwrap(),
-        ))
-        .unwrap();
-    formats
-        .register(Arc::new(
-            cdf_format_json::NdjsonFormatDriver::new().unwrap(),
-        ))
-        .unwrap();
-    formats
-        .register(Arc::new(
-            cdf_format_json::JsonDocumentFormatDriver::new().unwrap(),
-        ))
-        .unwrap();
-    let mut transforms = cdf_runtime::ByteTransformRegistry::default();
-    transforms
-        .register(Arc::new(
-            cdf_transform_gzip::GzipTransformDriver::new().unwrap(),
-        ))
-        .unwrap();
-    transforms
-        .register(Arc::new(
-            cdf_transform_zstd::ZstdTransformDriver::new().unwrap(),
-        ))
-        .unwrap();
-    FileRuntimeDependencies::new(
-        transport,
-        execution,
-        Arc::new(formats),
-        Arc::new(transforms),
-    )
-}
-
-#[allow(non_snake_case)]
-mod RestRuntimeDependencies {
-    pub fn new(
-        transport: impl cdf_http::HttpTransport + 'static,
-    ) -> cdf_source_rest::RestRuntimeDependencies {
-        let execution = cdf_engine::StandaloneExecutionHost::default_services(64 * 1024 * 1024)
-            .unwrap()
-            .1;
-        execution
-            .ensure_blocking_lanes(&[cdf_runtime::BlockingLaneSpec {
-                lane_id: "rest-source.sync".to_owned(),
-                maximum_concurrency: 8,
-                cpu_slot_cost: 1,
-                native_internal_parallelism: 1,
-                affinity: cdf_runtime::LaneAffinity::Shared,
-                interruption: cdf_runtime::InterruptionSafety::CooperativeOnly,
-            }])
-            .unwrap();
-        cdf_source_rest::RestRuntimeDependencies::new(transport, execution)
-    }
-}
-
-const BOOK_REST_EXAMPLE: &str = r#"
-[source.github]
-kind = "rest"
-base_url = "https://api.github.com"
-auth = { kind = "bearer", token = "secret://env/GITHUB_TOKEN" }
-rate_limit = { requests_per_minute = 300, respect_headers = ["Retry-After", "X-RateLimit-Reset"] }
-
-[resource.issues]
-path = "/repos/{owner}/{repo}/issues"
-params = { state = "all", per_page = 100 }
-paginate = { kind = "link_header" }
-records = "$"
-primary_key = ["id"]
-merge_key = ["id"]
-cursor = { field = "updated_at", param = "since", ordering = "best_effort", lag = "5m" }
-write_disposition = "merge"
-contract = "governed"
-partition = { by = "cursor_window", width = "7d" }
-records_transform = "python://./src/gh.py#flatten_reactions"
-"#;
-
-#[test]
-fn book_rest_example_parses_and_negotiates_inexact_cursor_pushdown() {
-    let document = parse_toml(BOOK_REST_EXAMPLE).unwrap();
-    let resources = compile_document(&document).unwrap();
-    assert_eq!(resources.len(), 1);
-
-    let resource = &resources[0];
-    assert_eq!(resource.descriptor().resource_id.as_str(), "github.issues");
-    assert_eq!(resource.descriptor().primary_key, vec!["id"]);
-    assert_eq!(resource.descriptor().merge_key, vec!["id"]);
-    assert_eq!(
-        resource.descriptor().cursor.as_ref().unwrap().ordering,
-        CursorOrderingClaim::Inexact
-    );
-    assert_eq!(
-        resource.capabilities().filters.default_fidelity,
-        PushdownFidelity::Inexact
-    );
-    let source_request = resource
-        .source_compile_request()
-        .expect("neutral REST source compile request");
-    assert_eq!(source_request.source_kind, "rest");
-    assert_eq!(
-        source_request.type_policy_allowances,
-        resource.type_policy_allowances()
-    );
-
-    let CompiledResourcePlan::Rest(plan) = resource.plan() else {
-        panic!("book example must compile as REST");
-    };
-    assert_eq!(plan.path, "/repos/{owner}/{repo}/issues");
-    assert_eq!(
-        plan.pagination.as_ref().unwrap().kind().to_string(),
-        "link_header"
-    );
-    assert_eq!(plan.rate_limit.requests_per_minute, Some(300));
-    assert_eq!(plan.cursor_param.as_deref(), Some("since"));
-    assert_eq!(
-        plan.records_transform.as_deref(),
-        Some("python://./src/gh.py#flatten_reactions")
-    );
-
-    let cursor_predicate_id = PredicateId::new("p1").unwrap();
-    let unsupported_predicate_id = PredicateId::new("p2").unwrap();
-    let request = ScanRequest {
-        resource_id: resource.descriptor().resource_id.clone(),
-        projection: None,
-        filters: vec![
-            scan_predicate(
-                cursor_predicate_id.clone(),
-                "updated_at >= \"2026-07-01T00:00:00Z\"",
-            ),
-            scan_predicate(unsupported_predicate_id.clone(), "id = 1"),
-        ],
-        limit: None,
-        order_by: vec![],
-        scope: ScopeKey::Resource,
-    };
-
-    assert_queryable_resource_conformance(
-        resource,
-        [
-            ResourceConformanceCase::new(request.clone()).with_expected_predicates([
-                PredicateExpectation::inexact(cursor_predicate_id),
-                PredicateExpectation::unsupported(unsupported_predicate_id),
-            ]),
-        ],
-    );
-    let plan = resource.negotiate(&request).unwrap();
-    assert_eq!(plan.pushed_predicates.len(), 1);
-    assert_eq!(
-        plan.pushed_predicates[0].fidelity,
-        PushdownFidelity::Inexact
-    );
-    assert_eq!(plan.unsupported_predicates.len(), 1);
-    assert_eq!(
-        plan.partitions[0].scan_intent.predicates,
-        plan.pushed_predicates
-    );
-    cdf_kernel::validate_compiled_scan_intents(&plan).unwrap();
-    assert_eq!(
-        plan.delivery_guarantee,
-        DeliveryGuarantee::EffectivelyOncePerKey
-    );
-    assert_eq!(
-        plan.partitions[0].metadata.get("pagination").unwrap(),
-        "link_header"
-    );
-}
-
-#[test]
-fn rest_tier_a_partition_is_full_scan_while_tier_b_uses_compiled_cursor_pushdown() {
-    let resource = compile_document(&parse_toml(BOOK_REST_EXAMPLE).unwrap())
-        .unwrap()
-        .remove(0);
-    let request = rest_cursor_request(&resource, "updated_at >= \"2026-07-01T00:00:00Z\"");
-    let dependencies = RestRuntimeDependencies::new(RecordingTransport::new([]));
-    let rest = resource.to_rest_resource(dependencies).unwrap();
-
-    let tier_a = rest.plan_partitions(&request).unwrap().remove(0);
-    assert_eq!(
-        tier_a.scan_intent,
-        cdf_kernel::CompiledScanIntent::full_scan()
-    );
-
-    let tier_b = rest.negotiate(&request).unwrap();
-    assert_eq!(tier_b.pushed_predicates.len(), 1);
-    assert_eq!(tier_b.partitions[0].scan_intent.predicates.len(), 1);
-}
-
-#[test]
-fn source_and_resource_names_form_canonical_compiled_id() {
-    let input = r#"
-[source.tlc]
-kind = "files"
-root = "data"
-
-[resource.yellow]
-glob = "*.parquet"
-format = "parquet"
-write_disposition = "append"
-trust = "governed"
-"#;
-    let resources = compile_document(&parse_toml(input).unwrap()).unwrap();
-
-    assert_eq!(resources.len(), 1);
-    assert_eq!(resources[0].descriptor().resource_id.as_str(), "tlc.yellow");
-    assert_eq!(resources[0].source_name(), "tlc");
-    assert_eq!(resources[0].resource_name(), "yellow");
-}
-
-#[test]
-fn explicit_resource_id_is_rejected_in_favor_of_canonical_id() {
-    let input = r#"
-[source.tlc]
-kind = "files"
-root = "data"
-
-[resource.yellow]
-id = "yellow"
-glob = "*.parquet"
-format = "parquet"
-write_disposition = "append"
-trust = "governed"
-"#;
-    let error = parse_toml(input).unwrap_err();
-    assert!(error.to_string().contains("unknown field `id`"));
-}
-
-#[test]
-fn rest_cursor_pushdown_can_be_explicit_exact() {
-    let input = BOOK_REST_EXAMPLE.replace(
-        r#"cursor = { field = "updated_at", param = "since", ordering = "best_effort", lag = "5m" }"#,
-        r#"cursor = { field = "updated_at", param = "since", ordering = "exact", lag = "0ms", filter_fidelity = "exact" }"#,
-    );
-    let resource = compile_document(&parse_toml(&input).unwrap())
-        .unwrap()
-        .remove(0);
-    assert_eq!(
-        resource.capabilities().filters.default_fidelity,
-        PushdownFidelity::Exact
-    );
-}
-
-#[test]
-fn rest_runtime_executes_json_pages_with_explicit_dependencies() {
-    let resource = compile_document(&parse_toml(REST_RUNTIME_EXAMPLE).unwrap())
-        .unwrap()
-        .remove(0);
-    let request = rest_cursor_request(&resource, "updated_at >= \"2026-07-01T00:00:00Z\"");
-    let plan = resource.negotiate(&request).unwrap();
-    assert_eq!(plan.pushed_predicates.len(), 1);
-    assert!(
-        !plan.partitions[0]
-            .metadata
-            .contains_key("cursor_query_param")
-    );
-    assert!(
-        !plan.partitions[0]
-            .metadata
-            .contains_key("cursor_query_value")
-    );
-
-    let transport = RecordingTransport::new([
-        json_response(
-            r#"{
-                "items": [
-                    { "id": 1, "name": "ada", "updated_at": "2026-07-02T00:00:00Z", "active": true, "score": 4.5 },
-                    { "id": 2, "name": "grace", "updated_at": "2026-07-03T00:00:00Z", "active": false, "score": null }
-                ],
-                "next_token": "n2"
-            }"#,
-        ),
-        json_response(
-            r#"{
-                "items": [
-                    { "id": 3, "name": "katherine", "updated_at": "2026-07-04T00:00:00Z", "active": true, "score": 9.25 }
-                ]
-            }"#,
-        ),
-    ]);
-    let dependencies = RestRuntimeDependencies::new(transport.clone()).with_secret_provider(
-        StaticSecretProvider::new([("secret://env/API_TOKEN", "token-1")]),
-    );
-    let rest = resource.to_rest_resource(dependencies).unwrap();
-
-    let batches =
-        drain_batches(futures_executor::block_on(rest.open(plan.partitions[0].clone())).unwrap());
-    assert_eq!(batches.len(), 2);
-    assert_eq!(batches[0].header.row_count, 2);
-    assert_eq!(batches[1].header.row_count, 1);
-    assert_eq!(
-        batches[0].header.observed_schema_hash,
-        cdf_kernel::canonical_arrow_schema_hash(
-            &batches[0].header.materialized_physical_schema().unwrap()
-        )
-        .unwrap()
-    );
-
-    let first = batches[0].record_batch().unwrap();
-    let ids = first
-        .column(0)
-        .as_any()
-        .downcast_ref::<Int64Array>()
-        .unwrap();
-    assert_eq!(ids.value(0), 1);
-    assert_eq!(ids.value(1), 2);
-
-    let first_position = cursor_string(&batches[0].header.source_position);
-    let second_position = cursor_string(&batches[1].header.source_position);
-    assert!(second_position > first_position);
-
-    let requests = transport.requests();
-    assert_eq!(requests.len(), 2);
-    assert_eq!(
-        requests[0].url,
-        "https://api.example.com/v1/items?existing=1&from_path=yes&state=all&since=2026-07-01T00%3A00%3A00Z"
-    );
-    assert_eq!(
-        requests[1].url,
-        "https://api.example.com/v1/items?existing=1&from_path=yes&state=all&since=2026-07-01T00%3A00%3A00Z&page_token=n2"
-    );
-    assert_eq!(
-        requests[0].headers.get("authorization").map(String::as_str),
-        Some("Bearer token-1")
-    );
-}
-
-#[test]
-fn rest_sample_discovery_infers_scalars_and_uses_runtime_request_path() {
-    let input = REST_RUNTIME_EXAMPLE
-        .replace(
-        r#"schema = { fields = [
-  { name = "id", type = "uint64", nullable = false },
-  { name = "name", type = "string", nullable = false },
-  { name = "updated_at", type = "timestamp_micros", nullable = false, timezone = "UTC" },
-  { name = "active", type = "boolean", nullable = false },
-  { name = "score", type = "float64", nullable = true },
-] }"#,
-        "",
-        )
-        .replace(
-            r#"paginate = { kind = "next_token", query_param = "page_token", response_field = "next_token" }"#,
-            r#"paginate = { kind = "page_number", query_param = "page", start_page = 7 }"#,
-        );
-    let resource = compile_document(&parse_toml(&input).unwrap())
-        .unwrap()
-        .remove(0);
-    let transport = RecordingTransport::new([json_response(
-        r#"{
-            "items": [
-                { "id": 9223372036854775808, "name": "ada", "updated_at": "2026-07-02T00:00:00Z", "active": true, "score": 4.5, "meta": { "tier": "gold" } },
-                { "id": 9223372036854775809, "name": null, "updated_at": "2026-07-03T00:00:00Z", "active": false, "score": 9, "meta": ["vip"], "late_field": "appeared" },
-                { "id": 9223372036854775810, "updated_at": "2026-07-04T00:00:00Z", "active": true, "score": null, "meta": "plain" }
-            ],
-            "next_token": "not-followed"
-        }"#,
-    )]);
-    let secret_provider = StaticSecretProvider::new([("secret://env/API_TOKEN", "sample-secret")]);
-    let memory: Arc<dyn cdf_memory::MemoryCoordinator> = Arc::new(
-        cdf_memory::DeterministicMemoryCoordinator::new(64 * 1024 * 1024, BTreeMap::new()).unwrap(),
-    );
-    let dependencies = RestDiscoveryDependencies::new(&transport, &secret_provider, memory);
-
-    let discovery = discover_rest_sample_schema(&resource, &dependencies).unwrap();
-
-    let schema = Arc::clone(&discovery.schema);
-    assert_eq!(
-        schema.field_with_name("active").unwrap().data_type(),
-        &DataType::Boolean
-    );
-    assert_eq!(
-        schema.field_with_name("id").unwrap().data_type(),
-        &DataType::UInt64
-    );
-    assert_eq!(
-        schema.field_with_name("score").unwrap().data_type(),
-        &DataType::Float64
-    );
-    assert_eq!(
-        schema.field_with_name("name").unwrap().data_type(),
-        &DataType::Utf8
-    );
-    assert!(schema.field_with_name("name").unwrap().is_nullable());
-    assert_eq!(
-        schema.field_with_name("meta").unwrap().data_type(),
-        &DataType::Utf8
-    );
-    assert!(schema.field_with_name("late_field").unwrap().is_nullable());
-    assert_eq!(discovery.source_identity["source_kind"], "rest");
-    assert_eq!(discovery.source_identity["sample_pages"], "1");
-    assert_eq!(discovery.source_identity["sample_records"], "3");
-
-    let requests = transport.requests();
-    assert_eq!(requests.len(), 1);
-    assert_eq!(
-        requests[0].url,
-        "https://api.example.com/v1/items?existing=1&from_path=yes&state=all&page=7"
-    );
-    assert_eq!(
-        requests[0].headers.get("authorization").map(String::as_str),
-        Some("Bearer sample-secret")
-    );
-    assert!(!format!("{discovery:?}").contains("sample-secret"));
-}
-
-#[test]
-fn rest_runtime_executes_with_discovered_snapshot_hash() {
-    let resource = compile_document(&parse_toml(REST_RUNTIME_EXAMPLE).unwrap())
-        .unwrap()
-        .remove(0);
-    let schema = resource.schema();
-    let snapshot_hash = SchemaHash::new("sha256:rest-discovered").unwrap();
-    let resource = resource.with_schema_source_and_schema(
-        SchemaSource::Discovered {
-            snapshot: cdf_kernel::SchemaSnapshotReference {
-                schema_hash: snapshot_hash.clone(),
-                path: ".cdf/schemas/api.items@sha256:rest-discovered.json".to_owned(),
-                metadata: BTreeMap::from([("probe".to_owned(), "rest-sample-page".to_owned())]),
+impl TestSourceDriver {
+    fn new(driver_id: &str, kind: &str, source_option: &str, resource_option: &str) -> Self {
+        let option_schema = serde_json::json!({
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "source": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [source_option],
+                "properties": {
+                    source_option: {"type": "string", "minLength": 1}
+                }
             },
-        },
-        schema,
-    );
-    let request = rest_cursor_request(&resource, "updated_at >= \"2026-07-01T00:00:00Z\"");
-    let plan = resource.negotiate(&request).unwrap();
-    let transport = RecordingTransport::new([json_response(
-        r#"{
-            "items": [
-                { "id": 1, "name": "ada", "updated_at": "2026-07-02T00:00:00Z", "active": true, "score": 4.5 }
-            ]
-        }"#,
-    )]);
-    let rest = resource
-        .to_rest_resource(
-            RestRuntimeDependencies::new(transport).with_secret_provider(
-                StaticSecretProvider::new([("secret://env/API_TOKEN", "token-1")]),
-            ),
-        )
-        .unwrap();
-
-    let batches =
-        drain_batches(futures_executor::block_on(rest.open(plan.partitions[0].clone())).unwrap());
-
-    assert_eq!(batches.len(), 1);
-    assert_eq!(
-        batches[0].header.observed_schema_hash,
-        cdf_kernel::canonical_arrow_schema_hash(
-            &batches[0].header.materialized_physical_schema().unwrap()
-        )
-        .unwrap()
-    );
-    assert!(matches!(
-        resource.descriptor().schema_source,
-        SchemaSource::Discovered { ref snapshot } if snapshot.schema_hash == snapshot_hash
-    ));
-}
-
-#[test]
-fn rest_runtime_reconciles_observed_schema_with_drift_source_names_and_exact_evidence() {
-    let input = r#"
-[source.api]
-kind = "rest"
-base_url = "https://api.example.com"
-egress_allowlist = ["api.example.com"]
-
-[resource.metrics]
-path = "/metrics"
-records = "$.items"
-write_disposition = "append"
-trust = "governed"
-schema = { fields = [
-  { name = "vendor_id", source_name = "VendorID", type = "int64", nullable = false },
-  { name = "amount", type = "decimal(20,0)", nullable = false },
-] }
-"#;
-    let resource = compile_document(&parse_toml(input).unwrap())
-        .unwrap()
-        .remove(0);
-    let partition = rest_partition(&resource);
-    let transport = RecordingTransport::new([json_response(
-        r#"{ "items": [
-            { "VendorID": 1, "amount": 10, "source_only": "kept-as-evidence" },
-            { "VendorID": 2, "amount": "bad", "source_only": "drifted" }
-        ] }"#,
-    )]);
-    let rest = resource
-        .to_rest_resource(RestRuntimeDependencies::new(transport))
-        .unwrap();
-
-    let batches = drain_batches(futures_executor::block_on(rest.open(partition)).unwrap());
-
-    assert_eq!(batches.len(), 1);
-    let batch = &batches[0];
-    let record_batch = batch.record_batch().unwrap();
-    assert_eq!(record_batch.num_rows(), 2);
-    assert_eq!(
-        source_name(record_batch.schema().field(0)),
-        Some("VendorID")
-    );
-    assert_eq!(physical_type(record_batch.schema().field(0)), Some("Int64"));
-    assert_eq!(physical_type(record_batch.schema().field(1)), Some("Int64"));
-    let amounts = record_batch
-        .column_by_name("amount")
-        .unwrap()
-        .as_any()
-        .downcast_ref::<Decimal128Array>()
-        .unwrap();
-    assert_eq!(amounts.value(0), 10);
-    assert!(amounts.is_null(1));
-    assert!(batch.header.pre_contract_quarantine.is_empty());
-    assert_eq!(batch.header.residual_candidates().len(), 3);
-
-    let plan = cdf_contract::schema_coercion_plan_from_trusted_json(
-        record_batch.schema().as_ref(),
-        batch.header.schema_coercion_plan.as_deref().unwrap(),
-    )
-    .unwrap();
-    assert_eq!(
-        plan.fields
-            .iter()
-            .find(|field| field.source_name == "amount")
-            .unwrap()
-            .decision,
-        cdf_contract::FieldCoercionDecision::Widened
-    );
-    assert!(
-        plan.fields
-            .iter()
-            .all(|field| field.source_name != "source_only")
-    );
-}
-
-#[test]
-fn rest_runtime_multi_page_reconciliation_is_stable_and_ordered() {
-    let input = rest_decimal_pages_input();
-    let resource = compile_document(&parse_toml(input).unwrap())
-        .unwrap()
-        .remove(0);
-    let partition = rest_partition(&resource);
-    let transport = RecordingTransport::new([
-        json_response(
-            r#"{ "items": [{ "id": 1, "amount": 10, "source_only": "a" }], "next_token": "n2" }"#,
-        ),
-        json_response(r#"{ "items": [{ "id": 2, "amount": 20, "source_only": "b" }] }"#),
-    ]);
-    let rest = resource
-        .to_rest_resource(RestRuntimeDependencies::new(transport))
-        .unwrap();
-
-    let batches = drain_batches(futures_executor::block_on(rest.open(partition)).unwrap());
-
-    assert_eq!(batches.len(), 2);
-    assert_eq!(
-        batches[0].header.schema_coercion_plan,
-        batches[1].header.schema_coercion_plan
-    );
-    let first_ids = batches[0]
-        .record_batch()
-        .unwrap()
-        .column_by_name("id")
-        .unwrap()
-        .as_any()
-        .downcast_ref::<Int64Array>()
-        .unwrap();
-    let second_ids = batches[1]
-        .record_batch()
-        .unwrap()
-        .column_by_name("id")
-        .unwrap()
-        .as_any()
-        .downcast_ref::<Int64Array>()
-        .unwrap();
-    assert_eq!(first_ids.value(0), 1);
-    assert_eq!(second_ids.value(0), 2);
-}
-
-#[test]
-fn rest_runtime_multi_page_unknown_fields_preserve_stable_typed_plan() {
-    let input = rest_decimal_pages_input();
-    let resource = compile_document(&parse_toml(input).unwrap())
-        .unwrap()
-        .remove(0);
-    let partition = rest_partition(&resource);
-    let transport = RecordingTransport::new([
-        json_response(
-            r#"{ "items": [{ "id": 1, "amount": 10, "source_only": "a" }], "next_token": "n2" }"#,
-        ),
-        json_response(
-            r#"{ "items": [{ "id": 2, "amount": 20, "source_only": "b", "page_two_only": true }] }"#,
-        ),
-    ]);
-    let rest = resource
-        .to_rest_resource(RestRuntimeDependencies::new(transport.clone()))
-        .unwrap();
-
-    let batches = drain_batches(futures_executor::block_on(rest.open(partition)).unwrap());
-    assert_eq!(batches.len(), 2);
-    assert_eq!(batches[0].header.residual_candidates().len(), 1);
-    assert_eq!(batches[1].header.residual_candidates().len(), 2);
-    assert_eq!(
-        batches[0].header.schema_coercion_plan,
-        batches[1].header.schema_coercion_plan
-    );
-    assert_eq!(transport.requests().len(), 2);
-}
-
-#[test]
-fn rest_runtime_satisfies_execution_conformance_helper() {
-    let resource = compile_document(&parse_toml(REST_RUNTIME_EXAMPLE).unwrap())
-        .unwrap()
-        .remove(0);
-    let request = rest_cursor_request(&resource, "updated_at >= \"2026-07-01T00:00:00Z\"");
-    let transport = RecordingTransport::new([
-        json_response(
-            r#"{
-                "items": [
-                    { "id": 1, "name": "ada", "updated_at": "2026-07-02T00:00:00Z", "active": true, "score": 4.5 },
-                    { "id": 2, "name": "grace", "updated_at": "2026-07-03T00:00:00Z", "active": false, "score": 2.0 }
-                ],
-                "next_token": "n2"
-            }"#,
-        ),
-        json_response(
-            r#"{
-                "items": [
-                    { "id": 3, "name": "katherine", "updated_at": "2026-07-04T00:00:00Z", "active": true, "score": 9.25 }
-                ]
-            }"#,
-        ),
-    ]);
-    let rest = resource
-        .to_rest_resource(
-            RestRuntimeDependencies::new(transport).with_secret_provider(
-                StaticSecretProvider::new([("secret://env/API_TOKEN", "token-1")]),
-            ),
-        )
-        .unwrap();
-    let partition = PartitionId::new("rest").unwrap();
-    let case = ResourceExecutionConformanceCase::new(
-        request,
-        cdf_kernel::canonical_arrow_schema_hash(resource.schema().as_ref()).unwrap(),
-        [partition.clone()],
-        3,
-    )
-    .with_expected_partition_rows([(partition, 3)])
-    .allow_observed_schema_variance();
-
-    futures_executor::block_on(assert_resource_stream_execution_conformance(&rest, [case]));
-}
-
-#[test]
-fn rest_runtime_forwards_capabilities_and_debugs_dependency_shape() {
-    let resource = compile_document(&parse_toml(REST_RUNTIME_EXAMPLE).unwrap())
-        .unwrap()
-        .remove(0);
-    let dependencies =
-        RestRuntimeDependencies::new(RecordingTransport::new([])).with_secret_provider(
-            StaticSecretProvider::new([("secret://env/API_TOKEN", "debug-secret")]),
-        );
-    let debug = format!("{dependencies:?}");
-    assert!(debug.contains("RestRuntimeDependencies"));
-    assert!(debug.contains("secret_provider"));
-    assert!(debug.contains("true"));
-    assert!(!debug.contains("debug-secret"));
-
-    let rest = resource.to_rest_resource(dependencies).unwrap();
-    assert_eq!(
-        rest.capabilities().filters.default_fidelity,
-        resource.capabilities().filters.default_fidelity
-    );
-    assert_eq!(
-        rest.capabilities().incremental,
-        resource.capabilities().incremental
-    );
-}
-
-#[test]
-fn rest_cursor_pushdown_accepts_only_safe_literal_tokens() {
-    let resource = compile_document(&parse_toml(REST_RUNTIME_EXAMPLE).unwrap())
-        .unwrap()
-        .remove(0);
-
-    let plan = resource
-        .negotiate(&rest_cursor_request(&resource, "updated_at >= -20260701.5"))
-        .unwrap();
-    assert_eq!(plan.pushed_predicates.len(), 1);
-    assert!(
-        !plan.partitions[0]
-            .metadata
-            .contains_key("cursor_query_value")
-    );
-    assert_eq!(
-        plan.partitions[0].scan_intent.predicates,
-        plan.pushed_predicates
-    );
-
-    let error = ScanPredicate::new(
-        PredicateId::new("unsafe-cursor").unwrap(),
-        "updated_at >= abc123",
-    )
-    .unwrap_err();
-    assert!(
-        error
-            .to_string()
-            .contains("expected '<column> <op> <literal>'")
-    );
-}
-
-#[test]
-fn compiled_declarations_require_typed_source_resolution_before_execution() {
-    let resource = compile_document(&parse_toml(REST_RUNTIME_EXAMPLE).unwrap())
-        .unwrap()
-        .remove(0);
-    let request = rest_cursor_request(&resource, "updated_at >= \"2026-07-01T00:00:00Z\"");
-    let partition = resource.plan_partitions(&request).unwrap().remove(0);
-
-    let error = expect_open_error(futures_executor::block_on(resource.open(partition)));
-    assert!(
-        error
-            .to_string()
-            .contains("resolve their typed source driver")
-    );
-}
-
-#[test]
-fn rest_runtime_does_not_smuggle_unsupported_predicates_into_urls() {
-    let resource = compile_document(&parse_toml(REST_RUNTIME_EXAMPLE).unwrap())
-        .unwrap()
-        .remove(0);
-    let predicate_id = PredicateId::new("unsupported").unwrap();
-    let request = ScanRequest {
-        resource_id: resource.descriptor().resource_id.clone(),
-        projection: None,
-        filters: vec![scan_predicate(predicate_id, "id = 2")],
-        limit: None,
-        order_by: vec![],
-        scope: ScopeKey::Resource,
-    };
-    let plan = resource.negotiate(&request).unwrap();
-    assert_eq!(plan.pushed_predicates.len(), 0);
-    assert_eq!(plan.unsupported_predicates.len(), 1);
-    assert!(
-        !plan.partitions[0]
-            .metadata
-            .contains_key("cursor_query_value")
-    );
-
-    let transport = RecordingTransport::new([json_response(
-        r#"{ "items": [{ "id": 2, "name": "grace", "updated_at": "2026-07-03T00:00:00Z", "active": true, "score": 1.0 }] }"#,
-    )]);
-    let rest = resource
-        .to_rest_resource(
-            RestRuntimeDependencies::new(transport.clone()).with_secret_provider(
-                StaticSecretProvider::new([("secret://env/API_TOKEN", "token-1")]),
-            ),
-        )
-        .unwrap();
-    drain_batches(futures_executor::block_on(rest.open(plan.partitions[0].clone())).unwrap());
-
-    let requests = transport.requests();
-    assert!(!requests[0].url.contains("id=2"));
-    assert!(!requests[0].url.contains("since="));
-
-    let unsupported_cursor_input = REST_RUNTIME_EXAMPLE.replace(
-        r#"cursor = { field = "updated_at", param = "since", ordering = "best_effort", lag = "0ms" }"#,
-        r#"cursor = { field = "updated_at", param = "since", ordering = "best_effort", lag = "0ms", filter_fidelity = "unsupported" }"#,
-    );
-    let unsupported_cursor_resource =
-        compile_document(&parse_toml(&unsupported_cursor_input).unwrap())
-            .unwrap()
-            .remove(0);
-    let unsupported_cursor_plan = unsupported_cursor_resource
-        .negotiate(&rest_cursor_request(
-            &unsupported_cursor_resource,
-            "updated_at >= \"2026-07-01T00:00:00Z\"",
-        ))
-        .unwrap();
-    assert_eq!(unsupported_cursor_plan.pushed_predicates.len(), 0);
-    assert_eq!(unsupported_cursor_plan.unsupported_predicates.len(), 1);
-    assert!(
-        !unsupported_cursor_plan.partitions[0]
-            .metadata
-            .contains_key("cursor_query_value")
-    );
-}
-
-#[test]
-fn rest_runtime_does_not_treat_symbolic_cursor_placeholder_as_executable_pushdown() {
-    let resource = compile_document(&parse_toml(REST_RUNTIME_EXAMPLE).unwrap())
-        .unwrap()
-        .remove(0);
-    let mut request = rest_cursor_request(&resource, "updated_at >= 0");
-    request.filters = vec![
-        ScanPredicate::from_expression(
-            PredicateId::new("cursor").unwrap(),
-            "updated_at >= checkpoint.cursor",
-            Expression::call(
-                "gte",
-                vec![
-                    ExpressionNode::Column {
-                        name: "updated_at".to_owned(),
-                    },
-                    ExpressionNode::Column {
-                        name: "checkpoint.cursor".to_owned(),
-                    },
-                ],
-            ),
-        )
-        .unwrap(),
-    ];
-    let plan = resource.negotiate(&request).unwrap();
-
-    assert_eq!(plan.pushed_predicates.len(), 0);
-    assert_eq!(plan.unsupported_predicates.len(), 1);
-    assert!(
-        !plan.partitions[0]
-            .metadata
-            .contains_key("cursor_query_value")
-    );
-}
-
-#[test]
-fn rest_runtime_refreshes_auth_once_when_configured() {
-    let resource = compile_document(&parse_toml(REST_RUNTIME_EXAMPLE).unwrap())
-        .unwrap()
-        .remove(0);
-    let request = rest_cursor_request(&resource, "updated_at >= \"2026-07-01T00:00:00Z\"");
-    let plan = resource.negotiate(&request).unwrap();
-    let transport = RecordingTransport::new([
-        HttpResponse::new(401).with_body(r#"{ "message": "expired" }"#),
-        json_response(
-            r#"{ "items": [{ "id": 1, "name": "ada", "updated_at": "2026-07-02T00:00:00Z", "active": true, "score": 4.5 }] }"#,
-        ),
-    ]);
-    let provider = RotatingSecretProvider::new(["old-token", "new-token"]);
-    let rest = resource
-        .to_rest_resource(
-            RestRuntimeDependencies::new(transport.clone())
-                .with_secret_provider(provider)
-                .with_auth_refresh_hook(ProviderRefreshHook),
-        )
-        .unwrap();
-
-    let batches =
-        drain_batches(futures_executor::block_on(rest.open(plan.partitions[0].clone())).unwrap());
-    assert_eq!(batches[0].header.row_count, 1);
-    let requests = transport.requests();
-    assert_eq!(requests.len(), 2);
-    assert_eq!(
-        requests[0].headers.get("authorization").map(String::as_str),
-        Some("Bearer old-token")
-    );
-    assert_eq!(
-        requests[1].headers.get("authorization").map(String::as_str),
-        Some("Bearer new-token")
-    );
-}
-
-#[test]
-fn rest_runtime_applies_header_auth_without_leaking_secret_in_debug() {
-    let input = REST_RUNTIME_EXAMPLE.replace(
-        r#"auth = { kind = "bearer", token = "secret://env/API_TOKEN" }"#,
-        r#"auth = { kind = "header", name = "X-Api-Key", value = "secret://env/API_TOKEN" }"#,
-    );
-    let resource = compile_document(&parse_toml(&input).unwrap())
-        .unwrap()
-        .remove(0);
-    let request = rest_cursor_request(&resource, "updated_at >= \"2026-07-01T00:00:00Z\"");
-    let plan = resource.negotiate(&request).unwrap();
-    let transport = RecordingTransport::new([json_response(
-        r#"{ "items": [{ "id": 1, "name": "ada", "updated_at": "2026-07-02T00:00:00Z", "active": true, "score": 4.5 }] }"#,
-    )]);
-    let dependencies = RestRuntimeDependencies::new(transport.clone()).with_secret_provider(
-        StaticSecretProvider::new([("secret://env/API_TOKEN", "header-secret-value")]),
-    );
-    assert!(!format!("{dependencies:?}").contains("header-secret-value"));
-    let rest = resource.to_rest_resource(dependencies).unwrap();
-
-    drain_batches(futures_executor::block_on(rest.open(plan.partitions[0].clone())).unwrap());
-    let requests = transport.requests();
-    assert_eq!(
-        requests[0].headers.get("x-api-key").map(String::as_str),
-        Some("header-secret-value")
-    );
-    assert!(!format!("{:?}", requests[0]).contains("header-secret-value"));
-}
-
-#[test]
-fn rest_runtime_denies_allowlist_before_transport_use() {
-    let input = REST_RUNTIME_EXAMPLE.replace(
-        r#"base_url = "https://api.example.com/v1?existing=1""#,
-        r#"base_url = "https://blocked.example.net/v1?existing=1""#,
-    );
-    let resource = compile_document(&parse_toml(&input).unwrap())
-        .unwrap()
-        .remove(0);
-    let request = rest_cursor_request(&resource, "updated_at >= \"2026-07-01T00:00:00Z\"");
-    let plan = resource.negotiate(&request).unwrap();
-    let transport = RecordingTransport::new([json_response(r#"{ "items": [] }"#)]);
-    let rest = resource
-        .to_rest_resource(
-            RestRuntimeDependencies::new(transport.clone()).with_secret_provider(
-                StaticSecretProvider::new([("secret://env/API_TOKEN", "token-1")]),
-            ),
-        )
-        .unwrap();
-
-    let error = expect_open_error(futures_executor::block_on(
-        rest.open(plan.partitions[0].clone()),
-    ));
-    assert_eq!(error.kind, ErrorKind::Auth);
-    assert_eq!(transport.requests().len(), 0);
-}
-
-#[test]
-fn rest_runtime_rejects_non_http_url_before_transport_use() {
-    let input = REST_RUNTIME_EXAMPLE.replace(
-        r#"base_url = "https://api.example.com/v1?existing=1""#,
-        r#"base_url = "ftp://api.example.com/v1?existing=1""#,
-    );
-    let resource = compile_document(&parse_toml(&input).unwrap())
-        .unwrap()
-        .remove(0);
-    let request = rest_cursor_request(&resource, "updated_at >= \"2026-07-01T00:00:00Z\"");
-    let plan = resource.negotiate(&request).unwrap();
-    let transport = RecordingTransport::new([json_response(r#"{ "items": [] }"#)]);
-    let rest = resource
-        .to_rest_resource(
-            RestRuntimeDependencies::new(transport.clone()).with_secret_provider(
-                StaticSecretProvider::new([("secret://env/API_TOKEN", "token-1")]),
-            ),
-        )
-        .unwrap();
-
-    let error = expect_open_error(futures_executor::block_on(
-        rest.open(plan.partitions[0].clone()),
-    ));
-    assert_eq!(error.kind, ErrorKind::Contract);
-    assert!(error.to_string().contains("http or https"));
-    assert_eq!(transport.requests().len(), 0);
-}
-
-#[test]
-fn rest_runtime_rejects_request_urls_with_whitespace_hosts() {
-    let input = REST_RUNTIME_EXAMPLE.replace(
-        r#"base_url = "https://api.example.com/v1?existing=1""#,
-        r#"base_url = "https://api example.com/v1?existing=1""#,
-    );
-    let resource = compile_document(&parse_toml(&input).unwrap())
-        .unwrap()
-        .remove(0);
-    let request = rest_cursor_request(&resource, "updated_at >= \"2026-07-01T00:00:00Z\"");
-    let plan = resource.negotiate(&request).unwrap();
-    let transport = RecordingTransport::new([json_response(r#"{ "items": [] }"#)]);
-    let rest = resource
-        .to_rest_resource(
-            RestRuntimeDependencies::new(transport.clone()).with_secret_provider(
-                StaticSecretProvider::new([("secret://env/API_TOKEN", "token-1")]),
-            ),
-        )
-        .unwrap();
-
-    let error = expect_open_error(futures_executor::block_on(
-        rest.open(plan.partitions[0].clone()),
-    ));
-    assert_eq!(error.kind, ErrorKind::Contract);
-    assert!(error.to_string().contains("whitespace"));
-    assert_eq!(transport.requests().len(), 0);
-}
-
-#[test]
-fn rest_runtime_fails_closed_for_missing_secret() {
-    let resource = compile_document(&parse_toml(REST_RUNTIME_EXAMPLE).unwrap())
-        .unwrap()
-        .remove(0);
-    let request = rest_cursor_request(&resource, "updated_at >= \"2026-07-01T00:00:00Z\"");
-    let plan = resource.negotiate(&request).unwrap();
-    let transport = RecordingTransport::new([json_response(r#"{ "items": [] }"#)]);
-    let rest = resource
-        .to_rest_resource(RestRuntimeDependencies::new(transport.clone()))
-        .unwrap();
-
-    let error = expect_open_error(futures_executor::block_on(
-        rest.open(plan.partitions[0].clone()),
-    ));
-    assert_eq!(error.kind, ErrorKind::Auth);
-    assert!(error.to_string().contains("SecretProvider"));
-    assert_eq!(transport.requests().len(), 0);
-}
-
-#[test]
-fn rest_runtime_dependency_preflight_resolves_auth_secret() {
-    let resource = compile_document(&parse_toml(REST_RUNTIME_EXAMPLE).unwrap())
-        .unwrap()
-        .remove(0);
-    let transport = RecordingTransport::new([json_response(r#"{ "items": [] }"#)]);
-
-    let valid = resource
-        .to_rest_resource(
-            RestRuntimeDependencies::new(transport.clone()).with_secret_provider(
-                StaticSecretProvider::new([("secret://env/API_TOKEN", "token-1")]),
-            ),
-        )
-        .unwrap();
-    valid.validate_runtime_dependencies().unwrap();
-
-    let missing = resource
-        .to_rest_resource(RestRuntimeDependencies::new(transport.clone()))
-        .unwrap();
-    let error = missing.validate_runtime_dependencies().unwrap_err();
-    assert_eq!(error.kind, ErrorKind::Auth);
-    assert!(error.to_string().contains("SecretProvider"));
-
-    let empty = resource
-        .to_rest_resource(
-            RestRuntimeDependencies::new(transport.clone())
-                .with_secret_provider(StaticSecretProvider::new([("secret://env/API_TOKEN", "")])),
-        )
-        .unwrap();
-    let error = empty.validate_runtime_dependencies().unwrap_err();
-    assert_eq!(error.kind, ErrorKind::Auth);
-    assert!(error.to_string().contains("empty value"));
-    assert_eq!(transport.requests().len(), 0);
-}
-
-#[test]
-fn rest_runtime_fails_closed_for_non_json_response() {
-    let error = rest_open_error(
-        REST_RUNTIME_EXAMPLE,
-        [HttpResponse::new(200).with_body("not json")],
-    );
-    assert_eq!(error.kind, ErrorKind::Data);
-    assert!(error.to_string().contains("not valid JSON"));
-}
-
-#[test]
-fn rest_runtime_fails_closed_for_selector_mismatch() {
-    let error = rest_open_error(REST_RUNTIME_EXAMPLE, [json_response(r#"{ "other": [] }"#)]);
-    assert_eq!(error.kind, ErrorKind::Data);
-    assert!(error.to_string().contains("selector target `items`"));
-}
-
-#[test]
-fn rest_runtime_rejects_invalid_record_selectors_before_batching() {
-    for (selector, response) in [
-        (r#"$."#, r#"{ "": [] }"#),
-        (r#"$.items.nested"#, r#"{ "items.nested": [] }"#),
-    ] {
-        let input = REST_RUNTIME_EXAMPLE.replace(
-            r#"records = "$.items""#,
-            &format!(r#"records = "{selector}""#),
-        );
-        let error = rest_open_error(&input, [json_response(response)]);
-        assert_eq!(error.kind, ErrorKind::Data);
-        assert!(error.to_string().contains("supports only one object field"));
-    }
-}
-
-#[test]
-fn rest_runtime_requires_non_nullable_record_fields() {
-    let error = rest_open_error(
-        REST_RUNTIME_EXAMPLE,
-        [json_response(
-            r#"{ "items": [
-                { "id": 1, "updated_at": "2026-07-02T00:00:00Z", "active": true, "score": 4.5 }
-            ] }"#,
-        )],
-    );
-    assert_eq!(error.kind, ErrorKind::Contract);
-    assert!(error.to_string().contains("field \"name\""));
-    assert!(error.to_string().contains("was not observed"));
-}
-
-#[test]
-fn rest_runtime_cursor_candidates_preserve_safe_position_and_renamed_identity() {
-    let input = REST_RUNTIME_EXAMPLE.replace(
-        r#"{ name = "updated_at", type = "string", nullable = false }"#,
-        r#"{ name = "updated_at", source_name = "Updated At", type = "string", nullable = true }"#,
-    );
-    let resource = compile_document(&parse_toml(&input).unwrap())
-        .unwrap()
-        .remove(0);
-    let plan = resource
-        .negotiate(&rest_cursor_request(
-            &resource,
-            "updated_at >= \"2026-07-01T00:00:00Z\"",
-        ))
-        .unwrap();
-    let transport = RecordingTransport::new([json_response(
-        r#"{ "items": [
-            { "id": 1, "name": "missing", "active": true, "score": 4.5 },
-            { "id": 2, "name": "good", "Updated At": "2026-07-03T00:00:00Z", "active": true, "score": 1.0 }
-        ] }"#,
-    )]);
-    let rest = resource
-        .to_rest_resource(
-            RestRuntimeDependencies::new(transport).with_secret_provider(
-                StaticSecretProvider::new([("secret://env/API_TOKEN", "token-1")]),
-            ),
-        )
-        .unwrap();
-    let batches =
-        drain_batches(futures_executor::block_on(rest.open(plan.partitions[0].clone())).unwrap());
-    assert_eq!(batches.len(), 1);
-    assert_eq!(batches[0].header.residual_candidates().len(), 1);
-    assert_eq!(
-        batches[0].header.residual_candidates()[0].source_path(),
-        &["Updated At".to_owned()]
-    );
-    assert_eq!(
-        cursor_string(&batches[0].header.source_position),
-        "2026-07-03T00:00:00Z"
-    );
-
-    let transport = RecordingTransport::new([json_response(
-        r#"{ "items": [
-            { "id": 3, "name": "missing", "active": true, "score": 4.5 },
-            { "id": 4, "name": "null", "Updated At": null, "active": true, "score": 1.0 }
-        ] }"#,
-    )]);
-    let rest = resource
-        .to_rest_resource(
-            RestRuntimeDependencies::new(transport).with_secret_provider(
-                StaticSecretProvider::new([("secret://env/API_TOKEN", "token-1")]),
-            ),
-        )
-        .unwrap();
-    let batches =
-        drain_batches(futures_executor::block_on(rest.open(plan.partitions[0].clone())).unwrap());
-    assert_eq!(batches[0].header.residual_candidates().len(), 2);
-    assert!(batches[0].header.source_position.is_none());
-}
-
-#[test]
-fn rest_runtime_localizes_later_page_scalar_drift_without_partial_loss() {
-    let resource = compile_document(&parse_toml(REST_RUNTIME_EXAMPLE).unwrap())
-        .unwrap()
-        .remove(0);
-    let request = rest_cursor_request(&resource, "updated_at >= \"2026-07-01T00:00:00Z\"");
-    let plan = resource.negotiate(&request).unwrap();
-    let transport = RecordingTransport::new([
-        json_response(
-            r#"{ "items": [{ "id": 1, "name": "ada", "updated_at": "2026-07-02T00:00:00Z", "active": true, "score": 4.5 }], "next_token": "n2" }"#,
-        ),
-        json_response(
-            r#"{ "items": [{ "id": "not-a-number", "name": "bad", "updated_at": "2026-07-03T00:00:00Z", "active": true, "score": 1.0 }] }"#,
-        ),
-    ]);
-    let rest = resource
-        .to_rest_resource(
-            RestRuntimeDependencies::new(transport.clone()).with_secret_provider(
-                StaticSecretProvider::new([("secret://env/API_TOKEN", "token-1")]),
-            ),
-        )
-        .unwrap();
-
-    let batches =
-        drain_batches(futures_executor::block_on(rest.open(plan.partitions[0].clone())).unwrap());
-    assert_eq!(batches.len(), 2);
-    assert_eq!(batches[0].header.row_count, 1);
-    assert_eq!(batches[1].header.row_count, 1);
-    assert!(batches[1].header.pre_contract_quarantine.is_empty());
-    assert_eq!(batches[1].header.residual_candidates().len(), 1);
-    assert_eq!(transport.requests().len(), 2);
-}
-
-#[test]
-fn rest_runtime_terminates_duplicate_token_and_empty_page_pagination() {
-    let resource = compile_document(&parse_toml(REST_RUNTIME_EXAMPLE).unwrap())
-        .unwrap()
-        .remove(0);
-    let request = rest_cursor_request(&resource, "updated_at >= \"2026-07-01T00:00:00Z\"");
-    let plan = resource.negotiate(&request).unwrap();
-    let transport = RecordingTransport::new([
-        json_response(
-            r#"{ "items": [{ "id": 1, "name": "ada", "updated_at": "2026-07-02T00:00:00Z", "active": true, "score": 4.5 }], "next_token": "same" }"#,
-        ),
-        json_response(
-            r#"{ "items": [{ "id": 2, "name": "grace", "updated_at": "2026-07-03T00:00:00Z", "active": true, "score": 1.0 }], "next_token": "same" }"#,
-        ),
-        json_response(
-            r#"{ "items": [{ "id": 3, "name": "unreached", "updated_at": "2026-07-04T00:00:00Z", "active": true, "score": 1.0 }] }"#,
-        ),
-    ]);
-    let rest = resource
-        .to_rest_resource(
-            RestRuntimeDependencies::new(transport.clone()).with_secret_provider(
-                StaticSecretProvider::new([("secret://env/API_TOKEN", "token-1")]),
-            ),
-        )
-        .unwrap();
-    let batches =
-        drain_batches(futures_executor::block_on(rest.open(plan.partitions[0].clone())).unwrap());
-    assert_eq!(
-        batches
-            .iter()
-            .map(|batch| batch.header.row_count)
-            .sum::<u64>(),
-        2
-    );
-    assert_eq!(transport.requests().len(), 2);
-
-    let empty_input = REST_RUNTIME_EXAMPLE.replace(
-        r#"paginate = { kind = "next_token", query_param = "page_token", response_field = "next_token" }"#,
-        r#"paginate = { kind = "page_number", query_param = "page", start_page = 1 }"#,
-    );
-    let empty_resource = compile_document(&parse_toml(&empty_input).unwrap())
-        .unwrap()
-        .remove(0);
-    let empty_plan = empty_resource
-        .negotiate(&rest_cursor_request(
-            &empty_resource,
-            "updated_at >= \"2026-07-01T00:00:00Z\"",
-        ))
-        .unwrap();
-    let empty_transport = RecordingTransport::new([json_response(r#"{ "items": [] }"#)]);
-    let empty_rest = empty_resource
-        .to_rest_resource(
-            RestRuntimeDependencies::new(empty_transport.clone()).with_secret_provider(
-                StaticSecretProvider::new([("secret://env/API_TOKEN", "token-1")]),
-            ),
-        )
-        .unwrap();
-    let batches = drain_batches(
-        futures_executor::block_on(empty_rest.open(empty_plan.partitions[0].clone())).unwrap(),
-    );
-    assert!(batches.is_empty());
-    assert_eq!(empty_transport.requests().len(), 1);
-
-    let blank_token_transport = RecordingTransport::new([
-        json_response(
-            r#"{ "items": [
-                { "id": 1, "name": "ada", "updated_at": "2026-07-02T00:00:00Z", "active": true, "score": 4.5 }
-            ], "next_token": "   " }"#,
-        ),
-        json_response(
-            r#"{ "items": [
-                { "id": 2, "name": "unreached", "updated_at": "2026-07-03T00:00:00Z", "active": true, "score": 5.5 }
-            ] }"#,
-        ),
-    ]);
-    let blank_token_rest = resource
-        .to_rest_resource(
-            RestRuntimeDependencies::new(blank_token_transport.clone()).with_secret_provider(
-                StaticSecretProvider::new([("secret://env/API_TOKEN", "token-1")]),
-            ),
-        )
-        .unwrap();
-    let batches = drain_batches(
-        futures_executor::block_on(blank_token_rest.open(plan.partitions[0].clone())).unwrap(),
-    );
-    assert_eq!(batches.len(), 1);
-    assert_eq!(blank_token_transport.requests().len(), 1);
-}
-
-#[test]
-fn rest_runtime_uses_cursor_and_offset_paginators() {
-    let cursor_input = REST_RUNTIME_EXAMPLE.replace(
-        r#"paginate = { kind = "next_token", query_param = "page_token", response_field = "next_token" }"#,
-        r#"paginate = { kind = "cursor_param", query_param = "cursor", response_field = "next_cursor" }"#,
-    );
-    let cursor_resource = compile_document(&parse_toml(&cursor_input).unwrap())
-        .unwrap()
-        .remove(0);
-    let cursor_plan = cursor_resource
-        .negotiate(&rest_cursor_request(
-            &cursor_resource,
-            "updated_at >= \"2026-07-01T00:00:00Z\"",
-        ))
-        .unwrap();
-    let cursor_transport = RecordingTransport::new([
-        json_response(
-            r#"{ "items": [{ "id": 1, "name": "ada", "updated_at": "2026-07-02T00:00:00Z", "active": true, "score": 4.5 }], "next_cursor": "c2" }"#,
-        ),
-        json_response(
-            r#"{ "items": [{ "id": 2, "name": "grace", "updated_at": "2026-07-03T00:00:00Z", "active": true, "score": 5.5 }] }"#,
-        ),
-    ]);
-    let cursor_rest = cursor_resource
-        .to_rest_resource(
-            RestRuntimeDependencies::new(cursor_transport.clone()).with_secret_provider(
-                StaticSecretProvider::new([("secret://env/API_TOKEN", "token-1")]),
-            ),
-        )
-        .unwrap();
-    drain_batches(
-        futures_executor::block_on(cursor_rest.open(cursor_plan.partitions[0].clone())).unwrap(),
-    );
-    let cursor_requests = cursor_transport.requests();
-    assert_eq!(cursor_requests.len(), 2);
-    assert!(cursor_requests[1].url.contains("cursor=c2"));
-
-    let offset_input = REST_RUNTIME_EXAMPLE.replace(
-        r#"paginate = { kind = "next_token", query_param = "page_token", response_field = "next_token" }"#,
-        r#"paginate = { kind = "offset", offset_param = "offset", limit_param = "limit", start_offset = 0, limit = 2 }"#,
-    );
-    let offset_resource = compile_document(&parse_toml(&offset_input).unwrap())
-        .unwrap()
-        .remove(0);
-    let offset_plan = offset_resource
-        .negotiate(&rest_cursor_request(
-            &offset_resource,
-            "updated_at >= \"2026-07-01T00:00:00Z\"",
-        ))
-        .unwrap();
-    let offset_transport = RecordingTransport::new([
-        json_response(
-            r#"{ "items": [
-                { "id": 1, "name": "ada", "updated_at": "2026-07-02T00:00:00Z", "active": true, "score": 4.5 },
-                { "id": 2, "name": "grace", "updated_at": "2026-07-03T00:00:00Z", "active": true, "score": 5.5 }
-            ] }"#,
-        ),
-        json_response(
-            r#"{ "items": [{ "id": 3, "name": "katherine", "updated_at": "2026-07-04T00:00:00Z", "active": true, "score": 6.5 }] }"#,
-        ),
-    ]);
-    let offset_rest = offset_resource
-        .to_rest_resource(
-            RestRuntimeDependencies::new(offset_transport.clone()).with_secret_provider(
-                StaticSecretProvider::new([("secret://env/API_TOKEN", "token-1")]),
-            ),
-        )
-        .unwrap();
-    drain_batches(
-        futures_executor::block_on(offset_rest.open(offset_plan.partitions[0].clone())).unwrap(),
-    );
-    let offset_requests = offset_transport.requests();
-    assert_eq!(offset_requests.len(), 2);
-    assert!(offset_requests[0].url.contains("offset=0"));
-    assert!(offset_requests[0].url.contains("limit=2"));
-    assert!(offset_requests[1].url.contains("offset=2"));
-}
-
-#[test]
-fn rest_runtime_rechecks_allowlist_for_link_header_next_url() {
-    let input = REST_RUNTIME_EXAMPLE.replace(
-        r#"paginate = { kind = "next_token", query_param = "page_token", response_field = "next_token" }"#,
-        r#"paginate = { kind = "link_header" }"#,
-    );
-    let resource = compile_document(&parse_toml(&input).unwrap())
-        .unwrap()
-        .remove(0);
-    let plan = resource
-        .negotiate(&rest_cursor_request(
-            &resource,
-            "updated_at >= \"2026-07-01T00:00:00Z\"",
-        ))
-        .unwrap();
-    let transport = RecordingTransport::new([json_response(
-        r#"{ "items": [{ "id": 1, "name": "ada", "updated_at": "2026-07-02T00:00:00Z", "active": true, "score": 4.5 }] }"#,
-    )
-    .with_header(
-        "Link",
-        r#"<https://blocked.example.net/v1/items?page=2>; rel="next""#,
-    )]);
-    let rest = resource
-        .to_rest_resource(
-            RestRuntimeDependencies::new(transport.clone()).with_secret_provider(
-                StaticSecretProvider::new([("secret://env/API_TOKEN", "token-1")]),
-            ),
-        )
-        .unwrap();
-
-    let error = expect_open_error(futures_executor::block_on(
-        rest.open(plan.partitions[0].clone()),
-    ));
-    assert_eq!(error.kind, ErrorKind::Auth);
-    assert_eq!(transport.requests().len(), 1);
-}
-
-#[test]
-fn rest_runtime_joins_absolute_paths_against_base_origin() {
-    let input = REST_RUNTIME_EXAMPLE
-        .replace(
-            r#"base_url = "https://api.example.com/v1?existing=1""#,
-            r#"base_url = "https://api.example.com/base/v1?existing=1""#,
-        )
-        .replace(
-            r#"path = "items?from_path=yes""#,
-            r#"path = "/v2/items?from_path=yes""#,
-        );
-    let resource = compile_document(&parse_toml(&input).unwrap())
-        .unwrap()
-        .remove(0);
-    let plan = resource
-        .negotiate(&rest_cursor_request(
-            &resource,
-            "updated_at >= \"2026-07-01T00:00:00Z\"",
-        ))
-        .unwrap();
-    let transport = RecordingTransport::new([json_response(
-        r#"{ "items": [
-            { "id": 1, "name": "ada", "updated_at": "2026-07-02T00:00:00Z", "active": true, "score": 4.5 }
-        ] }"#,
-    )]);
-    let rest = resource
-        .to_rest_resource(
-            RestRuntimeDependencies::new(transport.clone()).with_secret_provider(
-                StaticSecretProvider::new([("secret://env/API_TOKEN", "token-1")]),
-            ),
-        )
-        .unwrap();
-
-    drain_batches(futures_executor::block_on(rest.open(plan.partitions[0].clone())).unwrap());
-    assert_eq!(
-        transport.requests()[0].url,
-        "https://api.example.com/v2/items?existing=1&from_path=yes&state=all&since=2026-07-01T00%3A00%3A00Z"
-    );
-}
-
-#[test]
-fn rest_runtime_supports_top_level_array_selector() {
-    let input = REST_RUNTIME_EXAMPLE
-        .replace(r#"records = "$.items""#, r#"records = "$""#)
-        .replace(
-            r#"paginate = { kind = "next_token", query_param = "page_token", response_field = "next_token" }"#,
-            "",
-        );
-    let resource = compile_document(&parse_toml(&input).unwrap())
-        .unwrap()
-        .remove(0);
-    let plan = resource
-        .negotiate(&rest_cursor_request(
-            &resource,
-            "updated_at >= \"2026-07-01T00:00:00Z\"",
-        ))
-        .unwrap();
-    let transport = RecordingTransport::new([json_response(
-        r#"[
-            { "id": 1, "name": "ada", "updated_at": "2026-07-02T00:00:00Z", "active": true, "score": 4.5 }
-        ]"#,
-    )]);
-    let rest = resource
-        .to_rest_resource(
-            RestRuntimeDependencies::new(transport).with_secret_provider(
-                StaticSecretProvider::new([("secret://env/API_TOKEN", "token-1")]),
-            ),
-        )
-        .unwrap();
-
-    let batches =
-        drain_batches(futures_executor::block_on(rest.open(plan.partitions[0].clone())).unwrap());
-    assert_eq!(batches.len(), 1);
-    assert_eq!(batches[0].header.row_count, 1);
-}
-
-#[test]
-fn rest_runtime_localizes_scalar_drift_and_preserves_page_cursor_advancement() {
-    let resource = compile_document(&parse_toml(REST_RUNTIME_EXAMPLE).unwrap())
-        .unwrap()
-        .remove(0);
-    let plan = resource
-        .negotiate(&rest_cursor_request(
-            &resource,
-            "updated_at >= \"2026-07-01T00:00:00Z\"",
-        ))
-        .unwrap();
-    let transport = RecordingTransport::new([
-        json_response(
-            r#"{ "items": [
-                { "id": 42, "name": "first", "updated_at": "2026-07-01T00:00:00Z", "active": false, "score": 6.25 },
-                { "id": 7, "name": true, "updated_at": "2026-07-03T00:00:00Z", "active": true, "score": 9.5 },
-                { "id": 8, "name": "third", "updated_at": "2026-07-02T00:00:00Z", "active": true, "score": null }
-            ], "next_token": "n2" }"#,
-        ),
-        json_response(
-            r#"{ "items": [
-                { "id": 9, "name": "page2", "updated_at": "2026-06-30T00:00:00Z", "active": true, "score": 1.0 }
-            ] }"#,
-        ),
-    ]);
-    let rest = resource
-        .to_rest_resource(
-            RestRuntimeDependencies::new(transport).with_secret_provider(
-                StaticSecretProvider::new([("secret://env/API_TOKEN", "token-1")]),
-            ),
-        )
-        .unwrap();
-
-    let batches =
-        drain_batches(futures_executor::block_on(rest.open(plan.partitions[0].clone())).unwrap());
-    assert_eq!(batches.len(), 2);
-    assert_eq!(
-        cursor_string(&batches[0].header.source_position),
-        "2026-07-03T00:00:00Z"
-    );
-    assert!(
-        cursor_string(&batches[0].header.source_position)
-            > cursor_string(&batches[1].header.source_position)
-    );
-
-    let first = batches[0].record_batch().unwrap();
-    let ids = first
-        .column(0)
-        .as_any()
-        .downcast_ref::<Int64Array>()
-        .unwrap();
-    assert_eq!(ids.value(0), 42);
-    assert_eq!(ids.value(1), 7);
-    assert_eq!(ids.value(2), 8);
-
-    let names = first
-        .column(1)
-        .as_any()
-        .downcast_ref::<StringArray>()
-        .unwrap();
-    assert_eq!(names.value(0), "first");
-    assert!(names.is_null(1));
-    assert_eq!(names.value(2), "third");
-
-    let active = first
-        .column(3)
-        .as_any()
-        .downcast_ref::<BooleanArray>()
-        .unwrap();
-    assert!(!active.value(0));
-    assert!(active.value(1));
-
-    let scores = first
-        .column(4)
-        .as_any()
-        .downcast_ref::<Float64Array>()
-        .unwrap();
-    assert!((scores.value(0) - 6.25).abs() < f64::EPSILON);
-    assert!((scores.value(1) - 9.5).abs() < f64::EPSILON);
-    assert!(scores.is_null(2));
-    assert!(batches[0].header.pre_contract_quarantine.is_empty());
-    assert_eq!(batches[0].header.residual_candidates().len(), 1);
-}
-
-#[test]
-fn rest_runtime_parse_coercions_fail_closed_without_compiled_policy() {
-    let input = REST_RUNTIME_EXAMPLE.replace(
-        r#"{ name = "score", type = "float64", nullable = true }"#,
-        r#"{ name = "score", type = "float64", nullable = true },
-    { name = "event_day", type = "date32", nullable = false },
-    { name = "seen_at", type = "timestamp_millis", nullable = false, timezone = "UTC" }"#,
-    );
-    let resource = compile_document(&parse_toml(&input).unwrap())
-        .unwrap()
-        .remove(0);
-    let plan = resource
-        .negotiate(&rest_cursor_request(
-            &resource,
-            "updated_at >= \"2026-07-01T00:00:00Z\"",
-        ))
-        .unwrap();
-    let transport = RecordingTransport::new([json_response(
-        r#"{ "items": [
-            { "id": -5, "name": "ada", "updated_at": "2026-07-01T00:00:00Z", "active": true, "score": 1.0, "event_day": "1970-01-02", "seen_at": "1970-01-01T00:00:01.234Z" },
-            { "id": 7, "name": "grace", "updated_at": "2026-07-02T00:00:00Z", "active": false, "score": 2.0, "event_day": "1970-01-03", "seen_at": "1970-01-01T00:00:05.678Z" }
-        ] }"#,
-    )]);
-    let rest = resource
-        .to_rest_resource(
-            RestRuntimeDependencies::new(transport).with_secret_provider(
-                StaticSecretProvider::new([("secret://env/API_TOKEN", "token-1")]),
-            ),
-        )
-        .unwrap();
-
-    let error = expect_open_error(futures_executor::block_on(
-        rest.open(plan.partitions[0].clone()),
-    ));
-    assert_eq!(error.kind, ErrorKind::Contract);
-    assert!(error.to_string().contains("enable coerce_types"));
-}
-
-#[test]
-fn rest_runtime_uses_type_specific_cursor_maxima() {
-    let string_cursor_input = REST_RUNTIME_EXAMPLE.replace(
-        r#"cursor = { field = "updated_at", param = "since", ordering = "best_effort", lag = "0ms" }"#,
-        r#"cursor = { field = "name", param = "after_name", ordering = "best_effort", lag = "0ms" }"#,
-    );
-    assert_eq!(
-        first_cursor_value(
-            &string_cursor_input,
-            "name >= \"a\"",
-            r#"{ "items": [
-                { "id": 1, "name": "ada", "updated_at": "2026-07-01T00:00:00Z", "active": true, "score": 1.0 },
-                { "id": 2, "name": "zoe", "updated_at": "2026-07-02T00:00:00Z", "active": true, "score": 2.0 },
-                { "id": 3, "name": "maria", "updated_at": "2026-07-03T00:00:00Z", "active": true, "score": 3.0 }
-            ] }"#,
-        ),
-        CursorValue::String("zoe".to_owned())
-    );
-
-    let int_cursor_input = REST_RUNTIME_EXAMPLE
-        .replace(
-            r#"{ name = "id", type = "u_int64", nullable = false }"#,
-            r#"{ name = "id", type = "int64", nullable = false }"#,
-        )
-        .replace(
-            r#"cursor = { field = "updated_at", param = "since", ordering = "best_effort", lag = "0ms" }"#,
-            r#"cursor = { field = "id", param = "after_id", ordering = "best_effort", lag = "0ms" }"#,
-        );
-    assert_eq!(
-        first_cursor_value(
-            &int_cursor_input,
-            "id >= -10",
-            r#"{ "items": [
-                { "id": -5, "name": "low", "updated_at": "2026-07-01T00:00:00Z", "active": true, "score": 1.0 },
-                { "id": 7, "name": "high", "updated_at": "2026-07-02T00:00:00Z", "active": true, "score": 2.0 },
-                { "id": 2, "name": "mid", "updated_at": "2026-07-03T00:00:00Z", "active": true, "score": 3.0 }
-            ] }"#,
-        ),
-        CursorValue::I64(7)
-    );
-}
-
-#[test]
-fn rest_runtime_rejects_mismatched_partition_metadata() {
-    let resource = compile_document(&parse_toml(REST_RUNTIME_EXAMPLE).unwrap())
-        .unwrap()
-        .remove(0);
-    let plan = resource
-        .negotiate(&rest_cursor_request(
-            &resource,
-            "updated_at >= \"2026-07-01T00:00:00Z\"",
-        ))
-        .unwrap();
-    let mut partition = plan.partitions[0].clone();
-    partition
-        .metadata
-        .insert("path".to_owned(), "other".to_owned());
-    let transport = RecordingTransport::new([json_response(r#"{ "items": [] }"#)]);
-    let rest = resource
-        .to_rest_resource(
-            RestRuntimeDependencies::new(transport.clone()).with_secret_provider(
-                StaticSecretProvider::new([("secret://env/API_TOKEN", "token-1")]),
-            ),
-        )
-        .unwrap();
-
-    let error = expect_open_error(futures_executor::block_on(rest.open(partition)));
-    assert_eq!(error.kind, ErrorKind::Contract);
-    assert!(error.to_string().contains("partition path"));
-    assert_eq!(transport.requests().len(), 0);
-
-    let mut partition = plan.partitions[0].clone();
-    partition.scope = ScopeKey::File {
-        path: "not-rest".to_owned(),
-    };
-    let error = expect_open_error(futures_executor::block_on(rest.open(partition)));
-    assert_eq!(error.kind, ErrorKind::Contract);
-    assert!(error.to_string().contains("partition scope"));
-    assert_eq!(transport.requests().len(), 0);
-}
-
-#[test]
-fn rest_runtime_uses_numeric_float_cursor_max() {
-    let input = REST_RUNTIME_EXAMPLE
-        .replace(
-            r#"cursor = { field = "updated_at", param = "since", ordering = "best_effort", lag = "0ms" }"#,
-            r#"cursor = { field = "score", param = "min_score", ordering = "best_effort", lag = "0ms" }"#,
-        )
-        .replace(
-            r#"{ name = "score", type = "float64", nullable = true }"#,
-            r#"{ name = "score", type = "float64", nullable = false }"#,
-        );
-    let resource = compile_document(&parse_toml(&input).unwrap())
-        .unwrap()
-        .remove(0);
-    let plan = resource
-        .negotiate(&rest_cursor_request(&resource, "score >= 0"))
-        .unwrap();
-    let transport = RecordingTransport::new([json_response(
-        r#"{ "items": [
-            { "id": 1, "name": "low", "updated_at": "2026-07-02T00:00:00Z", "active": true, "score": 2.0 },
-            { "id": 2, "name": "high", "updated_at": "2026-07-03T00:00:00Z", "active": true, "score": 10.0 },
-            { "id": 3, "name": "mid", "updated_at": "2026-07-04T00:00:00Z", "active": true, "score": 5.0 }
-        ] }"#,
-    )]);
-    let rest = resource
-        .to_rest_resource(
-            RestRuntimeDependencies::new(transport).with_secret_provider(
-                StaticSecretProvider::new([("secret://env/API_TOKEN", "token-1")]),
-            ),
-        )
-        .unwrap();
-
-    let batches =
-        drain_batches(futures_executor::block_on(rest.open(plan.partitions[0].clone())).unwrap());
-    let Some(SourcePosition::Cursor(position)) = &batches[0].header.source_position else {
-        panic!("expected cursor source position");
-    };
-    assert_eq!(position.value, CursorValue::DecimalString("10".to_owned()));
-}
-
-#[test]
-fn rest_runtime_surfaces_transient_transport_errors_without_private_retry() {
-    let resource = compile_document(&parse_toml(REST_RUNTIME_EXAMPLE).unwrap())
-        .unwrap()
-        .remove(0);
-    let plan = resource
-        .negotiate(&rest_cursor_request(
-            &resource,
-            "updated_at >= \"2026-07-01T00:00:00Z\"",
-        ))
-        .unwrap();
-    let transport = FlakyTransport::new(
-        1,
-        json_response(
-            r#"{ "items": [{ "id": 1, "name": "ada", "updated_at": "2026-07-02T00:00:00Z", "active": true, "score": 4.5 }] }"#,
-        ),
-    );
-    let rest = resource
-        .to_rest_resource(
-            RestRuntimeDependencies::new(transport.clone()).with_secret_provider(
-                StaticSecretProvider::new([("secret://env/API_TOKEN", "token-1")]),
-            ),
-        )
-        .unwrap();
-
-    let error = match futures_executor::block_on(rest.open(plan.partitions[0].clone())) {
-        Ok(_) => panic!("private REST retry unexpectedly hid a transient transport error"),
-        Err(error) => error,
-    };
-    assert_eq!(error.kind, ErrorKind::Transient);
-    assert_eq!(transport.requests().len(), 1);
-}
-
-#[test]
-fn yaml_sql_and_file_resources_compile_to_mvp_descriptors() {
-    let root = tempfile::tempdir().unwrap();
-    let events_dir = root.path().join("data/events");
-    fs::create_dir_all(&events_dir).unwrap();
-    fs::write(
-        events_dir.join("one.ndjson"),
-        "{\"event_id\":1,\"payload\":\"ok\"}\n",
-    )
-    .unwrap();
-
-    let input = r#"
-source:
-  warehouse:
-    kind: sql
-    connection: secret://env/POSTGRES_URL
-    dialect: postgres
-  local:
-    kind: files
-    root: ./data
-resource:
-  orders:
-    source: warehouse
-    table: public.orders
-    primary_key: [id]
-    merge_key: [id]
-    cursor: { field: updated_at, ordering: exact, lag: 0ms }
-    write_disposition: merge
-    trust: governed
-    schema:
-      fields:
-        - { name: id, type: int64, nullable: false }
-        - { name: updated_at, type: timestamp_micros, nullable: false, timezone: UTC }
-  events:
-    source: local
-    glob: events/*.ndjson
-    format: ndjson
-    write_disposition: append
-    trust: experimental
-    partition: { by: file }
-    sample: { fields: [event_id, payload] }
-"#;
-
-    let document = parse_yaml(input).unwrap();
-    let resources = compile_document_with_project_root(&document, root.path()).unwrap();
-    let ids = resources
-        .iter()
-        .map(|resource| resource.descriptor().resource_id.as_str())
-        .collect::<Vec<_>>();
-    assert_eq!(ids, vec!["local.events", "warehouse.orders"]);
-
-    let compiled_file_resource = resources
-        .iter()
-        .find(|resource| resource.descriptor().resource_id.as_str() == "local.events")
-        .unwrap();
-    let file_resource = compiled_file_resource
-        .to_file_resource(test_file_dependencies(FileTransportFacade::new()))
-        .unwrap();
-    assert_eq!(
-        file_resource.capabilities().incremental,
-        IncrementalShape::File
-    );
-    let file_predicate_id = PredicateId::new("file-p1").unwrap();
-    let file_request = ScanRequest {
-        resource_id: file_resource.descriptor().resource_id.clone(),
-        projection: None,
-        filters: vec![scan_predicate(file_predicate_id.clone(), "event_id = 1")],
-        limit: None,
-        order_by: vec![],
-        scope: ScopeKey::Resource,
-    };
-    assert_queryable_resource_conformance(
-        &file_resource,
-        [ResourceConformanceCase::new(file_request)
-            .with_expected_predicates([PredicateExpectation::unsupported(file_predicate_id)])],
-    );
-
-    let sql_resource = resources
-        .iter()
-        .find(|resource| resource.descriptor().resource_id.as_str() == "warehouse.orders")
-        .unwrap();
-    assert_eq!(
-        sql_resource.capabilities().filters.default_fidelity,
-        PushdownFidelity::Exact
-    );
-    assert_eq!(sql_resource.schema().fields().len(), 2);
-}
-
-#[test]
-fn disposition_append_default_and_explicit_forms_are_keyless() {
-    for (name, disposition_line) in [
-        ("defaulted", ""),
-        ("explicit", "write_disposition = \"append\""),
-    ] {
-        let input = format!(
-            r#"
-[source.local]
-kind = "files"
-root = "/"
-
-[resource.{name}]
-glob = "*.ndjson"
-format = "ndjson"
-{disposition_line}
-trust = "governed"
-schema = {{ fields = [{{ name = "payload", type = "utf8" }}] }}
-"#
-        );
-        let resource = compile_document(&parse_toml(&input).unwrap())
-            .unwrap()
-            .remove(0);
-        assert_eq!(
-            resource.descriptor().write_disposition,
-            WriteDisposition::Append
-        );
-        assert!(resource.descriptor().primary_key.is_empty());
-        assert!(resource.descriptor().merge_key.is_empty());
-    }
-}
-
-#[test]
-fn tier_zero_type_allowances_compile_explicitly_and_default_closed() {
-    let configured = parse_toml(
-        r#"
-[source.local]
-kind = "files"
-root = "/tmp"
-
-[resource.events]
-glob = "events.ndjson"
-format = "ndjson"
-trust = "governed"
-types = { coerce_types = true, allow_lossy_mapping = true }
-schema = { fields = [{ name = "id", type = "int64", nullable = false }] }
-"#,
-    )
-    .unwrap();
-    let configured = compile_document(&configured).unwrap().remove(0);
-    assert_eq!(
-        configured.type_policy_allowances(),
-        cdf_kernel::TypePolicyAllowances {
-            coerce_types: true,
-            allow_lossy_mapping: true,
+            "resource": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [resource_option],
+                "properties": {
+                    resource_option: {"type": "string", "minLength": 1}
+                }
+            }
+        });
+        Self {
+            descriptor: SourceDriverDescriptor {
+                driver_id: SourceDriverId::new(driver_id).unwrap(),
+                driver_version: "1.0.0".to_owned(),
+                option_schema_hash: artifact_hash(&option_schema).unwrap(),
+                kinds: vec![kind.to_owned()],
+                schemes: Vec::new(),
+            },
+            option_schema,
         }
-    );
-
-    let closed = parse_toml(
-        r#"
-[source.local]
-kind = "files"
-root = "/tmp"
-
-[resource.events]
-glob = "events.ndjson"
-format = "ndjson"
-trust = "governed"
-schema = { fields = [{ name = "id", type = "int64", nullable = false }] }
-"#,
-    )
-    .unwrap();
-    let closed = compile_document(&closed).unwrap().remove(0);
-    assert_eq!(
-        closed.type_policy_allowances(),
-        cdf_kernel::TypePolicyAllowances::default()
-    );
-}
-
-#[test]
-fn disposition_merge_requires_explicit_merge_key_with_remediation() {
-    let input = r#"
-[source.local]
-kind = "files"
-root = "/"
-
-[resource.events]
-glob = "*.ndjson"
-format = "ndjson"
-primary_key = ["id"]
-write_disposition = "merge"
-trust = "governed"
-schema = { fields = [{ name = "id", type = "int64" }] }
-"#;
-
-    let error = compile_document(&parse_toml(input).unwrap()).unwrap_err();
-    let message = error.to_string();
-    assert!(message.contains("resource `local.events`"));
-    assert!(message.contains("missing merge_key"));
-    assert!(message.contains("add `merge_key = [...]`"));
-    assert!(message.contains("use `write_disposition = \"append\"`"));
-}
-
-#[test]
-fn disposition_merge_with_explicit_merge_key_compiles() {
-    let root = tempfile::tempdir().unwrap();
-    let data_dir = root.path().join("data");
-    fs::create_dir_all(&data_dir).unwrap();
-    fs::write(data_dir.join("events.ndjson"), "{\"id\":1}\n").unwrap();
-
-    let input = r#"
-[source.local]
-kind = "files"
-root = "data"
-
-[resource.events]
-glob = "*.ndjson"
-format = "ndjson"
-merge_key = ["id"]
-write_disposition = "merge"
-trust = "governed"
-schema = { fields = [{ name = "id", type = "int64" }] }
-"#;
-
-    let compiled = compile_document_with_project_root(&parse_toml(input).unwrap(), root.path())
-        .unwrap()
-        .remove(0);
-    assert!(compiled.descriptor().primary_key.is_empty());
-    assert_eq!(compiled.descriptor().merge_key, vec!["id"]);
-    assert_eq!(
-        compiled.descriptor().write_disposition,
-        WriteDisposition::Merge
-    );
-    let resource = compiled
-        .to_file_resource(test_file_dependencies(FileTransportFacade::new()))
-        .unwrap();
-    let request = ScanRequest {
-        resource_id: resource.descriptor().resource_id.clone(),
-        projection: None,
-        filters: Vec::new(),
-        limit: None,
-        order_by: Vec::new(),
-        scope: ScopeKey::Resource,
-    };
-    assert_eq!(
-        resource.negotiate(&request).unwrap().delivery_guarantee,
-        DeliveryGuarantee::EffectivelyOncePerKey
-    );
-}
-
-#[test]
-fn declarative_arrow_type_strings_compile_from_toml() {
-    let input = r#"
-[source.local]
-kind = "files"
-root = "."
-
-[resource.events]
-glob = "*.ndjson"
-format = "ndjson"
-write_disposition = "append"
-trust = "governed"
-schema = { fields = [
-  { name = "old_string", type = "string" },
-  { name = "old_json", type = "json" },
-  { name = "old_uint64", type = "u_int64" },
-  { name = "uint64", type = "uint64" },
-  { name = "int8", type = "int8" },
-  { name = "uint32", type = "uint32" },
-  { name = "float16", type = "float16" },
-  { name = "decimal", type = "decimal(38,9)" },
-  { name = "decimal256", type = "decimal256(76,10)" },
-  { name = "date64", type = "date(ms)" },
-  { name = "time64", type = "time64(ns)" },
-  { name = "timestamp", type = "timestamp(us, UTC)" },
-  { name = "duration", type = "duration(ms)" },
-  { name = "binary", type = "binary" },
-  { name = "large_binary", type = "large_binary" },
-  { name = "large_utf8", type = "large_utf8" },
-  { name = "items", type = "list<int64>" },
-  { name = "payload", type = "struct<amount: decimal(38,9), tags: list<utf8>>" },
-  { name = "counts", type = "map<utf8,int64>" },
-] }
-"#;
-
-    let resource = compile_document(&parse_toml(input).unwrap())
-        .unwrap()
-        .remove(0);
-    let schema = resource.schema();
-    let field_type = |name: &str| schema.field_with_name(name).unwrap().data_type();
-
-    assert_eq!(field_type("old_string"), &DataType::Utf8);
-    assert_eq!(field_type("old_json"), &DataType::Utf8);
-    assert_eq!(field_type("old_uint64"), &DataType::UInt64);
-    assert_eq!(field_type("uint64"), &DataType::UInt64);
-    assert_eq!(field_type("int8"), &DataType::Int8);
-    assert_eq!(field_type("uint32"), &DataType::UInt32);
-    assert_eq!(field_type("float16"), &DataType::Float16);
-    assert_eq!(field_type("decimal"), &DataType::Decimal128(38, 9));
-    assert_eq!(field_type("decimal256"), &DataType::Decimal256(76, 10));
-    assert_eq!(field_type("date64"), &DataType::Date64);
-    assert_eq!(
-        field_type("time64"),
-        &DataType::Time64(TimeUnit::Nanosecond)
-    );
-    assert_eq!(
-        field_type("timestamp"),
-        &DataType::Timestamp(TimeUnit::Microsecond, Some("UTC".into()))
-    );
-    assert_eq!(
-        field_type("duration"),
-        &DataType::Duration(TimeUnit::Millisecond)
-    );
-    assert_eq!(field_type("binary"), &DataType::Binary);
-    assert_eq!(field_type("large_binary"), &DataType::LargeBinary);
-    assert_eq!(field_type("large_utf8"), &DataType::LargeUtf8);
-    assert_eq!(
-        field_type("items"),
-        &DataType::new_list(DataType::Int64, true)
-    );
-    assert_eq!(
-        field_type("payload"),
-        &DataType::Struct(Fields::from(vec![
-            Field::new("amount", DataType::Decimal128(38, 9), true),
-            Field::new("tags", DataType::new_list(DataType::Utf8, true), true),
-        ]))
-    );
-    assert_eq!(
-        field_type("counts"),
-        &DataType::Map(
-            Arc::new(Field::new(
-                "entries",
-                DataType::Struct(Fields::from(vec![
-                    Field::new("key", DataType::Utf8, false),
-                    Field::new("value", DataType::Int64, true),
-                ])),
-                false,
-            )),
-            false,
-        )
-    );
-}
-
-#[test]
-fn declarative_arrow_type_strings_compile_from_yaml() {
-    let input = r#"
-source:
-  local:
-    kind: files
-    root: .
-resource:
-  events:
-    glob: "*.ndjson"
-    format: ndjson
-    write_disposition: append
-    trust: governed
-    schema:
-      fields:
-        - { name: id, type: int32, nullable: false }
-        - { name: tags, type: "list<large_utf8>" }
-        - { name: amount, type: "decimal128(20,4)" }
-"#;
-
-    let resource = compile_document(&parse_yaml(input).unwrap())
-        .unwrap()
-        .remove(0);
-    let schema = resource.schema();
-
-    assert_eq!(
-        schema.field_with_name("id").unwrap().data_type(),
-        &DataType::Int32
-    );
-    assert_eq!(
-        schema.field_with_name("tags").unwrap().data_type(),
-        &DataType::new_list(DataType::LargeUtf8, true)
-    );
-    assert_eq!(
-        schema.field_with_name("amount").unwrap().data_type(),
-        &DataType::Decimal128(20, 4)
-    );
-}
-
-#[test]
-fn declarative_schema_normalizes_field_names_and_records_source_names() {
-    let resource = compile_local_file_schema_resource(
-        "trips",
-        "*.parquet",
-        "parquet",
-        r#"
-  { name = "VendorID", type = "int64", nullable = false },
-  { name = "tpep_pickup_datetime", type = "timestamp_micros" },
-  { name = "vendor_id_explicit", source_name = "VendorIDExplicit", type = "int32" },
-"#,
-    )
-    .unwrap();
-    let schema = resource.schema();
-
-    let vendor = schema.field_with_name("vendor_id").unwrap();
-    assert_eq!(vendor.data_type(), &DataType::Int64);
-    assert_eq!(source_name(vendor), Some("VendorID"));
-    assert!(schema.field_with_name("VendorID").is_err());
-
-    let pickup = schema.field_with_name("tpep_pickup_datetime").unwrap();
-    assert_eq!(source_name(pickup), Some("tpep_pickup_datetime"));
-
-    let explicit = schema.field_with_name("vendor_id_explicit").unwrap();
-    assert_eq!(source_name(explicit), Some("VendorIDExplicit"));
-}
-
-#[test]
-fn declarative_schema_rejects_post_normalization_collisions_with_hint() {
-    let error = compile_local_file_schema_resource(
-        "users",
-        "*.ndjson",
-        "ndjson",
-        r#"
-  { name = "userName", type = "utf8" },
-  { name = "user_name", type = "utf8" },
-"#,
-    )
-    .unwrap_err();
-    let message = error.to_string();
-    assert!(message.contains("identifier collision after namecase-v1"));
-    assert!(message.contains("userName"));
-    assert!(message.contains("user_name"));
-    assert!(message.contains("add an explicit rename"));
-}
-
-#[test]
-fn schema_mode_hints_requires_declared_constraints() {
-    let error = compile_document(
-        &parse_toml(
-            r#"
-[source.local]
-kind = "files"
-root = "."
-
-[resource.events]
-glob = "*.parquet"
-schema_mode = "hints"
-"#,
-        )
-        .unwrap(),
-    )
-    .unwrap_err();
-
-    assert!(
-        error
-            .to_string()
-            .contains("schema_mode = \"hints\" requires a schema block")
-    );
-}
-
-#[test]
-fn schema_mode_discover_rejects_competing_declared_schema() {
-    let error = compile_document(
-        &parse_toml(
-            r#"
-[source.local]
-kind = "files"
-root = "."
-
-[resource.events]
-glob = "*.parquet"
-schema_mode = "discover"
-schema = { fields = [{ name = "id", type = "int64" }] }
-"#,
-        )
-        .unwrap(),
-    )
-    .unwrap_err();
-
-    let message = error.to_string();
-    assert!(message.contains("schema_mode = \"discover\" cannot carry a schema block"));
-    assert!(message.contains("use hints to constrain discovery"));
-}
-
-#[test]
-fn exact_row_dedup_is_explicit_keyless_append_semantics() {
-    let resource = compile_document(
-        &parse_toml(
-            r#"
-[source.local]
-kind = "files"
-root = "."
-
-[resource.events]
-glob = "*.ndjson"
-format = "ndjson"
-write_disposition = "append"
-deduplicate = "exact_row"
-trust = "governed"
-schema = { fields = [{ name = "id", type = "int64" }] }
-"#,
-        )
-        .unwrap(),
-    )
-    .unwrap()
-    .remove(0);
-
-    assert!(resource.descriptor().primary_key.is_empty());
-    assert!(resource.descriptor().merge_key.is_empty());
-    assert_eq!(
-        resource.descriptor().deduplication,
-        Some(DeduplicationSpec::ExactRow)
-    );
-}
-
-#[test]
-fn exact_row_dedup_rejects_non_append_dispositions() {
-    let error = compile_document(
-        &parse_toml(
-            r#"
-[source.local]
-kind = "files"
-root = "."
-
-[resource.events]
-glob = "*.ndjson"
-write_disposition = "replace"
-deduplicate = "exact_row"
-"#,
-        )
-        .unwrap(),
-    )
-    .unwrap_err();
-
-    let message = error.to_string();
-    assert!(message.contains("valid only with append"));
-    assert!(message.contains("remove deduplicate"));
-}
-
-fn compile_local_file_schema_resource(
-    resource_name: &str,
-    glob: &str,
-    format_kind: &str,
-    fields: &str,
-) -> cdf_kernel::Result<CompiledResource> {
-    let input = format!(
-        r#"
-[source.local]
-kind = "files"
-root = "."
-
-[resource.{resource_name}]
-glob = "{glob}"
-format = "{format_kind}"
-write_disposition = "append"
-trust = "governed"
-schema = {{ fields = [
-{fields}
-] }}
-"#
-    );
-
-    compile_document(&parse_toml(&input).unwrap()).map(|mut resources| resources.remove(0))
-}
-
-#[test]
-fn declarative_arrow_type_error_names_offending_string() {
-    let input = r#"
-[source.local]
-kind = "files"
-root = "."
-
-[resource.events]
-glob = "*.ndjson"
-format = "ndjson"
-write_disposition = "append"
-trust = "governed"
-schema = { fields = [{ name = "items", type = "list<not_a_type>" }] }
-"#;
-
-    let error = compile_document(&parse_toml(input).unwrap()).unwrap_err();
-    assert!(error.to_string().contains("list<not_a_type>"));
-    assert!(error.to_string().contains("invalid declarative field type"));
-}
-
-#[test]
-fn file_runtime_rejects_partition_metadata_that_does_not_match_plan() {
-    let root = tempfile::tempdir().unwrap();
-    let data_dir = root.path().join("data");
-    fs::create_dir_all(&data_dir).unwrap();
-    fs::write(data_dir.join("events.ndjson"), "{\"id\":1}\n").unwrap();
-
-    let input = r#"
-[source.local]
-kind = "files"
-root = "data"
-
-[resource.events]
-glob = "*.ndjson"
-format = "ndjson"
-write_disposition = "append"
-trust = "governed"
-"#;
-    let compiled = compile_document_with_project_root(&parse_toml(input).unwrap(), root.path())
-        .unwrap()
-        .remove(0);
-    let request = ScanRequest {
-        resource_id: compiled.descriptor().resource_id.clone(),
-        projection: None,
-        filters: Vec::new(),
-        limit: None,
-        order_by: Vec::new(),
-        scope: ScopeKey::Resource,
-    };
-    let resource = compiled
-        .to_file_resource(test_file_dependencies(FileTransportFacade::new()))
-        .unwrap();
-    let mut partition = resource.plan_partitions(&request).unwrap().remove(0);
-    partition
-        .metadata
-        .insert("glob".to_owned(), "other.ndjson".to_owned());
-
-    let error = match futures_executor::block_on(resource.open(partition)) {
-        Ok(_) => panic!("file runtime accepted a mismatched partition"),
-        Err(error) => error,
-    };
-
-    assert!(
-        error
-            .to_string()
-            .contains("declarative file partition glob does not match")
-    );
-}
-
-#[test]
-fn undeclared_format_remains_unresolved_until_registry_compilation() {
-    for glob in [
-        "2026/**/*.parquet",
-        "events.arrow",
-        "events.ndjson.gz",
-        "events",
-        "*.*",
-        "*.external",
-    ] {
-        let input = format!(
-            r#"
-[source.local]
-kind = "files"
-root = "data"
-
-[resource.events]
-glob = "{glob}"
-write_disposition = "append"
-trust = "governed"
-"#
-        );
-        let resource = compile_document(&parse_toml(&input).unwrap())
-            .unwrap()
-            .remove(0);
-        let CompiledResourcePlan::Files(plan) = resource.plan() else {
-            panic!("resource must compile as files");
-        };
-        assert_eq!(plan.format, None);
-        assert!(!plan.format_declared);
-        let source_request = resource
-            .source_compile_request()
-            .expect("neutral file source compile request");
-        assert_eq!(source_request.source_kind, "files");
-        assert!(!source_request.resource_options.contains_key("format"));
     }
 }
 
-#[test]
-fn inferred_parquet_glob_defers_content_confirmation_to_admission() {
-    let root = tempfile::tempdir().unwrap();
-    let data_dir = root.path().join("data");
-    fs::create_dir_all(&data_dir).unwrap();
-    write_test_parquet(&data_dir.join("a.parquet"), 1);
-    write_test_parquet(&data_dir.join("b.parquet"), 2);
-    let resource = compile_inferred_binary_resource(&root, "*.parquet");
-
-    let partitions = resource
-        .plan_partitions(&scan_request_for(&resource))
-        .unwrap();
-    assert_eq!(
-        partition_file_names(&partitions),
-        ["a.parquet", "b.parquet"]
-    );
-    for partition in &partitions {
-        assert_eq!(partition.metadata["format"], "parquet");
-        assert_eq!(partition.metadata["format_declared"], "false");
-        assert_eq!(partition.metadata["format_extension"], "parquet");
-        assert_eq!(partition.metadata["format_detection"], "none");
-        assert_eq!(partition.metadata["format_driver_version"], "1.0.0");
+impl SourceDriver for TestSourceDriver {
+    fn descriptor(&self) -> &SourceDriverDescriptor {
+        &self.descriptor
     }
 
-    fs::write(data_dir.join("b.parquet"), b"not parquet").unwrap();
-    let changed_partitions = resource
-        .plan_partitions(&scan_request_for(&resource))
-        .unwrap();
-    let changed = changed_partitions
-        .into_iter()
-        .find(|partition| partition.metadata["path"].ends_with("b.parquet"))
-        .unwrap();
-    let error = expect_open_or_stream_error(futures_executor::block_on(resource.open(changed)));
-    assert!(error.to_string().to_ascii_lowercase().contains("parquet"));
-}
+    fn option_schema(&self) -> &serde_json::Value {
+        &self.option_schema
+    }
 
-#[test]
-fn inferred_parquet_and_arrow_preview_and_run_share_resolved_format() {
-    let parquet_root = tempfile::tempdir().unwrap();
-    fs::create_dir_all(parquet_root.path().join("data")).unwrap();
-    write_test_parquet(&parquet_root.path().join("data/events.parquet"), 7);
-    let parquet = compile_inferred_binary_resource(&parquet_root, "events.parquet");
-    assert_preview_run_first_id(&parquet, 7);
+    fn compile(&self, request: SourceCompileRequest) -> Result<CompiledSourcePlan> {
+        request.context.validate()?;
+        let physical_plan = serde_json::json!({
+            "source_name": request.context.source_name,
+            "project_root": request.context.project_root,
+            "cursor_pushdown": request.context.cursor_pushdown,
+            "source": request.source_options,
+            "resource": request.resource_options,
+        });
+        CompiledSourcePlan::new(
+            self.descriptor.clone(),
+            ResourceCapabilities::default(),
+            test_execution_capabilities(),
+            CompiledSourcePlanInput {
+                descriptor: request.descriptor,
+                schema: request.schema,
+                type_policy_allowances: request.type_policy_allowances,
+                effective_schema_runtime: request.effective_schema_runtime,
+                baseline_observation_schema_catalog: request.baseline_observation_schema_catalog,
+                redacted_options: physical_plan.clone(),
+                physical_plan,
+            },
+        )
+    }
 
-    let arrow_root = tempfile::tempdir().unwrap();
-    fs::create_dir_all(arrow_root.path().join("data")).unwrap();
-    write_test_arrow(&arrow_root.path().join("data/events.arrow"), 9);
-    let arrow = compile_inferred_binary_resource(&arrow_root, "events.arrow");
-    assert_preview_run_first_id(&arrow, 9);
-}
+    fn discovery_session(
+        &self,
+        _plan: &CompiledSourcePlan,
+        _context: &SourceResolutionContext<'_>,
+    ) -> Result<Box<dyn SourceDiscoverySession>> {
+        Err(CdfError::internal("test driver is compile-only"))
+    }
 
-#[test]
-fn explicit_binary_format_defers_magic_confirmation_to_admission() {
-    let root = tempfile::tempdir().unwrap();
-    let data_dir = root.path().join("data");
-    fs::create_dir_all(&data_dir).unwrap();
-    write_test_arrow(&data_dir.join("events.parquet"), 11);
-    let input = r#"
-[source.local]
-kind = "files"
-root = "data"
-
-[resource.events]
-glob = "events.parquet"
-format = "parquet"
-write_disposition = "append"
-trust = "governed"
-"#;
-    let resource = compile_document_with_project_root(&parse_toml(input).unwrap(), root.path())
-        .unwrap()
-        .remove(0)
-        .into_file_resource(test_file_dependencies(FileTransportFacade::new()))
-        .unwrap();
-    let partition = resource
-        .plan_partitions(&scan_request_for(&resource))
-        .unwrap()
-        .remove(0);
-    assert_eq!(partition.metadata["format_detection"], "none");
-    let error = expect_open_or_stream_error(futures_executor::block_on(resource.open(partition)));
-    assert!(error.to_string().to_ascii_lowercase().contains("parquet"));
-
-    write_test_parquet(&data_dir.join("extensionless"), 12);
-    let extensionless = input.replace("events.parquet", "extensionless");
-    let resource =
-        compile_document_with_project_root(&parse_toml(&extensionless).unwrap(), root.path())
-            .unwrap()
-            .remove(0)
-            .into_file_resource(test_file_dependencies(FileTransportFacade::new()))
-            .unwrap();
-    let partition = resource
-        .plan_partitions(&scan_request_for(&resource))
-        .unwrap()
-        .remove(0);
-    assert_eq!(partition.metadata["format_extension"], "none");
-    assert_eq!(partition.metadata["format_detection"], "none");
-    assert_eq!(
-        first_i64_value(&drain_batches(
-            futures_executor::block_on(resource.open(partition)).unwrap()
-        )),
-        12
-    );
-}
-
-#[test]
-fn inferred_https_parquet_inventory_opens_no_payload_source() {
-    let bytes =
-        cdf_package::transcode_record_batches_to_parquet_bytes(&[test_id_batch(21)]).unwrap();
-    assert!(bytes.len() > 12);
-    let transport = MetadataOnlyHttpTransport::new(bytes.len() as u64);
-    let input = r#"
-[source.public]
-kind = "files"
-root = "https://data.example.test/trip-data/"
-egress_allowlist = ["data.example.test"]
-
-[resource.events]
-glob = "events.parquet"
-write_disposition = "append"
-trust = "governed"
-"#;
-    let compiled = compile_document(&parse_toml(input).unwrap())
-        .unwrap()
-        .remove(0);
-    let resource = compiled
-        .to_file_resource(test_file_dependencies(transport.clone()))
-        .unwrap();
-
-    let partitions = resource
-        .plan_partitions(&scan_request_for(&resource))
-        .unwrap();
-    assert_eq!(partitions.len(), 1);
-    assert_eq!(partitions[0].metadata["format"], "parquet");
-    assert_eq!(partitions[0].metadata["format_declared"], "false");
-    assert_eq!(partitions[0].metadata["format_detection"], "none");
-    assert_eq!(
-        partitions[0].retry_safety,
-        cdf_kernel::PartitionRetrySafety::ImmutableContent
-    );
-    assert_eq!(transport.payload_opens(), 0);
-}
-
-#[test]
-fn file_glob_plans_deterministic_partition_per_match() {
-    let (_root, resource) = compile_local_glob_runtime_resource([
-        ("b.ndjson", "{\"id\":2}\n"),
-        ("a.ndjson", "{\"id\":1}\n"),
-    ]);
-    let request = scan_request_for(&resource);
-
-    let partitions = resource.plan_partitions(&request).unwrap();
-    assert_eq!(partitions.len(), 2);
-    assert_eq!(
-        partition_file_names(&partitions),
-        vec!["a.ndjson", "b.ndjson"]
-    );
-    assert_eq!(resource.negotiate(&request).unwrap().partitions, partitions);
-
-    for partition in &partitions {
-        assert_eq!(
-            partition.metadata.get("kind").map(String::as_str),
-            Some("files")
-        );
-        assert_eq!(
-            partition.metadata.get("glob").map(String::as_str),
-            Some("*.ndjson")
-        );
-        assert_eq!(
-            partition.metadata.get("resource_id").map(String::as_str),
-            Some(resource.descriptor().resource_id.as_str())
-        );
-        assert!(partition.metadata.contains_key("bytes"));
-        assert!(partition.metadata.contains_key("source_generation"));
-        assert!(!partition.metadata.contains_key("sha256"));
-        assert!(partition.metadata.contains_key("modified_ms"));
-        assert!(partition.partition_id.as_str().starts_with("file-"));
-        assert!(partition.start_position.is_none());
-        assert_eq!(
-            partition.retry_safety,
-            cdf_kernel::PartitionRetrySafety::Forbidden
-        );
-
-        let path = partition.metadata.get("path").unwrap();
-        assert_eq!(partition.scope, ScopeKey::File { path: path.clone() });
+    fn resolve(
+        &self,
+        _plan: &CompiledSourcePlan,
+        _context: &SourceResolutionContext<'_>,
+    ) -> Result<Arc<dyn QueryableResource>> {
+        Err(CdfError::internal("test driver is compile-only"))
     }
 }
 
-#[test]
-fn file_glob_inventory_does_not_hash_payload_before_execution() {
-    let (_root, resource) =
-        compile_local_glob_runtime_resource([("events.ndjson", "{\"id\":1}\n")]);
-    let partition = resource
-        .plan_partitions(&scan_request_for(&resource))
-        .unwrap()
-        .remove(0);
-
-    assert!(partition.metadata.contains_key("source_generation"));
-    assert!(!partition.metadata.contains_key("sha256"));
-}
-
-#[test]
-fn file_partition_attestation_rejects_identity_change_after_planning() {
-    let (root, resource) = compile_local_glob_runtime_resource([("events.ndjson", "{\"id\":1}\n")]);
-    let partition = resource
-        .plan_partitions(&scan_request_for(&resource))
-        .unwrap()
-        .remove(0);
-
-    fs::write(root.path().join("data/events.ndjson"), "{\"id\":200}\n").unwrap();
-    let error = futures_executor::block_on(resource.attest_partition(partition)).unwrap_err();
-
-    assert!(
-        error.to_string().contains("changed size after planning"),
-        "{error}"
-    );
-}
-
-#[test]
-fn file_glob_run_and_preview_open_the_requested_partition() {
-    let (_root, resource) = compile_local_glob_runtime_resource([
-        ("b.ndjson", "{\"id\":2}\n"),
-        ("a.ndjson", "{\"id\":1}\n"),
-    ]);
-    let request = scan_request_for(&resource);
-    let partitions = resource.plan_partitions(&request).unwrap();
-
-    let preview_batches = drain_batches(
-        futures_executor::block_on(resource.open_preview(partitions[0].clone())).unwrap(),
-    );
-    let matching_run_batches =
-        drain_batches(futures_executor::block_on(resource.open(partitions[0].clone())).unwrap());
-    let run_batches =
-        drain_batches(futures_executor::block_on(resource.open(partitions[1].clone())).unwrap());
-
-    assert_eq!(first_i64_value(&preview_batches), 1);
-    assert_eq!(preview_batches.len(), matching_run_batches.len());
-    for (preview, run) in preview_batches.iter().zip(&matching_run_batches) {
-        assert_eq!(preview.record_batch().unwrap(), run.record_batch().unwrap());
-        assert_eq!(
-            preview.header.observed_schema_hash,
-            run.header.observed_schema_hash
-        );
-        assert_eq!(
-            preview.header.pre_contract_quarantine,
-            run.header.pre_contract_quarantine
-        );
+fn test_execution_capabilities() -> SourceExecutionCapabilities {
+    SourceExecutionCapabilities {
+        minimum_poll_bytes: 1,
+        maximum_poll_bytes: 1024,
+        minimum_decode_bytes: 1,
+        maximum_decode_bytes: 4096,
+        maximum_concurrency: 1,
+        useful_concurrency: 1,
+        executor_class: SourceExecutorClass::Io,
+        blocking_lane: None,
+        pausable: true,
+        spillable: false,
+        idempotent_reads: true,
+        reopenable: true,
+        resumable: false,
+        speculative_safe: false,
+        retry_granularity: SourceRetryGranularity::None,
+        retryable_errors: Vec::new(),
+        retry_policy: None,
+        attestation: SourceAttestationStrength::None,
+        rate_limit_per_second: None,
+        quota_authority: None,
+        canonical_order: true,
+        bounded: true,
+        batch_memory: SourceBatchMemoryContract::FrontierReserved,
+        telemetry_version: "test-v1".to_owned(),
     }
-    assert_eq!(first_i64_value(&run_batches), 2);
 }
 
-#[test]
-fn file_runtime_auto_compression_decodes_gzip_and_zstd_ndjson() {
-    let root = tempfile::tempdir().unwrap();
-    let data_dir = root.path().join("data");
-    fs::create_dir_all(&data_dir).unwrap();
-    fs::write(
-        data_dir.join("a.ndjson.gz"),
-        gzip_bytes(
-            br#"{"id":1}
-"#,
-        ),
-    )
-    .unwrap();
-    fs::write(
-        data_dir.join("b.ndjson.zst"),
-        zstd_bytes(
-            br#"{"id":2}
-"#,
-        ),
-    )
-    .unwrap();
-    let resource = compile_local_file_runtime_resource(&root, "*.ndjson.*", None);
-    let request = scan_request_for(&resource);
-
-    let partitions = resource.plan_partitions(&request).unwrap();
-
-    assert_eq!(
-        partition_file_names(&partitions),
-        vec!["a.ndjson.gz", "b.ndjson.zst"]
-    );
-    assert_eq!(
-        partitions[0]
-            .metadata
-            .get("compression")
-            .map(String::as_str),
-        Some("gzip")
-    );
-    assert_eq!(
-        partitions[0]
-            .metadata
-            .get("compression_declared")
-            .map(String::as_str),
-        Some("auto")
-    );
-    assert_eq!(
-        partitions[1]
-            .metadata
-            .get("compression")
-            .map(String::as_str),
-        Some("zstd")
-    );
-
-    let preview_batches = drain_batches(
-        futures_executor::block_on(resource.open_preview(partitions[0].clone())).unwrap(),
-    );
-    let run_batches =
-        drain_batches(futures_executor::block_on(resource.open(partitions[1].clone())).unwrap());
-
-    assert_eq!(first_i64_value(&preview_batches), 1);
-    assert_eq!(first_i64_value(&run_batches), 2);
-    assert!(!data_dir.join("a.ndjson").exists());
-    assert!(!data_dir.join("b.ndjson").exists());
-}
-
-#[test]
-fn file_runtime_explicit_compression_overrides_extension_inference() {
-    let root = tempfile::tempdir().unwrap();
-    let data_dir = root.path().join("data");
-    fs::create_dir_all(&data_dir).unwrap();
-    fs::write(
-        data_dir.join("events.ndjson.zst"),
-        gzip_bytes(
-            br#"{"id":7}
-"#,
-        ),
-    )
-    .unwrap();
-    let resource = compile_local_file_runtime_resource(&root, "*.zst", Some("gzip"));
-    let request = scan_request_for(&resource);
-
-    let partition = resource.plan_partitions(&request).unwrap().remove(0);
-
-    assert_eq!(
-        partition.metadata.get("compression").map(String::as_str),
-        Some("gzip")
-    );
-    assert_eq!(
-        partition
-            .metadata
-            .get("compression_extension")
-            .map(String::as_str),
-        Some("zstd")
-    );
-    assert_eq!(
-        partition
-            .metadata
-            .get("compression_magic")
-            .map(String::as_str),
-        Some("none")
-    );
-    let batches = drain_batches(futures_executor::block_on(resource.open(partition)).unwrap());
-    assert_eq!(first_i64_value(&batches), 7);
-}
-
-#[test]
-fn file_runtime_explicit_compression_mismatch_names_file_and_signals() {
-    let root = tempfile::tempdir().unwrap();
-    let data_dir = root.path().join("data");
-    fs::create_dir_all(&data_dir).unwrap();
-    fs::write(
-        data_dir.join("events.ndjson.gz"),
-        zstd_bytes(
-            br#"{"id":1}
-"#,
-        ),
-    )
-    .unwrap();
-    let resource = compile_local_file_runtime_resource(&root, "*.gz", Some("gzip"));
-
-    let partition = resource
-        .plan_partitions(&scan_request_for(&resource))
-        .unwrap()
-        .remove(0);
-    let error = expect_open_or_stream_error(futures_executor::block_on(resource.open(partition)));
-
-    let message = error.to_string();
-    assert!(message.to_ascii_lowercase().contains("gzip"), "{message}");
-}
-
-#[test]
-fn file_glob_zero_matches_still_reports_actionable_data_error() {
-    let (_root, resource) = compile_local_glob_runtime_resource(std::iter::empty::<(&str, &str)>());
-    let error = resource
-        .plan_partitions(&scan_request_for(&resource))
-        .unwrap_err();
-
-    let message = error.to_string();
-    assert!(message.contains("matched no files"));
-    assert!(message.contains("*.ndjson"));
-    assert!(message.contains("data"));
-}
-
-#[test]
-fn file_runtime_rejects_partition_path_not_produced_by_glob_before_read() {
-    let (_root, resource) =
-        compile_local_glob_runtime_resource([("events.ndjson", "{\"id\":1}\n")]);
-    let request = scan_request_for(&resource);
-    let mut partition = resource.plan_partitions(&request).unwrap().remove(0);
-    let unplanned_path = "other.ndjson".to_owned();
-    partition
-        .metadata
-        .insert("path".to_owned(), unplanned_path.clone());
-    partition.scope = ScopeKey::File {
-        path: unplanned_path,
-    };
-
-    let error = match futures_executor::block_on(resource.open(partition)) {
-        Ok(_) => panic!("file runtime accepted an unplanned partition path"),
-        Err(error) => error,
-    };
-
-    assert!(
-        error
-            .to_string()
-            .contains("was not produced by glob `*.ndjson`")
-    );
-}
-
-#[test]
-fn file_runtime_rejects_legacy_partition_id_for_multi_file_glob() {
-    let (_root, resource) = compile_local_glob_runtime_resource([
-        ("a.ndjson", "{\"id\":1}\n"),
-        ("b.ndjson", "{\"id\":2}\n"),
-    ]);
-    let request = scan_request_for(&resource);
-    let mut partition = resource.plan_partitions(&request).unwrap().remove(0);
-    partition.partition_id = PartitionId::new("files").unwrap();
-
-    let error = match futures_executor::block_on(resource.open(partition)) {
-        Ok(_) => panic!("file runtime accepted a legacy partition id for a multi-file glob"),
-        Err(error) => error,
-    };
-
-    assert!(error.to_string().contains("does not match file path"));
-}
-
-#[test]
-fn semantic_validation_rejects_missing_declared_schema_key() {
-    let input = r#"
-[source.github]
-kind = "rest"
-base_url = "https://api.github.com"
-
-[resource.issues]
-path = "/issues"
-records = "$"
-primary_key = ["id"]
-cursor = { field = "updated_at", param = "since", ordering = "best_effort", lag = "5m" }
-write_disposition = "append"
-trust = "governed"
-schema = { fields = [{ name = "updated_at", type = "timestamp_micros" }] }
-"#;
-    let error = compile_document(&parse_toml(input).unwrap()).unwrap_err();
-    assert!(error.to_string().contains("id"));
-    assert!(error.to_string().contains("declared schema"));
-}
-
-#[test]
-fn semantic_validation_rejects_missing_sample_cursor() {
-    let input = r#"
-[source.github]
-kind = "rest"
-base_url = "https://api.github.com"
-
-[resource.issues]
-path = "/issues"
-records = "$"
-primary_key = ["id"]
-cursor = { field = "updated_at", param = "since", ordering = "best_effort", lag = "5m" }
-write_disposition = "append"
-trust = "governed"
-sample = { fields = ["id"] }
-"#;
-    let error = validate_document(&parse_toml(input).unwrap()).unwrap_err();
-    assert!(error.to_string().contains("updated_at"));
-    assert!(error.to_string().contains("sample"));
-}
-
-#[test]
-fn json_schema_artifact_exposes_editor_schema_model() {
-    let artifact = declarative_json_schema_artifact();
-    assert_eq!(artifact.version, "cdf-declarative-v2");
-    assert_eq!(artifact.version, DECLARATIVE_SCHEMA_VERSION);
-    assert_eq!(artifact.path, DECLARATIVE_SCHEMA_ARTIFACT_PATH);
-
-    let schema = serde_json::to_string_pretty(&artifact.schema).unwrap();
-    assert!(schema.contains("DeclarativeDocument"));
-    assert!(schema.contains("link_header"));
-    assert!(schema.contains("records_transform"));
-
-    let resource_schema = artifact
-        .schema
-        .pointer("/$defs/ResourceDeclaration")
+fn test_registry() -> SourceRegistry {
+    let mut registry = SourceRegistry::new();
+    registry
+        .register(TestSourceDriver::new(
+            "httpish", "httpish", "endpoint", "path",
+        ))
         .unwrap();
-    assert_eq!(
-        resource_schema.get("additionalProperties"),
-        Some(&serde_json::Value::Bool(false))
-    );
-    assert!(resource_schema.pointer("/properties/id").is_none());
-
-    let field_type_schema = artifact
-        .schema
-        .pointer("/$defs/FieldDeclaration/properties/type")
+    registry
+        .register(TestSourceDriver::new(
+            "tableish", "tableish", "dsn", "table",
+        ))
         .unwrap();
-    let field_type_schema = resolve_schema_ref(&artifact.schema, field_type_schema);
-    assert_eq!(
-        field_type_schema
-            .get("type")
-            .and_then(serde_json::Value::as_str),
-        Some("string")
-    );
-    assert!(field_type_schema.get("enum").is_none());
-
-    let required = artifact
-        .schema
-        .pointer("/$defs/ResourceDeclaration/required")
-        .and_then(serde_json::Value::as_array)
-        .cloned()
-        .unwrap_or_default();
-    assert!(!required.iter().any(|field| field == "format"));
-    assert_eq!(
-        artifact
-            .schema
-            .pointer("/$defs/ResourceDeclaration/properties/sample_files/minimum")
-            .and_then(serde_json::Value::as_u64),
-        Some(1)
-    );
+    registry
 }
 
-#[test]
-fn sampled_file_discovery_is_explicit_positive_and_file_only() {
-    let file = r#"
-[source.local]
-kind = "files"
-root = "data"
+fn compile(input: &str) -> Result<Vec<CompiledResource>> {
+    compile_document(&test_registry(), &parse_toml(input)?)
+}
 
-[resource.events]
-glob = "*.parquet"
-format = "parquet"
-sample_files = 7
-write_disposition = "append"
-trust = "governed"
-"#;
-    let resource = compile_document(&parse_toml(file).unwrap())
-        .unwrap()
-        .remove(0);
-    assert!(matches!(resource.plan(), CompiledResourcePlan::Files(_)));
-    assert_eq!(resource.schema_discovery_sample_files(), Some(7));
-
-    let zero = file.replace("sample_files = 7", "sample_files = 0");
-    let error = compile_document(&parse_toml(&zero).unwrap())
-        .unwrap_err()
-        .to_string();
-    assert!(error.contains("sample_files must be greater than zero"));
-
-    let rest = r#"
+fn base_document(extra_resource: &str) -> String {
+    format!(
+        r#"
 [source.api]
-kind = "rest"
-base_url = "https://example.test"
+kind = "httpish"
+endpoint = "https://example.test"
 
 [resource.events]
 path = "/events"
-records = "$"
-sample_files = 2
-write_disposition = "append"
 trust = "governed"
-"#;
-    let error = compile_document(&parse_toml(rest).unwrap())
-        .unwrap_err()
-        .to_string();
-    assert!(error.contains("only valid for file resources"));
-
-    let text = file
-        .replace("*.parquet", "*.ndjson")
-        .replace("format = \"parquet\"", "format = \"ndjson\"");
-    let resource = compile_document(&parse_toml(&text).unwrap())
-        .unwrap()
-        .remove(0);
-    assert_eq!(resource.schema_discovery_sample_files(), Some(7));
+{extra_resource}
+"#
+    )
 }
 
 #[test]
-fn sql_negotiate_pushes_filters_exactly() {
-    let resource = compile_document(&parse_toml(SQL_RUNTIME_EXAMPLE).unwrap())
-        .unwrap()
-        .remove(0);
-    let predicate_id = PredicateId::new("p1").unwrap();
-    let source_request = resource
-        .source_compile_request()
-        .expect("neutral Postgres source compile request");
-    assert_eq!(source_request.source_kind, "sql");
-    let request = ScanRequest {
-        resource_id: resource.descriptor().resource_id.clone(),
-        projection: Some(vec!["id".to_owned()]),
-        filters: vec![scan_predicate(predicate_id.clone(), "id = 1")],
-        limit: Some(10),
-        order_by: vec![cdf_kernel::OrderBy {
-            field: "updated_at".to_owned(),
-            direction: SortDirection::Asc,
-        }],
-        scope: ScopeKey::Resource,
-    };
+fn open_declarations_preserve_driver_options_without_source_enums() {
+    let document = parse_toml(&base_document("format_hint = \"json\"")).unwrap();
+    let source = &document.source["api"];
+    assert_eq!(source.kind, "httpish");
+    assert_eq!(source.options["endpoint"], "https://example.test");
+    let resource = &document.resource["events"];
+    assert_eq!(resource.options["path"], "/events");
+    assert_eq!(resource.options["format_hint"], "json");
+}
 
-    assert_queryable_resource_conformance(
-        &resource,
-        [ResourceConformanceCase::new(request.clone())
-            .with_expected_predicates([PredicateExpectation::exact(predicate_id)])],
-    );
-    let plan = resource.negotiate(&request).unwrap();
-    assert_eq!(plan.pushed_predicates[0].fidelity, PushdownFidelity::Exact);
+#[test]
+fn registry_compilation_produces_one_compiled_source_plan_and_canonical_id() {
+    let resource = compile(&base_document("")).unwrap().remove(0);
+    assert_eq!(resource.descriptor().resource_id.as_str(), "api.events");
+    assert_eq!(resource.source_name(), "api");
+    assert_eq!(resource.resource_name(), "events");
+    assert_eq!(resource.source_plan().driver.driver_id.as_str(), "httpish");
     assert_eq!(
-        plan.partitions[0].scan_intent.projection,
-        request.projection
+        resource.source_plan().physical_plan["source"]["endpoint"],
+        "https://example.test"
     );
     assert_eq!(
-        plan.partitions[0].scan_intent.predicates,
-        plan.pushed_predicates
+        resource.source_plan().physical_plan["resource"]["path"],
+        "/events"
     );
-    assert_eq!(plan.partitions[0].scan_intent.limit, request.limit);
-    assert_eq!(plan.partitions[0].scan_intent.order_by, request.order_by);
-    cdf_kernel::validate_compiled_scan_intents(&plan).unwrap();
-    assert!(
-        !plan.partitions[0]
-            .metadata
-            .contains_key("postgres_sql_scan")
-    );
+    assert_eq!(resource.source_plan().descriptor, *resource.descriptor());
 }
 
 #[test]
-fn sql_negotiate_does_not_smuggle_unstructured_predicates() {
-    let resource = compile_document(&parse_toml(SQL_RUNTIME_EXAMPLE).unwrap())
+fn project_root_is_compiler_context_not_a_driver_specific_declaration() {
+    let document = parse_toml(&base_document("")).unwrap();
+    let resource = compile_document_with_project_root(&test_registry(), &document, "/tmp/project")
         .unwrap()
         .remove(0);
-    let safe = PredicateId::new("safe").unwrap();
-    let unsafe_predicate = PredicateId::new("unsafe").unwrap();
-    let request = ScanRequest {
-        resource_id: resource.descriptor().resource_id.clone(),
-        projection: Some(vec!["id".to_owned(), "updated_at".to_owned()]),
-        filters: vec![
-            scan_predicate(safe.clone(), "updated_at >= 10"),
-            scan_predicate(unsafe_predicate.clone(), "id != 1"),
-        ],
-        limit: Some(10),
-        order_by: vec![],
-        scope: ScopeKey::Resource,
-    };
-
-    assert_queryable_resource_conformance(
-        &resource,
-        [
-            ResourceConformanceCase::new(request.clone()).with_expected_predicates([
-                PredicateExpectation::exact(safe),
-                PredicateExpectation::unsupported(unsafe_predicate),
-            ]),
-        ],
-    );
-    let plan = resource.negotiate(&request).unwrap();
-    assert_eq!(plan.pushed_predicates.len(), 1);
-    assert_eq!(plan.unsupported_predicates.len(), 1);
-    let intent = &plan.partitions[0].scan_intent;
-    assert_eq!(intent.predicates.len(), 1);
+    assert_eq!(resource.project_root(), Some(Path::new("/tmp/project")));
     assert_eq!(
-        intent.predicates[0].predicate.canonical_expression,
-        cdf_kernel::Expression::parse_comparison("updated_at >= 10").unwrap()
+        resource.source_plan().physical_plan["project_root"],
+        "/tmp/project"
     );
 }
 
 #[test]
-fn sql_runtime_requires_explicit_secret_provider() {
-    let resource = compile_document(&parse_toml(SQL_RUNTIME_EXAMPLE).unwrap())
-        .unwrap()
-        .remove(0);
-    let sql = resource
-        .to_sql_resource(SqlRuntimeDependencies::new())
-        .unwrap();
-    let request = ScanRequest {
-        resource_id: resource.descriptor().resource_id.clone(),
-        projection: None,
-        filters: Vec::new(),
-        limit: None,
-        order_by: Vec::new(),
-        scope: ScopeKey::Resource,
-    };
-    let partition = sql.plan_partitions(&request).unwrap().remove(0);
-    let error = expect_open_error(futures_executor::block_on(sql.open(partition)));
-    assert!(error.to_string().contains("SecretProvider"));
-}
-
-#[test]
-fn sql_runtime_dependency_preflight_checks_presence_without_resolving_connection_secret() {
-    let resource = compile_document(&parse_toml(SQL_RUNTIME_EXAMPLE).unwrap())
-        .unwrap()
-        .remove(0);
-
-    let missing = resource
-        .to_sql_resource(SqlRuntimeDependencies::new())
-        .unwrap();
-    let error = missing.validate_runtime_dependencies().unwrap_err();
-    assert_eq!(error.kind, ErrorKind::Auth);
-    assert!(error.to_string().contains("SecretProvider"));
-
-    let execution = cdf_engine::StandaloneExecutionHost::default_services(64 * 1024 * 1024)
-        .unwrap()
-        .1;
-    let empty = resource
-        .to_sql_resource(
-            SqlRuntimeDependencies::new()
-                .with_secret_provider(StaticSecretProvider::new([(
-                    "secret://env/POSTGRES_URL",
-                    "",
-                )]))
-                .with_execution(execution),
-        )
-        .unwrap();
-    empty.validate_runtime_dependencies().unwrap();
-
-    let missing_execution = resource
-        .to_sql_resource(SqlRuntimeDependencies::new().with_secret_provider(
-            StaticSecretProvider::new([(
-                "secret://env/POSTGRES_URL",
-                "postgresql://localhost/not-contacted",
-            )]),
-        ))
-        .unwrap();
-    let error = missing_execution
-        .validate_runtime_dependencies()
-        .unwrap_err();
-    assert_eq!(error.kind, ErrorKind::Contract);
-    assert!(error.to_string().contains("execution services"));
-}
-
-#[test]
-fn sql_runtime_rejects_empty_connection_secret_before_connecting() {
-    let resource = compile_document(&parse_toml(SQL_RUNTIME_EXAMPLE).unwrap())
-        .unwrap()
-        .remove(0);
-    let execution = cdf_engine::StandaloneExecutionHost::default_services(64 * 1024 * 1024)
-        .unwrap()
-        .1;
-    let sql = resource
-        .to_sql_resource(
-            SqlRuntimeDependencies::new()
-                .with_secret_provider(StaticSecretProvider::new([(
-                    "secret://env/POSTGRES_URL",
-                    "",
-                )]))
-                .with_execution(execution),
-        )
-        .unwrap();
-    let request = ScanRequest {
-        resource_id: resource.descriptor().resource_id.clone(),
-        projection: None,
-        filters: Vec::new(),
-        limit: None,
-        order_by: Vec::new(),
-        scope: ScopeKey::Resource,
-    };
-    let partition = sql.plan_partitions(&request).unwrap().remove(0);
-    let error = expect_open_error(futures_executor::block_on(sql.open(partition)));
-    assert!(error.to_string().contains("empty value"));
-}
-
-#[test]
-fn sql_runtime_fails_closed_for_query_and_non_postgres_dialect() {
-    let query = SQL_RUNTIME_EXAMPLE.replace(
-        r#"table = "public.orders""#,
-        r#"query = "SELECT * FROM public.orders""#,
-    );
-    let query_resource = compile_document(&parse_toml(&query).unwrap())
-        .unwrap()
-        .remove(0);
-    let error = query_resource
-        .to_sql_resource(SqlRuntimeDependencies::new())
-        .unwrap_err();
-    assert!(
-        error
-            .to_string()
-            .contains("query resources are not supported")
-    );
-
-    let non_postgres =
-        SQL_RUNTIME_EXAMPLE.replace(r#"dialect = "postgres""#, r#"dialect = "sqlite""#);
-    let non_postgres = compile_document(&parse_toml(&non_postgres).unwrap())
-        .unwrap()
-        .remove(0);
-    let error = non_postgres
-        .to_sql_resource(SqlRuntimeDependencies::new())
-        .unwrap_err();
-    assert!(error.to_string().contains("`postgres`"), "{error}");
-}
-
-#[test]
-fn sql_runtime_rejects_malformed_table_and_empty_declared_schema() {
-    let malformed = SQL_RUNTIME_EXAMPLE.replace(r#"table = "public.orders""#, r#"table = "a.b.c""#);
-    let malformed = compile_document(&parse_toml(&malformed).unwrap())
-        .unwrap()
-        .remove(0);
-    assert!(
-        malformed
-            .to_sql_resource(SqlRuntimeDependencies::new())
-            .is_err()
-    );
-
-    let empty_schema = r#"
-[source.warehouse]
-kind = "sql"
-connection = "secret://env/POSTGRES_URL"
-dialect = "postgres"
-
-[resource.orders]
-table = "public.orders"
-write_disposition = "append"
-trust = "governed"
-schema = { fields = [] }
-"#;
-    let empty_resource = compile_document(&parse_toml(empty_schema).unwrap())
-        .unwrap()
-        .remove(0);
-    let error = empty_resource
-        .to_sql_resource(SqlRuntimeDependencies::new())
-        .unwrap_err();
-    assert!(error.to_string().contains("declared schema"));
-}
-
-const SQL_RUNTIME_EXAMPLE: &str = r#"
-[source.warehouse]
-kind = "sql"
-connection = "secret://env/POSTGRES_URL"
-dialect = "postgres"
-
-[resource.orders]
-table = "public.orders"
-primary_key = ["id"]
-merge_key = ["id"]
-cursor = { field = "updated_at", ordering = "exact", lag = "0ms" }
-write_disposition = "merge"
-trust = "governed"
-schema = { fields = [
-  { name = "id", type = "int64", nullable = false },
-  { name = "updated_at", type = "int64", nullable = false },
-] }
-"#;
-
-const REST_RUNTIME_EXAMPLE: &str = r#"
-[source.api]
-kind = "rest"
-base_url = "https://api.example.com/v1?existing=1"
-auth = { kind = "bearer", token = "secret://env/API_TOKEN" }
-egress_allowlist = ["api.example.com"]
-
-[resource.items]
-path = "items?from_path=yes"
-params = { state = "all" }
-paginate = { kind = "next_token", query_param = "page_token", response_field = "next_token" }
-records = "$.items"
-primary_key = ["id"]
-merge_key = ["id"]
-cursor = { field = "updated_at", param = "since", ordering = "best_effort", lag = "0ms" }
-write_disposition = "merge"
-trust = "governed"
-schema = { fields = [
-    { name = "id", type = "int64", nullable = false },
-    { name = "name", type = "string", nullable = false },
-    { name = "updated_at", type = "string", nullable = false },
-    { name = "active", type = "boolean", nullable = false },
-    { name = "score", type = "float64", nullable = true },
-] }
-"#;
-
-#[derive(Clone, Default)]
-struct RecordingTransport {
-    state: Arc<Mutex<RecordingTransportState>>,
-}
-
-#[derive(Default)]
-struct RecordingTransportState {
-    requests: Vec<HttpRequest>,
-    responses: VecDeque<HttpResponse>,
-}
-
-impl RecordingTransport {
-    fn new<I>(responses: I) -> Self
-    where
-        I: IntoIterator<Item = HttpResponse>,
-    {
-        Self {
-            state: Arc::new(Mutex::new(RecordingTransportState {
-                requests: Vec::new(),
-                responses: responses.into_iter().collect(),
-            })),
-        }
-    }
-
-    fn requests(&self) -> Vec<HttpRequest> {
-        self.state.lock().unwrap().requests.clone()
-    }
-}
-
-impl HttpTransport for RecordingTransport {
-    fn send(&self, request: HttpRequest) -> cdf_kernel::Result<HttpResponse> {
-        let mut state = self.state.lock().unwrap();
-        state.requests.push(request);
-        state
-            .responses
-            .pop_front()
-            .ok_or_else(|| CdfError::internal("test transport exhausted responses"))
-    }
-}
-
-#[derive(Clone)]
-struct FlakyTransport {
-    state: Arc<Mutex<FlakyTransportState>>,
-}
-
-struct FlakyTransportState {
-    failures_remaining: usize,
-    requests: Vec<HttpRequest>,
-    response: Option<HttpResponse>,
-}
-
-impl FlakyTransport {
-    fn new(failures_remaining: usize, response: HttpResponse) -> Self {
-        Self {
-            state: Arc::new(Mutex::new(FlakyTransportState {
-                failures_remaining,
-                requests: Vec::new(),
-                response: Some(response),
-            })),
-        }
-    }
-
-    fn requests(&self) -> Vec<HttpRequest> {
-        self.state.lock().unwrap().requests.clone()
-    }
-}
-
-impl HttpTransport for FlakyTransport {
-    fn send(&self, request: HttpRequest) -> cdf_kernel::Result<HttpResponse> {
-        let mut state = self.state.lock().unwrap();
-        state.requests.push(request);
-        if state.failures_remaining > 0 {
-            state.failures_remaining -= 1;
-            return Err(CdfError::transient("temporary test transport failure"));
-        }
-        state
-            .response
-            .take()
-            .ok_or_else(|| CdfError::internal("test transport exhausted response"))
-    }
-}
-
-struct StaticSecretProvider {
-    values: BTreeMap<String, String>,
-}
-
-impl StaticSecretProvider {
-    fn new<I, K, V>(values: I) -> Self
-    where
-        I: IntoIterator<Item = (K, V)>,
-        K: Into<String>,
-        V: Into<String>,
-    {
-        Self {
-            values: values
-                .into_iter()
-                .map(|(key, value)| (key.into(), value.into()))
-                .collect(),
-        }
-    }
-}
-
-impl SecretProvider for StaticSecretProvider {
-    fn resolve(&self, uri: &SecretUri) -> cdf_kernel::Result<SecretValue> {
-        self.values
-            .get(uri.as_str())
-            .map(|value| SecretValue::new(value.clone()))
-            .ok_or_else(|| CdfError::auth(format!("missing test secret `{uri}`")))
-    }
-}
-
-struct RotatingSecretProvider {
-    values: Mutex<VecDeque<String>>,
-}
-
-impl RotatingSecretProvider {
-    fn new<I, V>(values: I) -> Self
-    where
-        I: IntoIterator<Item = V>,
-        V: Into<String>,
-    {
-        Self {
-            values: Mutex::new(values.into_iter().map(Into::into).collect()),
-        }
-    }
-}
-
-impl SecretProvider for RotatingSecretProvider {
-    fn resolve(&self, _uri: &SecretUri) -> cdf_kernel::Result<SecretValue> {
-        self.values
-            .lock()
-            .unwrap()
-            .pop_front()
-            .map(SecretValue::new)
-            .ok_or_else(|| CdfError::auth("rotating test secret provider exhausted"))
-    }
-}
-
-fn resolve_schema_ref<'a>(
-    root: &'a serde_json::Value,
-    schema: &'a serde_json::Value,
-) -> &'a serde_json::Value {
-    let Some(reference) = schema.get("$ref").and_then(serde_json::Value::as_str) else {
-        return schema;
-    };
-    let pointer = reference
-        .strip_prefix('#')
-        .expect("local JSON Schema references must start with #");
-    root.pointer(pointer)
-        .expect("JSON Schema reference must resolve")
-}
-
-fn json_response(body: &str) -> HttpResponse {
-    HttpResponse::new(200)
-        .with_header("content-type", "application/json")
-        .with_body(body)
-}
-
-fn rest_cursor_request(resource: &CompiledResource, expression: &str) -> ScanRequest {
-    ScanRequest {
-        resource_id: resource.descriptor().resource_id.clone(),
-        projection: None,
-        filters: vec![scan_predicate(
-            PredicateId::new("cursor").unwrap(),
-            expression,
-        )],
-        limit: None,
-        order_by: vec![],
-        scope: ScopeKey::Resource,
-    }
-}
-
-fn rest_open_error<I>(input: &str, responses: I) -> CdfError
-where
-    I: IntoIterator<Item = HttpResponse>,
-{
-    let resource = compile_document(&parse_toml(input).unwrap())
-        .unwrap()
-        .remove(0);
-    let request = rest_cursor_request(&resource, "updated_at >= \"2026-07-01T00:00:00Z\"");
-    let plan = resource.negotiate(&request).unwrap();
-    let transport = RecordingTransport::new(responses);
-    let rest = resource
-        .to_rest_resource(
-            RestRuntimeDependencies::new(transport).with_secret_provider(
-                StaticSecretProvider::new([("secret://env/API_TOKEN", "token-1")]),
-            ),
-        )
-        .unwrap();
-    expect_open_error(futures_executor::block_on(
-        rest.open(plan.partitions[0].clone()),
-    ))
-}
-
-fn drain_batches<S>(mut stream: S) -> Vec<cdf_kernel::Batch>
-where
-    S: futures_util::Stream<Item = cdf_kernel::Result<cdf_kernel::Batch>> + Unpin,
-{
-    futures_executor::block_on(async move {
-        let mut batches = Vec::new();
-        while let Some(batch) = stream.next().await {
-            batches.push(batch.unwrap());
-        }
-        batches
-    })
-}
-
-fn compile_local_glob_runtime_resource<I>(files: I) -> (TempDir, FileResource)
-where
-    I: IntoIterator<Item = (&'static str, &'static str)>,
-{
-    let root = tempfile::tempdir().unwrap();
-    let data_dir = root.path().join("data");
-    fs::create_dir_all(&data_dir).unwrap();
-    for (relative, body) in files {
-        fs::write(data_dir.join(relative), body).unwrap();
-    }
-
+fn multiple_sources_require_an_explicit_resource_source() {
     let input = r#"
-[source.local]
-kind = "files"
-root = "data"
-
-[resource.events]
-glob = "*.ndjson"
-format = "ndjson"
-write_disposition = "append"
-trust = "governed"
-schema = { fields = [{ name = "id", type = "int64" }] }
-"#;
-    let compiled = compile_document_with_project_root(&parse_toml(input).unwrap(), root.path())
-        .unwrap()
-        .remove(0);
-    let resource = compiled
-        .to_file_resource(test_file_dependencies(FileTransportFacade::new()))
-        .unwrap();
-    (root, resource)
-}
-
-fn compile_local_file_runtime_resource(
-    root: &TempDir,
-    glob: &str,
-    compression: Option<&str>,
-) -> FileResource {
-    let compression_line = compression
-        .map(|value| format!(r#"compression = "{value}""#))
-        .unwrap_or_default();
-    let input = format!(
-        r#"
-[source.local]
-kind = "files"
-root = "data"
-
-[resource.events]
-glob = "{glob}"
-format = "ndjson"
-{compression_line}
-write_disposition = "append"
-trust = "governed"
-schema = {{ fields = [{{ name = "id", type = "int64" }}] }}
-"#
-    );
-    compile_document_with_project_root(&parse_toml(&input).unwrap(), root.path())
-        .unwrap()
-        .remove(0)
-        .into_file_resource(test_file_dependencies(FileTransportFacade::new()))
-        .unwrap()
-}
-
-fn compile_inferred_binary_resource(root: &TempDir, glob: &str) -> FileResource {
-    let input = format!(
-        r#"
-[source.local]
-kind = "files"
-root = "data"
-
-[resource.events]
-glob = "{glob}"
-write_disposition = "append"
-trust = "governed"
-"#
-    );
-    compile_document_with_project_root(&parse_toml(&input).unwrap(), root.path())
-        .unwrap()
-        .remove(0)
-        .into_file_resource(test_file_dependencies(FileTransportFacade::new()))
-        .unwrap()
-}
-
-#[derive(Clone)]
-struct MetadataOnlyHttpTransport {
-    size_bytes: u64,
-    payload_opens: Arc<AtomicUsize>,
-}
-
-impl MetadataOnlyHttpTransport {
-    fn new(size_bytes: u64) -> Self {
-        Self {
-            size_bytes,
-            payload_opens: Arc::new(AtomicUsize::new(0)),
-        }
-    }
-
-    fn payload_opens(&self) -> usize {
-        self.payload_opens.load(Ordering::Relaxed)
-    }
-}
-
-impl FileTransport for MetadataOnlyHttpTransport {
-    fn metadata(
-        &self,
-        resource: &FileTransportResource,
-    ) -> cdf_kernel::Result<cdf_source_files::FileMetadataObservation> {
-        let FileTransportLocation::HttpUrl { url } = &resource.location else {
-            panic!("test transport expects an HTTP URL");
-        };
-        Ok(cdf_source_files::FileMetadataObservation::direct(
-            resource,
-            FileIdentityMetadata {
-                location: url.clone(),
-                size_bytes: Some(self.size_bytes),
-                checksum: None,
-                etag: Some("fixture-etag".to_owned()),
-                version: None,
-                modified: None,
-            },
-        ))
-    }
-
-    fn list(
-        &self,
-        _resource: &FileTransportResource,
-    ) -> cdf_kernel::Result<Vec<FileIdentityMetadata>> {
-        Err(CdfError::contract(
-            "test transport does not support listing",
-        ))
-    }
-
-    fn open_byte_source(
-        &self,
-        _resource: &FileTransportResource,
-        _expected: &FileIdentityMetadata,
-        _memory: Arc<dyn cdf_memory::MemoryCoordinator>,
-    ) -> cdf_kernel::Result<Arc<dyn cdf_runtime::ByteSource>> {
-        self.payload_opens.fetch_add(1, Ordering::Relaxed);
-        Err(CdfError::internal(
-            "metadata-only planning test double cannot be installed as a file runtime",
-        ))
-    }
-}
-
-fn test_id_batch(id: i64) -> RecordBatch {
-    let schema = Arc::new(arrow_schema::Schema::new(vec![Field::new(
-        "id",
-        DataType::Int64,
-        false,
-    )]));
-    RecordBatch::try_new(schema, vec![Arc::new(Int64Array::from(vec![id]))]).unwrap()
-}
-
-fn write_test_parquet(path: &Path, id: i64) {
-    let bytes =
-        cdf_package::transcode_record_batches_to_parquet_bytes(&[test_id_batch(id)]).unwrap();
-    fs::write(path, bytes).unwrap();
-}
-
-fn write_test_arrow(path: &Path, id: i64) {
-    let batch = test_id_batch(id);
-    let file = fs::File::create(path).unwrap();
-    let mut writer = FileWriter::try_new(file, batch.schema().as_ref()).unwrap();
-    writer.write(&batch).unwrap();
-    writer.finish().unwrap();
-}
-
-fn assert_preview_run_first_id(resource: &FileResource, expected: i64) {
-    let request = scan_request_for(resource);
-    let partition = resource.plan_partitions(&request).unwrap().remove(0);
-    let preview = drain_batches(
-        futures_executor::block_on(resource.open_preview(partition.clone())).unwrap(),
-    );
-    let run = drain_batches(futures_executor::block_on(resource.open(partition)).unwrap());
-    assert_eq!(first_i64_value(&preview), expected);
-    assert_eq!(first_i64_value(&run), expected);
-    assert_eq!(
-        preview[0].record_batch().unwrap(),
-        run[0].record_batch().unwrap()
-    );
-}
-
-fn gzip_bytes(bytes: &[u8]) -> Vec<u8> {
-    let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
-    encoder.write_all(bytes).unwrap();
-    encoder.finish().unwrap()
-}
-
-fn zstd_bytes(bytes: &[u8]) -> Vec<u8> {
-    zstd::stream::encode_all(Cursor::new(bytes), 0).unwrap()
-}
-
-fn scan_request_for(resource: &(impl ResourceStream + ?Sized)) -> ScanRequest {
-    ScanRequest {
-        resource_id: resource.descriptor().resource_id.clone(),
-        projection: None,
-        filters: Vec::new(),
-        limit: None,
-        order_by: Vec::new(),
-        scope: ScopeKey::Resource,
-    }
-}
-
-fn partition_file_names(partitions: &[cdf_kernel::PartitionPlan]) -> Vec<String> {
-    partitions
-        .iter()
-        .map(|partition| {
-            Path::new(partition.metadata.get("path").unwrap())
-                .file_name()
-                .unwrap()
-                .to_str()
-                .unwrap()
-                .to_owned()
-        })
-        .collect()
-}
-
-fn first_i64_value(batches: &[cdf_kernel::Batch]) -> i64 {
-    let batch = batches[0].record_batch().unwrap();
-    batch
-        .column(0)
-        .as_any()
-        .downcast_ref::<Int64Array>()
-        .unwrap()
-        .value(0)
-}
-
-fn expect_open_error(result: cdf_kernel::Result<cdf_kernel::OpenedPartitionStream>) -> CdfError {
-    match result {
-        Ok(_) => panic!("REST open unexpectedly succeeded"),
-        Err(error) => error,
-    }
-}
-
-fn expect_open_or_stream_error(
-    result: cdf_kernel::Result<cdf_kernel::OpenedPartitionStream>,
-) -> CdfError {
-    match result {
-        Err(error) => error,
-        Ok(mut stream) => match futures_executor::block_on(stream.next()) {
-            Some(Err(error)) => error,
-            Some(Ok(_)) => panic!("malformed input emitted a partial batch before failing"),
-            None => panic!("malformed input completed without an error"),
-        },
-    }
-}
-
-fn cursor_string(position: &Option<SourcePosition>) -> String {
-    match position {
-        Some(SourcePosition::Cursor(position)) => match &position.value {
-            CursorValue::String(value) => value.clone(),
-            other => panic!("expected string cursor position, got {other:?}"),
-        },
-        other => panic!("expected cursor source position, got {other:?}"),
-    }
-}
-
-fn first_cursor_value(input: &str, expression: &str, body: &str) -> CursorValue {
-    let resource = compile_document(&parse_toml(input).unwrap())
-        .unwrap()
-        .remove(0);
-    let plan = resource
-        .negotiate(&rest_cursor_request(&resource, expression))
-        .unwrap();
-    let dependencies = RestRuntimeDependencies::new(RecordingTransport::new([json_response(body)]))
-        .with_secret_provider(StaticSecretProvider::new([(
-            "secret://env/API_TOKEN",
-            "token-1",
-        )]));
-    let rest = resource.to_rest_resource(dependencies).unwrap();
-    let batches =
-        drain_batches(futures_executor::block_on(rest.open(plan.partitions[0].clone())).unwrap());
-    match &batches[0].header.source_position {
-        Some(SourcePosition::Cursor(position)) => position.value.clone(),
-        other => panic!("expected cursor source position, got {other:?}"),
-    }
-}
-
-fn rest_partition(resource: &CompiledResource) -> cdf_kernel::PartitionPlan {
-    resource
-        .plan_partitions(&ScanRequest {
-            resource_id: resource.descriptor().resource_id.clone(),
-            projection: None,
-            filters: Vec::new(),
-            limit: None,
-            order_by: Vec::new(),
-            scope: resource.descriptor().state_scope.clone(),
-        })
-        .unwrap()
-        .remove(0)
-}
-
-fn rest_decimal_pages_input() -> &'static str {
-    r#"
 [source.api]
-kind = "rest"
-base_url = "https://api.example.com"
-egress_allowlist = ["api.example.com"]
+kind = "httpish"
+endpoint = "https://example.test"
 
-[resource.metrics]
-path = "/metrics"
-records = "$.items"
-paginate = { kind = "next_token", query_param = "page_token", response_field = "next_token" }
-write_disposition = "append"
+[source.db]
+kind = "tableish"
+dsn = "secret://db/main"
+
+[resource.events]
+path = "/events"
 trust = "governed"
-schema = { fields = [
-  { name = "id", type = "int64", nullable = false },
-  { name = "amount", type = "decimal(20,0)", nullable = false },
-] }
-"#
+"#;
+    let error = compile(input).unwrap_err();
+    assert!(error.message.contains("source must be declared"));
+}
+
+#[test]
+fn explicit_source_selects_the_matching_driver() {
+    let input = r#"
+[source.api]
+kind = "httpish"
+endpoint = "https://example.test"
+
+[source.db]
+kind = "tableish"
+dsn = "secret://db/main"
+
+[resource.orders]
+source = "db"
+table = "public.orders"
+trust = "governed"
+"#;
+    let resource = compile(input).unwrap().remove(0);
+    assert_eq!(resource.descriptor().resource_id.as_str(), "db.orders");
+    assert_eq!(resource.source_plan().driver.driver_id.as_str(), "tableish");
+}
+
+#[test]
+fn unknown_source_kind_fails_at_the_registry_boundary() {
+    let input = base_document("").replace("kind = \"httpish\"", "kind = \"missing\"");
+    let error = compile(&input).unwrap_err();
+    assert!(error.message.contains("missing"));
+}
+
+#[test]
+fn append_is_keyless_by_default_and_merge_names_both_fixes() {
+    let append = compile(&base_document("")).unwrap().remove(0);
+    assert_eq!(
+        append.descriptor().write_disposition,
+        WriteDisposition::Append
+    );
+    assert!(append.descriptor().primary_key.is_empty());
+    assert!(append.descriptor().merge_key.is_empty());
+
+    let error = compile(&base_document("write_disposition = \"merge\"")).unwrap_err();
+    assert!(error.message.contains("merge_key"));
+    assert!(error.message.contains("append"));
+}
+
+#[test]
+fn merge_and_exact_row_dedup_compile_only_for_their_valid_dispositions() {
+    let merged = compile(&base_document(
+        "write_disposition = \"merge\"\nmerge_key = [\"id\"]",
+    ))
+    .unwrap()
+    .remove(0);
+    assert_eq!(merged.descriptor().merge_key, vec!["id"]);
+
+    let deduped = compile(&base_document("deduplicate = \"exact_row\""))
+        .unwrap()
+        .remove(0);
+    assert_eq!(
+        deduped.descriptor().deduplication,
+        Some(DeduplicationSpec::ExactRow)
+    );
+
+    let error = compile(&base_document(
+        "write_disposition = \"replace\"\ndeduplicate = \"exact_row\"",
+    ))
+    .unwrap_err();
+    assert!(error.message.contains("valid only with append"));
+}
+
+#[test]
+fn schema_modes_have_one_unambiguous_baseline() {
+    let discovered = compile(&base_document("schema_mode = \"discover\""))
+        .unwrap()
+        .remove(0);
+    assert_eq!(
+        discovered.descriptor().schema_source,
+        SchemaSource::Discover
+    );
+
+    let hints = compile(&base_document(
+        "schema_mode = \"hints\"\nschema = { fields = [{ name = \"id\", type = \"int64\" }] }",
+    ))
+    .unwrap()
+    .remove(0);
+    assert!(matches!(
+        hints.descriptor().schema_source,
+        SchemaSource::Hints { .. }
+    ));
+
+    let error = compile(&base_document("schema_mode = \"hints\"")).unwrap_err();
+    assert!(error.message.contains("requires a schema block"));
+    let error = compile(&base_document(
+        "schema_mode = \"discover\"\nschema = { fields = [{ name = \"id\", type = \"int64\" }] }",
+    ))
+    .unwrap_err();
+    assert!(error.message.contains("cannot carry a schema block"));
+}
+
+#[test]
+fn declared_schema_is_normalized_and_preserves_source_identity() {
+    let resource = compile(&base_document(
+        "schema = { fields = [{ name = \"VendorID\", type = \"int32\", nullable = false }] }",
+    ))
+    .unwrap()
+    .remove(0);
+    let schema = resource.schema();
+    assert_eq!(schema.field(0).name(), "vendor_id");
+    assert_eq!(schema.field(0).data_type(), &DataType::Int32);
+    assert_eq!(schema.field(0).metadata()["cdf:source_name"], "VendorID");
+    assert!(matches!(
+        resource.descriptor().schema_source,
+        SchemaSource::Declared { .. }
+    ));
+}
+
+#[test]
+fn normalization_collisions_fail_before_driver_compilation() {
+    let error = compile(&base_document(
+        "schema = { fields = [{ name = \"VendorID\", type = \"int32\" }, { name = \"vendor_id\", type = \"int64\" }] }",
+    ))
+    .unwrap_err();
+    assert!(error.message.contains("collision"));
+}
+
+#[test]
+fn required_keys_and_cursor_fields_must_exist_in_declared_schema_and_sample() {
+    let error = compile(&base_document(
+        "primary_key = [\"missing\"]\nschema = { fields = [{ name = \"id\", type = \"int64\" }] }",
+    ))
+    .unwrap_err();
+    assert!(error.message.contains("missing required field"));
+
+    let error = compile(&base_document(
+        "cursor = { field = \"updated_at\", ordering = \"exact\", lag = \"0ms\" }\nsample = { fields = [\"id\"] }",
+    ))
+    .unwrap_err();
+    assert!(error.message.contains("sample"));
+}
+
+#[test]
+fn type_allowances_are_explicit_and_compiled_into_the_source_plan() {
+    let defaults = compile(&base_document("")).unwrap().remove(0);
+    assert!(!defaults.type_policy_allowances().coerce_types);
+    assert!(!defaults.type_policy_allowances().allow_lossy_mapping);
+
+    let configured = compile(&base_document(
+        "types = { coerce_types = true, allow_lossy_mapping = true }",
+    ))
+    .unwrap()
+    .remove(0);
+    assert!(configured.source_plan().type_policy_allowances.coerce_types);
+    assert!(
+        configured
+            .source_plan()
+            .type_policy_allowances
+            .allow_lossy_mapping
+    );
+}
+
+#[test]
+fn trust_and_partition_semantics_are_common_compiler_concerns() {
+    let resource = compile(&base_document(
+        "partition = { by = \"cursor_window\", width = \"2h\" }",
+    ))
+    .unwrap()
+    .remove(0);
+    assert_eq!(resource.descriptor().trust_level, TrustLevel::Governed);
+    assert_eq!(
+        resource.descriptor().state_scope,
+        ScopeKey::Window {
+            start: "cursor".to_owned(),
+            end: "cursor+2h".to_owned(),
+        }
+    );
+
+    let error = compile(&base_document("partition = { by = \"cursor_window\" }")).unwrap_err();
+    assert!(error.message.contains("must declare width"));
+}
+
+#[test]
+fn yaml_and_toml_share_the_open_declaration_model() {
+    let yaml = r#"
+source:
+  api:
+    kind: httpish
+    endpoint: https://example.test
+resource:
+  events:
+    path: /events
+    trust: governed
+"#;
+    let resource = compile_document(&test_registry(), &parse_yaml(yaml).unwrap())
+        .unwrap()
+        .remove(0);
+    assert_eq!(resource.descriptor().resource_id.as_str(), "api.events");
+}
+
+#[test]
+fn arrow_type_vocabulary_covers_widths_decimal_temporal_binary_and_nested_types() {
+    let cases = [
+        ("int8", DataType::Int8),
+        ("uint32", DataType::UInt32),
+        ("float16", DataType::Float16),
+        ("decimal(38,9)", DataType::Decimal128(38, 9)),
+        ("decimal256(76,18)", DataType::Decimal256(76, 18)),
+        ("date64", DataType::Date64),
+        ("time32(ms)", DataType::Time32(TimeUnit::Millisecond)),
+        ("duration(ns)", DataType::Duration(TimeUnit::Nanosecond)),
+        ("large_utf8", DataType::LargeUtf8),
+        ("large_binary", DataType::LargeBinary),
+        ("list<int64>", DataType::new_list(DataType::Int64, true)),
+    ];
+    for (declaration, expected) in cases {
+        assert_eq!(
+            parse_arrow_field_type(declaration).unwrap(),
+            expected,
+            "{declaration}"
+        );
+    }
+    assert_eq!(
+        parse_arrow_field_type("timestamp(us, UTC)").unwrap(),
+        DataType::Timestamp(TimeUnit::Microsecond, Some("UTC".into()))
+    );
+    assert_eq!(
+        parse_arrow_field_type("struct<id: int64, labels: list<utf8>>").unwrap(),
+        DataType::Struct(
+            vec![
+                Field::new("id", DataType::Int64, true),
+                Field::new("labels", DataType::new_list(DataType::Utf8, true), true),
+            ]
+            .into()
+        )
+    );
+}
+
+#[test]
+fn invalid_arrow_type_names_the_offending_declaration() {
+    let error = parse_arrow_field_type("decimal(0,9)").unwrap_err();
+    assert!(error.message.contains("decimal(0,9)"));
+    let error = parse_arrow_field_type("list<int64").unwrap_err();
+    assert!(error.message.contains("list<int64"));
+}
+
+#[test]
+fn physical_schema_hash_is_stable_and_metadata_sensitive() {
+    let schema = Schema::new(vec![Field::new("id", DataType::Int64, false)]);
+    assert_eq!(
+        physical_arrow_schema_hash(&schema).unwrap(),
+        physical_arrow_schema_hash(&schema).unwrap()
+    );
+    let changed = Schema::new(vec![
+        Field::new("id", DataType::Int64, false).with_metadata(HashMap::from([(
+            "source".to_owned(),
+            "physical".to_owned(),
+        )])),
+    ]);
+    assert_ne!(
+        physical_arrow_schema_hash(&schema).unwrap(),
+        physical_arrow_schema_hash(&changed).unwrap()
+    );
+}
+
+#[test]
+fn schema_rebinding_updates_the_compiled_plan_without_recompiling_the_driver() {
+    let resource = compile(&base_document("")).unwrap().remove(0);
+    let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, false)]));
+    let hash = physical_arrow_schema_hash(schema.as_ref()).unwrap();
+    let rebound = resource.with_schema_source_and_schema(
+        SchemaSource::Declared {
+            schema_hash: hash,
+            source: "test".to_owned(),
+        },
+        Arc::clone(&schema),
+    );
+    assert_eq!(rebound.schema(), schema);
+    assert_eq!(rebound.source_plan().schema, *schema);
+    assert_eq!(
+        rebound.source_plan().descriptor.schema_source,
+        rebound.descriptor().schema_source
+    );
+}
+
+#[test]
+fn generated_schema_merges_common_and_driver_fields_into_closed_objects() {
+    let artifact = declarative_json_schema_artifact(&test_registry()).unwrap();
+    assert_eq!(artifact.version, "cdf-declarative-v3");
+    let definitions = artifact.schema["$defs"].as_object().unwrap();
+    let sources = definitions["SourceDeclaration"]["oneOf"]
+        .as_array()
+        .unwrap();
+    assert_eq!(sources.len(), 2);
+    assert!(sources.iter().all(|variant| variant.get("allOf").is_none()));
+    let httpish = sources
+        .iter()
+        .find(|variant| variant["properties"]["kind"]["const"] == "httpish")
+        .unwrap();
+    assert_eq!(httpish["additionalProperties"], false);
+    assert!(httpish["properties"].get("endpoint").is_some());
+    assert!(httpish["properties"].get("kind").is_some());
+
+    let resources = definitions["ResourceDeclaration"]["anyOf"]
+        .as_array()
+        .unwrap();
+    assert_eq!(resources.len(), 2);
+    assert!(
+        resources
+            .iter()
+            .all(|variant| variant.get("allOf").is_none())
+    );
+    let http_resource = resources
+        .iter()
+        .find(|variant| variant["properties"].get("path").is_some())
+        .unwrap();
+    assert_eq!(http_resource["additionalProperties"], false);
+    assert!(http_resource["properties"].get("trust").is_some());
+    assert!(http_resource["properties"].get("path").is_some());
 }

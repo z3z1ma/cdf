@@ -30,7 +30,7 @@ pub(crate) const SOURCE_POSITION_PATH: &str = "events.ndjson";
 pub(crate) const SOURCE_CONTENTS: &str =
     "{\"id\":1,\"name\":\"ada\"}\n{\"id\":2,\"name\":\"grace\"}\n";
 pub(crate) const SOURCE_SHA256: &str =
-    "b8ecb46f86694505cef18e88722db9f4bc3a7c07cfb62230bf7ad123e61c9cb6";
+    "sha256:b8ecb46f86694505cef18e88722db9f4bc3a7c07cfb62230bf7ad123e61c9cb6";
 pub(crate) const SOURCE_SIZE_BYTES: u64 = 46;
 
 pub(crate) fn resource(
@@ -75,8 +75,13 @@ fn compile_resource(
     let resource_toml = resource_toml(disposition, glob);
     let resolver =
         InMemoryResourceSourceResolver::new().with_toml("resources/live.toml", resource_toml);
-    let mut resources =
-        compile_project_declarative_resources_with_root(&config, &resolver, project_root)?;
+    let source_registry = crate::source_fixture::local_file_registry()?;
+    let mut resources = compile_project_declarative_resources_with_root(
+        &source_registry,
+        &config,
+        &resolver,
+        project_root,
+    )?;
     if resources.len() != 1 {
         return Err(CdfError::contract(format!(
             "run matrix expected one file resource, found {}",
@@ -100,7 +105,11 @@ pub(crate) fn assert_source_position(report: &ProjectRunReport) {
     assert_eq!(manifest.version, 1);
     assert_eq!(manifest.files.len(), 1);
     let file = &manifest.files[0];
-    assert!(file.path.ends_with(SOURCE_POSITION_PATH));
+    assert!(
+        file.path.ends_with(SOURCE_POSITION_PATH),
+        "file checkpoint path `{}` does not end with `{SOURCE_POSITION_PATH}`",
+        file.path
+    );
     assert_eq!(file.size_bytes, SOURCE_SIZE_BYTES);
     assert_eq!(file.sha256.as_deref(), Some(SOURCE_SHA256));
 }

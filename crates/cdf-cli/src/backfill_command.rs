@@ -27,10 +27,10 @@ use crate::{
 pub(crate) fn backfill(
     cli: &Cli,
     args: BackfillArgs,
-    execution: Option<(
+    execution: (
         &cdf_engine::StandaloneExecutionHost,
         &cdf_runtime::ExecutionServices,
-    )>,
+    ),
     destinations: &cdf_runtime::DestinationRegistry,
 ) -> Result<CommandOutput, CliError> {
     let context = ProjectContext::load(cli.project.as_ref(), cli.env.as_deref())?;
@@ -41,8 +41,17 @@ pub(crate) fn backfill(
             .unwrap_or_else(|| default_target_for_resource(&args.resource_id)),
     )?;
     let source_plan = crate::project_run_resource::compile_source_plan_for_cli(resource)?;
-    let plan = plan_backfill(
+    let (host, services) = execution;
+    let run_resource = build_project_run_resource(
+        &context,
         resource,
+        source_plan.clone(),
+        Some(services),
+        cdf_runtime::PreparedSourcePayloads::default(),
+    )?;
+    let source = run_resource.as_project_resource();
+    let plan = plan_backfill(
+        source.queryable(),
         Some(&source_plan),
         BackfillPlanRequest {
             target: target.clone(),
@@ -57,19 +66,6 @@ pub(crate) fn backfill(
         return CommandOutput::rendered("backfill", report.render_document(), report);
     }
 
-    let (host, services) = execution.ok_or_else(|| {
-        CliError::from(CdfError::internal(
-            "backfill execution host was not provided",
-        ))
-    })?;
-    let run_resource = build_project_run_resource(
-        &context,
-        resource,
-        source_plan,
-        Some(services),
-        cdf_runtime::PreparedSourcePayloads::default(),
-    )?;
-    let source = run_resource.as_project_resource();
     source.validate_supported().map_err(CliError::from)?;
     let pipeline_id = backfill_pipeline_id()?;
     let progress = human_progress_sink(cli.json, &cli.terminal);

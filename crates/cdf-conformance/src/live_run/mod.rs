@@ -273,8 +273,13 @@ pub async fn run_live_local_file_fixture_with_destination(
     let config = parse_cdf_toml(CDF_PROJECT_TOML)?;
     let resolver =
         InMemoryResourceSourceResolver::new().with_toml("resources/live.toml", LIVE_RESOURCE_TOML);
-    let mut resources =
-        compile_project_declarative_resources_with_root(&config, &resolver, &spec.project_root)?;
+    let source_registry = crate::source_fixture::local_file_registry()?;
+    let mut resources = compile_project_declarative_resources_with_root(
+        &source_registry,
+        &config,
+        &resolver,
+        &spec.project_root,
+    )?;
     if resources.len() != 1 {
         return Err(CdfError::contract(format!(
             "live conformance fixture expected one resource, found {}",
@@ -291,36 +296,50 @@ pub async fn run_live_local_file_fixture_with_destination(
     let runtime_resource =
         crate::source_fixture::resolve_local_file(&resource, &spec.project_root)?;
 
-    let mut policy = ContractPolicy::for_trust(runtime_resource.descriptor().trust_level.clone());
+    let mut policy = ContractPolicy::for_trust(
+        runtime_resource
+            .queryable()
+            .descriptor()
+            .trust_level
+            .clone(),
+    );
     if let Some(identifier_policy) = destination.column_identifier_policy()? {
         policy.normalization.identifier = identifier_policy;
     }
     let validation_program = compile_validation_program(
         &policy,
-        &ObservedSchema::from_arrow(runtime_resource.schema().as_ref()),
+        &ObservedSchema::from_arrow(runtime_resource.queryable().schema().as_ref()),
     )?;
-    let mut plan = Planner::new().plan_tier_b(
-        runtime_resource.as_ref(),
+    let plan = Planner::new().plan_tier_b(
+        runtime_resource.queryable(),
         EnginePlanInput {
             request: ScanRequest {
-                resource_id: runtime_resource.descriptor().resource_id.clone(),
+                resource_id: runtime_resource
+                    .queryable()
+                    .descriptor()
+                    .resource_id
+                    .clone(),
                 projection: None,
                 filters: Vec::new(),
                 limit: None,
                 order_by: Vec::new(),
-                scope: runtime_resource.descriptor().state_scope.clone(),
+                scope: runtime_resource
+                    .queryable()
+                    .descriptor()
+                    .state_scope
+                    .clone(),
             },
             validation_program,
             execution_extent: ExecutionExtent::bounded(),
             package_id: spec.package_id.clone(),
         },
     )?;
-    stabilize_live_fixture_plan(&mut plan);
+    let plan = runtime_resource.bind_plan(plan)?;
 
     let services = crate::test_execution_services();
     run_project(
         ProjectRunRequest {
-            resource: ProjectRunSource::new(runtime_resource.as_ref()),
+            resource: ProjectRunSource::new(runtime_resource.queryable()),
             plan,
             package_root: spec.package_root,
             state_store_path: spec.state_store_path,
@@ -335,21 +354,6 @@ pub async fn run_live_local_file_fixture_with_destination(
         &services,
     )
     .await
-}
-
-fn stabilize_live_fixture_plan(plan: &mut cdf_engine::EnginePlan) {
-    for partition in &mut plan.scan.partitions {
-        partition.metadata.remove("modified_ms");
-        partition
-            .metadata
-            .remove(cdf_kernel::PLAN_SCHEMA_OBSERVATION_BINDING_KEY);
-    }
-    for partition in &mut plan.explain.partitions {
-        partition.metadata.remove("modified_ms");
-        partition
-            .metadata
-            .remove(cdf_kernel::PLAN_SCHEMA_OBSERVATION_BINDING_KEY);
-    }
 }
 
 pub fn assert_live_run_matches_expected(

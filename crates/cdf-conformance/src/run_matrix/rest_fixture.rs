@@ -1,7 +1,10 @@
-use cdf_declarative::{CompiledResource, RestResource};
+use std::{path::Path, sync::Arc};
+
+use cdf_declarative::CompiledResource;
 use cdf_http::HttpMethod;
 use cdf_kernel::{CdfError, CursorValue, Result, SourcePosition};
 use cdf_project::ProjectRunReport;
+use cdf_runtime::SourceResolutionContext;
 
 use super::{
     MatrixDisposition,
@@ -13,20 +16,30 @@ const SECRET_REF: &str = "secret://env/API_TOKEN";
 
 pub(crate) fn resource(
     disposition: MatrixDisposition,
-) -> Result<(RestResource, RecordingTransport)> {
-    let document = cdf_declarative::parse_toml(&resource_toml(disposition))?;
-    let compiled = one_resource(cdf_declarative::compile_document(&document)?)?;
+) -> Result<(
+    crate::source_fixture::ResolvedSourceFixture,
+    RecordingTransport,
+)> {
     let transport = RecordingTransport::new([json_response(
         r#"{ "items": [
             { "id": 1, "name": "ada", "updated_at": 10 },
             { "id": 2, "name": "grace", "updated_at": 20 }
         ] }"#,
     )]);
-    let resource = compiled.to_rest_resource(
-        crate::test_rest_runtime_dependencies(transport.clone()).with_secret_provider(
-            StaticSecretProvider::new([(SECRET_REF, "run-matrix-token")]),
-        ),
-    )?;
+    let registry = crate::test_rest_source_registry(transport.clone())?;
+    let document = cdf_declarative::parse_toml(&resource_toml(disposition))?;
+    let compiled = one_resource(cdf_declarative::compile_document(&registry, &document)?)?;
+    let execution = crate::test_execution_services();
+    let context = SourceResolutionContext::new(
+        Path::new("."),
+        Arc::new(StaticSecretProvider::new([(
+            SECRET_REF,
+            "run-matrix-token",
+        )])),
+        &execution,
+    );
+    let resource =
+        crate::source_fixture::ResolvedSourceFixture::resolve(&compiled, &registry, &context)?;
     Ok((resource, transport))
 }
 

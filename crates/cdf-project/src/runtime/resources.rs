@@ -20,22 +20,6 @@ impl<'a> ProjectRunSource<'a> {
         Self { resource }
     }
 
-    pub fn local_file(resource: &'a CompiledResource) -> Self {
-        Self::new(resource)
-    }
-
-    pub fn file(resource: &'a FileResource) -> Self {
-        Self::new(resource)
-    }
-
-    pub fn rest(resource: &'a RestResource) -> Self {
-        Self::new(resource)
-    }
-
-    pub fn sql(resource: &'a SqlResource) -> Self {
-        Self::new(resource)
-    }
-
     pub fn stream(self) -> &'a dyn ResourceStream {
         self.resource
     }

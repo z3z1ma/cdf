@@ -11,8 +11,7 @@ use std::{
 
 use cdf_contract::{ContractPolicy, ObservedSchema, compile_validation_program};
 use cdf_declarative::{
-    CompiledResource, RestRuntimeDependencies, compile_document,
-    compile_document_with_project_root, parse_toml,
+    CompiledResource, compile_document, compile_document_with_project_root, parse_toml,
 };
 use cdf_dest_postgres::{MergeDedupPolicy, PostgresTarget};
 use cdf_engine::{
@@ -309,34 +308,24 @@ schema = {{ fields = [
         serde_json::to_string(format_id)?,
         fields.join(",\n")
     ))?;
-    let compiled = compile_document_with_project_root(&document, source_root)?
+    let registry = benchmark_source_registry()?;
+    let compiled = compile_document_with_project_root(&registry, &document, source_root)?
         .into_iter()
         .next()
         .ok_or_else(|| bench_error("benchmark file declaration compiled no resource"))?;
-    resolve_benchmark_file_resource(compiled, source_root, execution)
+    resolve_benchmark_file_resource(compiled, &registry, source_root, execution)
 }
 
 fn resolve_benchmark_file_resource(
     compiled: CompiledResource,
+    registry: &SourceRegistry,
     project_root: &Path,
     execution: &cdf_runtime::ExecutionServices,
 ) -> BenchResult<BenchmarkFileSource> {
     let secrets = Arc::new(EnvSecretProvider::from_map(
         std::iter::empty::<(&str, &str)>(),
     ));
-    let request = compiled.source_compile_request().cloned().ok_or_else(|| {
-        bench_error(format!(
-            "benchmark resource `{}` omitted its source compile request",
-            compiled.descriptor().resource_id
-        ))
-    })?;
-    let registry = benchmark_source_registry()?;
-    let source_plan = registry.compile(request)?.bind_schema_authority(
-        compiled.descriptor(),
-        compiled.schema().as_ref(),
-        compiled.effective_schema_runtime().cloned(),
-        compiled.baseline_observation_schema_catalog().to_vec(),
-    )?;
+    let source_plan = compiled.source_plan().clone();
     let resolution = SourceResolutionContext::new(project_root, secrets, execution);
     let resource = registry.resolve(&source_plan, &resolution)?;
     Ok(BenchmarkFileSource {
@@ -804,6 +793,12 @@ fn run_file_to_package(
 }
 
 fn run_rest_decode(spec: &FixtureSpec) -> BenchResult<WorkMetric> {
+    let transport = FixtureTransport::new(rest_fixture_body(spec));
+    let mut registry = SourceRegistry::new();
+    let runtime_transport = transport.clone();
+    registry.register(cdf_source_rest::RestSourceDriver::new(move || {
+        Ok(Box::new(runtime_transport.clone()))
+    })?)?;
     let document = parse_toml(
         r#"
 [source.api]
@@ -824,7 +819,7 @@ schema = { fields = [
 ] }
 "#,
     )?;
-    let compiled = compile_document(&document)?.remove(0);
+    let compiled = compile_document(&registry, &document)?.remove(0);
     let execution =
         cdf_engine::StandaloneExecutionHost::default_services(BENCHMARK_MANAGED_MEMORY_BYTES)?.1;
     execution.ensure_blocking_lanes(&[cdf_runtime::BlockingLaneSpec {
@@ -835,10 +830,14 @@ schema = { fields = [
         affinity: cdf_runtime::LaneAffinity::Shared,
         interruption: cdf_runtime::InterruptionSafety::CooperativeOnly,
     }])?;
-    let resource = compiled.to_rest_resource(RestRuntimeDependencies::new(
-        FixtureTransport::new(rest_fixture_body(spec)),
-        execution,
-    ))?;
+    let resolution = SourceResolutionContext::new(
+        Path::new("."),
+        Arc::new(EnvSecretProvider::from_map(
+            std::iter::empty::<(&str, &str)>(),
+        )),
+        &execution,
+    );
+    let resource = registry.resolve(compiled.source_plan(), &resolution)?;
     let request = ScanRequest {
         resource_id: resource.descriptor().resource_id.clone(),
         projection: None,
@@ -982,9 +981,11 @@ schema = { fields = [
 ] }
 "#,
     )?;
-    let resource = compile_document_with_project_root(&document, &project_root)?.remove(0);
+    let registry = benchmark_source_registry()?;
+    let resource =
+        compile_document_with_project_root(&registry, &document, &project_root)?.remove(0);
     let services = benchmark_execution_services(available_host_jobs())?;
-    let source = resolve_benchmark_file_resource(resource, &project_root, &services)?;
+    let source = resolve_benchmark_file_resource(resource, &registry, &project_root, &services)?;
     let package_id = "pkg-startup-benchmark";
     let destination = ResolvedProjectDestination::new(
         Box::new(cdf_dest_duckdb::DuckDbDestination::new(

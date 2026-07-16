@@ -1,9 +1,9 @@
-use cdf_declarative::{CompiledResource, FileRuntimeDependencies, FileTransportFacade};
-use cdf_kernel::{QueryableResource, ResourceStream};
+use cdf_declarative::CompiledResource;
+use cdf_kernel::QueryableResource;
 use cdf_project::{ProjectRunSource, ResourceSourceKind, TrustPreset};
 use std::sync::Arc;
 
-use crate::{context::ProjectContext, http_transport::ReqwestHttpTransport, output::CliError};
+use crate::{context::ProjectContext, output::CliError};
 
 pub(crate) struct PreparedRuntimeResourceForCli {
     pub(crate) resource: CliProjectRunSource,
@@ -112,13 +112,8 @@ fn build_python_project_run_resource(
 pub(crate) fn build_project_resource_for_inspection(
     context: &ProjectContext,
     resource_id: &str,
-) -> Result<CliProjectRunSource, CliError> {
-    match build_python_project_run_resource(context, resource_id, None)? {
-        Some(resource) => Ok(resource),
-        None => Ok(CliProjectRunSource::new(
-            context.resource(resource_id)?.clone(),
-        )),
-    }
+) -> Result<Option<CliProjectRunSource>, CliError> {
+    build_python_project_run_resource(context, resource_id, None)
 }
 
 pub(crate) fn prepare_runtime_resource_for_cli(
@@ -202,13 +197,8 @@ pub(crate) fn build_project_run_resource(
 pub(crate) fn compile_source_plan_for_cli(
     resource: &CompiledResource,
 ) -> cdf_kernel::Result<cdf_runtime::CompiledSourcePlan> {
-    let request = resource.source_compile_request().ok_or_else(|| {
-        cdf_kernel::CdfError::contract(format!(
-            "resource `{}` has no source compile request",
-            resource.descriptor().resource_id
-        ))
-    })?;
-    crate::source_registry::builtin_source_registry()?.compile(request.clone())
+    resource.source_plan().validate()?;
+    Ok(resource.source_plan().clone())
 }
 
 pub(crate) fn discover_source_schema_for_cli(
@@ -274,25 +264,4 @@ pub(crate) fn preflight_fixed_source_schema_with_plan_for_cli(
         &resolution,
         options,
     )
-}
-
-pub(crate) fn file_runtime_dependencies(
-    context: &ProjectContext,
-    execution: Option<&cdf_runtime::ExecutionServices>,
-) -> Result<FileRuntimeDependencies, CliError> {
-    let mut facade = FileTransportFacade::new()
-        .with_http_transport(ReqwestHttpTransport::new()?)
-        .with_secret_provider(context.secret_provider());
-    if let Some(execution) = execution {
-        facade = facade.with_execution_services(execution.clone());
-    }
-    let execution = execution.ok_or_else(|| {
-        cdf_kernel::CdfError::internal("file runtime dependencies require execution services")
-    })?;
-    Ok(FileRuntimeDependencies::new(
-        facade,
-        execution.clone(),
-        crate::source_registry::builtin_format_registry()?,
-        crate::source_registry::builtin_transform_registry()?,
-    ))
 }

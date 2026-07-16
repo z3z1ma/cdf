@@ -7,41 +7,14 @@ publish = false
 description = "Declarative resource authoring boundary for cdf."
 
 [dependencies]
-arrow-array = "59.1.0"
 arrow-schema = "59.1.0"
 cdf-contract = { path = "../cdf-contract" }
-cdf-source-postgres = { path = "../cdf-source-postgres" }
-cdf-source-files = { path = "../cdf-source-files" }
-cdf-source-rest = { path = "../cdf-source-rest" }
-cdf-http = { path = "../cdf-http" }
 cdf-kernel = { path = "../cdf-kernel" }
 cdf-runtime = { path = "../cdf-runtime" }
-futures-util = "0.3.32"
-futures-executor = "0.3.32"
 hex = "0.4.3"
-object_store = { git = "https://github.com/apache/arrow-rs-object-store.git", rev = "c7316d29face118e7409eead0cda098f38589428", features = ["aws", "azure", "gcp"] }
 schemars = { version = "1.2.1", features = ["derive"] }
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.150"
 serde_yaml = "0.9.34"
 sha2 = "0.10.9"
-tempfile = "3.27.0"
 toml = "1.1.2"
-url = "2.5.8"
-
-[dev-dependencies]
-arrow-ipc = "59.1.0"
-cdf-conformance = { path = "../cdf-conformance" }
-cdf-engine = { path = "../cdf-engine" }
-cdf-format-arrow-ipc = { path = "../cdf-format-arrow-ipc" }
-cdf-format-delimited = { path = "../cdf-format-delimited" }
-cdf-format-json = { path = "../cdf-format-json" }
-cdf-format-parquet = { path = "../cdf-format-parquet" }
-cdf-memory = { path = "../cdf-memory" }
-cdf-package = { path = "../cdf-package" }
-cdf-transform-gzip = { path = "../cdf-transform-gzip" }
-cdf-transform-zstd = { path = "../cdf-transform-zstd" }
-flate2 = "1.1.9"
-futures-executor = "0.3.32"
-tempfile = "3.27.0"
-zstd = "0.13.3"

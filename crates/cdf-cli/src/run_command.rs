@@ -288,7 +288,9 @@ fn synthesize_adhoc_parquet(
     }
 
     let document = parse_declarative_toml(&resource_toml)?;
-    let mut resources = compile_document_with_project_root(&document, &context.root)?;
+    let source_registry = crate::source_registry::builtin_source_registry()?;
+    let mut resources =
+        compile_document_with_project_root(&source_registry, &document, &context.root)?;
     if resources.len() != 1 {
         return Err(CliError::mapped(
             CdfError::internal(format!(

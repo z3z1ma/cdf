@@ -491,12 +491,12 @@ fn option_schema() -> serde_json::Value {
         "resource": {
             "type": "object",
             "additionalProperties": false,
-            "required": ["glob", "compression"],
+            "required": ["glob"],
             "properties": {
                 "glob": {"type": "string", "minLength": 1},
                 "format": {"type": "string", "minLength": 1},
                 "format_options": {"type": "object"},
-                "compression": {"type": "string", "minLength": 1}
+                "compression": {"type": "string", "minLength": 1, "default": "auto"}
             }
         }
     })
@@ -522,6 +522,7 @@ struct FileResourceOptions {
     format: Option<FileFormatDeclaration>,
     #[serde(default = "empty_format_options")]
     format_options: serde_json::Value,
+    #[serde(default)]
     compression: FileCompressionDeclaration,
 }
 

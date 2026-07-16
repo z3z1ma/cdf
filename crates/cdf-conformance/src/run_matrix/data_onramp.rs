@@ -187,8 +187,7 @@ const P2_FRICTIONS: &[P2FrictionRow] = &[
     P2FrictionRow {
         id: 3,
         closed_tests: &[
-            "crates/cdf-declarative/src/tests.rs::declarative_arrow_type_strings_compile_from_toml",
-            "crates/cdf-declarative/src/tests.rs::declarative_arrow_type_strings_compile_from_yaml",
+            "crates/cdf-declarative/src/tests.rs::arrow_type_vocabulary_covers_widths_decimal_temporal_binary_and_nested_types",
         ],
         open_tickets: &[],
     },
@@ -481,10 +480,13 @@ fn p2_s5_rest_discover_pin_preview_run_package_checkpoint_conformance() {
     let first_pin = invoke_success_json(temp.path(), &["schema", "pin", "api.items"], Some(SECRET));
     let first = &first_pin["result"];
     assert_eq!(first["status"], "added");
-    assert_eq!(first["snapshot_metadata"]["probe"], "rest-sample-page");
-    assert_eq!(first["snapshot_metadata"]["source_kind"], "rest");
-    assert_eq!(first["source_identity"]["sample_pages"], "1");
-    assert_eq!(first["source_identity"]["sample_records"], "2");
+    assert_eq!(
+        first["snapshot_metadata"]["probe"],
+        "registered-source-discovery"
+    );
+    assert_eq!(first["snapshot_metadata"]["source_driver"], "rest");
+    assert_eq!(first["source_identity"]["driver.sample_pages"], "1");
+    assert_eq!(first["source_identity"]["driver.sample_records"], "2");
     assert_eq!(first["writes"]["schema_snapshot"], true);
     assert_eq!(first["writes"]["lockfile"], true);
 
@@ -493,7 +495,7 @@ fn p2_s5_rest_discover_pin_preview_run_package_checkpoint_conformance() {
     let snapshot_bytes = fs::read(temp.path().join(&snapshot_path)).unwrap();
     let lock_bytes = fs::read(temp.path().join("cdf.lock")).unwrap();
     let snapshot: Value = serde_json::from_slice(&snapshot_bytes).unwrap();
-    assert_eq!(snapshot["metadata"]["probe"], "rest-sample-page");
+    assert_eq!(snapshot["metadata"]["probe"], "registered-source-discovery");
     let vendor = snapshot["schema"]["fields"]
         .as_array()
         .unwrap()
@@ -687,8 +689,18 @@ fn p2_preview_run_parity_law_covers_supported_archetypes() {
     ];
 
     for cell in cases {
-        let preview = preview_fingerprint(cell, &postgres).unwrap();
-        let executed = core::execute_cell(cell, &postgres).unwrap();
+        let preview = preview_fingerprint(cell, &postgres).unwrap_or_else(|error| {
+            panic!(
+                "{} preview failed before parity comparison: {error}",
+                cell.source_archetype.as_str()
+            )
+        });
+        let executed = core::execute_cell(cell, &postgres).unwrap_or_else(|error| {
+            panic!(
+                "{} run failed before parity comparison: {error}",
+                cell.source_archetype.as_str()
+            )
+        });
 
         assert_eq!(preview.source, cell.source_archetype);
         assert_eq!(
@@ -713,19 +725,20 @@ fn p2_s8_multifile_preview_traverses_the_same_planned_partitions_as_run() {
     let compiled = file_fixture::multi_resource(temp.path(), MatrixDisposition::Append).unwrap();
     let resource = crate::source_fixture::resolve_local_file(&compiled, temp.path()).unwrap();
     let plan = plan_json::file_engine_plan(
-        resource.as_ref(),
+        resource.queryable(),
         "p2-s8-multifile-preview-run",
         MatrixDisposition::Append,
         None,
     )
     .unwrap();
+    let plan = resource.bind_plan(plan).unwrap();
     assert_eq!(plan.scan.partitions.len(), 2);
     assert!(plan.scan.partitions[0].metadata["path"] < plan.scan.partitions[1].metadata["path"]);
     let before_preview = project_tree_snapshot(temp.path());
 
     let preview = futures_executor::block_on(cdf_engine::preview_resource(
         &plan,
-        resource.as_ref(),
+        resource.queryable(),
         cdf_engine::EnginePreviewLimits::default(),
     ))
     .unwrap();
@@ -754,7 +767,7 @@ fn p2_s8_multifile_preview_traverses_the_same_planned_partitions_as_run() {
     let package = temp.path().join("package");
     let run = futures_executor::block_on(cdf_engine::execute_to_package(
         &plan,
-        resource.as_ref(),
+        resource.queryable(),
         &package,
     ))
     .unwrap();
@@ -852,16 +865,17 @@ fn preview_fingerprint(cell: RunMatrixCell, postgres: &LivePostgres) -> Result<P
             let compiled = file_fixture::resource(temp.path(), cell.disposition)?;
             let resource = crate::source_fixture::resolve_local_file(&compiled, temp.path())?;
             let plan = plan_json::file_engine_plan(
-                resource.as_ref(),
+                resource.queryable(),
                 &package_id,
                 cell.disposition,
                 None,
             )?;
-            let partitions = resource.plan_partitions(&plan.scan.request)?;
+            let plan = resource.bind_plan(plan)?;
+            let partitions = resource.queryable().plan_partitions(&plan.scan.request)?;
             assert_file_partitions_match_plan_identity(&partitions, &plan.scan.partitions);
             let preview = futures_executor::block_on(cdf_engine::preview_resource(
                 &plan,
-                resource.as_ref(),
+                resource.queryable(),
                 cdf_engine::EnginePreviewLimits::default(),
             ))?;
             (preview, partitions.len())
@@ -880,24 +894,26 @@ fn preview_fingerprint(cell: RunMatrixCell, postgres: &LivePostgres) -> Result<P
         }
         SourceArchetype::Rest => {
             let (resource, _) = rest_fixture::resource(cell.disposition)?;
-            let plan = plan_json::planned_engine_plan(&resource, &package_id, None)?;
-            let partitions = resource.plan_partitions(&plan.scan.request)?;
+            let plan = plan_json::planned_engine_plan(resource.queryable(), &package_id, None)?;
+            let plan = resource.bind_plan(plan)?;
+            let partitions = resource.queryable().plan_partitions(&plan.scan.request)?;
             assert_eq!(partitions, plan.scan.partitions);
             let preview = futures_executor::block_on(cdf_engine::preview_resource(
                 &plan,
-                &resource,
+                resource.queryable(),
                 cdf_engine::EnginePreviewLimits::default(),
             ))?;
             (preview, partitions.len())
         }
         SourceArchetype::Sql => {
             let resource = sql_fixture::resource(cell, postgres)?;
-            let plan = plan_json::planned_engine_plan(&resource, &package_id, None)?;
-            let partitions = resource.plan_partitions(&plan.scan.request)?;
+            let plan = plan_json::planned_engine_plan(resource.queryable(), &package_id, None)?;
+            let plan = resource.bind_plan(plan)?;
+            let partitions = resource.queryable().plan_partitions(&plan.scan.request)?;
             assert_eq!(partitions, plan.scan.partitions);
             let preview = futures_executor::block_on(cdf_engine::preview_resource(
                 &plan,
-                &resource,
+                resource.queryable(),
                 cdf_engine::EnginePreviewLimits::default(),
             ))?;
             (preview, partitions.len())
