@@ -13,8 +13,9 @@ use cdf_http::{
 };
 use cdf_kernel::{
     BackpressureSupport, Batch, BatchId, BatchStream, CapabilitySupport, CdfError,
-    CompiledScanIntent, CursorPosition, CursorValue, DeliveryGuarantee, EstimateSupport,
-    Expression, ExpressionLiteral, FilterCapabilities, IncrementalShape, PartitionId,
+    CompiledScanIntent, CursorPosition, CursorValue, DeliveryGuarantee, EffectiveSchemaRuntime,
+    EstimateSupport, Expression, ExpressionLiteral, FilterCapabilities, IncrementalShape,
+    PLAN_SCHEMA_OBSERVATION_BINDING_KEY, PLAN_SCHEMA_OBSERVATION_ID_KEY, PartitionId,
     PartitionPlan, PartitioningCapabilities, PayloadRetention, PlanId,
     PreContractResidualCandidate, PushdownFidelity, PushedPredicate, QueryableResource,
     ReplaySupport, ResourceCapabilities, ResourceDescriptor, ResourceStream, Result, ScanPlan,
@@ -156,6 +157,7 @@ pub struct RestResource {
     plan: RestResourcePlan,
     type_policy_allowances: TypePolicyAllowances,
     dependencies: RestRuntimeDependencies,
+    effective_schema_runtime: Option<EffectiveSchemaRuntime>,
     compiled_source_plan_hash: Option<String>,
 }
 
@@ -192,12 +194,21 @@ impl RestResource {
             plan,
             type_policy_allowances,
             dependencies,
+            effective_schema_runtime: None,
             compiled_source_plan_hash: None,
         })
     }
 
     pub fn with_compiled_source_plan_hash(mut self, hash: String) -> Self {
         self.compiled_source_plan_hash = Some(hash);
+        self
+    }
+
+    pub fn with_effective_schema_runtime(
+        mut self,
+        runtime: Option<EffectiveSchemaRuntime>,
+    ) -> Self {
+        self.effective_schema_runtime = runtime;
         self
     }
 
@@ -246,6 +257,10 @@ impl ResourceStream for RestResource {
 
     fn schema(&self) -> SchemaRef {
         Arc::clone(&self.schema)
+    }
+
+    fn effective_schema_runtime(&self) -> Option<&EffectiveSchemaRuntime> {
+        self.effective_schema_runtime.as_ref()
     }
 
     fn validate_runtime_dependencies(&self) -> Result<()> {
@@ -382,6 +397,17 @@ pub fn rest_partition(
         ("kind".to_owned(), "rest".to_owned()),
         ("path".to_owned(), plan.path.clone()),
         ("resource_id".to_owned(), descriptor.resource_id.to_string()),
+        (
+            PLAN_SCHEMA_OBSERVATION_ID_KEY.to_owned(),
+            descriptor.resource_id.to_string(),
+        ),
+        (
+            PLAN_SCHEMA_OBSERVATION_BINDING_KEY.to_owned(),
+            artifact_hash(&serde_json::json!({
+                "resource_id": descriptor.resource_id,
+                "path": plan.path,
+            }))?,
+        ),
     ]);
     if let Some(pagination) = &plan.pagination {
         metadata.insert("pagination".to_owned(), pagination.kind().to_string());

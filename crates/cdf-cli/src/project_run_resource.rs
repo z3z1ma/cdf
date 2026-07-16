@@ -187,6 +187,7 @@ pub(crate) fn build_project_run_resource(
         resource.descriptor(),
         resource.schema().as_ref(),
         resource.effective_schema_runtime(),
+        resource.baseline_observation_schema_catalog(),
     )?;
     let secrets = context.secret_provider();
     let resolution =
@@ -244,6 +245,29 @@ pub(crate) fn discover_source_schema_with_plan_for_cli(
     )
     .with_prepared_payloads(prepared_payloads);
     cdf_project::discover_resource_schema_with_source_registry(
+        resource,
+        &registry,
+        source_plan,
+        &resolution,
+        options,
+    )
+}
+
+pub(crate) fn preflight_fixed_source_schema_with_plan_for_cli(
+    context: &ProjectContext,
+    resource: &CompiledResource,
+    source_plan: &cdf_runtime::CompiledSourcePlan,
+    execution: &cdf_runtime::ExecutionServices,
+    options: cdf_project::SchemaDiscoveryExecutionOptions,
+) -> cdf_kernel::Result<cdf_project::ResourceSchemaDiscoveryArtifacts> {
+    let registry = crate::source_registry::builtin_source_registry()?;
+    let resolution = cdf_runtime::SourceResolutionContext::new(
+        &context.root,
+        Arc::new(context.secret_provider()),
+        execution,
+    );
+    cdf_project::preflight_fixed_resource_schema_with_source_registry(
+        &context.root,
         resource,
         &registry,
         source_plan,

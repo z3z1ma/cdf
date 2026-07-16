@@ -1173,6 +1173,8 @@ dependencies = [
  "cdf-package",
  "cdf-package-contract",
  "cdf-runtime",
+ "cdf-source-postgres",
+ "cdf-source-rest",
  "cdf-state-sqlite",
  "cdf-transform-gzip",
  "flate2",

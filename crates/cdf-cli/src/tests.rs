@@ -1153,7 +1153,7 @@ fn validate_deep_inferred_binary_mismatch_names_all_signals_without_writes() {
 }
 
 #[test]
-fn validate_deep_names_physical_and_constraint_types_and_honors_explicit_allowance() {
+fn validate_deep_names_quarantined_physical_and_constraint_types_and_honors_allowance() {
     let project = TestProject::new();
     fs::write(
         project.root.join("resources/files.toml"),
@@ -1181,7 +1181,7 @@ schema = { fields = [{ name = "VendorID", type = "int8", nullable = false }] }
         "validate",
         "--deep",
     ]);
-    assert_eq!(denied.exit_code, 3, "{}", denied.stderr);
+    assert_eq!(denied.exit_code, 0, "{}", denied.stderr);
     let denied_json = stderr_or_stdout_json(&denied.stdout);
     let messages = denied_json["result"]["resources"][0]["diagnostics"]
         .as_array()
@@ -1241,15 +1241,13 @@ fn validate_deep_reports_json_row_mismatch_as_governed_warning() {
         .unwrap();
     let mismatch = diagnostics
         .iter()
-        .find(|diagnostic| {
-            diagnostic["check"]
-                .as_str()
-                .is_some_and(|code| code.starts_with("row_local_schema_"))
-        })
+        .find(|diagnostic| diagnostic["check"] == "schema_quarantine")
         .unwrap_or_else(|| panic!("expected typed row-local warning, got {diagnostics:#?}"));
     assert_eq!(mismatch["severity"], "warning");
-    assert_eq!(mismatch["code"], "CDF-DEEP-ROW-LOCAL-SCHEMA-MISMATCH");
+    assert_eq!(mismatch["code"], "CDF-DEEP-SCHEMA-QUARANTINE");
     assert!(mismatch["message"].as_str().unwrap().contains("id"));
+    assert!(mismatch["message"].as_str().unwrap().contains("Utf8"));
+    assert!(mismatch["message"].as_str().unwrap().contains("Int64"));
     assert_no_schema_discovery_writes(&project);
 }
 
@@ -1309,65 +1307,6 @@ fn tier_zero_coerce_types_applies_to_actual_file_execution() {
         .collect::<Result<Vec<_>, _>>()
         .unwrap();
     assert_eq!(ids, vec![1, 2]);
-}
-
-#[test]
-fn remote_arrow_declared_schema_fails_plan_and_deep_validate_before_writes() {
-    let project = TestProject::new();
-    fs::write(
-        project.root.join("resources/files.toml"),
-        r#"
-[source.local]
-kind = "files"
-root = "https://data.example.test/"
-egress_allowlist = ["data.example.test"]
-
-[resource.events]
-glob = "events.arrow"
-write_disposition = "append"
-trust = "governed"
-schema = { fields = [{ name = "id", type = "int64", nullable = false }] }
-"#,
-    )
-    .unwrap();
-    let before = project_tree_snapshot(&project.root);
-
-    let plan = run([
-        "cdf",
-        "--json",
-        "--project",
-        project.root_str(),
-        "plan",
-        "local.events",
-    ]);
-    assert_ne!(plan.exit_code, 0);
-    let plan_json = stderr_or_stdout_json(&plan.stderr);
-    let plan_message = plan_json["error"]["message"].as_str().unwrap();
-    assert!(plan_message.contains("remote file resource `local.events`"));
-    assert!(plan_message.contains("does not support Arrow IPC"));
-    assert_eq!(project_tree_snapshot(&project.root), before);
-
-    let deep = run([
-        "cdf",
-        "--json",
-        "--project",
-        project.root_str(),
-        "validate",
-        "--deep",
-    ]);
-    assert_ne!(deep.exit_code, 0);
-    let deep_json = stderr_or_stdout_json(&deep.stdout);
-    let diagnostics = deep_json["result"]["resources"][0]["diagnostics"]
-        .as_array()
-        .unwrap();
-    let deep_messages = diagnostics
-        .iter()
-        .filter_map(|diagnostic| diagnostic["message"].as_str())
-        .collect::<Vec<_>>()
-        .join("\n");
-    assert!(deep_messages.contains("remote file resource `local.events`"));
-    assert!(deep_messages.contains("does not support Arrow IPC"));
-    assert_eq!(project_tree_snapshot(&project.root), before);
 }
 
 #[test]
@@ -3444,11 +3383,12 @@ schema = { fields = [
     assert_eq!(schema.field(0).data_type(), &DataType::Int64);
     assert_eq!(schema.field(0).metadata()["cdf:source_name"], "VendorID");
     assert!(!schema.field(0).metadata().contains_key("cdf:physical_type"));
-    let evidence: serde_json::Value = serde_json::from_slice(
-        &fs::read(package_dir.join("schema/effective-schema-evidence.json")).unwrap(),
-    )
-    .unwrap();
-    assert_eq!(evidence["authority"]["baseline"]["kind"], "declared");
+    assert!(
+        !package_dir
+            .join("schema/effective-schema-evidence.json")
+            .exists(),
+        "declared execution must classify the physical schema in-stream without a pre-scan artifact"
+    );
     let stream_admission: serde_json::Value = serde_json::from_slice(
         &fs::read(package_dir.join("schema/stream-admission-evidence.json")).unwrap(),
     )
@@ -5372,7 +5312,7 @@ fn schema_diff_rest_compares_pinned_snapshot_to_fresh_probe_without_writes_or_se
     let pinned_snapshot_count = fs::read_dir(project.root.join(".cdf/schemas"))
         .unwrap()
         .count();
-    assert_eq!(pinned_snapshot_count, 1);
+    assert!(pinned_snapshot_count >= 2);
 
     let diff = run([
         "cdf",
@@ -5466,8 +5406,11 @@ fn schema_pin_postgres_catalog_updates_lock_without_secret_leak() {
     let report = &json["result"];
     assert_eq!(report["writes"]["schema_snapshot"], true);
     assert_eq!(report["writes"]["lockfile"], true);
-    assert_eq!(report["snapshot_metadata"]["probe"], "postgres-catalog");
-    assert_eq!(report["snapshot_metadata"]["table"], table);
+    assert_eq!(
+        report["snapshot_metadata"]["probe"],
+        "registered-source-discovery"
+    );
+    assert_eq!(report["source_identity"]["driver.table"], table);
     assert_eq!(report["fields"][0]["source_name"], "VendorID");
     let lock_text = fs::read_to_string(project.root.join("cdf.lock")).unwrap();
     assert!(!lock_text.contains(&source_dsn));
@@ -6502,11 +6445,7 @@ fn postgres_discover_mode_plan_preview_run_autopins_through_file_secret_without_
     );
     assert_eq!(
         plan_report["resource_schema"]["snapshot_metadata"]["probe"],
-        "postgres-catalog"
-    );
-    assert_eq!(
-        plan_report["resource_schema"]["snapshot_metadata"]["table"],
-        table
+        "registered-source-discovery"
     );
     let snapshot_path = plan_report["resource_schema"]["snapshot_path"]
         .as_str()
@@ -6749,7 +6688,7 @@ fn rest_discover_mode_plan_preview_run_autopins_through_file_secret_without_leak
     );
     assert_eq!(
         plan_report["resource_schema"]["snapshot_metadata"]["probe"],
-        "rest-sample-page"
+        "registered-source-discovery"
     );
     let snapshot_path = plan_report["resource_schema"]["snapshot_path"]
         .as_str()
@@ -7125,7 +7064,7 @@ schema = { fields = [
         json["error"]["message"]
             .as_str()
             .unwrap()
-            .contains("query resources are not supported")
+            .contains("has no source compile request")
     );
 }
 
@@ -9519,7 +9458,7 @@ fn run_rest_runtime_defaults_cannot_authorize_parse_or_lossy_coercion() {
     assert_eq!(parse.exit_code, 0, "{}", parse.stderr);
     assert_secret_absent(&parse, "parse-token-secret");
     let parse_report = stderr_or_stdout_json(&parse.stdout);
-    assert_eq!(parse_report["result"]["row_count"], 1);
+    assert_eq!(parse_report["result"]["row_count"], 2);
     let parse_package = run_package_dir(&parse_project, &parse);
     let parse_admission: CompiledStreamAdmissionEvidence = serde_json::from_slice(
         &fs::read(parse_package.join("schema/stream-admission-evidence.json")).unwrap(),

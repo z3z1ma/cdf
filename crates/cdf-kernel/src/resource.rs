@@ -1506,6 +1506,14 @@ pub trait ResourceStream: Send + Sync {
     fn effective_schema_runtime(&self) -> Option<&EffectiveSchemaRuntime> {
         None
     }
+    /// Physical schemas admitted when the fixed schema snapshot was pinned.
+    ///
+    /// The complete catalog lets plan compilation derive projection-stable physical identities
+    /// without reopening every source. Execution still recomputes the projected physical hash
+    /// from the streamed Arrow schema before using the resulting allowlist.
+    fn baseline_observation_schema_catalog(&self) -> &[EffectiveSchemaCatalogEntry] {
+        &[]
+    }
     fn type_policy_allowances(&self) -> TypePolicyAllowances {
         TypePolicyAllowances::default()
     }

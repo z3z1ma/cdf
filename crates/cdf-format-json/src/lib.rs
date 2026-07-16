@@ -903,11 +903,6 @@ async fn decode_next(
             cdf_kernel::canonical_arrow_schema_hash(state.request.schema.decoder_schema.as_ref())?,
             record_batch,
         )?;
-        if state.request.schema.authority == cdf_runtime::DecodeSchemaAuthority::FixedAdmission {
-            batch
-                .header
-                .mark_materialized_output(state.request.schema.decoder_schema.as_ref())?;
-        }
         batch.header.source_position = state.request.source_position.clone();
         batch.header.extend_residual_candidates(candidates);
         if materialized_residuals_complete {
@@ -1576,7 +1571,7 @@ mod tests {
     }
 
     #[test]
-    fn empty_ndjson_emits_schema_bearing_materialized_batch() {
+    fn empty_ndjson_emits_schema_bearing_physical_batch() {
         let memory: Arc<dyn MemoryCoordinator> = Arc::new(
             DeterministicMemoryCoordinator::new(64 * 1024 * 1024, BTreeMap::new()).unwrap(),
         );
@@ -1616,7 +1611,7 @@ mod tests {
         assert_eq!(batches[0].batch().record_batch().unwrap().num_rows(), 0);
         assert_eq!(
             batches[0].batch().header.observation_representation,
-            cdf_kernel::PhysicalObservationRepresentation::MaterializedOutput
+            cdf_kernel::PhysicalObservationRepresentation::ArrowSchema
         );
     }
 }

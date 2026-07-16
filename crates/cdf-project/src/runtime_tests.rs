@@ -369,13 +369,7 @@ fn resolved_test_file_resource(
     resource: &cdf_declarative::CompiledResource,
 ) -> cdf_declarative::FileResource {
     let dependencies = test_file_runtime_dependencies();
-    let prepared = crate::prepare_declared_file_schema_artifacts(
-        resource,
-        &crate::EnvSecretProvider::from_map(std::iter::empty::<(&str, &str)>()),
-        dependencies.clone(),
-    )
-    .unwrap();
-    prepared.resource().to_file_resource(dependencies).unwrap()
+    resource.to_file_resource(dependencies).unwrap()
 }
 
 fn compile_test_file_resource(root: &Path, document: &str) -> cdf_declarative::FileResource {
@@ -786,6 +780,9 @@ fn backfill_planner_binds_every_slice_to_the_compiled_source_artifact() {
             schema: resource.schema.as_ref().clone(),
             type_policy_allowances: resource.type_policy_allowances(),
             effective_schema_runtime: resource.effective_schema_runtime().cloned(),
+            baseline_observation_schema_catalog: resource
+                .baseline_observation_schema_catalog()
+                .to_vec(),
             redacted_options: serde_json::json!({}),
             physical_plan: serde_json::json!({"partitions": 1}),
         },
@@ -2508,6 +2505,9 @@ fn compiled_test_source_plan(resource: &dyn QueryableResource) -> cdf_runtime::C
             schema: resource.schema().as_ref().clone(),
             type_policy_allowances: resource.type_policy_allowances(),
             effective_schema_runtime: resource.effective_schema_runtime().cloned(),
+            baseline_observation_schema_catalog: resource
+                .baseline_observation_schema_catalog()
+                .to_vec(),
             redacted_options: serde_json::json!({}),
             physical_plan: serde_json::json!({"partitions": 2}),
         },

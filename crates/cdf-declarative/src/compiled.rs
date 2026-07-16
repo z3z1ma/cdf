@@ -15,12 +15,12 @@ use cdf_http::{
 };
 use cdf_kernel::{
     BackpressureSupport, BoxFuture, CapabilitySupport, CdfError, ContractRef, CursorOrderingClaim,
-    CursorSpec, DeduplicationSpec, DeliveryGuarantee, EffectiveSchemaRuntime, EstimateSupport,
-    FilterCapabilities, FreshnessSpec, IncrementalShape, OpenedPartitionStream, PartitionPlan,
-    PartitioningCapabilities, PlanId, PushdownFidelity, PushedPredicate, QueryableResource,
-    ReplaySupport, ResourceCapabilities, ResourceDescriptor, ResourceId, ResourceStream, Result,
-    ScanPlan, ScanRequest, SchemaHash, SchemaSource, ScopeKey, ScopeKind, TrustLevel,
-    TypePolicyAllowances, WriteDisposition, with_cdf_metadata,
+    CursorSpec, DeduplicationSpec, DeliveryGuarantee, EffectiveSchemaCatalogEntry,
+    EffectiveSchemaRuntime, EstimateSupport, FilterCapabilities, FreshnessSpec, IncrementalShape,
+    OpenedPartitionStream, PartitionPlan, PartitioningCapabilities, PlanId, PushdownFidelity,
+    PushedPredicate, QueryableResource, ReplaySupport, ResourceCapabilities, ResourceDescriptor,
+    ResourceId, ResourceStream, Result, ScanPlan, ScanRequest, SchemaHash, SchemaSource, ScopeKey,
+    ScopeKind, TrustLevel, TypePolicyAllowances, WriteDisposition, with_cdf_metadata,
 };
 use cdf_runtime::{SourceCompileContext, SourceCompileRequest, SourceCursorPushdown};
 use cdf_source_files::FileResourcePlan;
@@ -44,6 +44,7 @@ pub struct CompiledResource {
     plan: CompiledResourcePlan,
     source_compile_request: Option<SourceCompileRequest>,
     effective_schema_runtime: Option<EffectiveSchemaRuntime>,
+    baseline_observation_schema_catalog: Vec<EffectiveSchemaCatalogEntry>,
     schema_discovery_sample_files: Option<u64>,
     type_policy_allowances: TypePolicyAllowances,
 }
@@ -122,6 +123,20 @@ impl CompiledResource {
         }
         resource.effective_schema_runtime = Some(runtime);
         Ok(resource)
+    }
+
+    pub fn with_baseline_observation_schema_catalog(
+        &self,
+        mut catalog: Vec<EffectiveSchemaCatalogEntry>,
+    ) -> Self {
+        catalog.sort_by(|left, right| left.physical_schema_hash.cmp(&right.physical_schema_hash));
+        catalog.dedup_by(|left, right| left.physical_schema_hash == right.physical_schema_hash);
+        let mut resource = self.clone();
+        resource.baseline_observation_schema_catalog = catalog.clone();
+        if let Some(request) = &mut resource.source_compile_request {
+            request.baseline_observation_schema_catalog = catalog;
+        }
+        resource
     }
 }
 
@@ -231,6 +246,10 @@ impl ResourceStream for CompiledResource {
 
     fn effective_schema_runtime(&self) -> Option<&EffectiveSchemaRuntime> {
         self.effective_schema_runtime.as_ref()
+    }
+
+    fn baseline_observation_schema_catalog(&self) -> &[EffectiveSchemaCatalogEntry] {
+        &self.baseline_observation_schema_catalog
     }
 
     fn type_policy_allowances(&self) -> TypePolicyAllowances {
@@ -417,6 +436,7 @@ fn compile_resource(
         plan,
         source_compile_request,
         effective_schema_runtime: None,
+        baseline_observation_schema_catalog: Vec::new(),
         schema_discovery_sample_files: resource.sample_files,
         type_policy_allowances,
     })
@@ -486,6 +506,7 @@ fn build_source_compile_request(
                 schema: schema.clone(),
                 type_policy_allowances,
                 effective_schema_runtime: None,
+                baseline_observation_schema_catalog: Vec::new(),
             }
         }
         SourceDeclaration::Rest(rest) => {
@@ -534,6 +555,7 @@ fn build_source_compile_request(
                 schema: schema.clone(),
                 type_policy_allowances,
                 effective_schema_runtime: None,
+                baseline_observation_schema_catalog: Vec::new(),
             }
         }
         SourceDeclaration::Files(files) => {
@@ -587,6 +609,7 @@ fn build_source_compile_request(
                 schema: schema.clone(),
                 type_policy_allowances,
                 effective_schema_runtime: None,
+                baseline_observation_schema_catalog: Vec::new(),
             }
         }
     };

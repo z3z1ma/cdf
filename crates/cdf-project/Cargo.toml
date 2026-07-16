@@ -39,6 +39,8 @@ cdf-format-arrow-ipc = { path = "../cdf-format-arrow-ipc" }
 cdf-format-delimited = { path = "../cdf-format-delimited" }
 cdf-format-json = { path = "../cdf-format-json" }
 cdf-format-parquet = { path = "../cdf-format-parquet" }
+cdf-source-postgres = { path = "../cdf-source-postgres" }
+cdf-source-rest = { path = "../cdf-source-rest" }
 cdf-transform-gzip = { path = "../cdf-transform-gzip" }
 flate2 = "1.1.9"
 futures-util = "0.3.32"

@@ -2,11 +2,12 @@ use crate::prelude::*;
 use arrow_schema::{DataType, Field};
 use cdf_kernel::{
     BatchStream, CommitCounts, CommitSegment, ConcurrencyLimit, DeliveryGuarantee, DestinationId,
-    ErrorKind, IdempotencySupport, IdempotencyToken, IdentifierRules, MigrationRecord, PackageHash,
-    PartitionId, PartitionPlan, PlanId, QueryableResource, ReceiptId, ResourceCapabilities,
-    ResourceDescriptor, ResourceId, ResourceStream, ScanPlan, ScanRequest, SchemaHash,
-    SchemaSource, ScopeKey, SegmentAck, SegmentId, TargetName, TransactionMetadata,
-    TransactionSupport, TrustLevel, TypeMapping, VerifyClause,
+    EffectiveSchemaCatalogEntry, EffectiveSchemaRuntime, ErrorKind, IdempotencySupport,
+    IdempotencyToken, IdentifierRules, MigrationRecord, PackageHash, PartitionId, PartitionPlan,
+    PlanId, QueryableResource, ReceiptId, ResourceCapabilities, ResourceDescriptor, ResourceId,
+    ResourceStream, ScanPlan, ScanRequest, SchemaHash, SchemaSource, ScopeKey, SegmentAck,
+    SegmentId, TargetName, TransactionMetadata, TransactionSupport, TrustLevel, TypeMapping,
+    TypePolicyAllowances, VerifyClause,
 };
 use std::{
     collections::BTreeMap,
@@ -947,6 +948,8 @@ fn bulk_selection_rejects_descriptor_and_evidence_drift() {
 struct MockSourceDriver {
     descriptor: SourceDriverDescriptor,
     option_schema: serde_json::Value,
+    tamper_baseline: bool,
+    tamper_resolve: bool,
 }
 
 impl SourceDriver for MockSourceDriver {
@@ -959,6 +962,18 @@ impl SourceDriver for MockSourceDriver {
     }
 
     fn compile(&self, request: SourceCompileRequest) -> Result<CompiledSourcePlan> {
+        let mut baseline_observation_schema_catalog = request.baseline_observation_schema_catalog;
+        if self.tamper_baseline {
+            let schema = Arc::new(Schema::new(vec![Field::new(
+                "tampered",
+                DataType::Utf8,
+                true,
+            )]));
+            baseline_observation_schema_catalog = vec![EffectiveSchemaCatalogEntry::new(
+                cdf_kernel::canonical_arrow_schema_hash(schema.as_ref()).unwrap(),
+                schema,
+            )];
+        }
         CompiledSourcePlan::new(
             self.descriptor.clone(),
             ResourceCapabilities::default(),
@@ -993,6 +1008,7 @@ impl SourceDriver for MockSourceDriver {
                 schema: request.schema,
                 type_policy_allowances: request.type_policy_allowances,
                 effective_schema_runtime: request.effective_schema_runtime,
+                baseline_observation_schema_catalog,
                 redacted_options: serde_json::json!({"token": "secret://env/MOCK_TOKEN"}),
                 physical_plan: serde_json::json!({"partitions": 2}),
             },
@@ -1012,10 +1028,22 @@ impl SourceDriver for MockSourceDriver {
         plan: &CompiledSourcePlan,
         _context: &SourceResolutionContext<'_>,
     ) -> Result<Arc<dyn QueryableResource>> {
+        let schema = if self.tamper_resolve {
+            Arc::new(Schema::new(vec![Field::new(
+                "tampered",
+                DataType::Utf8,
+                true,
+            )]))
+        } else {
+            Arc::new(plan.schema.clone())
+        };
         Ok(Arc::new(MockSourceResource {
             descriptor: plan.descriptor.clone(),
-            schema: Arc::new(plan.schema.clone()),
+            schema,
             capabilities: plan.resource_capabilities.clone(),
+            type_policy_allowances: plan.type_policy_allowances,
+            effective_schema_runtime: plan.effective_schema_runtime.clone(),
+            compiled_source_plan_hash: artifact_hash(plan)?,
         }))
     }
 }
@@ -1056,6 +1084,9 @@ struct MockSourceResource {
     descriptor: ResourceDescriptor,
     schema: Arc<Schema>,
     capabilities: ResourceCapabilities,
+    type_policy_allowances: TypePolicyAllowances,
+    effective_schema_runtime: Option<EffectiveSchemaRuntime>,
+    compiled_source_plan_hash: String,
 }
 
 impl ResourceStream for MockSourceResource {
@@ -1065,6 +1096,18 @@ impl ResourceStream for MockSourceResource {
 
     fn schema(&self) -> Arc<Schema> {
         Arc::clone(&self.schema)
+    }
+
+    fn compiled_source_plan_hash(&self) -> Option<&str> {
+        Some(&self.compiled_source_plan_hash)
+    }
+
+    fn effective_schema_runtime(&self) -> Option<&EffectiveSchemaRuntime> {
+        self.effective_schema_runtime.as_ref()
+    }
+
+    fn type_policy_allowances(&self) -> TypePolicyAllowances {
+        self.type_policy_allowances
     }
 
     fn plan_partitions(&self, request: &ScanRequest) -> Result<Vec<PartitionPlan>> {
@@ -1191,6 +1234,8 @@ fn source_registry_compiles_hashes_and_resolves_mock_without_order_authority() {
         .register(MockSourceDriver {
             descriptor: descriptor.clone(),
             option_schema: option_schema.clone(),
+            tamper_baseline: false,
+            tamper_resolve: false,
         })
         .unwrap();
     let resource_descriptor = ResourceDescriptor {
@@ -1209,6 +1254,11 @@ fn source_registry_compiles_hashes_and_resolves_mock_without_order_authority() {
         freshness: None,
         trust_level: TrustLevel::Experimental,
     };
+    let baseline_schema = Arc::new(Schema::empty());
+    let baseline_observation = EffectiveSchemaCatalogEntry::new(
+        cdf_kernel::canonical_arrow_schema_hash(baseline_schema.as_ref()).unwrap(),
+        baseline_schema,
+    );
     let request = SourceCompileRequest {
         source_kind: "mock".to_owned(),
         context: SourceCompileContext {
@@ -1222,13 +1272,30 @@ fn source_registry_compiles_hashes_and_resolves_mock_without_order_authority() {
         schema: Schema::empty(),
         type_policy_allowances: Default::default(),
         effective_schema_runtime: None,
+        baseline_observation_schema_catalog: vec![baseline_observation.clone()],
     };
     let mut invalid_request = request.clone();
     invalid_request.context.source_name.clear();
     let error = registry.compile(invalid_request).unwrap_err();
     assert!(error.message.contains("requires a source name"));
 
-    let plan = registry.compile(request).unwrap();
+    let plan = registry.compile(request.clone()).unwrap();
+    let mut tampering_registry = SourceRegistry::new();
+    tampering_registry
+        .register(MockSourceDriver {
+            descriptor: descriptor.clone(),
+            option_schema: option_schema.clone(),
+            tamper_baseline: true,
+            tamper_resolve: false,
+        })
+        .unwrap();
+    assert!(
+        tampering_registry
+            .compile(request)
+            .unwrap_err()
+            .message
+            .contains("changed compiler-owned schema or resource authority")
+    );
     let original_plan_hash = plan.physical_plan_hash.clone();
     let original_stable_hash = plan.schema_binding_stable_hash().unwrap();
     let mut discovered_descriptor = plan.descriptor.clone();
@@ -1236,7 +1303,12 @@ fn source_registry_compiles_hashes_and_resolves_mock_without_order_authority() {
     let discovered_schema = Schema::new(vec![Field::new("event_id", DataType::Int64, false)]);
     let bound = plan
         .clone()
-        .bind_schema_authority(&discovered_descriptor, &discovered_schema, None)
+        .bind_schema_authority(
+            &discovered_descriptor,
+            &discovered_schema,
+            None,
+            vec![baseline_observation.clone()],
+        )
         .unwrap();
     assert_eq!(bound.physical_plan_hash, original_plan_hash);
     assert_eq!(
@@ -1250,7 +1322,12 @@ fn source_registry_compiles_hashes_and_resolves_mock_without_order_authority() {
     invalid_binding.primary_key.push("event_id".to_owned());
     assert!(
         plan.clone()
-            .bind_schema_authority(&invalid_binding, &bound.schema, None)
+            .bind_schema_authority(
+                &invalid_binding,
+                &bound.schema,
+                None,
+                vec![baseline_observation.clone()],
+            )
             .unwrap_err()
             .message
             .contains("changed non-schema resource authority")
@@ -1299,6 +1376,29 @@ fn source_registry_compiles_hashes_and_resolves_mock_without_order_authority() {
     assert_eq!(observation.evidence_location.as_str(), "mock://events");
     let resource = registry.resolve(&plan, &context).unwrap();
     assert_eq!(resource.descriptor().resource_id.as_str(), "mock.events");
+    assert_eq!(
+        resource.baseline_observation_schema_catalog(),
+        std::slice::from_ref(&baseline_observation)
+    );
+
+    let mut hostile_registry = SourceRegistry::new();
+    hostile_registry
+        .register(MockSourceDriver {
+            descriptor: descriptor.clone(),
+            option_schema: option_schema.clone(),
+            tamper_baseline: false,
+            tamper_resolve: true,
+        })
+        .unwrap();
+    let error = match hostile_registry.resolve(&plan, &context) {
+        Ok(_) => panic!("hostile resolved source authority must fail closed"),
+        Err(error) => error,
+    };
+    assert!(
+        error
+            .message
+            .contains("resolved executable authority that differs from its compiled plan")
+    );
 
     assert_eq!(
         registry.option_schemas(),
@@ -1312,6 +1412,8 @@ fn source_registry_compiles_hashes_and_resolves_mock_without_order_authority() {
         .register(MockSourceDriver {
             descriptor: mismatched,
             option_schema: option_schema.clone(),
+            tamper_baseline: false,
+            tamper_resolve: false,
         })
         .unwrap_err();
     assert!(error.message.contains("does not match its declared hash"));
@@ -1328,6 +1430,8 @@ fn source_registry_compiles_hashes_and_resolves_mock_without_order_authority() {
         .register(MockSourceDriver {
             descriptor: invalid_descriptor,
             option_schema: invalid_schema,
+            tamper_baseline: false,
+            tamper_resolve: false,
         })
         .unwrap_err();
     assert!(error.message.contains("must be a closed object"));
@@ -1337,6 +1441,8 @@ fn source_registry_compiles_hashes_and_resolves_mock_without_order_authority() {
         .register(MockSourceDriver {
             descriptor,
             option_schema: option_schema.clone(),
+            tamper_baseline: false,
+            tamper_resolve: false,
         })
         .unwrap();
     assert_eq!(reordered.descriptors(), registry.descriptors());
@@ -1345,6 +1451,8 @@ fn source_registry_compiles_hashes_and_resolves_mock_without_order_authority() {
             .register(MockSourceDriver {
                 descriptor: reordered.descriptors()[0].clone(),
                 option_schema,
+                tamper_baseline: false,
+                tamper_resolve: false,
             })
             .is_err()
     );

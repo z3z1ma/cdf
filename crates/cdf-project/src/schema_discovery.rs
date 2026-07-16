@@ -1,6 +1,6 @@
 use std::{
-    collections::{BTreeMap, BTreeSet},
-    path::{Path, PathBuf},
+    collections::BTreeMap,
+    path::Path,
     sync::{
         Arc, Mutex,
         atomic::{AtomicUsize, Ordering},
@@ -20,25 +20,17 @@ use crate::{
 use cdf_contract::{
     AggregateFileSchemaVerdict, AggregateMetadataVariance, AggregateSchemaCandidate,
     ContractPolicy, IdentifierPolicy, NORMALIZER_NAMECASE_V1, RuleOutcome, SchemaEvolutionMode,
-    normalize_arrow_schema, plan_aggregate_arrow_schema_join, reconcile_schema,
+    normalize_arrow_schema, plan_aggregate_arrow_schema_join, plan_schema_reconciliation,
+    reconcile_schema,
 };
-use cdf_declarative::{
-    BoundedSchemaDiscoveryRequest, CompiledResource, CompiledResourcePlan, FileFormatDeclaration,
-    FileRuntimeDependencies, FileTransportLocation, FileTransportResource,
-    POSTGRES_CATALOG_DISCOVERY_PROBE, RestDiscoveryDependencies,
-    discover_local_binary_schema_bounded, discover_postgres_table_catalog_schema,
-    discover_rest_sample_schema, discover_transport_binary_schema_bounded,
-    local_file_discovery_candidates, physical_arrow_schema_hash,
-    postgres_table_target_for_sql_plan,
-};
-use cdf_http::SecretProvider;
+use cdf_declarative::CompiledResource;
 use cdf_kernel::{
     CdfError, DISCOVERY_MANIFEST_HASH_METADATA_KEY, DISCOVERY_MANIFEST_PATH_METADATA_KEY,
     DiscoveryCoverageEvidence, DiscoveryCoverageEvidenceInput, DiscoveryExecutorBudgetEvidence,
     EffectiveSchemaCatalogEntry, EffectiveSchemaEvidence, EffectiveSchemaObservationEvidence,
-    EffectiveSchemaRuntime, ResourceDescriptor, ResourceId, ResourceStream, Result, ScanRequest,
-    SchemaBaselineReference, SchemaHash, SchemaObservationFieldQuarantine, SchemaObservationPolicy,
-    SchemaSource, TerminalSchemaObservationQuarantine,
+    EffectiveSchemaRuntime, ResourceStream, Result, SchemaBaselineReference, SchemaHash,
+    SchemaObservationFieldQuarantine, SchemaObservationPolicy, SchemaSource,
+    TerminalSchemaObservationQuarantine,
 };
 use cdf_memory::{
     BudgetTag, ConsumerKey, DeterministicMemoryCoordinator, MemoryClass, MemoryCoordinator,
@@ -48,12 +40,6 @@ use cdf_runtime::{
     CompiledSourcePlan, SourceDiscoveryCandidate, SourceDiscoveryKind, SourceDiscoveryRequest,
     SourceDiscoverySession, SourceRegistry, SourceResolutionContext,
 };
-
-#[derive(Clone, Debug)]
-pub struct PreparedDiscoveredResource {
-    pub resource: CompiledResource,
-    pub discovery: Option<ResourceSchemaDiscovery>,
-}
 
 #[non_exhaustive]
 #[derive(Clone, Debug)]
@@ -113,7 +99,7 @@ pub struct VerifiedSchemaBaseline {
     resource_id: cdf_kernel::ResourceId,
     snapshot: cdf_kernel::SchemaSnapshotReference,
     schema: arrow_schema::SchemaRef,
-    baseline_observation_schema_hashes: BTreeSet<SchemaHash>,
+    baseline_observation_schema_catalog: BTreeMap<SchemaHash, cdf_kernel::CanonicalArrowSchema>,
 }
 
 impl VerifiedSchemaBaseline {
@@ -121,13 +107,13 @@ impl VerifiedSchemaBaseline {
         resource_id: cdf_kernel::ResourceId,
         snapshot: cdf_kernel::SchemaSnapshotReference,
         schema: arrow_schema::SchemaRef,
-        baseline_observation_schema_hashes: BTreeSet<SchemaHash>,
+        baseline_observation_schema_catalog: BTreeMap<SchemaHash, cdf_kernel::CanonicalArrowSchema>,
     ) -> Self {
         Self {
             resource_id,
             snapshot,
             schema,
-            baseline_observation_schema_hashes,
+            baseline_observation_schema_catalog,
         }
     }
 
@@ -148,8 +134,8 @@ impl VerifiedSchemaBaseline {
     }
 
     pub fn contains_baseline_observation_schema(&self, schema_hash: &SchemaHash) -> bool {
-        self.baseline_observation_schema_hashes
-            .contains(schema_hash)
+        self.baseline_observation_schema_catalog
+            .contains_key(schema_hash)
     }
 }
 
@@ -315,24 +301,6 @@ pub struct DiscoveredSchemaSnapshot {
     pub source_identity: BTreeMap<String, String>,
 }
 
-pub fn discover_resource_schema(
-    resource: &CompiledResource,
-    secret_provider: &dyn SecretProvider,
-) -> Result<ResourceSchemaDiscovery> {
-    Ok(
-        discover_resource_schema_artifacts(resource, secret_provider, Default::default())?
-            .discovery,
-    )
-}
-
-pub fn discover_resource_schema_artifacts(
-    resource: &CompiledResource,
-    secret_provider: &dyn SecretProvider,
-    options: SchemaDiscoveryExecutionOptions,
-) -> Result<ResourceSchemaDiscoveryArtifacts> {
-    discover_resource_schema_artifacts_inner(resource, secret_provider, None, options)
-}
-
 /// Discovers a resource exclusively through its compiled source driver.
 ///
 /// The project layer owns shared selection, reconciliation, snapshot, manifest,
@@ -350,59 +318,71 @@ pub fn discover_resource_schema_with_source_registry(
         resource.descriptor(),
         resource.schema().as_ref(),
         resource.effective_schema_runtime(),
+        resource.baseline_observation_schema_catalog(),
     )?;
     let session = registry.discovery_session(plan, context)?;
     let candidates = session
         .candidates()?
         .into_iter()
-        .map(BinaryDiscoveryCandidate::from_registered)
+        .map(DiscoveryCandidate::from_registered)
         .collect::<Result<Vec<_>>>()?;
-    let adapter = RegisteredSourceDiscoveryAdapter {
-        plan,
-        session: session.as_ref(),
-    };
-    discover_binary_resource_schema(resource, options, &adapter, candidates, None)
+    discover_registered_resource_schema(resource, options, plan, session.as_ref(), candidates)
 }
 
-pub fn discover_resource_schema_with_rest_dependencies(
+/// Explicitly observes a fixed-schema resource through its registered source.
+///
+/// This is a compiler-front-end preflight for commands such as `validate
+/// --deep`; ordinary plan/run preparation must not call it. The returned
+/// observations are classified against the fixed baseline and never change
+/// the resource's schema epoch.
+pub fn preflight_fixed_resource_schema_with_source_registry(
+    project_root: &Path,
     resource: &CompiledResource,
-    rest_dependencies: &RestDiscoveryDependencies<'_>,
-) -> Result<ResourceSchemaDiscovery> {
-    ensure_discover_schema_mode(resource)?;
-    if !matches!(resource.plan(), CompiledResourcePlan::Rest(_)) {
-        return Err(CdfError::contract(
-            "REST schema discovery dependencies require a REST resource",
-        ));
-    }
-    discover_rest_resource_schema(resource, rest_dependencies)
-}
-
-pub fn discover_resource_schema_with_file_dependencies(
-    resource: &CompiledResource,
-    secret_provider: &dyn SecretProvider,
-    file_dependencies: FileRuntimeDependencies,
-) -> Result<ResourceSchemaDiscovery> {
-    Ok(discover_resource_schema_with_file_dependencies_artifacts(
-        resource,
-        secret_provider,
-        file_dependencies,
-        Default::default(),
-    )?
-    .discovery)
-}
-
-pub fn discover_resource_schema_with_file_dependencies_artifacts(
-    resource: &CompiledResource,
-    secret_provider: &dyn SecretProvider,
-    file_dependencies: FileRuntimeDependencies,
+    registry: &SourceRegistry,
+    plan: &CompiledSourcePlan,
+    context: &SourceResolutionContext<'_>,
     options: SchemaDiscoveryExecutionOptions,
 ) -> Result<ResourceSchemaDiscoveryArtifacts> {
-    discover_resource_schema_artifacts_inner(
-        resource,
-        secret_provider,
-        Some(file_dependencies),
-        options,
-    )
+    let (probe, options) = match &resource.descriptor().schema_source {
+        SchemaSource::Declared { .. } => (
+            resource.with_schema_source_and_schema(SchemaSource::Discover, resource.schema()),
+            options.with_declared_baseline(resource)?,
+        ),
+        source if source.pinned_snapshot().is_some() => {
+            let snapshot = source
+                .pinned_snapshot()
+                .expect("pinned snapshot checked above");
+            let (_, baseline) =
+                SchemaSnapshotStore::new(project_root).read_with_verified_baseline(snapshot)?;
+            if baseline.resource_id() != &resource.descriptor().resource_id {
+                return Err(CdfError::data(format!(
+                    "pinned schema snapshot belongs to resource `{}` but preflight requested `{}`",
+                    baseline.resource_id(),
+                    resource.descriptor().resource_id
+                )));
+            }
+            (
+                resource.with_schema_source_and_schema(
+                    SchemaSource::Discover,
+                    Arc::clone(baseline.schema()),
+                ),
+                options.with_verified_baseline(baseline),
+            )
+        }
+        _ => {
+            return Err(CdfError::contract(format!(
+                "fixed-schema preflight requires a declared or pinned schema for resource `{}`",
+                resource.descriptor().resource_id
+            )));
+        }
+    };
+    let probe_plan = plan.clone().bind_schema_authority(
+        probe.descriptor(),
+        probe.schema().as_ref(),
+        None,
+        probe.baseline_observation_schema_catalog().to_vec(),
+    )?;
+    discover_resource_schema_with_source_registry(&probe, registry, &probe_plan, context, options)
 }
 
 /// Hydrates and verifies the fixed schema artifacts for a pinned resource.
@@ -444,227 +424,36 @@ pub fn prepare_pinned_resource_schema_artifacts(
         .discovery_manifest()?
         .map(|reference| DiscoveryManifestStore::new(project_root).read(&reference))
         .transpose()?;
-    let prepared = resource.with_schema_source_and_schema(
-        resource.descriptor().schema_source.clone(),
-        baseline.schema().clone(),
-    );
+    let baseline_observation_schema_catalog = discovery_manifest
+        .iter()
+        .flat_map(|manifest| &manifest.candidates)
+        .filter_map(|candidate| {
+            candidate
+                .physical_schema_hash
+                .clone()
+                .zip(candidate.physical_schema.as_ref())
+        })
+        .map(|(physical_schema_hash, schema)| {
+            Ok(EffectiveSchemaCatalogEntry::new(
+                physical_schema_hash,
+                Arc::new(schema.to_arrow()?),
+            ))
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let prepared = resource
+        .with_schema_source_and_schema(
+            resource.descriptor().schema_source.clone(),
+            baseline.schema().clone(),
+        )
+        .with_baseline_observation_schema_catalog(baseline_observation_schema_catalog);
     Ok(PreparedSchemaResource {
         resource: prepared,
         discovery_manifest,
     })
 }
 
-pub fn prepare_declared_file_schema_artifacts(
-    resource: &CompiledResource,
-    secret_provider: &dyn SecretProvider,
-    file_dependencies: FileRuntimeDependencies,
-) -> Result<PreparedSchemaResource> {
-    if !matches!(resource.plan(), CompiledResourcePlan::Files(_)) {
-        return Ok(PreparedSchemaResource {
-            resource: resource.clone(),
-            discovery_manifest: None,
-        });
-    }
-    if !matches!(
-        resource.descriptor().schema_source,
-        SchemaSource::Declared { .. }
-    ) {
-        return Err(CdfError::contract(
-            "declared schema observation preparation requires a declared resource",
-        ));
-    }
-    let probe_resource =
-        resource.with_schema_source_and_schema(SchemaSource::Discover, resource.schema());
-    let options = SchemaDiscoveryExecutionOptions::new().with_declared_baseline(resource)?;
-    let artifacts = discover_resource_schema_artifacts_inner(
-        &probe_resource,
-        secret_provider,
-        Some(file_dependencies),
-        options,
-    )?;
-    let manifest = artifacts.discovery_manifest.as_ref().ok_or_else(|| {
-        CdfError::contract("declared file schema observation requires a discovery manifest")
-    })?;
-    manifest.validate()?;
-    let baseline = resource
-        .descriptor()
-        .schema_source
-        .baseline_reference()
-        .ok_or_else(|| CdfError::internal("declared resource lost its schema baseline"))?;
-    if manifest.baseline_schema_hash.as_ref() != Some(baseline.schema_hash()) {
-        return Err(CdfError::data(
-            "declared schema observation manifest does not match the resource baseline",
-        ));
-    }
-    let runtime = artifacts.effective_schema_runtime.clone().ok_or_else(|| {
-        CdfError::contract("declared file schema observation omitted runtime evidence")
-    })?;
-    if runtime.evidence.baseline != baseline
-        || runtime.evidence.effective_schema_hash != *baseline.schema_hash()
-        || runtime.evidence.discovery_manifest != manifest.reference()
-    {
-        return Err(CdfError::data(
-            "declared schema runtime evidence does not match its compiler observation",
-        ));
-    }
-    Ok(PreparedSchemaResource {
-        resource: resource.with_effective_schema(resource.schema(), runtime)?,
-        discovery_manifest: Some(manifest.clone()),
-    })
-}
-
-fn discover_resource_schema_artifacts_inner(
-    resource: &CompiledResource,
-    secret_provider: &dyn SecretProvider,
-    file_dependencies: Option<FileRuntimeDependencies>,
-    options: SchemaDiscoveryExecutionOptions,
-) -> Result<ResourceSchemaDiscoveryArtifacts> {
-    ensure_discover_schema_mode(resource)?;
-    match resource.plan() {
-        CompiledResourcePlan::Files(plan) if !is_remote_file_root(&plan.root) => {
-            discover_local_binary_resource_schema(resource, plan, file_dependencies, options)
-        }
-        CompiledResourcePlan::Files(plan) => {
-            discover_remote_binary_resource_schema(resource, plan, file_dependencies, options)
-        }
-        CompiledResourcePlan::Sql(plan) => Ok(ResourceSchemaDiscoveryArtifacts {
-            discovery: discover_postgres_resource_schema(resource, plan, secret_provider)?,
-            discovery_manifest: None,
-            effective_schema_runtime: None,
-        }),
-        CompiledResourcePlan::Rest(_) => Err(unsupported_discover_slice(
-            resource.descriptor(),
-            "REST resource discovery requires explicit runtime dependencies",
-        )),
-    }
-}
-
-fn discover_remote_binary_resource_schema(
-    resource: &CompiledResource,
-    plan: &cdf_declarative::FileResourcePlan,
-    file_dependencies: Option<FileRuntimeDependencies>,
-    options: SchemaDiscoveryExecutionOptions,
-) -> Result<ResourceSchemaDiscoveryArtifacts> {
-    let dependencies = file_dependencies.ok_or_else(|| {
-        unsupported_discover_slice(
-            resource.descriptor(),
-            "remote binary discovery requires explicit file transport dependencies",
-        )
-    })?;
-    let (plan, compiled_format) =
-        cdf_declarative::compile_file_resource_plan(plan, dependencies.formats())?;
-    let adapter = RegisteredFormatDiscoveryAdapter::new(
-        &resource.descriptor().resource_id,
-        &plan,
-        &compiled_format,
-        "remote",
-    )?;
-    discover_remote_file_resource_schema(resource, &plan, dependencies, options, adapter)
-}
-
-fn discover_remote_file_resource_schema(
-    resource: &CompiledResource,
-    plan: &cdf_declarative::FileResourcePlan,
-    dependencies: FileRuntimeDependencies,
-    options: SchemaDiscoveryExecutionOptions,
-    adapter: RegisteredFormatDiscoveryAdapter,
-) -> Result<ResourceSchemaDiscoveryArtifacts> {
-    let runtime = resource.to_file_resource(dependencies.clone())?;
-    let partitions = runtime.plan_partitions(&discovery_scan_request(resource.descriptor())?)?;
-    let mut candidates = Vec::with_capacity(partitions.len());
-    for partition in partitions {
-        let location = partition.metadata.get("path").cloned().ok_or_else(|| {
-            CdfError::internal("remote file discovery partition omitted path metadata")
-        })?;
-        let size_bytes = partition
-            .metadata
-            .get("bytes")
-            .ok_or_else(|| CdfError::internal("remote file discovery partition omitted bytes"))?
-            .parse::<u64>()
-            .map_err(|error| CdfError::data(format!("invalid remote file size: {error}")))?;
-        let modified_at_ms = partition
-            .metadata
-            .get("modified_ms")
-            .map(|value| {
-                value.parse::<i64>().map_err(|error| {
-                    CdfError::data(format!("invalid remote file modification time: {error}"))
-                })
-            })
-            .transpose()?;
-        let transport_resource = if is_http_root(&location) {
-            FileTransportResource {
-                location: FileTransportLocation::HttpUrl {
-                    url: location.clone(),
-                },
-                egress_allowlist: plan.allowlist.clone(),
-                auth: plan.auth.clone(),
-                credentials: plan.credentials.clone(),
-            }
-        } else {
-            let mut request = FileTransportResource::object_store_url(location.clone())
-                .with_egress_allowlist(plan.allowlist.clone());
-            if let Some(credentials) = &plan.credentials {
-                request = request.with_credentials(credentials.clone());
-            }
-            request
-        };
-        candidates.push(BinaryDiscoveryCandidate {
-            location,
-            size_bytes,
-            size_known: true,
-            modified_at_ms,
-            compression: partition
-                .metadata
-                .get("compression")
-                .cloned()
-                .unwrap_or_else(|| "none".to_owned()),
-            cache_source: strong_cache_source_from_partition(&partition, size_bytes)?,
-            source: BinaryDiscoveryCandidateSource::Transport(transport_resource),
-        });
-    }
-    discover_binary_resource_schema(resource, options, &adapter, candidates, Some(&dependencies))
-}
-
-fn strong_cache_source_from_partition(
-    partition: &cdf_kernel::PartitionPlan,
-    size_bytes: u64,
-) -> Result<Option<StrongObservationSourceIdentity>> {
-    let strength = partition
-        .metadata
-        .get("identity_strength")
-        .map(String::as_str)
-        .ok_or_else(|| {
-            CdfError::internal("remote discovery partition omitted identity strength")
-        })?;
-    if strength == "weak" {
-        return Ok(None);
-    }
-    if !matches!(strength, "strong" | "content_addressed") {
-        return Err(CdfError::data(format!(
-            "remote discovery partition has unsupported identity strength `{strength}`"
-        )));
-    }
-    let location = partition.metadata.get("path").cloned().ok_or_else(|| {
-        CdfError::internal("remote discovery partition omitted canonical location")
-    })?;
-    let checksum = partition.metadata.get("sha256").cloned();
-    let generation = ["etag", "version"]
-        .into_iter()
-        .filter_map(|key| {
-            partition
-                .metadata
-                .get(key)
-                .cloned()
-                .map(|value| (key.to_owned(), value))
-        })
-        .collect();
-    Ok(Some(StrongObservationSourceIdentity::new(
-        location, size_bytes, checksum, generation,
-    )?))
-}
-
 #[derive(Clone, Debug)]
-struct LocalBinaryProbe {
+struct SchemaProbe {
     location: String,
     size_bytes: u64,
     size_known: bool,
@@ -680,43 +469,16 @@ struct LocalBinaryProbe {
 }
 
 #[derive(Clone, Debug)]
-struct BinaryDiscoveryCandidate {
+struct DiscoveryCandidate {
     location: String,
     size_bytes: u64,
     size_known: bool,
     modified_at_ms: Option<i64>,
-    compression: String,
     cache_source: Option<StrongObservationSourceIdentity>,
-    source: BinaryDiscoveryCandidateSource,
+    source: SourceDiscoveryCandidate,
 }
 
-#[derive(Clone, Debug)]
-enum BinaryDiscoveryCandidateSource {
-    Local {
-        path: PathBuf,
-        selection_bytes_read: u64,
-    },
-    Transport(FileTransportResource),
-    Registered(SourceDiscoveryCandidate),
-}
-
-impl BinaryDiscoveryCandidate {
-    fn from_local(candidate: cdf_declarative::LocalFileDiscoveryCandidate) -> Self {
-        let modified_at_ms = candidate.modified_at_ms();
-        Self {
-            location: candidate.relative_path,
-            size_bytes: candidate.size_bytes,
-            size_known: true,
-            modified_at_ms,
-            compression: candidate.compression,
-            cache_source: None,
-            source: BinaryDiscoveryCandidateSource::Local {
-                path: candidate.path,
-                selection_bytes_read: candidate.selection_bytes_read,
-            },
-        }
-    }
-
+impl DiscoveryCandidate {
     fn from_registered(candidate: SourceDiscoveryCandidate) -> Result<Self> {
         let size_known = candidate.size_bytes.is_some();
         let size_bytes = candidate.size_bytes.unwrap_or(0);
@@ -726,9 +488,8 @@ impl BinaryDiscoveryCandidate {
             size_bytes,
             size_known,
             modified_at_ms: candidate.modified_at_ms,
-            compression: "none".to_owned(),
             cache_source,
-            source: BinaryDiscoveryCandidateSource::Registered(candidate),
+            source: candidate,
         })
     }
 }
@@ -767,406 +528,74 @@ fn registered_cache_source(
     .map(Some)
 }
 
-trait SchemaDiscoveryAdapter: Sync {
-    fn discovery_kind(&self) -> SourceDiscoveryKind;
-    fn probe(
-        &self,
-        candidate: &BinaryDiscoveryCandidate,
-        budget: &DiscoveryExecutorBudget,
-        file_dependencies: Option<&FileRuntimeDependencies>,
-    ) -> Result<(arrow_schema::SchemaRef, BTreeMap<String, String>, u64, u64)>;
-    fn cache_key(
-        &self,
-        candidate: &BinaryDiscoveryCandidate,
-        budget: &DiscoveryExecutorBudget,
-        file_dependencies: Option<&FileRuntimeDependencies>,
-        admission_identity: &str,
-    ) -> Result<Option<ObservationCacheKey>>;
-    fn snapshot_metadata(&self) -> Result<BTreeMap<String, String>>;
-    fn source_label(&self) -> &str;
-    fn manifest_transport(&self) -> &str;
-    fn evidence_transport(&self) -> &str;
-    fn preserves_single_observation_metadata(&self) -> bool;
+fn registered_observation_cache_key(
+    plan: &CompiledSourcePlan,
+    session: &dyn SourceDiscoverySession,
+    candidate: &DiscoveryCandidate,
+    budget: &DiscoveryExecutorBudget,
+    admission_identity: &str,
+) -> Result<Option<ObservationCacheKey>> {
+    let Some(source) = candidate.cache_source.clone() else {
+        return Ok(None);
+    };
+    let interpretation_hash = crate::internal::semantic_hash(&serde_json::json!({
+        "redacted_options_hash": plan.redacted_options_hash,
+        "physical_plan_hash": plan.physical_plan_hash,
+    }))?;
+    let observation_contract_hash = crate::internal::semantic_hash(&serde_json::json!({
+        "discovery_kind": session.kind(),
+        "maximum_bytes": budget.max_bytes_per_file(),
+        "maximum_records": budget.max_records_per_file(),
+    }))?;
+    ObservationCacheKey::new(
+        source,
+        plan.driver.driver_id.as_str(),
+        plan.driver.driver_version.clone(),
+        interpretation_hash,
+        observation_contract_hash,
+        NORMALIZER_NAMECASE_V1,
+        admission_identity,
+    )
+    .map(Some)
 }
 
-struct RegisteredSourceDiscoveryAdapter<'a> {
-    plan: &'a CompiledSourcePlan,
-    session: &'a dyn SourceDiscoverySession,
+fn registered_snapshot_metadata(plan: &CompiledSourcePlan) -> Result<BTreeMap<String, String>> {
+    Ok(BTreeMap::from([
+        ("probe".to_owned(), "registered-source-discovery".to_owned()),
+        (
+            "source_driver".to_owned(),
+            plan.driver.driver_id.as_str().to_owned(),
+        ),
+        (
+            "source_driver_version".to_owned(),
+            plan.driver.driver_version.clone(),
+        ),
+        (
+            "source_plan_hash".to_owned(),
+            plan.discovery_binding_hash()?,
+        ),
+        (
+            "cdf:normalizer".to_owned(),
+            NORMALIZER_NAMECASE_V1.to_owned(),
+        ),
+    ]))
 }
 
-impl SchemaDiscoveryAdapter for RegisteredSourceDiscoveryAdapter<'_> {
-    fn discovery_kind(&self) -> SourceDiscoveryKind {
-        self.session.kind()
-    }
-
-    fn probe(
-        &self,
-        candidate: &BinaryDiscoveryCandidate,
-        budget: &DiscoveryExecutorBudget,
-        _file_dependencies: Option<&FileRuntimeDependencies>,
-    ) -> Result<(arrow_schema::SchemaRef, BTreeMap<String, String>, u64, u64)> {
-        let BinaryDiscoveryCandidateSource::Registered(candidate) = &candidate.source else {
-            return Err(CdfError::internal(
-                "registered source discovery received a legacy file candidate",
-            ));
-        };
-        let observation = self.session.observe(
-            candidate,
-            &SourceDiscoveryRequest::new(
-                budget.max_bytes_per_file(),
-                budget.max_records_per_file(),
-            )?,
-        )?;
-        Ok((
-            Arc::new(observation.schema),
-            observation.source_identity,
-            observation.bytes_read,
-            observation.records_read,
-        ))
-    }
-
-    fn cache_key(
-        &self,
-        candidate: &BinaryDiscoveryCandidate,
-        budget: &DiscoveryExecutorBudget,
-        _file_dependencies: Option<&FileRuntimeDependencies>,
-        admission_identity: &str,
-    ) -> Result<Option<ObservationCacheKey>> {
-        let Some(source) = candidate.cache_source.clone() else {
-            return Ok(None);
-        };
-        let interpretation_hash = crate::internal::semantic_hash(&serde_json::json!({
-            "redacted_options_hash": self.plan.redacted_options_hash,
-            "physical_plan_hash": self.plan.physical_plan_hash,
-        }))?;
-        let observation_contract_hash = crate::internal::semantic_hash(&serde_json::json!({
-            "discovery_kind": self.session.kind(),
-            "maximum_bytes": budget.max_bytes_per_file(),
-            "maximum_records": budget.max_records_per_file(),
-        }))?;
-        ObservationCacheKey::new(
-            source,
-            self.plan.driver.driver_id.as_str(),
-            self.plan.driver.driver_version.clone(),
-            interpretation_hash,
-            observation_contract_hash,
-            NORMALIZER_NAMECASE_V1,
-            admission_identity,
-        )
-        .map(Some)
-    }
-
-    fn snapshot_metadata(&self) -> Result<BTreeMap<String, String>> {
-        Ok(BTreeMap::from([
-            ("probe".to_owned(), "registered-source-discovery".to_owned()),
-            (
-                "source_driver".to_owned(),
-                self.plan.driver.driver_id.as_str().to_owned(),
-            ),
-            (
-                "source_driver_version".to_owned(),
-                self.plan.driver.driver_version.clone(),
-            ),
-            (
-                "source_plan_hash".to_owned(),
-                self.plan.discovery_binding_hash()?,
-            ),
-            (
-                "cdf:normalizer".to_owned(),
-                NORMALIZER_NAMECASE_V1.to_owned(),
-            ),
-        ]))
-    }
-
-    fn source_label(&self) -> &str {
-        self.plan.driver.driver_id.as_str()
-    }
-
-    fn manifest_transport(&self) -> &str {
-        self.plan.driver.driver_id.as_str()
-    }
-
-    fn evidence_transport(&self) -> &str {
-        self.plan.driver.driver_id.as_str()
-    }
-
-    fn preserves_single_observation_metadata(&self) -> bool {
-        true
-    }
-}
-
-#[derive(Clone, Debug)]
-struct RegisteredFormatDiscoveryAdapter {
-    resource_id: ResourceId,
-    format: FileFormatDeclaration,
-    format_declared: bool,
-    format_options: serde_json::Value,
-    format_options_hash: String,
-    format_driver_version: String,
-    discovery_kind: cdf_runtime::FormatDiscoveryKind,
-    transport_label: &'static str,
-}
-
-impl RegisteredFormatDiscoveryAdapter {
-    fn new(
-        resource_id: &ResourceId,
-        plan: &cdf_declarative::FileResourcePlan,
-        compiled_format: &cdf_runtime::CompiledFormatBinding,
-        transport_label: &'static str,
-    ) -> Result<Self> {
-        let format = plan.resolved_format()?.clone();
-        let discovery_kind = compiled_format.descriptor.discovery_kind;
-        Ok(Self {
-            resource_id: resource_id.clone(),
-            format,
-            format_declared: plan.format_declared,
-            format_options: compiled_format.canonical_options.clone(),
-            format_options_hash: cdf_runtime::artifact_hash(&compiled_format.canonical_options)?,
-            format_driver_version: compiled_format.descriptor.semantic_version.clone(),
-            discovery_kind,
-            transport_label,
-        })
-    }
-
-    fn probe(
-        &self,
-        candidate: &BinaryDiscoveryCandidate,
-        budget: &DiscoveryExecutorBudget,
-        file_dependencies: Option<&FileRuntimeDependencies>,
-    ) -> Result<(arrow_schema::SchemaRef, BTreeMap<String, String>, u64, u64)> {
-        match &candidate.source {
-            BinaryDiscoveryCandidateSource::Local {
-                path,
-                selection_bytes_read,
-            } => {
-                let dependencies = file_dependencies.ok_or_else(|| {
-                    CdfError::contract(
-                        "registered format discovery requires file runtime dependencies",
-                    )
-                })?;
-                let probe = discover_local_binary_schema_bounded(
-                    path,
-                    &candidate.location,
-                    dependencies,
-                    *selection_bytes_read,
-                    BoundedSchemaDiscoveryRequest {
-                        resource_id: &self.resource_id,
-                        format: &self.format,
-                        format_declared: self.format_declared,
-                        format_options: &self.format_options,
-                        transform_name: &candidate.compression,
-                        maximum_bytes: budget.max_bytes_per_file(),
-                        maximum_records: budget.max_records_per_file(),
-                    },
-                )?;
-                Ok((
-                    probe.schema,
-                    probe.source_identity,
-                    probe.probe_bytes_read,
-                    probe.probe_records_read,
-                ))
-            }
-            BinaryDiscoveryCandidateSource::Transport(resource) => {
-                let dependencies = file_dependencies.ok_or_else(|| {
-                    CdfError::contract(
-                        "registered remote format discovery requires file transport dependencies",
-                    )
-                })?;
-                let probe = discover_transport_binary_schema_bounded(
-                    resource.clone(),
-                    dependencies,
-                    BoundedSchemaDiscoveryRequest {
-                        resource_id: &self.resource_id,
-                        format: &self.format,
-                        format_declared: self.format_declared,
-                        format_options: &self.format_options,
-                        transform_name: &candidate.compression,
-                        maximum_bytes: budget.max_bytes_per_file(),
-                        maximum_records: budget.max_records_per_file(),
-                    },
-                )?;
-                Ok((
-                    probe.schema,
-                    probe.source_identity,
-                    probe.probe_bytes_read,
-                    probe.probe_records_read,
-                ))
-            }
-            BinaryDiscoveryCandidateSource::Registered(_) => Err(CdfError::internal(
-                "legacy registered-format discovery received a source-session candidate",
-            )),
-        }
-    }
-
-    fn cache_key(
-        &self,
-        candidate: &BinaryDiscoveryCandidate,
-        budget: &DiscoveryExecutorBudget,
-        file_dependencies: Option<&FileRuntimeDependencies>,
-        admission_identity: &str,
-    ) -> Result<Option<ObservationCacheKey>> {
-        let Some(source) = candidate.cache_source.clone() else {
-            return Ok(None);
-        };
-        let dependencies = file_dependencies.ok_or_else(|| {
-            CdfError::contract(
-                "observation cache interpretation requires file runtime dependencies",
-            )
-        })?;
-        let transform = if candidate.compression == "none" {
-            serde_json::json!({"id": "none", "version": "none"})
-        } else {
-            let driver = dependencies
-                .transforms()
-                .resolve_name(&candidate.compression)?;
-            serde_json::json!({
-                "id": driver.descriptor().transform_id.as_str(),
-                "version": driver.descriptor().semantic_version,
-            })
-        };
-        let interpretation_hash = crate::internal::semantic_hash(&serde_json::json!({
-            "format_options_hash": self.format_options_hash,
-            "format_declared": self.format_declared,
-            "transform": transform,
-        }))?;
-        let observation_contract_hash = crate::internal::semantic_hash(&serde_json::json!({
-            "discovery_kind": self.discovery_kind,
-            "maximum_bytes": budget.max_bytes_per_file(),
-            "maximum_records": budget.max_records_per_file(),
-        }))?;
-        Ok(Some(ObservationCacheKey::new(
-            source,
-            self.format.as_str(),
-            self.format_driver_version.clone(),
-            interpretation_hash,
-            observation_contract_hash,
-            NORMALIZER_NAMECASE_V1,
-            admission_identity,
-        )?))
-    }
-
-    fn snapshot_metadata(&self) -> Result<BTreeMap<String, String>> {
-        Ok(BTreeMap::from([
-            ("probe".to_owned(), "registered-format-discovery".to_owned()),
-            ("format".to_owned(), self.format.as_str().to_owned()),
-            (
-                "format_options_hash".to_owned(),
-                self.format_options_hash.clone(),
-            ),
-            (
-                "format_driver_version".to_owned(),
-                self.format_driver_version.clone(),
-            ),
-            ("source_kind".to_owned(), "files".to_owned()),
-            (
-                "cdf:normalizer".to_owned(),
-                NORMALIZER_NAMECASE_V1.to_owned(),
-            ),
-        ]))
-    }
-}
-
-impl SchemaDiscoveryAdapter for RegisteredFormatDiscoveryAdapter {
-    fn discovery_kind(&self) -> SourceDiscoveryKind {
-        match self.discovery_kind {
-            cdf_runtime::FormatDiscoveryKind::FormatMetadata => SourceDiscoveryKind::SchemaMetadata,
-            cdf_runtime::FormatDiscoveryKind::BoundedContent => SourceDiscoveryKind::BoundedContent,
-            cdf_runtime::FormatDiscoveryKind::FullContent => SourceDiscoveryKind::FullContent,
-        }
-    }
-
-    fn probe(
-        &self,
-        candidate: &BinaryDiscoveryCandidate,
-        budget: &DiscoveryExecutorBudget,
-        file_dependencies: Option<&FileRuntimeDependencies>,
-    ) -> Result<(arrow_schema::SchemaRef, BTreeMap<String, String>, u64, u64)> {
-        Self::probe(self, candidate, budget, file_dependencies)
-    }
-
-    fn cache_key(
-        &self,
-        candidate: &BinaryDiscoveryCandidate,
-        budget: &DiscoveryExecutorBudget,
-        file_dependencies: Option<&FileRuntimeDependencies>,
-        admission_identity: &str,
-    ) -> Result<Option<ObservationCacheKey>> {
-        Self::cache_key(
-            self,
-            candidate,
-            budget,
-            file_dependencies,
-            admission_identity,
-        )
-    }
-
-    fn snapshot_metadata(&self) -> Result<BTreeMap<String, String>> {
-        Self::snapshot_metadata(self)
-    }
-
-    fn source_label(&self) -> &str {
-        "file"
-    }
-
-    fn manifest_transport(&self) -> &str {
-        "file"
-    }
-
-    fn evidence_transport(&self) -> &str {
-        self.transport_label
-    }
-
-    fn preserves_single_observation_metadata(&self) -> bool {
-        false
-    }
-}
-
-fn discover_local_binary_resource_schema(
-    resource: &CompiledResource,
-    plan: &cdf_declarative::FileResourcePlan,
-    file_dependencies: Option<FileRuntimeDependencies>,
-    options: SchemaDiscoveryExecutionOptions,
-) -> Result<ResourceSchemaDiscoveryArtifacts> {
-    let dependencies = file_dependencies.ok_or_else(|| {
-        unsupported_discover_slice(
-            resource.descriptor(),
-            "file discovery requires explicit transport, format, and transform registry dependencies",
-        )
-    })?;
-    let (plan, compiled_format) =
-        cdf_declarative::compile_file_resource_plan(plan, dependencies.formats())?;
-    let adapter = RegisteredFormatDiscoveryAdapter::new(
-        &resource.descriptor().resource_id,
-        &plan,
-        &compiled_format,
-        "local",
-    )?;
-    let candidates = local_file_discovery_candidates(
-        &resource.descriptor().resource_id,
-        &plan,
-        dependencies.formats(),
-        dependencies.transforms(),
-    )?
-    .into_iter()
-    .map(BinaryDiscoveryCandidate::from_local)
-    .collect::<Vec<_>>();
-    discover_binary_resource_schema(resource, options, &adapter, candidates, Some(&dependencies))
-}
-
-fn discover_binary_resource_schema(
+fn discover_registered_resource_schema(
     resource: &CompiledResource,
     options: SchemaDiscoveryExecutionOptions,
-    adapter: &dyn SchemaDiscoveryAdapter,
-    candidates: Vec<BinaryDiscoveryCandidate>,
-    file_dependencies: Option<&FileRuntimeDependencies>,
+    plan: &CompiledSourcePlan,
+    session: &dyn SourceDiscoverySession,
+    candidates: Vec<DiscoveryCandidate>,
 ) -> Result<ResourceSchemaDiscoveryArtifacts> {
     ensure_discover_schema_mode(resource)?;
+    let source_label = plan.driver.driver_id.as_str();
     let baseline_schema_hash =
         options.runtime_baseline_hash_for(&resource.descriptor().resource_id)?;
     if candidates.is_empty() {
         return Err(CdfError::data(format!(
             "{} discovery for resource `{}` matched no candidates",
-            adapter.source_label(),
+            source_label,
             resource.descriptor().resource_id
         )));
     }
@@ -1187,7 +616,7 @@ fn discover_binary_resource_schema(
         DiscoveryFileCoverage::AllFiles => "all_files",
         DiscoveryFileCoverage::SampledFiles => "sampled_files",
     };
-    let within_file_coverage = match adapter.discovery_kind() {
+    let within_file_coverage = match session.kind() {
         SourceDiscoveryKind::SchemaMetadata => DiscoveryWithinFileCoverage::FormatMetadata,
         SourceDiscoveryKind::BoundedContent => DiscoveryWithinFileCoverage::BoundedContent,
         SourceDiscoveryKind::FullContent => DiscoveryWithinFileCoverage::FullContent,
@@ -1226,10 +655,11 @@ fn discover_binary_resource_schema(
     let cache_keys = scheduled_candidates
         .iter()
         .map(|candidate| {
-            adapter.cache_key(
+            registered_observation_cache_key(
+                plan,
+                session,
                 candidate,
                 &options.budget,
-                file_dependencies,
                 &admission_identity,
             )
         })
@@ -1239,11 +669,10 @@ fn discover_binary_resource_schema(
         &options.budget,
         options.memory_coordinator.clone(),
         |index| {
-            probe_binary_candidate(
-                adapter,
+            probe_discovery_candidate(
+                session,
                 scheduled_candidates[index],
                 &options.budget,
-                file_dependencies,
                 options.observation_cache.as_ref(),
                 cache_keys[index].as_ref(),
             )
@@ -1270,7 +699,7 @@ fn discover_binary_resource_schema(
     if failed {
         return Err(CdfError::data(format!(
             "{file_coverage_label} + {within_file_coverage_label} {} discovery failed for resource `{}` after evaluating every selected candidate without substitution: {}",
-            adapter.source_label(),
+            source_label,
             resource.descriptor().resource_id,
             probe_reports.join("; ")
         )));
@@ -1319,7 +748,7 @@ fn discover_binary_resource_schema(
     }
 
     let initial_observed_schema = match selected_probes.as_slice() {
-        [probe] if adapter.preserves_single_observation_metadata() => probe.schema.as_ref(),
+        [probe] => probe.schema.as_ref(),
         _ => &file_aggregate.schema,
     };
     let (effective_schema, terminal_quarantines) =
@@ -1340,7 +769,7 @@ fn discover_binary_resource_schema(
         };
     let normalized = effective_schema;
     let normalized = Arc::new(normalized);
-    let metadata = adapter.snapshot_metadata()?;
+    let metadata = registered_snapshot_metadata(plan)?;
     let effective = SchemaSnapshotArtifact::new(
         &resource.descriptor().resource_id,
         normalized.as_ref(),
@@ -1350,10 +779,7 @@ fn discover_binary_resource_schema(
         .iter()
         .map(|candidate| {
             if !selection.selects(&candidate.location) {
-                return Ok(unobserved_manifest_candidate(
-                    candidate,
-                    adapter.manifest_transport(),
-                ));
+                return Ok(unobserved_manifest_candidate(candidate, source_label));
             }
             let probe = probes
                 .iter()
@@ -1377,7 +803,7 @@ fn discover_binary_resource_schema(
             manifest_candidate(
                 probe,
                 verdict,
-                adapter.manifest_transport(),
+                source_label,
                 (selection.file_coverage == DiscoveryFileCoverage::SampledFiles)
                     .then(|| selector_candidate_identity(candidate)),
                 terminal_quarantines
@@ -1416,7 +842,7 @@ fn discover_binary_resource_schema(
         total.checked_add(probe.probe_bytes).ok_or_else(|| {
             CdfError::data(format!(
                 "{file_coverage_label} + {within_file_coverage_label} {} discovery byte accounting overflowed for resource `{}` while adding `{}`; reduce the matched candidate set or probe budget",
-                adapter.source_label(),
+                source_label,
                 resource.descriptor().resource_id,
                 probe.location
             ))
@@ -1426,7 +852,7 @@ fn discover_binary_resource_schema(
         total.checked_add(probe.probe_records).ok_or_else(|| {
             CdfError::data(format!(
                 "{file_coverage_label} + {within_file_coverage_label} {} discovery record accounting overflowed for resource `{}` while adding `{}`; reduce the matched candidate set or record budget",
-                adapter.source_label(),
+                source_label,
                 resource.descriptor().resource_id,
                 probe.location
             ))
@@ -1436,7 +862,7 @@ fn discover_binary_resource_schema(
         total.checked_add(probe.source_bytes_read).ok_or_else(|| {
             CdfError::data(format!(
                 "{file_coverage_label} + {within_file_coverage_label} {} discovery source-byte accounting overflowed for resource `{}` while adding `{}`",
-                adapter.source_label(),
+                source_label,
                 resource.descriptor().resource_id,
                 probe.location
             ))
@@ -1452,14 +878,8 @@ fn discover_binary_resource_schema(
         .count();
     let cache_bypasses = selected_probes.len() - cache_hits - cache_misses;
     let mut source_identity = BTreeMap::from([
-        (
-            "source_driver".to_owned(),
-            adapter.source_label().to_owned(),
-        ),
-        (
-            "transport".to_owned(),
-            adapter.evidence_transport().to_owned(),
-        ),
+        ("source_driver".to_owned(), source_label.to_owned()),
+        ("transport".to_owned(), source_label.to_owned()),
         ("file_coverage".to_owned(), file_coverage_label.to_owned()),
         (
             "within_file_coverage".to_owned(),
@@ -1521,7 +941,7 @@ fn discover_binary_resource_schema(
     let effective_schema_runtime = {
         let effective_schema_hash = manifest.effective_schema_hash.clone().ok_or_else(|| {
             CdfError::internal(
-                "local binary discovery manifest omitted its effective schema snapshot hash",
+                "registered source discovery manifest omitted its effective schema snapshot hash",
             )
         })?;
         let mut observations = probes
@@ -1694,14 +1114,13 @@ fn contract_policy_for_resource(resource: &CompiledResource) -> ContractPolicy {
     policy
 }
 
-fn probe_binary_candidate(
-    adapter: &dyn SchemaDiscoveryAdapter,
-    candidate: &BinaryDiscoveryCandidate,
+fn probe_discovery_candidate(
+    session: &dyn SourceDiscoverySession,
+    candidate: &DiscoveryCandidate,
     budget: &DiscoveryExecutorBudget,
-    file_dependencies: Option<&FileRuntimeDependencies>,
     cache: Option<&ObservationCacheStore>,
     cache_key: Option<&ObservationCacheKey>,
-) -> Result<LocalBinaryProbe> {
+) -> Result<SchemaProbe> {
     let mut cache_status = if cache_key.is_some() {
         "disabled".to_owned()
     } else {
@@ -1711,7 +1130,7 @@ fn probe_binary_candidate(
         match cache.lookup(cache_key) {
             ObservationCacheLookup::Hit(entry) => {
                 let entry = *entry;
-                return local_binary_probe_from_parts(
+                return schema_probe_from_parts(
                     candidate,
                     Arc::new(entry.arrow_schema()?),
                     entry.source_identity,
@@ -1726,8 +1145,14 @@ fn probe_binary_candidate(
             }
         }
     }
-    let (schema, source_identity, probe_bytes, probe_records) =
-        adapter.probe(candidate, budget, file_dependencies)?;
+    let observation = session.observe(
+        &candidate.source,
+        &SourceDiscoveryRequest::new(budget.max_bytes_per_file(), budget.max_records_per_file())?,
+    )?;
+    let schema = Arc::new(observation.schema);
+    let source_identity = observation.source_identity;
+    let probe_bytes = observation.bytes_read;
+    let probe_records = observation.records_read;
     if let (Some(cache), Some(cache_key)) = (cache, cache_key) {
         let entry = ObservationCacheEntry::new(
             cache_key.clone(),
@@ -1738,7 +1163,7 @@ fn probe_binary_candidate(
         )?;
         cache_status.push_str(observation_cache_store_suffix(cache.store(&entry)));
     }
-    local_binary_probe_from_parts(
+    schema_probe_from_parts(
         candidate,
         schema,
         source_identity,
@@ -1749,15 +1174,15 @@ fn probe_binary_candidate(
     )
 }
 
-fn local_binary_probe_from_parts(
-    candidate: &BinaryDiscoveryCandidate,
+fn schema_probe_from_parts(
+    candidate: &DiscoveryCandidate,
     schema: arrow_schema::SchemaRef,
     source_identity: BTreeMap<String, String>,
     probe_bytes: u64,
     probe_records: u64,
     source_bytes_read: u64,
     cache_status: String,
-) -> Result<LocalBinaryProbe> {
+) -> Result<SchemaProbe> {
     let modified_at_ms = source_identity
         .get("modified_unix_millis")
         .map(|value| {
@@ -1770,13 +1195,13 @@ fn local_binary_probe_from_parts(
         })
         .transpose()?
         .or(candidate.modified_at_ms);
-    let physical_schema_hash = physical_arrow_schema_hash(schema.as_ref())?;
+    let physical_schema_hash = cdf_kernel::canonical_arrow_schema_hash(schema.as_ref())?;
     let fingerprint = source_identity
         .get("footer_sha256")
         .or_else(|| source_identity.get("schema_hash"))
         .cloned()
         .unwrap_or_else(|| physical_schema_hash.to_string());
-    Ok(LocalBinaryProbe {
+    Ok(SchemaProbe {
         location: candidate.location.clone(),
         size_bytes: candidate.size_bytes,
         size_known: candidate.size_known,
@@ -1811,7 +1236,7 @@ fn observation_cache_store_suffix(outcome: ObservationCacheStoreOutcome) -> &'st
 }
 
 fn classify_runtime_schema_observations(
-    probes: &[LocalBinaryProbe],
+    probes: &[SchemaProbe],
     baseline: &RuntimeSchemaBaseline,
     contract: &ContractPolicy,
     admit_compatible_evolution: bool,
@@ -1838,11 +1263,11 @@ fn classify_runtime_schema_observations(
         } else {
             false
         };
-        let constrained = reconcile_schema(
+        let constrained = plan_schema_reconciliation(
             probe.schema.as_ref(),
             baseline.schema().as_ref(),
             &physical_type_policy,
-        );
+        )?;
         if report.is_compatible()
             && !freeze_deviation
             && admit_compatible_evolution
@@ -1851,7 +1276,7 @@ fn classify_runtime_schema_observations(
             effective = normalize_arrow_schema(&report.schema, &IdentifierPolicy::default())?;
             continue;
         }
-        if let Ok(constrained) = &constrained {
+        if constrained.errors.is_empty() {
             let projects_every_observed_field = constrained
                 .plan
                 .fields
@@ -1862,18 +1287,38 @@ fn classify_runtime_schema_observations(
             }
         }
 
-        let mut fields = report
-            .incompatibilities
+        let mut fields = constrained
+            .errors
             .iter()
             .map(|item| {
+                let path = vec![item.source_name.clone()];
+                let reason = if item.operator_fixes.is_empty() {
+                    item.message.clone()
+                } else {
+                    format!("{}; {}", item.message, item.operator_fixes.join("; "))
+                };
                 SchemaObservationFieldQuarantine::new_field_path(
-                    item.field_path.clone(),
-                    canonical_field_at_path(probe.schema.as_ref(), &item.field_path)?,
-                    canonical_field_at_path(&effective, &item.field_path)?,
-                    item.reason.clone(),
+                    path.clone(),
+                    canonical_field_at_path(probe.schema.as_ref(), &path)?,
+                    canonical_field_at_path(&effective, &path)?,
+                    reason,
                 )
             })
             .collect::<Result<Vec<_>>>()?;
+        if fields.is_empty() {
+            fields = report
+                .incompatibilities
+                .iter()
+                .map(|item| {
+                    SchemaObservationFieldQuarantine::new_field_path(
+                        item.field_path.clone(),
+                        canonical_field_at_path(probe.schema.as_ref(), &item.field_path)?,
+                        canonical_field_at_path(&effective, &item.field_path)?,
+                        item.reason.clone(),
+                    )
+                })
+                .collect::<Result<Vec<_>>>()?;
+        }
         if fields.is_empty() {
             for verdict in report.files.iter().flat_map(|file| &file.fields) {
                 if verdict.decision != cdf_contract::AggregateFieldDecision::Preserved
@@ -2001,7 +1446,7 @@ fn schema_field_component_matches(field: &arrow_schema::Field, component: &str) 
 }
 
 fn manifest_candidate(
-    probe: &LocalBinaryProbe,
+    probe: &SchemaProbe,
     verdict: &AggregateFileSchemaVerdict,
     transport: &str,
     selector_identity: Option<DiscoveryBoundedIdentity>,
@@ -2033,6 +1478,9 @@ fn manifest_candidate(
         participation: DiscoveryParticipation::Observed,
         metadata_variance: manifest_metadata_variance(verdict),
         physical_schema_hash: Some(probe.physical_schema_hash.clone()),
+        physical_schema: Some(cdf_kernel::CanonicalArrowSchema::from_arrow(
+            probe.schema.as_ref(),
+        )?),
         probe_bytes: Some(probe.probe_bytes),
         probe_records: Some(probe.probe_records),
         schema_verdict: Some(DiscoverySchemaVerdict {
@@ -2058,7 +1506,7 @@ fn manifest_candidate(
     })
 }
 
-fn selector_candidate_identity(candidate: &BinaryDiscoveryCandidate) -> DiscoveryBoundedIdentity {
+fn selector_candidate_identity(candidate: &DiscoveryCandidate) -> DiscoveryBoundedIdentity {
     DiscoveryBoundedIdentity {
         size_bytes: candidate.size_known.then_some(candidate.size_bytes),
         modified_at_ms: candidate.modified_at_ms,
@@ -2068,7 +1516,7 @@ fn selector_candidate_identity(candidate: &BinaryDiscoveryCandidate) -> Discover
 }
 
 fn unobserved_manifest_candidate(
-    candidate: &BinaryDiscoveryCandidate,
+    candidate: &DiscoveryCandidate,
     transport: &str,
 ) -> DiscoveryCandidateEvidence {
     DiscoveryCandidateEvidence {
@@ -2078,6 +1526,7 @@ fn unobserved_manifest_candidate(
         participation: DiscoveryParticipation::Unobserved,
         metadata_variance: Vec::new(),
         physical_schema_hash: None,
+        physical_schema: None,
         probe_bytes: None,
         probe_records: None,
         schema_verdict: None,
@@ -2137,154 +1586,6 @@ fn aggregate_file_report(verdict: &AggregateFileSchemaVerdict) -> String {
     )
 }
 
-fn discover_postgres_resource_schema(
-    resource: &CompiledResource,
-    plan: &cdf_declarative::SqlResourcePlan,
-    secret_provider: &dyn SecretProvider,
-) -> Result<ResourceSchemaDiscovery> {
-    if let Some(dialect) = &plan.dialect
-        && !dialect.eq_ignore_ascii_case("postgres")
-    {
-        return Err(unsupported_discover_slice(
-            resource.descriptor(),
-            format!(
-                "SQL dialect `{dialect}` discovery is not implemented in this slice; only dialect `postgres` table resources support catalog discovery"
-            ),
-        ));
-    }
-    let target = postgres_table_target_for_sql_plan(plan).map_err(|error| {
-        unsupported_discover_slice(
-            resource.descriptor(),
-            format!(
-                "Postgres table catalog discovery is unavailable: {}",
-                error.message
-            ),
-        )
-    })?;
-    let secret = secret_provider.resolve(&plan.connection)?;
-    let probe = discover_postgres_table_catalog_schema(
-        secret.as_str()?,
-        &resource.descriptor().resource_id,
-        &target,
-    )?;
-    let metadata = BTreeMap::from([
-        (
-            "probe".to_owned(),
-            POSTGRES_CATALOG_DISCOVERY_PROBE.to_owned(),
-        ),
-        ("source_kind".to_owned(), "sql".to_owned()),
-        ("dialect".to_owned(), "postgres".to_owned()),
-        ("table".to_owned(), target.display_name()),
-        (
-            "cdf:normalizer".to_owned(),
-            NORMALIZER_NAMECASE_V1.to_owned(),
-        ),
-    ]);
-    build_schema_discovery(resource, &probe.schema, metadata, probe.source_identity)
-}
-
-fn discover_rest_resource_schema(
-    resource: &CompiledResource,
-    dependencies: &RestDiscoveryDependencies<'_>,
-) -> Result<ResourceSchemaDiscovery> {
-    let probe = discover_rest_sample_schema(resource, dependencies)?;
-    let metadata = BTreeMap::from([
-        ("probe".to_owned(), "rest-sample-page".to_owned()),
-        ("source_kind".to_owned(), "rest".to_owned()),
-        (
-            "cdf:normalizer".to_owned(),
-            NORMALIZER_NAMECASE_V1.to_owned(),
-        ),
-    ]);
-    build_schema_discovery(
-        resource,
-        probe.schema.as_ref(),
-        metadata,
-        probe.source_identity,
-    )
-}
-
-fn build_schema_discovery(
-    resource: &CompiledResource,
-    schema: &arrow_schema::Schema,
-    metadata: BTreeMap<String, String>,
-    source_identity: BTreeMap<String, String>,
-) -> Result<ResourceSchemaDiscovery> {
-    let normalized = normalize_arrow_schema(schema, &IdentifierPolicy::default())?;
-    let normalized = Arc::new(normalized);
-    let artifact = SchemaSnapshotArtifact::new(
-        &resource.descriptor().resource_id,
-        normalized.as_ref(),
-        metadata,
-    )?;
-    Ok(ResourceSchemaDiscovery {
-        normalized_schema: normalized,
-        snapshot: DiscoveredSchemaSnapshot {
-            reference: artifact.reference(),
-            artifact,
-            source_identity,
-        },
-    })
-}
-
-pub fn prepare_discover_resource_with_file_dependencies(
-    project_root: impl AsRef<Path>,
-    resource: &CompiledResource,
-    secret_provider: &dyn SecretProvider,
-    file_dependencies: FileRuntimeDependencies,
-) -> Result<PreparedDiscoveredResource> {
-    if !schema_source_needs_pin(&resource.descriptor().schema_source) {
-        return Ok(PreparedDiscoveredResource {
-            resource: resource.clone(),
-            discovery: None,
-        });
-    }
-
-    let project_root = project_root.as_ref();
-    let discovery = discover_resource_schema_with_file_dependencies_artifacts(
-        resource,
-        secret_provider,
-        file_dependencies,
-        SchemaDiscoveryExecutionOptions::new()
-            .with_observation_cache(ObservationCacheStore::new(project_root)),
-    )?;
-    prepare_discovered_schema(project_root, resource, discovery)
-}
-
-pub fn prepare_discover_resource_with_rest_dependencies(
-    project_root: impl AsRef<Path>,
-    resource: &CompiledResource,
-    rest_dependencies: &RestDiscoveryDependencies<'_>,
-) -> Result<PreparedDiscoveredResource> {
-    if !schema_source_needs_pin(&resource.descriptor().schema_source) {
-        return Ok(PreparedDiscoveredResource {
-            resource: resource.clone(),
-            discovery: None,
-        });
-    }
-
-    let discovery = ResourceSchemaDiscoveryArtifacts {
-        discovery: discover_resource_schema_with_rest_dependencies(resource, rest_dependencies)?,
-        discovery_manifest: None,
-        effective_schema_runtime: None,
-    };
-    prepare_discovered_schema(project_root, resource, discovery)
-}
-
-fn prepare_discovered_schema(
-    project_root: impl AsRef<Path>,
-    resource: &CompiledResource,
-    mut artifacts: ResourceSchemaDiscoveryArtifacts,
-) -> Result<PreparedDiscoveredResource> {
-    let resource = compile_discovered_schema_artifacts(resource, &mut artifacts)?;
-    let discovery = artifacts.discovery.clone();
-    write_schema_discovery_artifacts(project_root, &artifacts)?;
-    Ok(PreparedDiscoveredResource {
-        resource,
-        discovery: Some(discovery),
-    })
-}
-
 pub fn compile_discovered_schema_artifacts(
     resource: &CompiledResource,
     artifacts: &mut ResourceSchemaDiscoveryArtifacts,
@@ -2295,6 +1596,7 @@ pub fn compile_discovered_schema_artifacts(
     let Some(runtime) = artifacts.effective_schema_runtime.as_ref() else {
         return Ok(prepared);
     };
+    prepared = prepared.with_baseline_observation_schema_catalog(runtime.schema_catalog.clone());
     let mut evidence = EffectiveSchemaEvidence::new(
         SchemaBaselineReference::Pinned {
             snapshot: artifacts.discovery.snapshot.reference.clone(),
@@ -2316,13 +1618,6 @@ pub fn compile_discovered_schema_artifacts(
     Ok(prepared)
 }
 
-fn schema_source_needs_pin(source: &SchemaSource) -> bool {
-    matches!(
-        source,
-        SchemaSource::Discover | SchemaSource::Hints { snapshot: None, .. }
-    )
-}
-
 pub fn apply_discovered_schema_constraints(
     resource: &CompiledResource,
     mut discovery: ResourceSchemaDiscovery,
@@ -2333,8 +1628,10 @@ pub fn apply_discovered_schema_constraints(
         snapshot: None,
     } = &resource.descriptor().schema_source
     else {
-        let prepared = apply_discovered_schema(resource, discovery.clone());
-        return Ok((prepared.resource, discovery));
+        return Ok((
+            apply_discovered_schema(resource, discovery.clone()),
+            discovery,
+        ));
     };
     let mut policy = ContractPolicy::for_trust(resource.descriptor().trust_level.clone()).types;
     let allowances = resource.type_policy_allowances();
@@ -2401,18 +1698,13 @@ pub fn write_schema_discovery_artifacts(
 pub fn apply_discovered_schema(
     resource: &CompiledResource,
     discovery: ResourceSchemaDiscovery,
-) -> PreparedDiscoveredResource {
-    let pinned = resource.with_schema_source_and_schema(
+) -> CompiledResource {
+    resource.with_schema_source_and_schema(
         SchemaSource::Discovered {
             snapshot: discovery.snapshot.reference.clone(),
         },
         Arc::clone(&discovery.normalized_schema),
-    );
-
-    PreparedDiscoveredResource {
-        resource: pinned,
-        discovery: Some(discovery),
-    }
+    )
 }
 
 fn same_effective_fields(left: &arrow_schema::Schema, right: &arrow_schema::Schema) -> bool {
@@ -2444,39 +1736,6 @@ fn ensure_discover_schema_mode(resource: &CompiledResource) -> Result<()> {
         "cdf schema discover supports resources in discover schema mode; resource `{}` already has a declared or pinned schema",
         resource.descriptor().resource_id
     )))
-}
-
-fn is_http_root(root: &str) -> bool {
-    root.starts_with("http://") || root.starts_with("https://")
-}
-
-fn is_remote_file_root(root: &str) -> bool {
-    is_http_root(root)
-        || root.starts_with("s3://")
-        || root.starts_with("gs://")
-        || root.starts_with("az://")
-}
-
-fn discovery_scan_request(descriptor: &ResourceDescriptor) -> Result<ScanRequest> {
-    Ok(ScanRequest {
-        resource_id: descriptor.resource_id.clone(),
-        projection: None,
-        filters: Vec::new(),
-        limit: None,
-        order_by: Vec::new(),
-        scope: descriptor.state_scope.clone(),
-    })
-}
-
-fn unsupported_discover_slice(
-    descriptor: &ResourceDescriptor,
-    reason: impl Into<String>,
-) -> CdfError {
-    CdfError::contract(format!(
-        "unsupported schema discovery slice for resource `{}`: {}",
-        descriptor.resource_id,
-        reason.into()
-    ))
 }
 
 #[cfg(test)]

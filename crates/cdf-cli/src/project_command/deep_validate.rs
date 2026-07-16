@@ -1,9 +1,7 @@
 use std::{collections::BTreeMap, sync::Arc};
 
-use cdf_contract::{
-    ContractPolicy, ObservedSchema, compile_resource_validation_program, reconcile_schema,
-};
-use cdf_declarative::{CompiledResource, CompiledResourcePlan};
+use cdf_contract::{ContractPolicy, ObservedSchema, compile_resource_validation_program};
+use cdf_declarative::CompiledResource;
 use cdf_engine::{EnginePlanInput, Planner};
 use cdf_kernel::ExecutionExtent;
 use cdf_kernel::{ResourceDescriptor, ResourceStream, ScanRequest, SchemaSource};
@@ -17,7 +15,10 @@ use crate::{
     context::ProjectContext,
     destination_uri::{redact_error_value, resolve_environment_destination},
     output::{CliError, CommandOutput},
-    project_run_resource::{compile_source_plan_for_cli, discover_source_schema_with_plan_for_cli},
+    project_run_resource::{
+        compile_source_plan_for_cli, discover_source_schema_with_plan_for_cli,
+        preflight_fixed_source_schema_with_plan_for_cli,
+    },
     render::{
         RenderDocument,
         primitives::{KeyValuePanel, NextCommand, SectionRule, StatusKind, StatusLine, Table},
@@ -110,11 +111,14 @@ fn deep_validate_resource(
             Arc::clone(&discovery.normalized_schema),
         );
     }
-    let runtime_resource = source_plan.and_then(|source_plan| {
-        let source_plan = match source_plan.bind_schema_authority(
+    let runtime_resource = source_plan.as_ref().and_then(|source_plan| {
+        let source_plan = match source_plan.clone().bind_schema_authority(
             working_resource.descriptor(),
             working_resource.schema().as_ref(),
             working_resource.effective_schema_runtime().cloned(),
+            working_resource
+                .baseline_observation_schema_catalog()
+                .to_vec(),
         ) {
             Ok(source_plan) => source_plan,
             Err(error) => {
@@ -147,7 +151,9 @@ fn deep_validate_resource(
         }
     });
     let partition_report = partition_check(runtime_resource.as_ref(), &mut diagnostics);
-    physical_schema_reconciliation_check(context, resource, execution, &mut diagnostics);
+    if let Some(source_plan) = source_plan.as_ref() {
+        fixed_schema_preflight_check(context, resource, source_plan, execution, &mut diagnostics);
+    }
     let validation_program = validation_program_check(&working_resource, &mut diagnostics);
     let normalization = normalization_check(&working_resource, &mut diagnostics);
     let destination = destination_check(
@@ -173,7 +179,7 @@ fn deep_validate_resource(
         source_file: origin.source_file.clone(),
         mapping_pattern: origin.mapping_pattern.clone(),
         mapping_status: origin.mapping_status.clone(),
-        source_kind: resource_kind_name(resource.plan()).to_owned(),
+        source_kind: resource_kind_name(resource).to_owned(),
         schema_source: schema_source_name(&working_resource.descriptor().schema_source).to_owned(),
         field_count: working_resource.schema().fields().len(),
         partitions: partition_report,
@@ -292,112 +298,79 @@ fn discover_for_deep_validate(
     .discovery)
 }
 
-fn physical_schema_reconciliation_check(
+fn fixed_schema_preflight_check(
     context: &ProjectContext,
     resource: &CompiledResource,
+    source_plan: &cdf_runtime::CompiledSourcePlan,
     execution: &cdf_runtime::ExecutionServices,
     diagnostics: &mut Vec<DeepValidateDiagnostic>,
 ) {
-    let CompiledResourcePlan::Files(plan) = resource.plan() else {
-        return;
-    };
-    if matches!(resource.descriptor().schema_source, SchemaSource::Discover) {
+    if matches!(
+        resource.descriptor().schema_source,
+        SchemaSource::Discover | SchemaSource::Hints { snapshot: None, .. }
+    ) {
         return;
     }
-    let dependencies =
-        match crate::project_run_resource::file_runtime_dependencies(context, Some(execution)) {
-            Ok(dependencies) => dependencies,
-            Err(error) => {
-                diagnostics.push(diagnostic(
-                    "error",
-                    "physical_schema_probe",
-                    redact_uri_userinfo(&error.message),
-                    "Fix the file runtime composition before plan/run.",
-                ));
-                return;
-            }
-        };
-    let (_, compiled_format) =
-        match cdf_declarative::compile_file_resource_plan(plan, dependencies.formats()) {
-            Ok(compiled) => compiled,
-            Err(error) => {
-                diagnostics.push(diagnostic(
-                    "error",
-                    "physical_schema_probe",
-                    redact_uri_userinfo(&error.message),
-                    "Declare `format` explicitly or install a driver that owns the file extension.",
-                ));
-                return;
-            }
-        };
-    let probe = resource.with_schema_source_and_schema(SchemaSource::Discover, resource.schema());
-    let secret_provider = context.secret_provider();
-    let discovery = cdf_project::discover_resource_schema_with_file_dependencies_artifacts(
-        &probe,
-        &secret_provider,
-        dependencies,
+    let preflight = preflight_fixed_source_schema_with_plan_for_cli(
+        context,
+        resource,
+        source_plan,
+        execution,
         cdf_project::SchemaDiscoveryExecutionOptions::new()
             .with_observation_cache(cdf_project::ObservationCacheStore::new(&context.root)),
-    )
-    .map(|artifacts| artifacts.discovery);
-    let observed = match discovery {
-        Ok(discovery) => discovery.normalized_schema,
+    );
+    let artifacts = match preflight {
+        Ok(artifacts) => artifacts,
         Err(error) => {
             diagnostics.push(diagnostic(
                 "error",
                 "physical_schema_probe",
-                format!(
-                    "resource `{}` at {}: {}",
-                    resource.descriptor().resource_id,
-                    safe_file_location(&plan.root, &plan.glob),
-                    redact_uri_userinfo(&error.message)
-                ),
-                "Fix the unreadable or malformed source before plan/run; schema mismatches that decode successfully remain governed verdicts.",
+                redact_uri_userinfo(&error.message),
+                "Fix the unreadable source or its fixed schema contract before plan/run; ordinary execution will otherwise classify the same observation in-stream.",
             ));
             return;
         }
     };
-    let mut policy = ContractPolicy::for_trust(resource.descriptor().trust_level.clone());
-    let allowances = resource.type_policy_allowances();
-    policy.types.coerce_types = allowances.coerce_types;
-    policy.types.allow_lossy_mapping = allowances.allow_lossy_mapping;
-    if let Err(error) =
-        reconcile_schema(observed.as_ref(), resource.schema().as_ref(), &policy.types)
+    if let Some(runtime) = artifacts.effective_schema_runtime
+        && !runtime.terminal_quarantines.is_empty()
     {
-        let row_local =
-            compiled_format.descriptor.error_isolation == cdf_runtime::FormatErrorIsolation::Record;
-        diagnostics.push(diagnostic(
-            if row_local { "warning" } else { "error" },
-            if row_local {
-                "row_local_schema_mismatch"
-            } else {
-                "schema_reconciliation"
-            },
-            format!(
-                "resource `{}` at {}: {}",
-                resource.descriptor().resource_id,
-                safe_file_location(&plan.root, &plan.glob),
-                error.message
-            ),
-            if row_local {
-                "Rows outside the declaration will quarantine; add fields, widen types, or explicitly enable the named type allowance."
-            } else {
-                "Widen the declaration or explicitly enable the named type allowance; lossy and parse coercions remain opt-in."
-            },
-        ));
-    }
-}
-
-fn safe_file_location(root: &str, glob: &str) -> String {
-    let joined = format!(
-        "{}/{}",
-        root.trim_end_matches('/'),
-        glob.trim_start_matches('/')
-    );
-    let without_fragment = joined.split('#').next().unwrap_or(&joined);
-    match without_fragment.split_once('?') {
-        Some((path, _)) => format!("{path}?<redacted>"),
-        None => without_fragment.to_owned(),
+        for quarantine in &runtime.terminal_quarantines {
+            let fields = quarantine
+                .fields()
+                .iter()
+                .map(|field| {
+                    let path = match field.scope() {
+                        cdf_kernel::SchemaObservationScope::FieldPath { path } => path.join("."),
+                        cdf_kernel::SchemaObservationScope::WholeSchema => "<schema>".to_owned(),
+                        _ => "<observation>".to_owned(),
+                    };
+                    let observed = field
+                        .observed_field()
+                        .and_then(|field| field.data_type.to_arrow().ok())
+                        .map_or_else(|| "<missing>".to_owned(), |kind| format!("{kind:?}"));
+                    let effective = field
+                        .effective_field()
+                        .and_then(|field| field.data_type.to_arrow().ok())
+                        .map_or_else(|| "<missing>".to_owned(), |kind| format!("{kind:?}"));
+                    format!(
+                        "`{path}` is `{observed}` in the source and `{effective}` in the fixed schema: {}",
+                        field.reason()
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join("; ");
+            diagnostics.push(diagnostic(
+                "warning",
+                "schema_quarantine",
+                format!(
+                    "resource `{}` observation `{}` will quarantine under `{}`: {fields}",
+                    resource.descriptor().resource_id,
+                    quarantine.observation_id(),
+                    quarantine.rule_id(),
+                ),
+                quarantine.remediation().to_owned(),
+            ));
+        }
     }
 }
 
@@ -583,12 +556,11 @@ fn deep_scan_request(descriptor: &ResourceDescriptor) -> cdf_kernel::Result<Scan
     })
 }
 
-fn resource_kind_name(plan: &CompiledResourcePlan) -> &'static str {
-    match plan {
-        CompiledResourcePlan::Files(_) => "files",
-        CompiledResourcePlan::Rest(_) => "rest",
-        CompiledResourcePlan::Sql(_) => "sql",
-    }
+fn resource_kind_name(resource: &CompiledResource) -> &str {
+    resource
+        .source_compile_request()
+        .map(|request| request.source_kind.as_str())
+        .unwrap_or("unregistered")
 }
 
 fn schema_source_name(source: &SchemaSource) -> &'static str {
@@ -608,14 +580,14 @@ fn diagnostic(
     severity: &'static str,
     check: &'static str,
     message: impl Into<String>,
-    remediation: &'static str,
+    remediation: impl Into<String>,
 ) -> DeepValidateDiagnostic {
     DeepValidateDiagnostic {
         severity: severity.to_owned(),
         check: check.to_owned(),
         code: format!("CDF-DEEP-{}", check.replace('_', "-").to_ascii_uppercase()),
         message: message.into(),
-        remediation: remediation.to_owned(),
+        remediation: remediation.into(),
     }
 }
 
@@ -846,20 +818,4 @@ fn document(report: &DeepValidateReport) -> RenderDocument {
         } else {
             "cdf inspect resources"
         }))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::safe_file_location;
-
-    #[test]
-    fn safe_file_location_removes_every_query_value_and_fragment() {
-        assert_eq!(
-            safe_file_location(
-                "https://example.test/data?X-Amz-Signature=secret&ordinary=value#fragment",
-                "events.parquet"
-            ),
-            "https://example.test/data?<redacted>"
-        );
-    }
 }

@@ -3,7 +3,7 @@ use std::{collections::BTreeMap, fs};
 use cdf_contract::{
     ContractPolicy, IdentifierPolicy, ObservedSchema, compile_resource_validation_program,
 };
-use cdf_declarative::{CompiledResource, CompiledResourcePlan};
+use cdf_declarative::CompiledResource;
 use cdf_engine::{
     EnginePlan, EnginePlanInput, EnginePreviewLimits, EnginePreviewSelectionEvidence, Planner,
 };
@@ -24,7 +24,7 @@ use crate::{
     output::{CliError, CommandOutput},
     project_run_resource::{
         CliProjectRunSource, compile_source_plan_for_cli, discover_source_schema_with_plan_for_cli,
-        file_runtime_dependencies, prepare_runtime_resource_for_cli,
+        prepare_runtime_resource_for_cli,
     },
     render::{
         RenderDocument,
@@ -63,6 +63,7 @@ impl PreparedSchemaForCli {
             resource.descriptor(),
             resource.schema().as_ref(),
             resource.effective_schema_runtime().cloned(),
+            resource.baseline_observation_schema_catalog().to_vec(),
         )?;
         Ok(Self {
             resource,
@@ -204,20 +205,6 @@ pub(crate) fn prepare_resource_schema_for_cli(
 ) -> Result<PreparedSchemaForCli, CliError> {
     let prepared_payloads = cdf_runtime::PreparedSourcePayloads::default();
     let source_plan = compile_source_plan_for_cli(resource)?;
-    if matches!(
-        resource.descriptor().schema_source,
-        SchemaSource::Declared { .. }
-    ) && matches!(resource.plan(), CompiledResourcePlan::Files(_))
-    {
-        let prepared = cdf_project::prepare_declared_file_schema_artifacts(
-            resource,
-            &context.secret_provider(),
-            file_runtime_dependencies(context, execution)?
-                .with_prepared_payloads(prepared_payloads.clone()),
-        )?;
-        let (resource, _) = prepared.into_parts();
-        return PreparedSchemaForCli::new(resource, source_plan, None, prepared_payloads);
-    }
     if let Some(snapshot) = resource.descriptor().schema_source.pinned_snapshot()
         && !no_pin
     {
@@ -281,6 +268,9 @@ pub(crate) fn prepare_resource_schema_for_cli(
         probe_resource.descriptor(),
         probe_resource.schema().as_ref(),
         probe_resource.effective_schema_runtime().cloned(),
+        probe_resource
+            .baseline_observation_schema_catalog()
+            .to_vec(),
     )?;
     let mut artifacts = discover_source_schema_with_plan_for_cli(
         context,

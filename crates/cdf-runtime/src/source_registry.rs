@@ -1,6 +1,10 @@
 use std::{collections::BTreeMap, sync::Arc};
 
-use cdf_kernel::{CdfError, QueryableResource, Result};
+use cdf_kernel::{
+    CdfError, EffectiveSchemaCatalogEntry, EffectiveSchemaRuntime, PartitionAttestationAttempt,
+    PartitionOpenAttempt, PartitionPlan, QueryableResource, ResourceCapabilities,
+    ResourceDescriptor, ResourceStream, Result, ScanPlan, ScanRequest, TypePolicyAllowances,
+};
 
 use crate::{
     CompiledSourcePlan, SourceCompileRequest, SourceDiscoveryCandidate, SourceDiscoveryKind,
@@ -72,9 +76,27 @@ impl SourceRegistry {
     pub fn compile(&self, request: SourceCompileRequest) -> Result<CompiledSourcePlan> {
         request.context.validate()?;
         let driver = self.driver_for_kind(&request.source_kind)?;
+        let expected_descriptor = request.descriptor.clone();
+        let expected_schema = request.schema.clone();
+        let expected_type_policy_allowances = request.type_policy_allowances;
+        let expected_effective_schema_runtime = request.effective_schema_runtime.clone();
+        let expected_baseline_observation_schema_catalog =
+            request.baseline_observation_schema_catalog.clone();
         let plan = driver.compile(request)?;
         self.verify_plan_driver(&plan, driver.descriptor())?;
         plan.validate()?;
+        if plan.descriptor != expected_descriptor
+            || plan.schema != expected_schema
+            || plan.type_policy_allowances != expected_type_policy_allowances
+            || plan.effective_schema_runtime != expected_effective_schema_runtime
+            || plan.baseline_observation_schema_catalog
+                != expected_baseline_observation_schema_catalog
+        {
+            return Err(CdfError::contract(format!(
+                "source driver `{}` changed compiler-owned schema or resource authority",
+                driver.descriptor().driver_id.as_str()
+            )));
+        }
         Ok(plan)
     }
 
@@ -89,7 +111,12 @@ impl SourceRegistry {
                 .execution()
                 .ensure_blocking_lanes(std::slice::from_ref(lane))?;
         }
-        driver.resolve(plan, context)
+        let inner = driver.resolve(plan, context)?;
+        verify_resolved_resource(plan, inner.as_ref())?;
+        Ok(Arc::new(RegistryBoundResource {
+            inner,
+            baseline_observation_schema_catalog: plan.baseline_observation_schema_catalog.clone(),
+        }))
     }
 
     pub fn discovery_session(
@@ -175,6 +202,97 @@ impl SourceRegistry {
             )));
         }
         Ok(())
+    }
+}
+
+struct RegistryBoundResource {
+    inner: Arc<dyn QueryableResource>,
+    baseline_observation_schema_catalog: Vec<EffectiveSchemaCatalogEntry>,
+}
+
+impl ResourceStream for RegistryBoundResource {
+    fn descriptor(&self) -> &ResourceDescriptor {
+        self.inner.descriptor()
+    }
+
+    fn schema(&self) -> arrow_schema::SchemaRef {
+        self.inner.schema()
+    }
+
+    fn compiled_source_plan_hash(&self) -> Option<&str> {
+        self.inner.compiled_source_plan_hash()
+    }
+
+    fn validate_runtime_dependencies(&self) -> Result<()> {
+        self.inner.validate_runtime_dependencies()
+    }
+
+    fn plan_partitions(&self, request: &ScanRequest) -> Result<Vec<PartitionPlan>> {
+        self.inner.plan_partitions(request)
+    }
+
+    fn open(&self, partition: PartitionPlan) -> PartitionOpenAttempt<'_> {
+        self.inner.open(partition)
+    }
+
+    fn attest_partition(&self, partition: PartitionPlan) -> PartitionAttestationAttempt<'_> {
+        self.inner.attest_partition(partition)
+    }
+
+    fn effective_schema_runtime(&self) -> Option<&EffectiveSchemaRuntime> {
+        self.inner.effective_schema_runtime()
+    }
+
+    fn baseline_observation_schema_catalog(&self) -> &[EffectiveSchemaCatalogEntry] {
+        &self.baseline_observation_schema_catalog
+    }
+
+    fn type_policy_allowances(&self) -> TypePolicyAllowances {
+        self.inner.type_policy_allowances()
+    }
+}
+
+fn verify_resolved_resource(
+    plan: &CompiledSourcePlan,
+    resource: &dyn QueryableResource,
+) -> Result<()> {
+    let expected_plan_hash = artifact_hash(plan)?;
+    let mut mismatches = Vec::new();
+    if resource.descriptor() != &plan.descriptor {
+        mismatches.push("descriptor");
+    }
+    if resource.schema().as_ref() != &plan.schema {
+        mismatches.push("Arrow schema");
+    }
+    if resource.capabilities() != &plan.resource_capabilities {
+        mismatches.push("resource capabilities");
+    }
+    if resource.type_policy_allowances() != plan.type_policy_allowances {
+        mismatches.push("type-policy allowances");
+    }
+    if resource.effective_schema_runtime() != plan.effective_schema_runtime.as_ref() {
+        mismatches.push("effective-schema runtime");
+    }
+    if resource.compiled_source_plan_hash() != Some(expected_plan_hash.as_str()) {
+        mismatches.push("compiled plan hash");
+    }
+    if !mismatches.is_empty() {
+        return Err(CdfError::contract(format!(
+            "source driver `{}` resolved executable authority that differs from its compiled plan: {}",
+            plan.driver.driver_id.as_str(),
+            mismatches.join(", ")
+        )));
+    }
+    Ok(())
+}
+
+impl QueryableResource for RegistryBoundResource {
+    fn capabilities(&self) -> &ResourceCapabilities {
+        self.inner.capabilities()
+    }
+
+    fn negotiate(&self, request: &ScanRequest) -> Result<ScanPlan> {
+        self.inner.negotiate(request)
     }
 }
 

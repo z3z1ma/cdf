@@ -8,9 +8,9 @@ use std::{
 use arrow_schema::Schema;
 use cdf_http::SecretProvider;
 use cdf_kernel::{
-    CdfError, EffectiveSchemaRuntime, ErrorKind, PayloadRetention, PushdownFidelity,
-    QueryableResource, ResourceCapabilities, ResourceDescriptor, ResourceId, Result, SchemaSource,
-    TypePolicyAllowances,
+    CdfError, EffectiveSchemaCatalogEntry, EffectiveSchemaRuntime, ErrorKind, PayloadRetention,
+    PushdownFidelity, QueryableResource, ResourceCapabilities, ResourceDescriptor, ResourceId,
+    Result, SchemaSource, TypePolicyAllowances,
 };
 use serde::{Deserialize, Serialize};
 
@@ -217,6 +217,29 @@ impl SourceDriverDescriptor {
         validate_names("source kind", &self.kinds)?;
         validate_names("source scheme", &self.schemes)
     }
+}
+
+fn validate_baseline_observation_schema_catalog(
+    catalog: &[EffectiveSchemaCatalogEntry],
+) -> Result<()> {
+    for entry in catalog {
+        if cdf_kernel::canonical_arrow_schema_hash(entry.schema.as_ref())?
+            != entry.physical_schema_hash
+        {
+            return Err(CdfError::contract(
+                "baseline observation schema catalog hash does not match its Arrow schema",
+            ));
+        }
+    }
+    if catalog
+        .windows(2)
+        .any(|pair| pair[0].physical_schema_hash >= pair[1].physical_schema_hash)
+    {
+        return Err(CdfError::contract(
+            "baseline observation schema catalog must be sorted and unique by hash",
+        ));
+    }
+    Ok(())
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -518,6 +541,7 @@ pub struct SourceCompileRequest {
     pub schema: Schema,
     pub type_policy_allowances: TypePolicyAllowances,
     pub effective_schema_runtime: Option<EffectiveSchemaRuntime>,
+    pub baseline_observation_schema_catalog: Vec<EffectiveSchemaCatalogEntry>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -529,6 +553,7 @@ pub struct CompiledSourcePlan {
     pub schema: Schema,
     pub type_policy_allowances: TypePolicyAllowances,
     pub effective_schema_runtime: Option<EffectiveSchemaRuntime>,
+    pub baseline_observation_schema_catalog: Vec<EffectiveSchemaCatalogEntry>,
     pub redacted_options: serde_json::Value,
     pub redacted_options_hash: String,
     pub physical_plan: serde_json::Value,
@@ -681,6 +706,7 @@ pub struct CompiledSourcePlanInput {
     pub schema: Schema,
     pub type_policy_allowances: TypePolicyAllowances,
     pub effective_schema_runtime: Option<EffectiveSchemaRuntime>,
+    pub baseline_observation_schema_catalog: Vec<EffectiveSchemaCatalogEntry>,
     pub redacted_options: serde_json::Value,
     pub physical_plan: serde_json::Value,
 }
@@ -704,6 +730,7 @@ impl CompiledSourcePlan {
             schema: input.schema,
             type_policy_allowances: input.type_policy_allowances,
             effective_schema_runtime: input.effective_schema_runtime,
+            baseline_observation_schema_catalog: input.baseline_observation_schema_catalog,
             redacted_options: input.redacted_options,
             redacted_options_hash,
             physical_plan: input.physical_plan,
@@ -721,6 +748,7 @@ impl CompiledSourcePlan {
                 "compiled source plan hash does not match its canonical payload",
             ));
         }
+        validate_baseline_observation_schema_catalog(&self.baseline_observation_schema_catalog)?;
         Ok(())
     }
 
@@ -731,6 +759,7 @@ impl CompiledSourcePlan {
         descriptor: &ResourceDescriptor,
         schema: &Schema,
         effective_schema_runtime: Option<EffectiveSchemaRuntime>,
+        mut baseline_observation_schema_catalog: Vec<EffectiveSchemaCatalogEntry>,
     ) -> Result<Self> {
         let mut expected_descriptor = self.descriptor.clone();
         expected_descriptor.schema_source = descriptor.schema_source.clone();
@@ -745,6 +774,11 @@ impl CompiledSourcePlan {
         self.descriptor = descriptor.clone();
         self.schema = schema.clone();
         self.effective_schema_runtime = effective_schema_runtime;
+        baseline_observation_schema_catalog
+            .sort_by(|left, right| left.physical_schema_hash.cmp(&right.physical_schema_hash));
+        baseline_observation_schema_catalog
+            .dedup_by(|left, right| left.physical_schema_hash == right.physical_schema_hash);
+        self.baseline_observation_schema_catalog = baseline_observation_schema_catalog;
         self.validate()?;
         Ok(self)
     }
@@ -754,11 +788,13 @@ impl CompiledSourcePlan {
         descriptor: &ResourceDescriptor,
         schema: &Schema,
         effective_schema_runtime: Option<&EffectiveSchemaRuntime>,
+        baseline_observation_schema_catalog: &[EffectiveSchemaCatalogEntry],
     ) -> Result<()> {
         self.validate()?;
         if &self.descriptor != descriptor
             || &self.schema != schema
             || self.effective_schema_runtime.as_ref() != effective_schema_runtime
+            || self.baseline_observation_schema_catalog != baseline_observation_schema_catalog
         {
             return Err(CdfError::contract(
                 "compiled source plan does not match the prepared schema authority",

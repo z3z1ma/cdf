@@ -476,6 +476,55 @@ fn compiled_stream_admission_enforces_unknown_and_widening_verdicts() {
 }
 
 #[test]
+fn pinned_baseline_admission_projects_full_physical_catalog_before_hashing() {
+    let baseline_physical = sample_schema();
+    let baseline_hash =
+        cdf_kernel::canonical_arrow_schema_hash(baseline_physical.as_ref()).unwrap();
+    let effective = Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, false)]));
+    let resource = MockResource::tier_b(sample_batches())
+        .with_schema(effective.clone())
+        .with_baseline_observation_schema_catalog(vec![EffectiveSchemaCatalogEntry::new(
+            baseline_hash,
+            baseline_physical,
+        )]);
+    let mut input = plan_input_for_schema(
+        effective,
+        Vec::new(),
+        Some(vec!["id".to_owned()]),
+        None,
+        ExecutionExtent::bounded(),
+    );
+    input
+        .validation_program
+        .schema_verdicts
+        .iter_mut()
+        .find(|rule| rule.change == SchemaChangeKind::TypeWidening)
+        .unwrap()
+        .verdict = VerdictAction::RejectBatch;
+
+    let plan = Planner::new().plan_tier_b(&resource, input).unwrap();
+    assert_eq!(
+        plan.compiled_schema_admission.baseline_projection,
+        Some(vec!["id".to_owned()])
+    );
+    let projected_baseline = Schema::new(vec![Field::new("id", DataType::Int32, false)]);
+    let projected_hash = cdf_kernel::canonical_arrow_schema_hash(&projected_baseline).unwrap();
+    plan.compiled_schema_admission
+        .instantiate(&projected_baseline, &projected_hash)
+        .unwrap();
+
+    let new_drift = Schema::new(vec![Field::new("id", DataType::Int16, false)]);
+    let drift_hash = cdf_kernel::canonical_arrow_schema_hash(&new_drift).unwrap();
+    assert!(
+        plan.compiled_schema_admission
+            .instantiate(&new_drift, &drift_hash)
+            .unwrap_err()
+            .message
+            .contains("width coercion")
+    );
+}
+
+#[test]
 fn materialized_stream_admission_rejects_noncanonical_provenance_and_nullable_claims() {
     let resource = MockResource::tier_a(sample_batches());
     let plan = Planner::new()
@@ -2139,6 +2188,7 @@ fn mock_compiled_source_plan(
             schema: resource.schema().as_ref().clone(),
             type_policy_allowances: resource.type_policy_allowances,
             effective_schema_runtime: resource.effective_schema_runtime.clone(),
+            baseline_observation_schema_catalog: Vec::new(),
             redacted_options: serde_json::json!({"endpoint": "redacted"}),
             physical_plan: serde_json::json!({"partitioning": "mock"}),
         },
@@ -4749,7 +4799,7 @@ fn package_identity_is_invariant_to_source_batch_rechunking() {
     );
     assert_eq!(
         one_output.manifest.package_hash,
-        "sha256:297a8981e4e2cd159488644b8b47ed848fe19f4dd593dc4e55af6f47f8cc8797"
+        "sha256:7d392b70cb3417cdf54fe202b854ccb8ee5e91dc0f3d7fe7b9481183220a12d6"
     );
 }
 
@@ -5377,6 +5427,7 @@ struct MockResource {
     transient_open_failures: Arc<AtomicUsize>,
     transient_stream_failures: Arc<AtomicUsize>,
     effective_schema_runtime: Option<EffectiveSchemaRuntime>,
+    baseline_observation_schema_catalog: Vec<EffectiveSchemaCatalogEntry>,
     type_policy_allowances: cdf_kernel::TypePolicyAllowances,
     duplicate_observation_identity: bool,
     misroute_batches: bool,
@@ -5585,6 +5636,7 @@ impl MockResource {
             transient_open_failures: Arc::new(AtomicUsize::new(0)),
             transient_stream_failures: Arc::new(AtomicUsize::new(0)),
             effective_schema_runtime: None,
+            baseline_observation_schema_catalog: Vec::new(),
             type_policy_allowances: cdf_kernel::TypePolicyAllowances::default(),
             duplicate_observation_identity: false,
             misroute_batches: false,
@@ -5625,6 +5677,15 @@ impl MockResource {
     ) -> Self {
         self.schema = schema;
         self.effective_schema_runtime = Some(runtime);
+        self
+    }
+
+    fn with_baseline_observation_schema_catalog(
+        mut self,
+        mut catalog: Vec<EffectiveSchemaCatalogEntry>,
+    ) -> Self {
+        catalog.sort_by(|left, right| left.physical_schema_hash.cmp(&right.physical_schema_hash));
+        self.baseline_observation_schema_catalog = catalog;
         self
     }
 
@@ -5984,6 +6045,10 @@ impl ResourceStream for MockResource {
 
     fn effective_schema_runtime(&self) -> Option<&EffectiveSchemaRuntime> {
         self.effective_schema_runtime.as_ref()
+    }
+
+    fn baseline_observation_schema_catalog(&self) -> &[EffectiveSchemaCatalogEntry] {
+        &self.baseline_observation_schema_catalog
     }
 
     fn type_policy_allowances(&self) -> cdf_kernel::TypePolicyAllowances {

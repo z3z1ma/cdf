@@ -91,6 +91,7 @@ impl SourceDriver for RestSourceDriver {
                 schema: request.schema,
                 type_policy_allowances: request.type_policy_allowances,
                 effective_schema_runtime: request.effective_schema_runtime,
+                baseline_observation_schema_catalog: request.baseline_observation_schema_catalog,
                 redacted_options: serde_json::to_value(&physical).map_err(serialize_error)?,
                 physical_plan: serde_json::to_value(&physical).map_err(serialize_error)?,
             },
@@ -142,6 +143,7 @@ impl SourceDriver for RestSourceDriver {
                 plan.type_policy_allowances,
                 dependencies,
             )?
+            .with_effective_schema_runtime(plan.effective_schema_runtime.clone())
             .with_compiled_source_plan_hash(cdf_runtime::artifact_hash(plan)?),
         ))
     }
@@ -785,6 +787,7 @@ mod tests {
                 schema: Schema::empty(),
                 type_policy_allowances: Default::default(),
                 effective_schema_runtime: None,
+                baseline_observation_schema_catalog: Vec::new(),
             })
             .unwrap();
         assert_eq!(
@@ -856,6 +859,7 @@ mod tests {
                 schema: Schema::empty(),
                 type_policy_allowances: Default::default(),
                 effective_schema_runtime: None,
+                baseline_observation_schema_catalog: Vec::new(),
             })
             .unwrap();
         let memory: Arc<dyn cdf_memory::MemoryCoordinator> = Arc::new(

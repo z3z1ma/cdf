@@ -11,11 +11,12 @@ use cdf_contract::{
     reconcile_schema,
 };
 use cdf_kernel::{
-    CdfError, DeliveryGuarantee, DiscoveryExecutorBudgetEvidence, EffectiveSchemaEvidence,
-    EstimateSupport, ExecutionExtent, PartitionId, ProcessedObservationPosition, PushdownFidelity,
-    ResourceId, ResourceStream, Result, RunPhaseMetric, ScanPlan, ScanPredicate, ScanRequest,
-    SchemaHash, SchemaObservationFieldQuarantine, SchemaObservationPolicy, SegmentId,
-    SourcePosition, TerminalSchemaObservationQuarantine, WriteDisposition, source_name,
+    CdfError, DeliveryGuarantee, DiscoveryExecutorBudgetEvidence, EffectiveSchemaCatalogEntry,
+    EffectiveSchemaEvidence, EstimateSupport, ExecutionExtent, PartitionId,
+    ProcessedObservationPosition, PushdownFidelity, ResourceId, ResourceStream, Result,
+    RunPhaseMetric, ScanPlan, ScanPredicate, ScanRequest, SchemaHash,
+    SchemaObservationFieldQuarantine, SchemaObservationPolicy, SegmentId, SourcePosition,
+    TerminalSchemaObservationQuarantine, WriteDisposition, source_name,
 };
 use cdf_package::VerifiedPackage;
 use cdf_package_contract::{PackageManifest, SegmentEntry};
@@ -261,7 +262,7 @@ impl EnginePlan {
     }
 }
 
-pub const COMPILED_SCHEMA_ADMISSION_VERSION: u16 = 1;
+pub const COMPILED_SCHEMA_ADMISSION_VERSION: u16 = 3;
 pub const SCHEMA_ADMISSION_CACHE_KEY_FIELDS: [&str; 5] = [
     "source_generation",
     "source_driver_and_codec",
@@ -277,6 +278,8 @@ pub struct CompiledSchemaAdmissionPlan {
     pub baseline_schema_hash: SchemaHash,
     pub effective_schema_hash: SchemaHash,
     pub resource_schema_hash: SchemaHash,
+    pub baseline_projection: Option<Vec<String>>,
+    pub baseline_projected_schema_hashes: Vec<SchemaHash>,
     pub constraint_schema: CompiledArrowSchema,
     pub normalizer_version: String,
     pub identifier_policy: IdentifierPolicy,
@@ -313,6 +316,8 @@ impl CompiledSchemaAdmissionPlan {
             baseline_schema_hash: authority.baseline_schema_hash.clone(),
             effective_schema_hash: authority.effective_schema_hash.clone(),
             resource_schema_hash: cdf_kernel::canonical_arrow_schema_hash(resource_schema)?,
+            baseline_projection: None,
+            baseline_projected_schema_hashes: Vec::new(),
             constraint_schema: CompiledArrowSchema::from_arrow(constraint_schema)?,
             normalizer_version: validation_program.normalizer_version.clone(),
             identifier_policy: validation_program.identifier_policy.clone(),
@@ -330,6 +335,30 @@ impl CompiledSchemaAdmissionPlan {
         };
         plan.validate_intrinsic(validation_program)?;
         Ok(plan)
+    }
+
+    pub(crate) fn bind_baseline_schema_catalog(
+        &mut self,
+        catalog: &[EffectiveSchemaCatalogEntry],
+        resource_schema: &Schema,
+        projection: Option<&[String]>,
+    ) -> Result<()> {
+        let mut hashes = catalog
+            .iter()
+            .map(|entry| {
+                let projected = project_baseline_observation(
+                    entry.schema.as_ref(),
+                    resource_schema,
+                    projection,
+                )?;
+                cdf_kernel::canonical_arrow_schema_hash(&projected)
+            })
+            .collect::<Result<Vec<_>>>()?;
+        hashes.sort();
+        hashes.dedup();
+        self.baseline_projection = projection.map(<[String]>::to_vec);
+        self.baseline_projected_schema_hashes = hashes;
+        Ok(())
     }
 
     pub fn bind_source(
@@ -493,6 +522,11 @@ impl CompiledSchemaAdmissionPlan {
         plan: &SchemaCoercionPlan,
     ) -> Result<()> {
         let constraint = self.constraint_schema.to_arrow()?;
+        let observed_hash = cdf_kernel::canonical_arrow_schema_hash(observed)?;
+        let formed_pinned_baseline = self
+            .baseline_projected_schema_hashes
+            .binary_search(&observed_hash)
+            .is_ok();
         let report = plan_schema_reconciliation(observed, constraint.as_ref(), &self.type_policy)?;
         if !report.errors.is_empty() || report.plan != *plan {
             return Err(CdfError::data(
@@ -511,8 +545,9 @@ impl CompiledSchemaAdmissionPlan {
                     )));
                 }
                 FieldCoercionDecision::Widened
-                    if self.schema_verdict(SchemaChangeKind::TypeWidening)?
-                        == &VerdictAction::Admit => {}
+                    if formed_pinned_baseline
+                        || self.schema_verdict(SchemaChangeKind::TypeWidening)?
+                            == &VerdictAction::Admit => {}
                 FieldCoercionDecision::Extra
                     if matches!(
                         self.schema_verdict(SchemaChangeKind::UnknownField)?,
@@ -873,6 +908,25 @@ impl CompiledSchemaAdmissionPlan {
                 self.resource_schema_hash
             )));
         }
+        let mut expected = resource
+            .baseline_observation_schema_catalog()
+            .iter()
+            .map(|entry| {
+                let projected = project_baseline_observation(
+                    entry.schema.as_ref(),
+                    resource.schema().as_ref(),
+                    self.baseline_projection.as_deref(),
+                )?;
+                cdf_kernel::canonical_arrow_schema_hash(&projected)
+            })
+            .collect::<Result<Vec<_>>>()?;
+        expected.sort();
+        expected.dedup();
+        if self.baseline_projected_schema_hashes != expected {
+            return Err(CdfError::data(
+                "compiled schema-admission baseline observations do not match the execution resource",
+            ));
+        }
         let mut expected =
             ContractPolicy::for_trust(resource.descriptor().trust_level.clone()).types;
         let allowances = resource.type_policy_allowances();
@@ -894,6 +948,24 @@ impl CompiledSchemaAdmissionPlan {
             )));
         }
         self.constraint_schema.to_arrow()?;
+        if self
+            .baseline_projection
+            .as_ref()
+            .is_some_and(|projection| projection.is_empty())
+        {
+            return Err(CdfError::data(
+                "compiled schema-admission baseline projection cannot be empty",
+            ));
+        }
+        if self
+            .baseline_projected_schema_hashes
+            .windows(2)
+            .any(|pair| pair[0] >= pair[1])
+        {
+            return Err(CdfError::data(
+                "compiled schema-admission baseline observation hashes are not sorted and unique",
+            ));
+        }
         if self.normalizer_version != validation_program.normalizer_version
             || self.identifier_policy != validation_program.identifier_policy
             || self.schema_verdicts != validation_program.schema_verdicts
@@ -930,6 +1002,44 @@ impl CompiledSchemaAdmissionPlan {
         }
         Ok(())
     }
+}
+
+fn project_baseline_observation(
+    physical: &Schema,
+    resource_schema: &Schema,
+    projection: Option<&[String]>,
+) -> Result<Schema> {
+    let Some(projection) = projection else {
+        return Ok(physical.clone());
+    };
+    let fields = projection
+        .iter()
+        .map(|logical_name| {
+            let resource_field = resource_schema.field_with_name(logical_name).map_err(|_| {
+                CdfError::contract(format!(
+                    "compiled baseline projection field {logical_name:?} is absent from the resource schema"
+                ))
+            })?;
+            let physical_name = source_name(resource_field).unwrap_or_else(|| resource_field.name());
+            physical
+                .fields()
+                .iter()
+                .find(|field| {
+                    field.name() == physical_name
+                        || source_name(field.as_ref()) == Some(physical_name)
+                })
+                .cloned()
+                .ok_or_else(|| {
+                    CdfError::data(format!(
+                        "baseline physical schema omitted projected source field {physical_name:?} for resource field {logical_name:?}"
+                    ))
+                })
+        })
+        .collect::<Result<Vec<_>>>()?;
+    Ok(Schema::new_with_metadata(
+        fields,
+        physical.metadata().clone(),
+    ))
 }
 
 pub(crate) enum CompiledSchemaAdmissionOutcome {

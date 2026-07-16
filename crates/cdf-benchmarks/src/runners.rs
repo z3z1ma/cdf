@@ -30,8 +30,8 @@ use cdf_package::{PackageBuilder, PackageReader, archive_package_to_parquet};
 use cdf_package_contract::{DestinationCommitPlanPreimage, PackageStatus, StateDeltaPreimage};
 use cdf_project::{
     EnvSecretProvider, PackageArtifactReplayRequest, ProjectRunRequest, ProjectRunSource,
-    ResolvedProjectDestination, RunTelemetryConfig, prepare_declared_file_schema_artifacts,
-    replay_package_from_artifacts, run_project, run_project_with_scheduler_and_telemetry,
+    ResolvedProjectDestination, RunTelemetryConfig, replay_package_from_artifacts, run_project,
+    run_project_with_scheduler_and_telemetry,
 };
 use cdf_runtime::{ByteTransformRegistry, FormatRegistry, SourceRegistry, SourceResolutionContext};
 use cdf_source_files::{FileRuntimeDependencies, FileSourceDriver, FileTransportFacade};
@@ -324,12 +324,6 @@ fn resolve_benchmark_file_resource(
     let secrets = Arc::new(EnvSecretProvider::from_map(
         std::iter::empty::<(&str, &str)>(),
     ));
-    let prepared = prepare_declared_file_schema_artifacts(
-        &compiled,
-        secrets.as_ref(),
-        benchmark_file_dependencies(execution.clone())?,
-    )?;
-    let (compiled, _) = prepared.into_parts();
     let request = compiled.source_compile_request().cloned().ok_or_else(|| {
         bench_error(format!(
             "benchmark resource `{}` omitted its source compile request",
@@ -341,6 +335,7 @@ fn resolve_benchmark_file_resource(
         compiled.descriptor(),
         compiled.schema().as_ref(),
         compiled.effective_schema_runtime().cloned(),
+        compiled.baseline_observation_schema_catalog().to_vec(),
     )?;
     let resolution = SourceResolutionContext::new(project_root, secrets, execution);
     let resource = registry.resolve(&source_plan, &resolution)?;
@@ -361,19 +356,6 @@ fn benchmark_schema_fields(spec: &FixtureSpec) -> Vec<String> {
         format!(r#"  {{ name = "metric_{column:03}", type = "int64", nullable = false }}"#)
     }));
     fields
-}
-
-fn benchmark_file_dependencies(
-    execution: cdf_runtime::ExecutionServices,
-) -> BenchResult<FileRuntimeDependencies> {
-    let formats = benchmark_format_registry()?;
-    let transport = FileTransportFacade::new().with_execution_services(execution.clone());
-    Ok(FileRuntimeDependencies::new(
-        transport,
-        execution,
-        formats,
-        Arc::new(ByteTransformRegistry::default()),
-    ))
 }
 
 fn benchmark_format_registry() -> BenchResult<Arc<FormatRegistry>> {

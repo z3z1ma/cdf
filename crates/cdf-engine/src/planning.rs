@@ -106,6 +106,12 @@ impl Planner {
                     .map(|cursor| cursor.field.clone()),
             },
         )?;
+        plan.compiled_schema_admission
+            .bind_baseline_schema_catalog(
+                resource.baseline_observation_schema_catalog(),
+                resource.schema().as_ref(),
+                None,
+            )?;
         if let Some(evidence) = &effective_schema_evidence {
             plan.compiled_schema_admission
                 .validate_preobserved_evidence(evidence)?;
@@ -179,6 +185,16 @@ impl Planner {
                     .map(|cursor| cursor.field.clone()),
             },
         )?;
+        let baseline_projection = (resource.capabilities().projection
+            == CapabilitySupport::Supported)
+            .then_some(plan.scan.request.projection.as_deref())
+            .flatten();
+        plan.compiled_schema_admission
+            .bind_baseline_schema_catalog(
+                resource.baseline_observation_schema_catalog(),
+                resource.schema().as_ref(),
+                baseline_projection,
+            )?;
         if let Some(evidence) = &effective_schema_evidence {
             plan.compiled_schema_admission
                 .validate_preobserved_evidence(evidence)?;
@@ -605,6 +621,14 @@ pub(crate) fn rebind_validation_program(
     compiled_expression_plan.validate_recorded()?;
     program.compiled_expression_plan = Some(compiled_expression_plan.clone());
     let source_binding = candidate.compiled_schema_admission.source.clone();
+    let baseline_projection = candidate
+        .compiled_schema_admission
+        .baseline_projection
+        .clone();
+    let baseline_projected_schema_hashes = candidate
+        .compiled_schema_admission
+        .baseline_projected_schema_hashes
+        .clone();
     let mut compiled_schema_admission = CompiledSchemaAdmissionPlan::compile(
         &candidate.schema_authority,
         expression_schema,
@@ -612,6 +636,8 @@ pub(crate) fn rebind_validation_program(
         &program,
         candidate.compiled_schema_admission.type_policy.clone(),
     )?;
+    compiled_schema_admission.baseline_projection = baseline_projection;
+    compiled_schema_admission.baseline_projected_schema_hashes = baseline_projected_schema_hashes;
     compiled_schema_admission.source = source_binding;
     let output_schema = CompiledArrowSchema::from_arrow(
         compile_output_schema(
