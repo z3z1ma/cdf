@@ -4,11 +4,13 @@ use arrow_array::{Int64Array, RecordBatch, StringArray};
 use arrow_schema::Schema;
 use cdf_kernel::{
     BackpressureSupport, Batch, BatchId, BatchStream, CapabilitySupport, CursorPosition,
-    CursorValue, DeliveryGuarantee, EstimateSupport, FilterCapabilities, IncrementalShape,
-    PartitionId, PartitionPlan, PartitionRetrySafety, PartitioningCapabilities, PlanId,
+    CursorValue, DeliveryGuarantee, ErrorKind, EstimateSupport, FilterCapabilities,
+    IncrementalShape, PartitionAttestation, PartitionAttestationAttempt, PartitionId,
+    PartitionPlan, PartitionRetrySafety, PartitioningCapabilities, PayloadRetention, PlanId,
     QueryableResource, ReplaySupport, ResourceCapabilities, ResourceDescriptor, ResourceStream,
     Result, ScanPlan, ScanRequest, SourcePosition, TypePolicyAllowances,
 };
+use cdf_memory::{ConsumerKey, MemoryClass, ReservationRequest};
 use cdf_project::ProjectRunReport;
 use cdf_runtime::{
     CompiledSourcePlan, CompiledSourcePlanInput, SourceAddPlanner, SourceAddProposal,
@@ -20,6 +22,7 @@ use cdf_runtime::{
     artifact_hash,
 };
 use futures_util::stream;
+use serde::{Deserialize, Serialize};
 
 use super::MatrixDisposition;
 
@@ -97,6 +100,25 @@ struct ExternalMockSourceDriver {
     option_schema: serde_json::Value,
 }
 
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct ExternalSourceOptions {
+    seed: u64,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct ExternalResourceOptions {
+    rows: u64,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct ExternalPhysicalPlan {
+    seed: u64,
+    rows: u64,
+}
+
 impl ExternalMockSourceDriver {
     fn new() -> Result<Self> {
         let option_schema = serde_json::json!({
@@ -158,6 +180,26 @@ impl SourceDriver for ExternalMockSourceDriver {
 
     fn compile(&self, request: SourceCompileRequest) -> Result<CompiledSourcePlan> {
         request.context.validate()?;
+        let source: ExternalSourceOptions = serde_json::from_value(serde_json::Value::Object(
+            request.source_options.clone().into_iter().collect(),
+        ))
+        .map_err(|error| {
+            cdf_kernel::CdfError::contract(format!(
+                "decode external source conformance options: {error}"
+            ))
+        })?;
+        let resource: ExternalResourceOptions = serde_json::from_value(serde_json::Value::Object(
+            request.resource_options.clone().into_iter().collect(),
+        ))
+        .map_err(|error| {
+            cdf_kernel::CdfError::contract(format!(
+                "decode external resource conformance options: {error}"
+            ))
+        })?;
+        let physical_plan = ExternalPhysicalPlan {
+            seed: source.seed,
+            rows: resource.rows,
+        };
         CompiledSourcePlan::new(
             self.descriptor.clone(),
             resource_capabilities(),
@@ -172,10 +214,11 @@ impl SourceDriver for ExternalMockSourceDriver {
                     "source": request.source_options,
                     "resource": request.resource_options,
                 }),
-                physical_plan: serde_json::json!({
-                    "seed": 7,
-                    "rows": 2,
-                }),
+                physical_plan: serde_json::to_value(physical_plan).map_err(|error| {
+                    cdf_kernel::CdfError::internal(format!(
+                        "encode external source conformance physical plan: {error}"
+                    ))
+                })?,
             },
         )
     }
@@ -193,8 +236,14 @@ impl SourceDriver for ExternalMockSourceDriver {
     fn resolve(
         &self,
         plan: &CompiledSourcePlan,
-        _context: &SourceResolutionContext<'_>,
+        context: &SourceResolutionContext<'_>,
     ) -> Result<Arc<dyn QueryableResource>> {
+        let physical_plan: ExternalPhysicalPlan =
+            serde_json::from_value(plan.physical_plan.clone()).map_err(|error| {
+                cdf_kernel::CdfError::contract(format!(
+                    "decode external source conformance physical plan: {error}"
+                ))
+            })?;
         Ok(Arc::new(ExternalMockResource {
             descriptor: plan.descriptor.clone(),
             schema: Arc::new(plan.schema.clone()),
@@ -202,12 +251,16 @@ impl SourceDriver for ExternalMockSourceDriver {
             type_policy_allowances: plan.type_policy_allowances,
             effective_schema_runtime: plan.effective_schema_runtime.clone(),
             compiled_source_plan_hash: artifact_hash(plan)?,
+            execution: context.execution().clone(),
+            execution_capabilities: plan.execution_capabilities.clone(),
+            physical_plan,
         }))
     }
 }
 
 impl SourceAddPlanner for ExternalMockSourceDriver {
     fn propose_add(&self, request: &SourceAddRequest) -> Result<Option<SourceAddProposal>> {
+        request.validate()?;
         if !request.location.starts_with("external-mock://") {
             return Ok(None);
         }
@@ -264,6 +317,9 @@ struct ExternalMockResource {
     type_policy_allowances: TypePolicyAllowances,
     effective_schema_runtime: Option<cdf_kernel::EffectiveSchemaRuntime>,
     compiled_source_plan_hash: String,
+    execution: cdf_runtime::ExecutionServices,
+    execution_capabilities: SourceExecutionCapabilities,
+    physical_plan: ExternalPhysicalPlan,
 }
 
 impl ResourceStream for ExternalMockResource {
@@ -288,13 +344,18 @@ impl ResourceStream for ExternalMockResource {
     }
 
     fn plan_partitions(&self, request: &ScanRequest) -> Result<Vec<PartitionPlan>> {
+        let position = SourcePosition::Cursor(CursorPosition {
+            version: 1,
+            field: "updated_at".to_owned(),
+            value: CursorValue::I64(UPDATED_AT),
+        });
         Ok(vec![PartitionPlan {
             partition_id: PartitionId::new("external-mock-000000")?,
             scope: request.scope.clone(),
-            planned_position: None,
+            planned_position: Some(position),
             start_position: None,
             scan_intent: cdf_kernel::CompiledScanIntent::full_scan(),
-            retry_safety: PartitionRetrySafety::Forbidden,
+            retry_safety: PartitionRetrySafety::ImmutableContent,
             metadata: BTreeMap::new(),
         }])
     }
@@ -302,7 +363,28 @@ impl ResourceStream for ExternalMockResource {
     fn open(&self, partition: PartitionPlan) -> cdf_kernel::PartitionOpenAttempt<'_> {
         let resource_id = self.descriptor.resource_id.clone();
         let schema = Arc::clone(&self.schema);
+        let execution = self.execution.clone();
+        let execution_capabilities = self.execution_capabilities.clone();
+        let physical_plan = self.physical_plan.clone();
         cdf_kernel::PartitionOpenAttempt::materialized(Box::pin(async move {
+            execution.admit_source_operation(
+                execution_capabilities
+                    .quota_authority
+                    .as_deref()
+                    .ok_or_else(|| {
+                        cdf_kernel::CdfError::internal(
+                            "external source conformance omitted its quota authority",
+                        )
+                    })?,
+                execution_capabilities.rate_limit,
+                cdf_runtime::RunCancellation::default(),
+            )?;
+            if physical_plan.rows != 2 {
+                return Err(cdf_kernel::CdfError::internal(format!(
+                    "external source conformance physical plan requires 2 rows, received {}",
+                    physical_plan.rows
+                )));
+            }
             let record_batch = RecordBatch::try_new(
                 schema.clone(),
                 vec![
@@ -314,13 +396,23 @@ impl ResourceStream for ExternalMockResource {
             .map_err(|error| {
                 cdf_kernel::CdfError::data(format!("build external source batch: {error}"))
             })?;
+            let retained_bytes = cdf_memory::record_batch_retained_bytes(&record_batch)?;
+            let lease = cdf_memory::reserve(
+                execution.memory(),
+                ReservationRequest::new(
+                    ConsumerKey::new("external-mock-batch", MemoryClass::Source)?,
+                    retained_bytes,
+                )?,
+            )
+            .await?;
             let mut batch = Batch::from_record_batch(
-                BatchId::new("external-mock-batch-000000")?,
+                BatchId::new(format!("external-mock-batch-{:06}", physical_plan.seed))?,
                 resource_id,
                 partition.partition_id,
                 cdf_kernel::canonical_arrow_schema_hash(schema.as_ref())?,
                 record_batch,
-            )?;
+            )?
+            .with_retention(PayloadRetention::new(Arc::new(lease), retained_bytes)?)?;
             batch.header.source_position = Some(SourcePosition::Cursor(CursorPosition {
                 version: 1,
                 field: "updated_at".to_owned(),
@@ -328,6 +420,22 @@ impl ResourceStream for ExternalMockResource {
             }));
             let stream = Box::pin(stream::iter([Ok(batch)])) as BatchStream;
             Ok(cdf_kernel::PartitionStreamPayload::batches(stream))
+        }))
+    }
+
+    fn attest_partition(&self, partition: PartitionPlan) -> PartitionAttestationAttempt<'_> {
+        let position = partition.planned_position;
+        let schema = Arc::clone(&self.schema);
+        PartitionAttestationAttempt::materialized(Box::pin(async move {
+            let position = position.ok_or_else(|| {
+                cdf_kernel::CdfError::internal(
+                    "external source conformance partition omitted its planned position",
+                )
+            })?;
+            Ok(Some(PartitionAttestation::new(
+                position,
+                Some(cdf_kernel::canonical_arrow_schema_hash(schema.as_ref())?),
+            )))
         }))
     }
 }
@@ -380,11 +488,11 @@ fn execution_capabilities() -> SourceExecutionCapabilities {
         spillable: false,
         idempotent_reads: true,
         reopenable: true,
-        resumable: false,
-        speculative_safe: false,
-        retry_granularity: SourceRetryGranularity::None,
-        retryable_errors: Vec::new(),
-        retry_policy: None,
+        resumable: true,
+        speculative_safe: true,
+        retry_granularity: SourceRetryGranularity::Partition,
+        retryable_errors: vec![ErrorKind::Transient],
+        retry_policy: Some(cdf_runtime::SourceRetryPolicy::default()),
         attestation: SourceAttestationStrength::ImmutableContent,
         rate_limit: Some(cdf_runtime::SourceRateLimit {
             operations: 100,
@@ -393,7 +501,7 @@ fn execution_capabilities() -> SourceExecutionCapabilities {
         quota_authority: Some("external-mock-fixture".to_owned()),
         canonical_order: true,
         bounded: true,
-        batch_memory: SourceBatchMemoryContract::FrontierReserved,
+        batch_memory: SourceBatchMemoryContract::Preaccounted,
         telemetry_version: "v1".to_owned(),
     }
 }
@@ -436,6 +544,25 @@ fn external_source_inherits_registry_schema_add_discovery_and_doctor_laws() {
     let compiled = cdf_declarative::compile_document(&registry, &compiled_document)
         .unwrap()
         .remove(0);
+    let changed_document = cdf_declarative::parse_toml(
+        &resource_toml(MatrixDisposition::Append).replace("seed = 7", "seed = 8"),
+    )
+    .unwrap();
+    let changed = cdf_declarative::compile_document(&registry, &changed_document)
+        .unwrap()
+        .remove(0);
+    assert_ne!(
+        compiled.source_plan().physical_plan_hash,
+        changed.source_plan().physical_plan_hash
+    );
+
+    let invalid_document = cdf_declarative::parse_toml(
+        &resource_toml(MatrixDisposition::Append).replace("rows = 2", "rows = 3"),
+    )
+    .unwrap();
+    let invalid_error = cdf_declarative::compile_document(&registry, &invalid_document)
+        .expect_err("registry option schema must reject invalid external resource options");
+    assert!(invalid_error.to_string().contains("rows"));
     let execution = crate::test_execution_services();
     let context = SourceResolutionContext::new(
         Path::new("."),
@@ -481,4 +608,15 @@ fn external_source_inherits_generic_plan_run_receipt_checkpoint_and_replay_laws(
     assert!(executed.destination_receipt_verified);
     assert!(executed.checkpoint_gated_after_receipt_verification);
     assert!(executed.artifact_replay_identity_asserted);
+    assert_eq!(
+        executed.runtime_scheduler.source_rate_admission.authorities,
+        1
+    );
+    assert_eq!(
+        executed
+            .runtime_scheduler
+            .source_rate_admission
+            .admitted_operations,
+        1
+    );
 }

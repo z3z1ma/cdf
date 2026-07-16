@@ -25,6 +25,8 @@ impl SecretProvider for NoSecrets {
 pub(crate) struct ResolvedSourceFixture {
     resource: Arc<dyn QueryableResource>,
     source_plan: CompiledSourcePlan,
+    #[cfg(test)]
+    execution: cdf_runtime::ExecutionServices,
 }
 
 impl ResolvedSourceFixture {
@@ -36,6 +38,8 @@ impl ResolvedSourceFixture {
         Ok(Self {
             resource: registry.resolve(compiled.source_plan(), context)?,
             source_plan: compiled.source_plan().clone(),
+            #[cfg(test)]
+            execution: context.execution().clone(),
         })
     }
 
@@ -45,6 +49,11 @@ impl ResolvedSourceFixture {
 
     pub(crate) fn bind_plan(&self, plan: cdf_engine::EnginePlan) -> Result<cdf_engine::EnginePlan> {
         plan.bind_compiled_source(&self.source_plan)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn execution(&self) -> &cdf_runtime::ExecutionServices {
+        &self.execution
     }
 }
 

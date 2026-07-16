@@ -57,7 +57,7 @@ pub(crate) fn execute_cell(
         &scope,
         &gate_observed,
     );
-    let services = crate::test_execution_services();
+    let services = source.execution().clone();
 
     let report = futures_executor::block_on(run_project(
         ProjectRunRequest {
@@ -105,6 +105,7 @@ pub(crate) fn execute_cell(
         checkpoint_gated_after_receipt_verification: true,
         artifact_replay_identity_asserted: true,
         duplicate_behavior,
+        runtime_scheduler: report.runtime_scheduler,
     })
 }
 

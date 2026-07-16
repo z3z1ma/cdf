@@ -58,6 +58,10 @@ impl PreparedMatrixSource {
         ProjectRunSource::new(self.queryable())
     }
 
+    pub(crate) fn execution(&self) -> &cdf_runtime::ExecutionServices {
+        self.resource.execution()
+    }
+
     pub(crate) fn assert_after_run(&self, report: &ProjectRunReport) {
         (self.after_run)(report);
     }

@@ -153,6 +153,7 @@ pub struct ExecutedMatrixCell {
     pub checkpoint_gated_after_receipt_verification: bool,
     pub artifact_replay_identity_asserted: bool,
     pub duplicate_behavior: String,
+    pub runtime_scheduler: cdf_runtime::RuntimeSchedulerReport,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
