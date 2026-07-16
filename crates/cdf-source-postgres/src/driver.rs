@@ -7,8 +7,8 @@ use cdf_runtime::{
     SourceAddRequest, SourceAttestationStrength, SourceCompileRequest, SourceDiscoveryCandidate,
     SourceDiscoveryKind, SourceDiscoveryRequest, SourceDiscoverySession, SourceDriver,
     SourceDriverDescriptor, SourceDriverId, SourceEvidenceLocation, SourceExecutionCapabilities,
-    SourceExecutorClass, SourceResolutionContext, SourceRetryGranularity, SourceSchemaObservation,
-    artifact_hash,
+    SourceExecutorClass, SourceHealthRequest, SourceHealthResult, SourceHealthStatus,
+    SourceResolutionContext, SourceRetryGranularity, SourceSchemaObservation, artifact_hash,
 };
 use serde::{Deserialize, Serialize};
 
@@ -70,6 +70,56 @@ impl SourceDriver for PostgresSourceDriver {
 
     fn add_planner(&self) -> Option<&dyn SourceAddPlanner> {
         Some(self)
+    }
+
+    fn health(
+        &self,
+        request: SourceHealthRequest,
+        context: &SourceResolutionContext<'_>,
+    ) -> Result<Vec<SourceHealthResult>> {
+        if request.compiled_plans.is_empty() {
+            return Ok(vec![SourceHealthResult {
+                probe_id: "catalog".to_owned(),
+                status: SourceHealthStatus::Skipped,
+                message: "no Postgres resources are compiled".to_owned(),
+                details: serde_json::json!({"resources": 0}),
+            }]);
+        }
+        let probe_request = SourceDiscoveryRequest::new(1, 1)?;
+        Ok(request
+            .compiled_plans
+            .iter()
+            .map(|plan| {
+                let resource_id = plan.descriptor.resource_id.as_str();
+                let probe = self.discovery_session(plan, context).and_then(|session| {
+                    let candidates = session.candidates()?;
+                    let candidate = candidates.first().ok_or_else(|| {
+                        CdfError::data("Postgres health probe produced no catalog candidate")
+                    })?;
+                    session.observe(candidate, &probe_request)
+                });
+                match probe {
+                    Ok(observation) => SourceHealthResult {
+                        probe_id: resource_id.to_owned(),
+                        status: SourceHealthStatus::Passed,
+                        message: "Postgres catalog probe passed".to_owned(),
+                        details: serde_json::json!({
+                            "resource_id": resource_id,
+                            "columns": observation.schema.fields().len(),
+                        }),
+                    },
+                    Err(error) => SourceHealthResult {
+                        probe_id: resource_id.to_owned(),
+                        status: SourceHealthStatus::Failed,
+                        message: "Postgres catalog probe failed".to_owned(),
+                        details: serde_json::json!({
+                            "resource_id": resource_id,
+                            "error": error.to_string(),
+                        }),
+                    },
+                }
+            })
+            .collect())
     }
 
     fn compile(&self, request: SourceCompileRequest) -> Result<CompiledSourcePlan> {
@@ -340,7 +390,7 @@ fn execution_capabilities() -> SourceExecutionCapabilities {
         retryable_errors: Vec::new(),
         retry_policy: None,
         attestation: SourceAttestationStrength::None,
-        rate_limit_per_second: None,
+        rate_limit: None,
         quota_authority: None,
         canonical_order: false,
         bounded: true,

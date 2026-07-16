@@ -13,7 +13,8 @@ use cdf_runtime::{
     SourceAttestationStrength, SourceCompileRequest, SourceDiscoveryCandidate, SourceDiscoveryKind,
     SourceDiscoveryRequest, SourceDiscoverySession, SourceDriver, SourceDriverDescriptor,
     SourceDriverId, SourceEvidenceLocation, SourceExecutionCapabilities, SourceExecutorClass,
-    SourceResolutionContext, SourceRetryGranularity, SourceSchemaObservation, artifact_hash,
+    SourceHealthRequest, SourceHealthResult, SourceHealthStatus, SourceResolutionContext,
+    SourceRetryGranularity, SourceSchemaObservation, artifact_hash,
 };
 use serde::{Deserialize, Serialize};
 
@@ -97,6 +98,51 @@ impl SourceDriver for FileSourceDriver {
 
     fn add_planner(&self) -> Option<&dyn SourceAddPlanner> {
         Some(self)
+    }
+
+    fn health(
+        &self,
+        request: SourceHealthRequest,
+        context: &SourceResolutionContext<'_>,
+    ) -> Result<Vec<SourceHealthResult>> {
+        if request.compiled_plans.is_empty() {
+            return Ok(vec![SourceHealthResult {
+                probe_id: "inventory".to_owned(),
+                status: SourceHealthStatus::Skipped,
+                message: "no file resources are compiled".to_owned(),
+                details: serde_json::json!({"resources": 0}),
+            }]);
+        }
+        request
+            .compiled_plans
+            .iter()
+            .map(|plan| {
+                let resource_id = plan.descriptor.resource_id.as_str();
+                match self
+                    .discovery_session(plan, context)
+                    .and_then(|session| session.candidates())
+                {
+                    Ok(candidates) => Ok(SourceHealthResult {
+                        probe_id: resource_id.to_owned(),
+                        status: SourceHealthStatus::Passed,
+                        message: "file source inventory probe passed".to_owned(),
+                        details: serde_json::json!({
+                            "resource_id": resource_id,
+                            "candidates": candidates.len(),
+                        }),
+                    }),
+                    Err(error) => Ok(SourceHealthResult {
+                        probe_id: resource_id.to_owned(),
+                        status: SourceHealthStatus::Failed,
+                        message: "file source inventory probe failed".to_owned(),
+                        details: serde_json::json!({
+                            "resource_id": resource_id,
+                            "error": error.to_string(),
+                        }),
+                    }),
+                }
+            })
+            .collect()
     }
 
     fn compile(&self, request: SourceCompileRequest) -> Result<CompiledSourcePlan> {
@@ -1040,7 +1086,7 @@ fn execution_capabilities() -> SourceExecutionCapabilities {
         ],
         retry_policy: Some(cdf_runtime::SourceRetryPolicy::default()),
         attestation: SourceAttestationStrength::ImmutableContent,
-        rate_limit_per_second: None,
+        rate_limit: None,
         quota_authority: None,
         canonical_order: true,
         bounded: true,
@@ -1355,6 +1401,17 @@ mod tests {
             &execution,
             Arc::new(cdf_http::EgressAllowlist::allow_any()),
         );
+        let health = driver
+            .health(
+                SourceHealthRequest {
+                    compiled_plans: vec![plan.clone()],
+                },
+                &context,
+            )
+            .unwrap();
+        assert_eq!(health.len(), 1);
+        assert_eq!(health[0].status, SourceHealthStatus::Passed);
+        assert_eq!(health[0].details["candidates"], 1);
         let session = driver.discovery_session(&plan, &context).unwrap();
 
         assert_eq!(session.kind(), SourceDiscoveryKind::BoundedContent);

@@ -1093,8 +1093,11 @@ mod tests {
                 attestation: cdf_runtime::SourceAttestationStrength::ImmutableContent,
                 resumable: true,
             }),
+            rate_limit: None,
+            quota_authority: None,
             speculative_safe: true,
             canonical_order: true,
+            bounded_source: true,
         };
         let schedule = cdf_runtime::CanonicalPartitionSchedule {
             plan_id: "plan-recorder-source-retry".to_owned(),

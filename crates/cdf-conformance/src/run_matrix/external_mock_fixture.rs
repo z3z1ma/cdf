@@ -15,9 +15,9 @@ use cdf_runtime::{
     SourceAddRequest, SourceAttestationStrength, SourceBatchMemoryContract, SourceCompileRequest,
     SourceDiscoveryCandidate, SourceDiscoveryKind, SourceDiscoveryRequest, SourceDiscoverySession,
     SourceDriver, SourceDriverDescriptor, SourceDriverId, SourceEvidenceLocation,
-    SourceExecutionCapabilities, SourceExecutorClass, SourceHealthProbe, SourceHealthRequest,
-    SourceHealthResult, SourceHealthStatus, SourceResolutionContext, SourceRetryGranularity,
-    SourceSchemaObservation, artifact_hash,
+    SourceExecutionCapabilities, SourceExecutorClass, SourceHealthRequest, SourceHealthResult,
+    SourceHealthStatus, SourceResolutionContext, SourceRetryGranularity, SourceSchemaObservation,
+    artifact_hash,
 };
 use futures_util::stream;
 
@@ -140,8 +140,19 @@ impl SourceDriver for ExternalMockSourceDriver {
         Some(self)
     }
 
-    fn health_probe(&self) -> Option<&dyn SourceHealthProbe> {
-        Some(self)
+    fn health(
+        &self,
+        request: SourceHealthRequest,
+        _context: &SourceResolutionContext<'_>,
+    ) -> Result<Vec<SourceHealthResult>> {
+        Ok(vec![SourceHealthResult {
+            probe_id: "health".to_owned(),
+            status: SourceHealthStatus::Passed,
+            message: "external source conformance probe passed".to_owned(),
+            details: serde_json::json!({
+                "compiled_resources": request.compiled_plans.len(),
+            }),
+        }])
     }
 
     fn compile(&self, request: SourceCompileRequest) -> Result<CompiledSourcePlan> {
@@ -208,19 +219,6 @@ impl SourceAddPlanner for ExternalMockSourceDriver {
             display_selection: request.resource_name.clone(),
             private_files: Vec::new(),
         }))
-    }
-}
-
-impl SourceHealthProbe for ExternalMockSourceDriver {
-    fn health(&self, request: SourceHealthRequest) -> Result<Vec<SourceHealthResult>> {
-        Ok(vec![SourceHealthResult {
-            probe_id: DRIVER_ID.to_owned(),
-            status: SourceHealthStatus::Passed,
-            message: "external source conformance probe passed".to_owned(),
-            details: serde_json::json!({
-                "referenced_resources": request.referenced_uris.len(),
-            }),
-        }])
     }
 }
 
@@ -387,7 +385,10 @@ fn execution_capabilities() -> SourceExecutionCapabilities {
         retryable_errors: Vec::new(),
         retry_policy: None,
         attestation: SourceAttestationStrength::ImmutableContent,
-        rate_limit_per_second: Some(100),
+        rate_limit: Some(cdf_runtime::SourceRateLimit {
+            operations: 100,
+            interval_ms: 1_000,
+        }),
         quota_authority: Some("external-mock-fixture".to_owned()),
         canonical_order: true,
         bounded: true,
@@ -451,11 +452,7 @@ fn external_source_inherits_registry_schema_add_discovery_and_doctor_laws() {
     assert_eq!(observation.schema, *compiled.schema().as_ref());
 
     let health = registry
-        .health_checks(
-            Path::new("."),
-            &BTreeMap::new(),
-            &["external-mock://events".to_owned()],
-        )
+        .health_checks(&context, &[compiled.source_plan().clone()])
         .unwrap();
     assert_eq!(health.len(), 1);
     assert_eq!(health[0].status, SourceHealthStatus::Passed);

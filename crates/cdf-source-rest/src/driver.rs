@@ -11,8 +11,9 @@ use cdf_runtime::{
     SourceAttestationStrength, SourceCompileRequest, SourceCursorPushdown,
     SourceDiscoveryCandidate, SourceDiscoveryKind, SourceDiscoveryRequest, SourceDiscoverySession,
     SourceDriver, SourceDriverDescriptor, SourceDriverId, SourceEvidenceLocation,
-    SourceExecutionCapabilities, SourceExecutorClass, SourceResolutionContext,
-    SourceRetryGranularity, SourceSchemaObservation, artifact_hash,
+    SourceExecutionCapabilities, SourceExecutorClass, SourceHealthRequest, SourceHealthResult,
+    SourceHealthStatus, SourceRateLimit, SourceResolutionContext, SourceRetryGranularity,
+    SourceSchemaObservation, artifact_hash,
 };
 use serde::{Deserialize, Serialize};
 
@@ -72,6 +73,62 @@ impl SourceDriver for RestSourceDriver {
         Some(self)
     }
 
+    fn health(
+        &self,
+        request: SourceHealthRequest,
+        context: &SourceResolutionContext<'_>,
+    ) -> Result<Vec<SourceHealthResult>> {
+        if request.compiled_plans.is_empty() {
+            return Ok(vec![SourceHealthResult {
+                probe_id: "request".to_owned(),
+                status: SourceHealthStatus::Skipped,
+                message: "no REST resources are compiled".to_owned(),
+                details: serde_json::json!({"resources": 0}),
+            }]);
+        }
+        let probe_request = SourceDiscoveryRequest::new(1024 * 1024, 1)?;
+        let health_context = context
+            .clone()
+            .with_prepared_payloads(cdf_runtime::PreparedSourcePayloads::default());
+        Ok(request
+            .compiled_plans
+            .iter()
+            .map(|plan| {
+                let resource_id = plan.descriptor.resource_id.as_str();
+                let probe = self
+                    .discovery_session(plan, &health_context)
+                    .and_then(|session| {
+                        let candidates = session.candidates()?;
+                        let candidate = candidates.first().ok_or_else(|| {
+                            CdfError::data("REST health probe produced no discovery candidate")
+                        })?;
+                        session.observe(candidate, &probe_request)
+                    });
+                match probe {
+                    Ok(observation) => SourceHealthResult {
+                        probe_id: resource_id.to_owned(),
+                        status: SourceHealthStatus::Passed,
+                        message: "REST endpoint probe passed".to_owned(),
+                        details: serde_json::json!({
+                            "resource_id": resource_id,
+                            "bytes_read": observation.bytes_read,
+                            "records_read": observation.records_read,
+                        }),
+                    },
+                    Err(error) => SourceHealthResult {
+                        probe_id: resource_id.to_owned(),
+                        status: SourceHealthStatus::Failed,
+                        message: "REST endpoint probe failed".to_owned(),
+                        details: serde_json::json!({
+                            "resource_id": resource_id,
+                            "error": error.to_string(),
+                        }),
+                    },
+                }
+            })
+            .collect())
+    }
+
     fn compile(&self, request: SourceCompileRequest) -> Result<CompiledSourcePlan> {
         request.context.validate()?;
         let source_name = request.context.source_name.clone();
@@ -90,7 +147,7 @@ impl SourceDriver for RestSourceDriver {
         CompiledSourcePlan::new(
             self.descriptor.clone(),
             capabilities,
-            execution_capabilities(),
+            execution_capabilities(&runtime_plan)?,
             cdf_runtime::CompiledSourcePlanInput {
                 descriptor: request.descriptor,
                 schema: request.schema,
@@ -708,8 +765,10 @@ fn scalar_param(name: &str, value: &serde_json::Value) -> Result<String> {
     }
 }
 
-fn execution_capabilities() -> SourceExecutionCapabilities {
-    SourceExecutionCapabilities {
+fn execution_capabilities(plan: &RestResourcePlan) -> Result<SourceExecutionCapabilities> {
+    let quota_authority =
+        cdf_runtime::SourceEgressTarget::parse(&plan.base_url)?.canonical_authority();
+    Ok(SourceExecutionCapabilities {
         minimum_poll_bytes: 8 * 1024,
         maximum_poll_bytes: crate::REST_MAXIMUM_BATCH_BYTES,
         minimum_decode_bytes: 8 * 1024,
@@ -735,13 +794,19 @@ fn execution_capabilities() -> SourceExecutionCapabilities {
         retryable_errors: Vec::new(),
         retry_policy: None,
         attestation: SourceAttestationStrength::None,
-        rate_limit_per_second: None,
-        quota_authority: Some("origin".to_owned()),
+        rate_limit: plan
+            .rate_limit
+            .requests_per_minute
+            .map(|operations| SourceRateLimit {
+                operations: u64::from(operations),
+                interval_ms: 60_000,
+            }),
+        quota_authority: Some(quota_authority),
         canonical_order: true,
         bounded: true,
         batch_memory: cdf_runtime::SourceBatchMemoryContract::Preaccounted,
         telemetry_version: "v1".to_owned(),
-    }
+    })
 }
 
 #[cfg(test)]
@@ -887,6 +952,10 @@ mod tests {
                         "base_url".to_owned(),
                         serde_json::json!("https://api.example.com"),
                     ),
+                    (
+                        "rate_limit".to_owned(),
+                        serde_json::json!({"requests_per_minute": 30}),
+                    ),
                     ("egress_allowlist".to_owned(), serde_json::json!([])),
                 ]),
                 resource_options: BTreeMap::from([
@@ -915,6 +984,17 @@ mod tests {
         assert_eq!(runtime.source, "api");
         assert_eq!(runtime.cursor_param.as_deref(), Some("since"));
         assert_eq!(runtime.cursor_filter_fidelity, PushdownFidelity::Exact);
+        assert_eq!(
+            plan.execution_capabilities.rate_limit,
+            Some(SourceRateLimit {
+                operations: 30,
+                interval_ms: 60_000,
+            })
+        );
+        assert_eq!(
+            plan.execution_capabilities.quota_authority.as_deref(),
+            Some("https://api.example.com:443")
+        );
 
         let mut drifted = plan;
         drifted.resource_capabilities.filters.default_fidelity = PushdownFidelity::Unsupported;
@@ -987,6 +1067,12 @@ mod tests {
             &execution,
             Arc::new(cdf_http::EgressAllowlist::allow_any()),
         );
+        let health = registry
+            .health_checks(&context, std::slice::from_ref(&plan))
+            .unwrap();
+        assert_eq!(health.len(), 1);
+        assert_eq!(health[0].status, SourceHealthStatus::Passed);
+        assert_eq!(health[0].details["records_read"], 1);
         let session = registry.discovery_session(&plan, &context).unwrap();
 
         assert_eq!(session.kind(), SourceDiscoveryKind::BoundedContent);

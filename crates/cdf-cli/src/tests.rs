@@ -12109,12 +12109,15 @@ schema = { fields = [
 
     assert_eq!(result.exit_code, 1, "stdout: {}", result.stdout);
     let json = stderr_or_stdout_json(&result.stdout);
-    let source = named_check(&json, "source:local.events");
+    let source = named_check(&json, "source.files.local.events");
     assert_eq!(source["status"], "failed");
     assert_eq!(source["details"]["resource_id"], "local.events");
-    assert_eq!(source["details"]["driver"], "files");
-    assert_eq!(source["details"]["partitions"], 0);
-    assert!(source["message"].as_str().unwrap().contains("egress"));
+    assert!(
+        source["details"]["error"]
+            .as_str()
+            .unwrap()
+            .contains("egress")
+    );
     assert!(!project.root.join(".cdf/state.db").exists());
     assert!(!project.root.join(".cdf/packages").exists());
     assert!(!project.root.join(".cdf/dev.duckdb").exists());
@@ -12270,7 +12273,7 @@ fn doctor_skips_python_without_interpreter_or_python_resources() {
 
     assert_eq!(result.exit_code, 0, "stderr: {}", result.stderr);
     let json = stderr_or_stdout_json(&result.stdout);
-    let python = named_check(&json, "python");
+    let python = named_check(&json, "source.python.interpreter");
     assert_eq!(python["status"], "skipped");
     assert_eq!(python["details"]["python_resources"], 0);
     assert_eq!(python["details"]["require_free_threaded"], false);
@@ -12284,7 +12287,7 @@ fn doctor_fails_python_resource_without_interpreter() {
 
     assert_eq!(result.exit_code, 1);
     let json = stderr_or_stdout_json(&result.stdout);
-    let python = named_check(&json, "python");
+    let python = named_check(&json, "source.python.interpreter");
     assert_eq!(python["status"], "failed");
     assert!(
         python["message"]
@@ -12309,7 +12312,7 @@ fn doctor_uses_fixed_python_probe_not_python_resource_code() {
 
     assert_eq!(result.exit_code, 0, "stderr: {}", result.stderr);
     let json = stderr_or_stdout_json(&result.stdout);
-    let python = named_check(&json, "python");
+    let python = named_check(&json, "source.python.interpreter");
     assert_eq!(python["status"], "passed");
     assert_eq!(python["details"]["version"], "3.12.7");
 }
@@ -12328,7 +12331,7 @@ fn doctor_passes_gil_enabled_python_interpreter_with_details() {
 
     assert_eq!(result.exit_code, 0, "stderr: {}", result.stderr);
     let json = stderr_or_stdout_json(&result.stdout);
-    let python = named_check(&json, "python");
+    let python = named_check(&json, "source.python.interpreter");
     assert_eq!(python["status"], "passed");
     assert_eq!(
         python["details"]["executable"],
@@ -12356,7 +12359,7 @@ fn doctor_passes_when_free_threaded_required_and_gil_disabled() {
 
     assert_eq!(result.exit_code, 0, "stderr: {}", result.stderr);
     let json = stderr_or_stdout_json(&result.stdout);
-    let python = named_check(&json, "python");
+    let python = named_check(&json, "source.python.interpreter");
     assert_eq!(python["status"], "passed");
     assert_eq!(python["details"]["gil_enabled"], false);
     assert_eq!(python["details"]["free_threaded_build"], true);
@@ -12378,7 +12381,7 @@ fn doctor_fails_when_free_threaded_required_but_gil_enabled() {
 
     assert_eq!(result.exit_code, 1);
     let json = stderr_or_stdout_json(&result.stdout);
-    let python = named_check(&json, "python");
+    let python = named_check(&json, "source.python.interpreter");
     assert_eq!(python["status"], "failed");
     assert!(
         python["message"]
@@ -12404,7 +12407,7 @@ fn doctor_fails_when_free_threaded_build_still_has_gil_enabled() {
 
     assert_eq!(result.exit_code, 1);
     let json = stderr_or_stdout_json(&result.stdout);
-    let python = named_check(&json, "python");
+    let python = named_check(&json, "source.python.interpreter");
     assert_eq!(python["status"], "failed");
     assert_eq!(python["details"]["gil_enabled"], true);
     assert_eq!(python["details"]["free_threaded_build"], true);
@@ -12420,7 +12423,7 @@ fn doctor_fails_missing_python_interpreter() {
 
     assert_eq!(result.exit_code, 1);
     let json = stderr_or_stdout_json(&result.stdout);
-    let python = named_check(&json, "python");
+    let python = named_check(&json, "source.python.interpreter");
     assert_eq!(python["status"], "failed");
     assert!(
         python["message"]
@@ -12450,7 +12453,7 @@ fn doctor_fails_non_executable_python_interpreter() {
 
     assert_eq!(result.exit_code, 1);
     let json = stderr_or_stdout_json(&result.stdout);
-    let python = named_check(&json, "python");
+    let python = named_check(&json, "source.python.interpreter");
     assert_eq!(python["status"], "failed");
     assert!(
         python["message"]
@@ -12473,7 +12476,7 @@ fn doctor_fails_unsuccessful_python_probe_without_echoing_output() {
     assert!(!result.stdout.contains("SUPER_SECRET"));
     assert!(!result.stderr.contains("SUPER_SECRET"));
     let json = stderr_or_stdout_json(&result.stdout);
-    let python = named_check(&json, "python");
+    let python = named_check(&json, "source.python.interpreter");
     assert_eq!(python["status"], "failed");
     assert!(
         python["message"]
@@ -12496,7 +12499,7 @@ fn doctor_fails_invalid_python_probe_json_without_echoing_output() {
     assert!(!result.stdout.contains("SUPER_SECRET"));
     assert!(!result.stderr.contains("SUPER_SECRET"));
     let json = stderr_or_stdout_json(&result.stdout);
-    let python = named_check(&json, "python");
+    let python = named_check(&json, "source.python.interpreter");
     assert_eq!(python["status"], "failed");
     assert!(
         python["message"]
@@ -12529,7 +12532,7 @@ fn doctor_fails_probe_json_with_inconsistent_version_metadata() {
 
     assert_eq!(result.exit_code, 1);
     let json = stderr_or_stdout_json(&result.stdout);
-    let python = named_check(&json, "python");
+    let python = named_check(&json, "source.python.interpreter");
     assert_eq!(python["status"], "failed");
     assert!(
         python["message"]
@@ -12562,7 +12565,7 @@ fn doctor_fails_probe_json_with_inconsistent_gil_metadata() {
 
     assert_eq!(result.exit_code, 1);
     let json = stderr_or_stdout_json(&result.stdout);
-    let python = named_check(&json, "python");
+    let python = named_check(&json, "source.python.interpreter");
     assert_eq!(python["status"], "failed");
     assert!(
         python["message"]
@@ -12586,7 +12589,7 @@ fn doctor_fails_old_python_interpreter_version() {
 
     assert_eq!(result.exit_code, 1);
     let json = stderr_or_stdout_json(&result.stdout);
-    let python = named_check(&json, "python");
+    let python = named_check(&json, "source.python.interpreter");
     assert_eq!(python["status"], "failed");
     assert!(
         python["message"]

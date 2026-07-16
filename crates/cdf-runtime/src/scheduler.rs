@@ -46,8 +46,11 @@ pub struct ScheduledPartition {
     pub maximum_working_set_bytes: u64,
     pub executor_class: SourceExecutorClass,
     pub retry: Option<CompiledSourceRetry>,
+    pub rate_limit: Option<crate::SourceRateLimit>,
+    pub quota_authority: Option<String>,
     pub speculative_safe: bool,
     pub canonical_order: bool,
+    pub bounded_source: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -105,8 +108,11 @@ impl CanonicalPartitionSchedule {
                         &source.execution_capabilities,
                         partition.retry_safety,
                     )?,
+                    rate_limit: source.execution_capabilities.rate_limit,
+                    quota_authority: source.execution_capabilities.quota_authority.clone(),
                     speculative_safe: source.execution_capabilities.speculative_safe,
                     canonical_order: source.execution_capabilities.canonical_order,
+                    bounded_source: source.execution_capabilities.bounded,
                 })
             })
             .collect::<Result<Vec<_>>>()?;
@@ -165,8 +171,11 @@ impl CanonicalPartitionSchedule {
                         })?
                 || scheduled.executor_class != source.execution_capabilities.executor_class
                 || scheduled.retry != expected_retry
+                || scheduled.rate_limit != source.execution_capabilities.rate_limit
+                || scheduled.quota_authority != source.execution_capabilities.quota_authority
                 || scheduled.speculative_safe != source.execution_capabilities.speculative_safe
                 || scheduled.canonical_order != source.execution_capabilities.canonical_order
+                || scheduled.bounded_source != source.execution_capabilities.bounded
             {
                 return Err(CdfError::data(
                     "partition schedule widens or differs from its compiled source execution plan",
@@ -286,9 +295,65 @@ pub struct RuntimeSchedulerResolution {
     pub source_maximum_concurrency: u16,
     pub source_useful_concurrency: u16,
     pub source_lane_concurrency: Option<u16>,
+    pub source_rate_limit: Option<crate::SourceRateLimit>,
+    pub source_quota_authority: Option<String>,
+    pub source_bounded: bool,
     pub transport_connection_limit: Option<u16>,
     pub destination_writer_concurrency: u16,
     pub destination_in_flight_segments: Option<u16>,
+}
+
+impl RuntimeSchedulerResolution {
+    /// Revalidates the source-owned half of a recorded scheduler join immediately before work.
+    /// Destination limits may narrow this result, but no caller may widen or substitute source
+    /// concurrency, lane, quota, rate, or boundedness authority after planning.
+    pub fn validate_for_source(
+        &self,
+        partition_count: usize,
+        source: &SourceExecutionCapabilities,
+    ) -> Result<()> {
+        source.validate()?;
+        let expected_lane = source
+            .blocking_lane
+            .as_ref()
+            .map(|lane| lane.maximum_concurrency);
+        if self.source_maximum_concurrency != source.maximum_concurrency
+            || self.source_useful_concurrency != source.useful_concurrency
+            || self.source_lane_concurrency != expected_lane
+            || self.source_rate_limit != source.rate_limit
+            || self.source_quota_authority != source.quota_authority
+            || self.source_bounded != source.bounded
+        {
+            return Err(CdfError::data(
+                "runtime scheduler source authority differs from the compiled source plan",
+            ));
+        }
+        let jobs = self.effective_jobs.jobs;
+        if partition_count == 0 {
+            if jobs != 0 {
+                return Err(CdfError::data(
+                    "runtime scheduler admitted jobs for an empty source plan",
+                ));
+            }
+            return Ok(());
+        }
+        let partition_ceiling = u16::try_from(partition_count).unwrap_or(u16::MAX);
+        let lane_ceiling = expected_lane.unwrap_or(u16::MAX);
+        if jobs == 0
+            || jobs > partition_ceiling
+            || jobs > source.maximum_concurrency
+            || jobs > source.useful_concurrency
+            || jobs > lane_ceiling
+            || jobs > self.container_cpu_slots
+            || jobs > self.effective_jobs.memory_jobs
+            || jobs > self.effective_jobs.cpu_jobs
+        {
+            return Err(CdfError::data(
+                "runtime scheduler job admission exceeds compiled source or host ceilings",
+            ));
+        }
+        Ok(())
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -430,6 +495,9 @@ pub fn resolve_runtime_scheduler(
         source_maximum_concurrency: source.maximum_concurrency,
         source_useful_concurrency: source.useful_concurrency,
         source_lane_concurrency: ceilings.lane_concurrency,
+        source_rate_limit: source.rate_limit,
+        source_quota_authority: source.quota_authority.clone(),
+        source_bounded: source.bounded,
         transport_connection_limit: ceilings.transport_connections,
         destination_writer_concurrency,
         destination_in_flight_segments,
@@ -856,8 +924,11 @@ mod tests {
             retryable_errors: vec![cdf_kernel::ErrorKind::Transient],
             retry_policy: Some(crate::SourceRetryPolicy::default()),
             attestation: crate::SourceAttestationStrength::ImmutableContent,
-            rate_limit_per_second: None,
-            quota_authority: None,
+            rate_limit: Some(crate::SourceRateLimit {
+                operations: 100,
+                interval_ms: 1_000,
+            }),
+            quota_authority: Some("shared-origin".to_owned()),
             canonical_order: true,
             bounded: true,
             batch_memory: crate::SourceBatchMemoryContract::Preaccounted,
@@ -889,6 +960,39 @@ mod tests {
                 .message
                 .contains("must preaccount")
         );
+
+        let runtime = RuntimeSchedulerResolution {
+            effective_jobs: EffectiveJobsResolution {
+                jobs: 3,
+                memory_jobs: 5,
+                cpu_jobs: 16,
+                limiting_factors: vec!["checkpoint_scope".to_owned()],
+            },
+            container_cpu_slots: 16,
+            managed_memory_available_bytes: 1_000,
+            source_maximum_concurrency: source.maximum_concurrency,
+            source_useful_concurrency: source.useful_concurrency,
+            source_lane_concurrency: None,
+            source_rate_limit: source.rate_limit,
+            source_quota_authority: source.quota_authority.clone(),
+            source_bounded: source.bounded,
+            transport_connection_limit: Some(5),
+            destination_writer_concurrency: 4,
+            destination_in_flight_segments: None,
+        };
+        runtime.validate_for_source(100, &source).unwrap();
+        let mut stale = runtime.clone();
+        stale.source_quota_authority = Some("other-origin".to_owned());
+        assert!(stale.validate_for_source(100, &source).is_err());
+        let mut stale = runtime.clone();
+        stale.source_rate_limit = Some(crate::SourceRateLimit {
+            operations: 101,
+            interval_ms: 1_000,
+        });
+        assert!(stale.validate_for_source(100, &source).is_err());
+        let mut stale = runtime.clone();
+        stale.source_bounded = false;
+        assert!(stale.validate_for_source(100, &source).is_err());
 
         let mut unit_only = source;
         unit_only.retry_granularity = crate::SourceRetryGranularity::Unit;

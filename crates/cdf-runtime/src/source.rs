@@ -243,6 +243,24 @@ impl SourceEgressTarget {
         self.port
     }
 
+    /// Returns a credential-free, path-free authority key suitable for shared quotas.
+    pub fn canonical_authority(&self) -> String {
+        let host = if self.host.contains(':') {
+            format!("[{}]", self.host)
+        } else {
+            self.host.clone()
+        };
+        let effective_port = self.port.or(match self.scheme.as_str() {
+            "http" => Some(80),
+            "https" => Some(443),
+            _ => None,
+        });
+        match effective_port {
+            Some(port) => format!("{}://{host}:{port}", self.scheme),
+            None => format!("{}://{host}", self.scheme),
+        }
+    }
+
     fn policy_uri(&self) -> String {
         let host = if self.host.contains(':') {
             format!("[{}]", self.host)
@@ -445,6 +463,27 @@ pub enum SourceBatchMemoryContract {
     FrontierReserved,
 }
 
+/// A source-owned operation budget over a monotonic interval.
+///
+/// The unit is deliberately protocol-neutral: an adapter defines the operation (HTTP request,
+/// database query, broker fetch) while the scheduler records the exact budget and quota scope.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SourceRateLimit {
+    pub operations: u64,
+    pub interval_ms: u64,
+}
+
+impl SourceRateLimit {
+    pub fn validate(&self) -> Result<()> {
+        if self.operations == 0 || self.interval_ms == 0 {
+            return Err(CdfError::contract(
+                "source rate limit operations and interval must be nonzero",
+            ));
+        }
+        Ok(())
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SourceExecutionCapabilities {
     pub minimum_poll_bytes: u64,
@@ -465,7 +504,7 @@ pub struct SourceExecutionCapabilities {
     pub retryable_errors: Vec<ErrorKind>,
     pub retry_policy: Option<SourceRetryPolicy>,
     pub attestation: SourceAttestationStrength,
-    pub rate_limit_per_second: Option<u64>,
+    pub rate_limit: Option<SourceRateLimit>,
     pub quota_authority: Option<String>,
     pub canonical_order: bool,
     pub bounded: bool,
@@ -586,12 +625,10 @@ impl SourceExecutionCapabilities {
                 "resumable source execution requires reopenable reads",
             ));
         }
-        if self.rate_limit_per_second == Some(0) {
-            return Err(CdfError::contract(
-                "source rate limit must be nonzero when declared",
-            ));
+        if let Some(rate_limit) = self.rate_limit {
+            rate_limit.validate()?;
         }
-        if self.rate_limit_per_second.is_some() && self.quota_authority.is_none() {
+        if self.rate_limit.is_some() && self.quota_authority.is_none() {
             return Err(CdfError::contract(
                 "source rate limit requires a quota authority",
             ));
@@ -771,15 +808,9 @@ impl SourceHealthResult {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct SourceHealthRequest {
-    pub project_root: PathBuf,
-    pub project_options: Option<serde_json::Value>,
-    pub referenced_uris: Vec<String>,
-}
-
-pub trait SourceHealthProbe: Send + Sync {
-    fn health(&self, request: SourceHealthRequest) -> Result<Vec<SourceHealthResult>>;
+    pub compiled_plans: Vec<CompiledSourcePlan>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -1446,9 +1477,16 @@ pub trait SourceDriver: Send + Sync {
     fn reference_compiler(&self) -> Option<&dyn SourceReferenceCompiler> {
         None
     }
-    fn health_probe(&self) -> Option<&dyn SourceHealthProbe> {
-        None
-    }
+    /// Runs this driver's bounded, redacted health checks for the exact plans it owns.
+    ///
+    /// The registry groups and validates plans before calling this method. Network, secret, and
+    /// runtime authority remain host-injected through `context`; a driver cannot manufacture a
+    /// second execution environment for doctor.
+    fn health(
+        &self,
+        request: SourceHealthRequest,
+        context: &SourceResolutionContext<'_>,
+    ) -> Result<Vec<SourceHealthResult>>;
     fn add_planner(&self) -> Option<&dyn crate::SourceAddPlanner> {
         None
     }

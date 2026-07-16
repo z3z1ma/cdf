@@ -2180,7 +2180,7 @@ fn mock_compiled_source_plan_with_speculation(
             } else {
                 cdf_runtime::SourceAttestationStrength::None
             },
-            rate_limit_per_second: None,
+            rate_limit: None,
             quota_authority: None,
             canonical_order: true,
             bounded: true,
@@ -2323,6 +2323,28 @@ fn operator_graph_compiles_from_capabilities_without_driver_name_dispatch() {
         serial.profile.statistics
     );
     assert_eq!(services.memory().snapshot().current_bytes, 0);
+
+    let mut stale_scheduler = cdf_runtime::resolve_runtime_scheduler(
+        plan.scan.partitions.len(),
+        &source.execution_capabilities,
+        &cdf_runtime::DestinationRuntimeCapabilities::default(),
+        &services,
+        Some(4),
+    )
+    .unwrap();
+    stale_scheduler.source_bounded = !source.execution_capabilities.bounded;
+    let stale_temp = TempDir::new().unwrap();
+    let error = block_on(execute_to_package_with_segment_positions_and_pre_finalize(
+        &plan,
+        &resource,
+        stale_temp.path(),
+        &pre_finalize,
+        EngineExecutionOptions::default()
+            .with_execution_services(services.clone())
+            .with_scheduler_resolution(stale_scheduler),
+    ))
+    .unwrap_err();
+    assert!(error.message.contains("scheduler source authority"));
 
     let destination = cdf_runtime::DestinationRuntimeCapabilities {
         blocking_lanes: vec![

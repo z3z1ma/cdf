@@ -9,7 +9,8 @@ use cdf_runtime::{
     CompiledSourcePlan, CompiledSourcePlanInput, SourceAttestationStrength,
     SourceBatchMemoryContract, SourceCompileRequest, SourceDiscoverySession, SourceDriver,
     SourceDriverDescriptor, SourceDriverId, SourceExecutionCapabilities, SourceExecutorClass,
-    SourceRegistry, SourceResolutionContext, SourceRetryGranularity, artifact_hash,
+    SourceHealthRequest, SourceHealthResult, SourceHealthStatus, SourceRegistry,
+    SourceResolutionContext, SourceRetryGranularity, artifact_hash,
 };
 
 use crate::*;
@@ -61,6 +62,19 @@ impl SourceDriver for TestSourceDriver {
 
     fn option_schema(&self) -> &serde_json::Value {
         &self.option_schema
+    }
+
+    fn health(
+        &self,
+        _request: SourceHealthRequest,
+        _context: &SourceResolutionContext<'_>,
+    ) -> Result<Vec<SourceHealthResult>> {
+        Ok(vec![SourceHealthResult {
+            probe_id: "compile_only".to_owned(),
+            status: SourceHealthStatus::Unsupported,
+            message: "compile-only test driver has no runtime health probe".to_owned(),
+            details: serde_json::json!({}),
+        }])
     }
 
     fn compile(&self, request: SourceCompileRequest) -> Result<CompiledSourcePlan> {
@@ -125,7 +139,7 @@ fn test_execution_capabilities() -> SourceExecutionCapabilities {
         retryable_errors: Vec::new(),
         retry_policy: None,
         attestation: SourceAttestationStrength::None,
-        rate_limit_per_second: None,
+        rate_limit: None,
         quota_authority: None,
         canonical_order: true,
         bounded: true,

@@ -961,6 +961,19 @@ impl SourceDriver for MockSourceDriver {
         &self.option_schema
     }
 
+    fn health(
+        &self,
+        request: SourceHealthRequest,
+        _context: &SourceResolutionContext<'_>,
+    ) -> Result<Vec<SourceHealthResult>> {
+        Ok(vec![SourceHealthResult {
+            probe_id: "mock".to_owned(),
+            status: SourceHealthStatus::Passed,
+            message: "mock source health probe passed".to_owned(),
+            details: serde_json::json!({"compiled_resources": request.compiled_plans.len()}),
+        }])
+    }
+
     fn add_planner(&self) -> Option<&dyn SourceAddPlanner> {
         Some(self)
     }
@@ -1000,7 +1013,10 @@ impl SourceDriver for MockSourceDriver {
                 retryable_errors: vec![ErrorKind::Transient],
                 retry_policy: Some(SourceRetryPolicy::default()),
                 attestation: SourceAttestationStrength::ImmutableContent,
-                rate_limit_per_second: Some(100),
+                rate_limit: Some(SourceRateLimit {
+                    operations: 100,
+                    interval_ms: 1_000,
+                }),
                 quota_authority: Some("mock-account".to_owned()),
                 canonical_order: true,
                 bounded: true,
@@ -2591,11 +2607,14 @@ fn source_egress_scope_exposes_only_normalized_credential_free_authority() {
     assert!(!format!("{request:?}").contains("secret"));
     assert!(!format!("{request:?}").contains("hidden"));
 
+    let normalized = SourceEgressTarget::parse("HTTPS://EXAMPLE.TEST./data").unwrap();
+    assert_eq!(normalized.host(), "example.test");
+    assert_eq!(normalized.canonical_authority(), "https://example.test:443");
     assert_eq!(
-        SourceEgressTarget::parse("HTTPS://EXAMPLE.TEST./data")
+        SourceEgressTarget::parse("https://example.test:443/other")
             .unwrap()
-            .host(),
-        "example.test"
+            .canonical_authority(),
+        normalized.canonical_authority()
     );
     assert!(SourceEgressTarget::parse("https://2001:db8::1/data").is_err());
     assert!(SourceEgressTarget::parse("https://example.test:0/data").is_err());

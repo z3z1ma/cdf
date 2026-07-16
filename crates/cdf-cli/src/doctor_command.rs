@@ -1,5 +1,4 @@
-use cdf_kernel::ScanRequest;
-use cdf_project::{FileResourceSourceResolver, ResourceSourceKind, validate_project};
+use cdf_project::{FileResourceSourceResolver, validate_project};
 use serde::Serialize;
 use serde_json::json;
 
@@ -52,8 +51,11 @@ pub(crate) fn doctor(
         Err(error) => checks.push(DoctorCheck::failed("secrets", error.to_string())),
     }
 
-    checks.extend(source_driver_health_checks(&context, source_registry));
-    checks.extend(source_runtime_checks(&context, execution));
+    checks.extend(source_driver_health_checks(
+        &context,
+        source_registry,
+        execution,
+    ));
     checks.extend(destination_checks(
         context.destination_runtime(destinations),
     ));
@@ -74,67 +76,6 @@ pub(crate) fn doctor(
     };
     let exit_code = if failed == 0 { 0 } else { 1 };
     CommandOutput::rendered_with_exit_code("doctor", report.render_document(), report, exit_code)
-}
-
-fn source_runtime_checks(
-    context: &ProjectContext,
-    execution: &cdf_runtime::ExecutionServices,
-) -> Vec<DoctorCheck> {
-    let registry = match crate::source_registry::builtin_source_registry() {
-        Ok(registry) => registry,
-        Err(error) => {
-            return vec![DoctorCheck::failed(
-                "source_registry",
-                format!("source registry initialization failed: {}", error.message),
-            )];
-        }
-    };
-    let resolution = cdf_runtime::SourceResolutionContext::new(
-        &context.root,
-        std::sync::Arc::new(context.secret_provider()),
-        execution,
-        std::sync::Arc::new(cdf_http::EgressAllowlist::allow_any()),
-    );
-    context
-        .resources
-        .iter()
-        .map(|resource| {
-            let resource_id = resource.descriptor().resource_id.to_string();
-            let driver = resource.source_plan().driver.driver_id.as_str();
-            let probe = registry
-                .resolve(resource.source_plan(), &resolution)
-                .and_then(|runtime| {
-                    runtime.plan_partitions(&ScanRequest {
-                        resource_id: resource.descriptor().resource_id.clone(),
-                        projection: None,
-                        filters: Vec::new(),
-                        limit: None,
-                        order_by: Vec::new(),
-                        scope: resource.descriptor().state_scope.clone(),
-                    })
-                });
-            match probe {
-                Ok(partitions) => DoctorCheck::passed(
-                    format!("source:{resource_id}"),
-                    format!("{driver} source resolved {} partition(s)", partitions.len()),
-                )
-                .with_details(json!({
-                    "resource_id": resource_id,
-                    "driver": driver,
-                    "partitions": partitions.len(),
-                })),
-                Err(error) => DoctorCheck::failed(
-                    format!("source:{resource_id}"),
-                    format!("{driver} source probe failed: {}", error.message),
-                )
-                .with_details(json!({
-                    "resource_id": resource_id,
-                    "driver": driver,
-                    "partitions": 0,
-                })),
-            }
-        })
-        .collect()
 }
 
 fn project_health_details(context: &ProjectContext) -> serde_json::Value {
@@ -160,17 +101,21 @@ fn secret_check_details(report: &cdf_project::ProjectValidationReport) -> serde_
 fn source_driver_health_checks(
     context: &ProjectContext,
     registry: &cdf_runtime::SourceRegistry,
+    execution: &cdf_runtime::ExecutionServices,
 ) -> Vec<DoctorCheck> {
-    let references = context
-        .config
+    let plans = context
         .resources
-        .values()
-        .filter_map(|resource| match resource.source_kind() {
-            ResourceSourceKind::Reference { uri } => Some(uri),
-            ResourceSourceKind::DeclarativeFile { .. } => None,
-        })
+        .iter()
+        .map(|resource| resource.source_plan().clone())
         .collect::<Vec<_>>();
-    match registry.health_checks(&context.root, &context.config.driver_options, &references) {
+    let resolution = cdf_runtime::SourceResolutionContext::new(
+        &context.root,
+        std::sync::Arc::new(context.secret_provider()),
+        execution,
+        std::sync::Arc::new(cdf_http::EgressAllowlist::allow_any()),
+    )
+    .with_driver_options(context.config.driver_options.clone());
+    match registry.health_checks(&resolution, &plans) {
         Ok(results) => results
             .into_iter()
             .map(|result| {

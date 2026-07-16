@@ -15,9 +15,9 @@ use cdf_runtime::{
     SourceAttestationStrength, SourceBatchMemoryContract, SourceCompileRequest,
     SourceDiscoveryCandidate, SourceDiscoveryKind, SourceDiscoveryRequest, SourceDiscoverySession,
     SourceDriver, SourceDriverDescriptor, SourceDriverId, SourceExecutionCapabilities,
-    SourceExecutorClass, SourceHealthProbe, SourceHealthRequest, SourceHealthResult,
-    SourceHealthStatus, SourceReferenceCompileRequest, SourceReferenceCompiler,
-    SourceResolutionContext, SourceRetryGranularity, SourceSchemaObservation, artifact_hash,
+    SourceExecutorClass, SourceHealthRequest, SourceHealthResult, SourceHealthStatus,
+    SourceReferenceCompileRequest, SourceReferenceCompiler, SourceResolutionContext,
+    SourceRetryGranularity, SourceSchemaObservation, artifact_hash,
 };
 use serde::Deserialize;
 
@@ -130,8 +130,12 @@ impl SourceDriver for PythonSourceDriver {
         Some(self)
     }
 
-    fn health_probe(&self) -> Option<&dyn SourceHealthProbe> {
-        Some(self)
+    fn health(
+        &self,
+        request: SourceHealthRequest,
+        context: &SourceResolutionContext<'_>,
+    ) -> Result<Vec<SourceHealthResult>> {
+        self.doctor_health(request, context)
     }
 
     fn discovery_session(
@@ -206,10 +210,14 @@ impl SourceReferenceCompiler for PythonSourceDriver {
     }
 }
 
-impl SourceHealthProbe for PythonSourceDriver {
-    fn health(&self, request: SourceHealthRequest) -> Result<Vec<SourceHealthResult>> {
-        let resource_count = request.referenced_uris.len();
-        let Some(options) = request.project_options else {
+impl PythonSourceDriver {
+    fn doctor_health(
+        &self,
+        request: SourceHealthRequest,
+        context: &SourceResolutionContext<'_>,
+    ) -> Result<Vec<SourceHealthResult>> {
+        let resource_count = request.compiled_plans.len();
+        let Some(options) = context.driver_options(&self.descriptor.driver_id) else {
             let (status, message) = if resource_count == 0 {
                 (
                     SourceHealthStatus::Skipped,
@@ -223,7 +231,7 @@ impl SourceHealthProbe for PythonSourceDriver {
                 )
             };
             return Ok(vec![SourceHealthResult {
-                probe_id: DRIVER_ID.to_owned(),
+                probe_id: "interpreter".to_owned(),
                 status,
                 message,
                 details: serde_json::json!({
@@ -232,11 +240,11 @@ impl SourceHealthProbe for PythonSourceDriver {
                 }),
             }]);
         };
-        let options = decode_project_options(&options)?;
-        let path = configured_interpreter_path(&request.project_root, &options.interpreter);
+        let options = decode_project_options(options)?;
+        let path = configured_interpreter_path(context.project_root(), &options.interpreter);
         let result = match probe_interpreter(&path) {
             Err(message) => SourceHealthResult {
-                probe_id: DRIVER_ID.to_owned(),
+                probe_id: "interpreter".to_owned(),
                 status: SourceHealthStatus::Failed,
                 message,
                 details: serde_json::json!({
@@ -259,7 +267,7 @@ impl SourceHealthProbe for PythonSourceDriver {
                 });
                 if (report.major, report.minor) < (MIN_PYTHON_MAJOR, MIN_PYTHON_MINOR) {
                     SourceHealthResult {
-                        probe_id: DRIVER_ID.to_owned(),
+                        probe_id: "interpreter".to_owned(),
                         status: SourceHealthStatus::Failed,
                         message: format!(
                             "Python interpreter {} is older than required {MIN_PYTHON_MAJOR}.{MIN_PYTHON_MINOR}",
@@ -269,14 +277,14 @@ impl SourceHealthProbe for PythonSourceDriver {
                     }
                 } else if options.require_free_threaded && !report.can_parallelize_python {
                     SourceHealthResult {
-                        probe_id: DRIVER_ID.to_owned(),
+                        probe_id: "interpreter".to_owned(),
                         status: SourceHealthStatus::Failed,
                         message: "configured Python resources require a free-threaded interpreter with the GIL disabled".to_owned(),
                         details,
                     }
                 } else {
                     SourceHealthResult {
-                        probe_id: DRIVER_ID.to_owned(),
+                        probe_id: "interpreter".to_owned(),
                         status: SourceHealthStatus::Passed,
                         message: format!(
                             "configured interpreter {} passed Python doctor probe",
@@ -505,7 +513,7 @@ fn execution_capabilities(parallel: bool) -> SourceExecutionCapabilities {
         retryable_errors: Vec::new(),
         retry_policy: None,
         attestation: SourceAttestationStrength::ImmutableContent,
-        rate_limit_per_second: None,
+        rate_limit: None,
         quota_authority: None,
         canonical_order: true,
         bounded: false,

@@ -2766,6 +2766,13 @@ where
     plan.validate_compiled_expression_plan()?;
     plan.validate_partition_schedule()?;
     plan.validate_compiled_source_resource(resource)?;
+    if let Some(scheduler) = &options.scheduler {
+        let source = plan.compiled_source_execution.as_ref().ok_or_else(|| {
+            CdfError::contract("package execution requires a compiled source execution plan")
+        })?;
+        scheduler
+            .validate_for_source(plan.scan.partitions.len(), source.execution_capabilities())?;
+    }
     let validation_program = plan.validation_program.clone();
     validate_program(&validation_program)?;
     cdf_kernel::validate_scan_partition_observation_identities(&plan.scan)?;

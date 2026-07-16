@@ -582,7 +582,7 @@ mod tests {
             retryable_errors: vec![ErrorKind::Transient, ErrorKind::RateLimited],
             retry_policy: Some(SourceRetryPolicy::default()),
             attestation: SourceAttestationStrength::ImmutableContent,
-            rate_limit_per_second: None,
+            rate_limit: None,
             quota_authority: None,
             canonical_order: true,
             bounded: true,
@@ -615,8 +615,11 @@ mod tests {
             maximum_working_set_bytes: 2,
             executor_class: SourceExecutorClass::Io,
             retry: Some(compiled_retry()),
+            rate_limit: None,
+            quota_authority: None,
             speculative_safe: false,
             canonical_order: true,
+            bounded_source: true,
         }
     }
 

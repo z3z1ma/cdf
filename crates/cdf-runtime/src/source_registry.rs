@@ -1,4 +1,4 @@
-use std::{collections::BTreeMap, path::Path, sync::Arc};
+use std::{collections::BTreeMap, sync::Arc};
 
 use cdf_kernel::{
     CdfError, EffectiveSchemaCatalogEntry, EffectiveSchemaRuntime, PartitionAttestationAttempt,
@@ -285,41 +285,36 @@ impl SourceRegistry {
 
     pub fn health_checks(
         &self,
-        project_root: &Path,
-        driver_options: &BTreeMap<String, serde_json::Value>,
-        referenced_uris: &[String],
+        context: &SourceResolutionContext<'_>,
+        compiled_plans: &[CompiledSourcePlan],
     ) -> Result<Vec<SourceHealthResult>> {
-        let mut references = BTreeMap::<SourceDriverId, Vec<String>>::new();
-        for uri in referenced_uris {
-            let driver = self.driver_for_uri(uri)?;
-            references
+        let mut plans = BTreeMap::<SourceDriverId, Vec<CompiledSourcePlan>>::new();
+        for plan in compiled_plans {
+            let driver = self.driver_for_plan(plan)?;
+            plans
                 .entry(driver.descriptor().driver_id.clone())
                 .or_default()
-                .push(uri.clone());
+                .push(plan.clone());
         }
         let mut results = Vec::new();
         for (driver_id, driver) in &self.drivers {
-            let mut uris = references.remove(driver_id).unwrap_or_default();
-            uris.sort();
-            uris.dedup();
-            let project_options = driver_options.get(driver_id.as_str()).cloned();
+            let project_options = context.driver_options(driver_id).cloned();
             if let Some(options) = &project_options {
                 driver.validate_project_options(options)?;
             }
-            let driver_results = if let Some(probe) = driver.health_probe() {
-                probe.health(SourceHealthRequest {
-                    project_root: project_root.to_path_buf(),
-                    project_options,
-                    referenced_uris: uris,
-                })?
-            } else {
-                vec![SourceHealthResult {
-                    probe_id: "health".to_owned(),
-                    status: crate::SourceHealthStatus::Unsupported,
-                    message: "driver does not expose a bounded health probe".to_owned(),
-                    details: serde_json::json!({}),
-                }]
-            };
+            let mut driver_plans = plans.remove(driver_id).unwrap_or_default();
+            driver_plans.sort_by(|left, right| {
+                left.descriptor
+                    .resource_id
+                    .as_str()
+                    .cmp(right.descriptor.resource_id.as_str())
+            });
+            let driver_results = driver.health(
+                SourceHealthRequest {
+                    compiled_plans: driver_plans,
+                },
+                context,
+            )?;
             for result in driver_results {
                 results.push(verify_health_result(driver_id, result)?);
             }
