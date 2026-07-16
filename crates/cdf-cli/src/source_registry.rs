@@ -4,15 +4,31 @@ use cdf_runtime::{ByteTransformRegistry, FormatRegistry, SourceRegistry};
 use cdf_source_files::{FileRuntimeDependencies, FileSourceDriver, FileTransportFacade};
 use cdf_source_postgres::PostgresSourceDriver;
 use cdf_source_rest::RestSourceDriver;
+use std::sync::{Arc, OnceLock};
 
 use crate::http_transport::ReqwestHttpTransport;
 
-pub(crate) fn builtin_source_registry() -> Result<SourceRegistry> {
+static BUILTIN_SOURCE_REGISTRY: OnceLock<SourceRegistry> = OnceLock::new();
+
+pub(crate) fn builtin_source_registry() -> Result<&'static SourceRegistry> {
+    if let Some(registry) = BUILTIN_SOURCE_REGISTRY.get() {
+        return Ok(registry);
+    }
+    let registry = build_builtin_source_registry()?;
+    let _ = BUILTIN_SOURCE_REGISTRY.set(registry);
+    BUILTIN_SOURCE_REGISTRY
+        .get()
+        .ok_or_else(|| cdf_kernel::CdfError::internal("initialize built-in source registry"))
+}
+
+fn build_builtin_source_registry() -> Result<SourceRegistry> {
     let mut registry = SourceRegistry::new();
     registry.register(PythonSourceDriver::new()?)?;
     registry.register(PostgresSourceDriver::new()?)?;
-    registry.register(RestSourceDriver::new(|| {
-        Ok(Box::new(ReqwestHttpTransport::new()?))
+    let http = ReqwestHttpTransport::new()?;
+    let rest_http = http.clone();
+    registry.register(RestSourceDriver::new(move || {
+        Ok(Box::new(rest_http.clone()))
     })?)?;
     let formats = builtin_format_registry()?;
     let runtime_formats = std::sync::Arc::clone(&formats);
@@ -21,7 +37,7 @@ pub(crate) fn builtin_source_registry() -> Result<SourceRegistry> {
         move |secrets, execution, egress| {
             Ok(FileRuntimeDependencies::new(
                 FileTransportFacade::new()
-                    .with_http_transport(ReqwestHttpTransport::new()?)
+                    .with_http_transport(http.clone())
                     .with_shared_secret_provider(secrets)
                     .with_execution_services(execution.clone()),
                 execution,
@@ -34,7 +50,7 @@ pub(crate) fn builtin_source_registry() -> Result<SourceRegistry> {
     Ok(registry)
 }
 
-pub(crate) fn builtin_transform_registry() -> Result<std::sync::Arc<ByteTransformRegistry>> {
+pub(crate) fn builtin_transform_registry() -> Result<Arc<ByteTransformRegistry>> {
     use cdf_transform_character::{CharacterEncoding, CharacterTransformDriver};
 
     let mut registry = ByteTransformRegistry::default();
@@ -71,10 +87,10 @@ pub(crate) fn builtin_transform_registry() -> Result<std::sync::Arc<ByteTransfor
             encoding,
         )?))?;
     }
-    Ok(std::sync::Arc::new(registry))
+    Ok(Arc::new(registry))
 }
 
-pub(crate) fn builtin_format_registry() -> Result<std::sync::Arc<FormatRegistry>> {
+pub(crate) fn builtin_format_registry() -> Result<Arc<FormatRegistry>> {
     let mut registry = FormatRegistry::default();
     registry.register(std::sync::Arc::new(
         cdf_format_arrow_ipc::ArrowIpcFileFormatDriver::new()?,
@@ -91,5 +107,18 @@ pub(crate) fn builtin_format_registry() -> Result<std::sync::Arc<FormatRegistry>
     registry.register(std::sync::Arc::new(
         cdf_format_json::JsonDocumentFormatDriver::new()?,
     ))?;
-    Ok(std::sync::Arc::new(registry))
+    Ok(Arc::new(registry))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn builtin_registry_is_process_scoped() {
+        let first = builtin_source_registry().unwrap();
+        let second = builtin_source_registry().unwrap();
+
+        assert!(std::ptr::eq(first, second));
+    }
 }

@@ -66,7 +66,7 @@ pub(crate) fn validate(
     let provider = context.secret_provider();
     let source_registry = crate::source_registry::builtin_source_registry()?;
     let report = validate_project(
-        &source_registry,
+        source_registry,
         &context.config,
         Some(&context.environment.name),
         &resolver,

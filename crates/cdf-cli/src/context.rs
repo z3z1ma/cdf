@@ -100,7 +100,7 @@ impl ProjectContext {
         let resolver = FileResourceSourceResolver::new(&root);
         let source_registry = crate::source_registry::builtin_source_registry()?;
         let entries = cdf_project::compile_project_declarative_resource_entries_with_root(
-            &source_registry,
+            source_registry,
             &config,
             &resolver,
             &root,

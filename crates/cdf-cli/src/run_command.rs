@@ -355,7 +355,7 @@ fn synthesize_adhoc_source(
 
     let document = parse_declarative_toml(&resource_toml)?;
     let mut resources =
-        compile_document_with_project_root(&source_registry, &document, &context.root)?;
+        compile_document_with_project_root(source_registry, &document, &context.root)?;
     if resources.len() != 1 {
         return Err(CliError::mapped(
             CdfError::internal(format!(

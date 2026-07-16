@@ -26,8 +26,9 @@ use sha2::{Digest, Sha256};
 const MINIMUM_CHUNK_BYTES: u64 = 8 * 1024;
 const MAXIMUM_CHUNK_BYTES: u64 = 32 * 1024 * 1024;
 
+#[derive(Clone)]
 pub struct ReqwestHttpTransport {
-    blocking: Mutex<Option<reqwest::blocking::Client>>,
+    blocking: Arc<Mutex<Option<reqwest::blocking::Client>>>,
     asynchronous: reqwest::Client,
 }
 
@@ -38,7 +39,7 @@ impl ReqwestHttpTransport {
             .build()
             .map_err(|error| CdfError::internal(format!("build async HTTP client: {error}")))?;
         Ok(Self {
-            blocking: Mutex::new(None),
+            blocking: Arc::new(Mutex::new(None)),
             asynchronous,
         })
     }
@@ -557,6 +558,14 @@ mod tests {
     use futures_util::TryStreamExt;
 
     use super::*;
+
+    #[test]
+    fn cloned_transport_shares_the_lazy_blocking_pool() {
+        let transport = ReqwestHttpTransport::new().unwrap();
+        let clone = transport.clone();
+
+        assert!(Arc::ptr_eq(&transport.blocking, &clone.blocking));
+    }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn http_source_streams_once_and_ranges_with_generation_preconditions() {

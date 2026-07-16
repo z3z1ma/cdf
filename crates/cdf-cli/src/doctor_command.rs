@@ -33,7 +33,7 @@ pub(crate) fn doctor(
     let provider = context.secret_provider();
     let source_registry = crate::source_registry::builtin_source_registry()?;
     match validate_project(
-        &source_registry,
+        source_registry,
         &context.config,
         Some(&context.environment.name),
         &resolver,
@@ -52,7 +52,7 @@ pub(crate) fn doctor(
         Err(error) => checks.push(DoctorCheck::failed("secrets", error.to_string())),
     }
 
-    checks.extend(source_driver_health_checks(&context, &source_registry));
+    checks.extend(source_driver_health_checks(&context, source_registry));
     checks.extend(source_runtime_checks(&context, execution));
     checks.extend(destination_checks(
         context.destination_runtime(destinations),

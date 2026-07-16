@@ -34,8 +34,8 @@ pub(crate) fn add(
     let context =
         ProjectContext::load_for_command("add", cli.project.as_ref(), cli.env.as_deref())?;
     let registry = crate::source_registry::builtin_source_registry()?;
-    let request = AddResourceRequest::from_args(&context, &registry, &args)?;
-    let proposed = build_proposed_resource(&context, &registry, &request)?;
+    let request = AddResourceRequest::from_args(&context, registry, &args)?;
+    let proposed = build_proposed_resource(&context, registry, &request)?;
     ensure_add_is_available(&context, &request, &proposed)?;
 
     let add_secrets = AddSecretProvider {
@@ -44,7 +44,7 @@ pub(crate) fn add(
     };
     let artifacts = discover_for_add(
         &context,
-        &registry,
+        registry,
         &proposed.resource,
         add_secrets,
         execution,

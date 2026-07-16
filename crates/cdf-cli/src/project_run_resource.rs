@@ -229,7 +229,7 @@ pub(crate) fn discover_source_schema_with_plan_for_cli(
     .with_driver_options(context.config.driver_options.clone());
     cdf_project::discover_resource_schema_with_source_registry(
         resource,
-        &registry,
+        registry,
         source_plan,
         &resolution,
         options,
@@ -254,7 +254,7 @@ pub(crate) fn preflight_fixed_source_schema_with_plan_for_cli(
     cdf_project::preflight_fixed_resource_schema_with_source_registry(
         &context.root,
         resource,
-        &registry,
+        registry,
         source_plan,
         &resolution,
         options,
