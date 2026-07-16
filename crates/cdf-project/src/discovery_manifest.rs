@@ -444,6 +444,11 @@ pub struct DiscoveryManifestArtifact {
 }
 
 impl DiscoveryManifestArtifact {
+    pub fn canonical_bytes(&self) -> Result<Vec<u8>> {
+        self.validate()?;
+        canonical_json_bytes(self)
+    }
+
     pub fn new(mut input: DiscoveryManifestInput) -> Result<Self> {
         input.candidates.sort_by(|left, right| {
             left.canonical_location
@@ -606,7 +611,7 @@ impl DiscoveryManifestStore {
     pub fn write_if_changed(&self, artifact: &DiscoveryManifestArtifact) -> Result<bool> {
         artifact.validate()?;
         let path = self.project_root.join(&artifact.path);
-        let encoded = canonical_json_bytes(artifact)?;
+        let encoded = artifact.canonical_bytes()?;
         match fs::read(&path) {
             Ok(existing) if existing == encoded => return Ok(false),
             Ok(_) => {

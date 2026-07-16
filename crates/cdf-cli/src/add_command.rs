@@ -1,11 +1,4 @@
-use std::{
-    collections::BTreeMap,
-    env, fs,
-    fs::File,
-    io::Write,
-    path::{Path, PathBuf},
-    sync::Arc,
-};
+use std::{collections::BTreeMap, env, fs, path::PathBuf, sync::Arc};
 
 use cdf_declarative::{
     CompiledResource, compile_document_with_project_root, parse_toml as parse_declarative_toml,
@@ -13,9 +6,10 @@ use cdf_declarative::{
 use cdf_http::{SecretProvider, SecretUri, SecretValue};
 use cdf_kernel::{CdfError, SchemaSource};
 use cdf_project::{
-    LOCK_FILE_NAME, PROJECT_FILE_NAME, ResourceSchemaDiscoveryArtifacts, SchemaSnapshotArtifact,
-    SchemaSnapshotDataType, SchemaSnapshotField, freeze_contract_snapshots, lock_to_toml,
-    parse_cdf_toml, write_schema_discovery_artifacts,
+    LOCK_FILE_NAME, PROJECT_FILE_NAME, ProjectFileExpectation, ProjectFileWrite,
+    ResourceSchemaDiscoveryArtifacts, SchemaSnapshotArtifact, SchemaSnapshotDataType,
+    SchemaSnapshotField, freeze_contract_snapshots, lock_to_toml, parse_cdf_toml, parse_lock,
+    publish_project_files_transactionally,
 };
 use cdf_runtime::{PlannedSourceAdd, SourceAddPrivateFile, SourceAddRequest, SourceRegistry};
 use serde::Serialize;
@@ -112,10 +106,12 @@ fn build_proposed_resource(
             error_catalog::PROJECT_IO,
         ));
     }
+    let (project_prior, project_toml) = appended_project_mapping(context, request)?;
     Ok(ProposedResource {
         resource,
         resource_toml,
-        project_toml: appended_project_mapping(context, request)?,
+        project_toml,
+        project_prior,
     })
 }
 
@@ -177,8 +173,7 @@ fn discover_for_add(
     secret_provider: AddSecretProvider,
     execution: &cdf_runtime::ExecutionServices,
 ) -> Result<ResourceSchemaDiscoveryArtifacts, CliError> {
-    let options = cdf_project::SchemaDiscoveryExecutionOptions::new()
-        .with_observation_cache(cdf_project::ObservationCacheStore::new(&context.root));
+    let options = cdf_project::SchemaDiscoveryExecutionOptions::new();
     let source_plan = resource.source_plan().clone();
     let resolution = cdf_runtime::SourceResolutionContext::new(
         &context.root,
@@ -222,6 +217,51 @@ fn write_add_artifacts(
     pinned_resource: &CompiledResource,
     artifacts: &ResourceSchemaDiscoveryArtifacts,
 ) -> Result<(), CliError> {
+    let lock_path = context.root.join(LOCK_FILE_NAME);
+    let lock_expectation = match (context.lock.as_ref(), fs::read(&lock_path)) {
+        (Some(expected), Ok(bytes)) => {
+            let text = std::str::from_utf8(&bytes).map_err(|error| {
+                CliError::mapped(
+                    CdfError::contract(format!("parse {LOCK_FILE_NAME} as UTF-8: {error}")),
+                    error_catalog::PROJECT_IO,
+                )
+            })?;
+            if &parse_lock(text)? != expected {
+                return Err(CliError::mapped(
+                    CdfError::contract(
+                        "cdf.lock changed after the add command loaded project authority; retry against the current project",
+                    ),
+                    error_catalog::PROJECT_IO,
+                ));
+            }
+            ProjectFileExpectation::Exact(bytes)
+        }
+        (None, Err(error)) if error.kind() == std::io::ErrorKind::NotFound => {
+            ProjectFileExpectation::Absent
+        }
+        (Some(_), Err(error)) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Err(CliError::mapped(
+                CdfError::contract(
+                    "cdf.lock disappeared after the add command loaded project authority; retry against the current project",
+                ),
+                error_catalog::PROJECT_IO,
+            ));
+        }
+        (None, Ok(_)) => {
+            return Err(CliError::mapped(
+                CdfError::contract(
+                    "cdf.lock appeared after the add command loaded project authority; retry against the current project",
+                ),
+                error_catalog::PROJECT_IO,
+            ));
+        }
+        (_, Err(error)) => {
+            return Err(CliError::mapped(
+                CdfError::contract(format!("read {LOCK_FILE_NAME}: {error}")),
+                error_catalog::PROJECT_IO,
+            ));
+        }
+    };
     let mut resources = context.resources.clone();
     resources.push(pinned_resource.clone());
     let updated_config = parse_cdf_toml(&proposed.project_toml)?;
@@ -239,105 +279,41 @@ fn write_add_artifacts(
     )?;
     let lock_toml = lock_to_toml(&lock)?;
 
-    for private_file in &request.plan.proposal.private_files {
-        write_private_source_file(context, private_file)?;
+    let mut writes = Vec::new();
+    for (path, bytes) in artifacts.canonical_artifact_files()? {
+        writes.push(ProjectFileWrite::new(
+            path,
+            bytes.clone(),
+            ProjectFileExpectation::AbsentOrExact(bytes),
+        ));
     }
-    write_schema_discovery_artifacts(&context.root, artifacts)?;
-    fs::create_dir_all(request.config_path_abs.parent().ok_or_else(|| {
-        CliError::mapped(
-            CdfError::internal("generated resource config path has no parent"),
-            error_catalog::PROJECT_IO,
-        )
-    })?)
-    .map_err(|error| {
-        CliError::mapped(
-            CdfError::contract(format!(
-                "create {}: {error}",
-                request
-                    .config_path_abs
-                    .parent()
-                    .expect("checked above")
-                    .display()
-            )),
-            error_catalog::PROJECT_IO,
-        )
-    })?;
-    fs::write(&request.config_path_abs, &proposed.resource_toml).map_err(|error| {
-        CliError::mapped(
-            CdfError::contract(format!("write {}: {error}", request.config_path_rel)),
-            error_catalog::PROJECT_IO,
-        )
-    })?;
-    fs::write(context.root.join(PROJECT_FILE_NAME), &proposed.project_toml).map_err(|error| {
-        CliError::mapped(
-            CdfError::contract(format!("write {PROJECT_FILE_NAME}: {error}")),
-            error_catalog::PROJECT_IO,
-        )
-    })?;
-    fs::write(context.root.join(LOCK_FILE_NAME), lock_toml).map_err(|error| {
-        CliError::mapped(
-            CdfError::contract(format!("write {LOCK_FILE_NAME}: {error}")),
-            error_catalog::PROJECT_IO,
-        )
-    })?;
-    Ok(())
-}
-
-fn write_private_source_file(
-    context: &ProjectContext,
-    private_file: &SourceAddPrivateFile,
-) -> Result<(), CliError> {
-    let path = context.root.join(&private_file.relative_path);
-    let parent = path.parent().ok_or_else(|| {
-        CliError::mapped(
-            CdfError::internal("private source file has no parent"),
-            error_catalog::PROJECT_IO,
-        )
-    })?;
-    fs::create_dir_all(parent).map_err(|error| {
-        CliError::mapped(
-            CdfError::contract(format!("create private source directory: {error}")),
-            error_catalog::PROJECT_IO,
-        )
-    })?;
-    let mut file = open_private_source_file(&path).map_err(|error| {
-        CliError::mapped(
-            CdfError::contract(format!("create private source file: {error}")),
-            error_catalog::PROJECT_IO,
-        )
-    })?;
-    file.write_all(private_file.value.as_str()?.as_bytes())
-        .map_err(|error| {
-            CliError::mapped(
-                CdfError::contract(format!("write private source file: {error}")),
-                error_catalog::PROJECT_IO,
+    for private_file in &request.plan.proposal.private_files {
+        writes.push(
+            ProjectFileWrite::new(
+                private_file.relative_path.clone(),
+                private_file.value.as_str()?.as_bytes().to_vec(),
+                ProjectFileExpectation::Absent,
             )
-        })?;
-    file.sync_all().map_err(|error| {
-        CliError::mapped(
-            CdfError::contract(format!("sync private source file: {error}")),
-            error_catalog::PROJECT_IO,
-        )
-    })
-}
-
-#[cfg(unix)]
-fn open_private_source_file(path: &Path) -> std::io::Result<File> {
-    use std::os::unix::fs::OpenOptionsExt;
-
-    fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .mode(0o600)
-        .open(path)
-}
-
-#[cfg(not(unix))]
-fn open_private_source_file(_path: &Path) -> std::io::Result<File> {
-    Err(std::io::Error::new(
-        std::io::ErrorKind::Unsupported,
-        "source private-file persistence requires an owner-only permission implementation on this platform",
-    ))
+            .owner_only(),
+        );
+    }
+    writes.push(ProjectFileWrite::new(
+        &request.config_path_rel,
+        proposed.resource_toml.as_bytes().to_vec(),
+        ProjectFileExpectation::Absent,
+    ));
+    writes.push(ProjectFileWrite::new(
+        PROJECT_FILE_NAME,
+        proposed.project_toml.as_bytes().to_vec(),
+        ProjectFileExpectation::Exact(proposed.project_prior.clone()),
+    ));
+    writes.push(ProjectFileWrite::new(
+        LOCK_FILE_NAME,
+        lock_toml.into_bytes(),
+        lock_expectation,
+    ));
+    publish_project_files_transactionally(&context.root, LOCK_FILE_NAME, writes)?;
+    Ok(())
 }
 
 #[derive(Clone, Debug)]
@@ -396,6 +372,7 @@ struct ProposedResource {
     resource: CompiledResource,
     resource_toml: String,
     project_toml: String,
+    project_prior: Vec<u8>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -650,7 +627,7 @@ pub(crate) fn registered_source_resource_toml(
 fn appended_project_mapping(
     context: &ProjectContext,
     request: &AddResourceRequest,
-) -> Result<String, CliError> {
+) -> Result<(Vec<u8>, String), CliError> {
     let project_path = context.root.join(PROJECT_FILE_NAME);
     let mut project = fs::read_to_string(&project_path).map_err(|error| {
         CliError::mapped(
@@ -658,6 +635,7 @@ fn appended_project_mapping(
             error_catalog::PROJECT_IO,
         )
     })?;
+    let prior = project.as_bytes().to_vec();
     while project.ends_with(['\n', '\r']) {
         project.pop();
     }
@@ -666,7 +644,7 @@ fn appended_project_mapping(
         request.resource_id,
         toml_string(&request.config_path_rel)?
     ));
-    Ok(project)
+    Ok((prior, project))
 }
 
 fn split_resource_id(id: &str) -> Result<(String, String), CliError> {

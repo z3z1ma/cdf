@@ -30,6 +30,7 @@ mod lock_cas;
 mod lockfile;
 mod models;
 mod observation_cache;
+mod project_files;
 mod promotion;
 mod runtime;
 #[cfg(test)]
@@ -48,6 +49,7 @@ pub use lock_cas::*;
 pub use lockfile::*;
 pub use models::*;
 pub use observation_cache::*;
+pub use project_files::*;
 pub use promotion::*;
 pub use runtime::*;
 pub use scaffold::*;

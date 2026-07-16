@@ -1428,6 +1428,7 @@ fn add_local_parquet_dry_run_writes_nothing() {
     write_vendor_parquet(&project.root.join("data/yellow.parquet"));
 
     let before_project = fs::read_to_string(project.root.join("cdf.toml")).unwrap();
+    let before_tree = project_tree_snapshot(&project.root);
     let result = run([
         "cdf",
         "--json",
@@ -1460,6 +1461,7 @@ fn add_local_parquet_dry_run_writes_nothing() {
     assert!(!project.root.join(".cdf/packages").exists());
     assert!(!project.root.join(".cdf/state.db").exists());
     assert!(!project.root.join(".cdf/dev.duckdb").exists());
+    assert_project_tree_unchanged(&project.root, &before_tree);
 }
 
 #[test]

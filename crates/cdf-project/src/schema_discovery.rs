@@ -87,6 +87,44 @@ impl ResourceSchemaDiscoveryArtifacts {
             effective_schema_runtime: None,
         }
     }
+
+    pub fn canonical_artifact_files(&self) -> Result<Vec<(String, Vec<u8>)>> {
+        let snapshot = &self.discovery.snapshot.artifact;
+        let linked_manifest = snapshot.discovery_manifest_reference()?;
+        let mut files = Vec::new();
+        match (linked_manifest, self.discovery_manifest.as_ref()) {
+            (Some(reference), Some(manifest)) if reference == manifest.reference() => {
+                if manifest.resource_id != snapshot.resource_id {
+                    return Err(CdfError::data(format!(
+                        "discovery manifest {} belongs to resource {} but schema snapshot belongs to {}",
+                        manifest.path, manifest.resource_id, snapshot.resource_id
+                    )));
+                }
+                files.push((manifest.path.clone(), manifest.canonical_bytes()?));
+            }
+            (None, None) => {}
+            (Some(reference), Some(manifest)) => {
+                return Err(CdfError::data(format!(
+                    "schema snapshot references discovery manifest {} but prepared artifact is {}",
+                    reference.path, manifest.path
+                )));
+            }
+            (Some(reference), None) => {
+                return Err(CdfError::data(format!(
+                    "schema snapshot references missing discovery manifest {}",
+                    reference.path
+                )));
+            }
+            (None, Some(manifest)) => {
+                return Err(CdfError::data(format!(
+                    "prepared discovery manifest {} is not linked from its schema snapshot",
+                    manifest.path
+                )));
+            }
+        }
+        files.push((snapshot.path.clone(), snapshot.canonical_bytes()?));
+        Ok(files)
+    }
 }
 
 /// Authority token proving that a schema snapshot and its linked discovery

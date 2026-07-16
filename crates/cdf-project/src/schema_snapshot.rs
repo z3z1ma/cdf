@@ -823,6 +823,11 @@ fn is_sorted_unique(values: &[String]) -> bool {
 }
 
 impl SchemaSnapshotArtifact {
+    pub fn canonical_bytes(&self) -> Result<Vec<u8>> {
+        self.validate_hash_input()?;
+        canonical_json_bytes(self)
+    }
+
     pub fn new(
         resource_id: &ResourceId,
         schema: &Schema,
@@ -1021,7 +1026,7 @@ impl SchemaSnapshotStore {
             fs::create_dir_all(parent)
                 .map_err(|error| CdfError::data(format!("create {}: {error}", parent.display())))?;
         }
-        fs::write(&path, canonical_json_bytes(artifact)?)
+        fs::write(&path, artifact.canonical_bytes()?)
             .map_err(|error| CdfError::data(format!("write {}: {error}", path.display())))?;
         Ok(path)
     }
@@ -1030,7 +1035,7 @@ impl SchemaSnapshotStore {
         artifact.validate_hash_input()?;
         self.validate_discovery_manifest(artifact)?;
         let path = self.project_root.join(&artifact.path);
-        let encoded = canonical_json_bytes(artifact)?;
+        let encoded = artifact.canonical_bytes()?;
         if fs::read(&path).ok().as_deref() == Some(encoded.as_slice()) {
             return Ok(false);
         }
