@@ -68,13 +68,14 @@ impl SourceDriver for TestSourceDriver {
         &self,
         _request: SourceHealthRequest,
         _context: &SourceResolutionContext<'_>,
-    ) -> Result<Vec<SourceHealthResult>> {
-        Ok(vec![SourceHealthResult {
+        output: &mut dyn cdf_runtime::SourceHealthSink,
+    ) -> Result<()> {
+        output.emit(SourceHealthResult {
             probe_id: "compile_only".to_owned(),
             status: SourceHealthStatus::Unsupported,
             message: "compile-only test driver has no runtime health probe".to_owned(),
             details: serde_json::json!({}),
-        }])
+        })
     }
 
     fn compile(&self, request: SourceCompileRequest) -> Result<CompiledSourcePlan> {

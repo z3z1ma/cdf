@@ -133,8 +133,9 @@ impl SourceDriver for PythonSourceDriver {
         &self,
         request: SourceHealthRequest,
         context: &SourceResolutionContext<'_>,
-    ) -> Result<Vec<SourceHealthResult>> {
-        self.doctor_health(request, context)
+        output: &mut dyn cdf_runtime::SourceHealthSink,
+    ) -> Result<()> {
+        output.emit(self.doctor_health(request, context)?)
     }
 
     fn discovery_session(
@@ -214,7 +215,7 @@ impl PythonSourceDriver {
         &self,
         request: SourceHealthRequest,
         context: &SourceResolutionContext<'_>,
-    ) -> Result<Vec<SourceHealthResult>> {
+    ) -> Result<SourceHealthResult> {
         request.budget.consume_work(1)?;
         let resource_count = request.compiled_plans.len();
         let Some(options) = context.driver_options(&self.descriptor.driver_id) else {
@@ -230,7 +231,7 @@ impl PythonSourceDriver {
                         .to_owned(),
                 )
             };
-            return Ok(vec![SourceHealthResult {
+            return Ok(SourceHealthResult {
                 probe_id: "interpreter".to_owned(),
                 status,
                 message,
@@ -238,7 +239,7 @@ impl PythonSourceDriver {
                     "python_resources": resource_count,
                     "require_free_threaded": false,
                 }),
-            }]);
+            });
         };
         let options = decode_project_options(options)?;
         let path = configured_interpreter_path(context.project_root(), &options.interpreter);
@@ -296,7 +297,7 @@ impl PythonSourceDriver {
                 }
             }
         };
-        Ok(vec![result])
+        Ok(result)
     }
 }
 

@@ -317,24 +317,20 @@ impl SourceRegistry {
                     .as_str()
                     .cmp(right.descriptor.resource_id.as_str())
             });
-            let driver_results = driver.health(
+            let mut output = RegistrySourceHealthSink {
+                driver_id,
+                budget: &budget,
+                probe_ids: &mut probe_ids,
+                results: &mut results,
+            };
+            driver.health(
                 SourceHealthRequest {
                     compiled_plans: driver_plans,
                     budget: budget.clone(),
                 },
                 context,
+                &mut output,
             )?;
-            for result in driver_results {
-                let result = verify_health_result(driver_id, result)?;
-                budget.record_result(&result)?;
-                if !probe_ids.insert(result.probe_id.clone()) {
-                    return Err(CdfError::contract(format!(
-                        "source health probe id `{}` was emitted more than once",
-                        result.probe_id
-                    )));
-                }
-                results.push(result);
-            }
         }
         Ok(results)
     }
@@ -372,6 +368,28 @@ impl SourceRegistry {
                 plan.driver.driver_id.as_str()
             )));
         }
+        Ok(())
+    }
+}
+
+struct RegistrySourceHealthSink<'a> {
+    driver_id: &'a SourceDriverId,
+    budget: &'a crate::SourceHealthBudget,
+    probe_ids: &'a mut BTreeSet<String>,
+    results: &'a mut Vec<SourceHealthResult>,
+}
+
+impl crate::SourceHealthSink for RegistrySourceHealthSink<'_> {
+    fn emit(&mut self, result: SourceHealthResult) -> Result<()> {
+        let result = verify_health_result(self.driver_id, result)?;
+        self.budget.record_result(&result)?;
+        if !self.probe_ids.insert(result.probe_id.clone()) {
+            return Err(CdfError::contract(format!(
+                "source health probe id `{}` was emitted more than once",
+                result.probe_id
+            )));
+        }
+        self.results.push(result);
         Ok(())
     }
 }

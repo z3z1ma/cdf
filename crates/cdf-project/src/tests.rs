@@ -234,17 +234,17 @@ impl cdf_runtime::SourceDriver for ProjectReferenceTestDriver {
         &self,
         request: cdf_runtime::SourceHealthRequest,
         _context: &cdf_runtime::SourceResolutionContext<'_>,
-    ) -> Result<Vec<cdf_runtime::SourceHealthResult>> {
-        Ok(request
-            .compiled_plans
-            .into_iter()
-            .map(|plan| cdf_runtime::SourceHealthResult {
+        output: &mut dyn cdf_runtime::SourceHealthSink,
+    ) -> Result<()> {
+        for plan in request.compiled_plans {
+            output.emit(cdf_runtime::SourceHealthResult {
                 probe_id: plan.descriptor.resource_id.as_str().replace('.', "_"),
                 status: cdf_runtime::SourceHealthStatus::Unsupported,
                 message: "project reference fixture has no health operation".to_owned(),
                 details: serde_json::json!({}),
-            })
-            .collect())
+            })?;
+        }
+        Ok(())
     }
 
     fn resolve(

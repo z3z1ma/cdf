@@ -965,14 +965,15 @@ impl SourceDriver for MockSourceDriver {
         &self,
         request: SourceHealthRequest,
         _context: &SourceResolutionContext<'_>,
-    ) -> Result<Vec<SourceHealthResult>> {
+        output: &mut dyn SourceHealthSink,
+    ) -> Result<()> {
         request.budget.consume_work(1)?;
-        Ok(vec![SourceHealthResult {
+        output.emit(SourceHealthResult {
             probe_id: "mock".to_owned(),
             status: SourceHealthStatus::Passed,
             message: "mock source health probe passed".to_owned(),
             details: serde_json::json!({"compiled_resources": request.compiled_plans.len()}),
-        }])
+        })
     }
 
     fn add_planner(&self) -> Option<&dyn SourceAddPlanner> {

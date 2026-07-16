@@ -106,40 +106,38 @@ impl SourceDriver for FileSourceDriver {
         &self,
         request: SourceHealthRequest,
         context: &SourceResolutionContext<'_>,
-    ) -> Result<Vec<SourceHealthResult>> {
+        output: &mut dyn cdf_runtime::SourceHealthSink,
+    ) -> Result<()> {
         if request.compiled_plans.is_empty() {
-            return Ok(vec![SourceHealthResult {
+            return output.emit(SourceHealthResult {
                 probe_id: "inventory".to_owned(),
                 status: SourceHealthStatus::Skipped,
                 message: "no file resources are compiled".to_owned(),
                 details: serde_json::json!({"resources": 0}),
-            }]);
+            });
         }
-        request
-            .compiled_plans
-            .iter()
-            .map(|plan| {
-                request.budget.consume_work(1)?;
-                let resource_id = plan.descriptor.resource_id.as_str();
-                let maximum_entries =
-                    usize::try_from(request.budget.remaining_list_entries()?).unwrap_or(usize::MAX);
-                match self
-                    .discovery_session_with_limit(plan, context, maximum_entries, false)
-                    .and_then(|session| session.candidates())
-                {
-                    Ok(candidates) => {
-                        if candidates.is_empty() {
-                            return Ok(SourceHealthResult::failed(
-                                resource_id,
-                                "file source inventory matched no candidates",
-                                &plan.descriptor.resource_id,
-                                &CdfError::data("configured file resource matched no files"),
-                            ));
-                        }
+        for plan in &request.compiled_plans {
+            request.budget.consume_work(1)?;
+            let resource_id = plan.descriptor.resource_id.as_str();
+            let maximum_entries =
+                usize::try_from(request.budget.remaining_list_entries()?).unwrap_or(usize::MAX);
+            let result = match self
+                .discovery_session_with_limit(plan, context, maximum_entries, false)
+                .and_then(|session| session.candidates())
+            {
+                Ok(candidates) => {
+                    if candidates.is_empty() {
+                        SourceHealthResult::failed(
+                            resource_id,
+                            "file source inventory matched no candidates",
+                            &plan.descriptor.resource_id,
+                            &CdfError::data("configured file resource matched no files"),
+                        )
+                    } else {
                         request.budget.consume_list_entries(
                             u64::try_from(candidates.len()).unwrap_or(u64::MAX),
                         )?;
-                        Ok(SourceHealthResult {
+                        SourceHealthResult {
                             probe_id: resource_id.to_owned(),
                             status: SourceHealthStatus::Passed,
                             message: "file source inventory probe passed".to_owned(),
@@ -147,17 +145,19 @@ impl SourceDriver for FileSourceDriver {
                                 "resource_id": resource_id,
                                 "candidates": candidates.len(),
                             }),
-                        })
+                        }
                     }
-                    Err(error) => Ok(SourceHealthResult::failed(
-                        resource_id,
-                        "file source inventory probe failed",
-                        &plan.descriptor.resource_id,
-                        &error,
-                    )),
                 }
-            })
-            .collect()
+                Err(error) => SourceHealthResult::failed(
+                    resource_id,
+                    "file source inventory probe failed",
+                    &plan.descriptor.resource_id,
+                    &error,
+                ),
+            };
+            output.emit(result)?;
+        }
+        Ok(())
     }
 
     fn compile(&self, request: SourceCompileRequest) -> Result<CompiledSourcePlan> {
@@ -1229,6 +1229,16 @@ mod tests {
 
     struct NoopSecretProvider;
 
+    #[derive(Default)]
+    struct TestHealthSink(Vec<SourceHealthResult>);
+
+    impl cdf_runtime::SourceHealthSink for TestHealthSink {
+        fn emit(&mut self, result: SourceHealthResult) -> Result<()> {
+            self.0.push(result);
+            Ok(())
+        }
+    }
+
     impl SecretProvider for NoopSecretProvider {
         fn resolve(&self, _uri: &SecretUri) -> Result<SecretValue> {
             Err(CdfError::auth(
@@ -1540,7 +1550,8 @@ mod tests {
             &execution,
             Arc::new(cdf_http::EgressAllowlist::allow_any()),
         );
-        let health = driver
+        let mut health = TestHealthSink::default();
+        driver
             .health(
                 SourceHealthRequest {
                     compiled_plans: vec![plan.clone()],
@@ -1552,11 +1563,12 @@ mod tests {
                     .unwrap(),
                 },
                 &context,
+                &mut health,
             )
             .unwrap();
-        assert_eq!(health.len(), 1);
-        assert_eq!(health[0].status, SourceHealthStatus::Passed);
-        assert_eq!(health[0].details["candidates"], 1);
+        assert_eq!(health.0.len(), 1);
+        assert_eq!(health.0[0].status, SourceHealthStatus::Passed);
+        assert_eq!(health.0[0].details["candidates"], 1);
         let session = driver.discovery_session(&plan, &context).unwrap();
 
         assert_eq!(session.kind(), SourceDiscoveryKind::BoundedContent);
@@ -1575,7 +1587,8 @@ mod tests {
         assert_eq!(observation.schema.fields()[0].name(), "id");
 
         std::fs::write(root.path().join("later.ndjson"), payload).unwrap();
-        let bounded_health = driver
+        let mut bounded_health = TestHealthSink::default();
+        driver
             .health(
                 SourceHealthRequest {
                     compiled_plans: vec![plan],
@@ -1590,9 +1603,10 @@ mod tests {
                     .unwrap(),
                 },
                 &context,
+                &mut bounded_health,
             )
             .unwrap();
-        assert_eq!(bounded_health.len(), 1);
-        assert_eq!(bounded_health[0].status, SourceHealthStatus::Failed);
+        assert_eq!(bounded_health.0.len(), 1);
+        assert_eq!(bounded_health.0[0].status, SourceHealthStatus::Failed);
     }
 }

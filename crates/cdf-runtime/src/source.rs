@@ -1062,6 +1062,15 @@ pub struct SourceHealthRequest {
     pub budget: SourceHealthBudget,
 }
 
+/// Registry-owned admission boundary for source health output.
+///
+/// Drivers emit one result at a time. The registry validates and accounts each result before it
+/// can become retained command output, so an adapter cannot bypass the aggregate result/detail
+/// limits by constructing an unbounded return collection first.
+pub trait SourceHealthSink {
+    fn emit(&mut self, result: SourceHealthResult) -> Result<()>;
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct CompiledSourcePlan {
     pub driver: SourceDriverDescriptor,
@@ -1820,7 +1829,8 @@ pub trait SourceDriver: Send + Sync {
         &self,
         request: SourceHealthRequest,
         context: &SourceResolutionContext<'_>,
-    ) -> Result<Vec<SourceHealthResult>>;
+        output: &mut dyn SourceHealthSink,
+    ) -> Result<()>;
     fn add_planner(&self) -> Option<&dyn crate::SourceAddPlanner> {
         None
     }

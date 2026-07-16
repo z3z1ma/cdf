@@ -76,50 +76,49 @@ impl SourceDriver for PostgresSourceDriver {
         &self,
         request: SourceHealthRequest,
         context: &SourceResolutionContext<'_>,
-    ) -> Result<Vec<SourceHealthResult>> {
+        output: &mut dyn cdf_runtime::SourceHealthSink,
+    ) -> Result<()> {
         if request.compiled_plans.is_empty() {
-            return Ok(vec![SourceHealthResult {
+            return output.emit(SourceHealthResult {
                 probe_id: "catalog".to_owned(),
                 status: SourceHealthStatus::Skipped,
                 message: "no Postgres resources are compiled".to_owned(),
                 details: serde_json::json!({"resources": 0}),
-            }]);
+            });
         }
         let probe_request =
             SourceDiscoveryRequest::new(1, 1)?.with_cancellation(request.budget.cancellation());
-        request
-            .compiled_plans
-            .iter()
-            .map(|plan| {
-                request.budget.consume_work(1)?;
-                request.budget.consume_list_entries(1)?;
-                let resource_id = plan.descriptor.resource_id.as_str();
-                let probe = self.discovery_session(plan, context).and_then(|session| {
-                    let candidates = session.candidates()?;
-                    let candidate = candidates.first().ok_or_else(|| {
-                        CdfError::data("Postgres health probe produced no catalog candidate")
-                    })?;
-                    session.observe(candidate, &probe_request)
-                });
-                match probe {
-                    Ok(observation) => Ok(SourceHealthResult {
-                        probe_id: resource_id.to_owned(),
-                        status: SourceHealthStatus::Passed,
-                        message: "Postgres catalog probe passed".to_owned(),
-                        details: serde_json::json!({
-                            "resource_id": resource_id,
-                            "columns": observation.schema.fields().len(),
-                        }),
+        for plan in &request.compiled_plans {
+            request.budget.consume_work(1)?;
+            request.budget.consume_list_entries(1)?;
+            let resource_id = plan.descriptor.resource_id.as_str();
+            let probe = self.discovery_session(plan, context).and_then(|session| {
+                let candidates = session.candidates()?;
+                let candidate = candidates.first().ok_or_else(|| {
+                    CdfError::data("Postgres health probe produced no catalog candidate")
+                })?;
+                session.observe(candidate, &probe_request)
+            });
+            let result = match probe {
+                Ok(observation) => SourceHealthResult {
+                    probe_id: resource_id.to_owned(),
+                    status: SourceHealthStatus::Passed,
+                    message: "Postgres catalog probe passed".to_owned(),
+                    details: serde_json::json!({
+                        "resource_id": resource_id,
+                        "columns": observation.schema.fields().len(),
                     }),
-                    Err(error) => Ok(SourceHealthResult::failed(
-                        resource_id,
-                        "Postgres catalog probe failed",
-                        &plan.descriptor.resource_id,
-                        &error,
-                    )),
-                }
-            })
-            .collect::<Result<Vec<_>>>()
+                },
+                Err(error) => SourceHealthResult::failed(
+                    resource_id,
+                    "Postgres catalog probe failed",
+                    &plan.descriptor.resource_id,
+                    &error,
+                ),
+            };
+            output.emit(result)?;
+        }
+        Ok(())
     }
 
     fn compile(&self, request: SourceCompileRequest) -> Result<CompiledSourcePlan> {

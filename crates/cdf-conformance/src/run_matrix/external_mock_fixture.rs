@@ -166,16 +166,17 @@ impl SourceDriver for ExternalMockSourceDriver {
         &self,
         request: SourceHealthRequest,
         _context: &SourceResolutionContext<'_>,
-    ) -> Result<Vec<SourceHealthResult>> {
+        output: &mut dyn cdf_runtime::SourceHealthSink,
+    ) -> Result<()> {
         request.budget.consume_work(1)?;
-        Ok(vec![SourceHealthResult {
+        output.emit(SourceHealthResult {
             probe_id: "health".to_owned(),
             status: SourceHealthStatus::Passed,
             message: "external source conformance probe passed".to_owned(),
             details: serde_json::json!({
                 "compiled_resources": request.compiled_plans.len(),
             }),
-        }])
+        })
     }
 
     fn compile(&self, request: SourceCompileRequest) -> Result<CompiledSourcePlan> {

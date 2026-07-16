@@ -78,14 +78,15 @@ impl SourceDriver for RestSourceDriver {
         &self,
         request: SourceHealthRequest,
         context: &SourceResolutionContext<'_>,
-    ) -> Result<Vec<SourceHealthResult>> {
+        output: &mut dyn cdf_runtime::SourceHealthSink,
+    ) -> Result<()> {
         if request.compiled_plans.is_empty() {
-            return Ok(vec![SourceHealthResult {
+            return output.emit(SourceHealthResult {
                 probe_id: "request".to_owned(),
                 status: SourceHealthStatus::Skipped,
                 message: "no REST resources are compiled".to_owned(),
                 details: serde_json::json!({"resources": 0}),
-            }]);
+            });
         }
         let probe_request = SourceDiscoveryRequest::new(
             (1024 * 1024).min(request.budget.limits().maximum_payload_bytes),
@@ -95,47 +96,45 @@ impl SourceDriver for RestSourceDriver {
         let health_context = context
             .clone()
             .with_prepared_payloads(cdf_runtime::PreparedSourcePayloads::default());
-        request
-            .compiled_plans
-            .iter()
-            .map(|plan| {
-                request.budget.consume_work(1)?;
-                request
-                    .budget
-                    .consume_payload_bytes(probe_request.maximum_bytes)?;
-                let resource_id = plan.descriptor.resource_id.as_str();
-                let probe = self
-                    .discovery_session(plan, &health_context)
-                    .and_then(|session| {
-                        let candidates = session.candidates()?;
-                        let candidate = candidates.first().ok_or_else(|| {
-                            CdfError::data("REST health probe produced no discovery candidate")
-                        })?;
-                        session.observe(candidate, &probe_request)
-                    });
-                match probe {
-                    Ok(observation) => {
-                        request.budget.consume_list_entries(1)?;
-                        Ok(SourceHealthResult {
-                            probe_id: resource_id.to_owned(),
-                            status: SourceHealthStatus::Passed,
-                            message: "REST endpoint probe passed".to_owned(),
-                            details: serde_json::json!({
-                                "resource_id": resource_id,
-                                "bytes_read": observation.bytes_read,
-                                "records_read": observation.records_read,
-                            }),
-                        })
+        for plan in &request.compiled_plans {
+            request.budget.consume_work(1)?;
+            request
+                .budget
+                .consume_payload_bytes(probe_request.maximum_bytes)?;
+            let resource_id = plan.descriptor.resource_id.as_str();
+            let probe = self
+                .discovery_session(plan, &health_context)
+                .and_then(|session| {
+                    let candidates = session.candidates()?;
+                    let candidate = candidates.first().ok_or_else(|| {
+                        CdfError::data("REST health probe produced no discovery candidate")
+                    })?;
+                    session.observe(candidate, &probe_request)
+                });
+            let result = match probe {
+                Ok(observation) => {
+                    request.budget.consume_list_entries(1)?;
+                    SourceHealthResult {
+                        probe_id: resource_id.to_owned(),
+                        status: SourceHealthStatus::Passed,
+                        message: "REST endpoint probe passed".to_owned(),
+                        details: serde_json::json!({
+                            "resource_id": resource_id,
+                            "bytes_read": observation.bytes_read,
+                            "records_read": observation.records_read,
+                        }),
                     }
-                    Err(error) => Ok(SourceHealthResult::failed(
-                        resource_id,
-                        "REST endpoint probe failed",
-                        &plan.descriptor.resource_id,
-                        &error,
-                    )),
                 }
-            })
-            .collect::<Result<Vec<_>>>()
+                Err(error) => SourceHealthResult::failed(
+                    resource_id,
+                    "REST endpoint probe failed",
+                    &plan.descriptor.resource_id,
+                    &error,
+                ),
+            };
+            output.emit(result)?;
+        }
+        Ok(())
     }
 
     fn compile(&self, request: SourceCompileRequest) -> Result<CompiledSourcePlan> {
