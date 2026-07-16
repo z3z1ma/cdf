@@ -1427,6 +1427,90 @@ fn source_registry_compiles_hashes_and_resolves_mock_without_order_authority() {
         serde_json::from_slice::<CompiledSourcePlan>(&encoded).unwrap(),
         plan
     );
+    let mut invalid_descriptor = serde_json::to_value(&plan).unwrap();
+    invalid_descriptor["descriptor"]["resource_id"] = serde_json::json!("");
+    let invalid_descriptor: CompiledSourcePlan =
+        serde_json::from_value(invalid_descriptor).unwrap();
+    assert!(
+        invalid_descriptor
+            .validate()
+            .unwrap_err()
+            .message
+            .contains("ResourceId cannot be empty")
+    );
+
+    let mut invalid_capabilities = serde_json::to_value(&plan).unwrap();
+    invalid_capabilities["resource_capabilities"]["filters"]["default_fidelity"] =
+        serde_json::json!("unsupported");
+    invalid_capabilities["resource_capabilities"]["filters"]["supported_operators"] =
+        serde_json::json!(["="]);
+    let invalid_capabilities: CompiledSourcePlan =
+        serde_json::from_value(invalid_capabilities).unwrap();
+    assert!(
+        invalid_capabilities
+            .validate()
+            .unwrap_err()
+            .message
+            .contains("unsupported pushdown fidelity")
+    );
+
+    let mut scalar_options = plan.clone();
+    scalar_options.redacted_options = serde_json::json!("not-an-options-object");
+    scalar_options.redacted_options_hash = artifact_hash(&scalar_options.redacted_options).unwrap();
+    assert!(
+        scalar_options
+            .validate()
+            .unwrap_err()
+            .message
+            .contains("must be JSON objects")
+    );
+
+    let mut invalid_snapshot = serde_json::to_value(&plan).unwrap();
+    invalid_snapshot["descriptor"]["schema_source"] = serde_json::json!({
+        "kind": "discovered",
+        "snapshot": {
+            "schema_hash": "not-the-empty-arrow-schema",
+            "path": "",
+            "metadata": {}
+        }
+    });
+    let invalid_snapshot: CompiledSourcePlan = serde_json::from_value(invalid_snapshot).unwrap();
+    assert!(
+        invalid_snapshot
+            .validate()
+            .unwrap_err()
+            .message
+            .contains("schema snapshot path")
+    );
+
+    let mut invalid_runtime = plan.clone();
+    let evidence = cdf_kernel::EffectiveSchemaEvidence::new(
+        invalid_runtime
+            .descriptor
+            .schema_source
+            .baseline_reference()
+            .unwrap(),
+        SchemaHash::new("effective-schema-fixture").unwrap(),
+        cdf_kernel::DiscoveryManifestReference {
+            manifest_hash: cdf_kernel::DiscoveryManifestHash::new("manifest-fixture").unwrap(),
+            path: ".cdf/discovery/mock.json".to_owned(),
+        },
+        Vec::new(),
+    )
+    .unwrap();
+    let mut runtime = EffectiveSchemaRuntime::new(evidence, Vec::new()).unwrap();
+    let mut invalid_budget = cdf_kernel::DiscoveryExecutorBudgetEvidence::new(1, 1, 1, 1).unwrap();
+    invalid_budget.max_bytes_per_file = 0;
+    runtime.discovery_executor_budget = Some(invalid_budget);
+    invalid_runtime.effective_schema_runtime = Some(runtime);
+    invalid_runtime.baseline_observation_schema_catalog.clear();
+    assert!(
+        invalid_runtime
+            .validate()
+            .unwrap_err()
+            .message
+            .contains("discovery executor budget")
+    );
     let memory: Arc<dyn cdf_memory::MemoryCoordinator> =
         Arc::new(cdf_memory::DeterministicMemoryCoordinator::new(1024, BTreeMap::new()).unwrap());
     let services = ExecutionServices::new(Arc::new(NoopSourceHost {

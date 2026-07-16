@@ -37,6 +37,146 @@ pub struct ResourceDescriptor {
     pub trust_level: TrustLevel,
 }
 
+impl ResourceDescriptor {
+    pub fn validate(&self) -> Result<()> {
+        ResourceId::new(self.resource_id.as_str())?;
+        validate_schema_source(&self.schema_source)?;
+        validate_resource_fields("primary key", &self.primary_key)?;
+        validate_resource_fields("merge key", &self.merge_key)?;
+        if self.write_disposition == WriteDisposition::Merge && self.merge_key.is_empty() {
+            return Err(CdfError::contract(format!(
+                "resource `{}` uses merge disposition without a merge key",
+                self.resource_id
+            )));
+        }
+        if self.deduplication.is_some() && self.write_disposition != WriteDisposition::Append {
+            return Err(CdfError::contract(
+                "exact-row deduplication is valid only for append disposition",
+            ));
+        }
+        if let Some(cursor) = &self.cursor {
+            validate_resource_token("cursor field", &cursor.field)?;
+        }
+        if let Some(contract) = &self.contract {
+            ContractRef::new(contract.as_str())?;
+        }
+        validate_scope_key(&self.state_scope)?;
+        if self
+            .freshness
+            .as_ref()
+            .is_some_and(|freshness| freshness.max_age_ms == 0)
+        {
+            return Err(CdfError::contract(
+                "resource freshness maximum age must be greater than zero",
+            ));
+        }
+        Ok(())
+    }
+}
+
+fn validate_schema_source(source: &SchemaSource) -> Result<()> {
+    match source {
+        SchemaSource::Declared {
+            schema_hash,
+            source,
+        } => {
+            SchemaHash::new(schema_hash.as_str())?;
+            validate_resource_token("declared schema source", source)
+        }
+        SchemaSource::Discover => Ok(()),
+        SchemaSource::Discovered { snapshot } => validate_schema_snapshot(snapshot),
+        SchemaSource::Hints {
+            source,
+            hints_hash,
+            snapshot,
+        } => {
+            validate_resource_token("schema hints source", source)?;
+            if let Some(hash) = hints_hash {
+                SchemaHash::new(hash.as_str())?;
+            }
+            if let Some(snapshot) = snapshot {
+                validate_schema_snapshot(snapshot)?;
+            }
+            Ok(())
+        }
+        SchemaSource::Contract {
+            contract,
+            schema_hash,
+        } => {
+            ContractRef::new(contract.as_str())?;
+            if let Some(hash) = schema_hash {
+                SchemaHash::new(hash.as_str())?;
+            }
+            Ok(())
+        }
+    }
+}
+
+fn validate_schema_snapshot(snapshot: &SchemaSnapshotReference) -> Result<()> {
+    SchemaHash::new(snapshot.schema_hash.as_str())?;
+    validate_resource_token("schema snapshot path", &snapshot.path)?;
+    for (key, value) in &snapshot.metadata {
+        validate_resource_token("schema snapshot metadata key", key)?;
+        validate_resource_token("schema snapshot metadata value", value)?;
+    }
+    snapshot.discovery_manifest()?;
+    Ok(())
+}
+
+fn validate_resource_fields(label: &str, fields: &[String]) -> Result<()> {
+    let mut unique = std::collections::BTreeSet::new();
+    for field in fields {
+        validate_resource_token(label, field)?;
+        if !unique.insert(field) {
+            return Err(CdfError::contract(format!(
+                "resource {label} fields must be unique"
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn validate_resource_token(label: &str, value: &str) -> Result<()> {
+    if value.trim().is_empty() || value.chars().any(char::is_control) {
+        return Err(CdfError::contract(format!(
+            "resource {label} must be non-empty and control-free"
+        )));
+    }
+    Ok(())
+}
+
+fn validate_scope_key(scope: &ScopeKey) -> Result<()> {
+    match scope {
+        ScopeKey::Resource => Ok(()),
+        ScopeKey::Partition { partition_id } => PartitionId::new(partition_id.as_str()).map(drop),
+        ScopeKey::Window { start, end } => {
+            validate_resource_token("window start", start)?;
+            validate_resource_token("window end", end)
+        }
+        ScopeKey::File { path } => validate_resource_token("file scope path", path),
+        ScopeKey::Stream { name } => validate_resource_token("stream scope name", name),
+        ScopeKey::SchemaContract { contract } => ContractRef::new(contract.as_str()).map(drop),
+        ScopeKey::DestinationLoad {
+            destination,
+            target,
+        } => {
+            crate::DestinationId::new(destination.as_str())?;
+            crate::TargetName::new(target.as_str()).map(drop)
+        }
+        ScopeKey::Composite { parts } => {
+            if parts.is_empty() {
+                return Err(CdfError::contract(
+                    "composite resource scope requires at least one part",
+                ));
+            }
+            for part in parts {
+                validate_scope_key(part)?;
+            }
+            Ok(())
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum DeduplicationSpec {
@@ -293,6 +433,42 @@ impl Default for ResourceCapabilities {
             backpressure: BackpressureSupport::CannotPause,
             estimates: EstimateSupport::None,
         }
+    }
+}
+
+impl ResourceCapabilities {
+    pub fn validate(&self) -> Result<()> {
+        let mut operators = std::collections::BTreeSet::new();
+        for operator in &self.filters.supported_operators {
+            validate_resource_token("filter operator", operator)?;
+            if !operators.insert(operator) {
+                return Err(CdfError::contract(
+                    "resource filter operators must be unique",
+                ));
+            }
+        }
+        if self.filters.default_fidelity == PushdownFidelity::Unsupported
+            && !self.filters.supported_operators.is_empty()
+        {
+            return Err(CdfError::contract(
+                "resource cannot advertise filter operators with unsupported pushdown fidelity",
+            ));
+        }
+        let mut scopes = Vec::new();
+        for scope in &self.partitioning.supported_scopes {
+            if scopes.contains(scope) {
+                return Err(CdfError::contract(
+                    "resource partition scopes must be unique",
+                ));
+            }
+            scopes.push(scope.clone());
+        }
+        if self.partitioning.parallel_partitions && self.partitioning.supported_scopes.is_empty() {
+            return Err(CdfError::contract(
+                "parallel resource partitioning requires at least one supported scope",
+            ));
+        }
+        Ok(())
     }
 }
 
@@ -1413,6 +1589,13 @@ impl EffectiveSchemaRuntime {
         self.evidence.validate_intrinsic()?;
         let mut previous = None::<&SchemaHash>;
         for physical in &self.schema_catalog {
+            if crate::canonical_arrow_schema_hash(physical.schema.as_ref())?
+                != physical.physical_schema_hash
+            {
+                return Err(CdfError::data(
+                    "effective schema physical catalog hash does not match its Arrow schema",
+                ));
+            }
             if previous.is_some_and(|value| value >= &physical.physical_schema_hash) {
                 return Err(CdfError::data(
                     "effective schema physical catalog is not in unique hash order",
@@ -1458,12 +1641,28 @@ impl EffectiveSchemaRuntime {
             }
             previous_quarantine = Some(&quarantine.observation_id);
         }
+        if let Some(budget) = &self.discovery_executor_budget {
+            DiscoveryExecutorBudgetEvidence::new(
+                budget.max_bytes_per_file,
+                budget.max_records_per_file,
+                budget.max_total_in_flight_bytes,
+                budget.max_concurrent_probes,
+            )?;
+        }
         Ok(())
     }
 
     pub fn validate_for_resource(&self, descriptor: &ResourceDescriptor) -> Result<()> {
         self.validate_intrinsic()?;
-        self.evidence.validate_for_resource(descriptor)
+        self.evidence.validate_for_resource(descriptor)?;
+        if let Some(snapshot) = descriptor.schema_source.pinned_snapshot()
+            && snapshot.discovery_manifest()?.as_ref() != Some(&self.evidence.discovery_manifest)
+        {
+            return Err(CdfError::data(
+                "effective schema discovery manifest does not match its pinned schema snapshot",
+            ));
+        }
+        Ok(())
     }
 
     pub fn physical_schema(&self, hash: &SchemaHash) -> Option<&SchemaRef> {

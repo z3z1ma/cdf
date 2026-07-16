@@ -2950,8 +2950,11 @@ fn execution_rejects_coherently_widened_source_ceiling_and_schedule() {
     *forged_source
         .pointer_mut("/execution_capabilities/retry_policy/max_total_attempts")
         .unwrap() = serde_json::json!(4);
-    forged_source["compiled_source_plan_hash"] = serde_json::json!("forged-source-plan");
-    forged_source["source_semantics_hash"] = serde_json::json!("forged-source-semantics");
+    let forged_source_plan_hash = format!("sha256:{}", "a".repeat(64));
+    let forged_source_semantics_hash = format!("sha256:{}", "b".repeat(64));
+    forged_source["compiled_source_plan_hash"] = serde_json::json!(forged_source_plan_hash.clone());
+    forged_source["source_semantics_hash"] =
+        serde_json::json!(forged_source_semantics_hash.clone());
     let forged_capabilities_hash =
         cdf_runtime::artifact_hash(&forged_source["execution_capabilities"]).unwrap();
     let provisional: cdf_runtime::CompiledSourceExecutionPlan =
@@ -2964,8 +2967,8 @@ fn execution_rejects_coherently_widened_source_ceiling_and_schedule() {
     let forged_schedule =
         cdf_runtime::CanonicalPartitionSchedule::compile(&forged_source, &plan.scan).unwrap();
     let admission_source = plan.compiled_schema_admission.source.as_mut().unwrap();
-    admission_source.compiled_source_plan_hash = "forged-source-plan".to_owned();
-    admission_source.source_semantics_hash = "forged-source-semantics".to_owned();
+    admission_source.compiled_source_plan_hash = forged_source_plan_hash;
+    admission_source.source_semantics_hash = forged_source_semantics_hash;
     admission_source.execution_capabilities_hash = forged_capabilities_hash;
     plan.compiled_source_execution = Some(forged_source);
     plan.partition_schedule = Some(forged_schedule.clone());

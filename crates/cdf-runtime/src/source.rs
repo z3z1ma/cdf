@@ -591,6 +591,23 @@ impl SourceExecutionCapabilities {
                 "source rate limit must be nonzero when declared",
             ));
         }
+        if self.rate_limit_per_second.is_some() && self.quota_authority.is_none() {
+            return Err(CdfError::contract(
+                "source rate limit requires a quota authority",
+            ));
+        }
+        if self.quota_authority.as_ref().is_some_and(|authority| {
+            authority.trim().is_empty()
+                || authority.len() > 256
+                || authority.chars().any(char::is_control)
+        }) {
+            return Err(CdfError::contract(
+                "source quota authority must be a bounded non-empty control-free value",
+            ));
+        }
+        self.maximum_poll_bytes
+            .checked_add(self.maximum_decode_bytes)
+            .ok_or_else(|| CdfError::contract("source working-set byte bounds overflow u64"))?;
         validate_version(&self.telemetry_version)
     }
 }
@@ -813,18 +830,19 @@ impl CompiledSourceCompilerBinding {
     }
 
     pub fn validate(&self) -> Result<()> {
-        if self.driver_id.is_empty()
-            || self.driver_version.is_empty()
-            || self.option_schema_hash.is_empty()
-            || self.physical_plan_hash.is_empty()
-            || self.compiled_source_plan_hash.is_empty()
-            || self.source_semantics_hash.is_empty()
-            || self.execution_capabilities_hash.is_empty()
-        {
-            return Err(CdfError::data(
-                "compiled source compiler binding is incomplete",
-            ));
-        }
+        SourceDriverId::new(self.driver_id.clone())?;
+        validate_version(&self.driver_version)?;
+        validate_hash("source option schema", &self.option_schema_hash)?;
+        validate_hash("compiled source physical plan", &self.physical_plan_hash)?;
+        validate_hash(
+            "complete compiled source plan",
+            &self.compiled_source_plan_hash,
+        )?;
+        validate_hash("compiled source semantics", &self.source_semantics_hash)?;
+        validate_hash(
+            "compiled source execution capabilities",
+            &self.execution_capabilities_hash,
+        )?;
         Ok(())
     }
 }
@@ -860,17 +878,20 @@ impl CompiledSourceExecutionPlan {
     }
 
     pub fn validate(&self) -> Result<()> {
+        ResourceId::new(self.resource_id.as_str())?;
         self.driver.validate()?;
         self.execution_capabilities.validate()?;
-        if self.physical_plan_hash.is_empty() {
-            return Err(CdfError::contract(
-                "compiled source execution plan requires a physical plan hash",
-            ));
-        }
-        if self.compiled_source_plan_hash.is_empty()
-            || self.source_semantics_hash.is_empty()
-            || self.execution_binding_hash != self.canonical_binding_hash()?
-        {
+        validate_hash("compiled source physical plan", &self.physical_plan_hash)?;
+        validate_hash(
+            "complete compiled source plan",
+            &self.compiled_source_plan_hash,
+        )?;
+        validate_hash("compiled source semantics", &self.source_semantics_hash)?;
+        validate_hash(
+            "compiled source execution binding",
+            &self.execution_binding_hash,
+        )?;
+        if self.execution_binding_hash != self.canonical_binding_hash()? {
             return Err(CdfError::contract(
                 "compiled source execution binding does not match its compiler-owned semantics",
             ));
@@ -939,11 +960,9 @@ impl CompiledSourcePlan {
         execution_capabilities: SourceExecutionCapabilities,
         input: CompiledSourcePlanInput,
     ) -> Result<Self> {
-        driver.validate()?;
-        execution_capabilities.validate()?;
         let redacted_options_hash = artifact_hash(&input.redacted_options)?;
         let physical_plan_hash = artifact_hash(&input.physical_plan)?;
-        Ok(Self {
+        let plan = Self {
             driver,
             descriptor: input.descriptor,
             resource_capabilities,
@@ -956,12 +975,23 @@ impl CompiledSourcePlan {
             redacted_options_hash,
             physical_plan: input.physical_plan,
             physical_plan_hash,
-        })
+        };
+        plan.validate()?;
+        Ok(plan)
     }
 
     pub fn validate(&self) -> Result<()> {
         self.driver.validate()?;
+        self.descriptor.validate()?;
+        self.resource_capabilities.validate()?;
         self.execution_capabilities.validate()?;
+        if !self.redacted_options.is_object() || !self.physical_plan.is_object() {
+            return Err(CdfError::contract(
+                "compiled source options and physical plan must be JSON objects",
+            ));
+        }
+        validate_hash("compiled source options", &self.redacted_options_hash)?;
+        validate_hash("compiled source physical plan", &self.physical_plan_hash)?;
         if artifact_hash(&self.redacted_options)? != self.redacted_options_hash
             || artifact_hash(&self.physical_plan)? != self.physical_plan_hash
         {
@@ -970,6 +1000,36 @@ impl CompiledSourcePlan {
             ));
         }
         validate_baseline_observation_schema_catalog(&self.baseline_observation_schema_catalog)?;
+        if let Some(runtime) = &self.effective_schema_runtime {
+            runtime.validate_for_resource(&self.descriptor)?;
+            if runtime.schema_catalog != self.baseline_observation_schema_catalog {
+                return Err(CdfError::contract(
+                    "compiled source baseline catalog does not match effective-schema runtime authority",
+                ));
+            }
+        }
+        if self.resource_capabilities.idempotent_reads
+            && !self.execution_capabilities.idempotent_reads
+        {
+            return Err(CdfError::contract(
+                "resource idempotent-read capability exceeds its source execution capability",
+            ));
+        }
+        match self.resource_capabilities.backpressure {
+            cdf_kernel::BackpressureSupport::Pausable if !self.execution_capabilities.pausable => {
+                return Err(CdfError::contract(
+                    "resource pausable backpressure capability exceeds its source execution capability",
+                ));
+            }
+            cdf_kernel::BackpressureSupport::SpillRequired
+                if !self.execution_capabilities.spillable =>
+            {
+                return Err(CdfError::contract(
+                    "resource spill-required backpressure capability exceeds its source execution capability",
+                ));
+            }
+            _ => {}
+        }
         Ok(())
     }
 
