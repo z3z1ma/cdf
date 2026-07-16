@@ -481,9 +481,9 @@ fn execution_capabilities(parallel: bool) -> SourceExecutionCapabilities {
     let concurrency = if parallel { 64 } else { 1 };
     SourceExecutionCapabilities {
         minimum_poll_bytes: 8 * 1024,
-        maximum_poll_bytes: 64 * 1024 * 1024,
+        maximum_poll_bytes: crate::DEFAULT_BOUNDARY_CHANNEL_BYTES,
         minimum_decode_bytes: 8 * 1024,
-        maximum_decode_bytes: 64 * 1024 * 1024,
+        maximum_decode_bytes: crate::DEFAULT_BOUNDARY_CHANNEL_BYTES,
         maximum_concurrency: concurrency,
         useful_concurrency: concurrency,
         executor_class: SourceExecutorClass::BlockingLane,
@@ -495,7 +495,7 @@ fn execution_capabilities(parallel: bool) -> SourceExecutionCapabilities {
             affinity: LaneAffinity::Shared,
             interruption: cdf_runtime::InterruptionSafety::CooperativeOnly,
         }),
-        pausable: false,
+        pausable: true,
         spillable: false,
         idempotent_reads: false,
         reopenable: false,
@@ -508,8 +508,8 @@ fn execution_capabilities(parallel: bool) -> SourceExecutionCapabilities {
         rate_limit_per_second: None,
         quota_authority: None,
         canonical_order: true,
-        bounded: true,
-        batch_memory: SourceBatchMemoryContract::FrontierReserved,
+        bounded: false,
+        batch_memory: SourceBatchMemoryContract::Preaccounted,
         telemetry_version: "v1".to_owned(),
     }
 }

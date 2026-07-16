@@ -704,9 +704,9 @@ fn scalar_param(name: &str, value: &serde_json::Value) -> Result<String> {
 fn execution_capabilities() -> SourceExecutionCapabilities {
     SourceExecutionCapabilities {
         minimum_poll_bytes: 8 * 1024,
-        maximum_poll_bytes: 32 * 1024 * 1024,
+        maximum_poll_bytes: crate::REST_MAXIMUM_BATCH_BYTES,
         minimum_decode_bytes: 8 * 1024,
-        maximum_decode_bytes: 32 * 1024 * 1024,
+        maximum_decode_bytes: crate::REST_MAXIMUM_BATCH_BYTES,
         maximum_concurrency: 8,
         useful_concurrency: 8,
         executor_class: SourceExecutorClass::BlockingLane,
@@ -718,7 +718,7 @@ fn execution_capabilities() -> SourceExecutionCapabilities {
             affinity: LaneAffinity::Shared,
             interruption: InterruptionSafety::CooperativeOnly,
         }),
-        pausable: false,
+        pausable: true,
         spillable: false,
         idempotent_reads: true,
         reopenable: true,
@@ -732,7 +732,7 @@ fn execution_capabilities() -> SourceExecutionCapabilities {
         quota_authority: Some("origin".to_owned()),
         canonical_order: true,
         bounded: true,
-        batch_memory: cdf_runtime::SourceBatchMemoryContract::FrontierReserved,
+        batch_memory: cdf_runtime::SourceBatchMemoryContract::Preaccounted,
         telemetry_version: "v1".to_owned(),
     }
 }

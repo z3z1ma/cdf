@@ -9,14 +9,13 @@ use std::{
 use arrow_array::{Array, Int64Array, TimestampMicrosecondArray, UInt64Array};
 use arrow_schema::{DataType, Field, Schema, SchemaRef, TimeUnit};
 use cdf_kernel::{
-    BackpressureSupport, BatchStream, CapabilitySupport, CursorOrderingClaim, CursorPosition,
-    CursorSpec, CursorValue, DeliveryGuarantee, EstimateSupport, FilterCapabilities, ForeignState,
-    IncrementalShape, PartitionId, PartitionPlan, PartitioningCapabilities, PlanId,
-    QueryableResource, ReplaySupport, ResourceCapabilities, ResourceDescriptor, ResourceId,
-    ResourceStream, Result, ScanPlan, ScanRequest, SchemaSource, ScopeKey, SourcePosition,
-    TrustLevel, WriteDisposition, parse_arrow_field_type,
+    BackpressureSupport, Batch, BatchStream, CapabilitySupport, CursorOrderingClaim,
+    CursorPosition, CursorSpec, CursorValue, DeliveryGuarantee, EstimateSupport,
+    FilterCapabilities, ForeignState, IncrementalShape, PartitionId, PartitionPlan,
+    PartitioningCapabilities, PlanId, QueryableResource, ReplaySupport, ResourceCapabilities,
+    ResourceDescriptor, ResourceId, ResourceStream, Result, ScanPlan, ScanRequest, SchemaSource,
+    ScopeKey, SourcePosition, TrustLevel, WriteDisposition, parse_arrow_field_type,
 };
-use futures_util::stream;
 use pyo3::{
     Python,
     types::{PyAnyMethods, PyModule},
@@ -24,7 +23,9 @@ use pyo3::{
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use crate::{PythonBridgeOptions, PythonResourceBridge, internal::py_error};
+use crate::{
+    DEFAULT_BOUNDARY_CHANNEL_BYTES, PythonBridgeOptions, PythonResourceBridge, internal::py_error,
+};
 
 const PARTITION_ID: &str = "python-000001";
 
@@ -136,7 +137,7 @@ impl PythonResource {
                 },
                 replay: ReplaySupport::None,
                 idempotent_reads: false,
-                backpressure: BackpressureSupport::CannotPause,
+                backpressure: BackpressureSupport::Pausable,
                 estimates: EstimateSupport::None,
             },
             module_path,
@@ -229,7 +230,13 @@ impl PythonResource {
         })
     }
 
-    fn execute_inline(&self, partition: PartitionPlan) -> Result<BatchStream> {
+    fn execute_stream(
+        &self,
+        partition: PartitionPlan,
+        mut sender: cdf_runtime::BlockingTaskStreamSender<Batch>,
+        cancellation: cdf_runtime::RunCancellation,
+        memory: Arc<dyn cdf_memory::MemoryCoordinator>,
+    ) -> Result<()> {
         if partition.partition_id.as_str() != PARTITION_ID {
             return Err(cdf_kernel::CdfError::contract(format!(
                 "Python resource planned partition `{PARTITION_ID}` but received `{}`",
@@ -250,7 +257,11 @@ impl PythonResource {
                 self.module_relative
             )));
         }
-        let mut read = Python::attach(|py| -> Result<_> {
+        let opaque_blob = format!("{}#{}", self.content_hash, self.callable).into_bytes();
+        let blob_sha256 = format!("sha256:{}", hex::encode(Sha256::digest(&opaque_blob)));
+        let cursor = self.descriptor.cursor.clone();
+        let mut reservation = Some(reserve_python_batch(Arc::clone(&memory))?);
+        Python::attach(|py| -> Result<_> {
             let module = load_module(py, &source, &self.module_relative)?;
             let callable = module.getattr(self.callable.as_str()).map_err(|_| {
                 cdf_kernel::CdfError::contract(format!(
@@ -268,26 +279,65 @@ impl PythonResource {
                 self.descriptor.resource_id.clone(),
                 partition.partition_id.clone(),
             ))
-            .batches_from_python_iterable(&iterable)
-        })?;
-        let opaque_blob = format!("{}#{}", self.content_hash, self.callable).into_bytes();
-        let blob_sha256 = format!("sha256:{}", hex::encode(Sha256::digest(&opaque_blob)));
-        for batch in &mut read.batches {
-            batch.header.source_position = match &self.descriptor.cursor {
-                Some(cursor) => batch
+            .visit_python_iterable(&iterable, |mut batch, _kind| {
+                cancellation.check()?;
+                batch.header.source_position = match &cursor {
+                    Some(cursor) => batch
+                        .record_batch()
+                        .map(|record_batch| cursor_position(record_batch, cursor))
+                        .transpose()?,
+                    None => Some(SourcePosition::ForeignState(ForeignState {
+                        version: 1,
+                        protocol: "python-resource-v1".to_owned(),
+                        opaque_blob: opaque_blob.clone(),
+                        blob_sha256: blob_sha256.clone(),
+                    })),
+                };
+                let retained_bytes = batch
                     .record_batch()
-                    .map(|record_batch| cursor_position(record_batch, cursor))
-                    .transpose()?,
-                None => Some(SourcePosition::ForeignState(ForeignState {
-                    version: 1,
-                    protocol: "python-resource-v1".to_owned(),
-                    opaque_blob: opaque_blob.clone(),
-                    blob_sha256: blob_sha256.clone(),
-                })),
-            };
-        }
-        Ok(Box::pin(stream::iter(read.batches.into_iter().map(Ok))))
+                    .map(cdf_memory::record_batch_retained_bytes)
+                    .transpose()?
+                    .unwrap_or(0)
+                    .checked_add(batch.header.pre_contract_evidence_retained_bytes()?)
+                    .ok_or_else(|| {
+                        cdf_kernel::CdfError::data("Python batch retained memory exceeds u64")
+                    })?;
+                if retained_bytes == 0 || retained_bytes > DEFAULT_BOUNDARY_CHANNEL_BYTES {
+                    return Err(cdf_kernel::CdfError::data(format!(
+                        "Python source batch retains {retained_bytes} bytes outside its compiled 1..={DEFAULT_BOUNDARY_CHANNEL_BYTES}-byte limit; emit smaller Arrow batches or lower dict_batch_rows"
+                    )));
+                }
+                let lease = reservation.take().ok_or_else(|| {
+                    cdf_kernel::CdfError::internal(
+                        "Python source batch omitted its memory reservation",
+                    )
+                })?;
+                lease.reconcile(retained_bytes)?;
+                let batch = batch.with_retention(cdf_kernel::PayloadRetention::new(
+                    Arc::new(lease),
+                    retained_bytes,
+                )?)?;
+                sender.send(batch)?;
+                cancellation.check()?;
+                reservation = Some(reserve_python_batch(Arc::clone(&memory))?);
+                Ok(())
+            })?;
+            Ok(())
+        })?;
+        Ok(())
     }
+}
+
+fn reserve_python_batch(
+    memory: Arc<dyn cdf_memory::MemoryCoordinator>,
+) -> Result<cdf_memory::MemoryLease> {
+    cdf_memory::reserve_blocking(
+        memory,
+        &cdf_memory::ReservationRequest::new(
+            cdf_memory::ConsumerKey::new("python-source-batch", cdf_memory::MemoryClass::Source)?,
+            DEFAULT_BOUNDARY_CHANNEL_BYTES,
+        )?,
+    )
 }
 
 fn cursor_position(
@@ -401,23 +451,28 @@ impl ResourceStream for PythonResource {
             }));
         };
         let resource = self.clone();
-        let task =
-            match execution.spawn_blocking_value("python-source-open", lane, move |cancellation| {
+        let memory = execution.memory();
+        let task = match execution.spawn_blocking_stream(
+            "python-source-open",
+            lane,
+            1,
+            move |sender, cancellation| {
                 cancellation.check()?;
-                let stream = resource.execute_inline(partition)?;
+                resource.execute_stream(partition, sender, cancellation.clone(), memory)?;
                 cancellation.check()?;
-                Ok(stream)
-            }) {
-                Ok(task) => task,
-                Err(error) => {
-                    return cdf_kernel::PartitionOpenAttempt::materialized(Box::pin(async move {
-                        Err(error)
-                    }));
-                }
-            };
+                Ok(())
+            },
+        ) {
+            Ok(task) => task,
+            Err(error) => {
+                return cdf_kernel::PartitionOpenAttempt::materialized(Box::pin(async move {
+                    Err(error)
+                }));
+            }
+        };
         let termination = task.termination();
         let opening = Box::pin(async move {
-            let stream = task.await?;
+            let stream = Box::pin(task) as BatchStream;
             Ok(cdf_kernel::PartitionStreamPayload::new(
                 stream,
                 Box::pin(async { Ok(cdf_kernel::PartitionCompletion::default()) }),

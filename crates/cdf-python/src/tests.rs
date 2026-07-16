@@ -92,6 +92,34 @@ fn python_generator_dicts_convert_to_batches() {
 }
 
 #[test]
+fn incremental_python_bridge_stops_before_exhausting_the_generator() {
+    Python::attach(|py| {
+        let module = PyModule::from_code(
+            py,
+            c"def rows():\n    yield {'id': 1}\n    yield {'id': 2}\n    raise RuntimeError('generator was exhaustively materialized')\n",
+            c"incremental_bridge.py",
+            c"incremental_bridge",
+        )
+        .unwrap();
+        let iterable = module.getattr("rows").unwrap().call0().unwrap();
+        let bridge = PythonResourceBridge::new(
+            PythonBridgeOptions::new(
+                ResourceId::new("python.incremental").unwrap(),
+                PartitionId::new("python-000001").unwrap(),
+            )
+            .with_dict_batch_rows(2)
+            .unwrap(),
+        );
+        let error = bridge
+            .visit_python_iterable(&iterable, |_batch, _kind| {
+                Err(CdfError::data("intentional downstream stop"))
+            })
+            .unwrap_err();
+        assert_eq!(error.message, "intentional downstream stop");
+    });
+}
+
+#[test]
 fn arrow_ipc_fixture_speaks_arrow_c_stream_into_kernel_batches() {
     Python::attach(|py| {
         if PyModule::import(py, "pyarrow").is_err() {

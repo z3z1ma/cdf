@@ -13,8 +13,9 @@ use cdf_runtime::{
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    PostgresTableResource, PostgresTarget, discover_postgres_table_catalog_schema,
-    postgres_source_blocking_lane, postgres_table_capabilities,
+    POSTGRES_MAXIMUM_BATCH_BYTES, PostgresTableResource, PostgresTarget,
+    discover_postgres_table_catalog_schema, postgres_source_blocking_lane,
+    postgres_table_capabilities,
 };
 
 #[derive(Clone, Debug)]
@@ -313,14 +314,14 @@ fn decode_options<T: for<'de> Deserialize<'de>>(
 fn execution_capabilities() -> SourceExecutionCapabilities {
     SourceExecutionCapabilities {
         minimum_poll_bytes: 8 * 1024,
-        maximum_poll_bytes: 32 * 1024 * 1024,
+        maximum_poll_bytes: POSTGRES_MAXIMUM_BATCH_BYTES,
         minimum_decode_bytes: 8 * 1024,
-        maximum_decode_bytes: 32 * 1024 * 1024,
+        maximum_decode_bytes: POSTGRES_MAXIMUM_BATCH_BYTES,
         maximum_concurrency: 4,
         useful_concurrency: 4,
         executor_class: SourceExecutorClass::BlockingLane,
         blocking_lane: Some(postgres_source_blocking_lane()),
-        pausable: false,
+        pausable: true,
         spillable: false,
         idempotent_reads: true,
         reopenable: true,
@@ -334,7 +335,7 @@ fn execution_capabilities() -> SourceExecutionCapabilities {
         quota_authority: None,
         canonical_order: false,
         bounded: true,
-        batch_memory: cdf_runtime::SourceBatchMemoryContract::FrontierReserved,
+        batch_memory: cdf_runtime::SourceBatchMemoryContract::Preaccounted,
         telemetry_version: "v1".to_owned(),
     }
 }

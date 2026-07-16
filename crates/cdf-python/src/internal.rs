@@ -2,10 +2,13 @@ use std::collections::BTreeMap;
 
 use crate::*;
 
-pub(crate) fn import_arrow_stream(object: &Bound<'_, PyAny>) -> Result<Vec<RecordBatch>> {
-    let table = object.extract::<PyTable>().map_err(py_error)?;
-    let (batches, _) = table.into_inner();
-    Ok(batches)
+pub(crate) fn import_arrow_stream(
+    object: &Bound<'_, PyAny>,
+) -> Result<Box<dyn arrow_array::RecordBatchReader + Send>> {
+    object
+        .extract::<PyRecordBatchReader>()
+        .and_then(PyRecordBatchReader::into_reader)
+        .map_err(py_error)
 }
 
 pub(crate) fn python_dict_to_json(py: Python<'_>, object: &Bound<'_, PyAny>) -> Result<String> {

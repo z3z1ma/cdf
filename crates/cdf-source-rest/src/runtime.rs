@@ -30,10 +30,11 @@ use cdf_runtime::{
     PreparedSourcePayload, PreparedSourcePayloadKey, PreparedSourcePayloads, ReadOptions,
     SourceDiscoveryRequest, SourceDriverId, artifact_hash, decode_bounded_format,
 };
-use futures_util::stream;
 use serde_json::{Map, Value};
 
-use crate::RestResourcePlan;
+use crate::{REST_MAXIMUM_BATCH_BYTES, RestResourcePlan};
+
+const REST_SOURCE_BLOCKING_LANE_ID: &str = "rest-source.sync";
 
 #[derive(Clone)]
 pub struct RestRuntimeDependencies {
@@ -285,35 +286,36 @@ impl ResourceStream for RestResource {
         let type_policy_allowances = self.type_policy_allowances;
         let dependencies = self.dependencies.clone();
         let execution = dependencies.execution.clone();
-        let task = execution.spawn_blocking_value(
+        let task = execution.spawn_blocking_stream(
             "rest-source-open",
-            "rest-source.sync",
-            move |cancellation| {
+            REST_SOURCE_BLOCKING_LANE_ID,
+            1,
+            move |sender, cancellation| {
                 cancellation.check()?;
-                let batches = execute_rest(
+                execute_rest(
                     &descriptor,
                     schema,
                     &plan,
                     &partition,
                     type_policy_allowances,
                     dependencies,
+                    sender,
                 )?;
                 cancellation.check()?;
-                Ok(batches)
+                Ok(())
             },
         );
-        let task = match task {
-            Ok(task) => task,
+        let stream = match task {
+            Ok(stream) => stream,
             Err(error) => {
                 return cdf_kernel::PartitionOpenAttempt::materialized(Box::pin(async move {
                     Err(error)
                 }));
             }
         };
-        let termination = task.termination();
+        let termination = stream.termination();
         let opening = Box::pin(async move {
-            let batches = task.await?;
-            let stream = Box::pin(stream::iter(batches.into_iter().map(Ok))) as BatchStream;
+            let stream = Box::pin(stream) as BatchStream;
             Ok(cdf_kernel::PartitionStreamPayload::new(
                 stream,
                 Box::pin(async { Ok(cdf_kernel::PartitionCompletion::default()) }),
@@ -500,7 +502,7 @@ pub fn rest_resource_capabilities(
             ReplaySupport::None
         },
         idempotent_reads: true,
-        backpressure: BackpressureSupport::CannotPause,
+        backpressure: BackpressureSupport::Pausable,
         estimates: EstimateSupport::None,
     }
 }
@@ -521,7 +523,8 @@ fn execute_rest(
     partition: &PartitionPlan,
     type_policy_allowances: TypePolicyAllowances,
     dependencies: RestRuntimeDependencies,
-) -> Result<Vec<Batch>> {
+    mut sender: cdf_runtime::BlockingTaskStreamSender<Batch>,
+) -> Result<()> {
     validate_partition(descriptor, plan, partition)?;
     execution_schema_hash(descriptor)?;
     if schema.fields().is_empty() {
@@ -538,7 +541,6 @@ fn execute_rest(
         Some(paginator) => paginator.first_request(&base_request_url).url,
         None => base_request_url,
     });
-    let mut batches = Vec::new();
     let mut page_index = 0_usize;
     let mut reconciliation_plan = None::<String>;
 
@@ -571,6 +573,13 @@ fn execute_rest(
         let body = response
             .body()
             .ok_or_else(|| CdfError::data("REST HTTP response did not include a JSON body"))?;
+        let body_bytes = u64::try_from(body.len())
+            .map_err(|_| CdfError::data("REST response body exceeds u64"))?;
+        if body_bytes > REST_MAXIMUM_BATCH_BYTES {
+            return Err(CdfError::data(format!(
+                "REST response page contains {body_bytes} bytes above the compiled {REST_MAXIMUM_BATCH_BYTES}-byte page limit; configure smaller pages on the source endpoint"
+            )));
+        }
         let decoded = decode_response_page(body, &plan.record_selector)?;
         response.page.item_count = decoded.records.len();
         response.page.fields = decoded.pagination_fields;
@@ -605,7 +614,8 @@ fn execute_rest(
                 partition.partition_id.clone(),
                 page.observed_schema_hash.clone(),
                 page.record_batch,
-            )?;
+            )?
+            .with_retention(page.retention)?;
             batch
                 .header
                 .mark_materialized_output(&page.physical_schema)?;
@@ -616,7 +626,7 @@ fn execute_rest(
                 .extend_residual_candidates(page.residual_candidates);
             batch.header.mark_materialized_residuals_complete();
             batch.header.schema_coercion_plan = page.schema_coercion_plan;
-            batches.push(batch);
+            sender.send(batch)?;
         }
 
         page_index = page_index.saturating_add(1);
@@ -626,7 +636,7 @@ fn execute_rest(
             .map(|request| request.url);
     }
 
-    Ok(batches)
+    Ok(())
 }
 
 pub fn discover_rest_sample_schema(
@@ -1082,6 +1092,7 @@ impl InferredRestKind {
 
 struct ReconciledRestPage {
     record_batch: RecordBatch,
+    retention: PayloadRetention,
     physical_schema: Schema,
     observed_schema_hash: SchemaHash,
     source_position: Option<SourcePosition>,
@@ -1211,9 +1222,17 @@ fn reconcile_rest_page(
     ));
     let record_batch = RecordBatch::try_new(output_schema, decoded_batch.columns().to_vec())
         .map_err(CdfError::from)?;
+    let retained_bytes = format_batch.retained_bytes();
+    if retained_bytes == 0 || retained_bytes > REST_MAXIMUM_BATCH_BYTES {
+        return Err(CdfError::data(format!(
+            "REST decoded batch retains {retained_bytes} bytes outside its compiled 1..={REST_MAXIMUM_BATCH_BYTES}-byte limit; configure smaller source pages"
+        )));
+    }
+    let retention = PayloadRetention::new(Arc::new(format_batch.clone()), retained_bytes)?;
 
     Ok(ReconciledRestPage {
         record_batch,
+        retention,
         physical_schema,
         observed_schema_hash: physical_schema_hash,
         source_position,

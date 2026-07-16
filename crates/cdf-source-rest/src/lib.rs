@@ -8,6 +8,8 @@ use cdf_kernel::PushdownFidelity;
 mod driver;
 mod runtime;
 
+pub(crate) const REST_MAXIMUM_BATCH_BYTES: u64 = 32 * 1024 * 1024;
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RestResourcePlan {
     pub source: String,

@@ -241,6 +241,29 @@ impl PythonResourceBridge {
         &self,
         iterable: &Bound<'_, PyAny>,
     ) -> Result<PythonBatchRead> {
+        let mut batches = Vec::new();
+        let mut yield_kinds = Vec::new();
+        let mut read = self.visit_python_iterable(iterable, |batch, kind| {
+            batches.push(batch);
+            yield_kinds.push(kind);
+            Ok(())
+        })?;
+        read.batches = batches;
+        read.yield_kinds = yield_kinds;
+        Ok(read)
+    }
+
+    /// Incrementally imports one Python iterator and emits each bounded Arrow batch before
+    /// advancing the producer. Callbacks run without the GIL so host backpressure and memory
+    /// admission never stall unrelated Python partitions.
+    pub(crate) fn visit_python_iterable<F>(
+        &self,
+        iterable: &Bound<'_, PyAny>,
+        mut emit: F,
+    ) -> Result<PythonBatchRead>
+    where
+        F: FnMut(Batch, PythonYieldKind) -> Result<()> + Send,
+    {
         let py = iterable.py();
         let mut read = PythonBatchRead::empty();
         let mut json_rows = Vec::new();
@@ -252,16 +275,21 @@ impl PythonResourceBridge {
             match arrow_boundary_for(&item)? {
                 Some(boundary) if boundary.kind == PythonYieldKind::ArrowCStream => {
                     self.flush_json_rows(&mut json_rows, &mut read, &mut next_batch_index)?;
-                    let batches = import_arrow_stream(&item)?;
-                    read.push_record_batches(
-                        batches,
-                        PythonYieldKind::ArrowCStream,
-                        &self.options,
-                        &mut next_batch_index,
-                    )?;
+                    emit_pending(py, &mut read, &mut emit)?;
+                    let reader = import_arrow_stream(&item)?;
+                    for batch in reader {
+                        read.push_record_batches(
+                            vec![batch.map_err(CdfError::from)?],
+                            PythonYieldKind::ArrowCStream,
+                            &self.options,
+                            &mut next_batch_index,
+                        )?;
+                        emit_pending(py, &mut read, &mut emit)?;
+                    }
                 }
                 Some(boundary) if boundary.kind == PythonYieldKind::ArrowCArray => {
                     self.flush_json_rows(&mut json_rows, &mut read, &mut next_batch_index)?;
+                    emit_pending(py, &mut read, &mut emit)?;
                     let batch = item
                         .extract::<PyRecordBatch>()
                         .map(PyRecordBatch::into_inner)
@@ -272,12 +300,14 @@ impl PythonResourceBridge {
                         &self.options,
                         &mut next_batch_index,
                     )?;
+                    emit_pending(py, &mut read, &mut emit)?;
                 }
                 Some(_) => unreachable!("arrow boundary kinds are exhausted"),
                 None if item.cast::<PyDict>().is_ok() => {
                     json_rows.push(python_dict_to_json(py, &item)?);
                     if json_rows.len() == self.options.dict_batch_rows {
                         self.flush_json_rows(&mut json_rows, &mut read, &mut next_batch_index)?;
+                        emit_pending(py, &mut read, &mut emit)?;
                     }
                 }
                 None => {
@@ -289,6 +319,7 @@ impl PythonResourceBridge {
         }
 
         self.flush_json_rows(&mut json_rows, &mut read, &mut next_batch_index)?;
+        emit_pending(py, &mut read, &mut emit)?;
         Ok(read)
     }
 
@@ -414,6 +445,21 @@ impl PythonResourceBridge {
             next_batch_index,
         )
     }
+}
+
+fn emit_pending<F>(py: Python<'_>, read: &mut PythonBatchRead, emit: &mut F) -> Result<()>
+where
+    F: FnMut(Batch, PythonYieldKind) -> Result<()> + Send,
+{
+    if read.batches.len() != read.yield_kinds.len() {
+        return Err(CdfError::internal(
+            "Python bridge batch and boundary-kind counts diverged",
+        ));
+    }
+    for (batch, kind) in read.batches.drain(..).zip(read.yield_kinds.drain(..)) {
+        py.detach(|| emit(batch, kind))?;
+    }
+    Ok(())
 }
 
 fn decode_json_rows_window(bytes: &[u8], batch_rows: usize) -> Result<Vec<RecordBatch>> {

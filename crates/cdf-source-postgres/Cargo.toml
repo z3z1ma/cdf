@@ -10,9 +10,11 @@ description = "Postgres source adapter for cdf."
 arrow-array = "59.1.0"
 arrow-schema = "59.1.0"
 cdf-kernel = { path = "../cdf-kernel" }
+cdf-memory = { path = "../cdf-memory" }
 cdf-http = { path = "../cdf-http" }
 cdf-postgres = { path = "../cdf-postgres" }
 cdf-runtime = { path = "../cdf-runtime" }
+fallible-iterator = "0.2"
 futures-util = "0.3.32"
 postgres = "0.19"
 serde = { version = "1.0.228", features = ["derive"] }

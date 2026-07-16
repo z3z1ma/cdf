@@ -13,20 +13,29 @@ use cdf_kernel::{
     BackpressureSupport, Batch, BatchId, BatchStream, CapabilitySupport, CdfError,
     CompiledScanIntent, CursorPosition, CursorValue, DeliveryGuarantee, EstimateSupport,
     Expression, ExpressionLiteral, FilterCapabilities, IncrementalShape, PartitionId,
-    PartitionPlan, PartitioningCapabilities, PlanId, PushdownFidelity, PushedPredicate,
-    QueryableResource, ReplaySupport, ResourceCapabilities, ResourceDescriptor, ResourceStream,
-    Result, ScanPlan, ScanPredicate, ScanRequest, SchemaHash, SchemaSource, ScopeKind,
-    SortDirection, SourcePosition, source_name,
+    PartitionPlan, PartitioningCapabilities, PayloadRetention, PlanId, PushdownFidelity,
+    PushedPredicate, QueryableResource, ReplaySupport, ResourceCapabilities, ResourceDescriptor,
+    ResourceStream, Result, ScanPlan, ScanPredicate, ScanRequest, SchemaHash, SchemaSource,
+    ScopeKind, SortDirection, SourcePosition, source_name,
 };
-use futures_util::stream;
+use fallible_iterator::FallibleIterator;
 use postgres::{Client, NoTls, Row, types::ToSql};
 
 use cdf_postgres::{PostgresIdentifier, PostgresTarget};
-use cdf_runtime::{BlockingLaneSpec, ExecutionServices, InterruptionSafety, LaneAffinity};
+use cdf_runtime::{
+    BlockingLaneSpec, BlockingTaskStreamSender, ExecutionServices, InterruptionSafety,
+    LaneAffinity, RunCancellation,
+};
+
+use cdf_memory::{
+    ConsumerKey, MemoryClass, MemoryCoordinator, ReservationRequest, reserve_blocking,
+};
 
 const POSTGRES_SQL_KIND: &str = "sql";
 const POSTGRES_SQL_DIALECT: &str = "postgres";
 pub const POSTGRES_SOURCE_BLOCKING_LANE_ID: &str = "postgres-source.sync";
+const POSTGRES_FETCH_ROWS: usize = 8 * 1024;
+pub(crate) const POSTGRES_MAXIMUM_BATCH_BYTES: u64 = 32 * 1024 * 1024;
 
 pub fn postgres_source_blocking_lane() -> BlockingLaneSpec {
     BlockingLaneSpec {
@@ -175,10 +184,12 @@ where
     if let Err(error) = execution.ensure_blocking_lanes(&[postgres_source_blocking_lane()]) {
         return cdf_kernel::PartitionOpenAttempt::materialized(Box::pin(async move { Err(error) }));
     }
-    let task = match execution.spawn_blocking_value(
+    let memory = execution.memory();
+    let task = match execution.spawn_blocking_stream(
         "postgres-source-open",
         POSTGRES_SOURCE_BLOCKING_LANE_ID,
-        move |cancellation| {
+        1,
+        move |sender, cancellation| {
             cancellation.check()?;
             let database_url = resolve_connection(cancellation.clone())?;
             if database_url.trim().is_empty() {
@@ -187,10 +198,20 @@ where
                 ));
             }
             cancellation.check()?;
-            let batches =
-                execute_postgres_table(&database_url, &descriptor, schema, &target, partition)?;
+            execute_postgres_table(
+                PostgresExecutionInput {
+                    database_url,
+                    descriptor,
+                    schema,
+                    target,
+                    partition,
+                    memory,
+                },
+                sender,
+                cancellation.clone(),
+            )?;
             cancellation.check()?;
-            Ok(batches)
+            Ok(())
         },
     ) {
         Ok(task) => task,
@@ -202,8 +223,7 @@ where
     };
     let termination = task.termination();
     let opening = Box::pin(async move {
-        let batches = task.await?;
-        let stream = Box::pin(stream::iter(batches.into_iter().map(Ok))) as BatchStream;
+        let stream = Box::pin(task) as BatchStream;
         Ok(cdf_kernel::PartitionStreamPayload::new(
             stream,
             Box::pin(async { Ok(cdf_kernel::PartitionCompletion::default()) }),
@@ -438,50 +458,97 @@ pub fn plan_postgres_table_partition(
     })
 }
 
-fn execute_postgres_table(
-    database_url: &str,
-    descriptor: &ResourceDescriptor,
+struct PostgresExecutionInput {
+    database_url: String,
+    descriptor: ResourceDescriptor,
     schema: SchemaRef,
-    target: &PostgresTarget,
+    target: PostgresTarget,
     partition: PartitionPlan,
-) -> Result<Vec<Batch>> {
-    validate_postgres_table_resource_shape(descriptor, &schema, target)?;
-    let scan = scan_from_partition(descriptor, &schema, target, &partition)?;
-    let query = build_query(&schema, target, &scan)?;
+    memory: Arc<dyn MemoryCoordinator>,
+}
 
-    let mut client = Client::connect(database_url, NoTls)
+fn execute_postgres_table(
+    input: PostgresExecutionInput,
+    mut sender: BlockingTaskStreamSender<Batch>,
+    cancellation: RunCancellation,
+) -> Result<()> {
+    let PostgresExecutionInput {
+        database_url,
+        descriptor,
+        schema,
+        target,
+        partition,
+        memory,
+    } = input;
+    validate_postgres_table_resource_shape(&descriptor, &schema, &target)?;
+    let scan = scan_from_partition(&descriptor, &schema, &target, &partition)?;
+    let query = build_query(&schema, &target, &scan)?;
+
+    let mut client = Client::connect(&database_url, NoTls)
         .map_err(|error| CdfError::transient(format!("connect to Postgres source: {error}")))?;
     let params = query
         .params
         .iter()
         .map(SqlParam::as_to_sql)
         .collect::<Vec<_>>();
-    let rows = client
-        .query(&query.sql, &params)
+    let mut rows = client
+        .query_raw(&query.sql, params)
         .map_err(|error| CdfError::data(format!("query Postgres source table: {error}")))?;
-    if rows.is_empty() {
-        return Ok(Vec::new());
+    let mut batch_index = 0_usize;
+    loop {
+        cancellation.check()?;
+        let lease = reserve_blocking(
+            Arc::clone(&memory),
+            &ReservationRequest::new(
+                ConsumerKey::new("postgres-source-batch", MemoryClass::Source)?,
+                POSTGRES_MAXIMUM_BATCH_BYTES,
+            )?,
+        )?;
+        let mut chunk = Vec::with_capacity(POSTGRES_FETCH_ROWS);
+        while chunk.len() < POSTGRES_FETCH_ROWS {
+            match rows
+                .next()
+                .map_err(|error| CdfError::data(format!("read Postgres source row: {error}")))?
+            {
+                Some(row) => chunk.push(row),
+                None => break,
+            }
+        }
+        if chunk.is_empty() {
+            return Ok(());
+        }
+        let (record_batch, source_position) =
+            rows_to_record_batch(&schema, &descriptor, &scan, &chunk)?;
+        let retained_bytes = cdf_memory::record_batch_retained_bytes(&record_batch)?;
+        if retained_bytes > POSTGRES_MAXIMUM_BATCH_BYTES {
+            return Err(CdfError::data(format!(
+                "Postgres source batch retains {retained_bytes} bytes above its compiled {POSTGRES_MAXIMUM_BATCH_BYTES}-byte limit; reduce source batch rows or project fewer columns"
+            )));
+        }
+        lease.reconcile(retained_bytes)?;
+        let physical_schema = record_batch.schema();
+        let observed_schema_hash =
+            cdf_kernel::canonical_arrow_schema_hash(physical_schema.as_ref())?;
+        batch_index = batch_index.saturating_add(1);
+        let mut batch = Batch::from_record_batch(
+            BatchId::new(format!(
+                "{}-{}-{batch_index:06}",
+                sanitize_id_part(descriptor.resource_id.as_str()),
+                sanitize_id_part(partition.partition_id.as_str())
+            ))?,
+            descriptor.resource_id.clone(),
+            partition.partition_id.clone(),
+            observed_schema_hash,
+            record_batch,
+        )?
+        .with_retention(PayloadRetention::new(Arc::new(lease), retained_bytes)?)?;
+        batch
+            .header
+            .mark_materialized_output(physical_schema.as_ref())?;
+        batch.header.source_position = source_position;
+        sender.send(batch)?;
+        cancellation.check()?;
     }
-
-    let (record_batch, source_position) = rows_to_record_batch(&schema, descriptor, &scan, &rows)?;
-    let physical_schema = record_batch.schema();
-    let observed_schema_hash = cdf_kernel::canonical_arrow_schema_hash(physical_schema.as_ref())?;
-    let mut batch = Batch::from_record_batch(
-        BatchId::new(format!(
-            "{}-{}-000001",
-            sanitize_id_part(descriptor.resource_id.as_str()),
-            sanitize_id_part(partition.partition_id.as_str())
-        ))?,
-        descriptor.resource_id.clone(),
-        partition.partition_id,
-        observed_schema_hash,
-        record_batch,
-    )?;
-    batch
-        .header
-        .mark_materialized_output(physical_schema.as_ref())?;
-    batch.header.source_position = source_position;
-    Ok(vec![batch])
 }
 
 fn scan_from_partition(

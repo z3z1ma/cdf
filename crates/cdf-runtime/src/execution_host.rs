@@ -29,6 +29,16 @@ pub struct TaskStreamSender<T> {
     cancellation: RunCancellation,
 }
 
+/// Backpressure-aware sender used by adapters whose native client must remain on a blocking lane.
+///
+/// The send waits on the bounded host channel, so a synchronous database cursor, interpreter, or
+/// foreign SDK cannot outrun downstream consumption. The adapter must still account any retained
+/// payload before calling `send`; this type owns flow control and cancellation, not memory policy.
+pub struct BlockingTaskStreamSender<T> {
+    sender: mpsc::Sender<T>,
+    cancellation: RunCancellation,
+}
+
 /// One blocking-lane result plus invocation-wide cancellation and join ownership.
 pub struct ScopedBlockingTask<T> {
     receiver: oneshot::Receiver<Result<T>>,
@@ -79,6 +89,15 @@ impl<T> TaskStreamSender<T> {
         self.sender
             .send(item)
             .await
+            .map_err(|_| CdfError::internal("task stream receiver closed"))?;
+        self.cancellation.check()
+    }
+}
+
+impl<T> BlockingTaskStreamSender<T> {
+    pub fn send(&mut self, item: T) -> Result<()> {
+        self.cancellation.check()?;
+        futures_executor::block_on(self.sender.send(item))
             .map_err(|_| CdfError::internal("task stream receiver closed"))?;
         self.cancellation.check()
     }
@@ -922,6 +941,54 @@ impl ExecutionServices {
         scope.spawn_io(Box::pin(async move {
             producer(stream_sender, task_cancellation).await
         }))?;
+        let scope_join = scope.join();
+        let cancel = cancellation.clone();
+        let termination = InvocationTermination::new(
+            move || cancel.cancel(),
+            Box::pin(async move { scope_join.await.map(|_| ()) }),
+        );
+        Ok(ScopedTaskStream {
+            receiver,
+            termination,
+            join: None,
+            cancellation,
+            terminal: false,
+        })
+    }
+
+    /// Runs a synchronous incremental producer on a declared blocking lane.
+    ///
+    /// Unlike `spawn_blocking_value`, this boundary never requires the adapter to materialize its
+    /// complete input. A bounded channel applies backpressure between every emitted item while the
+    /// returned stream retains structural cancellation and join authority for the producer.
+    pub fn spawn_blocking_stream<T, F>(
+        &self,
+        run_id: &str,
+        lane: &str,
+        maximum_items: usize,
+        producer: F,
+    ) -> Result<ScopedTaskStream<T>>
+    where
+        T: Send + 'static,
+        F: FnOnce(BlockingTaskStreamSender<T>, RunCancellation) -> Result<()> + Send + 'static,
+    {
+        if maximum_items == 0 {
+            return Err(CdfError::contract(
+                "blocking stream requires a nonzero item bound",
+            ));
+        }
+        let mut scope = self.open_scope(run_id)?;
+        let cancellation = scope.cancellation();
+        let (sender, receiver) = mpsc::channel(maximum_items);
+        let stream_sender = BlockingTaskStreamSender {
+            sender,
+            cancellation: cancellation.clone(),
+        };
+        let task_cancellation = cancellation.clone();
+        scope.spawn_blocking(
+            lane,
+            Box::new(move || producer(stream_sender, task_cancellation)),
+        )?;
         let scope_join = scope.join();
         let cancel = cancellation.clone();
         let termination = InvocationTermination::new(

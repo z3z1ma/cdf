@@ -17,7 +17,7 @@ use pyo3::{
     prelude::*,
     types::{PyDict, PyModule},
 };
-use pyo3_arrow::{PyRecordBatch, PyTable};
+use pyo3_arrow::{PyRecordBatch, PyRecordBatchReader};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
