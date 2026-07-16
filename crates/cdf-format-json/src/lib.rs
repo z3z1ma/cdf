@@ -900,12 +900,19 @@ async fn decode_next(
             batch_id,
             state.request.resource_id.clone(),
             state.request.partition_id.clone(),
-            cdf_kernel::canonical_arrow_schema_hash(state.request.schema.decoder_schema.as_ref())?,
+            cdf_kernel::canonical_arrow_schema_hash(record_batch.schema().as_ref())?,
             record_batch,
         )?;
         batch.header.source_position = state.request.source_position.clone();
         batch.header.extend_residual_candidates(candidates);
         if materialized_residuals_complete {
+            let physical_schema = batch
+                .record_batch()
+                .ok_or_else(|| CdfError::internal("decoded NDJSON batch lost its Arrow payload"))?
+                .schema();
+            batch
+                .header
+                .mark_materialized_output(physical_schema.as_ref())?;
             batch.header.mark_materialized_residuals_complete();
         }
         state.source_row_ordinal = state
@@ -1485,7 +1492,7 @@ mod tests {
             AccountedBytes::new(bytes::Bytes::copy_from_slice(input), input_lease).unwrap();
         let schema = Arc::new(Schema::new(vec![
             Field::new("id", DataType::Int64, true),
-            Field::new("event_type", DataType::Utf8, true),
+            Field::new("event_type", DataType::Utf8, false),
         ]));
         let request = PhysicalDecodeRequest {
             unit: DecodeUnitPlan {
@@ -1522,6 +1529,21 @@ mod tests {
         let batch = batches[0].batch();
         let record_batch = batch.record_batch().unwrap();
         assert_eq!(record_batch.num_rows(), 3);
+        assert_eq!(
+            batch.header.observed_schema_hash,
+            cdf_kernel::canonical_arrow_schema_hash(record_batch.schema().as_ref()).unwrap()
+        );
+        assert_eq!(
+            batch.header.observation_representation,
+            cdf_kernel::PhysicalObservationRepresentation::MaterializedOutput
+        );
+        assert!(
+            record_batch
+                .schema()
+                .field_with_name("event_type")
+                .unwrap()
+                .is_nullable()
+        );
         let event_types = record_batch
             .column_by_name("event_type")
             .unwrap()
