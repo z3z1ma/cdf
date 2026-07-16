@@ -1,10 +1,10 @@
 use super::{
     ExcludedMatrixCell, MatrixDestination, MatrixDisposition, RunMatrixCell, RunMatrixOutput,
-    SourceArchetype, core, local_postgres::LivePostgres, run_spine_matrix_cells,
+    SourceArchetype, core, local_postgres::LivePostgres, run_spine_matrix_cells, source_catalog,
 };
 
 #[test]
-fn run_matrix_file_python_rest_sql_source_cells_persist_output() {
+fn registered_source_catalog_cells_persist_output() {
     let postgres = LivePostgres::start().expect(
         "C2 run matrix requires Postgres coverage; set TEST_DATABASE_URL or install initdb/pg_ctl",
     );
@@ -18,19 +18,21 @@ fn run_matrix_file_python_rest_sql_source_cells_persist_output() {
             continue;
         }
 
-        output
-            .executed_cells
-            .push(core::execute_cell(cell, &postgres).unwrap());
+        let executed = core::execute_cell(cell.clone(), Some(&postgres)).unwrap_or_else(|error| {
+            panic!(
+                "run-matrix cell {}/{}/{} failed: {error}",
+                cell.source_archetype,
+                cell.destination.as_str(),
+                cell.disposition.as_str()
+            )
+        });
+        output.executed_cells.push(executed);
     }
 
-    assert_source_counts(&output, SourceArchetype::File);
-    assert_source_counts(&output, SourceArchetype::Python);
-    assert_source_counts(&output, SourceArchetype::Rest);
-    assert_source_counts(&output, SourceArchetype::Sql);
-    assert_required_cells(&output, SourceArchetype::File);
-    assert_required_cells(&output, SourceArchetype::Python);
-    assert_required_cells(&output, SourceArchetype::Rest);
-    assert_required_cells(&output, SourceArchetype::Sql);
+    for source in source_catalog::archetypes() {
+        assert_source_counts(&output, &source);
+        assert_required_cells(&output, &source);
+    }
 
     let serialized = serde_json::to_string_pretty(&output).unwrap();
     assert!(!serialized.contains("run-matrix-token"));
@@ -38,7 +40,7 @@ fn run_matrix_file_python_rest_sql_source_cells_persist_output() {
     println!("CDF_RUN_MATRIX_OUTPUT={serialized}");
 }
 
-fn assert_source_counts(output: &RunMatrixOutput, source: SourceArchetype) {
+fn assert_source_counts(output: &RunMatrixOutput, source: &SourceArchetype) {
     assert_eq!(
         core::executed_for_source(&output.executed_cells, source).count(),
         8
@@ -49,26 +51,26 @@ fn assert_source_counts(output: &RunMatrixOutput, source: SourceArchetype) {
     );
 }
 
-fn assert_required_cells(output: &RunMatrixOutput, source: SourceArchetype) {
+fn assert_required_cells(output: &RunMatrixOutput, source: &SourceArchetype) {
     for destination in [MatrixDestination::DuckDb, MatrixDestination::Postgres] {
         assert_executed(
             output,
-            RunMatrixCell::new(source, destination, MatrixDisposition::Append),
+            RunMatrixCell::new(source.clone(), destination, MatrixDisposition::Append),
         );
         assert_executed(
             output,
-            RunMatrixCell::new(source, destination, MatrixDisposition::Replace),
+            RunMatrixCell::new(source.clone(), destination, MatrixDisposition::Replace),
         );
         assert_executed(
             output,
-            RunMatrixCell::new(source, destination, MatrixDisposition::Merge),
+            RunMatrixCell::new(source.clone(), destination, MatrixDisposition::Merge),
         );
     }
 
     assert_executed(
         output,
         RunMatrixCell::new(
-            source,
+            source.clone(),
             MatrixDestination::ParquetFilesystem,
             MatrixDisposition::Append,
         ),
@@ -76,7 +78,7 @@ fn assert_required_cells(output: &RunMatrixOutput, source: SourceArchetype) {
     assert_executed(
         output,
         RunMatrixCell::new(
-            source,
+            source.clone(),
             MatrixDestination::ParquetFilesystem,
             MatrixDisposition::Replace,
         ),
@@ -84,7 +86,7 @@ fn assert_required_cells(output: &RunMatrixOutput, source: SourceArchetype) {
     assert_excluded(
         output,
         RunMatrixCell::new(
-            source,
+            source.clone(),
             MatrixDestination::ParquetFilesystem,
             MatrixDisposition::Merge,
         ),

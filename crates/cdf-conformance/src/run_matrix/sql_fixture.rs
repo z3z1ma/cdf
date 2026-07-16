@@ -67,6 +67,7 @@ fn one_resource(mut resources: Vec<CompiledResource>) -> Result<CompiledResource
 }
 
 fn resource_toml(disposition: MatrixDisposition, table: &str) -> String {
+    let keys = merge_keys(disposition);
     format!(
         r#"
 [source.warehouse]
@@ -76,8 +77,7 @@ dialect = "postgres"
 
 [resource.events]
 table = "{table}"
-primary_key = ["id"]
-merge_key = ["id"]
+{keys}
 cursor = {{ field = "updated_at", ordering = "exact", lag = "0ms" }}
 write_disposition = "{}"
 trust = "governed"
@@ -89,4 +89,12 @@ schema = {{ fields = [
 "#,
         disposition.as_str()
     )
+}
+
+fn merge_keys(disposition: MatrixDisposition) -> &'static str {
+    if disposition == MatrixDisposition::Merge {
+        "primary_key = [\"id\"]\nmerge_key = [\"id\"]"
+    } else {
+        ""
+    }
 }

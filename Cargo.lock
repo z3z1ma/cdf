@@ -1258,7 +1258,6 @@ dependencies = [
  "cdf-memory",
  "cdf-postgres",
  "cdf-runtime",
- "fallible-iterator 0.2.0",
  "futures-executor",
  "futures-util",
  "postgres",

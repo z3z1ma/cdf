@@ -1,11 +1,9 @@
 use std::cell::Cell;
 
 use cdf_dest_parquet::ParquetDestination;
-use cdf_kernel::{
-    CdfError, DestinationProtocol, PipelineId, QueryableResource, Result, RunId, SourcePosition,
-};
+use cdf_kernel::{CdfError, DestinationProtocol, PipelineId, Result, RunId, SourcePosition};
 use cdf_package::PackageReader;
-use cdf_project::{ProjectRunReport, ProjectRunRequest, ProjectRunSource, run_project};
+use cdf_project::{ProjectRunReport, ProjectRunRequest, run_project};
 
 use super::local_postgres::LivePostgres;
 use super::{
@@ -16,8 +14,7 @@ use super::{
         assert_plan_honesty, assert_replay_inputs_match_run, assert_run_report, receipt_gate,
     },
     destinations::{MatrixDestinationHandle, target_for_cell},
-    file_fixture, plan_json, python_fixture, rest_fixture, sql_fixture,
-    test_support::RecordingTransport,
+    source_catalog,
 };
 
 pub(crate) const ROW_COUNT: u64 = 2;
@@ -25,7 +22,7 @@ pub(crate) const SEGMENT_COUNT: usize = 1;
 
 pub(crate) fn execute_cell(
     cell: RunMatrixCell,
-    postgres: &LivePostgres,
+    postgres: Option<&LivePostgres>,
 ) -> Result<ExecutedMatrixCell> {
     let temp = tempfile::tempdir()
         .map_err(|error| CdfError::data(format!("create run matrix tempdir: {error}")))?;
@@ -41,8 +38,8 @@ pub(crate) fn execute_cell(
     let package_root = temp.path().join(".cdf/packages");
     let state_store_path = temp.path().join(".cdf/state.sqlite");
 
-    let source = MatrixSource::new(cell, temp.path(), postgres)?;
-    let target = target_for_cell(cell, postgres)?;
+    let source = source_catalog::prepare(&cell, temp.path(), postgres)?;
+    let target = target_for_cell(cell.clone(), postgres)?;
     let destination =
         MatrixDestinationHandle::new(cell.destination, temp.path(), target, postgres)?;
     let resolved_destination = destination.resolved()?;
@@ -83,16 +80,18 @@ pub(crate) fn execute_cell(
         gate_observed.get(),
         "receipt verification gate hook must run"
     );
-    assert_run_report(cell, &report, &resource_id, &scope, &pipeline_id);
+    assert_run_report(cell.clone(), &report, &resource_id, &scope, &pipeline_id);
     PackageReader::open(&report.package_dir)?.verify()?;
-    assert_replay_inputs_match_run(cell, &report);
+    assert_replay_inputs_match_run(cell.clone(), &report);
     destination.verify_trait_receipt(&report.receipt)?;
     assert_committed_checkpoint(&state_store_path, &report);
+    assert_segment_positions_match_checkpoint(&report);
+    assert_checkpoint_head_contains_source_position(&report);
     source.assert_after_run(&report);
 
     let duplicate_behavior =
-        assert_duplicate_replay_noop(cell, &destination, &report, temp.path())?;
-    assert_artifact_replay_identity(cell, &destination, &report, temp.path())?;
+        assert_duplicate_replay_noop(cell.clone(), &destination, &report, temp.path())?;
+    assert_artifact_replay_identity(cell.clone(), &destination, &report, temp.path())?;
 
     Ok(ExecutedMatrixCell {
         cell,
@@ -132,123 +131,20 @@ pub(crate) fn sheet_exclusion_reason(cell: &RunMatrixCell) -> Option<String> {
 
 pub(crate) fn executed_for_source<'a>(
     output: &'a [ExecutedMatrixCell],
-    source: SourceArchetype,
+    source: &'a SourceArchetype,
 ) -> impl Iterator<Item = &'a ExecutedMatrixCell> + 'a {
     output
         .iter()
-        .filter(move |executed| executed.cell.source_archetype == source)
+        .filter(move |executed| &executed.cell.source_archetype == source)
 }
 
 pub(crate) fn excluded_for_source<'a>(
     output: &'a [ExcludedMatrixCell],
-    source: SourceArchetype,
+    source: &'a SourceArchetype,
 ) -> impl Iterator<Item = &'a ExcludedMatrixCell> + 'a {
     output
         .iter()
-        .filter(move |excluded| excluded.cell.source_archetype == source)
-}
-
-enum MatrixSource {
-    File(crate::source_fixture::ResolvedSourceFixture),
-    Python(crate::source_fixture::ResolvedSourceFixture),
-    Rest {
-        resource: crate::source_fixture::ResolvedSourceFixture,
-        transport: RecordingTransport,
-    },
-    Sql(crate::source_fixture::ResolvedSourceFixture),
-}
-
-impl MatrixSource {
-    fn new(
-        cell: RunMatrixCell,
-        project_root: &std::path::Path,
-        postgres: &LivePostgres,
-    ) -> Result<Self> {
-        match cell.source_archetype {
-            SourceArchetype::File => {
-                let compiled = file_fixture::resource(project_root, cell.disposition)?;
-                Ok(Self::File(crate::source_fixture::resolve_local_file(
-                    &compiled,
-                    project_root,
-                )?))
-            }
-            SourceArchetype::Python => Ok(Self::Python(python_fixture::resource(
-                project_root,
-                cell.disposition,
-            )?)),
-            SourceArchetype::Rest => {
-                let (resource, transport) = rest_fixture::resource(cell.disposition)?;
-                Ok(Self::Rest {
-                    resource,
-                    transport,
-                })
-            }
-            SourceArchetype::Sql => Ok(Self::Sql(sql_fixture::resource(cell, postgres)?)),
-        }
-    }
-
-    fn queryable(&self) -> &dyn QueryableResource {
-        match self {
-            Self::File(resource) => resource.queryable(),
-            Self::Python(resource) => resource.queryable(),
-            Self::Rest { resource, .. } => resource.queryable(),
-            Self::Sql(resource) => resource.queryable(),
-        }
-    }
-
-    fn engine_plan(
-        &self,
-        package_id: &str,
-        disposition: MatrixDisposition,
-        identifier_policy: Option<&cdf_contract::IdentifierPolicy>,
-    ) -> Result<cdf_engine::EnginePlan> {
-        match self {
-            Self::File(resource) => resource.bind_plan(plan_json::file_engine_plan(
-                resource.queryable(),
-                package_id,
-                disposition,
-                identifier_policy,
-            )?),
-            Self::Python(resource) => resource.bind_plan(plan_json::planned_engine_plan(
-                resource.queryable(),
-                package_id,
-                identifier_policy,
-            )?),
-            Self::Rest { resource, .. } => resource.bind_plan(plan_json::planned_engine_plan(
-                resource.queryable(),
-                package_id,
-                identifier_policy,
-            )?),
-            Self::Sql(resource) => resource.bind_plan(plan_json::planned_engine_plan(
-                resource.queryable(),
-                package_id,
-                identifier_policy,
-            )?),
-        }
-    }
-
-    fn project_run_source(&self) -> ProjectRunSource<'_> {
-        match self {
-            Self::File(resource) => ProjectRunSource::new(resource.queryable()),
-            Self::Python(resource) => ProjectRunSource::new(resource.queryable()),
-            Self::Rest { resource, .. } => ProjectRunSource::new(resource.queryable()),
-            Self::Sql(resource) => ProjectRunSource::new(resource.queryable()),
-        }
-    }
-
-    fn assert_after_run(&self, report: &ProjectRunReport) {
-        assert_segment_positions_match_checkpoint(report);
-        assert_checkpoint_head_contains_source_position(report);
-        match self {
-            Self::File(_) => file_fixture::assert_source_position(report),
-            Self::Python(_) => python_fixture::assert_source_position(report),
-            Self::Rest { transport, .. } => {
-                rest_fixture::assert_runtime_observed(transport);
-                rest_fixture::assert_source_position(report);
-            }
-            Self::Sql(_) => sql_fixture::assert_source_position(report),
-        }
-    }
+        .filter(move |excluded| &excluded.cell.source_archetype == source)
 }
 
 fn assert_segment_positions_match_checkpoint(report: &ProjectRunReport) {

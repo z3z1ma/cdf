@@ -12,6 +12,11 @@ pub(crate) fn resource(
     disposition: MatrixDisposition,
 ) -> Result<crate::source_fixture::ResolvedSourceFixture> {
     let source = project_root.join("python_events.py");
+    let keys = if disposition == MatrixDisposition::Merge {
+        "events.__cdf_primary_key__ = (\"id\",)\nevents.__cdf_merge_key__ = (\"id\",)"
+    } else {
+        "events.__cdf_primary_key__ = ()\nevents.__cdf_merge_key__ = ()"
+    };
     fs::write(
         &source,
         format!(
@@ -21,8 +26,7 @@ def events():
     yield {{"id": 2, "name": "grace", "updated_at": 20}}
 
 events.__cdf_resource__ = True
-events.__cdf_primary_key__ = ("id",)
-events.__cdf_merge_key__ = ("id",)
+{keys}
 events.__cdf_cursor__ = "updated_at"
 events.__cdf_parallel__ = False
 events.__cdf_schema__ = (("id", "int64", False), ("name", "utf8", False), ("updated_at", "int64", False))

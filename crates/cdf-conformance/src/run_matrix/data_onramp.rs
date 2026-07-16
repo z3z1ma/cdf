@@ -23,7 +23,7 @@ use std::{
 
 use super::{
     MatrixDestination, MatrixDisposition, RunMatrixCell, SourceArchetype, core, file_fixture,
-    local_postgres::LivePostgres, plan_json, python_fixture, rest_fixture, sql_fixture,
+    local_postgres::LivePostgres, plan_json, source_catalog,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -681,21 +681,18 @@ fn p2_preview_run_parity_law_covers_supported_archetypes() {
     let postgres = LivePostgres::start().expect(
         "P2 S8 parity conformance requires Postgres coverage; set TEST_DATABASE_URL or install initdb/pg_ctl",
     );
-    let cases = [
-        RunMatrixCell::file(MatrixDestination::DuckDb, MatrixDisposition::Append),
-        RunMatrixCell::python(MatrixDestination::DuckDb, MatrixDisposition::Append),
-        RunMatrixCell::rest(MatrixDestination::DuckDb, MatrixDisposition::Append),
-        RunMatrixCell::sql(MatrixDestination::DuckDb, MatrixDisposition::Append),
-    ];
+    let cases = source_catalog::archetypes().into_iter().map(|source| {
+        RunMatrixCell::new(source, MatrixDestination::DuckDb, MatrixDisposition::Append)
+    });
 
     for cell in cases {
-        let preview = preview_fingerprint(cell, &postgres).unwrap_or_else(|error| {
+        let preview = preview_fingerprint(cell.clone(), Some(&postgres)).unwrap_or_else(|error| {
             panic!(
                 "{} preview failed before parity comparison: {error}",
                 cell.source_archetype.as_str()
             )
         });
-        let executed = core::execute_cell(cell, &postgres).unwrap_or_else(|error| {
+        let executed = core::execute_cell(cell.clone(), Some(&postgres)).unwrap_or_else(|error| {
             panic!(
                 "{} run failed before parity comparison: {error}",
                 cell.source_archetype.as_str()
@@ -861,7 +858,10 @@ fn workspace_root() -> &'static Path {
         .expect("cdf-conformance must be located under <workspace>/crates")
 }
 
-fn preview_fingerprint(cell: RunMatrixCell, postgres: &LivePostgres) -> Result<PreviewFingerprint> {
+fn preview_fingerprint(
+    cell: RunMatrixCell,
+    postgres: Option<&LivePostgres>,
+) -> Result<PreviewFingerprint> {
     let temp = tempfile::tempdir().map_err(|error| {
         cdf_kernel::CdfError::data(format!("create P2 parity preview tempdir: {error}"))
     })?;
@@ -871,66 +871,16 @@ fn preview_fingerprint(cell: RunMatrixCell, postgres: &LivePostgres) -> Result<P
         cell.disposition.as_str()
     );
 
-    let (preview, partition_count) = match cell.source_archetype {
-        SourceArchetype::File => {
-            let compiled = file_fixture::resource(temp.path(), cell.disposition)?;
-            let resource = crate::source_fixture::resolve_local_file(&compiled, temp.path())?;
-            let plan = plan_json::file_engine_plan(
-                resource.queryable(),
-                &package_id,
-                cell.disposition,
-                None,
-            )?;
-            let plan = resource.bind_plan(plan)?;
-            let partitions = resource.queryable().plan_partitions(&plan.scan.request)?;
-            assert_file_partitions_match_plan_identity(&partitions, &plan.scan.partitions);
-            let preview = futures_executor::block_on(cdf_engine::preview_resource(
-                &plan,
-                resource.queryable(),
-                cdf_engine::EnginePreviewLimits::default(),
-            ))?;
-            (preview, partitions.len())
-        }
-        SourceArchetype::Python => {
-            let resource = python_fixture::resource(temp.path(), cell.disposition)?;
-            let plan = plan_json::planned_engine_plan(resource.queryable(), &package_id, None)?;
-            let plan = resource.bind_plan(plan)?;
-            let partitions = resource.queryable().plan_partitions(&plan.scan.request)?;
-            assert_eq!(partitions, plan.scan.partitions);
-            let preview = futures_executor::block_on(cdf_engine::preview_resource(
-                &plan,
-                resource.queryable(),
-                cdf_engine::EnginePreviewLimits::default(),
-            ))?;
-            (preview, partitions.len())
-        }
-        SourceArchetype::Rest => {
-            let (resource, _) = rest_fixture::resource(cell.disposition)?;
-            let plan = plan_json::planned_engine_plan(resource.queryable(), &package_id, None)?;
-            let plan = resource.bind_plan(plan)?;
-            let partitions = resource.queryable().plan_partitions(&plan.scan.request)?;
-            assert_eq!(partitions, plan.scan.partitions);
-            let preview = futures_executor::block_on(cdf_engine::preview_resource(
-                &plan,
-                resource.queryable(),
-                cdf_engine::EnginePreviewLimits::default(),
-            ))?;
-            (preview, partitions.len())
-        }
-        SourceArchetype::Sql => {
-            let resource = sql_fixture::resource(cell, postgres)?;
-            let plan = plan_json::planned_engine_plan(resource.queryable(), &package_id, None)?;
-            let plan = resource.bind_plan(plan)?;
-            let partitions = resource.queryable().plan_partitions(&plan.scan.request)?;
-            assert_eq!(partitions, plan.scan.partitions);
-            let preview = futures_executor::block_on(cdf_engine::preview_resource(
-                &plan,
-                resource.queryable(),
-                cdf_engine::EnginePreviewLimits::default(),
-            ))?;
-            (preview, partitions.len())
-        }
-    };
+    let source = source_catalog::prepare(&cell, temp.path(), postgres)?;
+    let plan = source.engine_plan(&package_id, cell.disposition, None)?;
+    let partitions = source.queryable().plan_partitions(&plan.scan.request)?;
+    assert_eq!(partitions, plan.scan.partitions);
+    let preview = futures_executor::block_on(cdf_engine::preview_resource(
+        &plan,
+        source.queryable(),
+        cdf_engine::EnginePreviewLimits::default(),
+    ))?;
+    let partition_count = partitions.len();
 
     Ok(PreviewFingerprint {
         source: cell.source_archetype,
@@ -938,24 +888,6 @@ fn preview_fingerprint(cell: RunMatrixCell, postgres: &LivePostgres) -> Result<P
         field_names: preview.fields,
         partition_count,
     })
-}
-
-fn assert_file_partitions_match_plan_identity(
-    actual: &[cdf_kernel::PartitionPlan],
-    planned: &[cdf_kernel::PartitionPlan],
-) {
-    assert_eq!(actual.len(), planned.len());
-    for (actual, planned) in actual.iter().zip(planned) {
-        assert_eq!(actual.partition_id, planned.partition_id);
-        assert_eq!(actual.scope, planned.scope);
-        for key in ["kind", "glob", "path", "resource_id", "bytes", "sha256"] {
-            assert_eq!(
-                actual.metadata.get(key),
-                planned.metadata.get(key),
-                "file partition metadata `{key}` should match the run plan"
-            );
-        }
-    }
 }
 
 fn write_s5_project(root: &Path, base_url: &str, secret: &str) {

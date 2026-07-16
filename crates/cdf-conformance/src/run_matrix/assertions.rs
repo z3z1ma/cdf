@@ -17,7 +17,7 @@ use cdf_project::{
 use cdf_state_sqlite::SqliteCheckpointStore;
 
 use super::{
-    MatrixDestination, RunMatrixCell,
+    MatrixDestination, MatrixDisposition, RunMatrixCell,
     core::{ROW_COUNT, SEGMENT_COUNT},
     destinations::MatrixDestinationHandle,
     test_support::copy_dir_all,
@@ -111,7 +111,12 @@ pub(crate) fn assert_replay_inputs_match_run(cell: RunMatrixCell, report: &Proje
         report.package_hash.as_str()
     );
     assert_eq!(replay_inputs.schema_hash, report.receipt.schema_hash);
-    assert_eq!(replay_inputs.merge_keys, vec!["id".to_owned()]);
+    let expected_merge_keys = if cell.disposition == MatrixDisposition::Merge {
+        vec!["id".to_owned()]
+    } else {
+        Vec::new()
+    };
+    assert_eq!(replay_inputs.merge_keys, expected_merge_keys);
 }
 
 pub(crate) fn assert_committed_checkpoint(state_store_path: &Path, report: &ProjectRunReport) {

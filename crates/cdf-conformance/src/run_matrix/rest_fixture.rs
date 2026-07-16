@@ -85,6 +85,7 @@ fn one_resource(mut resources: Vec<CompiledResource>) -> Result<CompiledResource
 }
 
 fn resource_toml(disposition: MatrixDisposition) -> String {
+    let keys = merge_keys(disposition);
     format!(
         r#"
 [source.api]
@@ -96,8 +97,7 @@ egress_allowlist = ["api.example.test"]
 [resource.events]
 path = "/events"
 records = "$.items"
-primary_key = ["id"]
-merge_key = ["id"]
+{keys}
 cursor = {{ field = "updated_at", param = "since", ordering = "exact", lag = "0ms" }}
 write_disposition = "{}"
 trust = "governed"
@@ -109,4 +109,12 @@ schema = {{ fields = [
 "#,
         disposition.as_str()
     )
+}
+
+fn merge_keys(disposition: MatrixDisposition) -> &'static str {
+    if disposition == MatrixDisposition::Merge {
+        "primary_key = [\"id\"]\nmerge_key = [\"id\"]"
+    } else {
+        ""
+    }
 }

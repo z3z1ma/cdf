@@ -115,6 +115,7 @@ pub(crate) fn assert_source_position(report: &ProjectRunReport) {
 }
 
 fn resource_toml(disposition: MatrixDisposition, glob: &str) -> String {
+    let keys = merge_keys(disposition);
     format!(
         r#"
 [source.local]
@@ -124,8 +125,7 @@ root = "data"
 [resource.events]
 glob = "{glob}"
 format = "ndjson"
-primary_key = ["id"]
-merge_key = ["id"]
+{keys}
 write_disposition = "{}"
 trust = "governed"
 partition = {{ by = "file" }}
@@ -136,4 +136,12 @@ schema = {{ fields = [
 "#,
         disposition.as_str()
     )
+}
+
+fn merge_keys(disposition: MatrixDisposition) -> &'static str {
+    if disposition == MatrixDisposition::Merge {
+        "primary_key = [\"id\"]\nmerge_key = [\"id\"]"
+    } else {
+        ""
+    }
 }

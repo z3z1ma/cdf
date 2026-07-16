@@ -1,26 +1,60 @@
-use cdf_kernel::WriteDisposition;
+use cdf_kernel::{CdfError, Result, WriteDisposition};
 use serde::{Deserialize, Serialize};
 
 #[cfg(test)]
 mod examples;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum SourceArchetype {
-    File,
-    Python,
-    Rest,
-    Sql,
-}
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct SourceArchetype(String);
 
 impl SourceArchetype {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::File => "file",
-            Self::Python => "python",
-            Self::Rest => "rest",
-            Self::Sql => "sql",
+    pub fn new(value: impl Into<String>) -> Result<Self> {
+        let value = value.into();
+        if value.is_empty()
+            || !value
+                .bytes()
+                .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'_')
+        {
+            return Err(CdfError::contract(
+                "conformance source archetype must be a nonempty lowercase ASCII identifier",
+            ));
         }
+        Ok(Self(value))
+    }
+
+    fn fixture(value: &'static str) -> Self {
+        Self::new(value).expect("static conformance source archetype is valid")
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    pub fn file() -> Self {
+        Self::fixture("file")
+    }
+
+    pub fn python() -> Self {
+        Self::fixture("python")
+    }
+
+    pub fn rest() -> Self {
+        Self::fixture("rest")
+    }
+
+    pub fn sql() -> Self {
+        Self::fixture("sql")
+    }
+
+    pub fn external_mock() -> Self {
+        Self::fixture("external_mock")
+    }
+}
+
+impl std::fmt::Display for SourceArchetype {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(self.as_str())
     }
 }
 
@@ -69,7 +103,7 @@ impl MatrixDisposition {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct RunMatrixCell {
     pub source_archetype: SourceArchetype,
     pub destination: MatrixDestination,
@@ -77,7 +111,7 @@ pub struct RunMatrixCell {
 }
 
 impl RunMatrixCell {
-    pub const fn new(
+    pub fn new(
         source_archetype: SourceArchetype,
         destination: MatrixDestination,
         disposition: MatrixDisposition,
@@ -89,20 +123,20 @@ impl RunMatrixCell {
         }
     }
 
-    pub const fn file(destination: MatrixDestination, disposition: MatrixDisposition) -> Self {
-        Self::new(SourceArchetype::File, destination, disposition)
+    pub fn file(destination: MatrixDestination, disposition: MatrixDisposition) -> Self {
+        Self::new(SourceArchetype::file(), destination, disposition)
     }
 
-    pub const fn rest(destination: MatrixDestination, disposition: MatrixDisposition) -> Self {
-        Self::new(SourceArchetype::Rest, destination, disposition)
+    pub fn rest(destination: MatrixDestination, disposition: MatrixDisposition) -> Self {
+        Self::new(SourceArchetype::rest(), destination, disposition)
     }
 
-    pub const fn python(destination: MatrixDestination, disposition: MatrixDisposition) -> Self {
-        Self::new(SourceArchetype::Python, destination, disposition)
+    pub fn python(destination: MatrixDestination, disposition: MatrixDisposition) -> Self {
+        Self::new(SourceArchetype::python(), destination, disposition)
     }
 
-    pub const fn sql(destination: MatrixDestination, disposition: MatrixDisposition) -> Self {
-        Self::new(SourceArchetype::Sql, destination, disposition)
+    pub fn sql(destination: MatrixDestination, disposition: MatrixDisposition) -> Self {
+        Self::new(SourceArchetype::sql(), destination, disposition)
     }
 }
 
@@ -134,19 +168,15 @@ pub struct RunMatrixOutput {
 }
 
 pub fn file_source_matrix_cells() -> Vec<RunMatrixCell> {
-    source_matrix_cells(SourceArchetype::File)
+    source_matrix_cells(SourceArchetype::file())
 }
 
+#[cfg(test)]
 pub fn run_spine_matrix_cells() -> Vec<RunMatrixCell> {
-    [
-        SourceArchetype::File,
-        SourceArchetype::Python,
-        SourceArchetype::Rest,
-        SourceArchetype::Sql,
-    ]
-    .into_iter()
-    .flat_map(source_matrix_cells)
-    .collect()
+    source_catalog::archetypes()
+        .into_iter()
+        .flat_map(source_matrix_cells)
+        .collect()
 }
 
 pub fn source_matrix_cells(source_archetype: SourceArchetype) -> Vec<RunMatrixCell> {
@@ -162,7 +192,7 @@ pub fn source_matrix_cells(source_archetype: SourceArchetype) -> Vec<RunMatrixCe
             MatrixDisposition::Merge,
         ] {
             cells.push(RunMatrixCell::new(
-                source_archetype,
+                source_archetype.clone(),
                 destination,
                 disposition,
             ));
@@ -180,6 +210,8 @@ mod data_onramp;
 #[cfg(test)]
 mod destinations;
 #[cfg(test)]
+mod external_mock_fixture;
+#[cfg(test)]
 mod file_fixture;
 #[cfg(test)]
 pub(crate) mod local_postgres;
@@ -189,6 +221,8 @@ mod plan_json;
 mod python_fixture;
 #[cfg(test)]
 mod rest_fixture;
+#[cfg(test)]
+mod source_catalog;
 #[cfg(test)]
 mod sql_fixture;
 #[cfg(test)]

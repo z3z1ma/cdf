@@ -69,7 +69,7 @@ impl MatrixDestinationHandle {
         destination: MatrixDestination,
         root: &Path,
         target: MatrixTarget,
-        postgres: &LivePostgres,
+        postgres: Option<&LivePostgres>,
     ) -> Result<Self> {
         match (destination, target) {
             (MatrixDestination::DuckDb, MatrixTarget::Plain(target)) => Ok(Self::DuckDb {
@@ -91,7 +91,14 @@ impl MatrixDestinationHandle {
                     table,
                 },
             ) => Ok(Self::Postgres {
-                database_url: postgres.url().to_owned(),
+                database_url: postgres
+                    .ok_or_else(|| {
+                        CdfError::contract(
+                            "Postgres destination conformance requires a live Postgres fixture",
+                        )
+                    })?
+                    .url()
+                    .to_owned(),
                 target,
                 target_name,
                 schema,
@@ -207,14 +214,19 @@ impl MatrixDestinationHandle {
 
 pub(crate) fn target_for_cell(
     cell: RunMatrixCell,
-    postgres: &LivePostgres,
+    postgres: Option<&LivePostgres>,
 ) -> Result<MatrixTarget> {
-    let table = target_table_for_cell(cell);
+    let table = target_table_for_cell(&cell);
     match cell.destination {
         MatrixDestination::DuckDb | MatrixDestination::ParquetFilesystem => {
             Ok(MatrixTarget::Plain(TargetName::new(table)?))
         }
         MatrixDestination::Postgres => {
+            let postgres = postgres.ok_or_else(|| {
+                CdfError::contract(
+                    "Postgres destination conformance requires a live Postgres fixture",
+                )
+            })?;
             let target = PostgresTarget::new(Some(postgres.schema()), &table)?;
             Ok(MatrixTarget::Postgres {
                 target_name: TargetName::new(target.display_name())?,
@@ -226,14 +238,12 @@ pub(crate) fn target_for_cell(
     }
 }
 
-fn target_table_for_cell(cell: RunMatrixCell) -> String {
-    let prefix = match cell.source_archetype {
-        super::SourceArchetype::File => "events",
-        super::SourceArchetype::Python => "python_events",
-        super::SourceArchetype::Rest => "rest_events",
-        super::SourceArchetype::Sql => "sql_events",
-    };
-    format!("{prefix}_{}", cell.disposition.as_str())
+fn target_table_for_cell(cell: &RunMatrixCell) -> String {
+    format!(
+        "{}_events_{}",
+        cell.source_archetype.as_str(),
+        cell.disposition.as_str()
+    )
 }
 
 fn list_relative_files(root: &Path) -> Result<Vec<FileFootprint>> {

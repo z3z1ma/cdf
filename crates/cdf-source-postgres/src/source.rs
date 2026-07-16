@@ -18,8 +18,7 @@ use cdf_kernel::{
     ResourceStream, Result, ScanPlan, ScanPredicate, ScanRequest, SchemaHash, SchemaSource,
     ScopeKind, SortDirection, SourcePosition, source_name,
 };
-use fallible_iterator::FallibleIterator;
-use postgres::{Client, NoTls, Row, types::ToSql};
+use postgres::{Client, IsolationLevel, NoTls, Row, types::ToSql};
 
 use cdf_postgres::{PostgresIdentifier, PostgresTarget};
 use cdf_runtime::{
@@ -504,9 +503,18 @@ fn execute_postgres_table(
         .iter()
         .map(SqlParam::as_to_sql)
         .collect::<Vec<_>>();
-    let mut rows = client
-        .query_raw(&query.sql, params)
-        .map_err(|error| CdfError::data(format!("query Postgres source table: {error}")))?;
+    let mut transaction = client
+        .build_transaction()
+        .isolation_level(IsolationLevel::RepeatableRead)
+        .read_only(true)
+        .start()
+        .map_err(|error| CdfError::data(format!("begin Postgres source snapshot: {error}")))?;
+    let statement = transaction
+        .prepare(&query.sql)
+        .map_err(|error| CdfError::data(format!("prepare Postgres source query: {error}")))?;
+    let portal = transaction
+        .bind(&statement, &params)
+        .map_err(|error| CdfError::data(format!("bind Postgres source query portal: {error}")))?;
     let mut batch_index = 0_usize;
     loop {
         cancellation.check()?;
@@ -517,16 +525,12 @@ fn execute_postgres_table(
                 POSTGRES_MAXIMUM_BATCH_BYTES,
             )?,
         )?;
-        let mut chunk = Vec::with_capacity(POSTGRES_FETCH_ROWS);
-        while chunk.len() < POSTGRES_FETCH_ROWS {
-            match rows
-                .next()
-                .map_err(|error| CdfError::data(format!("read Postgres source row: {error}")))?
-            {
-                Some(row) => chunk.push(row),
-                None => break,
-            }
-        }
+        let chunk = transaction
+            .query_portal(
+                &portal,
+                i32::try_from(POSTGRES_FETCH_ROWS).expect("Postgres source fetch rows fit i32"),
+            )
+            .map_err(|error| CdfError::data(format!("fetch Postgres source rows: {error}")))?;
         if chunk.is_empty() {
             return Ok(());
         }
