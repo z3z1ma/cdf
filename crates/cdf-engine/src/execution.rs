@@ -2697,19 +2697,28 @@ fn source_frontier_batch_bounds(plan: &EnginePlan, partition_count: usize) -> Re
             "source frontier schedule does not cover every executable partition",
         ));
     }
-    schedule
+    if schedule
         .partitions
         .iter()
-        .map(|partition| {
-            if partition.maximum_working_set_bytes == 0 {
-                Err(CdfError::contract(
-                    "source frontier partition requires a nonzero working-set bound",
-                ))
-            } else {
-                Ok(partition.maximum_working_set_bytes)
-            }
-        })
-        .collect()
+        .any(|partition| partition.maximum_working_set_bytes == 0)
+    {
+        return Err(CdfError::contract(
+            "source frontier partition requires a nonzero working-set bound",
+        ));
+    }
+    let maximum_batch_bytes = plan
+        .compiled_source_execution
+        .as_ref()
+        .ok_or_else(|| {
+            CdfError::contract("package execution requires a compiled source execution plan")
+        })?
+        .execution_capabilities()
+        .maximum_decode_bytes;
+    // The partition schedule owns admission for the source's complete concurrent working set
+    // (transport poll plus decode). The frontier retains only the decoded batch crossing the
+    // source edge, so reserving the schedule total here double-counts transport memory and can
+    // make a valid single-partition schedule impossible to execute under the same ledger.
+    Ok(vec![maximum_batch_bytes; partition_count])
 }
 
 fn partition_open_jobs(plan: &EnginePlan, options: &EngineExecutionOptions) -> usize {
