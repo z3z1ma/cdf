@@ -34,6 +34,7 @@ pub struct RestResourcePlan {
     pub pagination: Option<PaginationConfig>,
     pub auth: Option<AuthScheme>,
     pub rate_limit: RateLimitPolicy,
+    pub quota_authority: String,
     pub respect_headers: Vec<String>,
     pub allowlist: EgressAllowlist,
     pub cursor_param: Option<String>,

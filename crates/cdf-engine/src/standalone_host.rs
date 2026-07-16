@@ -824,6 +824,12 @@ impl ExecutionHost for StandaloneExecutionHost {
         self.monotonic_origin.elapsed()
     }
 
+    fn unix_now(&self) -> Duration {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or(Duration::ZERO)
+    }
+
     fn entropy_u64(&self) -> u64 {
         let counter = self.entropy_counter.fetch_add(1, Ordering::Relaxed);
         std::collections::hash_map::RandomState::new().hash_one(counter)

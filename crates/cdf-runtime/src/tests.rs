@@ -1230,6 +1230,10 @@ impl ExecutionHost for NoopSourceHost {
         std::time::Duration::ZERO
     }
 
+    fn unix_now(&self) -> std::time::Duration {
+        std::time::Duration::ZERO
+    }
+
     fn entropy_u64(&self) -> u64 {
         0
     }
@@ -2127,6 +2131,10 @@ impl ExecutionHost for LeaseTestHost {
     }
 
     fn monotonic_now(&self) -> std::time::Duration {
+        std::time::Duration::ZERO
+    }
+
+    fn unix_now(&self) -> std::time::Duration {
         std::time::Duration::ZERO
     }
 

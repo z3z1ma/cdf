@@ -115,9 +115,14 @@ impl RateLimiter {
         }
     }
 
-    pub fn observe_response(&mut self, response: &HttpResponse, now_ms: u64) -> RateLimitDecision {
+    pub fn observe_response(
+        &mut self,
+        response: &HttpResponse,
+        monotonic_now_ms: u64,
+        unix_now_ms: u64,
+    ) -> RateLimitDecision {
         if let Some(wait_ms) = retry_after_ms(response) {
-            self.blocked_until_ms = now_ms.saturating_add(wait_ms);
+            self.blocked_until_ms = monotonic_now_ms.saturating_add(wait_ms);
             return RateLimitDecision::wait(wait_ms, "Retry-After");
         }
 
@@ -136,16 +141,16 @@ impl RateLimiter {
                 .map(|value| match quota.reset {
                     ResetHeaderSemantics::DelaySeconds => value.saturating_mul(1_000),
                     ResetHeaderSemantics::EpochSeconds => {
-                        value.saturating_mul(1_000).saturating_sub(now_ms)
+                        value.saturating_mul(1_000).saturating_sub(unix_now_ms)
                     }
                 })
                 .unwrap_or(1_000);
-            self.blocked_until_ms = now_ms.saturating_add(wait_ms);
+            self.blocked_until_ms = monotonic_now_ms.saturating_add(wait_ms);
             return RateLimitDecision::wait(wait_ms, quota.reset_header.clone());
         }
 
         if response.status == 429 {
-            self.blocked_until_ms = now_ms.saturating_add(1_000);
+            self.blocked_until_ms = monotonic_now_ms.saturating_add(1_000);
             return RateLimitDecision::wait(1_000, "429");
         }
 

@@ -2,6 +2,7 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     fmt,
     sync::{Arc, Mutex},
+    time::Duration,
 };
 
 use arrow_array::{RecordBatch, new_null_array};
@@ -121,7 +122,7 @@ impl fmt::Debug for RestRuntimeDependencies {
 pub struct RestDiscoveryDependencies<'a> {
     transport: &'a dyn HttpTransport,
     secret_provider: &'a dyn SecretProvider,
-    memory: Arc<dyn MemoryCoordinator>,
+    execution: ExecutionServices,
     egress: SourceEgressScope,
     prepared_payloads: PreparedSourcePayloads,
 }
@@ -130,13 +131,13 @@ impl<'a> RestDiscoveryDependencies<'a> {
     pub fn new(
         transport: &'a dyn HttpTransport,
         secret_provider: &'a dyn SecretProvider,
-        memory: Arc<dyn MemoryCoordinator>,
+        execution: ExecutionServices,
         egress: SourceEgressScope,
     ) -> Self {
         Self {
             transport,
             secret_provider,
-            memory,
+            execution,
             egress,
             prepared_payloads: PreparedSourcePayloads::default(),
         }
@@ -158,6 +159,7 @@ impl fmt::Debug for RestDiscoveryDependencies<'_> {
             .debug_struct("RestDiscoveryDependencies")
             .field("transport", &"<explicit>")
             .field("secret_provider", &"<explicit>")
+            .field("managed_execution", &true)
             .field("egress", &self.egress)
             .field("prepared_payloads", &self.prepared_payloads)
             .finish()
@@ -573,7 +575,7 @@ fn execute_rest(
         ));
     }
 
-    let mut limiter = RateLimiter::new(plan.rate_limit.clone(), 0);
+    let mut limiter = response_quota_limiter(plan);
     let mut auth_session = plan.auth.clone().map(AuthSession::new);
     let mut paginator = plan.pagination.clone().map(Paginator::new);
     let base_request_url = build_request_url(
@@ -594,7 +596,7 @@ fn execute_rest(
 
     while let Some(url) = next_url {
         let prepared_key = prepared_rest_page_key(descriptor, plan, partition, &url)?;
-        let (mut response, prepared_retention) = match dependencies
+        let (mut response, _prepared_retention) = match dependencies
             .prepared_payloads
             .take(&prepared_key)?
         {
@@ -622,9 +624,6 @@ fn execute_rest(
                 None,
             ),
         };
-        if prepared_retention.is_some() {
-            limiter.observe_response(&response, 0);
-        }
         let body = response
             .body()
             .ok_or_else(|| CdfError::data("REST HTTP response did not include a JSON body"))?;
@@ -706,7 +705,7 @@ pub fn discover_rest_sample_schema(
     validate_partition(descriptor, plan, partition)?;
 
     let mut auth_session = plan.auth.clone().map(AuthSession::new);
-    let mut limiter = RateLimiter::new(plan.rate_limit.clone(), 0);
+    let mut limiter = response_quota_limiter(plan);
     let base_request_url = build_request_url(
         descriptor,
         plan,
@@ -724,8 +723,9 @@ pub fn discover_rest_sample_schema(
         auth_refresh: None,
         egress: &dependencies.egress,
         maximum_response_bytes: request.maximum_bytes,
-        memory: Arc::clone(&dependencies.memory),
+        memory: dependencies.execution.memory(),
         cancellation: request.cancellation.clone(),
+        execution: &dependencies.execution,
     };
     let response = send_page_with_transport(
         &mut send_context,
@@ -745,11 +745,8 @@ pub fn discover_rest_sample_schema(
             request.maximum_bytes
         )));
     }
-    let decoded = decode_response_page(
-        body,
-        &plan.record_selector,
-        Arc::clone(&dependencies.memory),
-    )?;
+    let decoded =
+        decode_response_page(body, &plan.record_selector, dependencies.execution.memory())?;
     let sampled_records = decoded.records.len().min(
         usize::try_from(request.maximum_records)
             .map_err(|_| CdfError::data("REST discovery record limit exceeds usize"))?,
@@ -866,6 +863,7 @@ struct RestSendContext<'a> {
     maximum_response_bytes: u64,
     memory: Arc<dyn MemoryCoordinator>,
     cancellation: RunCancellation,
+    execution: &'a ExecutionServices,
 }
 
 fn send_page(
@@ -887,6 +885,7 @@ fn send_page(
         maximum_response_bytes: REST_MAXIMUM_BATCH_BYTES,
         memory: dependencies.execution.memory(),
         cancellation: cancellation.clone(),
+        execution: &dependencies.execution,
     };
     send_page_with_transport(&mut send_context, plan, url, auth_session, limiter)
 }
@@ -905,17 +904,30 @@ fn send_page_with_transport(
         auth_session: &mut Option<AuthSession>,
         limiter: &mut RateLimiter,
     ) -> Result<HttpResponse> {
-        let decision = limiter.before_request(0);
-        if !decision.allowed {
-            return Err(CdfError::rate_limited(
-                decision
-                    .reason
-                    .unwrap_or_else(|| "REST rate limiter blocked request".to_owned()),
-                Some(decision.wait_ms),
-            ));
-        }
+        let rate_limit = plan
+            .rate_limit
+            .requests_per_minute
+            .map(|requests_per_minute| cdf_runtime::SourceRateLimit {
+                operations: u64::from(requests_per_minute),
+                interval_ms: 60_000,
+            });
+        context.execution.admit_source_operation(
+            &plan.quota_authority,
+            rate_limit,
+            context.cancellation.clone(),
+        )?;
         let response = send_page_once(context, plan, url, auth_session)?;
-        limiter.observe_response(&response, 0);
+        let quota = limiter.observe_response(
+            &response,
+            duration_millis(context.execution.monotonic_now()),
+            duration_millis(context.execution.unix_now()),
+        );
+        if !quota.allowed {
+            context.execution.defer_source_operations(
+                &plan.quota_authority,
+                Duration::from_millis(quota.wait_ms),
+            )?;
+        }
         Ok(response)
     }
 
@@ -944,6 +956,20 @@ fn send_page_with_transport(
         return Err(error);
     }
     Ok(response)
+}
+
+fn response_quota_limiter(plan: &RestResourcePlan) -> RateLimiter {
+    RateLimiter::new(
+        cdf_http::RateLimitPolicy {
+            requests_per_minute: None,
+            quota_headers: plan.rate_limit.quota_headers.clone(),
+        },
+        0,
+    )
+}
+
+fn duration_millis(duration: Duration) -> u64 {
+    u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
 }
 
 fn send_page_once(
@@ -1880,6 +1906,12 @@ fn validate_http_url(url: &str) -> Result<()> {
             "REST request URL must not include a fragment",
         ));
     }
+    if url
+        .split_once("://")
+        .is_none_or(|(_, authority)| authority.starts_with('/'))
+    {
+        return Err(CdfError::contract("REST request URL must include a host"));
+    }
     let parsed = url::Url::parse(url)
         .map_err(|error| CdfError::contract(format!("invalid REST request URL: {error}")))?;
     if !matches!(parsed.scheme(), "http" | "https") {
@@ -2042,6 +2074,82 @@ mod tests {
 
     use super::*;
 
+    struct TestExecutionHost {
+        memory: Arc<dyn MemoryCoordinator>,
+        spill: Arc<dyn cdf_runtime::SpillBudgetCoordinator>,
+    }
+
+    impl cdf_runtime::ExecutionHost for TestExecutionHost {
+        fn capabilities(&self) -> cdf_runtime::ExecutionHostCapabilities {
+            cdf_runtime::ExecutionHostCapabilities {
+                logical_cpu_slots: 1,
+                io_workers: 1,
+                blocking_lanes: Vec::new(),
+            }
+        }
+
+        fn memory(&self) -> Arc<dyn MemoryCoordinator> {
+            Arc::clone(&self.memory)
+        }
+
+        fn spill(&self) -> Arc<dyn cdf_runtime::SpillBudgetCoordinator> {
+            Arc::clone(&self.spill)
+        }
+
+        fn open_scope(&self, _run_id: &str) -> Result<Box<dyn cdf_runtime::ExecutionTaskScope>> {
+            Err(CdfError::internal("REST unit host does not open scopes"))
+        }
+
+        fn run_io_blocking(&self, _task: cdf_runtime::IoValueTask) -> Result<cdf_runtime::IoValue> {
+            Err(CdfError::internal("REST unit host does not run I/O"))
+        }
+
+        fn delay(
+            &self,
+            _duration: Duration,
+            cancellation: RunCancellation,
+        ) -> cdf_kernel::BoxFuture<'static, Result<()>> {
+            Box::pin(async move { cancellation.check() })
+        }
+
+        fn monotonic_now(&self) -> Duration {
+            Duration::ZERO
+        }
+
+        fn unix_now(&self) -> Duration {
+            Duration::ZERO
+        }
+
+        fn entropy_u64(&self) -> u64 {
+            0
+        }
+
+        fn ensure_blocking_lanes(&self, _lanes: &[cdf_runtime::BlockingLaneSpec]) -> Result<()> {
+            Ok(())
+        }
+
+        fn run_blocking_value(
+            &self,
+            _lane: &str,
+            task: cdf_runtime::BlockingValueTask,
+        ) -> Result<cdf_runtime::IoValue> {
+            task()
+        }
+    }
+
+    fn test_execution_services() -> ExecutionServices {
+        let memory: Arc<dyn MemoryCoordinator> = Arc::new(
+            cdf_memory::DeterministicMemoryCoordinator::new(
+                crate::REST_MAXIMUM_DECODE_BYTES,
+                BTreeMap::new(),
+            )
+            .unwrap(),
+        );
+        let spill: Arc<dyn cdf_runtime::SpillBudgetCoordinator> =
+            Arc::new(cdf_runtime::FixedSpillBudget::new(64 * 1024 * 1024).unwrap());
+        ExecutionServices::new(Arc::new(TestExecutionHost { memory, spill })).unwrap()
+    }
+
     fn test_http_budget() -> HttpResponseBudget {
         let memory: Arc<dyn MemoryCoordinator> = Arc::new(
             cdf_memory::DeterministicMemoryCoordinator::new(
@@ -2134,6 +2242,7 @@ mod tests {
             pagination: None,
             auth: None,
             rate_limit: cdf_http::RateLimitPolicy::unrestricted(),
+            quota_authority: "https://adapter-permitted.example.org:443".to_owned(),
             respect_headers: Vec::new(),
             allowlist: cdf_http::EgressAllowlist::allow_any(),
             cursor_param: None,
@@ -2141,6 +2250,7 @@ mod tests {
             records_transform: None,
         };
         let mut auth_session = None;
+        let execution = test_execution_services();
         let context = RestSendContext {
             transport: &transport,
             secret_provider: None,
@@ -2151,6 +2261,7 @@ mod tests {
                 cdf_memory::DeterministicMemoryCoordinator::new(1024, BTreeMap::new()).unwrap(),
             ),
             cancellation: RunCancellation::default(),
+            execution: &execution,
         };
 
         let error = send_page_once(
@@ -2277,6 +2388,7 @@ mod tests {
             pagination: None,
             auth: None,
             rate_limit: cdf_http::RateLimitPolicy::unrestricted(),
+            quota_authority: "https://api.example.com:443".to_owned(),
             respect_headers: Vec::new(),
             allowlist: cdf_http::EgressAllowlist::allow_any(),
             cursor_param: Some("since".to_owned()),

@@ -40,6 +40,7 @@ def resource(
     merge_key: Sequence[str] = (),
     cursor: str | None = None,
     parallel: bool = False,
+    bounded: bool = True,
     schema: Mapping[str, str | tuple[str, bool]] | None = None,
     write_disposition: str = "append",
 ) -> Callable[[R], R]: ...
@@ -54,6 +55,7 @@ def resource(
     merge_key: Sequence[str] = (),
     cursor: str | None = None,
     parallel: bool = False,
+    bounded: bool = True,
     schema: Mapping[str, str | tuple[str, bool]] | None = None,
     write_disposition: str = "append",
 ) -> R | Callable[[R], R]:
@@ -64,6 +66,7 @@ def resource(
         setattr(inner, "__cdf_merge_key__", tuple(merge_key))
         setattr(inner, "__cdf_cursor__", cursor)
         setattr(inner, "__cdf_parallel__", parallel)
+        setattr(inner, "__cdf_bounded__", bounded)
         setattr(
             inner,
             "__cdf_schema__",

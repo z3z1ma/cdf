@@ -38,6 +38,7 @@ pub struct PythonResource {
     module_relative: String,
     callable: String,
     content_hash: String,
+    bounded: bool,
     execution: Option<cdf_runtime::ExecutionServices>,
     blocking_lane: Option<String>,
     compiled_source_plan_hash: Option<String>,
@@ -49,6 +50,7 @@ pub(crate) struct PythonPhysicalPlan {
     pub(crate) module_relative: String,
     pub(crate) callable: String,
     pub(crate) content_hash: String,
+    pub(crate) bounded: bool,
 }
 
 impl PythonResource {
@@ -144,6 +146,7 @@ impl PythonResource {
             module_relative,
             callable,
             content_hash,
+            bounded: metadata.bounded,
             execution: None,
             blocking_lane: None,
             compiled_source_plan_hash: None,
@@ -155,6 +158,7 @@ impl PythonResource {
             module_relative: self.module_relative.clone(),
             callable: self.callable.clone(),
             content_hash: self.content_hash.clone(),
+            bounded: self.bounded,
         }
     }
 
@@ -175,6 +179,7 @@ impl PythonResource {
             module_relative: physical.module_relative,
             callable: physical.callable,
             content_hash: physical.content_hash,
+            bounded: physical.bounded,
             execution: None,
             blocking_lane: None,
             compiled_source_plan_hash: Some(compiled_source_plan_hash),
@@ -509,6 +514,7 @@ struct PythonMetadata {
     merge_key: Vec<String>,
     cursor: Option<String>,
     parallel: bool,
+    bounded: bool,
     write_disposition: String,
 }
 
@@ -563,6 +569,10 @@ fn inspect_metadata(source: &str, file_name: &str, callable_name: &str) -> Resul
                 .map_err(py_error)?,
             parallel: callable
                 .getattr("__cdf_parallel__")
+                .and_then(|value| value.extract())
+                .map_err(py_error)?,
+            bounded: callable
+                .getattr("__cdf_bounded__")
                 .and_then(|value| value.extract())
                 .map_err(py_error)?,
             write_disposition: callable

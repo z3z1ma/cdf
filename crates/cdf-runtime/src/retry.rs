@@ -549,6 +549,10 @@ mod tests {
             Duration::from_millis(self.now_ms.load(Ordering::SeqCst))
         }
 
+        fn unix_now(&self) -> Duration {
+            self.monotonic_now()
+        }
+
         fn entropy_u64(&self) -> u64 {
             self.entropy.lock().unwrap().pop_front().unwrap_or(0)
         }

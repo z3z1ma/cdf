@@ -16708,6 +16708,7 @@ raw_events.__cdf_primary_key__ = ()
 raw_events.__cdf_merge_key__ = ()
 raw_events.__cdf_cursor__ = "updated_at"
 raw_events.__cdf_parallel__ = False
+raw_events.__cdf_bounded__ = True
 raw_events.__cdf_schema__ = (("id", "int64", False), ("name", "utf8", False), ("updated_at", "int64", False))
 raw_events.__cdf_write_disposition__ = "append"
 "#,

@@ -312,7 +312,10 @@ fn compile_resource_plan(
     CompiledSourcePlan::new(
         driver,
         capabilities.clone(),
-        execution_capabilities(capabilities.partitioning.parallel_partitions),
+        execution_capabilities(
+            capabilities.partitioning.parallel_partitions,
+            physical.bounded,
+        ),
         CompiledSourcePlanInput {
             descriptor,
             schema,
@@ -485,7 +488,7 @@ fn is_executable(_metadata: &fs::Metadata) -> bool {
     true
 }
 
-fn execution_capabilities(parallel: bool) -> SourceExecutionCapabilities {
+fn execution_capabilities(parallel: bool, bounded: bool) -> SourceExecutionCapabilities {
     let concurrency = if parallel { 64 } else { 1 };
     SourceExecutionCapabilities {
         minimum_poll_bytes: 8 * 1024,
@@ -516,7 +519,7 @@ fn execution_capabilities(parallel: bool) -> SourceExecutionCapabilities {
         rate_limit: None,
         quota_authority: None,
         canonical_order: true,
-        bounded: false,
+        bounded,
         batch_memory: SourceBatchMemoryContract::Preaccounted,
         telemetry_version: "v1".to_owned(),
     }

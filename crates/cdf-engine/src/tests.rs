@@ -94,6 +94,15 @@ async fn execute_to_package(
     super::execute_to_package(&plan, resource, package_dir).await
 }
 
+async fn preview_resource(
+    plan: &EnginePlan,
+    resource: &MockResource,
+    limits: EnginePreviewLimits,
+) -> Result<EnginePreviewOutput> {
+    let plan = executable_mock_plan(plan, resource)?;
+    super::preview_resource(&plan, resource, limits).await
+}
+
 async fn execute_to_package_with_run_id(
     run_id: &RunId,
     plan: &EnginePlan,
@@ -303,7 +312,22 @@ fn engine_plan_requires_recorded_schema_authorities() {
             plan_input(vec![], None, None, ExecutionExtent::bounded()),
         )
         .unwrap();
+    assert!(
+        plan.validate_partition_schedule()
+            .unwrap_err()
+            .message
+            .contains("requires compiled source")
+    );
     let source = mock_compiled_source_plan(&resource, None);
+    let mut unbounded = source.clone();
+    unbounded.execution_capabilities.bounded = false;
+    assert!(
+        plan.clone()
+            .bind_compiled_source(&unbounded)
+            .unwrap_err()
+            .message
+            .contains("requires a source that declares finite completion")
+    );
     resource.bind_compiled_source(&source);
     plan = plan.bind_compiled_source(&source).unwrap();
     for required in [
@@ -315,6 +339,18 @@ fn engine_plan_requires_recorded_schema_authorities() {
         incomplete.as_object_mut().unwrap().remove(required);
         let error = serde_json::from_value::<EnginePlan>(incomplete).unwrap_err();
         assert!(error.to_string().contains(required));
+    }
+    for required in ["compiled_source_execution", "partition_schedule"] {
+        let mut incomplete = serde_json::to_value(&plan).unwrap();
+        incomplete.as_object_mut().unwrap().remove(required);
+        let incomplete: EnginePlan = serde_json::from_value(incomplete).unwrap();
+        let error = incomplete.validate_partition_schedule().unwrap_err();
+        assert!(
+            error.message.contains("must be present together")
+                || error
+                    .message
+                    .contains("does not match its recorded explain")
+        );
     }
 }
 

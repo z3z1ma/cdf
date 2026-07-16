@@ -29,6 +29,7 @@ events.__cdf_resource__ = True
 {keys}
 events.__cdf_cursor__ = "updated_at"
 events.__cdf_parallel__ = False
+events.__cdf_bounded__ = True
 events.__cdf_schema__ = (("id", "int64", False), ("name", "utf8", False), ("updated_at", "int64", False))
 events.__cdf_write_disposition__ = "{}"
 "#,

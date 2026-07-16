@@ -470,6 +470,16 @@ pub struct RuntimeSchedulerReport {
     /// report here.
     pub successful_task_scopes: TaskScopeReport,
     pub run_work: Option<RunWorkReport>,
+    pub source_rate_admission: SourceRateAdmissionReport,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SourceRateAdmissionReport {
+    pub authorities: u64,
+    pub admitted_operations: u64,
+    pub delayed_operations: u64,
+    pub wait_ms: u64,
+    pub response_deferrals: u64,
 }
 
 pub trait ExecutionTaskScope: Send {
@@ -502,6 +512,8 @@ pub trait ExecutionHost: Send + Sync {
     ) -> BoxFuture<'static, Result<()>>;
     /// Monotonic process-local time used only for runtime deadlines and telemetry.
     fn monotonic_now(&self) -> Duration;
+    /// Wall-clock Unix time used only to interpret external absolute reset/deadline headers.
+    fn unix_now(&self) -> Duration;
     /// Runtime entropy used for nonidentity scheduling choices such as retry jitter.
     fn entropy_u64(&self) -> u64;
     fn ensure_blocking_lanes(&self, lanes: &[BlockingLaneSpec]) -> Result<()>;
@@ -557,6 +569,27 @@ pub struct ExecutionServices {
     run_work: Option<Arc<RunWorkAdmission>>,
     staging_leases: Option<Arc<crate::StagingLeaseSupervisor>>,
     task_reports: Option<Arc<Mutex<TaskScopeReport>>>,
+    source_rate_gates: Arc<SourceRateGateRegistry>,
+}
+
+#[derive(Default)]
+struct SourceRateGateRegistry {
+    gates: Mutex<BTreeMap<String, Arc<SourceRateGate>>>,
+}
+
+struct SourceRateGate {
+    limit: Option<crate::SourceRateLimit>,
+    state: Mutex<SourceRateGateState>,
+}
+
+struct SourceRateGateState {
+    token_millis: u128,
+    last_refill_ms: u64,
+    blocked_until_ms: u64,
+    admitted_operations: u64,
+    delayed_operations: u64,
+    wait_ms: u64,
+    response_deferrals: u64,
 }
 
 struct RunWorkAdmission {
@@ -672,6 +705,7 @@ impl ExecutionServices {
             run_work: None,
             staging_leases: None,
             task_reports: None,
+            source_rate_gates: Arc::new(SourceRateGateRegistry::default()),
         })
     }
 
@@ -696,6 +730,7 @@ impl ExecutionServices {
             })),
             staging_leases: self.staging_leases.clone(),
             task_reports: None,
+            source_rate_gates: Arc::clone(&self.source_rate_gates),
         })
     }
 
@@ -711,6 +746,7 @@ impl ExecutionServices {
                 Arc::clone(&self.host),
             )?),
             task_reports: self.task_reports.clone(),
+            source_rate_gates: Arc::clone(&self.source_rate_gates),
         })
     }
 
@@ -835,8 +871,141 @@ impl ExecutionServices {
         self.host.monotonic_now()
     }
 
+    pub fn unix_now(&self) -> Duration {
+        self.host.unix_now()
+    }
+
     pub fn entropy_u64(&self) -> u64 {
         self.host.entropy_u64()
+    }
+
+    /// Admits one protocol-defined source operation through the shared quota authority.
+    ///
+    /// Drivers own the operation boundary, but timing, cancellation, and cross-resource quota
+    /// state are host-injected. Two plans cannot silently assign different budgets to one quota
+    /// authority within the same execution service.
+    pub fn admit_source_operation(
+        &self,
+        quota_authority: &str,
+        limit: Option<crate::SourceRateLimit>,
+        cancellation: RunCancellation,
+    ) -> Result<()> {
+        if let Some(limit) = limit {
+            limit.validate()?;
+        }
+        let gate = self.source_rate_gate(quota_authority, limit)?;
+
+        loop {
+            cancellation.check()?;
+            let now_ms = duration_millis(self.monotonic_now());
+            let wait_ms = {
+                let mut state = gate
+                    .state
+                    .lock()
+                    .map_err(|_| CdfError::internal("source rate-gate lock is poisoned"))?;
+                if now_ms < state.blocked_until_ms {
+                    let wait_ms = state.blocked_until_ms - now_ms;
+                    state.delayed_operations = state.delayed_operations.saturating_add(1);
+                    state.wait_ms = state.wait_ms.saturating_add(wait_ms);
+                    wait_ms
+                } else if let Some(limit) = gate.limit {
+                    let elapsed_ms = now_ms.saturating_sub(state.last_refill_ms);
+                    let capacity = u128::from(limit.operations) * u128::from(limit.interval_ms);
+                    let refill = u128::from(elapsed_ms) * u128::from(limit.operations);
+                    state.token_millis = capacity.min(state.token_millis.saturating_add(refill));
+                    state.last_refill_ms = now_ms;
+                    if state.token_millis >= u128::from(limit.interval_ms) {
+                        state.token_millis -= u128::from(limit.interval_ms);
+                        state.admitted_operations = state.admitted_operations.saturating_add(1);
+                        0
+                    } else {
+                        let missing = u128::from(limit.interval_ms) - state.token_millis;
+                        let operations = u128::from(limit.operations);
+                        let wait_ms = u64::try_from(missing.div_ceil(operations))
+                            .unwrap_or(u64::MAX)
+                            .max(1);
+                        state.delayed_operations = state.delayed_operations.saturating_add(1);
+                        state.wait_ms = state.wait_ms.saturating_add(wait_ms);
+                        wait_ms
+                    }
+                } else {
+                    state.admitted_operations = state.admitted_operations.saturating_add(1);
+                    0
+                }
+            };
+            if wait_ms == 0 {
+                return Ok(());
+            }
+            futures_executor::block_on(
+                self.delay(Duration::from_millis(wait_ms), cancellation.clone()),
+            )?;
+        }
+    }
+
+    /// Applies a server-observed quota delay to every operation sharing this authority.
+    pub fn defer_source_operations(&self, quota_authority: &str, delay: Duration) -> Result<()> {
+        let gate = self.source_rate_gate_existing(quota_authority)?;
+        let now_ms = duration_millis(self.monotonic_now());
+        let delay_ms = duration_millis(delay);
+        let mut state = gate
+            .state
+            .lock()
+            .map_err(|_| CdfError::internal("source rate-gate lock is poisoned"))?;
+        state.blocked_until_ms = state.blocked_until_ms.max(now_ms.saturating_add(delay_ms));
+        state.response_deferrals = state.response_deferrals.saturating_add(1);
+        Ok(())
+    }
+
+    fn source_rate_gate(
+        &self,
+        quota_authority: &str,
+        limit: Option<crate::SourceRateLimit>,
+    ) -> Result<Arc<SourceRateGate>> {
+        validate_quota_authority(quota_authority)?;
+        let now_ms = duration_millis(self.monotonic_now());
+        let mut gates = self
+            .source_rate_gates
+            .gates
+            .lock()
+            .map_err(|_| CdfError::internal("source rate-gate registry lock is poisoned"))?;
+        if let Some(gate) = gates.get(quota_authority) {
+            if gate.limit != limit {
+                return Err(CdfError::contract(format!(
+                    "source quota authority `{quota_authority}` has conflicting operation budgets"
+                )));
+            }
+            return Ok(Arc::clone(gate));
+        }
+        let token_millis = limit
+            .map(|limit| u128::from(limit.operations) * u128::from(limit.interval_ms))
+            .unwrap_or_default();
+        let gate = Arc::new(SourceRateGate {
+            limit,
+            state: Mutex::new(SourceRateGateState {
+                token_millis,
+                last_refill_ms: now_ms,
+                blocked_until_ms: now_ms,
+                admitted_operations: 0,
+                delayed_operations: 0,
+                wait_ms: 0,
+                response_deferrals: 0,
+            }),
+        });
+        gates.insert(quota_authority.to_owned(), Arc::clone(&gate));
+        Ok(gate)
+    }
+
+    fn source_rate_gate_existing(&self, quota_authority: &str) -> Result<Arc<SourceRateGate>> {
+        validate_quota_authority(quota_authority)?;
+        self.source_rate_gates
+            .gates
+            .lock()
+            .map_err(|_| CdfError::internal("source rate-gate registry lock is poisoned"))?
+            .get(quota_authority)
+            .cloned()
+            .ok_or_else(|| {
+                CdfError::internal("source quota response was observed before operation admission")
+            })
     }
 
     pub fn open_scope(&self, run_id: &str) -> Result<Box<dyn ExecutionTaskScope>> {
@@ -877,6 +1046,7 @@ impl ExecutionServices {
                 (true, None) => Some(Arc::new(Mutex::new(TaskScopeReport::default()))),
                 (false, _) => None,
             },
+            source_rate_gates: Arc::clone(&self.source_rate_gates),
         })
     }
 
@@ -908,9 +1078,37 @@ impl ExecutionServices {
                     .map_err(|_| CdfError::internal("run work admission lock is poisoned"))
             })
             .transpose()?;
+        let source_rate_admission = {
+            let gates =
+                self.source_rate_gates.gates.lock().map_err(|_| {
+                    CdfError::internal("source rate-gate registry lock is poisoned")
+                })?;
+            let mut report = SourceRateAdmissionReport {
+                authorities: u64::try_from(gates.len()).unwrap_or(u64::MAX),
+                ..SourceRateAdmissionReport::default()
+            };
+            for gate in gates.values() {
+                let state = gate
+                    .state
+                    .lock()
+                    .map_err(|_| CdfError::internal("source rate-gate lock is poisoned"))?;
+                report.admitted_operations = report
+                    .admitted_operations
+                    .saturating_add(state.admitted_operations);
+                report.delayed_operations = report
+                    .delayed_operations
+                    .saturating_add(state.delayed_operations);
+                report.wait_ms = report.wait_ms.saturating_add(state.wait_ms);
+                report.response_deferrals = report
+                    .response_deferrals
+                    .saturating_add(state.response_deferrals);
+            }
+            report
+        };
         Ok(RuntimeSchedulerReport {
             successful_task_scopes,
             run_work,
+            source_rate_admission,
         })
     }
 
@@ -1186,6 +1384,22 @@ impl ExecutionServices {
     }
 }
 
+fn duration_millis(duration: Duration) -> u64 {
+    u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
+}
+
+fn validate_quota_authority(quota_authority: &str) -> Result<()> {
+    if quota_authority.trim().is_empty()
+        || quota_authority.len() > 256
+        || quota_authority.chars().any(char::is_control)
+    {
+        return Err(CdfError::contract(
+            "source operation admission requires a bounded non-empty quota authority",
+        ));
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use std::task::{Context, Poll};
@@ -1233,6 +1447,7 @@ mod tests {
                 run_work: Some(Arc::clone(&admission)),
                 staging_leases: None,
                 task_reports: Some(Arc::new(Mutex::new(TaskScopeReport::default()))),
+                source_rate_gates: Arc::new(SourceRateGateRegistry::default()),
             };
             services.tighten_run_job_ceiling(2).unwrap();
             assert_eq!(services.run_job_ceiling().unwrap(), Some(2));
@@ -1274,6 +1489,130 @@ mod tests {
         });
     }
 
+    #[test]
+    fn source_operation_rate_gate_is_shared_timed_and_policy_exact() {
+        struct VirtualRateHost {
+            now_ms: std::sync::atomic::AtomicU64,
+        }
+
+        impl ExecutionHost for VirtualRateHost {
+            fn capabilities(&self) -> ExecutionHostCapabilities {
+                ExecutionHostCapabilities {
+                    logical_cpu_slots: 1,
+                    io_workers: 1,
+                    blocking_lanes: Vec::new(),
+                }
+            }
+
+            fn memory(&self) -> Arc<dyn MemoryCoordinator> {
+                panic!("rate-gate test does not use memory")
+            }
+
+            fn spill(&self) -> Arc<dyn crate::SpillBudgetCoordinator> {
+                panic!("rate-gate test does not use spill")
+            }
+
+            fn open_scope(&self, _run_id: &str) -> Result<Box<dyn ExecutionTaskScope>> {
+                panic!("rate-gate test does not open scopes")
+            }
+
+            fn run_io_blocking(&self, _task: IoValueTask) -> Result<IoValue> {
+                panic!("rate-gate test does not run I/O")
+            }
+
+            fn delay(
+                &self,
+                duration: Duration,
+                cancellation: RunCancellation,
+            ) -> BoxFuture<'static, Result<()>> {
+                self.now_ms.fetch_add(
+                    u64::try_from(duration.as_millis()).unwrap_or(u64::MAX),
+                    Ordering::SeqCst,
+                );
+                Box::pin(async move { cancellation.check() })
+            }
+
+            fn monotonic_now(&self) -> Duration {
+                Duration::from_millis(self.now_ms.load(Ordering::SeqCst))
+            }
+
+            fn unix_now(&self) -> Duration {
+                self.monotonic_now()
+            }
+
+            fn entropy_u64(&self) -> u64 {
+                0
+            }
+
+            fn ensure_blocking_lanes(&self, _lanes: &[BlockingLaneSpec]) -> Result<()> {
+                Ok(())
+            }
+
+            fn run_blocking_value(&self, _lane: &str, task: BlockingValueTask) -> Result<IoValue> {
+                task()
+            }
+        }
+
+        let host = Arc::new(VirtualRateHost {
+            now_ms: std::sync::atomic::AtomicU64::new(0),
+        });
+        let services = ExecutionServices::new(host.clone()).unwrap();
+        let shared = services.clone();
+        let limit = crate::SourceRateLimit {
+            operations: 2,
+            interval_ms: 100,
+        };
+        services
+            .admit_source_operation("origin-a", Some(limit), RunCancellation::default())
+            .unwrap();
+        shared
+            .admit_source_operation("origin-a", Some(limit), RunCancellation::default())
+            .unwrap();
+        services
+            .admit_source_operation("origin-a", Some(limit), RunCancellation::default())
+            .unwrap();
+        assert_eq!(host.now_ms.load(Ordering::SeqCst), 50);
+        assert_eq!(
+            services.scheduler_report().unwrap().source_rate_admission,
+            SourceRateAdmissionReport {
+                authorities: 1,
+                admitted_operations: 3,
+                delayed_operations: 1,
+                wait_ms: 50,
+                response_deferrals: 0,
+            }
+        );
+        services
+            .defer_source_operations("origin-a", Duration::from_millis(25))
+            .unwrap();
+        shared
+            .admit_source_operation("origin-a", Some(limit), RunCancellation::default())
+            .unwrap();
+        assert_eq!(host.now_ms.load(Ordering::SeqCst), 100);
+        assert_eq!(
+            services
+                .scheduler_report()
+                .unwrap()
+                .source_rate_admission
+                .response_deferrals,
+            1
+        );
+        assert!(
+            shared
+                .admit_source_operation(
+                    "origin-a",
+                    Some(crate::SourceRateLimit {
+                        operations: 3,
+                        interval_ms: 100,
+                    }),
+                    RunCancellation::default(),
+                )
+                .unwrap_err()
+                .message
+                .contains("conflicting operation budgets")
+        );
+    }
+
     struct TestHost;
 
     impl ExecutionHost for TestHost {
@@ -1310,6 +1649,10 @@ mod tests {
         }
 
         fn monotonic_now(&self) -> Duration {
+            Duration::ZERO
+        }
+
+        fn unix_now(&self) -> Duration {
             Duration::ZERO
         }
 

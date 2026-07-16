@@ -173,7 +173,6 @@ impl SourceDriver for RestSourceDriver {
             plan: runtime_plan,
             transport: Arc::from((self.transport_factory)()?),
             secret_provider: Arc::clone(context.secret_provider()),
-            memory: context.execution().memory(),
             prepared_payloads: context.prepared_payloads().clone(),
             execution: context.execution().clone(),
             egress: context.egress_scope(&plan.driver.driver_id),
@@ -330,7 +329,6 @@ struct RestDriverDiscoverySession {
     plan: RestResourcePlan,
     transport: Arc<dyn HttpTransport>,
     secret_provider: Arc<dyn cdf_http::SecretProvider + Send + Sync>,
-    memory: Arc<dyn cdf_memory::MemoryCoordinator>,
     prepared_payloads: cdf_runtime::PreparedSourcePayloads,
     execution: cdf_runtime::ExecutionServices,
     egress: cdf_runtime::SourceEgressScope,
@@ -362,7 +360,7 @@ impl SourceDiscoverySession for RestDriverDiscoverySession {
         let plan = self.plan.clone();
         let transport = Arc::clone(&self.transport);
         let secret_provider = Arc::clone(&self.secret_provider);
-        let memory = Arc::clone(&self.memory);
+        let execution = self.execution.clone();
         let prepared_payloads = self.prepared_payloads.clone();
         let egress = self.egress.clone();
         let candidate = candidate.clone();
@@ -389,7 +387,7 @@ impl SourceDiscoverySession for RestDriverDiscoverySession {
             let dependencies = RestDiscoveryDependencies::new(
                 transport.as_ref(),
                 secret_provider.as_ref(),
-                memory,
+                execution,
                 egress,
             )
             .with_prepared_payloads(prepared_payloads);
@@ -651,6 +649,8 @@ impl RestPhysicalPlan {
             .as_ref()
             .map(|cursor| (cursor.parameter.clone(), cursor.fidelity.clone()))
             .unwrap_or((None, PushdownFidelity::Inexact));
+        let quota_authority =
+            cdf_runtime::SourceEgressTarget::parse(&self.source.base_url)?.canonical_authority();
         Ok(RestResourcePlan {
             source: self.source_name.clone(),
             base_url: self.source.base_url.clone(),
@@ -672,6 +672,7 @@ impl RestPhysicalPlan {
                     .map(QuotaOptions::to_runtime)
                     .collect::<Result<_>>()?,
             },
+            quota_authority,
             respect_headers: rate.respect_headers,
             allowlist: if self.source.egress_allowlist.is_empty() {
                 EgressAllowlist::allow_any()
@@ -818,8 +819,6 @@ fn is_sensitive_parameter_name(name: &str) -> bool {
 }
 
 fn execution_capabilities(plan: &RestResourcePlan) -> Result<SourceExecutionCapabilities> {
-    let quota_authority =
-        cdf_runtime::SourceEgressTarget::parse(&plan.base_url)?.canonical_authority();
     Ok(SourceExecutionCapabilities {
         minimum_poll_bytes: 8 * 1024,
         maximum_poll_bytes: crate::REST_MAXIMUM_BATCH_BYTES,
@@ -853,7 +852,7 @@ fn execution_capabilities(plan: &RestResourcePlan) -> Result<SourceExecutionCapa
                 operations: u64::from(operations),
                 interval_ms: 60_000,
             }),
-        quota_authority: Some(quota_authority),
+        quota_authority: Some(plan.quota_authority.clone()),
         canonical_order: true,
         bounded: true,
         batch_memory: cdf_runtime::SourceBatchMemoryContract::Preaccounted,
@@ -942,6 +941,10 @@ mod tests {
         }
 
         fn monotonic_now(&self) -> std::time::Duration {
+            std::time::Duration::ZERO
+        }
+
+        fn unix_now(&self) -> std::time::Duration {
             std::time::Duration::ZERO
         }
 

@@ -108,7 +108,11 @@ impl EnginePlan {
                 source.validate_compiler_binding(compiler_source)?;
                 schedule.validate_against_scan(&self.scan, source)?;
             }
-            (None, None) => {}
+            (None, None) => {
+                return Err(CdfError::data(
+                    "executable engine plan requires compiled source and partition-schedule authority",
+                ));
+            }
             (Some(_), None) | (None, Some(_)) => {
                 return Err(CdfError::data(
                     "partition schedule and compiled source execution plan must be present together",
@@ -151,7 +155,9 @@ impl EnginePlan {
             {
                 Ok(())
             }
-            (None, None) => Ok(()),
+            (None, None) => Err(CdfError::data(
+                "executable engine plan and resolved resource require compiler source bindings",
+            )),
             (Some(_), Some(_)) => Err(CdfError::data(
                 "resolved source does not match the compiler source artifact recorded by the engine plan",
             )),
@@ -169,6 +175,11 @@ impl EnginePlan {
         mut self,
         source: &cdf_runtime::CompiledSourcePlan,
     ) -> Result<Self> {
+        if self.execution_extent.is_bounded() && !source.execution_capabilities.bounded {
+            return Err(CdfError::contract(
+                "bounded execution requires a source that declares finite completion; declare the source bounded or compile a drain/resident extent",
+            ));
+        }
         self.compiled_schema_admission
             .bind_source(source, &self.scan.request.resource_id)?;
         let compiled_source_execution = cdf_runtime::CompiledSourceExecutionPlan::compile(source)?;

@@ -107,14 +107,14 @@ fn rate_limiter_respects_retry_after_and_quota_headers() {
 
     assert!(limiter.before_request(0).allowed);
     let retry_after = HttpResponse::new(429).with_header("Retry-After", "2");
-    let decision = limiter.observe_response(&retry_after, 10);
+    let decision = limiter.observe_response(&retry_after, 10, 10);
     assert_eq!(decision.wait_ms, 2_000);
     assert!(!limiter.before_request(1_000).allowed);
 
     let quota = HttpResponse::new(200)
         .with_header("X-RateLimit-Remaining", "0")
         .with_header("X-RateLimit-Reset", "3");
-    let decision = limiter.observe_response(&quota, 5_000);
+    let decision = limiter.observe_response(&quota, 5_000, 5_000);
     assert_eq!(decision.wait_ms, 3_000);
 }
 
