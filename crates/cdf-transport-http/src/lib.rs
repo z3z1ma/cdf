@@ -338,7 +338,10 @@ impl ByteSource for HttpByteSource {
         Box::pin(async move {
             request.cancellation.check()?;
             validate_chunk_target(request.preferred_chunk_bytes, &self.capabilities)?;
-            let response = self.request().send().await.map_err(http_send_error)?;
+            let response = request
+                .cancellation
+                .await_or_cancel(async { self.request().send().await.map_err(http_send_error) })
+                .await?;
             validate_response(&response, 200, &self.expected)?;
             let state = HttpSequentialState {
                 stream: Box::pin(response.bytes_stream()),
@@ -373,20 +376,24 @@ impl ByteSource for HttpByteSource {
             if end > self.expected.size_bytes.unwrap_or_default() {
                 return Err(CdfError::data("HTTP byte range exceeds planned generation"));
             }
-            let lease = reserve(
-                Arc::clone(&self.memory),
-                ReservationRequest::new(
-                    ConsumerKey::new("http-byte-source-range", MemoryClass::Source)?,
-                    extent.length,
-                )?,
-            )
-            .await?;
-            let response = self
-                .request()
-                .header("range", format!("bytes={}-{}", extent.start, end - 1))
-                .send()
-                .await
-                .map_err(http_send_error)?;
+            let lease = cancellation
+                .await_or_cancel(reserve(
+                    Arc::clone(&self.memory),
+                    ReservationRequest::new(
+                        ConsumerKey::new("http-byte-source-range", MemoryClass::Source)?,
+                        extent.length,
+                    )?,
+                ))
+                .await?;
+            let response = cancellation
+                .await_or_cancel(async {
+                    self.request()
+                        .header("range", format!("bytes={}-{}", extent.start, end - 1))
+                        .send()
+                        .await
+                        .map_err(http_send_error)
+                })
+                .await?;
             validate_response(&response, 206, &self.expected)?;
             let content_range = response
                 .headers()
@@ -404,7 +411,9 @@ impl ByteSource for HttpByteSource {
                     content_range
                 )));
             }
-            let bytes = response.bytes().await.map_err(http_body_error)?;
+            let bytes = cancellation
+                .await_or_cancel(async { response.bytes().await.map_err(http_body_error) })
+                .await?;
             if u64::try_from(bytes.len()).ok() != Some(extent.length) {
                 return Err(CdfError::data("HTTP exact range returned a short body"));
             }
@@ -432,17 +441,23 @@ async fn http_sequential_next(
     mut state: HttpSequentialState,
 ) -> Result<Option<(AccountedBytes, HttpSequentialState)>> {
     state.cancellation.check()?;
-    let lease = reserve(
-        Arc::clone(&state.memory),
-        ReservationRequest::new(
-            ConsumerKey::new("http-byte-source-sequential", MemoryClass::Source)?,
-            state.maximum_chunk_bytes,
-        )?,
-    )
-    .await?;
+    let lease = state
+        .cancellation
+        .await_or_cancel(reserve(
+            Arc::clone(&state.memory),
+            ReservationRequest::new(
+                ConsumerKey::new("http-byte-source-sequential", MemoryClass::Source)?,
+                state.maximum_chunk_bytes,
+            )?,
+        ))
+        .await?;
     loop {
         state.cancellation.check()?;
-        let Some(bytes) = state.stream.try_next().await.map_err(http_body_error)? else {
+        let cancellation = state.cancellation.clone();
+        let next = cancellation
+            .await_or_cancel(async { state.stream.try_next().await.map_err(http_body_error) })
+            .await?;
+        let Some(bytes) = next else {
             drop(lease);
             if state.transferred_bytes != state.expected_size {
                 return Err(CdfError::data(format!(
@@ -780,6 +795,70 @@ mod tests {
             1
         );
         assert_eq!(coordinator.snapshot().current_bytes, 0);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn http_source_cancellation_interrupts_a_pending_request() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let (request_sender, request_receiver) = mpsc::channel();
+        let (release_sender, release_receiver) = mpsc::channel();
+        let server = thread::spawn(move || {
+            let (mut socket, _) = listener.accept().unwrap();
+            let mut request = Vec::new();
+            let mut buffer = [0_u8; 1024];
+            while !request.windows(4).any(|window| window == b"\r\n\r\n") {
+                let read = socket.read(&mut buffer).unwrap();
+                if read == 0 {
+                    break;
+                }
+                request.extend_from_slice(&buffer[..read]);
+            }
+            request_sender.send(()).unwrap();
+            let _ = release_receiver.recv_timeout(Duration::from_secs(3));
+        });
+        let url = format!("http://{address}/stalled.bin");
+        let resource = FileTransportResource::http_url(url.clone());
+        let expected = FileIdentityMetadata {
+            location: url,
+            size_bytes: Some(16),
+            checksum: None,
+            etag: None,
+            version: None,
+            modified: None,
+        };
+        let memory: Arc<dyn MemoryCoordinator> =
+            Arc::new(DeterministicMemoryCoordinator::new(1024 * 1024, BTreeMap::new()).unwrap());
+        let source = ReqwestHttpTransport::new()
+            .unwrap()
+            .open_byte_source(&resource, &expected, memory)
+            .unwrap();
+        let cancellation = RunCancellation::default();
+        let task_cancellation = cancellation.clone();
+        let task = tokio::spawn(async move {
+            source
+                .open_sequential(SequentialReadRequest {
+                    preferred_chunk_bytes: MINIMUM_CHUNK_BYTES,
+                    cancellation: task_cancellation,
+                })
+                .await
+        });
+        tokio::task::spawn_blocking(move || request_receiver.recv_timeout(Duration::from_secs(2)))
+            .await
+            .unwrap()
+            .unwrap();
+        cancellation.cancel();
+        let outcome = tokio::time::timeout(Duration::from_secs(1), task)
+            .await
+            .expect("pending HTTP send ignored run cancellation")
+            .unwrap();
+        let error = match outcome {
+            Ok(_) => panic!("pending HTTP send completed after cancellation"),
+            Err(error) => error,
+        };
+        assert!(error.message.contains("cancelled"));
+        release_sender.send(()).unwrap();
+        server.join().unwrap();
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
