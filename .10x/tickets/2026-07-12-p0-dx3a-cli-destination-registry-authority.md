@@ -75,7 +75,7 @@ Thread the borrowed registry explicitly through command dispatch and every curre
 The implementation is complete, but the explicit full existing-CLI-suite acceptance criterion is red (272/291). Durable owners for the failing categories are:
 
 - `.10x/tickets/2026-07-11-p1-cx2-compact-renderer-errors.md` and `.10x/tickets/2026-07-11-p1-cx3-live-progress-activity.md` — narrow table/list assertions and stderr progress expectations.
-- `.10x/tickets/2026-07-11-p0-sx1-source-extension-boundary.md`, `.10x/tickets/done/2026-07-11-p0-fx1-native-format-extension-boundary.md`, and `.10x/tickets/2026-07-11-p3-b3-arrow-ipc-codecs.md` — deep-validation runtime injection, compressed/remote Arrow IPC, and discovery identity parity.
+- `.10x/tickets/done/2026-07-11-p0-sx1-source-extension-boundary.md`, `.10x/tickets/done/2026-07-11-p0-fx1-native-format-extension-boundary.md`, and `.10x/tickets/2026-07-11-p3-b3-arrow-ipc-codecs.md` — deep-validation runtime injection, compressed/remote Arrow IPC, and discovery identity parity.
 - `.10x/tickets/2026-07-11-p0-remove-preproduction-compatibility-vestiges.md` and `.10x/tickets/2026-07-11-p3-ws-v-vectorized-validation.md` — physical-to-compiled schema/coercion binding on actual file batches and stale error-contract assertions.
 - The active schema-promotion/product surface under `.10x/tickets/2026-07-05-implement-cdf-system.md` — Parquet execution-service injection, Postgres provenance preconditions, and current residual-count expectations.
 

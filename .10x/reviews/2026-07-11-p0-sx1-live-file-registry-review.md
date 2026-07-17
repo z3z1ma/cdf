@@ -1,7 +1,7 @@
 Status: recorded
 Created: 2026-07-11
 Updated: 2026-07-11
-Target: .10x/tickets/2026-07-11-p0-sx1-source-extension-boundary.md
+Target: .10x/tickets/done/2026-07-11-p0-sx1-source-extension-boundary.md
 Verdict: pass
 
 # SX1 live-file registry milestone review

@@ -1,8 +1,8 @@
 Status: active
 Created: 2026-07-11
-Updated: 2026-07-13
+Updated: 2026-07-16
 Parent: None
-Depends-On: `.10x/tickets/2026-07-11-p0-sx1-source-extension-boundary.md`
+Depends-On: `.10x/tickets/done/2026-07-11-p0-sx1-source-extension-boundary.md`
 
 # P0: Remove pre-production compatibility vestiges
 
@@ -28,7 +28,7 @@ No compatibility promise for the first production release is introduced here. No
 
 ## Blockers
 
-Repository-wide closure depends on SX1 replacing the remaining declarative file/REST compatibility adapters with the source extension boundary. Completed slices continue independently; the ticket MUST NOT move to done while those adapters remain.
+None from SX1: the source extension boundary is done. This ticket now owns direct repository-wide verification and deletion of any remaining preproduction compatibility vestige.
 
 ## References
 

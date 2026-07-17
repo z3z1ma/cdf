@@ -1,8 +1,8 @@
 Status: open
 Created: 2026-07-11
-Updated: 2026-07-12
+Updated: 2026-07-16
 Parent: .10x/tickets/2026-07-05-implement-cdf-system.md
-Depends-On: .10x/tickets/2026-07-11-p0-sx1-source-extension-boundary.md, .10x/tickets/done/2026-07-11-p0-dx1-neutral-runtime-crate.md, .10x/tickets/done/2026-07-11-p0-bx1-kernel-stream-extent-artifacts.md, .10x/specs/portable-partition-task-protocol.md
+Depends-On: .10x/tickets/done/2026-07-11-p0-sx1-source-extension-boundary.md, .10x/tickets/done/2026-07-11-p0-dx1-neutral-runtime-crate.md, .10x/tickets/done/2026-07-11-p0-bx1-kernel-stream-extent-artifacts.md, .10x/specs/portable-partition-task-protocol.md
 
 # P0 WX1: portable partition task/result protocol
 
@@ -27,7 +27,7 @@ No RPC, worker daemon, framework adapter, remote store, or placement.
 
 ## Blockers
 
-Depends on SX1, DX1, and BX1 artifact ownership.
+None. SX1, DX1, and BX1 are done; this ticket is executable.
 
 ## References
 

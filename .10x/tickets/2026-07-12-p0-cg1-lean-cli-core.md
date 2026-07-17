@@ -29,7 +29,7 @@ Extract `cdf-cli-core` as the dependency-light owner of grammar/help/artifacts/t
 - `.10x/specs/product-build-graph-boundaries.md`
 - `.10x/decisions/lean-cli-and-package-contract-build-boundaries.md`
 - `.10x/research/2026-07-12-cargo-product-build-graph-audit.md`
-- `.10x/tickets/2026-07-11-p0-sx1-source-extension-boundary.md`
+- `.10x/tickets/done/2026-07-11-p0-sx1-source-extension-boundary.md`
 - `.10x/tickets/done/2026-07-11-p0-fx1-native-format-extension-boundary.md`
 - `.10x/tickets/2026-07-12-p0-dx3a-cli-destination-registry-authority.md`
 

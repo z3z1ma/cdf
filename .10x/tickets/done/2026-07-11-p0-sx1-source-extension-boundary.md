@@ -1,4 +1,4 @@
-Status: active
+Status: done
 Created: 2026-07-11
 Updated: 2026-07-16
 Parent: .10x/tickets/2026-07-05-implement-cdf-system.md
@@ -30,7 +30,7 @@ No new source protocol, parser optimization, dynamic ABI, or distributed executi
 
 ## Blockers
 
-None. Neutral runtime, memory, and execution-host dependencies are done. Remaining work is owned by this ticket.
+None at closure. On 2026-07-16 the user explicitly ended further SX1 review/implementation and accepted the documented noncritical residuals under their existing P3/conformance owners.
 
 ## References
 
@@ -122,3 +122,16 @@ The compiled scan-intent milestone's first independent verdict was `fail` with f
 The registry-only stream-admission batch received one bounded independent review with verdict `fail` and three significant findings: projection-unstable baseline identity, unverified resolved executable authority, and a surviving single-implementation adapter. The implementation pass above addresses each finding with permanent falsification coverage and the consolidated runtime/engine/project/source/strict-Clippy matrix is green. Per the program's anti-thrash review policy, the same batch was not sent through repeated review cycles. SX1 remains active for the explicit registry-open declarative/add/doctor/Python/build-graph tail; this milestone is not ticket closure.
 
 The 2026-07-15 ticket-wide closure review deliberately split two fresh reviewers across correctness/security/identity/lifecycle and architecture/extensibility/performance/legacy. Both independently returned `fail` on the same critical defect: REST, Postgres, and Python advertised bounded source working sets while materializing complete inputs before exposing a stream. Their complementary significant findings are now one repair set: discovery-generation binding; host-owned egress and health validation; read-only/failure-atomic add; complete compiled-plan validation; data-driven mock-source conformance; typed incremental-position authority instead of file metadata strings; live scheduler consumption of declared capabilities; runtime-authoritative option schemas; one application-scoped registry/client set; complete driver-owned doctor probes; and deletion of obsolete destination-owned Postgres source hooks and optional-plan shims. No closure or pass is claimed until those shared-boundary repairs and their hostile laws land. Reviewers ran no redundant broad suites and were not asked for serial re-review.
+
+Closure verdict (2026-07-16): **done with explicitly accepted residual risk**. The final critical evidence-secret finding was repaired and permanently tested. Registry-owned health admission and cancellable async HTTP payload I/O also landed. The user explicitly directed that SX1 stop and close rather than continue review-driven expansion. The remaining significant concerns are not represented as completed SX1 acceptance: discovery/listing metadata cardinality is owned by `.10x/tickets/2026-07-11-p3-f2-materialization-closure-audit.md`; provider metadata/blocking-I/O cancellation and deadline completion is owned by `.10x/tickets/2026-07-11-p3-g1-streaming-transport-byte-sources.md`; and the remaining external-driver/catalog law breadth is owned by `.10x/tickets/2026-07-11-p0-dx4-conformance-extension-law.md`. No critical finding is waived.
+
+## Evidence
+
+- Generic source orchestration, registry-open compilation/discovery/add/doctor, first-party source dependency isolation, and compiled scheduler authority are evidenced by the journaled focused suites and `.10x/evidence/2026-07-14-p0-sx1-registry-discovery.md` plus `.10x/evidence/2026-07-14-p0-sx1-compiled-scan-intent.md`.
+- File/REST/Postgres/Python source libraries, the external mock lifecycle/run laws, strict all-target Clippy, evidence redaction, and package/receipt/checkpoint/replay paths passed the focused commands recorded above.
+- The complete compatibility/golden acceptance criterion is only partially supported: the final broad conformance run passed 64 tests and failed 29 pre-existing environment/artifact/catalog cases. Those failures are durably recorded above and are not relabeled as SX1 success.
+- The source-only Cargo boundary is statically enforced; product-wide rebuild timing remains with `.10x/tickets/2026-07-12-p0-cg1-lean-cli-core.md` rather than being claimed here.
+
+## Retrospective
+
+The extension boundary became sound when lifecycle behavior moved behind required driver capabilities and the registry became the validator/admission owner. The expensive failure mode was repeatedly treating every newly observed cross-cutting performance or conformance concern as another reason not to close the boundary ticket. That obscured the distinction between establishing an architecture seam and exhaustively optimizing every implementation behind it. Future closure reviews must return one complete severity-ranked set, critical findings must be repaired, and noncritical cross-program work must move immediately to its natural performance/conformance owner instead of recursively expanding the structural ticket.

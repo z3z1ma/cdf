@@ -22,7 +22,7 @@ The production run path now admits a bounded canonical frontier of partition ope
 
 The focused jobs-invariance test passed at jobs 1 and 4 with identical manifest identity and lineage and zero residual managed-memory bytes. The exact-limit observation test passed with one payload open and no extra attestation. The full engine suite passed 93 tests with five explicitly slow benchmark/stress probes ignored. Workspace all-target compilation and scoped strict Clippy passed.
 
-The broad `cdf-project` test command was also sampled and reached 147 passes before failing obsolete direct-`CompiledResource` execution fixtures with `compiled declarations are not executable; resolve their typed source driver`. That known migration is owned by `.10x/tickets/2026-07-11-p0-sx1-source-extension-boundary.md` and is independent of scheduler propagation; no compatibility shim was added.
+The broad `cdf-project` test command was also sampled and reached 147 passes before failing obsolete direct-`CompiledResource` execution fixtures with `compiled declarations are not executable; resolve their typed source driver`. That known migration is owned by `.10x/tickets/done/2026-07-11-p0-sx1-source-extension-boundary.md` and is independent of scheduler propagation; no compatibility shim was added.
 
 ## What this supports or challenges
 

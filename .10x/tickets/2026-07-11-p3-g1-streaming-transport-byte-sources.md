@@ -1,8 +1,8 @@
 Status: open
 Created: 2026-07-11
-Updated: 2026-07-14
+Updated: 2026-07-16
 Parent: .10x/tickets/2026-07-10-p3-ws-g-remote-io-overlap.md
-Depends-On: .10x/tickets/done/2026-07-10-p3-ws-l5-preoptimization-baseline.md, .10x/tickets/2026-07-11-p0-sx1-source-extension-boundary.md, .10x/tickets/done/2026-07-11-p0-fx1-native-format-extension-boundary.md, .10x/tickets/done/2026-07-11-p3-a4-injected-execution-host.md, .10x/specs/remote-local-io-overlap.md
+Depends-On: .10x/tickets/done/2026-07-10-p3-ws-l5-preoptimization-baseline.md, .10x/tickets/done/2026-07-11-p0-sx1-source-extension-boundary.md, .10x/tickets/done/2026-07-11-p0-fx1-native-format-extension-boundary.md, .10x/tickets/done/2026-07-11-p3-a4-injected-execution-host.md, .10x/specs/remote-local-io-overlap.md
 
 # P3 G1: async streaming local/HTTP/cloud byte sources
 
@@ -28,7 +28,7 @@ No adaptive range controller or codec optimization.
 
 ## Blockers
 
-Depends on L5, SX1, FX1, and A4.
+None. L5, SX1, FX1, and A4 are done; this ticket is executable.
 
 ## References
 
@@ -52,4 +52,5 @@ Depends on L5, SX1, FX1, and A4.
 - 2026-07-12 fresh adversarial review of the empty-frame repair: **Findings:** no significant or critical findings. Both providers reserve once before body polling, retain that lease across any number of provider-produced empty frames, check cancellation around polling/publication, exclude empty frames from transfer counts and `AccountedBytes`, reconcile a nonempty payload to its exact length, and release on EOF/error by RAII. HTTP EOF checks the exact planned length; object-store EOF preserves exact length/identity verification and the weak-generation `HEAD` reattestation. The focused fixtures exercise empty-empty-3-byte-data-EOF, require the published lease to reconcile to 3 bytes, require exactly one 4 MiB peak, and require zero current bytes after EOF; root reports both focused tests and the HTTP Parquet regression law passed. `AccountedBytes::new` and `MemoryLease::reconcile` still reject zero-byte payloads. **Verdict:** pass for this repair slice. **Residual risk:** the fixtures use synthetic streams and therefore do not establish which live Reqwest/hyper or cloud-provider versions emit empty frames; existing G1 live-provider/chunk-bound conformance remains open, but no repair-specific closure blocker was found.
 - 2026-07-14: SA3 live-stream testing exposed that `object_store::GetResult` is free to emit one provider frame larger than CDF's requested receive window (the in-memory provider emitted a 2.1 MiB object against a 1 MiB plan). Strong-generation sequential reads now avoid provider-controlled framing: CDF issues deterministic exact windows with the planned ETag/version precondition, reserves each window before the request, validates response extent/generation/length, and publishes it before advancing. A regression fixture proves a 2 MiB+137-byte provider object arrives as exactly 1 MiB, 1 MiB, and 137-byte accounted windows with a 1 MiB peak and zero residual bytes. Weak generations retain one full-request stream because independently joining weak ranges would be unsound; G1's remaining native-provider work owns a bounded single-request body implementation rather than weakening that rule.
 - 2026-07-14 adversarial repair review: **Findings:** the first pass would have skipped all network reattestation for a planned zero-byte strong object because it has no legal nonempty range; fixed by an explicit generation-bound `HEAD` before returning the empty stream and added a mutation regression. No critical/significant finding remains in the strong path: every nonempty request is exact, preconditioned, pre-reserved, extent/metadata/length checked, ordered, and cancellation checked before publication. **Verdict:** pass for the strong-generation repair. **Residual risk:** weak provider body framing remains outside CDF's control and the serial range loop is correctness-first rather than the final overlapped cloud implementation; both remain explicit G1/G2 acceptance, not a closure claim.
+- 2026-07-16: SX1 closed after landing cancellable async HTTP payload request/body operations. G1 owns the remaining transport-level metadata and blocking-provider deadline/cancellation completion; this is native transport work, not a reason to reopen the source registry boundary.
 - 2026-07-14: Superseded the temporary strong-generation exact-window “sequential” loop with one full-object provider stream. Strong S3/GCS/Azure reads bind generation conditions, weak reads retain terminal reattestation, provider frames are admitted once and exposed through bounded zero-copy slices, and full-scan telemetry now truthfully reports one request. Evidence: `.10x/evidence/2026-07-14-p3-g2-object-store-single-stream.md`. G1 remains open for bounded paged listing, auth/retry laws, and the live provider matrix; the obsolete serial loop is no longer a residual.

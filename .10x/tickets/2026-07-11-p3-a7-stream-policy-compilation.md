@@ -1,8 +1,8 @@
 Status: open
 Created: 2026-07-11
-Updated: 2026-07-11
+Updated: 2026-07-16
 Parent: .10x/tickets/2026-07-10-p3-ws-a-streaming-runtime-pipeline.md
-Depends-On: .10x/tickets/done/2026-07-11-p0-bx1-kernel-stream-extent-artifacts.md, .10x/tickets/2026-07-11-p0-sx1-source-extension-boundary.md, .10x/tickets/done/2026-07-11-p3-a5-streaming-operator-graph.md
+Depends-On: .10x/tickets/done/2026-07-11-p0-bx1-kernel-stream-extent-artifacts.md, .10x/tickets/done/2026-07-11-p0-sx1-source-extension-boundary.md, .10x/tickets/done/2026-07-11-p3-a5-streaming-operator-graph.md
 
 # P3 A7: stream policy compilation and explain
 
@@ -27,7 +27,7 @@ No runtime epoch execution or resident lifecycle.
 
 ## Blockers
 
-Blocked only on SX1. BX1 and A5 are done.
+None. SX1, BX1, and A5 are done; this ticket is executable.
 
 ## References
 
