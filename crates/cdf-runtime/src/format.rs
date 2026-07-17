@@ -679,77 +679,80 @@ pub trait ByteSource: Send + Sync {
         extents: Vec<ByteExtent>,
         cancellation: RunCancellation,
     ) -> BoxFuture<'_, Result<ExactRangeReadBatch>> {
-        Box::pin(async move {
-            cancellation.check()?;
-            self.capabilities().validate()?;
-            let policy = self.exact_range_coalescing_policy();
-            policy.validate()?;
-            if extents.is_empty() {
-                return ExactRangeReadBatch::try_new(Vec::new(), 0, 0, 0);
+        Box::pin(execute_exact_range_batch(self, extents, cancellation))
+    }
+}
+
+pub(crate) async fn execute_exact_range_batch<S: ByteSource + ?Sized>(
+    source: &S,
+    extents: Vec<ByteExtent>,
+    cancellation: RunCancellation,
+) -> Result<ExactRangeReadBatch> {
+    cancellation.check()?;
+    source.capabilities().validate()?;
+    let policy = source.exact_range_coalescing_policy();
+    policy.validate()?;
+    if extents.is_empty() {
+        return ExactRangeReadBatch::try_new(Vec::new(), 0, 0, 0);
+    }
+    if !source.capabilities().exact_ranges {
+        return Err(CdfError::contract(
+            "byte source cannot execute a batch of exact ranges",
+        ));
+    }
+    let logical_count = extents.len();
+    let groups = coalesce_exact_ranges(extents, source.capabilities().maximum_chunk_bytes, policy)?;
+    let useful_bytes = groups.iter().try_fold(0_u64, |total, group| {
+        total
+            .checked_add(group.useful_bytes)
+            .ok_or_else(|| CdfError::data("exact-range useful byte count overflowed"))
+    })?;
+    let request_count = u32::try_from(groups.len())
+        .map_err(|_| CdfError::data("exact-range request count exceeds u32"))?;
+    let concurrency = usize::from(source.capabilities().useful_range_concurrency.max(1));
+    let mut fetched = stream::iter(groups.into_iter().enumerate())
+        .map(|(ordinal, group)| {
+            let cancellation = cancellation.clone();
+            async move {
+                let physical = source.read_exact_range(group.extent, cancellation).await?;
+                Ok::<_, CdfError>((ordinal, group, physical))
             }
-            if !self.capabilities().exact_ranges {
-                return Err(CdfError::contract(
-                    "byte source cannot execute a batch of exact ranges",
+        })
+        .buffer_unordered(concurrency)
+        .try_collect::<Vec<_>>()
+        .await?;
+    fetched.sort_unstable_by_key(|(ordinal, _, _)| *ordinal);
+
+    let mut logical = (0..logical_count).map(|_| None).collect::<Vec<_>>();
+    let mut physical_bytes = 0_u64;
+    for (_, group, physical) in fetched {
+        let observed = u64::try_from(physical.payload().len())
+            .map_err(|_| CdfError::data("physical range length exceeds u64"))?;
+        if observed != group.extent.length {
+            return Err(CdfError::data(
+                "exact-range source returned a physical extent with the wrong length",
+            ));
+        }
+        physical_bytes = physical_bytes
+            .checked_add(observed)
+            .ok_or_else(|| CdfError::data("physical range byte count overflowed"))?;
+        for member in group.members {
+            let slot = logical.get_mut(member.ordinal).ok_or_else(|| {
+                CdfError::internal("exact-range member ordinal is outside its batch")
+            })?;
+            if slot.is_some() {
+                return Err(CdfError::internal(
+                    "exact-range member ordinal was populated twice",
                 ));
             }
-            let logical_count = extents.len();
-            let groups =
-                coalesce_exact_ranges(extents, self.capabilities().maximum_chunk_bytes, policy)?;
-            let useful_bytes = groups.iter().try_fold(0_u64, |total, group| {
-                total
-                    .checked_add(group.useful_bytes)
-                    .ok_or_else(|| CdfError::data("exact-range useful byte count overflowed"))
-            })?;
-            let request_count = u32::try_from(groups.len())
-                .map_err(|_| CdfError::data("exact-range request count exceeds u32"))?;
-            let concurrency = usize::from(self.capabilities().useful_range_concurrency.max(1));
-            let mut fetched = stream::iter(groups.into_iter().enumerate())
-                .map(|(ordinal, group)| {
-                    let cancellation = cancellation.clone();
-                    async move {
-                        let physical = self.read_exact_range(group.extent, cancellation).await?;
-                        Ok::<_, CdfError>((ordinal, group, physical))
-                    }
-                })
-                .buffer_unordered(concurrency)
-                .try_collect::<Vec<_>>()
-                .await?;
-            fetched.sort_unstable_by_key(|(ordinal, _, _)| *ordinal);
-
-            let mut logical = (0..logical_count).map(|_| None).collect::<Vec<_>>();
-            let mut physical_bytes = 0_u64;
-            for (_, group, physical) in fetched {
-                let observed = u64::try_from(physical.payload().len())
-                    .map_err(|_| CdfError::data("physical range length exceeds u64"))?;
-                if observed != group.extent.length {
-                    return Err(CdfError::data(
-                        "exact-range source returned a physical extent with the wrong length",
-                    ));
-                }
-                physical_bytes = physical_bytes
-                    .checked_add(observed)
-                    .ok_or_else(|| CdfError::data("physical range byte count overflowed"))?;
-                for member in group.members {
-                    let slot = logical.get_mut(member.ordinal).ok_or_else(|| {
-                        CdfError::internal("exact-range member ordinal is outside its batch")
-                    })?;
-                    if slot.is_some() {
-                        return Err(CdfError::internal(
-                            "exact-range member ordinal was populated twice",
-                        ));
-                    }
-                    *slot = Some(physical.slice(member.start..member.end)?);
-                }
-            }
-            let logical = logical
-                .into_iter()
-                .map(|item| {
-                    item.ok_or_else(|| CdfError::internal("exact-range member was not populated"))
-                })
-                .collect::<Result<Vec<_>>>()?;
-            ExactRangeReadBatch::try_new(logical, useful_bytes, physical_bytes, request_count)
-        })
+            *slot = Some(physical.slice(member.start..member.end)?);
+        }
     }
+    let logical = logical
+        .into_iter()
+        .map(|item| item.ok_or_else(|| CdfError::internal("exact-range member was not populated")))
+        .collect::<Result<Vec<_>>>()?;
+    ExactRangeReadBatch::try_new(logical, useful_bytes, physical_bytes, request_count)
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

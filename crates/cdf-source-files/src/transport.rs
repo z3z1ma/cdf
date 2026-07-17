@@ -782,31 +782,67 @@ impl FileTransport for FileTransportFacade {
         expected: &FileIdentityMetadata,
         memory: Arc<dyn MemoryCoordinator>,
     ) -> Result<Arc<dyn ByteSource>> {
-        match &resource.location {
+        let (source, origin): (Arc<dyn ByteSource>, Option<String>) = match &resource.location {
             FileTransportLocation::LocalPath { path } => {
-                Ok(Arc::new(crate::LocalByteSource::open(path, memory)?))
+                (Arc::new(crate::LocalByteSource::open(path, memory)?), None)
             }
-            FileTransportLocation::FileUrl { url } => Ok(Arc::new(crate::LocalByteSource::open(
-                file_url_path(url)?,
-                memory,
-            )?)),
+            FileTransportLocation::FileUrl { url } => (
+                Arc::new(crate::LocalByteSource::open(file_url_path(url)?, memory)?),
+                None,
+            ),
             FileTransportLocation::RemoteUrl { url } => {
-                let (store, path, _) = self.resolve_object_store(egress, resource, url)?;
-                Ok(Arc::new(crate::ObjectStoreByteSource::new(
-                    store,
-                    path,
-                    expected.clone(),
-                    memory,
-                )?))
+                let (store, path, origin) = self.resolve_object_store(egress, resource, url)?;
+                (
+                    Arc::new(crate::ObjectStoreByteSource::new(
+                        store,
+                        path,
+                        expected.clone(),
+                        memory,
+                    )?),
+                    Some(origin),
+                )
             }
             FileTransportLocation::HttpUrl { url } => {
                 egress.authorize(url)?;
                 let auth = self.resolve_http_auth(resource)?;
-                self.http_transport()?
-                    .open_byte_source(resource, expected, auth, memory)
+                (
+                    self.http_transport()?
+                        .open_byte_source(resource, expected, auth, memory)?,
+                    Some(http_origin(url)?),
+                )
             }
+        };
+        let Some(origin) = origin else {
+            return Ok(source);
+        };
+        if !source.capabilities().exact_ranges
+            || expected.generation_strength() == GenerationStrength::Weak
+        {
+            return Ok(source);
         }
+        let limits = cdf_runtime::SourceIoControllerLimits::automatic(
+            source.capabilities().useful_range_concurrency,
+        )?;
+        Ok(Arc::new(cdf_runtime::ControlledByteSource::new(
+            source,
+            origin,
+            self.execution()?.clone(),
+            limits,
+            cdf_runtime::SourceRetryPolicy::default(),
+        )?))
     }
+}
+
+fn http_origin(url: &str) -> Result<String> {
+    let parsed = Url::parse(url)
+        .map_err(|error| CdfError::contract(format!("invalid HTTP file URL: {error}")))?;
+    let host = parsed
+        .host_str()
+        .ok_or_else(|| CdfError::contract("HTTP file URL must name a host"))?;
+    let port = parsed
+        .port()
+        .map_or_else(String::new, |port| format!(":{port}"));
+    Ok(format!("{}://{host}{port}", parsed.scheme()))
 }
 
 impl FileTransportFacade {

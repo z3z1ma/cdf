@@ -11,7 +11,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use cdf_kernel::{BoxFuture, CdfError, InvocationTermination, Result};
+use cdf_kernel::{BoxFuture, CdfError, ErrorKind, InvocationTermination, Result};
 use cdf_memory::MemoryCoordinator;
 use futures_channel::{mpsc, oneshot};
 use futures_util::{SinkExt, Stream, future::Either};
@@ -487,6 +487,7 @@ pub struct RuntimeSchedulerReport {
     pub successful_task_scopes: TaskScopeReport,
     pub run_work: Option<RunWorkReport>,
     pub source_rate_admission: SourceRateAdmissionReport,
+    pub source_io_controller: SourceIoControllerReport,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -496,6 +497,77 @@ pub struct SourceRateAdmissionReport {
     pub delayed_operations: u64,
     pub wait_ms: u64,
     pub response_deferrals: u64,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SourceIoControllerMode {
+    Automatic,
+    Fixed,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SourceIoControllerLimits {
+    pub mode: SourceIoControllerMode,
+    pub minimum_concurrency: u16,
+    pub initial_concurrency: u16,
+    pub maximum_concurrency: u16,
+}
+
+impl SourceIoControllerLimits {
+    pub fn automatic(maximum_concurrency: u16) -> Result<Self> {
+        let limits = Self {
+            mode: SourceIoControllerMode::Automatic,
+            minimum_concurrency: 1,
+            // Preserve the healthy-provider roofline. Automatic feedback is a
+            // pressure response and recovery controller, not a conservative
+            // cold-start tax on every selective scan.
+            initial_concurrency: maximum_concurrency,
+            maximum_concurrency,
+        };
+        limits.validate()?;
+        Ok(limits)
+    }
+
+    pub fn fixed(concurrency: u16) -> Result<Self> {
+        let limits = Self {
+            mode: SourceIoControllerMode::Fixed,
+            minimum_concurrency: concurrency,
+            initial_concurrency: concurrency,
+            maximum_concurrency: concurrency,
+        };
+        limits.validate()?;
+        Ok(limits)
+    }
+
+    pub fn validate(self) -> Result<()> {
+        if self.minimum_concurrency == 0
+            || self.initial_concurrency < self.minimum_concurrency
+            || self.maximum_concurrency < self.initial_concurrency
+        {
+            return Err(CdfError::contract(
+                "source I/O controller limits require nonzero ordered concurrency bounds",
+            ));
+        }
+        Ok(())
+    }
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SourceIoControllerReport {
+    pub authorities: u64,
+    pub automatic_authorities: u64,
+    pub fixed_authorities: u64,
+    pub current_concurrency: u64,
+    pub peak_active: u16,
+    pub acquired_requests: u64,
+    pub queue_wait_ns: u64,
+    pub upward_adjustments: u64,
+    pub downward_adjustments: u64,
+    pub retries: u64,
+    pub throttles: u64,
+    pub physical_bytes: u64,
+    pub request_duration_ns: u64,
 }
 
 pub trait ExecutionTaskScope: Send {
@@ -586,6 +658,7 @@ pub struct ExecutionServices {
     staging_leases: Option<Arc<crate::StagingLeaseSupervisor>>,
     task_reports: Option<Arc<Mutex<TaskScopeReport>>>,
     source_rate_gates: Arc<SourceRateGateRegistry>,
+    source_io_controllers: Arc<SourceIoControllerRegistry>,
 }
 
 #[derive(Default)]
@@ -606,6 +679,116 @@ struct SourceRateGateState {
     delayed_operations: u64,
     wait_ms: u64,
     response_deferrals: u64,
+}
+
+#[derive(Default)]
+struct SourceIoControllerRegistry {
+    controllers: Mutex<BTreeMap<String, Arc<SourceIoControllerInner>>>,
+}
+
+struct SourceIoControllerInner {
+    limits: SourceIoControllerLimits,
+    state: Mutex<SourceIoControllerState>,
+}
+
+/// One resolved, credential-free transport-origin controller.
+///
+/// Resolution performs the registry lookup once. Range hot paths retain this
+/// handle and never return to the registry; its origin remains private and the
+/// operational feedback is excluded from every identity-bearing artifact.
+#[derive(Clone)]
+pub struct SourceIoController {
+    host: Arc<dyn ExecutionHost>,
+    inner: Arc<SourceIoControllerInner>,
+}
+
+struct SourceIoControllerState {
+    concurrency: u16,
+    active: u16,
+    peak_active: u16,
+    acquired_requests: u64,
+    queue_wait_ns: u64,
+    upward_adjustments: u64,
+    downward_adjustments: u64,
+    retries: u64,
+    throttles: u64,
+    physical_bytes: u64,
+    request_duration_ns: u64,
+    previous_throughput_bytes_per_second: u64,
+    improvement_streak: u8,
+    blocked_until_ms: u64,
+    waiters: WakerRegistry,
+}
+
+struct SourceIoRequestAcquisition {
+    controller: Arc<SourceIoControllerInner>,
+    waiter_id: Option<u64>,
+    waiting_since: Instant,
+}
+
+impl Future for SourceIoRequestAcquisition {
+    type Output = Result<SourceIoRequestPermit>;
+
+    fn poll(self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<Self::Output> {
+        let acquisition = self.get_mut();
+        let mut state = match acquisition.controller.state.lock() {
+            Ok(state) => state,
+            Err(_) => {
+                return Poll::Ready(Err(CdfError::internal(
+                    "source I/O controller lock is poisoned",
+                )));
+            }
+        };
+        if state.active < state.concurrency {
+            state.active += 1;
+            state.peak_active = state.peak_active.max(state.active);
+            state.acquired_requests = state.acquired_requests.saturating_add(1);
+            state.queue_wait_ns = state.queue_wait_ns.saturating_add(
+                u64::try_from(acquisition.waiting_since.elapsed().as_nanos()).unwrap_or(u64::MAX),
+            );
+            if let Some(waiter_id) = acquisition.waiter_id.take() {
+                state.waiters.unregister(waiter_id);
+            }
+            drop(state);
+            return Poll::Ready(Ok(SourceIoRequestPermit {
+                controller: Arc::clone(&acquisition.controller),
+            }));
+        }
+        acquisition.waiter_id = Some(
+            state
+                .waiters
+                .register(acquisition.waiter_id, context.waker()),
+        );
+        Poll::Pending
+    }
+}
+
+impl Drop for SourceIoRequestAcquisition {
+    fn drop(&mut self) {
+        if let Some(waiter_id) = self.waiter_id.take()
+            && let Ok(mut state) = self.controller.state.lock()
+        {
+            state.waiters.unregister(waiter_id);
+        }
+    }
+}
+
+pub struct SourceIoRequestPermit {
+    controller: Arc<SourceIoControllerInner>,
+}
+
+impl Drop for SourceIoRequestPermit {
+    fn drop(&mut self) {
+        let waiters = {
+            let mut state = self.controller.state.lock().unwrap();
+            debug_assert!(state.active > 0);
+            state.active = state.active.saturating_sub(1);
+            state.waiters.take_all()
+        };
+        for waiter in waiters {
+            waiter.wake();
+        }
+    }
 }
 
 struct RunWorkAdmission {
@@ -703,6 +886,139 @@ impl Drop for RunWorkPermit {
     }
 }
 
+impl std::fmt::Debug for SourceIoController {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("SourceIoController")
+            .field("limits", &self.inner.limits)
+            .finish_non_exhaustive()
+    }
+}
+
+impl SourceIoController {
+    pub fn limits(&self) -> SourceIoControllerLimits {
+        self.inner.limits
+    }
+
+    pub fn acquire(
+        &self,
+        cancellation: RunCancellation,
+    ) -> BoxFuture<'static, Result<SourceIoRequestPermit>> {
+        let controller = Arc::clone(&self.inner);
+        Box::pin(async move {
+            cancellation
+                .await_or_cancel(SourceIoRequestAcquisition {
+                    controller,
+                    waiter_id: None,
+                    waiting_since: Instant::now(),
+                })
+                .await
+        })
+    }
+
+    pub fn backoff_remaining(&self) -> Result<Duration> {
+        let now_ms = duration_millis(self.host.monotonic_now());
+        let state = self
+            .inner
+            .state
+            .lock()
+            .map_err(|_| CdfError::internal("source I/O controller lock is poisoned"))?;
+        Ok(Duration::from_millis(
+            state.blocked_until_ms.saturating_sub(now_ms),
+        ))
+    }
+
+    pub fn observe_retry(&self, error: &CdfError) -> Result<()> {
+        let now_ms = duration_millis(self.host.monotonic_now());
+        let mut state = self
+            .inner
+            .state
+            .lock()
+            .map_err(|_| CdfError::internal("source I/O controller lock is poisoned"))?;
+        state.retries = state.retries.saturating_add(1);
+        if error.kind == ErrorKind::RateLimited {
+            state.throttles = state.throttles.saturating_add(1);
+            let retry_after_ms = error.retry_after_ms.unwrap_or(100);
+            state.blocked_until_ms = state
+                .blocked_until_ms
+                .max(now_ms.saturating_add(retry_after_ms));
+        }
+        if self.inner.limits.mode == SourceIoControllerMode::Automatic {
+            let reduced = state
+                .concurrency
+                .div_ceil(2)
+                .max(self.inner.limits.minimum_concurrency);
+            if reduced < state.concurrency {
+                state.concurrency = reduced;
+                state.downward_adjustments = state.downward_adjustments.saturating_add(1);
+                state.improvement_streak = 0;
+            }
+        }
+        let waiters = state.waiters.take_all();
+        drop(state);
+        for waiter in waiters {
+            waiter.wake();
+        }
+        Ok(())
+    }
+
+    pub fn observe_batch(&self, physical_bytes: u64, duration: Duration) -> Result<()> {
+        if physical_bytes == 0 {
+            return Ok(());
+        }
+        let duration_ns = u64::try_from(duration.as_nanos())
+            .unwrap_or(u64::MAX)
+            .max(1);
+        let throughput = u64::try_from(
+            u128::from(physical_bytes)
+                .saturating_mul(1_000_000_000)
+                .checked_div(u128::from(duration_ns))
+                .unwrap_or_default(),
+        )
+        .unwrap_or(u64::MAX);
+        let mut state = self
+            .inner
+            .state
+            .lock()
+            .map_err(|_| CdfError::internal("source I/O controller lock is poisoned"))?;
+        state.physical_bytes = state.physical_bytes.saturating_add(physical_bytes);
+        state.request_duration_ns = state.request_duration_ns.saturating_add(duration_ns);
+        if self.inner.limits.mode == SourceIoControllerMode::Automatic
+            && state.concurrency < self.inner.limits.maximum_concurrency
+        {
+            let improved = state.previous_throughput_bytes_per_second == 0
+                || u128::from(throughput).saturating_mul(100)
+                    >= u128::from(state.previous_throughput_bytes_per_second).saturating_mul(103);
+            if improved {
+                state.improvement_streak = state.improvement_streak.saturating_add(1);
+            } else {
+                state.improvement_streak = 0;
+            }
+            if state.previous_throughput_bytes_per_second == 0 || state.improvement_streak >= 2 {
+                state.concurrency = state.concurrency.saturating_add(1);
+                state.upward_adjustments = state.upward_adjustments.saturating_add(1);
+                state.improvement_streak = 0;
+            }
+        }
+        state.previous_throughput_bytes_per_second =
+            if state.previous_throughput_bytes_per_second == 0 {
+                throughput
+            } else {
+                state
+                    .previous_throughput_bytes_per_second
+                    .saturating_mul(7)
+                    .saturating_add(throughput)
+                    / 8
+            };
+        let waiters = state.waiters.take_all();
+        drop(state);
+        for waiter in waiters {
+            waiter.wake();
+        }
+        Ok(())
+    }
+}
+
 impl std::fmt::Debug for ExecutionServices {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
@@ -722,6 +1038,7 @@ impl ExecutionServices {
             staging_leases: None,
             task_reports: None,
             source_rate_gates: Arc::new(SourceRateGateRegistry::default()),
+            source_io_controllers: Arc::new(SourceIoControllerRegistry::default()),
         })
     }
 
@@ -747,6 +1064,7 @@ impl ExecutionServices {
             staging_leases: self.staging_leases.clone(),
             task_reports: None,
             source_rate_gates: Arc::clone(&self.source_rate_gates),
+            source_io_controllers: Arc::clone(&self.source_io_controllers),
         })
     }
 
@@ -763,6 +1081,7 @@ impl ExecutionServices {
             )?),
             task_reports: self.task_reports.clone(),
             source_rate_gates: Arc::clone(&self.source_rate_gates),
+            source_io_controllers: Arc::clone(&self.source_io_controllers),
         })
     }
 
@@ -970,6 +1289,55 @@ impl ExecutionServices {
         Ok(())
     }
 
+    pub fn resolve_source_io_controller(
+        &self,
+        origin: &str,
+        limits: SourceIoControllerLimits,
+    ) -> Result<SourceIoController> {
+        validate_quota_authority(origin)?;
+        limits.validate()?;
+        let mut controllers =
+            self.source_io_controllers.controllers.lock().map_err(|_| {
+                CdfError::internal("source I/O controller registry lock is poisoned")
+            })?;
+        if let Some(controller) = controllers.get(origin) {
+            if controller.limits != limits {
+                return Err(CdfError::contract(format!(
+                    "source I/O origin `{origin}` has conflicting controller limits"
+                )));
+            }
+            return Ok(SourceIoController {
+                host: Arc::clone(&self.host),
+                inner: Arc::clone(controller),
+            });
+        }
+        let controller = Arc::new(SourceIoControllerInner {
+            limits,
+            state: Mutex::new(SourceIoControllerState {
+                concurrency: limits.initial_concurrency,
+                active: 0,
+                peak_active: 0,
+                acquired_requests: 0,
+                queue_wait_ns: 0,
+                upward_adjustments: 0,
+                downward_adjustments: 0,
+                retries: 0,
+                throttles: 0,
+                physical_bytes: 0,
+                request_duration_ns: 0,
+                previous_throughput_bytes_per_second: 0,
+                improvement_streak: 0,
+                blocked_until_ms: 0,
+                waiters: WakerRegistry::default(),
+            }),
+        });
+        controllers.insert(origin.to_owned(), Arc::clone(&controller));
+        Ok(SourceIoController {
+            host: Arc::clone(&self.host),
+            inner: controller,
+        })
+    }
+
     fn source_rate_gate(
         &self,
         quota_authority: &str,
@@ -1061,6 +1429,7 @@ impl ExecutionServices {
                 (false, _) => None,
             },
             source_rate_gates: Arc::clone(&self.source_rate_gates),
+            source_io_controllers: Arc::clone(&self.source_io_controllers),
         })
     }
 
@@ -1119,10 +1488,56 @@ impl ExecutionServices {
             }
             report
         };
+        let source_io_controller = {
+            let controllers = self.source_io_controllers.controllers.lock().map_err(|_| {
+                CdfError::internal("source I/O controller registry lock is poisoned")
+            })?;
+            let mut report = SourceIoControllerReport {
+                authorities: u64::try_from(controllers.len()).unwrap_or(u64::MAX),
+                ..SourceIoControllerReport::default()
+            };
+            for controller in controllers.values() {
+                match controller.limits.mode {
+                    SourceIoControllerMode::Automatic => {
+                        report.automatic_authorities =
+                            report.automatic_authorities.saturating_add(1);
+                    }
+                    SourceIoControllerMode::Fixed => {
+                        report.fixed_authorities = report.fixed_authorities.saturating_add(1);
+                    }
+                }
+                let state = controller
+                    .state
+                    .lock()
+                    .map_err(|_| CdfError::internal("source I/O controller lock is poisoned"))?;
+                report.current_concurrency = report
+                    .current_concurrency
+                    .saturating_add(u64::from(state.concurrency));
+                report.peak_active = report.peak_active.max(state.peak_active);
+                report.acquired_requests = report
+                    .acquired_requests
+                    .saturating_add(state.acquired_requests);
+                report.queue_wait_ns = report.queue_wait_ns.saturating_add(state.queue_wait_ns);
+                report.upward_adjustments = report
+                    .upward_adjustments
+                    .saturating_add(state.upward_adjustments);
+                report.downward_adjustments = report
+                    .downward_adjustments
+                    .saturating_add(state.downward_adjustments);
+                report.retries = report.retries.saturating_add(state.retries);
+                report.throttles = report.throttles.saturating_add(state.throttles);
+                report.physical_bytes = report.physical_bytes.saturating_add(state.physical_bytes);
+                report.request_duration_ns = report
+                    .request_duration_ns
+                    .saturating_add(state.request_duration_ns);
+            }
+            report
+        };
         Ok(RuntimeSchedulerReport {
             successful_task_scopes,
             run_work,
             source_rate_admission,
+            source_io_controller,
         })
     }
 
@@ -1463,6 +1878,7 @@ mod tests {
                 staging_leases: None,
                 task_reports: Some(Arc::new(Mutex::new(TaskScopeReport::default()))),
                 source_rate_gates: Arc::new(SourceRateGateRegistry::default()),
+                source_io_controllers: Arc::new(SourceIoControllerRegistry::default()),
             };
             services.tighten_run_job_ceiling(2).unwrap();
             assert_eq!(services.run_job_ceiling().unwrap(), Some(2));
@@ -1505,6 +1921,127 @@ mod tests {
     }
 
     #[test]
+    fn source_io_admission_is_origin_shared_bounded_and_cancellable() {
+        futures_executor::block_on(async {
+            let services = ExecutionServices::new(Arc::new(TestHost)).unwrap();
+            let shared = services.clone();
+            let limits = SourceIoControllerLimits::fixed(2).unwrap();
+            let controller = services
+                .resolve_source_io_controller("https://data.example", limits)
+                .unwrap();
+            let shared_controller = shared
+                .resolve_source_io_controller("https://data.example", limits)
+                .unwrap();
+            let first = controller
+                .acquire(RunCancellation::default())
+                .await
+                .unwrap();
+            let second = shared_controller
+                .acquire(RunCancellation::default())
+                .await
+                .unwrap();
+
+            let cancellation = RunCancellation::default();
+            let waiting = controller.acquire(cancellation.clone());
+            futures_util::pin_mut!(waiting);
+            assert!(matches!(
+                futures_util::poll!(waiting.as_mut()),
+                Poll::Pending
+            ));
+            cancellation.cancel();
+            let error = match waiting.await {
+                Ok(_) => panic!("cancelled source I/O waiter unexpectedly acquired a permit"),
+                Err(error) => error,
+            };
+            assert_eq!(error.kind, ErrorKind::Internal);
+            assert!(error.message.contains("cancelled"));
+
+            drop(first);
+            drop(second);
+            let report = services.scheduler_report().unwrap().source_io_controller;
+            assert_eq!(report.authorities, 1);
+            assert_eq!(report.fixed_authorities, 1);
+            assert_eq!(report.current_concurrency, 2);
+            assert_eq!(report.peak_active, 2);
+            assert_eq!(report.acquired_requests, 2);
+            assert!(
+                services
+                    .source_io_controllers
+                    .controllers
+                    .lock()
+                    .unwrap()
+                    .values()
+                    .next()
+                    .unwrap()
+                    .state
+                    .lock()
+                    .unwrap()
+                    .waiters
+                    .is_empty()
+            );
+        });
+    }
+
+    #[test]
+    fn automatic_source_io_feedback_preserves_healthy_ceiling_then_recovers_after_throttle() {
+        let services = ExecutionServices::new(Arc::new(TestHost)).unwrap();
+        let limits = SourceIoControllerLimits::automatic(8).unwrap();
+        let controller = services
+            .resolve_source_io_controller("s3://bucket.example", limits)
+            .unwrap();
+        assert_eq!(
+            services
+                .scheduler_report()
+                .unwrap()
+                .source_io_controller
+                .current_concurrency,
+            8
+        );
+        controller
+            .observe_retry(&CdfError::rate_limited("provider throttle", Some(250)))
+            .unwrap();
+        let backed_off = services.scheduler_report().unwrap().source_io_controller;
+        assert_eq!(backed_off.automatic_authorities, 1);
+        assert_eq!(backed_off.current_concurrency, 4);
+        assert_eq!(backed_off.downward_adjustments, 1);
+        assert_eq!(backed_off.retries, 1);
+        assert_eq!(backed_off.throttles, 1);
+        assert_eq!(
+            controller.backoff_remaining().unwrap(),
+            Duration::from_millis(250)
+        );
+
+        controller
+            .observe_batch(10 * 1024 * 1024, Duration::from_secs(1))
+            .unwrap();
+        let recovering = services.scheduler_report().unwrap().source_io_controller;
+        assert_eq!(recovering.current_concurrency, 5);
+        assert_eq!(recovering.upward_adjustments, 1);
+    }
+
+    #[test]
+    fn fixed_source_io_mode_records_retries_without_changing_concurrency() {
+        let services = ExecutionServices::new(Arc::new(TestHost)).unwrap();
+        let limits = SourceIoControllerLimits::fixed(6).unwrap();
+        let controller = services
+            .resolve_source_io_controller("az://account.example", limits)
+            .unwrap();
+        controller
+            .observe_retry(&CdfError::transient("connection reset"))
+            .unwrap();
+        controller
+            .observe_batch(4 * 1024 * 1024, Duration::from_millis(20))
+            .unwrap();
+        let report = services.scheduler_report().unwrap().source_io_controller;
+        assert_eq!(report.fixed_authorities, 1);
+        assert_eq!(report.current_concurrency, 6);
+        assert_eq!(report.upward_adjustments, 0);
+        assert_eq!(report.downward_adjustments, 0);
+        assert_eq!(report.retries, 1);
+        assert_eq!(report.throttles, 0);
+    }
+
+    #[test]
     fn source_operation_rate_gate_is_shared_timed_and_policy_exact() {
         struct VirtualRateHost {
             now_ms: std::sync::atomic::AtomicU64,
@@ -1531,8 +2068,8 @@ mod tests {
                 panic!("rate-gate test does not open scopes")
             }
 
-            fn run_io_blocking(&self, _task: IoValueTask) -> Result<IoValue> {
-                panic!("rate-gate test does not run I/O")
+            fn run_io_blocking(&self, task: IoValueTask) -> Result<IoValue> {
+                futures_executor::block_on(task)
             }
 
             fn delay(
@@ -1655,8 +2192,8 @@ mod tests {
                 panic!("health-budget test does not open scopes")
             }
 
-            fn run_io_blocking(&self, _task: IoValueTask) -> Result<IoValue> {
-                panic!("health-budget test does not run I/O")
+            fn run_io_blocking(&self, task: IoValueTask) -> Result<IoValue> {
+                futures_executor::block_on(task)
             }
 
             fn delay(
