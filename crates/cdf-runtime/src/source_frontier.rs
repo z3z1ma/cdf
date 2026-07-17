@@ -647,7 +647,10 @@ impl<'a, M: Send + 'a> CanonicalSourceFrontier<'a, M> {
         } = current.state;
         self.canonical_ordinal += 1;
         self.head_poll_started = false;
-        self.fill_head();
+        // Retiring the canonical partition frees one frontier slot. Keep the configured open
+        // frontier warm so downstream staging is not starved between partitions; speculative
+        // streams still remain gated to one prefetched batch by `head_poll_started`.
+        self.fill_active();
         Ok((metadata, completion))
     }
 
@@ -1287,6 +1290,73 @@ mod tests {
         assert_eq!(report.discarded_prefetched_batches, 0);
         assert!(report.peak_ready_partitions >= 1);
         assert!(report.wait_ns > 0);
+    }
+
+    #[test]
+    fn partition_finish_replenishes_the_configured_open_frontier() {
+        let (gate_sender, gate_receiver) = oneshot::channel::<()>();
+        let mut gate_receiver = Some(gate_receiver);
+        let opened_count = Arc::new(AtomicUsize::new(0));
+        let opened_for_opener = Arc::clone(&opened_count);
+        let opener: SourcePartitionOpener<'_, usize> = Box::new(move |ordinal, _cancellation| {
+            opened_for_opener.fetch_add(1, Ordering::SeqCst);
+            match ordinal {
+                0 => {
+                    let receiver = gate_receiver.take().unwrap();
+                    Ok(opened(
+                        ordinal,
+                        stream::once(async move {
+                            receiver
+                                .await
+                                .map_err(|_| CdfError::internal("gate dropped"))?;
+                            Ok(batch(0, 0))
+                        }),
+                    ))
+                }
+                1 => Ok(opened(ordinal, stream::once(async { Ok(batch(1, 10)) }))),
+                2 => Ok(opened(ordinal, stream::empty())),
+                _ => Err(CdfError::internal("unexpected ordinal")),
+            }
+        });
+        let memory =
+            Arc::new(DeterministicMemoryCoordinator::new(2048, Default::default()).unwrap());
+        let memory_authority: Arc<dyn MemoryCoordinator> = memory.clone();
+        let mut frontier = CanonicalSourceFrontier::new(
+            3,
+            2,
+            opener,
+            vec![1024; 3],
+            Some(memory_authority),
+            crate::SourceBatchMemoryContract::FrontierReserved,
+            RunCancellation::default(),
+        )
+        .unwrap();
+
+        let mut head = futures_executor::block_on(frontier.next_partition())
+            .unwrap()
+            .unwrap();
+        let mut next_head = Box::pin(head.next_batch());
+        let mut context = Context::from_waker(Waker::noop());
+        assert!(matches!(
+            next_head.as_mut().poll(&mut context),
+            Poll::Pending
+        ));
+        assert_eq!(opened_count.load(Ordering::SeqCst), 2);
+
+        gate_sender.send(()).unwrap();
+        let first = futures_executor::block_on(next_head).unwrap().unwrap();
+        assert_eq!(first.header.partition_id.as_str(), "p0");
+        drop(first);
+        assert!(
+            futures_executor::block_on(head.next_batch())
+                .unwrap()
+                .is_none()
+        );
+        head.finish().unwrap();
+        drop(head);
+
+        assert_eq!(opened_count.load(Ordering::SeqCst), 3);
+        futures_executor::block_on(frontier.terminate_and_join()).unwrap();
     }
 
     #[test]
