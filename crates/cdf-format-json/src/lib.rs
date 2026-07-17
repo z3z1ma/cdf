@@ -1394,6 +1394,7 @@ impl<'de> Deserialize<'de> for BorrowedJsonObject<'de> {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct BoundedJsonSelection {
     pub byte_range: Range<usize>,
+    pub records_present: bool,
     pub top_level_scalar_fields: BTreeMap<String, String>,
 }
 
@@ -1405,17 +1406,13 @@ pub struct BoundedJsonSelection {
 pub fn select_bounded_json_records(bytes: &[u8], selector: &str) -> Result<BoundedJsonSelection> {
     if selector == "$" {
         let byte_range = trim_ascii_whitespace_range(bytes);
-        if bytes
-            .get(byte_range.clone())
-            .and_then(|value| value.first())
-            != Some(&b'[')
-        {
-            return Err(CdfError::data(
-                "JSON record selector `$` requires a top-level array",
-            ));
-        }
+        let records_present =
+            json_array_has_records(bytes.get(byte_range.clone()).ok_or_else(|| {
+                CdfError::data("JSON record selector `$` requires a top-level array")
+            })?)?;
         return Ok(BoundedJsonSelection {
             byte_range,
+            records_present,
             top_level_scalar_fields: BTreeMap::new(),
         });
     }
@@ -1451,14 +1448,31 @@ pub fn select_bounded_json_records(bytes: &[u8], selector: &str) -> Result<Bound
             scalars.insert(name, marker);
         }
     }
+    let byte_range = selected.ok_or_else(|| {
+        CdfError::data(format!(
+            "JSON record selector target `{field}` is missing from response"
+        ))
+    })?;
+    let records_present = json_array_has_records(
+        bytes
+            .get(byte_range.clone())
+            .ok_or_else(|| CdfError::internal("selected JSON range escaped its source body"))?,
+    )?;
     Ok(BoundedJsonSelection {
-        byte_range: selected.ok_or_else(|| {
-            CdfError::data(format!(
-                "JSON record selector target `{field}` is missing from response"
-            ))
-        })?,
+        byte_range,
+        records_present,
         top_level_scalar_fields: scalars,
     })
+}
+
+fn json_array_has_records(bytes: &[u8]) -> Result<bool> {
+    let bytes = trim_ascii_whitespace(bytes);
+    if bytes.first() != Some(&b'[') || bytes.last() != Some(&b']') {
+        return Err(CdfError::data(
+            "JSON record selector target must be a complete array",
+        ));
+    }
+    Ok(!trim_ascii_whitespace(&bytes[1..bytes.len() - 1]).is_empty())
 }
 
 fn raw_value_range(bytes: &[u8], value: &RawValue) -> Result<Range<usize>> {
@@ -1782,6 +1796,7 @@ mod tests {
         let selected = select_bounded_json_records(body, "$.items").unwrap();
 
         assert_eq!(&body[selected.byte_range], br#"[ {"id":1}, {"id":2} ]"#);
+        assert!(selected.records_present);
         assert_eq!(
             selected.top_level_scalar_fields,
             BTreeMap::from([
@@ -1798,6 +1813,8 @@ mod tests {
         assert!(duplicate.message.contains("repeats field"), "{duplicate}");
         let scalar = select_bounded_json_records(br#"{"items":1}"#, "$.items").unwrap_err();
         assert!(scalar.message.contains("not an array"), "{scalar}");
+        let empty = select_bounded_json_records(br#"{"items": [ ]}"#, "$.items").unwrap();
+        assert!(!empty.records_present);
     }
 
     #[test]

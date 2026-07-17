@@ -831,7 +831,7 @@ fn is_sensitive_parameter_name(name: &str) -> bool {
 fn execution_capabilities(plan: &RestResourcePlan) -> Result<SourceExecutionCapabilities> {
     Ok(SourceExecutionCapabilities {
         minimum_poll_bytes: 8 * 1024,
-        maximum_poll_bytes: crate::REST_MAXIMUM_BATCH_BYTES,
+        maximum_poll_bytes: crate::REST_MAXIMUM_POLL_BYTES,
         minimum_decode_bytes: 8 * 1024,
         maximum_decode_bytes: crate::REST_MAXIMUM_DECODE_BYTES,
         maximum_concurrency: 8,
@@ -1060,6 +1060,10 @@ mod tests {
         assert_eq!(
             plan.execution_capabilities.quota_authority.as_deref(),
             Some("https://api.example.com:443")
+        );
+        assert_eq!(
+            plan.execution_capabilities.maximum_poll_bytes,
+            crate::REST_MAXIMUM_RESPONSE_BYTES * 2
         );
 
         let mut credential_url = physical.clone();

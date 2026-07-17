@@ -1126,6 +1126,7 @@ egress_allowlist = ["api.example.test"]
 
 [resource.items]
 path = "/items"
+paginate = { kind = "next_token", query_param = "page_token", response_field = "next_token" }
 records = "$.items"
 primary_key = ["id"]
 cursor = { field = "updated_at", param = "since", ordering = "exact", lag = "0ms" }
@@ -3550,12 +3551,18 @@ fn run_rest_project_with_jobs(
     let services = services
         .with_run_job_ceiling(jobs.unwrap_or(host_jobs))
         .unwrap();
-    let transport = RecordingTransport::new([json_response(
-        r#"{ "items": [
-            { "id": 1, "updated_at": 10 },
-            { "id": 2, "updated_at": 20 }
-        ] }"#,
-    )]);
+    let transport = RecordingTransport::new([
+        json_response(
+            r#"{ "next_token": "page-2", "items": [
+                { "id": 1, "updated_at": 10 }
+            ] }"#,
+        ),
+        json_response(
+            r#"{ "items": [
+                { "id": 2, "updated_at": 20 }
+            ] }"#,
+        ),
+    ]);
     let resource = resolve_rest_resource(
         &compiled,
         transport.clone(),
@@ -5404,8 +5411,8 @@ fn general_project_run_executes_deterministic_rest_resource_stream() {
     assert_eq!(first.package_status, PackageStatus::Checkpointed);
     assert_eq!(first.checkpoint.status, CheckpointStatus::Committed);
     assert_eq!(first.package_hash, second.package_hash);
-    assert_eq!(first_transport.requests().len(), 1);
-    assert_eq!(second_transport.requests().len(), 1);
+    assert_eq!(first_transport.requests().len(), 2);
+    assert_eq!(second_transport.requests().len(), 2);
     let SourcePosition::Cursor(cursor) = &first.checkpoint.delta.output_position else {
         panic!("expected REST run to checkpoint a cursor position");
     };
@@ -5426,7 +5433,7 @@ fn rest_source_jobs_matrix_preserves_package_receipt_and_checkpoint_identity() {
         let root = tempfile::tempdir().unwrap();
         let (report, transport, effective_jobs) =
             run_rest_project_with_jobs(root.path(), "run-general-rest-jobs-matrix", jobs);
-        assert_eq!(transport.requests().len(), 1, "{label}");
+        assert_eq!(transport.requests().len(), 2, "{label}");
         assert_eq!(effective_jobs, 1, "single REST cursor partition at {label}");
         roots.push(root);
         runs.push(report);

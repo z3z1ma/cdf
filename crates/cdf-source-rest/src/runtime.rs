@@ -5,7 +5,7 @@ use std::{
     time::Duration,
 };
 
-use crate::{REST_MAXIMUM_BATCH_BYTES, RestResourcePlan};
+use crate::{REST_MAXIMUM_RESPONSE_BYTES, RestResourcePlan};
 use arrow_array::{
     Array, ArrayRef, Date32Array, Float64Array, Int64Array, LargeStringArray, StringArray,
     TimestampMicrosecondArray, TimestampMillisecondArray, UInt64Array, new_null_array,
@@ -13,13 +13,13 @@ use arrow_array::{
 use arrow_schema::{DataType, Field, SchemaRef, TimeUnit};
 use cdf_http::{
     AuthRefreshHook, AuthScheme, AuthSession, HttpMethod, HttpRequest, HttpResponse,
-    HttpResponseBudget, HttpTransport, Paginator, RateLimiter, SecretProvider, SecretUri,
-    classify_response, send_with_policy,
+    HttpResponseBudget, HttpTransport, PaginationKind, Paginator, RateLimiter, SecretProvider,
+    SecretUri, classify_response, send_with_policy,
 };
 use cdf_kernel::{
-    BackpressureSupport, Batch, BatchStream, CapabilitySupport, CdfError, CompiledScanIntent,
-    CursorPosition, CursorValue, DeliveryGuarantee, EffectiveSchemaRuntime, EstimateSupport,
-    Expression, ExpressionLiteral, FilterCapabilities, IncrementalShape,
+    BackpressureSupport, Batch, BatchStream, BoxFuture, CapabilitySupport, CdfError,
+    CompiledScanIntent, CursorPosition, CursorValue, DeliveryGuarantee, EffectiveSchemaRuntime,
+    EstimateSupport, Expression, ExpressionLiteral, FilterCapabilities, IncrementalShape,
     PLAN_SCHEMA_OBSERVATION_BINDING_KEY, PLAN_SCHEMA_OBSERVATION_ID_KEY, PartitionId,
     PartitionPlan, PartitioningCapabilities, PayloadRetention, PlanId,
     PreContractResidualCandidate, PushdownFidelity, PushedPredicate, QueryableResource,
@@ -549,6 +549,11 @@ struct RestExecutionInvocation {
     cancellation: RunCancellation,
 }
 
+struct PendingRestPage {
+    url: String,
+    response: Option<HttpResponse>,
+}
+
 async fn execute_rest(
     invocation: RestExecutionInvocation,
     mut sender: cdf_runtime::TaskStreamSender<Batch>,
@@ -575,6 +580,7 @@ async fn execute_rest(
     let mut limiter = response_quota_limiter(plan);
     let mut auth_session = plan.auth.clone().map(AuthSession::new);
     let mut paginator = plan.pagination.clone().map(Paginator::new);
+    let pagination_kind = plan.pagination.as_ref().map(|pagination| pagination.kind());
     let base_request_url = build_request_url(
         descriptor,
         plan,
@@ -584,57 +590,74 @@ async fn execute_rest(
             .as_deref()
             .map(|provider| provider as &dyn SecretProvider),
     )?;
-    let mut next_url = Some(match &paginator {
+    let first_url = match &paginator {
         Some(paginator) => paginator.first_request(&base_request_url).url,
         None => base_request_url,
+    };
+    let mut next_page = Some(PendingRestPage {
+        url: first_url,
+        response: None,
     });
     let mut page_index = 0_usize;
-    while let Some(url) = next_url {
+    while let Some(PendingRestPage {
+        url,
+        response: prefetched_response,
+    }) = next_page.take()
+    {
         let prepared_key = prepared_rest_page_key(descriptor, plan, partition, &url)?;
-        let (mut response, _prepared_retention) = match dependencies
-            .prepared_payloads
-            .take(&prepared_key)?
-        {
-            Some(payload) => {
-                let (prepared, retention) =
-                    payload.into_typed::<PreparedRestPage>("REST first-page execution")?;
-                let response = prepared
-                    .state
-                    .response
-                    .lock()
-                    .map_err(|_| CdfError::internal("prepared REST page was poisoned"))?
-                    .take()
-                    .ok_or_else(|| CdfError::internal("prepared REST page was already consumed"))?;
-                (response, Some(retention))
-            }
-            None => (
-                send_page(
-                    &dependencies,
-                    plan,
-                    &url,
-                    &mut auth_session,
-                    &mut limiter,
-                    &cancellation,
-                )
-                .await?,
-                None,
-            ),
+        let (mut response, _prepared_retention) = match prefetched_response {
+            Some(response) => (response, None),
+            None => match dependencies.prepared_payloads.take(&prepared_key)? {
+                Some(payload) => {
+                    let (prepared, retention) =
+                        payload.into_typed::<PreparedRestPage>("REST first-page execution")?;
+                    let response = prepared
+                        .state
+                        .response
+                        .lock()
+                        .map_err(|_| CdfError::internal("prepared REST page was poisoned"))?
+                        .take()
+                        .ok_or_else(|| {
+                            CdfError::internal("prepared REST page was already consumed")
+                        })?;
+                    (response, Some(retention))
+                }
+                None => (
+                    send_page(
+                        &dependencies,
+                        plan,
+                        &url,
+                        &mut auth_session,
+                        &mut limiter,
+                        &cancellation,
+                    )
+                    .await?,
+                    None,
+                ),
+            },
         };
         let body = response
             .accounted_body()
             .ok_or_else(|| CdfError::data("REST HTTP response did not include a JSON body"))?;
         let body_bytes = u64::try_from(body.payload().len())
             .map_err(|_| CdfError::data("REST response body exceeds u64"))?;
-        if body_bytes > REST_MAXIMUM_BATCH_BYTES {
+        if body_bytes > REST_MAXIMUM_RESPONSE_BYTES {
             return Err(CdfError::data(format!(
-                "REST response page contains {body_bytes} bytes above the compiled {REST_MAXIMUM_BATCH_BYTES}-byte page limit; configure smaller pages on the source endpoint"
+                "REST response page contains {body_bytes} bytes above the compiled {REST_MAXIMUM_RESPONSE_BYTES}-byte page limit; configure smaller pages on the source endpoint"
             )));
         }
         let selection =
             cdf_format_json::select_bounded_json_records(body.payload(), &plan.record_selector)?;
         let selected = body.slice(selection.byte_range)?;
         response.page.fields = selection.top_level_scalar_fields;
-        let mut batches = decode_selected_rest_page(
+        let prefetch_url = predecode_next_rest_url(
+            paginator.as_mut(),
+            pagination_kind,
+            &url,
+            &mut response,
+            selection.records_present,
+        );
+        let decode = decode_selected_rest_page(
             Arc::clone(&schema),
             descriptor,
             partition,
@@ -642,8 +665,31 @@ async fn execute_rest(
             page_index,
             &dependencies.execution,
             cancellation.clone(),
-        )
-        .await?;
+        );
+        let prefetch = match prefetch_url {
+            Some(next_url) => {
+                let fetch_url = next_url.clone();
+                let dependencies = &dependencies;
+                let auth_session = &mut auth_session;
+                let limiter = &mut limiter;
+                let cancellation = &cancellation;
+                let fetch: BoxFuture<'_, Result<HttpResponse>> = Box::pin(async move {
+                    send_page(
+                        dependencies,
+                        plan,
+                        &fetch_url,
+                        auth_session,
+                        limiter,
+                        cancellation,
+                    )
+                    .await
+                });
+                Some((next_url, fetch))
+            }
+            None => None,
+        };
+        let (mut batches, prefetched_page) =
+            decode_with_prefetch(Box::pin(decode), prefetch).await?;
         response.page.item_count = batches.iter().try_fold(0_usize, |total, batch| {
             let rows = usize::try_from(batch.header.row_count)
                 .map_err(|_| CdfError::data("REST batch row count exceeds usize"))?;
@@ -670,13 +716,58 @@ async fn execute_rest(
         }
 
         page_index = page_index.saturating_add(1);
-        next_url = paginator
-            .as_mut()
-            .and_then(|paginator| paginator.next_request(&url, &response))
-            .map(|request| request.url);
+        next_page = prefetched_page.or_else(|| {
+            (pagination_kind == Some(PaginationKind::Offset))
+                .then(|| {
+                    paginator
+                        .as_mut()
+                        .and_then(|paginator| paginator.next_request(&url, &response))
+                        .map(|request| PendingRestPage {
+                            url: request.url,
+                            response: None,
+                        })
+                })
+                .flatten()
+        });
     }
 
     Ok(())
+}
+
+async fn decode_with_prefetch(
+    decode: BoxFuture<'_, Result<Vec<Batch>>>,
+    prefetch: Option<(String, BoxFuture<'_, Result<HttpResponse>>)>,
+) -> Result<(Vec<Batch>, Option<PendingRestPage>)> {
+    match prefetch {
+        Some((url, fetch)) => {
+            let (batches, response) = futures_util::try_join!(decode, fetch)?;
+            Ok((
+                batches,
+                Some(PendingRestPage {
+                    url,
+                    response: Some(response),
+                }),
+            ))
+        }
+        None => Ok((decode.await?, None)),
+    }
+}
+
+fn predecode_next_rest_url(
+    paginator: Option<&mut Paginator>,
+    pagination_kind: Option<PaginationKind>,
+    current_url: &str,
+    response: &mut HttpResponse,
+    records_present: bool,
+) -> Option<String> {
+    match pagination_kind? {
+        PaginationKind::Offset => return None,
+        PaginationKind::Page => response.page.item_count = usize::from(records_present),
+        PaginationKind::Cursor | PaginationKind::LinkHeader | PaginationKind::NextToken => {}
+    }
+    paginator?
+        .next_request(current_url, response)
+        .map(|request| request.url)
 }
 
 pub async fn discover_rest_sample_schema(
@@ -878,7 +969,7 @@ async fn send_page(
         secret_provider: dependencies.secret_provider.as_deref(),
         auth_refresh: dependencies.auth_refresh.as_ref(),
         egress: &dependencies.egress,
-        maximum_response_bytes: REST_MAXIMUM_BATCH_BYTES,
+        maximum_response_bytes: REST_MAXIMUM_RESPONSE_BYTES,
         memory: dependencies.execution.memory(),
         cancellation: cancellation.clone(),
         execution: &dependencies.execution,
@@ -1448,7 +1539,9 @@ mod tests {
         sync::{
             Arc, Barrier,
             atomic::{AtomicUsize, Ordering},
+            mpsc,
         },
+        task::{Poll, Waker},
         time::Duration,
     };
 
@@ -1533,17 +1626,109 @@ mod tests {
     fn test_http_budget() -> HttpResponseBudget {
         let memory: Arc<dyn MemoryCoordinator> = Arc::new(
             cdf_memory::DeterministicMemoryCoordinator::new(
-                REST_MAXIMUM_BATCH_BYTES,
+                REST_MAXIMUM_RESPONSE_BYTES,
                 BTreeMap::new(),
             )
             .unwrap(),
         );
-        HttpResponseBudget::new(REST_MAXIMUM_BATCH_BYTES, memory, Arc::new(|| Ok(()))).unwrap()
+        HttpResponseBudget::new(REST_MAXIMUM_RESPONSE_BYTES, memory, Arc::new(|| Ok(()))).unwrap()
     }
 
     struct ConcurrentProbeTransport {
         active: Arc<AtomicUsize>,
         peak: Arc<AtomicUsize>,
+    }
+
+    struct PollGate {
+        started: std::sync::atomic::AtomicBool,
+        signal: mpsc::Sender<()>,
+        state: Mutex<PollGateState>,
+    }
+
+    struct PollGateState {
+        released: bool,
+        waker: Option<Waker>,
+    }
+
+    impl PollGate {
+        fn new(signal: mpsc::Sender<()>) -> Arc<Self> {
+            Arc::new(Self {
+                started: std::sync::atomic::AtomicBool::new(false),
+                signal,
+                state: Mutex::new(PollGateState {
+                    released: false,
+                    waker: None,
+                }),
+            })
+        }
+
+        fn future<T: Send + 'static>(self: Arc<Self>, value: T) -> BoxFuture<'static, Result<T>> {
+            let mut value = Some(value);
+            Box::pin(futures_util::future::poll_fn(move |context| {
+                if !self.started.swap(true, std::sync::atomic::Ordering::SeqCst) {
+                    self.signal.send(()).unwrap();
+                }
+                let mut state = self.state.lock().unwrap();
+                if state.released {
+                    Poll::Ready(Ok(value.take().unwrap()))
+                } else {
+                    state.waker = Some(context.waker().clone());
+                    Poll::Pending
+                }
+            }))
+        }
+
+        fn release(&self) {
+            let waker = {
+                let mut state = self.state.lock().unwrap();
+                state.released = true;
+                state.waker.take()
+            };
+            if let Some(waker) = waker {
+                waker.wake();
+            }
+        }
+    }
+
+    fn delayed_future<T: Send + 'static>(
+        delay: Duration,
+        value: T,
+    ) -> BoxFuture<'static, Result<T>> {
+        struct State<T> {
+            value: Option<T>,
+            ready: bool,
+            waker: Option<Waker>,
+        }
+
+        let state = Arc::new(Mutex::new(State {
+            value: Some(value),
+            ready: false,
+            waker: None,
+        }));
+        let started = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        Box::pin(futures_util::future::poll_fn(move |context| {
+            if !started.swap(true, std::sync::atomic::Ordering::SeqCst) {
+                let state = Arc::clone(&state);
+                std::thread::spawn(move || {
+                    std::thread::sleep(delay);
+                    let waker = {
+                        let mut state = state.lock().unwrap();
+                        state.ready = true;
+                        state.waker.take()
+                    };
+                    if let Some(waker) = waker {
+                        waker.wake();
+                    }
+                });
+            }
+            let mut state = state.lock().unwrap();
+            if state.ready {
+                Poll::Ready(Ok(state.value.take().unwrap()))
+            } else {
+                state.waker = Some(context.waker().clone());
+                Poll::Pending
+            }
+        }))
     }
 
     impl HttpTransport for ConcurrentProbeTransport {
@@ -1593,6 +1778,96 @@ mod tests {
             worker.join().unwrap();
         }
         assert_eq!(peak.load(Ordering::SeqCst), 2);
+    }
+
+    #[test]
+    fn paginator_prefetches_only_from_predecode_evidence() {
+        let mut pages = Paginator::new(cdf_http::PaginationConfig::Page {
+            query_param: "page".to_owned(),
+            start_page: 1,
+        });
+        let mut nonempty = HttpResponse::new(200);
+        assert_eq!(
+            predecode_next_rest_url(
+                Some(&mut pages),
+                Some(PaginationKind::Page),
+                "https://api.example.test/items?page=1",
+                &mut nonempty,
+                true,
+            )
+            .as_deref(),
+            Some("https://api.example.test/items?page=2")
+        );
+
+        let mut pages = Paginator::new(cdf_http::PaginationConfig::Page {
+            query_param: "page".to_owned(),
+            start_page: 1,
+        });
+        let mut empty = HttpResponse::new(200);
+        assert_eq!(
+            predecode_next_rest_url(
+                Some(&mut pages),
+                Some(PaginationKind::Page),
+                "https://api.example.test/items?page=1",
+                &mut empty,
+                false,
+            ),
+            None
+        );
+
+        let mut offsets = Paginator::new(cdf_http::PaginationConfig::Offset {
+            offset_param: "offset".to_owned(),
+            limit_param: "limit".to_owned(),
+            start_offset: 0,
+            limit: 100,
+        });
+        let mut response = HttpResponse::new(200).with_item_count(100);
+        assert_eq!(
+            predecode_next_rest_url(
+                Some(&mut offsets),
+                Some(PaginationKind::Offset),
+                "https://api.example.test/items?offset=0&limit=100",
+                &mut response,
+                true,
+            ),
+            None
+        );
+        assert_eq!(
+            offsets
+                .next_request(
+                    "https://api.example.test/items?offset=0&limit=100",
+                    &response,
+                )
+                .unwrap()
+                .url,
+            "https://api.example.test/items?limit=100&offset=100"
+        );
+    }
+
+    #[test]
+    fn page_decode_and_prefetch_are_polled_concurrently() {
+        let (started_tx, started_rx) = mpsc::channel();
+        let decode_gate = PollGate::new(started_tx.clone());
+        let fetch_gate = PollGate::new(started_tx);
+        let decode = Arc::clone(&decode_gate).future(Vec::new());
+        let fetch = Arc::clone(&fetch_gate).future(HttpResponse::new(200));
+        let worker = std::thread::spawn(move || {
+            futures_executor::block_on(decode_with_prefetch(
+                decode,
+                Some(("https://api.example.test/page-2".to_owned(), fetch)),
+            ))
+        });
+
+        let decode_or_fetch_started = started_rx.recv_timeout(Duration::from_secs(1)).is_ok();
+        let both_started = started_rx.recv_timeout(Duration::from_millis(100)).is_ok();
+        decode_gate.release();
+        fetch_gate.release();
+        let (batches, prefetched) = worker.join().unwrap().unwrap();
+
+        assert!(decode_or_fetch_started);
+        assert!(both_started, "decode and fetch were polled serially");
+        assert!(batches.is_empty());
+        assert_eq!(prefetched.unwrap().url, "https://api.example.test/page-2");
     }
 
     #[test]
@@ -1804,6 +2079,39 @@ mod tests {
                 .scan_intent
                 .predicates
                 .is_empty()
+        );
+    }
+
+    #[test]
+    #[ignore = "release performance envelope"]
+    fn page_prefetch_hides_one_network_or_decode_window() {
+        const WINDOW: Duration = Duration::from_millis(75);
+        let serial_started = std::time::Instant::now();
+        futures_executor::block_on(async {
+            delayed_future(WINDOW, Vec::<Batch>::new()).await.unwrap();
+            delayed_future(WINDOW, HttpResponse::new(200))
+                .await
+                .unwrap();
+        });
+        let serial = serial_started.elapsed();
+
+        let overlapped_started = std::time::Instant::now();
+        futures_executor::block_on(decode_with_prefetch(
+            delayed_future(WINDOW, Vec::<Batch>::new()),
+            Some((
+                "https://api.example.test/page-2".to_owned(),
+                delayed_future(WINDOW, HttpResponse::new(200)),
+            )),
+        ))
+        .unwrap();
+        let overlapped = overlapped_started.elapsed();
+        let speedup = serial.as_secs_f64() / overlapped.as_secs_f64();
+        eprintln!(
+            "REST page overlap: serial={serial:?}, overlapped={overlapped:?}, speedup={speedup:.2}x"
+        );
+        assert!(
+            overlapped.as_secs_f64() < serial.as_secs_f64() * 0.70,
+            "REST page overlap failed to hide one window: serial={serial:?}, overlapped={overlapped:?}"
         );
     }
 }
