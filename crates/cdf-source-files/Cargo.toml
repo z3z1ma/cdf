@@ -14,6 +14,7 @@ cdf-expression = { path = "../cdf-expression" }
 cdf-kernel = { path = "../cdf-kernel" }
 cdf-memory = { path = "../cdf-memory" }
 cdf-runtime = { path = "../cdf-runtime" }
+futures-executor = "0.3.32"
 futures-util = "0.3.32"
 hex = "0.4.3"
 object_store = { git = "https://github.com/apache/arrow-rs-object-store.git", rev = "c7316d29face118e7409eead0cda098f38589428", features = ["aws", "azure", "gcp"] }
@@ -35,6 +36,5 @@ cdf-format-parquet = { path = "../cdf-format-parquet" }
 cdf-package = { path = "../cdf-package" }
 cdf-transform-gzip = { path = "../cdf-transform-gzip" }
 flate2 = "1.1.9"
-futures-executor = "0.3.32"
 parquet = "59.1.0"
 tokio = { version = "=1.52.3", features = ["rt-multi-thread"] }

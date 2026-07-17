@@ -1,22 +1,27 @@
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     fmt, fs,
     path::{Path, PathBuf},
+    pin::Pin,
     sync::Arc,
     time::UNIX_EPOCH,
 };
 
 use cdf_http::{
     AuthScheme, EgressAllowlist, HeaderMap, HttpMethod, HttpRequest, Redactor, SecretProvider,
-    SecretUri,
+    SecretUri, SecretValue,
 };
 use cdf_kernel::{BoxFuture, CdfError, ErrorKind, FilePosition, Result};
 use cdf_memory::MemoryCoordinator;
 use cdf_runtime::{ByteSource, GenerationStrength, SourceEgressScope};
-use futures_util::{StreamExt, TryStreamExt};
+use futures_util::{Stream, TryStreamExt};
 use object_store::{ObjectStore, ObjectStoreExt, path::Path as ObjectPath};
 use serde::{Deserialize, Serialize};
 use url::Url;
+
+const FILE_LIST_CHANNEL_ENTRIES: usize = 64;
+const MAX_FILE_LOCATION_BYTES: usize = 64 * 1024;
+const MAX_FILE_IDENTITY_FIELD_BYTES: usize = 16 * 1024;
 
 #[derive(Clone, PartialEq, Eq)]
 pub struct FileTransportResource {
@@ -98,7 +103,13 @@ impl fmt::Debug for FileTransportResource {
             .debug_struct("FileTransportResource")
             .field("location", &self.location)
             .field("egress_allowlist", &self.egress_allowlist)
-            .field("auth", &self.auth)
+            .field(
+                "auth",
+                &self.auth.as_ref().map(|auth| match auth {
+                    AuthScheme::Bearer { .. } => "bearer",
+                    AuthScheme::Header { .. } => "header",
+                }),
+            )
             .finish()
     }
 }
@@ -146,6 +157,34 @@ pub struct FileIdentityMetadata {
 }
 
 impl FileIdentityMetadata {
+    pub fn validate(&self) -> Result<()> {
+        validate_identity_text(
+            "file location",
+            &self.location,
+            MAX_FILE_LOCATION_BYTES,
+            false,
+        )?;
+        for (label, value) in [
+            ("file ETag", self.etag.as_deref()),
+            ("file object version", self.version.as_deref()),
+            ("file modification identity", self.modified.as_deref()),
+        ] {
+            if let Some(value) = value {
+                validate_identity_text(label, value, MAX_FILE_IDENTITY_FIELD_BYTES, false)?;
+            }
+        }
+        if let Some(checksum) = &self.checksum {
+            validate_identity_text("file checksum algorithm", &checksum.algorithm, 64, true)?;
+            validate_identity_text(
+                "file checksum value",
+                &checksum.value,
+                MAX_FILE_IDENTITY_FIELD_BYTES,
+                true,
+            )?;
+        }
+        Ok(())
+    }
+
     pub fn file_position_evidence(&self) -> Result<FilePosition> {
         let size_bytes = self.size_bytes.ok_or_else(|| {
             CdfError::data(format!(
@@ -204,6 +243,7 @@ impl fmt::Debug for FileIdentityMetadata {
 pub struct FileMetadataObservation {
     identity: FileIdentityMetadata,
     access_location: OpaqueAccessLocation,
+    forward_auth: bool,
 }
 
 #[derive(Clone, PartialEq, Eq)]
@@ -221,6 +261,7 @@ impl fmt::Debug for FileMetadataObservation {
             .debug_struct("FileMetadataObservation")
             .field("identity", &self.identity)
             .field("access_location", &self.access_location)
+            .field("forward_auth", &self.forward_auth)
             .finish()
     }
 }
@@ -230,12 +271,16 @@ impl FileMetadataObservation {
         Self {
             identity,
             access_location: OpaqueAccessLocation(resource.location.clone()),
+            forward_auth: true,
         }
     }
 
     pub(crate) fn access_resource(&self, logical: &FileTransportResource) -> FileTransportResource {
         let mut resource = logical.clone();
         resource.location = self.access_location.0.clone();
+        if !self.forward_auth {
+            resource.auth = None;
+        }
         resource
     }
 
@@ -253,6 +298,9 @@ pub struct FileChecksum {
     pub algorithm: String,
     pub value: String,
 }
+
+pub type FileIdentityStream =
+    Pin<Box<dyn Stream<Item = Result<FileIdentityMetadata>> + Send + 'static>>;
 
 pub trait FileTransport: Send + Sync {
     fn metadata(
@@ -272,7 +320,7 @@ pub trait FileTransport: Send + Sync {
         egress: &SourceEgressScope,
         resource: &FileTransportResource,
         maximum_results: usize,
-    ) -> Result<Vec<FileIdentityMetadata>>;
+    ) -> Result<FileIdentityStream>;
     fn open_byte_source(
         &self,
         egress: &SourceEgressScope,
@@ -293,8 +341,54 @@ pub trait HttpFileTransport: Send + Sync {
         &self,
         resource: &FileTransportResource,
         expected: &FileIdentityMetadata,
+        auth: Option<ResolvedHttpAuth>,
         memory: Arc<dyn MemoryCoordinator>,
     ) -> Result<Arc<dyn ByteSource>>;
+}
+
+#[derive(Clone)]
+pub struct ResolvedHttpAuth {
+    scheme: AuthScheme,
+    value: Arc<SecretValue>,
+}
+
+impl ResolvedHttpAuth {
+    fn new(scheme: AuthScheme, value: SecretValue) -> Self {
+        Self {
+            scheme,
+            value: Arc::new(value),
+        }
+    }
+
+    pub fn apply(&self, request: &mut HttpFileRequest) -> Result<()> {
+        let (name, value) = match &self.scheme {
+            AuthScheme::Bearer { .. } => (
+                "authorization".to_owned(),
+                format!("Bearer {}", self.value.as_str()?),
+            ),
+            AuthScheme::Header { name, .. } => {
+                (name.to_ascii_lowercase(), self.value.as_str()?.to_owned())
+            }
+        };
+        if name.is_empty()
+            || name
+                .bytes()
+                .any(|byte| !byte.is_ascii_alphanumeric() && !matches!(byte, b'-' | b'_'))
+        {
+            return Err(CdfError::contract(
+                "HTTP auth header name must contain only ASCII letters, digits, `-`, or `_`",
+            ));
+        }
+        request.headers.insert(name.clone(), value);
+        request.sensitive_headers.insert(name);
+        Ok(())
+    }
+}
+
+impl fmt::Debug for ResolvedHttpAuth {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("ResolvedHttpAuth([REDACTED])")
+    }
 }
 
 #[derive(Clone, PartialEq, Eq)]
@@ -302,6 +396,7 @@ pub struct HttpFileRequest {
     pub method: HttpMethod,
     pub url: String,
     pub headers: HeaderMap,
+    sensitive_headers: BTreeSet<String>,
 }
 
 impl HttpFileRequest {
@@ -310,6 +405,13 @@ impl HttpFileRequest {
             method,
             url: url.into(),
             headers: HeaderMap::new(),
+            sensitive_headers: BTreeSet::new(),
+        }
+    }
+
+    fn strip_sensitive_headers(&mut self) {
+        for name in std::mem::take(&mut self.sensitive_headers) {
+            self.headers.remove(&name);
         }
     }
 }
@@ -317,11 +419,17 @@ impl HttpFileRequest {
 impl fmt::Debug for HttpFileRequest {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         let redactor = Redactor::default();
+        let mut headers = redactor.redact_headers(&self.headers);
+        for name in &self.sensitive_headers {
+            if let Some(value) = headers.get_mut(name) {
+                *value = "[REDACTED]".to_owned();
+            }
+        }
         formatter
             .debug_struct("HttpFileRequest")
             .field("method", &self.method)
             .field("url", &"<opaque HTTP URL>")
-            .field("headers", &redactor.redact_headers(&self.headers))
+            .field("headers", &headers)
             .finish()
     }
 }
@@ -460,13 +568,13 @@ impl FileTransport for FileTransportFacade {
         egress: &SourceEgressScope,
         resource: &FileTransportResource,
         maximum_results: usize,
-    ) -> Result<Vec<FileIdentityMetadata>> {
+    ) -> Result<FileIdentityStream> {
         match &resource.location {
             FileTransportLocation::LocalPath { path } => {
-                list_local(Path::new(path), maximum_results)
+                self.list_local(PathBuf::from(path), maximum_results)
             }
             FileTransportLocation::FileUrl { url } => {
-                list_local(&file_url_path(url)?, maximum_results)
+                self.list_local(file_url_path(url)?, maximum_results)
             }
             FileTransportLocation::HttpUrl { .. } => Err(CdfError::contract(
                 "HTTP(S) file transport does not support arbitrary directory listing; use an explicit URL or a ratified template/range enumerator",
@@ -503,8 +611,9 @@ impl FileTransport for FileTransportFacade {
             }
             FileTransportLocation::HttpUrl { url } => {
                 egress.authorize(url)?;
+                let auth = self.resolve_http_auth(resource)?;
                 self.http_transport()?
-                    .open_byte_source(resource, expected, memory)
+                    .open_byte_source(resource, expected, auth, memory)
             }
         }
     }
@@ -539,36 +648,87 @@ impl FileTransportFacade {
         resource: &FileTransportResource,
         url: &str,
         maximum_results: usize,
-    ) -> Result<Vec<FileIdentityMetadata>> {
+    ) -> Result<FileIdentityStream> {
         let (store, prefix, origin) = self.resolve_object_store(egress, resource, url)?;
-        let boundary = maximum_results.saturating_add(1);
-        let objects = self
-            .object_store_io(async move {
-                Ok(store
-                    .list(Some(&prefix))
-                    .take(boundary)
-                    .try_collect::<Vec<_>>()
-                    .await)
-            })?
-            .map_err(|error| object_store_error("list object prefix", error))?;
-        if objects.len() > maximum_results {
-            return Err(CdfError::data(format!(
-                "file inventory exceeds the {maximum_results}-entry boundary"
-            )));
-        }
-        let mut identities = objects
-            .into_iter()
-            .map(|metadata| {
-                let location = format!(
-                    "{}/{}",
-                    origin.trim_end_matches('/'),
-                    metadata.location.as_ref()
-                );
-                object_identity(location, metadata)
-            })
-            .collect::<Vec<_>>();
-        identities.sort_by(|left, right| left.location.cmp(&right.location));
-        Ok(identities)
+        let stream = self.execution()?.spawn_io_stream(
+            "file-object-store-list",
+            FILE_LIST_CHANNEL_ENTRIES,
+            move |output, cancellation| {
+                publish_object_store_listing(
+                    store.list(Some(&prefix)),
+                    origin,
+                    maximum_results,
+                    output,
+                    cancellation,
+                )
+            },
+        )?;
+        Ok(Box::pin(stream))
+    }
+
+    fn list_local(&self, path: PathBuf, maximum_results: usize) -> Result<FileIdentityStream> {
+        let execution = self.execution()?;
+        execution.ensure_blocking_lanes(&[crate::file_source_blocking_lane()])?;
+        let stream = execution.spawn_blocking_stream(
+            "file-local-list",
+            crate::FILE_SOURCE_BLOCKING_LANE_ID,
+            FILE_LIST_CHANNEL_ENTRIES,
+            move |mut output, cancellation| {
+                cancellation.check()?;
+                let metadata = fs::metadata(&path).map_err(|error| {
+                    CdfError::data(format!(
+                        "stat local file source {}: {error}",
+                        path.display()
+                    ))
+                })?;
+                if metadata.is_file() {
+                    if maximum_results == 0 {
+                        return Err(CdfError::data(
+                            "file inventory exceeds the 0-entry boundary",
+                        ));
+                    }
+                    let identity = local_metadata(&path)?;
+                    identity.validate()?;
+                    output.send(identity)?;
+                    return Ok(());
+                }
+                if !metadata.is_dir() {
+                    return Err(CdfError::data(format!(
+                        "local file transport path {} is neither a file nor a directory",
+                        path.display()
+                    )));
+                }
+                let mut emitted = 0_usize;
+                for entry in fs::read_dir(&path).map_err(|error| {
+                    CdfError::data(format!(
+                        "read local file source directory {}: {error}",
+                        path.display()
+                    ))
+                })? {
+                    cancellation.check()?;
+                    let entry = entry.map_err(|error| {
+                        CdfError::data(format!(
+                            "read local file source directory {}: {error}",
+                            path.display()
+                        ))
+                    })?;
+                    if !entry.path().is_file() {
+                        continue;
+                    }
+                    if emitted == maximum_results {
+                        return Err(CdfError::data(format!(
+                            "file inventory exceeds the {maximum_results}-entry boundary"
+                        )));
+                    }
+                    let identity = local_metadata(&entry.path())?;
+                    identity.validate()?;
+                    output.send(identity)?;
+                    emitted += 1;
+                }
+                Ok(())
+            },
+        )?;
+        Ok(Box::pin(stream))
     }
 
     fn resolve_object_store(
@@ -633,6 +793,12 @@ impl FileTransportFacade {
             .run_io(future)
     }
 
+    fn execution(&self) -> Result<&cdf_runtime::ExecutionServices> {
+        self.execution
+            .as_ref()
+            .ok_or_else(|| CdfError::contract("file transport requires injected ExecutionServices"))
+    }
+
     fn http_io<T, F>(&self, future: F) -> Result<T>
     where
         T: Send + 'static,
@@ -666,8 +832,11 @@ impl FileTransportFacade {
         const MAX_REDIRECTS: usize = 10;
 
         validate_http_file_url(logical_url)?;
-        self.reject_unimplemented_auth(resource)?;
-        let head = HttpFileRequest::new(HttpMethod::Head, logical_url.to_owned());
+        let auth = self.resolve_http_auth(resource)?;
+        let mut head = HttpFileRequest::new(HttpMethod::Head, logical_url.to_owned());
+        if let Some(auth) = &auth {
+            auth.apply(&mut head)?;
+        }
         let (mut access_url, mut response) =
             self.send_headers_following_redirects(egress, resource, head, MAX_REDIRECTS)?;
         if response.status == 404 && missing_is_none {
@@ -682,6 +851,9 @@ impl FileTransportFacade {
                 && optional_u64_header(&response.headers, "content-length")?.is_none())
         {
             let mut get = HttpFileRequest::new(HttpMethod::Get, logical_url.to_owned());
+            if let Some(auth) = &auth {
+                auth.apply(&mut get)?;
+            }
             set_header(&mut get.headers, "range", "bytes=0-0");
             set_header(&mut get.headers, "accept-encoding", "identity");
             (access_url, response) =
@@ -698,8 +870,9 @@ impl FileTransportFacade {
         Ok(Some(FileMetadataObservation {
             identity,
             access_location: OpaqueAccessLocation(FileTransportLocation::HttpUrl {
-                url: access_url,
+                url: access_url.clone(),
             }),
+            forward_auth: same_http_origin(logical_url, &access_url)?,
         }))
     }
 
@@ -731,6 +904,9 @@ impl FileTransportFacade {
             let target = base.join(location).map_err(|error| {
                 CdfError::data(format!("HTTP file transport redirect is invalid: {error}"))
             })?;
+            if !same_http_origin(&request.url, target.as_str())? {
+                request.strip_sensitive_headers();
+            }
             request.url = target.into();
         }
         Err(CdfError::internal(
@@ -749,19 +925,95 @@ impl FileTransportFacade {
             })
     }
 
-    fn reject_unimplemented_auth(&self, resource: &FileTransportResource) -> Result<()> {
-        if resource.auth.is_none() {
-            return Ok(());
-        }
-        let provider_state = if self.secret_provider.is_some() {
-            "configured"
-        } else {
-            "missing"
+    fn resolve_http_auth(
+        &self,
+        resource: &FileTransportResource,
+    ) -> Result<Option<ResolvedHttpAuth>> {
+        let Some(scheme) = &resource.auth else {
+            return Ok(None);
         };
-        Err(CdfError::auth(format!(
-            "HTTP(S) file transport secret auth hooks are represented, but credential resolution is not implemented in this facade slice ({provider_state} SecretProvider)"
+        let provider = self
+            .secret_provider
+            .as_ref()
+            .ok_or_else(|| CdfError::auth("HTTP file auth requires an injected secret provider"))?;
+        let reference = match scheme {
+            AuthScheme::Bearer { token_uri } => token_uri,
+            AuthScheme::Header { value_uri, .. } => value_uri,
+        };
+        Ok(Some(ResolvedHttpAuth::new(
+            scheme.clone(),
+            provider.resolve(reference)?,
         )))
     }
+}
+
+async fn publish_object_store_listing(
+    mut objects: futures_util::stream::BoxStream<
+        'static,
+        object_store::Result<object_store::ObjectMeta>,
+    >,
+    origin: String,
+    maximum_results: usize,
+    mut output: cdf_runtime::TaskStreamSender<FileIdentityMetadata>,
+    cancellation: cdf_runtime::RunCancellation,
+) -> Result<()> {
+    let mut emitted = 0_usize;
+    loop {
+        let next = cancellation
+            .await_or_cancel(async {
+                objects
+                    .try_next()
+                    .await
+                    .map_err(|error| object_store_error("list object prefix", error))
+            })
+            .await?;
+        let Some(metadata) = next else {
+            return Ok(());
+        };
+        if emitted == maximum_results {
+            return Err(CdfError::data(format!(
+                "file inventory exceeds the {maximum_results}-entry boundary"
+            )));
+        }
+        let location = format!(
+            "{}/{}",
+            origin.trim_end_matches('/'),
+            metadata.location.as_ref()
+        );
+        let identity = object_identity(location, metadata);
+        identity.validate()?;
+        output.send(identity).await?;
+        emitted += 1;
+    }
+}
+
+fn same_http_origin(left: &str, right: &str) -> Result<bool> {
+    let left = Url::parse(left)
+        .map_err(|error| CdfError::contract(format!("invalid HTTP file URL: {error}")))?;
+    let right = Url::parse(right)
+        .map_err(|error| CdfError::contract(format!("invalid HTTP file URL: {error}")))?;
+    Ok(left.scheme() == right.scheme()
+        && left.host_str() == right.host_str()
+        && left.port_or_known_default() == right.port_or_known_default())
+}
+
+fn validate_identity_text(
+    label: &str,
+    value: &str,
+    maximum_bytes: usize,
+    ascii_only: bool,
+) -> Result<()> {
+    if value.is_empty()
+        || value.len() > maximum_bytes
+        || value.chars().any(char::is_control)
+        || (ascii_only && !value.is_ascii())
+    {
+        return Err(CdfError::data(format!(
+            "{label} must be nonempty, control-free, and at most {maximum_bytes} bytes{}",
+            if ascii_only { " of ASCII" } else { "" }
+        )));
+    }
+    Ok(())
 }
 
 fn local_metadata(path: &Path) -> Result<FileIdentityMetadata> {
@@ -815,7 +1067,23 @@ pub(crate) fn object_identity(
 }
 
 fn object_store_error(action: &str, error: object_store::Error) -> CdfError {
-    CdfError::data(format!("{action}: {error}"))
+    let message = format!("{action}: {error}");
+    match error {
+        object_store::Error::PermissionDenied { .. }
+        | object_store::Error::Unauthenticated { .. } => CdfError::auth(message),
+        object_store::Error::Generic { .. } | object_store::Error::JoinError { .. } => {
+            CdfError::transient(message)
+        }
+        object_store::Error::InvalidPath { .. }
+        | object_store::Error::NotSupported { .. }
+        | object_store::Error::NotImplemented { .. }
+        | object_store::Error::UnknownConfigurationKey { .. } => CdfError::contract(message),
+        object_store::Error::NotFound { .. }
+        | object_store::Error::AlreadyExists { .. }
+        | object_store::Error::Precondition { .. }
+        | object_store::Error::NotModified { .. } => CdfError::data(message),
+        _ => CdfError::transient(message),
+    }
 }
 
 pub(crate) fn verify_generation_identity(
@@ -855,54 +1123,6 @@ pub(crate) fn verify_generation_identity(
         ));
     }
     Ok(())
-}
-
-fn list_local(path: &Path, maximum_results: usize) -> Result<Vec<FileIdentityMetadata>> {
-    let metadata = fs::metadata(path).map_err(|error| {
-        CdfError::data(format!(
-            "stat local file source {}: {error}",
-            path.display()
-        ))
-    })?;
-    if metadata.is_file() {
-        return Ok(vec![local_metadata(path)?]);
-    }
-    if !metadata.is_dir() {
-        return Err(CdfError::data(format!(
-            "local file transport path {} is neither a file nor a directory",
-            path.display()
-        )));
-    }
-    let mut entries = fs::read_dir(path)
-        .map_err(|error| {
-            CdfError::data(format!(
-                "read local file source directory {}: {error}",
-                path.display()
-            ))
-        })?
-        .filter_map(|entry| match entry {
-            Ok(entry) if entry.path().is_file() => Some(Ok(entry.path())),
-            Ok(_) => None,
-            Err(error) => Some(Err(error)),
-        })
-        .take(maximum_results.saturating_add(1))
-        .collect::<std::io::Result<Vec<_>>>()
-        .map_err(|error| {
-            CdfError::data(format!(
-                "read local file source directory {}: {error}",
-                path.display()
-            ))
-        })?;
-    if entries.len() > maximum_results {
-        return Err(CdfError::data(format!(
-            "file inventory exceeds the {maximum_results}-entry boundary"
-        )));
-    }
-    entries.sort();
-    entries
-        .into_iter()
-        .map(|entry| local_metadata(&entry))
-        .collect()
 }
 
 pub(crate) fn file_url_path(url: &str) -> Result<PathBuf> {
@@ -1116,6 +1336,7 @@ mod tests {
     };
 
     use cdf_http::{SecretUri, SecretValue};
+    use futures_util::StreamExt;
     use object_store::{ObjectStoreExt, PutPayload, memory::InMemory};
     use tempfile::TempDir;
 
@@ -1128,6 +1349,97 @@ mod tests {
 
         assert_eq!(error.kind, ErrorKind::RateLimited);
         assert_eq!(error.retry_after_ms, Some(7_000));
+    }
+
+    #[test]
+    fn object_store_errors_preserve_retry_auth_and_contract_taxonomy() {
+        let source = || -> Box<dyn std::error::Error + Send + Sync> {
+            Box::new(std::io::Error::other("fixture"))
+        };
+        let transient = object_store_error(
+            "list",
+            object_store::Error::Generic {
+                store: "fixture",
+                source: source(),
+            },
+        );
+        let auth = object_store_error(
+            "head",
+            object_store::Error::Unauthenticated {
+                path: "opaque".to_owned(),
+                source: source(),
+            },
+        );
+        let contract = object_store_error(
+            "list",
+            object_store::Error::NotImplemented {
+                operation: "list".to_owned(),
+                implementer: "fixture".to_owned(),
+            },
+        );
+        assert_eq!(transient.kind, ErrorKind::Transient);
+        assert_eq!(auth.kind, ErrorKind::Auth);
+        assert_eq!(contract.kind, ErrorKind::Contract);
+    }
+
+    #[test]
+    fn streamed_file_identity_metadata_has_a_fixed_per_entry_envelope() {
+        let mut identity = FileIdentityMetadata {
+            location: "s3://bucket/object".to_owned(),
+            size_bytes: Some(1),
+            checksum: None,
+            etag: Some("\"generation\"".to_owned()),
+            version: None,
+            modified: None,
+        };
+        identity.validate().unwrap();
+        identity.location = "x".repeat(MAX_FILE_LOCATION_BYTES + 1);
+        let error = identity.validate().unwrap_err();
+        assert_eq!(error.kind, ErrorKind::Data);
+        assert!(error.message.contains("at most 65536 bytes"));
+    }
+
+    #[test]
+    #[ignore = "million-entry bounded listing evidence; run in the G1 slow gate"]
+    fn million_entry_object_listing_uses_the_bounded_transport_stream() {
+        const ENTRIES: u64 = 1_000_000;
+        let objects = futures_util::stream::iter((0..ENTRIES).map(|ordinal| {
+            Ok(object_store::ObjectMeta {
+                location: ObjectPath::from(format!("prod/{ordinal:010}.parquet")),
+                last_modified: Default::default(),
+                size: 1,
+                e_tag: Some(format!("\"{ordinal}\"")),
+                version: None,
+            })
+        }))
+        .boxed();
+        let execution = crate::test_execution_services();
+        let mut listing = execution
+            .spawn_io_stream(
+                "million-object-list",
+                FILE_LIST_CHANNEL_ENTRIES,
+                move |output, cancellation| {
+                    publish_object_store_listing(
+                        objects,
+                        "s3://bounded".to_owned(),
+                        usize::MAX,
+                        output,
+                        cancellation,
+                    )
+                },
+            )
+            .unwrap();
+        let mut count = 0_u64;
+        futures_executor::block_on(async {
+            while let Some(identity) = listing.try_next().await.unwrap() {
+                assert_eq!(
+                    identity.location,
+                    format!("s3://bounded/prod/{count:010}.parquet")
+                );
+                count += 1;
+            }
+        });
+        assert_eq!(count, ENTRIES);
     }
 
     #[test]
@@ -1144,6 +1456,7 @@ mod tests {
         let root = FileTransportResource::object_store_url("s3://acme-events/prod/");
         let listed = transport
             .list(&crate::test_egress_scope(), &root, usize::MAX)
+            .and_then(|stream| futures_executor::block_on(stream.try_collect::<Vec<_>>()))
             .unwrap();
         assert_eq!(listed.len(), 1);
         assert_eq!(
@@ -1171,13 +1484,18 @@ mod tests {
             .with_object_store("s3://bounded", store)
             .with_execution_services(crate::test_execution_services());
         let root = FileTransportResource::object_store_url("s3://bounded/prod/");
-        let error = transport
-            .list(&crate::test_egress_scope(), &root, 1)
-            .unwrap_err();
+        let error = futures_executor::block_on(
+            transport
+                .list(&crate::test_egress_scope(), &root, 1)
+                .unwrap()
+                .try_collect::<Vec<_>>(),
+        )
+        .unwrap_err();
         assert!(error.message.contains("1-entry boundary"));
         assert_eq!(
             transport
                 .list(&crate::test_egress_scope(), &root, 2)
+                .and_then(|stream| futures_executor::block_on(stream.try_collect::<Vec<_>>()))
                 .unwrap()
                 .len(),
             2
@@ -1414,9 +1732,10 @@ mod tests {
         let resource = FileTransportResource::http_url("https://data.example.org/");
         let transport = http_facade(client);
 
-        let error = transport
-            .list(&crate::test_egress_scope(), &resource, usize::MAX)
-            .unwrap_err();
+        let error = match transport.list(&crate::test_egress_scope(), &resource, usize::MAX) {
+            Ok(_) => panic!("HTTP listing must remain unsupported"),
+            Err(error) => error,
+        };
         assert_eq!(error.kind, ErrorKind::Contract);
         assert!(
             error
@@ -1427,7 +1746,7 @@ mod tests {
     }
 
     #[test]
-    fn file_transport_http_allowlist_and_auth_hooks_fail_before_client_use() {
+    fn file_transport_http_allowlist_and_secret_auth_are_enforced_before_client_use() {
         let blocked_client = RecordingHttpFileTransport::new([]);
         let blocked_recorder = blocked_client.clone();
         let blocked_resource =
@@ -1441,14 +1760,16 @@ mod tests {
         assert_eq!(error.kind, ErrorKind::Auth);
         assert_eq!(blocked_recorder.requests().len(), 0);
 
-        let auth_client = RecordingHttpFileTransport::new([]);
+        let auth_client = RecordingHttpFileTransport::new([HttpFileResponse::new(200)
+            .with_header("Content-Length", "16")
+            .with_header("ETag", "\"auth-generation\"")]);
         let auth_recorder = auth_client.clone();
-        let auth_resource = FileTransportResource::http_url(
-            "https://data.example.org/events.parquet",
-        )
-        .with_auth(AuthScheme::Bearer {
-            token_uri: SecretUri::new("secret://env/FILE_TOKEN").unwrap(),
-        });
+        let auth_resource =
+            FileTransportResource::http_url("https://data.example.org/events.parquet")
+                .with_egress_allowlist(EgressAllowlist::from_hosts(["data.example.org"]))
+                .with_auth(AuthScheme::Bearer {
+                    token_uri: SecretUri::new("secret://env/FILE_TOKEN").unwrap(),
+                });
         assert_eq!(
             auth_resource.secret_references()[0].as_str(),
             "secret://env/FILE_TOKEN"
@@ -1457,17 +1778,59 @@ mod tests {
             StaticSecretProvider::new([("secret://env/FILE_TOKEN", "secret-value")]),
         );
 
-        let error = auth_transport
+        let metadata = auth_transport
             .metadata(&crate::test_egress_scope(), &auth_resource)
-            .unwrap_err();
-        assert_eq!(error.kind, ErrorKind::Auth);
-        assert!(
-            error
-                .to_string()
-                .contains("credential resolution is not implemented")
+            .unwrap();
+        assert_eq!(metadata.identity().size_bytes, Some(16));
+        let requests = auth_recorder.requests();
+        assert_eq!(requests.len(), 1);
+        assert_eq!(
+            requests[0].headers.get("authorization").map(String::as_str),
+            Some("Bearer secret-value")
         );
-        assert_eq!(auth_recorder.requests().len(), 0);
+        assert!(!format!("{:?}", requests[0]).contains("secret-value"));
         assert!(!format!("{auth_transport:?}").contains("secret-value"));
+    }
+
+    #[test]
+    fn authenticated_http_redirect_never_forwards_credentials_across_origins() {
+        let client = RecordingHttpFileTransport::new([
+            HttpFileResponse::new(302).with_header(
+                "Location",
+                "https://objects.example.org/file.parquet?sig=signed",
+            ),
+            HttpFileResponse::new(200)
+                .with_header("Content-Length", "16")
+                .with_header("ETag", "\"redirect-generation\""),
+        ]);
+        let recorder = client.clone();
+        let resource = FileTransportResource::http_url("https://catalog.example.org/file.parquet")
+            .with_egress_allowlist(EgressAllowlist::from_hosts([
+                "catalog.example.org",
+                "objects.example.org",
+            ]))
+            .with_auth(AuthScheme::Header {
+                name: "x-api-key".to_owned(),
+                value_uri: SecretUri::new("secret://env/FILE_KEY").unwrap(),
+            });
+        let transport = http_facade(client).with_secret_provider(StaticSecretProvider::new([(
+            "secret://env/FILE_KEY",
+            "do-not-forward",
+        )]));
+
+        let observation = transport
+            .metadata(&crate::test_egress_scope(), &resource)
+            .unwrap();
+        let requests = recorder.requests();
+        assert_eq!(requests.len(), 2);
+        assert_eq!(
+            requests[0].headers.get("x-api-key").map(String::as_str),
+            Some("do-not-forward")
+        );
+        assert!(!requests[1].headers.contains_key("x-api-key"));
+        assert!(observation.access_resource(&resource).auth.is_none());
+        assert!(!format!("{:?}", requests[0]).contains("do-not-forward"));
+        assert!(!format!("{observation:?}").contains("signed"));
     }
 
     #[test]
@@ -1537,6 +1900,7 @@ mod tests {
                 modified: None,
             },
             access_location: OpaqueAccessLocation(FileTransportLocation::HttpUrl { url: location }),
+            forward_auth: false,
         };
 
         for debug in [
@@ -1630,6 +1994,7 @@ mod tests {
             &self,
             _resource: &FileTransportResource,
             _expected: &FileIdentityMetadata,
+            _auth: Option<ResolvedHttpAuth>,
             _memory: Arc<dyn MemoryCoordinator>,
         ) -> Result<Arc<dyn ByteSource>> {
             Err(CdfError::internal(

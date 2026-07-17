@@ -3566,7 +3566,8 @@ fn resolve_object_store_matches_bounded(
     };
     let components = pattern_components(&plan.glob)?;
     let mut matches = Vec::new();
-    for metadata in transport.list(egress, &root_resource, maximum_matches)? {
+    let mut listing = transport.list(egress, &root_resource, maximum_matches)?;
+    while let Some(metadata) = futures_executor::block_on(listing.try_next())? {
         let relative = object_store_relative_path(&plan.root, &metadata.location)?;
         if !glob_path_matches(&components, &relative) {
             continue;
@@ -4822,7 +4823,7 @@ mod tests {
             egress: &cdf_runtime::SourceEgressScope,
             resource: &FileTransportResource,
             maximum_results: usize,
-        ) -> Result<Vec<FileIdentityMetadata>> {
+        ) -> Result<crate::FileIdentityStream> {
             self.listings.fetch_add(1, Ordering::Relaxed);
             self.inner.list(egress, resource, maximum_results)
         }
@@ -5721,6 +5722,7 @@ mod tests {
                 &self,
                 _resource: &FileTransportResource,
                 _expected: &FileIdentityMetadata,
+                _auth: Option<crate::ResolvedHttpAuth>,
                 memory: Arc<dyn cdf_memory::MemoryCoordinator>,
             ) -> Result<Arc<dyn ByteSource>> {
                 Ok(Arc::new(LocalByteSource::open(&self.path, memory)?))

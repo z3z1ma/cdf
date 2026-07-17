@@ -1,16 +1,12 @@
 #![doc = "Pooled HTTP transport provider for cdf."]
 
-use std::{
-    io::Read,
-    pin::Pin,
-    sync::{Arc, Mutex},
-};
+use std::{io::Read, pin::Pin, sync::Arc};
 
 use bytes::Bytes;
 use cdf_http::{
     HeaderMap, HttpMethod, HttpRequest, HttpResponse, HttpResponseBudget, HttpTransport,
 };
-use cdf_kernel::{BoxFuture, CdfError, Result};
+use cdf_kernel::{BoxFuture, CdfError, ErrorKind, Result};
 use cdf_memory::{
     AccountedBytes, ConsumerKey, MemoryClass, MemoryCoordinator, ReservationRequest, reserve,
 };
@@ -21,7 +17,7 @@ use cdf_runtime::{
 };
 use cdf_source_files::{
     FileIdentityMetadata, FileTransportResource, HttpFileRequest, HttpFileResponse,
-    HttpFileTransport,
+    HttpFileTransport, ResolvedHttpAuth,
 };
 use futures_util::{Stream, TryStreamExt, stream};
 use sha2::{Digest, Sha256};
@@ -31,18 +27,22 @@ const MAXIMUM_CHUNK_BYTES: u64 = 32 * 1024 * 1024;
 
 #[derive(Clone)]
 pub struct ReqwestHttpTransport {
-    blocking: Arc<Mutex<Option<reqwest::blocking::Client>>>,
+    blocking: reqwest::blocking::Client,
     asynchronous: reqwest::Client,
 }
 
 impl ReqwestHttpTransport {
     pub fn new() -> Result<Self> {
+        let blocking = reqwest::blocking::Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .map_err(|error| CdfError::internal(format!("build blocking HTTP client: {error}")))?;
         let asynchronous = reqwest::Client::builder()
             .redirect(reqwest::redirect::Policy::none())
             .build()
             .map_err(|error| CdfError::internal(format!("build async HTTP client: {error}")))?;
         Ok(Self {
-            blocking: Arc::new(Mutex::new(None)),
+            blocking,
             asynchronous,
         })
     }
@@ -95,13 +95,9 @@ impl HttpFileTransport for ReqwestHttpTransport {
         &self,
         resource: &FileTransportResource,
         expected: &FileIdentityMetadata,
+        auth: Option<ResolvedHttpAuth>,
         memory: Arc<dyn MemoryCoordinator>,
     ) -> Result<Arc<dyn ByteSource>> {
-        if resource.auth.is_some() {
-            return Err(CdfError::auth(
-                "HTTP byte-source auth must be resolved by the transport provider before open",
-            ));
-        }
         let url = match &resource.location {
             cdf_source_files::FileTransportLocation::HttpUrl { url } => url.clone(),
             _ => {
@@ -117,6 +113,7 @@ impl HttpFileTransport for ReqwestHttpTransport {
             self.asynchronous.clone(),
             url,
             expected.clone(),
+            auth,
             memory,
         )?))
     }
@@ -133,8 +130,7 @@ impl ReqwestHttpTransport {
     ) -> Result<RawHttpResponse> {
         budget.check_cancellation()?;
         let method = reqwest_method(method)?;
-        let client = self.blocking_client()?;
-        let mut builder = client.request(method, url);
+        let mut builder = self.blocking.request(method, url);
         for (name, value) in headers {
             builder = builder.header(name.as_str(), value.as_str());
         }
@@ -153,27 +149,6 @@ impl ReqwestHttpTransport {
             headers,
             body,
         })
-    }
-
-    fn blocking_client(&self) -> Result<reqwest::blocking::Client> {
-        let mut client = self
-            .blocking
-            .lock()
-            .map_err(|_| CdfError::internal("blocking HTTP client lock is poisoned"))?;
-        if client.is_none() {
-            *client = Some(
-                reqwest::blocking::Client::builder()
-                    .redirect(reqwest::redirect::Policy::none())
-                    .build()
-                    .map_err(|error| {
-                        CdfError::internal(format!("build blocking HTTP client: {error}"))
-                    })?,
-            );
-        }
-        client
-            .as_ref()
-            .cloned()
-            .ok_or_else(|| CdfError::internal("blocking HTTP client initialization failed"))
     }
 }
 
@@ -247,6 +222,7 @@ struct HttpByteSource {
     client: reqwest::Client,
     url: String,
     expected: FileIdentityMetadata,
+    auth: Option<ResolvedHttpAuth>,
     identity: ContentIdentity,
     capabilities: ByteSourceCapabilities,
     memory: Arc<dyn MemoryCoordinator>,
@@ -257,6 +233,7 @@ impl HttpByteSource {
         client: reqwest::Client,
         url: String,
         expected: FileIdentityMetadata,
+        auth: Option<ResolvedHttpAuth>,
         memory: Arc<dyn MemoryCoordinator>,
     ) -> Result<Self> {
         let size_bytes = expected
@@ -302,19 +279,26 @@ impl HttpByteSource {
             client,
             url,
             expected,
+            auth,
             identity,
             capabilities,
             memory,
         })
     }
 
-    fn request(&self) -> reqwest::RequestBuilder {
-        let request = self.client.get(&self.url);
-        if let Some(etag) = &self.expected.etag {
-            request.header("if-match", etag)
-        } else {
-            request
+    fn request(&self) -> Result<reqwest::RequestBuilder> {
+        let mut logical = HttpFileRequest::new(HttpMethod::Get, self.url.clone());
+        if let Some(auth) = &self.auth {
+            auth.apply(&mut logical)?;
         }
+        let mut request = self.client.get(&self.url);
+        for (name, value) in logical.headers {
+            request = request.header(name, value);
+        }
+        if let Some(etag) = &self.expected.etag {
+            request = request.header("if-match", etag);
+        }
+        Ok(request)
     }
 }
 
@@ -340,7 +324,7 @@ impl ByteSource for HttpByteSource {
             validate_chunk_target(request.preferred_chunk_bytes, &self.capabilities)?;
             let response = request
                 .cancellation
-                .await_or_cancel(async { self.request().send().await.map_err(http_send_error) })
+                .await_or_cancel(async { self.request()?.send().await.map_err(http_send_error) })
                 .await?;
             validate_response(&response, 200, &self.expected)?;
             let state = HttpSequentialState {
@@ -387,7 +371,7 @@ impl ByteSource for HttpByteSource {
                 .await?;
             let response = cancellation
                 .await_or_cancel(async {
-                    self.request()
+                    self.request()?
                         .header("range", format!("bytes={}-{}", extent.start, end - 1))
                         .send()
                         .await
@@ -535,13 +519,17 @@ fn validate_response(
 ) -> Result<()> {
     let status = response.status().as_u16();
     if status != expected_status {
-        return Err(if status == 412 {
-            CdfError::data("HTTP object generation changed (If-Match precondition failed)")
-        } else {
-            CdfError::transient(format!(
-                "HTTP byte source expected status {expected_status}, got {status}"
-            ))
-        });
+        let retry_after_ms = response
+            .headers()
+            .get("retry-after")
+            .and_then(|value| value.to_str().ok())
+            .and_then(|value| value.trim().parse::<u64>().ok())
+            .map(|seconds| seconds.saturating_mul(1_000));
+        return Err(classify_http_byte_source_status(
+            status,
+            expected_status,
+            retry_after_ms,
+        ));
     }
     if let Some(expected_etag) = expected.etag.as_deref() {
         let etag = response
@@ -578,6 +566,25 @@ fn validate_response(
         }
     }
     Ok(())
+}
+
+fn classify_http_byte_source_status(
+    status: u16,
+    expected_status: u16,
+    retry_after_ms: Option<u64>,
+) -> CdfError {
+    let message = || format!("HTTP byte source expected status {expected_status}, got {status}");
+    match status {
+        401 | 403 => CdfError::auth(message()),
+        408 | 425 | 500..=599 => CdfError::transient(message()),
+        429 => CdfError::rate_limited(message(), retry_after_ms),
+        412 => CdfError::data("HTTP object generation changed (precondition failed)"),
+        200 if expected_status == 206 => {
+            CdfError::data("HTTP byte source ignored the planned exact byte range")
+        }
+        300..=499 => CdfError::data(message()),
+        _ => CdfError::new(ErrorKind::Internal, message()),
+    }
 }
 
 struct RawHttpResponse {
@@ -656,11 +663,19 @@ mod tests {
     }
 
     #[test]
-    fn cloned_transport_shares_the_lazy_blocking_pool() {
-        let transport = ReqwestHttpTransport::new().unwrap();
-        let clone = transport.clone();
+    fn byte_source_statuses_preserve_scheduler_retry_taxonomy() {
+        let rate = classify_http_byte_source_status(429, 200, Some(7_000));
+        let transient = classify_http_byte_source_status(503, 200, None);
+        let auth = classify_http_byte_source_status(401, 200, None);
+        let changed = classify_http_byte_source_status(412, 206, None);
+        let ignored_range = classify_http_byte_source_status(200, 206, None);
 
-        assert!(Arc::ptr_eq(&transport.blocking, &clone.blocking));
+        assert_eq!(rate.kind, ErrorKind::RateLimited);
+        assert_eq!(rate.retry_after_ms, Some(7_000));
+        assert_eq!(transient.kind, ErrorKind::Transient);
+        assert_eq!(auth.kind, ErrorKind::Auth);
+        assert_eq!(changed.kind, ErrorKind::Data);
+        assert_eq!(ignored_range.kind, ErrorKind::Data);
     }
 
     #[test]
@@ -753,7 +768,7 @@ mod tests {
         let memory: Arc<dyn MemoryCoordinator> = coordinator.clone();
         let transport = ReqwestHttpTransport::new().unwrap();
         let source = transport
-            .open_byte_source(&resource, &expected, memory)
+            .open_byte_source(&resource, &expected, None, memory)
             .unwrap();
 
         let chunks = source
@@ -831,7 +846,7 @@ mod tests {
             Arc::new(DeterministicMemoryCoordinator::new(1024 * 1024, BTreeMap::new()).unwrap());
         let source = ReqwestHttpTransport::new()
             .unwrap()
-            .open_byte_source(&resource, &expected, memory)
+            .open_byte_source(&resource, &expected, None, memory)
             .unwrap();
         let cancellation = RunCancellation::default();
         let task_cancellation = cancellation.clone();
@@ -906,7 +921,7 @@ mod tests {
         let memory: Arc<dyn MemoryCoordinator> = coordinator.clone();
         let source = ReqwestHttpTransport::new()
             .unwrap()
-            .open_byte_source(&resource, &expected, memory)
+            .open_byte_source(&resource, &expected, None, memory)
             .unwrap();
 
         let batch = source
@@ -1044,7 +1059,7 @@ mod tests {
             Arc::new(DeterministicMemoryCoordinator::new(1024 * 1024, BTreeMap::new()).unwrap());
 
         let source = transport
-            .open_byte_source(&resource, &expected, memory)
+            .open_byte_source(&resource, &expected, None, memory)
             .unwrap();
         assert!(!source.capabilities().seekable);
         assert!(!source.capabilities().exact_ranges);
@@ -1068,7 +1083,7 @@ mod tests {
             Arc::new(DeterministicMemoryCoordinator::new(1024 * 1024, BTreeMap::new()).unwrap());
 
         let source = transport
-            .open_byte_source(&resource, &expected, memory)
+            .open_byte_source(&resource, &expected, None, memory)
             .unwrap();
 
         assert_eq!(
