@@ -237,6 +237,7 @@ pub struct SchemaDiscoveryExecutionOptions {
     runtime_baseline: Option<RuntimeSchemaBaseline>,
     memory_coordinator: Option<Arc<dyn MemoryCoordinator>>,
     observation_cache: Option<ObservationCacheStore>,
+    cancellation: cdf_runtime::RunCancellation,
 }
 
 impl std::fmt::Debug for SchemaDiscoveryExecutionOptions {
@@ -247,6 +248,7 @@ impl std::fmt::Debug for SchemaDiscoveryExecutionOptions {
             .field("runtime_baseline", &self.runtime_baseline)
             .field("memory_coordinator", &self.memory_coordinator.is_some())
             .field("observation_cache", &self.observation_cache.is_some())
+            .field("cancelled", &self.cancellation.is_cancelled())
             .finish()
     }
 }
@@ -276,6 +278,15 @@ impl SchemaDiscoveryExecutionOptions {
     pub fn with_observation_cache(mut self, cache: ObservationCacheStore) -> Self {
         self.observation_cache = Some(cache);
         self
+    }
+
+    pub fn with_cancellation(mut self, cancellation: cdf_runtime::RunCancellation) -> Self {
+        self.cancellation = cancellation;
+        self
+    }
+
+    pub fn cancellation(&self) -> cdf_runtime::RunCancellation {
+        self.cancellation.clone()
     }
 
     pub fn budget(&self) -> &DiscoveryExecutorBudget {
@@ -713,6 +724,7 @@ fn discover_registered_resource_schema(
                 &options.budget,
                 options.observation_cache.as_ref(),
                 cache_keys[index].as_ref(),
+                options.cancellation.clone(),
             )
         },
     )?;
@@ -1159,6 +1171,7 @@ fn probe_discovery_candidate(
     budget: &DiscoveryExecutorBudget,
     cache: Option<&ObservationCacheStore>,
     cache_key: Option<&ObservationCacheKey>,
+    cancellation: cdf_runtime::RunCancellation,
 ) -> Result<SchemaProbe> {
     let mut cache_status = if cache_key.is_some() {
         "disabled".to_owned()
@@ -1186,7 +1199,8 @@ fn probe_discovery_candidate(
     }
     let observation = session.observe(
         &candidate.source,
-        &SourceDiscoveryRequest::new(budget.max_bytes_per_file(), budget.max_records_per_file())?,
+        &SourceDiscoveryRequest::new(budget.max_bytes_per_file(), budget.max_records_per_file())?
+            .with_cancellation(cancellation),
     )?;
     let schema = Arc::new(observation.schema);
     let source_identity = observation.source_identity;

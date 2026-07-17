@@ -1950,6 +1950,45 @@ mod tests {
 
     #[test]
     fn production_runtime_ownership_is_centralized() {
+        fn production_source(source: &str) -> String {
+            let mut production = String::with_capacity(source.len());
+            let mut remaining = source;
+            while let Some(test_attribute) = remaining.find("#[cfg(test)]") {
+                production.push_str(&remaining[..test_attribute]);
+                let test_item = &remaining[test_attribute + "#[cfg(test)]".len()..];
+                if test_item.trim_start().starts_with("mod tests") {
+                    remaining = "";
+                    break;
+                }
+                let mut braces = 0_usize;
+                let mut entered_body = false;
+                let mut item_end = test_item.len();
+                for (offset, character) in test_item.char_indices() {
+                    match character {
+                        '{' => {
+                            entered_body = true;
+                            braces += 1;
+                        }
+                        '}' if entered_body => {
+                            braces = braces.saturating_sub(1);
+                            if braces == 0 {
+                                item_end = offset + character.len_utf8();
+                                break;
+                            }
+                        }
+                        ';' if !entered_body => {
+                            item_end = offset + character.len_utf8();
+                            break;
+                        }
+                        _ => {}
+                    }
+                }
+                remaining = &test_item[item_end..];
+            }
+            production.push_str(remaining);
+            production
+        }
+
         fn visit(directory: &Path, violations: &mut Vec<String>) {
             for entry in std::fs::read_dir(directory).unwrap() {
                 let entry = entry.unwrap();
@@ -1973,7 +2012,7 @@ mod tests {
                     continue;
                 }
                 let source = std::fs::read_to_string(&path).unwrap();
-                let production = source.split("#[cfg(test)]").next().unwrap_or(&source);
+                let production = production_source(&source);
                 for forbidden in [
                     "tokio::runtime::Builder",
                     "RuntimeBuilder::new_",

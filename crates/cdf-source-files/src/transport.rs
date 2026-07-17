@@ -3,7 +3,8 @@ use std::{
     fmt, fs,
     path::{Path, PathBuf},
     pin::Pin,
-    sync::Arc,
+    sync::{Arc, Mutex},
+    task::{Context, Poll},
     time::{Duration, UNIX_EPOCH},
 };
 
@@ -11,8 +12,10 @@ use cdf_http::{
     AuthScheme, EgressAllowlist, HeaderMap, HttpMethod, HttpRequest, Redactor, SecretProvider,
     SecretUri, SecretValue,
 };
-use cdf_kernel::{BoxFuture, CdfError, ErrorKind, FilePosition, Result};
-use cdf_memory::MemoryCoordinator;
+use cdf_kernel::{BoxFuture, CdfError, ErrorKind, FilePosition, InvocationTermination, Result};
+use cdf_memory::{
+    ConsumerKey, MemoryClass, MemoryCoordinator, MemoryLease, ReservationRequest, reserve,
+};
 use cdf_runtime::{
     ByteSource, ExecutionServices, GenerationStrength, RunCancellation, SourceEgressScope,
 };
@@ -21,9 +24,10 @@ use object_store::{ObjectStore, ObjectStoreExt, path::Path as ObjectPath};
 use serde::{Deserialize, Serialize};
 use url::Url;
 
-const FILE_LIST_CHANNEL_ENTRIES: usize = 64;
+const FILE_LIST_CHANNEL_ENTRIES: usize = 32;
 const MAX_FILE_LOCATION_BYTES: usize = 64 * 1024;
 const MAX_FILE_IDENTITY_FIELD_BYTES: usize = 16 * 1024;
+pub(crate) const FILE_IDENTITY_MEMORY_ENVELOPE_BYTES: u64 = 144 * 1024;
 
 #[derive(Clone, PartialEq, Eq)]
 pub struct FileTransportResource {
@@ -63,9 +67,9 @@ impl FileTransportResource {
         }
     }
 
-    pub fn object_store_url(url: impl Into<String>) -> Self {
+    pub fn remote_url(url: impl Into<String>) -> Self {
         Self {
-            location: FileTransportLocation::ObjectStoreUrl { url: url.into() },
+            location: FileTransportLocation::RemoteUrl { url: url.into() },
             egress_allowlist: EgressAllowlist::allow_any(),
             auth: None,
             credentials: None,
@@ -122,7 +126,7 @@ pub enum FileTransportLocation {
     LocalPath { path: String },
     FileUrl { url: String },
     HttpUrl { url: String },
-    ObjectStoreUrl { url: String },
+    RemoteUrl { url: String },
 }
 
 impl fmt::Debug for FileTransportLocation {
@@ -140,8 +144,8 @@ impl fmt::Debug for FileTransportLocation {
                 .debug_struct("HttpUrl")
                 .field("url", &"<opaque HTTP URL>")
                 .finish(),
-            Self::ObjectStoreUrl { url } => formatter
-                .debug_struct("ObjectStoreUrl")
+            Self::RemoteUrl { url } => formatter
+                .debug_struct("RemoteUrl")
                 .field("url", &redacted_location_for_debug(url))
                 .finish(),
         }
@@ -156,6 +160,8 @@ pub struct FileIdentityMetadata {
     pub etag: Option<String>,
     pub version: Option<String>,
     pub modified: Option<String>,
+    /// True only when the provider has positively attested independent byte-range support.
+    pub exact_ranges: bool,
 }
 
 impl FileIdentityMetadata {
@@ -301,8 +307,93 @@ pub struct FileChecksum {
     pub value: String,
 }
 
-pub type FileIdentityStream =
-    Pin<Box<dyn Stream<Item = Result<FileIdentityMetadata>> + Send + 'static>>;
+pub struct FileIdentityStream {
+    inner: Pin<Box<dyn Stream<Item = Result<AccountedFileIdentity>> + Send + 'static>>,
+    termination: InvocationTermination,
+    terminal: bool,
+}
+
+impl FileIdentityStream {
+    pub fn scoped(stream: cdf_runtime::ScopedTaskStream<AccountedFileIdentity>) -> Self {
+        let termination = stream.termination();
+        Self {
+            inner: Box::pin(stream),
+            termination,
+            terminal: false,
+        }
+    }
+
+    pub fn materialized(
+        stream: impl Stream<Item = Result<AccountedFileIdentity>> + Send + 'static,
+    ) -> Self {
+        Self {
+            inner: Box::pin(stream),
+            termination: InvocationTermination::completed(),
+            terminal: false,
+        }
+    }
+
+    pub fn termination(&self) -> InvocationTermination {
+        self.termination.clone()
+    }
+}
+
+impl Stream for FileIdentityStream {
+    type Item = Result<AccountedFileIdentity>;
+
+    fn poll_next(mut self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        let next = self.inner.as_mut().poll_next(context);
+        if matches!(next, Poll::Ready(None)) {
+            self.terminal = true;
+        }
+        next
+    }
+}
+
+#[derive(Debug)]
+pub struct AccountedFileIdentity {
+    identity: FileIdentityMetadata,
+    _lease: MemoryLease,
+}
+
+impl AccountedFileIdentity {
+    pub fn new(identity: FileIdentityMetadata, lease: MemoryLease) -> Result<Self> {
+        identity.validate()?;
+        if lease.bytes() < FILE_IDENTITY_MEMORY_ENVELOPE_BYTES {
+            return Err(CdfError::internal(
+                "file identity metadata lease is smaller than its fixed envelope",
+            ));
+        }
+        Ok(Self {
+            identity,
+            _lease: lease,
+        })
+    }
+
+    pub fn identity(&self) -> &FileIdentityMetadata {
+        &self.identity
+    }
+
+    pub fn into_identity(self) -> FileIdentityMetadata {
+        self.identity
+    }
+}
+
+impl std::ops::Deref for AccountedFileIdentity {
+    type Target = FileIdentityMetadata;
+
+    fn deref(&self) -> &Self::Target {
+        &self.identity
+    }
+}
+
+impl Drop for FileIdentityStream {
+    fn drop(&mut self) {
+        if !self.terminal {
+            self.termination.cancel();
+        }
+    }
+}
 
 #[derive(Clone, Debug, Default)]
 pub struct FileTransportControl {
@@ -322,7 +413,7 @@ impl FileTransportControl {
         self.cancellation.clone()
     }
 
-    fn check(&self, execution: Option<&ExecutionServices>) -> Result<()> {
+    pub(crate) fn check(&self, execution: Option<&ExecutionServices>) -> Result<()> {
         self.cancellation.check()?;
         if let Some(deadline) = self.deadline {
             let execution = execution.ok_or_else(|| {
@@ -517,11 +608,43 @@ impl fmt::Debug for HttpFileResponse {
     }
 }
 
+#[derive(Clone, Default)]
+pub struct ObjectStoreClientPool {
+    clients: Arc<Mutex<BTreeMap<String, Arc<dyn ObjectStore>>>>,
+}
+
+impl ObjectStoreClientPool {
+    fn get(&self, key: &str) -> Result<Option<Arc<dyn ObjectStore>>> {
+        self.clients
+            .lock()
+            .map(|clients| clients.get(key).cloned())
+            .map_err(|_| CdfError::internal("object-store client pool lock is poisoned"))
+    }
+
+    fn insert_or_get(
+        &self,
+        key: String,
+        client: Arc<dyn ObjectStore>,
+    ) -> Result<Arc<dyn ObjectStore>> {
+        let mut clients = self
+            .clients
+            .lock()
+            .map_err(|_| CdfError::internal("object-store client pool lock is poisoned"))?;
+        Ok(Arc::clone(clients.entry(key).or_insert(client)))
+    }
+
+    #[cfg(test)]
+    fn len(&self) -> usize {
+        self.clients.lock().unwrap().len()
+    }
+}
+
 #[derive(Default)]
 pub struct FileTransportFacade {
     http: Option<Box<dyn HttpFileTransport>>,
     secret_provider: Option<Arc<dyn SecretProvider + Send + Sync>>,
     object_stores: BTreeMap<String, Arc<dyn ObjectStore>>,
+    object_store_clients: ObjectStoreClientPool,
     execution: Option<cdf_runtime::ExecutionServices>,
 }
 
@@ -560,6 +683,11 @@ impl FileTransportFacade {
         self
     }
 
+    pub fn with_shared_object_store_clients(mut self, pool: ObjectStoreClientPool) -> Self {
+        self.object_store_clients = pool;
+        self
+    }
+
     pub fn with_execution_services(mut self, execution: cdf_runtime::ExecutionServices) -> Self {
         self.execution = Some(execution);
         self
@@ -573,6 +701,15 @@ impl fmt::Debug for FileTransportFacade {
             .field("http", &self.http.is_some())
             .field("secret_provider", &self.secret_provider.is_some())
             .field("object_store_count", &self.object_stores.len())
+            .field(
+                "pooled_object_store_count",
+                &self
+                    .object_store_clients
+                    .clients
+                    .lock()
+                    .map(|clients| clients.len())
+                    .ok(),
+            )
             .field("execution_services", &self.execution.is_some())
             .finish()
     }
@@ -594,7 +731,7 @@ impl FileTransport for FileTransportFacade {
             FileTransportLocation::HttpUrl { url } => {
                 self.http_metadata(egress, resource, url, control)
             }
-            FileTransportLocation::ObjectStoreUrl { url } => self
+            FileTransportLocation::RemoteUrl { url } => self
                 .object_store_metadata(egress, resource, url, control)
                 .map(|identity| FileMetadataObservation::direct(resource, identity)),
         }
@@ -632,7 +769,7 @@ impl FileTransport for FileTransportFacade {
             FileTransportLocation::HttpUrl { .. } => Err(CdfError::contract(
                 "HTTP(S) file transport does not support arbitrary directory listing; use an explicit URL or a ratified template/range enumerator",
             )),
-            FileTransportLocation::ObjectStoreUrl { url } => {
+            FileTransportLocation::RemoteUrl { url } => {
                 self.list_object_store(egress, resource, url, maximum_results, control.clone())
             }
         }
@@ -653,7 +790,7 @@ impl FileTransport for FileTransportFacade {
                 file_url_path(url)?,
                 memory,
             )?)),
-            FileTransportLocation::ObjectStoreUrl { url } => {
+            FileTransportLocation::RemoteUrl { url } => {
                 let (store, path, _) = self.resolve_object_store(egress, resource, url)?;
                 Ok(Arc::new(crate::ObjectStoreByteSource::new(
                     store,
@@ -722,7 +859,7 @@ impl FileTransportFacade {
                 )
             },
         )?;
-        Ok(Box::pin(stream))
+        Ok(FileIdentityStream::scoped(stream))
     }
 
     fn list_local(
@@ -737,7 +874,7 @@ impl FileTransportFacade {
             "file-local-list",
             crate::FILE_SOURCE_BLOCKING_LANE_ID,
             FILE_LIST_CHANNEL_ENTRIES,
-            move |mut output, cancellation| {
+            move |output, cancellation| {
                 control.check(Some(&execution))?;
                 cancellation.check()?;
                 let metadata = fs::metadata(&path).map_err(|error| {
@@ -752,9 +889,14 @@ impl FileTransportFacade {
                             "file inventory exceeds the 0-entry boundary",
                         ));
                     }
+                    let lease = reserve_file_identity_envelope(&execution, &control)?;
                     let identity = local_metadata(&path)?;
-                    identity.validate()?;
-                    output.send(identity)?;
+                    send_blocking_file_identity(
+                        &output,
+                        AccountedFileIdentity::new(identity, lease)?,
+                        &execution,
+                        &control,
+                    )?;
                     return Ok(());
                 }
                 if !metadata.is_dir() {
@@ -786,15 +928,20 @@ impl FileTransportFacade {
                             "file inventory exceeds the {maximum_results}-entry boundary"
                         )));
                     }
+                    let lease = reserve_file_identity_envelope(&execution, &control)?;
                     let identity = local_metadata(&entry.path())?;
-                    identity.validate()?;
-                    output.send(identity)?;
+                    send_blocking_file_identity(
+                        &output,
+                        AccountedFileIdentity::new(identity, lease)?,
+                        &execution,
+                        &control,
+                    )?;
                     emitted += 1;
                 }
                 Ok(())
             },
         )?;
-        Ok(Box::pin(stream))
+        Ok(FileIdentityStream::scoped(stream))
     }
 
     fn resolve_object_store(
@@ -825,6 +972,21 @@ impl FileTransportFacade {
                 origin,
             ));
         }
+        let pool_key = format!(
+            "{origin}\0{}",
+            resource
+                .credentials
+                .as_ref()
+                .map_or("anonymous", SecretUri::as_str)
+        );
+        if let Some(store) = self.object_store_clients.get(&pool_key)? {
+            return Ok((
+                store,
+                ObjectPath::parse(parsed.path().trim_start_matches('/'))
+                    .map_err(|error| CdfError::contract(format!("parse object path: {error}")))?,
+                origin,
+            ));
+        }
         let options = match &resource.credentials {
             Some(reference) => {
                 let provider = self.secret_provider.as_ref().ok_or_else(|| {
@@ -841,7 +1003,10 @@ impl FileTransportFacade {
         };
         let (store, path) = object_store::parse_url_opts(&parsed, options)
             .map_err(|error| object_store_error("configure object store", error))?;
-        Ok((Arc::from(store), path, origin))
+        let store = self
+            .object_store_clients
+            .insert_or_get(pool_key, Arc::from(store))?;
+        Ok((store, path, origin))
     }
 
     fn execution(&self) -> Result<&cdf_runtime::ExecutionServices> {
@@ -1015,13 +1180,25 @@ async fn publish_object_store_listing(
     >,
     origin: String,
     maximum_results: usize,
-    mut output: cdf_runtime::TaskStreamSender<FileIdentityMetadata>,
+    mut output: cdf_runtime::TaskStreamSender<AccountedFileIdentity>,
     cancellation: cdf_runtime::RunCancellation,
     control: FileTransportControl,
     execution: ExecutionServices,
 ) -> Result<()> {
     let mut emitted = 0_usize;
     loop {
+        let lease = await_controlled(
+            &control,
+            &execution,
+            cancellation.await_or_cancel(reserve(
+                execution.memory(),
+                ReservationRequest::new(
+                    ConsumerKey::new("file-identity-metadata", MemoryClass::Discovery)?,
+                    FILE_IDENTITY_MEMORY_ENVELOPE_BYTES,
+                )?,
+            )),
+        )
+        .await?;
         let operation = cancellation.await_or_cancel(async {
             objects
                 .try_next()
@@ -1030,6 +1207,7 @@ async fn publish_object_store_listing(
         });
         let next = await_controlled(&control, &execution, operation).await?;
         let Some(metadata) = next else {
+            drop(lease);
             return Ok(());
         };
         if emitted == maximum_results {
@@ -1042,11 +1220,49 @@ async fn publish_object_store_listing(
             origin.trim_end_matches('/'),
             metadata.location.as_ref()
         );
-        let identity = object_identity(location, metadata);
-        identity.validate()?;
-        output.send(identity).await?;
+        let identity = AccountedFileIdentity::new(object_identity(location, metadata), lease)?;
+        await_controlled(
+            &control,
+            &execution,
+            cancellation.await_or_cancel(output.send(identity)),
+        )
+        .await?;
         emitted += 1;
     }
+}
+
+fn reserve_file_identity_envelope(
+    execution: &ExecutionServices,
+    control: &FileTransportControl,
+) -> Result<MemoryLease> {
+    let execution_for_future = execution.clone();
+    let control = control.clone();
+    execution.run_io(async move {
+        await_controlled(
+            &control,
+            &execution_for_future,
+            control.cancellation.await_or_cancel(reserve(
+                execution_for_future.memory(),
+                ReservationRequest::new(
+                    ConsumerKey::new("file-identity-metadata", MemoryClass::Discovery)?,
+                    FILE_IDENTITY_MEMORY_ENVELOPE_BYTES,
+                )?,
+            )),
+        )
+        .await
+    })
+}
+
+fn send_blocking_file_identity(
+    output: &cdf_runtime::BlockingTaskStreamSender<AccountedFileIdentity>,
+    identity: AccountedFileIdentity,
+    execution: &ExecutionServices,
+    control: &FileTransportControl,
+) -> Result<()> {
+    let execution_for_future = execution.clone();
+    let control = control.clone();
+    let send = output.send_future(identity);
+    execution.run_io(async move { await_controlled(&control, &execution_for_future, send).await })
 }
 
 async fn await_controlled<T>(
@@ -1134,6 +1350,7 @@ fn local_metadata(path: &Path) -> Result<FileIdentityMetadata> {
             .ok()
             .and_then(|modified| modified.duration_since(UNIX_EPOCH).ok())
             .map(|duration| format!("unix_ms:{}", duration.as_millis())),
+        exact_ranges: true,
     })
 }
 
@@ -1151,11 +1368,15 @@ pub(crate) fn object_identity(
             "unix_ms:{}",
             metadata.last_modified.timestamp_millis()
         )),
+        exact_ranges: true,
     }
 }
 
-fn object_store_error(action: &str, error: object_store::Error) -> CdfError {
-    let message = format!("{action}: {error}");
+pub(crate) fn object_store_error(action: &str, error: object_store::Error) -> CdfError {
+    // Provider errors may embed signed URLs, credential-bearing configuration, or response
+    // bodies. Preserve the scheduler-relevant class without copying opaque provider text across
+    // the transport boundary.
+    let message = format!("{action}: object-store provider request failed");
     match error {
         object_store::Error::PermissionDenied { .. }
         | object_store::Error::Unauthenticated { .. } => CdfError::auth(message),
@@ -1307,6 +1528,9 @@ fn http_identity(url: &str, response: &HttpFileResponse) -> Result<FileIdentityM
         etag,
         version: None,
         modified: header_value(&response.headers, "last-modified").map(str::to_owned),
+        exact_ranges: response.status == 206
+            || header_value(&response.headers, "accept-ranges")
+                .is_some_and(|value| value.eq_ignore_ascii_case("bytes")),
     })
 }
 
@@ -1481,6 +1705,7 @@ mod tests {
             etag: Some("\"generation\"".to_owned()),
             version: None,
             modified: None,
+            exact_ranges: true,
         };
         identity.validate().unwrap();
         identity.location = "x".repeat(MAX_FILE_LOCATION_BYTES + 1);
@@ -1504,6 +1729,7 @@ mod tests {
         }))
         .boxed();
         let execution = crate::test_execution_services();
+        let memory = execution.memory();
         let listing_execution = execution.clone();
         let mut listing = execution
             .spawn_io_stream(
@@ -1533,6 +1759,13 @@ mod tests {
             }
         });
         assert_eq!(count, ENTRIES);
+        let snapshot = memory.snapshot();
+        assert_eq!(snapshot.current_bytes, 0);
+        assert!(
+            snapshot.peak_bytes
+                <= FILE_IDENTITY_MEMORY_ENVELOPE_BYTES
+                    .saturating_mul(FILE_LIST_CHANNEL_ENTRIES as u64 + 2)
+        );
     }
 
     #[test]
@@ -1546,7 +1779,7 @@ mod tests {
         let transport = FileTransportFacade::new()
             .with_object_store("s3://acme-events", store)
             .with_execution_services(crate::test_execution_services());
-        let root = FileTransportResource::object_store_url("s3://acme-events/prod/");
+        let root = FileTransportResource::remote_url("s3://acme-events/prod/");
         let listed = transport
             .list(
                 &crate::test_egress_scope(),
@@ -1562,7 +1795,7 @@ mod tests {
             "s3://acme-events/prod/2026/events.parquet"
         );
         assert_eq!(listed[0].size_bytes, Some(15));
-        let object = FileTransportResource::object_store_url(&listed[0].location);
+        let object = FileTransportResource::remote_url(&listed[0].location);
         let head = transport
             .metadata(
                 &crate::test_egress_scope(),
@@ -1585,7 +1818,7 @@ mod tests {
         let transport = FileTransportFacade::new()
             .with_object_store("s3://bounded", store)
             .with_execution_services(crate::test_execution_services());
-        let root = FileTransportResource::object_store_url("s3://bounded/prod/");
+        let root = FileTransportResource::remote_url("s3://bounded/prod/");
         let error = futures_executor::block_on(
             transport
                 .list(
@@ -1641,9 +1874,38 @@ mod tests {
     }
 
     #[test]
+    fn object_store_clients_are_shared_across_resource_runtime_facades() {
+        let pool = ObjectStoreClientPool::default();
+        let first = FileTransportFacade::new()
+            .with_shared_object_store_clients(pool.clone())
+            .with_execution_services(crate::test_execution_services());
+        let second = FileTransportFacade::new()
+            .with_shared_object_store_clients(pool.clone())
+            .with_execution_services(crate::test_execution_services());
+        let resource = FileTransportResource::remote_url("s3://cdf-pool-law/data/a.parquet");
+        let (first_client, _, _) = first
+            .resolve_object_store(
+                &crate::test_egress_scope(),
+                &resource,
+                "s3://cdf-pool-law/data/a.parquet",
+            )
+            .unwrap();
+        let (second_client, _, _) = second
+            .resolve_object_store(
+                &crate::test_egress_scope(),
+                &resource,
+                "s3://cdf-pool-law/data/b.parquet",
+            )
+            .unwrap();
+
+        assert!(Arc::ptr_eq(&first_client, &second_client));
+        assert_eq!(pool.len(), 1);
+    }
+
+    #[test]
     fn object_store_credentials_and_egress_fail_before_network_without_leaks() {
         let credential = SecretUri::new("secret://file/cloud-options").unwrap();
-        let resource = FileTransportResource::object_store_url("s3://private-bucket/data.parquet")
+        let resource = FileTransportResource::remote_url("s3://private-bucket/data.parquet")
             .with_credentials(credential)
             .with_egress_allowlist(EgressAllowlist::from_hosts(["allowed-bucket"]));
         let transport = FileTransportFacade::new();
@@ -2022,6 +2284,7 @@ mod tests {
                 etag: None,
                 version: None,
                 modified: None,
+                exact_ranges: false,
             },
             access_location: OpaqueAccessLocation(FileTransportLocation::HttpUrl { url: location }),
             forward_auth: false,
@@ -2051,6 +2314,7 @@ mod tests {
             etag: None,
             version: None,
             modified: None,
+            exact_ranges: false,
         };
 
         let resource_debug = format!("{resource:?}");

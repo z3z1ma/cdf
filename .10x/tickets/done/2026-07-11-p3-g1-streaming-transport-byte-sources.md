@@ -1,4 +1,4 @@
-Status: active
+Status: done
 Created: 2026-07-11
 Updated: 2026-07-16
 Parent: .10x/tickets/2026-07-10-p3-ws-g-remote-io-overlap.md
@@ -59,3 +59,27 @@ None. L5, SX1, FX1, and A4 are done; this ticket is executable.
 - 2026-07-14 adversarial repair review: **Findings:** the first pass would have skipped all network reattestation for a planned zero-byte strong object because it has no legal nonempty range; fixed by an explicit generation-bound `HEAD` before returning the empty stream and added a mutation regression. No critical/significant finding remains in the strong path: every nonempty request is exact, preconditioned, pre-reserved, extent/metadata/length checked, ordered, and cancellation checked before publication. **Verdict:** pass for the strong-generation repair. **Residual risk:** weak provider body framing remains outside CDF's control and the serial range loop is correctness-first rather than the final overlapped cloud implementation; both remain explicit G1/G2 acceptance, not a closure claim.
 - 2026-07-16: SX1 closed after landing cancellable async HTTP payload request/body operations. G1 owns the remaining transport-level metadata and blocking-provider deadline/cancellation completion; this is native transport work, not a reason to reopen the source registry boundary.
 - 2026-07-14: Superseded the temporary strong-generation exact-window “sequential” loop with one full-object provider stream. Strong S3/GCS/Azure reads bind generation conditions, weak reads retain terminal reattestation, provider frames are admitted once and exposed through bounded zero-copy slices, and full-scan telemetry now truthfully reports one request. Evidence: `.10x/evidence/2026-07-14-p3-g2-object-store-single-stream.md`. G1 remains open for bounded paged listing, auth/retry laws, and the live provider matrix; the obsolete serial loop is no longer a residual.
+- 2026-07-16: Closed the final G1 transport slice in one consolidated repair after two independent adversarial reviews. Production file listing and source-health waits now enter only through injected execution services; the static ownership gate scans all production code while excluding individual test-only items. Listing streams retain cancellation/join authority, every in-flight identity owns a fixed discovery-memory lease, and the million-object law proves the bounded channel releases to zero. HTTP and object-store request/body waits are cancellation-bound; object-store clients are pooled at application scope; provider-controlled body frames are retained once and exposed as bounded zero-copy slices; HTTP exact ranges require positive range-support evidence in addition to strong identity; object-store errors preserve scheduler class without leaking provider text; and an external `mock://` transport composes without a source/format/scheduler identity branch. The obsolete local discovery helper and closed cloud-scheme enum were deleted.
+
+## Evidence
+
+- `CARGO_BUILD_JOBS=12 cargo check -p cdf-runtime -p cdf-source-files -p cdf-transport-http -p cdf-project -p cdf-cli -p cdf-engine --all-targets --locked -j 12`: passed.
+- `CARGO_BUILD_JOBS=12 cargo test -p cdf-source-files -p cdf-transport-http --lib --locked -j 12`: source files passed 69 with one intentional slow ignore; the unrestricted localhost rerun passed HTTP 12/12. The restricted HTTP attempt failed only because the sandbox denied loopback binds.
+- `CARGO_BUILD_JOBS=12 cargo test -p cdf-source-files million_entry_object_listing_uses_the_bounded_transport_stream --lib --locked -j 12 -- --ignored --nocapture`: passed one million ordered identities in 4.78 seconds, released current discovery memory to zero, and held peak memory below the fixed channel envelope.
+- `CARGO_BUILD_JOBS=12 cargo test -p cdf-engine production_runtime_ownership_is_centralized --lib --locked -j 12 -- --nocapture`: passed after the gate was corrected to inspect production following test-only imports without flagging test helpers.
+- Strict affected-crate all-target Clippy passed with `-D warnings`.
+- The broader engine matrix reached 152 passes, 6 intentional ignores, and 10 failures outside this diff: nine active schema-admission fixture/hash mismatches plus the independently owned package-rechunking identity failure. G1 does not claim those failures as passing evidence or absorb their ownership.
+
+## Review
+
+Verdict: **pass** for G1 closure; no critical or significant G1 finding remains.
+
+The consolidated review found and the repair closed production `block_on` calls in file planning/listing, uncancellable object-store waits, per-resource object-store client construction, erased listing termination, unaccounted in-flight metadata, legal oversized provider frames, ETag-only range inference, and the closed cloud-scheme dispatch. The first static-gate correction was itself falsified because it flagged individually attributed test helpers; the final gate strips each `#[cfg(test)]` item and still scans later production code.
+
+Residual work is explicitly transferred rather than hidden: `.10x/tickets/2026-07-11-p3-b5-json-codecs.md` owns deleting the final blocking REST client/runtime while implementing async REST decode; `.10x/tickets/2026-07-11-p3-f2-materialization-closure-audit.md` owns downstream candidate/partition cardinality and spill-backed ordering; `.10x/tickets/2026-07-11-p3-g2-range-readahead-spool-controller.md` owns adaptive range/readahead/cache control; and `.10x/tickets/2026-07-11-p3-g4-tlc-remote-io-envelope.md` owns the live S3/GCS/Azure matrix, provider pagination semantics, retry/waste measurements, and end-to-end envelope. Those are separate acceptance surfaces with active owners, not reasons to keep the provider contract open.
+
+## Retrospective
+
+The repeated failure mode was treating a bounded channel as proof of bounded control-plane memory and treating a stream type alias as proof of lifecycle ownership. The durable shape is stronger: each queued item carries its own lease, and the stream carries termination authority through EOF, error, and early drop. The other recurring mistake was deriving capabilities from identity: an ETag makes independently joined bytes generation-safe only when the server also positively attests range support. Capability and identity must remain separate facts.
+
+Pooling belongs at application composition, provider-specific error text stops at the adapter boundary, and generic runtime dispatch must branch on transport category/capability rather than a closed list of provider schemes. These boundaries now make adding a provider a registry/transport operation, not a runtime edit.

@@ -1030,7 +1030,8 @@ impl SourceHealthBudget {
 
     pub fn delay(&self, duration: Duration) -> Result<()> {
         self.check()?;
-        futures_executor::block_on(self.execution.delay(duration, self.cancellation.clone()))?;
+        self.execution
+            .run_io(self.execution.delay(duration, self.cancellation.clone()))?;
         self.check()
     }
 
@@ -1752,6 +1753,7 @@ pub struct SourceResolutionContext<'a> {
     egress_authorizer: Arc<dyn SourceEgressAuthorizer>,
     prepared_payloads: PreparedSourcePayloads,
     driver_options: BTreeMap<String, serde_json::Value>,
+    cancellation: crate::RunCancellation,
 }
 
 impl<'a> SourceResolutionContext<'a> {
@@ -1768,6 +1770,7 @@ impl<'a> SourceResolutionContext<'a> {
             egress_authorizer,
             prepared_payloads: PreparedSourcePayloads::default(),
             driver_options: BTreeMap::new(),
+            cancellation: crate::RunCancellation::default(),
         }
     }
 
@@ -1784,6 +1787,11 @@ impl<'a> SourceResolutionContext<'a> {
         self
     }
 
+    pub fn with_cancellation(mut self, cancellation: crate::RunCancellation) -> Self {
+        self.cancellation = cancellation;
+        self
+    }
+
     pub fn project_root(&self) -> &'a Path {
         self.project_root
     }
@@ -1794,6 +1802,10 @@ impl<'a> SourceResolutionContext<'a> {
 
     pub fn execution(&self) -> &'a ExecutionServices {
         self.execution
+    }
+
+    pub fn cancellation(&self) -> crate::RunCancellation {
+        self.cancellation.clone()
     }
 
     pub fn egress_scope(&self, driver_id: &SourceDriverId) -> SourceEgressScope {

@@ -257,7 +257,7 @@ impl HttpByteSource {
                     .map(|modified| format!("last-modified:{modified};size:{size_bytes}"))
             })
             .or_else(|| Some(format!("unversioned-size:{size_bytes}")));
-        let exact_ranges = expected.etag.is_some();
+        let exact_ranges = expected.etag.is_some() && expected.exact_ranges;
         let identity = ContentIdentity {
             stable_id: expected.location.clone(),
             size_bytes: Some(size_bytes),
@@ -265,7 +265,7 @@ impl HttpByteSource {
             checksum: checksum.clone(),
             strength: if checksum.is_some() {
                 GenerationStrength::ContentAddressed
-            } else if exact_ranges {
+            } else if expected.etag.is_some() {
                 GenerationStrength::Strong
             } else {
                 GenerationStrength::Weak
@@ -341,6 +341,7 @@ impl ByteSource for HttpByteSource {
                 cancellation: request.cancellation,
                 maximum_chunk_bytes: request.preferred_chunk_bytes,
                 transferred_bytes: 0,
+                pending: None,
                 expected_checksum: self.expected.sha256().map(str::to_owned),
                 hasher: self.expected.sha256().map(|_| Sha256::new()),
             };
@@ -424,6 +425,7 @@ struct HttpSequentialState {
     cancellation: RunCancellation,
     maximum_chunk_bytes: u64,
     transferred_bytes: u64,
+    pending: Option<AccountedBytes>,
     expected_checksum: Option<String>,
     hasher: Option<Sha256>,
 }
@@ -432,6 +434,9 @@ async fn http_sequential_next(
     mut state: HttpSequentialState,
 ) -> Result<Option<(AccountedBytes, HttpSequentialState)>> {
     state.cancellation.check()?;
+    if let Some(chunk) = take_http_sequential_chunk(&mut state)? {
+        return Ok(Some((chunk, state)));
+    }
     let lease = state
         .cancellation
         .await_or_cancel(reserve(
@@ -486,12 +491,7 @@ async fn http_sequential_next(
         if length == 0 {
             continue;
         }
-        if length > state.maximum_chunk_bytes {
-            return Err(CdfError::data(format!(
-                "HTTP response chunk {length} exceeds its pre-admitted {}-byte envelope",
-                state.maximum_chunk_bytes
-            )));
-        }
+        lease.reconcile(length)?;
         state.transferred_bytes = state
             .transferred_bytes
             .checked_add(length)
@@ -505,8 +505,26 @@ async fn http_sequential_next(
             hasher.update(&bytes);
         }
         state.cancellation.check()?;
-        return Ok(Some((AccountedBytes::new(bytes, lease)?, state)));
+        state.pending = Some(AccountedBytes::new(bytes, lease)?);
+        let chunk = take_http_sequential_chunk(&mut state)?.ok_or_else(|| {
+            CdfError::internal("nonempty HTTP frame produced no sequential chunk")
+        })?;
+        return Ok(Some((chunk, state)));
     }
+}
+
+fn take_http_sequential_chunk(state: &mut HttpSequentialState) -> Result<Option<AccountedBytes>> {
+    let Some(pending) = state.pending.take() else {
+        return Ok(None);
+    };
+    let target = usize::try_from(state.maximum_chunk_bytes)
+        .map_err(|_| CdfError::data("HTTP chunk target exceeds usize"))?;
+    if pending.payload().len() <= target {
+        return Ok(Some(pending));
+    }
+    let chunk = pending.slice(0..target)?;
+    state.pending = Some(pending.slice(target..pending.payload().len())?);
+    Ok(Some(chunk))
 }
 
 fn validate_chunk_target(target: u64, capabilities: &ByteSourceCapabilities) -> Result<()> {
@@ -769,6 +787,7 @@ mod tests {
             etag: Some("\"generation-1\"".to_owned()),
             version: None,
             modified: None,
+            exact_ranges: true,
         };
         let coordinator =
             Arc::new(DeterministicMemoryCoordinator::new(1024 * 1024, BTreeMap::new()).unwrap());
@@ -848,6 +867,7 @@ mod tests {
             etag: None,
             version: None,
             modified: None,
+            exact_ranges: false,
         };
         let memory: Arc<dyn MemoryCoordinator> =
             Arc::new(DeterministicMemoryCoordinator::new(1024 * 1024, BTreeMap::new()).unwrap());
@@ -922,6 +942,7 @@ mod tests {
             etag: Some("\"generation-1\"".to_owned()),
             version: None,
             modified: None,
+            exact_ranges: true,
         };
         let coordinator =
             Arc::new(DeterministicMemoryCoordinator::new(1024 * 1024, BTreeMap::new()).unwrap());
@@ -1020,10 +1041,10 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn http_sequential_source_skips_empty_transport_frames_under_one_lease() {
-        const WINDOW_BYTES: u64 = 4 * 1024 * 1024;
+    async fn http_sequential_source_slices_oversized_transport_frames_under_one_lease() {
+        const WINDOW_BYTES: u64 = 2;
         let coordinator =
-            Arc::new(DeterministicMemoryCoordinator::new(WINDOW_BYTES, BTreeMap::new()).unwrap());
+            Arc::new(DeterministicMemoryCoordinator::new(3, BTreeMap::new()).unwrap());
         let memory: Arc<dyn MemoryCoordinator> = coordinator.clone();
         let stream: HttpBodyStream = Box::pin(stream::iter([
             Ok::<Bytes, reqwest::Error>(Bytes::new()),
@@ -1037,14 +1058,18 @@ mod tests {
             cancellation: RunCancellation::default(),
             maximum_chunk_bytes: WINDOW_BYTES,
             transferred_bytes: 0,
+            pending: None,
             expected_checksum: None,
             hasher: None,
         };
 
         let (chunk, state) = http_sequential_next(state).await.unwrap().unwrap();
-        assert_eq!(chunk.payload(), b"abc");
+        assert_eq!(chunk.payload(), b"ab");
         assert_eq!(chunk.lease().bytes(), 3);
-        assert_eq!(coordinator.snapshot().peak_bytes, WINDOW_BYTES);
+        assert_eq!(coordinator.snapshot().peak_bytes, 3);
+        drop(chunk);
+        let (chunk, state) = http_sequential_next(state).await.unwrap().unwrap();
+        assert_eq!(chunk.payload(), b"c");
         drop(chunk);
         assert!(http_sequential_next(state).await.unwrap().is_none());
         assert_eq!(coordinator.snapshot().current_bytes, 0);
@@ -1061,6 +1086,7 @@ mod tests {
             etag: None,
             version: None,
             modified: Some("Wed, 08 Jul 2026 12:00:00 GMT".to_owned()),
+            exact_ranges: false,
         };
         let memory: Arc<dyn MemoryCoordinator> =
             Arc::new(DeterministicMemoryCoordinator::new(1024 * 1024, BTreeMap::new()).unwrap());
@@ -1085,6 +1111,7 @@ mod tests {
             etag: None,
             version: None,
             modified: None,
+            exact_ranges: false,
         };
         let memory: Arc<dyn MemoryCoordinator> =
             Arc::new(DeterministicMemoryCoordinator::new(1024 * 1024, BTreeMap::new()).unwrap());
@@ -1098,6 +1125,31 @@ mod tests {
             Some("unversioned-size:16")
         );
         assert_eq!(source.identity().strength, GenerationStrength::Weak);
+        assert!(!source.capabilities().seekable);
+        assert!(!source.capabilities().exact_ranges);
+    }
+
+    #[test]
+    fn strong_http_identity_without_range_attestation_uses_sequential_access() {
+        let transport = ReqwestHttpFileTransport::new().unwrap();
+        let resource = FileTransportResource::http_url("https://example.test/events.bin");
+        let expected = FileIdentityMetadata {
+            location: "https://example.test/events.bin".to_owned(),
+            size_bytes: Some(16),
+            checksum: None,
+            etag: Some("\"generation-1\"".to_owned()),
+            version: None,
+            modified: None,
+            exact_ranges: false,
+        };
+        let memory: Arc<dyn MemoryCoordinator> =
+            Arc::new(DeterministicMemoryCoordinator::new(1024 * 1024, BTreeMap::new()).unwrap());
+
+        let source = transport
+            .open_byte_source(&resource, &expected, None, memory)
+            .unwrap();
+
+        assert_eq!(source.identity().strength, GenerationStrength::Strong);
         assert!(!source.capabilities().seekable);
         assert!(!source.capabilities().exact_ranges);
     }

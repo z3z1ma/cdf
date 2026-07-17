@@ -14,7 +14,10 @@ use futures_util::{TryStreamExt, stream};
 use object_store::{GetOptions, ObjectStore, ObjectStoreExt, path::Path as ObjectPath};
 use sha2::{Digest, Sha256};
 
-use crate::{FileIdentityMetadata, transport::verify_generation_identity};
+use crate::{
+    FileIdentityMetadata,
+    transport::{object_store_error, verify_generation_identity},
+};
 
 const MINIMUM_CHUNK_BYTES: u64 = 8 * 1024;
 const MAXIMUM_CHUNK_BYTES: u64 = 32 * 1024 * 1024;
@@ -132,11 +135,15 @@ impl ByteSource for ObjectStoreByteSource {
                     self.capabilities.maximum_chunk_bytes
                 )));
             }
-            let result = self
-                .store
-                .get_opts(&self.path, self.get_options())
-                .await
-                .map_err(|error| object_error("open object stream", error))?;
+            let result = request
+                .cancellation
+                .await_or_cancel(async {
+                    self.store
+                        .get_opts(&self.path, self.get_options())
+                        .await
+                        .map_err(|error| object_store_error("open object stream", error))
+                })
+                .await?;
             let observed = crate::transport::object_identity(
                 self.expected.location.clone(),
                 result.meta.clone(),
@@ -206,22 +213,26 @@ impl ByteSource for ObjectStoreByteSource {
                     "object-store byte range exceeds planned generation",
                 ));
             }
-            let lease = reserve(
-                Arc::clone(&self.memory),
-                ReservationRequest::new(
-                    ConsumerKey::new("object-store-byte-source-range", MemoryClass::Source)?,
-                    extent.length,
-                )?,
-            )
-            .await?;
-            let result = self
-                .store
-                .get_opts(
-                    &self.path,
-                    self.get_options().with_range(Some(extent.start..end)),
-                )
-                .await
-                .map_err(|error| object_error("read object range", error))?;
+            let lease = cancellation
+                .await_or_cancel(reserve(
+                    Arc::clone(&self.memory),
+                    ReservationRequest::new(
+                        ConsumerKey::new("object-store-byte-source-range", MemoryClass::Source)?,
+                        extent.length,
+                    )?,
+                ))
+                .await?;
+            let result = cancellation
+                .await_or_cancel(async {
+                    self.store
+                        .get_opts(
+                            &self.path,
+                            self.get_options().with_range(Some(extent.start..end)),
+                        )
+                        .await
+                        .map_err(|error| object_store_error("read object range", error))
+                })
+                .await?;
             if result.range != (extent.start..end) {
                 return Err(CdfError::data(format!(
                     "object-store range response {:?} does not match requested {}..{end}",
@@ -239,10 +250,14 @@ impl ByteSource for ObjectStoreByteSource {
                     CdfError::data("object range metadata omitted content length")
                 })?,
             )?;
-            let bytes = result
-                .bytes()
-                .await
-                .map_err(|error| object_error("collect exact object range", error))?;
+            let bytes = cancellation
+                .await_or_cancel(async {
+                    result
+                        .bytes()
+                        .await
+                        .map_err(|error| object_store_error("collect exact object range", error))
+                })
+                .await?;
             if u64::try_from(bytes.len()).ok() != Some(extent.length) {
                 return Err(CdfError::data(
                     "object-store exact range returned a short body",
@@ -296,30 +311,40 @@ async fn object_sequential_next(
         .unwrap_or_default()
         .saturating_sub(state.transferred_bytes);
     let admitted_frame_bytes = remaining.clamp(1, state.maximum_provider_chunk_bytes);
-    let lease = reserve(
-        Arc::clone(&state.memory),
-        ReservationRequest::new(
-            ConsumerKey::new("object-store-byte-source-sequential", MemoryClass::Source)?,
-            admitted_frame_bytes,
-        )?,
-    )
-    .await?;
+    let lease = state
+        .cancellation
+        .await_or_cancel(reserve(
+            Arc::clone(&state.memory),
+            ReservationRequest::new(
+                ConsumerKey::new("object-store-byte-source-sequential", MemoryClass::Source)?,
+                admitted_frame_bytes,
+            )?,
+        ))
+        .await?;
     loop {
         state.cancellation.check()?;
         let Some(bytes) = state
-            .stream
-            .try_next()
-            .await
-            .map_err(|error| object_error("stream object body", error))?
+            .cancellation
+            .await_or_cancel(async {
+                state
+                    .stream
+                    .try_next()
+                    .await
+                    .map_err(|error| object_store_error("stream object body", error))
+            })
+            .await?
         else {
             drop(lease);
             verify_generation_identity(&state.expected, &state.expected, state.transferred_bytes)?;
             if state.expected.etag.is_none() && state.expected.version.is_none() {
                 let metadata = state
-                    .store
-                    .head(&state.path)
-                    .await
-                    .map_err(|error| object_error("reattest weak object generation", error))?;
+                    .cancellation
+                    .await_or_cancel(async {
+                        state.store.head(&state.path).await.map_err(|error| {
+                            object_store_error("reattest weak object generation", error)
+                        })
+                    })
+                    .await?;
                 let observed =
                     crate::transport::object_identity(state.expected.location.clone(), metadata);
                 verify_generation_identity(&state.expected, &observed, state.transferred_bytes)?;
@@ -354,12 +379,7 @@ async fn object_sequential_next(
         if length == 0 {
             continue;
         }
-        if length > state.maximum_provider_chunk_bytes {
-            return Err(CdfError::data(format!(
-                "object-store response chunk {length} exceeds its pre-admitted {}-byte envelope",
-                state.maximum_provider_chunk_bytes
-            )));
-        }
+        lease.reconcile(length)?;
         state.transferred_bytes = state
             .transferred_bytes
             .checked_add(length)
@@ -381,17 +401,17 @@ async fn object_sequential_next(
     }
 }
 
-fn object_error(action: &str, error: object_store::Error) -> CdfError {
-    CdfError::data(format!("{action}: {error}"))
-}
-
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
 
     use cdf_memory::DeterministicMemoryCoordinator;
     use futures_util::{StreamExt, TryStreamExt};
-    use object_store::{ObjectStoreExt, PutPayload, memory::InMemory};
+    use object_store::{
+        ObjectStoreExt, PutPayload,
+        memory::InMemory,
+        throttle::{ThrottleConfig, ThrottledStore},
+    };
 
     use super::*;
 
@@ -437,9 +457,54 @@ mod tests {
         assert_eq!(coordinator.snapshot().current_bytes, 0);
     }
 
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn object_store_cancellation_interrupts_pending_provider_get() {
+        let inner = Arc::new(InMemory::new());
+        let path = ObjectPath::from("events/pending.bin");
+        inner
+            .put(&path, PutPayload::from_static(b"payload"))
+            .await
+            .unwrap();
+        let metadata = inner.head(&path).await.unwrap();
+        let expected = crate::transport::object_identity(
+            "s3://bucket/events/pending.bin".to_owned(),
+            metadata,
+        );
+        let store: Arc<dyn ObjectStore> = Arc::new(ThrottledStore::new(
+            inner,
+            ThrottleConfig {
+                wait_get_per_call: std::time::Duration::from_secs(60),
+                ..ThrottleConfig::default()
+            },
+        ));
+        let memory: Arc<dyn MemoryCoordinator> =
+            Arc::new(DeterministicMemoryCoordinator::new(1024 * 1024, BTreeMap::new()).unwrap());
+        let source = ObjectStoreByteSource::new(store, path, expected, memory).unwrap();
+        let cancellation = RunCancellation::default();
+        let cancel = cancellation.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+            cancel.cancel();
+        });
+        let started = std::time::Instant::now();
+        let error = match source
+            .open_sequential(SequentialReadRequest {
+                preferred_chunk_bytes: MINIMUM_CHUNK_BYTES,
+                cancellation,
+            })
+            .await
+        {
+            Ok(_) => panic!("pending provider GET ignored cancellation"),
+            Err(error) => error,
+        };
+
+        assert!(error.message.contains("cancelled"), "{error}");
+        assert!(started.elapsed() < std::time::Duration::from_secs(1));
+    }
+
     #[test]
-    fn object_store_sequential_source_skips_empty_provider_frames_under_one_lease() {
-        const WINDOW_BYTES: u64 = 4 * 1024 * 1024;
+    fn object_store_sequential_source_slices_oversized_provider_frames_under_one_lease() {
+        const WINDOW_BYTES: u64 = 2;
         let store = Arc::new(InMemory::new());
         let path = ObjectPath::from("events/empty-frames.bin");
         futures_executor::block_on(store.put(&path, PutPayload::from(Bytes::from_static(b"abc"))))
@@ -450,7 +515,7 @@ mod tests {
             metadata,
         );
         let coordinator =
-            Arc::new(DeterministicMemoryCoordinator::new(WINDOW_BYTES, BTreeMap::new()).unwrap());
+            Arc::new(DeterministicMemoryCoordinator::new(3, BTreeMap::new()).unwrap());
         let memory: Arc<dyn MemoryCoordinator> = coordinator.clone();
         let stream = futures_util::stream::iter([
             Ok::<Bytes, object_store::Error>(Bytes::new()),
@@ -476,9 +541,14 @@ mod tests {
         let (chunk, state) = futures_executor::block_on(object_sequential_next(state))
             .unwrap()
             .unwrap();
-        assert_eq!(chunk.payload(), b"abc");
+        assert_eq!(chunk.payload(), b"ab");
         assert_eq!(chunk.lease().bytes(), 3);
         assert_eq!(coordinator.snapshot().peak_bytes, 3);
+        drop(chunk);
+        let (chunk, state) = futures_executor::block_on(object_sequential_next(state))
+            .unwrap()
+            .unwrap();
+        assert_eq!(chunk.payload(), b"c");
         drop(chunk);
         assert!(
             futures_executor::block_on(object_sequential_next(state))
@@ -550,9 +620,10 @@ mod tests {
         )
         .unwrap_err();
 
-        assert!(
-            error.message.contains("precondition") || error.message.contains("Precondition"),
-            "{error}"
+        assert_eq!(error.kind, cdf_kernel::ErrorKind::Data);
+        assert_eq!(
+            error.message,
+            "read object range: object-store provider request failed"
         );
     }
 
@@ -579,10 +650,12 @@ mod tests {
                 Err(error) => error,
             };
 
+        assert_eq!(error.kind, cdf_kernel::ErrorKind::Data);
         assert!(
-            error.message.contains("generation changed")
-                || error.message.contains("generation size")
-                || error.message.contains("precondition"),
+            error.message.contains("generation")
+                || error
+                    .message
+                    .contains("object-store provider request failed"),
             "{error}"
         );
     }

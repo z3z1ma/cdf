@@ -234,12 +234,13 @@ impl SourceDriver for FileSourceDriver {
         plan: &CompiledSourcePlan,
         context: &SourceResolutionContext<'_>,
     ) -> Result<Box<dyn SourceDiscoverySession>> {
+        let control = FileTransportControl::new(context.cancellation(), None);
         Ok(Box::new(self.discovery_session_with_limit(
             plan,
             context,
             usize::MAX,
             true,
-            &FileTransportControl::default(),
+            &control,
         )?))
     }
 
@@ -271,6 +272,7 @@ impl SourceDriver for FileSourceDriver {
                 },
                 dependencies,
             )?
+            .with_transport_control(FileTransportControl::new(context.cancellation(), None))
             .with_prepared_inventory_key(prepared_inventory_key)
             .with_compiled_source_plan_hash(cdf_runtime::artifact_hash(plan)?),
         ))
@@ -666,11 +668,7 @@ fn file_discovery_entries(
         None => Some(PathBuf::from(&plan.root)),
         Some(FileTransportScheme::File) => Some(crate::transport::file_url_path(&plan.root)?),
         Some(
-            FileTransportScheme::Http
-            | FileTransportScheme::Https
-            | FileTransportScheme::S3
-            | FileTransportScheme::Gs
-            | FileTransportScheme::Az,
+            FileTransportScheme::Http | FileTransportScheme::Https | FileTransportScheme::Remote(_),
         ) => None,
     };
     let transport_inventory = local_root.is_none();
@@ -836,10 +834,8 @@ fn transport_resource_for_location(
             credentials: plan.credentials.clone(),
         },
         Some(FileTransportScheme::File) => FileTransportResource::file_url(location),
-        Some(FileTransportScheme::S3 | FileTransportScheme::Gs | FileTransportScheme::Az) => {
-            FileTransportResource::object_store_url(location)
-                .with_egress_allowlist(plan.allowlist.clone())
-        }
+        Some(FileTransportScheme::Remote(_)) => FileTransportResource::remote_url(location)
+            .with_egress_allowlist(plan.allowlist.clone()),
         None => {
             return Err(CdfError::contract(format!(
                 "file transport location {location:?} does not contain a supported URI scheme"
@@ -1055,25 +1051,21 @@ fn resolve_runtime_root(root: &str, project_root: &std::path::Path) -> Result<St
         .ok_or_else(|| CdfError::data("file source root is not valid UTF-8"))
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum FileTransportScheme {
     File,
     Http,
     Https,
-    S3,
-    Gs,
-    Az,
+    Remote(String),
 }
 
 impl FileTransportScheme {
-    pub(crate) const fn as_str(self) -> &'static str {
+    pub(crate) fn as_str(&self) -> &str {
         match self {
             Self::File => "file",
             Self::Http => "http",
             Self::Https => "https",
-            Self::S3 => "s3",
-            Self::Gs => "gs",
-            Self::Az => "az",
+            Self::Remote(scheme) => scheme,
         }
     }
 }
@@ -1103,14 +1095,7 @@ pub(crate) fn file_transport_scheme(value: &str) -> Result<Option<FileTransportS
         "file" => FileTransportScheme::File,
         "http" => FileTransportScheme::Http,
         "https" => FileTransportScheme::Https,
-        "s3" => FileTransportScheme::S3,
-        "gs" => FileTransportScheme::Gs,
-        "az" => FileTransportScheme::Az,
-        scheme => {
-            return Err(CdfError::contract(format!(
-                "unsupported file transport scheme {scheme:?}; supported schemes are file, http, https, s3, gs, and az"
-            )));
-        }
+        scheme => FileTransportScheme::Remote(scheme.to_owned()),
     };
     Ok(Some(scheme))
 }
@@ -1389,7 +1374,7 @@ mod tests {
     }
 
     #[test]
-    fn portable_roots_normalize_supported_schemes_and_reject_unknown_schemes() {
+    fn portable_roots_normalize_builtin_schemes_and_preserve_external_schemes() {
         assert_eq!(
             file_transport_scheme("HTTPS://example.test/data").unwrap(),
             Some(FileTransportScheme::Https)
@@ -1402,10 +1387,11 @@ mod tests {
             .unwrap(),
             "https://example.test/data"
         );
-        let error =
-            resolve_runtime_root("custom+v1://cluster/data", std::path::Path::new("/project"))
-                .unwrap_err();
-        assert!(error.message.contains("unsupported file transport scheme"));
+        assert_eq!(
+            resolve_runtime_root("CUSTOM+V1://cluster/data", std::path::Path::new("/project"))
+                .unwrap(),
+            "custom+v1://cluster/data"
+        );
         assert!(
             resolve_runtime_root(
                 "https://alice:secret@example.test/data",

@@ -155,15 +155,10 @@ impl FileRuntimeDependencies {
     ) -> Result<R> {
         f(self.transport.as_ref(), &self.egress)
     }
-}
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct LocalFileDiscoveryCandidate {
-    pub path: PathBuf,
-    pub relative_path: String,
-    pub size_bytes: u64,
-    pub compression: String,
-    pub selection_bytes_read: u64,
+    fn transport_and_egress(&self) -> (Arc<dyn FileTransport>, SourceEgressScope) {
+        (Arc::clone(&self.transport), self.egress.clone())
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -733,54 +728,6 @@ fn merge_discovery_evidence(
     Ok(())
 }
 
-impl LocalFileDiscoveryCandidate {
-    pub fn modified_at_ms(&self) -> Option<i64> {
-        fs::metadata(&self.path)
-            .ok()?
-            .modified()
-            .ok()?
-            .duration_since(UNIX_EPOCH)
-            .ok()
-            .and_then(|duration| i64::try_from(duration.as_millis()).ok())
-    }
-}
-
-pub fn local_file_discovery_candidates(
-    resource_id: &ResourceId,
-    plan: &FileResourcePlan,
-    formats: &FormatRegistry,
-    transforms: &ByteTransformRegistry,
-    maximum_candidates: usize,
-) -> Result<Vec<LocalFileDiscoveryCandidate>> {
-    if let Some(scheme) = file_transport_scheme(&plan.root)? {
-        return Err(CdfError::contract(format!(
-            "local file discovery candidate enumeration does not support the {:?} transport scheme",
-            scheme.as_str()
-        )));
-    }
-
-    let root = PathBuf::from(&plan.root);
-    if !root.is_absolute() {
-        return Err(CdfError::contract(format!(
-            "file source root `{}` must be absolute before discovery; compile with an explicit project root or declare an absolute file source root",
-            plan.root
-        )));
-    }
-    let components = pattern_components(&plan.glob)?;
-    let mut matches = Vec::new();
-    let mut budget = LocalInventoryBudget::new(maximum_candidates);
-    collect_matches(&root, &components, &mut matches, &mut budget)?;
-    matches.sort();
-    matches.dedup();
-
-    contained_matches(&root, matches)?
-        .into_iter()
-        .map(|path| {
-            local_file_discovery_candidate(resource_id, &root, path, plan, formats, transforms)
-        })
-        .collect()
-}
-
 impl fmt::Debug for FileRuntimeDependencies {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
@@ -802,6 +749,7 @@ pub struct FileResource {
     dependencies: FileRuntimeDependencies,
     prepared_inventory_key: Option<PreparedSourcePayloadKey>,
     compiled_source_plan_hash: Option<String>,
+    transport_control: FileTransportControl,
 }
 
 #[derive(Clone, Debug)]
@@ -853,11 +801,17 @@ impl FileResource {
             dependencies,
             prepared_inventory_key: None,
             compiled_source_plan_hash: None,
+            transport_control: FileTransportControl::default(),
         })
     }
 
     pub(crate) fn with_prepared_inventory_key(mut self, key: PreparedSourcePayloadKey) -> Self {
         self.prepared_inventory_key = Some(key);
+        self
+    }
+
+    pub(crate) fn with_transport_control(mut self, control: FileTransportControl) -> Self {
+        self.transport_control = control;
         self
     }
 
@@ -873,7 +827,7 @@ impl FileResource {
         self.partitions_for_intent_with_inventory_limit(
             scan_intent,
             usize::MAX,
-            &FileTransportControl::default(),
+            &self.transport_control,
         )
     }
 
@@ -916,21 +870,33 @@ impl FileResource {
             }
             return Ok(partitions);
         }
-        self.dependencies.with_transport(|transport, egress| {
-            file_partitions_for_plan_with_transport(
-                &self.descriptor,
-                &self.plan,
-                scan_intent,
-                FilePlanningContext {
-                    transport,
-                    egress,
-                    formats: self.dependencies.formats(),
-                    transforms: self.dependencies.transforms(),
-                    maximum_matches,
-                    control,
-                },
-            )
-        })
+        let execution = self.dependencies.execution().clone();
+        execution.ensure_blocking_lanes(&[file_source_blocking_lane()])?;
+        let (transport, egress) = self.dependencies.transport_and_egress();
+        let descriptor = self.descriptor.clone();
+        let plan = self.plan.clone();
+        let scan_intent = scan_intent.clone();
+        let formats = Arc::clone(self.dependencies.formats());
+        let transforms = Arc::clone(self.dependencies.transforms());
+        let control = control.clone();
+        execution
+            .clone()
+            .run_blocking(FILE_SOURCE_BLOCKING_LANE_ID, move || {
+                file_partitions_for_plan_with_transport(
+                    &descriptor,
+                    &plan,
+                    &scan_intent,
+                    FilePlanningContext {
+                        transport: transport.as_ref(),
+                        egress: &egress,
+                        formats: formats.as_ref(),
+                        transforms: transforms.as_ref(),
+                        maximum_matches,
+                        control: &control,
+                        execution,
+                    },
+                )
+            })
     }
 
     pub fn validate_runtime_dependencies(&self) -> Result<()> {
@@ -1003,15 +969,19 @@ impl ResourceStream for FileResource {
             FILE_SOURCE_BLOCKING_LANE_ID,
             move |cancellation| {
                 cancellation.check()?;
+                let control = FileTransportControl::new(cancellation.clone(), None);
                 let resolved = dependencies.with_transport(|transport, egress| {
                     validate_partition(
                         &descriptor,
                         &plan,
                         &partition,
-                        transport,
-                        egress,
-                        dependencies.formats(),
-                        dependencies.transforms(),
+                        FileResolutionContext {
+                            transport,
+                            egress,
+                            formats: dependencies.formats(),
+                            transforms: dependencies.transforms(),
+                            control: &control,
+                        },
                     )
                 })?;
                 cancellation.check()?;
@@ -1276,6 +1246,7 @@ pub(crate) struct ResolvedFileMatch {
     etag: Option<String>,
     version: Option<String>,
     modified_ms: Option<String>,
+    exact_ranges: bool,
     bytes_loaded: Option<u64>,
     compression: CompressionEvidence,
     format: FormatEvidence,
@@ -1841,13 +1812,31 @@ impl CompressionEvidence {
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 struct FilePlanningContext<'a> {
     transport: &'a dyn FileTransport,
     egress: &'a SourceEgressScope,
     formats: &'a FormatRegistry,
     transforms: &'a ByteTransformRegistry,
     maximum_matches: usize,
+    control: &'a FileTransportControl,
+    execution: ExecutionServices,
+}
+
+#[derive(Clone, Copy)]
+struct FileResolutionContext<'a> {
+    transport: &'a dyn FileTransport,
+    egress: &'a SourceEgressScope,
+    formats: &'a FormatRegistry,
+    transforms: &'a ByteTransformRegistry,
+    control: &'a FileTransportControl,
+}
+
+struct FilePartitionPreparation<'a> {
+    admission_schema: SchemaRef,
+    dependencies: &'a FileRuntimeDependencies,
+    effective_schema_runtime: Option<&'a EffectiveSchemaRuntime>,
+    compiled_format: &'a CompiledFormatBinding,
     control: &'a FileTransportControl,
 }
 
@@ -1884,6 +1873,7 @@ fn open_file_resource_with_dependencies(
         dependencies,
         prepared_inventory_key: _,
         compiled_source_plan_hash: _,
+        transport_control: _,
     } = resource;
     if let Err(error) = validate_partition_plan_shape(&descriptor, &plan, &partition) {
         return cdf_kernel::PartitionOpenAttempt::materialized(Box::pin(async move { Err(error) }));
@@ -1906,14 +1896,18 @@ fn open_file_resource_with_dependencies(
         NATIVE_STREAM_ITEMS,
         move |cancellation| {
             cancellation.check()?;
+            let control = FileTransportControl::new(cancellation.clone(), None);
             let prepared = prepare_file_partition(
                 &descriptor,
                 &plan,
                 &partition,
-                schema,
-                &prepare_dependencies,
-                effective_schema_runtime.as_deref(),
-                &compiled_format,
+                FilePartitionPreparation {
+                    admission_schema: schema,
+                    dependencies: &prepare_dependencies,
+                    effective_schema_runtime: effective_schema_runtime.as_deref(),
+                    compiled_format: &compiled_format,
+                    control: &control,
+                },
             )?;
             cancellation.check()?;
             Ok(prepared)
@@ -2022,24 +2016,27 @@ fn prepare_file_partition(
     descriptor: &ResourceDescriptor,
     plan: &FileResourcePlan,
     partition: &PartitionPlan,
-    admission_schema: SchemaRef,
-    dependencies: &FileRuntimeDependencies,
-    effective_schema_runtime: Option<&EffectiveSchemaRuntime>,
-    compiled_format: &CompiledFormatBinding,
+    preparation: FilePartitionPreparation<'_>,
 ) -> Result<PreparedFilePartition> {
     partition.scan_intent.validate()?;
-    let resolved = dependencies.with_transport(|transport, egress| {
-        validate_partition(
-            descriptor,
-            plan,
-            partition,
-            transport,
-            egress,
-            dependencies.formats(),
-            dependencies.transforms(),
-        )
-    })?;
-    let planned_physical_schema_hash = effective_schema_runtime
+    let resolved = preparation
+        .dependencies
+        .with_transport(|transport, egress| {
+            validate_partition(
+                descriptor,
+                plan,
+                partition,
+                FileResolutionContext {
+                    transport,
+                    egress,
+                    formats: preparation.dependencies.formats(),
+                    transforms: preparation.dependencies.transforms(),
+                    control: preparation.control,
+                },
+            )
+        })?;
+    let planned_physical_schema_hash = preparation
+        .effective_schema_runtime
         .and_then(|runtime| {
             partition
                 .metadata
@@ -2049,35 +2046,42 @@ fn prepare_file_partition(
         .map(|observation| observation.physical_schema_hash.clone());
     let planned_physical_schema = planned_physical_schema_hash
         .as_ref()
-        .and_then(|hash| effective_schema_runtime.and_then(|runtime| runtime.physical_schema(hash)))
+        .and_then(|hash| {
+            preparation
+                .effective_schema_runtime
+                .and_then(|runtime| runtime.physical_schema(hash))
+        })
         .cloned();
     let options = ReadOptions::new(
         descriptor.resource_id.clone(),
         partition.partition_id.clone(),
     );
-    let driver = compiled_format.verify(dependencies.formats())?;
+    let driver = preparation
+        .compiled_format
+        .verify(preparation.dependencies.formats())?;
     let source_access = driver.descriptor().source_access;
-    let access_coverage = planned_file_access_coverage(&partition.scan_intent, &admission_schema);
+    let access_coverage =
+        planned_file_access_coverage(&partition.scan_intent, &preparation.admission_schema);
     let prepared_input = prepare_file_input(
         &descriptor.resource_id,
         &resolved,
         source_access,
         access_coverage,
         driver.as_ref(),
-        &compiled_format.canonical_options,
-        dependencies,
+        &preparation.compiled_format.canonical_options,
+        preparation.dependencies,
     )?;
     Ok(PreparedFilePartition {
         resolved,
         input: prepared_input.input,
         scan_intent: partition.scan_intent.clone(),
         options,
-        admission_schema,
+        admission_schema: preparation.admission_schema,
         physical_schema_authority: PhysicalSchemaAuthority {
             hash: planned_physical_schema_hash,
             schema: planned_physical_schema,
         },
-        canonical_format_options: compiled_format.canonical_options.clone(),
+        canonical_format_options: preparation.compiled_format.canonical_options.clone(),
         driver,
         source_io: prepared_input.source_io,
         extraction_content_hash: prepared_input.extraction_content_hash,
@@ -2282,6 +2286,7 @@ fn expected_file_identity(resolved: &ResolvedFileMatch) -> FileIdentityMetadata 
         etag: resolved.etag.clone(),
         version: resolved.version.clone(),
         modified: resolved.source_generation.clone(),
+        exact_ranges: resolved.exact_ranges,
     }
 }
 
@@ -2897,15 +2902,10 @@ fn validate_partition(
     descriptor: &ResourceDescriptor,
     plan: &FileResourcePlan,
     partition: &PartitionPlan,
-    transport: &dyn FileTransport,
-    egress: &SourceEgressScope,
-    formats: &FormatRegistry,
-    transforms: &ByteTransformRegistry,
+    context: FileResolutionContext<'_>,
 ) -> Result<ResolvedFileMatch> {
     let (path, match_count) = validate_partition_plan_shape(descriptor, plan, partition)?;
-    let resolved = resolve_planned_file_match(
-        descriptor, plan, path, transport, egress, formats, transforms,
-    )?;
+    let resolved = resolve_planned_file_match(descriptor, plan, path, context)?;
     let planned = partition.planned_file()?.ok_or_else(|| {
         CdfError::contract(format!(
             "file partition `{}` omitted its typed planned position",
@@ -3266,10 +3266,7 @@ fn resolve_planned_file_match(
     descriptor: &ResourceDescriptor,
     plan: &FileResourcePlan,
     path: &str,
-    transport: &dyn FileTransport,
-    egress: &SourceEgressScope,
-    formats: &FormatRegistry,
-    transforms: &ByteTransformRegistry,
+    context: FileResolutionContext<'_>,
 ) -> Result<ResolvedFileMatch> {
     let components = pattern_components(&plan.glob)?;
     match file_transport_scheme(&plan.root)? {
@@ -3296,14 +3293,16 @@ fn resolve_planned_file_match(
                 credentials: plan.credentials.clone(),
             };
             let observation =
-                transport.metadata(egress, &logical, &FileTransportControl::default())?;
-            let compression = resolve_transport_compression(plan, path, transforms)?;
+                context
+                    .transport
+                    .metadata(context.egress, &logical, context.control)?;
+            let compression = resolve_transport_compression(plan, path, context.transforms)?;
             let format = resolve_transport_format(
                 &descriptor.resource_id,
                 plan,
                 path,
                 &compression,
-                formats,
+                context.formats,
             )?;
             resolved_transport_file_match(
                 observation.access_resource(&logical),
@@ -3312,29 +3311,31 @@ fn resolve_planned_file_match(
                 format,
             )
         }
-        Some(FileTransportScheme::S3 | FileTransportScheme::Gs | FileTransportScheme::Az) => {
-            let relative = object_store_relative_path(&plan.root, path)?;
+        Some(FileTransportScheme::Remote(_)) => {
+            let relative = remote_relative_path(&plan.root, path)?;
             if !glob_path_matches(&components, &relative) {
                 return Err(CdfError::contract(format!(
                     "file partition `{path}` is outside glob `{}`",
                     plan.glob
                 )));
             }
-            let logical = FileTransportResource::object_store_url(path.to_owned())
+            let logical = FileTransportResource::remote_url(path.to_owned())
                 .with_egress_allowlist(plan.allowlist.clone());
             let logical = match &plan.credentials {
                 Some(credentials) => logical.with_credentials(credentials.clone()),
                 None => logical,
             };
             let observation =
-                transport.metadata(egress, &logical, &FileTransportControl::default())?;
-            let compression = resolve_transport_compression(plan, path, transforms)?;
+                context
+                    .transport
+                    .metadata(context.egress, &logical, context.control)?;
+            let compression = resolve_transport_compression(plan, path, context.transforms)?;
             let format = resolve_transport_format(
                 &descriptor.resource_id,
                 plan,
                 path,
                 &compression,
-                formats,
+                context.formats,
             )?;
             resolved_transport_file_match(
                 observation.access_resource(&logical),
@@ -3354,8 +3355,8 @@ fn resolve_planned_file_match(
                 &local_plan,
                 path,
                 &components,
-                formats,
-                transforms,
+                context.formats,
+                context.transforms,
             )
         }
         None => resolve_planned_local_file_match(
@@ -3363,8 +3364,8 @@ fn resolve_planned_file_match(
             plan,
             path,
             &components,
-            formats,
-            transforms,
+            context.formats,
+            context.transforms,
         ),
     }
 }
@@ -3452,6 +3453,7 @@ fn resolve_file_matches(
             transforms,
             maximum_matches: usize::MAX,
             control: &FileTransportControl::default(),
+            execution: crate::test_execution_services(),
         },
     )
 }
@@ -3478,8 +3480,8 @@ fn resolve_file_matches_bounded(
                 context.control,
             );
         }
-        Some(FileTransportScheme::S3 | FileTransportScheme::Gs | FileTransportScheme::Az) => {
-            return resolve_object_store_matches_bounded(resource_id, plan, context);
+        Some(FileTransportScheme::Remote(_)) => {
+            return resolve_remote_matches_bounded(resource_id, plan, context);
         }
         Some(FileTransportScheme::File) => {
             let mut local_plan = plan.clone();
@@ -3502,7 +3504,11 @@ fn resolve_file_matches_bounded(
 
     let components = pattern_components(&plan.glob)?;
     let mut matches = Vec::new();
-    let mut budget = LocalInventoryBudget::new(context.maximum_matches);
+    let mut budget = LocalInventoryBudget::new(
+        context.maximum_matches,
+        context.control.clone(),
+        context.execution.clone(),
+    );
     collect_matches(&root, &components, &mut matches, &mut budget)?;
     matches.sort();
     matches.dedup();
@@ -3524,7 +3530,7 @@ fn resolve_file_matches_bounded(
 }
 
 #[cfg(test)]
-fn resolve_object_store_matches(
+fn resolve_remote_matches(
     resource_id: &ResourceId,
     plan: &FileResourcePlan,
     transport: &dyn FileTransport,
@@ -3532,7 +3538,7 @@ fn resolve_object_store_matches(
     formats: &FormatRegistry,
     transforms: &ByteTransformRegistry,
 ) -> Result<Vec<ResolvedFileMatch>> {
-    resolve_object_store_matches_bounded(
+    resolve_remote_matches_bounded(
         resource_id,
         plan,
         FilePlanningContext {
@@ -3542,16 +3548,17 @@ fn resolve_object_store_matches(
             transforms,
             maximum_matches: usize::MAX,
             control: &FileTransportControl::default(),
+            execution: crate::test_execution_services(),
         },
     )
 }
 
-fn resolve_object_store_matches_bounded(
+fn resolve_remote_matches_bounded(
     resource_id: &ResourceId,
     plan: &FileResourcePlan,
     context: FilePlanningContext<'_>,
 ) -> Result<Vec<ResolvedFileMatch>> {
-    let root_resource = FileTransportResource::object_store_url(plan.root.clone())
+    let root_resource = FileTransportResource::remote_url(plan.root.clone())
         .with_egress_allowlist(plan.allowlist.clone());
     let root_resource = match &plan.credentials {
         Some(credentials) => root_resource.with_credentials(credentials.clone()),
@@ -3559,18 +3566,38 @@ fn resolve_object_store_matches_bounded(
     };
     let components = pattern_components(&plan.glob)?;
     let mut matches = Vec::new();
-    let mut listing = context.transport.list(
+    let listing = context.transport.list(
         context.egress,
         &root_resource,
         context.maximum_matches,
         context.control,
     )?;
-    while let Some(metadata) = futures_executor::block_on(listing.try_next())? {
-        let relative = object_store_relative_path(&plan.root, &metadata.location)?;
+    let termination = listing.termination();
+    let listed = context.execution.run_io(async move {
+        let result = listing.try_collect::<Vec<_>>().await;
+        match result {
+            Ok(listed) => {
+                termination.join().await?;
+                Ok(listed)
+            }
+            Err(mut error) => {
+                if let Err(cleanup) = termination.terminate_and_join().await {
+                    error.message = format!(
+                        "{}; file listing termination also failed: {}",
+                        error.message, cleanup.message
+                    );
+                }
+                Err(error)
+            }
+        }
+    })?;
+    for metadata in listed {
+        let metadata = metadata.into_identity();
+        let relative = remote_relative_path(&plan.root, &metadata.location)?;
         if !glob_path_matches(&components, &relative) {
             continue;
         }
-        let resource = FileTransportResource::object_store_url(metadata.location.clone())
+        let resource = FileTransportResource::remote_url(metadata.location.clone())
             .with_egress_allowlist(plan.allowlist.clone());
         let resource = match &plan.credentials {
             Some(credentials) => resource.with_credentials(credentials.clone()),
@@ -3596,7 +3623,7 @@ fn resolve_object_store_matches_bounded(
     Ok(matches)
 }
 
-fn object_store_relative_path(root: &str, location: &str) -> Result<String> {
+fn remote_relative_path(root: &str, location: &str) -> Result<String> {
     let prefix = format!("{}/", root.trim_end_matches('/'));
     location
         .strip_prefix(&prefix)
@@ -3696,17 +3723,30 @@ fn pattern_components(pattern: &str) -> Result<Vec<String>> {
 struct LocalInventoryBudget {
     maximum_entries: usize,
     observed_entries: usize,
+    control: FileTransportControl,
+    execution: ExecutionServices,
 }
 
 impl LocalInventoryBudget {
-    fn new(maximum_entries: usize) -> Self {
+    fn new(
+        maximum_entries: usize,
+        control: FileTransportControl,
+        execution: ExecutionServices,
+    ) -> Self {
         Self {
             maximum_entries,
             observed_entries: 0,
+            control,
+            execution,
         }
     }
 
+    fn check(&self) -> Result<()> {
+        self.control.check(Some(&self.execution))
+    }
+
     fn observe_entry(&mut self) -> Result<()> {
+        self.check()?;
         if self.observed_entries >= self.maximum_entries {
             return Err(CdfError::data(format!(
                 "file inventory exceeds the {}-entry boundary",
@@ -3718,6 +3758,7 @@ impl LocalInventoryBudget {
     }
 
     fn admit_match(&self, matches: &[PathBuf]) -> Result<()> {
+        self.check()?;
         if matches.len() >= self.maximum_entries {
             return Err(CdfError::data(format!(
                 "file inventory exceeds the {}-entry boundary",
@@ -3734,6 +3775,7 @@ fn collect_matches(
     matches: &mut Vec<PathBuf>,
     budget: &mut LocalInventoryBudget,
 ) -> Result<()> {
+    budget.check()?;
     let Some((component, rest)) = components.split_first() else {
         return collect_leaf_match(current, matches, budget);
     };
@@ -3951,51 +3993,10 @@ fn resolved_file_match(
         etag: None,
         version: None,
         modified_ms,
+        exact_ranges: true,
         bytes_loaded: None,
         compression,
         format,
-    })
-}
-
-fn local_file_discovery_candidate(
-    resource_id: &ResourceId,
-    root: &Path,
-    path: PathBuf,
-    plan: &FileResourcePlan,
-    formats: &FormatRegistry,
-    transforms: &ByteTransformRegistry,
-) -> Result<LocalFileDiscoveryCandidate> {
-    let metadata = fs::metadata(&path).map_err(|error| {
-        CdfError::data(format!("stat matched file {}: {error}", path.display()))
-    })?;
-    let canonical_root = fs::canonicalize(root).map_err(|error| {
-        CdfError::data(format!(
-            "canonicalize file source root {}: {error}",
-            root.display()
-        ))
-    })?;
-    let relative_path = path.strip_prefix(&canonical_root).map_err(|error| {
-        CdfError::internal(format!(
-            "matched file {} did not remain relative to canonical root {}: {error}",
-            path.display(),
-            canonical_root.display()
-        ))
-    })?;
-    let relative_path = relative_path.to_str().map(str::to_owned).ok_or_else(|| {
-        CdfError::data(format!(
-            "matched file path is not valid UTF-8: {}",
-            relative_path.display()
-        ))
-    })?;
-    let relative_path = relative_path.replace(std::path::MAIN_SEPARATOR, "/");
-    let compression = resolve_local_compression(&relative_path, &plan.compression, transforms)?;
-    resolve_local_format(resource_id, plan, &relative_path, &compression, formats)?;
-    Ok(LocalFileDiscoveryCandidate {
-        path,
-        relative_path,
-        size_bytes: metadata.len(),
-        compression: compression.mode_name().to_owned(),
-        selection_bytes_read: 0,
     })
 }
 
@@ -4016,6 +4017,7 @@ fn resolved_transport_file_match(
     let source_generation = (identity_strength == GenerationStrength::Weak)
         .then(|| metadata.modified.clone())
         .flatten();
+    let exact_ranges = metadata.exact_ranges;
     Ok(ResolvedFileMatch {
         open: ResolvedFileOpen::Transport(resource),
         path_text: metadata.location,
@@ -4030,6 +4032,7 @@ fn resolved_transport_file_match(
             .as_deref()
             .and_then(|modified| modified.strip_prefix("unix_ms:"))
             .map(str::to_owned),
+        exact_ranges,
         bytes_loaded: None,
         compression,
         format,
@@ -4525,6 +4528,7 @@ mod tests {
     use arrow_array::{ArrayRef, Int64Array, RecordBatch, StringArray};
     use arrow_ipc::writer::FileWriter;
     use arrow_schema::{DataType, Field, Schema};
+    use cdf_memory::MemoryCoordinator;
     use flate2::{Compression, write::GzEncoder};
     use object_store::{ObjectStoreExt, PutPayload, memory::InMemory, path::Path as ObjectPath};
     use parquet::arrow::ArrowWriter;
@@ -4805,6 +4809,73 @@ mod tests {
         listings: Arc<AtomicUsize>,
     }
 
+    struct ExternalSchemeTransport {
+        memory: Arc<dyn cdf_memory::MemoryCoordinator>,
+    }
+
+    impl FileTransport for ExternalSchemeTransport {
+        fn metadata(
+            &self,
+            _egress: &cdf_runtime::SourceEgressScope,
+            _resource: &FileTransportResource,
+            _control: &FileTransportControl,
+        ) -> Result<crate::FileMetadataObservation> {
+            Err(CdfError::internal(
+                "external scheme fixture does not use metadata",
+            ))
+        }
+
+        fn list(
+            &self,
+            _egress: &cdf_runtime::SourceEgressScope,
+            resource: &FileTransportResource,
+            _maximum_results: usize,
+            _control: &FileTransportControl,
+        ) -> Result<crate::FileIdentityStream> {
+            assert!(matches!(
+                &resource.location,
+                FileTransportLocation::RemoteUrl { url } if url.starts_with("mock://")
+            ));
+            let lease = futures_executor::block_on(cdf_memory::reserve(
+                Arc::clone(&self.memory),
+                cdf_memory::ReservationRequest::new(
+                    cdf_memory::ConsumerKey::new(
+                        "external-file-transport-metadata",
+                        cdf_memory::MemoryClass::Discovery,
+                    )?,
+                    crate::transport::FILE_IDENTITY_MEMORY_ENVELOPE_BYTES,
+                )?,
+            ))?;
+            let identity = crate::AccountedFileIdentity::new(
+                FileIdentityMetadata {
+                    location: "mock://catalog/data/events.parquet".to_owned(),
+                    size_bytes: Some(4),
+                    checksum: None,
+                    etag: Some("\"mock-generation\"".to_owned()),
+                    version: None,
+                    modified: None,
+                    exact_ranges: true,
+                },
+                lease,
+            )?;
+            Ok(crate::FileIdentityStream::materialized(
+                futures_util::stream::iter([Ok(identity)]),
+            ))
+        }
+
+        fn open_byte_source(
+            &self,
+            _egress: &cdf_runtime::SourceEgressScope,
+            _resource: &FileTransportResource,
+            _expected: &FileIdentityMetadata,
+            _memory: Arc<dyn cdf_memory::MemoryCoordinator>,
+        ) -> Result<Arc<dyn cdf_runtime::ByteSource>> {
+            Err(CdfError::internal(
+                "external scheme fixture does not open payload",
+            ))
+        }
+    }
+
     impl FileTransport for PayloadOpenCountingTransport {
         fn metadata(
             &self,
@@ -4847,6 +4918,46 @@ mod tests {
             self.inner
                 .open_byte_source(egress, resource, expected, memory)
         }
+    }
+
+    #[test]
+    fn external_remote_scheme_requires_no_file_runtime_dispatch_branch() {
+        let coordinator = Arc::new(
+            cdf_memory::DeterministicMemoryCoordinator::new(
+                crate::transport::FILE_IDENTITY_MEMORY_ENVELOPE_BYTES,
+                BTreeMap::new(),
+            )
+            .unwrap(),
+        );
+        let transport = ExternalSchemeTransport {
+            memory: coordinator.clone(),
+        };
+        let plan = FileResourcePlan {
+            source: "events".to_owned(),
+            root: "mock://catalog/data".to_owned(),
+            glob: "*.parquet".to_owned(),
+            format: Some(FileFormatDeclaration::parquet()),
+            format_declared: true,
+            format_options: serde_json::json!({}),
+            compression: FileCompressionDeclaration::none(),
+            auth: None,
+            credentials: None,
+            allowlist: cdf_http::EgressAllowlist::allow_any(),
+        };
+
+        let matches = resolve_remote_matches(
+            &ResourceId::new("events.raw").unwrap(),
+            &plan,
+            &transport,
+            &crate::test_egress_scope(),
+            crate::test_format_registry().as_ref(),
+            crate::test_transform_registry().as_ref(),
+        )
+        .unwrap();
+
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0].path_text, "mock://catalog/data/events.parquet");
+        assert_eq!(coordinator.snapshot().current_bytes, 0);
     }
 
     #[test]
@@ -5546,7 +5657,7 @@ mod tests {
         let resource_id = ResourceId::new("ipc.events").unwrap();
         let resolved = dependencies
             .with_transport(|transport, egress| {
-                resolve_object_store_matches(
+                resolve_remote_matches(
                     &resource_id,
                     &plan,
                     transport,
@@ -5675,7 +5786,7 @@ mod tests {
         let resource_id = ResourceId::new("parquet.events").unwrap();
         let resolved = dependencies
             .with_transport(|transport, egress| {
-                resolve_object_store_matches(
+                resolve_remote_matches(
                     &resource_id,
                     &plan,
                     transport,
@@ -5764,6 +5875,7 @@ mod tests {
             etag: None,
             version: None,
             modified_ms: None,
+            exact_ranges: false,
             bytes_loaded: None,
             compression: resolved[0].compression.clone(),
             format: resolved[0].format.clone(),
@@ -5893,7 +6005,7 @@ mod tests {
         .unwrap();
         let constrained_matches = constrained
             .with_transport(|transport, egress| {
-                resolve_object_store_matches(
+                resolve_remote_matches(
                     &resource_id,
                     &plan,
                     transport,
@@ -5957,7 +6069,7 @@ mod tests {
         .unwrap();
         let contended_matches = contended
             .with_transport(|transport, egress| {
-                resolve_object_store_matches(
+                resolve_remote_matches(
                     &ResourceId::new("parquet.contended").unwrap(),
                     &plan,
                     transport,
@@ -6034,7 +6146,7 @@ mod tests {
         };
         let resource_id = ResourceId::new("events.raw").unwrap();
 
-        let matches = resolve_object_store_matches(
+        let matches = resolve_remote_matches(
             &resource_id,
             &plan,
             &transport,
@@ -6089,7 +6201,7 @@ mod tests {
             allowlist: cdf_http::EgressAllowlist::allow_any(),
         };
 
-        let matches = resolve_object_store_matches(
+        let matches = resolve_remote_matches(
             &ResourceId::new("events.raw").unwrap(),
             &plan,
             &transport,
@@ -6171,6 +6283,7 @@ mod tests {
                 transforms: transforms.as_ref(),
                 maximum_matches: usize::MAX,
                 control: &FileTransportControl::default(),
+                execution: crate::test_execution_services(),
             },
         )
         .unwrap();
@@ -6178,14 +6291,19 @@ mod tests {
         assert_eq!(listings.load(Ordering::Relaxed), 1);
 
         for partition in &partitions {
+            let egress = crate::test_egress_scope();
+            let control = FileTransportControl::default();
             validate_partition(
                 &descriptor,
                 &plan,
                 partition,
-                &transport,
-                &crate::test_egress_scope(),
-                formats.as_ref(),
-                transforms.as_ref(),
+                FileResolutionContext {
+                    transport: &transport,
+                    egress: &egress,
+                    formats: formats.as_ref(),
+                    transforms: transforms.as_ref(),
+                    control: &control,
+                },
             )
             .unwrap();
         }
@@ -6263,7 +6381,7 @@ mod tests {
             allowlist: cdf_http::EgressAllowlist::allow_any(),
         };
         let resource_id = ResourceId::new("events.raw").unwrap();
-        let resolved = resolve_object_store_matches(
+        let resolved = resolve_remote_matches(
             &resource_id,
             &plan,
             transport.as_ref(),

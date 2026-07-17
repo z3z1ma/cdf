@@ -219,12 +219,14 @@ pub(crate) fn discover_source_schema_with_plan_for_cli(
     options: cdf_project::SchemaDiscoveryExecutionOptions,
 ) -> cdf_kernel::Result<cdf_project::ResourceSchemaDiscoveryArtifacts> {
     let registry = crate::source_registry::builtin_source_registry()?;
+    let cancellation = options.cancellation();
     let resolution = cdf_runtime::SourceResolutionContext::new(
         &context.root,
         Arc::new(context.secret_provider()),
         execution,
         Arc::new(cdf_http::EgressAllowlist::allow_any()),
     )
+    .with_cancellation(cancellation)
     .with_prepared_payloads(prepared_payloads)
     .with_driver_options(context.config.driver_options.clone());
     cdf_project::discover_resource_schema_with_source_registry(
@@ -244,12 +246,14 @@ pub(crate) fn preflight_fixed_source_schema_with_plan_for_cli(
     options: cdf_project::SchemaDiscoveryExecutionOptions,
 ) -> cdf_kernel::Result<cdf_project::ResourceSchemaDiscoveryArtifacts> {
     let registry = crate::source_registry::builtin_source_registry()?;
+    let cancellation = options.cancellation();
     let resolution = cdf_runtime::SourceResolutionContext::new(
         &context.root,
         Arc::new(context.secret_provider()),
         execution,
         Arc::new(cdf_http::EgressAllowlist::allow_any()),
     )
+    .with_cancellation(cancellation)
     .with_driver_options(context.config.driver_options.clone());
     cdf_project::preflight_fixed_resource_schema_with_source_registry(
         &context.root,

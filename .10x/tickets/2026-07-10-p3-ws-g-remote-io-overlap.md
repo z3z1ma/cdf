@@ -1,6 +1,6 @@
 Status: active
 Created: 2026-07-10
-Updated: 2026-07-14
+Updated: 2026-07-16
 Parent: .10x/tickets/2026-07-10-p3-terabyte-scale-program.md
 Depends-On: .10x/tickets/done/2026-07-11-p0-sx1-source-extension-boundary.md, .10x/tickets/2026-07-10-p3-ws-a-streaming-runtime-pipeline.md, .10x/tickets/2026-07-10-p3-ws-b-format-decode-engines.md, .10x/specs/data-onramp-file-sources-transports.md
 
@@ -12,7 +12,7 @@ Build on the P2 transport facade with parallel ranged Parquet GETs, bounded read
 
 ## Activated children
 
-- `.10x/tickets/2026-07-11-p3-g1-streaming-transport-byte-sources.md`
+- `.10x/tickets/done/2026-07-11-p3-g1-streaming-transport-byte-sources.md`
 - `.10x/tickets/2026-07-11-p3-g2-range-readahead-spool-controller.md`
 - `.10x/tickets/2026-07-11-p3-g3-codec-download-decode-overlap.md`
 - `.10x/tickets/2026-07-11-p3-g4-tlc-remote-io-envelope.md`
@@ -26,7 +26,7 @@ Build on the P2 transport facade with parallel ranged Parquet GETs, bounded read
 
 ## Blockers
 
-No immediate execution blocker. The active G1/G2/G3 slices build on the completed lab, execution-host, operator-graph, scheduler-admission, and memory-ledger foundations. Program closure still depends on completing the source/format boundaries, remaining codec/controller work, deterministic scaling matrix, and G4 envelope.
+No immediate execution blocker. G1 is terminal; the active G2/G3 slices build on its provider contract and the completed lab, execution-host, operator-graph, scheduler-admission, and memory-ledger foundations. Program closure still depends on completing the remaining codec/controller work and G4 envelope.
 
 ## References
 

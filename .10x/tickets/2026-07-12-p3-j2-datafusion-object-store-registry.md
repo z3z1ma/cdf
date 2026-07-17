@@ -1,8 +1,8 @@
 Status: open
 Created: 2026-07-12
-Updated: 2026-07-12
+Updated: 2026-07-16
 Parent: .10x/tickets/2026-07-12-p3-ws-j-datafusion-currency-bridges.md
-Depends-On: .10x/tickets/done/2026-07-11-p3-a2-unified-memory-ledger.md, .10x/tickets/2026-07-11-p3-g1-streaming-transport-byte-sources.md
+Depends-On: .10x/tickets/done/2026-07-11-p3-a2-unified-memory-ledger.md, .10x/tickets/done/2026-07-11-p3-g1-streaming-transport-byte-sources.md
 
 # P3 J2: DataFusion object-store registry bridge
 
@@ -28,5 +28,4 @@ No codec migration or DataFusion datasource adoption.
 
 ## Blockers
 
-G1 must establish the final injected provider contract.
-
+None. G1's final injected provider contract is terminal.

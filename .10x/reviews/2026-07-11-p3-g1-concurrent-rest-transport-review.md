@@ -11,7 +11,7 @@ Verdict: pass
 - Significant, resolved: neutral HTTP required mutable sends and REST serialized every request behind an adapter-wide mutex. The trait and dependency are now shared/concurrent; no poison/error compatibility branch remains.
 - Significant, preserved: auth refresh is genuinely mutable and remains independently locked; removing it would permit duplicate/unsynchronized credential transitions.
 - Minor, resolved: discovery, CLI, benchmark, conformance, and test call sites still advertised mutable transport authority after the trait changed. Strict Clippy found and removed every unnecessary mutable pass.
-- Significant, open and owned: response bodies remain collected by blocking Reqwest. `.10x/tickets/2026-07-11-p3-g1-streaming-transport-byte-sources.md` remains open for the native async provider/body stream, and `.10x/tickets/2026-07-11-p3-b5-json-codecs.md` owns streamed decode.
+- Significant, open and owned: response bodies remain collected by blocking Reqwest. `.10x/tickets/done/2026-07-11-p3-g1-streaming-transport-byte-sources.md` remains open for the native async provider/body stream, and `.10x/tickets/2026-07-11-p3-b5-json-codecs.md` owns streamed decode.
 
 ## Verdict
 

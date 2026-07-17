@@ -37,6 +37,7 @@ pub struct TaskStreamSender<T> {
 pub struct BlockingTaskStreamSender<T> {
     sender: mpsc::Sender<T>,
     cancellation: RunCancellation,
+    execution: ExecutionServices,
 }
 
 /// One blocking-lane result plus invocation-wide cancellation and join ownership.
@@ -94,11 +95,26 @@ impl<T> TaskStreamSender<T> {
     }
 }
 
-impl<T> BlockingTaskStreamSender<T> {
+impl<T: Send + 'static> BlockingTaskStreamSender<T> {
+    pub fn send_future(&self, item: T) -> BoxFuture<'static, Result<()>> {
+        let mut sender = self.sender.clone();
+        let cancellation = self.cancellation.clone();
+        Box::pin(async move {
+            cancellation
+                .await_or_cancel(async {
+                    sender
+                        .send(item)
+                        .await
+                        .map_err(|_| CdfError::internal("task stream receiver closed"))
+                })
+                .await
+        })
+    }
+
     pub fn send(&mut self, item: T) -> Result<()> {
         self.cancellation.check()?;
-        futures_executor::block_on(self.sender.send(item))
-            .map_err(|_| CdfError::internal("task stream receiver closed"))?;
+        let future = self.send_future(item);
+        self.execution.run_io(future)?;
         self.cancellation.check()
     }
 }
@@ -936,9 +952,7 @@ impl ExecutionServices {
             if wait_ms == 0 {
                 return Ok(());
             }
-            futures_executor::block_on(
-                self.delay(Duration::from_millis(wait_ms), cancellation.clone()),
-            )?;
+            self.run_io(self.delay(Duration::from_millis(wait_ms), cancellation.clone()))?;
         }
     }
 
@@ -1181,6 +1195,7 @@ impl ExecutionServices {
         let stream_sender = BlockingTaskStreamSender {
             sender,
             cancellation: cancellation.clone(),
+            execution: self.clone(),
         };
         let task_cancellation = cancellation.clone();
         scope.spawn_blocking(
