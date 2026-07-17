@@ -59,6 +59,7 @@ Depends on G1-G3; DuckDB bulk and deterministic scaling closeout are complete.
 - 2026-07-17: Added the user-supplied Hugging Face TLC mirror as a live E2E lane because the original CloudFront object now returns HTTP 403 to direct curl/HEAD from this host. Mirror config: `[source.tlc] root = "https://huggingface.co/datasets/Lucky239/taxi-data/resolve/main"` with allowlist `huggingface.co` and `us.aws.cdn.hf.co`. The mirror pins all 12 files successfully and removes the provider-unavailability excuse: raw parallel curl downloaded all 12 objects in `real 7.65s`, while CDF over the same mirror scales close to serial file waves (one file `3.93s`, two files `7.67s`, four files `12.62s`, twelve files timed out at `45.02s` after only January materialized). G4 therefore remains open on remote multi-partition transfer overlap/source scheduling, not raw provider bandwidth.
 - 2026-07-17: Rejected an immediate-active-frontier opening experiment. Changing source-frontier initialization from `fill_head()` to `fill_active()` was tempting because large remote Parquet row groups delay first-batch frontier warmup, but measured HF four-file TLC performance regressed from `real 12.62s` to a `25s` timeout. The source was reverted. Any retained fix must overlap remote full-scan transfers without forcing an eager decode/open pattern that slows healthy paths.
 - 2026-07-17: Added the Hugging Face TLC mirror to the P3 benchmark dataset catalog as an optional `remote_files.mirrors[]` entry, with its egress allowlist and notes. This does not claim envelope closure; it makes the live lab resilient to the CloudFront 403 and keeps the benchmark catalog as the authoritative place to discover alternate public TLC endpoints.
+- 2026-07-17: Rejected a broader active-frontier plus lazy prepared-stream prestart experiment. The design was architecturally cleaner than the first `fill_active()` patch — a generic `SourceFrontierOpenPolicy` plus file-source-owned growing-spool prestart — but the measured local 12-file TLC-to-DuckDB control timed out at `real 30.02s` versus the `16.25s` repaired baseline. That is a direct performance regression on the established local floor, so the entire uncommitted experiment was reverted. Future G4 attempts must either be explicit knobs/off-by-default or prove local single/full-year controls before any default change.
 
 ## Evidence
 
@@ -111,6 +112,13 @@ Depends on G1-G3; DuckDB bulk and deterministic scaling closeout are complete.
   - CDF twelve-file mirror run `/private/tmp/cdf-g4-hf-tlc.GlDqZL` was interrupted at `real 45.02`, `user 3.46`, `sys 17.51`, max RSS `1180696576`, after only partition `p00000000` materialized. This proves current CDF remote full-scan orchestration is not saturating the available provider/network lane.
   - Rejected frontier experiment: immediate active opening rebuilt into the release binary made the four-file HF run `/private/tmp/cdf-g4-hf-4-after.3IBZvl` time out at `25.02s` against the prior `12.62s` control. The experiment was reverted and is not closure evidence.
   - `CARGO_BUILD_JOBS=12 cargo test -p cdf-benchmarks embedded_p3_dataset_catalog_validates --lib --locked -j 12` — passed. Proves the committed benchmark catalog deserializes and validates with the optional HF mirror entry.
+- Rejected active-frontier/lazy-prestart experiment:
+  - `CARGO_BUILD_JOBS=12 cargo check -p cdf-runtime -p cdf-source-files -p cdf-engine --locked -j 12` — passed for the draft.
+  - `CARGO_BUILD_JOBS=12 cargo test -p cdf-source-files --lib --locked -j 12` — passed for the draft after fixing payload-cache behavior.
+  - `CARGO_BUILD_JOBS=12 cargo test -p cdf-runtime --lib --locked -j 12` — passed for the draft.
+  - `CARGO_BUILD_JOBS=12 cargo test -p cdf-engine source --lib --locked -j 12` — passed for the draft after updating the expected package hash for the new recorded execution-policy identity.
+  - `CARGO_BUILD_JOBS=12 cargo build -p cdf-cli --release --locked -j 12` — passed for the draft.
+  - Local non-regression control `/private/tmp/cdf-g4-policy-local.kTMa02`, after explicit `schema pin`: `timeout 30s target/release/cdf --project ... run tlc.yellow --progress never --color never` exited `124` at `real 30.02`, `user 3.76`, `sys 0.92`, max RSS `1708621824`. This failed the `16.25s` repaired baseline and caused immediate revert before any commit.
 
 ## Review
 
