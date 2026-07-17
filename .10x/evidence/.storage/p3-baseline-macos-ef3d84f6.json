@@ -66,7 +66,7 @@
       ],
       "comparability": {
         "cdf_revision": "ef3d84f6",
-        "dataset_id": "legacy_medium_throughput",
+        "dataset_id": "control_medium_throughput",
         "dependency_tuple": "arrow59-datafusion7ff7278-duckdb1.10504",
         "host_class": "host-class-f4bf4d1c46a93156",
         "io_mode": "warm",
@@ -205,7 +205,7 @@
       ],
       "comparability": {
         "cdf_revision": "ef3d84f6",
-        "dataset_id": "legacy_medium_throughput",
+        "dataset_id": "control_medium_throughput",
         "dependency_tuple": "arrow59-datafusion7ff7278-duckdb1.10504",
         "host_class": "host-class-f4bf4d1c46a93156",
         "io_mode": "warm",
@@ -563,13 +563,13 @@
     {
       "bias": [
         {
-          "code": "includes_legacy_setup",
-          "description": "legacy compatibility case includes fixture and plan setup"
+          "code": "includes_cdf_evidence",
+          "description": "current file source package path includes decode validation normalization package encode hash and finalize"
         }
       ],
       "comparability": {
         "cdf_revision": "ef3d84f6",
-        "dataset_id": "legacy_medium_throughput",
+        "dataset_id": "control_medium_throughput",
         "dependency_tuple": "arrow59-datafusion7ff7278-duckdb1.10504",
         "host_class": "host-class-f4bf4d1c46a93156",
         "io_mode": "warm",
@@ -693,13 +693,13 @@
     {
       "bias": [
         {
-          "code": "includes_legacy_setup",
-          "description": "legacy compatibility case includes package fixture construction"
+          "code": "includes_cdf_evidence",
+          "description": "current file source to DuckDB destination path"
         }
       ],
       "comparability": {
         "cdf_revision": "ef3d84f6",
-        "dataset_id": "legacy_medium_throughput",
+        "dataset_id": "control_medium_throughput",
         "dependency_tuple": "arrow59-datafusion7ff7278-duckdb1.10504",
         "host_class": "host-class-f4bf4d1c46a93156",
         "io_mode": "warm",
@@ -823,13 +823,13 @@
     {
       "bias": [
         {
-          "code": "includes_legacy_setup",
-          "description": "legacy compatibility case includes package fixture construction"
+          "code": "includes_cdf_evidence",
+          "description": "current file source to Parquet destination path"
         }
       ],
       "comparability": {
         "cdf_revision": "ef3d84f6",
-        "dataset_id": "legacy_medium_throughput",
+        "dataset_id": "control_medium_throughput",
         "dependency_tuple": "arrow59-datafusion7ff7278-duckdb1.10504",
         "host_class": "host-class-f4bf4d1c46a93156",
         "io_mode": "warm",
@@ -953,19 +953,19 @@
     {
       "bias": [
         {
-          "code": "includes_legacy_setup",
+          "code": "includes_startup_control",
           "description": "startup case intentionally includes child fixture compile package destination and checkpoint"
         }
       ],
       "comparability": {
         "cdf_revision": "ef3d84f6",
-        "dataset_id": "legacy_tiny_startup",
+        "dataset_id": "control_tiny_startup",
         "dependency_tuple": "arrow59-datafusion7ff7278-duckdb1.10504",
         "host_class": "host-class-f4bf4d1c46a93156",
         "io_mode": "warm",
         "os_toolchain": "macos-rust1.96.1",
         "timed_region_version": 1,
-        "workload_id": "legacy_tiny_startup_e2e"
+        "workload_id": "control_tiny_startup_e2e"
       },
       "measurement_provider": {
         "method": "bsd-time-l-child-process",
@@ -1162,7 +1162,7 @@
       "bias": [],
       "comparability": {
         "cdf_revision": "ef3d84f6",
-        "dataset_id": "legacy_medium_throughput",
+        "dataset_id": "control_medium_throughput",
         "dependency_tuple": "arrow59-datafusion7ff7278-duckdb1.10504",
         "host_class": "host-class-f4bf4d1c46a93156",
         "io_mode": "warm",

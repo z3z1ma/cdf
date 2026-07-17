@@ -6,7 +6,7 @@ This document is generated from the machine report; edit its inputs, not this fi
 
 ## Evidence authority
 
-- Report: `sha256:534bc6ddf4ead5471e218f3630ef084f7442a9a6ebb3fc96bbbe5018116e4c66`
+- Report: `sha256:997f7551e6e64734800c033300683e5669ff2801e606ae15c7df6196d172535f`
 - Host class: `host-class-f4bf4d1c46a93156`
 - Host: aarch64 / 18 logical cores / macos 26.5.1 / Rust rustc 1.96.1 (31fca3adb 2026-06-26)
 - Effective CPU: supported via process-available-parallelism: 18 logical, quota unbounded, affinity 18
@@ -44,10 +44,10 @@ This document is generated from the machine report; edit its inputs, not this fi
 
 - `raw_arrow_ndjson` (warm): observed; bias: omits_cdf_evidence: omits contract validation package hashing receipts and checkpoints
 - `json_ndjson_to_package` (warm): observed; bias: includes_cdf_evidence: includes decode validation normalization package encode hash and finalize; fixture_scale: medium fixture exposes current costs but is not a large scale claim
-- `package_build` (warm): observed; bias: includes_legacy_setup: legacy compatibility case includes fixture and plan setup
-- `duckdb_commit` (warm): observed; bias: includes_legacy_setup: legacy compatibility case includes package fixture construction
-- `parquet_destination` (warm): observed; bias: includes_legacy_setup: legacy compatibility case includes package fixture construction
-- `legacy_tiny_startup_e2e` (warm): observed; bias: includes_legacy_setup: startup case intentionally includes child fixture compile package destination and checkpoint
+- `package_build` (warm): observed; bias: includes_cdf_evidence: current file source package path includes decode validation normalization package encode hash and finalize
+- `duckdb_commit` (warm): observed; bias: includes_cdf_evidence: current file source to DuckDB destination path
+- `parquet_destination` (warm): observed; bias: includes_cdf_evidence: current file source to Parquet destination path
+- `control_tiny_startup_e2e` (warm): observed; bias: includes_startup_control: startup case intentionally includes child fixture compile package destination and checkpoint
 - `tlc_parquet_to_package` (warm): unavailable: full year TLC acquisition manifest is not present on this host; bias: none recorded
 - `tpch_csv_to_package` (warm): unavailable: TPC H SF10 generated dataset is not present on this host; bias: none recorded
 - `validation_kernel` (warm): failed: dedicated P3 vector validation baseline runner is not implemented; bias: none recorded
