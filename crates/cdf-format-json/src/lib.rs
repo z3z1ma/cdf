@@ -19,7 +19,9 @@ use cdf_kernel::{
     Batch, BatchId, BoxFuture, CdfError, PreContractResidualCandidate, PushdownFidelity, Result,
     source_name, with_physical_type,
 };
-use cdf_memory::{ConsumerKey, MemoryClass, MemoryLease, ReservationRequest, reserve};
+use cdf_memory::{
+    ConsumerKey, MemoryClass, MemoryLease, ReservationRequest, reserve,
+};
 use cdf_runtime::{
     AccountedByteStream, AccountedChunksReader, AccountedPhysicalBatch, ByteExtent, ByteSource,
     DecodePlanningRequest, DecodeUnitPlan, FormatDecodeSession, FormatDetection,
@@ -28,14 +30,92 @@ use cdf_runtime::{
     PhysicalSchemaObservation, SequentialReadRequest,
 };
 use futures_util::{TryStreamExt, stream};
+use memchr::{memchr, memchr_iter, memrchr};
 use serde::{
-    Deserialize, Deserializer,
+    Deserialize, Deserializer, Serialize,
     de::{MapAccess, Visitor},
 };
 use serde_json::value::RawValue;
 
 const DISCOVERY_CHUNK_BYTES: u64 = 1024 * 1024;
 const MAXIMUM_DECODE_WORKING_SET_BYTES: u64 = 64 * 1024 * 1024;
+const MAXIMUM_CONFIGURED_RECORD_BYTES: u64 = 32 * 1024 * 1024;
+const DEFAULT_MAXIMUM_RECORD_BYTES: u64 = 16 * 1024 * 1024;
+const MAXIMUM_JSON_NESTING_DEPTH: usize = 256;
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
+#[serde(default, deny_unknown_fields)]
+struct NdjsonOptions {
+    maximum_record_bytes: u64,
+}
+
+impl Default for NdjsonOptions {
+    fn default() -> Self {
+        Self {
+            maximum_record_bytes: DEFAULT_MAXIMUM_RECORD_BYTES,
+        }
+    }
+}
+
+impl NdjsonOptions {
+    fn parse(value: serde_json::Value) -> Result<Self> {
+        let options: Self = serde_json::from_value(value)
+            .map_err(|error| CdfError::contract(format!("invalid NDJSON options: {error}")))?;
+        validate_maximum_record_bytes(options.maximum_record_bytes)?;
+        Ok(options)
+    }
+
+    fn canonical(self) -> Result<serde_json::Value> {
+        serde_json::to_value(self)
+            .map_err(|error| CdfError::internal(format!("encode NDJSON options: {error}")))
+    }
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
+#[serde(default, deny_unknown_fields)]
+struct JsonDocumentOptions {
+    maximum_record_bytes: u64,
+    maximum_nesting_depth: usize,
+}
+
+impl Default for JsonDocumentOptions {
+    fn default() -> Self {
+        Self {
+            maximum_record_bytes: DEFAULT_MAXIMUM_RECORD_BYTES,
+            maximum_nesting_depth: MAXIMUM_JSON_NESTING_DEPTH,
+        }
+    }
+}
+
+impl JsonDocumentOptions {
+    fn parse(value: serde_json::Value) -> Result<Self> {
+        let options: Self = serde_json::from_value(value)
+            .map_err(|error| CdfError::contract(format!("invalid JSON options: {error}")))?;
+        validate_maximum_record_bytes(options.maximum_record_bytes)?;
+        if options.maximum_nesting_depth == 0
+            || options.maximum_nesting_depth > MAXIMUM_JSON_NESTING_DEPTH
+        {
+            return Err(CdfError::contract(format!(
+                "JSON maximum_nesting_depth must be in 1..={MAXIMUM_JSON_NESTING_DEPTH}"
+            )));
+        }
+        Ok(options)
+    }
+
+    fn canonical(self) -> Result<serde_json::Value> {
+        serde_json::to_value(self)
+            .map_err(|error| CdfError::internal(format!("encode JSON options: {error}")))
+    }
+}
+
+fn validate_maximum_record_bytes(value: u64) -> Result<()> {
+    if value == 0 || value > MAXIMUM_CONFIGURED_RECORD_BYTES {
+        return Err(CdfError::contract(format!(
+            "JSON maximum_record_bytes must be in 1..={MAXIMUM_CONFIGURED_RECORD_BYTES}"
+        )));
+    }
+    Ok(())
+}
 
 #[derive(Debug)]
 pub struct NdjsonFormatDriver {
@@ -58,6 +138,14 @@ impl NdjsonFormatDriver {
                 },
                 option_schema: serde_json::json!({
                     "type": "object",
+                    "properties": {
+                        "maximum_record_bytes": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "maximum": MAXIMUM_CONFIGURED_RECORD_BYTES,
+                            "default": DEFAULT_MAXIMUM_RECORD_BYTES
+                        }
+                    },
                     "additionalProperties": false
                 }),
                 projection_pushdown: PushdownFidelity::Unsupported,
@@ -73,7 +161,7 @@ impl NdjsonFormatDriver {
                     native_internal_parallelism: 1,
                 },
                 minimum_working_set_bytes: 1024 * 1024,
-                maximum_working_set_bytes: 64 * 1024 * 1024,
+                maximum_working_set_bytes: 96 * 1024 * 1024,
             },
         })
     }
@@ -85,11 +173,7 @@ impl FormatDriver for NdjsonFormatDriver {
     }
 
     fn canonical_options(&self, options: serde_json::Value) -> Result<serde_json::Value> {
-        if options.as_object().is_some_and(serde_json::Map::is_empty) {
-            Ok(options)
-        } else {
-            Err(CdfError::contract("NDJSON format options must be empty"))
-        }
+        NdjsonOptions::parse(options)?.canonical()
     }
 
     fn detect(&self, probe: &FormatProbe) -> Result<FormatDetection> {
@@ -111,7 +195,7 @@ impl FormatDriver for NdjsonFormatDriver {
         request: FormatDiscoveryRequest,
     ) -> BoxFuture<'_, Result<PhysicalSchemaObservation>> {
         Box::pin(async move {
-            self.canonical_options(request.options)?;
+            let _options = NdjsonOptions::parse(request.options)?;
             request.cancellation.check()?;
             if request.maximum_bytes == 0 || request.maximum_records == 0 {
                 return Err(CdfError::contract(
@@ -160,7 +244,7 @@ impl FormatDriver for NdjsonFormatDriver {
         request: DecodePlanningRequest,
     ) -> BoxFuture<'_, Result<Arc<dyn FormatDecodeSession>>> {
         Box::pin(async move {
-            self.canonical_options(request.options)?;
+            let options = NdjsonOptions::parse(request.options)?;
             request.cancellation.check()?;
             if request.target_batch_rows == 0 || request.target_batch_bytes == 0 {
                 return Err(CdfError::contract(
@@ -185,7 +269,11 @@ impl FormatDriver for NdjsonFormatDriver {
                     .clamp(1024 * 1024, 64 * 1024 * 1024),
                 independently_retryable: true,
             }];
-            Ok(Arc::new(NdjsonDecodeSession { source, units }) as Arc<dyn FormatDecodeSession>)
+            Ok(Arc::new(NdjsonDecodeSession {
+                source,
+                units,
+                maximum_record_bytes: options.maximum_record_bytes,
+            }) as Arc<dyn FormatDecodeSession>)
         })
     }
 }
@@ -193,6 +281,7 @@ impl FormatDriver for NdjsonFormatDriver {
 struct NdjsonDecodeSession {
     source: Arc<dyn ByteSource>,
     units: Vec<DecodeUnitPlan>,
+    maximum_record_bytes: u64,
 }
 
 impl FormatDecodeSession for NdjsonDecodeSession {
@@ -221,7 +310,7 @@ impl FormatDecodeSession for NdjsonDecodeSession {
                     cancellation: request.cancellation.clone(),
                 })
                 .await?;
-            decode_ndjson_stream(input, request).await
+            decode_ndjson_stream(input, request, self.maximum_record_bytes).await
         })
     }
 }
@@ -247,6 +336,20 @@ impl JsonDocumentFormatDriver {
                 },
                 option_schema: serde_json::json!({
                     "type": "object",
+                    "properties": {
+                        "maximum_record_bytes": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "maximum": MAXIMUM_CONFIGURED_RECORD_BYTES,
+                            "default": DEFAULT_MAXIMUM_RECORD_BYTES
+                        },
+                        "maximum_nesting_depth": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "maximum": MAXIMUM_JSON_NESTING_DEPTH,
+                            "default": MAXIMUM_JSON_NESTING_DEPTH
+                        }
+                    },
                     "additionalProperties": false
                 }),
                 projection_pushdown: PushdownFidelity::Unsupported,
@@ -262,7 +365,7 @@ impl JsonDocumentFormatDriver {
                     native_internal_parallelism: 1,
                 },
                 minimum_working_set_bytes: 1024 * 1024,
-                maximum_working_set_bytes: 64 * 1024 * 1024,
+                maximum_working_set_bytes: 96 * 1024 * 1024,
             },
         })
     }
@@ -274,11 +377,7 @@ impl FormatDriver for JsonDocumentFormatDriver {
     }
 
     fn canonical_options(&self, options: serde_json::Value) -> Result<serde_json::Value> {
-        if options.as_object().is_some_and(serde_json::Map::is_empty) {
-            Ok(options)
-        } else {
-            Err(CdfError::contract("JSON document options must be empty"))
-        }
+        JsonDocumentOptions::parse(options)?.canonical()
     }
 
     fn detect(&self, probe: &FormatProbe) -> Result<FormatDetection> {
@@ -299,7 +398,7 @@ impl FormatDriver for JsonDocumentFormatDriver {
         request: FormatDiscoveryRequest,
     ) -> BoxFuture<'_, Result<PhysicalSchemaObservation>> {
         Box::pin(async move {
-            self.canonical_options(request.options)?;
+            let options = JsonDocumentOptions::parse(request.options)?;
             request.cancellation.check()?;
             if request.maximum_bytes == 0 || request.maximum_records == 0 {
                 return Err(CdfError::contract(
@@ -319,6 +418,8 @@ impl FormatDriver for JsonDocumentFormatDriver {
                     maximum_input_bytes: request.maximum_bytes,
                     maximum_records: Some(request.maximum_records),
                     preferred_output_chunk_bytes: DISCOVERY_CHUNK_BYTES,
+                    maximum_record_bytes: options.maximum_record_bytes,
+                    maximum_nesting_depth: options.maximum_nesting_depth,
                     require_terminal_document: false,
                     input_counter: Arc::clone(&sampled_bytes),
                     memory: Arc::clone(&request.memory),
@@ -353,7 +454,7 @@ impl FormatDriver for JsonDocumentFormatDriver {
         request: DecodePlanningRequest,
     ) -> BoxFuture<'_, Result<Arc<dyn FormatDecodeSession>>> {
         Box::pin(async move {
-            self.canonical_options(request.options)?;
+            let options = JsonDocumentOptions::parse(request.options)?;
             request.cancellation.check()?;
             if request.target_batch_rows == 0 || request.target_batch_bytes == 0 {
                 return Err(CdfError::contract(
@@ -378,8 +479,11 @@ impl FormatDriver for JsonDocumentFormatDriver {
                     .clamp(1024 * 1024, 64 * 1024 * 1024),
                 independently_retryable: true,
             }];
-            Ok(Arc::new(JsonDocumentDecodeSession { source, units })
-                as Arc<dyn FormatDecodeSession>)
+            Ok(Arc::new(JsonDocumentDecodeSession {
+                source,
+                units,
+                options,
+            }) as Arc<dyn FormatDecodeSession>)
         })
     }
 }
@@ -387,6 +491,7 @@ impl FormatDriver for JsonDocumentFormatDriver {
 struct JsonDocumentDecodeSession {
     source: Arc<dyn ByteSource>,
     units: Vec<DecodeUnitPlan>,
+    options: JsonDocumentOptions,
 }
 
 impl FormatDecodeSession for JsonDocumentDecodeSession {
@@ -423,13 +528,15 @@ impl FormatDecodeSession for JsonDocumentDecodeSession {
                     preferred_output_chunk_bytes: request
                         .target_batch_bytes
                         .clamp(64 * 1024, 4 * 1024 * 1024),
+                    maximum_record_bytes: self.options.maximum_record_bytes,
+                    maximum_nesting_depth: self.options.maximum_nesting_depth,
                     require_terminal_document: true,
                     input_counter: Arc::new(AtomicU64::new(0)),
                     memory: Arc::clone(&request.memory),
                     cancellation: request.cancellation.clone(),
                 },
             )?;
-            decode_ndjson_stream(framed, request).await
+            decode_ndjson_stream(framed, request, self.options.maximum_record_bytes).await
         })
     }
 }
@@ -439,6 +546,8 @@ struct JsonFrameRequest {
     maximum_input_bytes: u64,
     maximum_records: Option<u64>,
     preferred_output_chunk_bytes: u64,
+    maximum_record_bytes: u64,
+    maximum_nesting_depth: usize,
     require_terminal_document: bool,
     input_counter: Arc<AtomicU64>,
     memory: Arc<dyn cdf_memory::MemoryCoordinator>,
@@ -465,6 +574,7 @@ struct JsonFrameState {
     escaped: bool,
     input_bytes: u64,
     records: u64,
+    record_bytes: u64,
     sample_complete: bool,
     output: Vec<u8>,
     output_lease: Option<MemoryLease>,
@@ -477,6 +587,9 @@ fn frame_json_document(
 ) -> Result<AccountedByteStream> {
     if request.maximum_input_bytes == 0
         || request.preferred_output_chunk_bytes < 2
+        || request.maximum_record_bytes == 0
+        || request.maximum_nesting_depth == 0
+        || request.maximum_nesting_depth > MAXIMUM_JSON_NESTING_DEPTH
         || request.maximum_records == Some(0)
     {
         return Err(CdfError::contract(
@@ -495,6 +608,7 @@ fn frame_json_document(
         escaped: false,
         input_bytes: 0,
         records: 0,
+        record_bytes: 0,
         sample_complete: false,
         output: Vec::new(),
         output_lease: None,
@@ -591,6 +705,7 @@ fn emit_frame_output(
 
 fn process_frame_byte(state: &mut JsonFrameState, byte: u8) -> Result<()> {
     if state.depth != 0 {
+        observe_json_document_record_byte(state)?;
         state.output.push(byte);
         if state.in_string {
             if state.escaped {
@@ -613,6 +728,7 @@ fn process_frame_byte(state: &mut JsonFrameState, byte: u8) -> Result<()> {
                 state.depth -= 1;
                 if state.depth == 0 {
                     state.output.push(b'\n');
+                    state.record_bytes = 0;
                     state.records = state
                         .records
                         .checked_add(1)
@@ -703,13 +819,35 @@ fn process_frame_byte(state: &mut JsonFrameState, byte: u8) -> Result<()> {
 }
 
 fn start_record(state: &mut JsonFrameState) -> Result<()> {
+    state.record_bytes = 1;
+    if state.record_bytes > state.request.maximum_record_bytes {
+        return Err(maximum_record_bytes_error(
+            state.request.maximum_record_bytes,
+        ));
+    }
     state.output.push(b'{');
     push_close(state, b'}')
 }
 
+fn observe_json_document_record_byte(state: &mut JsonFrameState) -> Result<()> {
+    state.record_bytes = state
+        .record_bytes
+        .checked_add(1)
+        .ok_or_else(|| CdfError::data("JSON record byte count overflowed"))?;
+    if state.record_bytes > state.request.maximum_record_bytes {
+        return Err(maximum_record_bytes_error(
+            state.request.maximum_record_bytes,
+        ));
+    }
+    Ok(())
+}
+
 fn push_close(state: &mut JsonFrameState, close: u8) -> Result<()> {
-    if state.depth == state.close_stack.len() {
-        return Err(CdfError::data("JSON nesting exceeds the 256-level limit"));
+    if state.depth == state.request.maximum_nesting_depth {
+        return Err(CdfError::data(format!(
+            "JSON nesting exceeds the configured {}-level limit",
+            state.request.maximum_nesting_depth
+        )));
     }
     state.close_stack[state.depth] = close;
     state.depth += 1;
@@ -738,12 +876,15 @@ fn validate_frame_terminal(state: &JsonFrameState) -> Result<()> {
 async fn decode_ndjson_stream(
     input: AccountedByteStream,
     request: PhysicalDecodeRequest,
+    maximum_record_bytes: u64,
 ) -> Result<PhysicalDecodeStream> {
     let decoder = strict_decoder(
         Arc::clone(&request.schema.decoder_schema),
         request.target_batch_rows,
     )?;
-    let output_lease = reserve_output(&request).await?;
+    let window_target_bytes = request.target_batch_bytes;
+    validate_maximum_record_bytes(maximum_record_bytes)?;
+    let output_lease = reserve_output(&request, maximum_record_bytes).await?;
     let state = DecodeState {
         input,
         current: None,
@@ -755,6 +896,9 @@ async fn decode_ndjson_stream(
         source_row_ordinal: 0,
         retained: Vec::new(),
         retained_bytes: 0,
+        record_bytes: 0,
+        window_target_bytes,
+        maximum_record_bytes,
         finished: false,
     };
     Ok(Box::pin(stream::try_unfold(state, decode_next)) as PhysicalDecodeStream)
@@ -771,6 +915,9 @@ struct DecodeState {
     source_row_ordinal: u64,
     retained: Vec<RetainedDecodeSpan>,
     retained_bytes: u64,
+    record_bytes: u64,
+    window_target_bytes: u64,
+    maximum_record_bytes: u64,
     finished: bool,
 }
 
@@ -802,13 +949,28 @@ async fn decode_next(
             let available = ndjson_decode_window(
                 &chunk.payload()[state.offset..],
                 state.retained_bytes,
-                state.request.target_batch_bytes,
+                state.window_target_bytes,
             );
+            let prior_record_bytes = state.record_bytes;
+            let observed_record_bytes = observe_ndjson_record_bytes(
+                available,
+                prior_record_bytes,
+                state.maximum_record_bytes,
+            )?;
             let start = state.offset;
             let consumed = state
                 .decoder
                 .decode(available)
                 .map_err(|error| CdfError::data(format!("decode NDJSON: {error}")))?;
+            state.record_bytes = if consumed == available.len() {
+                observed_record_bytes
+            } else {
+                observe_ndjson_record_bytes(
+                    &available[..consumed],
+                    prior_record_bytes,
+                    state.maximum_record_bytes,
+                )?
+            };
             state.offset += consumed;
             if consumed > 0 {
                 state.retained.push(RetainedDecodeSpan {
@@ -827,9 +989,7 @@ async fn decode_next(
                 let complete_record_boundary = available
                     .get(consumed.saturating_sub(1))
                     .is_some_and(|byte| *byte == b'\n');
-                if state.retained_bytes < state.request.target_batch_bytes
-                    || !complete_record_boundary
-                {
+                if state.retained_bytes < state.window_target_bytes || !complete_record_boundary {
                     continue;
                 }
             }
@@ -923,9 +1083,16 @@ async fn decode_next(
             .ok_or_else(|| CdfError::data("NDJSON source row ordinal overflowed"))?;
         state.retained.clear();
         state.retained_bytes = 0;
+        state.record_bytes = 0;
         let physical = AccountedPhysicalBatch::new(batch, lease)?;
+        state.window_target_bytes = next_decode_window_target(
+            state.window_target_bytes,
+            physical.lease().bytes(),
+            state.request.target_batch_bytes,
+        );
         if !state.finished {
-            state.output_lease = Some(reserve_output(&state.request).await?);
+            state.output_lease =
+                Some(reserve_output(&state.request, state.maximum_record_bytes).await?);
         }
         return Ok(Some((physical, state)));
     }
@@ -939,12 +1106,76 @@ fn ndjson_decode_window(available: &[u8], retained_bytes: u64, target_batch_byte
     if search_from == available.len() {
         return available;
     }
-    available[search_from..]
-        .iter()
-        .position(|byte| *byte == b'\n')
-        .map_or(available, |relative| {
-            &available[..search_from + relative + 1]
-        })
+    memchr(b'\n', &available[search_from..]).map_or(available, |relative| {
+        &available[..search_from + relative + 1]
+    })
+}
+
+fn observe_ndjson_record_bytes(
+    bytes: &[u8],
+    current_record_bytes: u64,
+    maximum_record_bytes: u64,
+) -> Result<u64> {
+    let Some(first_newline) = memchr(b'\n', bytes) else {
+        let record_bytes = current_record_bytes
+            .checked_add(
+                u64::try_from(bytes.len())
+                    .map_err(|_| CdfError::data("NDJSON record fragment length exceeds u64"))?,
+            )
+            .ok_or_else(|| CdfError::data("NDJSON record byte count overflowed"))?;
+        if record_bytes > maximum_record_bytes {
+            return Err(maximum_record_bytes_error(maximum_record_bytes));
+        }
+        return Ok(record_bytes);
+    };
+    let prefix_bytes = current_record_bytes
+        .checked_add(
+            u64::try_from(first_newline)
+                .map_err(|_| CdfError::data("NDJSON record prefix length exceeds u64"))?,
+        )
+        .ok_or_else(|| CdfError::data("NDJSON record byte count overflowed"))?;
+    if prefix_bytes > maximum_record_bytes {
+        return Err(maximum_record_bytes_error(maximum_record_bytes));
+    }
+    let last_newline = memrchr(b'\n', bytes)
+        .ok_or_else(|| CdfError::internal("NDJSON newline observation diverged"))?;
+    if u64::try_from(bytes.len()).unwrap_or(u64::MAX) > maximum_record_bytes {
+        let mut previous = first_newline;
+        for newline in memchr_iter(b'\n', &bytes[first_newline + 1..]) {
+            let absolute = first_newline + 1 + newline;
+            if u64::try_from(absolute - previous - 1).unwrap_or(u64::MAX) > maximum_record_bytes {
+                return Err(maximum_record_bytes_error(maximum_record_bytes));
+            }
+            previous = absolute;
+        }
+    }
+    let trailing = u64::try_from(bytes.len() - last_newline - 1)
+        .map_err(|_| CdfError::data("NDJSON trailing record fragment exceeds u64"))?;
+    if trailing > maximum_record_bytes {
+        return Err(maximum_record_bytes_error(maximum_record_bytes));
+    }
+    Ok(trailing)
+}
+
+fn maximum_record_bytes_error(maximum_record_bytes: u64) -> CdfError {
+    CdfError::data(format!(
+        "JSON record exceeds the planned {maximum_record_bytes}-byte maximum_record_bytes limit; increase format_options.maximum_record_bytes before planning or split the source record"
+    ))
+}
+
+fn next_decode_window_target(current: u64, observed_output: u64, ceiling: u64) -> u64 {
+    let floor = ceiling.clamp(1, 1024 * 1024);
+    if observed_output == 0 {
+        return ceiling;
+    }
+    u64::try_from(
+        u128::from(current)
+            .saturating_mul(u128::from(ceiling))
+            .checked_div(u128::from(observed_output))
+            .unwrap_or(u128::from(floor))
+            .clamp(u128::from(floor), u128::from(ceiling)),
+    )
+    .unwrap_or(ceiling)
 }
 
 fn strict_decoder(schema: SchemaRef, batch_rows: usize) -> Result<arrow_json::reader::Decoder> {
@@ -1272,11 +1503,17 @@ fn raw_residual_array(source: &str, value: &RawValue) -> Result<(Field, ArrayRef
     Ok((field, values))
 }
 
-async fn reserve_output(request: &PhysicalDecodeRequest) -> Result<MemoryLease> {
+async fn reserve_output(
+    request: &PhysicalDecodeRequest,
+    maximum_record_bytes: u64,
+) -> Result<MemoryLease> {
     let input_window_bytes = request
         .target_batch_bytes
-        .clamp(1024 * 1024, MAXIMUM_DECODE_WORKING_SET_BYTES / 2);
-    let output_authority_bytes = MAXIMUM_DECODE_WORKING_SET_BYTES
+        .max(maximum_record_bytes)
+        .clamp(1024 * 1024, MAXIMUM_CONFIGURED_RECORD_BYTES);
+    let total_working_set_bytes =
+        MAXIMUM_DECODE_WORKING_SET_BYTES.max(maximum_record_bytes.saturating_mul(3));
+    let output_authority_bytes = total_working_set_bytes
         .checked_sub(input_window_bytes)
         .ok_or_else(|| CdfError::internal("NDJSON decode working-set split underflowed"))?;
     reserve(
@@ -1340,6 +1577,8 @@ mod tests {
                 maximum_input_bytes: u64::try_from(input.len()).unwrap(),
                 maximum_records,
                 preferred_output_chunk_bytes: 7,
+                maximum_record_bytes: DEFAULT_MAXIMUM_RECORD_BYTES,
+                maximum_nesting_depth: MAXIMUM_JSON_NESTING_DEPTH,
                 require_terminal_document: maximum_records.is_none(),
                 input_counter: Arc::clone(&counter),
                 memory,
@@ -1388,6 +1627,115 @@ mod tests {
         let error = frame(br#"[{"a":1},]"#, None).unwrap_err();
 
         assert!(error.message.contains("trailing comma"), "{error}");
+    }
+
+    #[test]
+    fn codec_limits_are_explicit_canonical_plan_evidence() {
+        let ndjson = NdjsonFormatDriver::new()
+            .unwrap()
+            .canonical_options(serde_json::json!({}))
+            .unwrap();
+        assert_eq!(
+            ndjson,
+            serde_json::json!({"maximum_record_bytes": DEFAULT_MAXIMUM_RECORD_BYTES})
+        );
+        let json = JsonDocumentFormatDriver::new()
+            .unwrap()
+            .canonical_options(serde_json::json!({"maximum_nesting_depth": 32}))
+            .unwrap();
+        assert_eq!(
+            json,
+            serde_json::json!({
+                "maximum_nesting_depth": 32,
+                "maximum_record_bytes": DEFAULT_MAXIMUM_RECORD_BYTES
+            })
+        );
+        let error = NdjsonFormatDriver::new()
+            .unwrap()
+            .canonical_options(serde_json::json!({
+                "maximum_record_bytes": MAXIMUM_CONFIGURED_RECORD_BYTES + 1
+            }))
+            .unwrap_err();
+        assert!(error.message.contains("maximum_record_bytes"), "{error}");
+    }
+
+    #[test]
+    fn ndjson_oversized_record_fails_before_publishing_a_batch() {
+        let input = br#"{"id":1,"value":"this-record-is-too-large"}
+{"id":2,"value":"would-otherwise-be-valid"}
+"#;
+        let coordinator = Arc::new(
+            DeterministicMemoryCoordinator::new(128 * 1024 * 1024, BTreeMap::new()).unwrap(),
+        );
+        let memory: Arc<dyn MemoryCoordinator> = coordinator.clone();
+        let input_lease = reserve_blocking(
+            Arc::clone(&memory),
+            &ReservationRequest::new(
+                ConsumerKey::new("json-oversized-test-input", MemoryClass::Source).unwrap(),
+                u64::try_from(input.len()).unwrap(),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        let accounted =
+            AccountedBytes::new(bytes::Bytes::copy_from_slice(input), input_lease).unwrap();
+        let request = PhysicalDecodeRequest {
+            unit: DecodeUnitPlan {
+                unit_id: "ndjson-oversized".to_owned(),
+                ordinal: 0,
+                extent: None,
+                estimated_working_set_bytes: 1024 * 1024,
+                independently_retryable: true,
+            },
+            resource_id: ResourceId::new("events.oversized").unwrap(),
+            partition_id: PartitionId::new("file-0001").unwrap(),
+            batch_id_prefix: "events-oversized".to_owned(),
+            schema: cdf_runtime::DecodeSchemaPlan::verified_physical(Arc::new(Schema::new(vec![
+                Field::new("id", DataType::Int64, true),
+                Field::new("value", DataType::Utf8, true),
+            ]))),
+            source_position: None,
+            projection: None,
+            predicates: Vec::new(),
+            target_batch_rows: 64,
+            target_batch_bytes: 16,
+            memory,
+            cancellation: cdf_runtime::RunCancellation::default(),
+        };
+        let error = futures_executor::block_on(async move {
+            let input: AccountedByteStream = Box::pin(stream::iter([Ok(accounted)]));
+            let mut decoded = decode_ndjson_stream(input, request, 8).await?;
+            match decoded.try_next().await {
+                Err(error) => Result::<()>::Err(error),
+                Ok(_) => Result::<()>::Err(CdfError::internal("oversized NDJSON emitted a batch")),
+            }
+        })
+        .unwrap_err();
+
+        assert!(error.message.contains("planned 8-byte"), "{error}");
+        assert!(error.message.contains("maximum_record_bytes"), "{error}");
+        assert_eq!(coordinator.snapshot().current_bytes, 0);
+    }
+
+    #[test]
+    fn byte_feedback_is_deterministic_and_never_exceeds_the_plan_target() {
+        const MIB: u64 = 1024 * 1024;
+        assert_eq!(
+            next_decode_window_target(16 * MIB, 8 * MIB, 16 * MIB),
+            16 * MIB
+        );
+        assert_eq!(
+            next_decode_window_target(16 * MIB, 32 * MIB, 16 * MIB),
+            8 * MIB
+        );
+        assert_eq!(
+            next_decode_window_target(8 * MIB, 4 * MIB, 16 * MIB),
+            16 * MIB
+        );
+        assert_eq!(
+            next_decode_window_target(16 * MIB, 64 * MIB, 16 * MIB),
+            4 * MIB
+        );
     }
 
     #[test]
@@ -1450,7 +1798,8 @@ mod tests {
         };
         let batches = futures_executor::block_on(async move {
             let input: AccountedByteStream = Box::pin(stream::iter(chunks));
-            let mut decoded = decode_ndjson_stream(input, request).await?;
+            let mut decoded =
+                decode_ndjson_stream(input, request, DEFAULT_MAXIMUM_RECORD_BYTES).await?;
             let mut batches = Vec::new();
             while let Some(batch) = decoded.try_next().await? {
                 batches.push(batch);
@@ -1518,7 +1867,8 @@ mod tests {
         };
         let batches = futures_executor::block_on(async move {
             let input: AccountedByteStream = Box::pin(stream::iter([Ok(accounted)]));
-            let mut decoded = decode_ndjson_stream(input, request).await?;
+            let mut decoded =
+                decode_ndjson_stream(input, request, DEFAULT_MAXIMUM_RECORD_BYTES).await?;
             let mut batches = Vec::new();
             while let Some(batch) = decoded.try_next().await? {
                 batches.push(batch);
@@ -1622,7 +1972,8 @@ mod tests {
         };
         let batches = futures_executor::block_on(async move {
             let input: AccountedByteStream = Box::pin(stream::empty());
-            let mut decoded = decode_ndjson_stream(input, request).await?;
+            let mut decoded =
+                decode_ndjson_stream(input, request, DEFAULT_MAXIMUM_RECORD_BYTES).await?;
             let mut batches = Vec::new();
             while let Some(batch) = decoded.try_next().await? {
                 batches.push(batch);

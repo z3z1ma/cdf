@@ -15,6 +15,7 @@ cdf-kernel = { path = "../cdf-kernel" }
 cdf-memory = { path = "../cdf-memory" }
 cdf-runtime = { path = "../cdf-runtime" }
 futures-util = "0.3.32"
+memchr = "2.8.2"
 serde = "1.0.228"
 serde_json = { version = "1.0.150", features = ["raw_value"] }
 
