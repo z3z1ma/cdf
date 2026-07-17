@@ -2,7 +2,7 @@ Status: open
 Created: 2026-07-11
 Updated: 2026-07-15
 Parent: .10x/tickets/2026-07-10-p3-ws-g-remote-io-overlap.md
-Depends-On: .10x/tickets/2026-07-11-p3-g3-codec-download-decode-overlap.md, .10x/tickets/done/2026-07-11-p3-d2-duckdb-arrow-bulk.md, .10x/tickets/done/2026-07-11-p3-c4-jobs-invariance-scaling-matrix.md
+Depends-On: .10x/tickets/done/2026-07-11-p3-g3-codec-download-decode-overlap.md, .10x/tickets/done/2026-07-11-p3-d2-duckdb-arrow-bulk.md, .10x/tickets/done/2026-07-11-p3-c4-jobs-invariance-scaling-matrix.md
 
 # P3 G4: remote/local I/O envelope and TLC closeout
 

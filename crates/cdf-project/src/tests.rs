@@ -76,6 +76,28 @@ fn test_execution_services() -> cdf_runtime::ExecutionServices {
         .1
 }
 
+fn test_execution_services_with_slots(
+    logical_cpu_slots: u16,
+    memory_budget_bytes: u64,
+) -> cdf_runtime::ExecutionServices {
+    let memory: Arc<dyn MemoryCoordinator> = Arc::new(
+        cdf_memory::DeterministicMemoryCoordinator::new(memory_budget_bytes, BTreeMap::new())
+            .unwrap(),
+    );
+    let host = Arc::new(
+        cdf_engine::StandaloneExecutionHost::new(
+            cdf_runtime::ExecutionHostCapabilities {
+                logical_cpu_slots,
+                io_workers: logical_cpu_slots.min(4),
+                blocking_lanes: Vec::new(),
+            },
+            memory,
+        )
+        .unwrap(),
+    );
+    cdf_runtime::ExecutionServices::new(host).unwrap()
+}
+
 #[derive(Clone, Debug)]
 struct PreparedDiscoveredResource {
     resource: cdf_declarative::CompiledResource,
@@ -453,13 +475,19 @@ impl cdf_runtime::FormatDecodeSession for ProjectExternalMockSession {
 }
 
 fn file_dependencies(transport: FileTransportFacade) -> FileRuntimeDependencies {
+    file_dependencies_with_execution(transport, test_execution_services())
+}
+
+fn file_dependencies_with_execution(
+    transport: FileTransportFacade,
+    execution: cdf_runtime::ExecutionServices,
+) -> FileRuntimeDependencies {
     let mut transforms = cdf_runtime::ByteTransformRegistry::default();
     transforms
         .register(Arc::new(
             cdf_transform_gzip::GzipTransformDriver::new().unwrap(),
         ))
         .unwrap();
-    let execution = test_execution_services();
     FileRuntimeDependencies::new(
         transport.with_execution_services(execution.clone()),
         execution,
@@ -2482,6 +2510,273 @@ fn object_store_gzip_ndjson_discovers_pins_and_executes_through_one_transport() 
 }
 
 #[test]
+fn http_gzip_ndjson_backpressures_and_cancels_before_download_completion() {
+    let temp = tempfile::tempdir().unwrap();
+    write_http_discover_project(temp.path(), "");
+    fs::write(
+        temp.path().join("resources/files.toml"),
+        r#"
+[source.remote]
+kind = "files"
+root = "https://data.example.test/events"
+
+[resource.events]
+glob = "events.ndjson.gz"
+format = "ndjson"
+compression = "gzip"
+write_disposition = "append"
+trust = "governed"
+schema = { fields = [
+  { name = "id", type = "int64", nullable = false },
+  { name = "payload", type = "utf8", nullable = false },
+] }
+"#,
+    )
+    .unwrap();
+
+    // Sixteen native batches exceed every bounded frontier between transport and this consumer.
+    // Compression level zero keeps the fixture cheap while still exercising the production gzip
+    // transform and leaving enough source bytes to observe two distinct backpressure plateaus.
+    let row_count = 16 * cdf_runtime::DEFAULT_FORMAT_BATCH_ROWS + 128;
+    let mut source = Vec::with_capacity(row_count * 48);
+    for id in 0..row_count {
+        source
+            .extend_from_slice(format!(r#"{{"id":{id},"payload":"payload-{id:08x}"}}"#).as_bytes());
+        source.push(b'\n');
+    }
+    let mut encoder = GzEncoder::new(Vec::new(), Compression::none());
+    std::io::Write::write_all(&mut encoder, &source).unwrap();
+    let encoded = encoder.finish().unwrap();
+    assert!(encoded.len() > 4 * 1024 * 1024);
+    let encoded_bytes = u64::try_from(encoded.len()).unwrap();
+
+    let transport = RecordingHttpFileTransport::new(encoded.clone());
+    let execution = cdf_engine::StandaloneExecutionHost::default_services(512 * 1024 * 1024)
+        .unwrap()
+        .1;
+    let dependencies = file_dependencies_with_execution(
+        FileTransportFacade::new().with_http_transport(transport.clone()),
+        execution,
+    );
+    let resource = compile_single_project_resource(temp.path());
+    let runtime = resolve_file_resource_for_test(&resource, dependencies.clone());
+    let plan = live_plan_for_stream(runtime.as_ref(), resource.source_plan(), "pkg-http-gzip");
+    let mut opened = futures_executor::block_on(runtime.open(plan.scan.partitions[0].clone()))
+        .expect("open recorded HTTP gzip partition");
+    let first = futures_executor::block_on(futures_util::StreamExt::next(&mut opened))
+        .expect("first bounded batch")
+        .expect("decode first bounded batch");
+    assert_eq!(
+        first.header.row_count,
+        u64::try_from(cdf_runtime::DEFAULT_FORMAT_BATCH_ROWS).unwrap()
+    );
+
+    let wait_for_stable_partial_progress = |minimum_bytes: u64| {
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        let mut stable_observations = 0;
+        let mut previous = transport.sequential_progress();
+        loop {
+            thread::sleep(Duration::from_millis(20));
+            let current = transport.sequential_progress();
+            if current == previous
+                && current.bytes_emitted > minimum_bytes
+                && current.bytes_emitted < encoded_bytes
+            {
+                stable_observations += 1;
+                if stable_observations == 5 {
+                    break current;
+                }
+            } else {
+                stable_observations = 0;
+            }
+            previous = current;
+            assert!(
+                std::time::Instant::now() < deadline,
+                "recorded HTTP source did not reach a stable partial-transfer plateau: {current:?}"
+            );
+        }
+    };
+    let stalled = wait_for_stable_partial_progress(encoded_bytes / 4);
+    assert_eq!(stalled.streams_closed, 0);
+    assert_eq!(stalled.streams_completed, 0);
+
+    // Drain only the already-bounded output frontier until demand propagates through every nested
+    // stage and resumes the transport. A stable plateau followed by progress caused only by
+    // downstream polls distinguishes backpressure from an incidental decode pause.
+    let mut resumed_batches = Vec::new();
+    let mut resumed = None;
+    for _ in 0..8 {
+        resumed_batches.push(
+            futures_executor::block_on(futures_util::StreamExt::next(&mut opened))
+                .expect("bounded batch after transport plateau")
+                .expect("decode bounded batch after transport plateau"),
+        );
+        let poll_deadline = std::time::Instant::now() + Duration::from_millis(250);
+        loop {
+            let progress = transport.sequential_progress();
+            if progress.bytes_emitted > stalled.bytes_emitted {
+                resumed = Some(progress);
+                break;
+            }
+            if std::time::Instant::now() >= poll_deadline {
+                break;
+            }
+            thread::sleep(Duration::from_millis(5));
+        }
+        if resumed.is_some() {
+            break;
+        }
+    }
+    let resumed = resumed.expect(
+        "bounded downstream demand did not propagate through the source frontier to the transport",
+    );
+    assert!(resumed.bytes_emitted < encoded_bytes);
+    let stalled_again = wait_for_stable_partial_progress(stalled.bytes_emitted);
+    assert!(stalled_again.bytes_emitted >= resumed.bytes_emitted);
+    assert_eq!(stalled_again.streams_closed, 0);
+    assert_eq!(stalled_again.streams_completed, 0);
+
+    let (termination_tx, termination_rx) = mpsc::sync_channel(1);
+    let termination = thread::spawn(move || {
+        let result = futures_executor::block_on(opened.terminate_and_join());
+        termination_tx.send(result).unwrap();
+    });
+    termination_rx
+        .recv_timeout(Duration::from_secs(1))
+        .expect("blocked source invocation must cancel and join within one second")
+        .expect("blocked source invocation must cancel and join cleanly");
+    termination.join().unwrap();
+    drop((first, resumed_batches));
+    let cleanup_deadline = std::time::Instant::now() + Duration::from_secs(1);
+    let stopped = loop {
+        let progress = transport.sequential_progress();
+        assert_eq!(progress.bytes_emitted, stalled_again.bytes_emitted);
+        if progress.streams_closed == 1 && transport.current_memory_bytes() == 0 {
+            break progress;
+        }
+        assert!(
+            std::time::Instant::now() < cleanup_deadline,
+            "cancelled stream did not drop its transport state: {progress:?}; memory={} bytes",
+            transport.current_memory_bytes()
+        );
+        thread::sleep(Duration::from_millis(5));
+    };
+    assert_eq!(stopped.streams_completed, 0);
+}
+
+#[test]
+fn recorded_http_multifile_packages_are_jobs_invariant() {
+    let temp = tempfile::tempdir().unwrap();
+    write_http_discover_project(temp.path(), "");
+    fs::write(
+        temp.path().join("resources/files.toml"),
+        r#"
+[source.remote]
+kind = "files"
+root = "https://data.example.test/events"
+
+[resource.events]
+glob = "part-{01..04}.ndjson.gz"
+format = "ndjson"
+compression = "gzip"
+write_disposition = "append"
+trust = "governed"
+schema = { fields = [
+  { name = "id", type = "int64", nullable = false },
+  { name = "payload", type = "utf8", nullable = false },
+] }
+"#,
+    )
+    .unwrap();
+    let rows_per_file = 8_192;
+    let mut source = Vec::with_capacity(rows_per_file * 80);
+    for id in 0..rows_per_file {
+        source.extend_from_slice(
+            format!(
+                r#"{{"id":{id},"payload":"payload-{id:08x}-0123456789abcdef0123456789abcdef"}}"#
+            )
+            .as_bytes(),
+        );
+        source.push(b'\n');
+    }
+    let mut encoder = GzEncoder::new(Vec::new(), Compression::none());
+    std::io::Write::write_all(&mut encoder, &source).unwrap();
+    let encoded = encoder.finish().unwrap();
+    let resource = compile_single_project_resource(temp.path());
+
+    let run = |jobs: u16| {
+        let execution = test_execution_services_with_slots(4, 512 * 1024 * 1024)
+            .with_run_job_ceiling(jobs)
+            .unwrap();
+        let transport = RecordingHttpFileTransport::new(encoded.clone());
+        let dependencies = file_dependencies_with_execution(
+            FileTransportFacade::new().with_http_transport(transport.clone()),
+            execution.clone(),
+        );
+        let runtime = resolve_file_resource_for_test(&resource, dependencies);
+        let plan = live_plan_for_stream(runtime.as_ref(), resource.source_plan(), "pkg-http-jobs")
+            .bind_operator_graph(
+                resource.source_plan(),
+                &cdf_runtime::DestinationRuntimeCapabilities::default(),
+            )
+            .unwrap();
+        assert_eq!(plan.scan.partitions.len(), 4);
+        let source_execution = plan.compiled_source_execution.as_ref().unwrap();
+        let scheduler = cdf_runtime::resolve_runtime_scheduler(
+            plan.scan.partitions.len(),
+            source_execution.execution_capabilities(),
+            &cdf_runtime::DestinationRuntimeCapabilities::default(),
+            &execution,
+            Some(jobs),
+        )
+        .unwrap();
+        assert_eq!(scheduler.effective_jobs.jobs, jobs);
+        let run_root = temp.path().join(format!("jobs-{jobs}"));
+        let pre_finalize =
+            |_: &cdf_package::PackageBuilder, _: cdf_engine::EnginePackageDraft<'_>| Ok(());
+        let output = futures_executor::block_on(
+            cdf_engine::execute_to_package_with_segment_positions_and_pre_finalize(
+                &plan,
+                runtime.as_ref(),
+                run_root.join("package"),
+                &pre_finalize,
+                cdf_engine::EngineExecutionOptions::default()
+                    .with_execution_services(execution)
+                    .with_scheduler_resolution(scheduler),
+            ),
+        )
+        .unwrap();
+        let progress = transport.sequential_progress();
+        assert_eq!(progress.streams_completed, 4);
+        assert_eq!(progress.streams_closed, 4);
+        assert!(progress.peak_active_streams <= jobs);
+        assert_eq!(transport.current_memory_bytes(), 0);
+        (output, progress)
+    };
+
+    let (serial, serial_progress) = run(1);
+    let (parallel, parallel_progress) = run(4);
+    assert_eq!(serial_progress.peak_active_streams, 1);
+    assert!(parallel_progress.peak_active_streams >= 2);
+    assert_eq!(
+        parallel.output.profile.output_rows,
+        u64::try_from(4 * rows_per_file).unwrap()
+    );
+    assert_eq!(
+        parallel.output.manifest.package_hash,
+        serial.output.manifest.package_hash
+    );
+    assert_eq!(parallel.output.segments, serial.output.segments);
+    assert_eq!(parallel.output.profile, serial.output.profile);
+    assert_eq!(parallel.output.lineage, serial.output.lineage);
+    assert_eq!(parallel.segment_positions, serial.segment_positions);
+    assert_eq!(
+        parallel.output.terminal_schema_quarantines,
+        serial.output.terminal_schema_quarantines
+    );
+}
+
+#[test]
 fn http_numeric_template_discovers_and_plans_every_file() {
     let temp = tempfile::tempdir().unwrap();
     write_http_discover_project(temp.path(), "");
@@ -4198,6 +4493,23 @@ struct RecordingHttpFileTransportState {
     body: Arc<Vec<u8>>,
     etag: Option<String>,
     missing: BTreeSet<String>,
+    sequential_chunks_emitted: u64,
+    sequential_bytes_emitted: u64,
+    sequential_streams_active: u16,
+    sequential_streams_peak: u16,
+    sequential_streams_closed: u64,
+    sequential_streams_completed: u64,
+    memory: Option<Arc<dyn MemoryCoordinator>>,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct RecordingSequentialProgress {
+    chunks_emitted: u64,
+    bytes_emitted: u64,
+    active_streams: u16,
+    peak_active_streams: u16,
+    streams_closed: u64,
+    streams_completed: u64,
 }
 
 struct RecordingHttpByteSource {
@@ -4250,6 +4562,7 @@ impl RecordingHttpByteSource {
             maximum_chunk_bytes: 32 * 1024 * 1024,
         };
         capabilities.validate()?;
+        state.lock().unwrap().memory = Some(Arc::clone(&memory));
         Ok(Self {
             state,
             url: url.clone(),
@@ -4290,6 +4603,10 @@ impl ByteSource for RecordingHttpByteSource {
                     request.headers.insert("if-match".to_owned(), etag.clone());
                 }
                 state.requests.push(request);
+                state.sequential_streams_active += 1;
+                state.sequential_streams_peak = state
+                    .sequential_streams_peak
+                    .max(state.sequential_streams_active);
                 Arc::clone(&state.body)
             };
             let state = RecordingSequentialState {
@@ -4299,24 +4616,36 @@ impl ByteSource for RecordingHttpByteSource {
                     .map_err(|_| CdfError::data("test chunk size exceeds usize"))?,
                 memory: Arc::clone(&self.memory),
                 cancellation: request.cancellation,
+                transport_state: Arc::clone(&self.state),
             };
             Ok(Box::pin(stream::try_unfold(state, |mut state| async move {
                 state.cancellation.check()?;
                 if state.offset == state.body.len() {
+                    state
+                        .transport_state
+                        .lock()
+                        .unwrap()
+                        .sequential_streams_completed += 1;
                     return Ok(None);
                 }
                 let end = state
                     .offset
                     .saturating_add(state.chunk_bytes)
                     .min(state.body.len());
-                let bytes = Bytes::copy_from_slice(&state.body[state.offset..end]);
+                let byte_count = u64::try_from(end.saturating_sub(state.offset))
+                    .map_err(|_| CdfError::data("test byte length exceeds u64"))?;
                 let reservation = ReservationRequest::new(
                     ConsumerKey::new("project-http-fixture", MemoryClass::Source)?,
-                    u64::try_from(bytes.len())
-                        .map_err(|_| CdfError::data("test byte length exceeds u64"))?,
+                    byte_count,
                 )?;
                 let lease = reserve(Arc::clone(&state.memory), reservation).await?;
+                let bytes = Bytes::copy_from_slice(&state.body[state.offset..end]);
                 state.offset = end;
+                {
+                    let mut transport = state.transport_state.lock().unwrap();
+                    transport.sequential_chunks_emitted += 1;
+                    transport.sequential_bytes_emitted += byte_count;
+                }
                 Ok(Some((AccountedBytes::new(bytes, lease)?, state)))
             })) as AccountedByteStream)
         })
@@ -4369,6 +4698,15 @@ struct RecordingSequentialState {
     chunk_bytes: usize,
     memory: Arc<dyn MemoryCoordinator>,
     cancellation: RunCancellation,
+    transport_state: Arc<Mutex<RecordingHttpFileTransportState>>,
+}
+
+impl Drop for RecordingSequentialState {
+    fn drop(&mut self) {
+        let mut state = self.transport_state.lock().unwrap();
+        state.sequential_streams_active -= 1;
+        state.sequential_streams_closed += 1;
+    }
 }
 
 impl RecordingHttpFileTransport {
@@ -4379,6 +4717,13 @@ impl RecordingHttpFileTransport {
                 body: Arc::new(body),
                 etag: Some("\"fixture-etag\"".to_owned()),
                 missing: BTreeSet::new(),
+                sequential_chunks_emitted: 0,
+                sequential_bytes_emitted: 0,
+                sequential_streams_active: 0,
+                sequential_streams_peak: 0,
+                sequential_streams_closed: 0,
+                sequential_streams_completed: 0,
+                memory: None,
             })),
         }
     }
@@ -4399,6 +4744,27 @@ impl RecordingHttpFileTransport {
 
     fn clear_etag(&self) {
         self.state.lock().unwrap().etag = None;
+    }
+
+    fn sequential_progress(&self) -> RecordingSequentialProgress {
+        let state = self.state.lock().unwrap();
+        RecordingSequentialProgress {
+            chunks_emitted: state.sequential_chunks_emitted,
+            bytes_emitted: state.sequential_bytes_emitted,
+            active_streams: state.sequential_streams_active,
+            peak_active_streams: state.sequential_streams_peak,
+            streams_closed: state.sequential_streams_closed,
+            streams_completed: state.sequential_streams_completed,
+        }
+    }
+
+    fn current_memory_bytes(&self) -> u64 {
+        self.state
+            .lock()
+            .unwrap()
+            .memory
+            .as_ref()
+            .map_or(0, |memory| memory.snapshot().current_bytes)
     }
 }
 

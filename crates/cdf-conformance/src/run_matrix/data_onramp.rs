@@ -82,9 +82,11 @@ const P2_SCENARIOS: &[P2Scenario] = &[
         id: "S3",
         title: "S3 compressed NDJSON recursive glob with transparent gzip and drift governed by contract policy",
         status: CoverageStatus::Covered,
-        rationale: "the object-store fixture recursively resolves, bounded-discovers, pins, previews, streams gzip NDJSON, preserves remote FileManifest identity, and executes 10,000 rows; drift quarantine remains covered by the shared file-contract conformance",
+        rationale: "the object-store fixture recursively resolves, bounded-discovers, pins, previews, streams gzip NDJSON, preserves remote FileManifest identity, and executes 10,000 rows; recorded HTTP fixtures additionally prove bounded transform/decode backpressure, cancellation before download completion, and jobs-invariant multi-file packages; drift quarantine remains covered by the shared file-contract conformance",
         tests: &[
             "crates/cdf-project/src/tests.rs::object_store_gzip_ndjson_discovers_pins_and_executes_through_one_transport",
+            "crates/cdf-project/src/tests.rs::http_gzip_ndjson_backpressures_and_cancels_before_download_completion",
+            "crates/cdf-project/src/tests.rs::recorded_http_multifile_packages_are_jobs_invariant",
             "crates/cdf-conformance/src/live_run/drift_quarantine/mod.rs::drift_quarantine_duckdb_conformance_asserts_unsupported_mirror_exclusion",
         ],
         tickets: &[],
@@ -213,7 +215,7 @@ const P2_FRICTIONS: &[P2FrictionRow] = &[
     P2FrictionRow {
         id: 6,
         closed_tests: &[
-            "crates/cdf-declarative/src/tests.rs::declarative_schema_normalizes_field_names_and_records_source_names",
+            "crates/cdf-declarative/src/tests.rs::declared_schema_is_normalized_and_preserves_source_identity",
             "crates/cdf-contract/src/tests.rs::destination_identifier_policy_preserves_postgres_max_length",
             "crates/cdf-cli/src/tests.rs::duckdb_destination_policy_normalizes_plan_preview_package_and_commit",
             "crates/cdf-cli/src/tests.rs::destination_normalization_collision_fails_before_writes",
@@ -224,7 +226,7 @@ const P2_FRICTIONS: &[P2FrictionRow] = &[
     P2FrictionRow {
         id: 7,
         closed_tests: &[
-            "crates/cdf-declarative/src/tests.rs::declarative_schema_normalizes_field_names_and_records_source_names",
+            "crates/cdf-declarative/src/tests.rs::declared_schema_is_normalized_and_preserves_source_identity",
             "crates/cdf-cli/src/tests.rs::duckdb_destination_policy_normalizes_plan_preview_package_and_commit",
             "crates/cdf-project/src/runtime_tests.rs::postgres_destination_policy_truncates_package_and_committed_column_identically",
         ],
@@ -233,7 +235,7 @@ const P2_FRICTIONS: &[P2FrictionRow] = &[
     P2FrictionRow {
         id: 8,
         closed_tests: &[
-            "crates/cdf-declarative/src/tests.rs::file_glob_plans_deterministic_partition_per_match",
+            "crates/cdf-source-files/src/runtime.rs::tests::object_store_recursive_glob_resolves_stable_multi_file_partitions",
             "crates/cdf-project/src/runtime_tests.rs::general_project_run_commits_multi_file_resource_manifest_checkpoint",
             "crates/cdf-project/src/runtime_tests.rs::file_manifest_append_run_skips_unchanged_files_and_loads_only_changes",
         ],
@@ -242,7 +244,6 @@ const P2_FRICTIONS: &[P2FrictionRow] = &[
     P2FrictionRow {
         id: 9,
         closed_tests: &[
-            "crates/cdf-declarative/src/tests.rs::file_glob_run_and_preview_open_the_requested_partition",
             "crates/cdf-conformance/src/run_matrix/data_onramp.rs::p2_preview_run_parity_law_covers_supported_archetypes",
             "crates/cdf-conformance/src/run_matrix/data_onramp.rs::p2_s8_multifile_preview_traverses_the_same_planned_partitions_as_run",
             "crates/cdf-cli/src/tests.rs::pinned_multi_file_parquet_keeps_fixed_schema_and_admits_new_physical_schemas_in_stream",
@@ -253,7 +254,7 @@ const P2_FRICTIONS: &[P2FrictionRow] = &[
     P2FrictionRow {
         id: 10,
         closed_tests: &[
-            "crates/cdf-declarative/src/tests.rs::source_and_resource_names_form_canonical_compiled_id",
+            "crates/cdf-declarative/src/tests.rs::registry_compilation_produces_one_compiled_source_plan_and_canonical_id",
             "crates/cdf-project/src/tests.rs::declarative_resource_mapping_pattern_must_match_compiled_id",
             "crates/cdf-cli/src/tests.rs::resource_mapping_pattern_mismatch_reports_validate_and_plan_commands",
         ],
@@ -302,17 +303,17 @@ const P2_FRICTIONS: &[P2FrictionRow] = &[
         id: 16,
         closed_tests: &[
             "crates/cdf-source-files/src/runtime.rs::tests::object_store_gzip_ndjson_streams_without_spill_and_preserves_remote_position",
-            "crates/cdf-declarative/src/tests.rs::file_runtime_auto_compression_decodes_gzip_and_zstd_ndjson",
-            "crates/cdf-declarative/src/tests.rs::file_runtime_explicit_compression_mismatch_names_file_and_signals",
+            "crates/cdf-project/src/tests.rs::http_gzip_ndjson_backpressures_and_cancels_before_download_completion",
+            "crates/cdf-transform-gzip/src/lib.rs::tests::streams_concatenated_members_across_single_byte_input_chunks",
+            "crates/cdf-transform-zstd/src/lib.rs::tests::streams_concatenated_frames_across_single_byte_input_chunks",
         ],
         open_tickets: &[],
     },
     P2FrictionRow {
         id: 17,
         closed_tests: &[
-            "crates/cdf-declarative/src/tests.rs::disposition_append_default_and_explicit_forms_are_keyless",
-            "crates/cdf-declarative/src/tests.rs::disposition_merge_requires_explicit_merge_key_with_remediation",
-            "crates/cdf-declarative/src/tests.rs::disposition_merge_with_explicit_merge_key_compiles",
+            "crates/cdf-declarative/src/tests.rs::append_is_keyless_by_default_and_merge_names_both_fixes",
+            "crates/cdf-declarative/src/tests.rs::merge_and_exact_row_dedup_compile_only_for_their_valid_dispositions",
             "crates/cdf-project/src/tests.rs::local_project_scaffold_writes_valid_project_without_runtime_artifacts",
             "crates/cdf-cli/src/tests.rs::keyless_append_file_validate_plan_preview_run_has_no_key_nudge",
             "crates/cdf-cli/src/tests.rs::keyless_append_rest_validate_plan_preview_run_has_no_key_nudge",
