@@ -1,12 +1,12 @@
 use std::{collections::BTreeMap, fs, path::Path};
 
 use cdf_benchmarks::{
-    BenchmarkReport, ChildCommand, HostCapabilityProvider, HostProbeConfig, LegacyCaseWorkload,
-    MacroRunSpec, PreoptimizationBaselineConfig, PreparedFileDestinationWorkload,
-    PreparedFilePackageWorkload, ProfileTool, ReferenceWorkload, SystemHostProvider,
-    WorkerMeasurement, canonical_json_bytes, compare_reports, comparison_fails, host_class,
-    install_baseline, plan_profile, run_legacy_case_workload, run_preoptimization_baseline,
-    run_prepared_file_to_destination, run_prepared_file_to_package, run_reference,
+    BenchmarkReport, ChildCommand, HostCapabilityProvider, HostProbeConfig, MacroRunSpec,
+    PreoptimizationBaselineConfig, PreparedFileDestinationWorkload, PreparedFilePackageWorkload,
+    ProfileTool, ReferenceWorkload, StartupControlWorkload, SystemHostProvider, WorkerMeasurement,
+    canonical_json_bytes, compare_reports, comparison_fails, host_class, install_baseline,
+    plan_profile, run_preoptimization_baseline, run_prepared_file_to_destination,
+    run_prepared_file_to_package, run_reference, run_startup_control_workload,
 };
 
 fn main() {
@@ -75,13 +75,13 @@ fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             }
             Ok(())
         }
-        [command, request] if command == "legacy-case-worker" => {
-            let mut workload: LegacyCaseWorkload = serde_json::from_slice(&fs::read(request)?)?;
+        [command, request] if command == "startup-control-worker" => {
+            let mut workload: StartupControlWorkload = serde_json::from_slice(&fs::read(request)?)?;
             fs::create_dir_all(&workload.output_root)?;
             let output_root = tempfile::tempdir_in(&workload.output_root)?;
             workload.output_root = output_root.path().to_path_buf();
             let started = std::time::Instant::now();
-            let mut measurement = run_legacy_case_workload(&workload)?;
+            let mut measurement = run_startup_control_workload(&workload)?;
             measurement.timed_wall_time_ns =
                 Some(u64::try_from(started.elapsed().as_nanos()).unwrap_or(u64::MAX));
             write_stdout(&canonical_json_bytes(&measurement)?)

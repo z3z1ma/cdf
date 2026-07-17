@@ -300,7 +300,7 @@ pub struct BiasLabel {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct LegacyTrendRecord {
+pub struct ImportedTrendRecord {
     pub observed_at_ms: u128,
     pub suite: String,
     pub label: String,
@@ -311,8 +311,8 @@ pub struct LegacyTrendRecord {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct LegacyTrendImport {
-    pub record: LegacyTrendRecord,
+pub struct IncomparableTrendImport {
+    pub record: ImportedTrendRecord,
     pub status: ObservationStatus,
 }
 
@@ -330,12 +330,12 @@ pub fn report_fixture() -> BenchResult<BenchmarkReport> {
     Ok(report)
 }
 
-pub fn import_legacy_trend(bytes: &[u8]) -> BenchResult<LegacyTrendImport> {
-    let record: LegacyTrendRecord = serde_json::from_slice(bytes)?;
-    Ok(LegacyTrendImport {
+pub fn import_incomparable_trend(bytes: &[u8]) -> BenchResult<IncomparableTrendImport> {
+    let record: ImportedTrendRecord = serde_json::from_slice(bytes)?;
+    Ok(IncomparableTrendImport {
         record,
         status: ObservationStatus::Inconclusive {
-            reason: "legacy trend records lack host, revision, timed-region, cache-mode, distribution, RSS, and comparability authority"
+            reason: "imported trend records lack host, revision, timed-region, cache-mode, distribution, RSS, and comparability authority"
                 .to_owned(),
         },
     })
@@ -647,7 +647,7 @@ fn validate_recipe(dataset_id: &str, recipe: &DatasetRecipe) -> BenchResult<()> 
             let catalog = crate::fixture_catalog()?;
             let fixture = crate::fixture_spec(fixture_name)?;
             if *fixture_catalog_version != catalog.schema_version
-                || *generator_version != crate::fixtures::LEGACY_FIXTURE_GENERATOR_VERSION
+                || *generator_version != crate::fixtures::FIXTURE_GENERATOR_VERSION
                 || *rows != fixture.rows as u64
                 || *batch_rows != fixture.batch_size as u64
             {

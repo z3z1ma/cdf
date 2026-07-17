@@ -32,10 +32,10 @@ pub use references::{
     ExternalFileFormat, ReferenceWorkload, discover_polars, polars_scan_command, run_reference,
 };
 pub use runners::{
-    LegacyCaseWorkload, PreparedDestinationKind, PreparedFileDestinationRun,
-    PreparedFileDestinationWorkload, PreparedFileFormat, PreparedFilePackageRun,
-    PreparedFilePackageWorkload, run_case, run_legacy_case_workload,
-    run_prepared_file_to_destination, run_prepared_file_to_package,
+    PreparedDestinationKind, PreparedFileDestinationRun, PreparedFileDestinationWorkload,
+    PreparedFileFormat, PreparedFilePackageRun, PreparedFilePackageWorkload,
+    StartupControlWorkload, run_case, run_prepared_file_to_destination,
+    run_prepared_file_to_package, run_startup_control_workload,
 };
 
 pub type BenchResult<T> = Result<T, Box<dyn Error + Send + Sync>>;

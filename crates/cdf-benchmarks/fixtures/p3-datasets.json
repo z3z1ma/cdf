@@ -2,9 +2,9 @@
   "schema_version": 2,
   "datasets": [
     {
-      "id": "legacy_tiny_startup",
+      "id": "control_tiny_startup",
       "description": "Eight-row deterministic fixture that exposes process, compile, package, destination, and checkpoint startup overhead",
-      "schema_ref": "legacy-orders-v1",
+      "schema_ref": "fixture-orders-v1",
       "expected_rows": 8,
       "expected_logical_bytes": null,
       "expected_physical_bytes": null,
@@ -18,16 +18,16 @@
         "kind": "benchmark_fixture",
         "fixture_catalog_version": 1,
         "fixture_name": "tiny",
-        "generator_version": "legacy-orders-generator-v1",
+        "generator_version": "fixture-orders-generator-v1",
         "rows": 8,
         "batch_rows": 8,
         "max_generated_bytes": 1048576
       }
     },
     {
-      "id": "legacy_medium_throughput",
+      "id": "control_medium_throughput",
       "description": "2,048-row deterministic fixture for separating bounded fixture throughput from tiny startup overhead",
-      "schema_ref": "legacy-orders-v1",
+      "schema_ref": "fixture-orders-v1",
       "expected_rows": 2048,
       "expected_logical_bytes": null,
       "expected_physical_bytes": null,
@@ -41,7 +41,7 @@
         "kind": "benchmark_fixture",
         "fixture_catalog_version": 1,
         "fixture_name": "medium",
-        "generator_version": "legacy-orders-generator-v1",
+        "generator_version": "fixture-orders-generator-v1",
         "rows": 2048,
         "batch_rows": 512,
         "max_generated_bytes": 8388608
@@ -233,8 +233,8 @@
   ],
   "workloads": [
     {
-      "id": "legacy_tiny_startup_e2e",
-      "dataset_id": "legacy_tiny_startup",
+      "id": "control_tiny_startup_e2e",
+      "dataset_id": "control_tiny_startup",
       "operation": "Isolated CDF process startup through DuckDB receipt and committed checkpoint",
       "timed_region": {
         "version": 1,
@@ -245,8 +245,8 @@
       "physical_byte_counter": {"name": "source_and_package_bytes", "method": "fixture file bytes plus package identity file bytes"}
     },
     {
-      "id": "legacy_medium_ndjson_package",
-      "dataset_id": "legacy_medium_throughput",
+      "id": "control_medium_ndjson_package",
+      "dataset_id": "control_medium_throughput",
       "operation": "Prepared medium NDJSON source read through verified package finalization",
       "timed_region": {
         "version": 1,

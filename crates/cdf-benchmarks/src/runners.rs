@@ -276,7 +276,7 @@ fn collect_named_files(root: &Path, name: &str, output: &mut Vec<PathBuf>) -> Be
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct LegacyCaseWorkload {
+pub struct StartupControlWorkload {
     pub case_label: String,
     pub output_root: PathBuf,
 }
@@ -410,13 +410,15 @@ fn available_host_jobs() -> u16 {
         .unwrap_or(1)
 }
 
-pub fn run_legacy_case_workload(request: &LegacyCaseWorkload) -> BenchResult<WorkerMeasurement> {
+pub fn run_startup_control_workload(
+    request: &StartupControlWorkload,
+) -> BenchResult<WorkerMeasurement> {
     let case = crate::benchmark_cases()
         .iter()
         .find(|case| case.label == request.case_label)
         .ok_or_else(|| {
             bench_error(format!(
-                "unknown legacy benchmark case `{}`",
+                "unknown startup-control benchmark case `{}`",
                 request.case_label
             ))
         })?;

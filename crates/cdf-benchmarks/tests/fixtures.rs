@@ -2,7 +2,7 @@ use cdf_benchmarks::{
     BENCHMARK_REPORT_SCHEMA_VERSION, BenchmarkSuite, Capability, DatasetRecipe, GeneratorDelivery,
     IoMode, MetricClass, ObservationStatus, benchmark_cases, canonical_json_bytes,
     canonical_sha256, cases_for, coverage_matrix, dataset_catalog, fixture_spec,
-    import_legacy_trend, report_fixture, validate_dataset_catalog, validate_report,
+    import_incomparable_trend, report_fixture, validate_dataset_catalog, validate_report,
     write_all_local_fixture_formats,
 };
 
@@ -116,8 +116,8 @@ fn coverage_matrix_records_executable_and_deferred_cells() {
 fn p3_dataset_catalog_is_regeneration_grade_and_bounded() {
     let catalog = dataset_catalog().unwrap();
     for required in [
-        "legacy_tiny_startup",
-        "legacy_medium_throughput",
+        "control_tiny_startup",
+        "control_medium_throughput",
         "nyc_tlc_yellow_2024",
         "tpch_sf10",
         "tpch_sf100",
@@ -163,7 +163,7 @@ fn p3_dataset_catalog_is_regeneration_grade_and_bounded() {
             } if fixture_name == "tiny"
         )
     }));
-    for required in ["legacy_tiny_startup_e2e", "legacy_medium_ndjson_package"] {
+    for required in ["control_tiny_startup_e2e", "control_medium_ndjson_package"] {
         assert!(
             catalog
                 .workloads
@@ -185,7 +185,7 @@ fn p3_dataset_catalog_is_regeneration_grade_and_bounded() {
     );
     assert_eq!(
         canonical_sha256(&catalog).unwrap(),
-        "sha256:a795621b04fbbaf27706554c844cd2766abe6e8777f0eb29a7caa631ce2ffa98"
+        "sha256:2f8a9cb00c676dd41ed5f9931e5241d4aeb32bbf1967dc389052e1eec5b6b4b0"
     );
 }
 
@@ -242,9 +242,9 @@ fn p3_catalog_and_report_fail_closed_when_incomparable_or_malformed() {
 }
 
 #[test]
-fn legacy_trends_load_only_as_incomparable_imports() {
-    let legacy = br#"{"observed_at_ms":1,"suite":"smoke","label":"trend.old","metric_class":"trend_only","elapsed_ns":10,"rows":1,"bytes":8}"#;
-    let imported = import_legacy_trend(legacy).unwrap();
+fn imported_trends_load_only_as_incomparable_imports() {
+    let trend = br#"{"observed_at_ms":1,"suite":"smoke","label":"trend.old","metric_class":"trend_only","elapsed_ns":10,"rows":1,"bytes":8}"#;
+    let imported = import_incomparable_trend(trend).unwrap();
     assert_eq!(imported.record.label, "trend.old");
     assert!(matches!(
         imported.status,

@@ -75,7 +75,7 @@ fn observed_verdict(report: &cdf_benchmarks::ComparisonReport) -> &ComparisonVer
     &report
         .cells
         .iter()
-        .find(|cell| cell.workload_id == "legacy_medium_ndjson_package")
+        .find(|cell| cell.workload_id == "control_medium_ndjson_package")
         .unwrap()
         .verdict
 }

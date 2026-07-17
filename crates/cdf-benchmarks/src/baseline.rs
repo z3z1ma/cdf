@@ -7,11 +7,12 @@ use std::{
 
 use crate::{
     BENCHMARK_REPORT_SCHEMA_VERSION, BenchmarkObservation, BenchmarkReport, BiasLabel,
-    ChildCommand, ComparabilityKey, HostCapabilityProvider, IoMode, LegacyCaseWorkload,
-    MacroRunRequest, MeasurementProviderIdentity, ObservationStatus, PreparedDestinationKind,
+    ChildCommand, ComparabilityKey, HostCapabilityProvider, IoMode, MacroRunRequest,
+    MeasurementProviderIdentity, ObservationStatus, PreparedDestinationKind,
     PreparedFileDestinationWorkload, PreparedFileFormat, PreparedFilePackageWorkload,
-    ReferenceIdentity, ReferenceWorkload, bench_error, canonical_json_bytes, host_class,
-    run_macro_cell, validate_report, write_all_local_fixture_formats,
+    ReferenceIdentity, ReferenceWorkload, StartupControlWorkload, bench_error,
+    canonical_json_bytes, host_class, run_macro_cell, validate_report,
+    write_all_local_fixture_formats,
 };
 
 #[derive(Clone, Debug)]
@@ -60,7 +61,7 @@ pub fn run_preoptimization_baseline(
         key(
             config,
             &host_class,
-            "legacy_medium_throughput",
+            "control_medium_throughput",
             "raw_arrow_ndjson",
         ),
         command(&config.worker_executable, "reference-worker", &raw_request),
@@ -98,7 +99,7 @@ pub fn run_preoptimization_baseline(
         key(
             config,
             &host_class,
-            "legacy_medium_throughput",
+            "control_medium_throughput",
             "json_ndjson_to_package",
         ),
         command(
@@ -143,7 +144,7 @@ pub fn run_preoptimization_baseline(
         key(
             config,
             &host_class,
-            "legacy_medium_throughput",
+            "control_medium_throughput",
             "package_build",
         ),
         command(
@@ -189,7 +190,12 @@ pub fn run_preoptimization_baseline(
         observations.push(run_cell(
             provider,
             config,
-            key(config, &host_class, "legacy_medium_throughput", workload_id),
+            key(
+                config,
+                &host_class,
+                "control_medium_throughput",
+                workload_id,
+            ),
             command(
                 &config.worker_executable,
                 "cdf-file-destination-worker",
@@ -205,17 +211,17 @@ pub fn run_preoptimization_baseline(
 
     {
         let (workload_id, dataset_id, case_label, description) = (
-            "legacy_tiny_startup_e2e",
-            "legacy_tiny_startup",
+            "control_tiny_startup_e2e",
+            "control_tiny_startup",
             "trend.cdf_startup.file_to_duckdb.tiny",
             "startup case intentionally includes child fixture compile package destination and checkpoint",
         );
         let request_path = request_root.join(format!("{workload_id}.json"));
         fs::write(
             &request_path,
-            canonical_json_bytes(&LegacyCaseWorkload {
+            canonical_json_bytes(&StartupControlWorkload {
                 case_label: case_label.to_owned(),
-                output_root: config.output_root.join("legacy-cases"),
+                output_root: config.output_root.join("startup-control-cases"),
             })?,
         )?;
         observations.push(run_cell(
@@ -224,12 +230,12 @@ pub fn run_preoptimization_baseline(
             key(config, &host_class, dataset_id, workload_id),
             command(
                 &config.worker_executable,
-                "legacy-case-worker",
+                "startup-control-worker",
                 &request_path,
             ),
             None,
             vec![BiasLabel {
-                code: "includes_legacy_setup".to_owned(),
+                code: "includes_startup_control".to_owned(),
                 description: description.to_owned(),
             }],
         )?);
@@ -259,7 +265,7 @@ pub fn run_preoptimization_baseline(
             },
         ),
         (
-            "legacy_medium_throughput",
+            "control_medium_throughput",
             "postgres_commit",
             ObservationStatus::Unavailable {
                 reason: "disposable Postgres benchmark service is not configured".to_owned(),

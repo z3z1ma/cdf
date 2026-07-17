@@ -641,7 +641,7 @@ fn preoptimization_baseline_covers_every_target_and_retains_phases() {
                 .any(|phase| phase.phase == "persist_hash")
     }));
     assert!(report.observations.iter().any(|observation| {
-        observation.comparability.workload_id == "legacy_tiny_startup_e2e"
+        observation.comparability.workload_id == "control_tiny_startup_e2e"
             && matches!(observation.status, ObservationStatus::Observed)
     }));
 }
