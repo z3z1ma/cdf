@@ -24,7 +24,7 @@ use crate::{
         primitives::{KeyValuePanel, NextCommand, SectionRule, StatusKind, StatusLine, Table},
         redaction::redact_uri_userinfo,
     },
-    scan_command::default_target_for_resource,
+    scan_command::{default_target_for_resource, validate_resource_source_authority},
 };
 
 pub(super) fn run(
@@ -94,6 +94,18 @@ fn deep_validate_resource(
             None
         }
     };
+    let mut source_authority_ok = source_plan.is_some();
+    if let Some(source_plan) = source_plan.as_ref()
+        && let Err(error) = validate_resource_source_authority(resource, source_plan)
+    {
+        source_authority_ok = false;
+        diagnostics.push(diagnostic(
+            "error",
+            "source_schema_authority",
+            redact_uri_userinfo(&error.message),
+            "Repin the schema against the current source configuration before validate/plan/run.",
+        ));
+    }
     let discovery = source_plan.as_ref().map_or_else(
         || DeepValidateDiscoveryReport {
             status: "failed".to_owned(),
@@ -114,6 +126,9 @@ fn deep_validate_resource(
         );
     }
     let runtime_resource = source_plan.as_ref().and_then(|source_plan| {
+        if !source_authority_ok {
+            return None;
+        }
         let source_plan = match source_plan.clone().bind_schema_authority(
             working_resource.descriptor(),
             working_resource.schema().as_ref(),
@@ -153,7 +168,7 @@ fn deep_validate_resource(
         }
     });
     let partition_report = partition_check(runtime_resource.as_ref(), &mut diagnostics);
-    if let Some(source_plan) = source_plan.as_ref() {
+    if source_authority_ok && let Some(source_plan) = source_plan.as_ref() {
         fixed_schema_preflight_check(context, resource, source_plan, execution, &mut diagnostics);
     }
     let validation_program = validation_program_check(&working_resource, &mut diagnostics);

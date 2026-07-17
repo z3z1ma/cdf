@@ -51,14 +51,7 @@ impl PreparedSchemaForCli {
         schema_snapshot: Option<SchemaSnapshotActionReport>,
         prepared_payloads: cdf_runtime::PreparedSourcePayloads,
     ) -> Result<Self, CliError> {
-        if let Some(snapshot) = resource.descriptor().schema_source.pinned_snapshot() {
-            validate_recorded_source_authority(
-                &snapshot.metadata,
-                source_plan.driver.driver_id.as_str(),
-                &source_plan.driver.driver_version,
-                &source_plan.discovery_binding_hash()?,
-            )?;
-        }
+        validate_resource_source_authority(&resource, &source_plan)?;
         let source_plan = source_plan.bind_schema_authority(
             resource.descriptor(),
             resource.schema().as_ref(),
@@ -72,6 +65,21 @@ impl PreparedSchemaForCli {
             prepared_payloads,
         })
     }
+}
+
+pub(crate) fn validate_resource_source_authority(
+    resource: &CompiledResource,
+    source_plan: &cdf_runtime::CompiledSourcePlan,
+) -> cdf_kernel::Result<()> {
+    if let Some(snapshot) = resource.descriptor().schema_source.pinned_snapshot() {
+        validate_recorded_source_authority(
+            &snapshot.metadata,
+            source_plan.driver.driver_id.as_str(),
+            &source_plan.driver.driver_version,
+            &source_plan.discovery_binding_hash()?,
+        )?;
+    }
+    Ok(())
 }
 
 fn validate_recorded_source_authority(

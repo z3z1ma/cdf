@@ -1117,6 +1117,70 @@ fn validate_deep_reports_source_front_end_checks_without_writes() {
 }
 
 #[test]
+fn validate_deep_rejects_stale_pinned_source_authority_without_runtime_probe() {
+    let project = TestProject::new();
+    write_minimal_lockfile(&project);
+    write_parquet_discover_resource(&project, "*.parquet");
+    write_vendor_parquet(&project.root.join("data/vendors.parquet"));
+
+    let pin = run([
+        "cdf",
+        "--json",
+        "--project",
+        project.root_str(),
+        "schema",
+        "pin",
+        "local.events",
+    ]);
+    assert_eq!(pin.exit_code, 0, "stderr: {}", pin.stderr);
+
+    fs::create_dir_all(project.root.join("other-data")).unwrap();
+    write_vendor_parquet(&project.root.join("other-data/vendors.parquet"));
+    let resource_path = project.root.join("resources/files.toml");
+    let resource_text = fs::read_to_string(&resource_path).unwrap();
+    fs::write(
+        &resource_path,
+        resource_text.replace("root = \"data\"", "root = \"other-data\""),
+    )
+    .unwrap();
+
+    let result = run([
+        "cdf",
+        "--json",
+        "--project",
+        project.root_str(),
+        "validate",
+        "--deep",
+    ]);
+
+    assert_eq!(result.exit_code, 3, "stdout: {}", result.stdout);
+    assert!(!project.root.join(".cdf/packages").exists());
+    assert!(!project.root.join(".cdf/state.db").exists());
+    assert!(!project.root.join(".cdf/dev.duckdb").exists());
+
+    let json = stderr_or_stdout_json(&result.stdout);
+    let resource = &json["result"]["resources"][0];
+    assert_eq!(resource["status"], "failed");
+    let diagnostics = resource["diagnostics"].as_array().unwrap();
+    let authority = diagnostics
+        .iter()
+        .find(|diagnostic| diagnostic["check"] == "source_schema_authority")
+        .expect("deep validation must report stale pinned source authority");
+    assert!(
+        authority["message"]
+            .as_str()
+            .unwrap()
+            .contains("does not match compiled source authority")
+    );
+    assert!(
+        authority["remediation"]
+            .as_str()
+            .unwrap()
+            .contains("Repin the schema")
+    );
+}
+
+#[test]
 fn validate_deep_inferred_binary_mismatch_names_all_signals_without_writes() {
     let project = TestProject::new();
     write_parquet_discover_resource(&project, "events.parquet");

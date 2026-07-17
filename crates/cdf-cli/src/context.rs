@@ -59,7 +59,10 @@ impl ProjectContext {
         Self::load(project_arg, env_arg)
             .and_then(|mut context| {
                 if hydrate_locked_snapshots
-                    && matches!(command, "plan" | "explain" | "preview" | "run")
+                    && matches!(
+                        command,
+                        "plan" | "explain" | "preview" | "run" | "validate --deep"
+                    )
                 {
                     context.resources = hydrate_locked_schema_snapshots(
                         &context.root,
