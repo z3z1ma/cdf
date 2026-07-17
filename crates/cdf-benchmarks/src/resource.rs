@@ -133,13 +133,15 @@ impl HttpTransport for FixtureTransport {
         &self,
         _request: HttpRequest,
         budget: cdf_http::HttpResponseBudget,
-    ) -> CdfResult<HttpResponse> {
-        let body = self
-            .state
-            .lock()
-            .map_err(|_| CdfError::internal("fixture transport mutex poisoned"))?
-            .pop_front()
-            .ok_or_else(|| CdfError::internal("fixture transport exhausted responses"))?;
-        Ok(HttpResponse::new(200).with_body(budget.account_body(body)?))
+    ) -> cdf_kernel::BoxFuture<'_, CdfResult<HttpResponse>> {
+        Box::pin(async move {
+            let body = self
+                .state
+                .lock()
+                .map_err(|_| CdfError::internal("fixture transport mutex poisoned"))?
+                .pop_front()
+                .ok_or_else(|| CdfError::internal("fixture transport exhausted responses"))?;
+            Ok(HttpResponse::new(200).with_body(budget.account_body(body).await?))
+        })
     }
 }

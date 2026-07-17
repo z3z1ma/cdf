@@ -8,7 +8,7 @@ use cdf_source_postgres::PostgresSourceDriver;
 use cdf_source_rest::RestSourceDriver;
 use std::sync::{Arc, OnceLock};
 
-use crate::http_transport::{ReqwestHttpFileTransport, ReqwestHttpTransport};
+use crate::http_transport::ReqwestHttpProvider;
 
 static BUILTIN_SOURCE_REGISTRY: OnceLock<SourceRegistry> = OnceLock::new();
 
@@ -27,11 +27,12 @@ fn build_builtin_source_registry() -> Result<SourceRegistry> {
     let mut registry = SourceRegistry::new();
     registry.register(PythonSourceDriver::new()?)?;
     registry.register(PostgresSourceDriver::new()?)?;
-    let rest_http = ReqwestHttpTransport::new()?;
+    let http = ReqwestHttpProvider::new()?;
+    let rest_http = http.clone();
     registry.register(RestSourceDriver::new(move || {
         Ok(Box::new(rest_http.clone()))
     })?)?;
-    let file_http = ReqwestHttpFileTransport::new()?;
+    let file_http = http;
     let object_store_clients = ObjectStoreClientPool::default();
     let formats = builtin_format_registry()?;
     let runtime_formats = std::sync::Arc::clone(&formats);

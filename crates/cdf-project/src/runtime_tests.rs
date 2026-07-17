@@ -80,7 +80,7 @@ use crate::{
 };
 
 fn test_execution_services() -> cdf_runtime::ExecutionServices {
-    let services = cdf_engine::StandaloneExecutionHost::default_services(64 * 1024 * 1024)
+    let services = cdf_engine::StandaloneExecutionHost::default_services(256 * 1024 * 1024)
         .unwrap()
         .1;
     let scopes: Arc<dyn cdf_kernel::ScopeLeaseStore> = Arc::new(InMemoryScopeLeaseStore::new());
@@ -3252,16 +3252,20 @@ impl HttpTransport for RecordingTransport {
         &self,
         request: HttpRequest,
         budget: cdf_http::HttpResponseBudget,
-    ) -> Result<HttpResponse> {
-        let mut state = self.state.lock().unwrap();
-        state.requests.push(request);
-        let template = state
-            .responses
-            .pop_front()
-            .ok_or_else(|| CdfError::internal("test transport exhausted responses"))?;
-        Ok(template
-            .response
-            .with_body(budget.account_body(template.body)?))
+    ) -> cdf_kernel::BoxFuture<'_, Result<HttpResponse>> {
+        Box::pin(async move {
+            let template = {
+                let mut state = self.state.lock().unwrap();
+                state.requests.push(request);
+                state
+                    .responses
+                    .pop_front()
+                    .ok_or_else(|| CdfError::internal("test transport exhausted responses"))?
+            };
+            Ok(template
+                .response
+                .with_body(budget.account_body(template.body).await?))
+        })
     }
 }
 
@@ -5478,9 +5482,12 @@ fn general_project_run_executes_rest_with_discovered_snapshot_hash() {
     let state_path = temp.path().join(".cdf/state.db");
     let duckdb_path = temp.path().join(".cdf/dev.duckdb");
 
+    let plan = live_plan(&resource, package_id)
+        .bind_compiled_source(compiled.source_plan())
+        .unwrap();
     let report = futures_executor::block_on(run_project(ProjectRunRequest {
         resource: ProjectRunSource::new(&resource),
-        plan: live_plan(&resource, package_id),
+        plan,
         package_root: temp.path().join(".cdf/packages"),
         state_store_path: state_path,
         pipeline_id: PipelineId::new("pipeline-live").unwrap(),
@@ -6035,9 +6042,12 @@ fn general_project_run_window_closes_inexact_numeric_rest_cursor() {
     let duckdb_path = temp.path().join(".cdf/dev.duckdb");
     let state_path = temp.path().join(".cdf/state.db");
 
+    let plan = live_plan(&resource, package_id)
+        .bind_compiled_source(compiled.source_plan())
+        .unwrap();
     let report = futures_executor::block_on(run_project(ProjectRunRequest {
         resource: ProjectRunSource::new(&resource),
-        plan: live_plan(&resource, package_id),
+        plan,
         package_root: package_root.clone(),
         state_store_path: state_path.clone(),
         pipeline_id: PipelineId::new("pipeline-live").unwrap(),

@@ -1,6 +1,6 @@
 #![doc = "Pooled HTTP transport provider for cdf."]
 
-use std::{io::Read, pin::Pin, sync::Arc};
+use std::{pin::Pin, sync::Arc};
 
 use bytes::Bytes;
 use cdf_http::{
@@ -26,26 +26,11 @@ const MINIMUM_CHUNK_BYTES: u64 = 8 * 1024;
 const MAXIMUM_CHUNK_BYTES: u64 = 32 * 1024 * 1024;
 
 #[derive(Clone)]
-pub struct ReqwestHttpTransport {
-    blocking: reqwest::blocking::Client,
-}
-
-impl ReqwestHttpTransport {
-    pub fn new() -> Result<Self> {
-        let blocking = reqwest::blocking::Client::builder()
-            .redirect(reqwest::redirect::Policy::none())
-            .build()
-            .map_err(|error| CdfError::internal(format!("build blocking HTTP client: {error}")))?;
-        Ok(Self { blocking })
-    }
-}
-
-#[derive(Clone)]
-pub struct ReqwestHttpFileTransport {
+pub struct ReqwestHttpProvider {
     asynchronous: reqwest::Client,
 }
 
-impl ReqwestHttpFileTransport {
+impl ReqwestHttpProvider {
     pub fn new() -> Result<Self> {
         let asynchronous = reqwest::Client::builder()
             .redirect(reqwest::redirect::Policy::none())
@@ -55,24 +40,32 @@ impl ReqwestHttpFileTransport {
     }
 }
 
-impl HttpTransport for ReqwestHttpTransport {
-    fn send(&self, request: HttpRequest, budget: HttpResponseBudget) -> Result<HttpResponse> {
-        let raw = self.send_raw(
-            &request.method,
-            &request.url,
-            &request.headers,
-            "REST",
-            &budget,
-        )?;
-        let mut response = HttpResponse::new(raw.status).with_body(raw.body);
-        for (name, value) in raw.headers {
-            response = response.with_header(name, value);
-        }
-        Ok(response)
+impl HttpTransport for ReqwestHttpProvider {
+    fn send(
+        &self,
+        request: HttpRequest,
+        budget: HttpResponseBudget,
+    ) -> BoxFuture<'_, Result<HttpResponse>> {
+        Box::pin(async move {
+            let raw = self
+                .send_raw(
+                    &request.method,
+                    &request.url,
+                    &request.headers,
+                    "REST",
+                    &budget,
+                )
+                .await?;
+            let mut response = HttpResponse::new(raw.status).with_body(raw.body);
+            for (name, value) in raw.headers {
+                response = response.with_header(name, value);
+            }
+            Ok(response)
+        })
     }
 }
 
-impl HttpFileTransport for ReqwestHttpFileTransport {
+impl HttpFileTransport for ReqwestHttpProvider {
     fn send_headers(
         &self,
         request: HttpFileRequest,
@@ -126,8 +119,8 @@ impl HttpFileTransport for ReqwestHttpFileTransport {
     }
 }
 
-impl ReqwestHttpTransport {
-    fn send_raw(
+impl ReqwestHttpProvider {
+    async fn send_raw(
         &self,
         method: &HttpMethod,
         url: &str,
@@ -137,11 +130,11 @@ impl ReqwestHttpTransport {
     ) -> Result<RawHttpResponse> {
         budget.check_cancellation()?;
         let method = reqwest_method(method)?;
-        let mut builder = self.blocking.request(method, url);
+        let mut builder = self.asynchronous.request(method, url);
         for (name, value) in headers {
             builder = builder.header(name.as_str(), value.as_str());
         }
-        let mut response = builder.send().map_err(|error| {
+        let response = builder.send().await.map_err(|error| {
             CdfError::transient(format!(
                 "send {context} HTTP request: {}",
                 sanitized_reqwest_error(error)
@@ -150,7 +143,7 @@ impl ReqwestHttpTransport {
         let status = response.status().as_u16();
         let headers = response_headers(response.headers());
         let declared_length = response.content_length();
-        let body = read_bounded_response_body(&mut response, declared_length, context, budget)?;
+        let body = read_bounded_response_body(response, declared_length, context, budget).await?;
         Ok(RawHttpResponse {
             status,
             headers,
@@ -159,8 +152,26 @@ impl ReqwestHttpTransport {
     }
 }
 
-fn read_bounded_response_body(
-    reader: &mut impl Read,
+async fn read_bounded_response_body(
+    response: reqwest::Response,
+    declared_length: Option<u64>,
+    context: &str,
+    budget: &HttpResponseBudget,
+) -> Result<Option<AccountedBytes>> {
+    let error_context = context.to_owned();
+    let stream = response.bytes_stream().map_err(move |error| {
+        CdfError::transient(format!(
+            "read {error_context} HTTP response body: {}",
+            sanitized_reqwest_error(error)
+        ))
+    });
+    collect_bounded_response_body(Box::pin(stream), declared_length, context, budget).await
+}
+
+type BoundedBodyStream = Pin<Box<dyn Stream<Item = Result<Bytes>> + Send + 'static>>;
+
+async fn collect_bounded_response_body(
+    mut stream: BoundedBodyStream,
     declared_length: Option<u64>,
     context: &str,
     budget: &HttpResponseBudget,
@@ -174,38 +185,25 @@ fn read_bounded_response_body(
         )));
     }
     let reservation_bytes = declared_length.unwrap_or(budget.maximum_body_bytes());
-    let lease = budget.reserve_body(reservation_bytes)?;
+    let lease = budget.reserve_body(reservation_bytes).await?;
     let capacity = usize::try_from(reservation_bytes)
         .map_err(|_| CdfError::data("HTTP response body limit exceeds usize"))?;
     let mut body = Vec::with_capacity(capacity);
     let mut remaining = reservation_bytes;
-    let mut chunk = [0_u8; 64 * 1024];
-    while remaining > 0 {
+    while let Some(chunk) = stream.try_next().await? {
         budget.check_cancellation()?;
-        let read_limit = usize::try_from(remaining.min(chunk.len() as u64))
-            .expect("bounded by fixed response chunk");
-        let count = reader.read(&mut chunk[..read_limit]).map_err(|error| {
-            CdfError::transient(format!("read {context} HTTP response body: {error}"))
-        })?;
-        if count == 0 {
-            break;
+        let chunk_bytes = u64::try_from(chunk.len())
+            .map_err(|_| CdfError::data("HTTP response chunk exceeds u64"))?;
+        if chunk_bytes > remaining {
+            return Err(CdfError::data(format!(
+                "{context} HTTP response exceeds its {}-byte body limit",
+                budget.maximum_body_bytes()
+            )));
         }
-        body.extend_from_slice(&chunk[..count]);
-        remaining -= u64::try_from(count).expect("usize chunk fits u64");
+        body.extend_from_slice(&chunk);
+        remaining -= chunk_bytes;
     }
     budget.check_cancellation()?;
-    let mut excess = [0_u8; 1];
-    if reader.read(&mut excess).map_err(|error| {
-        CdfError::transient(format!(
-            "read {context} HTTP response body boundary: {error}"
-        ))
-    })? != 0
-    {
-        return Err(CdfError::data(format!(
-            "{context} HTTP response exceeds its {}-byte body limit",
-            budget.maximum_body_bytes()
-        )));
-    }
     if let Some(declared) = declared_length
         && declared != body.len() as u64
     {
@@ -703,17 +701,18 @@ mod tests {
         assert_eq!(ignored_range.kind, ErrorKind::Data);
     }
 
-    #[test]
-    fn rest_rejects_oversized_content_length_before_body_allocation() {
+    #[tokio::test]
+    async fn rest_rejects_oversized_content_length_before_body_allocation() {
         let coordinator =
             Arc::new(DeterministicMemoryCoordinator::new(1024, BTreeMap::new()).unwrap());
-        let mut body = std::io::Cursor::new(b"12345678".as_slice());
-        let error = read_bounded_response_body(
-            &mut body,
+        let body: BoundedBodyStream = Box::pin(stream::iter([Ok(Bytes::from_static(b"12345678"))]));
+        let error = collect_bounded_response_body(
+            body,
             Some(8),
             "REST",
             &rest_response_budget(4, Arc::clone(&coordinator)),
         )
+        .await
         .unwrap_err();
 
         assert_eq!(error.kind, cdf_kernel::ErrorKind::Data);
@@ -721,19 +720,18 @@ mod tests {
         assert_eq!(coordinator.snapshot().peak_bytes, 0);
     }
 
-    #[test]
-    fn rest_stops_chunked_body_exactly_at_the_accounted_limit() {
+    #[tokio::test]
+    async fn rest_stops_chunked_body_exactly_at_the_accounted_limit() {
         let coordinator =
             Arc::new(DeterministicMemoryCoordinator::new(1024, BTreeMap::new()).unwrap());
-        // Reqwest removes transfer framing before exposing `Read`; an unknown-length cursor is
-        // therefore the exact transport boundary this helper receives for chunked bodies.
-        let mut body = std::io::Cursor::new(b"abcdef".as_slice());
-        let error = read_bounded_response_body(
-            &mut body,
+        let body: BoundedBodyStream = Box::pin(stream::iter([Ok(Bytes::from_static(b"abcdef"))]));
+        let error = collect_bounded_response_body(
+            body,
             None,
             "REST",
             &rest_response_budget(4, Arc::clone(&coordinator)),
         )
+        .await
         .unwrap_err();
 
         assert_eq!(error.kind, cdf_kernel::ErrorKind::Data);
@@ -792,7 +790,7 @@ mod tests {
         let coordinator =
             Arc::new(DeterministicMemoryCoordinator::new(1024 * 1024, BTreeMap::new()).unwrap());
         let memory: Arc<dyn MemoryCoordinator> = coordinator.clone();
-        let transport = ReqwestHttpFileTransport::new().unwrap();
+        let transport = ReqwestHttpProvider::new().unwrap();
         let source = transport
             .open_byte_source(&resource, &expected, None, memory)
             .unwrap();
@@ -871,7 +869,7 @@ mod tests {
         };
         let memory: Arc<dyn MemoryCoordinator> =
             Arc::new(DeterministicMemoryCoordinator::new(1024 * 1024, BTreeMap::new()).unwrap());
-        let source = ReqwestHttpFileTransport::new()
+        let source = ReqwestHttpProvider::new()
             .unwrap()
             .open_byte_source(&resource, &expected, None, memory)
             .unwrap();
@@ -947,7 +945,7 @@ mod tests {
         let coordinator =
             Arc::new(DeterministicMemoryCoordinator::new(1024 * 1024, BTreeMap::new()).unwrap());
         let memory: Arc<dyn MemoryCoordinator> = coordinator.clone();
-        let source = ReqwestHttpFileTransport::new()
+        let source = ReqwestHttpProvider::new()
             .unwrap()
             .open_byte_source(&resource, &expected, None, memory)
             .unwrap();
@@ -1003,7 +1001,7 @@ mod tests {
             socket.flush().unwrap();
             let _ = release_receiver.recv_timeout(Duration::from_secs(3));
         });
-        let transport = ReqwestHttpFileTransport::new().unwrap();
+        let transport = ReqwestHttpProvider::new().unwrap();
         let response = tokio::time::timeout(
             Duration::from_secs(2),
             transport.send_headers(HttpFileRequest::new(
@@ -1025,7 +1023,7 @@ mod tests {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let address = listener.local_addr().unwrap();
         drop(listener);
-        let transport = ReqwestHttpFileTransport::new().unwrap();
+        let transport = ReqwestHttpProvider::new().unwrap();
         let secret = "must-not-leak";
 
         let error = transport
@@ -1077,7 +1075,7 @@ mod tests {
 
     #[test]
     fn weak_http_identity_selects_sequential_verified_spool_instead_of_ranges() {
-        let transport = ReqwestHttpFileTransport::new().unwrap();
+        let transport = ReqwestHttpProvider::new().unwrap();
         let resource = FileTransportResource::http_url("https://example.test/events.bin");
         let expected = FileIdentityMetadata {
             location: "https://example.test/events.bin".to_owned(),
@@ -1102,7 +1100,7 @@ mod tests {
 
     #[test]
     fn unversioned_http_identity_remains_sequential_and_attestable() {
-        let transport = ReqwestHttpFileTransport::new().unwrap();
+        let transport = ReqwestHttpProvider::new().unwrap();
         let resource = FileTransportResource::http_url("https://example.test/events.bin");
         let expected = FileIdentityMetadata {
             location: "https://example.test/events.bin".to_owned(),
@@ -1131,7 +1129,7 @@ mod tests {
 
     #[test]
     fn strong_http_identity_without_range_attestation_uses_sequential_access() {
-        let transport = ReqwestHttpFileTransport::new().unwrap();
+        let transport = ReqwestHttpProvider::new().unwrap();
         let resource = FileTransportResource::http_url("https://example.test/events.bin");
         let expected = FileIdentityMetadata {
             location: "https://example.test/events.bin".to_owned(),

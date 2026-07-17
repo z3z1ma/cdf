@@ -6,14 +6,13 @@ use cdf_http::{
 };
 use cdf_kernel::{CdfError, PushdownFidelity, QueryableResource, Result, ScanRequest};
 use cdf_runtime::{
-    BlockingLaneSpec, CompiledSourcePlan, InterruptionSafety, LaneAffinity, SourceAddCursor,
-    SourceAddCursorOrdering, SourceAddPlanner, SourceAddProposal, SourceAddRequest,
-    SourceAttestationStrength, SourceCompileRequest, SourceCursorPushdown,
-    SourceDiscoveryCandidate, SourceDiscoveryKind, SourceDiscoveryRequest, SourceDiscoverySession,
-    SourceDriver, SourceDriverDescriptor, SourceDriverId, SourceEvidenceLocation,
-    SourceExecutionCapabilities, SourceExecutorClass, SourceHealthRequest, SourceHealthResult,
-    SourceHealthStatus, SourceRateLimit, SourceResolutionContext, SourceRetryGranularity,
-    SourceSchemaObservation, artifact_hash,
+    CompiledSourcePlan, SourceAddCursor, SourceAddCursorOrdering, SourceAddPlanner,
+    SourceAddProposal, SourceAddRequest, SourceAttestationStrength, SourceCompileRequest,
+    SourceCursorPushdown, SourceDiscoveryCandidate, SourceDiscoveryKind, SourceDiscoveryRequest,
+    SourceDiscoverySession, SourceDriver, SourceDriverDescriptor, SourceDriverId,
+    SourceEvidenceLocation, SourceExecutionCapabilities, SourceExecutorClass, SourceHealthRequest,
+    SourceHealthResult, SourceHealthStatus, SourceRateLimit, SourceResolutionContext,
+    SourceRetryGranularity, SourceSchemaObservation, artifact_hash,
 };
 use serde::{Deserialize, Serialize};
 
@@ -375,7 +374,7 @@ impl SourceDiscoverySession for RestDriverDiscoverySession {
         let egress = self.egress.clone();
         let candidate = candidate.clone();
         let request = request.clone();
-        self.execution.run_blocking("rest-source.sync", move || {
+        self.execution.run_io(async move {
             if candidate.canonical_location != descriptor.resource_id.as_str() {
                 return Err(CdfError::contract(format!(
                     "REST discovery candidate `{}` does not match compiled resource `{}`",
@@ -407,7 +406,8 @@ impl SourceDiscoverySession for RestDriverDiscoverySession {
                 &partition,
                 &dependencies,
                 &request,
-            )?;
+            )
+            .await?;
             SourceSchemaObservation::new(
                 &candidate,
                 discovery.schema.as_ref().clone(),
@@ -836,15 +836,8 @@ fn execution_capabilities(plan: &RestResourcePlan) -> Result<SourceExecutionCapa
         maximum_decode_bytes: crate::REST_MAXIMUM_DECODE_BYTES,
         maximum_concurrency: 8,
         useful_concurrency: 8,
-        executor_class: SourceExecutorClass::BlockingLane,
-        blocking_lane: Some(BlockingLaneSpec {
-            lane_id: "rest-source.sync".to_owned(),
-            maximum_concurrency: 8,
-            cpu_slot_cost: 1,
-            native_internal_parallelism: 1,
-            affinity: LaneAffinity::Shared,
-            interruption: InterruptionSafety::CooperativeOnly,
-        }),
+        executor_class: SourceExecutorClass::Cpu,
+        blocking_lane: None,
         pausable: true,
         spillable: false,
         idempotent_reads: true,
@@ -892,9 +885,14 @@ mod tests {
             &self,
             _request: HttpRequest,
             budget: cdf_http::HttpResponseBudget,
-        ) -> Result<HttpResponse> {
-            Ok(HttpResponse::new(200)
-                .with_body(budget.account_body(br#"{"items":[{"id":1},{"id":2}]}"#.to_vec())?))
+        ) -> cdf_kernel::BoxFuture<'_, Result<HttpResponse>> {
+            Box::pin(async move {
+                Ok(HttpResponse::new(200).with_body(
+                    budget
+                        .account_body(br#"{"items":[{"id":1},{"id":2}]}"#.to_vec())
+                        .await?,
+                ))
+            })
         }
     }
 
@@ -908,12 +906,12 @@ mod tests {
         }
     }
 
-    struct ImmediateBlockingHost {
+    struct ImmediateExecutionHost {
         memory: Arc<dyn cdf_memory::MemoryCoordinator>,
         spill: Arc<dyn SpillBudgetCoordinator>,
     }
 
-    impl ExecutionHost for ImmediateBlockingHost {
+    impl ExecutionHost for ImmediateExecutionHost {
         fn capabilities(&self) -> ExecutionHostCapabilities {
             ExecutionHostCapabilities {
                 logical_cpu_slots: 1,
@@ -936,10 +934,8 @@ mod tests {
             ))
         }
 
-        fn run_io_blocking(&self, _task: IoValueTask) -> Result<IoValue> {
-            Err(CdfError::internal(
-                "REST discovery test does not execute I/O futures",
-            ))
+        fn run_io_blocking(&self, task: IoValueTask) -> Result<IoValue> {
+            futures_executor::block_on(task)
         }
 
         fn delay(
@@ -1174,7 +1170,7 @@ mod tests {
         let spill: Arc<dyn SpillBudgetCoordinator> =
             Arc::new(FixedSpillBudget::new(64 * 1024 * 1024).unwrap());
         let execution =
-            ExecutionServices::new(Arc::new(ImmediateBlockingHost { memory, spill })).unwrap();
+            ExecutionServices::new(Arc::new(ImmediateExecutionHost { memory, spill })).unwrap();
         let context = SourceResolutionContext::new(
             std::path::Path::new("."),
             Arc::new(NoopSecretProvider),
@@ -1190,7 +1186,12 @@ mod tests {
             )
             .unwrap();
         assert_eq!(health.len(), 1);
-        assert_eq!(health[0].status, SourceHealthStatus::Passed);
+        assert_eq!(
+            health[0].status,
+            SourceHealthStatus::Passed,
+            "{:?}",
+            health[0]
+        );
         assert_eq!(health[0].details["records_read"], 1);
         let session = registry.discovery_session(&plan, &context).unwrap();
 

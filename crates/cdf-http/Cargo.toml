@@ -10,3 +10,6 @@ description = "HTTP resource toolkit boundary for cdf."
 bytes = "1.11.0"
 cdf-kernel = { path = "../cdf-kernel" }
 cdf-memory = { path = "../cdf-memory" }
+
+[dev-dependencies]
+futures-executor = "0.3.32"

@@ -1,6 +1,6 @@
 use std::collections::BTreeSet;
 
-use cdf_kernel::{CdfError, Result};
+use cdf_kernel::{BoxFuture, CdfError, Result};
 
 use crate::{
     message::{HttpRequest, HttpResponse, HttpResponseBudget},
@@ -37,15 +37,19 @@ impl EgressAllowlist {
 }
 
 pub trait HttpTransport: Send + Sync {
-    fn send(&self, request: HttpRequest, budget: HttpResponseBudget) -> Result<HttpResponse>;
+    fn send(
+        &self,
+        request: HttpRequest,
+        budget: HttpResponseBudget,
+    ) -> BoxFuture<'_, Result<HttpResponse>>;
 }
 
-pub fn send_with_policy(
+pub async fn send_with_policy(
     transport: &dyn HttpTransport,
     allowlist: &EgressAllowlist,
     request: HttpRequest,
     budget: HttpResponseBudget,
 ) -> Result<HttpResponse> {
     allowlist.check(&request)?;
-    transport.send(request, budget)
+    transport.send(request, budget).await
 }

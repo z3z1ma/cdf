@@ -827,14 +827,6 @@ schema = { fields = [
     let compiled = compile_document(&registry, &document)?.remove(0);
     let execution =
         cdf_engine::StandaloneExecutionHost::default_services(BENCHMARK_MANAGED_MEMORY_BYTES)?.1;
-    execution.ensure_blocking_lanes(&[cdf_runtime::BlockingLaneSpec {
-        lane_id: "rest-source.sync".to_owned(),
-        maximum_concurrency: 8,
-        cpu_slot_cost: 1,
-        native_internal_parallelism: 1,
-        affinity: cdf_runtime::LaneAffinity::Shared,
-        interruption: cdf_runtime::InterruptionSafety::CooperativeOnly,
-    }])?;
     let resolution = SourceResolutionContext::new(
         Path::new("."),
         Arc::new(EnvSecretProvider::from_map(

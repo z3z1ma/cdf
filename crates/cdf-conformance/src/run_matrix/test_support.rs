@@ -47,16 +47,19 @@ impl HttpTransport for RecordingTransport {
         &self,
         request: HttpRequest,
         budget: cdf_http::HttpResponseBudget,
-    ) -> Result<HttpResponse> {
-        let mut state = self.state.lock().unwrap();
-        state.requests.push(request);
-        let template = state
-            .responses
-            .pop_front()
-            .ok_or_else(|| CdfError::internal("run matrix REST transport exhausted responses"))?;
-        Ok(template
-            .response
-            .with_body(budget.account_body(template.body)?))
+    ) -> cdf_kernel::BoxFuture<'_, Result<HttpResponse>> {
+        Box::pin(async move {
+            let template = {
+                let mut state = self.state.lock().unwrap();
+                state.requests.push(request);
+                state.responses.pop_front().ok_or_else(|| {
+                    CdfError::internal("run matrix REST transport exhausted responses")
+                })?
+            };
+            Ok(template
+                .response
+                .with_body(budget.account_body(template.body).await?))
+        })
     }
 }
 

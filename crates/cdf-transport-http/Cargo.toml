@@ -14,7 +14,7 @@ cdf-memory = { path = "../cdf-memory" }
 cdf-runtime = { path = "../cdf-runtime" }
 cdf-source-files = { path = "../cdf-source-files" }
 futures-util = "0.3.32"
-reqwest = { version = "0.13.4", default-features = false, features = ["blocking", "rustls", "stream"] }
+reqwest = { version = "0.13.4", default-features = false, features = ["rustls", "stream"] }
 sha2 = "0.10.9"
 
 [dev-dependencies]

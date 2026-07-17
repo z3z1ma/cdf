@@ -4,7 +4,7 @@ use bytes::Bytes;
 use cdf_kernel::{CdfError, Result};
 use cdf_memory::{
     AccountedBytes, ConsumerKey, MemoryClass, MemoryCoordinator, MemoryLease, ReservationRequest,
-    reserve_blocking,
+    reserve,
 };
 
 use crate::{redaction::Redactor, support::set_header};
@@ -57,7 +57,7 @@ impl HttpResponseBudget {
         self.cancellation.check()
     }
 
-    pub fn reserve_body(&self, bytes: u64) -> Result<Option<MemoryLease>> {
+    pub async fn reserve_body(&self, bytes: u64) -> Result<Option<MemoryLease>> {
         self.check_cancellation()?;
         if bytes > self.maximum_body_bytes {
             return Err(CdfError::data(format!(
@@ -68,21 +68,22 @@ impl HttpResponseBudget {
         if bytes == 0 {
             return Ok(None);
         }
-        reserve_blocking(
+        reserve(
             Arc::clone(&self.memory),
-            &ReservationRequest::new(
+            ReservationRequest::new(
                 ConsumerKey::new("http-response-body", MemoryClass::Source)?,
                 bytes,
             )?,
         )
+        .await
         .map(Some)
     }
 
-    pub fn account_body(&self, body: impl Into<Bytes>) -> Result<Option<AccountedBytes>> {
+    pub async fn account_body(&self, body: impl Into<Bytes>) -> Result<Option<AccountedBytes>> {
         let body = body.into();
         let bytes = u64::try_from(body.len())
             .map_err(|_| CdfError::data("HTTP response body length exceeds u64"))?;
-        let Some(lease) = self.reserve_body(bytes)? else {
+        let Some(lease) = self.reserve_body(bytes).await? else {
             return Ok(None);
         };
         self.account_reserved_body(body, lease).map(Some)
@@ -174,6 +175,10 @@ impl HttpResponse {
 
     pub fn body(&self) -> Option<&[u8]> {
         self.body.as_ref().map(AccountedBytes::payload)
+    }
+
+    pub fn accounted_body(&self) -> Option<&AccountedBytes> {
+        self.body.as_ref()
     }
 
     pub fn with_field(mut self, name: impl Into<String>, value: impl Into<String>) -> Self {

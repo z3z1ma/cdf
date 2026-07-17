@@ -198,30 +198,36 @@ fn allowlist_denies_before_transport_send() {
     }
 
     impl HttpTransport for CountingTransport {
-        fn send(&self, _request: HttpRequest, _budget: HttpResponseBudget) -> Result<HttpResponse> {
-            self.sends.fetch_add(1, Ordering::SeqCst);
-            Ok(HttpResponse::new(200))
+        fn send(
+            &self,
+            _request: HttpRequest,
+            _budget: HttpResponseBudget,
+        ) -> cdf_kernel::BoxFuture<'_, Result<HttpResponse>> {
+            Box::pin(async move {
+                self.sends.fetch_add(1, Ordering::SeqCst);
+                Ok(HttpResponse::new(200))
+            })
         }
     }
 
     let allowlist = EgressAllowlist::from_hosts(["api.example.com"]);
     let transport = CountingTransport::default();
-    let denied = send_with_policy(
+    let denied = futures_executor::block_on(send_with_policy(
         &transport,
         &allowlist,
         HttpRequest::new(HttpMethod::Get, "https://evil.example.net/items"),
         test_response_budget(),
-    )
+    ))
     .unwrap_err();
     assert_eq!(denied.kind, ErrorKind::Auth);
     assert_eq!(transport.sends.load(Ordering::SeqCst), 0);
 
-    send_with_policy(
+    futures_executor::block_on(send_with_policy(
         &transport,
         &allowlist,
         HttpRequest::new(HttpMethod::Get, "https://api.example.com/items"),
         test_response_budget(),
-    )
+    ))
     .unwrap();
     assert_eq!(transport.sends.load(Ordering::SeqCst), 1);
 }

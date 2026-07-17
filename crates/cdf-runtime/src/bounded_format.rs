@@ -65,6 +65,47 @@ impl MemoryByteSource {
         })
     }
 
+    /// Wraps invocation-local accounted bytes without adding a redundant content-hash pass.
+    ///
+    /// Use this for already-authorized bounded messages such as one REST response page. The
+    /// identity is deliberately weak and must never be promoted into persistent source evidence;
+    /// the caller's transport/protocol authority owns that evidence.
+    pub fn from_ephemeral_accounted_bytes(
+        stable_id: impl Into<String>,
+        payload: AccountedBytes,
+    ) -> Result<Self> {
+        let size_bytes = u64::try_from(payload.payload().len())
+            .map_err(|_| CdfError::data("bounded format payload length exceeds u64"))?;
+        if size_bytes == 0 {
+            return Err(CdfError::data(
+                "bounded format payload must contain at least one byte",
+            ));
+        }
+        let identity = ContentIdentity {
+            stable_id: stable_id.into(),
+            size_bytes: Some(size_bytes),
+            generation: Some(format!("invocation-local-size:{size_bytes}")),
+            checksum: None,
+            strength: GenerationStrength::Weak,
+        };
+        identity.validate()?;
+        let capabilities = ByteSourceCapabilities {
+            known_length: true,
+            reopenable: true,
+            seekable: true,
+            exact_ranges: true,
+            useful_range_concurrency: 1,
+            minimum_chunk_bytes: 1,
+            maximum_chunk_bytes: size_bytes,
+        };
+        capabilities.validate()?;
+        Ok(Self {
+            identity,
+            capabilities,
+            payload,
+        })
+    }
+
     pub async fn from_bytes(
         stable_id: impl Into<String>,
         payload: Vec<u8>,

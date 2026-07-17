@@ -39,17 +39,6 @@ pub fn test_execution_services() -> cdf_runtime::ExecutionServices {
 pub(crate) fn test_rest_source_registry(
     transport: impl cdf_http::HttpTransport + Clone + 'static,
 ) -> cdf_kernel::Result<cdf_runtime::SourceRegistry> {
-    let services = test_execution_services();
-    services
-        .ensure_blocking_lanes(&[cdf_runtime::BlockingLaneSpec {
-            lane_id: "rest-source.sync".to_owned(),
-            maximum_concurrency: 8,
-            cpu_slot_cost: 1,
-            native_internal_parallelism: 1,
-            affinity: cdf_runtime::LaneAffinity::Shared,
-            interruption: cdf_runtime::InterruptionSafety::CooperativeOnly,
-        }])
-        .expect("conformance REST blocking lane");
     let mut registry = cdf_runtime::SourceRegistry::new();
     registry.register(cdf_source_rest::RestSourceDriver::new(move || {
         Ok(Box::new(transport.clone()))

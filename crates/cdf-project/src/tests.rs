@@ -4054,6 +4054,7 @@ trust = "governed"
     );
     assert_eq!(transport.requests().len(), 1);
     assert_eq!(prepared_payloads.pending_count().unwrap(), 0);
+    drop(batches);
     assert_eq!(execution.memory().snapshot().current_bytes, 0);
 }
 
@@ -4168,16 +4169,20 @@ impl HttpTransport for RecordingTransport {
         &self,
         request: HttpRequest,
         budget: cdf_http::HttpResponseBudget,
-    ) -> Result<HttpResponse> {
-        let mut state = self.state.lock().unwrap();
-        state.requests.push(request);
-        let template = state
-            .responses
-            .pop_front()
-            .ok_or_else(|| CdfError::internal("test transport exhausted responses"))?;
-        Ok(template
-            .response
-            .with_body(budget.account_body(template.body)?))
+    ) -> cdf_kernel::BoxFuture<'_, Result<HttpResponse>> {
+        Box::pin(async move {
+            let template = {
+                let mut state = self.state.lock().unwrap();
+                state.requests.push(request);
+                state
+                    .responses
+                    .pop_front()
+                    .ok_or_else(|| CdfError::internal("test transport exhausted responses"))?
+            };
+            Ok(template
+                .response
+                .with_body(budget.account_body(template.body).await?))
+        })
     }
 }
 

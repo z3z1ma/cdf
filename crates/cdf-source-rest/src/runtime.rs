@@ -5,18 +5,21 @@ use std::{
     time::Duration,
 };
 
-use arrow_array::{RecordBatch, new_null_array};
-use arrow_schema::{DataType, Field, Schema, SchemaRef, TimeUnit};
-use cdf_contract::{ContractPolicy, TypePolicy, reconcile_schema};
+use crate::{REST_MAXIMUM_BATCH_BYTES, RestResourcePlan};
+use arrow_array::{
+    Array, ArrayRef, Date32Array, Float64Array, Int64Array, LargeStringArray, StringArray,
+    TimestampMicrosecondArray, TimestampMillisecondArray, UInt64Array, new_null_array,
+};
+use arrow_schema::{DataType, Field, SchemaRef, TimeUnit};
 use cdf_http::{
     AuthRefreshHook, AuthScheme, AuthSession, HttpMethod, HttpRequest, HttpResponse,
     HttpResponseBudget, HttpTransport, Paginator, RateLimiter, SecretProvider, SecretUri,
     classify_response, send_with_policy,
 };
 use cdf_kernel::{
-    BackpressureSupport, Batch, BatchId, BatchStream, CapabilitySupport, CdfError,
-    CompiledScanIntent, CursorPosition, CursorValue, DeliveryGuarantee, EffectiveSchemaRuntime,
-    EstimateSupport, Expression, ExpressionLiteral, FilterCapabilities, IncrementalShape,
+    BackpressureSupport, Batch, BatchStream, CapabilitySupport, CdfError, CompiledScanIntent,
+    CursorPosition, CursorValue, DeliveryGuarantee, EffectiveSchemaRuntime, EstimateSupport,
+    Expression, ExpressionLiteral, FilterCapabilities, IncrementalShape,
     PLAN_SCHEMA_OBSERVATION_BINDING_KEY, PLAN_SCHEMA_OBSERVATION_ID_KEY, PartitionId,
     PartitionPlan, PartitioningCapabilities, PayloadRetention, PlanId,
     PreContractResidualCandidate, PushdownFidelity, PushedPredicate, QueryableResource,
@@ -24,20 +27,13 @@ use cdf_kernel::{
     ScanRequest, SchemaHash, SchemaSource, ScopeKind, SourcePosition, TypePolicyAllowances,
     WriteDisposition, source_name,
 };
-use cdf_memory::{
-    ConsumerKey, MemoryClass, MemoryCoordinator, MemoryLease, ReservationRequest, reserve_blocking,
-};
+use cdf_memory::MemoryCoordinator;
 use cdf_runtime::{
-    BoundedFormatRequest, DecodeSchemaPlan, ExecutionServices, MemoryByteSource,
-    PreparedSourcePayload, PreparedSourcePayloadKey, PreparedSourcePayloads, ReadOptions,
-    RunCancellation, SourceDiscoveryRequest, SourceDriverId, SourceEgressScope, artifact_hash,
-    decode_bounded_format,
+    BoundedFormatRequest, CpuTaskSpec, DecodeSchemaPlan, ExecutionServices, FormatDiscoveryRequest,
+    FormatDriver, MemoryByteSource, PreparedSourcePayload, PreparedSourcePayloadKey,
+    PreparedSourcePayloads, ReadOptions, RunCancellation, SourceDiscoveryRequest, SourceDriverId,
+    SourceEgressScope, artifact_hash, decode_bounded_format,
 };
-use serde_json::{Map, Value};
-
-use crate::{REST_JSON_SCRATCH_MULTIPLIER, REST_MAXIMUM_BATCH_BYTES, RestResourcePlan};
-
-const REST_SOURCE_BLOCKING_LANE_ID: &str = "rest-source.sync";
 
 #[derive(Clone)]
 pub struct RestRuntimeDependencies {
@@ -121,7 +117,7 @@ impl fmt::Debug for RestRuntimeDependencies {
 #[derive(Clone)]
 pub struct RestDiscoveryDependencies<'a> {
     transport: &'a dyn HttpTransport,
-    secret_provider: &'a dyn SecretProvider,
+    secret_provider: &'a (dyn SecretProvider + Send + Sync),
     execution: ExecutionServices,
     egress: SourceEgressScope,
     prepared_payloads: PreparedSourcePayloads,
@@ -130,7 +126,7 @@ pub struct RestDiscoveryDependencies<'a> {
 impl<'a> RestDiscoveryDependencies<'a> {
     pub fn new(
         transport: &'a dyn HttpTransport,
-        secret_provider: &'a dyn SecretProvider,
+        secret_provider: &'a (dyn SecretProvider + Send + Sync),
         execution: ExecutionServices,
         egress: SourceEgressScope,
     ) -> Self {
@@ -304,14 +300,17 @@ impl ResourceStream for RestResource {
         let descriptor = self.descriptor.clone();
         let schema = Arc::clone(&self.schema);
         let plan = self.plan.clone();
-        let type_policy_allowances = self.type_policy_allowances;
         let dependencies = self.dependencies.clone();
         let execution = dependencies.execution.clone();
-        let task = execution.spawn_blocking_stream(
+        let task = execution.spawn_cpu_stream(
             "rest-source-open",
-            REST_SOURCE_BLOCKING_LANE_ID,
+            CpuTaskSpec {
+                task_kind: "source.rest.decode".to_owned(),
+                cpu_slot_cost: 1,
+                native_internal_parallelism: 1,
+            },
             1,
-            move |sender, cancellation| {
+            move |sender, cancellation| async move {
                 cancellation.check()?;
                 execute_rest(
                     RestExecutionInvocation {
@@ -319,12 +318,12 @@ impl ResourceStream for RestResource {
                         schema,
                         plan,
                         partition,
-                        type_policy_allowances,
                         dependencies,
                         cancellation: cancellation.clone(),
                     },
                     sender,
-                )?;
+                )
+                .await?;
                 cancellation.check()?;
                 Ok(())
             },
@@ -546,21 +545,19 @@ struct RestExecutionInvocation {
     schema: SchemaRef,
     plan: RestResourcePlan,
     partition: PartitionPlan,
-    type_policy_allowances: TypePolicyAllowances,
     dependencies: RestRuntimeDependencies,
     cancellation: RunCancellation,
 }
 
-fn execute_rest(
+async fn execute_rest(
     invocation: RestExecutionInvocation,
-    mut sender: cdf_runtime::BlockingTaskStreamSender<Batch>,
+    mut sender: cdf_runtime::TaskStreamSender<Batch>,
 ) -> Result<()> {
     let RestExecutionInvocation {
         descriptor,
         schema,
         plan,
         partition,
-        type_policy_allowances,
         dependencies,
         cancellation,
     } = invocation;
@@ -571,7 +568,7 @@ fn execute_rest(
     execution_schema_hash(descriptor)?;
     if schema.fields().is_empty() {
         return Err(CdfError::data(
-            "declarative REST execution requires a declared schema with at least one field",
+            "declarative REST execution requires a non-empty compiled schema",
         ));
     }
 
@@ -592,8 +589,6 @@ fn execute_rest(
         None => base_request_url,
     });
     let mut page_index = 0_usize;
-    let mut reconciliation_plan = None::<String>;
-
     while let Some(url) = next_url {
         let prepared_key = prepared_rest_page_key(descriptor, plan, partition, &url)?;
         let (mut response, _prepared_retention) = match dependencies
@@ -620,68 +615,58 @@ fn execute_rest(
                     &mut auth_session,
                     &mut limiter,
                     &cancellation,
-                )?,
+                )
+                .await?,
                 None,
             ),
         };
         let body = response
-            .body()
+            .accounted_body()
             .ok_or_else(|| CdfError::data("REST HTTP response did not include a JSON body"))?;
-        let body_bytes = u64::try_from(body.len())
+        let body_bytes = u64::try_from(body.payload().len())
             .map_err(|_| CdfError::data("REST response body exceeds u64"))?;
         if body_bytes > REST_MAXIMUM_BATCH_BYTES {
             return Err(CdfError::data(format!(
                 "REST response page contains {body_bytes} bytes above the compiled {REST_MAXIMUM_BATCH_BYTES}-byte page limit; configure smaller pages on the source endpoint"
             )));
         }
-        let decoded =
-            decode_response_page(body, &plan.record_selector, dependencies.execution.memory())?;
-        response.page.item_count = decoded.records.len();
-        response.page.fields = decoded.pagination_fields;
-
-        if !decoded.records.is_empty() {
-            let page = reconcile_rest_page(
+        let selection =
+            cdf_format_json::select_bounded_json_records(body.payload(), &plan.record_selector)?;
+        let selected = body.slice(selection.byte_range)?;
+        response.page.fields = selection.top_level_scalar_fields;
+        let mut batches = decode_selected_rest_page(
+            Arc::clone(&schema),
+            descriptor,
+            partition,
+            selected,
+            page_index,
+            &dependencies.execution,
+            cancellation.clone(),
+        )
+        .await?;
+        response.page.item_count = batches.iter().try_fold(0_usize, |total, batch| {
+            let rows = usize::try_from(batch.header.row_count)
+                .map_err(|_| CdfError::data("REST batch row count exceeds usize"))?;
+            total
+                .checked_add(rows)
+                .ok_or_else(|| CdfError::data("REST page row count overflowed"))
+        })?;
+        let mut page_row_offset = 0_u64;
+        for mut batch in batches.drain(..) {
+            if batch.header.row_count == 0 {
+                continue;
+            }
+            add_missing_cursor_candidates_from_batch(
                 &schema,
                 descriptor,
-                partition,
-                &decoded.records,
-                type_policy_allowances,
-                &dependencies.execution,
+                &mut batch,
+                page_row_offset,
             )?;
-            if let Some(page_plan) = &page.schema_coercion_plan {
-                if let Some(previous) = &reconciliation_plan
-                    && previous != page_plan
-                {
-                    return Err(CdfError::data(
-                        "REST pages produced inconsistent schema coercion plans",
-                    ));
-                }
-                reconciliation_plan = Some(page_plan.clone());
-            }
-            let mut batch = Batch::from_record_batch(
-                BatchId::new(format!(
-                    "{}-{}-{:06}",
-                    sanitize_id_part(descriptor.resource_id.as_str()),
-                    sanitize_id_part(partition.partition_id.as_str()),
-                    page_index + 1
-                ))?,
-                descriptor.resource_id.clone(),
-                partition.partition_id.clone(),
-                page.observed_schema_hash.clone(),
-                page.record_batch,
-            )?
-            .with_retention(page.retention)?;
-            batch
-                .header
-                .mark_materialized_output(&page.physical_schema)?;
-            batch.header.source_position = page.source_position;
-            batch.header.pre_contract_quarantine = page.pre_contract_quarantine;
-            batch
-                .header
-                .extend_residual_candidates(page.residual_candidates);
-            batch.header.mark_materialized_residuals_complete();
-            batch.header.schema_coercion_plan = page.schema_coercion_plan;
-            sender.send(batch)?;
+            batch.header.source_position = rest_batch_cursor_position(&schema, descriptor, &batch)?;
+            page_row_offset = page_row_offset
+                .checked_add(batch.header.row_count)
+                .ok_or_else(|| CdfError::data("REST page row ordinal overflowed"))?;
+            sender.send(batch).await?;
         }
 
         page_index = page_index.saturating_add(1);
@@ -694,7 +679,7 @@ fn execute_rest(
     Ok(())
 }
 
-pub fn discover_rest_sample_schema(
+pub async fn discover_rest_sample_schema(
     descriptor: &ResourceDescriptor,
     plan: &RestResourcePlan,
     partition: &PartitionPlan,
@@ -733,11 +718,12 @@ pub fn discover_rest_sample_schema(
         &url,
         &mut auth_session,
         &mut limiter,
-    )?;
+    )
+    .await?;
     let body = response
-        .body()
+        .accounted_body()
         .ok_or_else(|| CdfError::data("REST HTTP response did not include a JSON body"))?;
-    let body_bytes = u64::try_from(body.len())
+    let body_bytes = u64::try_from(body.payload().len())
         .map_err(|_| CdfError::data("REST discovery response exceeds u64"))?;
     if body_bytes > request.maximum_bytes {
         return Err(CdfError::data(format!(
@@ -745,15 +731,29 @@ pub fn discover_rest_sample_schema(
             request.maximum_bytes
         )));
     }
-    let decoded =
-        decode_response_page(body, &plan.record_selector, dependencies.execution.memory())?;
-    let sampled_records = decoded.records.len().min(
-        usize::try_from(request.maximum_records)
-            .map_err(|_| CdfError::data("REST discovery record limit exceeds usize"))?,
-    );
-    let schema = Arc::new(infer_rest_sample_schema(
-        &decoded.records[..sampled_records],
+    let selection =
+        cdf_format_json::select_bounded_json_records(body.payload(), &plan.record_selector)?;
+    let selected = body.slice(selection.byte_range)?;
+    let selected_bytes = u64::try_from(selected.payload().len())
+        .map_err(|_| CdfError::data("REST selected JSON body exceeds u64"))?;
+    let source = Arc::new(MemoryByteSource::from_ephemeral_accounted_bytes(
+        format!("rest-discovery:{}", descriptor.resource_id),
+        selected,
     )?);
+    let observation = cdf_format_json::JsonDocumentFormatDriver::new()?
+        .discover(
+            source,
+            FormatDiscoveryRequest {
+                options: serde_json::json!({}),
+                maximum_bytes: selected_bytes,
+                maximum_records: request.maximum_records,
+                memory: dependencies.execution.memory(),
+                cancellation: request.cancellation.clone(),
+            },
+        )
+        .await?;
+    let sampled_records = observation.sampled_records;
+    let schema = observation.arrow_schema;
     let retained_bytes = body_bytes;
     let state = Arc::new(PreparedRestPageState {
         response: Mutex::new(Some(response)),
@@ -777,8 +777,7 @@ pub fn discover_rest_sample_schema(
         schema,
         source_identity,
         bytes_read: body_bytes,
-        records_read: u64::try_from(sampled_records)
-            .map_err(|_| CdfError::data("REST discovery sample record count exceeds u64"))?,
+        records_read: sampled_records,
     })
 }
 
@@ -857,7 +856,7 @@ fn execution_schema_hash(descriptor: &ResourceDescriptor) -> Result<SchemaHash> 
 
 struct RestSendContext<'a> {
     transport: &'a dyn HttpTransport,
-    secret_provider: Option<&'a dyn SecretProvider>,
+    secret_provider: Option<&'a (dyn SecretProvider + Send + Sync)>,
     auth_refresh: Option<&'a Arc<Mutex<Box<dyn AuthRefreshHook + Send>>>>,
     egress: &'a SourceEgressScope,
     maximum_response_bytes: u64,
@@ -866,7 +865,7 @@ struct RestSendContext<'a> {
     execution: &'a ExecutionServices,
 }
 
-fn send_page(
+async fn send_page(
     dependencies: &RestRuntimeDependencies,
     plan: &RestResourcePlan,
     url: &str,
@@ -876,10 +875,7 @@ fn send_page(
 ) -> Result<HttpResponse> {
     let mut send_context = RestSendContext {
         transport: dependencies.transport.as_ref(),
-        secret_provider: dependencies
-            .secret_provider
-            .as_deref()
-            .map(|provider| provider as &dyn SecretProvider),
+        secret_provider: dependencies.secret_provider.as_deref(),
         auth_refresh: dependencies.auth_refresh.as_ref(),
         egress: &dependencies.egress,
         maximum_response_bytes: REST_MAXIMUM_BATCH_BYTES,
@@ -887,17 +883,17 @@ fn send_page(
         cancellation: cancellation.clone(),
         execution: &dependencies.execution,
     };
-    send_page_with_transport(&mut send_context, plan, url, auth_session, limiter)
+    send_page_with_transport(&mut send_context, plan, url, auth_session, limiter).await
 }
 
-fn send_page_with_transport(
+async fn send_page_with_transport(
     context: &mut RestSendContext<'_>,
     plan: &RestResourcePlan,
     url: &str,
     auth_session: &mut Option<AuthSession>,
     limiter: &mut RateLimiter,
 ) -> Result<HttpResponse> {
-    fn send_once_with_rate_limit(
+    async fn send_once_with_rate_limit(
         context: &RestSendContext<'_>,
         plan: &RestResourcePlan,
         url: &str,
@@ -916,7 +912,7 @@ fn send_page_with_transport(
             rate_limit,
             context.cancellation.clone(),
         )?;
-        let response = send_page_once(context, plan, url, auth_session)?;
+        let response = send_page_once(context, plan, url, auth_session).await?;
         let quota = limiter.observe_response(
             &response,
             duration_millis(context.execution.monotonic_now()),
@@ -931,7 +927,7 @@ fn send_page_with_transport(
         Ok(response)
     }
 
-    let mut response = send_once_with_rate_limit(context, plan, url, auth_session, limiter)?;
+    let mut response = send_once_with_rate_limit(context, plan, url, auth_session, limiter).await?;
     if matches!(response.status, 401 | 403)
         && auth_session.is_some()
         && let Some(hook) = context.auth_refresh
@@ -941,15 +937,16 @@ fn send_page_with_transport(
                 "REST auth refresh requires an explicit SecretProvider runtime dependency",
             )
         })?;
-        let mut hook = hook.lock().map_err(|_| {
-            CdfError::internal("REST auth refresh hook mutex was poisoned during refresh")
-        })?;
-        auth_session
-            .as_mut()
-            .expect("checked auth session availability")
-            .refresh_once(provider, &mut **hook)?;
-        drop(hook);
-        response = send_once_with_rate_limit(context, plan, url, auth_session, limiter)?;
+        {
+            let mut hook = hook.lock().map_err(|_| {
+                CdfError::internal("REST auth refresh hook mutex was poisoned during refresh")
+            })?;
+            auth_session
+                .as_mut()
+                .expect("checked auth session availability")
+                .refresh_once(provider, &mut **hook)?;
+        }
+        response = send_once_with_rate_limit(context, plan, url, auth_session, limiter).await?;
     }
 
     if let Some(error) = classify_response(&response) {
@@ -972,7 +969,7 @@ fn duration_millis(duration: Duration) -> u64 {
     u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
 }
 
-fn send_page_once(
+async fn send_page_once(
     context: &RestSendContext<'_>,
     plan: &RestResourcePlan,
     url: &str,
@@ -998,548 +995,54 @@ fn send_page_once(
         Arc::clone(&context.memory),
         cancellation,
     )?;
-    send_with_policy(context.transport, &plan.allowlist, request, budget)
+    send_with_policy(context.transport, &plan.allowlist, request, budget).await
 }
 
-#[derive(Debug)]
-struct DecodedPage {
-    records: Vec<Map<String, Value>>,
-    pagination_fields: BTreeMap<String, String>,
-    _scratch: MemoryLease,
-}
-
-fn decode_response_page(
-    bytes: &[u8],
-    selector: &str,
-    memory: Arc<dyn MemoryCoordinator>,
-) -> Result<DecodedPage> {
-    let body_bytes = u64::try_from(bytes.len())
-        .map_err(|_| CdfError::data("REST JSON body length exceeds u64"))?;
-    let scratch_bytes = body_bytes
-        .checked_mul(REST_JSON_SCRATCH_MULTIPLIER)
-        .ok_or_else(|| CdfError::data("REST JSON scratch bound overflowed"))?;
-    let scratch = reserve_blocking(
-        memory,
-        &ReservationRequest::new(
-            ConsumerKey::new("rest-json-page-scratch", MemoryClass::Decode)?,
-            scratch_bytes,
-        )?,
-    )?;
-    let mut root: Value = serde_json::from_slice(bytes).map_err(|error| {
-        CdfError::data(format!("REST response body is not valid JSON: {error}"))
-    })?;
-    let pagination_fields = top_level_pagination_fields(&root);
-    let records = take_records(&mut root, selector)?;
-    let mut objects = Vec::with_capacity(records.len());
-    for record in records {
-        let Value::Object(object) = record else {
-            return Err(CdfError::data(
-                "REST record selector yielded a non-object array entry",
-            ));
-        };
-        objects.push(object);
-    }
-
-    Ok(DecodedPage {
-        records: objects,
-        pagination_fields,
-        _scratch: scratch,
-    })
-}
-
-fn take_records(root: &mut Value, selector: &str) -> Result<Vec<Value>> {
-    if selector == "$" {
-        return root
-            .as_array_mut()
-            .map(std::mem::take)
-            .ok_or_else(|| CdfError::data("REST record selector `$` requires a top-level array"));
-    }
-    let Some(field) = selector.strip_prefix("$.") else {
-        return Err(CdfError::data(
-            "REST record selector must be `$` or `$.<field>` in this execution slice",
-        ));
-    };
-    if field.is_empty() || field.contains('.') {
-        return Err(CdfError::data(
-            "REST record selector supports only one object field after `$.`",
-        ));
-    }
-    root.get_mut(field)
-        .ok_or_else(|| {
-            CdfError::data(format!(
-                "REST record selector target `{field}` is missing from response"
-            ))
-        })?
-        .as_array_mut()
-        .map(std::mem::take)
-        .ok_or_else(|| {
-            CdfError::data(format!(
-                "REST record selector target `{field}` is not an array"
-            ))
-        })
-}
-
-fn top_level_pagination_fields(root: &Value) -> BTreeMap<String, String> {
-    let Some(object) = root.as_object() else {
-        return BTreeMap::new();
-    };
-    object
-        .iter()
-        .filter_map(|(key, value)| scalar_marker(value).map(|value| (key.clone(), value)))
-        .collect()
-}
-
-fn infer_rest_sample_schema(records: &[Map<String, Value>]) -> Result<Schema> {
-    if records.is_empty() {
-        return Err(CdfError::data(
-            "REST schema discovery selector yielded no records to sample",
-        ));
-    }
-    let mut fields = BTreeMap::<String, InferredRestField>::new();
-    let mut records_seen = 0_usize;
-    for record in records {
-        for field in fields.values_mut() {
-            field.seen_in_current_record = false;
-        }
-        for (name, value) in record {
-            match fields.entry(name.clone()) {
-                std::collections::btree_map::Entry::Occupied(mut entry) => {
-                    entry.get_mut().observe(name, value)?;
-                }
-                std::collections::btree_map::Entry::Vacant(entry) => {
-                    let mut field = InferredRestField {
-                        nullable: records_seen > 0,
-                        ..InferredRestField::default()
-                    };
-                    field.observe(name, value)?;
-                    entry.insert(field);
-                }
-            }
-        }
-        for field in fields.values_mut() {
-            if !field.seen_in_current_record {
-                field.nullable = true;
-            }
-        }
-        records_seen = records_seen.saturating_add(1);
-    }
-    let fields = fields
-        .into_iter()
-        .map(|(name, field)| Ok(Field::new(name, field.data_type()?, field.nullable)))
-        .collect::<Result<Vec<_>>>()?;
-    Ok(Schema::new(fields))
-}
-
-#[derive(Clone, Debug, Default)]
-struct InferredRestField {
-    nullable: bool,
-    kind: Option<InferredRestKind>,
-    seen_in_current_record: bool,
-}
-
-impl InferredRestField {
-    fn observe(&mut self, field: &str, value: &Value) -> Result<()> {
-        self.seen_in_current_record = true;
-        if value.is_null() {
-            self.nullable = true;
-            return Ok(());
-        }
-        let observed = InferredRestKind::from_value(field, value)?;
-        self.kind = Some(match self.kind.take() {
-            Some(current) => current.merge(field, observed)?,
-            None => observed,
-        });
-        Ok(())
-    }
-
-    fn data_type(&self) -> Result<DataType> {
-        Ok(match self.kind {
-            Some(InferredRestKind::Boolean) => DataType::Boolean,
-            Some(InferredRestKind::Int64) => DataType::Int64,
-            Some(InferredRestKind::UInt64) => DataType::UInt64,
-            Some(InferredRestKind::Float64) => DataType::Float64,
-            Some(InferredRestKind::Utf8) => DataType::Utf8,
-            None => DataType::Null,
-        })
-    }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum InferredRestKind {
-    Boolean,
-    Int64,
-    UInt64,
-    Float64,
-    Utf8,
-}
-
-impl InferredRestKind {
-    fn from_value(field: &str, value: &Value) -> Result<Self> {
-        Ok(match value {
-            Value::Bool(_) => Self::Boolean,
-            Value::Number(number) if number.as_i64().is_some() => Self::Int64,
-            Value::Number(number) if number.as_u64().is_some() => Self::UInt64,
-            Value::Number(number) if number.as_f64().is_some() => Self::Float64,
-            Value::Number(_) => {
-                return Err(CdfError::data(format!(
-                    "REST field `{field}` contains a number outside supported int64/uint64/float64 inference"
-                )));
-            }
-            Value::String(_) | Value::Array(_) | Value::Object(_) => Self::Utf8,
-            Value::Null => unreachable!("null handled before inference"),
-        })
-    }
-
-    fn merge(self, field: &str, observed: Self) -> Result<Self> {
-        use InferredRestKind::*;
-        Ok(match (self, observed) {
-            (Boolean, Boolean) => Boolean,
-            (Int64, Int64) => Int64,
-            (UInt64, UInt64) => UInt64,
-            (Float64, Float64) => Float64,
-            (Utf8, Utf8) => Utf8,
-            (Utf8, _) | (_, Utf8) | (Boolean, _) | (_, Boolean) => Utf8,
-            (Float64, _) | (_, Float64) => Float64,
-            (Int64, UInt64) | (UInt64, Int64) => {
-                return Err(CdfError::data(format!(
-                    "REST field `{field}` mixes signed and unsigned integer values that cannot be inferred losslessly"
-                )));
-            }
-        })
-    }
-}
-
-struct ReconciledRestPage {
-    record_batch: RecordBatch,
-    retention: PayloadRetention,
-    physical_schema: Schema,
-    observed_schema_hash: SchemaHash,
-    source_position: Option<SourcePosition>,
-    pre_contract_quarantine: Vec<cdf_kernel::PreContractQuarantineFact>,
-    residual_candidates: Vec<cdf_kernel::PreContractResidualCandidate>,
-    schema_coercion_plan: Option<String>,
-}
-
-fn reconcile_rest_page(
-    schema: &SchemaRef,
+async fn decode_selected_rest_page(
+    schema: SchemaRef,
     descriptor: &ResourceDescriptor,
     partition: &PartitionPlan,
-    records: &[Map<String, Value>],
-    type_policy_allowances: TypePolicyAllowances,
+    selected: cdf_memory::AccountedBytes,
+    page_index: usize,
     execution: &ExecutionServices,
-) -> Result<ReconciledRestPage> {
-    let memory = execution.memory();
-    let mut type_policy = ContractPolicy::default().types;
-    type_policy.coerce_types = type_policy_allowances.coerce_types;
-    type_policy.allow_lossy_mapping = type_policy_allowances.allow_lossy_mapping;
-    let physical_schema = infer_admitted_rest_physical_schema(schema, records, &type_policy)?;
-    let physical_schema_hash = cdf_kernel::canonical_arrow_schema_hash(&physical_schema)?;
-    let reconciliation = reconcile_schema(&physical_schema, schema.as_ref(), &type_policy)?;
-    let reconciliation_plan = serde_json::to_string(&reconciliation.plan).map_err(|error| {
-        CdfError::internal(format!(
-            "serialize REST schema reconciliation plan: {error}"
-        ))
-    })?;
-    let mut ndjson = Vec::new();
-    for record in records {
-        serde_json::to_writer(&mut ndjson, record)
-            .map_err(|error| CdfError::data(format!("serialize REST record: {error}")))?;
-        ndjson.push(b'\n');
-    }
+    cancellation: RunCancellation,
+) -> Result<Vec<Batch>> {
+    let source = Arc::new(MemoryByteSource::from_ephemeral_accounted_bytes(
+        format!(
+            "rest-page:{}:{}:{}",
+            descriptor.resource_id, partition.partition_id, page_index
+        ),
+        selected,
+    )?);
     let read_options = ReadOptions::new(
         descriptor.resource_id.clone(),
         partition.partition_id.clone(),
     )
-    .with_batch_size(records.len().max(1))?;
-    let location = format!(
-        "rest-page:{}:{}",
-        descriptor.resource_id, partition.partition_id
-    );
-    let admission_schema = Arc::clone(schema);
-    let read = execution.run_io(async move {
-        let source =
-            Arc::new(MemoryByteSource::from_bytes(location, ndjson, Arc::clone(&memory)).await?);
-        decode_bounded_format(
-            Arc::new(cdf_format_json::NdjsonFormatDriver::new()?),
-            source,
-            BoundedFormatRequest::new(read_options, memory)
-                .with_schema(DecodeSchemaPlan::fixed_admission(admission_schema)),
-        )
-        .await
-    })?;
-    let [format_batch] = read.batches.as_slice() else {
-        return Err(CdfError::internal(
-            "REST page reconciliation expected exactly one format batch",
-        ));
-    };
-    let mut residual_candidates = format_batch.header.residual_candidates().to_vec();
-    add_missing_cursor_candidates(schema, descriptor, records, &mut residual_candidates)?;
-    let cursor_identities = descriptor
-        .cursor
-        .as_ref()
-        .and_then(|cursor| {
-            schema
-                .fields()
-                .iter()
-                .map(|field| field.as_ref())
-                .find(|field| {
-                    cursor.field == field.name().as_str()
-                        || source_name(field).is_some_and(|source| cursor.field == source)
-                })
-        })
-        .map(|field| {
-            BTreeSet::from([
-                field.name().clone(),
-                source_name(field)
-                    .unwrap_or_else(|| field.name().as_str())
-                    .to_owned(),
-            ])
-        })
-        .unwrap_or_default();
-    let excluded_cursor_rows = residual_candidates
-        .iter()
-        .filter(|candidate| {
-            candidate
-                .source_path()
-                .first()
-                .is_some_and(|field| cursor_identities.contains(field))
-        })
-        .map(PreContractResidualCandidate::batch_row_ordinal)
-        .collect::<BTreeSet<_>>();
-    let source_position =
-        rest_page_cursor_position(schema, descriptor, records, &excluded_cursor_rows)?;
-    let mut pre_contract_quarantine = format_batch.header.pre_contract_quarantine.clone();
-    for fact in &mut pre_contract_quarantine {
-        fact.source_position = source_position.clone();
-    }
-
-    let decoded_batch = format_batch
-        .record_batch()
-        .ok_or_else(|| CdfError::internal("REST format batch has no Arrow payload"))?
-        .clone();
-    let nullable_sources = residual_candidates
-        .iter()
-        .filter(|candidate| candidate.expected_field().is_some())
-        .filter_map(|candidate| candidate.source_path().first().map(String::as_str))
-        .collect::<BTreeSet<_>>();
-    let output_schema = Arc::new(Schema::new_with_metadata(
-        reconciliation
-            .schema
-            .fields()
-            .iter()
-            .map(|field| {
-                let source = source_name(field.as_ref()).unwrap_or_else(|| field.name());
-                Arc::new(
-                    field
-                        .as_ref()
-                        .clone()
-                        .with_nullable(field.is_nullable() || nullable_sources.contains(source)),
-                )
-            })
-            .collect::<Vec<_>>(),
-        reconciliation.schema.metadata().clone(),
-    ));
-    let record_batch = RecordBatch::try_new(output_schema, decoded_batch.columns().to_vec())
-        .map_err(CdfError::from)?;
-    let retained_bytes = format_batch.retained_bytes();
-    if retained_bytes == 0 || retained_bytes > REST_MAXIMUM_BATCH_BYTES {
-        return Err(CdfError::data(format!(
-            "REST decoded batch retains {retained_bytes} bytes outside its compiled 1..={REST_MAXIMUM_BATCH_BYTES}-byte limit; configure smaller source pages"
-        )));
-    }
-    let retention = PayloadRetention::new(Arc::new(format_batch.clone()), retained_bytes)?;
-
-    Ok(ReconciledRestPage {
-        record_batch,
-        retention,
-        physical_schema,
-        observed_schema_hash: physical_schema_hash,
-        source_position,
-        pre_contract_quarantine,
-        residual_candidates,
-        schema_coercion_plan: Some(reconciliation_plan),
-    })
+    .with_batch_id_prefix(format!(
+        "{}-{}-p{:06}",
+        sanitize_id_part(descriptor.resource_id.as_str()),
+        sanitize_id_part(partition.partition_id.as_str()),
+        page_index + 1
+    ))?;
+    let decoded = decode_bounded_format(
+        Arc::new(cdf_format_json::JsonDocumentFormatDriver::new()?),
+        source,
+        BoundedFormatRequest::new(read_options, execution.memory())
+            .with_schema(DecodeSchemaPlan::fixed_admission(schema))
+            .with_cancellation(cancellation),
+    )
+    .await?;
+    Ok(decoded.batches)
 }
 
-fn infer_admitted_rest_physical_schema(
-    declared: &Schema,
-    records: &[Map<String, Value>],
-    type_policy: &TypePolicy,
-) -> Result<Schema> {
-    let declared_fields = declared
-        .fields()
-        .iter()
-        .map(|field| {
-            (
-                source_name(field.as_ref()).unwrap_or_else(|| field.name()),
-                field.as_ref(),
-            )
-        })
-        .collect::<BTreeMap<_, _>>();
-    let mut admitted = Vec::with_capacity(records.len());
-    for record in records {
-        let mut row = record.clone();
-        row.retain(|source, _| declared_fields.contains_key(source.as_str()));
-        for (source, field) in &declared_fields {
-            let Some(value) = row.get(*source) else {
-                continue;
-            };
-            if !value.is_null() && declared_rest_type_mismatch(field, value, type_policy)? {
-                row.insert((*source).to_owned(), Value::Null);
-            }
-        }
-        admitted.push(row);
-    }
-    let inferred = infer_rest_sample_schema(&admitted)?;
-    let fields = declared
-        .fields()
-        .iter()
-        .filter_map(|declared_field| {
-            let source =
-                source_name(declared_field.as_ref()).unwrap_or_else(|| declared_field.name());
-            inferred
-                .fields()
-                .iter()
-                .find(|field| field.name() == source)
-        })
-        .map(|field| {
-            if field.data_type() != &DataType::Null {
-                return field.as_ref().clone();
-            }
-            declared_fields.get(field.name().as_str()).map_or_else(
-                || field.as_ref().clone(),
-                |declared| {
-                    Field::new(field.name(), declared.data_type().clone(), true)
-                        .with_metadata(field.metadata().clone())
-                },
-            )
-        })
-        .collect::<Vec<_>>();
-    Ok(Schema::new_with_metadata(
-        fields,
-        inferred.metadata().clone(),
-    ))
-}
-
-fn declared_rest_type_mismatch(
-    field: &Field,
-    value: &Value,
-    type_policy: &TypePolicy,
-) -> Result<bool> {
-    Ok(match field.data_type() {
-        DataType::Boolean => !(value.is_boolean() || value.is_string() && type_policy.coerce_types),
-        DataType::Int8 | DataType::Int16 | DataType::Int32 | DataType::Int64 => {
-            !(value.as_i64().is_some()
-                || value.as_u64().is_some_and(|value| value <= i64::MAX as u64)
-                || value.is_number() && type_policy.allow_lossy_mapping
-                || value.is_string() && type_policy.coerce_types)
-        }
-        DataType::UInt8 | DataType::UInt16 | DataType::UInt32 | DataType::UInt64 => {
-            !(value.as_u64().is_some()
-                || value.is_number() && type_policy.allow_lossy_mapping
-                || value.is_string() && type_policy.coerce_types)
-        }
-        DataType::Float16
-        | DataType::Float32
-        | DataType::Float64
-        | DataType::Decimal32(_, _)
-        | DataType::Decimal64(_, _)
-        | DataType::Decimal128(_, _)
-        | DataType::Decimal256(_, _) => {
-            !(value.is_number() || value.is_string() && type_policy.coerce_types)
-        }
-        DataType::Utf8 | DataType::LargeUtf8 | DataType::Date32 | DataType::Timestamp(_, _) => {
-            !value.is_string()
-        }
-        other => {
-            return Err(CdfError::contract(format!(
-                "REST bounded JSON admission does not support field {:?} with type {other}",
-                field.name()
-            )));
-        }
-    })
-}
-
-fn rest_page_cursor_position(
-    schema: &SchemaRef,
+fn cursor_field<'a>(
+    schema: &'a SchemaRef,
     descriptor: &ResourceDescriptor,
-    records: &[Map<String, Value>],
-    excluded_rows: &BTreeSet<usize>,
-) -> Result<Option<SourcePosition>> {
-    let Some(cursor_spec) = &descriptor.cursor else {
-        return Ok(None);
-    };
-    if records.is_empty() {
-        return Ok(None);
-    }
-    let field = schema
-        .fields()
-        .iter()
-        .map(|field| field.as_ref())
-        .find(|field| {
-            cursor_spec.field == field.name().as_str()
-                || source_name(field).is_some_and(|source| cursor_spec.field == source)
-        })
-        .ok_or_else(|| {
-            CdfError::data(format!(
-                "REST cursor field `{}` is missing from declared schema",
-                cursor_spec.field
-            ))
-        })?;
-    let Some(value) = max_cursor_for_field(field, records, excluded_rows)? else {
-        return Ok(None);
-    };
-    Ok(Some(SourcePosition::Cursor(CursorPosition {
-        version: 1,
-        field: cursor_spec.field.clone(),
-        value: value.into_cursor_value(),
-    })))
-}
-
-fn max_cursor_for_field(
-    field: &arrow_schema::Field,
-    records: &[Map<String, Value>],
-    excluded_rows: &BTreeSet<usize>,
-) -> Result<Option<ObservedCursor>> {
-    let mut max_value = None;
-    let key = source_name(field).unwrap_or_else(|| field.name().as_str());
-    for (row, record) in records.iter().enumerate() {
-        if excluded_rows.contains(&row) {
-            continue;
-        }
-        let value = record.get(key).ok_or_else(|| {
-            CdfError::data(format!(
-                "REST cursor field `{}` is missing from an accepted record",
-                field.name()
-            ))
-        })?;
-        if value.is_null() {
-            return Err(CdfError::data(format!(
-                "REST cursor field `{}` is null in an accepted record",
-                field.name()
-            )));
-        }
-        let value = cursor_value_for_field(field, value)?;
-        if max_value
-            .as_ref()
-            .is_none_or(|current| value.greater_than(current))
-        {
-            max_value = Some(value);
-        }
-    }
-    Ok(max_value)
-}
-
-fn add_missing_cursor_candidates(
-    schema: &SchemaRef,
-    descriptor: &ResourceDescriptor,
-    records: &[Map<String, Value>],
-    candidates: &mut Vec<PreContractResidualCandidate>,
-) -> Result<()> {
+) -> Result<Option<&'a Field>> {
     let Some(cursor) = &descriptor.cursor else {
-        return Ok(());
+        return Ok(None);
     };
-    let expected = schema
+    schema
         .fields()
         .iter()
         .map(|field| field.as_ref())
@@ -1547,62 +1050,185 @@ fn add_missing_cursor_candidates(
             cursor.field == field.name().as_str()
                 || source_name(field).is_some_and(|source| cursor.field == source)
         })
+        .map(Some)
         .ok_or_else(|| {
             CdfError::data(format!(
-                "REST cursor candidate field `{}` is missing from declared schema fields {:?}",
-                cursor.field,
-                schema
-                    .fields()
-                    .iter()
-                    .map(|field| (field.name(), source_name(field.as_ref())))
-                    .collect::<Vec<_>>()
+                "REST cursor field `{}` is missing from the compiled schema",
+                cursor.field
             ))
-        })?;
-    let source = source_name(expected).unwrap_or_else(|| expected.name().as_str());
-    for (row, record) in records.iter().enumerate() {
-        if record.get(source).is_some_and(|value| !value.is_null())
-            || candidates.iter().any(|candidate| {
-                candidate.batch_row_ordinal() == row
-                    && candidate
-                        .source_path()
-                        .first()
-                        .is_some_and(|field| field == source)
-            })
-        {
+        })
+}
+
+fn cursor_array<'a>(batch: &'a Batch, field: &Field) -> Result<&'a ArrayRef> {
+    let record_batch = batch
+        .record_batch()
+        .ok_or_else(|| CdfError::internal("REST format batch has no Arrow payload"))?;
+    let source = source_name(field).unwrap_or_else(|| field.name());
+    record_batch
+        .column_by_name(source)
+        .or_else(|| record_batch.column_by_name(field.name()))
+        .ok_or_else(|| {
+            CdfError::data(format!(
+                "REST cursor field {:?} is missing from a decoded batch",
+                field.name()
+            ))
+        })
+}
+
+fn add_missing_cursor_candidates_from_batch(
+    schema: &SchemaRef,
+    descriptor: &ResourceDescriptor,
+    batch: &mut Batch,
+    page_row_offset: u64,
+) -> Result<()> {
+    let Some(field) = cursor_field(schema, descriptor)? else {
+        return Ok(());
+    };
+    let source = source_name(field)
+        .unwrap_or_else(|| field.name())
+        .to_owned();
+    let null_rows = {
+        let array = cursor_array(batch, field)?;
+        (0..array.len())
+            .filter(|row| array.is_null(*row))
+            .collect::<Vec<_>>()
+    };
+    let existing = batch
+        .header
+        .residual_candidates()
+        .iter()
+        .filter(|candidate| candidate.source_path().first() == Some(&source))
+        .map(PreContractResidualCandidate::batch_row_ordinal)
+        .collect::<BTreeSet<_>>();
+    let mut candidates = Vec::new();
+    for row in null_rows {
+        if existing.contains(&row) {
             continue;
         }
+        let row = u64::try_from(row).map_err(|_| CdfError::data("REST cursor row exceeds u64"))?;
         candidates.push(PreContractResidualCandidate::new(
-            row as u64,
-            row,
-            vec![source.to_owned()],
-            Field::new(source, DataType::Null, true),
-            Some(expected.clone()),
+            page_row_offset
+                .checked_add(row)
+                .ok_or_else(|| CdfError::data("REST cursor row ordinal overflowed"))?,
+            usize::try_from(row).map_err(|_| CdfError::data("REST cursor row exceeds usize"))?,
+            vec![source.clone()],
+            Field::new(&source, DataType::Null, true),
+            Some(field.clone()),
             new_null_array(&DataType::Null, 1),
             0,
         )?);
     }
+    batch.header.extend_residual_candidates(candidates);
     Ok(())
 }
 
-fn cursor_value_for_field(field: &arrow_schema::Field, value: &Value) -> Result<ObservedCursor> {
-    let name = field.name();
+fn rest_batch_cursor_position(
+    schema: &SchemaRef,
+    descriptor: &ResourceDescriptor,
+    batch: &Batch,
+) -> Result<Option<SourcePosition>> {
+    let Some(cursor) = &descriptor.cursor else {
+        return Ok(None);
+    };
+    let field = cursor_field(schema, descriptor)?
+        .ok_or_else(|| CdfError::internal("REST cursor authority disappeared"))?;
+    let array = cursor_array(batch, field)?;
+    let source = source_name(field).unwrap_or_else(|| field.name());
+    let excluded = batch
+        .header
+        .residual_candidates()
+        .iter()
+        .filter(|candidate| candidate.source_path().first().map(String::as_str) == Some(source))
+        .map(PreContractResidualCandidate::batch_row_ordinal)
+        .collect::<BTreeSet<_>>();
+    let mut maximum = None::<ObservedCursor>;
+    for row in 0..array.len() {
+        if excluded.contains(&row) {
+            continue;
+        }
+        if array.is_null(row) {
+            return Err(CdfError::data(format!(
+                "REST cursor field {:?} is null in an accepted record",
+                field.name()
+            )));
+        }
+        let value = cursor_value_from_array(field, array, row)?;
+        if maximum
+            .as_ref()
+            .is_none_or(|current| value.greater_than(current))
+        {
+            maximum = Some(value);
+        }
+    }
+    Ok(maximum.map(|value| {
+        SourcePosition::Cursor(CursorPosition {
+            version: 1,
+            field: cursor.field.clone(),
+            value: value.into_cursor_value(),
+        })
+    }))
+}
+
+fn cursor_value_from_array(field: &Field, array: &ArrayRef, row: usize) -> Result<ObservedCursor> {
+    macro_rules! primitive {
+        ($array:ty, $variant:ident) => {
+            ObservedCursor::$variant(
+                array
+                    .as_any()
+                    .downcast_ref::<$array>()
+                    .ok_or_else(|| CdfError::internal("REST cursor Arrow type diverged"))?
+                    .value(row),
+            )
+        };
+    }
     Ok(match field.data_type() {
-        DataType::Utf8 => ObservedCursor::String(string_value(name, value)?),
-        DataType::Int64 => ObservedCursor::I64(i64_value(name, value)?),
-        DataType::UInt64 => ObservedCursor::U64(u64_value(name, value)?),
-        DataType::Float64 => ObservedCursor::F64(f64_value(name, value)?),
-        DataType::Date32 => ObservedCursor::I64(i64::from(date32_value(name, value)?)),
+        DataType::Utf8 => ObservedCursor::String(
+            array
+                .as_any()
+                .downcast_ref::<StringArray>()
+                .ok_or_else(|| CdfError::internal("REST cursor Arrow type diverged"))?
+                .value(row)
+                .to_owned(),
+        ),
+        DataType::LargeUtf8 => ObservedCursor::String(
+            array
+                .as_any()
+                .downcast_ref::<LargeStringArray>()
+                .ok_or_else(|| CdfError::internal("REST cursor Arrow type diverged"))?
+                .value(row)
+                .to_owned(),
+        ),
+        DataType::Int64 => primitive!(Int64Array, I64),
+        DataType::UInt64 => primitive!(UInt64Array, U64),
+        DataType::Float64 => primitive!(Float64Array, F64),
+        DataType::Date32 => ObservedCursor::I64(i64::from(
+            array
+                .as_any()
+                .downcast_ref::<Date32Array>()
+                .ok_or_else(|| CdfError::internal("REST cursor Arrow type diverged"))?
+                .value(row),
+        )),
         DataType::Timestamp(TimeUnit::Millisecond, timezone) => ObservedCursor::TimestampMicros {
-            micros: timestamp_millis_value(name, value)?.saturating_mul(1_000),
+            micros: array
+                .as_any()
+                .downcast_ref::<TimestampMillisecondArray>()
+                .ok_or_else(|| CdfError::internal("REST cursor Arrow type diverged"))?
+                .value(row)
+                .saturating_mul(1_000),
             timezone: timezone.as_ref().map(ToString::to_string),
         },
         DataType::Timestamp(TimeUnit::Microsecond, timezone) => ObservedCursor::TimestampMicros {
-            micros: timestamp_micros_value(name, value)?,
+            micros: array
+                .as_any()
+                .downcast_ref::<TimestampMicrosecondArray>()
+                .ok_or_else(|| CdfError::internal("REST cursor Arrow type diverged"))?
+                .value(row),
             timezone: timezone.as_ref().map(ToString::to_string),
         },
         other => {
             return Err(CdfError::data(format!(
-                "REST cursor field `{name}` has unsupported Arrow type {other}"
+                "REST cursor field {:?} has unsupported Arrow type {other}",
+                field.name()
             )));
         }
     })
@@ -1645,146 +1271,6 @@ impl ObservedCursor {
                 CursorValue::TimestampMicros { micros, timezone }
             }
         }
-    }
-}
-
-fn string_value(field: &str, value: &Value) -> Result<String> {
-    match value {
-        Value::String(value) => Ok(value.clone()),
-        Value::Number(value) => Ok(value.to_string()),
-        Value::Bool(value) => Ok(value.to_string()),
-        Value::Array(_) | Value::Object(_) => serde_json::to_string(value).map_err(|error| {
-            CdfError::data(format!("serialize REST JSON field `{field}`: {error}"))
-        }),
-        Value::Null => Err(CdfError::data(format!(
-            "REST field `{field}` is null where a value is required"
-        ))),
-    }
-}
-
-fn i64_value(field: &str, value: &Value) -> Result<i64> {
-    match value {
-        Value::Number(value) => value.as_i64().ok_or_else(|| {
-            CdfError::data(format!("REST field `{field}` cannot be coerced to int64"))
-        }),
-        Value::String(value) => value.parse::<i64>().map_err(|error| {
-            CdfError::data(format!(
-                "REST field `{field}` cannot be parsed as int64: {error}"
-            ))
-        }),
-        _ => Err(CdfError::data(format!(
-            "REST field `{field}` cannot be coerced to int64"
-        ))),
-    }
-}
-
-fn u64_value(field: &str, value: &Value) -> Result<u64> {
-    match value {
-        Value::Number(value) => value.as_u64().ok_or_else(|| {
-            CdfError::data(format!("REST field `{field}` cannot be coerced to uint64"))
-        }),
-        Value::String(value) => value.parse::<u64>().map_err(|error| {
-            CdfError::data(format!(
-                "REST field `{field}` cannot be parsed as uint64: {error}"
-            ))
-        }),
-        _ => Err(CdfError::data(format!(
-            "REST field `{field}` cannot be coerced to uint64"
-        ))),
-    }
-}
-
-fn f64_value(field: &str, value: &Value) -> Result<f64> {
-    let parsed = match value {
-        Value::Number(value) => value.as_f64().ok_or_else(|| {
-            CdfError::data(format!("REST field `{field}` cannot be coerced to float64"))
-        })?,
-        Value::String(value) => value.parse::<f64>().map_err(|error| {
-            CdfError::data(format!(
-                "REST field `{field}` cannot be parsed as float64: {error}"
-            ))
-        })?,
-        _ => {
-            return Err(CdfError::data(format!(
-                "REST field `{field}` cannot be coerced to float64"
-            )));
-        }
-    };
-    if !parsed.is_finite() {
-        return Err(CdfError::data(format!(
-            "REST field `{field}` contains a non-finite float64"
-        )));
-    }
-    Ok(parsed)
-}
-
-#[cfg(test)]
-fn bool_value(field: &str, value: &Value) -> Result<bool> {
-    match value {
-        Value::Bool(value) => Ok(*value),
-        Value::String(value) if value.eq_ignore_ascii_case("true") => Ok(true),
-        Value::String(value) if value.eq_ignore_ascii_case("false") => Ok(false),
-        _ => Err(CdfError::data(format!(
-            "REST field `{field}` cannot be coerced to boolean"
-        ))),
-    }
-}
-
-fn date32_value(field: &str, value: &Value) -> Result<i32> {
-    match value {
-        Value::Number(_) => i64_value(field, value).and_then(|value| {
-            i32::try_from(value).map_err(|error| {
-                CdfError::data(format!("REST field `{field}` cannot fit date32: {error}"))
-            })
-        }),
-        Value::String(value) => parse_date32(value).ok_or_else(|| {
-            CdfError::data(format!(
-                "REST field `{field}` cannot be parsed as YYYY-MM-DD date32"
-            ))
-        }),
-        _ => Err(CdfError::data(format!(
-            "REST field `{field}` cannot be coerced to date32"
-        ))),
-    }
-}
-
-fn timestamp_millis_value(field: &str, value: &Value) -> Result<i64> {
-    match value {
-        Value::Number(_) => i64_value(field, value),
-        Value::String(value) => parse_rfc3339_micros(value)
-            .map(|micros| micros / 1_000)
-            .ok_or_else(|| {
-                CdfError::data(format!(
-                    "REST field `{field}` cannot be parsed as RFC3339 timestamp"
-                ))
-            }),
-        _ => Err(CdfError::data(format!(
-            "REST field `{field}` cannot be coerced to timestamp millis"
-        ))),
-    }
-}
-
-fn timestamp_micros_value(field: &str, value: &Value) -> Result<i64> {
-    match value {
-        Value::Number(_) => i64_value(field, value),
-        Value::String(value) => parse_rfc3339_micros(value).ok_or_else(|| {
-            CdfError::data(format!(
-                "REST field `{field}` cannot be parsed as RFC3339 timestamp"
-            ))
-        }),
-        _ => Err(CdfError::data(format!(
-            "REST field `{field}` cannot be coerced to timestamp micros"
-        ))),
-    }
-}
-
-fn scalar_marker(value: &Value) -> Option<String> {
-    match value {
-        Value::String(value) if !value.trim().is_empty() => Some(value.clone()),
-        Value::String(_) => None,
-        Value::Number(value) => Some(value.to_string()),
-        Value::Bool(value) => Some(value.to_string()),
-        Value::Null | Value::Array(_) | Value::Object(_) => None,
     }
 }
 
@@ -1943,112 +1429,6 @@ fn percent_encode(value: &str) -> String {
     encoded
 }
 
-fn parse_date32(value: &str) -> Option<i32> {
-    let (year, month, day) = parse_date(value)?;
-    i32::try_from(days_from_civil(year, month, day)).ok()
-}
-
-fn parse_rfc3339_micros(value: &str) -> Option<i64> {
-    let (date, time_and_zone) = value.split_once('T')?;
-    let (year, month, day) = parse_date(date)?;
-    let (time, offset_seconds) = split_time_zone(time_and_zone)?;
-    let mut parts = time.split(':');
-    let hour = parts.next()?.parse::<i64>().ok()?;
-    let minute = parts.next()?.parse::<i64>().ok()?;
-    let second_fraction = parts.next()?;
-    if parts.next().is_some() {
-        return None;
-    }
-    let (second_text, fraction_text) = second_fraction
-        .split_once('.')
-        .map_or((second_fraction, ""), |(second, fraction)| {
-            (second, fraction)
-        });
-    let second = second_text.parse::<i64>().ok()?;
-    if !(0..=23).contains(&hour) || !(0..=59).contains(&minute) || !(0..=60).contains(&second) {
-        return None;
-    }
-    let fraction = parse_fraction_micros(fraction_text)?;
-    let days = days_from_civil(year, month, day);
-    let seconds = days
-        .checked_mul(86_400)?
-        .checked_add(hour.checked_mul(3_600)?)?
-        .checked_add(minute.checked_mul(60)?)?
-        .checked_add(second)?
-        .checked_sub(i64::from(offset_seconds))?;
-    seconds.checked_mul(1_000_000)?.checked_add(fraction)
-}
-
-fn parse_date(value: &str) -> Option<(i64, u32, u32)> {
-    let mut parts = value.split('-');
-    let year = parts.next()?.parse::<i64>().ok()?;
-    let month = parts.next()?.parse::<u32>().ok()?;
-    let day = parts.next()?.parse::<u32>().ok()?;
-    if parts.next().is_some()
-        || !(1..=12).contains(&month)
-        || !(1..=days_in_month(year, month)).contains(&day)
-    {
-        return None;
-    }
-    Some((year, month, day))
-}
-
-fn split_time_zone(value: &str) -> Option<(&str, i32)> {
-    if let Some(time) = value.strip_suffix('Z') {
-        return Some((time, 0));
-    }
-    let split_at = value.rfind(['+', '-'])?;
-    let (time, offset) = value.split_at(split_at);
-    let sign = if offset.starts_with('-') { -1 } else { 1 };
-    let offset = &offset[1..];
-    let (hours, minutes) = offset.split_once(':')?;
-    let hours = hours.parse::<i32>().ok()?;
-    let minutes = minutes.parse::<i32>().ok()?;
-    if !(0..=23).contains(&hours) || !(0..=59).contains(&minutes) {
-        return None;
-    }
-    Some((time, sign * (hours * 3_600 + minutes * 60)))
-}
-
-fn parse_fraction_micros(value: &str) -> Option<i64> {
-    if value.is_empty() {
-        return Some(0);
-    }
-    if !value.chars().all(|character| character.is_ascii_digit()) {
-        return None;
-    }
-    let mut padded = value.chars().take(6).collect::<String>();
-    while padded.len() < 6 {
-        padded.push('0');
-    }
-    padded.parse::<i64>().ok()
-}
-
-fn days_in_month(year: i64, month: u32) -> u32 {
-    match month {
-        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
-        4 | 6 | 9 | 11 => 30,
-        2 if is_leap_year(year) => 29,
-        2 => 28,
-        _ => 0,
-    }
-}
-
-fn is_leap_year(year: i64) -> bool {
-    (year % 4 == 0 && year % 100 != 0) || year % 400 == 0
-}
-
-fn days_from_civil(year: i64, month: u32, day: u32) -> i64 {
-    let year = year - i64::from(month <= 2);
-    let era = if year >= 0 { year } else { year - 399 } / 400;
-    let year_of_era = year - era * 400;
-    let month = i64::from(month);
-    let day = i64::from(day);
-    let day_of_year = (153 * (month + if month > 2 { -3 } else { 9 }) + 2) / 5 + day - 1;
-    let day_of_era = year_of_era * 365 + year_of_era / 4 - year_of_era / 100 + day_of_year;
-    era * 146_097 + day_of_era - 719_468
-}
-
 fn sanitize_id_part(value: &str) -> String {
     value
         .chars()
@@ -2167,12 +1547,18 @@ mod tests {
     }
 
     impl HttpTransport for ConcurrentProbeTransport {
-        fn send(&self, _request: HttpRequest, _budget: HttpResponseBudget) -> Result<HttpResponse> {
-            let current = self.active.fetch_add(1, Ordering::SeqCst) + 1;
-            self.peak.fetch_max(current, Ordering::SeqCst);
-            std::thread::sleep(Duration::from_millis(50));
-            self.active.fetch_sub(1, Ordering::SeqCst);
-            Ok(HttpResponse::new(200))
+        fn send(
+            &self,
+            _request: HttpRequest,
+            _budget: HttpResponseBudget,
+        ) -> cdf_kernel::BoxFuture<'_, Result<HttpResponse>> {
+            Box::pin(async move {
+                let current = self.active.fetch_add(1, Ordering::SeqCst) + 1;
+                self.peak.fetch_max(current, Ordering::SeqCst);
+                std::thread::sleep(Duration::from_millis(50));
+                self.active.fetch_sub(1, Ordering::SeqCst);
+                Ok(HttpResponse::new(200))
+            })
         }
     }
 
@@ -2191,15 +1577,14 @@ mod tests {
                 let start = Arc::clone(&start);
                 std::thread::spawn(move || {
                     start.wait();
-                    transport
-                        .send(
-                            HttpRequest::new(
-                                HttpMethod::Get,
-                                format!("https://api.example.test/{index}"),
-                            ),
-                            test_http_budget(),
-                        )
-                        .unwrap();
+                    futures_executor::block_on(transport.send(
+                        HttpRequest::new(
+                            HttpMethod::Get,
+                            format!("https://api.example.test/{index}"),
+                        ),
+                        test_http_budget(),
+                    ))
+                    .unwrap();
                 })
             })
             .collect::<Vec<_>>();
@@ -2219,9 +1604,11 @@ mod tests {
                 &self,
                 _request: HttpRequest,
                 _budget: HttpResponseBudget,
-            ) -> Result<HttpResponse> {
-                self.0.fetch_add(1, Ordering::SeqCst);
-                Ok(HttpResponse::new(200))
+            ) -> cdf_kernel::BoxFuture<'_, Result<HttpResponse>> {
+                Box::pin(async move {
+                    self.0.fetch_add(1, Ordering::SeqCst);
+                    Ok(HttpResponse::new(200))
+                })
             }
         }
 
@@ -2264,56 +1651,16 @@ mod tests {
             execution: &execution,
         };
 
-        let error = send_page_once(
+        let error = futures_executor::block_on(send_page_once(
             &context,
             &plan,
             "https://adapter-permitted.example.org/items",
             &mut auth_session,
-        )
+        ))
         .unwrap_err();
 
         assert_eq!(error.kind, cdf_kernel::ErrorKind::Auth);
         assert_eq!(sends.load(Ordering::SeqCst), 0);
-    }
-
-    #[test]
-    fn rfc3339_parser_handles_utc_and_offsets() {
-        assert_eq!(parse_rfc3339_micros("1970-01-01T00:00:00Z").unwrap(), 0);
-        assert_eq!(
-            parse_rfc3339_micros("1970-01-01T01:00:00+01:00").unwrap(),
-            0
-        );
-        assert_eq!(
-            parse_rfc3339_micros("1970-01-01T00:00:00.123456Z").unwrap(),
-            123_456
-        );
-        assert_eq!(
-            parse_rfc3339_micros("1970-01-01T01:30:00+01:30").unwrap(),
-            0
-        );
-        assert_eq!(
-            parse_rfc3339_micros("1969-12-31T22:30:00-01:30").unwrap(),
-            0
-        );
-        assert!(parse_rfc3339_micros("1970-01-01T24:00:00Z").is_none());
-        assert!(parse_rfc3339_micros("1970-01-01T00:60:00Z").is_none());
-        assert!(parse_rfc3339_micros("1970-01-01T00:00:61Z").is_none());
-        assert!(parse_rfc3339_micros("1970-01-01T00:00:00+24:00").is_none());
-        assert!(parse_rfc3339_micros("1970-01-01T00:00:00+00:60").is_none());
-    }
-
-    #[test]
-    fn date32_parser_uses_unix_epoch_days() {
-        assert_eq!(parse_date32("1969-12-31").unwrap(), -1);
-        assert_eq!(parse_date32("1970-01-01").unwrap(), 0);
-        assert_eq!(parse_date32("1970-01-02").unwrap(), 1);
-        assert_eq!(parse_date32("2000-02-29").unwrap(), 11016);
-        assert_eq!(parse_date32("2000-03-01").unwrap(), 11017);
-        assert!(parse_date32("2026-13-01").is_none());
-        assert!(parse_date32("2026-04-31").is_none());
-        assert!(parse_date32("2026-02-29").is_none());
-        assert!(parse_date32("1900-02-29").is_none());
-        assert!(parse_date32("2026-01-01-extra").is_none());
     }
 
     #[test]
@@ -2336,27 +1683,12 @@ mod tests {
             })
         );
 
-        assert!(bool_value("active", &Value::String("sometimes".to_owned())).is_err());
-        assert_eq!(
-            timestamp_micros_value("updated_at", &Value::Number(123.into())).unwrap(),
-            123
-        );
-        assert_eq!(scalar_marker(&Value::String("   ".to_owned())), None);
         assert_eq!(
             origin("https://api.example.com/v1?existing=1").unwrap(),
             "https://api.example.com"
         );
         assert!(validate_http_url("https:///v1").is_err());
         assert!(validate_http_url("https://api example.com/v1").is_err());
-        assert_eq!(days_in_month(2026, 4), 30);
-        assert_eq!(days_in_month(2024, 2), 29);
-        assert_eq!(days_in_month(2023, 2), 28);
-        assert!(is_leap_year(2024));
-        assert!(!is_leap_year(2023));
-        assert!(!is_leap_year(1900));
-        assert!(is_leap_year(2000));
-        assert_eq!(days_from_civil(-1, 3, 1), -719_834);
-        assert_eq!(days_from_civil(-400, 3, 1), -865_565);
         assert_eq!(sanitize_id_part("api.items/v1_*"), "api-items-v1_-");
     }
 
