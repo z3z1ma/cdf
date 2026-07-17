@@ -780,12 +780,72 @@ pub enum FormatErrorIsolation {
     Record,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum FormatDiscoveryKind {
     FormatMetadata,
     BoundedContent,
     FullContent,
+}
+
+impl std::fmt::Display for FormatDiscoveryKind {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(match self {
+            Self::FormatMetadata => "format_metadata",
+            Self::BoundedContent => "bounded_content",
+            Self::FullContent => "full_content",
+        })
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FormatDiscoveryCapabilities {
+    pub default_kind: FormatDiscoveryKind,
+    pub supported_kinds: Vec<FormatDiscoveryKind>,
+}
+
+impl FormatDiscoveryCapabilities {
+    pub fn only(kind: FormatDiscoveryKind) -> Self {
+        Self {
+            default_kind: kind,
+            supported_kinds: vec![kind],
+        }
+    }
+
+    pub fn new(
+        default_kind: FormatDiscoveryKind,
+        supported_kinds: impl IntoIterator<Item = FormatDiscoveryKind>,
+    ) -> Result<Self> {
+        let capabilities = Self {
+            default_kind,
+            supported_kinds: supported_kinds
+                .into_iter()
+                .collect::<std::collections::BTreeSet<_>>()
+                .into_iter()
+                .collect(),
+        };
+        capabilities.validate()?;
+        Ok(capabilities)
+    }
+
+    pub fn supports(&self, kind: FormatDiscoveryKind) -> bool {
+        self.supported_kinds.binary_search(&kind).is_ok()
+    }
+
+    pub fn validate(&self) -> Result<()> {
+        if self.supported_kinds.is_empty()
+            || self
+                .supported_kinds
+                .windows(2)
+                .any(|pair| pair[0] >= pair[1])
+            || !self.supports(self.default_kind)
+        {
+            return Err(CdfError::contract(
+                "format discovery capabilities require a non-empty canonical kind set containing the default",
+            ));
+        }
+        Ok(())
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -804,7 +864,7 @@ pub struct FormatDriverDescriptor {
     /// Empty when predicate pushdown is unsupported.
     pub predicate_operators: Vec<String>,
     pub source_access: FormatSourceAccess,
-    pub discovery_kind: FormatDiscoveryKind,
+    pub discovery: FormatDiscoveryCapabilities,
     pub decode_unit_policy: String,
     pub error_isolation: FormatErrorIsolation,
     pub decode_cpu: crate::CpuTaskSpec,
@@ -890,6 +950,7 @@ impl FormatDriverDescriptor {
             ));
         }
         self.decode_cpu.validate()?;
+        self.discovery.validate()?;
         const MAX_DETECTION_PROBE_BYTES: u32 = 1024 * 1024;
         if self.detection_probe.prefix_bytes > MAX_DETECTION_PROBE_BYTES
             || self.detection_probe.suffix_bytes > MAX_DETECTION_PROBE_BYTES
@@ -965,6 +1026,7 @@ pub enum FormatDetectionConfidence {
 #[derive(Clone)]
 pub struct FormatDiscoveryRequest {
     pub options: serde_json::Value,
+    pub discovery_kind: FormatDiscoveryKind,
     pub maximum_bytes: u64,
     pub maximum_records: u64,
     pub memory: Arc<dyn MemoryCoordinator>,
@@ -1940,7 +2002,7 @@ mod tests {
             predicate_pushdown: PushdownFidelity::Unsupported,
             predicate_operators: Vec::new(),
             source_access: FormatSourceAccess::Sequential,
-            discovery_kind: FormatDiscoveryKind::BoundedContent,
+            discovery: FormatDiscoveryCapabilities::only(FormatDiscoveryKind::BoundedContent),
             decode_unit_policy: "whole_object".to_owned(),
             error_isolation: FormatErrorIsolation::DecodeUnit,
             decode_cpu: crate::CpuTaskSpec {
@@ -1970,6 +2032,38 @@ mod tests {
         assert!(registry.register(driver("mock", &[], b"OTHER")).is_err());
         assert!(registry.register(driver("other", &[], b"MOCK")).is_err());
         assert_eq!(registry.descriptors().len(), 1);
+    }
+
+    #[test]
+    fn discovery_capabilities_require_a_canonical_set_containing_the_default() {
+        let capabilities = FormatDiscoveryCapabilities::new(
+            FormatDiscoveryKind::BoundedContent,
+            [
+                FormatDiscoveryKind::BoundedContent,
+                FormatDiscoveryKind::FullContent,
+            ],
+        )
+        .unwrap();
+        assert!(capabilities.supports(FormatDiscoveryKind::BoundedContent));
+        assert!(capabilities.supports(FormatDiscoveryKind::FullContent));
+        assert!(!capabilities.supports(FormatDiscoveryKind::FormatMetadata));
+
+        assert!(
+            FormatDiscoveryCapabilities::new(
+                FormatDiscoveryKind::FullContent,
+                [FormatDiscoveryKind::BoundedContent]
+            )
+            .is_err()
+        );
+        let canonicalized = FormatDiscoveryCapabilities::new(
+            FormatDiscoveryKind::BoundedContent,
+            [
+                FormatDiscoveryKind::FullContent,
+                FormatDiscoveryKind::BoundedContent,
+                FormatDiscoveryKind::FullContent,
+            ],
+        );
+        assert_eq!(canonicalized.unwrap(), capabilities);
     }
 
     #[test]

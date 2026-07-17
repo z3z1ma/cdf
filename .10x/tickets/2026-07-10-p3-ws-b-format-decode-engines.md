@@ -20,7 +20,7 @@ The native closeout catalog is `.10x/specs/native-enterprise-format-catalog.md`;
 - `.10x/tickets/done/2026-07-11-p3-b2-parquet-codec.md`
 - `.10x/tickets/2026-07-11-p3-b3-arrow-ipc-codecs.md`
 - `.10x/tickets/2026-07-11-p3-b4-delimited-fixed-width-codecs.md`
-- `.10x/tickets/2026-07-11-p3-b5-json-codecs.md`
+- `.10x/tickets/done/2026-07-11-p3-b5-json-codecs.md`
 - `.10x/tickets/2026-07-11-p3-b6-avro-codecs.md`
 - `.10x/tickets/2026-07-11-p3-b7-orc-codec.md`
 - `.10x/tickets/2026-07-11-p3-b8-xml-codec.md`
@@ -39,8 +39,9 @@ The native closeout catalog is `.10x/specs/native-enterprise-format-catalog.md`;
 
 ## Blockers
 
-None. WS-L and FX1 are complete. This parent remains open only for its remaining codec children and the native-format matrix; B2 is closed.
+None. WS-L and FX1 are complete. This parent remains open only for its remaining codec children and the native-format matrix; B2 and B5 are closed.
 
 ## Journal
 
 - 2026-07-16: Closed B2 after the native Parquet path reached the recorded decode/HTTPS envelope, deterministic row-group/jobs laws, exact projection and physically proven predicate pushdown, explicit weak-source spool fallback, bounded late-materialized decoding, and malformed footer/late-page fail-closed coverage. The complete ticket and closure review are at `.10x/tickets/done/2026-07-11-p3-b2-parquet-codec.md`.
+- 2026-07-16: Closed B5 after JSON/NDJSON full-content discovery became an explicit compiled capability with constant-memory inference and retained-source reuse; REST page I/O overlaps Arrow tape decode; malformed/rechunk/depth/record/residual/jobs laws pass; selector+tape decode reaches 450.4 MiB/s aggregate and 3.10x the deleted DOM shape; full-content inference reaches 1.02x the raw Arrow roofline. The complete evidence and closure review are at `.10x/tickets/done/2026-07-11-p3-b5-json-codecs.md`.

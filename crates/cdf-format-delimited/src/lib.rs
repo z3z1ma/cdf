@@ -44,7 +44,9 @@ impl CsvFormatDriver {
                 predicate_pushdown: PushdownFidelity::Unsupported,
                 predicate_operators: Vec::new(),
                 source_access: cdf_runtime::FormatSourceAccess::Sequential,
-                discovery_kind: cdf_runtime::FormatDiscoveryKind::BoundedContent,
+                discovery: cdf_runtime::FormatDiscoveryCapabilities::only(
+                    cdf_runtime::FormatDiscoveryKind::BoundedContent,
+                ),
                 decode_unit_policy: "csv_stream_v1".to_owned(),
                 error_isolation: cdf_runtime::FormatErrorIsolation::DecodeUnit,
                 decode_cpu: cdf_runtime::CpuTaskSpec {

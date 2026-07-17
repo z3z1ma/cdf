@@ -836,6 +836,7 @@ pub async fn discover_rest_sample_schema(
             source,
             FormatDiscoveryRequest {
                 options: serde_json::json!({}),
+                discovery_kind: cdf_runtime::FormatDiscoveryKind::BoundedContent,
                 maximum_bytes: selected_bytes,
                 maximum_records: request.maximum_records,
                 memory: dependencies.execution.memory(),

@@ -22,11 +22,10 @@ use cdf_runtime::{
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    BoundedSchemaDiscoveryRequest, FileCompressionDeclaration, FileFormatDeclaration,
-    FilePayloadCache, FileResource, FileResourceDefinition, FileResourcePlan,
-    FileRuntimeDependencies, FileTransportControl, FileTransportLocation, FileTransportResource,
-    discover_local_binary_schema_bounded, discover_transport_binary_schema_bounded,
-    file_source_blocking_lane,
+    FileCompressionDeclaration, FileFormatDeclaration, FilePayloadCache, FileResource,
+    FileResourceDefinition, FileResourcePlan, FileRuntimeDependencies, FileTransportControl,
+    FileTransportLocation, FileTransportResource, SchemaDiscoveryRequest,
+    discover_local_binary_schema, discover_transport_binary_schema, file_source_blocking_lane,
 };
 
 type RuntimeFactory = dyn Fn(
@@ -185,6 +184,7 @@ impl SourceDriver for FileSourceDriver {
             format: resource.format.clone(),
             format_declared: resource.format.is_some(),
             format_options: resource.format_options.clone(),
+            schema_discovery: resource.schema_discovery,
             compression: resource.compression.clone(),
             auth: source
                 .auth
@@ -205,6 +205,7 @@ impl SourceDriver for FileSourceDriver {
         let (resource_plan, compiled_format) =
             compile_file_resource_plan(&unresolved, self.formats.as_ref())?;
         let resolved_format = resource_plan.resolved_format()?.clone();
+        let schema_discovery = resource_plan.resolved_schema_discovery()?;
         let physical = FilePhysicalPlan {
             source_name,
             source,
@@ -213,6 +214,7 @@ impl SourceDriver for FileSourceDriver {
                 format: resolved_format,
                 format_declared: resource_plan.format_declared,
                 format_options: resource_plan.format_options,
+                schema_discovery,
                 compression: resource_plan.compression,
             },
             compiled_format,
@@ -311,6 +313,7 @@ impl FileSourceDriver {
         )?;
         physical.compiled_format.verify(dependencies.formats())?;
         let runtime_plan = physical.to_runtime_plan(context.project_root())?;
+        let discovery_kind = runtime_plan.resolved_schema_discovery()?;
         let entries = file_discovery_entries(
             plan,
             &runtime_plan,
@@ -326,6 +329,7 @@ impl FileSourceDriver {
             compiled_format: physical.compiled_format,
             dependencies,
             entries,
+            discovery_kind,
         })
     }
 }
@@ -572,11 +576,12 @@ struct FileDriverDiscoverySession {
     compiled_format: CompiledFormatBinding,
     dependencies: FileRuntimeDependencies,
     entries: Vec<FileDriverDiscoveryEntry>,
+    discovery_kind: FormatDiscoveryKind,
 }
 
 impl SourceDiscoverySession for FileDriverDiscoverySession {
     fn kind(&self) -> SourceDiscoveryKind {
-        match self.compiled_format.descriptor.discovery_kind {
+        match self.discovery_kind {
             FormatDiscoveryKind::FormatMetadata => SourceDiscoveryKind::SchemaMetadata,
             FormatDiscoveryKind::BoundedContent => SourceDiscoveryKind::BoundedContent,
             FormatDiscoveryKind::FullContent => SourceDiscoveryKind::FullContent,
@@ -608,11 +613,12 @@ impl SourceDiscoverySession for FileDriverDiscoverySession {
                 ))
             })?;
         let format = self.plan.resolved_format()?;
-        let probe_request = BoundedSchemaDiscoveryRequest {
+        let probe_request = SchemaDiscoveryRequest {
             resource_id: &self.resource_id,
             format,
             format_declared: self.plan.format_declared,
             format_options: &self.compiled_format.canonical_options,
+            discovery_kind: self.discovery_kind,
             transform_name: &entry.compression,
             maximum_bytes: request.maximum_bytes,
             maximum_records: request.maximum_records,
@@ -622,20 +628,18 @@ impl SourceDiscoverySession for FileDriverDiscoverySession {
             FileDriverDiscoverySource::Local {
                 path,
                 selection_bytes_read,
-            } => discover_local_binary_schema_bounded(
+            } => discover_local_binary_schema(
                 path,
                 &candidate.canonical_location,
                 &self.dependencies,
                 *selection_bytes_read,
                 probe_request,
             )?,
-            FileDriverDiscoverySource::Transport(resource) => {
-                discover_transport_binary_schema_bounded(
-                    resource.clone(),
-                    &self.dependencies,
-                    probe_request,
-                )?
-            }
+            FileDriverDiscoverySource::Transport(resource) => discover_transport_binary_schema(
+                resource.clone(),
+                &self.dependencies,
+                probe_request,
+            )?,
         };
         SourceSchemaObservation::new(
             candidate,
@@ -968,6 +972,10 @@ fn option_schema() -> serde_json::Value {
                 "glob": {"type": "string", "minLength": 1},
                 "format": {"type": "string", "minLength": 1},
                 "format_options": {"type": "object"},
+                "schema_discovery": {
+                    "type": "string",
+                    "enum": ["format_metadata", "bounded_content", "full_content"]
+                },
                 "compression": {"type": "string", "minLength": 1, "default": "auto"}
             }
         }
@@ -994,6 +1002,8 @@ struct FileResourceOptions {
     format: Option<FileFormatDeclaration>,
     #[serde(default = "empty_format_options")]
     format_options: serde_json::Value,
+    #[serde(default)]
+    schema_discovery: Option<FormatDiscoveryKind>,
     #[serde(default)]
     compression: FileCompressionDeclaration,
 }
@@ -1025,6 +1035,7 @@ struct CompiledFileResourceOptions {
     format: FileFormatDeclaration,
     format_declared: bool,
     format_options: serde_json::Value,
+    schema_discovery: FormatDiscoveryKind,
     compression: FileCompressionDeclaration,
 }
 
@@ -1044,6 +1055,7 @@ impl FilePhysicalPlan {
             format: Some(self.resource.format.clone()),
             format_declared: self.resource.format_declared,
             format_options: self.resource.format_options.clone(),
+            schema_discovery: Some(self.resource.schema_discovery),
             compression: self.resource.compression.clone(),
             auth: self
                 .source
@@ -1193,11 +1205,34 @@ pub fn compile_file_resource_plan(
         driver.descriptor().format_id.as_str(),
         plan.format_options.clone(),
     )?;
+    let schema_discovery = plan
+        .schema_discovery
+        .unwrap_or(compiled_format.descriptor.discovery.default_kind);
+    if !compiled_format
+        .descriptor
+        .discovery
+        .supports(schema_discovery)
+    {
+        return Err(CdfError::contract(format!(
+            "file format `{}` does not support schema_discovery = `{}`; supported values: {}",
+            compiled_format.descriptor.format_id,
+            schema_discovery,
+            compiled_format
+                .descriptor
+                .discovery
+                .supported_kinds
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join(", ")
+        )));
+    }
     let mut resolved = plan.clone();
     resolved.format = Some(FileFormatDeclaration::named(
         compiled_format.descriptor.format_id.as_str().to_owned(),
     )?);
     resolved.format_declared = format_declared;
+    resolved.schema_discovery = Some(schema_discovery);
     Ok((resolved, compiled_format))
 }
 
@@ -1674,6 +1709,46 @@ mod tests {
     }
 
     #[test]
+    fn compiled_format_capabilities_govern_schema_discovery_selection() {
+        let formats = crate::test_format_registry();
+        let driver = FileSourceDriver::new(Arc::clone(&formats), |_, _, _| {
+            Err(CdfError::internal("compile-only test runtime factory"))
+        })
+        .unwrap();
+
+        let default = driver.compile(compile_request()).unwrap();
+        let physical: FilePhysicalPlan = serde_json::from_value(default.physical_plan).unwrap();
+        assert_eq!(
+            physical.resource.schema_discovery,
+            FormatDiscoveryKind::FormatMetadata
+        );
+
+        let mut full = compile_request();
+        full.resource_options
+            .insert("glob".to_owned(), serde_json::json!("events.ndjson"));
+        full.resource_options.insert(
+            "schema_discovery".to_owned(),
+            serde_json::json!("full_content"),
+        );
+        let full = driver.compile(full).unwrap();
+        let physical: FilePhysicalPlan = serde_json::from_value(full.physical_plan).unwrap();
+        assert_eq!(
+            physical.resource.schema_discovery,
+            FormatDiscoveryKind::FullContent
+        );
+
+        let mut unsupported = compile_request();
+        unsupported.resource_options.insert(
+            "schema_discovery".to_owned(),
+            serde_json::json!("full_content"),
+        );
+        let error = driver.compile(unsupported).unwrap_err();
+        assert!(error.message.contains("file format `parquet`"));
+        assert!(error.message.contains("schema_discovery = `full_content`"));
+        assert!(error.message.contains("supported values: format_metadata"));
+    }
+
+    #[test]
     fn recompiling_an_inferred_format_preserves_its_provenance() {
         let formats = crate::test_format_registry();
         let unresolved = FileResourcePlan {
@@ -1683,6 +1758,7 @@ mod tests {
             format: None,
             format_declared: false,
             format_options: serde_json::json!({}),
+            schema_discovery: None,
             compression: FileCompressionDeclaration::auto(),
             auth: None,
             credentials: None,
@@ -1794,5 +1870,65 @@ mod tests {
             .unwrap();
         assert_eq!(bounded_health.0.len(), 1);
         assert_eq!(bounded_health.0[0].status, SourceHealthStatus::Failed);
+    }
+
+    #[test]
+    fn full_content_file_discovery_ignores_bounded_probe_limits_and_records_coverage() {
+        let root = tempfile::tempdir().unwrap();
+        let payload = b"{\"id\":1}\n{\"id\":2,\"late\":\"observed\"}\n";
+        std::fs::write(root.path().join("events.ndjson"), payload).unwrap();
+        let formats = crate::test_format_registry();
+        let runtime_formats = Arc::clone(&formats);
+        let transforms = crate::test_transform_registry();
+        let driver = FileSourceDriver::new(Arc::clone(&formats), move |_, execution, egress| {
+            Ok(FileRuntimeDependencies::new(
+                FileTransportFacade::new().with_execution_services(execution.clone()),
+                execution,
+                Arc::clone(&runtime_formats),
+                Arc::clone(&transforms),
+                egress,
+            ))
+        })
+        .unwrap();
+        let mut request = compile_request();
+        request.source_options.insert(
+            "root".to_owned(),
+            serde_json::json!(root.path().display().to_string()),
+        );
+        request
+            .resource_options
+            .insert("glob".to_owned(), serde_json::json!("*.ndjson"));
+        request
+            .resource_options
+            .insert("format".to_owned(), serde_json::json!("ndjson"));
+        request
+            .resource_options
+            .insert("compression".to_owned(), serde_json::json!("none"));
+        request.resource_options.insert(
+            "schema_discovery".to_owned(),
+            serde_json::json!("full_content"),
+        );
+        let plan = driver.compile(request).unwrap();
+        let execution = crate::test_execution_services();
+        let context = SourceResolutionContext::new(
+            root.path(),
+            Arc::new(NoopSecretProvider),
+            &execution,
+            Arc::new(cdf_http::EgressAllowlist::allow_any()),
+        );
+        let session = driver.discovery_session(&plan, &context).unwrap();
+        assert_eq!(session.kind(), SourceDiscoveryKind::FullContent);
+        let candidate = session.candidates().unwrap().remove(0);
+        let observation = session
+            .observe(&candidate, &SourceDiscoveryRequest::new(8, 1).unwrap())
+            .unwrap();
+
+        assert_eq!(observation.bytes_read, payload.len() as u64);
+        assert_eq!(observation.records_read, 2);
+        assert_eq!(observation.schema.field(1).name(), "late");
+        assert_eq!(
+            observation.source_identity["content_coverage"],
+            "full_content"
+        );
     }
 }

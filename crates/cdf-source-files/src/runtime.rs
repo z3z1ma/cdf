@@ -173,7 +173,7 @@ impl FileRuntimeDependencies {
 }
 
 #[derive(Clone, Debug)]
-pub struct BoundedBinarySchemaProbe {
+pub struct BinarySchemaProbe {
     pub schema: SchemaRef,
     pub source_identity: BTreeMap<String, String>,
     pub probe_bytes_read: u64,
@@ -181,24 +181,25 @@ pub struct BoundedBinarySchemaProbe {
 }
 
 #[derive(Clone, Debug)]
-pub struct BoundedSchemaDiscoveryRequest<'a> {
+pub struct SchemaDiscoveryRequest<'a> {
     pub resource_id: &'a ResourceId,
     pub format: &'a FileFormatDeclaration,
     pub format_declared: bool,
     pub format_options: &'a serde_json::Value,
+    pub discovery_kind: cdf_runtime::FormatDiscoveryKind,
     pub transform_name: &'a str,
     pub maximum_bytes: u64,
     pub maximum_records: u64,
     pub cancellation: cdf_runtime::RunCancellation,
 }
 
-pub fn discover_local_binary_schema_bounded(
+pub fn discover_local_binary_schema(
     path: impl AsRef<Path>,
     location: &str,
     dependencies: &FileRuntimeDependencies,
     initial_bytes_read: u64,
-    request: BoundedSchemaDiscoveryRequest<'_>,
-) -> Result<BoundedBinarySchemaProbe> {
+    request: SchemaDiscoveryRequest<'_>,
+) -> Result<BinarySchemaProbe> {
     request.cancellation.check()?;
     let path = path.as_ref().to_path_buf();
     let source_size = fs::metadata(&path)
@@ -220,7 +221,8 @@ pub fn discover_local_binary_schema_bounded(
         .map(|driver| driver.descriptor().transform_id.clone());
     let needs_spool = transform_id.is_some()
         && driver.descriptor().source_access != cdf_runtime::FormatSourceAccess::Sequential;
-    let retain_sequential = retains_sequential_discovery_payload(driver.descriptor());
+    let retain_sequential =
+        retains_sequential_discovery_payload(driver.descriptor(), request.discovery_kind);
     let extraction_content_hash =
         (needs_spool || retain_sequential).then(SourceContentDigest::default);
     let upstream = match extraction_content_hash.as_ref() {
@@ -259,6 +261,7 @@ pub fn discover_local_binary_schema_bounded(
     };
     let maximum_bytes = request.maximum_bytes;
     let maximum_records = request.maximum_records;
+    let discovery_kind = request.discovery_kind;
     let cancellation = request.cancellation.clone();
     let observation = dependencies.execution().run_io({
         let dependencies = dependencies.clone();
@@ -313,16 +316,18 @@ pub fn discover_local_binary_schema_bounded(
                 cancellation.clone(),
             )
             .await?;
-            let discovery_bytes = discovery_budget_after_confirmation(
+            let discovery_bytes = schema_observation_byte_limit(
                 maximum_bytes,
                 confirmation_bytes,
                 &confirmation,
+                discovery_kind,
             )?;
             let observation = driver
                 .discover(
                     Arc::clone(&source),
                     FormatDiscoveryRequest {
                         options,
+                        discovery_kind,
                         maximum_bytes: discovery_bytes,
                         maximum_records,
                         memory: discovery_memory,
@@ -377,7 +382,7 @@ pub fn discover_local_binary_schema_bounded(
     source_identity.insert("path".to_owned(), path.to_string_lossy().into_owned());
     source_identity.insert("compression".to_owned(), request.transform_name.to_owned());
     source_identity.insert("source_size_bytes".to_owned(), source_size.to_string());
-    Ok(BoundedBinarySchemaProbe {
+    Ok(BinarySchemaProbe {
         schema,
         source_identity,
         probe_bytes_read: initial_bytes_read.saturating_add(probe_bytes_read),
@@ -385,11 +390,11 @@ pub fn discover_local_binary_schema_bounded(
     })
 }
 
-pub fn discover_transport_binary_schema_bounded(
+pub fn discover_transport_binary_schema(
     resource: FileTransportResource,
     dependencies: &FileRuntimeDependencies,
-    request: BoundedSchemaDiscoveryRequest<'_>,
-) -> Result<BoundedBinarySchemaProbe> {
+    request: SchemaDiscoveryRequest<'_>,
+) -> Result<BinarySchemaProbe> {
     let control = FileTransportControl::new(request.cancellation.clone(), None);
     let observation = dependencies
         .with_transport(|transport, egress| transport.metadata(egress, &resource, &control))?;
@@ -422,7 +427,8 @@ pub fn discover_transport_binary_schema_bounded(
     let needs_spool = driver.descriptor().source_access
         != cdf_runtime::FormatSourceAccess::Sequential
         && (!upstream.capabilities().seekable || transform_id.is_some());
-    let retain_sequential = retains_sequential_discovery_payload(driver.descriptor());
+    let retain_sequential =
+        retains_sequential_discovery_payload(driver.descriptor(), request.discovery_kind);
     let extraction_content_hash = ((needs_spool || retain_sequential)
         && metadata.generation_strength() == GenerationStrength::Weak)
         .then(SourceContentDigest::default);
@@ -466,6 +472,7 @@ pub fn discover_transport_binary_schema_bounded(
     };
     let maximum_bytes = request.maximum_bytes;
     let maximum_records = request.maximum_records;
+    let discovery_kind = request.discovery_kind;
     let cancellation = request.cancellation.clone();
     let observation = execution.run_io({
         let dependencies = dependencies.clone();
@@ -519,16 +526,18 @@ pub fn discover_transport_binary_schema_bounded(
                 cancellation.clone(),
             )
             .await?;
-            let discovery_bytes = discovery_budget_after_confirmation(
+            let discovery_bytes = schema_observation_byte_limit(
                 maximum_bytes,
                 confirmation_bytes,
                 &confirmation,
+                discovery_kind,
             )?;
             let observation = driver
                 .discover(
                     Arc::clone(&source),
                     FormatDiscoveryRequest {
                         options,
+                        discovery_kind,
                         maximum_bytes: discovery_bytes,
                         maximum_records,
                         memory,
@@ -575,7 +584,7 @@ pub fn discover_transport_binary_schema_bounded(
         ("size_bytes".to_owned(), size_bytes.to_string()),
     ]);
     merge_discovery_evidence(&mut source_identity, observation.evidence)?;
-    let mut probe = BoundedBinarySchemaProbe {
+    let mut probe = BinarySchemaProbe {
         schema: observation.arrow_schema,
         source_identity,
         probe_bytes_read,
@@ -627,6 +636,18 @@ fn discovery_budget_after_confirmation(
         )));
     }
     Ok(remaining)
+}
+
+fn schema_observation_byte_limit(
+    maximum_bytes: u64,
+    confirmation_bytes: u64,
+    context: &FormatConfirmationContext,
+    discovery_kind: cdf_runtime::FormatDiscoveryKind,
+) -> Result<u64> {
+    if discovery_kind == cdf_runtime::FormatDiscoveryKind::FullContent {
+        return Ok(maximum_bytes);
+    }
+    discovery_budget_after_confirmation(maximum_bytes, confirmation_bytes, context)
 }
 
 async fn confirm_registered_format(
@@ -1304,10 +1325,13 @@ struct PreparedInput {
     payload_cache_key: Option<crate::payload_cache::FilePayloadCacheKey>,
 }
 
-fn retains_sequential_discovery_payload(descriptor: &cdf_runtime::FormatDriverDescriptor) -> bool {
+fn retains_sequential_discovery_payload(
+    descriptor: &cdf_runtime::FormatDriverDescriptor,
+    discovery_kind: cdf_runtime::FormatDiscoveryKind,
+) -> bool {
     descriptor.source_access == cdf_runtime::FormatSourceAccess::Sequential
         && matches!(
-            descriptor.discovery_kind,
+            discovery_kind,
             cdf_runtime::FormatDiscoveryKind::BoundedContent
                 | cdf_runtime::FormatDiscoveryKind::FullContent
         )
@@ -4937,7 +4961,9 @@ mod tests {
                     predicate_pushdown: cdf_kernel::PushdownFidelity::Unsupported,
                     predicate_operators: Vec::new(),
                     source_access: cdf_runtime::FormatSourceAccess::Sequential,
-                    discovery_kind: cdf_runtime::FormatDiscoveryKind::BoundedContent,
+                    discovery: cdf_runtime::FormatDiscoveryCapabilities::only(
+                        cdf_runtime::FormatDiscoveryKind::BoundedContent,
+                    ),
                     decode_unit_policy: "whole_mock_file".to_owned(),
                     error_isolation: cdf_runtime::FormatErrorIsolation::DecodeUnit,
                     decode_cpu: cdf_runtime::CpuTaskSpec {
@@ -5277,6 +5303,7 @@ mod tests {
             format: Some(FileFormatDeclaration::parquet()),
             format_declared: true,
             format_options: serde_json::json!({}),
+            schema_discovery: None,
             compression: FileCompressionDeclaration::none(),
             auth: None,
             credentials: None,
@@ -5325,6 +5352,7 @@ mod tests {
             format: Some(FileFormatDeclaration::named("external_mock").unwrap()),
             format_declared: true,
             format_options: serde_json::json!({}),
+            schema_discovery: None,
             compression: FileCompressionDeclaration::auto(),
             auth: None,
             credentials: None,
@@ -5344,16 +5372,17 @@ mod tests {
             })
             .unwrap();
         assert_eq!(resolved[0].compression.mode_name(), "external_passthrough");
-        let probe = discover_local_binary_schema_bounded(
+        let probe = discover_local_binary_schema(
             &path,
             "events.mock.mt",
             &dependencies,
             0,
-            BoundedSchemaDiscoveryRequest {
+            SchemaDiscoveryRequest {
                 resource_id: &resource_id,
                 format: plan.resolved_format().unwrap(),
                 format_declared: plan.format_declared,
                 format_options: &plan.format_options,
+                discovery_kind: cdf_runtime::FormatDiscoveryKind::BoundedContent,
                 transform_name: "external_passthrough",
                 maximum_bytes: 1024,
                 maximum_records: 1_000,
@@ -5564,6 +5593,7 @@ mod tests {
             format: Some(FileFormatDeclaration::parquet()),
             format_declared: true,
             format_options: serde_json::json!({}),
+            schema_discovery: None,
             compression: FileCompressionDeclaration::none(),
             auth: None,
             credentials: None,
@@ -5875,6 +5905,7 @@ mod tests {
             format: Some(FileFormatDeclaration::parquet()),
             format_declared: true,
             format_options: serde_json::json!({}),
+            schema_discovery: None,
             compression: FileCompressionDeclaration::auto(),
             auth: None,
             credentials: None,
@@ -5895,16 +5926,17 @@ mod tests {
             .unwrap();
         assert_eq!(resolved[0].compression.mode_name(), "gzip");
         assert_eq!(resolved[0].format.extension.as_deref(), Some("parquet"));
-        let probe = discover_local_binary_schema_bounded(
+        let probe = discover_local_binary_schema(
             root.path().join("events.parquet.gz"),
             "events.parquet.gz",
             &dependencies,
             0,
-            BoundedSchemaDiscoveryRequest {
+            SchemaDiscoveryRequest {
                 resource_id: &resource_id,
                 format: plan.resolved_format().unwrap(),
                 format_declared: plan.format_declared,
                 format_options: &plan.format_options,
+                discovery_kind: cdf_runtime::FormatDiscoveryKind::FormatMetadata,
                 transform_name: "gzip",
                 maximum_bytes: 64 * 1024 * 1024,
                 maximum_records: 1_000,
@@ -5987,6 +6019,7 @@ mod tests {
             format: Some(FileFormatDeclaration::arrow_ipc()),
             format_declared: true,
             format_options: serde_json::json!({}),
+            schema_discovery: None,
             compression: FileCompressionDeclaration::none(),
             auth: None,
             credentials: None,
@@ -6034,6 +6067,7 @@ mod tests {
             format: Some(FileFormatDeclaration::ndjson()),
             format_declared: true,
             format_options: serde_json::json!({}),
+            schema_discovery: None,
             compression: FileCompressionDeclaration::none(),
             auth: None,
             credentials: None,
@@ -6117,6 +6151,7 @@ mod tests {
             format: Some(FileFormatDeclaration::parquet()),
             format_declared: true,
             format_options: serde_json::json!({}),
+            schema_discovery: None,
             compression: FileCompressionDeclaration::none(),
             auth: None,
             credentials: None,
@@ -6515,6 +6550,7 @@ mod tests {
             format: Some(FileFormatDeclaration::parquet()),
             format_declared: true,
             format_options: serde_json::json!({}),
+            schema_discovery: None,
             compression: FileCompressionDeclaration::none(),
             auth: None,
             credentials: None,
@@ -6692,6 +6728,7 @@ mod tests {
             format: Some(FileFormatDeclaration::parquet()),
             format_declared: true,
             format_options: serde_json::json!({}),
+            schema_discovery: None,
             compression: FileCompressionDeclaration::none(),
             auth: None,
             credentials: None,
@@ -6748,6 +6785,7 @@ mod tests {
             format: Some(FileFormatDeclaration::ndjson()),
             format_declared: true,
             format_options: serde_json::json!({}),
+            schema_discovery: None,
             compression: FileCompressionDeclaration::auto(),
             auth: None,
             credentials: None,
@@ -6801,6 +6839,7 @@ mod tests {
             format: Some(FileFormatDeclaration::parquet()),
             format_declared: true,
             format_options: serde_json::json!({}),
+            schema_discovery: None,
             compression: FileCompressionDeclaration::none(),
             auth: None,
             credentials: None,
@@ -6928,6 +6967,7 @@ mod tests {
             format: Some(FileFormatDeclaration::ndjson()),
             format_declared: true,
             format_options: serde_json::json!({}),
+            schema_discovery: None,
             compression: FileCompressionDeclaration::auto(),
             auth: None,
             credentials: None,
@@ -7023,6 +7063,7 @@ mod tests {
             format: Some(FileFormatDeclaration::csv()),
             format_declared: true,
             format_options: serde_json::json!({}),
+            schema_discovery: None,
             compression: FileCompressionDeclaration::none(),
             auth: None,
             credentials: None,
@@ -7041,16 +7082,17 @@ mod tests {
                 )
             })
             .unwrap();
-        let probe = discover_local_binary_schema_bounded(
+        let probe = discover_local_binary_schema(
             &path,
             "events.csv",
             &dependencies,
             0,
-            BoundedSchemaDiscoveryRequest {
+            SchemaDiscoveryRequest {
                 resource_id: &resource_id,
                 format: plan.resolved_format().unwrap(),
                 format_declared: plan.format_declared,
                 format_options: &plan.format_options,
+                discovery_kind: cdf_runtime::FormatDiscoveryKind::BoundedContent,
                 transform_name: "none",
                 maximum_bytes: 1024 * 1024,
                 maximum_records: 1_000,
@@ -7095,12 +7137,12 @@ mod tests {
     }
 
     #[test]
-    fn local_ndjson_discovery_replays_and_continues_the_same_source() {
+    fn local_ndjson_full_content_discovery_replays_the_same_source_for_extraction() {
         let root = tempfile::tempdir().unwrap();
         let path = root.path().join("events.ndjson");
         std::fs::write(
             &path,
-            b"{\"id\":1,\"name\":\"alpha\"}\n{\"id\":2,\"name\":\"beta\"}\n",
+            b"{\"id\":1,\"name\":\"alpha\"}\n{\"id\":2,\"name\":\"beta\",\"late\":true}\n",
         )
         .unwrap();
         let dependencies = FileRuntimeDependencies::new(
@@ -7117,6 +7159,7 @@ mod tests {
             format: Some(FileFormatDeclaration::ndjson()),
             format_declared: true,
             format_options: serde_json::json!({}),
+            schema_discovery: Some(cdf_runtime::FormatDiscoveryKind::FullContent),
             compression: FileCompressionDeclaration::none(),
             auth: None,
             credentials: None,
@@ -7135,25 +7178,28 @@ mod tests {
                 )
             })
             .unwrap();
-        let probe = discover_local_binary_schema_bounded(
+        let probe = discover_local_binary_schema(
             &path,
             "events.ndjson",
             &dependencies,
             0,
-            BoundedSchemaDiscoveryRequest {
+            SchemaDiscoveryRequest {
                 resource_id: &resource_id,
                 format: plan.resolved_format().unwrap(),
                 format_declared: plan.format_declared,
                 format_options: &plan.format_options,
+                discovery_kind: cdf_runtime::FormatDiscoveryKind::FullContent,
                 transform_name: "none",
-                maximum_bytes: 1024 * 1024,
-                maximum_records: 1_000,
+                maximum_bytes: 8,
+                maximum_records: 1,
                 cancellation: cdf_runtime::RunCancellation::default(),
             },
         )
         .unwrap();
         assert_eq!(probe.schema.field(0).data_type(), &DataType::Int64);
         assert_eq!(probe.schema.field(1).data_type(), &DataType::Utf8);
+        assert_eq!(probe.schema.field(2).data_type(), &DataType::Boolean);
+        assert_eq!(probe.source_identity["content_coverage"], "full_content");
         assert_eq!(dependencies.prepared_payloads().pending_count().unwrap(), 1);
         std::fs::remove_file(&path).unwrap();
 
@@ -7352,16 +7398,34 @@ mod tests {
     #[test]
     fn bounded_and_full_content_drivers_share_the_retained_stream_handoff() {
         let mut descriptor = ExternalMockFormat::new().descriptor().clone();
-        assert!(retains_sequential_discovery_payload(&descriptor));
+        assert!(retains_sequential_discovery_payload(
+            &descriptor,
+            cdf_runtime::FormatDiscoveryKind::BoundedContent
+        ));
 
-        descriptor.discovery_kind = cdf_runtime::FormatDiscoveryKind::FullContent;
-        assert!(retains_sequential_discovery_payload(&descriptor));
+        descriptor.discovery = cdf_runtime::FormatDiscoveryCapabilities::only(
+            cdf_runtime::FormatDiscoveryKind::FullContent,
+        );
+        assert!(retains_sequential_discovery_payload(
+            &descriptor,
+            cdf_runtime::FormatDiscoveryKind::FullContent
+        ));
 
-        descriptor.discovery_kind = cdf_runtime::FormatDiscoveryKind::FormatMetadata;
-        assert!(!retains_sequential_discovery_payload(&descriptor));
-        descriptor.discovery_kind = cdf_runtime::FormatDiscoveryKind::FullContent;
+        descriptor.discovery = cdf_runtime::FormatDiscoveryCapabilities::only(
+            cdf_runtime::FormatDiscoveryKind::FormatMetadata,
+        );
+        assert!(!retains_sequential_discovery_payload(
+            &descriptor,
+            cdf_runtime::FormatDiscoveryKind::FormatMetadata
+        ));
+        descriptor.discovery = cdf_runtime::FormatDiscoveryCapabilities::only(
+            cdf_runtime::FormatDiscoveryKind::FullContent,
+        );
         descriptor.source_access = cdf_runtime::FormatSourceAccess::Adaptive;
-        assert!(!retains_sequential_discovery_payload(&descriptor));
+        assert!(!retains_sequential_discovery_payload(
+            &descriptor,
+            cdf_runtime::FormatDiscoveryKind::FullContent
+        ));
     }
 
     #[test]
@@ -7387,6 +7451,7 @@ mod tests {
             format: Some(FileFormatDeclaration::json()),
             format_declared: true,
             format_options: serde_json::json!({}),
+            schema_discovery: None,
             compression: FileCompressionDeclaration::none(),
             auth: None,
             credentials: None,
@@ -7405,16 +7470,17 @@ mod tests {
                 )
             })
             .unwrap();
-        let probe = discover_local_binary_schema_bounded(
+        let probe = discover_local_binary_schema(
             &path,
             "events.json",
             &dependencies,
             0,
-            BoundedSchemaDiscoveryRequest {
+            SchemaDiscoveryRequest {
                 resource_id: &resource_id,
                 format: plan.resolved_format().unwrap(),
                 format_declared: plan.format_declared,
                 format_options: &plan.format_options,
+                discovery_kind: cdf_runtime::FormatDiscoveryKind::BoundedContent,
                 transform_name: "none",
                 maximum_bytes: 1024 * 1024,
                 maximum_records: 1_000,
@@ -7469,6 +7535,7 @@ mod tests {
             format: Some(FileFormatDeclaration::ndjson()),
             format_declared: true,
             format_options: serde_json::json!({}),
+            schema_discovery: None,
             compression: FileCompressionDeclaration::none(),
             auth: None,
             credentials: None,
@@ -7515,4 +7582,14 @@ fn format_confirmation_shares_the_configured_discovery_byte_budget() {
     for confirmation_bytes in [1_024, 1_025] {
         assert!(discovery_budget_after_confirmation(1_024, confirmation_bytes, &context).is_err());
     }
+    assert_eq!(
+        schema_observation_byte_limit(
+            1,
+            1_024,
+            &context,
+            cdf_runtime::FormatDiscoveryKind::FullContent,
+        )
+        .unwrap(),
+        1
+    );
 }

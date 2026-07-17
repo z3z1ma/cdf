@@ -132,6 +132,7 @@ pub struct FileResourcePlan {
     pub format: Option<FileFormatDeclaration>,
     pub format_declared: bool,
     pub format_options: serde_json::Value,
+    pub schema_discovery: Option<cdf_runtime::FormatDiscoveryKind>,
     pub compression: FileCompressionDeclaration,
     pub auth: Option<AuthScheme>,
     pub credentials: Option<SecretUri>,
@@ -143,6 +144,16 @@ impl FileResourcePlan {
         self.format.as_ref().ok_or_else(|| {
             cdf_kernel::CdfError::internal(
                 "file resource format selection was not compiled by the registered source driver",
+            )
+        })
+    }
+
+    pub fn resolved_schema_discovery(
+        &self,
+    ) -> cdf_kernel::Result<cdf_runtime::FormatDiscoveryKind> {
+        self.schema_discovery.ok_or_else(|| {
+            cdf_kernel::CdfError::internal(
+                "file resource schema discovery selection was not compiled by the registered source driver",
             )
         })
     }

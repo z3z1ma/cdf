@@ -2,6 +2,7 @@
 
 use std::{
     collections::{BTreeMap, BTreeSet},
+    io::Cursor,
     ops::Range,
     sync::{
         Arc,
@@ -23,9 +24,9 @@ use cdf_memory::{ConsumerKey, MemoryClass, MemoryLease, ReservationRequest, rese
 use cdf_runtime::{
     AccountedByteStream, AccountedChunksReader, AccountedPhysicalBatch, ByteExtent, ByteSource,
     DecodePlanningRequest, DecodeUnitPlan, FormatDecodeSession, FormatDetection,
-    FormatDetectionConfidence, FormatDetectionProbe, FormatDiscoveryRequest, FormatDriver,
-    FormatDriverDescriptor, FormatId, FormatProbe, PhysicalDecodeRequest, PhysicalDecodeStream,
-    PhysicalSchemaObservation, SequentialReadRequest,
+    FormatDetectionConfidence, FormatDetectionProbe, FormatDiscoveryKind, FormatDiscoveryRequest,
+    FormatDriver, FormatDriverDescriptor, FormatId, FormatProbe, PhysicalDecodeRequest,
+    PhysicalDecodeStream, PhysicalSchemaObservation, SequentialReadRequest,
 };
 use futures_util::{TryStreamExt, stream};
 use memchr::{memchr, memchr_iter, memrchr};
@@ -36,6 +37,7 @@ use serde::{
 use serde_json::value::RawValue;
 
 const DISCOVERY_CHUNK_BYTES: u64 = 1024 * 1024;
+const FULL_CONTENT_INFERENCE_WINDOW_BYTES: u64 = 8 * 1024 * 1024;
 const MAXIMUM_DECODE_WORKING_SET_BYTES: u64 = 64 * 1024 * 1024;
 const MAXIMUM_CONFIGURED_RECORD_BYTES: u64 = 32 * 1024 * 1024;
 const DEFAULT_MAXIMUM_RECORD_BYTES: u64 = 16 * 1024 * 1024;
@@ -107,12 +109,267 @@ impl JsonDocumentOptions {
 }
 
 fn validate_maximum_record_bytes(value: u64) -> Result<()> {
+    // Every token and string byte consumes at least one record byte. This limit is therefore also
+    // a hard token-count and string-size ceiling without adding counters to the decode hot loop.
     if value == 0 || value > MAXIMUM_CONFIGURED_RECORD_BYTES {
         return Err(CdfError::contract(format!(
             "JSON maximum_record_bytes must be in 1..={MAXIMUM_CONFIGURED_RECORD_BYTES}"
         )));
     }
     Ok(())
+}
+
+fn validate_json_discovery_kind(kind: FormatDiscoveryKind) -> Result<()> {
+    if matches!(
+        kind,
+        FormatDiscoveryKind::BoundedContent | FormatDiscoveryKind::FullContent
+    ) {
+        Ok(())
+    } else {
+        Err(CdfError::contract(
+            "JSON format discovery supports `bounded_content` or `full_content`",
+        ))
+    }
+}
+
+async fn infer_full_content_json_schema(
+    mut input: AccountedByteStream,
+    memory: Arc<dyn cdf_memory::MemoryCoordinator>,
+    cancellation: cdf_runtime::RunCancellation,
+    maximum_record_bytes: u64,
+    target_window_bytes: u64,
+) -> Result<(Schema, u64, u64)> {
+    validate_maximum_record_bytes(maximum_record_bytes)?;
+    if target_window_bytes == 0 {
+        return Err(CdfError::contract(
+            "full-content JSON inference requires a nonzero window target",
+        ));
+    }
+    let window_capacity = target_window_bytes
+        .checked_add(maximum_record_bytes)
+        .ok_or_else(|| CdfError::contract("full-content JSON inference window overflowed"))?;
+    let capacity = usize::try_from(window_capacity)
+        .map_err(|_| CdfError::contract("full-content JSON inference window exceeds usize"))?;
+    let working_set_bytes = (96 * 1024 * 1024_u64)
+        .max(MAXIMUM_DECODE_WORKING_SET_BYTES)
+        .max(maximum_record_bytes.saturating_mul(3));
+    let _working_set = reserve(
+        memory,
+        ReservationRequest::new(
+            ConsumerKey::new("json-full-content-inference", MemoryClass::Discovery)?,
+            working_set_bytes,
+        )?
+        .as_minimum_working_set(),
+    )
+    .await?;
+    let mut window = Vec::with_capacity(capacity);
+    let mut effective_schema = Schema::empty();
+    let mut sampled_bytes = 0_u64;
+    let mut sampled_records = 0_u64;
+    let mut current_record_bytes = 0_u64;
+
+    while let Some(chunk) = input.try_next().await? {
+        cancellation.check()?;
+        sampled_bytes = sampled_bytes
+            .checked_add(
+                u64::try_from(chunk.payload().len())
+                    .map_err(|_| CdfError::data("JSON discovery chunk length exceeds u64"))?,
+            )
+            .ok_or_else(|| CdfError::data("JSON discovery byte count overflowed"))?;
+        let mut offset = 0_usize;
+        for newline in memchr_iter(b'\n', chunk.payload()) {
+            let record_fragment = newline.saturating_sub(offset);
+            current_record_bytes =
+                current_record_bytes
+                    .checked_add(u64::try_from(record_fragment).map_err(|_| {
+                        CdfError::data("JSON discovery record fragment exceeds u64")
+                    })?)
+                    .ok_or_else(|| CdfError::data("JSON discovery record byte count overflowed"))?;
+            if current_record_bytes > maximum_record_bytes {
+                return Err(maximum_record_bytes_error(maximum_record_bytes));
+            }
+            append_discovery_window(&mut window, &chunk.payload()[offset..=newline], capacity)?;
+            current_record_bytes = 0;
+            offset = newline + 1;
+            if u64::try_from(window.len()).unwrap_or(u64::MAX) >= target_window_bytes {
+                infer_and_merge_json_window(&mut effective_schema, &mut sampled_records, &window)?;
+                window.clear();
+            }
+        }
+        if offset < chunk.payload().len() {
+            let fragment = &chunk.payload()[offset..];
+            current_record_bytes =
+                current_record_bytes
+                    .checked_add(u64::try_from(fragment.len()).map_err(|_| {
+                        CdfError::data("JSON discovery record fragment exceeds u64")
+                    })?)
+                    .ok_or_else(|| CdfError::data("JSON discovery record byte count overflowed"))?;
+            if current_record_bytes > maximum_record_bytes {
+                return Err(maximum_record_bytes_error(maximum_record_bytes));
+            }
+            append_discovery_window(&mut window, fragment, capacity)?;
+        }
+    }
+    cancellation.check()?;
+    if !window.is_empty() {
+        infer_and_merge_json_window(&mut effective_schema, &mut sampled_records, &window)?;
+    }
+    Ok((effective_schema, sampled_bytes, sampled_records))
+}
+
+fn append_discovery_window(window: &mut Vec<u8>, bytes: &[u8], capacity: usize) -> Result<()> {
+    let required = window
+        .len()
+        .checked_add(bytes.len())
+        .ok_or_else(|| CdfError::data("JSON discovery window length overflowed"))?;
+    if required > capacity {
+        return Err(CdfError::internal(
+            "JSON discovery window exceeded its record-plus-window authority",
+        ));
+    }
+    window.extend_from_slice(bytes);
+    Ok(())
+}
+
+fn infer_and_merge_json_window(
+    effective_schema: &mut Schema,
+    sampled_records: &mut u64,
+    window: &[u8],
+) -> Result<()> {
+    let (observed, records) = infer_json_schema(Cursor::new(window), None)
+        .map_err(|error| CdfError::data(format!("infer full-content JSON schema: {error}")))?;
+    *sampled_records = sampled_records
+        .checked_add(
+            u64::try_from(records)
+                .map_err(|_| CdfError::data("JSON sampled record count exceeds u64"))?,
+        )
+        .ok_or_else(|| CdfError::data("JSON sampled record count overflowed"))?;
+    *effective_schema = merge_json_inferred_schemas(effective_schema, &observed)?;
+    Ok(())
+}
+
+fn merge_json_inferred_schemas(left: &Schema, right: &Schema) -> Result<Schema> {
+    let fields = merge_json_inferred_fields(left.fields(), right.fields(), "$")?;
+    let mut metadata = left.metadata().clone();
+    for (key, value) in right.metadata() {
+        if metadata
+            .insert(key.clone(), value.clone())
+            .is_some_and(|prior| prior != *value)
+        {
+            return Err(CdfError::data(format!(
+                "JSON inference metadata key {key:?} changed across windows"
+            )));
+        }
+    }
+    Ok(Schema::new_with_metadata(fields, metadata))
+}
+
+fn merge_json_inferred_fields(
+    left: &arrow_schema::Fields,
+    right: &arrow_schema::Fields,
+    path: &str,
+) -> Result<Vec<Arc<Field>>> {
+    let mut merged = left.iter().cloned().collect::<Vec<_>>();
+    let mut positions = merged
+        .iter()
+        .enumerate()
+        .map(|(index, field)| (field.name().clone(), index))
+        .collect::<BTreeMap<_, _>>();
+    for right_field in right {
+        if let Some(&index) = positions.get(right_field.name()) {
+            let left_field = &merged[index];
+            let field_path = format!("{path}.{}", right_field.name());
+            let data_type = merge_json_inferred_types(
+                left_field.data_type(),
+                right_field.data_type(),
+                &field_path,
+            )?;
+            let mut metadata = left_field.metadata().clone();
+            for (key, value) in right_field.metadata() {
+                if metadata
+                    .insert(key.clone(), value.clone())
+                    .is_some_and(|prior| prior != *value)
+                {
+                    return Err(CdfError::data(format!(
+                        "JSON inference field metadata changed at {field_path}.{key}"
+                    )));
+                }
+            }
+            merged[index] = Arc::new(
+                Field::new(
+                    left_field.name(),
+                    data_type,
+                    left_field.is_nullable() || right_field.is_nullable(),
+                )
+                .with_metadata(metadata),
+            );
+        } else {
+            positions.insert(right_field.name().clone(), merged.len());
+            merged.push(Arc::clone(right_field));
+        }
+    }
+    Ok(merged)
+}
+
+fn merge_json_inferred_types(left: &DataType, right: &DataType, path: &str) -> Result<DataType> {
+    use DataType::{Boolean, Float64, Int64, List, Null, Struct, Utf8};
+    Ok(match (left, right) {
+        (Null, other) | (other, Null) => other.clone(),
+        (Struct(left), Struct(right)) => {
+            Struct(merge_json_inferred_fields(left, right, path)?.into())
+        }
+        (List(left), List(right)) => List(Arc::new(Field::new_list_field(
+            merge_json_inferred_types(left.data_type(), right.data_type(), path)?,
+            true,
+        ))),
+        (List(item), scalar) if json_inferred_scalar(scalar) => {
+            List(Arc::new(Field::new_list_field(
+                merge_json_inferred_types(item.data_type(), scalar, path)?,
+                true,
+            )))
+        }
+        (scalar, List(item)) if json_inferred_scalar(scalar) => {
+            List(Arc::new(Field::new_list_field(
+                merge_json_inferred_types(scalar, item.data_type(), path)?,
+                true,
+            )))
+        }
+        (Int64, Float64) | (Float64, Int64) => Float64,
+        (Boolean, Boolean) => Boolean,
+        (Int64, Int64) => Int64,
+        (Float64, Float64) => Float64,
+        (Utf8, Utf8) => Utf8,
+        (left, right) if json_inferred_scalar(left) && json_inferred_scalar(right) => Utf8,
+        (left, right) => {
+            return Err(CdfError::data(format!(
+                "incompatible JSON types across full-content inference windows at {path}: {left:?} versus {right:?}"
+            )));
+        }
+    })
+}
+
+fn json_inferred_scalar(data_type: &DataType) -> bool {
+    matches!(
+        data_type,
+        DataType::Null | DataType::Boolean | DataType::Int64 | DataType::Float64 | DataType::Utf8
+    )
+}
+
+fn full_content_discovery_evidence(
+    sampled_bytes: u64,
+    sampled_records: u64,
+) -> BTreeMap<String, String> {
+    BTreeMap::from([
+        ("content_coverage".to_owned(), "full_content".to_owned()),
+        (
+            "source_bytes_observed".to_owned(),
+            sampled_bytes.to_string(),
+        ),
+        (
+            "source_records_observed".to_owned(),
+            sampled_records.to_string(),
+        ),
+    ])
 }
 
 #[derive(Debug)]
@@ -125,7 +382,7 @@ impl NdjsonFormatDriver {
         Ok(Self {
             descriptor: FormatDriverDescriptor {
                 format_id: FormatId::new("ndjson")?,
-                semantic_version: "1.0.0".to_owned(),
+                semantic_version: "1.1.0".to_owned(),
                 aliases: vec!["jsonl".to_owned()],
                 extensions: vec!["ndjson".to_owned(), "jsonl".to_owned()],
                 mime_types: vec!["application/x-ndjson".to_owned()],
@@ -150,7 +407,13 @@ impl NdjsonFormatDriver {
                 predicate_pushdown: PushdownFidelity::Unsupported,
                 predicate_operators: Vec::new(),
                 source_access: cdf_runtime::FormatSourceAccess::Sequential,
-                discovery_kind: cdf_runtime::FormatDiscoveryKind::BoundedContent,
+                discovery: cdf_runtime::FormatDiscoveryCapabilities::new(
+                    cdf_runtime::FormatDiscoveryKind::BoundedContent,
+                    [
+                        cdf_runtime::FormatDiscoveryKind::BoundedContent,
+                        cdf_runtime::FormatDiscoveryKind::FullContent,
+                    ],
+                )?,
                 decode_unit_policy: "ndjson_stream_v1".to_owned(),
                 error_isolation: cdf_runtime::FormatErrorIsolation::Record,
                 decode_cpu: cdf_runtime::CpuTaskSpec {
@@ -193,19 +456,44 @@ impl FormatDriver for NdjsonFormatDriver {
         request: FormatDiscoveryRequest,
     ) -> BoxFuture<'_, Result<PhysicalSchemaObservation>> {
         Box::pin(async move {
-            let _options = NdjsonOptions::parse(request.options)?;
+            let options = NdjsonOptions::parse(request.options)?;
             request.cancellation.check()?;
             if request.maximum_bytes == 0 || request.maximum_records == 0 {
                 return Err(CdfError::contract(
                     "NDJSON discovery requires nonzero byte and record bounds",
                 ));
             }
+            validate_json_discovery_kind(request.discovery_kind)?;
+            let identity = source.identity().clone();
             let mut input = source
                 .open_sequential(SequentialReadRequest {
-                    preferred_chunk_bytes: DISCOVERY_CHUNK_BYTES.min(request.maximum_bytes),
+                    preferred_chunk_bytes: match request.discovery_kind {
+                        FormatDiscoveryKind::BoundedContent => {
+                            DISCOVERY_CHUNK_BYTES.min(request.maximum_bytes)
+                        }
+                        FormatDiscoveryKind::FullContent => DISCOVERY_CHUNK_BYTES,
+                        FormatDiscoveryKind::FormatMetadata => unreachable!(),
+                    },
                     cancellation: request.cancellation.clone(),
                 })
                 .await?;
+            if request.discovery_kind == FormatDiscoveryKind::FullContent {
+                let (schema, sampled_bytes, sampled_records) = infer_full_content_json_schema(
+                    input,
+                    Arc::clone(&request.memory),
+                    request.cancellation,
+                    options.maximum_record_bytes,
+                    FULL_CONTENT_INFERENCE_WINDOW_BYTES,
+                )
+                .await?;
+                return Ok(PhysicalSchemaObservation {
+                    identity,
+                    arrow_schema: Arc::new(schema),
+                    sampled_bytes,
+                    sampled_records,
+                    evidence: full_content_discovery_evidence(sampled_bytes, sampled_records),
+                });
+            }
             let mut chunks = Vec::new();
             let mut sampled_bytes = 0_u64;
             while sampled_bytes < request.maximum_bytes {
@@ -226,7 +514,7 @@ impl FormatDriver for NdjsonFormatDriver {
                 .map_err(|error| CdfError::data(format!("infer NDJSON schema: {error}")))?;
             let schema = Arc::new(schema);
             Ok(PhysicalSchemaObservation {
-                identity: source.identity().clone(),
+                identity,
                 arrow_schema: schema,
                 sampled_bytes,
                 sampled_records: u64::try_from(sampled_records)
@@ -323,7 +611,7 @@ impl JsonDocumentFormatDriver {
         Ok(Self {
             descriptor: FormatDriverDescriptor {
                 format_id: FormatId::new("json")?,
-                semantic_version: "1.0.0".to_owned(),
+                semantic_version: "1.1.0".to_owned(),
                 aliases: Vec::new(),
                 extensions: vec!["json".to_owned()],
                 mime_types: vec!["application/json".to_owned()],
@@ -354,7 +642,13 @@ impl JsonDocumentFormatDriver {
                 predicate_pushdown: PushdownFidelity::Unsupported,
                 predicate_operators: Vec::new(),
                 source_access: cdf_runtime::FormatSourceAccess::Sequential,
-                discovery_kind: cdf_runtime::FormatDiscoveryKind::BoundedContent,
+                discovery: cdf_runtime::FormatDiscoveryCapabilities::new(
+                    cdf_runtime::FormatDiscoveryKind::BoundedContent,
+                    [
+                        cdf_runtime::FormatDiscoveryKind::BoundedContent,
+                        cdf_runtime::FormatDiscoveryKind::FullContent,
+                    ],
+                )?,
                 decode_unit_policy: "json_document_stream_v1".to_owned(),
                 error_isolation: cdf_runtime::FormatErrorIsolation::Record,
                 decode_cpu: cdf_runtime::CpuTaskSpec {
@@ -403,9 +697,16 @@ impl FormatDriver for JsonDocumentFormatDriver {
                     "JSON discovery requires nonzero byte and record bounds",
                 ));
             }
+            validate_json_discovery_kind(request.discovery_kind)?;
+            let identity = source.identity().clone();
+            let full_content = request.discovery_kind == FormatDiscoveryKind::FullContent;
             let input = source
                 .open_sequential(SequentialReadRequest {
-                    preferred_chunk_bytes: DISCOVERY_CHUNK_BYTES.min(request.maximum_bytes),
+                    preferred_chunk_bytes: if full_content {
+                        DISCOVERY_CHUNK_BYTES
+                    } else {
+                        DISCOVERY_CHUNK_BYTES.min(request.maximum_bytes)
+                    },
                     cancellation: request.cancellation.clone(),
                 })
                 .await?;
@@ -413,17 +714,39 @@ impl FormatDriver for JsonDocumentFormatDriver {
             let mut framed = frame_json_document(
                 input,
                 JsonFrameRequest {
-                    maximum_input_bytes: request.maximum_bytes,
-                    maximum_records: Some(request.maximum_records),
+                    maximum_input_bytes: if full_content {
+                        u64::MAX
+                    } else {
+                        request.maximum_bytes
+                    },
+                    maximum_records: (!full_content).then_some(request.maximum_records),
                     preferred_output_chunk_bytes: DISCOVERY_CHUNK_BYTES,
                     maximum_record_bytes: options.maximum_record_bytes,
                     maximum_nesting_depth: options.maximum_nesting_depth,
-                    require_terminal_document: false,
+                    require_terminal_document: full_content,
                     input_counter: Arc::clone(&sampled_bytes),
                     memory: Arc::clone(&request.memory),
-                    cancellation: request.cancellation,
+                    cancellation: request.cancellation.clone(),
                 },
             )?;
+            if full_content {
+                let (schema, _, sampled_records) = infer_full_content_json_schema(
+                    framed,
+                    Arc::clone(&request.memory),
+                    request.cancellation,
+                    options.maximum_record_bytes,
+                    FULL_CONTENT_INFERENCE_WINDOW_BYTES,
+                )
+                .await?;
+                let sampled_bytes = sampled_bytes.load(Ordering::Relaxed);
+                return Ok(PhysicalSchemaObservation {
+                    identity,
+                    arrow_schema: Arc::new(schema),
+                    sampled_bytes,
+                    sampled_records,
+                    evidence: full_content_discovery_evidence(sampled_bytes, sampled_records),
+                });
+            }
             let mut chunks = Vec::new();
             while let Some(chunk) = framed.try_next().await? {
                 chunks.push(chunk);
@@ -436,7 +759,7 @@ impl FormatDriver for JsonDocumentFormatDriver {
                 .map_err(|error| CdfError::data(format!("infer JSON schema: {error}")))?;
             let schema = Arc::new(schema);
             Ok(PhysicalSchemaObservation {
-                identity: source.identity().clone(),
+                identity,
                 arrow_schema: schema,
                 sampled_bytes,
                 sampled_records: u64::try_from(sampled_records)
@@ -628,6 +951,10 @@ async fn frame_next(
         }
         if state.sample_complete {
             if state.output.is_empty() {
+                state
+                    .request
+                    .input_counter
+                    .store(state.input_bytes, Ordering::Relaxed);
                 return Ok(None);
             }
             return emit_frame_output(state).map(Some);
@@ -653,10 +980,6 @@ async fn frame_next(
             .input_bytes
             .checked_add(1)
             .ok_or_else(|| CdfError::data("JSON input byte count overflowed"))?;
-        state
-            .request
-            .input_counter
-            .store(state.input_bytes, Ordering::Relaxed);
         if state.input_bytes > state.request.maximum_input_bytes {
             return Err(CdfError::data(format!(
                 "JSON discovery exceeded its {}-byte input bound before completing the requested sample",
@@ -690,6 +1013,10 @@ async fn ensure_frame_output(state: &mut JsonFrameState) -> Result<()> {
 fn emit_frame_output(
     mut state: JsonFrameState,
 ) -> Result<(cdf_memory::AccountedBytes, JsonFrameState)> {
+    state
+        .request
+        .input_counter
+        .store(state.input_bytes, Ordering::Relaxed);
     let lease = state
         .output_lease
         .take()
@@ -1679,7 +2006,11 @@ mod tests {
 
     use super::*;
 
-    fn frame(input: &[u8], maximum_records: Option<u64>) -> Result<(Vec<u8>, u64, u64)> {
+    fn frame_with_depth(
+        input: &[u8],
+        maximum_records: Option<u64>,
+        maximum_nesting_depth: usize,
+    ) -> Result<(Vec<u8>, u64, u64)> {
         let coordinator =
             Arc::new(DeterministicMemoryCoordinator::new(1024 * 1024, BTreeMap::new()).unwrap());
         let memory: Arc<dyn MemoryCoordinator> = coordinator.clone();
@@ -1708,7 +2039,7 @@ mod tests {
                 maximum_records,
                 preferred_output_chunk_bytes: 7,
                 maximum_record_bytes: DEFAULT_MAXIMUM_RECORD_BYTES,
-                maximum_nesting_depth: MAXIMUM_JSON_NESTING_DEPTH,
+                maximum_nesting_depth,
                 require_terminal_document: maximum_records.is_none(),
                 input_counter: Arc::clone(&counter),
                 memory,
@@ -1725,6 +2056,10 @@ mod tests {
         let sampled = counter.load(Ordering::Relaxed);
         let retained = coordinator.snapshot().current_bytes;
         Ok((output, sampled, retained))
+    }
+
+    fn frame(input: &[u8], maximum_records: Option<u64>) -> Result<(Vec<u8>, u64, u64)> {
+        frame_with_depth(input, maximum_records, MAXIMUM_JSON_NESTING_DEPTH)
     }
 
     #[test]
@@ -1760,6 +2095,30 @@ mod tests {
     }
 
     #[test]
+    fn json_document_framing_enforces_the_compiled_depth_limit() {
+        let error = frame_with_depth(br#"[{"a":{"b":{"c":1}}}]"#, None, 2).unwrap_err();
+
+        assert!(error.message.contains("2-level limit"), "{error}");
+    }
+
+    #[test]
+    fn malformed_json_document_corpus_fails_closed_without_retained_memory() {
+        for (input, expected) in [
+            (br#"[{"a":[1}}]"#.as_slice(), "mismatched delimiters"),
+            (
+                br#"[{"a":"unterminated}]"#.as_slice(),
+                "ended inside a record",
+            ),
+            (br#"[1]"#.as_slice(), "array entries must be objects"),
+            (br#"{"a":1} trailing"#.as_slice(), "trailing non-whitespace"),
+            (br#"[{"a":1},"#.as_slice(), "ended after a comma"),
+        ] {
+            let error = frame(input, None).unwrap_err();
+            assert!(error.message.contains(expected), "{input:?}: {error}");
+        }
+    }
+
+    #[test]
     fn codec_limits_are_explicit_canonical_plan_evidence() {
         let ndjson = NdjsonFormatDriver::new()
             .unwrap()
@@ -1787,6 +2146,169 @@ mod tests {
             }))
             .unwrap_err();
         assert!(error.message.contains("maximum_record_bytes"), "{error}");
+    }
+
+    #[test]
+    fn full_content_discovery_observes_late_fields_beyond_bounded_limits() {
+        let coordinator = Arc::new(
+            DeterministicMemoryCoordinator::new(256 * 1024 * 1024, BTreeMap::new()).unwrap(),
+        );
+        let memory: Arc<dyn MemoryCoordinator> = coordinator.clone();
+        let ndjson = br#"{"id":1}
+{"id":2,"late":"observed"}
+"#
+        .to_vec();
+        let source: Arc<dyn ByteSource> = Arc::new(
+            futures_executor::block_on(MemoryByteSource::from_bytes(
+                "full-content-ndjson",
+                ndjson.clone(),
+                Arc::clone(&memory),
+            ))
+            .unwrap(),
+        );
+        let observation = futures_executor::block_on(NdjsonFormatDriver::new().unwrap().discover(
+            Arc::clone(&source),
+            FormatDiscoveryRequest {
+                options: serde_json::json!({}),
+                discovery_kind: FormatDiscoveryKind::FullContent,
+                maximum_bytes: 8,
+                maximum_records: 1,
+                memory: Arc::clone(&memory),
+                cancellation: cdf_runtime::RunCancellation::default(),
+            },
+        ))
+        .unwrap();
+        assert_eq!(observation.sampled_bytes, ndjson.len() as u64);
+        assert_eq!(observation.sampled_records, 2);
+        assert_eq!(observation.arrow_schema.field(1).name(), "late");
+        assert_eq!(observation.evidence["content_coverage"], "full_content");
+        drop(observation);
+        drop(source);
+
+        let document = br#"[{"id":1},{"id":2,"late":"observed"}]"#.to_vec();
+        let source: Arc<dyn ByteSource> = Arc::new(
+            futures_executor::block_on(MemoryByteSource::from_bytes(
+                "full-content-json",
+                document.clone(),
+                Arc::clone(&memory),
+            ))
+            .unwrap(),
+        );
+        let observation =
+            futures_executor::block_on(JsonDocumentFormatDriver::new().unwrap().discover(
+                Arc::clone(&source),
+                FormatDiscoveryRequest {
+                    options: serde_json::json!({}),
+                    discovery_kind: FormatDiscoveryKind::FullContent,
+                    maximum_bytes: 8,
+                    maximum_records: 1,
+                    memory: Arc::clone(&memory),
+                    cancellation: cdf_runtime::RunCancellation::default(),
+                },
+            ))
+            .unwrap();
+        assert_eq!(observation.sampled_bytes, document.len() as u64);
+        assert_eq!(observation.sampled_records, 2);
+        assert_eq!(observation.arrow_schema.field(1).name(), "late");
+        assert_eq!(observation.evidence["content_coverage"], "full_content");
+        drop(observation);
+        drop(source);
+        assert_eq!(coordinator.snapshot().current_bytes, 0);
+    }
+
+    #[test]
+    fn full_content_schema_is_invariant_to_transport_rechunking_and_inference_windows() {
+        let input = br#"{"id":1,"metric":1,"values":[1],"nested":{"active":true}}
+{"id":2,"metric":1.5,"values":2,"nested":{"label":"x"}}
+{"id":3,"metric":null,"values":[3.5],"late":"yes"}
+"#;
+        let (expected, expected_records) =
+            infer_json_schema(Cursor::new(input.as_slice()), None).unwrap();
+        assert_eq!(expected_records, 3);
+
+        for chunk_bytes in [1_u64, 2, 7, 31, 1024] {
+            let coordinator = Arc::new(
+                DeterministicMemoryCoordinator::new(256 * 1024 * 1024, BTreeMap::new()).unwrap(),
+            );
+            let memory: Arc<dyn MemoryCoordinator> = coordinator.clone();
+            let source: Arc<dyn ByteSource> = Arc::new(
+                futures_executor::block_on(MemoryByteSource::from_bytes(
+                    format!("rechunk-{chunk_bytes}"),
+                    input.to_vec(),
+                    Arc::clone(&memory),
+                ))
+                .unwrap(),
+            );
+            let stream =
+                futures_executor::block_on(source.open_sequential(SequentialReadRequest {
+                    preferred_chunk_bytes: chunk_bytes,
+                    cancellation: cdf_runtime::RunCancellation::default(),
+                }))
+                .unwrap();
+            let (observed, sampled_bytes, sampled_records) =
+                futures_executor::block_on(infer_full_content_json_schema(
+                    stream,
+                    Arc::clone(&memory),
+                    cdf_runtime::RunCancellation::default(),
+                    DEFAULT_MAXIMUM_RECORD_BYTES,
+                    32,
+                ))
+                .unwrap();
+            assert_eq!(observed, expected, "chunk size {chunk_bytes}");
+            assert_eq!(sampled_bytes, input.len() as u64);
+            assert_eq!(sampled_records, 3);
+            drop(source);
+            assert_eq!(coordinator.snapshot().current_bytes, 0);
+        }
+
+        for seed in 1_u64..=32 {
+            let coordinator = Arc::new(
+                DeterministicMemoryCoordinator::new(256 * 1024 * 1024, BTreeMap::new()).unwrap(),
+            );
+            let memory: Arc<dyn MemoryCoordinator> = coordinator.clone();
+            let mut state = seed;
+            let mut offset = 0_usize;
+            let mut chunks = Vec::new();
+            while offset < input.len() {
+                state ^= state << 13;
+                state ^= state >> 7;
+                state ^= state << 17;
+                let length = (state as usize % 37 + 1).min(input.len() - offset);
+                let lease = reserve_blocking(
+                    Arc::clone(&memory),
+                    &ReservationRequest::new(
+                        ConsumerKey::new(
+                            format!("json-random-rechunk-{seed}-{offset}"),
+                            MemoryClass::Source,
+                        )
+                        .unwrap(),
+                        length as u64,
+                    )
+                    .unwrap(),
+                )
+                .unwrap();
+                chunks.push(Ok(AccountedBytes::new(
+                    bytes::Bytes::copy_from_slice(&input[offset..offset + length]),
+                    lease,
+                )
+                .unwrap()));
+                offset += length;
+            }
+            let stream: AccountedByteStream = Box::pin(stream::iter(chunks));
+            let (observed, sampled_bytes, sampled_records) =
+                futures_executor::block_on(infer_full_content_json_schema(
+                    stream,
+                    Arc::clone(&memory),
+                    cdf_runtime::RunCancellation::default(),
+                    DEFAULT_MAXIMUM_RECORD_BYTES,
+                    32,
+                ))
+                .unwrap();
+            assert_eq!(observed, expected, "random rechunk seed {seed}");
+            assert_eq!(sampled_bytes, input.len() as u64);
+            assert_eq!(sampled_records, 3);
+            assert_eq!(coordinator.snapshot().current_bytes, 0);
+        }
     }
 
     #[test]
@@ -1925,6 +2447,313 @@ mod tests {
             "REST aggregate selector+tape decode fell below 300 MiB/s: {median_bytes_per_second} B/s"
         );
         drop(body);
+        assert_eq!(coordinator.snapshot().current_bytes, 0);
+    }
+
+    #[test]
+    #[ignore = "release performance envelope"]
+    fn rest_selector_tape_decode_exceeds_superseded_dom_shape_by_three_times() {
+        const RECORDS: u64 = 262_144;
+        const ITERATIONS: usize = 5;
+        let mut document = String::with_capacity(RECORDS as usize * 52);
+        document.push_str(r#"{"next":"done","items":["#);
+        for id in 0..RECORDS {
+            if id != 0 {
+                document.push(',');
+            }
+            write!(
+                document,
+                r#"{{"id":{id},"active":true,"category":"benchmark"}}"#
+            )
+            .unwrap();
+        }
+        document.push_str("]}");
+
+        let coordinator = Arc::new(
+            DeterministicMemoryCoordinator::new(512 * 1024 * 1024, BTreeMap::new()).unwrap(),
+        );
+        let memory: Arc<dyn MemoryCoordinator> = coordinator.clone();
+        let body_bytes = u64::try_from(document.len()).unwrap();
+        let lease = reserve_blocking(
+            Arc::clone(&memory),
+            &ReservationRequest::new(
+                ConsumerKey::new("rest-dom-comparison-input", MemoryClass::Source).unwrap(),
+                body_bytes,
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        let body = AccountedBytes::new(bytes::Bytes::from(document), lease).unwrap();
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int64, false),
+            Field::new("active", DataType::Boolean, false),
+            Field::new("category", DataType::Utf8, false),
+        ]));
+        let mut tape_observations = Vec::with_capacity(ITERATIONS);
+        let mut dom_observations = Vec::with_capacity(ITERATIONS);
+        for iteration in 0..=ITERATIONS {
+            let started = Instant::now();
+            let selection = select_bounded_json_records(body.payload(), "$.items").unwrap();
+            let selected = body.slice(selection.byte_range).unwrap();
+            let source = Arc::new(
+                MemoryByteSource::from_ephemeral_accounted_bytes(
+                    format!("rest-dom-comparison-{iteration}"),
+                    selected,
+                )
+                .unwrap(),
+            );
+            let decoded = futures_executor::block_on(decode_bounded_format(
+                Arc::new(JsonDocumentFormatDriver::new().unwrap()),
+                source,
+                BoundedFormatRequest::new(
+                    ReadOptions::new(
+                        ResourceId::new("benchmark.rest").unwrap(),
+                        PartitionId::new("rest-dom-comparison").unwrap(),
+                    ),
+                    Arc::clone(&memory),
+                )
+                .with_schema(DecodeSchemaPlan::fixed_admission(Arc::clone(&schema))),
+            ))
+            .unwrap();
+            assert_eq!(
+                decoded
+                    .batches
+                    .iter()
+                    .map(|batch| batch.header.row_count)
+                    .sum::<u64>(),
+                RECORDS
+            );
+            let tape_elapsed = started.elapsed();
+            drop(decoded);
+
+            // This benchmark-only reference intentionally performs less work than the deleted
+            // REST implementation: it includes its full DOM, object materialization,
+            // reserialization, and Arrow decode, but omits the old per-page schema inference and
+            // reconciliation. It is therefore a conservative lower bound for the superseded
+            // production shape, not production compatibility code.
+            let started = Instant::now();
+            let mut root: serde_json::Value = serde_json::from_slice(body.payload()).unwrap();
+            let pagination = root
+                .as_object()
+                .unwrap()
+                .iter()
+                .filter_map(|(name, value)| {
+                    value.as_str().map(|value| (name.clone(), value.to_owned()))
+                })
+                .collect::<BTreeMap<_, _>>();
+            assert_eq!(pagination.get("next").map(String::as_str), Some("done"));
+            let records = root
+                .get_mut("items")
+                .and_then(serde_json::Value::as_array_mut)
+                .map(std::mem::take)
+                .unwrap();
+            let records = records
+                .into_iter()
+                .map(|record| record.as_object().unwrap().clone())
+                .collect::<Vec<_>>();
+            let declared = BTreeMap::from([("active", 1_u8), ("category", 4), ("id", 2)]);
+            let mut admitted = Vec::with_capacity(records.len());
+            for record in &records {
+                let mut row = record.clone();
+                row.retain(|name, _| declared.contains_key(name.as_str()));
+                for (name, kind) in &declared {
+                    let value = row.get(*name).unwrap();
+                    assert!(match kind {
+                        1 => value.is_boolean(),
+                        2 => value.is_i64() || value.is_u64(),
+                        4 => value.is_string(),
+                        _ => false,
+                    });
+                }
+                admitted.push(row);
+            }
+            let mut inferred = BTreeMap::<String, (u8, bool, bool)>::new();
+            for (record_index, record) in admitted.iter().enumerate() {
+                for (_, _, seen) in inferred.values_mut() {
+                    *seen = false;
+                }
+                for (name, value) in record {
+                    let kind = if value.is_boolean() {
+                        1
+                    } else if value.is_i64() || value.is_u64() {
+                        2
+                    } else if value.is_f64() {
+                        3
+                    } else if value.is_string() {
+                        4
+                    } else {
+                        5
+                    };
+                    let entry =
+                        inferred
+                            .entry(name.clone())
+                            .or_insert((kind, record_index != 0, true));
+                    entry.0 = entry.0.max(kind);
+                    entry.2 = true;
+                }
+                for (_, nullable, seen) in inferred.values_mut() {
+                    if !*seen {
+                        *nullable = true;
+                    }
+                }
+            }
+            assert_eq!(
+                inferred
+                    .iter()
+                    .map(|(name, (kind, nullable, _))| (name.as_str(), *kind, *nullable))
+                    .collect::<Vec<_>>(),
+                vec![
+                    ("active", 1, false),
+                    ("category", 4, false),
+                    ("id", 2, false)
+                ]
+            );
+            let physical_schema = Schema::new(vec![
+                Field::new("active", DataType::Boolean, false),
+                Field::new("category", DataType::Utf8, false),
+                Field::new("id", DataType::Int64, false),
+            ]);
+            let physical_schema_hash =
+                cdf_kernel::canonical_arrow_schema_hash(&physical_schema).unwrap();
+            std::hint::black_box(physical_schema_hash.to_string());
+            let mut ndjson = Vec::with_capacity(body.payload().len());
+            for record in &records {
+                serde_json::to_writer(&mut ndjson, record).unwrap();
+                ndjson.push(b'\n');
+            }
+            let source = Arc::new(
+                futures_executor::block_on(MemoryByteSource::from_bytes(
+                    format!("rest-dom-reference-{iteration}"),
+                    ndjson,
+                    Arc::clone(&memory),
+                ))
+                .unwrap(),
+            );
+            let decoded = futures_executor::block_on(decode_bounded_format(
+                Arc::new(NdjsonFormatDriver::new().unwrap()),
+                source,
+                BoundedFormatRequest::new(
+                    ReadOptions::new(
+                        ResourceId::new("benchmark.rest-dom").unwrap(),
+                        PartitionId::new("rest-dom-reference").unwrap(),
+                    )
+                    .with_batch_size(records.len())
+                    .unwrap(),
+                    Arc::clone(&memory),
+                )
+                .with_schema(DecodeSchemaPlan::fixed_admission(Arc::clone(&schema))),
+            ))
+            .unwrap();
+            assert_eq!(
+                decoded
+                    .batches
+                    .iter()
+                    .map(|batch| batch.header.row_count)
+                    .sum::<u64>(),
+                RECORDS
+            );
+            let dom_elapsed = started.elapsed();
+            drop(decoded);
+
+            if iteration != 0 {
+                tape_observations.push(tape_elapsed);
+                dom_observations.push(dom_elapsed);
+            }
+        }
+        tape_observations.sort_unstable();
+        dom_observations.sort_unstable();
+        let tape = tape_observations[ITERATIONS / 2];
+        let dom = dom_observations[ITERATIONS / 2];
+        let speedup = dom.as_secs_f64() / tape.as_secs_f64();
+        eprintln!(
+            "REST selector+tape versus superseded DOM lower bound: {:.1} MiB, tape {tape:?}, DOM {dom:?}, {speedup:.2}x",
+            body_bytes as f64 / (1024.0 * 1024.0),
+        );
+        assert!(
+            speedup >= 3.0,
+            "REST selector+tape decode did not reach 3x the superseded DOM lower bound: {speedup:.3}x"
+        );
+        drop(body);
+        assert_eq!(coordinator.snapshot().current_bytes, 0);
+    }
+
+    #[test]
+    #[ignore = "release performance envelope"]
+    fn full_content_discovery_tracks_arrow_json_roofline() {
+        const RECORDS: u64 = 524_288;
+        const ITERATIONS: usize = 3;
+        let mut input = String::with_capacity(RECORDS as usize * 72);
+        for id in 0..RECORDS {
+            writeln!(
+                input,
+                r#"{{"id":{id},"active":true,"metric":12.5,"category":"benchmark"}}"#
+            )
+            .unwrap();
+        }
+        let bytes = input.into_bytes();
+        let byte_count = bytes.len() as f64;
+        let (expected, expected_records) =
+            infer_json_schema(Cursor::new(bytes.as_slice()), None).unwrap();
+        assert_eq!(expected_records as u64, RECORDS);
+        let coordinator = Arc::new(
+            DeterministicMemoryCoordinator::new(512 * 1024 * 1024, BTreeMap::new()).unwrap(),
+        );
+        let memory: Arc<dyn MemoryCoordinator> = coordinator.clone();
+        let source: Arc<dyn ByteSource> = Arc::new(
+            futures_executor::block_on(MemoryByteSource::from_bytes(
+                "full-content-discovery-envelope",
+                bytes.clone(),
+                Arc::clone(&memory),
+            ))
+            .unwrap(),
+        );
+
+        let mut reference = Vec::with_capacity(ITERATIONS);
+        let mut cdf = Vec::with_capacity(ITERATIONS);
+        for _ in 0..ITERATIONS {
+            let started = Instant::now();
+            let (schema, records) = infer_json_schema(Cursor::new(bytes.as_slice()), None).unwrap();
+            reference.push(started.elapsed());
+            assert_eq!(schema, expected);
+            assert_eq!(records as u64, RECORDS);
+
+            let started = Instant::now();
+            let observation =
+                futures_executor::block_on(NdjsonFormatDriver::new().unwrap().discover(
+                    Arc::clone(&source),
+                    FormatDiscoveryRequest {
+                        options: serde_json::json!({}),
+                        discovery_kind: FormatDiscoveryKind::FullContent,
+                        maximum_bytes: 1,
+                        maximum_records: 1,
+                        memory: Arc::clone(&memory),
+                        cancellation: cdf_runtime::RunCancellation::default(),
+                    },
+                ))
+                .unwrap();
+            cdf.push(started.elapsed());
+            assert_eq!(observation.arrow_schema.as_ref(), &expected);
+            assert_eq!(observation.sampled_records, RECORDS);
+        }
+        reference.sort_unstable();
+        cdf.sort_unstable();
+        let reference = reference[ITERATIONS / 2];
+        let cdf = cdf[ITERATIONS / 2];
+        let reference_rate = byte_count / reference.as_secs_f64();
+        let cdf_rate = byte_count / cdf.as_secs_f64();
+        let roofline_ratio = cdf_rate / reference_rate;
+        eprintln!(
+            "full-content discovery: {:.1} MiB, Arrow reference {reference:?} ({:.1} MiB/s), CDF {cdf:?} ({:.1} MiB/s), {:.2}x roofline",
+            byte_count / (1024.0 * 1024.0),
+            reference_rate / (1024.0 * 1024.0),
+            cdf_rate / (1024.0 * 1024.0),
+            roofline_ratio,
+        );
+        assert!(
+            roofline_ratio >= 0.6,
+            "full-content discovery fell below 0.6x raw arrow-json inference: {roofline_ratio:.3}"
+        );
+        drop(source);
         assert_eq!(coordinator.snapshot().current_bytes, 0);
     }
 

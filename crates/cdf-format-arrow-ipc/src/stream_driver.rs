@@ -45,7 +45,9 @@ impl ArrowIpcStreamFormatDriver {
                 predicate_pushdown: PushdownFidelity::Unsupported,
                 predicate_operators: Vec::new(),
                 source_access: FormatSourceAccess::Sequential,
-                discovery_kind: cdf_runtime::FormatDiscoveryKind::FormatMetadata,
+                discovery: cdf_runtime::FormatDiscoveryCapabilities::only(
+                    cdf_runtime::FormatDiscoveryKind::FormatMetadata,
+                ),
                 decode_unit_policy: "ipc_stream_v1".to_owned(),
                 error_isolation: cdf_runtime::FormatErrorIsolation::DecodeUnit,
                 decode_cpu: cdf_runtime::CpuTaskSpec {

@@ -71,7 +71,9 @@ impl ParquetFormatDriver {
                     "<=".to_owned(),
                 ],
                 source_access: cdf_runtime::FormatSourceAccess::Adaptive,
-                discovery_kind: cdf_runtime::FormatDiscoveryKind::FormatMetadata,
+                discovery: cdf_runtime::FormatDiscoveryCapabilities::only(
+                    cdf_runtime::FormatDiscoveryKind::FormatMetadata,
+                ),
                 decode_unit_policy: "row_group".to_owned(),
                 error_isolation: cdf_runtime::FormatErrorIsolation::DecodeUnit,
                 decode_cpu: cdf_runtime::CpuTaskSpec {

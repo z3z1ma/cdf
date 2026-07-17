@@ -159,6 +159,7 @@ fn arrow_ipc_file_driver_discovers_projects_and_streams_blocks() {
         Arc::clone(&source),
         FormatDiscoveryRequest {
             options: serde_json::json!({}),
+            discovery_kind: cdf_runtime::FormatDiscoveryKind::FormatMetadata,
             maximum_bytes: 9,
             maximum_records: 0,
             memory: Arc::clone(&memory),
@@ -173,6 +174,7 @@ fn arrow_ipc_file_driver_discovers_projects_and_streams_blocks() {
         Arc::clone(&source),
         FormatDiscoveryRequest {
             options: serde_json::json!({}),
+            discovery_kind: cdf_runtime::FormatDiscoveryKind::FormatMetadata,
             maximum_bytes: 1024 * 1024,
             maximum_records: 0,
             memory: Arc::clone(&memory),

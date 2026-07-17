@@ -269,6 +269,7 @@ pub async fn decode_bounded_format(
                     Arc::clone(&source),
                     FormatDiscoveryRequest {
                         options: canonical_options.clone(),
+                        discovery_kind: driver.descriptor().discovery.default_kind,
                         maximum_bytes: size_bytes,
                         maximum_records: u64::MAX,
                         memory: Arc::clone(&memory),

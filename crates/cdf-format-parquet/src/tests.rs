@@ -279,6 +279,7 @@ fn parquet_driver_discovers_plans_and_decodes_through_neutral_byte_source() {
         Arc::clone(&source),
         FormatDiscoveryRequest {
             options: serde_json::json!({}),
+            discovery_kind: cdf_runtime::FormatDiscoveryKind::FormatMetadata,
             maximum_bytes: 1024 * 1024,
             maximum_records: 0,
             memory: Arc::clone(&memory),
