@@ -486,12 +486,6 @@ impl DuckDbNativeResources {
         })
     }
 
-    fn appender_flush_threshold_bytes(&self) -> u64 {
-        const MINIMUM_FLUSH_BYTES: u64 = 64 * 1024 * 1024;
-        const MAXIMUM_FLUSH_BYTES: u64 = 256 * 1024 * 1024;
-
-        (self.memory_limit_bytes / 4).clamp(MINIMUM_FLUSH_BYTES, MAXIMUM_FLUSH_BYTES)
-    }
 }
 
 fn bounded_connection_config(resources: &DuckDbNativeResources, read_only: bool) -> Result<Config> {
@@ -583,10 +577,6 @@ impl cdf_runtime::StagedIngressSession for DuckDbStagedIngressSession {
         let Some(first_segment) = stream.next_segment()? else {
             return Ok(());
         };
-        let flush_threshold_bytes = self
-            .destination
-            .native_resources
-            .appender_flush_threshold_bytes();
         if self.writer.is_none() {
             let (writer, migrations) = self.destination.start_staged_writer(&self.request)?;
             self.writer = Some(writer);
@@ -607,7 +597,6 @@ impl cdf_runtime::StagedIngressSession for DuckDbStagedIngressSession {
         }
         let write_target = writer.write_target.clone();
         let mut appender = open_arrow_appender(&writer.conn, &write_target, &column_names)?;
-        let mut buffered_bytes = 0_u64;
         let mut current = Some(first_segment);
         while let Some(mut segment) = current {
             self.request.mutation_guard().assert_current()?;
@@ -649,15 +638,8 @@ impl cdf_runtime::StagedIngressSession for DuckDbStagedIngressSession {
                     .map_err(|_| CdfError::data("DuckDB staged batch rows exceed u64"))?;
                 let persisted =
                     persistence_batch(batch, next_row_key, merge.then_some(writer.rows_received))?;
-                let batch_bytes = u64::try_from(persisted.get_array_memory_size())
-                    .map_err(|_| CdfError::data("DuckDB staged batch bytes exceed u64"))?;
                 self.request.mutation_guard().assert_current()?;
                 append_arrow_batch(&mut appender, &write_target, persisted)?;
-                buffered_bytes = buffered_bytes.saturating_add(batch_bytes);
-                if buffered_bytes >= flush_threshold_bytes {
-                    flush_arrow_appender(&mut appender, &write_target)?;
-                    buffered_bytes = 0;
-                }
                 next_row_key = next_row_key
                     .checked_add(batch_rows)
                     .ok_or_else(|| CdfError::data("DuckDB staged row key overflowed"))?;
@@ -682,9 +664,7 @@ impl cdf_runtime::StagedIngressSession for DuckDbStagedIngressSession {
             drop(segment);
             current = stream.next_segment()?;
         }
-        if buffered_bytes != 0 {
-            flush_arrow_appender(&mut appender, &write_target)?;
-        }
+        flush_arrow_appender(&mut appender, &write_target)?;
         Ok(())
     }
 
