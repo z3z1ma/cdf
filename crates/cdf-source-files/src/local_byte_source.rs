@@ -108,6 +108,80 @@ impl LocalByteSource {
     }
 }
 
+pub(crate) fn open_identity_preserving_local_source(
+    path: &Path,
+    identity: ContentIdentity,
+    size_bytes: u64,
+    memory: Arc<dyn MemoryCoordinator>,
+) -> Result<Arc<dyn ByteSource>> {
+    identity.validate()?;
+    let local = LocalByteSource::open(path, memory)?;
+    if local.identity().size_bytes != Some(size_bytes) {
+        return Err(CdfError::data(
+            "materialized source changed before local open",
+        ));
+    }
+    Ok(Arc::new(IdentityPreservingLocalByteSource {
+        identity,
+        local,
+    }))
+}
+
+struct IdentityPreservingLocalByteSource {
+    identity: ContentIdentity,
+    local: LocalByteSource,
+}
+
+impl std::fmt::Debug for IdentityPreservingLocalByteSource {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("IdentityPreservingLocalByteSource")
+            .field("identity", &self.identity)
+            .finish_non_exhaustive()
+    }
+}
+
+impl ByteSource for IdentityPreservingLocalByteSource {
+    fn identity(&self) -> &ContentIdentity {
+        &self.identity
+    }
+
+    fn capabilities(&self) -> &ByteSourceCapabilities {
+        self.local.capabilities()
+    }
+
+    fn exact_range_coalescing_policy(&self) -> cdf_runtime::ExactRangeCoalescingPolicy {
+        self.local.exact_range_coalescing_policy()
+    }
+
+    fn open_sequential(
+        &self,
+        request: SequentialReadRequest,
+    ) -> BoxFuture<'_, Result<AccountedByteStream>> {
+        self.local.open_sequential(request)
+    }
+
+    fn read_exact_range(
+        &self,
+        extent: ByteExtent,
+        cancellation: RunCancellation,
+    ) -> BoxFuture<'_, Result<AccountedBytes>> {
+        self.local.read_exact_range(extent, cancellation)
+    }
+
+    fn read_exact_ranges(
+        &self,
+        extents: Vec<ByteExtent>,
+        cancellation: RunCancellation,
+    ) -> BoxFuture<'_, Result<cdf_runtime::ExactRangeReadBatch>> {
+        self.local.read_exact_ranges(extents, cancellation)
+    }
+
+    fn release_before(&self, frontier: u64) -> Result<()> {
+        self.local.release_before(frontier)
+    }
+}
+
 impl ByteSource for LocalByteSource {
     fn identity(&self) -> &ContentIdentity {
         &self.identity
@@ -274,6 +348,14 @@ fn local_change_token(metadata: &std::fs::Metadata) -> String {
 
 pub(crate) fn local_source_generation(path: &Path) -> Result<String> {
     Ok(local_generation(path)?.evidence_token())
+}
+
+pub(crate) fn local_storage_attestation(path: &Path) -> Result<String> {
+    let generation = local_generation(path)?;
+    Ok(format!(
+        "local-storage-v1:{}:{}:{}",
+        generation.size_bytes, generation.modified_ns, generation.change_token
+    ))
 }
 
 async fn attest_file(file: &File, expected: &LocalGeneration) -> Result<()> {

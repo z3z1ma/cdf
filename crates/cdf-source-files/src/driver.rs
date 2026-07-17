@@ -22,10 +22,11 @@ use cdf_runtime::{
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    BoundedSchemaDiscoveryRequest, FileCompressionDeclaration, FileFormatDeclaration, FileResource,
-    FileResourceDefinition, FileResourcePlan, FileRuntimeDependencies, FileTransportControl,
-    FileTransportLocation, FileTransportResource, discover_local_binary_schema_bounded,
-    discover_transport_binary_schema_bounded, file_source_blocking_lane,
+    BoundedSchemaDiscoveryRequest, FileCompressionDeclaration, FileFormatDeclaration,
+    FilePayloadCache, FileResource, FileResourceDefinition, FileResourcePlan,
+    FileRuntimeDependencies, FileTransportControl, FileTransportLocation, FileTransportResource,
+    discover_local_binary_schema_bounded, discover_transport_binary_schema_bounded,
+    file_source_blocking_lane,
 };
 
 type RuntimeFactory = dyn Fn(
@@ -96,6 +97,10 @@ impl SourceDriver for FileSourceDriver {
 
     fn option_schema(&self) -> &serde_json::Value {
         &self.option_schema
+    }
+
+    fn validate_project_options(&self, options: &serde_json::Value) -> Result<()> {
+        decode_file_project_options(options).map(|_| ())
     }
 
     fn add_planner(&self) -> Option<&dyn SourceAddPlanner> {
@@ -252,12 +257,15 @@ impl SourceDriver for FileSourceDriver {
         let physical: FilePhysicalPlan = serde_json::from_value(plan.physical_plan.clone())
             .map_err(|error| CdfError::contract(format!("invalid file source plan: {error}")))?;
         validate_compiled_capabilities(plan, &physical.compiled_format)?;
-        let dependencies = (self.runtime_factory)(
-            Arc::clone(context.secret_provider()),
-            context.execution().clone(),
-            context.egress_scope(&plan.driver.driver_id),
-        )?
-        .with_prepared_payloads(context.prepared_payloads().clone());
+        let dependencies = configure_runtime_dependencies(
+            (self.runtime_factory)(
+                Arc::clone(context.secret_provider()),
+                context.execution().clone(),
+                context.egress_scope(&plan.driver.driver_id),
+            )?
+            .with_prepared_payloads(context.prepared_payloads().clone()),
+            context,
+        )?;
         let prepared_inventory_key = prepared_file_inventory_key(plan)?;
         physical.compiled_format.verify(dependencies.formats())?;
         Ok(Arc::new(
@@ -292,12 +300,15 @@ impl FileSourceDriver {
         let physical: FilePhysicalPlan = serde_json::from_value(plan.physical_plan.clone())
             .map_err(|error| CdfError::contract(format!("invalid file source plan: {error}")))?;
         validate_compiled_capabilities(plan, &physical.compiled_format)?;
-        let dependencies = (self.runtime_factory)(
-            Arc::clone(context.secret_provider()),
-            context.execution().clone(),
-            context.egress_scope(&plan.driver.driver_id),
-        )?
-        .with_prepared_payloads(context.prepared_payloads().clone());
+        let dependencies = configure_runtime_dependencies(
+            (self.runtime_factory)(
+                Arc::clone(context.secret_provider()),
+                context.execution().clone(),
+                context.egress_scope(&plan.driver.driver_id),
+            )?
+            .with_prepared_payloads(context.prepared_payloads().clone()),
+            context,
+        )?;
         physical.compiled_format.verify(dependencies.formats())?;
         let runtime_plan = physical.to_runtime_plan(context.project_root())?;
         let entries = file_discovery_entries(
@@ -848,6 +859,70 @@ fn transport_resource_for_location(
     Ok(resource)
 }
 
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct FileProjectOptions {
+    #[serde(default)]
+    payload_cache: Option<FilePayloadCacheOptions>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct FilePayloadCacheOptions {
+    location: String,
+    max_entries: usize,
+    max_bytes: u64,
+}
+
+fn decode_file_project_options(options: &serde_json::Value) -> Result<FileProjectOptions> {
+    let decoded: FileProjectOptions = serde_json::from_value(options.clone())
+        .map_err(|error| CdfError::contract(format!("invalid file driver options: {error}")))?;
+    if let Some(cache) = &decoded.payload_cache {
+        if cache.location.trim().is_empty()
+            || cache.location.chars().any(char::is_control)
+            || cache.max_entries == 0
+            || cache.max_bytes == 0
+        {
+            return Err(CdfError::contract(
+                "file payload cache requires a safe location plus positive max_entries and max_bytes",
+            ));
+        }
+        let path = Path::new(&cache.location);
+        if path
+            .components()
+            .any(|component| component == std::path::Component::ParentDir)
+        {
+            return Err(CdfError::contract(
+                "relative file payload cache location must stay under the project root",
+            ));
+        }
+    }
+    Ok(decoded)
+}
+
+fn configure_runtime_dependencies(
+    dependencies: FileRuntimeDependencies,
+    context: &SourceResolutionContext<'_>,
+) -> Result<FileRuntimeDependencies> {
+    let driver_id = SourceDriverId::new("files")?;
+    let options = context
+        .driver_options(&driver_id)
+        .cloned()
+        .unwrap_or_else(|| serde_json::json!({}));
+    let options = decode_file_project_options(&options)?;
+    let Some(cache) = options.payload_cache else {
+        return Ok(dependencies);
+    };
+    let configured = PathBuf::from(cache.location);
+    let root =
+        crate::payload_cache::resolve_project_cache_root(context.project_root(), &configured)?;
+    Ok(dependencies.with_payload_cache(FilePayloadCache::new(
+        root.join("v1"),
+        cache.max_entries,
+        cache.max_bytes,
+    )?))
+}
+
 fn option_schema() -> serde_json::Value {
     let auth = serde_json::json!({
         "oneOf": [
@@ -1355,6 +1430,110 @@ mod tests {
                 .message
                 .contains("does not match the registered driver")
         );
+    }
+
+    #[test]
+    fn payload_cache_requires_complete_explicit_bounded_project_policy() {
+        let formats = crate::test_format_registry();
+        let driver = FileSourceDriver::new(Arc::clone(&formats), |_, _, _| {
+            Err(CdfError::internal("validation-only test runtime factory"))
+        })
+        .unwrap();
+
+        driver
+            .validate_project_options(&serde_json::json!({}))
+            .unwrap();
+        driver
+            .validate_project_options(&serde_json::json!({
+                "payload_cache": {
+                    "location": ".cdf/cache/file-payloads",
+                    "max_entries": 32,
+                    "max_bytes": 1_073_741_824_u64,
+                }
+            }))
+            .unwrap();
+
+        for invalid in [
+            serde_json::json!({"payload_cache": {"location": "cache", "max_entries": 1}}),
+            serde_json::json!({
+                "payload_cache": {"location": "cache", "max_entries": 0, "max_bytes": 1}
+            }),
+            serde_json::json!({
+                "payload_cache": {"location": "../cache", "max_entries": 1, "max_bytes": 1}
+            }),
+            serde_json::json!({"payload_cache": {
+                "location": "cache",
+                "max_entries": 1,
+                "max_bytes": 1,
+                "unknown": true
+            }}),
+        ] {
+            assert!(driver.validate_project_options(&invalid).is_err());
+        }
+
+        let project = tempfile::tempdir().unwrap();
+        let execution = crate::test_execution_services();
+        let context = SourceResolutionContext::new(
+            project.path(),
+            Arc::new(NoopSecretProvider),
+            &execution,
+            Arc::new(cdf_http::EgressAllowlist::allow_any()),
+        )
+        .with_driver_options(BTreeMap::from([(
+            "files".to_owned(),
+            serde_json::json!({
+                "payload_cache": {
+                    "location": ".cdf/cache/file-payloads",
+                    "max_entries": 32,
+                    "max_bytes": 1_073_741_824_u64,
+                }
+            }),
+        )]));
+        let dependencies = FileRuntimeDependencies::new(
+            FileTransportFacade::new(),
+            execution.clone(),
+            crate::test_format_registry(),
+            crate::test_transform_registry(),
+            crate::test_egress_scope(),
+        );
+        let configured = configure_runtime_dependencies(dependencies, &context).unwrap();
+        assert_eq!(
+            configured.payload_cache().unwrap().root(),
+            std::fs::canonicalize(project.path())
+                .unwrap()
+                .join(".cdf/cache/file-payloads/v1")
+        );
+
+        #[cfg(unix)]
+        {
+            let outside = tempfile::tempdir().unwrap();
+            std::os::unix::fs::symlink(outside.path(), project.path().join("cache-escape"))
+                .unwrap();
+            let escape_context = SourceResolutionContext::new(
+                project.path(),
+                Arc::new(NoopSecretProvider),
+                &execution,
+                Arc::new(cdf_http::EgressAllowlist::allow_any()),
+            )
+            .with_driver_options(BTreeMap::from([(
+                "files".to_owned(),
+                serde_json::json!({
+                    "payload_cache": {
+                        "location": "cache-escape/payloads",
+                        "max_entries": 1,
+                        "max_bytes": 1,
+                    }
+                }),
+            )]));
+            let dependencies = FileRuntimeDependencies::new(
+                FileTransportFacade::new(),
+                execution.clone(),
+                crate::test_format_registry(),
+                crate::test_transform_registry(),
+                crate::test_egress_scope(),
+            );
+            assert!(configure_runtime_dependencies(dependencies, &escape_context).is_err());
+        }
     }
 
     #[test]

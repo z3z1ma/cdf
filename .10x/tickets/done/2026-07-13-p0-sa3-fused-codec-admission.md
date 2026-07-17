@@ -26,7 +26,7 @@ No dynamic-language producer lifecycle, same-run typed promotion, selective Parq
 - `.10x/specs/schema-discovery-and-stream-admission.md`
 - `.10x/tickets/2026-07-11-p3-b5-json-codecs.md`
 - `.10x/tickets/done/2026-07-11-p3-b2-parquet-codec.md`
-- `.10x/tickets/2026-07-11-p3-g2-range-readahead-spool-controller.md`
+- `.10x/tickets/done/2026-07-11-p3-g2-range-readahead-spool-controller.md`
 - `.10x/tickets/2026-07-11-p3-g3-codec-download-decode-overlap.md`
 
 ## Assumptions

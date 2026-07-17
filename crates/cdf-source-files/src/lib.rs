@@ -9,6 +9,7 @@ mod evicting_spool_byte_source;
 mod growing_spool_byte_source;
 mod local_byte_source;
 mod object_store_byte_source;
+mod payload_cache;
 mod runtime;
 mod transport;
 
@@ -150,6 +151,7 @@ impl FileResourcePlan {
 pub use driver::{FileSourceDriver, compile_file_resource_plan};
 pub use local_byte_source::LocalByteSource;
 pub use object_store_byte_source::ObjectStoreByteSource;
+pub use payload_cache::{FilePayloadCache, FilePayloadCachePolicy};
 pub use runtime::*;
 pub use transport::*;
 

@@ -927,6 +927,8 @@ pub enum SourceReadMode {
     /// One finite generation streams through fixed disk residency reclaimed by
     /// codec-proven no-lookback frontiers.
     EvictingSpool,
+    /// A generation-revalidated local payload whose hash was verified at cache promotion.
+    PayloadCache,
     /// One invocation intentionally combines direct verification and exact-range decode.
     MixedAccess,
 }
@@ -939,6 +941,7 @@ impl SourceReadMode {
             Self::FullSpool => "full_spool",
             Self::GrowingSpool => "growing_spool",
             Self::EvictingSpool => "evicting_spool",
+            Self::PayloadCache => "payload_cache",
             Self::MixedAccess => "mixed_access",
         }
     }

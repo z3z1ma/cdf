@@ -23,9 +23,9 @@ const DEFAULT_TAIL_RANGE_BYTES: u64 = 32 * 1024 * 1024;
 pub(crate) struct GrowingSpoolSession {
     pub(crate) source: Arc<dyn ByteSource>,
     pub(crate) retention: PayloadRetention,
-    pub(crate) completion: BoxFuture<'static, Result<()>>,
-    #[cfg(test)]
-    spool_path: std::path::PathBuf,
+    pub(crate) completion: BoxFuture<'static, Result<Option<String>>>,
+    pub(crate) spool_path: std::path::PathBuf,
+    pub(crate) cache_staged: bool,
 }
 
 struct GrowingSpoolStorage {
@@ -60,34 +60,52 @@ enum GrowingSpoolTerminal {
     Failed(String),
 }
 
+struct GrowingSpoolRequest {
+    upstream: Arc<dyn ByteSource>,
+    size_bytes: u64,
+    maximum_spool_bytes: u64,
+    spill: Arc<dyn SpillBudgetCoordinator>,
+    memory: Arc<dyn MemoryCoordinator>,
+    staging_root: Option<std::path::PathBuf>,
+    cancellation: RunCancellation,
+}
+
 pub(crate) fn start_growing_spool(
     upstream: Arc<dyn ByteSource>,
     size_bytes: u64,
     maximum_spool_bytes: u64,
     spill: Arc<dyn SpillBudgetCoordinator>,
     memory: Arc<dyn MemoryCoordinator>,
+    staging_root: Option<&Path>,
     cancellation: RunCancellation,
 ) -> Result<Option<GrowingSpoolSession>> {
     start_growing_spool_with_tail_bytes(
+        GrowingSpoolRequest {
+            upstream,
+            size_bytes,
+            maximum_spool_bytes,
+            spill,
+            memory,
+            staging_root: staging_root.map(Path::to_path_buf),
+            cancellation,
+        },
+        DEFAULT_TAIL_RANGE_BYTES,
+    )
+}
+
+fn start_growing_spool_with_tail_bytes(
+    request: GrowingSpoolRequest,
+    tail_range_bytes: u64,
+) -> Result<Option<GrowingSpoolSession>> {
+    let GrowingSpoolRequest {
         upstream,
         size_bytes,
         maximum_spool_bytes,
         spill,
         memory,
-        DEFAULT_TAIL_RANGE_BYTES,
+        staging_root,
         cancellation,
-    )
-}
-
-fn start_growing_spool_with_tail_bytes(
-    upstream: Arc<dyn ByteSource>,
-    size_bytes: u64,
-    maximum_spool_bytes: u64,
-    spill: Arc<dyn SpillBudgetCoordinator>,
-    memory: Arc<dyn MemoryCoordinator>,
-    tail_range_bytes: u64,
-    cancellation: RunCancellation,
-) -> Result<Option<GrowingSpoolSession>> {
+    } = request;
     if size_bytes == 0 {
         return Err(CdfError::contract(
             "growing spool requires a nonempty known-length source",
@@ -116,8 +134,23 @@ fn start_growing_spool_with_tail_bytes(
     let Some(reservation) = spill.try_reserve(size_bytes)? else {
         return Ok(None);
     };
-    let file = tempfile::NamedTempFile::new()
-        .map_err(|error| CdfError::data(format!("create growing file spool: {error}")))?;
+    let (file, cache_staged) = if let Some(staging_root) = staging_root {
+        match tempfile::NamedTempFile::new_in(staging_root) {
+            Ok(file) => (file, true),
+            Err(_) => (
+                tempfile::NamedTempFile::new().map_err(|error| {
+                    CdfError::data(format!("create growing file spool: {error}"))
+                })?,
+                false,
+            ),
+        }
+    } else {
+        (
+            tempfile::NamedTempFile::new()
+                .map_err(|error| CdfError::data(format!("create growing file spool: {error}")))?,
+            false,
+        )
+    };
     let storage = Arc::new(GrowingSpoolStorage {
         file,
         _reservation: reservation,
@@ -150,7 +183,6 @@ fn start_growing_spool_with_tail_bytes(
     });
     let owner: Arc<dyn std::any::Any + Send + Sync> = storage.clone();
     let retention = PayloadRetention::new(owner, size_bytes)?;
-    #[cfg(test)]
     let spool_path = storage.path().to_path_buf();
     let completion = Box::pin(async move {
         let result = download_into_growing_spool(
@@ -158,11 +190,12 @@ fn start_growing_spool_with_tail_bytes(
             size_bytes,
             storage.as_ref(),
             progress.as_ref(),
+            cache_staged,
             cancellation,
         )
         .await;
         match &result {
-            Ok(()) => progress.complete(size_bytes)?,
+            Ok(_) => progress.complete(size_bytes)?,
             Err(error) => progress.fail(error),
         }
         result
@@ -171,8 +204,8 @@ fn start_growing_spool_with_tail_bytes(
         source,
         retention,
         completion,
-        #[cfg(test)]
         spool_path,
+        cache_staged,
     }))
 }
 
@@ -181,8 +214,9 @@ async fn download_into_growing_spool(
     size_bytes: u64,
     storage: &GrowingSpoolStorage,
     progress: &GrowingSpoolProgress,
+    calculate_sha256: bool,
     cancellation: RunCancellation,
-) -> Result<()> {
+) -> Result<Option<String>> {
     let mut output = tokio::fs::OpenOptions::new()
         .write(true)
         .truncate(true)
@@ -201,7 +235,7 @@ async fn download_into_growing_spool(
         .await?;
     let mut transferred = 0_u64;
     let expected_checksum = upstream.identity().checksum.as_deref();
-    let mut hasher = expected_checksum.map(|_| Sha256::new());
+    let mut hasher = (expected_checksum.is_some() || calculate_sha256).then(Sha256::new);
     while let Some(chunk) = cancellation.await_or_cancel(input.try_next()).await? {
         cancellation.check()?;
         let length = u64::try_from(chunk.payload().len())
@@ -232,15 +266,17 @@ async fn download_into_growing_spool(
             "growing spool wrote {transferred} bytes for a planned {size_bytes}-byte generation"
         )));
     }
-    if let (Some(expected), Some(hasher)) = (expected_checksum, hasher) {
-        let observed = hex::encode(hasher.finalize());
-        if observed != expected.strip_prefix("sha256:").unwrap_or(expected) {
-            return Err(CdfError::data(
-                "growing spool checksum does not match planned content identity",
-            ));
-        }
+    let observed_sha256 = hasher.map(|hasher| format!("sha256:{}", hex::encode(hasher.finalize())));
+    if let (Some(expected), Some(observed)) = (expected_checksum, observed_sha256.as_deref())
+        && observed.strip_prefix("sha256:").unwrap_or(observed)
+            != expected.strip_prefix("sha256:").unwrap_or(expected)
+    {
+        return Err(CdfError::data(
+            "growing spool checksum does not match planned content identity",
+        ));
     }
-    cancellation.check()
+    cancellation.check()?;
+    Ok(observed_sha256)
 }
 
 impl GrowingSpoolStorage {
@@ -616,13 +652,16 @@ mod tests {
                 let spill = Arc::clone(&spill);
                 async move {
                     let session = start_growing_spool_with_tail_bytes(
-                        source,
-                        payload.len() as u64,
-                        1024 * 1024,
-                        spill,
-                        memory,
+                        GrowingSpoolRequest {
+                            upstream: source,
+                            size_bytes: payload.len() as u64,
+                            maximum_spool_bytes: 1024 * 1024,
+                            spill,
+                            memory,
+                            staging_root: None,
+                            cancellation: RunCancellation::default(),
+                        },
                         16,
-                        RunCancellation::default(),
                     )?
                     .ok_or_else(|| {
                         CdfError::internal("test growing spool unexpectedly declined admission")
@@ -711,13 +750,16 @@ mod tests {
         });
 
         let error = start_growing_spool_with_tail_bytes(
-            source,
-            96,
-            1,
-            Arc::clone(&spill),
-            Arc::clone(&memory),
+            GrowingSpoolRequest {
+                upstream: source,
+                size_bytes: 96,
+                maximum_spool_bytes: 1,
+                spill: Arc::clone(&spill),
+                memory: Arc::clone(&memory),
+                staging_root: None,
+                cancellation: RunCancellation::default(),
+            },
             16,
-            RunCancellation::default(),
         )
         .err()
         .expect("weak source must not enter growing-spool overlap");
@@ -766,13 +808,16 @@ mod tests {
                 let cancellation = cancellation.clone();
                 async move {
                     let session = start_growing_spool_with_tail_bytes(
-                        source,
-                        payload.len() as u64,
-                        1024 * 1024,
-                        Arc::clone(&spill),
-                        memory,
+                        GrowingSpoolRequest {
+                            upstream: source,
+                            size_bytes: payload.len() as u64,
+                            maximum_spool_bytes: 1024 * 1024,
+                            spill: Arc::clone(&spill),
+                            memory,
+                            staging_root: None,
+                            cancellation: cancellation.clone(),
+                        },
                         16,
-                        cancellation.clone(),
                     )?
                     .ok_or_else(|| {
                         CdfError::internal("test growing spool unexpectedly declined admission")

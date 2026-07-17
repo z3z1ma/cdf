@@ -13,7 +13,7 @@ Build on the P2 transport facade with parallel ranged Parquet GETs, bounded read
 ## Activated children
 
 - `.10x/tickets/done/2026-07-11-p3-g1-streaming-transport-byte-sources.md`
-- `.10x/tickets/2026-07-11-p3-g2-range-readahead-spool-controller.md`
+- `.10x/tickets/done/2026-07-11-p3-g2-range-readahead-spool-controller.md`
 - `.10x/tickets/2026-07-11-p3-g3-codec-download-decode-overlap.md`
 - `.10x/tickets/2026-07-11-p3-g4-tlc-remote-io-envelope.md`
 
@@ -26,7 +26,7 @@ Build on the P2 transport facade with parallel ranged Parquet GETs, bounded read
 
 ## Blockers
 
-No immediate execution blocker. G1 is terminal; the active G2/G3 slices build on its provider contract and the completed lab, execution-host, operator-graph, scheduler-admission, and memory-ledger foundations. Program closure still depends on completing the remaining codec/controller work and G4 envelope.
+No immediate execution blocker. G1 and G2 are terminal; G3 builds on their provider/controller contracts and the completed lab, execution-host, operator-graph, scheduler-admission, and memory-ledger foundations. Program closure depends on G3 codec/pipeline overlap and the G4 live/recorded envelope.
 
 ## References
 
@@ -36,3 +36,4 @@ No immediate execution blocker. G1 is terminal; the active G2/G3 slices build on
 ## Progress and notes
 
 - 2026-07-14: Remote Parquet full scans now overlap one sequential transfer with local decode through a generation-bound growing spool when the complete finite object fits the atomically reserved spill budget. Strong exact-range sources that do not fit no longer require object-sized local disk: they fall back to the registered codec's generation-bound range access with zero spool consumption. Weak/unversioned sources retain verified sequential staging, and unbounded row streams remain direct bounded decode paths. Evidence: `.10x/evidence/2026-07-14-p3-g2-fineweb-growing-spool-overlap.md`, `.10x/evidence/2026-07-14-p3-g2-large-object-range-fallback.md`.
+- 2026-07-16: G2 closed at `.10x/tickets/done/2026-07-11-p3-g2-range-readahead-spool-controller.md`. The terminal controller now covers origin-shared adaptive/fixed range admission, exact retries, bounded coalescing/readahead, full/growing/evicting spools, cancellation, telemetry, and opt-in generation-revalidated cache promotion without adding payload work to the disabled or oversized paths. G3 owns end-to-end codec/network backpressure and jobs parity; G4 owns the live provider/TLC envelope and default tuning.

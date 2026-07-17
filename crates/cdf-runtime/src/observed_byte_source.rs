@@ -118,6 +118,7 @@ impl SourceIoObserver {
                     | SourceReadMode::FullSpool
                     | SourceReadMode::GrowingSpool
                     | SourceReadMode::EvictingSpool
+                    | SourceReadMode::PayloadCache
                     | SourceReadMode::MixedAccess,
                 ),
                 Some(source_length),
@@ -277,7 +278,8 @@ fn encode_mode(mode: SourceReadMode) -> u8 {
         SourceReadMode::FullSpool => 3,
         SourceReadMode::GrowingSpool => 4,
         SourceReadMode::EvictingSpool => 5,
-        SourceReadMode::MixedAccess => 6,
+        SourceReadMode::PayloadCache => 6,
+        SourceReadMode::MixedAccess => 7,
     }
 }
 
@@ -289,7 +291,8 @@ fn decode_mode(encoded: u8) -> Option<SourceReadMode> {
         3 => Some(SourceReadMode::FullSpool),
         4 => Some(SourceReadMode::GrowingSpool),
         5 => Some(SourceReadMode::EvictingSpool),
-        6 => Some(SourceReadMode::MixedAccess),
+        6 => Some(SourceReadMode::PayloadCache),
+        7 => Some(SourceReadMode::MixedAccess),
         _ => None,
     }
 }
