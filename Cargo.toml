@@ -52,3 +52,17 @@ lto = "fat"
 codegen-units = 1
 panic = "abort"
 strip = "symbols"
+
+[profile.dev]
+incremental = false
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+debug = false
+
+[profile.test]
+incremental = false
+debug = "line-tables-only"
+
+[profile.test.package."*"]
+debug = false
