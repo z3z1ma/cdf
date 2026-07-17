@@ -944,6 +944,14 @@ impl SourceHealthBudget {
         ))
     }
 
+    /// Absolute host-monotonic deadline shared by every operation in this health probe.
+    pub fn deadline(&self) -> Duration {
+        Duration::from_millis(
+            self.started_ms
+                .saturating_add(self.limits.maximum_duration_ms),
+        )
+    }
+
     pub fn consume_work(&self, units: u64) -> Result<()> {
         self.consume_counter(
             units,

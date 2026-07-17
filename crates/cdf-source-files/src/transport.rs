@@ -4,7 +4,7 @@ use std::{
     path::{Path, PathBuf},
     pin::Pin,
     sync::Arc,
-    time::UNIX_EPOCH,
+    time::{Duration, UNIX_EPOCH},
 };
 
 use cdf_http::{
@@ -13,7 +13,9 @@ use cdf_http::{
 };
 use cdf_kernel::{BoxFuture, CdfError, ErrorKind, FilePosition, Result};
 use cdf_memory::MemoryCoordinator;
-use cdf_runtime::{ByteSource, GenerationStrength, SourceEgressScope};
+use cdf_runtime::{
+    ByteSource, ExecutionServices, GenerationStrength, RunCancellation, SourceEgressScope,
+};
 use futures_util::{Stream, TryStreamExt};
 use object_store::{ObjectStore, ObjectStoreExt, path::Path as ObjectPath};
 use serde::{Deserialize, Serialize};
@@ -302,24 +304,68 @@ pub struct FileChecksum {
 pub type FileIdentityStream =
     Pin<Box<dyn Stream<Item = Result<FileIdentityMetadata>> + Send + 'static>>;
 
+#[derive(Clone, Debug, Default)]
+pub struct FileTransportControl {
+    cancellation: RunCancellation,
+    deadline: Option<Duration>,
+}
+
+impl FileTransportControl {
+    pub fn new(cancellation: RunCancellation, deadline: Option<Duration>) -> Self {
+        Self {
+            cancellation,
+            deadline,
+        }
+    }
+
+    pub fn cancellation(&self) -> RunCancellation {
+        self.cancellation.clone()
+    }
+
+    fn check(&self, execution: Option<&ExecutionServices>) -> Result<()> {
+        self.cancellation.check()?;
+        if let Some(deadline) = self.deadline {
+            let execution = execution.ok_or_else(|| {
+                CdfError::contract("deadline-bound file transport requires ExecutionServices")
+            })?;
+            if execution.monotonic_now() >= deadline {
+                return Err(CdfError::data(
+                    "file transport operation exceeded its deadline",
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    fn remaining(&self, execution: &ExecutionServices) -> Result<Option<Duration>> {
+        self.check(Some(execution))?;
+        Ok(self
+            .deadline
+            .map(|deadline| deadline.saturating_sub(execution.monotonic_now())))
+    }
+}
+
 pub trait FileTransport: Send + Sync {
     fn metadata(
         &self,
         egress: &SourceEgressScope,
         resource: &FileTransportResource,
+        control: &FileTransportControl,
     ) -> Result<FileMetadataObservation>;
     fn metadata_if_exists(
         &self,
         egress: &SourceEgressScope,
         resource: &FileTransportResource,
+        control: &FileTransportControl,
     ) -> Result<Option<FileMetadataObservation>> {
-        self.metadata(egress, resource).map(Some)
+        self.metadata(egress, resource, control).map(Some)
     }
     fn list(
         &self,
         egress: &SourceEgressScope,
         resource: &FileTransportResource,
         maximum_results: usize,
+        control: &FileTransportControl,
     ) -> Result<FileIdentityStream>;
     fn open_byte_source(
         &self,
@@ -537,15 +583,19 @@ impl FileTransport for FileTransportFacade {
         &self,
         egress: &SourceEgressScope,
         resource: &FileTransportResource,
+        control: &FileTransportControl,
     ) -> Result<FileMetadataObservation> {
+        control.check(self.execution.as_ref())?;
         match &resource.location {
             FileTransportLocation::LocalPath { path } => local_metadata(Path::new(path))
                 .map(|identity| FileMetadataObservation::direct(resource, identity)),
             FileTransportLocation::FileUrl { url } => local_metadata(&file_url_path(url)?)
                 .map(|identity| FileMetadataObservation::direct(resource, identity)),
-            FileTransportLocation::HttpUrl { url } => self.http_metadata(egress, resource, url),
+            FileTransportLocation::HttpUrl { url } => {
+                self.http_metadata(egress, resource, url, control)
+            }
             FileTransportLocation::ObjectStoreUrl { url } => self
-                .object_store_metadata(egress, resource, url)
+                .object_store_metadata(egress, resource, url, control)
                 .map(|identity| FileMetadataObservation::direct(resource, identity)),
         }
     }
@@ -554,12 +604,13 @@ impl FileTransport for FileTransportFacade {
         &self,
         egress: &SourceEgressScope,
         resource: &FileTransportResource,
+        control: &FileTransportControl,
     ) -> Result<Option<FileMetadataObservation>> {
         match &resource.location {
             FileTransportLocation::HttpUrl { url } => {
-                self.http_metadata_if_exists(egress, resource, url)
+                self.http_metadata_if_exists(egress, resource, url, control)
             }
-            _ => self.metadata(egress, resource).map(Some),
+            _ => self.metadata(egress, resource, control).map(Some),
         }
     }
 
@@ -568,19 +619,21 @@ impl FileTransport for FileTransportFacade {
         egress: &SourceEgressScope,
         resource: &FileTransportResource,
         maximum_results: usize,
+        control: &FileTransportControl,
     ) -> Result<FileIdentityStream> {
+        control.check(self.execution.as_ref())?;
         match &resource.location {
             FileTransportLocation::LocalPath { path } => {
-                self.list_local(PathBuf::from(path), maximum_results)
+                self.list_local(PathBuf::from(path), maximum_results, control.clone())
             }
             FileTransportLocation::FileUrl { url } => {
-                self.list_local(file_url_path(url)?, maximum_results)
+                self.list_local(file_url_path(url)?, maximum_results, control.clone())
             }
             FileTransportLocation::HttpUrl { .. } => Err(CdfError::contract(
                 "HTTP(S) file transport does not support arbitrary directory listing; use an explicit URL or a ratified template/range enumerator",
             )),
             FileTransportLocation::ObjectStoreUrl { url } => {
-                self.list_object_store(egress, resource, url, maximum_results)
+                self.list_object_store(egress, resource, url, maximum_results, control.clone())
             }
         }
     }
@@ -625,8 +678,9 @@ impl FileTransportFacade {
         egress: &SourceEgressScope,
         resource: &FileTransportResource,
         url: &str,
+        control: &FileTransportControl,
     ) -> Result<Option<FileMetadataObservation>> {
-        self.probe_http_metadata(egress, resource, url, true)
+        self.probe_http_metadata(egress, resource, url, true, control)
     }
 
     fn object_store_metadata(
@@ -634,10 +688,11 @@ impl FileTransportFacade {
         egress: &SourceEgressScope,
         resource: &FileTransportResource,
         url: &str,
+        control: &FileTransportControl,
     ) -> Result<FileIdentityMetadata> {
         let (store, path, _) = self.resolve_object_store(egress, resource, url)?;
         let metadata = self
-            .object_store_io(async move { Ok(store.head(&path).await) })?
+            .controlled_io(control, async move { Ok(store.head(&path).await) })?
             .map_err(|error| object_store_error("read object metadata", error))?;
         Ok(object_identity(url.to_owned(), metadata))
     }
@@ -648,9 +703,11 @@ impl FileTransportFacade {
         resource: &FileTransportResource,
         url: &str,
         maximum_results: usize,
+        control: FileTransportControl,
     ) -> Result<FileIdentityStream> {
         let (store, prefix, origin) = self.resolve_object_store(egress, resource, url)?;
-        let stream = self.execution()?.spawn_io_stream(
+        let execution = self.execution()?.clone();
+        let stream = execution.clone().spawn_io_stream(
             "file-object-store-list",
             FILE_LIST_CHANNEL_ENTRIES,
             move |output, cancellation| {
@@ -660,20 +717,28 @@ impl FileTransportFacade {
                     maximum_results,
                     output,
                     cancellation,
+                    control,
+                    execution.clone(),
                 )
             },
         )?;
         Ok(Box::pin(stream))
     }
 
-    fn list_local(&self, path: PathBuf, maximum_results: usize) -> Result<FileIdentityStream> {
-        let execution = self.execution()?;
+    fn list_local(
+        &self,
+        path: PathBuf,
+        maximum_results: usize,
+        control: FileTransportControl,
+    ) -> Result<FileIdentityStream> {
+        let execution = self.execution()?.clone();
         execution.ensure_blocking_lanes(&[crate::file_source_blocking_lane()])?;
-        let stream = execution.spawn_blocking_stream(
+        let stream = execution.clone().spawn_blocking_stream(
             "file-local-list",
             crate::FILE_SOURCE_BLOCKING_LANE_ID,
             FILE_LIST_CHANNEL_ENTRIES,
             move |mut output, cancellation| {
+                control.check(Some(&execution))?;
                 cancellation.check()?;
                 let metadata = fs::metadata(&path).map_err(|error| {
                     CdfError::data(format!(
@@ -705,6 +770,7 @@ impl FileTransportFacade {
                         path.display()
                     ))
                 })? {
+                    control.check(Some(&execution))?;
                     cancellation.check()?;
                     let entry = entry.map_err(|error| {
                         CdfError::data(format!(
@@ -778,38 +844,22 @@ impl FileTransportFacade {
         Ok((Arc::from(store), path, origin))
     }
 
-    fn object_store_io<T, F>(&self, future: F) -> Result<T>
-    where
-        T: Send + 'static,
-        F: std::future::Future<Output = Result<T>> + Send + 'static,
-    {
-        self.execution
-            .as_ref()
-            .ok_or_else(|| {
-                CdfError::contract(
-                    "object-store file transport requires injected ExecutionServices",
-                )
-            })?
-            .run_io(future)
-    }
-
     fn execution(&self) -> Result<&cdf_runtime::ExecutionServices> {
         self.execution
             .as_ref()
             .ok_or_else(|| CdfError::contract("file transport requires injected ExecutionServices"))
     }
 
-    fn http_io<T, F>(&self, future: F) -> Result<T>
+    fn controlled_io<T, F>(&self, control: &FileTransportControl, future: F) -> Result<T>
     where
         T: Send + 'static,
         F: std::future::Future<Output = Result<T>> + Send + 'static,
     {
-        self.execution
-            .as_ref()
-            .ok_or_else(|| {
-                CdfError::contract("HTTP file transport requires injected ExecutionServices")
-            })?
-            .run_io(future)
+        let execution = self.execution()?.clone();
+        let control = control.clone();
+        execution
+            .clone()
+            .run_io(async move { await_controlled(&control, &execution, future).await })
     }
 
     fn http_metadata(
@@ -817,8 +867,9 @@ impl FileTransportFacade {
         egress: &SourceEgressScope,
         resource: &FileTransportResource,
         url: &str,
+        control: &FileTransportControl,
     ) -> Result<FileMetadataObservation> {
-        self.probe_http_metadata(egress, resource, url, false)?
+        self.probe_http_metadata(egress, resource, url, false, control)?
             .ok_or_else(|| CdfError::data("HTTP file transport resource does not exist"))
     }
 
@@ -828,6 +879,7 @@ impl FileTransportFacade {
         resource: &FileTransportResource,
         logical_url: &str,
         missing_is_none: bool,
+        control: &FileTransportControl,
     ) -> Result<Option<FileMetadataObservation>> {
         const MAX_REDIRECTS: usize = 10;
 
@@ -838,7 +890,7 @@ impl FileTransportFacade {
             auth.apply(&mut head)?;
         }
         let (mut access_url, mut response) =
-            self.send_headers_following_redirects(egress, resource, head, MAX_REDIRECTS)?;
+            self.send_headers_following_redirects(egress, resource, head, MAX_REDIRECTS, control)?;
         if response.status == 404 && missing_is_none {
             return Ok(None);
         }
@@ -856,8 +908,13 @@ impl FileTransportFacade {
             }
             set_header(&mut get.headers, "range", "bytes=0-0");
             set_header(&mut get.headers, "accept-encoding", "identity");
-            (access_url, response) =
-                self.send_headers_following_redirects(egress, resource, get, MAX_REDIRECTS)?;
+            (access_url, response) = self.send_headers_following_redirects(
+                egress,
+                resource,
+                get,
+                MAX_REDIRECTS,
+                control,
+            )?;
             if response.status == 404 && missing_is_none {
                 return Ok(None);
             }
@@ -882,12 +939,16 @@ impl FileTransportFacade {
         resource: &FileTransportResource,
         mut request: HttpFileRequest,
         maximum_redirects: usize,
+        control: &FileTransportControl,
     ) -> Result<(String, HttpFileResponse)> {
         for redirect_count in 0..=maximum_redirects {
             validate_http_file_url(&request.url)?;
             egress.authorize(&request.url)?;
             resource.egress_allowlist.check(&policy_request(&request))?;
-            let response = self.http_io(self.http_transport()?.send_headers(request.clone()))?;
+            let response = self.controlled_io(
+                control,
+                self.http_transport()?.send_headers(request.clone()),
+            )?;
             if !matches!(response.status, 301 | 302 | 303 | 307 | 308) {
                 return Ok((request.url, response));
             }
@@ -956,17 +1017,18 @@ async fn publish_object_store_listing(
     maximum_results: usize,
     mut output: cdf_runtime::TaskStreamSender<FileIdentityMetadata>,
     cancellation: cdf_runtime::RunCancellation,
+    control: FileTransportControl,
+    execution: ExecutionServices,
 ) -> Result<()> {
     let mut emitted = 0_usize;
     loop {
-        let next = cancellation
-            .await_or_cancel(async {
-                objects
-                    .try_next()
-                    .await
-                    .map_err(|error| object_store_error("list object prefix", error))
-            })
-            .await?;
+        let operation = cancellation.await_or_cancel(async {
+            objects
+                .try_next()
+                .await
+                .map_err(|error| object_store_error("list object prefix", error))
+        });
+        let next = await_controlled(&control, &execution, operation).await?;
         let Some(metadata) = next else {
             return Ok(());
         };
@@ -984,6 +1046,32 @@ async fn publish_object_store_listing(
         identity.validate()?;
         output.send(identity).await?;
         emitted += 1;
+    }
+}
+
+async fn await_controlled<T>(
+    control: &FileTransportControl,
+    execution: &ExecutionServices,
+    operation: impl std::future::Future<Output = Result<T>>,
+) -> Result<T> {
+    let operation = control.cancellation.await_or_cancel(operation);
+    let Some(remaining) = control.remaining(execution)? else {
+        return operation.await;
+    };
+    let timer_cancellation = RunCancellation::default();
+    let timer = execution.delay(remaining, timer_cancellation.clone());
+    futures_util::pin_mut!(operation, timer);
+    match futures_util::future::select(operation, timer).await {
+        futures_util::future::Either::Left((result, _)) => {
+            timer_cancellation.cancel();
+            result
+        }
+        futures_util::future::Either::Right((timer_result, _)) => {
+            timer_result?;
+            Err(CdfError::data(
+                "file transport operation exceeded its deadline",
+            ))
+        }
     }
 }
 
@@ -1333,6 +1421,8 @@ mod tests {
         collections::{BTreeMap, VecDeque},
         fs,
         sync::{Arc, Mutex},
+        thread,
+        time::Duration,
     };
 
     use cdf_http::{SecretUri, SecretValue};
@@ -1414,6 +1504,7 @@ mod tests {
         }))
         .boxed();
         let execution = crate::test_execution_services();
+        let listing_execution = execution.clone();
         let mut listing = execution
             .spawn_io_stream(
                 "million-object-list",
@@ -1425,6 +1516,8 @@ mod tests {
                         usize::MAX,
                         output,
                         cancellation,
+                        FileTransportControl::default(),
+                        listing_execution.clone(),
                     )
                 },
             )
@@ -1455,7 +1548,12 @@ mod tests {
             .with_execution_services(crate::test_execution_services());
         let root = FileTransportResource::object_store_url("s3://acme-events/prod/");
         let listed = transport
-            .list(&crate::test_egress_scope(), &root, usize::MAX)
+            .list(
+                &crate::test_egress_scope(),
+                &root,
+                usize::MAX,
+                &FileTransportControl::default(),
+            )
             .and_then(|stream| futures_executor::block_on(stream.try_collect::<Vec<_>>()))
             .unwrap();
         assert_eq!(listed.len(), 1);
@@ -1466,7 +1564,11 @@ mod tests {
         assert_eq!(listed[0].size_bytes, Some(15));
         let object = FileTransportResource::object_store_url(&listed[0].location);
         let head = transport
-            .metadata(&crate::test_egress_scope(), &object)
+            .metadata(
+                &crate::test_egress_scope(),
+                &object,
+                &FileTransportControl::default(),
+            )
             .unwrap();
         assert_eq!(head.identity.size_bytes, Some(15));
     }
@@ -1486,7 +1588,12 @@ mod tests {
         let root = FileTransportResource::object_store_url("s3://bounded/prod/");
         let error = futures_executor::block_on(
             transport
-                .list(&crate::test_egress_scope(), &root, 1)
+                .list(
+                    &crate::test_egress_scope(),
+                    &root,
+                    1,
+                    &FileTransportControl::default(),
+                )
                 .unwrap()
                 .try_collect::<Vec<_>>(),
         )
@@ -1494,7 +1601,12 @@ mod tests {
         assert!(error.message.contains("1-entry boundary"));
         assert_eq!(
             transport
-                .list(&crate::test_egress_scope(), &root, 2)
+                .list(
+                    &crate::test_egress_scope(),
+                    &root,
+                    2,
+                    &FileTransportControl::default(),
+                )
                 .and_then(|stream| futures_executor::block_on(stream.try_collect::<Vec<_>>()))
                 .unwrap()
                 .len(),
@@ -1536,7 +1648,7 @@ mod tests {
             .with_egress_allowlist(EgressAllowlist::from_hosts(["allowed-bucket"]));
         let transport = FileTransportFacade::new();
         let error = transport
-            .metadata(&crate::test_egress_scope(), &resource)
+            .metadata(&crate::test_egress_scope(), &resource, &test_control())
             .unwrap_err();
         assert_eq!(error.kind, ErrorKind::Auth);
         assert!(!error.message.contains("cloud-options"));
@@ -1554,6 +1666,7 @@ mod tests {
             .metadata(
                 &crate::test_egress_scope(),
                 &FileTransportResource::local_path(&path),
+                &test_control(),
             )
             .unwrap()
             .identity;
@@ -1584,7 +1697,7 @@ mod tests {
         let transport = http_facade(client);
 
         let metadata = transport
-            .metadata(&crate::test_egress_scope(), &resource)
+            .metadata(&crate::test_egress_scope(), &resource, &test_control())
             .unwrap()
             .identity;
         assert_eq!(metadata.location, "https://data.example.org/events.parquet");
@@ -1635,7 +1748,7 @@ mod tests {
             let transport = http_facade(client);
 
             let observation = transport
-                .metadata(&crate::test_egress_scope(), &resource)
+                .metadata(&crate::test_egress_scope(), &resource, &test_control())
                 .unwrap();
 
             assert_eq!(observation.identity.location, logical);
@@ -1675,7 +1788,7 @@ mod tests {
         let transport = http_facade(client);
 
         let identity = transport
-            .metadata(&crate::test_egress_scope(), &resource)
+            .metadata(&crate::test_egress_scope(), &resource, &test_control())
             .unwrap()
             .identity;
 
@@ -1694,7 +1807,7 @@ mod tests {
         let transport = http_facade(client);
 
         let error = transport
-            .metadata(&crate::test_egress_scope(), &resource)
+            .metadata(&crate::test_egress_scope(), &resource, &test_control())
             .unwrap_err();
 
         assert_eq!(error.kind, ErrorKind::Auth);
@@ -1715,12 +1828,12 @@ mod tests {
 
         assert_eq!(
             transport
-                .metadata_if_exists(&crate::test_egress_scope(), &resource)
+                .metadata_if_exists(&crate::test_egress_scope(), &resource, &test_control())
                 .unwrap(),
             None
         );
         let forbidden = transport
-            .metadata_if_exists(&crate::test_egress_scope(), &resource)
+            .metadata_if_exists(&crate::test_egress_scope(), &resource, &test_control())
             .unwrap_err();
         assert_eq!(forbidden.kind, ErrorKind::Auth);
     }
@@ -1732,7 +1845,12 @@ mod tests {
         let resource = FileTransportResource::http_url("https://data.example.org/");
         let transport = http_facade(client);
 
-        let error = match transport.list(&crate::test_egress_scope(), &resource, usize::MAX) {
+        let error = match transport.list(
+            &crate::test_egress_scope(),
+            &resource,
+            usize::MAX,
+            &test_control(),
+        ) {
             Ok(_) => panic!("HTTP listing must remain unsupported"),
             Err(error) => error,
         };
@@ -1755,7 +1873,11 @@ mod tests {
         let blocked_transport = http_facade(blocked_client);
 
         let error = blocked_transport
-            .metadata(&crate::test_egress_scope(), &blocked_resource)
+            .metadata(
+                &crate::test_egress_scope(),
+                &blocked_resource,
+                &test_control(),
+            )
             .unwrap_err();
         assert_eq!(error.kind, ErrorKind::Auth);
         assert_eq!(blocked_recorder.requests().len(), 0);
@@ -1779,7 +1901,7 @@ mod tests {
         );
 
         let metadata = auth_transport
-            .metadata(&crate::test_egress_scope(), &auth_resource)
+            .metadata(&crate::test_egress_scope(), &auth_resource, &test_control())
             .unwrap();
         assert_eq!(metadata.identity().size_bytes, Some(16));
         let requests = auth_recorder.requests();
@@ -1819,7 +1941,7 @@ mod tests {
         )]));
 
         let observation = transport
-            .metadata(&crate::test_egress_scope(), &resource)
+            .metadata(&crate::test_egress_scope(), &resource, &test_control())
             .unwrap();
         let requests = recorder.requests();
         assert_eq!(requests.len(), 2);
@@ -1846,7 +1968,9 @@ mod tests {
         );
         let transport = http_facade(client);
 
-        let error = transport.metadata(&host_scope, &resource).unwrap_err();
+        let error = transport
+            .metadata(&host_scope, &resource, &test_control())
+            .unwrap_err();
 
         assert_eq!(error.kind, ErrorKind::Auth);
         assert!(error.message.contains("adapter-permitted.example.org"));
@@ -1975,6 +2099,10 @@ mod tests {
             .with_execution_services(crate::test_execution_services())
     }
 
+    fn test_control() -> FileTransportControl {
+        FileTransportControl::default()
+    }
+
     impl HttpFileTransport for RecordingHttpFileTransport {
         fn send_headers(
             &self,
@@ -2001,6 +2129,69 @@ mod tests {
                 "control-plane HTTP test double cannot be installed as a file runtime",
             ))
         }
+    }
+
+    #[derive(Clone)]
+    struct PendingHttpFileTransport;
+
+    impl HttpFileTransport for PendingHttpFileTransport {
+        fn send_headers(
+            &self,
+            _request: HttpFileRequest,
+        ) -> BoxFuture<'static, Result<HttpFileResponse>> {
+            Box::pin(futures_util::future::pending())
+        }
+
+        fn open_byte_source(
+            &self,
+            _resource: &FileTransportResource,
+            _expected: &FileIdentityMetadata,
+            _auth: Option<ResolvedHttpAuth>,
+            _memory: Arc<dyn MemoryCoordinator>,
+        ) -> Result<Arc<dyn ByteSource>> {
+            Err(CdfError::internal(
+                "pending control-plane transport has no payload source",
+            ))
+        }
+    }
+
+    #[test]
+    fn pending_http_metadata_obeys_cancellation_and_absolute_deadline() {
+        let resource = FileTransportResource::http_url("https://pending.example.test/file")
+            .with_egress_allowlist(EgressAllowlist::from_hosts(["pending.example.test"]));
+
+        let execution = crate::test_execution_services();
+        let transport = FileTransportFacade::new()
+            .with_http_transport(PendingHttpFileTransport)
+            .with_execution_services(execution.clone());
+        let cancellation = RunCancellation::default();
+        let cancel = cancellation.clone();
+        let cancel_thread = thread::spawn(move || {
+            thread::sleep(Duration::from_millis(10));
+            cancel.cancel();
+        });
+        let cancelled = transport
+            .metadata(
+                &crate::test_egress_scope(),
+                &resource,
+                &FileTransportControl::new(cancellation, None),
+            )
+            .unwrap_err();
+        cancel_thread.join().unwrap();
+        assert!(cancelled.message.contains("cancelled"));
+
+        let deadline = execution
+            .monotonic_now()
+            .saturating_add(Duration::from_millis(10));
+        let expired = transport
+            .metadata(
+                &crate::test_egress_scope(),
+                &resource,
+                &FileTransportControl::new(RunCancellation::default(), Some(deadline)),
+            )
+            .unwrap_err();
+        assert_eq!(expired.kind, ErrorKind::Data);
+        assert!(expired.message.contains("deadline"));
     }
 
     struct StaticSecretProvider {

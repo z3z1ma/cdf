@@ -23,8 +23,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     BoundedSchemaDiscoveryRequest, FileCompressionDeclaration, FileFormatDeclaration, FileResource,
-    FileResourceDefinition, FileResourcePlan, FileRuntimeDependencies, FileTransportLocation,
-    FileTransportResource, discover_local_binary_schema_bounded,
+    FileResourceDefinition, FileResourcePlan, FileRuntimeDependencies, FileTransportControl,
+    FileTransportLocation, FileTransportResource, discover_local_binary_schema_bounded,
     discover_transport_binary_schema_bounded, file_source_blocking_lane,
 };
 
@@ -121,8 +121,12 @@ impl SourceDriver for FileSourceDriver {
             let resource_id = plan.descriptor.resource_id.as_str();
             let maximum_entries =
                 usize::try_from(request.budget.remaining_list_entries()?).unwrap_or(usize::MAX);
+            let control = FileTransportControl::new(
+                request.budget.cancellation(),
+                Some(request.budget.deadline()),
+            );
             let result = match self
-                .discovery_session_with_limit(plan, context, maximum_entries, false)
+                .discovery_session_with_limit(plan, context, maximum_entries, false, &control)
                 .and_then(|session| session.candidates())
             {
                 Ok(candidates) => {
@@ -148,12 +152,15 @@ impl SourceDriver for FileSourceDriver {
                         }
                     }
                 }
-                Err(error) => SourceHealthResult::failed(
-                    resource_id,
-                    "file source inventory probe failed",
-                    &plan.descriptor.resource_id,
-                    &error,
-                ),
+                Err(error) => {
+                    request.budget.check()?;
+                    SourceHealthResult::failed(
+                        resource_id,
+                        "file source inventory probe failed",
+                        &plan.descriptor.resource_id,
+                        &error,
+                    )
+                }
             };
             output.emit(result)?;
         }
@@ -232,6 +239,7 @@ impl SourceDriver for FileSourceDriver {
             context,
             usize::MAX,
             true,
+            &FileTransportControl::default(),
         )?))
     }
 
@@ -276,6 +284,7 @@ impl FileSourceDriver {
         context: &SourceResolutionContext<'_>,
         maximum_entries: usize,
         retain_inventory: bool,
+        control: &FileTransportControl,
     ) -> Result<FileDriverDiscoverySession> {
         plan.validate()?;
         let physical: FilePhysicalPlan = serde_json::from_value(plan.physical_plan.clone())
@@ -296,6 +305,7 @@ impl FileSourceDriver {
             &dependencies,
             maximum_entries,
             retain_inventory,
+            control,
         )?;
         Ok(FileDriverDiscoverySession {
             resource_id: plan.descriptor.resource_id.clone(),
@@ -593,6 +603,7 @@ impl SourceDiscoverySession for FileDriverDiscoverySession {
             transform_name: &entry.compression,
             maximum_bytes: request.maximum_bytes,
             maximum_records: request.maximum_records,
+            cancellation: request.cancellation.clone(),
         };
         let probe = match &entry.source {
             FileDriverDiscoverySource::Local {
@@ -630,6 +641,7 @@ fn file_discovery_entries(
     dependencies: &FileRuntimeDependencies,
     maximum_entries: usize,
     retain_inventory: bool,
+    control: &FileTransportControl,
 ) -> Result<Vec<FileDriverDiscoveryEntry>> {
     let runtime = FileResource::new(
         FileResourceDefinition {
@@ -645,6 +657,7 @@ fn file_discovery_entries(
     let partitions = runtime.partitions_for_intent_with_inventory_limit(
         &CompiledScanIntent::full_scan(),
         maximum_entries,
+        control,
     )?;
     if retain_inventory {
         install_prepared_file_inventory(source_plan, dependencies, &partitions)?;

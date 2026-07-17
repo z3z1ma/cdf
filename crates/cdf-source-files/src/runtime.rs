@@ -41,7 +41,8 @@ use tokio::io::AsyncWriteExt;
 use crate::FileTransportFacade;
 use crate::{
     FileCompressionDeclaration, FileFormatDeclaration, FileIdentityMetadata, FileResourcePlan,
-    FileTransport, FileTransportLocation, FileTransportResource, LocalByteSource,
+    FileTransport, FileTransportControl, FileTransportLocation, FileTransportResource,
+    LocalByteSource,
     driver::{FileTransportScheme, file_transport_scheme},
     evicting_spool_byte_source::start_evicting_spool,
     growing_spool_byte_source::start_growing_spool,
@@ -173,7 +174,7 @@ pub struct BoundedBinarySchemaProbe {
     pub probe_records_read: u64,
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub struct BoundedSchemaDiscoveryRequest<'a> {
     pub resource_id: &'a ResourceId,
     pub format: &'a FileFormatDeclaration,
@@ -182,6 +183,7 @@ pub struct BoundedSchemaDiscoveryRequest<'a> {
     pub transform_name: &'a str,
     pub maximum_bytes: u64,
     pub maximum_records: u64,
+    pub cancellation: cdf_runtime::RunCancellation,
 }
 
 pub fn discover_local_binary_schema_bounded(
@@ -191,6 +193,7 @@ pub fn discover_local_binary_schema_bounded(
     initial_bytes_read: u64,
     request: BoundedSchemaDiscoveryRequest<'_>,
 ) -> Result<BoundedBinarySchemaProbe> {
+    request.cancellation.check()?;
     let path = path.as_ref().to_path_buf();
     let source_size = fs::metadata(&path)
         .map_err(|error| CdfError::data(format!("stat {} for discovery: {error}", path.display())))?
@@ -250,6 +253,7 @@ pub fn discover_local_binary_schema_bounded(
     };
     let maximum_bytes = request.maximum_bytes;
     let maximum_records = request.maximum_records;
+    let cancellation = request.cancellation.clone();
     let observation = dependencies.execution().run_io({
         let dependencies = dependencies.clone();
         let driver = Arc::clone(&driver);
@@ -260,13 +264,8 @@ pub fn discover_local_binary_schema_bounded(
             let mut sequential_capture = None;
             let source = if needs_spool {
                 let accounted = Arc::new(
-                    spool_byte_source_async(
-                        source,
-                        None,
-                        &dependencies,
-                        cdf_runtime::RunCancellation::default(),
-                    )
-                    .await?,
+                    spool_byte_source_async(source, None, &dependencies, cancellation.clone())
+                        .await?,
                 );
                 let local: Arc<dyn ByteSource> = Arc::new(LocalByteSource::open(
                     accounted.path(),
@@ -299,6 +298,7 @@ pub fn discover_local_binary_schema_bounded(
                 &driver,
                 dependencies.formats(),
                 &confirmation,
+                cancellation.clone(),
             )
             .await?;
             let discovery_bytes = discovery_budget_after_confirmation(
@@ -314,7 +314,7 @@ pub fn discover_local_binary_schema_bounded(
                         maximum_bytes: discovery_bytes,
                         maximum_records,
                         memory: discovery_memory,
-                        cancellation: cdf_runtime::RunCancellation::default(),
+                        cancellation: cancellation.clone(),
                     },
                 )
                 .await?;
@@ -378,8 +378,9 @@ pub fn discover_transport_binary_schema_bounded(
     dependencies: &FileRuntimeDependencies,
     request: BoundedSchemaDiscoveryRequest<'_>,
 ) -> Result<BoundedBinarySchemaProbe> {
-    let observation =
-        dependencies.with_transport(|transport, egress| transport.metadata(egress, &resource))?;
+    let control = FileTransportControl::new(request.cancellation.clone(), None);
+    let observation = dependencies
+        .with_transport(|transport, egress| transport.metadata(egress, &resource, &control))?;
     let access_resource = observation.access_resource(&resource);
     let metadata = observation.into_identity();
     let evidence_location = diagnostic_location(&metadata.location)?;
@@ -453,6 +454,7 @@ pub fn discover_transport_binary_schema_bounded(
     };
     let maximum_bytes = request.maximum_bytes;
     let maximum_records = request.maximum_records;
+    let cancellation = request.cancellation.clone();
     let observation = execution.run_io({
         let dependencies = dependencies.clone();
         let driver = Arc::clone(&driver);
@@ -462,13 +464,8 @@ pub fn discover_transport_binary_schema_bounded(
             let mut sequential_capture = None;
             let source = if needs_spool {
                 let accounted = Arc::new(
-                    spool_byte_source_async(
-                        source,
-                        None,
-                        &dependencies,
-                        cdf_runtime::RunCancellation::default(),
-                    )
-                    .await?,
+                    spool_byte_source_async(source, None, &dependencies, cancellation.clone())
+                        .await?,
                 );
                 let local: Arc<dyn ByteSource> = Arc::new(LocalByteSource::open(
                     accounted.path(),
@@ -501,6 +498,7 @@ pub fn discover_transport_binary_schema_bounded(
                 &driver,
                 dependencies.formats(),
                 &confirmation,
+                cancellation.clone(),
             )
             .await?;
             let discovery_bytes = discovery_budget_after_confirmation(
@@ -516,7 +514,7 @@ pub fn discover_transport_binary_schema_bounded(
                         maximum_bytes: discovery_bytes,
                         maximum_records,
                         memory,
-                        cancellation: cdf_runtime::RunCancellation::default(),
+                        cancellation: cancellation.clone(),
                     },
                 )
                 .await?;
@@ -619,7 +617,9 @@ async fn confirm_registered_format(
     driver: &Arc<dyn FormatDriver>,
     formats: &FormatRegistry,
     context: &FormatConfirmationContext,
+    cancellation: cdf_runtime::RunCancellation,
 ) -> Result<u64> {
+    cancellation.check()?;
     if driver.descriptor().magic.is_empty() || source_size == 0 {
         return Ok(0);
     }
@@ -643,7 +643,6 @@ async fn confirm_registered_format(
         .max()
         .unwrap_or(0)
         .min(source_size);
-    let cancellation = cdf_runtime::RunCancellation::default();
     let prefix = if prefix_length == 0 {
         None
     } else {
@@ -871,13 +870,18 @@ impl FileResource {
         &self,
         scan_intent: &CompiledScanIntent,
     ) -> Result<Vec<PartitionPlan>> {
-        self.partitions_for_intent_with_inventory_limit(scan_intent, usize::MAX)
+        self.partitions_for_intent_with_inventory_limit(
+            scan_intent,
+            usize::MAX,
+            &FileTransportControl::default(),
+        )
     }
 
     pub(crate) fn partitions_for_intent_with_inventory_limit(
         &self,
         scan_intent: &CompiledScanIntent,
         maximum_matches: usize,
+        control: &FileTransportControl,
     ) -> Result<Vec<PartitionPlan>> {
         if let Some(key) = &self.prepared_inventory_key
             && let Some(payload) = self.dependencies.prepared_payloads().take(key)?
@@ -923,6 +927,7 @@ impl FileResource {
                     formats: self.dependencies.formats(),
                     transforms: self.dependencies.transforms(),
                     maximum_matches,
+                    control,
                 },
             )
         })
@@ -1836,12 +1841,14 @@ impl CompressionEvidence {
     }
 }
 
+#[derive(Clone, Copy)]
 struct FilePlanningContext<'a> {
     transport: &'a dyn FileTransport,
     egress: &'a SourceEgressScope,
     formats: &'a FormatRegistry,
     transforms: &'a ByteTransformRegistry,
     maximum_matches: usize,
+    control: &'a FileTransportControl,
 }
 
 fn file_partitions_for_plan_with_transport(
@@ -1850,15 +1857,7 @@ fn file_partitions_for_plan_with_transport(
     scan_intent: &CompiledScanIntent,
     context: FilePlanningContext<'_>,
 ) -> Result<Vec<PartitionPlan>> {
-    let matches = resolve_file_matches_bounded(
-        &descriptor.resource_id,
-        plan,
-        context.transport,
-        context.egress,
-        context.formats,
-        context.transforms,
-        context.maximum_matches,
-    )?;
+    let matches = resolve_file_matches_bounded(&descriptor.resource_id, plan, context)?;
     if matches.is_empty() {
         return Err(no_file_matches_error(&descriptor.resource_id, plan));
     }
@@ -3296,7 +3295,8 @@ fn resolve_planned_file_match(
                 auth: plan.auth.clone(),
                 credentials: plan.credentials.clone(),
             };
-            let observation = transport.metadata(egress, &logical)?;
+            let observation =
+                transport.metadata(egress, &logical, &FileTransportControl::default())?;
             let compression = resolve_transport_compression(plan, path, transforms)?;
             let format = resolve_transport_format(
                 &descriptor.resource_id,
@@ -3326,7 +3326,8 @@ fn resolve_planned_file_match(
                 Some(credentials) => logical.with_credentials(credentials.clone()),
                 None => logical,
             };
-            let observation = transport.metadata(egress, &logical)?;
+            let observation =
+                transport.metadata(egress, &logical, &FileTransportControl::default())?;
             let compression = resolve_transport_compression(plan, path, transforms)?;
             let format = resolve_transport_format(
                 &descriptor.resource_id,
@@ -3444,26 +3445,25 @@ fn resolve_file_matches(
     resolve_file_matches_bounded(
         resource_id,
         plan,
-        transport,
-        egress,
-        formats,
-        transforms,
-        usize::MAX,
+        FilePlanningContext {
+            transport,
+            egress,
+            formats,
+            transforms,
+            maximum_matches: usize::MAX,
+            control: &FileTransportControl::default(),
+        },
     )
 }
 
 fn resolve_file_matches_bounded(
     resource_id: &ResourceId,
     plan: &FileResourcePlan,
-    transport: &dyn FileTransport,
-    egress: &SourceEgressScope,
-    formats: &FormatRegistry,
-    transforms: &ByteTransformRegistry,
-    maximum_matches: usize,
+    context: FilePlanningContext<'_>,
 ) -> Result<Vec<ResolvedFileMatch>> {
     match file_transport_scheme(&plan.root)? {
         Some(FileTransportScheme::Http | FileTransportScheme::Https) => {
-            if maximum_matches == 0 {
+            if context.maximum_matches == 0 {
                 return Err(CdfError::data(
                     "file inventory exceeds the 0-entry boundary",
                 ));
@@ -3471,22 +3471,15 @@ fn resolve_file_matches_bounded(
             return resolve_http_file_match(
                 resource_id,
                 plan,
-                transport,
-                egress,
-                formats,
-                transforms,
+                context.transport,
+                context.egress,
+                context.formats,
+                context.transforms,
+                context.control,
             );
         }
         Some(FileTransportScheme::S3 | FileTransportScheme::Gs | FileTransportScheme::Az) => {
-            return resolve_object_store_matches_bounded(
-                resource_id,
-                plan,
-                transport,
-                egress,
-                formats,
-                transforms,
-                maximum_matches,
-            );
+            return resolve_object_store_matches_bounded(resource_id, plan, context);
         }
         Some(FileTransportScheme::File) => {
             let mut local_plan = plan.clone();
@@ -3494,15 +3487,7 @@ fn resolve_file_matches_bounded(
                 .to_str()
                 .map(str::to_owned)
                 .ok_or_else(|| CdfError::data("file URL path is not valid UTF-8"))?;
-            return resolve_file_matches_bounded(
-                resource_id,
-                &local_plan,
-                transport,
-                egress,
-                formats,
-                transforms,
-                maximum_matches,
-            );
+            return resolve_file_matches_bounded(resource_id, &local_plan, context);
         }
         None => {}
     }
@@ -3517,7 +3502,7 @@ fn resolve_file_matches_bounded(
 
     let components = pattern_components(&plan.glob)?;
     let mut matches = Vec::new();
-    let mut budget = LocalInventoryBudget::new(maximum_matches);
+    let mut budget = LocalInventoryBudget::new(context.maximum_matches);
     collect_matches(&root, &components, &mut matches, &mut budget)?;
     matches.sort();
     matches.dedup();
@@ -3525,7 +3510,16 @@ fn resolve_file_matches_bounded(
     let matches = contained_matches(&root, matches)?;
     matches
         .into_iter()
-        .map(|path| resolved_file_match(resource_id, &root, path, plan, formats, transforms))
+        .map(|path| {
+            resolved_file_match(
+                resource_id,
+                &root,
+                path,
+                plan,
+                context.formats,
+                context.transforms,
+            )
+        })
         .collect()
 }
 
@@ -3541,22 +3535,21 @@ fn resolve_object_store_matches(
     resolve_object_store_matches_bounded(
         resource_id,
         plan,
-        transport,
-        egress,
-        formats,
-        transforms,
-        usize::MAX,
+        FilePlanningContext {
+            transport,
+            egress,
+            formats,
+            transforms,
+            maximum_matches: usize::MAX,
+            control: &FileTransportControl::default(),
+        },
     )
 }
 
 fn resolve_object_store_matches_bounded(
     resource_id: &ResourceId,
     plan: &FileResourcePlan,
-    transport: &dyn FileTransport,
-    egress: &SourceEgressScope,
-    formats: &FormatRegistry,
-    transforms: &ByteTransformRegistry,
-    maximum_matches: usize,
+    context: FilePlanningContext<'_>,
 ) -> Result<Vec<ResolvedFileMatch>> {
     let root_resource = FileTransportResource::object_store_url(plan.root.clone())
         .with_egress_allowlist(plan.allowlist.clone());
@@ -3566,7 +3559,12 @@ fn resolve_object_store_matches_bounded(
     };
     let components = pattern_components(&plan.glob)?;
     let mut matches = Vec::new();
-    let mut listing = transport.list(egress, &root_resource, maximum_matches)?;
+    let mut listing = context.transport.list(
+        context.egress,
+        &root_resource,
+        context.maximum_matches,
+        context.control,
+    )?;
     while let Some(metadata) = futures_executor::block_on(listing.try_next())? {
         let relative = object_store_relative_path(&plan.root, &metadata.location)?;
         if !glob_path_matches(&components, &relative) {
@@ -3578,9 +3576,15 @@ fn resolve_object_store_matches_bounded(
             Some(credentials) => resource.with_credentials(credentials.clone()),
             None => resource,
         };
-        let compression = resolve_transport_compression(plan, &metadata.location, transforms)?;
-        let format =
-            resolve_transport_format(resource_id, plan, &metadata.location, &compression, formats)?;
+        let compression =
+            resolve_transport_compression(plan, &metadata.location, context.transforms)?;
+        let format = resolve_transport_format(
+            resource_id,
+            plan,
+            &metadata.location,
+            &compression,
+            context.formats,
+        )?;
         matches.push(resolved_transport_file_match(
             resource,
             metadata,
@@ -3607,6 +3611,7 @@ fn resolve_http_file_match(
     egress: &SourceEgressScope,
     formats: &FormatRegistry,
     transforms: &ByteTransformRegistry,
+    control: &FileTransportControl,
 ) -> Result<Vec<ResolvedFileMatch>> {
     let globs = expand_http_glob(resource_id, &plan.glob)?;
     let mut matches = Vec::with_capacity(globs.len());
@@ -3618,7 +3623,7 @@ fn resolve_http_file_match(
             auth: plan.auth.clone(),
             credentials: plan.credentials.clone(),
         };
-        let Some(observation) = transport.metadata_if_exists(egress, &resource)? else {
+        let Some(observation) = transport.metadata_if_exists(egress, &resource, control)? else {
             continue;
         };
         let logical_location = match &resource.location {
@@ -4805,17 +4810,19 @@ mod tests {
             &self,
             egress: &cdf_runtime::SourceEgressScope,
             resource: &FileTransportResource,
+            control: &FileTransportControl,
         ) -> Result<crate::FileMetadataObservation> {
             self.metadata_reads.fetch_add(1, Ordering::Relaxed);
-            self.inner.metadata(egress, resource)
+            self.inner.metadata(egress, resource, control)
         }
 
         fn metadata_if_exists(
             &self,
             egress: &cdf_runtime::SourceEgressScope,
             resource: &FileTransportResource,
+            control: &FileTransportControl,
         ) -> Result<Option<crate::FileMetadataObservation>> {
-            self.inner.metadata_if_exists(egress, resource)
+            self.inner.metadata_if_exists(egress, resource, control)
         }
 
         fn list(
@@ -4823,9 +4830,10 @@ mod tests {
             egress: &cdf_runtime::SourceEgressScope,
             resource: &FileTransportResource,
             maximum_results: usize,
+            control: &FileTransportControl,
         ) -> Result<crate::FileIdentityStream> {
             self.listings.fetch_add(1, Ordering::Relaxed);
-            self.inner.list(egress, resource, maximum_results)
+            self.inner.list(egress, resource, maximum_results, control)
         }
 
         fn open_byte_source(
@@ -4900,6 +4908,7 @@ mod tests {
                 transform_name: "external_passthrough",
                 maximum_bytes: 1024,
                 maximum_records: 1_000,
+                cancellation: cdf_runtime::RunCancellation::default(),
             },
         )
         .unwrap();
@@ -5450,6 +5459,7 @@ mod tests {
                 transform_name: "gzip",
                 maximum_bytes: 64 * 1024 * 1024,
                 maximum_records: 1_000,
+                cancellation: cdf_runtime::RunCancellation::default(),
             },
         )
         .unwrap();
@@ -6160,6 +6170,7 @@ mod tests {
                 formats: formats.as_ref(),
                 transforms: transforms.as_ref(),
                 maximum_matches: usize::MAX,
+                control: &FileTransportControl::default(),
             },
         )
         .unwrap();
@@ -6372,6 +6383,7 @@ mod tests {
                 transform_name: "none",
                 maximum_bytes: 1024 * 1024,
                 maximum_records: 1_000,
+                cancellation: cdf_runtime::RunCancellation::default(),
             },
         )
         .unwrap();
@@ -6465,6 +6477,7 @@ mod tests {
                 transform_name: "none",
                 maximum_bytes: 1024 * 1024,
                 maximum_records: 1_000,
+                cancellation: cdf_runtime::RunCancellation::default(),
             },
         )
         .unwrap();
@@ -6734,6 +6747,7 @@ mod tests {
                 transform_name: "none",
                 maximum_bytes: 1024 * 1024,
                 maximum_records: 1_000,
+                cancellation: cdf_runtime::RunCancellation::default(),
             },
         )
         .unwrap();
