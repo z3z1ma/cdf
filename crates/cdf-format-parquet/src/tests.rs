@@ -8,7 +8,7 @@ use std::{
 
 use arrow_array::{Int64Array, RecordBatch, StringArray};
 use arrow_schema::{DataType, Field, Schema};
-use cdf_kernel::{PartitionId, ResourceId};
+use cdf_kernel::{PartitionId, PredicateId, ResourceId, ScanPredicate};
 use cdf_memory::{
     AccountedBytes, ConsumerKey, DeterministicMemoryCoordinator, MemoryClass, MemoryCoordinator,
     ReservationRequest, reserve_blocking,
@@ -148,7 +148,7 @@ fn empty_fixture() -> (Arc<Schema>, Vec<u8>) {
 
 fn ordered_projection_fixture(with_rows: bool) -> (Arc<Schema>, Vec<u8>) {
     let schema = Arc::new(Schema::new(vec![
-        Field::new("a", DataType::Int64, false).with_metadata(HashMap::from([(
+        Field::new("a", DataType::Int64, true).with_metadata(HashMap::from([(
             "cdf:source_name".to_owned(),
             "SourceA".to_owned(),
         )])),
@@ -156,6 +156,7 @@ fn ordered_projection_fixture(with_rows: bool) -> (Arc<Schema>, Vec<u8>) {
             "cdf:source_name".to_owned(),
             "SourceB".to_owned(),
         )])),
+        Field::new("ignored", DataType::Int64, false),
     ]));
     let mut bytes = Vec::new();
     let mut writer = ArrowWriter::try_new(&mut bytes, Arc::clone(&schema), None).unwrap();
@@ -165,8 +166,9 @@ fn ordered_projection_fixture(with_rows: bool) -> (Arc<Schema>, Vec<u8>) {
                 &RecordBatch::try_new(
                     Arc::clone(&schema),
                     vec![
-                        Arc::new(Int64Array::from(vec![1, 2])),
-                        Arc::new(StringArray::from(vec!["ten", "twenty"])),
+                        Arc::new(Int64Array::from(vec![None, Some(2), Some(3)])),
+                        Arc::new(StringArray::from(vec!["null", "twenty", "thirty"])),
+                        Arc::new(Int64Array::from(vec![100, 200, 300])),
                     ],
                 )
                 .unwrap(),
@@ -435,4 +437,72 @@ fn parquet_projection_preserves_compiled_field_order_for_rows_and_empty_files() 
         drop(session);
         assert_eq!(memory.snapshot().current_bytes, 0);
     }
+}
+
+#[test]
+fn parquet_exact_predicate_filters_before_projecting_output_columns() {
+    let (schema, bytes) = ordered_projection_fixture(true);
+    let memory: Arc<dyn MemoryCoordinator> =
+        Arc::new(DeterministicMemoryCoordinator::new(64 * 1024 * 1024, BTreeMap::new()).unwrap());
+    let source = MemoryByteSource::new(bytes, Arc::clone(&memory));
+    let driver = ParquetFormatDriver::new().unwrap();
+    let predicates = vec![
+        ScanPredicate::new(PredicateId::new("a-after-one").unwrap(), "a > 1").unwrap(),
+        ScanPredicate::new(PredicateId::new("a-before-three").unwrap(), "a < 3").unwrap(),
+    ];
+    let projection = vec!["b".to_owned()];
+    let session = futures_executor::block_on(driver.prepare_decode(
+        source.clone(),
+        DecodePlanningRequest {
+            options: serde_json::json!({}),
+            projection: Some(projection.clone()),
+            predicates: predicates.clone(),
+            target_batch_rows: 64 * 1024,
+            target_batch_bytes: 8 * 1024 * 1024,
+            cancellation: RunCancellation::default(),
+        },
+    ))
+    .unwrap();
+    source.range_reads.lock().unwrap().clear();
+    let stream = futures_executor::block_on(session.decode(PhysicalDecodeRequest {
+        unit: session.units()[0].clone(),
+        resource_id: ResourceId::new("fixture.parquet").unwrap(),
+        partition_id: PartitionId::new("file-000001").unwrap(),
+        batch_id_prefix: "fixture".to_owned(),
+        schema: cdf_runtime::DecodeSchemaPlan::verified_physical(schema),
+        source_position: None,
+        projection: Some(projection),
+        predicates,
+        target_batch_rows: 64 * 1024,
+        target_batch_bytes: 8 * 1024 * 1024,
+        memory: Arc::clone(&memory),
+        cancellation: RunCancellation::default(),
+    }))
+    .unwrap();
+    let batches = futures_executor::block_on(stream.try_collect::<Vec<_>>()).unwrap();
+    assert_eq!(batches.len(), 1);
+    let batch = batches[0].batch().record_batch().unwrap();
+    assert_eq!(batch.num_rows(), 1);
+    assert_eq!(batch.schema().fields().len(), 1);
+    assert_eq!(batch.schema().field(0).name(), "b");
+    assert_eq!(
+        batch
+            .column(0)
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap()
+            .value(0),
+        "twenty"
+    );
+    let payload_bytes = source
+        .range_reads
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|extent| extent.length)
+        .sum::<u64>();
+    assert!(payload_bytes < source.identity.size_bytes.unwrap());
+    drop(batches);
+    drop(session);
+    assert_eq!(memory.snapshot().current_bytes, 0);
 }

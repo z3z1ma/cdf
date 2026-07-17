@@ -283,6 +283,7 @@ impl ProjectExternalMockFormat {
                 }),
                 projection_pushdown: cdf_kernel::PushdownFidelity::Unsupported,
                 predicate_pushdown: cdf_kernel::PushdownFidelity::Unsupported,
+                predicate_operators: Vec::new(),
                 source_access: cdf_runtime::FormatSourceAccess::Sequential,
                 discovery_kind: cdf_runtime::FormatDiscoveryKind::BoundedContent,
                 decode_unit_policy: "whole_mock_file".to_owned(),

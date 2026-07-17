@@ -30,7 +30,9 @@ serde_json = "1.0.150"
 
 [dev-dependencies]
 arrow-cast = "59.1.0"
+bytes = "1.11.1"
 cdf-cli = { path = "../cdf-cli" }
+cdf-format-parquet = { path = "../cdf-format-parquet" }
 cdf-memory = { path = "../cdf-memory" }
 cdf-python = { path = "../cdf-python" }
 cdf-subprocess = { path = "../cdf-subprocess" }
@@ -38,6 +40,7 @@ cdf-source-postgres = { path = "../cdf-source-postgres" }
 cdf-source-rest = { path = "../cdf-source-rest" }
 duckdb = { version = "1.10504.0", features = ["bundled"] }
 futures-executor = "0.3.32"
+parquet = { version = "59.1.0", default-features = false, features = ["arrow"] }
 postgres = "0.19"
 proptest = "1.11.0"
 tempfile = "3.27.0"

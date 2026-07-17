@@ -797,6 +797,9 @@ pub struct FormatDriverDescriptor {
     pub option_schema: serde_json::Value,
     pub projection_pushdown: PushdownFidelity,
     pub predicate_pushdown: PushdownFidelity,
+    /// Canonical diagnostic operators accepted by the codec for predicate pushdown.
+    /// Empty when predicate pushdown is unsupported.
+    pub predicate_operators: Vec<String>,
     pub source_access: FormatSourceAccess,
     pub discovery_kind: FormatDiscoveryKind,
     pub decode_unit_policy: String,
@@ -866,6 +869,21 @@ impl FormatDriverDescriptor {
         {
             return Err(CdfError::contract(
                 "format driver requires a decode-unit policy and valid working-set bounds",
+            ));
+        }
+        let mut predicate_operators = std::collections::BTreeSet::new();
+        if self.predicate_operators.iter().any(|operator| {
+            operator.trim().is_empty() || !predicate_operators.insert(operator.as_str())
+        }) {
+            return Err(CdfError::contract(
+                "format predicate operators must be unique and non-empty",
+            ));
+        }
+        if (self.predicate_pushdown == PushdownFidelity::Unsupported)
+            != self.predicate_operators.is_empty()
+        {
+            return Err(CdfError::contract(
+                "format predicate fidelity and supported-operator vocabulary disagree",
             ));
         }
         self.decode_cpu.validate()?;
@@ -1917,6 +1935,7 @@ mod tests {
             option_schema: serde_json::json!({"type": "object"}),
             projection_pushdown: PushdownFidelity::Unsupported,
             predicate_pushdown: PushdownFidelity::Unsupported,
+            predicate_operators: Vec::new(),
             source_access: FormatSourceAccess::Sequential,
             discovery_kind: FormatDiscoveryKind::BoundedContent,
             decode_unit_policy: "whole_object".to_owned(),

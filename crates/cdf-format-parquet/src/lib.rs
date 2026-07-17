@@ -23,7 +23,9 @@ use futures_util::{FutureExt, TryStreamExt, future::BoxFuture as FuturesBoxFutur
 use parquet::{
     arrow::{
         ProjectionMask,
-        arrow_reader::{ArrowReaderMetadata, ArrowReaderOptions},
+        arrow_reader::{
+            ArrowPredicate, ArrowPredicateFn, ArrowReaderMetadata, ArrowReaderOptions, RowFilter,
+        },
         async_reader::{AsyncFileReader, MetadataSuffixFetch, ParquetRecordBatchStreamBuilder},
     },
     errors::ParquetError,
@@ -41,7 +43,7 @@ impl ParquetFormatDriver {
         Ok(Self {
             descriptor: FormatDriverDescriptor {
                 format_id: FormatId::new("parquet")?,
-                semantic_version: "1.0.0".to_owned(),
+                semantic_version: "1.1.0".to_owned(),
                 aliases: Vec::new(),
                 extensions: vec!["parquet".to_owned()],
                 mime_types: vec!["application/vnd.apache.parquet".to_owned()],
@@ -59,7 +61,15 @@ impl ParquetFormatDriver {
                     "additionalProperties": false
                 }),
                 projection_pushdown: PushdownFidelity::Exact,
-                predicate_pushdown: PushdownFidelity::Unsupported,
+                predicate_pushdown: PushdownFidelity::Exact,
+                predicate_operators: vec![
+                    "=".to_owned(),
+                    "!=".to_owned(),
+                    ">".to_owned(),
+                    ">=".to_owned(),
+                    "<".to_owned(),
+                    "<=".to_owned(),
+                ],
                 source_access: cdf_runtime::FormatSourceAccess::Adaptive,
                 discovery_kind: cdf_runtime::FormatDiscoveryKind::FormatMetadata,
                 decode_unit_policy: "row_group".to_owned(),
@@ -158,10 +168,16 @@ impl FormatDriver for ParquetFormatDriver {
                     "Parquet unit planning requires nonzero row and byte batch targets",
                 ));
             }
-            let builder = ParquetRecordBatchStreamBuilder::new(ParquetByteSource::new(
-                Arc::clone(&source),
-                request.cancellation.clone(),
-            ))
+            // RowFilter performs exact late-materialized predicate evaluation without
+            // retaining whole-file page indexes. Global page-index loading is not a
+            // bounded session operation: its parsed allocation scales with every page
+            // and can also stall a growing spool on suffix metadata. Page-level pruning
+            // must enter through a separately accounted, per-unit access plan.
+            let reader_options = ArrowReaderOptions::new();
+            let builder = ParquetRecordBatchStreamBuilder::new_with_options(
+                ParquetByteSource::new(Arc::clone(&source), request.cancellation.clone()),
+                reader_options.clone(),
+            )
             .await
             .map_err(parquet_error)?;
             let source_size = source
@@ -206,11 +222,9 @@ impl FormatDriver for ParquetFormatDriver {
                     })
                     .collect::<Result<Vec<_>>>()?
             };
-            let metadata = ArrowReaderMetadata::try_new(
-                Arc::clone(builder.metadata()),
-                ArrowReaderOptions::new(),
-            )
-            .map_err(parquet_error)?;
+            let metadata =
+                ArrowReaderMetadata::try_new(Arc::clone(builder.metadata()), reader_options)
+                    .map_err(parquet_error)?;
             Ok(Arc::new(ParquetDecodeSession {
                 source,
                 metadata,
@@ -277,11 +291,6 @@ impl FormatDecodeSession for ParquetDecodeSession {
                     "Parquet decode requires nonzero row and byte batch targets",
                 ));
             }
-            if !request.predicates.is_empty() {
-                return Err(CdfError::contract(
-                    "Parquet predicate pushdown is not implemented by this driver version",
-                ));
-            }
             let mut builder = ParquetRecordBatchStreamBuilder::new_with_metadata(
                 ParquetByteSource::new(Arc::clone(&self.source), request.cancellation.clone()),
                 self.metadata.clone(),
@@ -337,6 +346,14 @@ impl FormatDecodeSession for ParquetDecodeSession {
                     .collect::<Result<Vec<_>>>()?;
                 let mask = ProjectionMask::roots(builder.parquet_schema(), roots);
                 builder = builder.with_projection(mask);
+            }
+            if !request.predicates.is_empty() {
+                let row_filter = parquet_row_filter(
+                    builder.schema().as_ref(),
+                    builder.parquet_schema(),
+                    &request.predicates,
+                )?;
+                builder = builder.with_row_filter(row_filter);
             }
             let physical_schema_metadata = builder.schema().metadata().clone();
             let parquet_stream = builder.build().map_err(parquet_error)?;
@@ -444,6 +461,55 @@ impl FormatDecodeSession for ParquetDecodeSession {
             })) as PhysicalDecodeStream)
         })
     }
+}
+
+fn parquet_row_filter(
+    physical_schema: &arrow_schema::Schema,
+    parquet_schema: &parquet::schema::types::SchemaDescriptor,
+    predicates: &[cdf_kernel::ScanPredicate],
+) -> Result<RowFilter> {
+    let predicates = predicates
+        .iter()
+        .map(|predicate| {
+            predicate.canonical_expression.validate()?;
+            let mut roots = predicate
+                .canonical_expression
+                .column_dependencies()
+                .into_iter()
+                .map(|name| {
+                    physical_schema.index_of(&name).map_err(|_| {
+                        CdfError::contract(format!(
+                            "Parquet predicate field {name:?} is absent from the physical schema"
+                        ))
+                    })
+                })
+                .collect::<Result<Vec<_>>>()?;
+            roots.sort_unstable();
+            roots.dedup();
+            if roots.is_empty() {
+                return Err(CdfError::contract(
+                    "Parquet predicate requires at least one physical column",
+                ));
+            }
+            let predicate_schema = arrow_schema::Schema::new(
+                roots
+                    .iter()
+                    .map(|index| physical_schema.field(*index).clone())
+                    .collect::<Vec<_>>(),
+            );
+            let compiled = cdf_expression::bind_boolean_expression(
+                &predicate.canonical_expression.root,
+                &predicate_schema,
+            )?;
+            let projection = ProjectionMask::roots(parquet_schema, roots);
+            let predicate = ArrowPredicateFn::new(projection, move |batch| {
+                cdf_expression::evaluate_bound_expression(&batch, &compiled)
+                    .map_err(|error| arrow_schema::ArrowError::ComputeError(error.to_string()))
+            });
+            Ok(Box::new(predicate) as Box<dyn ArrowPredicate>)
+        })
+        .collect::<Result<Vec<_>>>()?;
+    Ok(RowFilter::new(predicates))
 }
 
 fn parquet_discovery_evidence(

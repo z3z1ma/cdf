@@ -43,6 +43,7 @@ impl ArrowIpcStreamFormatDriver {
                 }),
                 projection_pushdown: PushdownFidelity::Unsupported,
                 predicate_pushdown: PushdownFidelity::Unsupported,
+                predicate_operators: Vec::new(),
                 source_access: FormatSourceAccess::Sequential,
                 discovery_kind: cdf_runtime::FormatDiscoveryKind::FormatMetadata,
                 decode_unit_policy: "ipc_stream_v1".to_owned(),

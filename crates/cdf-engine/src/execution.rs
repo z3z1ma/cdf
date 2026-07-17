@@ -19,6 +19,11 @@ use cdf_contract::{
     evaluate_package_order_dedup, materialize_schema_coercion, package_dedup_rule,
     reject_untrusted_schema_coercion_metadata, schema_coercion_plan_from_trusted_json,
 };
+use cdf_expression::{
+    BoundBooleanExpression, BoundExpressionTransform, apply_bound_expression_transforms,
+    apply_bound_filters, apply_expression_transforms, bind_expression_transforms,
+    bind_filter_expressions, expression_transform_output_schema,
+};
 use cdf_kernel::{
     Batch, CdfError, PHYSICAL_TYPE_METADATA_KEY, PLAN_PHYSICAL_SCHEMA_HASH_KEY,
     PLAN_SCHEMA_OBSERVATION_BINDING_KEY, PLAN_SCHEMA_OBSERVATION_ID_KEY, PartitionAttestation,
@@ -54,11 +59,6 @@ use crate::{
     StreamAdmissionObservationEvidence,
     output_schema::canonicalize_effective_output_schema,
     planning::{scan_expression_schema, validate_program},
-    predicates::{
-        BoundBooleanExpression, BoundExpressionTransform, apply_bound_expression_transforms,
-        apply_bound_filters, apply_expression_transforms, bind_expression_transforms,
-        bind_filter_expressions, expression_transform_output_schema,
-    },
     variant_capture::{
         ContractEvolutionArtifact, ResidualDecisionArtifact, ResidualRuntimeVerdict,
         ResidualTypedProjection, contract_evolution_artifact_metadata, normalize_batch,
@@ -5716,7 +5716,7 @@ mod transform_kernel_tests {
         )
         .unwrap();
         let tracked_schema = source_row_tracking_schema(schema.as_ref()).unwrap();
-        let bound = crate::predicates::bind_expression_transforms(
+        let bound = cdf_expression::bind_expression_transforms(
             &transforms,
             &[derive, filter],
             &tracked_schema,

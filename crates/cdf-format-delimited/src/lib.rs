@@ -42,6 +42,7 @@ impl CsvFormatDriver {
                 }),
                 projection_pushdown: PushdownFidelity::Unsupported,
                 predicate_pushdown: PushdownFidelity::Unsupported,
+                predicate_operators: Vec::new(),
                 source_access: cdf_runtime::FormatSourceAccess::Sequential,
                 discovery_kind: cdf_runtime::FormatDiscoveryKind::BoundedContent,
                 decode_unit_policy: "csv_stream_v1".to_owned(),

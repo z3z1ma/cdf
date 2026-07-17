@@ -7,7 +7,6 @@ mod graph_plan;
 mod memory;
 mod output_schema;
 mod planning;
-mod predicates;
 mod residual_spill;
 mod segmentation;
 mod standalone_host;

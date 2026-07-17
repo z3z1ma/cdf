@@ -3,6 +3,7 @@ members = [
     "crates/cdf-kernel",
     "crates/cdf-engine",
     "crates/cdf-contract",
+    "crates/cdf-expression",
     "crates/cdf-package-contract",
     "crates/cdf-package",
     "crates/cdf-runtime",

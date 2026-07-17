@@ -631,7 +631,7 @@ mod tests {
         mark_cursor_subsumed, plan_expression, record_exact_source_expression,
         record_native_contract_expression, to_datafusion,
     };
-    use crate::predicates::{apply_bound_filters, bind_filter_expressions};
+    use cdf_expression::{apply_bound_filters, bind_filter_expressions};
 
     fn schema() -> Schema {
         Schema::new(vec![Field::new("id", DataType::Int64, true)])

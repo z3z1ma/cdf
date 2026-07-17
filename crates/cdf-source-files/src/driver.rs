@@ -1319,7 +1319,15 @@ mod tests {
         );
         assert_eq!(
             physical.compiled_format.descriptor.semantic_version,
-            "1.0.0"
+            "1.1.0"
+        );
+        assert_eq!(
+            physical.compiled_format.descriptor.predicate_pushdown,
+            cdf_kernel::PushdownFidelity::Exact
+        );
+        assert_eq!(
+            physical.compiled_format.descriptor.predicate_operators,
+            ["=", "!=", ">", ">=", "<", "<="]
         );
         assert_eq!(
             physical.compiled_format.descriptor.decode_unit_policy,

@@ -21,7 +21,6 @@ use crate::{
         record_native_contract_expression, validate_recorded_expressions,
     },
     output_schema::compile_output_schema,
-    predicates::predicate_operator,
 };
 
 pub const CDF_NATIVE_RESOURCE_ADAPTER_KIND: &str = "cdf_native_resource_adapter";
@@ -470,7 +469,11 @@ fn validate_negotiated_scan(
         .map(String::as_str)
         .collect::<BTreeSet<_>>();
     for pushed in &scan.pushed_predicates {
-        let operator = predicate_operator(&pushed.predicate.canonical_expression);
+        let operator = pushed
+            .predicate
+            .canonical_expression
+            .comparison_operator()
+            .map(str::to_owned);
         if capabilities.filters.default_fidelity == PushdownFidelity::Unsupported
             || pushed.fidelity == PushdownFidelity::Unsupported
             || operator
@@ -995,7 +998,10 @@ pub fn negotiate_scan_plan(
         .collect();
 
     for predicate in &request.filters {
-        let operator = predicate_operator(&predicate.canonical_expression);
+        let operator = predicate
+            .canonical_expression
+            .comparison_operator()
+            .map(str::to_owned);
         let supported = operator
             .as_deref()
             .is_some_and(|operator| supported_operators.contains(operator));
@@ -1201,9 +1207,9 @@ mod expression_transform_tests {
         physical_scan_request, plan_transform_expressions, record_native_contract_expression,
         scan_expression_schema,
     };
-    use crate::{
-        expression::plan_expression,
-        predicates::{apply_bound_filters, apply_expression_transforms, bind_filter_expressions},
+    use crate::expression::plan_expression;
+    use cdf_expression::{
+        apply_bound_filters, apply_expression_transforms, bind_filter_expressions,
     };
 
     #[test]

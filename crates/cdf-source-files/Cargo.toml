@@ -10,6 +10,7 @@ description = "File and object-store source adapter for cdf."
 arrow-schema = "59.1.0"
 bytes = "1.11.0"
 cdf-http = { path = "../cdf-http" }
+cdf-expression = { path = "../cdf-expression" }
 cdf-kernel = { path = "../cdf-kernel" }
 cdf-memory = { path = "../cdf-memory" }
 cdf-runtime = { path = "../cdf-runtime" }

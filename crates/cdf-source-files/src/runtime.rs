@@ -9,13 +9,14 @@ use std::{
 use arrow_schema::{Schema, SchemaRef};
 use cdf_kernel::{
     BackpressureSupport, Batch, BatchStream, BoxFuture, CapabilitySupport, CdfError,
-    CompiledScanIntent, DeliveryGuarantee, EffectiveSchemaRuntime, EstimateSupport,
+    CompiledScanIntent, DeliveryGuarantee, EffectiveSchemaRuntime, EstimateSupport, ExpressionNode,
     FilterCapabilities, IncrementalShape, PLAN_SCHEMA_OBSERVATION_BINDING_KEY,
     PLAN_SCHEMA_OBSERVATION_ID_KEY, PartitionAttestation, PartitionCompletion, PartitionId,
     PartitionPlan, PartitioningCapabilities, PayloadRetention, PlanId, PushdownFidelity,
     PushedPredicate, QueryableResource, ReplaySupport, ResourceCapabilities, ResourceDescriptor,
     ResourceId, ResourceStream, Result, ScanPlan, ScanRequest, SchemaHash, ScopeKey, ScopeKind,
-    SourcePosition, SourceReadMode, TypePolicyAllowances, WriteDisposition, source_name,
+    SourcePosition, SourceReadMode, TypePolicyAllowances, WriteDisposition,
+    partition_schema_observation_id, source_name,
 };
 use cdf_memory::{ConsumerKey, MemoryClass};
 use cdf_runtime::{
@@ -837,12 +838,6 @@ impl FileResource {
                 plan.resolved_format()?.as_str()
             )));
         }
-        if compiled_format.descriptor.predicate_pushdown != PushdownFidelity::Unsupported {
-            return Err(CdfError::contract(format!(
-                "format `{}` declares predicate fidelity without the operator vocabulary required for safe file-source negotiation",
-                compiled_format.descriptor.format_id
-            )));
-        }
         compiled_format.verify(dependencies.formats())?;
         let capabilities = file_resource_capabilities(&compiled_format.descriptor);
         plan.format = Some(FileFormatDeclaration::named(
@@ -1061,8 +1056,21 @@ impl QueryableResource for FileResource {
                 request.resource_id, self.descriptor.resource_id
             )));
         }
-        let negotiation = compile_file_scan(request, &self.compiled_format.descriptor)?;
-        let partitions = self.partitions_for_intent(&negotiation.intent)?;
+        let negotiation = compile_file_scan(
+            request,
+            &self.compiled_format.descriptor,
+            self.schema.as_ref(),
+        )?;
+        let mut partitions = self.partitions_for_intent(&negotiation.intent)?;
+        let negotiation = reconcile_exact_file_predicates(
+            negotiation,
+            &partitions,
+            self.schema.as_ref(),
+            self.effective_schema_runtime.as_deref(),
+        )?;
+        for partition in &mut partitions {
+            partition.scan_intent = negotiation.intent.clone();
+        }
         Ok(ScanPlan {
             plan_id: PlanId::new(format!("plan-{}", self.descriptor.resource_id))?,
             request: request.clone(),
@@ -1085,12 +1093,39 @@ struct FileScanNegotiation {
 fn compile_file_scan(
     request: &ScanRequest,
     descriptor: &cdf_runtime::FormatDriverDescriptor,
+    schema: &Schema,
 ) -> Result<FileScanNegotiation> {
     let projection = (descriptor.projection_pushdown == PushdownFidelity::Exact)
         .then(|| request.projection.clone())
         .flatten();
-    let pushed_predicates = Vec::new();
-    let unsupported_predicates = request.filters.clone();
+    let mut pushed_predicates = Vec::new();
+    let mut unsupported_predicates = Vec::new();
+    for predicate in &request.filters {
+        let operator_supported = predicate
+            .canonical_expression
+            .comparison_operator()
+            .is_some_and(|operator| {
+                descriptor
+                    .predicate_operators
+                    .iter()
+                    .any(|item| item == operator)
+            });
+        let lowering_supported = descriptor.predicate_pushdown != PushdownFidelity::Exact
+            || cdf_expression::bind_boolean_expression(
+                &predicate.canonical_expression.root,
+                schema,
+            )
+            .is_ok();
+        let supported = operator_supported && lowering_supported;
+        if supported && descriptor.predicate_pushdown != PushdownFidelity::Unsupported {
+            pushed_predicates.push(PushedPredicate {
+                predicate: predicate.clone(),
+                fidelity: descriptor.predicate_pushdown.clone(),
+            });
+        } else {
+            unsupported_predicates.push(predicate.clone());
+        }
+    }
     let intent = CompiledScanIntent {
         version: cdf_kernel::COMPILED_SCAN_INTENT_VERSION,
         projection,
@@ -1106,6 +1141,89 @@ fn compile_file_scan(
     })
 }
 
+fn reconcile_exact_file_predicates(
+    negotiation: FileScanNegotiation,
+    partitions: &[PartitionPlan],
+    effective_schema: &Schema,
+    runtime: Option<&EffectiveSchemaRuntime>,
+) -> Result<FileScanNegotiation> {
+    let mut pushed_predicates = Vec::with_capacity(negotiation.pushed_predicates.len());
+    let mut unsupported_predicates = negotiation.unsupported_predicates;
+    for pushed in negotiation.pushed_predicates {
+        let exact_for_every_partition = pushed.fidelity != PushdownFidelity::Exact
+            || exact_predicate_is_partition_equivalent(
+                &pushed.predicate,
+                partitions,
+                effective_schema,
+                runtime,
+            )?;
+        if exact_for_every_partition {
+            pushed_predicates.push(pushed);
+        } else {
+            unsupported_predicates.push(pushed.predicate);
+        }
+    }
+    let intent = CompiledScanIntent {
+        predicates: pushed_predicates.clone(),
+        ..negotiation.intent
+    };
+    Ok(FileScanNegotiation {
+        intent,
+        pushed_predicates,
+        unsupported_predicates,
+    })
+}
+
+fn exact_predicate_is_partition_equivalent(
+    predicate: &cdf_kernel::ScanPredicate,
+    partitions: &[PartitionPlan],
+    effective_schema: &Schema,
+    runtime: Option<&EffectiveSchemaRuntime>,
+) -> Result<bool> {
+    let Some(runtime) = runtime else {
+        return Ok(false);
+    };
+    if partitions.is_empty() {
+        return Ok(false);
+    }
+    for partition in partitions {
+        let Some(observation) = runtime
+            .evidence
+            .observation(partition_schema_observation_id(partition))
+        else {
+            return Ok(false);
+        };
+        let Some(physical_schema) = runtime.physical_schema(&observation.physical_schema_hash)
+        else {
+            return Ok(false);
+        };
+        for logical_name in predicate.canonical_expression.column_dependencies() {
+            let effective_field = effective_schema.field_with_name(&logical_name).map_err(|_| {
+                CdfError::contract(format!(
+                    "compiled file predicate field {logical_name:?} is absent from the effective schema"
+                ))
+            })?;
+            let physical_name =
+                source_name(effective_field).unwrap_or_else(|| effective_field.name());
+            let Ok(physical_field) = physical_schema.field_with_name(physical_name) else {
+                return Ok(false);
+            };
+            // Exact physical pushdown is deliberately conservative. Any type
+            // reconciliation, even a lossless width change, is evaluated after
+            // admission so filtering cannot bypass coercion or quarantine.
+            if physical_field.data_type() != effective_field.data_type() {
+                return Ok(false);
+            }
+        }
+        let physical =
+            physical_expression_node(effective_schema, &predicate.canonical_expression.root)?;
+        if cdf_expression::bind_boolean_expression(&physical, physical_schema.as_ref()).is_err() {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
 pub(crate) fn file_resource_capabilities(
     descriptor: &cdf_runtime::FormatDriverDescriptor,
 ) -> ResourceCapabilities {
@@ -1116,11 +1234,8 @@ pub(crate) fn file_resource_capabilities(
             CapabilitySupport::Unsupported
         },
         filters: FilterCapabilities {
-            // A format fidelity alone cannot safely classify expressions; an
-            // operator vocabulary will become part of the descriptor when a
-            // production codec implements predicate pushdown.
-            default_fidelity: PushdownFidelity::Unsupported,
-            supported_operators: Vec::new(),
+            default_fidelity: descriptor.predicate_pushdown.clone(),
+            supported_operators: descriptor.predicate_operators.clone(),
         },
         limits: CapabilitySupport::Unsupported,
         ordering: CapabilitySupport::Unsupported,
@@ -1943,10 +2058,12 @@ fn prepare_file_partition(
     );
     let driver = compiled_format.verify(dependencies.formats())?;
     let source_access = driver.descriptor().source_access;
+    let access_coverage = planned_file_access_coverage(&partition.scan_intent, &admission_schema);
     let prepared_input = prepare_file_input(
         &descriptor.resource_id,
         &resolved,
         source_access,
+        access_coverage,
         driver.as_ref(),
         &compiled_format.canonical_options,
         dependencies,
@@ -1970,10 +2087,35 @@ fn prepare_file_partition(
     })
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PlannedFileAccessCoverage {
+    Full,
+    Selective,
+}
+
+fn planned_file_access_coverage(
+    scan_intent: &CompiledScanIntent,
+    admission_schema: &Schema,
+) -> PlannedFileAccessCoverage {
+    // Exact ranges are worthwhile only when the compiled projection proves that
+    // at least one physical root can be omitted. Predicate selectivity is unknown
+    // without recorded statistics, so predicate-only scans retain sequential spool.
+    if scan_intent
+        .projection
+        .as_ref()
+        .is_some_and(|projection| projection.len() < admission_schema.fields().len())
+    {
+        PlannedFileAccessCoverage::Selective
+    } else {
+        PlannedFileAccessCoverage::Full
+    }
+}
+
 fn prepare_file_input(
     resource_id: &ResourceId,
     resolved: &ResolvedFileMatch,
     source_access: cdf_runtime::FormatSourceAccess,
+    access_coverage: PlannedFileAccessCoverage,
     driver: &dyn FormatDriver,
     canonical_format_options: &serde_json::Value,
     dependencies: &FileRuntimeDependencies,
@@ -2014,7 +2156,10 @@ fn prepare_file_input(
         let source = opened.source;
         let extraction_content_hash = opened.content_digest;
         let transport_spool = matches!(resolved.open, ResolvedFileOpen::Transport(_))
-            && source_access == cdf_runtime::FormatSourceAccess::Adaptive;
+            && source_access == cdf_runtime::FormatSourceAccess::Adaptive
+            && (access_coverage == PlannedFileAccessCoverage::Full
+                || source.identity().strength == GenerationStrength::Weak
+                || !source.capabilities().exact_ranges);
         let hash_sweep_source = (extraction_content_hash.is_some()
             && source_access != cdf_runtime::FormatSourceAccess::Sequential
             && !transport_spool)
@@ -2297,6 +2442,7 @@ fn stream_file_match_blocking(
         &options.resource_id,
         resolved,
         driver.descriptor().source_access,
+        PlannedFileAccessCoverage::Full,
         driver.as_ref(),
         &canonical_format_options,
         dependencies,
@@ -2531,7 +2677,10 @@ fn stream_registered_format(
                 admission_schema.as_ref(),
                 scan_intent.projection.as_deref(),
             )?;
-            let predicates = scan_intent.pushed_predicates();
+            let predicates = physical_predicates(
+                admission_schema.as_ref(),
+                &scan_intent.pushed_predicates(),
+            )?;
             let decode_schema = match physical_schema_authority.schema {
                 Some(schema) => {
                     let schema_hash =
@@ -2689,6 +2838,60 @@ fn physical_projection_names(
                 .collect::<Result<Vec<_>>>()
         })
         .transpose()
+}
+
+fn physical_predicates(
+    effective_schema: &Schema,
+    predicates: &[cdf_kernel::ScanPredicate],
+) -> Result<Vec<cdf_kernel::ScanPredicate>> {
+    predicates
+        .iter()
+        .map(|predicate| {
+            let mut physical = predicate.clone();
+            physical.canonical_expression = cdf_kernel::Expression::new(physical_expression_node(
+                effective_schema,
+                &predicate.canonical_expression.root,
+            )?);
+            physical.canonical_expression.validate()?;
+            Ok(physical)
+        })
+        .collect()
+}
+
+fn physical_expression_node(
+    effective_schema: &Schema,
+    node: &ExpressionNode,
+) -> Result<ExpressionNode> {
+    match node {
+        ExpressionNode::Column { name } => {
+            let field = effective_schema.field_with_name(name).map_err(|_| {
+                CdfError::contract(format!(
+                    "compiled file predicate field {name:?} is absent from the effective schema"
+                ))
+            })?;
+            Ok(ExpressionNode::Column {
+                name: source_name(field)
+                    .unwrap_or_else(|| field.name())
+                    .to_owned(),
+            })
+        }
+        ExpressionNode::Literal { value } => Ok(ExpressionNode::Literal {
+            value: value.clone(),
+        }),
+        ExpressionNode::Call {
+            function,
+            arguments,
+        } => Ok(ExpressionNode::Call {
+            function: function.clone(),
+            arguments: arguments
+                .iter()
+                .map(|argument| physical_expression_node(effective_schema, argument))
+                .collect::<Result<Vec<_>>>()?,
+        }),
+        _ => Err(CdfError::contract(
+            "compiled file predicate contains an unsupported expression node",
+        )),
+    }
 }
 
 fn validate_partition(
@@ -4323,6 +4526,42 @@ mod tests {
 
     use super::*;
 
+    fn physical_runtime(
+        descriptor: &ResourceDescriptor,
+        effective_schema: SchemaRef,
+        physical_schema: SchemaRef,
+        observation_id: impl Into<String>,
+    ) -> EffectiveSchemaRuntime {
+        let effective_hash =
+            cdf_kernel::canonical_arrow_schema_hash(effective_schema.as_ref()).unwrap();
+        let physical_hash =
+            cdf_kernel::canonical_arrow_schema_hash(physical_schema.as_ref()).unwrap();
+        let evidence = cdf_kernel::EffectiveSchemaEvidence::new(
+            descriptor.schema_source.baseline_reference().unwrap(),
+            effective_hash,
+            cdf_kernel::DiscoveryManifestReference {
+                manifest_hash: cdf_kernel::DiscoveryManifestHash::new(
+                    "test-exact-physical-manifest",
+                )
+                .unwrap(),
+                path: ".cdf/discovery/test-exact-physical.json".to_owned(),
+            },
+            vec![cdf_kernel::EffectiveSchemaObservationEvidence::new(
+                observation_id,
+                physical_hash.clone(),
+            )],
+        )
+        .unwrap();
+        EffectiveSchemaRuntime::new(
+            evidence,
+            vec![cdf_kernel::EffectiveSchemaCatalogEntry::new(
+                physical_hash,
+                physical_schema,
+            )],
+        )
+        .unwrap()
+    }
+
     #[derive(Debug)]
     struct ExternalMockFormat {
         descriptor: cdf_runtime::FormatDriverDescriptor,
@@ -4348,6 +4587,7 @@ mod tests {
                     }),
                     projection_pushdown: cdf_kernel::PushdownFidelity::Unsupported,
                     predicate_pushdown: cdf_kernel::PushdownFidelity::Unsupported,
+                    predicate_operators: Vec::new(),
                     source_access: cdf_runtime::FormatSourceAccess::Sequential,
                     discovery_kind: cdf_runtime::FormatDiscoveryKind::BoundedContent,
                     decode_unit_policy: "whole_mock_file".to_owned(),
@@ -4820,24 +5060,32 @@ mod tests {
     }
 
     #[test]
-    fn negotiated_parquet_projection_reaches_production_decode() {
+    fn negotiated_parquet_projection_and_predicate_reach_production_decode() {
+        let physical_schema = Arc::new(Schema::new(vec![
+            Field::new("VendorID", DataType::Int64, false),
+            Field::new("Name", DataType::Utf8, false),
+            Field::new("Ignored", DataType::Int64, false),
+        ]));
         let schema = Arc::new(Schema::new(vec![
-            Field::new("id", DataType::Int64, false),
-            Field::new("name", DataType::Utf8, false),
-            Field::new("ignored", DataType::Int64, false),
+            cdf_kernel::with_source_name(
+                Field::new("vendor_id", DataType::Int64, false),
+                "VendorID",
+            ),
+            cdf_kernel::with_source_name(Field::new("name", DataType::Utf8, false), "Name"),
+            cdf_kernel::with_source_name(Field::new("ignored", DataType::Int64, false), "Ignored"),
         ]));
         let temp = TempDir::new().unwrap();
         let path = temp.path().join("events.parquet");
         let mut writer = ArrowWriter::try_new(
             std::fs::File::create(&path).unwrap(),
-            Arc::clone(&schema),
+            Arc::clone(&physical_schema),
             None,
         )
         .unwrap();
         writer
             .write(
                 &RecordBatch::try_new(
-                    Arc::clone(&schema),
+                    Arc::clone(&physical_schema),
                     vec![
                         Arc::new(Int64Array::from(vec![1, 2])) as ArrayRef,
                         Arc::new(StringArray::from(vec!["one", "two"])) as ArrayRef,
@@ -4884,13 +5132,24 @@ mod tests {
             file_resource_capabilities(&compiled_format.descriptor).projection,
             CapabilitySupport::Supported
         );
+        assert_eq!(
+            file_resource_capabilities(&compiled_format.descriptor)
+                .filters
+                .default_fidelity,
+            PushdownFidelity::Exact
+        );
         let resource = FileResource::new(
             FileResourceDefinition {
                 descriptor: descriptor.clone(),
                 schema: Arc::clone(&schema),
                 plan,
                 type_policy_allowances: TypePolicyAllowances::default(),
-                effective_schema_runtime: None,
+                effective_schema_runtime: Some(physical_runtime(
+                    &descriptor,
+                    Arc::clone(&schema),
+                    Arc::clone(&physical_schema),
+                    "events.parquet",
+                )),
                 compiled_format,
             },
             FileRuntimeDependencies::new(
@@ -4903,9 +5162,20 @@ mod tests {
         )
         .unwrap();
         let request = ScanRequest {
-            resource_id: descriptor.resource_id,
-            projection: Some(vec!["id".to_owned()]),
-            filters: Vec::new(),
+            resource_id: descriptor.resource_id.clone(),
+            projection: Some(vec!["vendor_id".to_owned()]),
+            filters: vec![
+                cdf_kernel::ScanPredicate::new(
+                    cdf_kernel::PredicateId::new("id-is-greater-than-one").unwrap(),
+                    "vendor_id > 1",
+                )
+                .unwrap(),
+                cdf_kernel::ScanPredicate::new(
+                    cdf_kernel::PredicateId::new("name-is-two").unwrap(),
+                    "name = 'two'",
+                )
+                .unwrap(),
+            ],
             limit: None,
             order_by: Vec::new(),
             scope: ScopeKey::Resource,
@@ -4915,9 +5185,33 @@ mod tests {
         let scan = resource.negotiate(&request).unwrap();
         assert_eq!(
             scan.partitions[0].scan_intent.projection.as_deref(),
-            Some(["id".to_owned()].as_slice())
+            Some(["vendor_id".to_owned()].as_slice())
         );
+        assert_eq!(scan.partitions[0].scan_intent.predicates.len(), 2);
+        assert_eq!(scan.pushed_predicates.len(), 2);
+        assert!(scan.unsupported_predicates.is_empty());
         cdf_kernel::validate_compiled_scan_intents(&scan).unwrap();
+
+        let widened_physical = Arc::new(Schema::new(vec![
+            Field::new("VendorID", DataType::Int32, false),
+            Field::new("Name", DataType::Utf8, false),
+            Field::new("Ignored", DataType::Int64, false),
+        ]));
+        let widened_runtime = physical_runtime(
+            &descriptor,
+            Arc::clone(&schema),
+            widened_physical,
+            "events.parquet",
+        );
+        assert!(
+            !exact_predicate_is_partition_equivalent(
+                &request.filters[0],
+                &scan.partitions,
+                schema.as_ref(),
+                Some(&widened_runtime),
+            )
+            .unwrap()
+        );
 
         let opened = futures_executor::block_on(resource.open(scan.partitions[0].clone())).unwrap();
         let batches = futures_executor::block_on(opened.collect::<Vec<_>>())
@@ -4927,8 +5221,17 @@ mod tests {
         assert_eq!(batches.len(), 1);
         let projected = batches[0].record_batch().unwrap();
         assert_eq!(projected.schema().fields().len(), 1);
-        assert_eq!(projected.schema().field(0).name(), "id");
-        assert_eq!(projected.num_rows(), 2);
+        assert_eq!(projected.schema().field(0).name(), "VendorID");
+        assert_eq!(projected.num_rows(), 1);
+        assert_eq!(
+            projected
+                .column(0)
+                .as_any()
+                .downcast_ref::<Int64Array>()
+                .unwrap()
+                .value(0),
+            2
+        );
     }
 
     #[test]
@@ -4941,6 +5244,148 @@ mod tests {
             physical_projection_names(&schema, Some(&["vendor_id".to_owned()])).unwrap(),
             Some(vec!["VendorID".to_owned()])
         );
+    }
+
+    #[test]
+    fn compiled_logical_predicate_maps_to_physical_source_names() {
+        let schema = Schema::new(vec![cdf_kernel::with_source_name(
+            Field::new("vendor_id", DataType::Int64, false),
+            "VendorID",
+        )]);
+        let predicate = cdf_kernel::ScanPredicate::new(
+            cdf_kernel::PredicateId::new("vendor-filter").unwrap(),
+            "vendor_id = 7",
+        )
+        .unwrap();
+        let physical = physical_predicates(&schema, &[predicate]).unwrap();
+        assert_eq!(
+            physical[0]
+                .canonical_expression
+                .comparison()
+                .map(|(name, _, _)| name),
+            Some("VendorID")
+        );
+    }
+
+    #[test]
+    fn adaptive_range_policy_requires_a_strict_subset_projection() {
+        let schema = Schema::new(vec![
+            Field::new("id", DataType::Int64, false),
+            Field::new("payload", DataType::Utf8, false),
+        ]);
+        assert_eq!(
+            planned_file_access_coverage(&CompiledScanIntent::full_scan(), &schema),
+            PlannedFileAccessCoverage::Full
+        );
+        let predicate = cdf_kernel::ScanPredicate::new(
+            cdf_kernel::PredicateId::new("id-filter").unwrap(),
+            "id > 7",
+        )
+        .unwrap();
+        let predicate_only = CompiledScanIntent {
+            version: cdf_kernel::COMPILED_SCAN_INTENT_VERSION,
+            projection: None,
+            predicates: vec![PushedPredicate {
+                predicate,
+                fidelity: PushdownFidelity::Exact,
+            }],
+            limit: None,
+            order_by: Vec::new(),
+        };
+        assert_eq!(
+            planned_file_access_coverage(&predicate_only, &schema),
+            PlannedFileAccessCoverage::Full
+        );
+        let all_columns = CompiledScanIntent {
+            projection: Some(vec!["id".to_owned(), "payload".to_owned()]),
+            ..CompiledScanIntent::full_scan()
+        };
+        assert_eq!(
+            planned_file_access_coverage(&all_columns, &schema),
+            PlannedFileAccessCoverage::Full
+        );
+        let subset = CompiledScanIntent {
+            projection: Some(vec!["id".to_owned()]),
+            ..CompiledScanIntent::full_scan()
+        };
+        assert_eq!(
+            planned_file_access_coverage(&subset, &schema),
+            PlannedFileAccessCoverage::Selective
+        );
+    }
+
+    #[test]
+    fn exact_predicate_negotiation_requires_the_shared_physical_lowering() {
+        let descriptor = cdf_format_parquet::ParquetFormatDriver::new()
+            .unwrap()
+            .descriptor()
+            .clone();
+        let integer_schema = Schema::new(vec![Field::new("id", DataType::Int64, false)]);
+        let integer_request = ScanRequest {
+            resource_id: ResourceId::new("events").unwrap(),
+            projection: None,
+            filters: vec![
+                cdf_kernel::ScanPredicate::new(
+                    cdf_kernel::PredicateId::new("id-filter").unwrap(),
+                    "id > 7",
+                )
+                .unwrap(),
+            ],
+            limit: None,
+            order_by: Vec::new(),
+            scope: ScopeKey::Resource,
+        };
+        let integer = compile_file_scan(&integer_request, &descriptor, &integer_schema).unwrap();
+        assert_eq!(integer.pushed_predicates.len(), 1);
+        assert!(integer.unsupported_predicates.is_empty());
+
+        let timestamp_schema = Schema::new(vec![Field::new(
+            "observed_at",
+            DataType::Timestamp(arrow_schema::TimeUnit::Microsecond, None),
+            false,
+        )]);
+        let timestamp_request = ScanRequest {
+            filters: vec![
+                cdf_kernel::ScanPredicate::new(
+                    cdf_kernel::PredicateId::new("time-filter").unwrap(),
+                    "observed_at >= '2026-07-16T00:00:00Z'",
+                )
+                .unwrap(),
+            ],
+            ..integer_request.clone()
+        };
+        let timestamp =
+            compile_file_scan(&timestamp_request, &descriptor, &timestamp_schema).unwrap();
+        assert!(timestamp.pushed_predicates.is_empty());
+        assert_eq!(timestamp.unsupported_predicates.len(), 1);
+
+        let hostile = cdf_kernel::ScanPredicate::from_expression(
+            cdf_kernel::PredicateId::new("hostile-version").unwrap(),
+            "id = 7",
+            cdf_kernel::Expression::new(ExpressionNode::Call {
+                function: cdf_kernel::FunctionReference {
+                    namespace: "other".to_owned(),
+                    name: "eq".to_owned(),
+                    version: "999".to_owned(),
+                },
+                arguments: vec![
+                    ExpressionNode::Column {
+                        name: "id".to_owned(),
+                    },
+                    ExpressionNode::Literal {
+                        value: cdf_kernel::ExpressionLiteral::Signed(7),
+                    },
+                ],
+            }),
+        )
+        .unwrap();
+        let hostile_request = ScanRequest {
+            filters: vec![hostile],
+            ..integer_request
+        };
+        let hostile = compile_file_scan(&hostile_request, &descriptor, &integer_schema).unwrap();
+        assert!(hostile.pushed_predicates.is_empty());
+        assert_eq!(hostile.unsupported_predicates.len(), 1);
     }
 
     #[test]
@@ -5159,6 +5604,7 @@ mod tests {
             &resource_id,
             &resolved,
             cdf_runtime::FormatSourceAccess::Sequential,
+            PlannedFileAccessCoverage::Full,
             driver.as_ref(),
             &canonical_options,
             &dependencies,
@@ -5172,10 +5618,16 @@ mod tests {
 
     #[test]
     fn remote_parquet_uses_admitted_spool_or_generation_bound_ranges() {
-        let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, false)]));
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int64, false),
+            Field::new("payload", DataType::Int64, false),
+        ]));
         let batch = RecordBatch::try_new(
             Arc::clone(&schema),
-            vec![Arc::new(Int64Array::from_iter_values(0..100_000))],
+            vec![
+                Arc::new(Int64Array::from_iter_values(0..100_000)),
+                Arc::new(Int64Array::from_iter_values(100_000..200_000)),
+            ],
         )
         .unwrap();
         let bytes = cdf_package::transcode_record_batches_to_parquet_bytes(&[batch]).unwrap();
@@ -5229,6 +5681,21 @@ mod tests {
                 &resource_id,
                 &resolved[0],
                 cdf_runtime::FormatSourceAccess::Adaptive,
+                PlannedFileAccessCoverage::Selective,
+                driver.as_ref(),
+                &canonical_options,
+                &dependencies,
+            )
+            .unwrap()
+            .input,
+            PreparedFileInput::Source(_)
+        ));
+        assert!(matches!(
+            prepare_file_input(
+                &resource_id,
+                &resolved[0],
+                cdf_runtime::FormatSourceAccess::Adaptive,
+                PlannedFileAccessCoverage::Full,
                 driver.as_ref(),
                 &canonical_options,
                 &dependencies,
@@ -5237,6 +5704,137 @@ mod tests {
             .input,
             PreparedFileInput::SpoolSource { .. }
         ));
+
+        struct WeakHttpTransport {
+            path: PathBuf,
+        }
+
+        impl crate::transport::HttpFileTransport for WeakHttpTransport {
+            fn send_headers(
+                &self,
+                _request: crate::transport::HttpFileRequest,
+            ) -> BoxFuture<'static, Result<crate::transport::HttpFileResponse>> {
+                Box::pin(async { Err(CdfError::internal("unused weak HTTP metadata probe")) })
+            }
+
+            fn open_byte_source(
+                &self,
+                _resource: &FileTransportResource,
+                _expected: &FileIdentityMetadata,
+                memory: Arc<dyn cdf_memory::MemoryCoordinator>,
+            ) -> Result<Arc<dyn ByteSource>> {
+                Ok(Arc::new(LocalByteSource::open(&self.path, memory)?))
+            }
+        }
+
+        let weak_file = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(weak_file.path(), &bytes).unwrap();
+        let weak_dependencies = FileRuntimeDependencies::new(
+            FileTransportFacade::new().with_http_transport(WeakHttpTransport {
+                path: weak_file.path().to_path_buf(),
+            }),
+            crate::test_execution_services(),
+            crate::test_format_registry(),
+            crate::test_transform_registry(),
+            crate::test_egress_scope(),
+        )
+        .with_max_spool_bytes(bytes.len() as u64)
+        .unwrap();
+        let weak = ResolvedFileMatch {
+            open: ResolvedFileOpen::Transport(FileTransportResource::http_url(
+                "https://weak.example/events.parquet",
+            )),
+            path_text: "https://weak.example/events.parquet".to_owned(),
+            size_bytes: bytes.len() as u64,
+            source_generation: None,
+            identity_strength: GenerationStrength::Weak,
+            sha256: None,
+            etag: None,
+            version: None,
+            modified_ms: None,
+            bytes_loaded: None,
+            compression: resolved[0].compression.clone(),
+            format: resolved[0].format.clone(),
+        };
+        let weak_driver = weak_dependencies.formats().resolve("parquet").unwrap();
+        let weak_options = weak_driver
+            .canonical_options(serde_json::json!({}))
+            .unwrap();
+        let weak_input = prepare_file_input(
+            &resource_id,
+            &weak,
+            cdf_runtime::FormatSourceAccess::Adaptive,
+            PlannedFileAccessCoverage::Selective,
+            weak_driver.as_ref(),
+            &weak_options,
+            &weak_dependencies,
+        )
+        .unwrap();
+        assert!(matches!(
+            &weak_input.input,
+            PreparedFileInput::SpoolSource { .. }
+        ));
+        let weak_partition = PreparedFilePartition {
+            resolved: weak,
+            input: weak_input.input,
+            scan_intent: CompiledScanIntent {
+                projection: Some(vec!["id".to_owned()]),
+                ..CompiledScanIntent::full_scan()
+            },
+            options: ReadOptions::new(
+                resource_id.clone(),
+                PartitionId::new("file-parquet-weak").unwrap(),
+            ),
+            admission_schema: Arc::clone(&schema),
+            physical_schema_authority: PhysicalSchemaAuthority::default(),
+            canonical_format_options: weak_options,
+            driver: weak_driver,
+            source_io: weak_input.source_io,
+            extraction_content_hash: weak_input.extraction_content_hash,
+            hash_sweep_source: weak_input.hash_sweep_source,
+            payload_retention: weak_input.payload_retention,
+        };
+        let dependencies_for_weak = weak_dependencies.clone();
+        let weak_stream = weak_dependencies
+            .execution()
+            .run_io(async move {
+                stream_prepared_file_match(
+                    weak_partition,
+                    &dependencies_for_weak,
+                    cdf_runtime::RunCancellation::default(),
+                )
+                .await
+            })
+            .unwrap();
+        assert!(weak_stream.source_completion.is_none());
+        let weak_batches = futures_executor::block_on(weak_stream.batches.collect::<Vec<_>>())
+            .into_iter()
+            .collect::<Result<Vec<_>>>()
+            .unwrap();
+        assert_eq!(
+            weak_batches
+                .iter()
+                .map(|batch| batch.header.row_count)
+                .sum::<u64>(),
+            100_000
+        );
+        assert!(weak_batches.iter().all(|batch| {
+            batch
+                .record_batch()
+                .is_some_and(|batch| batch.schema().fields().len() == 1)
+        }));
+        drop(weak_batches);
+        assert_eq!(
+            weak_dependencies
+                .execution()
+                .memory()
+                .snapshot()
+                .current_bytes,
+            0
+        );
+        let weak_spill = weak_dependencies.execution().spill().snapshot();
+        assert!(weak_spill.peak_bytes >= bytes.len() as u64);
+        assert_eq!(weak_spill.current_bytes, 0);
         let stream = stream_file_match_blocking(
             &resolved[0],
             plan.resolved_format().unwrap(),
@@ -5300,6 +5898,7 @@ mod tests {
                 &resource_id,
                 &constrained_matches[0],
                 cdf_runtime::FormatSourceAccess::Adaptive,
+                PlannedFileAccessCoverage::Full,
                 driver.as_ref(),
                 &canonical_options,
                 &constrained,

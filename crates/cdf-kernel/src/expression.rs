@@ -87,6 +87,9 @@ impl Expression {
         else {
             return None;
         };
+        if !function.is_current_cdf() {
+            return None;
+        }
         let [
             ExpressionNode::Column { name },
             ExpressionNode::Literal { value },
@@ -95,6 +98,19 @@ impl Expression {
             return None;
         };
         Some((name, function.name.as_str(), value))
+    }
+
+    pub fn comparison_operator(&self) -> Option<&'static str> {
+        let (_, function, _) = self.comparison()?;
+        match function {
+            "eq" => Some("="),
+            "neq" => Some("!="),
+            "gt" => Some(">"),
+            "gte" => Some(">="),
+            "lt" => Some("<"),
+            "lte" => Some("<="),
+            _ => None,
+        }
     }
 }
 
@@ -252,6 +268,10 @@ impl FunctionReference {
         }
     }
 
+    pub fn is_current_cdf(&self) -> bool {
+        self.namespace == CDF_FUNCTION_NAMESPACE && self.version == CDF_FUNCTION_VERSION
+    }
+
     fn validate(&self) -> Result<()> {
         if self.namespace.trim().is_empty()
             || self.name.trim().is_empty()
@@ -354,5 +374,6 @@ mod tests {
         let float = Expression::parse_comparison("cursor >= -20260701.5").unwrap();
         let (_, _, literal) = float.comparison().unwrap();
         assert_eq!(literal.as_float64(), Some(-20260701.5));
+        assert_eq!(float.comparison_operator(), Some(">="));
     }
 }

@@ -1,3 +1,5 @@
+#![doc = "Shared Arrow-native execution for CDF's compiled expression IR."]
+
 use arrow_arith::boolean::{and_kleene, is_not_null, is_null, not, or_kleene};
 use arrow_array::{
     ArrayRef, BooleanArray, Float64Array, Int8Array, Int16Array, Int32Array, Int64Array,
@@ -7,11 +9,14 @@ use arrow_array::{
 use arrow_ord::cmp::{eq, gt, gt_eq, lt, lt_eq, neq};
 use arrow_schema::{DataType, Field, Schema};
 use arrow_select::filter::filter_record_batch;
-use cdf_contract::{ExpressionLiteral, ExpressionNode, PlannedExpression, TransformDescription};
+use cdf_contract::{
+    CDF_FUNCTION_NAMESPACE, CDF_FUNCTION_VERSION, ExpressionLiteral, ExpressionNode,
+    PlannedExpression, TransformDescription,
+};
 use cdf_kernel::{CdfError, Result};
 
 #[derive(Clone)]
-pub(crate) enum BoundBooleanExpression {
+pub enum BoundBooleanExpression {
     Column(BoundColumn),
     Literal(Option<bool>),
     Not(Box<Self>),
@@ -27,14 +32,14 @@ pub(crate) enum BoundBooleanExpression {
 }
 
 #[derive(Clone)]
-pub(crate) struct BoundColumn {
+pub struct BoundColumn {
     index: usize,
     name: String,
     data_type: DataType,
 }
 
 #[derive(Clone, Copy)]
-pub(crate) enum BoundComparisonOperator {
+pub enum BoundComparisonOperator {
     Equal,
     NotEqual,
     Greater,
@@ -43,7 +48,7 @@ pub(crate) enum BoundComparisonOperator {
     LessOrEqual,
 }
 
-pub(crate) enum BoundExpressionTransform {
+pub enum BoundExpressionTransform {
     Derive {
         column: String,
         expression: BoundBooleanExpression,
@@ -51,7 +56,7 @@ pub(crate) enum BoundExpressionTransform {
     Filter(BoundBooleanExpression),
 }
 
-pub(crate) fn bind_filter_expressions(
+pub fn bind_filter_expressions(
     expressions: &[PlannedExpression],
     schema: &Schema,
 ) -> Result<Vec<BoundBooleanExpression>> {
@@ -61,7 +66,7 @@ pub(crate) fn bind_filter_expressions(
         .collect()
 }
 
-pub(crate) fn bind_expression_transforms(
+pub fn bind_expression_transforms(
     transforms: &[TransformDescription],
     planned: &[PlannedExpression],
     schema: &Schema,
@@ -101,7 +106,7 @@ pub(crate) fn bind_expression_transforms(
     Ok(bound)
 }
 
-pub(crate) fn expression_transform_output_schema(
+pub fn expression_transform_output_schema(
     transforms: &[TransformDescription],
     schema: &Schema,
 ) -> Schema {
@@ -125,7 +130,7 @@ fn schema_with_derived_boolean(schema: &Schema, column: &str) -> Schema {
     Schema::new_with_metadata(fields, schema.metadata().clone())
 }
 
-pub(crate) fn apply_bound_filters(
+pub fn apply_bound_filters(
     batch: &RecordBatch,
     expressions: &[BoundBooleanExpression],
 ) -> Result<RecordBatch> {
@@ -146,7 +151,7 @@ pub(crate) fn apply_bound_filters(
     filter_record_batch(batch, &keep).map_err(CdfError::from)
 }
 
-pub(crate) fn apply_expression_transforms(
+pub fn apply_expression_transforms(
     batch: RecordBatch,
     transforms: &[TransformDescription],
     planned: &[PlannedExpression],
@@ -155,7 +160,7 @@ pub(crate) fn apply_expression_transforms(
     apply_bound_expression_transforms(batch, &bound)
 }
 
-pub(crate) fn apply_bound_expression_transforms(
+pub fn apply_bound_expression_transforms(
     mut batch: RecordBatch,
     transforms: &[BoundExpressionTransform],
 ) -> Result<RecordBatch> {
@@ -193,7 +198,7 @@ pub(crate) fn apply_bound_expression_transforms(
     Ok(batch)
 }
 
-fn bind_boolean_expression(
+pub fn bind_boolean_expression(
     node: &ExpressionNode,
     schema: &Schema,
 ) -> Result<BoundBooleanExpression> {
@@ -216,58 +221,68 @@ fn bind_boolean_expression(
         ExpressionNode::Call {
             function,
             arguments,
-        } => match (function.name.as_str(), arguments.as_slice()) {
-            ("not", [value]) => Ok(BoundBooleanExpression::Not(Box::new(
-                bind_boolean_expression(value, schema)?,
-            ))),
-            ("and", [left, right]) => Ok(BoundBooleanExpression::And(
-                Box::new(bind_boolean_expression(left, schema)?),
-                Box::new(bind_boolean_expression(right, schema)?),
-            )),
-            ("or", [left, right]) => Ok(BoundBooleanExpression::Or(
-                Box::new(bind_boolean_expression(left, schema)?),
-                Box::new(bind_boolean_expression(right, schema)?),
-            )),
-            ("is_null", [ExpressionNode::Column { name }]) => {
-                Ok(BoundBooleanExpression::IsNull(bind_column(name, schema)?))
+        } => {
+            if function.namespace != CDF_FUNCTION_NAMESPACE
+                || function.version != CDF_FUNCTION_VERSION
+            {
+                return Err(CdfError::contract(format!(
+                    "unsupported expression function {}.{}@{}; native execution requires the recorded CDF function version",
+                    function.namespace, function.name, function.version
+                )));
             }
-            ("is_not_null", [ExpressionNode::Column { name }]) => Ok(
-                BoundBooleanExpression::IsNotNull(bind_column(name, schema)?),
-            ),
-            (
-                operator @ ("eq" | "neq" | "gt" | "gte" | "lt" | "lte"),
-                [
-                    ExpressionNode::Column { name },
-                    ExpressionNode::Literal { value },
-                ],
-            ) => {
-                let column = bind_column(name, schema)?;
-                let scalar = Scalar::new(scalar_for_array(name, &column.data_type, value)?);
-                Ok(BoundBooleanExpression::Comparison {
-                    column,
-                    operator: match operator {
-                        "eq" => BoundComparisonOperator::Equal,
-                        "neq" => BoundComparisonOperator::NotEqual,
-                        "gt" => BoundComparisonOperator::Greater,
-                        "gte" => BoundComparisonOperator::GreaterOrEqual,
-                        "lt" => BoundComparisonOperator::Less,
-                        "lte" => BoundComparisonOperator::LessOrEqual,
-                        _ => unreachable!("operator admitted by pattern"),
-                    },
-                    scalar,
-                })
+            match (function.name.as_str(), arguments.as_slice()) {
+                ("not", [value]) => Ok(BoundBooleanExpression::Not(Box::new(
+                    bind_boolean_expression(value, schema)?,
+                ))),
+                ("and", [left, right]) => Ok(BoundBooleanExpression::And(
+                    Box::new(bind_boolean_expression(left, schema)?),
+                    Box::new(bind_boolean_expression(right, schema)?),
+                )),
+                ("or", [left, right]) => Ok(BoundBooleanExpression::Or(
+                    Box::new(bind_boolean_expression(left, schema)?),
+                    Box::new(bind_boolean_expression(right, schema)?),
+                )),
+                ("is_null", [ExpressionNode::Column { name }]) => {
+                    Ok(BoundBooleanExpression::IsNull(bind_column(name, schema)?))
+                }
+                ("is_not_null", [ExpressionNode::Column { name }]) => Ok(
+                    BoundBooleanExpression::IsNotNull(bind_column(name, schema)?),
+                ),
+                (
+                    operator @ ("eq" | "neq" | "gt" | "gte" | "lt" | "lte"),
+                    [
+                        ExpressionNode::Column { name },
+                        ExpressionNode::Literal { value },
+                    ],
+                ) => {
+                    let column = bind_column(name, schema)?;
+                    let scalar = Scalar::new(scalar_for_array(name, &column.data_type, value)?);
+                    Ok(BoundBooleanExpression::Comparison {
+                        column,
+                        operator: match operator {
+                            "eq" => BoundComparisonOperator::Equal,
+                            "neq" => BoundComparisonOperator::NotEqual,
+                            "gt" => BoundComparisonOperator::Greater,
+                            "gte" => BoundComparisonOperator::GreaterOrEqual,
+                            "lt" => BoundComparisonOperator::Less,
+                            "lte" => BoundComparisonOperator::LessOrEqual,
+                            _ => unreachable!("operator admitted by pattern"),
+                        },
+                        scalar,
+                    })
+                }
+                (name, _) => Err(CdfError::contract(format!(
+                    "recorded expression function {name:?} has no native fused filter lowering"
+                ))),
             }
-            (name, _) => Err(CdfError::contract(format!(
-                "recorded expression function {name:?} has no native fused filter lowering"
-            ))),
-        },
+        }
         other => Err(CdfError::contract(format!(
             "recorded expression {other:?} does not produce a boolean filter"
         ))),
     }
 }
 
-fn evaluate_bound_expression(
+pub fn evaluate_bound_expression(
     batch: &RecordBatch,
     expression: &BoundBooleanExpression,
 ) -> Result<BooleanArray> {
@@ -337,24 +352,6 @@ fn bound_column_array<'a>(batch: &'a RecordBatch, column: &BoundColumn) -> Resul
         )));
     }
     Ok(batch.column(column.index))
-}
-
-pub(crate) fn predicate_operator(expression: &cdf_contract::Expression) -> Option<String> {
-    match &expression.root {
-        ExpressionNode::Call { function, .. } => Some(
-            match function.name.as_str() {
-                "eq" => "=",
-                "neq" => "!=",
-                "gt" => ">",
-                "gte" => ">=",
-                "lt" => "<",
-                "lte" => "<=",
-                _ => return None,
-            }
-            .to_owned(),
-        ),
-        _ => None,
-    }
 }
 
 fn scalar_for_array(

@@ -1,0 +1,16 @@
+[package]
+name = "cdf-expression"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+description = "Shared Arrow-native execution for CDF's compiled expression IR."
+
+[dependencies]
+arrow-arith = "59.1.0"
+arrow-array = "59.1.0"
+arrow-ord = "59.1.0"
+arrow-schema = "59.1.0"
+arrow-select = "59.1.0"
+cdf-contract = { path = "../cdf-contract" }
+cdf-kernel = { path = "../cdf-kernel" }

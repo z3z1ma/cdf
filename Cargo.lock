@@ -820,6 +820,7 @@ dependencies = [
  "arrow-array 59.1.0",
  "arrow-cast 59.1.0",
  "arrow-schema 59.1.0",
+ "bytes",
  "cdf-cli",
  "cdf-contract",
  "cdf-declarative",
@@ -828,6 +829,7 @@ dependencies = [
  "cdf-dest-postgres",
  "cdf-engine",
  "cdf-format-json",
+ "cdf-format-parquet",
  "cdf-http",
  "cdf-kernel",
  "cdf-memory",
@@ -844,6 +846,7 @@ dependencies = [
  "duckdb",
  "futures-executor",
  "futures-util",
+ "parquet",
  "postgres",
  "proptest",
  "serde",
@@ -964,13 +967,12 @@ dependencies = [
 name = "cdf-engine"
 version = "0.1.0"
 dependencies = [
- "arrow-arith 59.1.0",
  "arrow-array 59.1.0",
  "arrow-ipc",
- "arrow-ord 59.1.0",
  "arrow-schema 59.1.0",
  "arrow-select 59.1.0",
  "cdf-contract",
+ "cdf-expression",
  "cdf-kernel",
  "cdf-memory",
  "cdf-package",
@@ -985,6 +987,19 @@ dependencies = [
  "tempfile",
  "tokio",
  "tracing",
+]
+
+[[package]]
+name = "cdf-expression"
+version = "0.1.0"
+dependencies = [
+ "arrow-arith 59.1.0",
+ "arrow-array 59.1.0",
+ "arrow-ord 59.1.0",
+ "arrow-schema 59.1.0",
+ "arrow-select 59.1.0",
+ "cdf-contract",
+ "cdf-kernel",
 ]
 
 [[package]]
@@ -1044,6 +1059,7 @@ dependencies = [
  "arrow-array 59.1.0",
  "arrow-schema 59.1.0",
  "bytes",
+ "cdf-expression",
  "cdf-kernel",
  "cdf-memory",
  "cdf-runtime",
@@ -1225,6 +1241,7 @@ dependencies = [
  "arrow-ipc",
  "arrow-schema 59.1.0",
  "bytes",
+ "cdf-expression",
  "cdf-format-arrow-ipc",
  "cdf-format-delimited",
  "cdf-format-json",

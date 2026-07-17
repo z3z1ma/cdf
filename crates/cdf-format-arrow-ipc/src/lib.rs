@@ -55,6 +55,7 @@ impl ArrowIpcFileFormatDriver {
                 }),
                 projection_pushdown: PushdownFidelity::Exact,
                 predicate_pushdown: PushdownFidelity::Unsupported,
+                predicate_operators: Vec::new(),
                 source_access: cdf_runtime::FormatSourceAccess::Seekable,
                 discovery_kind: cdf_runtime::FormatDiscoveryKind::FormatMetadata,
                 decode_unit_policy: "ipc_file_blocks_v1".to_owned(),
