@@ -64,7 +64,15 @@
         "kind": "remote_files",
         "base_url": "https://d37ci6vzurychx.cloudfront.net/trip-data/",
         "object_template": "yellow_tripdata_2024-{01..12}.parquet",
-        "immutable_identity": "monthly object generation (etag/checksum pinned by acquisition manifest)"
+        "immutable_identity": "monthly object generation (etag/checksum pinned by acquisition manifest)",
+        "mirrors": [
+          {
+            "label": "huggingface-lucky239",
+            "base_url": "https://huggingface.co/datasets/Lucky239/taxi-data/resolve/main",
+            "egress_allowlist": ["huggingface.co", "us.aws.cdn.hf.co"],
+            "notes": "Alternative public mirror for live TLC E2E runs when the original CloudFront endpoint denies GET/HEAD from the benchmark host."
+          }
+        ]
       }
     },
     {

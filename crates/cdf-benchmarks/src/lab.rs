@@ -51,6 +51,8 @@ pub enum DatasetRecipe {
         base_url: String,
         object_template: String,
         immutable_identity: String,
+        #[serde(default)]
+        mirrors: Vec<RemoteFilesMirror>,
     },
     Tpch {
         generator: String,
@@ -77,6 +79,14 @@ pub enum DatasetRecipe {
         chunk_bytes: u64,
         delivery: GeneratorDelivery,
     },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RemoteFilesMirror {
+    pub label: String,
+    pub base_url: String,
+    pub egress_allowlist: Vec<String>,
+    pub notes: String,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -660,10 +670,32 @@ fn validate_recipe(dataset_id: &str, recipe: &DatasetRecipe) -> BenchResult<()> 
             base_url,
             object_template,
             immutable_identity,
+            mirrors,
         } => {
             require_text(base_url, "remote base_url")?;
             require_text(object_template, "remote object_template")?;
             require_text(immutable_identity, "remote immutable_identity")?;
+            let mut labels = BTreeSet::new();
+            for mirror in mirrors {
+                require_text(&mirror.label, "remote mirror label")?;
+                require_text(&mirror.base_url, "remote mirror base_url")?;
+                require_text(&mirror.notes, "remote mirror notes")?;
+                if mirror.egress_allowlist.is_empty() {
+                    return Err(bench_error(format!(
+                        "dataset `{dataset_id}` remote mirror `{}` requires an egress allowlist",
+                        mirror.label
+                    )));
+                }
+                for host in &mirror.egress_allowlist {
+                    require_text(host, "remote mirror egress host")?;
+                }
+                if !labels.insert(mirror.label.as_str()) {
+                    return Err(bench_error(format!(
+                        "dataset `{dataset_id}` repeats remote mirror label `{}`",
+                        mirror.label
+                    )));
+                }
+            }
         }
         DatasetRecipe::Tpch {
             scale_factor,
@@ -799,4 +831,20 @@ fn reject_sensitive_identity(value: &str, label: &str) -> BenchResult<()> {
         )));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn embedded_p3_dataset_catalog_validates() {
+        let catalog = dataset_catalog().unwrap();
+        assert!(
+            catalog
+                .datasets
+                .iter()
+                .any(|dataset| dataset.id == "nyc_tlc_yellow_2024")
+        );
+    }
 }
