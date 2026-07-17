@@ -2217,11 +2217,11 @@ fn production_commit_paths_cannot_collect_package_segments() {
     let crates_dir = Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .expect("cdf-package has a crates parent");
-    let mut files = vec![
-        Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("src")
-            .join("archive.rs"),
-    ];
+    let archive_path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("src")
+        .join("archive.rs");
+    let mut files = vec![archive_path.clone()];
+    files.push(crates_dir.join("cdf-project/src/promotion.rs"));
     for relative in [
         "cdf-project/src/runtime",
         "cdf-dest-duckdb/src",
@@ -2232,11 +2232,15 @@ fn production_commit_paths_cannot_collect_package_segments() {
     }
     for path in files {
         let source = fs::read_to_string(&path).unwrap();
-        for forbidden in [
+        let mut forbidden = vec![
             "read_all_segments(",
             "read_commit_segments(",
             "Vec<CommitSegment>",
-        ] {
+        ];
+        if path != archive_path {
+            forbidden.push("read_segment(");
+        }
+        for forbidden in forbidden {
             assert!(
                 !source.contains(forbidden),
                 "production package materialization token {forbidden:?} found in {}",

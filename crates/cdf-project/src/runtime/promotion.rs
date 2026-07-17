@@ -23,6 +23,7 @@ use cdf_kernel::{
     PromotionSettlementStore, Receipt, ResourceId, SchemaHash, ScopeKey, ScopeLease,
     SourcePosition, StateDelta, StateSegment, TargetName,
 };
+use cdf_memory::{DeterministicMemoryCoordinator, MemoryCoordinator};
 use cdf_package::{PackageBuilder, PackageReader};
 use cdf_package_contract::{
     DestinationCommitPlanPreimage, MANIFEST_FILE, PackageStatus, StateDeltaPreimage,
@@ -37,6 +38,15 @@ use crate::{
     SchemaPromotionTargetReport, SchemaSnapshotStore, compare_and_swap_lock_file, lock_to_toml,
     parse_lock, read_lock_file_authority, validate_schema_promotion_plan_identity,
 };
+
+const PROMOTION_SEGMENT_SCAN_WINDOW_BYTES: u64 = 64 * 1024 * 1024;
+
+fn promotion_segment_scan_memory() -> cdf_kernel::Result<Arc<dyn MemoryCoordinator>> {
+    Ok(Arc::new(DeterministicMemoryCoordinator::new(
+        PROMOTION_SEGMENT_SCAN_WINDOW_BYTES,
+        Default::default(),
+    )?))
+}
 
 pub const SCHEMA_PROMOTION_EXECUTION_ARTIFACT_VERSION: u16 = 1;
 pub const SCHEMA_PROMOTION_CORRECTION_PACKAGE_VERSION: u16 = 1;
@@ -1041,7 +1051,7 @@ fn extract_operations(
     output_field: &CanonicalArrowField,
 ) -> cdf_kernel::Result<Vec<DestinationCorrectionOperation>> {
     let reader = PackageReader::open(package_dir)?;
-    reader.verify()?;
+    let verified = reader.verify_for_consumption()?;
     let package_hash = PackageHash::new(reader.manifest().package_hash.clone())?;
     let receipts = reader
         .receipts()?
@@ -1063,9 +1073,15 @@ fn extract_operations(
     }
     let selected = selected_type.to_arrow()?;
     let mut operations = Vec::new();
-    for segment in &reader.manifest().identity.segments {
+    let stream = reader.verified_canonical_segment_stream_with(
+        &verified,
+        promotion_segment_scan_memory()?,
+        PROMOTION_SEGMENT_SCAN_WINDOW_BYTES,
+    )?;
+    for segment in stream {
+        let segment = segment?;
         let mut ordinal = 0_u64;
-        for batch in reader.read_segment(&segment.segment_id)? {
+        for batch in &segment.batches {
             let variant_index = batch
                 .schema()
                 .fields()
@@ -1074,7 +1090,7 @@ fn extract_operations(
                 .ok_or_else(|| {
                     cdf_kernel::CdfError::data(format!(
                         "source package {package_hash} segment {} has no framework residual column",
-                        segment.segment_id
+                        segment.entry.segment_id
                     ))
                 })?;
             let variant = batch
@@ -1104,7 +1120,7 @@ fn extract_operations(
                     promotion_id: promotion_id.clone(),
                     original_row: cdf_kernel::RowProvenanceAddress::new(
                         package_hash.clone(),
-                        segment.segment_id.clone(),
+                        segment.entry.segment_id.clone(),
                         ordinal + row as u64,
                     ),
                     old_schema_hash: old_schema_hash.clone(),
@@ -1381,8 +1397,13 @@ fn read_correction_package_operations(
     reader: &PackageReader,
 ) -> cdf_kernel::Result<Vec<DestinationCorrectionOperation>> {
     let mut operations = Vec::new();
-    for segment in &reader.manifest().identity.segments {
-        for batch in reader.read_segment(&segment.segment_id)? {
+    let stream = reader.verified_canonical_segment_stream(
+        promotion_segment_scan_memory()?,
+        PROMOTION_SEGMENT_SCAN_WINDOW_BYTES,
+    )?;
+    for segment in stream {
+        let segment = segment?;
+        for batch in &segment.batches {
             if batch.num_columns() != 1 {
                 return Err(cdf_kernel::CdfError::data(
                     "correction package segment must contain one typed operation column",

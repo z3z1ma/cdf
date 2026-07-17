@@ -2,6 +2,7 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     fs,
     path::{Path, PathBuf},
+    sync::Arc,
 };
 
 use arrow_array::{Array, StringArray};
@@ -16,6 +17,7 @@ use cdf_kernel::{
     CanonicalArrowType, CapabilitySupport, CdfError, CorrectionStrategy, PackageHash, PromotionId,
     RowProvenanceAddress, TypeMappingFidelity,
 };
+use cdf_memory::{DeterministicMemoryCoordinator, MemoryCoordinator};
 use cdf_package::PackageReader;
 #[cfg(test)]
 use cdf_package_contract::{DestinationCommitPlanPreimage, RECEIPTS_FILE};
@@ -30,6 +32,8 @@ use crate::{
     SchemaSnapshotPromotionEvidenceAvailability, SchemaSnapshotPromotionPathAuthority,
     SchemaSnapshotPromotionTargetAssociationAuthority, SchemaSnapshotSchema,
 };
+
+const PROMOTION_RESIDUAL_SCAN_SEGMENT_WINDOW_BYTES: u64 = 64 * 1024 * 1024;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SchemaPromotionPlanReport {
@@ -1272,9 +1276,16 @@ fn scan_canonical_package_residuals(
     ) -> cdf_kernel::Result<()>,
 ) -> cdf_kernel::Result<CanonicalResidualScan> {
     let mut scan = CanonicalResidualScan::default();
-    for segment in &reader.manifest().identity.segments {
+    let memory: Arc<dyn MemoryCoordinator> = Arc::new(DeterministicMemoryCoordinator::new(
+        PROMOTION_RESIDUAL_SCAN_SEGMENT_WINDOW_BYTES,
+        Default::default(),
+    )?);
+    let stream = reader
+        .verified_canonical_segment_stream(memory, PROMOTION_RESIDUAL_SCAN_SEGMENT_WINDOW_BYTES)?;
+    for segment in stream {
+        let segment = segment?;
         let mut segment_ordinal = 0_u64;
-        for batch in reader.read_segment(&segment.segment_id)? {
+        for batch in &segment.batches {
             let variant_indexes = batch
                 .schema()
                 .fields()
@@ -1307,13 +1318,13 @@ fn scan_canonical_package_residuals(
                     CdfError::data(format!(
                         "decode residual in package {} segment {} row {}: {error}",
                         package_hash,
-                        segment.segment_id,
+                        segment.entry.segment_id,
                         segment_ordinal + row as u64
                     ))
                 })?;
                 let address = RowProvenanceAddress::new(
                     package_hash.clone(),
-                    segment.segment_id.clone(),
+                    segment.entry.segment_id.clone(),
                     segment_ordinal + row as u64,
                 );
                 for field in &decoded {

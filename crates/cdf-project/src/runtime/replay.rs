@@ -2106,13 +2106,13 @@ fn write_package_segments_to_session(
             PackageReplayStage::DestinationSegmentAcknowledged { ack: &ack },
         )
     };
+    let budget = memory.snapshot().budget_bytes;
+    let maximum_segment_bytes = capabilities
+        .max_in_flight_bytes
+        .unwrap_or(64 * 1024 * 1024)
+        .min(budget);
     match capabilities.commit_payload_mode {
         cdf_runtime::DestinationCommitPayloadMode::SegmentStreaming => {
-            let budget = memory.snapshot().budget_bytes;
-            let maximum_segment_bytes = capabilities
-                .max_in_flight_bytes
-                .unwrap_or(64 * 1024 * 1024)
-                .min(budget);
             let stream = reader.verified_commit_segment_stream_with(
                 verified,
                 &commit.segments,
@@ -2124,25 +2124,14 @@ fn write_package_segments_to_session(
             }
         }
         cdf_runtime::DestinationCommitPayloadMode::MaterializedPackage => {
-            reader.replay_inputs_verified(verified)?;
-            for state in &commit.segments {
-                let entry = reader
-                    .manifest()
-                    .identity
-                    .segments
-                    .iter()
-                    .find(|entry| entry.segment_id == state.segment_id)
-                    .ok_or_else(|| {
-                        CdfError::data(format!(
-                            "destination commit segment {} is absent from the package manifest",
-                            state.segment_id
-                        ))
-                    })?;
-                acknowledge(cdf_kernel::CommitSegment::new(
-                    state.clone(),
-                    entry.byte_count,
-                    reader.read_segment(&state.segment_id)?,
-                ))?;
+            let stream = reader.verified_commit_segment_stream_with(
+                verified,
+                &commit.segments,
+                memory,
+                maximum_segment_bytes,
+            )?;
+            for segment in stream {
+                acknowledge(segment?.into_commit_segment()?)?;
             }
         }
     }
