@@ -1,6 +1,6 @@
 {
   "package_id": "live-local-file-postgres-v1",
-  "package_hash": "sha256:6e14cbe1bb3267d223c0797250da2162509dcfde50375fdacc17c90617c04cf1",
+  "package_hash": "sha256:63743f44f596bc64ecccbf3c59b1fdd13067e78823483052eb47ef4a521295cf",
   "checkpoint_id": "checkpoint-live-local-file-postgres-v1",
   "pipeline_id": "pipeline-live-local-file-postgres-v1",
   "resource_id": "local.events",
@@ -21,9 +21,9 @@
   "mirror_state_rows": 1,
   "package": {
     "manifest_version": 1,
-    "package_hash": "sha256:6e14cbe1bb3267d223c0797250da2162509dcfde50375fdacc17c90617c04cf1",
+    "package_hash": "sha256:63743f44f596bc64ecccbf3c59b1fdd13067e78823483052eb47ef4a521295cf",
     "package_status": "checkpointed",
-    "signature_signing_input": "sha256:6e14cbe1bb3267d223c0797250da2162509dcfde50375fdacc17c90617c04cf1",
+    "signature_signing_input": "sha256:63743f44f596bc64ecccbf3c59b1fdd13067e78823483052eb47ef4a521295cf",
     "signature_value": null,
     "identity_manifest_version": 1,
     "identity_layout": [
@@ -55,18 +55,18 @@
       },
       {
         "path": "plan/explain.json",
-        "byte_count": 3270,
-        "sha256": "80f43a9018708701cd24c90bb9fc2a370394a46da92a9700dbb216de6b2a615b"
+        "byte_count": 3333,
+        "sha256": "fe70bda2ca66f5c6b573f24e4cfa0fda8794ec9d635e5667b32383a39f873d76"
       },
       {
         "path": "plan/scan.json",
         "byte_count": 1373,
-        "sha256": "a453748e892992b35f56565f570bd9bb4a303ad2d4de1fb9e35ad63298c77dec"
+        "sha256": "e739bc0c3173b36d53385450f5c165f94ab1ec959824a3ce7c0170d590201b77"
       },
       {
         "path": "plan/schema-admission.json",
         "byte_count": 2812,
-        "sha256": "d43381aeb21ea33d930bc758e13466f964b2014f314a6060c369bce6522e5d81"
+        "sha256": "a2e9749b43c6e33a36251528e49aa5edc11312fdb9e61e4d9cdce0668ed62f56"
       },
       {
         "path": "plan/validation-program.json",
@@ -91,7 +91,7 @@
       {
         "path": "schema/stream-admission-evidence.json",
         "byte_count": 1727,
-        "sha256": "558736663e3ff0d10fc46c9c5b482e2315eddc1bc46d7ec7a92e2b7407639649"
+        "sha256": "e63fbe8a9831b2255db121ebb616656ef07f017715c09014f171f5533aff45e4"
       },
       {
         "path": "state/input_checkpoint.json",
@@ -109,9 +109,9 @@
         "sha256": "177d2769257f747498404537d1bdad958b273744ce53121097508e8e31031107"
       },
       {
-        "path": "stats/profile.json",
-        "byte_count": 56,
-        "sha256": "2f6cf155d7aa0b0031d24ba0e8936a36dfba0128493625f1d9824445418d6abe"
+        "path": "stats/profile.parquet",
+        "byte_count": 8198,
+        "sha256": "733626e1847b416afb608db27fc0fc8282d508ef17afbba781e1dbcbcaff4a37"
       },
       {
         "path": "trace.jsonl",

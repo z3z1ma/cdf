@@ -200,7 +200,20 @@ fn tier_a_resource_runs_engine_projection_filter_limit_into_package() {
         output.profile.statistics.columns[0].minimum,
         Some(cdf_kernel::TypedScalar::Utf8("two".into()))
     );
-    assert!(temp.path().join("stats/profile.json").exists());
+    assert!(!temp.path().join("stats/profile.json").exists());
+    assert!(
+        temp.path()
+            .join(cdf_package::STATISTICS_PROFILE_FILE)
+            .exists()
+    );
+    let reader = cdf_package::PackageReader::open(temp.path()).unwrap();
+    let verified = reader.verify_for_consumption().unwrap();
+    let profile_rows = reader.verified_statistics_profile(&verified).unwrap();
+    assert!(profile_rows.iter().any(|row| {
+        row.grain == cdf_package::StatisticsProfileGrain::Package
+            && row.field_path[0].as_ref() == "name"
+            && row.minimum == Some(cdf_kernel::TypedScalar::Utf8("two".into()))
+    }));
 
     let reader = cdf_package::PackageReader::open(temp.path()).unwrap();
     let batches = reader.read_segment(&output.segments[0].segment_id).unwrap();

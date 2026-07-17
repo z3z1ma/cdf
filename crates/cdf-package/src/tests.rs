@@ -141,6 +141,61 @@ fn sample_batch_values(ids: Vec<i64>, names: Vec<Option<&str>>) -> RecordBatch {
 }
 
 #[test]
+fn verified_statistics_profile_is_manifest_bound_typed_parquet() {
+    let temp = tempfile::tempdir().unwrap();
+    let builder = PackageBuilder::create(temp.path(), "pkg-stats-profile").unwrap();
+    let segment_id = SegmentId::new("seg-000001").unwrap();
+    let batch = sample_batch();
+    let stats = cdf_kernel::BatchStats::compute(&batch).unwrap();
+    let mut profile = builder.begin_statistics_profile().unwrap();
+    profile
+        .write_stats(
+            StatisticsProfileGrain::Segment,
+            0,
+            segment_id.as_str(),
+            "sha256:schema",
+            &stats,
+        )
+        .unwrap();
+    profile
+        .write_stats(
+            StatisticsProfileGrain::Package,
+            0,
+            "pkg-stats-profile",
+            "sha256:schema",
+            &stats,
+        )
+        .unwrap();
+    profile.finish().unwrap();
+    builder.write_segment(segment_id, &[batch]).unwrap();
+    let (_, verified) = builder.finish_verified().unwrap();
+    let reader = PackageReader::open(temp.path()).unwrap();
+
+    let rows = reader.verified_statistics_profile(&verified).unwrap();
+
+    assert_eq!(rows.len(), 4);
+    assert_eq!(rows[0].grain, StatisticsProfileGrain::Segment);
+    assert_eq!(rows[0].container_id, "seg-000001");
+    assert_eq!(rows[0].field_path[0].as_ref(), "id");
+    assert_eq!(rows[0].minimum, Some(cdf_kernel::TypedScalar::Signed(1)));
+    assert_eq!(rows[1].field_path[0].as_ref(), "name");
+    assert_eq!(
+        rows[1].maximum,
+        Some(cdf_kernel::TypedScalar::Utf8("grace".into()))
+    );
+    assert_eq!(rows[2].grain, StatisticsProfileGrain::Package);
+
+    fs::write(temp.path().join(STATISTICS_PROFILE_FILE), b"tampered").unwrap();
+    let error = reader.verified_statistics_profile(&verified).unwrap_err();
+    assert!(
+        error
+            .message
+            .contains("identity artifact stats/profile.parquet changed after package verification"),
+        "{error}"
+    );
+}
+
+#[test]
 fn verification_rejects_unknown_contract_evolution_versions() {
     for (name, artifact) in [
         (

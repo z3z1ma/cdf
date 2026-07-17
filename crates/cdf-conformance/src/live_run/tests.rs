@@ -131,6 +131,20 @@ fn live_local_file_expected_fixtures_contain_required_evidence() {
             Some(&LIVE_LOCAL_FILE_V1_ROW_COUNT)
         );
         assert!(!expected.package.identity_files.is_empty());
+        assert!(
+            expected
+                .package
+                .identity_files
+                .iter()
+                .any(|file| file.path == cdf_package::STATISTICS_PROFILE_FILE)
+        );
+        assert!(
+            !expected
+                .package
+                .identity_files
+                .iter()
+                .any(|file| file.path == "stats/profile.json")
+        );
         assert_eq!(
             expected.package.segments.len(),
             LIVE_LOCAL_FILE_V1_SEGMENT_COUNT

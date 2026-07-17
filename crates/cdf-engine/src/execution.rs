@@ -1538,6 +1538,9 @@ struct OutputWriteState<'a> {
     memory: Option<&'a Arc<dyn MemoryCoordinator>>,
     statistics_memory: &'a Arc<dyn MemoryCoordinator>,
     statistics_memory_lease: &'a mut Option<MemoryLease>,
+    statistics_profile: &'a mut cdf_package::StatisticsProfileWriter,
+    statistics_profile_schema_hash: &'a str,
+    statistics_segment_ordinal: &'a mut u64,
 }
 
 struct SegmentOutputSink<'a, 'b> {
@@ -2850,6 +2853,9 @@ where
     };
     let mut profile = ExecutionProfile::default();
     let mut statistics_memory_lease = None;
+    let mut statistics_profile = builder.begin_statistics_profile()?;
+    let statistics_profile_schema_hash = schema_authority.effective_schema_hash.as_str().to_owned();
+    let mut statistics_segment_ordinal = 0_u64;
     let mut verdict_summary = VerdictSummary::default();
     let mut lineage = LineageSummary::default();
     let mut segments = Vec::new();
@@ -3437,6 +3443,9 @@ where
                         memory: memory.as_ref(),
                         statistics_memory: &statistics_memory,
                         statistics_memory_lease: &mut statistics_memory_lease,
+                        statistics_profile: &mut statistics_profile,
+                        statistics_profile_schema_hash: &statistics_profile_schema_hash,
+                        statistics_segment_ordinal: &mut statistics_segment_ordinal,
                     },
                     &mut SegmentOutputSink {
                         builder: &builder,
@@ -3458,6 +3467,9 @@ where
                     memory: memory.as_ref(),
                     statistics_memory: &statistics_memory,
                     statistics_memory_lease: &mut statistics_memory_lease,
+                    statistics_profile: &mut statistics_profile,
+                    statistics_profile_schema_hash: &statistics_profile_schema_hash,
+                    statistics_segment_ordinal: &mut statistics_segment_ordinal,
                 },
                 &mut SegmentOutputSink {
                     builder: &builder,
@@ -3729,6 +3741,9 @@ where
                 memory: memory.as_ref(),
                 statistics_memory: &statistics_memory,
                 statistics_memory_lease: &mut statistics_memory_lease,
+                statistics_profile: &mut statistics_profile,
+                statistics_profile_schema_hash: &statistics_profile_schema_hash,
+                statistics_segment_ordinal: &mut statistics_segment_ordinal,
             },
             &mut SegmentOutputSink {
                 builder: &builder,
@@ -3751,6 +3766,9 @@ where
             memory: memory.as_ref(),
             statistics_memory: &statistics_memory,
             statistics_memory_lease: &mut statistics_memory_lease,
+            statistics_profile: &mut statistics_profile,
+            statistics_profile_schema_hash: &statistics_profile_schema_hash,
+            statistics_segment_ordinal: &mut statistics_segment_ordinal,
         },
         &mut durable_segment_observer,
     )?;
@@ -3906,10 +3924,14 @@ where
     ) {
         write_contract_evolution_stream(&builder, &evolution, residual_decisions.as_mut())?;
     }
-    builder.write_stats_artifact(
-        "profile.json",
-        &cdf_package::canonical_json_bytes(&profile)?,
+    statistics_profile.write_stats(
+        cdf_package::StatisticsProfileGrain::Package,
+        0,
+        &plan.package_id,
+        &statistics_profile_schema_hash,
+        &profile.statistics,
     )?;
+    statistics_profile.finish()?;
     if verdict_summary.violation_count > 0 || verdict_summary.quarantine_candidate_count > 0 {
         builder.write_stats_artifact(
             "verdict-summary.json",
@@ -4556,6 +4578,17 @@ fn persist_canonical_segments(
             .as_ref()
             .ok_or_else(|| CdfError::internal("segment statistics lease is absent"))?
             .reconcile(statistics.retained_bytes()?)?;
+        state.statistics_profile.write_stats(
+            cdf_package::StatisticsProfileGrain::Segment,
+            *state.statistics_segment_ordinal,
+            segment_id.as_str(),
+            state.statistics_profile_schema_hash,
+            &statistics,
+        )?;
+        *state.statistics_segment_ordinal = state
+            .statistics_segment_ordinal
+            .checked_add(1)
+            .ok_or_else(|| CdfError::data("statistics profile segment ordinal overflow"))?;
         retain_package_statistics(state, statistics, _statistics_memory_lease)?;
         sink.queue.submit(
             SegmentEncodeWork {

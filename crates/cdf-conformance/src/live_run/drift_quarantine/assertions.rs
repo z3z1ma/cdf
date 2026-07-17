@@ -7,7 +7,7 @@ use cdf_kernel::{
     CapabilitySupport, CheckpointStatus, CheckpointStore, DestinationProtocol, SourcePosition,
     WriteDisposition,
 };
-use cdf_package::PackageReader;
+use cdf_package::{PackageReader, STATISTICS_PROFILE_FILE, StatisticsProfileGrain};
 use cdf_package_contract::{DEDUP_SUMMARY_FILE, PackageStatus, QuarantineObservedValue};
 use cdf_project::ProjectRunReport;
 use cdf_state_sqlite::{RunEventKind, RunEventValue, SqliteCheckpointStore};
@@ -38,7 +38,7 @@ pub(super) fn assert_drift_quarantine_package_evidence(report: &ProjectRunReport
     );
 
     let reader = PackageReader::open(&report.package_dir).unwrap();
-    reader.verify().unwrap();
+    let verified = reader.verify_for_consumption().unwrap();
     let files = reader
         .manifest()
         .identity
@@ -47,7 +47,7 @@ pub(super) fn assert_drift_quarantine_package_evidence(report: &ProjectRunReport
         .map(|file| file.path.as_str())
         .collect::<Vec<_>>();
     assert!(files.contains(&"plan/validation-program.json"));
-    assert!(files.contains(&"stats/profile.json"));
+    assert!(files.contains(&STATISTICS_PROFILE_FILE));
     assert!(files.contains(&"stats/verdict-summary.json"));
     assert!(files.contains(&"stats/quarantine-summary.json"));
     assert!(files.contains(&"quarantine/part-000001.parquet"));
@@ -69,11 +69,12 @@ pub(super) fn assert_drift_quarantine_package_evidence(report: &ProjectRunReport
             .any(|rule| rule["change"] == "type_narrowing" && rule["verdict"] == "quarantine")
     );
 
-    let profile: Value =
-        serde_json::from_slice(&fs::read(report.package_dir.join("stats/profile.json")).unwrap())
-            .unwrap();
-    assert_eq!(profile["output_rows"], Value::from(1));
-    assert_eq!(profile["output_batches"], Value::from(1));
+    let profile = reader.verified_statistics_profile(&verified).unwrap();
+    assert!(profile.iter().any(|row| {
+        row.grain == StatisticsProfileGrain::Package
+            && row.row_count == 1
+            && row.field_path[0].as_ref() == "id"
+    }));
 
     let verdict_summary: Value = serde_json::from_slice(
         &fs::read(report.package_dir.join("stats/verdict-summary.json")).unwrap(),
