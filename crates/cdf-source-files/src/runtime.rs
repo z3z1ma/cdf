@@ -55,12 +55,12 @@ const NATIVE_STREAM_ITEMS: usize = 2;
 const NATIVE_UNIT_STREAM_ITEMS: usize = 1;
 const NATIVE_UNIT_BUFFERED_BATCHES: u16 = 2;
 pub const FILE_SOURCE_BLOCKING_LANE_ID: &str = "file-source.control";
-pub const FILE_SOURCE_BLOCKING_LANE_CONCURRENCY: u16 = 4;
+pub const FILE_SOURCE_ADVERTISED_PARALLELISM: u16 = 16;
 
 pub fn file_source_blocking_lane() -> BlockingLaneSpec {
     BlockingLaneSpec {
         lane_id: FILE_SOURCE_BLOCKING_LANE_ID.to_owned(),
-        maximum_concurrency: FILE_SOURCE_BLOCKING_LANE_CONCURRENCY,
+        maximum_concurrency: FILE_SOURCE_ADVERTISED_PARALLELISM,
         cpu_slot_cost: 1,
         native_internal_parallelism: 1,
         affinity: LaneAffinity::Shared,
@@ -4900,14 +4900,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn file_source_blocking_lane_caps_speculative_partition_opens() {
+    fn file_source_blocking_lane_matches_advertised_parallelism() {
         let lane = file_source_blocking_lane();
         assert_eq!(lane.lane_id, FILE_SOURCE_BLOCKING_LANE_ID);
-        assert_eq!(
-            lane.maximum_concurrency,
-            FILE_SOURCE_BLOCKING_LANE_CONCURRENCY
-        );
-        assert_eq!(lane.maximum_concurrency, 4);
+        assert_eq!(lane.maximum_concurrency, FILE_SOURCE_ADVERTISED_PARALLELISM);
         assert_eq!(lane.cpu_slot_cost, 1);
         assert_eq!(lane.native_internal_parallelism, 1);
     }

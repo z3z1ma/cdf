@@ -13,7 +13,9 @@ mod payload_cache;
 mod runtime;
 mod transport;
 
-pub use runtime::{FILE_SOURCE_BLOCKING_LANE_ID, file_source_blocking_lane};
+pub use runtime::{
+    FILE_SOURCE_ADVERTISED_PARALLELISM, FILE_SOURCE_BLOCKING_LANE_ID, file_source_blocking_lane,
+};
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(transparent)]

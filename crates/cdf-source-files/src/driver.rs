@@ -22,10 +22,11 @@ use cdf_runtime::{
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    FileCompressionDeclaration, FileFormatDeclaration, FilePayloadCache, FileResource,
-    FileResourceDefinition, FileResourcePlan, FileRuntimeDependencies, FileTransportControl,
-    FileTransportLocation, FileTransportResource, SchemaDiscoveryRequest,
-    discover_local_binary_schema, discover_transport_binary_schema, file_source_blocking_lane,
+    FILE_SOURCE_ADVERTISED_PARALLELISM, FileCompressionDeclaration, FileFormatDeclaration,
+    FilePayloadCache, FileResource, FileResourceDefinition, FileResourcePlan,
+    FileRuntimeDependencies, FileTransportControl, FileTransportLocation, FileTransportResource,
+    SchemaDiscoveryRequest, discover_local_binary_schema, discover_transport_binary_schema,
+    file_source_blocking_lane,
 };
 
 type RuntimeFactory = dyn Fn(
@@ -1298,8 +1299,8 @@ fn execution_capabilities() -> SourceExecutionCapabilities {
         maximum_poll_bytes: 32 * 1024 * 1024,
         minimum_decode_bytes: 8 * 1024,
         maximum_decode_bytes: 32 * 1024 * 1024,
-        maximum_concurrency: 16,
-        useful_concurrency: 16,
+        maximum_concurrency: FILE_SOURCE_ADVERTISED_PARALLELISM,
+        useful_concurrency: FILE_SOURCE_ADVERTISED_PARALLELISM,
         executor_class: SourceExecutorClass::BlockingLane,
         blocking_lane: Some(file_source_blocking_lane()),
         pausable: true,
@@ -1341,18 +1342,24 @@ mod tests {
     struct TestHealthSink(Vec<SourceHealthResult>);
 
     #[test]
-    fn execution_capabilities_keep_file_partition_speculation_bounded() {
+    fn execution_capabilities_share_advertised_parallelism_with_blocking_lane() {
         let capabilities = execution_capabilities();
         capabilities.validate().unwrap();
-        assert_eq!(capabilities.maximum_concurrency, 16);
-        assert_eq!(capabilities.useful_concurrency, 16);
+        assert_eq!(
+            capabilities.maximum_concurrency,
+            FILE_SOURCE_ADVERTISED_PARALLELISM
+        );
+        assert_eq!(
+            capabilities.useful_concurrency,
+            FILE_SOURCE_ADVERTISED_PARALLELISM
+        );
         assert_eq!(
             capabilities
                 .blocking_lane
                 .as_ref()
                 .unwrap()
                 .maximum_concurrency,
-            crate::runtime::FILE_SOURCE_BLOCKING_LANE_CONCURRENCY
+            FILE_SOURCE_ADVERTISED_PARALLELISM
         );
     }
 
