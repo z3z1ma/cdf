@@ -1,6 +1,6 @@
 Status: active
 Created: 2026-07-11
-Updated: 2026-07-16
+Updated: 2026-07-17
 Parent: None
 Depends-On: `.10x/tickets/done/2026-07-11-p0-sx1-source-extension-boundary.md`
 
@@ -136,7 +136,17 @@ None from SX1: the source extension boundary is done. This ticket now owns direc
 - Root's fresh adversarial pass over canonical IDs checked TOML/YAML deserialization, JSON Schema output, compiler derivation, source-plan lowering, and every embedded first-party declaration. Removing only the compiler fallback would have silently accepted and ignored `id`; the repaired boundary rejects the key and the v2 editor schema forbids it. All migrated fixtures already used values equal to their canonical table-derived IDs, so no current semantics were changed by their deletion. Verdict: **pass** for this slice; direct compiled-resource runtime adapters and remaining occurrence classification stay owned by this ticket.
 - Root's fresh adversarial pass over engine-plan authority checked initial planning, validation-program rebinding, serialization/deserialization, zero-row execution, destination preflight, and tamper rejection. Partition schedule, operator graph, and effective-schema evidence remain optional because they are real current staged-compilation/declared-schema states; schema and output identities do not. Verdict: **pass** for this slice; source-extension compatibility adapters and remaining occurrence classification stay owned by their active tickets.
 - Root's fresh adversarial pass over SQLite state deletion distinguished future migration capability from shipping historical compatibility. It found and repaired three risks before commit: the first draft discarded the useful version gate, retained a misleading run-ledger v5, and would have let a versioned-but-missing table be recreated silently. The final design retains one insert-only component-version registry, labels all current components v1, rejects noncurrent/unversioned/incomplete schemas in read-only and mutating opens, and removes only unused upgrade implementations and the premature CLI product. Package-receipt recovery is unchanged. Verdict: **pass** for this slice; the ticket remains active for SX1-owned source adapters and the repository-wide occurrence classification.
+- 2026-07-17: L3R's repaired failure reporting exposed three stale `legacy-case-worker` baseline cells. Replaced `package_build`, `duckdb_commit`, and `parquet_destination` with current prepared file-package and file-destination workers instead of preserving legacy case compatibility. Added a `cdf-file-destination-worker` command backed by the current `PreparedFileDestinationWorkload` runner; baseline package and destination cells now execute through compiled source, scheduler, package, destination ingress, receipt, and checkpoint paths. The tiny startup legacy trend remains as an explicit benchmark control and still observes successfully.
 
 ## Retrospective
 
 Pending ticket completion.
+
+## Current slice evidence
+
+- 2026-07-17 benchmark legacy-cell deletion:
+  - `CARGO_BUILD_JOBS=12 cargo check -p cdf-benchmarks --locked -j 12` — passed.
+  - `CARGO_BUILD_JOBS=12 cargo test -p cdf-benchmarks preoptimization_baseline_covers_every_target_and_retains_phases --locked -j 12` — passed.
+  - `CARGO_BUILD_JOBS=12 cargo clippy -p cdf-benchmarks --all-targets --locked -j 12 -- -D warnings` — passed.
+  - `CARGO_BUILD_JOBS=12 cargo build -p cdf-benchmarks --bin cdf-p3-lab --release --locked -j 12` — passed.
+  - Live smoke: `target/release/cdf-p3-lab baseline-run /tmp/cdf-baseline-current2.sUOqH1/report dev deps toolchain 3` exited 0. First six cells were observed: `raw_arrow_ndjson`, `json_ndjson_to_package`, `package_build`, `duckdb_commit`, `parquet_destination`, and `legacy_tiny_startup_e2e`; DuckDB and Parquet destination samples retained nonzero logical/physical input-byte authority.

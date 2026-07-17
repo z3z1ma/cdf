@@ -2,10 +2,11 @@ use std::{collections::BTreeMap, fs, path::Path};
 
 use cdf_benchmarks::{
     BenchmarkReport, ChildCommand, HostCapabilityProvider, HostProbeConfig, LegacyCaseWorkload,
-    MacroRunSpec, PreoptimizationBaselineConfig, PreparedFilePackageWorkload, ProfileTool,
-    ReferenceWorkload, SystemHostProvider, canonical_json_bytes, compare_reports, comparison_fails,
-    host_class, install_baseline, plan_profile, run_legacy_case_workload,
-    run_preoptimization_baseline, run_prepared_file_to_package, run_reference,
+    MacroRunSpec, PreoptimizationBaselineConfig, PreparedFileDestinationWorkload,
+    PreparedFilePackageWorkload, ProfileTool, ReferenceWorkload, SystemHostProvider,
+    WorkerMeasurement, canonical_json_bytes, compare_reports, comparison_fails, host_class,
+    install_baseline, plan_profile, run_legacy_case_workload, run_preoptimization_baseline,
+    run_prepared_file_to_destination, run_prepared_file_to_package, run_reference,
 };
 
 fn main() {
@@ -37,6 +38,26 @@ fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             run.measurement.timed_wall_time_ns =
                 Some(u64::try_from(started.elapsed().as_nanos()).unwrap_or(u64::MAX));
             write_stdout(&canonical_json_bytes(&run)?)
+        }
+        [command, request] if command == "cdf-file-destination-worker" => {
+            let mut workload: PreparedFileDestinationWorkload =
+                serde_json::from_slice(&fs::read(request)?)?;
+            let input_bytes = exact_input_bytes(&workload.source_root, &workload.glob)?;
+            fs::create_dir_all(&workload.output_root)?;
+            let output_root = tempfile::tempdir_in(&workload.output_root)?;
+            workload.output_root = output_root.path().to_path_buf();
+            let started = std::time::Instant::now();
+            let run = run_prepared_file_to_destination(&workload)?;
+            write_stdout(&canonical_json_bytes(&WorkerMeasurement {
+                timed_wall_time_ns: Some(
+                    u64::try_from(started.elapsed().as_nanos()).unwrap_or(u64::MAX),
+                ),
+                rows: run.row_count,
+                logical_bytes: input_bytes,
+                physical_bytes: input_bytes,
+                spill_bytes: 0,
+                phases: Vec::new(),
+            })?)
         }
         [command, request, iterations] if command == "profile-repeat-cdf" => {
             let workload: PreparedFilePackageWorkload =
@@ -175,6 +196,16 @@ fn write_stdout(bytes: &[u8]) -> Result<(), Box<dyn std::error::Error + Send + S
     use std::io::Write;
     std::io::stdout().write_all(bytes)?;
     Ok(())
+}
+
+fn exact_input_bytes(
+    source_root: &Path,
+    glob: &str,
+) -> Result<u64, Box<dyn std::error::Error + Send + Sync>> {
+    if glob.contains('*') || glob.contains('?') || glob.contains('[') || glob.contains('{') {
+        return Ok(0);
+    }
+    Ok(fs::metadata(source_root.join(glob))?.len())
 }
 
 fn executable_name() -> String {

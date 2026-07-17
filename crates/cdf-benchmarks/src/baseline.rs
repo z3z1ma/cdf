@@ -8,10 +8,10 @@ use std::{
 use crate::{
     BENCHMARK_REPORT_SCHEMA_VERSION, BenchmarkObservation, BenchmarkReport, BiasLabel,
     ChildCommand, ComparabilityKey, HostCapabilityProvider, IoMode, LegacyCaseWorkload,
-    MacroRunRequest, MeasurementProviderIdentity, ObservationStatus, PreparedFileFormat,
-    PreparedFilePackageWorkload, ReferenceIdentity, ReferenceWorkload, bench_error,
-    canonical_json_bytes, host_class, run_macro_cell, validate_report,
-    write_all_local_fixture_formats,
+    MacroRunRequest, MeasurementProviderIdentity, ObservationStatus, PreparedDestinationKind,
+    PreparedFileDestinationWorkload, PreparedFileFormat, PreparedFilePackageWorkload,
+    ReferenceIdentity, ReferenceWorkload, bench_error, canonical_json_bytes, host_class,
+    run_macro_cell, validate_report, write_all_local_fixture_formats,
 };
 
 #[derive(Clone, Debug)]
@@ -122,32 +122,94 @@ pub fn run_preoptimization_baseline(
         ],
     )?);
 
-    for (workload_id, dataset_id, case_label, description) in [
-        (
-            "package_build",
+    let package_build_request = request_root.join("package_build.json");
+    fs::write(
+        &package_build_request,
+        canonical_json_bytes(&PreparedFilePackageWorkload {
+            fixture_name: "medium".to_owned(),
+            source_root: fixture_root.clone(),
+            glob: "orders.parquet".to_owned(),
+            package_dir: config.output_root.join("package-build-packages"),
+            format: PreparedFileFormat::Parquet,
+            jobs: None,
+            execution_host_jobs: std::thread::available_parallelism()
+                .map(|jobs| u16::try_from(jobs.get()).unwrap_or(u16::MAX))
+                .unwrap_or(1),
+        })?,
+    )?;
+    observations.push(run_cell(
+        provider,
+        config,
+        key(
+            config,
+            &host_class,
             "legacy_medium_throughput",
-            "trend.cdf_engine.package_filter_project.medium",
-            "legacy compatibility case includes fixture and plan setup",
+            "package_build",
         ),
+        command(
+            &config.worker_executable,
+            "cdf-file-package-worker",
+            &package_build_request,
+        ),
+        None,
+        vec![BiasLabel {
+            code: "includes_cdf_evidence".to_owned(),
+            description: "current file source package path includes decode validation normalization package encode hash and finalize".to_owned(),
+        }],
+    )?);
+
+    for (workload_id, destination, description) in [
         (
             "duckdb_commit",
-            "legacy_medium_throughput",
-            "trend.cdf_package_replay.duckdb_package_receipt_checkpoint.medium",
-            "legacy compatibility case includes package fixture construction",
+            PreparedDestinationKind::DuckDb,
+            "current file source to DuckDB destination path",
         ),
         (
             "parquet_destination",
-            "legacy_medium_throughput",
-            "trend.cdf_package_replay.parquet_package_receipt_checkpoint.medium",
-            "legacy compatibility case includes package fixture construction",
+            PreparedDestinationKind::Parquet,
+            "current file source to Parquet destination path",
         ),
-        (
+    ] {
+        let request_path = request_root.join(format!("{workload_id}.json"));
+        fs::write(
+            &request_path,
+            canonical_json_bytes(&PreparedFileDestinationWorkload {
+                fixture_name: "medium".to_owned(),
+                source_root: fixture_root.clone(),
+                glob: "orders.parquet".to_owned(),
+                format: PreparedFileFormat::Parquet,
+                output_root: config.output_root.join(format!("{workload_id}-outputs")),
+                destination,
+                jobs: None,
+                execution_host_jobs: std::thread::available_parallelism()
+                    .map(|jobs| u16::try_from(jobs.get()).unwrap_or(u16::MAX))
+                    .unwrap_or(1),
+            })?,
+        )?;
+        observations.push(run_cell(
+            provider,
+            config,
+            key(config, &host_class, "legacy_medium_throughput", workload_id),
+            command(
+                &config.worker_executable,
+                "cdf-file-destination-worker",
+                &request_path,
+            ),
+            None,
+            vec![BiasLabel {
+                code: "includes_cdf_evidence".to_owned(),
+                description: description.to_owned(),
+            }],
+        )?);
+    }
+
+    {
+        let (workload_id, dataset_id, case_label, description) = (
             "legacy_tiny_startup_e2e",
             "legacy_tiny_startup",
             "trend.cdf_startup.file_to_duckdb.tiny",
             "startup case intentionally includes child fixture compile package destination and checkpoint",
-        ),
-    ] {
+        );
         let request_path = request_root.join(format!("{workload_id}.json"));
         fs::write(
             &request_path,
