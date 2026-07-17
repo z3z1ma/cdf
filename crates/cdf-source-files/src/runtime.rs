@@ -3936,13 +3936,25 @@ fn resolve_remote_matches_bounded(
         context.control,
     )?;
     let termination = listing.termination();
-    let listed = context.execution.run_io(async move {
-        let result = listing.try_collect::<Vec<_>>().await;
-        match result {
-            Ok(listed) => {
-                termination.join().await?;
-                Ok(listed)
+    let root = plan.root.clone();
+    let components_for_listing = components.clone();
+    let matched_metadata = context.execution.run_io(async move {
+        let mut listing = listing;
+        let mut matched = Vec::new();
+        let result: Result<Vec<FileIdentityMetadata>> = async {
+            while let Some(identity) = listing.try_next().await? {
+                let metadata = identity.into_identity();
+                let relative = remote_relative_path(&root, &metadata.location)?;
+                if glob_path_matches(&components_for_listing, &relative) {
+                    matched.push(metadata);
+                }
             }
+            termination.join().await?;
+            Ok(matched)
+        }
+        .await;
+        match result {
+            Ok(matched) => Ok(matched),
             Err(mut error) => {
                 if let Err(cleanup) = termination.terminate_and_join().await {
                     error.message = format!(
@@ -3954,12 +3966,7 @@ fn resolve_remote_matches_bounded(
             }
         }
     })?;
-    for metadata in listed {
-        let metadata = metadata.into_identity();
-        let relative = remote_relative_path(&plan.root, &metadata.location)?;
-        if !glob_path_matches(&components, &relative) {
-            continue;
-        }
+    for metadata in matched_metadata {
         let resource = FileTransportResource::remote_url(metadata.location.clone())
             .with_egress_allowlist(plan.allowlist.clone());
         let resource = match &plan.credentials {
@@ -6767,6 +6774,129 @@ mod tests {
             ]
         );
         assert!(matches.iter().all(|file| file.etag.is_some()));
+    }
+
+    struct StreamingOnlyRemoteListingTransport {
+        memory: Arc<cdf_memory::DeterministicMemoryCoordinator>,
+        locations: Vec<String>,
+    }
+
+    impl FileTransport for StreamingOnlyRemoteListingTransport {
+        fn metadata(
+            &self,
+            _egress: &cdf_runtime::SourceEgressScope,
+            _resource: &FileTransportResource,
+            _control: &FileTransportControl,
+        ) -> Result<crate::FileMetadataObservation> {
+            Err(CdfError::internal(
+                "streaming-listing fixture does not support metadata",
+            ))
+        }
+
+        fn list(
+            &self,
+            _egress: &cdf_runtime::SourceEgressScope,
+            _resource: &FileTransportResource,
+            _maximum_results: usize,
+            _control: &FileTransportControl,
+        ) -> Result<crate::FileIdentityStream> {
+            let memory = Arc::clone(&self.memory);
+            let stream = futures_util::stream::iter(self.locations.clone().into_iter().enumerate())
+                .then(move |(index, location)| {
+                    let memory = Arc::clone(&memory);
+                    async move {
+                        let lease = cdf_memory::reserve(
+                            memory,
+                            cdf_memory::ReservationRequest::new(
+                                cdf_memory::ConsumerKey::new(
+                                    format!("streaming-listing-{index}"),
+                                    cdf_memory::MemoryClass::Discovery,
+                                )?,
+                                crate::transport::FILE_IDENTITY_MEMORY_ENVELOPE_BYTES,
+                            )?,
+                        )
+                        .await?;
+                        crate::AccountedFileIdentity::new(
+                            FileIdentityMetadata {
+                                location,
+                                size_bytes: Some(4),
+                                checksum: None,
+                                etag: Some(format!("\"listing-{index}\"")),
+                                version: None,
+                                modified: None,
+                                exact_ranges: true,
+                            },
+                            lease,
+                        )
+                    }
+                });
+            Ok(crate::FileIdentityStream::materialized(stream))
+        }
+
+        fn open_byte_source(
+            &self,
+            _egress: &cdf_runtime::SourceEgressScope,
+            _resource: &FileTransportResource,
+            _expected: &FileIdentityMetadata,
+            _memory: Arc<dyn cdf_memory::MemoryCoordinator>,
+        ) -> Result<Arc<dyn ByteSource>> {
+            Err(CdfError::internal(
+                "streaming-listing fixture does not open payload",
+            ))
+        }
+    }
+
+    #[test]
+    fn remote_listing_filters_without_materializing_all_metadata() {
+        let memory = Arc::new(
+            cdf_memory::DeterministicMemoryCoordinator::new(
+                crate::transport::FILE_IDENTITY_MEMORY_ENVELOPE_BYTES,
+                BTreeMap::new(),
+            )
+            .unwrap(),
+        );
+        let mut locations = (0..64)
+            .map(|index| format!("s3://acme-events/prod/2025/nonmatch-{index:02}.parquet"))
+            .collect::<Vec<_>>();
+        locations.push("s3://acme-events/prod/2026/keep.parquet".to_owned());
+        locations.extend(
+            (0..64).map(|index| format!("s3://acme-events/prod/2027/nonmatch-{index:02}.parquet")),
+        );
+        let transport = StreamingOnlyRemoteListingTransport {
+            memory: Arc::clone(&memory),
+            locations,
+        };
+        let plan = FileResourcePlan {
+            source: "events".to_owned(),
+            root: "s3://acme-events/prod".to_owned(),
+            glob: "2026/*.parquet".to_owned(),
+            format: Some(FileFormatDeclaration::parquet()),
+            format_declared: true,
+            format_options: serde_json::json!({}),
+            schema_discovery: None,
+            compression: FileCompressionDeclaration::none(),
+            auth: None,
+            credentials: None,
+            allowlist: cdf_http::EgressAllowlist::allow_any(),
+        };
+        let resource_id = ResourceId::new("events.raw").unwrap();
+
+        let matches = resolve_remote_matches(
+            &resource_id,
+            &plan,
+            &transport,
+            &crate::test_egress_scope(),
+            crate::test_format_registry().as_ref(),
+            crate::test_transform_registry().as_ref(),
+        )
+        .unwrap();
+
+        assert_eq!(matches.len(), 1);
+        assert_eq!(
+            matches[0].path_text,
+            "s3://acme-events/prod/2026/keep.parquet"
+        );
+        assert_eq!(memory.snapshot().current_bytes, 0);
     }
 
     #[test]

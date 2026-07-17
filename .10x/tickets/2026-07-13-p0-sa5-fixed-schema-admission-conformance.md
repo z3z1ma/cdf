@@ -1,6 +1,6 @@
 Status: open
 Created: 2026-07-13
-Updated: 2026-07-13
+Updated: 2026-07-17
 Parent: .10x/tickets/2026-07-13-p0-fixed-schema-discovery-stream-admission.md
 Depends-On: .10x/tickets/done/2026-07-13-p0-sa0-cold-discovery-final-plan-lifecycle.md, .10x/tickets/done/2026-07-13-p0-sa1-compiled-stream-admission-plan.md, .10x/tickets/done/2026-07-13-p0-sa2-metadata-inventory-observation-cache.md, .10x/tickets/done/2026-07-13-p0-sa3-fused-codec-admission.md, .10x/tickets/2026-07-13-p0-sa4-dynamic-producer-admission.md
 
@@ -31,7 +31,7 @@ None beyond referenced completed children.
 
 ## Journal
 
-Pending.
+- 2026-07-17: Live G4 Hugging Face mirror setup exposed validate/run parity cases that SA5 must cover. `validate --deep` accepted a stale/disposable project whose pinned schema/source authority no longer matched the current resource root and accepted an older schema artifact-version state that `run` rejected later. These are not G4 performance blockers, but they violate the SA5 law that preview/validate/plan/run share the same fixed-schema admission authority and that a clean deep validation cannot miss a run-visible schema-authority error.
 
 ## Blockers
 

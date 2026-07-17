@@ -44,6 +44,7 @@ Depends on the runtime/codec/destination/package/remote materialization owners.
 - 2026-07-16: SX1 closure routed its remaining discovery/listing control-plane cardinality finding here. F2 must replace pre-bounded candidate/partition metadata materialization with ledger-owned bounded or spill-backed iteration and prove high-cardinality deterministic behavior; the completed source registry boundary is not reopened for that allocation-owner work.
 - 2026-07-17: Deleted the obsolete in-memory `archive_package_to_parquet` report API instead of preserving a compatibility shim. Package archive callers now use the bounded persisted archive path; the benchmark matrix measures that production path; the old tests that only blessed resident Parquet byte reports were removed, while unsupported-type and duplicate-column coverage remains attached to the surviving persisted/transcode paths.
 - 2026-07-17: Removed raw `PackageReader::read_segment` use from production replay and promotion/correction planning paths. Destination replay now hands both staged and materialized-package destinations the same verified/accounted commit-segment stream; promotion residual scans and correction package reads use verified canonical segment streams with a 64 MiB package window. The static production gate now forbids `read_segment(` in project runtime/promotion and destination production files, while the package archive's explicit reserved-window reader remains the only package-internal carve-out.
+- 2026-07-17: Closed a metadata-cardinality slice for object-store remote inventory. `resolve_remote_matches_bounded` now streams provider listing entries through relative-path/glob filtering and retains only matching metadata, instead of first collecting every remote identity into a `Vec` and filtering afterward. The test fixture admits only one `FILE_IDENTITY_MEMORY_ENVELOPE_BYTES` lease while listing 129 identities; the old collect-all path would exhaust the discovery budget before reaching the single matching file, while the retained path releases each nonmatching identity as it is skipped.
 
 ## Evidence
 
@@ -59,6 +60,11 @@ Depends on the runtime/codec/destination/package/remote materialization owners.
   - `CARGO_BUILD_JOBS=12 cargo test -p cdf-project promotion --lib --locked -j 12` — passed, 20 passed.
   - `CARGO_BUILD_JOBS=12 cargo test -p cdf-project replay --lib --locked -j 12` — passed, 17 passed.
   - `CARGO_BUILD_JOBS=12 cargo clippy -p cdf-project -p cdf-package --all-targets --locked -j 12 -- -D warnings` — passed.
+- 2026-07-17 remote listing metadata-cardinality slice:
+  - `CARGO_BUILD_JOBS=12 cargo test -p cdf-source-files remote_listing_filters_without_materializing_all_metadata --locked -j 12` — passed. Proves nonmatching remote identity metadata is released while scanning the listing, with only the matched file retained.
+  - `CARGO_BUILD_JOBS=12 cargo test -p cdf-source-files --lib --locked -j 12` — passed, 80 passed, 1 ignored.
+  - `CARGO_BUILD_JOBS=12 cargo clippy -p cdf-source-files --all-targets --locked -j 12 -- -D warnings` — passed.
+  - `CARGO_BUILD_JOBS=12 cargo test -p cdf-runtime source_frontier --lib --locked -j 12` — passed after reverting the rejected immediate-active-frontier experiment; proves the retained source-frontier contract remains tested.
 - This is partial F2 evidence only. The ticket remains active because its cross-codebase owner matrix, static architecture gates, direct-construction audit, metadata-cardinality closure, and geometric stress proof are not complete.
 
 ## Review

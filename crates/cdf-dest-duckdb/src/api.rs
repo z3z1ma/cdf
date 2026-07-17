@@ -485,7 +485,6 @@ impl DuckDbNativeResources {
             scratch_reservation: Some(Arc::new(scratch_reservation)),
         })
     }
-
 }
 
 fn bounded_connection_config(resources: &DuckDbNativeResources, read_only: bool) -> Result<Config> {
