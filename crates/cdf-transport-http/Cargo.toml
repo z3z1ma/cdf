@@ -16,6 +16,7 @@ cdf-source-files = { path = "../cdf-source-files" }
 futures-util = "0.3.32"
 reqwest = { version = "0.13.4", default-features = false, features = ["rustls", "stream"] }
 sha2 = "0.10.9"
+tokio = { version = "=1.52.3", features = ["time"] }
 
 [dev-dependencies]
-tokio = { version = "1.50.0", features = ["macros", "rt-multi-thread"] }
+tokio = { version = "=1.52.3", features = ["macros", "rt-multi-thread", "time"] }

@@ -1,6 +1,6 @@
 #![doc = "Pooled HTTP transport provider for cdf."]
 
-use std::{pin::Pin, sync::Arc};
+use std::{future::Future, pin::Pin, sync::Arc, time::Duration};
 
 use bytes::Bytes;
 use cdf_http::{
@@ -24,19 +24,34 @@ use sha2::{Digest, Sha256};
 
 const MINIMUM_CHUNK_BYTES: u64 = 8 * 1024;
 const MAXIMUM_CHUNK_BYTES: u64 = 32 * 1024 * 1024;
+const FILE_RESPONSE_TIMEOUT: Duration = Duration::from_secs(10);
+const FILE_READ_IDLE_TIMEOUT: Duration = Duration::from_secs(10);
 
 #[derive(Clone)]
 pub struct ReqwestHttpProvider {
     asynchronous: reqwest::Client,
+    file_response_timeout: Duration,
+    file_read_idle_timeout: Duration,
 }
 
 impl ReqwestHttpProvider {
     pub fn new() -> Result<Self> {
+        Self::with_file_timeouts(FILE_RESPONSE_TIMEOUT, FILE_READ_IDLE_TIMEOUT)
+    }
+
+    fn with_file_timeouts(
+        file_response_timeout: Duration,
+        file_read_idle_timeout: Duration,
+    ) -> Result<Self> {
         let asynchronous = reqwest::Client::builder()
             .redirect(reqwest::redirect::Policy::none())
             .build()
             .map_err(|error| CdfError::internal(format!("build async HTTP client: {error}")))?;
-        Ok(Self { asynchronous })
+        Ok(Self {
+            asynchronous,
+            file_response_timeout,
+            file_read_idle_timeout,
+        })
     }
 }
 
@@ -115,6 +130,8 @@ impl HttpFileTransport for ReqwestHttpProvider {
             expected.clone(),
             auth,
             memory,
+            self.file_response_timeout,
+            self.file_read_idle_timeout,
         )?))
     }
 }
@@ -231,6 +248,8 @@ struct HttpByteSource {
     identity: ContentIdentity,
     capabilities: ByteSourceCapabilities,
     memory: Arc<dyn MemoryCoordinator>,
+    file_response_timeout: Duration,
+    file_read_idle_timeout: Duration,
 }
 
 impl HttpByteSource {
@@ -240,6 +259,8 @@ impl HttpByteSource {
         expected: FileIdentityMetadata,
         auth: Option<ResolvedHttpAuth>,
         memory: Arc<dyn MemoryCoordinator>,
+        file_response_timeout: Duration,
+        file_read_idle_timeout: Duration,
     ) -> Result<Self> {
         let size_bytes = expected
             .size_bytes
@@ -288,6 +309,8 @@ impl HttpByteSource {
             identity,
             capabilities,
             memory,
+            file_response_timeout,
+            file_read_idle_timeout,
         })
     }
 
@@ -329,7 +352,11 @@ impl ByteSource for HttpByteSource {
             validate_chunk_target(request.preferred_chunk_bytes, &self.capabilities)?;
             let response = request
                 .cancellation
-                .await_or_cancel(async { self.request()?.send().await.map_err(http_send_error) })
+                .await_or_cancel(with_file_progress_deadline(
+                    "receive HTTP byte-source response",
+                    self.file_response_timeout,
+                    async { self.request()?.send().await.map_err(http_send_error) },
+                ))
                 .await?;
             validate_response(&response, 200, &self.expected)?;
             let state = HttpSequentialState {
@@ -342,6 +369,7 @@ impl ByteSource for HttpByteSource {
                 pending: None,
                 expected_checksum: self.expected.sha256().map(str::to_owned),
                 hasher: self.expected.sha256().map(|_| Sha256::new()),
+                read_idle_timeout: self.file_read_idle_timeout,
             };
             Ok(Box::pin(stream::try_unfold(state, http_sequential_next)) as AccountedByteStream)
         })
@@ -376,13 +404,17 @@ impl ByteSource for HttpByteSource {
                 ))
                 .await?;
             let response = cancellation
-                .await_or_cancel(async {
-                    self.request()?
-                        .header("range", format!("bytes={}-{}", extent.start, end - 1))
-                        .send()
-                        .await
-                        .map_err(http_send_error)
-                })
+                .await_or_cancel(with_file_progress_deadline(
+                    "receive HTTP byte-source range response",
+                    self.file_response_timeout,
+                    async {
+                        self.request()?
+                            .header("range", format!("bytes={}-{}", extent.start, end - 1))
+                            .send()
+                            .await
+                            .map_err(http_send_error)
+                    },
+                ))
                 .await?;
             validate_response(&response, 206, &self.expected)?;
             let content_range = response
@@ -401,12 +433,13 @@ impl ByteSource for HttpByteSource {
                     content_range
                 )));
             }
-            let bytes = cancellation
-                .await_or_cancel(async { response.bytes().await.map_err(http_body_error) })
-                .await?;
-            if u64::try_from(bytes.len()).ok() != Some(extent.length) {
-                return Err(CdfError::data("HTTP exact range returned a short body"));
-            }
+            let bytes = read_exact_range_body_with_idle(
+                response,
+                extent.length,
+                self.file_read_idle_timeout,
+                cancellation.clone(),
+            )
+            .await?;
             cancellation.check()?;
             AccountedBytes::new(bytes, lease)
         })
@@ -426,6 +459,7 @@ struct HttpSequentialState {
     pending: Option<AccountedBytes>,
     expected_checksum: Option<String>,
     hasher: Option<Sha256>,
+    read_idle_timeout: Duration,
 }
 
 async fn http_sequential_next(
@@ -449,7 +483,11 @@ async fn http_sequential_next(
         state.cancellation.check()?;
         let cancellation = state.cancellation.clone();
         let next = cancellation
-            .await_or_cancel(async { state.stream.try_next().await.map_err(http_body_error) })
+            .await_or_cancel(with_file_progress_deadline(
+                "stream HTTP byte-source response",
+                state.read_idle_timeout,
+                async { state.stream.try_next().await.map_err(http_body_error) },
+            ))
             .await?;
         let Some(bytes) = next else {
             drop(lease);
@@ -509,6 +547,44 @@ async fn http_sequential_next(
         })?;
         return Ok(Some((chunk, state)));
     }
+}
+
+async fn read_exact_range_body_with_idle(
+    response: reqwest::Response,
+    expected_length: u64,
+    read_idle_timeout: Duration,
+    cancellation: RunCancellation,
+) -> Result<Bytes> {
+    let capacity = usize::try_from(expected_length)
+        .map_err(|_| CdfError::data("HTTP exact range length exceeds usize"))?;
+    let mut stream = response.bytes_stream();
+    let mut body = Vec::with_capacity(capacity);
+    while body.len() < capacity {
+        cancellation.check()?;
+        let next = cancellation
+            .await_or_cancel(with_file_progress_deadline(
+                "stream HTTP byte-source range response",
+                read_idle_timeout,
+                async { stream.try_next().await.map_err(http_body_error) },
+            ))
+            .await?;
+        let Some(chunk) = next else {
+            break;
+        };
+        let next_len = body
+            .len()
+            .checked_add(chunk.len())
+            .ok_or_else(|| CdfError::data("HTTP exact range body length overflowed"))?;
+        if next_len > capacity {
+            return Err(CdfError::data("HTTP exact range returned too many bytes"));
+        }
+        body.extend_from_slice(&chunk);
+    }
+    if body.len() != capacity {
+        return Err(CdfError::data("HTTP exact range returned a short body"));
+    }
+    cancellation.check()?;
+    Ok(Bytes::from(body))
 }
 
 fn take_http_sequential_chunk(state: &mut HttpSequentialState) -> Result<Option<AccountedBytes>> {
@@ -654,6 +730,26 @@ fn http_body_error(error: reqwest::Error) -> CdfError {
     CdfError::transient(format!(
         "stream HTTP byte-source response: {}",
         sanitized_reqwest_error(error)
+    ))
+}
+
+async fn with_file_progress_deadline<T, F>(
+    operation: &str,
+    timeout: Duration,
+    future: F,
+) -> Result<T>
+where
+    F: Future<Output = Result<T>>,
+{
+    tokio::time::timeout(timeout, future)
+        .await
+        .map_err(|_| http_file_progress_timeout(operation, timeout))?
+}
+
+fn http_file_progress_timeout(operation: &str, timeout: Duration) -> CdfError {
+    CdfError::transient(format!(
+        "{operation} made no progress for {} ms",
+        timeout.as_millis()
     ))
 }
 
@@ -902,6 +998,192 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn http_source_fails_transiently_when_a_response_body_stops_making_progress() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let (headers_sender, headers_receiver) = mpsc::channel();
+        let (release_sender, release_receiver) = mpsc::channel();
+        let server = thread::spawn(move || {
+            let (mut socket, _) = listener.accept().unwrap();
+            let mut request = Vec::new();
+            let mut buffer = [0_u8; 1024];
+            while !request.windows(4).any(|window| window == b"\r\n\r\n") {
+                let read = socket.read(&mut buffer).unwrap();
+                if read == 0 {
+                    break;
+                }
+                request.extend_from_slice(&buffer[..read]);
+            }
+            socket
+                .write_all(
+                    b"HTTP/1.1 200 OK\r\nContent-Length: 16\r\nETag: \"generation-1\"\r\nConnection: close\r\n\r\n",
+                )
+                .unwrap();
+            socket.flush().unwrap();
+            headers_sender.send(()).unwrap();
+            let _ = release_receiver.recv_timeout(Duration::from_secs(3));
+        });
+        let url = format!("http://{address}/stalled-body.bin");
+        let resource = FileTransportResource::http_url(url.clone());
+        let expected = FileIdentityMetadata {
+            location: url,
+            size_bytes: Some(16),
+            checksum: None,
+            etag: Some("\"generation-1\"".to_owned()),
+            version: None,
+            modified: None,
+            exact_ranges: true,
+        };
+        let coordinator =
+            Arc::new(DeterministicMemoryCoordinator::new(1024 * 1024, BTreeMap::new()).unwrap());
+        let memory: Arc<dyn MemoryCoordinator> = coordinator.clone();
+        let source = ReqwestHttpProvider::with_file_timeouts(
+            Duration::from_secs(1),
+            Duration::from_millis(50),
+        )
+        .unwrap()
+        .open_byte_source(&resource, &expected, None, memory)
+        .unwrap();
+        let mut stream = source
+            .open_sequential(SequentialReadRequest {
+                preferred_chunk_bytes: MINIMUM_CHUNK_BYTES,
+                cancellation: RunCancellation::default(),
+            })
+            .await
+            .unwrap();
+        tokio::task::spawn_blocking(move || headers_receiver.recv_timeout(Duration::from_secs(2)))
+            .await
+            .unwrap()
+            .unwrap();
+
+        let error = tokio::time::timeout(Duration::from_secs(1), stream.try_next())
+            .await
+            .expect("HTTP body idle timeout did not terminate the stalled response")
+            .unwrap_err();
+
+        assert_eq!(error.kind, ErrorKind::Transient);
+        assert!(error.message.contains("stream HTTP byte-source response"));
+        drop(stream);
+        release_sender.send(()).unwrap();
+        server.join().unwrap();
+        assert_eq!(coordinator.snapshot().current_bytes, 0);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn http_source_idle_deadline_resets_after_progress() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = thread::spawn(move || {
+            let (mut socket, _) = listener.accept().unwrap();
+            let mut request = Vec::new();
+            let mut buffer = [0_u8; 1024];
+            while !request.windows(4).any(|window| window == b"\r\n\r\n") {
+                let read = socket.read(&mut buffer).unwrap();
+                if read == 0 {
+                    break;
+                }
+                request.extend_from_slice(&buffer[..read]);
+            }
+            socket
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 12\r\nETag: \"generation-1\"\r\nConnection: close\r\n\r\n")
+                .unwrap();
+            for chunk in [
+                b"abc".as_slice(),
+                b"def".as_slice(),
+                b"ghi".as_slice(),
+                b"jkl".as_slice(),
+            ] {
+                thread::sleep(Duration::from_millis(30));
+                socket.write_all(chunk).unwrap();
+                socket.flush().unwrap();
+            }
+        });
+        let url = format!("http://{address}/slow-progress.bin");
+        let resource = FileTransportResource::http_url(url.clone());
+        let expected = FileIdentityMetadata {
+            location: url,
+            size_bytes: Some(12),
+            checksum: None,
+            etag: Some("\"generation-1\"".to_owned()),
+            version: None,
+            modified: None,
+            exact_ranges: true,
+        };
+        let coordinator =
+            Arc::new(DeterministicMemoryCoordinator::new(1024 * 1024, BTreeMap::new()).unwrap());
+        let memory: Arc<dyn MemoryCoordinator> = coordinator.clone();
+        let source = ReqwestHttpProvider::with_file_timeouts(
+            Duration::from_secs(1),
+            Duration::from_millis(50),
+        )
+        .unwrap()
+        .open_byte_source(&resource, &expected, None, memory)
+        .unwrap();
+
+        let chunks = source
+            .open_sequential(SequentialReadRequest {
+                preferred_chunk_bytes: MINIMUM_CHUNK_BYTES,
+                cancellation: RunCancellation::default(),
+            })
+            .await
+            .unwrap()
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap();
+        let streamed = chunks
+            .iter()
+            .flat_map(|chunk| chunk.payload().iter().copied())
+            .collect::<Vec<_>>();
+
+        assert_eq!(streamed, b"abcdefghijkl");
+        drop(chunks);
+        server.join().unwrap();
+        assert_eq!(coordinator.snapshot().current_bytes, 0);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn rest_transport_does_not_inherit_file_idle_deadline() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = thread::spawn(move || {
+            let (mut socket, _) = listener.accept().unwrap();
+            let mut request = Vec::new();
+            let mut buffer = [0_u8; 1024];
+            while !request.windows(4).any(|window| window == b"\r\n\r\n") {
+                let read = socket.read(&mut buffer).unwrap();
+                if read == 0 {
+                    break;
+                }
+                request.extend_from_slice(&buffer[..read]);
+            }
+            thread::sleep(Duration::from_millis(120));
+            socket
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok")
+                .unwrap();
+        });
+        let coordinator =
+            Arc::new(DeterministicMemoryCoordinator::new(1024 * 1024, BTreeMap::new()).unwrap());
+        let budget = rest_response_budget(1024, coordinator);
+        let transport = ReqwestHttpProvider::with_file_timeouts(
+            Duration::from_millis(20),
+            Duration::from_millis(20),
+        )
+        .unwrap();
+
+        let response = transport
+            .send(
+                HttpRequest::new(HttpMethod::Get, format!("http://{address}/rest")),
+                budget,
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status, 200);
+        assert_eq!(response.body().unwrap(), b"ok");
+        server.join().unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn http_range_batch_coalesces_requests_and_preserves_logical_order() {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let address = listener.local_addr().unwrap();
@@ -1059,6 +1341,7 @@ mod tests {
             pending: None,
             expected_checksum: None,
             hasher: None,
+            read_idle_timeout: Duration::from_secs(1),
         };
 
         let (chunk, state) = http_sequential_next(state).await.unwrap().unwrap();
