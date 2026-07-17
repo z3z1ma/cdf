@@ -1,4 +1,4 @@
-Status: active
+Status: done
 Created: 2026-07-11
 Updated: 2026-07-16
 Parent: .10x/tickets/2026-07-10-p3-ws-b-format-decode-engines.md
@@ -27,7 +27,7 @@ No Parquet destination writer.
 
 ## Blockers
 
-None. L5, FX1, segmentation, the execution host, and the neutral compiled scan-intent prerequisite are complete. Predicate/page-index semantics, measured range concurrency, memory, and the final envelope remain owned here.
+None at closure. L5, FX1, segmentation, the execution host, and the neutral compiled scan-intent prerequisite are complete. Exact predicate/projection semantics, generation-bound range selection with explicit spool fallback, bounded row-group execution, memory release, malformed-page behavior, jobs invariance, and the measured envelope are evidenced below.
 
 ## References
 
@@ -56,6 +56,14 @@ None. L5, FX1, segmentation, the execution host, and the neutral compiled scan-i
 - 2026-07-14: Re-ranked closure after tracing scan intent end to end. `FileResource::negotiate` currently reports filters unsupported; `stream_registered_format` constructs decode-planning and physical-decode requests with no projection or predicates; and `PartitionPlan` carries no neutral compiled scan request. The Parquet adapter's existing projection implementation is therefore unreachable from the production run path, while predicate pushdown correctly remains unsupported. SX1 owns the missing neutral source/format scan artifact. A7 was initially named but corrected because it owns stream epoch/watermark policy, not bounded scan intent. Adding Parquet-only partition metadata or teaching the file runtime to recover engine policy would violate the extension boundary and is rejected.
 - 2026-07-14: SX1 delivered the required neutral compiled scan intent and the generic file runtime now passes exact projection into prepared format sessions. Planner/execution tests cover pinned full-file discovery evidence projected to the exact emitted Arrow schema, while the source retains the complete physical observation for generation verification; Arrow IPC's same capability path was repaired rather than left contradictory. A production Parquet fixture proves negotiated projection reaches the codec, and Tier-A remains a recorded full scan. B2 is no longer blocked by SX1. Predicate/page-index pushdown and the measured envelope remain open. Evidence: `.10x/evidence/2026-07-14-p0-sx1-compiled-scan-intent.md`.
 - 2026-07-16: Completed the remaining selective-scan surface without adding Parquet semantics to orchestration. `FormatDriverDescriptor` now pins a validated predicate vocabulary; Parquet `1.1.0` evaluates late-materialized row filters through the same extracted `cdf-expression` Arrow kernel used by engine residuals and transforms. Exact negotiation requires every planned partition's recorded physical schema to bind with identical predicate-column types; missing observations, coercions, unsupported types, and foreign function identities remain residual. The old engine-local module and its superseded dependencies were deleted. Generic file preparation maps logical identifiers to physical source names and selects generation-bound ranges only for strict-subset projection coverage on a capable strong source; weak/non-range remote input explicitly spools. Eager whole-file page-index loading was removed because it was unaccounted and could serialize growing-spool preparation; the accepted unit-bounded row filter preserves overlap and no-lookback, and any future page-level access plan must be per-unit and ledger-accounted. Five Parquet tests, all 62 file-source tests, 64 malformed-footer property cases, a late-page corruption case, and strict touched-target Clippy form the final gate. Evidence: `.10x/evidence/2026-07-16-p3-b2-exact-parquet-pushdown-closeout.md`.
+
+## Evidence
+
+- Multi-file and row-group order/completion: `.10x/evidence/2026-07-14-p3-c2-b2-canonical-decode-unit-frontier.md` proves deterministic unit publication; `.10x/evidence/2026-07-14-p3-c4-fineweb-local-scaling.md` proves fixed-package manifest identity across jobs and multi-file scaling.
+- Exact projection/predicate fidelity and physical provenance: `.10x/evidence/2026-07-16-p3-b2-exact-parquet-pushdown-closeout.md` proves shared evaluator semantics, per-partition physical equivalence, coercion/unknown residual fallback, NULL/multiple predicates, logical-to-physical names, and late materialization.
+- Remote bounded ranges with explicit spool fallback: `.10x/evidence/2026-07-14-p3-g2-transport-neutral-range-batching.md` proves transport-neutral exact-range batching; the 2026-07-16 closeout evidence proves strong selective range admission and successful weak/non-range spool fallback. `.10x/evidence/2026-07-14-p3-b2-parquet-no-lookback-byte-envelopes.md` proves post-prepare reads remain inside unit envelopes without suffix rereads.
+- Envelope and jobs invariance: raw FineWeb decode measured approximately `0.90x` arrow-rs in `.10x/evidence/2026-07-14-p3-b2-prepared-parquet-decode-session.md`; governed HTTPS FineWeb measured `1.10x` its sequential transfer floor in `.10x/evidence/2026-07-14-p3-g2-fineweb-growing-spool-overlap.md`; jobs hashes and scaling are recorded in `.10x/evidence/2026-07-14-p3-c4-fineweb-local-scaling.md`.
+- Fail-closed malformed input: the closeout evidence records 64 generated corrupt-footer cases and a valid-footer late compressed-page corruption case, both without panic or partial materialized output.
 
 ## Review
 

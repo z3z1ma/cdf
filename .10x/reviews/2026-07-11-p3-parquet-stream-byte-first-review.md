@@ -1,7 +1,7 @@
 Status: recorded
 Created: 2026-07-11
 Updated: 2026-07-11
-Target: .10x/tickets/done/2026-07-11-p3-a12-byte-first-segments-shared-arrow-accounting.md, .10x/tickets/2026-07-11-p3-b2-parquet-codec.md
+Target: .10x/tickets/done/2026-07-11-p3-a12-byte-first-segments-shared-arrow-accounting.md, .10x/tickets/done/2026-07-11-p3-b2-parquet-codec.md
 Verdict: pass
 
 # P3 Parquet stream and byte-first segment review

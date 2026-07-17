@@ -2,7 +2,7 @@ Status: active
 Created: 2026-07-11
 Updated: 2026-07-14
 Parent: .10x/tickets/2026-07-10-p3-ws-g-remote-io-overlap.md
-Depends-On: .10x/tickets/2026-07-11-p3-g2-range-readahead-spool-controller.md, .10x/tickets/2026-07-11-p3-b2-parquet-codec.md, .10x/tickets/2026-07-11-p3-b5-json-codecs.md, .10x/tickets/done/2026-07-11-p3-a5-streaming-operator-graph.md
+Depends-On: .10x/tickets/2026-07-11-p3-g2-range-readahead-spool-controller.md, .10x/tickets/done/2026-07-11-p3-b2-parquet-codec.md, .10x/tickets/2026-07-11-p3-b5-json-codecs.md, .10x/tickets/done/2026-07-11-p3-a5-streaming-operator-graph.md
 
 # P3 G3: remote codec and pipeline overlap
 

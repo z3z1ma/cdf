@@ -1,7 +1,7 @@
 Status: recorded
 Created: 2026-07-14
 Updated: 2026-07-14
-Relates-To: .10x/tickets/done/2026-07-11-p3-c2-parallel-frontier-execution.md, .10x/tickets/2026-07-11-p3-b2-parquet-codec.md
+Relates-To: .10x/tickets/done/2026-07-11-p3-c2-parallel-frontier-execution.md, .10x/tickets/done/2026-07-11-p3-b2-parquet-codec.md
 
 # Canonical decode-unit frontier evidence
 

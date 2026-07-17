@@ -1,6 +1,6 @@
 Status: open
 Created: 2026-07-10
-Updated: 2026-07-11
+Updated: 2026-07-16
 Parent: .10x/tickets/2026-07-10-p3-terabyte-scale-program.md
 Depends-On: .10x/tickets/done/2026-07-10-p3-ws-l-performance-lab.md, .10x/tickets/done/2026-07-11-p0-fx1-native-format-extension-boundary.md, .10x/tickets/done/2026-07-07-rest-json-to-arrow-performance-triage.md
 
@@ -17,7 +17,7 @@ The native closeout catalog is `.10x/specs/native-enterprise-format-catalog.md`;
 ## Activated children
 
 - `.10x/tickets/2026-07-11-p3-b1-streaming-byte-transforms.md`
-- `.10x/tickets/2026-07-11-p3-b2-parquet-codec.md`
+- `.10x/tickets/done/2026-07-11-p3-b2-parquet-codec.md`
 - `.10x/tickets/2026-07-11-p3-b3-arrow-ipc-codecs.md`
 - `.10x/tickets/2026-07-11-p3-b4-delimited-fixed-width-codecs.md`
 - `.10x/tickets/2026-07-11-p3-b5-json-codecs.md`
@@ -39,4 +39,8 @@ The native closeout catalog is `.10x/specs/native-enterprise-format-catalog.md`;
 
 ## Blockers
 
-Blocked until WS-L baseline evidence and the FX1 format-driver boundary exist.
+None. WS-L and FX1 are complete. This parent remains open only for its remaining codec children and the native-format matrix; B2 is closed.
+
+## Journal
+
+- 2026-07-16: Closed B2 after the native Parquet path reached the recorded decode/HTTPS envelope, deterministic row-group/jobs laws, exact projection and physically proven predicate pushdown, explicit weak-source spool fallback, bounded late-materialized decoding, and malformed footer/late-page fail-closed coverage. The complete ticket and closure review are at `.10x/tickets/done/2026-07-11-p3-b2-parquet-codec.md`.
