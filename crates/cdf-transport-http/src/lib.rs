@@ -28,7 +28,6 @@ const MAXIMUM_CHUNK_BYTES: u64 = 32 * 1024 * 1024;
 #[derive(Clone)]
 pub struct ReqwestHttpTransport {
     blocking: reqwest::blocking::Client,
-    asynchronous: reqwest::Client,
 }
 
 impl ReqwestHttpTransport {
@@ -37,14 +36,22 @@ impl ReqwestHttpTransport {
             .redirect(reqwest::redirect::Policy::none())
             .build()
             .map_err(|error| CdfError::internal(format!("build blocking HTTP client: {error}")))?;
+        Ok(Self { blocking })
+    }
+}
+
+#[derive(Clone)]
+pub struct ReqwestHttpFileTransport {
+    asynchronous: reqwest::Client,
+}
+
+impl ReqwestHttpFileTransport {
+    pub fn new() -> Result<Self> {
         let asynchronous = reqwest::Client::builder()
             .redirect(reqwest::redirect::Policy::none())
             .build()
             .map_err(|error| CdfError::internal(format!("build async HTTP client: {error}")))?;
-        Ok(Self {
-            blocking,
-            asynchronous,
-        })
+        Ok(Self { asynchronous })
     }
 }
 
@@ -65,7 +72,7 @@ impl HttpTransport for ReqwestHttpTransport {
     }
 }
 
-impl HttpFileTransport for ReqwestHttpTransport {
+impl HttpFileTransport for ReqwestHttpFileTransport {
     fn send_headers(
         &self,
         request: HttpFileRequest,
@@ -766,7 +773,7 @@ mod tests {
         let coordinator =
             Arc::new(DeterministicMemoryCoordinator::new(1024 * 1024, BTreeMap::new()).unwrap());
         let memory: Arc<dyn MemoryCoordinator> = coordinator.clone();
-        let transport = ReqwestHttpTransport::new().unwrap();
+        let transport = ReqwestHttpFileTransport::new().unwrap();
         let source = transport
             .open_byte_source(&resource, &expected, None, memory)
             .unwrap();
@@ -844,7 +851,7 @@ mod tests {
         };
         let memory: Arc<dyn MemoryCoordinator> =
             Arc::new(DeterministicMemoryCoordinator::new(1024 * 1024, BTreeMap::new()).unwrap());
-        let source = ReqwestHttpTransport::new()
+        let source = ReqwestHttpFileTransport::new()
             .unwrap()
             .open_byte_source(&resource, &expected, None, memory)
             .unwrap();
@@ -919,7 +926,7 @@ mod tests {
         let coordinator =
             Arc::new(DeterministicMemoryCoordinator::new(1024 * 1024, BTreeMap::new()).unwrap());
         let memory: Arc<dyn MemoryCoordinator> = coordinator.clone();
-        let source = ReqwestHttpTransport::new()
+        let source = ReqwestHttpFileTransport::new()
             .unwrap()
             .open_byte_source(&resource, &expected, None, memory)
             .unwrap();
@@ -975,7 +982,7 @@ mod tests {
             socket.flush().unwrap();
             let _ = release_receiver.recv_timeout(Duration::from_secs(3));
         });
-        let transport = ReqwestHttpTransport::new().unwrap();
+        let transport = ReqwestHttpFileTransport::new().unwrap();
         let response = tokio::time::timeout(
             Duration::from_secs(2),
             transport.send_headers(HttpFileRequest::new(
@@ -997,7 +1004,7 @@ mod tests {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let address = listener.local_addr().unwrap();
         drop(listener);
-        let transport = ReqwestHttpTransport::new().unwrap();
+        let transport = ReqwestHttpFileTransport::new().unwrap();
         let secret = "must-not-leak";
 
         let error = transport
@@ -1045,7 +1052,7 @@ mod tests {
 
     #[test]
     fn weak_http_identity_selects_sequential_verified_spool_instead_of_ranges() {
-        let transport = ReqwestHttpTransport::new().unwrap();
+        let transport = ReqwestHttpFileTransport::new().unwrap();
         let resource = FileTransportResource::http_url("https://example.test/events.bin");
         let expected = FileIdentityMetadata {
             location: "https://example.test/events.bin".to_owned(),
@@ -1069,7 +1076,7 @@ mod tests {
 
     #[test]
     fn unversioned_http_identity_remains_sequential_and_attestable() {
-        let transport = ReqwestHttpTransport::new().unwrap();
+        let transport = ReqwestHttpFileTransport::new().unwrap();
         let resource = FileTransportResource::http_url("https://example.test/events.bin");
         let expected = FileIdentityMetadata {
             location: "https://example.test/events.bin".to_owned(),

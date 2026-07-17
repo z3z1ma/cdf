@@ -1,1 +1,1 @@
-pub(crate) use cdf_transport_http::ReqwestHttpTransport;
+pub(crate) use cdf_transport_http::{ReqwestHttpFileTransport, ReqwestHttpTransport};

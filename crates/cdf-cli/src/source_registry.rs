@@ -6,7 +6,7 @@ use cdf_source_postgres::PostgresSourceDriver;
 use cdf_source_rest::RestSourceDriver;
 use std::sync::{Arc, OnceLock};
 
-use crate::http_transport::ReqwestHttpTransport;
+use crate::http_transport::{ReqwestHttpFileTransport, ReqwestHttpTransport};
 
 static BUILTIN_SOURCE_REGISTRY: OnceLock<SourceRegistry> = OnceLock::new();
 
@@ -25,11 +25,11 @@ fn build_builtin_source_registry() -> Result<SourceRegistry> {
     let mut registry = SourceRegistry::new();
     registry.register(PythonSourceDriver::new()?)?;
     registry.register(PostgresSourceDriver::new()?)?;
-    let http = ReqwestHttpTransport::new()?;
-    let rest_http = http.clone();
+    let rest_http = ReqwestHttpTransport::new()?;
     registry.register(RestSourceDriver::new(move || {
         Ok(Box::new(rest_http.clone()))
     })?)?;
+    let file_http = ReqwestHttpFileTransport::new()?;
     let formats = builtin_format_registry()?;
     let runtime_formats = std::sync::Arc::clone(&formats);
     registry.register(FileSourceDriver::new(
@@ -37,7 +37,7 @@ fn build_builtin_source_registry() -> Result<SourceRegistry> {
         move |secrets, execution, egress| {
             Ok(FileRuntimeDependencies::new(
                 FileTransportFacade::new()
-                    .with_http_transport(http.clone())
+                    .with_http_transport(file_http.clone())
                     .with_shared_secret_provider(secrets)
                     .with_execution_services(execution.clone()),
                 execution,
