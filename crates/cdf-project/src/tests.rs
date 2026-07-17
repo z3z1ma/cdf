@@ -4435,6 +4435,7 @@ impl HttpFileTransport for RecordingHttpFileTransport {
         &self,
         resource: &FileTransportResource,
         expected: &FileIdentityMetadata,
+        _auth: Option<cdf_source_files::ResolvedHttpAuth>,
         memory: Arc<dyn MemoryCoordinator>,
     ) -> Result<Arc<dyn ByteSource>> {
         Ok(Arc::new(RecordingHttpByteSource::new(
