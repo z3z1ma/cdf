@@ -314,7 +314,7 @@ const COVERAGE: &[CoverageCell] = &[
     CoverageCell {
         area: "archive_ipc_to_parquet",
         status: "implemented",
-        reason: "Package archive transcode uses the public archive_package_to_parquet API.",
+        reason: "Package archive transcode uses the bounded persisted archive path.",
     },
     CoverageCell {
         area: "startup_medium_wide",

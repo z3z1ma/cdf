@@ -25,7 +25,7 @@ use cdf_kernel::{
     ScopeKey, SegmentId, SourcePosition, StateSegment, TargetName, WriteDisposition,
     canonical_arrow_schema_hash,
 };
-use cdf_package::{PackageBuilder, PackageReader, archive_package_to_parquet};
+use cdf_package::{PackageBuilder, PackageReader, persist_package_parquet_archive};
 use cdf_package_contract::{DestinationCommitPlanPreimage, PackageStatus, StateDeltaPreimage};
 use cdf_project::{
     EnvSecretProvider, PackageArtifactReplayRequest, ProjectRunRequest, ProjectRunSource,
@@ -861,17 +861,17 @@ schema = { fields = [
 
 fn run_archive_ipc_to_parquet(spec: &FixtureSpec, root: &Path) -> BenchResult<WorkMetric> {
     let fixture = build_package_fixture(spec, root, "pkg-archive-benchmark")?;
-    let report = archive_package_to_parquet(&fixture.package_dir)?;
+    let report = persist_package_parquet_archive(&fixture.package_dir, false)?;
     Ok(WorkMetric {
         rows: report
             .segments
             .iter()
-            .map(|segment| segment.parquet_row_count)
+            .map(|segment| segment.archive_row_count)
             .sum(),
         bytes: report
             .segments
             .iter()
-            .map(|segment| segment.parquet_byte_count)
+            .map(|segment| segment.archive_byte_count)
             .sum(),
     })
 }

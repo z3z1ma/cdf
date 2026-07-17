@@ -1,6 +1,6 @@
 Status: active
 Created: 2026-07-11
-Updated: 2026-07-16
+Updated: 2026-07-17
 Parent: .10x/tickets/2026-07-10-p3-ws-f-constant-memory-guarantee.md
 Depends-On: .10x/tickets/done/2026-07-11-p3-a5-streaming-operator-graph.md, .10x/tickets/done/2026-07-11-p3-a6-spillable-package-dedup.md, .10x/tickets/2026-07-11-p3-b13-native-format-matrix.md, .10x/tickets/done/2026-07-11-p3-d5-bulk-path-matrix.md, .10x/tickets/2026-07-11-p3-e4-package-io-envelope.md, .10x/tickets/done/2026-07-11-p3-g3-codec-download-decode-overlap.md
 
@@ -42,11 +42,16 @@ Depends on the runtime/codec/destination/package/remote materialization owners.
 - 2026-07-14: Final local FineWeb evidence measured 7.27 seconds and 1,385,006,712 bytes peak footprint versus the earlier uncapped 6.24 seconds and 3,248,835,536 bytes. Remote HTTPS-to-DuckDB measured 18.54 seconds versus an immediate 15.31-second curl floor and stayed near 1.62 GB peak footprint. Full adapter semantics passed 27 tests (one benchmark ignored); focused settings/reservation/failure tests and the product catalog fixture passed. Evidence: `.10x/evidence/2026-07-14-p3-f2-duckdb-native-resource-envelope.md`.
 - 2026-07-14 cross-ticket verification discovery: P3 C3's full `cdf-benchmarks` test exposed that F2 updated the DuckDB catalog to `p3-f2-2026-07-14-v2` but did not regenerate the committed D5 destination report/performance envelope, which still claim `p3-d2-2026-07-11-v1`. `generated_envelope_matches_committed_golden` now correctly fails closed on that mismatch. F2 owns a fresh destination observation and envelope regeneration; changing only the evidence-version string would launder the old measurement and is forbidden.
 - 2026-07-16: SX1 closure routed its remaining discovery/listing control-plane cardinality finding here. F2 must replace pre-bounded candidate/partition metadata materialization with ledger-owned bounded or spill-backed iteration and prove high-cardinality deterministic behavior; the completed source registry boundary is not reopened for that allocation-owner work.
+- 2026-07-17: Deleted the obsolete in-memory `archive_package_to_parquet` report API instead of preserving a compatibility shim. Package archive callers now use the bounded persisted archive path; the benchmark matrix measures that production path; the old tests that only blessed resident Parquet byte reports were removed, while unsupported-type and duplicate-column coverage remains attached to the surviving persisted/transcode paths.
 
 ## Evidence
 
 - Accounted segment ownership across staged ingress and the measured concurrency result: `.10x/evidence/2026-07-14-p3-f2-accounted-staged-payload-handoff.md`.
 - DuckDB native transaction owner and bounded replacement: `.10x/evidence/2026-07-14-p3-f2-duckdb-native-resource-envelope.md`.
+- 2026-07-17 resident archive API deletion:
+  - `CARGO_BUILD_JOBS=12 cargo test -p cdf-package --lib --locked -j 12` — passed, 52 passed, 3 ignored. Proves the persisted archive path, verification, bounded archive window, unsupported-type, and duplicate-column tests still cover the remaining package archive behavior.
+  - `CARGO_BUILD_JOBS=12 cargo check -p cdf-benchmarks --locked -j 12` — passed. Proves the benchmark harness now compiles against `persist_package_parquet_archive` and no longer depends on the deleted resident report API.
+  - `CARGO_BUILD_JOBS=12 cargo clippy -p cdf-package -p cdf-benchmarks --all-targets --locked -j 12 -- -D warnings` — passed. Proves the touched package and benchmark crates are warning-clean after removing the legacy surface.
 - This is partial F2 evidence only. The ticket remains active because its cross-codebase owner matrix, static architecture gates, direct-construction audit, metadata-cardinality closure, and geometric stress proof are not complete.
 
 ## Review
