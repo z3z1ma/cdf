@@ -38,7 +38,10 @@ pub struct ChildObservation {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ChildObservationStatus {
     Completed(ChildObservation),
-    Failed { exit_code: Option<i32> },
+    Failed {
+        exit_code: Option<i32>,
+        stderr: String,
+    },
     TimedOut,
 }
 
@@ -273,14 +276,20 @@ fn child_failure_status(
         ChildObservationStatus::Completed(_) => {
             unreachable!("completed child has no failure status")
         }
-        ChildObservationStatus::Failed { exit_code } => ObservationStatus::Failed {
-            error: format!(
+        ChildObservationStatus::Failed { exit_code, stderr } => {
+            let mut error = format!(
                 "isolated benchmark child exited unsuccessfully with code {}",
                 exit_code
                     .map(|code| code.to_string())
                     .unwrap_or_else(|| "unknown".to_owned())
-            ),
-        },
+            );
+            let stderr = stderr.trim();
+            if !stderr.is_empty() {
+                error.push_str("; stderr: ");
+                error.push_str(stderr);
+            }
+            ObservationStatus::Failed { error }
+        }
         ChildObservationStatus::TimedOut => ObservationStatus::TimedOut {
             timeout_ms: u64::try_from(request.timeout.as_millis()).unwrap_or(u64::MAX),
         },

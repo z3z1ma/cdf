@@ -16,6 +16,7 @@ use crate::{
 
 const PROVIDER_VERSION: &str = "system-host-v1";
 const MAX_CHILD_STDOUT_BYTES: usize = 1024 * 1024;
+const MAX_CHILD_STDERR_BYTES: usize = 64 * 1024;
 
 #[derive(Clone, Debug)]
 pub struct HostProbeConfig {
@@ -242,7 +243,7 @@ fn observe_child(
     process
         .envs(&command.environment)
         .stdout(Stdio::piped())
-        .stderr(Stdio::null());
+        .stderr(Stdio::piped());
     if let Some(current_dir) = &command.current_dir {
         process.current_dir(current_dir);
     }
@@ -252,21 +253,15 @@ fn observe_child(
         .stdout
         .take()
         .ok_or_else(|| bench_error("isolated child stdout pipe was not created"))?;
+    let mut child_stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| bench_error("isolated child stderr pipe was not created"))?;
     let stdout_reader = thread::spawn(move || -> std::io::Result<(Vec<u8>, bool)> {
-        let mut output = Vec::new();
-        let mut buffer = [0_u8; 8192];
-        let mut overflow = false;
-        loop {
-            let read = child_stdout.read(&mut buffer)?;
-            if read == 0 {
-                break;
-            }
-            let available = MAX_CHILD_STDOUT_BYTES.saturating_sub(output.len());
-            let retained = available.min(read);
-            output.extend_from_slice(&buffer[..retained]);
-            overflow |= retained != read;
-        }
-        Ok((output, overflow))
+        read_limited(&mut child_stdout, MAX_CHILD_STDOUT_BYTES)
+    });
+    let stderr_reader = thread::spawn(move || -> std::io::Result<(Vec<u8>, bool)> {
+        read_limited(&mut child_stderr, MAX_CHILD_STDERR_BYTES)
     });
     let status = loop {
         if let Some(status) = child.try_wait()? {
@@ -276,19 +271,29 @@ fn observe_child(
             child.kill()?;
             child.wait()?;
             let _ = stdout_reader.join();
+            let _ = stderr_reader.join();
             return Ok(ChildObservationStatus::TimedOut);
         }
         thread::sleep(Duration::from_millis(5));
     };
     if !status.success() {
         let _ = stdout_reader.join();
+        let stderr = match stderr_reader.join() {
+            Ok(Ok((bytes, overflow))) => child_stderr_text(bytes, overflow),
+            Ok(Err(error)) => format!("failed to read child stderr: {error}"),
+            Err(_) => "child stderr reader panicked".to_owned(),
+        };
         return Ok(ChildObservationStatus::Failed {
             exit_code: status.code(),
+            stderr,
         });
     }
     let (stdout, stdout_overflow) = stdout_reader
         .join()
         .map_err(|_| bench_error("isolated child stdout reader panicked"))??;
+    let _stderr = stderr_reader
+        .join()
+        .map_err(|_| bench_error("isolated child stderr reader panicked"))??;
     if stdout_overflow {
         return Err(bench_error(
             "isolated benchmark child exceeded the 1 MiB measurement output limit",
@@ -305,6 +310,44 @@ fn observe_child(
         peak_rss_bytes,
         stdout,
     }))
+}
+
+fn read_limited(reader: &mut impl Read, limit: usize) -> std::io::Result<(Vec<u8>, bool)> {
+    let mut output = Vec::new();
+    let mut buffer = [0_u8; 8192];
+    let mut overflow = false;
+    loop {
+        let read = reader.read(&mut buffer)?;
+        if read == 0 {
+            break;
+        }
+        let available = limit.saturating_sub(output.len());
+        let retained = available.min(read);
+        output.extend_from_slice(&buffer[..retained]);
+        overflow |= retained != read;
+    }
+    Ok((output, overflow))
+}
+
+fn child_stderr_text(bytes: Vec<u8>, overflow: bool) -> String {
+    let mut text = String::from_utf8_lossy(&bytes)
+        .chars()
+        .map(|character| match character {
+            '/' | '\\' | '@' => '-',
+            character if character.is_control() => ' ',
+            character => character,
+        })
+        .collect::<String>()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    if overflow {
+        if !text.is_empty() {
+            text.push(' ');
+        }
+        text.push_str("[stderr truncated]");
+    }
+    text
 }
 
 fn parse_time_output(platform: Platform, output: &str) -> (Option<u64>, Option<u64>) {
@@ -662,5 +705,52 @@ mod tests {
             provider.prepare_io_mode(IoMode::Cold, false),
             Capability::Unavailable { .. }
         ));
+    }
+
+    #[test]
+    fn failed_child_retains_bounded_stderr_evidence() {
+        let status = observe_child(
+            &ChildCommand {
+                program: PathBuf::from("/bin/sh"),
+                args: vec![
+                    "-c".to_owned(),
+                    "printf 'useful child failure\\nwith context\\n' >&2; exit 7".to_owned(),
+                ],
+                environment: BTreeMap::new(),
+                current_dir: None,
+            },
+            Duration::from_secs(5),
+            Platform::Portable,
+        )
+        .unwrap();
+        let ChildObservationStatus::Failed { exit_code, stderr } = status else {
+            panic!("expected failed child observation");
+        };
+        assert_eq!(exit_code, Some(7));
+        assert!(stderr.contains("useful child failure with context"));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_time_wrapped_failed_child_retains_stderr_evidence() {
+        let status = observe_child(
+            &ChildCommand {
+                program: PathBuf::from("/bin/sh"),
+                args: vec![
+                    "-c".to_owned(),
+                    "printf 'macos wrapped failure\\n' >&2; exit 9".to_owned(),
+                ],
+                environment: BTreeMap::new(),
+                current_dir: None,
+            },
+            Duration::from_secs(5),
+            Platform::MacOs,
+        )
+        .unwrap();
+        let ChildObservationStatus::Failed { exit_code, stderr } = status else {
+            panic!("expected failed child observation");
+        };
+        assert_eq!(exit_code, Some(9));
+        assert!(stderr.contains("macos wrapped failure"));
     }
 }
