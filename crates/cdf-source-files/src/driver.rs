@@ -1340,6 +1340,22 @@ mod tests {
     #[derive(Default)]
     struct TestHealthSink(Vec<SourceHealthResult>);
 
+    #[test]
+    fn execution_capabilities_keep_file_partition_speculation_bounded() {
+        let capabilities = execution_capabilities();
+        capabilities.validate().unwrap();
+        assert_eq!(capabilities.maximum_concurrency, 16);
+        assert_eq!(capabilities.useful_concurrency, 16);
+        assert_eq!(
+            capabilities
+                .blocking_lane
+                .as_ref()
+                .unwrap()
+                .maximum_concurrency,
+            crate::runtime::FILE_SOURCE_BLOCKING_LANE_CONCURRENCY
+        );
+    }
+
     impl cdf_runtime::SourceHealthSink for TestHealthSink {
         fn emit(&mut self, result: SourceHealthResult) -> Result<()> {
             self.0.push(result);

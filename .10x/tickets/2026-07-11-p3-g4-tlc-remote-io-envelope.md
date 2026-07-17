@@ -47,6 +47,7 @@ Depends on G1-G3; DuckDB bulk and deterministic scaling closeout are complete.
 - 2026-07-17: Corrected the HTTP liveness boundary after adversarial review. The ratified default is now private to file byte-source transfer phases: 10 seconds to receive the file response, 10 seconds between delivered body frames, and no total transfer deadline. The shared reqwest client no longer carries a global read timeout, so REST and file metadata keep their prior semantics. Timeout failures retain the transport's existing sanitized `Transient` taxonomy; the deterministic slice proves bounded classification/cleanup and preserves slow-progressing transfers, while scheduler retry success remains governed by the compiled source retry path.
 - 2026-07-17: Release remeasurement after the liveness correction: fresh three-month TLC completed in `real 5.40s` (`user 5.98s`, `sys 3.61s`, 9.6M rows, 51 segments), preserving the established fast path within public-endpoint noise but not improving it. Fresh full-year TLC was interrupted after `real 114.73s` (`user 3.02s`, `sys 9.42s`, max RSS about 1.0 GB) with only first-partition segment files present and only startup events in the state ledger. This fails the same-host 10.31-second G4 ceiling and keeps G4 open.
 - 2026-07-16: Same-host raw controls established the current G4 floor: two-way parallel curl downloaded the 12 public TLC objects (660 MiB) in `4.34s`; DuckDB natively created the 41,169,720-row table in `2.53s`. The ratified 1.5x composite ceiling is therefore `10.31s` on this observation. The native cell omits CDF evidence/package work and is labeled as a favorable roofline rather than semantic equivalence.
+- 2026-07-17: Tuned the file-source scheduler default at the source capability boundary rather than in engine orchestration. File source still advertises `maximum_concurrency = 16` and `useful_concurrency = 16`, but its shared blocking lane now admits four simultaneous partition opens by default. This keeps multi-file parallelism while preventing a 12-file HTTPS full scan from starting 12 generation-bound full-object spools at once against a public origin. The change is intentionally source-owned and generic: the engine still joins recorded scheduler ceilings and never branches on file/HTTP identity. Live full-year TLC remeasurement remains required before G4 closure.
 
 ## Evidence
 
@@ -56,6 +57,11 @@ Depends on G1-G3; DuckDB bulk and deterministic scaling closeout are complete.
   - `CARGO_BUILD_JOBS=12 cargo build -p cdf-cli --release --locked -j 12`: passed.
   - Fresh 3-month live TLC, `/private/tmp/cdf-g4-tlc3-after.nBhv2i`: `real 5.40s`, success.
   - Fresh 12-month live TLC, `/private/tmp/cdf-g4-tlc-after.PvMGvm`: interrupted at `real 114.73s`; failed G4 envelope.
+- File-source partition-open cap slice:
+  - `CARGO_BUILD_JOBS=12 cargo test -p cdf-source-files execution_capabilities_keep_file_partition_speculation_bounded --locked -j 12` — passed, 1 passed. Confirms the file source capability remains high-ceiling but is bounded by the source-owned blocking lane.
+  - `CARGO_BUILD_JOBS=12 cargo test -p cdf-source-files file_source_blocking_lane_caps_speculative_partition_opens --locked -j 12` — passed, 1 passed. Confirms the lane cap is the named four-way default and not a magic engine branch.
+  - `CARGO_BUILD_JOBS=12 cargo clippy -p cdf-source-files --all-targets --locked -j 12 -- -D warnings` — passed.
+  - `git diff --check` — passed.
 
 ## Review
 
