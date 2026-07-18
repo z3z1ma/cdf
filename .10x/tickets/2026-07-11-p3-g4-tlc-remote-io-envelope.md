@@ -222,6 +222,11 @@ Depends on G1-G3; DuckDB bulk and deterministic scaling closeout are complete.
   - Command: `CDF_BENCH_REMOTE_WORKSPACE=/home/ec2-user/cdf-bench/repo/target/cdf-benchmarks/g4-scheduler-default-20260718085558/local-workspace CDF_BENCH_SAMPLES=1 CDF_BENCH_IO_MODE=uncontrolled CDF_BENCH_TIMEOUT_MS=120000 tools/p3-ec2-benchmark-host.sh measure-cdf target/cdf-benchmarks/g4-local-default-measured.json nyc_tlc_yellow_2024 tlc_local_duckdb_default -- run tlc.yellow --json --progress never`.
   - Result: observed one-sample local full-year TLC-to-DuckDB cell, `33.955522533s`, 41,169,720 rows, peak RSS about 2.15 GiB. Extracted phase telemetry: `source_read=2.052s`, `decode=0.156s`, `validation_normalization=0.210s`, `segment_encode=9.868s`, `persist_hash=1.617s`, `destination_ingress=32.916s`, `package_execution=33.136s`, `destination_write_receipt=0.677s`.
   - Current conclusion is unchanged but now cleaner: the measured local baseline proves G4's next code owner is destination/package execution. Any default-changing patch must beat this host-labeled cell, not a laptop or manual `/usr/bin/time` transcript.
+- Rejected EC2 source-admission overdrive:
+  - Machine storage: `.10x/evidence/.storage/2026-07-18-p3-g4-ec2-local-jobs3-measured.json`.
+  - Command: `CDF_BENCH_REMOTE_WORKSPACE=/home/ec2-user/cdf-bench/repo/target/cdf-benchmarks/g4-scheduler-default-20260718085558/local-workspace CDF_BENCH_SAMPLES=1 CDF_BENCH_IO_MODE=uncontrolled CDF_BENCH_TIMEOUT_MS=120000 tools/p3-ec2-benchmark-host.sh measure-cdf target/cdf-benchmarks/g4-local-jobs3-measured.json nyc_tlc_yellow_2024 tlc_local_duckdb_jobs3 -- run tlc.yellow --jobs 3 --json --progress never`.
+  - Result: failed supervised observation with `CDF command exceeded worker timeout of 119000ms`; immediate process-tree inspection found no remaining `cdf-p3-lab` worker or release `cdf` workload process.
+  - Current conclusion: raising default source jobs above the staged destination pressure join is rejected. It does not beat the 33.96-second default cell; it reintroduces the old overdrive/non-completion shape. Future work must change staged-ingress/backpressure or destination bulk strategy, not simply lift admission.
 
 ## Review
 

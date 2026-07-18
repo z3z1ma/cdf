@@ -24,6 +24,7 @@ Scheduler-default repair measurements, same tuned host:
 - CDF local files to DuckDB now completes in `33.83s` (`user=46.27`, `sys=2.90`, max RSS about `2.16 GiB`) for 41,169,720 rows and 215 segments, instead of the previous `304.55s` low-CPU termination.
 - CDF remote HF mirror to DuckDB completes in `36.98s` (`user=46.96`, `sys=4.90`, max RSS about `2.27 GiB`) for 41,169,720 rows and 215 segments, preserving the tuned remote envelope class.
 - Both local and remote plans report `effective_jobs.jobs = 2` and limiting factor `staged_destination_in_flight`; source capability remains 16-way. This confirms the default is a generic downstream-pressure admission join, not a destination-identity branch or hidden hard cap. Explicit job configuration remains outside this default join.
+- A supervised explicit-overdrive probe with `--jobs 3` rejected raising the default source admission window: the same full-year local TLC-to-DuckDB workload timed out through `measure-cdf` with `CDF command exceeded worker timeout of 119000ms`, and immediate process inspection found no orphaned `cdf` worker. Machine artifact: `.10x/evidence/.storage/2026-07-18-p3-g4-ec2-local-jobs3-measured.json`.
 - Remaining owner: package/destination hot path. Local source read drops to about `2.02s` while `destination_ingress` remains about `32.82s`; remote adds `13.96s` aggregate growing-spool source read but wall remains destination/package dominated.
 
 Native DuckDB reference cell, same tuned host and same 12 local TLC files:
@@ -45,6 +46,7 @@ Tuned machine artifacts:
 - `.10x/evidence/.storage/2026-07-18-p3-g4-ec2-native-duckdb-ingest-run-cell.json`
 - `.10x/evidence/.storage/2026-07-18-p3-g4-ec2-native-duckdb-ingest-reference.json`
 - `.10x/evidence/.storage/2026-07-18-p3-g4-ec2-local-default-measured.json`
+- `.10x/evidence/.storage/2026-07-18-p3-g4-ec2-local-jobs3-measured.json`
 
 Same-host measurements:
 
@@ -84,6 +86,8 @@ The scheduler-default repair supports retaining a default-admission change: the 
 The native DuckDB reference cell turns the G4 target from an approximation into a measured host-local comparison. It challenges any interpretation that 33–37 seconds is merely public network or benchmark-host noise: DuckDB can persistently materialize the same 12 files in about 4.17 seconds once the bytes are local, and the raw network floor is about 1.48 seconds. The next retained data-plane work must therefore reduce CDF's destination/package hot path by multiples, not by tuning small remote-read constants.
 
 The L6 `measure-cdf` local default cell makes the retained CDF baseline itself a standard benchmark-lab observation: full-year local TLC to DuckDB completed in `33.955522533s`, with 41,169,720 rows and ten extracted phase metrics. The decisive phases were `destination_ingress=32.916s` and `package_execution=33.136s`; local `source_read` and `decode` together were under 2.3 seconds. This confirms the current G4 owner as destination/package execution under host-labeled evidence.
+
+The supervised `--jobs 3` failure challenges a tempting scheduler shortcut. Increasing source jobs above the staged destination's default pressure join does not recover the old local floor on the EC2 host; it reintroduces a non-completing overdrive shape. Future G4 work should not promote higher default source admission without a different staged-ingress/backpressure architecture and same-host proof.
 
 The pre-tuning run still has diagnostic value: it proved the benchmark host was originally too slow at durable storage for promotion evidence. After tuning, the HF wall improved from `43.39s` to `36.51s`, but the result is still far above the P3 target envelope.
 
