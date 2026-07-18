@@ -2,7 +2,7 @@ Status: active
 Created: 2026-07-18
 Updated: 2026-07-18
 Parent: .10x/tickets/2026-07-10-p3-ws-d-destination-bulk-paths.md
-Depends-On: .10x/tickets/done/2026-07-18-p3-d11-duckdb-arrow-ipc-handoff-falsification.md
+Depends-On: .10x/tickets/done/2026-07-18-p3-d11-duckdb-arrow-ipc-handoff-falsification.md, .10x/tickets/2026-07-18-p3-d15-canonical-package-row-ordinal.md
 
 # P3 D14: DuckDB nanoarrow 0.8.0 LZ4 revalidation
 
@@ -12,7 +12,7 @@ Correct D11's overbroad LZ4 conclusion by building the DuckDB nanoarrow extensio
 
 ## Non-goals
 
-- No package artifact-format change.
+- No destination-local row enumeration that duplicates canonical package authority.
 - No uncompressed duplicate handoff.
 - No generic runtime branch for DuckDB, nanoarrow, Arrow IPC paths, or extension installation.
 - No product default change before full-CDF EC2 evidence meets the retained performance and memory thresholds.
@@ -59,6 +59,7 @@ Correct D11's overbroad LZ4 conclusion by building the DuckDB nanoarrow extensio
 - 2026-07-18: A vectorized post-materialization strategy retained the raw floor: order-preserving `CREATE TABLE AS read_arrow(...)`, one `_cdf_row_key` column addition, and one in-transaction `UPDATE ... SET _cdf_row_key = rowid + first_row_key` completed the full 41,169,720-row materialization plus count/min/max verification in a single uncontrolled `4.50s` sample at approximately 3.23 GiB peak RSS. Setting the stored key `NOT NULL` required a separate `0.37s` uncontrolled probe. DuckDB documents materialized `rowid` as the non-window row enumeration mechanism and documents order preservation for single-table `FROM`/`SELECT`; product conformance must additionally prove that nanoarrow's ordered path list maps each segment to its expected contiguous key range at `threads=1` and `threads=N` before this can become authority.
 - 2026-07-18: Added the vectorized row-key strategy to the existing controlled reference workload with explicit `row_key_start`, explicit `preserve_insertion_order=true`, exact min/max verification, and optional `NOT NULL` restoration. This keeps the next EC2 median comparable and prevents an unmeasured product prototype from becoming the benchmark.
 - 2026-07-18: Landed the destination-neutral prerequisite locally. `DurableSegmentReader` now optionally exposes the exact length-bound local file represented by its staged identity; live execution supplies the hash-while-write canonical segment, and replay supplies a package-verification-bound segment object. Replay decoding is lazy: a destination consuming the canonical file performs no redundant Arrow IPC decode, while batch-oriented destinations invoke the same accounted decoder on first `next_batch()`. No generic layer names DuckDB, nanoarrow, or Arrow IPC strategy ids.
+- 2026-07-18: The user ratified shifting row enumeration into the canonical post-verdict Arrow stream. D15 now owns a dense `_cdf_package_row_ordinal`, explicit per-segment manifest starts, verification, memory/performance evidence, and cross-destination adoption. D14 no longer retains the destination-side `rowid` prototype: after D15, nanoarrow computes the transaction-owned `_cdf_row_key` directly from the persisted package ordinal with no file-order premise.
 
 ## Blockers
 
@@ -70,7 +71,7 @@ None.
 - Upstream capability: Apache Arrow nanoarrow PR 819 and release `apache-arrow-nanoarrow-0.8.0`, linked under References.
 - Focused local lab validation: `cargo fmt --all`; `CARGO_BUILD_JOBS=12 cargo check -p cdf-benchmarks --locked -j 12`; `CARGO_BUILD_JOBS=12 cargo test -p cdf-benchmarks arrow_ipc_handoff_writer_emits_readable_files --locked -j 12 -- --nocapture`; and `git diff --check` all passed.
 - Neutral staged-object validation: `CARGO_BUILD_JOBS=12 cargo check -p cdf-runtime -p cdf-package -p cdf-engine -p cdf-project --locked -j 12`; focused durable-file request validation passed; all 53 non-ignored `cdf-package` library tests passed; and the `cdf-project` library test command completed successfully. The local-file request test also proves length drift is rejected before destination consumption.
-- Acceptance mapping: exact pin/build configuration is recorded in the Journal; extension load/version, generated LZ4, and current-segment compatibility are proved by the controlled-host probes; the raw JSON records every full-year sample, row count, throughput, RSS, cgroup peak/events, and measurement biases. Full-CDF product integration remains open.
+- Acceptance mapping: exact pin/build configuration is recorded in the Journal; extension load/version, generated LZ4, and current-segment compatibility are proved by the controlled-host probes; the raw JSON records every full-year sample, row count, throughput, RSS, cgroup peak/events, and measurement biases. Full-CDF product integration remains open behind D15.
 
 ## Review
 
