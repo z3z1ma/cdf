@@ -44,10 +44,11 @@ Implement and record the operating procedure/tooling for P3 performance measurem
 
 - 2026-07-18: Opened from user benchmark guidance after repeated laptop swap/disk-pressure invalidations and live public-endpoint variance affected G4/G4-adjacent timing. The governing spec now treats dedicated EC2 evidence as the promotion authority for P3 defaults and closeout cells.
 - 2026-07-18: Added `tools/p3-ec2-benchmark-host.sh` as the first dry-runable benchmark-host helper. The script centralizes the candidate FQ12 PowerUser profile, region, instance shape, state-file location, launch/reuse, ignore-respecting repo/workspace sync, on-host release build, remote command execution, and explicit teardown. Live provisioning requires explicit subnet/security group/key or launch template inputs; dry-run command construction works without cloud writes.
+- 2026-07-18: Read-only EC2 discovery found a default `us-west-2` VPC, public default subnets, the default security group in that VPC, and several account key-pair names. No private SSH key was present under `~/.ssh`, so no instance was launched. The next live tranche must either provide `CDF_BENCH_SSH_KEY` for a known key pair, create an explicitly owned ephemeral key as part of the tranche, or switch the helper to an SSM/Instance-Connect sync path.
 
 ## Blockers
 
-Live benchmark execution still requires selecting or providing subnet/security group/key/launch-template inputs and a private SSH key path. The script intentionally does not invent those network/security choices.
+Live benchmark execution still requires selecting or providing subnet/security group/key/launch-template inputs and a private SSH key path. The script intentionally does not invent those network/security choices. Current local host has no private key in `~/.ssh`.
 
 ## Evidence
 
@@ -65,6 +66,11 @@ Live benchmark execution still requires selecting or providing subnet/security g
   - `CDF_BENCH_HOST=example.invalid CDF_BENCH_SSH_KEY=/tmp/cdf-bench-key tools/p3-ec2-benchmark-host.sh --dry-run build` — printed the on-host release build command using `CARGO_BUILD_JOBS=$(nproc)` and `cargo build -p cdf-cli --bin cdf --release --locked -j $(nproc)`.
   - `CDF_BENCH_HOST=example.invalid CDF_BENCH_SSH_KEY=/tmp/cdf-bench-key CDF_BENCH_WORKSPACE=/tmp/cdf-workspace tools/p3-ec2-benchmark-host.sh --dry-run sync-workspace` — printed workspace mkdir/rsync commands excluding local env/secret paths.
   - Limit: no cloud resource was created, no SSH connection was attempted, and no release build ran on EC2. This validates command construction/redaction only.
+- 2026-07-18 read-only launch-input discovery:
+  - `aws ec2 describe-vpcs --filters Name=is-default,Values=true` found default VPC `vpc-d097bfa8`.
+  - `aws ec2 describe-subnets --filters Name=default-for-az,Values=true` found public default subnets in `us-west-2a` through `us-west-2d`; `subnet-acc642d4` in `us-west-2a` is a viable candidate input, but not selected as authority.
+  - `aws ec2 describe-security-groups --filters Name=group-name,Values=default` found default-VPC security group `sg-7deb0443`; it currently only permits self-referential ingress and all outbound, so direct SSH would require an explicit ingress/security decision before use.
+  - `aws ec2 describe-key-pairs` found existing key-pair names including `local-dev`, but `find ~/.ssh -maxdepth 1 -type f` found no local private key file. No key pair was selected.
 
 ## Review
 
