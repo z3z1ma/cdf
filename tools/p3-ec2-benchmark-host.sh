@@ -18,6 +18,8 @@ Commands:
   build            Build optimized release CDF and cdf-p3-lab binaries on the benchmark host.
   verify           Run on-host cdf --version and cdf-p3-lab host.
   cdf -- ARGS...   Run the on-host release CDF binary from the synced CDF workspace.
+  measure-cdf OUT DATASET WORKLOAD -- ARGS...
+                   Run release CDF through cdf-p3-lab with host-labeled median-of-N evidence.
   lab -- ARGS...   Run the on-host release cdf-p3-lab binary from the synced repo.
   run -- CMD...    Run an arbitrary command from the synced repo on the benchmark host.
   teardown         Terminate the benchmark instance recorded in state.env.
@@ -43,6 +45,14 @@ Environment:
   CDF_BENCH_REMOTE_ROOT             default: /home/ec2-user/cdf-bench
   CDF_BENCH_WORKSPACE               local CDF workspace to sync for sync-workspace
   CDF_BENCH_WORKSPACE_SYNC_MODE     default: minimal; use full for an ignore-filtered full tree
+  CDF_BENCH_MEASURE_WORKSPACE_MODE  default: fresh_copy; use in_place for non-mutating commands
+  CDF_BENCH_MEASURE_PRESERVE_STATE  default: 0; set 1 to benchmark resume/no-op state
+  CDF_BENCH_SAMPLES                 default: 3 for measure-cdf
+  CDF_BENCH_TIMEOUT_MS              default: 900000 for measure-cdf
+  CDF_BENCH_IO_MODE                 default: warm for measure-cdf
+  CDF_BENCH_EXPECTED_ROWS           optional row authority for measure-cdf
+  CDF_BENCH_LOGICAL_BYTES           optional logical byte authority for measure-cdf
+  CDF_BENCH_PHYSICAL_BYTES          optional physical byte authority for measure-cdf
   CDF_BENCH_RUST_TOOLCHAIN          default: stable
   CDF_BENCH_STATE                   default: target/cdf-benchmarks/ec2-host/state.env
   CDF_BENCH_RESOURCE_STATE          default: target/cdf-benchmarks/ec2-host/ssh-resources.env
@@ -52,6 +62,7 @@ Safety:
   prepare-ssh creates only CDF-tagged security/key resources and restricts SSH to one CIDR.
   Repo sync excludes .git, target, .env*, local AWS/Codex config, and common secret directories.
   Workspace sync defaults to a minimal control-plane manifest and has an explicit full mode.
+  measure-cdf copies the synced workspace outside the timed region by default and drops runtime state unless explicitly preserved.
   The same recorded instance is reused until teardown removes state.env after termination.
 EOF
 }
@@ -198,6 +209,64 @@ none_to_empty() {
   else
     printf '%s\n' "${value}"
   fi
+}
+
+write_state_for_instance() {
+  local resolved_instance_id="$1"
+  local description
+  description="$("${aws_cmd[@]}" ec2 describe-instances \
+    --instance-ids "${resolved_instance_id}" \
+    --query 'Reservations[0].Instances[0].[PublicDnsName,PublicIpAddress,InstanceType,ImageId,SubnetId,SecurityGroups[0].GroupId,BlockDeviceMappings[0].Ebs.VolumeId]' \
+    --output text)"
+  read -r public_dns_name public_ip_address described_instance_type image_id described_subnet_id described_security_group_id volume_id <<<"${description}"
+  {
+    echo "instance_id=${resolved_instance_id}"
+    echo "public_dns_name=${public_dns_name}"
+    echo "public_ip_address=${public_ip_address}"
+    echo "aws_profile=${aws_profile}"
+    echo "aws_region=${aws_region}"
+    echo "instance_type=${described_instance_type}"
+    echo "image_id=${image_id}"
+    echo "volume_id=${volume_id}"
+    echo "volume_gb=${volume_gb}"
+    echo "volume_iops=${volume_iops}"
+    echo "volume_throughput=${volume_throughput}"
+    echo "subnet_id=${CDF_BENCH_SUBNET_ID:-${described_subnet_id}}"
+    echo "security_group_id=${CDF_BENCH_SECURITY_GROUP_ID:-${described_security_group_id}}"
+    echo "key_name=${CDF_BENCH_KEY_NAME:-}"
+    echo "ssh_key=${CDF_BENCH_SSH_KEY:-}"
+    echo "created_revision=$(git -C "${repo_root}" rev-parse HEAD)"
+  } > "${state_file}"
+}
+
+adopt_existing_instance_if_unique() {
+  if [[ "${dry_run}" -eq 1 ]]; then
+    run_cmd "${aws_cmd[@]}" ec2 describe-instances \
+      --filters Name=tag:Project,Values=CDF Name=tag:Purpose,Values=P3Benchmark Name=instance-state-name,Values=pending,running \
+      --query 'Reservations[].Instances[].InstanceId' \
+      --output text
+    return 1
+  fi
+  local instances
+  instances="$("${aws_cmd[@]}" ec2 describe-instances \
+    --filters Name=tag:Project,Values=CDF Name=tag:Purpose,Values=P3Benchmark Name=instance-state-name,Values=pending,running \
+    --query 'Reservations[].Instances[].InstanceId' \
+    --output text | tr '\t' '\n' | sed '/^$/d')"
+  local count
+  count="$(printf '%s\n' "${instances}" | sed '/^$/d' | wc -l | tr -d ' ')"
+  if [[ "${count}" == "0" ]]; then
+    return 1
+  fi
+  if [[ "${count}" != "1" ]]; then
+    echo "multiple running CDF P3 benchmark instances exist; refusing to choose implicitly:" >&2
+    printf '%s\n' "${instances}" >&2
+    exit 2
+  fi
+  local adopted_instance_id
+  adopted_instance_id="$(printf '%s\n' "${instances}" | sed -n '1p')"
+  echo "adopting existing tagged benchmark instance_id=${adopted_instance_id}" >&2
+  write_state_for_instance "${adopted_instance_id}"
+  return 0
 }
 
 ensure_ssh_resources() {
@@ -396,6 +465,10 @@ case "${command}" in
         --output json
       exit 0
     fi
+    if adopt_existing_instance_if_unique; then
+      cat "${state_file}"
+      exit 0
+    fi
     if [[ -z "${CDF_BENCH_LAUNCH_TEMPLATE_ID:-}" && ( -z "${CDF_BENCH_SUBNET_ID:-}" || -z "${CDF_BENCH_SECURITY_GROUP_ID:-}" || -z "${CDF_BENCH_KEY_NAME:-}" ) ]]; then
       ensure_ssh_resources
     fi
@@ -430,26 +503,7 @@ case "${command}" in
     instance_id="$("${aws_cmd[@]}" "${launch_args[@]}")"
     "${aws_cmd[@]}" ec2 wait instance-running --instance-ids "${instance_id}"
     "${aws_cmd[@]}" ec2 wait instance-status-ok --instance-ids "${instance_id}"
-    read -r public_dns_name public_ip_address < <("${aws_cmd[@]}" ec2 describe-instances \
-      --instance-ids "${instance_id}" \
-      --query 'Reservations[0].Instances[0].[PublicDnsName,PublicIpAddress]' \
-      --output text)
-    {
-      echo "instance_id=${instance_id}"
-      echo "public_dns_name=${public_dns_name}"
-      echo "public_ip_address=${public_ip_address}"
-      echo "aws_profile=${aws_profile}"
-      echo "aws_region=${aws_region}"
-      echo "instance_type=${instance_type}"
-      echo "volume_gb=${volume_gb}"
-      echo "volume_iops=${volume_iops}"
-      echo "volume_throughput=${volume_throughput}"
-      echo "subnet_id=${CDF_BENCH_SUBNET_ID:-}"
-      echo "security_group_id=${CDF_BENCH_SECURITY_GROUP_ID:-}"
-      echo "key_name=${CDF_BENCH_KEY_NAME:-}"
-      echo "ssh_key=${CDF_BENCH_SSH_KEY:-}"
-      echo "created_revision=$(git -C "${repo_root}" rev-parse HEAD)"
-    } > "${state_file}"
+    write_state_for_instance "${instance_id}"
     cat "${state_file}"
     ;;
 
@@ -628,6 +682,99 @@ EOF"
     remote_args="$(remote_command "$@")"
     run_cmd ssh -i "${CDF_BENCH_SSH_KEY}" -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new "${ssh_user}@${host}" \
       "${remote_prelude}; cd '${remote_workspace}' && '${remote_repo}/target/release/cdf' ${remote_args}"
+    ;;
+
+  measure-cdf)
+    output_path="${1:-}"
+    dataset_id="${2:-}"
+    workload_id="${3:-}"
+    if [[ -z "${output_path}" || -z "${dataset_id}" || -z "${workload_id}" ]]; then
+      echo "measure-cdf requires OUT DATASET WORKLOAD before -- ARGS" >&2
+      exit 2
+    fi
+    shift 3
+    if [[ "${1:-}" == "--" ]]; then
+      shift
+    fi
+    if [[ "$#" -eq 0 ]]; then
+      echo "measure-cdf requires CDF arguments after --" >&2
+      exit 2
+    fi
+    load_resource_state
+    require_env CDF_BENCH_SSH_KEY
+    host="$(target_host)"
+    cdf_args_json="$(python3 -c 'import json, sys; print(json.dumps(sys.argv[1:]))' "$@")"
+    output_q="$(printf '%q' "${output_path}")"
+    dataset_q="$(printf '%q' "${dataset_id}")"
+    workload_q="$(printf '%q' "${workload_id}")"
+    args_json_q="$(printf '%q' "${cdf_args_json}")"
+    samples_q="$(printf '%q' "${CDF_BENCH_SAMPLES:-3}")"
+    timeout_q="$(printf '%q' "${CDF_BENCH_TIMEOUT_MS:-900000}")"
+    io_mode_q="$(printf '%q' "${CDF_BENCH_IO_MODE:-warm}")"
+    workspace_mode_q="$(printf '%q' "${CDF_BENCH_MEASURE_WORKSPACE_MODE:-fresh_copy}")"
+    preserve_state_q="$(printf '%q' "${CDF_BENCH_MEASURE_PRESERVE_STATE:-0}")"
+    timed_region_version_q="$(printf '%q' "${CDF_BENCH_TIMED_REGION_VERSION:-1}")"
+    rows_q="$(printf '%q' "${CDF_BENCH_EXPECTED_ROWS:-}")"
+    logical_bytes_q="$(printf '%q' "${CDF_BENCH_LOGICAL_BYTES:-}")"
+    physical_bytes_q="$(printf '%q' "${CDF_BENCH_PHYSICAL_BYTES:-}")"
+    run_cmd ssh -i "${CDF_BENCH_SSH_KEY}" -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new "${ssh_user}@${host}" \
+      "set -euo pipefail; ${remote_prelude}; cd '${remote_repo}'; out=${output_q}; dataset=${dataset_q}; workload=${workload_q}; cdf_args_json=${args_json_q}; samples=${samples_q}; timeout_ms=${timeout_q}; io_mode=${io_mode_q}; workspace_mode=${workspace_mode_q}; preserve_state=${preserve_state_q}; timed_region_version=${timed_region_version_q}; expected_rows=${rows_q}; logical_bytes=${logical_bytes_q}; physical_bytes=${physical_bytes_q}; mkdir -p \"\$(dirname \"\${out}\")\" target/cdf-benchmarks/requests target/cdf-benchmarks/cdf-command-workspaces; . ./.cdf-bench-revision.env; host_class=\"\$(target/release/cdf-p3-lab host-class)\"; toolchain=\"\$(rustc --version)\"; request_path=\"target/cdf-benchmarks/requests/\$(basename \"\${out}\" .json)-cdf-command.json\"; spec_path=\"target/cdf-benchmarks/requests/\$(basename \"\${out}\" .json)-run-cell.json\"; CDF_BENCH_MEASURE_OUT=\"\${out}\" CDF_BENCH_MEASURE_DATASET=\"\${dataset}\" CDF_BENCH_MEASURE_WORKLOAD=\"\${workload}\" CDF_BENCH_MEASURE_ARGS_JSON=\"\${cdf_args_json}\" CDF_BENCH_MEASURE_SAMPLES=\"\${samples}\" CDF_BENCH_MEASURE_TIMEOUT_MS=\"\${timeout_ms}\" CDF_BENCH_MEASURE_IO_MODE=\"\${io_mode}\" CDF_BENCH_MEASURE_WORKSPACE_MODE=\"\${workspace_mode}\" CDF_BENCH_MEASURE_PRESERVE_STATE=\"\${preserve_state}\" CDF_BENCH_MEASURE_TIMED_REGION_VERSION=\"\${timed_region_version}\" CDF_BENCH_MEASURE_ROWS=\"\${expected_rows}\" CDF_BENCH_MEASURE_LOGICAL_BYTES=\"\${logical_bytes}\" CDF_BENCH_MEASURE_PHYSICAL_BYTES=\"\${physical_bytes}\" CDF_BENCH_MEASURE_REQUEST=\"\${request_path}\" CDF_BENCH_MEASURE_SPEC=\"\${spec_path}\" CDF_BENCH_MEASURE_REPO='${remote_repo}' CDF_BENCH_MEASURE_WORKSPACE='${remote_workspace}' CDF_BENCH_MEASURE_REVISION=\"\${repo_revision_label:-unknown}\" CDF_BENCH_MEASURE_HOST_CLASS=\"\${host_class}\" CDF_BENCH_MEASURE_TOOLCHAIN=\"\${toolchain}\" python3 - <<'PY'
+import json
+import os
+from pathlib import Path
+
+def optional_u64(name):
+    value = os.environ.get(name, \"\")
+    return int(value) if value else None
+
+repo = os.environ[\"CDF_BENCH_MEASURE_REPO\"]
+request_path = Path(os.environ[\"CDF_BENCH_MEASURE_REQUEST\"])
+spec_path = Path(os.environ[\"CDF_BENCH_MEASURE_SPEC\"])
+request = {
+    \"cdf_executable\": f\"{repo}/target/release/cdf\",
+    \"workspace_template\": os.environ[\"CDF_BENCH_MEASURE_WORKSPACE\"],
+    \"workspace_parent\": f\"{repo}/target/cdf-benchmarks/cdf-command-workspaces\",
+    \"workspace_mode\": os.environ[\"CDF_BENCH_MEASURE_WORKSPACE_MODE\"],
+    \"args\": json.loads(os.environ[\"CDF_BENCH_MEASURE_ARGS_JSON\"]),
+    \"rows\": optional_u64(\"CDF_BENCH_MEASURE_ROWS\"),
+    \"logical_bytes\": optional_u64(\"CDF_BENCH_MEASURE_LOGICAL_BYTES\"),
+    \"physical_bytes\": optional_u64(\"CDF_BENCH_MEASURE_PHYSICAL_BYTES\"),
+    \"spill_bytes\": 0,
+    \"preserve_state\": os.environ[\"CDF_BENCH_MEASURE_PRESERVE_STATE\"] == \"1\",
+}
+request_path.write_text(json.dumps(request, sort_keys=True), encoding=\"utf-8\")
+spec = {
+    \"comparability\": {
+        \"dataset_id\": os.environ[\"CDF_BENCH_MEASURE_DATASET\"],
+        \"workload_id\": os.environ[\"CDF_BENCH_MEASURE_WORKLOAD\"],
+        \"timed_region_version\": int(os.environ[\"CDF_BENCH_MEASURE_TIMED_REGION_VERSION\"]),
+        \"cdf_revision\": os.environ[\"CDF_BENCH_MEASURE_REVISION\"],
+        \"dependency_tuple\": \"Cargo.lock\",
+        \"host_class\": os.environ[\"CDF_BENCH_MEASURE_HOST_CLASS\"],
+        \"os_toolchain\": os.environ[\"CDF_BENCH_MEASURE_TOOLCHAIN\"],
+        \"io_mode\": os.environ[\"CDF_BENCH_MEASURE_IO_MODE\"],
+    },
+    \"expected_host_class\": os.environ[\"CDF_BENCH_MEASURE_HOST_CLASS\"],
+    \"sample_count\": int(os.environ[\"CDF_BENCH_MEASURE_SAMPLES\"]),
+    \"timeout_ms\": int(os.environ[\"CDF_BENCH_MEASURE_TIMEOUT_MS\"]),
+    \"allow_privileged_cache_control\": False,
+    \"command\": {
+        \"program\": f\"{repo}/target/release/cdf-p3-lab\",
+        \"args\": [\"cdf-command-worker\", str(request_path)],
+        \"environment\": {},
+        \"current_dir\": None,
+    },
+    \"reference\": None,
+    \"bias\": [
+        {
+            \"code\": \"includes_cdf_evidence\",
+            \"description\": \"runs the release cdf command; fresh workspace copy setup is outside the worker timed region by default\",
+        }
+    ],
+}
+spec_path.write_text(json.dumps(spec, sort_keys=True), encoding=\"utf-8\")
+PY
+target/release/cdf-p3-lab run-cell \"\${spec_path}\" > \"\${out}\"; python3 -m json.tool \"\${out}\" >/dev/null; wc -c \"\${out}\""
     ;;
 
   lab)

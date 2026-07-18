@@ -2,6 +2,7 @@ use std::error::Error;
 
 mod baseline;
 mod catalog;
+mod cdf_command;
 mod comparison;
 mod envelope;
 mod fixtures;
@@ -17,6 +18,7 @@ mod runners;
 
 pub use baseline::{PreoptimizationBaselineConfig, run_preoptimization_baseline};
 pub use catalog::{FixtureCatalog, FixtureSpec, fixture_catalog, fixture_spec};
+pub use cdf_command::{CdfCommandWorkload, CdfWorkspaceMode, run_cdf_command_workload};
 pub use cdf_package::canonical_json_bytes;
 pub use comparison::*;
 pub use envelope::*;

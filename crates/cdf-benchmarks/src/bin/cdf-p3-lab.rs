@@ -5,9 +5,9 @@ use cdf_benchmarks::{
     MacroRunSpec, PreoptimizationBaselineConfig, PreparedFileDestinationWorkload,
     PreparedFilePackageWorkload, ProfileTool, ReferenceWorkload, StartupControlWorkload,
     SystemHostProvider, WorkerMeasurement, canonical_json_bytes, compare_reports, comparison_fails,
-    host_class, install_baseline, plan_profile, run_interop_fixture_workload,
-    run_preoptimization_baseline, run_prepared_file_to_destination, run_prepared_file_to_package,
-    run_reference, run_startup_control_workload,
+    host_class, install_baseline, plan_profile, run_cdf_command_workload,
+    run_interop_fixture_workload, run_preoptimization_baseline, run_prepared_file_to_destination,
+    run_prepared_file_to_package, run_reference, run_startup_control_workload,
 };
 
 fn main() {
@@ -58,7 +58,12 @@ fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 physical_bytes: input_bytes,
                 spill_bytes: 0,
                 phases: Vec::new(),
-            })?)
+                })?)
+        }
+        [command, request] if command == "cdf-command-worker" => {
+            let workload: cdf_benchmarks::CdfCommandWorkload =
+                serde_json::from_slice(&fs::read(request)?)?;
+            write_stdout(&canonical_json_bytes(&run_cdf_command_workload(&workload)?)?)
         }
         [command, request, iterations] if command == "profile-repeat-cdf" => {
             let workload: PreparedFilePackageWorkload =
@@ -182,7 +187,7 @@ fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             write_stdout(&canonical_json_bytes(&run)?)
         }
         _ => Err(format!(
-            "usage: {} reference-worker REQUEST.json | host | run-cell REQUEST.json | baseline-run OUTPUT_ROOT REVISION DEPENDENCIES TOOLCHAIN SAMPLES | compare BASELINE.json CURRENT.json",
+            "usage: {} reference-worker REQUEST.json | cdf-command-worker REQUEST.json | host | run-cell REQUEST.json | baseline-run OUTPUT_ROOT REVISION DEPENDENCIES TOOLCHAIN SAMPLES | compare BASELINE.json CURRENT.json",
             executable_name()
         )
         .into()),
