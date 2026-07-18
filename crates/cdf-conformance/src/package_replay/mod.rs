@@ -6,17 +6,24 @@ use std::{
 
 use arrow_array::{ArrayRef, Int64Array, RecordBatch, StringArray};
 use arrow_schema::{DataType, Field, Schema};
-use cdf_contract::{
-    CompiledExpressionPlan, ContractPolicy, ObservedSchema, compile_validation_program,
+use cdf_contract::{ContractPolicy, ObservedSchema, compile_validation_program};
+use cdf_engine::{
+    CompiledStreamAdmissionEvidence, EnginePlanInput, LineageInputObservation, LineageSummary,
+    PhysicalObservationEvidence, Planner, StreamAdmissionCompletion,
+    StreamAdmissionObservationEvidence,
 };
 use cdf_kernel::{
     CHECKPOINT_STATE_VERSION, CdfError, Checkpoint, CheckpointId, CheckpointStatus,
-    CheckpointStore, CursorPosition, CursorValue, DeliveryGuarantee, PackageHash, PartitionId,
-    PipelineId, PlanId, Receipt, ResourceId, Result, ScanPlan, ScanRequest, SchemaHash, ScopeKey,
-    SegmentId, SourcePosition, StateDelta, StateSegment, TargetName, WriteDisposition,
+    CheckpointStore, CompiledScanIntent, CursorPosition, CursorValue, ExecutionExtent,
+    PLAN_SCHEMA_OBSERVATION_ID_KEY, PackageHash, PartitionId, PartitionOpenAttempt, PartitionPlan,
+    PartitionRetrySafety, PipelineId, ProcessedObservationOutcome, ProcessedObservationPosition,
+    Receipt, ResourceDescriptor, ResourceId, ResourceStream, Result, ScanRequest, SchemaHash,
+    SchemaSource, ScopeKey, SegmentId, SourcePosition, StateDelta, StateSegment, TargetName,
+    TrustLevel, WriteDisposition,
 };
 use cdf_package_contract::{
-    DestinationCommitPlanPreimage, PackageManifest, PackageStatus, SegmentEntry, StateDeltaPreimage,
+    DestinationCommitPlanPreimage, PROCESSED_OBSERVATIONS_FILE, PackageManifest, PackageStatus,
+    ProcessedObservationEvidenceArtifact, SegmentEntry, StateDeltaPreimage,
 };
 use cdf_project::{
     PackageArtifactRecoveryRequest, PackageArtifactReplayRequest, ReceiptVerifiedHook,
@@ -31,6 +38,8 @@ pub use cdf_state_sqlite::SqliteCheckpointStore;
 pub const DEFAULT_PREPARED_SCHEMA_HASH: &str = "schema-v1";
 pub const DEFAULT_PREPARED_TARGET: &str = "orders";
 pub const DEFAULT_PREPARED_SEGMENT_ID: &str = "seg-000001";
+const PREPARED_PARTITION_ID: &str = "p0";
+const PREPARED_OBSERVATION_ID: &str = "p0";
 
 #[derive(Clone, Debug)]
 pub struct PreparedPackageFixtureSpec {
@@ -165,13 +174,22 @@ pub fn build_prepared_package_fixture(
     let builder = PackageBuilder::create(&spec.package_dir, spec.package_id.clone())?;
     builder.update_status(PackageStatus::Extracting)?;
     let batch = deterministic_orders_batch()?;
-    write_compiled_expression_artifacts(&builder, batch.schema().as_ref())?;
+    let schema = batch.schema();
+    let admission =
+        write_compiled_plan_artifacts(&builder, Arc::clone(&schema), &spec.schema_hash)?;
     builder.write_runtime_arrow_schema(batch.schema().as_ref())?;
     builder.write_json_artifact(
         "schema/output.arrow.json",
         &BTreeMap::from([("schema_hash", spec.schema_hash.as_str())]),
     )?;
     let segment = builder.write_segment(spec.segment_id.clone(), &[batch])?;
+    write_stream_admission_artifacts(
+        &builder,
+        &admission,
+        segment.row_count,
+        &spec.segment_id,
+        schema.as_ref(),
+    )?;
     write_prepared_state_commit_artifacts(&builder, &spec, segment)?;
     let manifest = builder.finish_with_status(spec.status)?;
 
@@ -184,24 +202,22 @@ pub fn build_prepared_package_fixture(
     })
 }
 
-fn write_compiled_expression_artifacts(builder: &PackageBuilder, schema: &Schema) -> Result<()> {
+fn write_compiled_plan_artifacts(
+    builder: &PackageBuilder,
+    schema: Arc<Schema>,
+    schema_hash: &SchemaHash,
+) -> Result<cdf_engine::CompiledSchemaAdmissionPlan> {
     let mut program = compile_validation_program(
         &ContractPolicy::evolve(),
-        &ObservedSchema::from_arrow(schema),
+        &ObservedSchema::from_arrow(schema.as_ref()),
     )?;
     program.row_rules.clear();
     program.transforms.clear();
-    program.compiled_expression_plan = Some(CompiledExpressionPlan::current(
-        Vec::new(),
-        Vec::new(),
-        Vec::new(),
-        Vec::new(),
-    )?);
-    builder.write_json_artifact("plan/validation-program.json", &program)?;
-    builder.write_json_artifact(
-        "plan/scan.json",
-        &ScanPlan {
-            plan_id: PlanId::new("conformance-artifact-plan")?,
+
+    let resource = PreparedFixtureResource::new(Arc::clone(&schema), schema_hash.clone())?;
+    let plan = Planner::new().plan_tier_a(
+        &resource,
+        EnginePlanInput {
             request: ScanRequest {
                 resource_id: ResourceId::new("orders")?,
                 projection: None,
@@ -210,15 +226,125 @@ fn write_compiled_expression_artifacts(builder: &PackageBuilder, schema: &Schema
                 order_by: Vec::new(),
                 scope: ScopeKey::Resource,
             },
-            partitions: Vec::new(),
-            pushed_predicates: Vec::new(),
-            unsupported_predicates: Vec::new(),
-            estimated_rows: None,
-            estimated_bytes: None,
-            delivery_guarantee: DeliveryGuarantee::AtLeastOnceDuplicateRisk,
+            validation_program: program,
+            execution_extent: ExecutionExtent::bounded(),
+            package_id: "conformance-prepared-package".to_owned(),
         },
     )?;
+    builder.write_json_artifact("plan/validation-program.json", &plan.validation_program)?;
+    builder.write_json_artifact("plan/scan.json", &plan.scan)?;
+    builder.write_json_artifact(
+        "plan/schema-admission.json",
+        &plan.compiled_schema_admission,
+    )?;
+    Ok(plan.compiled_schema_admission)
+}
+
+fn write_stream_admission_artifacts(
+    builder: &PackageBuilder,
+    admission: &cdf_engine::CompiledSchemaAdmissionPlan,
+    row_count: u64,
+    segment_id: &SegmentId,
+    schema: &Schema,
+) -> Result<()> {
+    let physical = PhysicalObservationEvidence::arrow_schema(schema)?;
+    let physical_hash = physical.identity_hash()?;
+    let coercion = admission.instantiate(schema, &physical_hash)?;
+    let output_position = prepared_output_position();
+    let observation = StreamAdmissionObservationEvidence::new(
+        PREPARED_OBSERVATION_ID,
+        physical_hash.clone(),
+        coercion,
+        StreamAdmissionCompletion::Complete {
+            source_position: output_position.clone(),
+        },
+    )?;
+    let stream_evidence = CompiledStreamAdmissionEvidence::new(
+        admission,
+        BTreeMap::from([(physical_hash.to_string(), physical)]),
+        vec![observation],
+    )?;
+    builder.write_json_artifact("schema/stream-admission-evidence.json", &stream_evidence)?;
+    let partition_id = prepared_partition_id()?;
+    let lineage = LineageSummary {
+        input_partitions: vec![partition_id.clone()],
+        input_rows: row_count,
+        input_observations: vec![LineageInputObservation {
+            observation_id: PREPARED_OBSERVATION_ID.to_owned(),
+            partition_id,
+            observed_rows: row_count,
+            output_position: Some(output_position),
+        }],
+        output_segments: vec![segment_id.clone()],
+    };
+    builder.write_lineage_artifact(
+        "lineage.json",
+        &cdf_package::canonical_json_bytes(&lineage)?,
+    )?;
     Ok(())
+}
+
+struct PreparedFixtureResource {
+    descriptor: ResourceDescriptor,
+    schema: Arc<Schema>,
+}
+
+impl PreparedFixtureResource {
+    fn new(schema: Arc<Schema>, schema_hash: SchemaHash) -> Result<Self> {
+        Ok(Self {
+            descriptor: ResourceDescriptor {
+                resource_id: ResourceId::new("orders")?,
+                schema_source: SchemaSource::Declared {
+                    schema_hash,
+                    source: "prepared-package-fixture".to_owned(),
+                },
+                primary_key: Vec::new(),
+                merge_key: Vec::new(),
+                cursor: None,
+                write_disposition: WriteDisposition::Append,
+                deduplication: None,
+                contract: None,
+                state_scope: ScopeKey::Resource,
+                freshness: None,
+                trust_level: TrustLevel::Experimental,
+            },
+            schema,
+        })
+    }
+}
+
+impl ResourceStream for PreparedFixtureResource {
+    fn descriptor(&self) -> &ResourceDescriptor {
+        &self.descriptor
+    }
+
+    fn schema(&self) -> Arc<Schema> {
+        Arc::clone(&self.schema)
+    }
+
+    fn plan_partitions(&self, _request: &ScanRequest) -> Result<Vec<PartitionPlan>> {
+        let partition_id = prepared_partition_id()?;
+        Ok(vec![PartitionPlan {
+            partition_id: partition_id.clone(),
+            scope: ScopeKey::Partition { partition_id },
+            planned_position: None,
+            start_position: None,
+            scan_intent: CompiledScanIntent::full_scan(),
+            retry_safety: PartitionRetrySafety::Forbidden,
+            metadata: BTreeMap::from([(
+                PLAN_SCHEMA_OBSERVATION_ID_KEY.to_owned(),
+                PREPARED_OBSERVATION_ID.to_owned(),
+            )]),
+        }])
+    }
+
+    fn open(&self, _partition: PartitionPlan) -> PartitionOpenAttempt<'_> {
+        PartitionOpenAttempt::materialized(Box::pin(async {
+            Err(CdfError::internal(
+                "prepared replay fixture has no source payload",
+            ))
+        }))
+    }
 }
 
 pub fn replay_package_case<Store>(
@@ -605,13 +731,9 @@ fn write_prepared_state_commit_artifacts(
     segment: SegmentEntry,
 ) -> Result<()> {
     let scope = ScopeKey::Partition {
-        partition_id: PartitionId::new("p0")?,
+        partition_id: prepared_partition_id()?,
     };
-    let output_position = SourcePosition::Cursor(CursorPosition {
-        version: CHECKPOINT_STATE_VERSION,
-        field: "id".to_owned(),
-        value: CursorValue::I64(3),
-    });
+    let output_position = prepared_output_position();
     let segments = vec![StateSegment {
         segment_id: segment.segment_id,
         scope: scope.clone(),
@@ -627,10 +749,24 @@ fn write_prepared_state_commit_artifacts(
         state_version: CHECKPOINT_STATE_VERSION,
         parent_checkpoint_id: None,
         input_position: None,
-        output_position,
+        output_position: output_position.clone(),
         schema_hash: spec.schema_hash.clone(),
         segments: segments.clone(),
     };
+    let processed = ProcessedObservationPosition::new(
+        PREPARED_OBSERVATION_ID,
+        ProcessedObservationOutcome::Admitted,
+        output_position.clone(),
+    )?;
+    builder.write_json_artifact(
+        PROCESSED_OBSERVATIONS_FILE,
+        &ProcessedObservationEvidenceArtifact::new(
+            None,
+            spec.disposition.clone(),
+            vec![processed],
+            output_position.clone(),
+        )?,
+    )?;
     let commit_plan = DestinationCommitPlanPreimage::package_hash_token(
         spec.target.clone(),
         spec.disposition.clone(),
@@ -642,6 +778,18 @@ fn write_prepared_state_commit_artifacts(
     builder.write_state_delta_preimage_artifact(&state_delta)?;
     builder.write_commit_plan_preimage_artifact(&commit_plan)?;
     Ok(())
+}
+
+fn prepared_partition_id() -> Result<PartitionId> {
+    PartitionId::new(PREPARED_PARTITION_ID)
+}
+
+fn prepared_output_position() -> SourcePosition {
+    SourcePosition::Cursor(CursorPosition {
+        version: CHECKPOINT_STATE_VERSION,
+        field: "id".to_owned(),
+        value: CursorValue::I64(3),
+    })
 }
 
 #[cfg(test)]
