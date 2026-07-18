@@ -50,6 +50,11 @@ Correct D11's overbroad LZ4 conclusion by building the DuckDB nanoarrow extensio
 ## Journal
 
 - 2026-07-18: Opened after upstream verification invalidated D11's general LZ4 conclusion. Apache PR 819 merged LZ4 IPC decompression on 2025-10-27 and nanoarrow `0.8.0` released it behind `NANOARROW_IPC_WITH_LZ4`. The installed DuckDB community extension's `.info` file identifies extension revision `42e4199`; that revision fetches nanoarrow `4bf5a932` from 2025-01-09 and therefore produced the observed `Compression type with value 1 not supported by this build of nanoarrow` error.
+- 2026-07-18: Built the DuckDB nanoarrow extension on the controlled EC2 host from extension revision `42e4199a67c4cd0789087562a025e87e7130fdc3`, DuckDB `v1.5.4` commit `08e34c447bae34eaee3723cac61f2878b6bdf787`, and Apache nanoarrow `0.8.0` commit `a579fbf5d192e85b6249935e117de7d02a6dc4e9`. The exact nanoarrow commit archive digest is `sha256:ed186f0b8151c323fd41a1b7cfa830abad0ac84e1657cd597da12d98fa9a4be1`; the extension was compiled with `NANOARROW_IPC_WITH_LZ4=ON` against system `lz4-devel 1.9.4`. The loaded extension reported `nanoarrow_version() = 0.8.0` under DuckDB `v1.5.4`.
+- 2026-07-18: The corrected extension counted `1,048,576` rows from a generated LZ4 Arrow IPC file and `196,608` rows from an exact current canonical CDF LZ4 package segment. The previous incompatibility was entirely the pre-0.8.0 extension artifact, not CDF's segment framing or compression.
+- 2026-07-18: Extended the performance lab's existing Arrow IPC reference workload with an explicit absolute-path loadable-extension variant and required nanoarrow-version assertion. Unsigned-extension enablement is confined to this lab-only variant; the community-extension probes retain their existing signed install/load path.
+- 2026-07-18: Ran three warm full-year samples in an isolated `MemoryMax=24G` user cgroup against the exact 215 canonical CDF LZ4 segment files from the full-year TLC package. All samples materialized `41,169,720` rows. Wall times were `4.672500665s`, `4.558788174s`, and `4.210656148s`; median was `4.558788174s` with `113.712491ms` MAD, `9,030,847` rows/s, `2,289,385,472` bytes peak process RSS, and `4,828,008,448` bytes peak cgroup memory. No memory-high, max, OOM, or spill event occurred.
+- 2026-07-18: The result clears the generated retention threshold by a wide margin: direct canonical-segment materialization is approximately `7.5x` faster than the current approximately `34s` full-CDF appender path and approximately `2.0x` faster than D11's generated uncompressed duplicate-handoff median. Its stated limit is equally important: the probe omits CDF receipt/checkpoint work and destination provenance-column construction, so a destination-owned product path must still clear the full-CDF EC2 gate before replacing the default.
 
 ## Blockers
 
@@ -57,7 +62,10 @@ None.
 
 ## Evidence
 
-Pending.
+- Exact controlled-host observation: `.10x/evidence/.storage/2026-07-18-p3-d14-ec2-current-package-lz4-nanoarrow-080-observation.json`.
+- Upstream capability: Apache Arrow nanoarrow PR 819 and release `apache-arrow-nanoarrow-0.8.0`, linked under References.
+- Focused local lab validation: `cargo fmt --all`; `CARGO_BUILD_JOBS=12 cargo check -p cdf-benchmarks --locked -j 12`; `CARGO_BUILD_JOBS=12 cargo test -p cdf-benchmarks arrow_ipc_handoff_writer_emits_readable_files --locked -j 12 -- --nocapture`; and `git diff --check` all passed.
+- Acceptance mapping: exact pin/build configuration is recorded in the Journal; extension load/version, generated LZ4, and current-segment compatibility are proved by the controlled-host probes; the raw JSON records every full-year sample, row count, throughput, RSS, cgroup peak/events, and measurement biases. Full-CDF product integration remains open.
 
 ## Review
 

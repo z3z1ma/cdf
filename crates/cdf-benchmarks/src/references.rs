@@ -267,18 +267,23 @@ pub enum ReferenceWorkload {
     },
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum DuckDbArrowExtension {
     Nanoarrow,
     Arrow,
+    Loadable {
+        path: PathBuf,
+        expected_nanoarrow_version: String,
+    },
 }
 
 impl DuckDbArrowExtension {
-    fn extension_name(self) -> &'static str {
+    fn community_extension_name(&self) -> Option<&'static str> {
         match self {
-            Self::Nanoarrow => "nanoarrow",
-            Self::Arrow => "arrow",
+            Self::Nanoarrow => Some("nanoarrow"),
+            Self::Arrow => Some("arrow"),
+            Self::Loadable { .. } => None,
         }
     }
 }
@@ -509,7 +514,7 @@ pub fn run_reference(workload: &ReferenceWorkload) -> BenchResult<WorkerMeasurem
             output,
             extension,
             checkpoint,
-        } => run_duckdb_arrow_ipc_existing_read(paths, output, *extension, *checkpoint),
+        } => run_duckdb_arrow_ipc_existing_read(paths, output, extension, *checkpoint),
         ReferenceWorkload::DuckDbArrowIpcHandoffIngest {
             output,
             staging_dir,
@@ -528,7 +533,7 @@ pub fn run_reference(workload: &ReferenceWorkload) -> BenchResult<WorkerMeasurem
             *rows_per_file,
             *include_row_key,
             *compression,
-            *extension,
+            extension,
             *checkpoint,
         ),
         ReferenceWorkload::DuckDbParquetStagedIngest {
@@ -859,7 +864,7 @@ fn run_duckdb_arrow_stream_scan_ingest(
 fn run_duckdb_arrow_ipc_existing_read(
     paths: &[PathBuf],
     output: &Path,
-    extension: DuckDbArrowExtension,
+    extension: &DuckDbArrowExtension,
     checkpoint: bool,
 ) -> BenchResult<WorkerMeasurement> {
     if paths.is_empty() {
@@ -873,7 +878,7 @@ fn run_duckdb_arrow_ipc_existing_read(
     }
     remove_if_exists(output)?;
     remove_if_exists(&duckdb_wal_path(output))?;
-    let connection = duckdb::Connection::open(output)?;
+    let connection = open_duckdb_arrow_database(output, extension)?;
     load_duckdb_arrow_extension(&connection, extension)?;
     connection.execute_batch(&format!(
         "CREATE TABLE arrow_ipc_read AS SELECT * FROM read_arrow({})",
@@ -900,7 +905,7 @@ fn run_duckdb_arrow_ipc_handoff_ingest(
     rows_per_file: u64,
     include_row_key: bool,
     compression: ArrowIpcCompression,
-    extension: DuckDbArrowExtension,
+    extension: &DuckDbArrowExtension,
     checkpoint: bool,
 ) -> BenchResult<WorkerMeasurement> {
     if rows == 0 {
@@ -953,7 +958,7 @@ fn run_duckdb_arrow_ipc_handoff_ingest(
         file_index += 1;
     }
 
-    let connection = duckdb::Connection::open(output)?;
+    let connection = open_duckdb_arrow_database(output, extension)?;
     load_duckdb_arrow_extension(&connection, extension)?;
     connection.execute_batch(&format!(
         "CREATE TABLE arrow_ipc_handoff AS SELECT * FROM read_arrow({})",
@@ -1857,18 +1862,63 @@ fn duckdb_path_list(paths: &[PathBuf]) -> String {
 
 fn load_duckdb_arrow_extension(
     connection: &duckdb::Connection,
-    extension: DuckDbArrowExtension,
+    extension: &DuckDbArrowExtension,
 ) -> BenchResult<()> {
-    let extension_name = extension.extension_name();
+    if let Some(extension_name) = extension.community_extension_name() {
+        return connection
+            .execute_batch(&format!(
+                "INSTALL {extension_name} FROM community; LOAD {extension_name};"
+            ))
+            .map_err(|error| {
+                bench_error(format!(
+                    "DuckDB {extension_name} extension install/load failed: {error}"
+                ))
+            });
+    }
+
+    let DuckDbArrowExtension::Loadable {
+        path,
+        expected_nanoarrow_version,
+    } = extension
+    else {
+        unreachable!("community extensions returned above")
+    };
+    if !path.is_absolute() || !path.is_file() {
+        return Err(bench_error(format!(
+            "DuckDB loadable Arrow extension must be an existing absolute file: {}",
+            path.display()
+        )));
+    }
     connection
-        .execute_batch(&format!(
-            "INSTALL {extension_name} FROM community; LOAD {extension_name};"
-        ))
+        .execute_batch(&format!("LOAD {};", duckdb_string_literal(path)))
         .map_err(|error| {
             bench_error(format!(
-                "DuckDB {extension_name} extension install/load failed: {error}"
+                "DuckDB loadable Arrow extension {} failed to load: {error}",
+                path.display()
             ))
-        })
+        })?;
+    let observed_version = connection.query_row("SELECT nanoarrow_version()", [], |row| {
+        row.get::<_, String>(0)
+    })?;
+    if observed_version != *expected_nanoarrow_version {
+        return Err(bench_error(format!(
+            "DuckDB loadable Arrow extension reports nanoarrow {observed_version}, expected {expected_nanoarrow_version}"
+        )));
+    }
+    Ok(())
+}
+
+fn open_duckdb_arrow_database(
+    output: &Path,
+    extension: &DuckDbArrowExtension,
+) -> BenchResult<duckdb::Connection> {
+    if matches!(extension, DuckDbArrowExtension::Loadable { .. }) {
+        return Ok(duckdb::Connection::open_with_flags(
+            output,
+            duckdb::Config::default().allow_unsigned_extensions()?,
+        )?);
+    }
+    Ok(duckdb::Connection::open(output)?)
 }
 
 fn duckdb_ident(value: &str) -> String {

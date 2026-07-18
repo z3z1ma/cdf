@@ -86,3 +86,7 @@ Pass with retained scope narrowed. The evidence answers every falsification ques
 ## Retrospective
 
 The important correction was separating three Arrow IPC questions that sounded like one: extension availability, existing package compatibility, and destination-owned ephemeral handoff viability. Existing CDF segments stay LZ4-compressed package artifacts and are not a viable DuckDB input today. A separate uncompressed handoff file is viable and fast enough to justify implementation, but it must remain destination-owned temporary spill until a separate artifact-format decision says otherwise.
+
+## Corrective follow-up
+
+- 2026-07-18: `.10x/tickets/2026-07-18-p3-d14-duckdb-nanoarrow-080-lz4-revalidation.md` supersedes D11's overbroad LZ4 conclusion. D11 accurately measured the then-installed community extension artifact, but that artifact vendors pre-LZ4 nanoarrow. Apache nanoarrow `0.8.0` includes LZ4 IPC decompression, and the corrected pinned build directly reads current canonical CDF LZ4 segments. Preserve D11 as historical evidence for the old artifact; do not treat its incompatibility conclusion as current authority.

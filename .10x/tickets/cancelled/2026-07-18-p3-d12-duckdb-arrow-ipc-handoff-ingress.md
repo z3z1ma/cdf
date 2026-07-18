@@ -78,3 +78,7 @@ Pass for cancellation. The code under test stayed behind the DuckDB destination 
 ## Retrospective
 
 D11's generated `CREATE TABLE AS SELECT read_arrow(...)` result was a useful falsification probe but not sufficient product evidence. The integration point matters: CDF's production destination final binding, transaction shape, resource settings, and table/provenance requirements changed the actual DuckDB cost profile. The durable lesson is to require full-CDF EC2 evidence before retaining even an off-by-default destination path. The next G4 branch should favor tuned Parquet handoff because it already has same-host generated evidence around `10.47s`, or it should attack package/destination duplication more directly rather than adding another materialization variant.
+
+## Corrective follow-up
+
+- 2026-07-18: D12 remains correctly cancelled because its duplicate uncompressed handoff failed its own full-CDF threshold. Its claim that direct canonical LZ4 segment reads were unavailable is superseded by `.10x/tickets/2026-07-18-p3-d14-duckdb-nanoarrow-080-lz4-revalidation.md`: a DuckDB nanoarrow extension built against nanoarrow `0.8.0` with `NANOARROW_IPC_WITH_LZ4=ON` reads those segments directly. D14 is a materially different no-duplicate-handoff path, not a revival of D12.
