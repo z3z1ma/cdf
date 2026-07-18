@@ -1,6 +1,6 @@
 Status: active
 Created: 2026-07-11
-Updated: 2026-07-17
+Updated: 2026-07-18
 Parent: None
 Depends-On: `.10x/tickets/done/2026-07-11-p0-sx1-source-extension-boundary.md`
 
@@ -139,6 +139,7 @@ None from SX1: the source extension boundary is done. This ticket now owns direc
 - 2026-07-17: L3R's repaired failure reporting exposed three stale startup-control baseline cells. Replaced `package_build`, `duckdb_commit`, and `parquet_destination` with current prepared file-package and file-destination workers instead of preserving compatibility case machinery. Added a `cdf-file-destination-worker` command backed by the current `PreparedFileDestinationWorkload` runner; baseline package and destination cells now execute through compiled source, scheduler, package, destination ingress, receipt, and checkpoint paths. The tiny startup control remains an explicit benchmark control and still observes successfully.
 - 2026-07-17: Renamed the remaining benchmark-lab compatibility vocabulary to truthful control vocabulary without changing the measured work. `LegacyCaseWorkload`, `legacy-case-worker`, `legacy_*` dataset/workload IDs, and `LEGACY_FIXTURE_GENERATOR_VERSION` are now `StartupControlWorkload`, `startup-control-worker`, `control_*`, and `FIXTURE_GENERATOR_VERSION`; imported trend records remain supported only as incomparable external measurements, not current compatibility surfaces. A focused scan finds no remaining `LegacyCase`, `legacy-case`, `legacy_`, `legacy-orders`, `LEGACY_FIXTURE`, `includes_legacy`, `run_legacy`, `import_legacy`, `legacy_medium`, or `legacy_tiny` occurrences under `crates/cdf-benchmarks`.
 - 2026-07-17: Cleaned the installed P3 baseline evidence and generated envelope after the benchmark vocabulary cleanup. The report copies and `docs/performance-envelope.md` now use `control_medium_throughput`, `control_tiny_startup`, `control_tiny_startup_e2e`, `includes_cdf_evidence`, and `includes_startup_control`; no timing samples were altered. The installed baseline report was renamed to its new content identity `sha256:997f7551e6e64734800c033300683e5669ff2801e606ae15c7df6196d172535f`, and the baseline index now points at that report. The generated-envelope golden remains blocked by the already-recorded D5/F2 destination-evidence mismatch, not by this vocabulary cleanup.
+- 2026-07-18: Ran another repository vocabulary inventory and removed two internal compatibility-smelling names without changing behavior. The ignored segmentation fixed-cost benchmark now calls its comparison package/metric `baseline_*` instead of `legacy_*`. The active dlt interop surface is a bridge, not a CDF compatibility shim, so Rust/API vocabulary now uses `DltBridge*`, `mapping_table`, and the error text says `dlt bridge metadata`. Remaining `legacy` hits are classified as external protocol/format dialects (Airbyte `LEGACY` state and explicitly rejected legacy LZ4 framing), current versioned artifact names, or ordinary English/test data, not preproduction CDF artifact compatibility.
 
 ## Retrospective
 
@@ -165,3 +166,8 @@ Pending ticket completion.
   - `CARGO_BUILD_JOBS=12 cargo test -p cdf-benchmarks --test fixtures p3_dataset_catalog_is_regeneration_grade_and_bounded --locked -j 12` — passed, 1 passed.
   - `CARGO_BUILD_JOBS=12 cargo test -p cdf-benchmarks --test fixtures imported_trends_load_only_as_incomparable_imports --locked -j 12` — passed, 1 passed.
   - `CARGO_BUILD_JOBS=12 cargo test -p cdf-benchmarks --test lab_policy generated_envelope_matches_committed_golden --locked -j 12` — failed before comparing the envelope because `destination observation duckdb/arrow_record_batch_appender evidence p3-d2-2026-07-11-v1 does not exactly match a registry descriptor`; this is the pre-existing F2/D5 evidence drift already recorded above and not new evidence against this cleanup.
+- 2026-07-18 repository vocabulary cleanup:
+  - `rg -n "DltShim|dlt shim|dlt_shim|migration_table|ShimMapping|ShimMetadata|ShimRead|ShimObject" crates/cdf-python crates/cdf-cli docs .10x/tickets/2026-07-11-p0-remove-preproduction-compatibility-vestiges.md` — no matches after the rename.
+  - `CARGO_BUILD_JOBS=12 cargo test -p cdf-python dlt --locked -j 12 -- --nocapture` — passed, 4 passed. Confirms dlt bridge metadata/resource/source behavior survived the vocabulary cleanup.
+  - `CARGO_BUILD_JOBS=12 cargo test -p cdf-engine canonical_coalescing_package_benchmark --locked -j 12 -- --ignored --nocapture` — passed and reported `baseline_1024_row_segments_ns=654958666 canonical_64k_segment_ns=59857209 speedup=10.94`.
+  - `CARGO_BUILD_JOBS=12 cargo clippy -p cdf-python -p cdf-engine --all-targets --locked -j 12 -- -D warnings` — passed.

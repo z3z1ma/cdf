@@ -1342,19 +1342,19 @@ mod tests {
             .collect::<Vec<_>>();
         let root = tempfile::tempdir().unwrap();
 
-        let legacy_started = std::time::Instant::now();
-        let legacy =
-            cdf_package::PackageBuilder::create(root.path().join("legacy"), "legacy").unwrap();
+        let baseline_started = std::time::Instant::now();
+        let baseline =
+            cdf_package::PackageBuilder::create(root.path().join("baseline"), "baseline").unwrap();
         for (ordinal, chunk) in chunks.iter().enumerate() {
-            legacy
+            baseline
                 .write_segment(
-                    SegmentId::new(format!("legacy-{ordinal:08}")).unwrap(),
+                    SegmentId::new(format!("baseline-{ordinal:08}")).unwrap(),
                     std::slice::from_ref(chunk),
                 )
                 .unwrap();
         }
-        legacy.finish().unwrap();
-        let legacy_ns = legacy_started.elapsed().as_nanos();
+        baseline.finish().unwrap();
+        let baseline_ns = baseline_started.elapsed().as_nanos();
 
         let canonical_started = std::time::Instant::now();
         let mut assembler =
@@ -1375,10 +1375,10 @@ mod tests {
         }
         canonical.finish().unwrap();
         let canonical_ns = canonical_started.elapsed().as_nanos();
-        let speedup = legacy_ns as f64 / canonical_ns as f64;
+        let speedup = baseline_ns as f64 / canonical_ns as f64;
         eprintln!(
-            "legacy_1024_row_segments_ns={legacy_ns} canonical_64k_segment_ns={canonical_ns} speedup={speedup:.2}"
+            "baseline_1024_row_segments_ns={baseline_ns} canonical_64k_segment_ns={canonical_ns} speedup={speedup:.2}"
         );
-        assert!(canonical_ns < legacy_ns);
+        assert!(canonical_ns < baseline_ns);
     }
 }

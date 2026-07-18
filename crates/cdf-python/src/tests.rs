@@ -525,7 +525,7 @@ orders.__cdf_dlt_metadata__ = {
         assert_eq!(descriptor.state_scope, ScopeKey::Resource);
         assert_eq!(preview.read.row_count(), 1);
 
-        let snapshot = serde_json::to_string_pretty(&preview.migration_table).unwrap();
+        let snapshot = serde_json::to_string_pretty(&preview.mapping_table).unwrap();
         assert!(snapshot.contains("primary_key"));
         assert!(snapshot.contains("write_disposition.strategy"));
         assert!(snapshot.contains("dlt destination delegation"));
@@ -661,9 +661,9 @@ def crm():
         );
         assert_eq!(read.metadata.source_name.as_deref(), Some("crm"));
         assert_eq!(read.read.row_count(), 1);
-        assert!(read.migration_table.entries.iter().any(|entry| {
+        assert!(read.mapping_table.entries.iter().any(|entry| {
             entry.dlt_feature == "dlt destination delegation"
-                && entry.status == DltShimMappingStatus::Unsupported
+                && entry.status == DltBridgeMappingStatus::Unsupported
         }));
     });
 }
@@ -672,8 +672,8 @@ def crm():
 fn dlt_current_state_view_reads_committed_checkpoint_heads() {
     let pipeline_id = PipelineId::new("pipeline").unwrap();
     let resource_id = ResourceId::new("orders").unwrap();
-    let metadata = DltShimMetadata {
-        kind: DltShimObjectKind::Resource,
+    let metadata = DltBridgeMetadata {
+        kind: DltBridgeObjectKind::Resource,
         name: Some("orders".to_owned()),
         table_name: None,
         source_name: Some("crm".to_owned()),

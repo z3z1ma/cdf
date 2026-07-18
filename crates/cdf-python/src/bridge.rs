@@ -323,11 +323,13 @@ impl PythonResourceBridge {
         Ok(read)
     }
 
-    pub fn batches_from_dlt_resource(&self, resource: &Bound<'_, PyAny>) -> Result<DltShimRead> {
+    pub fn batches_from_dlt_resource(&self, resource: &Bound<'_, PyAny>) -> Result<DltBridgeRead> {
         let metadata = extract_dlt_metadata(resource)?.ok_or_else(|| {
-            CdfError::contract("dlt preview requires cdf dlt shim metadata on the resource object")
+            CdfError::contract(
+                "dlt preview requires cdf dlt bridge metadata on the resource object",
+            )
         })?;
-        if metadata.kind != DltShimObjectKind::Resource {
+        if metadata.kind != DltBridgeObjectKind::Resource {
             return Err(CdfError::contract(
                 "dlt preview expected resource metadata; use batches_from_dlt_source for sources",
             ));
@@ -338,17 +340,17 @@ impl PythonResourceBridge {
         if let Some(descriptor) = read.descriptor.as_mut() {
             metadata.apply_to_descriptor(descriptor)?;
         }
-        Ok(DltShimRead {
-            migration_table: metadata.migration_table(),
+        Ok(DltBridgeRead {
+            mapping_table: metadata.mapping_table(),
             metadata,
             read,
         })
     }
 
-    pub fn batches_from_dlt_source(&self, source: &Bound<'_, PyAny>) -> Result<Vec<DltShimRead>> {
+    pub fn batches_from_dlt_source(&self, source: &Bound<'_, PyAny>) -> Result<Vec<DltBridgeRead>> {
         let source_metadata = extract_dlt_metadata(source)?;
         if let Some(metadata) = &source_metadata
-            && metadata.kind == DltShimObjectKind::Resource
+            && metadata.kind == DltBridgeObjectKind::Resource
         {
             return self
                 .batches_from_dlt_resource(source)
@@ -365,7 +367,7 @@ impl PythonResourceBridge {
             source.clone()
         };
         if let Some(metadata) = extract_dlt_metadata(&source_output)?
-            && metadata.kind == DltShimObjectKind::Resource
+            && metadata.kind == DltBridgeObjectKind::Resource
         {
             let mut read = self.batches_from_dlt_resource(&source_output)?;
             if read.metadata.source_name.is_none() {
@@ -379,7 +381,7 @@ impl PythonResourceBridge {
         for item in iterator {
             let item = item.map_err(py_error)?;
             if let Some(metadata) = extract_dlt_metadata(&item)?
-                && metadata.kind == DltShimObjectKind::Resource
+                && metadata.kind == DltBridgeObjectKind::Resource
                 && !metadata.selected_for_source_expansion()
             {
                 continue;
@@ -393,7 +395,7 @@ impl PythonResourceBridge {
         Ok(reads)
     }
 
-    fn bridge_for_dlt_metadata(&self, metadata: &DltShimMetadata) -> Result<Self> {
+    fn bridge_for_dlt_metadata(&self, metadata: &DltBridgeMetadata) -> Result<Self> {
         let Some(resource_id) = metadata.resource_id_hint() else {
             return Ok(self.clone());
         };

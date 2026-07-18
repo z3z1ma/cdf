@@ -12,43 +12,43 @@ pub const DLT_METADATA_ATTR: &str = "__cdf_dlt_metadata__";
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum DltShimObjectKind {
+pub enum DltBridgeObjectKind {
     Resource,
     Source,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum DltShimMappingStatus {
+pub enum DltBridgeMappingStatus {
     Mapped,
     PreviewOnly,
     Unsupported,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct DltShimMigrationEntry {
+pub struct DltBridgeMappingEntry {
     pub dlt_feature: String,
     pub cdf_mapping: String,
-    pub status: DltShimMappingStatus,
+    pub status: DltBridgeMappingStatus,
     pub note: String,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct DltShimMigrationTable {
-    pub entries: Vec<DltShimMigrationEntry>,
+pub struct DltBridgeMappingTable {
+    pub entries: Vec<DltBridgeMappingEntry>,
 }
 
-impl DltShimMigrationTable {
+impl DltBridgeMappingTable {
     pub fn mapped(
         &mut self,
         dlt_feature: impl Into<String>,
         cdf_mapping: impl Into<String>,
         note: impl Into<String>,
     ) {
-        self.entries.push(DltShimMigrationEntry {
+        self.entries.push(DltBridgeMappingEntry {
             dlt_feature: dlt_feature.into(),
             cdf_mapping: cdf_mapping.into(),
-            status: DltShimMappingStatus::Mapped,
+            status: DltBridgeMappingStatus::Mapped,
             note: note.into(),
         });
     }
@@ -59,10 +59,10 @@ impl DltShimMigrationTable {
         cdf_mapping: impl Into<String>,
         note: impl Into<String>,
     ) {
-        self.entries.push(DltShimMigrationEntry {
+        self.entries.push(DltBridgeMappingEntry {
             dlt_feature: dlt_feature.into(),
             cdf_mapping: cdf_mapping.into(),
-            status: DltShimMappingStatus::PreviewOnly,
+            status: DltBridgeMappingStatus::PreviewOnly,
             note: note.into(),
         });
     }
@@ -73,10 +73,10 @@ impl DltShimMigrationTable {
         cdf_mapping: impl Into<String>,
         note: impl Into<String>,
     ) {
-        self.entries.push(DltShimMigrationEntry {
+        self.entries.push(DltBridgeMappingEntry {
             dlt_feature: dlt_feature.into(),
             cdf_mapping: cdf_mapping.into(),
-            status: DltShimMappingStatus::Unsupported,
+            status: DltBridgeMappingStatus::Unsupported,
             note: note.into(),
         });
     }
@@ -134,8 +134,8 @@ pub struct DltSchemaContractHint {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct DltShimMetadata {
-    pub kind: DltShimObjectKind,
+pub struct DltBridgeMetadata {
+    pub kind: DltBridgeObjectKind,
     pub name: Option<String>,
     pub table_name: Option<String>,
     pub source_name: Option<String>,
@@ -148,7 +148,7 @@ pub struct DltShimMetadata {
     pub parallelized: bool,
 }
 
-impl DltShimMetadata {
+impl DltBridgeMetadata {
     pub fn selected_for_source_expansion(&self) -> bool {
         self.selected
             && !matches!(
@@ -175,8 +175,8 @@ impl DltShimMetadata {
             })
     }
 
-    pub fn migration_table(&self) -> DltShimMigrationTable {
-        let mut table = DltShimMigrationTable::default();
+    pub fn mapping_table(&self) -> DltBridgeMappingTable {
+        let mut table = DltBridgeMappingTable::default();
         table.preview_only(
             "live dlt runtime",
             "deterministic shim metadata",
@@ -317,9 +317,9 @@ impl DltShimMetadata {
 }
 
 #[derive(Debug)]
-pub struct DltShimRead {
-    pub metadata: DltShimMetadata,
-    pub migration_table: DltShimMigrationTable,
+pub struct DltBridgeRead {
+    pub metadata: DltBridgeMetadata,
+    pub mapping_table: DltBridgeMappingTable,
     pub read: PythonBatchRead,
 }
 
@@ -335,7 +335,7 @@ pub struct DltCurrentStateView {
     pub note: String,
 }
 
-pub fn extract_dlt_metadata(object: &Bound<'_, PyAny>) -> Result<Option<DltShimMetadata>> {
+pub fn extract_dlt_metadata(object: &Bound<'_, PyAny>) -> Result<Option<DltBridgeMetadata>> {
     if object.hasattr(DLT_METADATA_ATTR).map_err(py_error)? {
         let metadata = object.getattr(DLT_METADATA_ATTR).map_err(py_error)?;
         return parse_dlt_metadata(&metadata).map(Some);
@@ -350,7 +350,7 @@ pub fn dlt_current_state_view(
     store: &dyn CheckpointStore,
     pipeline_id: PipelineId,
     resource_id: ResourceId,
-    metadata: &DltShimMetadata,
+    metadata: &DltBridgeMetadata,
 ) -> Result<DltCurrentStateView> {
     let resource_scope = ScopeKey::Resource;
     let resource_state = match store.head(&pipeline_id, &resource_id, &resource_scope)? {
@@ -378,10 +378,10 @@ pub fn dlt_current_state_view(
     })
 }
 
-fn parse_dlt_metadata(metadata: &Bound<'_, PyAny>) -> Result<DltShimMetadata> {
+fn parse_dlt_metadata(metadata: &Bound<'_, PyAny>) -> Result<DltBridgeMetadata> {
     let json_text = python_dict_to_json(metadata.py(), metadata)?;
     let raw: RawDltMetadata = serde_json::from_str(&json_text).map_err(json_error)?;
-    Ok(DltShimMetadata {
+    Ok(DltBridgeMetadata {
         kind: parse_kind(raw.kind.as_deref())?,
         name: optional_string(raw.name)?,
         table_name: optional_string(raw.table_name)?,
@@ -399,9 +399,9 @@ fn parse_dlt_metadata(metadata: &Bound<'_, PyAny>) -> Result<DltShimMetadata> {
     })
 }
 
-fn extract_cdf_resource_metadata(object: &Bound<'_, PyAny>) -> Result<DltShimMetadata> {
-    Ok(DltShimMetadata {
-        kind: DltShimObjectKind::Resource,
+fn extract_cdf_resource_metadata(object: &Bound<'_, PyAny>) -> Result<DltBridgeMetadata> {
+    Ok(DltBridgeMetadata {
+        kind: DltBridgeObjectKind::Resource,
         name: string_attr(object, "__cdf_name__")?,
         table_name: None,
         source_name: None,
@@ -515,12 +515,12 @@ struct RawIncremental {
     row_order: Option<String>,
 }
 
-fn parse_kind(value: Option<&str>) -> Result<DltShimObjectKind> {
+fn parse_kind(value: Option<&str>) -> Result<DltBridgeObjectKind> {
     match value.unwrap_or("resource") {
-        "resource" => Ok(DltShimObjectKind::Resource),
-        "source" => Ok(DltShimObjectKind::Source),
+        "resource" => Ok(DltBridgeObjectKind::Resource),
+        "source" => Ok(DltBridgeObjectKind::Source),
         other => Err(CdfError::contract(format!(
-            "unknown dlt shim metadata kind `{other}`"
+            "unknown dlt bridge metadata kind `{other}`"
         ))),
     }
 }
