@@ -90,6 +90,28 @@ fn python_bridge_emits_neutral_foreign_outcomes() {
 }
 
 #[test]
+fn direct_dict_rows_emit_neutral_outcomes_without_collecting_all_batches() {
+    let rows = vec![
+        serde_json::json!({"id": 1}),
+        serde_json::json!({"id": 2}),
+        serde_json::json!({"id": 3}),
+        serde_json::json!({"id": 4}),
+    ];
+    let mut emitted = 0;
+    let error = bridge()
+        .visit_json_dict_rows(rows, |outcome, kind| {
+            emitted += 1;
+            assert_eq!(kind, PythonYieldKind::DictRows);
+            assert_eq!(outcome.transfer_mode, ForeignTransferMode::RowCompat);
+            Err(CdfError::data("stop after first neutral dict window"))
+        })
+        .unwrap_err();
+
+    assert_eq!(emitted, 1);
+    assert_eq!(error.message, "stop after first neutral dict window");
+}
+
+#[test]
 fn dict_row_conversion_window_enforces_the_boundary_byte_limit() {
     let bridge = PythonResourceBridge::new(
         PythonBridgeOptions::new(

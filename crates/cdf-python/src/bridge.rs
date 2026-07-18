@@ -219,9 +219,27 @@ impl PythonResourceBridge {
     where
         I: IntoIterator<Item = serde_json::Value>,
     {
+        let mut batches = Vec::new();
+        let mut yield_kinds = Vec::new();
+        let mut read = self.visit_json_dict_rows(rows, |outcome, kind| {
+            batches.push(outcome.batch);
+            yield_kinds.push(kind);
+            Ok(())
+        })?;
+        read.batches = batches;
+        read.yield_kinds = yield_kinds;
+        Ok(read)
+    }
+
+    pub(crate) fn visit_json_dict_rows<I, F>(&self, rows: I, mut emit: F) -> Result<PythonBatchRead>
+    where
+        I: IntoIterator<Item = serde_json::Value>,
+        F: FnMut(ForeignBatchOutcome, PythonYieldKind) -> Result<()> + Send,
+    {
         let mut read = PythonBatchRead::empty();
         let mut json_rows = Vec::new();
         let mut next_batch_index = 0;
+        let mut next_outcome_sequence = 0;
         for row in rows {
             if !row.is_object() {
                 return Err(CdfError::data(
@@ -231,10 +249,12 @@ impl PythonResourceBridge {
             json_rows.push(serde_json::to_string(&row).map_err(json_error)?);
             if json_rows.len() == self.options.dict_batch_rows {
                 self.flush_json_rows(&mut json_rows, &mut read, &mut next_batch_index)?;
+                drain_pending_outcomes(&mut read, &mut emit, &mut next_outcome_sequence)?;
             }
         }
 
         self.flush_json_rows(&mut json_rows, &mut read, &mut next_batch_index)?;
+        drain_pending_outcomes(&mut read, &mut emit, &mut next_outcome_sequence)?;
         Ok(read)
     }
 
@@ -468,10 +488,30 @@ where
             "Python bridge batch and boundary-kind counts diverged",
         ));
     }
+    drain_pending_outcomes(
+        read,
+        &mut |outcome, kind| py.detach(|| emit(outcome, kind)),
+        next_outcome_sequence,
+    )
+}
+
+fn drain_pending_outcomes<F>(
+    read: &mut PythonBatchRead,
+    emit: &mut F,
+    next_outcome_sequence: &mut u64,
+) -> Result<()>
+where
+    F: FnMut(ForeignBatchOutcome, PythonYieldKind) -> Result<()>,
+{
+    if read.batches.len() != read.yield_kinds.len() {
+        return Err(CdfError::internal(
+            "Python bridge batch and boundary-kind counts diverged",
+        ));
+    }
     for (batch, kind) in read.batches.drain(..).zip(read.yield_kinds.drain(..)) {
         *next_outcome_sequence = next_outcome_sequence.saturating_add(1);
         let outcome = python_foreign_outcome(*next_outcome_sequence, batch, &kind)?;
-        py.detach(|| emit(outcome, kind))?;
+        emit(outcome, kind)?;
     }
     Ok(())
 }
