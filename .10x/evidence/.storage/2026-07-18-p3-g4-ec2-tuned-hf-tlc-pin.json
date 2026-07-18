@@ -1,0 +1,292 @@
+{
+  "ok": true,
+  "command": "schema pin",
+  "result": {
+    "project": "tlc_quickstart",
+    "environment": "dev",
+    "resource_id": "tlc.yellow",
+    "schema_hash": "sha256:cb0dfb490fe1aeac37ce6da691cf344dc66b60e669b9097ab77709a3d562f51d",
+    "schema_snapshot_path": ".cdf/schemas/tlc.yellow@sha256:cb0dfb490fe1aeac37ce6da691cf344dc66b60e669b9097ab77709a3d562f51d.json",
+    "snapshot_metadata": {
+      "cdf:discovery_manifest_hash": "sha256:a7f32b0bb06b3942a904073c48dceaae9ea4796caeb7ea318828f267f0213ba0",
+      "cdf:discovery_manifest_path": ".cdf/schemas/tlc.yellow@sha256:a7f32b0bb06b3942a904073c48dceaae9ea4796caeb7ea318828f267f0213ba0.discovery.json",
+      "cdf:normalizer": "namecase-v1",
+      "probe": "registered-source-discovery",
+      "source_driver": "files",
+      "source_driver_version": "1.0.0",
+      "source_plan_hash": "sha256:548ccfe74f4e32e0f603e7539360a219d8fd2d558c912121eeb07325a753e38e"
+    },
+    "fields": [
+      {
+        "name": "vendor_id",
+        "data_type": {
+          "kind": "int",
+          "signed": true,
+          "bits": 32
+        },
+        "nullable": true,
+        "source_name": "VendorID",
+        "metadata": {
+          "cdf:source_name": "VendorID"
+        }
+      },
+      {
+        "name": "tpep_pickup_datetime",
+        "data_type": {
+          "kind": "timestamp",
+          "unit": "microsecond",
+          "timezone": null
+        },
+        "nullable": true,
+        "source_name": "tpep_pickup_datetime",
+        "metadata": {
+          "cdf:source_name": "tpep_pickup_datetime"
+        }
+      },
+      {
+        "name": "tpep_dropoff_datetime",
+        "data_type": {
+          "kind": "timestamp",
+          "unit": "microsecond",
+          "timezone": null
+        },
+        "nullable": true,
+        "source_name": "tpep_dropoff_datetime",
+        "metadata": {
+          "cdf:source_name": "tpep_dropoff_datetime"
+        }
+      },
+      {
+        "name": "passenger_count",
+        "data_type": {
+          "kind": "int",
+          "signed": true,
+          "bits": 64
+        },
+        "nullable": true,
+        "source_name": "passenger_count",
+        "metadata": {
+          "cdf:source_name": "passenger_count"
+        }
+      },
+      {
+        "name": "trip_distance",
+        "data_type": {
+          "kind": "float",
+          "bits": 64
+        },
+        "nullable": true,
+        "source_name": "trip_distance",
+        "metadata": {
+          "cdf:source_name": "trip_distance"
+        }
+      },
+      {
+        "name": "ratecode_id",
+        "data_type": {
+          "kind": "int",
+          "signed": true,
+          "bits": 64
+        },
+        "nullable": true,
+        "source_name": "RatecodeID",
+        "metadata": {
+          "cdf:source_name": "RatecodeID"
+        }
+      },
+      {
+        "name": "store_and_fwd_flag",
+        "data_type": {
+          "kind": "utf8",
+          "offset_width": 64
+        },
+        "nullable": true,
+        "source_name": "store_and_fwd_flag",
+        "metadata": {
+          "cdf:source_name": "store_and_fwd_flag"
+        }
+      },
+      {
+        "name": "pu_location_id",
+        "data_type": {
+          "kind": "int",
+          "signed": true,
+          "bits": 32
+        },
+        "nullable": true,
+        "source_name": "PULocationID",
+        "metadata": {
+          "cdf:source_name": "PULocationID"
+        }
+      },
+      {
+        "name": "do_location_id",
+        "data_type": {
+          "kind": "int",
+          "signed": true,
+          "bits": 32
+        },
+        "nullable": true,
+        "source_name": "DOLocationID",
+        "metadata": {
+          "cdf:source_name": "DOLocationID"
+        }
+      },
+      {
+        "name": "payment_type",
+        "data_type": {
+          "kind": "int",
+          "signed": true,
+          "bits": 64
+        },
+        "nullable": true,
+        "source_name": "payment_type",
+        "metadata": {
+          "cdf:source_name": "payment_type"
+        }
+      },
+      {
+        "name": "fare_amount",
+        "data_type": {
+          "kind": "float",
+          "bits": 64
+        },
+        "nullable": true,
+        "source_name": "fare_amount",
+        "metadata": {
+          "cdf:source_name": "fare_amount"
+        }
+      },
+      {
+        "name": "extra",
+        "data_type": {
+          "kind": "float",
+          "bits": 64
+        },
+        "nullable": true,
+        "source_name": "extra",
+        "metadata": {
+          "cdf:source_name": "extra"
+        }
+      },
+      {
+        "name": "mta_tax",
+        "data_type": {
+          "kind": "float",
+          "bits": 64
+        },
+        "nullable": true,
+        "source_name": "mta_tax",
+        "metadata": {
+          "cdf:source_name": "mta_tax"
+        }
+      },
+      {
+        "name": "tip_amount",
+        "data_type": {
+          "kind": "float",
+          "bits": 64
+        },
+        "nullable": true,
+        "source_name": "tip_amount",
+        "metadata": {
+          "cdf:source_name": "tip_amount"
+        }
+      },
+      {
+        "name": "tolls_amount",
+        "data_type": {
+          "kind": "float",
+          "bits": 64
+        },
+        "nullable": true,
+        "source_name": "tolls_amount",
+        "metadata": {
+          "cdf:source_name": "tolls_amount"
+        }
+      },
+      {
+        "name": "improvement_surcharge",
+        "data_type": {
+          "kind": "float",
+          "bits": 64
+        },
+        "nullable": true,
+        "source_name": "improvement_surcharge",
+        "metadata": {
+          "cdf:source_name": "improvement_surcharge"
+        }
+      },
+      {
+        "name": "total_amount",
+        "data_type": {
+          "kind": "float",
+          "bits": 64
+        },
+        "nullable": true,
+        "source_name": "total_amount",
+        "metadata": {
+          "cdf:source_name": "total_amount"
+        }
+      },
+      {
+        "name": "congestion_surcharge",
+        "data_type": {
+          "kind": "float",
+          "bits": 64
+        },
+        "nullable": true,
+        "source_name": "congestion_surcharge",
+        "metadata": {
+          "cdf:source_name": "congestion_surcharge"
+        }
+      },
+      {
+        "name": "airport_fee",
+        "data_type": {
+          "kind": "float",
+          "bits": 64
+        },
+        "nullable": true,
+        "source_name": "Airport_fee",
+        "metadata": {
+          "cdf:source_name": "Airport_fee"
+        }
+      }
+    ],
+    "status": "refreshed",
+    "source_identity": {
+      "discovery_manifest_hash": "sha256:a7f32b0bb06b3942a904073c48dceaae9ea4796caeb7ea318828f267f0213ba0",
+      "discovery_manifest_path": ".cdf/schemas/tlc.yellow@sha256:a7f32b0bb06b3942a904073c48dceaae9ea4796caeb7ea318828f267f0213ba0.discovery.json",
+      "discovery_source_bytes_read": "151340",
+      "file_coverage": "all_files",
+      "matched_files": "12",
+      "observation_cache_bypasses": "0",
+      "observation_cache_hits": "0",
+      "observation_cache_misses": "12",
+      "probe_bytes_read": "151340",
+      "probe_records_read": "0",
+      "selected_files": "12",
+      "source_driver": "files",
+      "transport": "files",
+      "unobserved_files": "0",
+      "within_file_coverage": "format_metadata"
+    },
+    "discovery": {
+      "file_coverage": "all_files",
+      "within_file_coverage": "format_metadata",
+      "matched_files": 12,
+      "selected_files": 12,
+      "unobserved_files": 0
+    },
+    "writes": {
+      "schema_snapshot": true,
+      "lockfile": true,
+      "package": false,
+      "destination": false,
+      "checkpoint": false
+    },
+    "unsupported": [],
+    "next_command": "cdf schema show tlc.yellow"
+  }
+}

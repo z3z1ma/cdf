@@ -1,0 +1,128 @@
+{
+  "artifact_dir": "/home/ec2-user/cdf-bench/repo/target/cdf-benchmarks/g4-tuned-20260718081853",
+  "hf-pin": "hf_schema_pin_real=8.63 user=0.05 sys=0.03 maxrss_kb=38156",
+  "hf-pin-ok": true,
+  "hf-pin-resource_id": "tlc.yellow",
+  "hf-pin-schema_hash": "sha256:cb0dfb490fe1aeac37ce6da691cf344dc66b60e669b9097ab77709a3d562f51d",
+  "hf-run": "hf_cdf_run_real=36.51 user=46.33 sys=4.94 maxrss_kb=2844708",
+  "hf-run-file_manifest": {
+    "changed_file_count": 12,
+    "no_changed_files": false,
+    "total_file_count": 12,
+    "unchanged_file_count": 0
+  },
+  "hf-run-ok": true,
+  "hf-run-package_id": "pkg-tlc-yellow-53547-1784362780394986180",
+  "hf-run-phases": {
+    "checkpoint_gate": {
+      "context": null,
+      "duration_ms": 1.264,
+      "input_bytes": 0,
+      "operations": 1,
+      "output_bytes": 0,
+      "status": "completed"
+    },
+    "decode": {
+      "context": null,
+      "duration_ms": 10968.484,
+      "input_bytes": 5849047168,
+      "operations": 657,
+      "output_bytes": 5849047168,
+      "status": "completed"
+    },
+    "destination_ingress": {
+      "context": null,
+      "duration_ms": 32350.801,
+      "input_bytes": 1513310278,
+      "operations": 215,
+      "output_bytes": 1513310278,
+      "status": "completed"
+    },
+    "destination_write_receipt": {
+      "context": null,
+      "duration_ms": 869.597,
+      "input_bytes": 1513310278,
+      "operations": 215,
+      "output_bytes": 1513310278,
+      "status": "completed"
+    },
+    "package_execution": {
+      "context": null,
+      "duration_ms": 33510.956,
+      "input_bytes": 1513310278,
+      "operations": 215,
+      "output_bytes": 1513310278,
+      "status": "completed"
+    },
+    "package_finalize": {
+      "context": null,
+      "duration_ms": 7.126,
+      "input_bytes": 1513310278,
+      "operations": 1,
+      "output_bytes": 1513667638,
+      "status": "completed"
+    },
+    "persist_hash": {
+      "context": null,
+      "duration_ms": 1619.712,
+      "input_bytes": 1513310278,
+      "operations": 215,
+      "output_bytes": 1513310278,
+      "status": "completed"
+    },
+    "segment_encode": {
+      "context": null,
+      "duration_ms": 9619.799,
+      "input_bytes": 6019599292,
+      "operations": 215,
+      "output_bytes": 1513310278,
+      "status": "completed"
+    },
+    "source_read": {
+      "context": {
+        "kind": "source_read",
+        "mode": "growing_spool"
+      },
+      "duration_ms": 16136.82,
+      "input_bytes": 693103829,
+      "operations": 36,
+      "output_bytes": 693001713,
+      "status": "completed"
+    },
+    "validation_normalization": {
+      "context": null,
+      "duration_ms": 208.039,
+      "input_bytes": 11698094336,
+      "operations": 1266,
+      "output_bytes": 11868646460,
+      "status": "completed"
+    }
+  },
+  "hf-run-resource_id": "tlc.yellow",
+  "hf-run-row_count": 41169720,
+  "hf-run-run_id": "run-fab1a05ce6de72b663a55a82c2ae214e",
+  "hf-run-schema_hash": "sha256:cb0dfb490fe1aeac37ce6da691cf344dc66b60e669b9097ab77709a3d562f51d",
+  "hf-run-segment_count": 215,
+  "host_class": "host-class-95da083e15eebd1c",
+  "local-pin": "local_schema_pin_real=0.04 user=0.02 sys=0.02 maxrss_kb=35136",
+  "local-pin-ok": true,
+  "local-pin-resource_id": "tlc.yellow",
+  "local-pin-schema_hash": "sha256:9fa9db8f7963c2c82676548a1eec499f51c0878018063bf836f668068512e850",
+  "local-run": "Command exited with non-zero status 143\nlocal_cdf_run_real=304.55 user=6.89 sys=1.49 maxrss_kb=2037904",
+  "local_run_proc_sample": {
+    "cpu_percent": 2.7,
+    "elapsed": "05:04",
+    "fdcount": 21,
+    "rchar": 980253620,
+    "read_bytes": 0,
+    "rss_bytes_approx": 2083430400,
+    "wchan": "futex_wait_queue",
+    "wchar": 345037392,
+    "write_bytes": 345296896
+  },
+  "local_run_status": "terminated_after_over_5_minutes_low_cpu_futex_wait",
+  "raw-curl": "raw_parallel_curl_real=1.48 user=0.58 sys=0.67 maxrss_kb=12596",
+  "raw-du": "693018097\t/home/ec2-user/cdf-bench/repo/target/cdf-benchmarks/g4-tuned-20260718081853/raw",
+  "revision": "8aeb9e767f02318dcec60ee9cd4870f82f4ef1ec",
+  "storage": "gp3 16000 IOPS / 1000 MiB/s"
+}

@@ -38,6 +38,7 @@ Observed outputs included:
 - Root volume before tuning: gp3 3,000 IOPS / 125 MiB/s throughput
 - Root volume after tuning: gp3 16,000 IOPS / 1,000 MiB/s throughput
 - Direct durable 1 GiB disk probe after tuning: `direct_write_1g_real=0.43`, `direct_read_1g_real=0.61`
+- Benchmark SSH access was rotated after accidental local private-key exposure in tool output; the old EC2 key pair was deleted, the old local private key was removed, and `tools/p3-ec2-benchmark-host.sh status` succeeds with the replacement key.
 
 ## What it supports or challenges
 
@@ -52,3 +53,5 @@ The EC2 instance was intentionally left running for reuse across the current ben
 The baseline report is a smoke-scale machine-evidence proof, not a claim that the P3 throughput envelope is met. Large TLC/TPC-H/stress cells remain owned by their P3 performance tickets and must reuse the same host-labeled path.
 
 Any storage-sensitive measurement recorded before the gp3 tuning is diagnostic only, because the host was capped at the default 125 MiB/s gp3 throughput at that time.
+
+The SSH key rotation proves continued access to this live tranche host, but the replacement private key remains ignored local state under `target/`; it is not committed evidence and must still be torn down with the instance at tranche close.
