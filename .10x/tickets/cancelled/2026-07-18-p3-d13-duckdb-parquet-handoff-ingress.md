@@ -1,4 +1,4 @@
-Status: open
+Status: cancelled
 Created: 2026-07-18
 Updated: 2026-07-18
 Parent: .10x/tickets/2026-07-10-p3-ws-d-destination-bulk-paths.md
@@ -53,19 +53,25 @@ The path must stay behind DuckDB's destination ingress implementation and the ex
 ## Journal
 
 - 2026-07-18: Opened as D12's fallback path. The first implementation should reuse destination-owned staging/bulk capability seams and avoid broad runtime changes.
+- 2026-07-18: Activated implementation. Initial shape: add an explicit DuckDB-owned `CDF_DUCKDB_BULK_PATH=parquet_read_parquet_handoff` selection, write temporary Parquet handoff bytes inside `cdf-dest-duckdb`, use DuckDB native `read_parquet(...)` for final materialization, and leave the default appender path unchanged until full-CDF EC2 evidence proves promotion.
+- 2026-07-18: Implemented the opt-in destination-owned path locally behind DuckDB runtime capabilities. Local focused and full `cdf-dest-duckdb` tests passed, including opt-in selection, receipt/idempotency/provenance, duplicate redrive, row-key addressability, and staging cleanup. EC2 product measurement then failed the ticket's retention threshold: the CTAS-plus-row-key-nullability variant measured `37.546207167s`, slower than the `33.955522533s` appender floor. The phase profile isolated the regression to final binding, not source/package work (`destination_write_receipt=32.407414891s`).
+- 2026-07-18: Removed the CTAS branch and simplified the prototype to one materialization model: apply the planned DuckDB table DDL first, then `INSERT INTO target SELECT ... FROM read_parquet(...)`, so constraints are enforced during vectorized ingest rather than by post-load `ALTER`. Local full `cdf-dest-duckdb` tests passed again. EC2 product measurement still failed worse at `38.828391414s`, with `destination_write_receipt=33.200610882s`.
+- 2026-07-18: Cancelled D13. The product code was removed before commit; only the retention evidence remains. The generated-lab Parquet result from D11 does not survive full CDF destination final-binding semantics, so G4 must move to a different materialization strategy rather than retaining a slower opt-in path.
 
 ## Blockers
 
-None for an opt-in implementation. Default promotion is blocked until EC2 product evidence beats the retained appender baseline and cleanup/staging semantics are proven.
+Cancelled by product evidence. Default promotion is rejected because both measured product variants are slower than the retained appender baseline.
 
 ## Evidence
 
-Pending implementation.
+- `.10x/evidence/.storage/2026-07-18-p3-d13-ec2-local-parquet-handoff-optin-measured.json`: EC2 full-year local TLC product run with the opt-in Parquet handoff CTAS variant. One uncontrolled sample on `host-class-649c6f28be3544c8`, 41,169,720 rows, `37.546207167s` wall, `2.948952064 GiB` peak RSS, cgroup peak `11.328344064 GiB`, `destination_ingress=4.770972202s`, `destination_write_receipt=32.407414891s`.
+- `.10x/evidence/.storage/2026-07-18-p3-d13-ec2-local-parquet-handoff-insert-optin-measured.json`: EC2 full-year local TLC product run with the simplified planned-table + `INSERT ... read_parquet(...)` variant. One uncontrolled sample on `host-class-649c6f28be3544c8`, 41,169,720 rows, `38.828391414s` wall, `2.824097792 GiB` peak RSS, `destination_ingress=5.226351699s`, `destination_write_receipt=33.200610882s`.
+- `CARGO_BUILD_JOBS=10 cargo test -p cdf-dest-duckdb -- --nocapture`: passed locally before source removal for both variants; proves the rejected code met local semantics but does not justify retention after EC2 failure.
 
 ## Review
 
-Pending implementation.
+Pass for cancellation. The prototype stayed behind the DuckDB destination boundary and did not change package identity or generic runtime orchestration, but it violated the explicit performance retention threshold. Cancelling is the correct outcome. No product code, compatibility shim, disabled branch, dependency, or runtime capability remains from this failed path.
 
 ## Retrospective
 
-Pending implementation.
+D11's generated Parquet handoff benchmark was too optimistic because it did not include the full CDF destination final-binding contract. In product form, both plausible Parquet materializations spend roughly appender-floor time inside DuckDB final binding after CDF has already paid package encode/persist costs. The next G4 move should stop adding destination materialization variants that duplicate package bytes and instead attack the architecture that creates two persistence formats before commit, or measure a more direct DuckDB ingest primitive with full product semantics before implementation.
