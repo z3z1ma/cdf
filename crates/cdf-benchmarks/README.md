@@ -13,6 +13,24 @@ cargo build -p cdf-benchmarks --bin cdf-p3-lab --release --locked
 target/release/cdf-p3-lab host
 ```
 
+## Dedicated EC2 benchmark host
+
+P3 promotion measurements should run on a reusable EC2 benchmark host rather than a developer laptop. The helper keeps setup explicit:
+
+```bash
+tools/p3-ec2-benchmark-host.sh plan
+tools/p3-ec2-benchmark-host.sh provision
+tools/p3-ec2-benchmark-host.sh bootstrap
+tools/p3-ec2-benchmark-host.sh sync-repo
+CDF_BENCH_WORKSPACE=/path/to/cdf-workspace tools/p3-ec2-benchmark-host.sh sync-workspace
+tools/p3-ec2-benchmark-host.sh build
+tools/p3-ec2-benchmark-host.sh cdf -- run tlc.yellow --progress never
+tools/p3-ec2-benchmark-host.sh lab -- host
+tools/p3-ec2-benchmark-host.sh teardown
+```
+
+The instance is reused for a benchmark tranche and then explicitly terminated. Repo synchronization honors `.gitignore` and excludes `target/`, local environment files, and common secret directories; workspace synchronization copies the CDF project state needed for the workload while excluding local secrets. The on-host build uses the workspace release profile (`opt-level=3`, fat LTO, one codegen unit, stripped symbols) from the synchronized `Cargo.lock`.
+
 `run-cell REQUEST.json` executes a schema-versioned macro cell with median-of-N sampling, timeout, explicit warm/cold/uncontrolled mode, child-process wall/CPU/RSS observation, reference identity, and bias labels. `reference-worker REQUEST.json` is the isolated worker for sequential read/write, memcpy, Arrow Parquet/CSV/NDJSON, direct Arrow Parquet rewrite with explicit writer policy, and DuckDB Parquet references.
 
 Profiling plans record the exact detected tool/version, command, and ignored artifact path without requiring the tool in ordinary tests:

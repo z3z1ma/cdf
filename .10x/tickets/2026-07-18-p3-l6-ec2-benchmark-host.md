@@ -45,6 +45,7 @@ Implement and record the operating procedure/tooling for P3 performance measurem
 - 2026-07-18: Opened from user benchmark guidance after repeated laptop swap/disk-pressure invalidations and live public-endpoint variance affected G4/G4-adjacent timing. The governing spec now treats dedicated EC2 evidence as the promotion authority for P3 defaults and closeout cells.
 - 2026-07-18: Added `tools/p3-ec2-benchmark-host.sh` as the first dry-runable benchmark-host helper. The script centralizes the candidate FQ12 PowerUser profile, region, instance shape, state-file location, launch/reuse, ignore-respecting repo/workspace sync, on-host release build, remote command execution, and explicit teardown. Live provisioning requires explicit subnet/security group/key or launch template inputs; dry-run command construction works without cloud writes.
 - 2026-07-18: Read-only EC2 discovery found a default `us-west-2` VPC, public default subnets, the default security group in that VPC, and several account key-pair names. No private SSH key was present under `~/.ssh`, so no instance was launched. The next live tranche must either provide `CDF_BENCH_SSH_KEY` for a known key pair, create an explicitly owned ephemeral key as part of the tranche, or switch the helper to an SSM/Instance-Connect sync path.
+- 2026-07-18: Tightened the helper around the user-ratified benchmarking workflow: a single recorded host is reused for the tranche; `bootstrap` prepares Amazon Linux build prerequisites and Rust; `build` now produces both optimized release binaries (`cdf` and `cdf-p3-lab`) and prints host facts; `cdf -- ...` runs the release CDF binary from the synced workspace; `lab -- ...` runs the release lab binary from the synced repo; `status` reports recorded EC2 state and remote host/toolchain facts when SSH is available. `crates/cdf-benchmarks/README.md` now documents this sequence as the dedicated-host path.
 
 ## Blockers
 
@@ -71,6 +72,15 @@ Live benchmark execution still requires selecting or providing subnet/security g
   - `aws ec2 describe-subnets --filters Name=default-for-az,Values=true` found public default subnets in `us-west-2a` through `us-west-2d`; `subnet-acc642d4` in `us-west-2a` is a viable candidate input, but not selected as authority.
   - `aws ec2 describe-security-groups --filters Name=group-name,Values=default` found default-VPC security group `sg-7deb0443`; it currently only permits self-referential ingress and all outbound, so direct SSH would require an explicit ingress/security decision before use.
   - `aws ec2 describe-key-pairs` found existing key-pair names including `local-dev`, but `find ~/.ssh -maxdepth 1 -type f` found no local private key file. No key pair was selected.
+- 2026-07-18 tranche-command validation:
+  - `bash -n tools/p3-ec2-benchmark-host.sh` — passed.
+  - `tools/p3-ec2-benchmark-host.sh --dry-run plan` — passed against read-only AWS identity/AMI lookup.
+  - `CDF_BENCH_HOST=example.invalid CDF_BENCH_SSH_KEY=/tmp/cdf-bench-key tools/p3-ec2-benchmark-host.sh --dry-run status` — printed recorded-state absence and dry-run remote host-fact command; no connection attempted.
+  - `CDF_BENCH_HOST=example.invalid CDF_BENCH_SSH_KEY=/tmp/cdf-bench-key tools/p3-ec2-benchmark-host.sh --dry-run bootstrap` — printed Amazon Linux package/Rust setup command.
+  - `CDF_BENCH_HOST=example.invalid CDF_BENCH_SSH_KEY=/tmp/cdf-bench-key tools/p3-ec2-benchmark-host.sh --dry-run build` — printed optimized release builds for both `cdf-cli --bin cdf` and `cdf-benchmarks --bin cdf-p3-lab`, followed by version/host-fingerprint commands.
+  - `CDF_BENCH_HOST=example.invalid CDF_BENCH_SSH_KEY=/tmp/cdf-bench-key CDF_BENCH_WORKSPACE=/tmp/cdf-workspace tools/p3-ec2-benchmark-host.sh --dry-run cdf -- run tlc.yellow --progress never` — printed a workspace-rooted invocation of the synced release `cdf` binary with remote-quoted arguments.
+  - `CDF_BENCH_HOST=example.invalid CDF_BENCH_SSH_KEY=/tmp/cdf-bench-key tools/p3-ec2-benchmark-host.sh --dry-run lab -- host` — printed a repo-rooted invocation of the synced release `cdf-p3-lab` binary.
+  - Limit: this still validates command construction only. L6 remains active until a real host proves provision/reuse/bootstrap/sync/build/run/teardown end to end.
 
 ## Review
 
