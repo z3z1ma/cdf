@@ -1,18 +1,22 @@
 use std::{
+    ffi::{CStr, CString},
     fs,
     hint::black_box,
     io::{BufReader, BufWriter, Read, Write},
+    mem::{ManuallyDrop, align_of, size_of},
+    os::raw::c_char,
     path::{Path, PathBuf},
+    ptr,
     sync::Arc,
 };
 
 use arrow_array::{
-    ArrayRef, Float64Array, Int32Array, Int64Array, StringArray, TimestampMicrosecondArray,
-    UInt64Array,
+    Array, ArrayRef, Float64Array, Int32Array, Int64Array, StringArray, StructArray,
+    TimestampMicrosecondArray, UInt64Array, ffi::FFI_ArrowArray,
 };
 use arrow_csv::reader::{Format as CsvFormat, ReaderBuilder as CsvReaderBuilder};
 use arrow_json::reader::{ReaderBuilder as JsonReaderBuilder, infer_json_schema};
-use arrow_schema::{DataType, Field, Schema, TimeUnit};
+use arrow_schema::{DataType, Field, Schema, TimeUnit, ffi::FFI_ArrowSchema};
 use parquet::{
     arrow::{ArrowWriter, arrow_reader::ParquetRecordBatchReaderBuilder},
     file::properties::{EnabledStatistics, WriterProperties},
@@ -200,6 +204,13 @@ pub enum ReferenceWorkload {
         checkpoint: bool,
     },
     DuckDbArrowAppend {
+        output: PathBuf,
+        rows: u64,
+        batch_rows: usize,
+        include_row_key: bool,
+        checkpoint: bool,
+    },
+    DuckDbArrowDataChunkAppend {
         output: PathBuf,
         rows: u64,
         batch_rows: usize,
@@ -398,6 +409,19 @@ pub fn run_reference(workload: &ReferenceWorkload) -> BenchResult<WorkerMeasurem
             include_row_key,
             checkpoint,
         } => run_duckdb_arrow_append(output, *rows, *batch_rows, *include_row_key, *checkpoint),
+        ReferenceWorkload::DuckDbArrowDataChunkAppend {
+            output,
+            rows,
+            batch_rows,
+            include_row_key,
+            checkpoint,
+        } => run_duckdb_arrow_data_chunk_append(
+            output,
+            *rows,
+            *batch_rows,
+            *include_row_key,
+            *checkpoint,
+        ),
         ReferenceWorkload::DuckDbParquetStagedIngest {
             output,
             staging,
@@ -538,6 +562,93 @@ fn run_duckdb_arrow_append(
     if observed_rows != rows {
         return Err(bench_error(format!(
             "DuckDB Arrow append row count mismatch: expected {rows}, observed {observed_rows}"
+        )));
+    }
+    Ok(WorkerMeasurement {
+        timed_wall_time_ns: None,
+        rows,
+        logical_bytes,
+        physical_bytes: duckdb_database_bytes(output)?,
+        spill_bytes: 0,
+        phases: Vec::new(),
+    })
+}
+
+fn run_duckdb_arrow_data_chunk_append(
+    output: &Path,
+    rows: u64,
+    batch_rows: usize,
+    include_row_key: bool,
+    checkpoint: bool,
+) -> BenchResult<WorkerMeasurement> {
+    if rows == 0 {
+        return Err(bench_error(
+            "DuckDB Arrow data-chunk append reference requires at least one row",
+        ));
+    }
+    require_batch(batch_rows)?;
+    if let Some(parent) = output.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    remove_if_exists(output)?;
+    remove_if_exists(&duckdb_wal_path(output))?;
+
+    let mut connection = RawDuckDbConnection::open(output)?;
+    let mut columns = tlc_duckdb_columns();
+    if include_row_key {
+        columns.push((cdf_dest_duckdb::CDF_ROW_KEY_COLUMN, "UBIGINT"));
+    }
+    let column_sql = columns
+        .iter()
+        .map(|(name, sql_type)| format!("{} {} NOT NULL", duckdb_ident(name), sql_type))
+        .collect::<Vec<_>>()
+        .join(", ");
+    connection.query(&format!(
+        "CREATE TABLE arrow_data_chunk_append ({column_sql})"
+    ))?;
+    connection.query("BEGIN TRANSACTION")?;
+
+    let mut converted_schema = DuckDbArrowConvertedSchema::from_arrow(
+        connection.handle(),
+        &tlc_arrow_schema(include_row_key),
+    )?;
+    let mut appender = RawDuckDbAppender::create(connection.handle(), "arrow_data_chunk_append")?;
+    let mut remaining = rows;
+    let mut row_start = 1_u64;
+    let mut logical_bytes = 0_u64;
+    while remaining > 0 {
+        let current_rows = usize::try_from(remaining.min(batch_rows as u64))?;
+        let batch = tlc_arrow_batch(current_rows, row_start, include_row_key)?;
+        logical_bytes = logical_bytes.saturating_add(u64::try_from(batch.get_array_memory_size())?);
+        append_arrow_batch_as_duckdb_data_chunk(
+            connection.handle(),
+            appender.handle(),
+            converted_schema.handle(),
+            batch,
+        )?;
+        row_start = row_start
+            .checked_add(u64::try_from(current_rows)?)
+            .ok_or_else(|| bench_error("DuckDB Arrow data-chunk append row offset overflowed"))?;
+        remaining -= u64::try_from(current_rows)?;
+    }
+    appender.flush()?;
+    drop(appender);
+    drop(converted_schema);
+    connection.query("COMMIT")?;
+    if checkpoint {
+        connection.query("CHECKPOINT")?;
+    }
+    drop(connection);
+
+    let connection = duckdb::Connection::open(output)?;
+    let observed_rows =
+        connection.query_row("SELECT count(*) FROM arrow_data_chunk_append", [], |row| {
+            row.get::<_, i64>(0)
+        })?;
+    let observed_rows = u64::try_from(observed_rows)?;
+    if observed_rows != rows {
+        return Err(bench_error(format!(
+            "DuckDB Arrow data-chunk append row count mismatch: expected {rows}, observed {observed_rows}"
         )));
     }
     Ok(WorkerMeasurement {
@@ -877,6 +988,331 @@ fn tlc_duckdb_arrow_batch(
     RecordBatch::try_new(Arc::new(Schema::new(fields)), columns).map_err(Into::into)
 }
 
+struct RawDuckDbConnection {
+    database: duckdb::ffi::duckdb_database,
+    connection: duckdb::ffi::duckdb_connection,
+}
+
+impl RawDuckDbConnection {
+    fn open(path: &Path) -> BenchResult<Self> {
+        let path = CString::new(path.display().to_string())?;
+        let mut database = ptr::null_mut();
+        let mut connection = ptr::null_mut();
+        // SAFETY: `path` is a live NUL-terminated string for this call, and
+        // DuckDB initializes the output handles or reports an error. The
+        // wrapper owns successful handles and releases them in `Drop`.
+        let open_state = unsafe { duckdb::ffi::duckdb_open(path.as_ptr(), &mut database) };
+        if open_state != duckdb::ffi::DuckDBSuccess {
+            return Err(bench_error("DuckDB raw open failed"));
+        }
+        // SAFETY: `database` is a valid handle returned by `duckdb_open`.
+        let connect_state = unsafe { duckdb::ffi::duckdb_connect(database, &mut connection) };
+        if connect_state != duckdb::ffi::DuckDBSuccess {
+            // SAFETY: `database` was returned by `duckdb_open` and has not
+            // been closed yet.
+            unsafe {
+                duckdb::ffi::duckdb_close(&mut database);
+            }
+            return Err(bench_error("DuckDB raw connect failed"));
+        }
+        Ok(Self {
+            database,
+            connection,
+        })
+    }
+
+    fn handle(&mut self) -> duckdb::ffi::duckdb_connection {
+        self.connection
+    }
+
+    fn query(&mut self, sql: &str) -> BenchResult<()> {
+        let sql = CString::new(sql)?;
+        let mut result = unsafe { std::mem::zeroed::<duckdb::ffi::duckdb_result>() };
+        // SAFETY: the connection is owned by this wrapper and `sql` is a live
+        // NUL-terminated string. DuckDB initializes `result`; it is destroyed
+        // below on every path as required by the C API.
+        let state =
+            unsafe { duckdb::ffi::duckdb_query(self.connection, sql.as_ptr(), &mut result) };
+        let error = if state == duckdb::ffi::DuckDBSuccess {
+            None
+        } else {
+            Some(duckdb_result_error_message(&mut result))
+        };
+        // SAFETY: `duckdb_query` requires result destruction even when the
+        // state is an error.
+        unsafe {
+            duckdb::ffi::duckdb_destroy_result(&mut result);
+        }
+        match error {
+            Some(message) => Err(bench_error(format!("DuckDB raw query failed: {message}"))),
+            None => Ok(()),
+        }
+    }
+}
+
+impl Drop for RawDuckDbConnection {
+    fn drop(&mut self) {
+        // SAFETY: both handles are owned by this wrapper and DuckDB accepts
+        // null handles, so double-drop is avoided by setting them to null.
+        unsafe {
+            if !self.connection.is_null() {
+                duckdb::ffi::duckdb_disconnect(&mut self.connection);
+            }
+            if !self.database.is_null() {
+                duckdb::ffi::duckdb_close(&mut self.database);
+            }
+        }
+    }
+}
+
+struct DuckDbArrowConvertedSchema {
+    schema: duckdb::ffi::duckdb_arrow_converted_schema,
+}
+
+impl DuckDbArrowConvertedSchema {
+    fn from_arrow(
+        connection: duckdb::ffi::duckdb_connection,
+        schema: &Schema,
+    ) -> BenchResult<Self> {
+        assert_arrow_duckdb_c_data_layout();
+        let mut arrow_schema = FFI_ArrowSchema::try_from(schema)?;
+        let mut converted_schema = ptr::null_mut();
+        // SAFETY: arrow-rs and libduckdb-sys define ABI-identical C Data
+        // Interface schemas; the assertion above guards size/alignment. The
+        // Arrow schema stays alive for the call and is released by its Drop
+        // implementation afterward. DuckDB returns a converted schema owned by
+        // this wrapper.
+        let error = unsafe {
+            duckdb::ffi::duckdb_schema_from_arrow(
+                connection,
+                (&mut arrow_schema as *mut FFI_ArrowSchema).cast::<duckdb::ffi::ArrowSchema>(),
+                &mut converted_schema,
+            )
+        };
+        duckdb_error_data_result(error, "DuckDB Arrow schema conversion")?;
+        if converted_schema.is_null() {
+            return Err(bench_error(
+                "DuckDB Arrow schema conversion returned a null converted schema",
+            ));
+        }
+        Ok(Self {
+            schema: converted_schema,
+        })
+    }
+
+    fn handle(&mut self) -> duckdb::ffi::duckdb_arrow_converted_schema {
+        self.schema
+    }
+}
+
+impl Drop for DuckDbArrowConvertedSchema {
+    fn drop(&mut self) {
+        // SAFETY: the converted schema is owned by this wrapper and is
+        // destroyed exactly once.
+        unsafe {
+            if !self.schema.is_null() {
+                duckdb::ffi::duckdb_destroy_arrow_converted_schema(&mut self.schema);
+            }
+        }
+    }
+}
+
+struct RawDuckDbAppender {
+    appender: duckdb::ffi::duckdb_appender,
+}
+
+impl RawDuckDbAppender {
+    fn create(connection: duckdb::ffi::duckdb_connection, table: &str) -> BenchResult<Self> {
+        let table = CString::new(table)?;
+        let mut appender = ptr::null_mut();
+        // SAFETY: `connection` is live for the appender lifetime, the default
+        // schema pointer is null by DuckDB contract, and `table` is a live
+        // NUL-terminated string for this call.
+        let state = unsafe {
+            duckdb::ffi::duckdb_appender_create(
+                connection,
+                ptr::null(),
+                table.as_ptr(),
+                &mut appender,
+            )
+        };
+        if state != duckdb::ffi::DuckDBSuccess {
+            return Err(bench_error("DuckDB raw appender creation failed"));
+        }
+        if appender.is_null() {
+            return Err(bench_error("DuckDB raw appender creation returned null"));
+        }
+        Ok(Self { appender })
+    }
+
+    fn handle(&mut self) -> duckdb::ffi::duckdb_appender {
+        self.appender
+    }
+
+    fn flush(&mut self) -> BenchResult<()> {
+        // SAFETY: this wrapper owns a live appender handle.
+        let state = unsafe { duckdb::ffi::duckdb_appender_flush(self.appender) };
+        if state == duckdb::ffi::DuckDBSuccess {
+            Ok(())
+        } else {
+            Err(bench_error(format!(
+                "DuckDB raw appender flush failed: {}",
+                self.error_message()
+            )))
+        }
+    }
+
+    fn error_message(&self) -> String {
+        // SAFETY: this wrapper owns a live appender handle; DuckDB owns the
+        // returned error data and the helper destroys it.
+        unsafe {
+            let error = duckdb::ffi::duckdb_appender_error_data(self.appender);
+            duckdb_error_data_message_take(error).unwrap_or_else(|| "unknown error".to_owned())
+        }
+    }
+}
+
+impl Drop for RawDuckDbAppender {
+    fn drop(&mut self) {
+        // SAFETY: the appender is owned by this wrapper and is destroyed once.
+        unsafe {
+            if !self.appender.is_null() {
+                let _ = duckdb::ffi::duckdb_appender_destroy(&mut self.appender);
+            }
+        }
+    }
+}
+
+fn append_arrow_batch_as_duckdb_data_chunk(
+    connection: duckdb::ffi::duckdb_connection,
+    appender: duckdb::ffi::duckdb_appender,
+    converted_schema: duckdb::ffi::duckdb_arrow_converted_schema,
+    batch: arrow_array::RecordBatch,
+) -> BenchResult<()> {
+    assert_arrow_duckdb_c_data_layout();
+    let struct_array = StructArray::from(batch);
+    let mut arrow_array = ManuallyDrop::new(FFI_ArrowArray::new(&struct_array.to_data()));
+    let mut chunk = ptr::null_mut();
+    // SAFETY: arrow-rs and libduckdb-sys define ABI-identical C Data Interface
+    // arrays. DuckDB takes ownership of the exported Arrow array's private
+    // data on successful conversion; the `ManuallyDrop` prevents Rust from
+    // releasing it prematurely. The resulting DuckDB data chunk is destroyed
+    // after append.
+    let error = unsafe {
+        duckdb::ffi::duckdb_data_chunk_from_arrow(
+            connection,
+            (&mut *arrow_array as *mut FFI_ArrowArray).cast::<duckdb::ffi::ArrowArray>(),
+            converted_schema,
+            &mut chunk,
+        )
+    };
+    match duckdb_error_data_result(error, "DuckDB Arrow data-chunk conversion") {
+        Ok(()) => {}
+        Err(error) => {
+            // SAFETY: conversion failed, so this benchmark keeps ownership of
+            // the exported Arrow array and must release it.
+            unsafe {
+                ManuallyDrop::drop(&mut arrow_array);
+            }
+            return Err(error);
+        }
+    }
+    if chunk.is_null() {
+        return Err(bench_error(
+            "DuckDB Arrow data-chunk conversion returned a null chunk",
+        ));
+    }
+    // SAFETY: `appender` and `chunk` are live handles. DuckDB appends from the
+    // chunk before it is destroyed below.
+    let append_state = unsafe { duckdb::ffi::duckdb_append_data_chunk(appender, chunk) };
+    // SAFETY: `chunk` is owned by this function after successful conversion.
+    unsafe {
+        duckdb::ffi::duckdb_destroy_data_chunk(&mut chunk);
+    }
+    if append_state == duckdb::ffi::DuckDBSuccess {
+        Ok(())
+    } else {
+        Err(bench_error("DuckDB raw data-chunk append failed"))
+    }
+}
+
+fn assert_arrow_duckdb_c_data_layout() {
+    assert_eq!(
+        size_of::<FFI_ArrowArray>(),
+        size_of::<duckdb::ffi::ArrowArray>(),
+        "ArrowArray ABI size changed"
+    );
+    assert_eq!(
+        align_of::<FFI_ArrowArray>(),
+        align_of::<duckdb::ffi::ArrowArray>(),
+        "ArrowArray ABI alignment changed"
+    );
+    assert_eq!(
+        size_of::<FFI_ArrowSchema>(),
+        size_of::<duckdb::ffi::ArrowSchema>(),
+        "ArrowSchema ABI size changed"
+    );
+    assert_eq!(
+        align_of::<FFI_ArrowSchema>(),
+        align_of::<duckdb::ffi::ArrowSchema>(),
+        "ArrowSchema ABI alignment changed"
+    );
+}
+
+fn duckdb_result_error_message(result: *mut duckdb::ffi::duckdb_result) -> String {
+    // SAFETY: `result` is the initialized result object from a failed
+    // `duckdb_query`; the returned pointer is owned by DuckDB until result
+    // destruction.
+    let pointer = unsafe { duckdb::ffi::duckdb_result_error(result) };
+    cstr_message(pointer)
+}
+
+fn duckdb_error_data_result(
+    error_data: duckdb::ffi::duckdb_error_data,
+    context: &str,
+) -> BenchResult<()> {
+    // SAFETY: the DuckDB C API returns owned error data for Arrow conversion
+    // calls; this helper reads and destroys it exactly once.
+    let message = unsafe { duckdb_error_data_message_take(error_data) };
+    match message {
+        Some(message) => Err(bench_error(format!("{context} failed: {message}"))),
+        None => Ok(()),
+    }
+}
+
+unsafe fn duckdb_error_data_message_take(
+    mut error_data: duckdb::ffi::duckdb_error_data,
+) -> Option<String> {
+    if error_data.is_null() {
+        return None;
+    }
+    // SAFETY: `error_data` is non-null and owned by this helper.
+    let has_error = unsafe { duckdb::ffi::duckdb_error_data_has_error(error_data) };
+    let message = if has_error {
+        // SAFETY: DuckDB owns the returned message pointer until the error data
+        // is destroyed below.
+        let pointer = unsafe { duckdb::ffi::duckdb_error_data_message(error_data) };
+        Some(cstr_message(pointer))
+    } else {
+        None
+    };
+    // SAFETY: `error_data` is owned and destroyed once.
+    unsafe {
+        duckdb::ffi::duckdb_destroy_error_data(&mut error_data);
+    }
+    message
+}
+
+fn cstr_message(pointer: *const c_char) -> String {
+    if pointer.is_null() {
+        return "unknown error".to_owned();
+    }
+    // SAFETY: DuckDB returns NUL-terminated diagnostic strings for these APIs.
+    unsafe { CStr::from_ptr(pointer) }
+        .to_string_lossy()
+        .into_owned()
+}
+
 fn remove_if_exists(path: &Path) -> BenchResult<()> {
     match fs::remove_file(path) {
         Ok(()) => Ok(()),
@@ -1119,6 +1555,41 @@ mod tests {
         let rows = connection
             .query_row(
                 "SELECT count(*), min(_cdf_row_key), max(_cdf_row_key) FROM arrow_append",
+                [],
+                |row| {
+                    Ok((
+                        row.get::<_, i64>(0)?,
+                        row.get::<_, u64>(1)?,
+                        row.get::<_, u64>(2)?,
+                    ))
+                },
+            )
+            .unwrap();
+        assert_eq!(rows, (2048, 1, 2048));
+    }
+
+    #[test]
+    fn duckdb_arrow_data_chunk_append_reference_materializes_persistent_table() {
+        let temp = tempfile::tempdir().unwrap();
+        let output = temp.path().join("arrow-data-chunk-append.duckdb");
+
+        let measurement = run_reference(&ReferenceWorkload::DuckDbArrowDataChunkAppend {
+            output: output.clone(),
+            rows: 2048,
+            batch_rows: 512,
+            include_row_key: true,
+            checkpoint: true,
+        })
+        .unwrap();
+
+        assert_eq!(measurement.rows, 2048);
+        assert!(measurement.logical_bytes > 0);
+        assert!(measurement.physical_bytes > 0);
+        let connection = duckdb::Connection::open(output).unwrap();
+        let rows = connection
+            .query_row(
+                "SELECT count(*), min(_cdf_row_key), max(_cdf_row_key) \
+                 FROM arrow_data_chunk_append",
                 [],
                 |row| {
                     Ok((

@@ -40,6 +40,7 @@ Own the lifecycle of the currently running dedicated EC2 benchmark host for the 
 ## Journal
 
 - 2026-07-18: Opened during L6 closure so the benchmark protocol can be marked done while the intentionally running tranche host remains visibly owned. Latest strict preflight passed at clean revision/build `a37a4d8645bfcc1919c04e22615e5364542ad238`, with tuned gp3 storage, workspace present, and `205647929344` free bytes. Current host markers are `.10x/evidence/.storage/2026-07-18-p3-l6-ec2-current-clean-revision.env` and `.10x/evidence/.storage/2026-07-18-p3-l6-ec2-current-clean-build.env`.
+- 2026-07-18: Tranche preflight rechecked before the next G4 benchmark slice: `tools/p3-ec2-benchmark-host.sh preflight` passed for instance `i-05011a85b7f2a33fe`, `c7i.4xlarge`, tuned gp3 volume `vol-02f4b599167f8831c` at `16000` IOPS / `1000` MiB/s, synced and built clean revision `33fb860a2b35cc8d8fbe890c38f497eba60dd967`, host class `host-class-95da083e15eebd1c`, workspace present, and `205647839232` free bytes. The host remains intentionally active for G4 and follow-on P3 measurements.
 
 ## Blockers
 

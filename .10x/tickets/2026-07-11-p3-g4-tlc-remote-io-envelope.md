@@ -264,6 +264,10 @@ Depends on G1-G3; DuckDB bulk and deterministic scaling closeout are complete.
   - Machine storage: `.10x/evidence/.storage/2026-07-18-p3-g4-ec2-native-duckdb-row-key-observation.json`, `.10x/evidence/.storage/2026-07-18-p3-g4-ec2-native-duckdb-row-key-run-cell.json`, `.10x/evidence/.storage/2026-07-18-p3-g4-ec2-native-duckdb-row-key-reference.json`.
   - Result: three warm samples over the same 12 local TLC Parquet files and 41,169,720 rows produced median wall `32.381451900s`, median rows/s `1,271,398`, median logical/physical bytes/s `21,401,193`, and peak RSS about `1.56 GiB`.
   - Current conclusion: SQL-generated row-key provenance collapses DuckDB's native no-row-key ingest floor (`4.17s`) back into the Arrow-appender/CDF baseline class (`31.83s`/`33.96s`). This is not a production accelerator. Any retained DuckDB native path must preserve CDF identity without a global window operation.
+- DuckDB raw Arrow data-chunk diagnostic:
+  - Added a lab-only `DuckDbArrowDataChunkAppend` reference workload to `cdf-p3-lab`. The workload bypasses the Rust binding's `append_record_batch` helper and calls DuckDB's C Arrow conversion APIs directly: `duckdb_schema_from_arrow`, `duckdb_data_chunk_from_arrow`, and `duckdb_append_data_chunk`. This is not a production path; it tests whether the persistent Arrow-appender floor is caused by the binding wrapper's per-vector slicing or by DuckDB persistence itself.
+  - Local validation: `cargo fmt && CARGO_BUILD_JOBS=12 cargo test -p cdf-benchmarks duckdb_arrow_data_chunk_append_reference_materializes_persistent_table --locked -j 12` — passed. The test materialized 2,048 rows into a persistent DuckDB database and verified `_cdf_row_key` min/max continuity.
+  - Current conclusion pending EC2 measurement: no default or production destination change is authorized until this cell beats the host-labeled `31.831857687s` persistent Arrow-appender diagnostic and the `33.955522533s` CDF local baseline.
 
 ## Review
 
