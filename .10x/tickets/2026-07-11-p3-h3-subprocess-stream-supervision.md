@@ -37,6 +37,7 @@ None. H1, runtime ledger, injected execution host, and streaming codecs are done
 ## Journal
 
 - 2026-07-18: Activated after H1/H2 made the neutral foreign stream vocabulary available. First implementation slice stayed intentionally narrow and architectural: added a reusable `cdf-runtime::decode_format_stream` helper that decodes any `ByteSource` into a `FormatBatchStream` against an already-compiled schema without performing discovery/current-schema pre-scan, and added a one-shot subprocess stdout `ByteSource` behind `run_stdout_adapter_streaming`. The subprocess source starts the child lazily when the batch stream is polled, accounts stdout chunks as they are read, supervises bounded stderr concurrently, records exit/stderr through a completion handle after terminal drain, and fails nonzero exit with redacted stderr context. The legacy `run_bounded_command`/unpinned `run_stdout_adapter` path remains for tiny probes and compatibility collectors; it is not claimed as H3 closure.
+- 2026-07-18: Reworked the subprocess stdout source to read the OS pipe on a Tokio task into a one-item accounted channel. This preserves pipe backpressure for slow codec consumers and avoids requiring codec-side blocking helper threads to poll Tokio I/O directly. An Arrow IPC unknown-length subprocess-stream experiment hung under test and was not retained; Arrow IPC subprocess streaming remains a named residual until its codec termination model can prove bounded finite-stream behavior without lying about exact content length or risking a hang.
 
 ## Evidence
 
@@ -47,11 +48,12 @@ None. H1, runtime ledger, injected execution host, and streaming codecs are done
   - `CARGO_BUILD_JOBS=12 cargo check -p cdf-python -p cdf-conformance --locked -j 12` — passed. Proves Python interpreter probing and subprocess conformance callers still compile against the compatibility APIs.
   - `cargo fmt --all` — passed.
   - `CARGO_BUILD_JOBS=12 cargo clippy -p cdf-runtime -p cdf-subprocess -p cdf-python -p cdf-conformance --all-targets --locked -j 12 -- -D warnings` — passed.
+  - Rejected experiment: `CARGO_BUILD_JOBS=12 cargo test -p cdf-subprocess stdout_adapter_streams --lib --locked -j 12` hung in the Arrow IPC unknown-length streaming case even after decoupling subprocess pipe reads behind a bounded channel. The Arrow IPC widening patch and test were removed rather than weakening the timeout, lying about exact length, or shipping a possible hang.
 - Limit: no throughput envelope, process-tree descendant reaping, Arrow IPC unbounded stream length, Singer/Airbyte streaming state/control, nonzero-after-emitted-batch checkpoint proof, or copy/memory-cost lab report is claimed by this slice.
 
 ## Review
 
-Pass for the schema-pinned stdout streaming milestone; concerns remain for H3 closure. The new path is expressed through the runtime `ByteSource`/format-driver boundary, not a subprocess-specific decoder or destination/source branch. It does not change performance defaults for existing file/HTTP paths. The significant remaining risk is that public compatibility helpers still expose bounded `Vec<Batch>`/whole protocol readers for unpinned and Singer/Airbyte modes; those must either become explicit capped compatibility collectors or move to streaming protocol readers before H3 can close.
+Pass for the schema-pinned NDJSON stdout streaming milestone; concerns remain for H3 closure. The new path is expressed through the runtime `ByteSource`/format-driver boundary, not a subprocess-specific decoder or destination/source branch. It does not change performance defaults for existing file/HTTP paths. The Arrow IPC hang was correctly rejected. The significant remaining risk is that public compatibility helpers still expose bounded `Vec<Batch>`/whole protocol readers for unpinned and Singer/Airbyte modes; those must either become explicit capped compatibility collectors or move to streaming protocol readers before H3 can close.
 
 ## Retrospective
 

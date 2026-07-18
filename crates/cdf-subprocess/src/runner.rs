@@ -458,7 +458,7 @@ impl ByteSource for SubprocessStdoutByteSource {
                     "subprocess stdout stream is one-shot and cannot be reopened",
                 ));
             }
-            let running = start_streaming_subprocess(
+            let stdout = spawn_streaming_subprocess_stdout(
                 &self.command,
                 &self.supervision,
                 Arc::clone(&self.memory),
@@ -467,10 +467,7 @@ impl ByteSource for SubprocessStdoutByteSource {
                 request.cancellation,
             )
             .await?;
-            Ok(
-                Box::pin(stream::try_unfold(running, read_subprocess_stdout_chunk))
-                    as AccountedByteStream,
-            )
+            Ok(stdout)
         })
     }
 
@@ -562,9 +559,54 @@ async fn start_streaming_subprocess(
     })
 }
 
+async fn spawn_streaming_subprocess_stdout(
+    command: &CommandSpec,
+    supervision: &SupervisionOptions,
+    memory: Arc<dyn MemoryCoordinator>,
+    completion: SubprocessCompletionHandle,
+    preferred_chunk_bytes: u64,
+    cancellation: RunCancellation,
+) -> Result<AccountedByteStream> {
+    let mut running = start_streaming_subprocess(
+        command,
+        supervision,
+        memory,
+        completion,
+        preferred_chunk_bytes,
+        cancellation,
+    )
+    .await?;
+    let (sender, receiver) = tokio::sync::mpsc::channel::<Result<AccountedBytes>>(1);
+    tokio::spawn(async move {
+        loop {
+            match read_subprocess_stdout_chunk(&mut running).await {
+                Ok(Some(chunk)) => {
+                    if sender.send(Ok(chunk)).await.is_err() {
+                        break;
+                    }
+                }
+                Ok(None) => break,
+                Err(error) => {
+                    let _ = sender.send(Err(error)).await;
+                    break;
+                }
+            }
+        }
+    });
+    Ok(
+        Box::pin(stream::try_unfold(receiver, |mut receiver| async move {
+            match receiver.recv().await {
+                Some(Ok(chunk)) => Ok(Some((chunk, receiver))),
+                Some(Err(error)) => Err(error),
+                None => Ok(None),
+            }
+        })) as AccountedByteStream,
+    )
+}
+
 async fn read_subprocess_stdout_chunk(
-    mut state: RunningSubprocessStdout,
-) -> Result<Option<(AccountedBytes, RunningSubprocessStdout)>> {
+    state: &mut RunningSubprocessStdout,
+) -> Result<Option<AccountedBytes>> {
     state.cancellation.check()?;
     let remaining = state
         .maximum_stdout_bytes
@@ -598,8 +640,7 @@ async fn read_subprocess_stdout_chunk(
     if read_u64 > remaining {
         let _ = state.child.start_kill();
         let _ = state.child.wait().await;
-        state.stderr_task.abort();
-        let _ = state.stderr_task.await;
+        abort_stderr_task(state).await;
         return Err(CdfError::data(format!(
             "subprocess stdout exceeded the {}-byte boundary",
             state.maximum_stdout_bytes
@@ -611,7 +652,7 @@ async fn read_subprocess_stdout_chunk(
         .ok_or_else(|| CdfError::data("subprocess stdout byte count overflowed"))?;
     buffer.truncate(read);
     let chunk = AccountedBytes::new(Bytes::from(buffer), lease)?;
-    Ok(Some((chunk, state)))
+    Ok(Some(chunk))
 }
 
 async fn reserve_subprocess_stdout_chunk(
@@ -627,6 +668,15 @@ async fn reserve_subprocess_stdout_chunk(
         .as_minimum_working_set(),
     )
     .await
+}
+
+async fn abort_stderr_task(state: &mut RunningSubprocessStdout) {
+    let stderr_task = std::mem::replace(
+        &mut state.stderr_task,
+        tokio::spawn(async { Ok(Vec::new()) }),
+    );
+    stderr_task.abort();
+    let _ = stderr_task.await;
 }
 
 async fn read_with_deadline<R: AsyncRead + Unpin>(
@@ -698,12 +748,16 @@ fn subprocess_timeout(deadline: tokio::time::Instant) -> CdfError {
     ))
 }
 
-async fn finalize_streaming_subprocess(mut state: RunningSubprocessStdout) -> Result<()> {
+async fn finalize_streaming_subprocess(state: &mut RunningSubprocessStdout) -> Result<()> {
     let exit_status =
         wait_with_deadline(&mut state.child, state.deadline, state.cancellation.clone()).await?;
-    let stderr_bytes = join_bounded_reader(state.stderr_task.await, "stderr")?;
+    let stderr_task = std::mem::replace(
+        &mut state.stderr_task,
+        tokio::spawn(async { Ok(Vec::new()) }),
+    );
+    let stderr_bytes = join_bounded_reader(stderr_task.await, "stderr")?;
     let stderr = StderrTrace::new(
-        BoundedCommandBytes::new(stderr_bytes, state.stderr_lease)?,
+        BoundedCommandBytes::new(stderr_bytes, state.stderr_lease.clone())?,
         state.stderr_line_limit,
     );
     if !exit_status.success() {
