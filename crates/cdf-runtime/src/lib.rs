@@ -48,6 +48,10 @@ pub use staging_lease::*;
 pub use transformed_byte_source::*;
 pub use utilities::*;
 
+pub mod foreign {
+    pub use cdf_foreign_stream::*;
+}
+
 pub type RuntimeSecretProvider =
     dyn cdf_http::SecretProvider + Send + Sync + std::panic::RefUnwindSafe;
 

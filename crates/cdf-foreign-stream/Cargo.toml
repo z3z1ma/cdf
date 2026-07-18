@@ -1,0 +1,20 @@
+[package]
+name = "cdf-foreign-stream"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+description = "Executor-neutral foreign producer stream contract for cdf."
+
+[dependencies]
+cdf-kernel = { path = "../cdf-kernel" }
+futures-core = "0.3.32"
+futures-util = "0.3.32"
+serde = { version = "1.0.228", features = ["derive"] }
+
+[dev-dependencies]
+arrow-array = "59.1.0"
+arrow-schema = "59.1.0"
+cdf-package = { path = "../cdf-package" }
+futures-executor = "0.3.32"
+tempfile = "3.27.0"

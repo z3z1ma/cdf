@@ -33,15 +33,17 @@ The same SA1 plan operation applies across native and dynamic sources.
 
 ## Journal
 
-- 2026-07-18: Closure graph audit found SA0-SA3 complete but SA4 not executable: the current upstream Python/WASM/foreign-stream owners have not yet supplied the incremental dynamic producer boundary needed to count one invocation, retain bootstrap batches, and continue the same producer under the compiled admission program. Marked this ticket blocked on H1/H2/H4/WIT rather than implementing a source-specific workaround.
+- 2026-07-18: Closure graph audit found SA0-SA3 complete but SA4 not executable: upstream dynamic-producer owners had not yet supplied the full incremental boundary needed to count one invocation, retain bootstrap batches, and continue the same producer under the compiled admission program. Marked this ticket blocked on H1/H2/H4/WIT rather than implementing a source-specific workaround.
+- 2026-07-18: IX1 closed the neutral foreign-stream contract. SA4 remains blocked because measurement/copy proof, concrete Python migration, WASM cost/interface validation, and WIT recursive composite projection are still upstream of a source-agnostic dynamic producer admission implementation.
 
 ## Blockers
 
-Blocked on the relevant language runtime tickets. H2 is open and depends on H1; H4 is open and depends on H1 plus the blocked WIT foundation; the WIT foundation is blocked on a ratified recursive composite projection for foreign-boundary scope/source-position values. SA4 must not invent dynamic-producer bootstrap semantics ahead of those upstream boundaries.
+Blocked on the relevant language runtime tickets. H1 is now executable; H2 is open and depends on H1; H4 is open and depends on H1 plus the blocked WIT foundation; the WIT foundation is blocked on a ratified recursive composite projection for foreign-boundary scope/source-position values. SA4 must not invent dynamic-producer bootstrap semantics ahead of those upstream boundaries.
 
 ## Evidence
 
 - 2026-07-18 ticket/source audit:
+  - `.10x/tickets/done/2026-07-11-p0-ix1-neutral-foreign-stream-contract.md` now supplies the neutral producer descriptor/outcome/control/terminal vocabulary.
   - `.10x/tickets/2026-07-11-p3-h2-python-incremental-arrow-boundary.md` is open and explicitly depends on H1, A4, and A2.
   - `.10x/tickets/2026-07-11-p3-h4-wasm-cost-interface-model.md` is open and depends on H1 and the WIT foundation.
   - `.10x/tickets/2026-07-08-wasm-wit-interface-foundation.md` is blocked on recursive composite value projection.

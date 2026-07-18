@@ -11,6 +11,7 @@ arrow-array = "59.1.0"
 arrow-schema = { version = "59.1.0", features = ["serde"] }
 bytes = "1.11.0"
 cdf-http = { path = "../cdf-http" }
+cdf-foreign-stream = { path = "../cdf-foreign-stream" }
 cdf-kernel = { path = "../cdf-kernel" }
 cdf-memory = { path = "../cdf-memory" }
 cdf-package-contract = { path = "../cdf-package-contract" }

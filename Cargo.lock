@@ -1014,6 +1014,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "cdf-foreign-stream"
+version = "0.1.0"
+dependencies = [
+ "arrow-array 59.1.0",
+ "arrow-schema 59.1.0",
+ "cdf-kernel",
+ "cdf-package",
+ "futures-core",
+ "futures-executor",
+ "futures-util",
+ "serde",
+ "tempfile",
+]
+
+[[package]]
 name = "cdf-format-arrow-ipc"
 version = "0.1.0"
 dependencies = [
@@ -1233,6 +1248,7 @@ dependencies = [
  "arrow-array 59.1.0",
  "arrow-schema 59.1.0",
  "bytes",
+ "cdf-foreign-stream",
  "cdf-http",
  "cdf-kernel",
  "cdf-memory",

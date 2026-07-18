@@ -7,6 +7,7 @@ members = [
     "crates/cdf-package-contract",
     "crates/cdf-package",
     "crates/cdf-runtime",
+    "crates/cdf-foreign-stream",
     "crates/cdf-memory",
     "crates/cdf-state-sqlite",
     "crates/cdf-http",

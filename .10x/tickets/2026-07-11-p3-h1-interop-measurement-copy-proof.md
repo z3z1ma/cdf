@@ -1,8 +1,8 @@
 Status: open
 Created: 2026-07-11
-Updated: 2026-07-11
+Updated: 2026-07-18
 Parent: .10x/tickets/2026-07-10-p3-ws-h-interop-boundaries.md
-Depends-On: .10x/tickets/done/2026-07-10-p3-ws-l5-preoptimization-baseline.md, .10x/tickets/2026-07-11-p0-ix1-neutral-foreign-stream-contract.md
+Depends-On: .10x/tickets/done/2026-07-10-p3-ws-l5-preoptimization-baseline.md, .10x/tickets/done/2026-07-11-p0-ix1-neutral-foreign-stream-contract.md
 
 # P3 H1: interop measurement and copy-proof harness
 
@@ -27,7 +27,7 @@ No adapter optimization.
 
 ## Blockers
 
-Blocked on L5 and IX1.
+None. L5 and IX1 are done; this ticket is executable.
 
 ## References
 
