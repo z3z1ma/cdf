@@ -2,19 +2,31 @@ use std::{
     future::Future,
     pin::Pin,
     process::{ExitStatus, Stdio},
-    sync::Arc,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
 };
 
+use bytes::Bytes;
 use cdf_kernel::{CdfError, ErrorKind, Result};
+use cdf_memory::AccountedBytes;
 use cdf_memory::{ConsumerKey, MemoryClass, MemoryCoordinator, MemoryLease, ReservationRequest};
 use cdf_runtime::{
-    BoundedFormatRequest, MemoryByteSource, ReadOptions, RunCancellation, decode_bounded_format,
+    AccountedByteStream, BoundedFormatRequest, ByteExtent, ByteSource, ByteSourceCapabilities,
+    ContentIdentity, DecodeSchemaPlan, GenerationStrength, MemoryByteSource, ReadOptions,
+    RunCancellation, SequentialReadRequest, decode_bounded_format, decode_format_stream,
 };
-use tokio::{io::AsyncReadExt, process::Command};
+use futures_util::stream;
+use tokio::{
+    io::{AsyncRead, AsyncReadExt},
+    process::{Child, ChildStdout, Command},
+};
 
 use crate::{
     BoundedCommandBytes, BoundedCommandOutput, CommandSpec, StderrTrace, StdoutFormat,
-    SubprocessOutput, SubprocessRead, SupervisionOptions,
+    SubprocessCompletion, SubprocessCompletionHandle, SubprocessOutput, SubprocessRead,
+    SubprocessStreamOutput, SupervisionOptions, command::descriptor_for_schema_hash,
 };
 
 pub async fn run_bounded_command(
@@ -270,6 +282,60 @@ pub async fn run_stdout_adapter(
     })
 }
 
+pub async fn run_stdout_adapter_streaming(
+    command: &CommandSpec,
+    stdout_format: StdoutFormat,
+    read_options: &ReadOptions,
+    schema: DecodeSchemaPlan,
+    supervision: &SupervisionOptions,
+    memory: Arc<dyn MemoryCoordinator>,
+) -> Result<SubprocessStreamOutput> {
+    validate_supervision(supervision)?;
+    let completion = SubprocessCompletionHandle::new();
+    let driver: Arc<dyn cdf_runtime::FormatDriver> = match stdout_format {
+        StdoutFormat::ArrowIpc => {
+            Arc::new(cdf_format_arrow_ipc::ArrowIpcStreamFormatDriver::new()?)
+        }
+        StdoutFormat::Ndjson => Arc::new(cdf_format_json::NdjsonFormatDriver::new()?),
+    };
+    let schema_hash = cdf_kernel::canonical_arrow_schema_hash(schema.authority_schema.as_ref())?;
+    let source: Arc<dyn ByteSource> = Arc::new(SubprocessStdoutByteSource::new(
+        command.clone(),
+        supervision.clone(),
+        Arc::clone(&memory),
+        completion.clone(),
+    )?);
+    let stream = decode_format_stream(
+        driver,
+        source,
+        BoundedFormatRequest::new(read_options.clone(), memory)
+            .with_schema(schema)
+            .with_cancellation(RunCancellation::default()),
+    )
+    .await
+    .map_err(|error| CdfError {
+        kind: error.kind,
+        message: format!(
+            "stream subprocess {stdout_format:?} stdout: {}",
+            error.message
+        ),
+        retry_after_ms: error.retry_after_ms,
+    })?;
+    let descriptor = descriptor_for_schema_hash(
+        read_options.resource_id.clone(),
+        schema_hash,
+        cdf_kernel::ScopeKey::Stream {
+            name: "subprocess_stdout".to_owned(),
+        },
+        "subprocess-stream-format-driver",
+    );
+    Ok(SubprocessStreamOutput {
+        descriptor,
+        batches: stream.batches,
+        completion,
+    })
+}
+
 fn add_stderr_context(
     error: CdfError,
     stderr: &StderrTrace,
@@ -298,4 +364,364 @@ fn status_message(status: ExitStatus) -> String {
         }
     }
     "unknown exit status".to_owned()
+}
+
+fn validate_supervision(supervision: &SupervisionOptions) -> Result<()> {
+    if supervision.maximum_stdout_bytes == 0
+        || supervision.maximum_stderr_bytes == 0
+        || supervision.maximum_stdout_bytes == u64::MAX
+        || supervision.maximum_stderr_bytes == u64::MAX
+    {
+        return Err(CdfError::contract(
+            "subprocess stdout and stderr byte boundaries must be within 1..u64::MAX",
+        ));
+    }
+    if supervision.stderr_line_limit == 0 {
+        return Err(CdfError::contract(
+            "subprocess stderr line boundary must be greater than zero",
+        ));
+    }
+    Ok(())
+}
+
+struct SubprocessStdoutByteSource {
+    command: CommandSpec,
+    supervision: SupervisionOptions,
+    memory: Arc<dyn MemoryCoordinator>,
+    identity: ContentIdentity,
+    capabilities: ByteSourceCapabilities,
+    opened: AtomicBool,
+    completion: SubprocessCompletionHandle,
+}
+
+impl SubprocessStdoutByteSource {
+    fn new(
+        command: CommandSpec,
+        supervision: SupervisionOptions,
+        memory: Arc<dyn MemoryCoordinator>,
+        completion: SubprocessCompletionHandle,
+    ) -> Result<Self> {
+        validate_supervision(&supervision)?;
+        let stable_id = format!("subprocess:stdout:{}", command.program);
+        let identity = ContentIdentity {
+            stable_id,
+            size_bytes: None,
+            generation: Some("invocation-local-subprocess-stdout".to_owned()),
+            checksum: None,
+            strength: GenerationStrength::Weak,
+        };
+        identity.validate()?;
+        let capabilities = ByteSourceCapabilities {
+            known_length: false,
+            reopenable: false,
+            seekable: false,
+            exact_ranges: false,
+            useful_range_concurrency: 0,
+            minimum_chunk_bytes: 1,
+            maximum_chunk_bytes: supervision.maximum_stdout_bytes,
+        };
+        capabilities.validate()?;
+        Ok(Self {
+            command,
+            supervision,
+            memory,
+            identity,
+            capabilities,
+            opened: AtomicBool::new(false),
+            completion,
+        })
+    }
+}
+
+impl ByteSource for SubprocessStdoutByteSource {
+    fn identity(&self) -> &ContentIdentity {
+        &self.identity
+    }
+
+    fn capabilities(&self) -> &ByteSourceCapabilities {
+        &self.capabilities
+    }
+
+    fn open_sequential(
+        &self,
+        request: SequentialReadRequest,
+    ) -> cdf_kernel::BoxFuture<'_, Result<AccountedByteStream>> {
+        Box::pin(async move {
+            request.cancellation.check()?;
+            if request.preferred_chunk_bytes == 0 {
+                return Err(CdfError::contract(
+                    "subprocess stdout stream requires a nonzero preferred chunk size",
+                ));
+            }
+            if self.opened.swap(true, Ordering::AcqRel) {
+                return Err(CdfError::contract(
+                    "subprocess stdout stream is one-shot and cannot be reopened",
+                ));
+            }
+            let running = start_streaming_subprocess(
+                &self.command,
+                &self.supervision,
+                Arc::clone(&self.memory),
+                self.completion.clone(),
+                request.preferred_chunk_bytes,
+                request.cancellation,
+            )
+            .await?;
+            Ok(
+                Box::pin(stream::try_unfold(running, read_subprocess_stdout_chunk))
+                    as AccountedByteStream,
+            )
+        })
+    }
+
+    fn read_exact_range(
+        &self,
+        _extent: ByteExtent,
+        _cancellation: RunCancellation,
+    ) -> cdf_kernel::BoxFuture<'_, Result<AccountedBytes>> {
+        Box::pin(async {
+            Err(CdfError::contract(
+                "subprocess stdout stream does not support exact byte ranges",
+            ))
+        })
+    }
+}
+
+struct RunningSubprocessStdout {
+    stdout: ChildStdout,
+    child: Child,
+    stderr_task: tokio::task::JoinHandle<Result<Vec<u8>>>,
+    stderr_lease: MemoryLease,
+    stderr_line_limit: usize,
+    maximum_stdout_bytes: u64,
+    stdout_bytes: u64,
+    preferred_chunk_bytes: u64,
+    deadline: Option<tokio::time::Instant>,
+    cancellation: RunCancellation,
+    memory: Arc<dyn MemoryCoordinator>,
+    completion: SubprocessCompletionHandle,
+}
+
+async fn start_streaming_subprocess(
+    command: &CommandSpec,
+    supervision: &SupervisionOptions,
+    memory: Arc<dyn MemoryCoordinator>,
+    completion: SubprocessCompletionHandle,
+    preferred_chunk_bytes: u64,
+    cancellation: RunCancellation,
+) -> Result<RunningSubprocessStdout> {
+    let stderr_lease = reserve_output_capacity(
+        &memory,
+        "subprocess-stderr",
+        supervision.maximum_stderr_bytes,
+    )?;
+    let mut process = Command::new(&command.program);
+    process
+        .args(&command.args)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true);
+    if let Some(current_dir) = &command.current_dir {
+        process.current_dir(current_dir);
+    }
+    for (key, value) in &command.env {
+        process.env(key, value);
+    }
+    let mut child = process
+        .spawn()
+        .map_err(|error| CdfError::internal(format!("spawn subprocess: {error}")))?;
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| CdfError::internal("subprocess stdout pipe was not created"))?;
+    let stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| CdfError::internal("subprocess stderr pipe was not created"))?;
+    let stderr_task = tokio::spawn(read_bounded(
+        stderr,
+        supervision.maximum_stderr_bytes,
+        "stderr",
+    ));
+    let deadline = supervision
+        .timeout
+        .map(|duration| tokio::time::Instant::now() + duration);
+    Ok(RunningSubprocessStdout {
+        stdout,
+        child,
+        stderr_task,
+        stderr_lease,
+        stderr_line_limit: supervision.stderr_line_limit,
+        maximum_stdout_bytes: supervision.maximum_stdout_bytes,
+        stdout_bytes: 0,
+        preferred_chunk_bytes,
+        deadline,
+        cancellation,
+        memory,
+        completion,
+    })
+}
+
+async fn read_subprocess_stdout_chunk(
+    mut state: RunningSubprocessStdout,
+) -> Result<Option<(AccountedBytes, RunningSubprocessStdout)>> {
+    state.cancellation.check()?;
+    let remaining = state
+        .maximum_stdout_bytes
+        .saturating_sub(state.stdout_bytes);
+    let read_window = if remaining == 0 {
+        1
+    } else {
+        state
+            .preferred_chunk_bytes
+            .min(remaining.saturating_add(1))
+            .max(1)
+    };
+    let read_window = usize::try_from(read_window)
+        .map_err(|_| CdfError::data("subprocess stdout chunk boundary exceeds usize"))?;
+    let lease = reserve_subprocess_stdout_chunk(&state.memory, read_window as u64).await?;
+    let mut buffer = vec![0_u8; read_window];
+    let read = read_with_deadline(
+        &mut state.stdout,
+        &mut buffer,
+        state.deadline,
+        state.cancellation.clone(),
+    )
+    .await?;
+    if read == 0 {
+        drop(lease);
+        finalize_streaming_subprocess(state).await?;
+        return Ok(None);
+    }
+    let read_u64 = u64::try_from(read)
+        .map_err(|_| CdfError::data("subprocess stdout read length exceeds u64"))?;
+    if read_u64 > remaining {
+        let _ = state.child.start_kill();
+        let _ = state.child.wait().await;
+        state.stderr_task.abort();
+        let _ = state.stderr_task.await;
+        return Err(CdfError::data(format!(
+            "subprocess stdout exceeded the {}-byte boundary",
+            state.maximum_stdout_bytes
+        )));
+    }
+    state.stdout_bytes = state
+        .stdout_bytes
+        .checked_add(read_u64)
+        .ok_or_else(|| CdfError::data("subprocess stdout byte count overflowed"))?;
+    buffer.truncate(read);
+    let chunk = AccountedBytes::new(Bytes::from(buffer), lease)?;
+    Ok(Some((chunk, state)))
+}
+
+async fn reserve_subprocess_stdout_chunk(
+    memory: &Arc<dyn MemoryCoordinator>,
+    bytes: u64,
+) -> Result<MemoryLease> {
+    cdf_memory::reserve(
+        Arc::clone(memory),
+        ReservationRequest::new(
+            ConsumerKey::new("subprocess-stdout-chunk", MemoryClass::Source)?,
+            bytes.max(1),
+        )?
+        .as_minimum_working_set(),
+    )
+    .await
+}
+
+async fn read_with_deadline<R: AsyncRead + Unpin>(
+    reader: &mut R,
+    buffer: &mut [u8],
+    deadline: Option<tokio::time::Instant>,
+    cancellation: RunCancellation,
+) -> Result<usize> {
+    let cancelled = cancellation.cancelled();
+    tokio::pin!(cancelled);
+    match deadline {
+        Some(deadline) => {
+            let sleep = tokio::time::sleep_until(deadline);
+            tokio::pin!(sleep);
+            tokio::select! {
+                result = reader.read(buffer) => {
+                    result.map_err(|error| CdfError::internal(format!("read subprocess stdout: {error}")))
+                }
+                () = &mut sleep => Err(subprocess_timeout(deadline)),
+                () = &mut cancelled => Err(cancellation.check().unwrap_err()),
+            }
+        }
+        None => {
+            tokio::select! {
+                result = reader.read(buffer) => {
+                    result.map_err(|error| CdfError::internal(format!("read subprocess stdout: {error}")))
+                }
+                () = &mut cancelled => Err(cancellation.check().unwrap_err()),
+            }
+        }
+    }
+}
+
+async fn wait_with_deadline(
+    child: &mut Child,
+    deadline: Option<tokio::time::Instant>,
+    cancellation: RunCancellation,
+) -> Result<ExitStatus> {
+    let cancelled = cancellation.cancelled();
+    tokio::pin!(cancelled);
+    match deadline {
+        Some(deadline) => {
+            let sleep = tokio::time::sleep_until(deadline);
+            tokio::pin!(sleep);
+            tokio::select! {
+                result = child.wait() => {
+                    result.map_err(|error| CdfError::internal(format!("wait for subprocess: {error}")))
+                }
+                () = &mut sleep => Err(subprocess_timeout(deadline)),
+                () = &mut cancelled => Err(cancellation.check().unwrap_err()),
+            }
+        }
+        None => {
+            tokio::select! {
+                result = child.wait() => {
+                    result.map_err(|error| CdfError::internal(format!("wait for subprocess: {error}")))
+                }
+                () = &mut cancelled => Err(cancellation.check().unwrap_err()),
+            }
+        }
+    }
+}
+
+fn subprocess_timeout(deadline: tokio::time::Instant) -> CdfError {
+    let overdue = tokio::time::Instant::now().saturating_duration_since(deadline);
+    CdfError::transient(format!(
+        "subprocess timed out after deadline was reached (overdue {} ms)",
+        overdue.as_millis()
+    ))
+}
+
+async fn finalize_streaming_subprocess(mut state: RunningSubprocessStdout) -> Result<()> {
+    let exit_status =
+        wait_with_deadline(&mut state.child, state.deadline, state.cancellation.clone()).await?;
+    let stderr_bytes = join_bounded_reader(state.stderr_task.await, "stderr")?;
+    let stderr = StderrTrace::new(
+        BoundedCommandBytes::new(stderr_bytes, state.stderr_lease)?,
+        state.stderr_line_limit,
+    );
+    if !exit_status.success() {
+        return Err(CdfError::new(
+            ErrorKind::Transient,
+            format!(
+                "subprocess exited unsuccessfully: {}; stderr: {}",
+                status_message(exit_status),
+                stderr.summary()
+            ),
+        ));
+    }
+    state
+        .completion
+        .complete(SubprocessCompletion {
+            stderr,
+            exit_status,
+        })
+        .map_err(|error| CdfError::internal(error.message))?;
+    Ok(())
 }

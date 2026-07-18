@@ -1,8 +1,14 @@
-use std::{collections::BTreeMap, path::PathBuf, process::ExitStatus, time::Duration};
+use std::{
+    collections::BTreeMap,
+    path::PathBuf,
+    process::ExitStatus,
+    sync::{Arc, Mutex},
+    time::Duration,
+};
 
 use cdf_kernel::{
-    Batch, ResourceDescriptor, SchemaSnapshotReference, SchemaSource, ScopeKey, TrustLevel,
-    WriteDisposition,
+    Batch, ResourceDescriptor, ResourceId, SchemaHash, SchemaSnapshotReference, SchemaSource,
+    ScopeKey, TrustLevel, WriteDisposition,
 };
 use cdf_memory::{AccountedBytes, MemoryLease};
 use cdf_runtime::BoundedFormatRead;
@@ -127,6 +133,48 @@ pub struct SubprocessOutput {
     pub exit_status: ExitStatus,
 }
 
+pub struct SubprocessStreamOutput {
+    pub descriptor: ResourceDescriptor,
+    pub batches: cdf_runtime::FormatBatchStream,
+    pub completion: SubprocessCompletionHandle,
+}
+
+#[derive(Debug)]
+pub struct SubprocessCompletion {
+    pub stderr: StderrTrace,
+    pub exit_status: ExitStatus,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct SubprocessCompletionHandle {
+    inner: Arc<Mutex<Option<SubprocessCompletion>>>,
+}
+
+impl SubprocessCompletionHandle {
+    pub(crate) fn new() -> Self {
+        Self::default()
+    }
+
+    pub(crate) fn complete(&self, completion: SubprocessCompletion) -> cdf_kernel::Result<()> {
+        let mut guard = self.inner.lock().unwrap();
+        if guard.is_some() {
+            return Err(cdf_kernel::CdfError::internal(
+                "subprocess stream completion was recorded twice",
+            ));
+        }
+        *guard = Some(completion);
+        Ok(())
+    }
+
+    pub fn take(&self) -> cdf_kernel::Result<SubprocessCompletion> {
+        self.inner
+            .lock()
+            .unwrap()
+            .take()
+            .ok_or_else(|| cdf_kernel::CdfError::internal("subprocess stream has not completed"))
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct SubprocessRead {
     pub descriptor: ResourceDescriptor,
@@ -147,30 +195,41 @@ impl SubprocessRead {
                 cdf_kernel::CdfError::internal("bounded subprocess read emitted no batch")
             })?;
         Ok(Self {
-            descriptor: ResourceDescriptor {
-                resource_id: resource_id.clone(),
-                schema_source: SchemaSource::Discovered {
-                    snapshot: SchemaSnapshotReference {
-                        schema_hash: schema_hash.clone(),
-                        path: format!(".cdf/schemas/{resource_id}@{schema_hash}.json"),
-                        metadata: BTreeMap::from([(
-                            "probe".to_owned(),
-                            "subprocess-format-driver".to_owned(),
-                        )]),
-                    },
-                },
-                primary_key: Vec::new(),
-                merge_key: Vec::new(),
-                cursor: None,
-                write_disposition: WriteDisposition::Append,
-                deduplication: None,
-                contract: None,
-                state_scope: scope,
-                freshness: None,
-                trust_level: TrustLevel::Experimental,
-            },
+            descriptor: descriptor_for_schema_hash(
+                resource_id,
+                schema_hash,
+                scope,
+                "subprocess-format-driver",
+            ),
             batches: read.batches,
         })
+    }
+}
+
+pub(crate) fn descriptor_for_schema_hash(
+    resource_id: ResourceId,
+    schema_hash: SchemaHash,
+    scope: ScopeKey,
+    probe: &'static str,
+) -> ResourceDescriptor {
+    ResourceDescriptor {
+        resource_id: resource_id.clone(),
+        schema_source: SchemaSource::Discovered {
+            snapshot: SchemaSnapshotReference {
+                schema_hash: schema_hash.clone(),
+                path: format!(".cdf/schemas/{resource_id}@{schema_hash}.json"),
+                metadata: BTreeMap::from([("probe".to_owned(), probe.to_owned())]),
+            },
+        },
+        primary_key: Vec::new(),
+        merge_key: Vec::new(),
+        cursor: None,
+        write_disposition: WriteDisposition::Append,
+        deduplication: None,
+        contract: None,
+        state_scope: scope,
+        freshness: None,
+        trust_level: TrustLevel::Experimental,
     }
 }
 

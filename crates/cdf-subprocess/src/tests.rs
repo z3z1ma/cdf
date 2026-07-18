@@ -15,7 +15,8 @@ use cdf_kernel::{
     ErrorKind, ForeignState, PartitionId, ResourceId, ScopeKey, SegmentId, SourcePosition,
 };
 use cdf_memory::{DeterministicMemoryCoordinator, MemoryCoordinator};
-use cdf_runtime::ReadOptions;
+use cdf_runtime::{DecodeSchemaPlan, ReadOptions};
+use futures_util::TryStreamExt;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
@@ -284,6 +285,47 @@ async fn arrow_ipc_stdout_adapter_reads_kernel_batches() {
             .schema()
             .as_ref(),
         schema.as_ref()
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn ndjson_stdout_adapter_streams_with_compiled_schema_without_reserving_stdout_ceiling() {
+    let constrained: Arc<dyn MemoryCoordinator> =
+        Arc::new(DeterministicMemoryCoordinator::new(96 * 1024 * 1024, BTreeMap::new()).unwrap());
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("id", DataType::Int64, true),
+        Field::new("name", DataType::Utf8, true),
+    ]));
+    let command = shell([
+        "-c",
+        "printf 'stream trace\\n' >&2; i=0; while [ \"$i\" -lt 4096 ]; do printf '{\"id\":%s,\"name\":\"ada\"}\\n' \"$i\"; i=$((i + 1)); done",
+    ]);
+
+    let output = run_stdout_adapter_streaming(
+        &command,
+        StdoutFormat::Ndjson,
+        &read_options(),
+        DecodeSchemaPlan::fixed_admission(schema),
+        &SupervisionOptions {
+            maximum_stdout_bytes: 256 * 1024 * 1024,
+            maximum_stderr_bytes: 64 * 1024,
+            ..SupervisionOptions::default()
+        },
+        constrained,
+    )
+    .await
+    .unwrap();
+    let batches = output.batches.try_collect::<Vec<_>>().await.unwrap();
+    let completion = output.completion.take().unwrap();
+
+    assert!(completion.exit_status.success());
+    assert_eq!(completion.stderr.lines(), vec!["stream trace"]);
+    assert_eq!(
+        batches
+            .iter()
+            .map(|batch| batch.header.row_count)
+            .sum::<u64>(),
+        4096
     );
 }
 

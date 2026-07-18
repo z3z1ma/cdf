@@ -1365,6 +1365,7 @@ dependencies = [
  "cdf-memory",
  "cdf-package",
  "cdf-runtime",
+ "futures-util",
  "hex",
  "serde",
  "serde_json",

@@ -6,7 +6,7 @@ use cdf_kernel::{Batch, CdfError, Result, SourcePosition};
 use cdf_memory::{
     AccountedBytes, ConsumerKey, MemoryClass, MemoryCoordinator, ReservationRequest, reserve,
 };
-use futures_util::{TryStreamExt, stream};
+use futures_util::{Stream, TryStreamExt, stream};
 use sha2::{Digest, Sha256};
 
 use crate::{
@@ -198,6 +198,13 @@ pub struct BoundedFormatRead {
     pub batches: Vec<Batch>,
 }
 
+pub type FormatBatchStream = std::pin::Pin<Box<dyn Stream<Item = Result<Batch>> + Send + 'static>>;
+
+pub struct FormatStreamRead {
+    pub schema: SchemaRef,
+    pub batches: FormatBatchStream,
+}
+
 #[derive(Clone)]
 pub struct BoundedFormatRequest {
     pub options: serde_json::Value,
@@ -249,6 +256,23 @@ pub async fn decode_bounded_format(
     source: Arc<dyn ByteSource>,
     request: BoundedFormatRequest,
 ) -> Result<BoundedFormatRead> {
+    let stream = decode_format_stream(driver, source, request).await?;
+    let schema = Arc::clone(&stream.schema);
+    let batches = stream.batches.try_collect::<Vec<_>>().await?;
+    Ok(BoundedFormatRead { schema, batches })
+}
+
+/// Executes a registered codec against a byte source and streams physical
+/// batches as soon as the codec emits them. When `request.schema` is present,
+/// the output schema is already compiled and no discovery/current-schema
+/// pre-scan is performed. When it is absent, this helper retains bounded-format
+/// behavior and therefore requires a known finite payload length before
+/// discovery.
+pub async fn decode_format_stream(
+    driver: Arc<dyn FormatDriver>,
+    source: Arc<dyn ByteSource>,
+    request: BoundedFormatRequest,
+) -> Result<FormatStreamRead> {
     let BoundedFormatRequest {
         options,
         read_options,
@@ -258,12 +282,14 @@ pub async fn decode_bounded_format(
         cancellation,
     } = request;
     let canonical_options = driver.canonical_options(options)?;
-    let size_bytes = source.identity().size_bytes.ok_or_else(|| {
-        CdfError::contract("bounded format execution requires a known payload length")
-    })?;
     let decode_schema = match schema {
         Some(schema) => schema,
         None => {
+            let size_bytes = source.identity().size_bytes.ok_or_else(|| {
+                CdfError::contract(
+                    "format discovery requires a known finite payload length; provide a compiled schema to stream an unbounded source",
+                )
+            })?;
             let observation = driver
                 .discover(
                     Arc::clone(&source),
@@ -304,38 +330,95 @@ pub async fn decode_bounded_format(
         ));
     }
     let frontiers = decode_unit_no_lookback_frontiers(&units)?;
-    let mut batches = Vec::new();
-    for (ordinal, unit) in units.into_iter().enumerate() {
-        let mut decoded = session
+    let schema = decode_schema.decoder_schema.clone();
+    let state = FormatStreamState {
+        source,
+        session,
+        units,
+        frontiers,
+        next_unit: 0,
+        current: None,
+        read_options,
+        decode_schema,
+        source_position,
+        target_batch_bytes,
+        memory,
+        cancellation,
+        final_release_done: false,
+    };
+    Ok(FormatStreamRead {
+        schema,
+        batches: Box::pin(stream::try_unfold(state, decode_format_stream_next)),
+    })
+}
+
+struct FormatStreamState {
+    source: Arc<dyn ByteSource>,
+    session: Arc<dyn crate::FormatDecodeSession>,
+    units: Vec<crate::DecodeUnitPlan>,
+    frontiers: Option<Vec<u64>>,
+    next_unit: usize,
+    current: Option<crate::PhysicalDecodeStream>,
+    read_options: ReadOptions,
+    decode_schema: DecodeSchemaPlan,
+    source_position: Option<SourcePosition>,
+    target_batch_bytes: u64,
+    memory: Arc<dyn MemoryCoordinator>,
+    cancellation: RunCancellation,
+    final_release_done: bool,
+}
+
+async fn decode_format_stream_next(
+    mut state: FormatStreamState,
+) -> Result<Option<(Batch, FormatStreamState)>> {
+    loop {
+        state.cancellation.check()?;
+        if let Some(current) = &mut state.current {
+            if let Some(batch) = current.try_next().await? {
+                return Ok(Some((batch.into_batch()?, state)));
+            }
+            state.current = None;
+            let completed_ordinal = state
+                .next_unit
+                .checked_sub(1)
+                .ok_or_else(|| CdfError::internal("format stream completed before starting"))?;
+            if let Some(frontiers) = &state.frontiers {
+                state.source.release_before(frontiers[completed_ordinal])?;
+            }
+            continue;
+        }
+        let Some(unit) = state.units.get(state.next_unit).cloned() else {
+            if !state.final_release_done {
+                if let Some(size_bytes) = state.source.identity().size_bytes {
+                    state.source.release_before(size_bytes)?;
+                }
+                state.final_release_done = true;
+            }
+            return Ok(None);
+        };
+        state.next_unit = state
+            .next_unit
+            .checked_add(1)
+            .ok_or_else(|| CdfError::data("format stream unit ordinal overflowed"))?;
+        let decoded = state
+            .session
             .decode(PhysicalDecodeRequest {
                 unit,
-                resource_id: read_options.resource_id.clone(),
-                partition_id: read_options.partition_id.clone(),
-                batch_id_prefix: read_options.batch_id_prefix.clone(),
-                schema: decode_schema.clone(),
-                source_position: source_position.clone(),
+                resource_id: state.read_options.resource_id.clone(),
+                partition_id: state.read_options.partition_id.clone(),
+                batch_id_prefix: state.read_options.batch_id_prefix.clone(),
+                schema: state.decode_schema.clone(),
+                source_position: state.source_position.clone(),
                 projection: None,
                 predicates: Vec::new(),
-                target_batch_rows: read_options.batch_size,
-                target_batch_bytes,
-                memory: Arc::clone(&memory),
-                cancellation: cancellation.clone(),
+                target_batch_rows: state.read_options.batch_size,
+                target_batch_bytes: state.target_batch_bytes,
+                memory: Arc::clone(&state.memory),
+                cancellation: state.cancellation.clone(),
             })
             .await?;
-        while let Some(batch) = decoded.try_next().await? {
-            batches.push(batch.into_batch()?);
-        }
-        if let Some(frontiers) = &frontiers {
-            source.release_before(frontiers[ordinal])?;
-        }
+        state.current = Some(decoded);
     }
-    source.release_before(size_bytes)?;
-    let schema = batches
-        .first()
-        .and_then(Batch::record_batch)
-        .map(arrow_array::RecordBatch::schema)
-        .unwrap_or(decode_schema.decoder_schema);
-    Ok(BoundedFormatRead { schema, batches })
 }
 
 #[cfg(test)]
