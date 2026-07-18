@@ -1,0 +1,1 @@
+{"batch_rows":65536,"checkpoint":true,"include_row_key":false,"kind":"duck_db_arrow_append","output":"/home/ec2-user/cdf-bench/repo/target/cdf-benchmarks/g4-arrow-append-no-row-key-20260718134730/arrow-append-no-row-key.duckdb","rows":41169720}
