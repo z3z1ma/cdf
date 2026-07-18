@@ -8,7 +8,7 @@ use cdf_project::{
 use cdf_state_sqlite::{RunEventDetails, RunEventValue, RunLedgerSnapshot};
 use serde::Serialize;
 
-use crate::render::{
+use cdf_cli_core::render::{
     RenderDocument,
     humanize::humanize_rows,
     primitives::{KeyValuePanel, NextCommand, SectionRule, StatusKind, StatusLine},
@@ -949,7 +949,7 @@ mod tests {
 
         let rendered = report
             .render_document()
-            .render(&crate::render::RenderConfig::headless_for_width(96));
+            .render(&cdf_cli_core::render::RenderConfig::headless_for_width(96));
 
         assert!(!rendered.contains("secret-value"));
         assert!(rendered.contains("postgres://[redacted]@localhost/db"));

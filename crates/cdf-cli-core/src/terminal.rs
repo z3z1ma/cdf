@@ -2,11 +2,11 @@ use std::io::IsTerminal;
 
 use crate::output::CliError;
 
-pub(crate) const DEFAULT_TERMINAL_WIDTH: usize = 80;
-pub(crate) const MIN_TERMINAL_WIDTH: usize = 20;
+pub const DEFAULT_TERMINAL_WIDTH: usize = 80;
+pub const MIN_TERMINAL_WIDTH: usize = 20;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub(crate) enum PolicyMode {
+pub enum PolicyMode {
     #[default]
     Auto,
     Always,
@@ -14,7 +14,7 @@ pub(crate) enum PolicyMode {
 }
 
 impl PolicyMode {
-    pub(crate) fn parse(flag: &str, value: &str) -> Result<Self, CliError> {
+    pub fn parse(flag: &str, value: &str) -> Result<Self, CliError> {
         match value {
             "auto" => Ok(Self::Auto),
             "always" => Ok(Self::Always),
@@ -27,7 +27,7 @@ impl PolicyMode {
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub(crate) enum Verbosity {
+pub enum Verbosity {
     Quiet,
     #[default]
     Normal,
@@ -35,7 +35,7 @@ pub(crate) enum Verbosity {
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub(crate) struct TerminalPolicy {
+pub struct TerminalPolicy {
     pub color: PolicyMode,
     pub progress: PolicyMode,
     pub unicode: PolicyMode,
@@ -43,7 +43,7 @@ pub(crate) struct TerminalPolicy {
 }
 
 impl TerminalPolicy {
-    pub(crate) fn progress_enabled(self, json: bool) -> bool {
+    pub fn progress_enabled(self, json: bool) -> bool {
         !json && self.progress != PolicyMode::Never && self.verbosity != Verbosity::Quiet
     }
 }
@@ -114,13 +114,13 @@ mod tests {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum OutputChannel {
+pub enum OutputChannel {
     Stdout,
     Stderr,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub(crate) struct TerminalEnvironment {
+pub struct TerminalEnvironment {
     pub stdout_is_terminal: bool,
     pub stderr_is_terminal: bool,
     pub terminal_width: Option<usize>,
@@ -132,7 +132,7 @@ pub(crate) struct TerminalEnvironment {
 }
 
 impl TerminalEnvironment {
-    pub(crate) fn detect() -> Self {
+    pub fn detect() -> Self {
         let stdout_is_terminal = std::io::stdout().is_terminal();
         let stderr_is_terminal = std::io::stderr().is_terminal();
         let (terminal_width, terminal_rows) = if stdout_is_terminal || stderr_is_terminal {
@@ -160,14 +160,14 @@ impl TerminalEnvironment {
         }
     }
 
-    pub(crate) fn is_terminal(self, channel: OutputChannel) -> bool {
+    pub fn is_terminal(self, channel: OutputChannel) -> bool {
         match channel {
             OutputChannel::Stdout => self.stdout_is_terminal,
             OutputChannel::Stderr => self.stderr_is_terminal,
         }
     }
 
-    pub(crate) fn width(self) -> usize {
+    pub fn width(self) -> usize {
         self.terminal_width
             .or(self.columns)
             .unwrap_or(DEFAULT_TERMINAL_WIDTH)

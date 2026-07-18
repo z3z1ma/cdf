@@ -1,0 +1,25 @@
+[package]
+name = "cdf-cli-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+description = "Dependency-light CLI grammar, rendering, terminal, and output core for cdf."
+
+[[bin]]
+name = "cdf-generate-cli-artifacts"
+path = "src/bin/generate_cli_artifacts.rs"
+required-features = ["cli-artifacts"]
+
+[features]
+cli-artifacts = ["dep:clap_complete", "dep:clap_mangen"]
+
+[dependencies]
+cdf-kernel = { path = "../cdf-kernel" }
+clap = { version = "4.6.1", default-features = false, features = ["std", "help", "usage", "error-context", "string"] }
+clap_complete = { version = "4.6.7", default-features = false, optional = true }
+clap_mangen = { version = "0.3.0", default-features = false, optional = true }
+crossterm = { version = "0.28.1", default-features = false }
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.150"
+unicode-width = "0.2.2"

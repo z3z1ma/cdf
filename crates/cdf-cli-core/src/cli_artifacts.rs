@@ -22,14 +22,14 @@ const COMMAND_DOCS_DIR: &str = "commands";
 const ERROR_DOCS_DIR: &str = "errors";
 
 pub fn default_artifact_dir() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("generated")
+    workspace_root()
+        .join("crates")
+        .join("cdf-cli")
+        .join("generated")
 }
 
 pub fn default_docs_dir() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("..")
-        .join("..")
-        .join("docs")
+    workspace_root().join("docs")
 }
 
 pub fn generate_cli_artifacts(out_dir: &Path) -> Result<(), CliError> {
@@ -371,7 +371,7 @@ fn compare_trees(
     } else {
         Err(CliError::usage_with(
             format!(
-                "generated CLI artifacts are stale; run `cargo run -p cdf-cli --locked --features cli-artifacts --bin cdf-generate-cli-artifacts -- --out-dir {}`:\n{}",
+                "generated CLI artifacts are stale; run `cargo run -p cdf-cli-core --locked --features cli-artifacts --bin cdf-generate-cli-artifacts -- --out-dir {}`:\n{}",
                 default_artifact_dir().display(),
                 drift.join("\n")
             ),
@@ -403,7 +403,7 @@ fn compare_reference_trees(
     } else {
         Err(CliError::usage_with(
             format!(
-                "generated command and error reference is stale; run `cargo run -p cdf-cli --locked --features cli-artifacts --bin cdf-generate-cli-artifacts -- --docs-dir {} --docs-only`:\n{}",
+                "generated command and error reference is stale; run `cargo run -p cdf-cli-core --locked --features cli-artifacts --bin cdf-generate-cli-artifacts -- --docs-dir {} --docs-only`:\n{}",
                 docs_dir.display(),
                 drift.join("\n")
             ),
@@ -417,12 +417,7 @@ fn unique_temp_dir() -> Result<PathBuf, CliError> {
         .duration_since(UNIX_EPOCH)
         .map_err(|error| internal(format!("system clock before UNIX epoch: {error}")))?
         .as_nanos();
-    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("..")
-        .join("..")
-        .join("target")
-        .join("quality")
-        .join("tmp");
+    let root = workspace_root().join("target").join("quality").join("tmp");
     fs::create_dir_all(&root).map_err(io_error("create temporary artifact parent directory"))?;
     for attempt in 0..100 {
         let path = root.join(format!(
@@ -444,6 +439,12 @@ fn unique_temp_dir() -> Result<PathBuf, CliError> {
     ))
 }
 
+fn workspace_root() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("..")
+}
+
 fn io_error(context: &'static str) -> impl Fn(io::Error) -> CliError {
     move |error| internal(format!("{context}: {error}"))
 }
@@ -460,4 +461,48 @@ enum CompletionShell {
     Zsh,
     Fish,
     PowerShell,
+}
+
+#[cfg(test)]
+mod tests {
+    use std::fs;
+
+    use super::{check_cli_artifacts, default_artifact_dir};
+
+    #[test]
+    fn cli_generated_artifacts_match_committed_snapshots() {
+        check_cli_artifacts(&default_artifact_dir()).unwrap();
+    }
+
+    #[test]
+    fn cx1_generated_help_and_man_pages_are_complete_and_share_global_authority() {
+        let generated = default_artifact_dir();
+        for child in ["help", "man"] {
+            for entry in fs::read_dir(generated.join(child)).unwrap() {
+                let text = fs::read_to_string(entry.unwrap().path()).unwrap();
+                assert!(!text.contains("Command option"));
+                assert!(!text.contains("Command value"));
+            }
+        }
+
+        let root = fs::read_to_string(generated.join("help/cdf.txt")).unwrap();
+        assert!(root.contains("Environment:"));
+        assert!(root.contains("Examples:"));
+        let run_man = fs::read_to_string(generated.join("man/cdf-run.1")).unwrap();
+        for global in ["\\-\\-color", "\\-\\-progress", "\\-\\-unicode"] {
+            assert!(run_man.contains(global), "run man page missing {global}");
+        }
+        for description in [
+            "Color policy: auto, always, or never",
+            "Progress policy: auto, always, or never",
+            "Unicode policy: auto, always, or never",
+        ] {
+            assert!(
+                run_man.contains(description),
+                "run man page missing {description}"
+            );
+        }
+        let bash = fs::read_to_string(generated.join("completions/cdf.bash")).unwrap();
+        assert!(bash.matches("auto always never").count() >= 3);
+    }
 }

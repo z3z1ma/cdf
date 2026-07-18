@@ -161,7 +161,7 @@ _cdf() {
 
     case "${cmd}" in
         cdf)
-            opts="-q -v -h -V --quiet --verbose --color --progress --unicode --help --version help version init add validate plan explain run preview sql inspect diff schema contract state resume replay backfill package doctor status"
+            opts="-q -v -h -V --quiet --verbose --color --progress --unicode --memory-budget --spill-budget --help --version help version init add validate plan explain run preview sql inspect diff schema contract state resume replay backfill package doctor status"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 1 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -179,6 +179,14 @@ _cdf() {
                     COMPREPLY=($(compgen -W "auto always never" -- "${cur}"))
                     return 0
                     ;;
+                --memory-budget)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --spill-budget)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
                 *)
                     COMPREPLY=()
                     ;;
@@ -187,7 +195,7 @@ _cdf() {
             return 0
             ;;
         cdf__subcmd__add)
-            opts="-q -v -h --dry-run --option --quiet --verbose --color --progress --unicode --help"
+            opts="-q -v -h --dry-run --option --quiet --verbose --color --progress --unicode --memory-budget --spill-budget --help"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 2 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -209,6 +217,14 @@ _cdf() {
                     COMPREPLY=($(compgen -W "auto always never" -- "${cur}"))
                     return 0
                     ;;
+                --memory-budget)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --spill-budget)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
                 *)
                     COMPREPLY=()
                     ;;
@@ -217,7 +233,7 @@ _cdf() {
             return 0
             ;;
         cdf__subcmd__backfill)
-            opts="-q -v -h --from --to --target --execute --slice-size --quiet --verbose --color --progress --unicode --help"
+            opts="-q -v -h --from --to --target --execute --slice-size --quiet --verbose --color --progress --unicode --memory-budget --spill-budget --help"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 2 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -251,6 +267,14 @@ _cdf() {
                     COMPREPLY=($(compgen -W "auto always never" -- "${cur}"))
                     return 0
                     ;;
+                --memory-budget)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --spill-budget)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
                 *)
                     COMPREPLY=()
                     ;;
@@ -259,7 +283,7 @@ _cdf() {
             return 0
             ;;
         cdf__subcmd__contract)
-            opts="-q -v -h --quiet --verbose --color --progress --unicode --help freeze show test"
+            opts="-q -v -h --quiet --verbose --color --progress --unicode --memory-budget --spill-budget --help freeze show test"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 2 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -275,6 +299,14 @@ _cdf() {
                     ;;
                 --unicode)
                     COMPREPLY=($(compgen -W "auto always never" -- "${cur}"))
+                    return 0
+                    ;;
+                --memory-budget)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --spill-budget)
+                    COMPREPLY=($(compgen -f "${cur}"))
                     return 0
                     ;;
                 *)
@@ -285,7 +317,7 @@ _cdf() {
             return 0
             ;;
         cdf__subcmd__contract__subcmd__freeze)
-            opts="-q -v -h --quiet --verbose --color --progress --unicode --help"
+            opts="-q -v -h --quiet --verbose --color --progress --unicode --memory-budget --spill-budget --help"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -301,6 +333,14 @@ _cdf() {
                     ;;
                 --unicode)
                     COMPREPLY=($(compgen -W "auto always never" -- "${cur}"))
+                    return 0
+                    ;;
+                --memory-budget)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --spill-budget)
+                    COMPREPLY=($(compgen -f "${cur}"))
                     return 0
                     ;;
                 *)
@@ -311,7 +351,7 @@ _cdf() {
             return 0
             ;;
         cdf__subcmd__contract__subcmd__show)
-            opts="-q -v -h --quiet --verbose --color --progress --unicode --help"
+            opts="-q -v -h --quiet --verbose --color --progress --unicode --memory-budget --spill-budget --help"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -327,6 +367,14 @@ _cdf() {
                     ;;
                 --unicode)
                     COMPREPLY=($(compgen -W "auto always never" -- "${cur}"))
+                    return 0
+                    ;;
+                --memory-budget)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --spill-budget)
+                    COMPREPLY=($(compgen -f "${cur}"))
                     return 0
                     ;;
                 *)
@@ -337,7 +385,7 @@ _cdf() {
             return 0
             ;;
         cdf__subcmd__contract__subcmd__test)
-            opts="-q -v -h --quiet --verbose --color --progress --unicode --help"
+            opts="-q -v -h --quiet --verbose --color --progress --unicode --memory-budget --spill-budget --help"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -353,6 +401,14 @@ _cdf() {
                     ;;
                 --unicode)
                     COMPREPLY=($(compgen -W "auto always never" -- "${cur}"))
+                    return 0
+                    ;;
+                --memory-budget)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --spill-budget)
+                    COMPREPLY=($(compgen -f "${cur}"))
                     return 0
                     ;;
                 *)
@@ -363,7 +419,7 @@ _cdf() {
             return 0
             ;;
         cdf__subcmd__diff)
-            opts="-q -v -h --quiet --verbose --color --progress --unicode --help schema"
+            opts="-q -v -h --quiet --verbose --color --progress --unicode --memory-budget --spill-budget --help schema"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 2 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -381,6 +437,14 @@ _cdf() {
                     COMPREPLY=($(compgen -W "auto always never" -- "${cur}"))
                     return 0
                     ;;
+                --memory-budget)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --spill-budget)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
                 *)
                     COMPREPLY=()
                     ;;
@@ -389,7 +453,7 @@ _cdf() {
             return 0
             ;;
         cdf__subcmd__diff__subcmd__schema)
-            opts="-q -v -h --quiet --verbose --color --progress --unicode --help"
+            opts="-q -v -h --quiet --verbose --color --progress --unicode --memory-budget --spill-budget --help"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -407,6 +471,14 @@ _cdf() {
                     COMPREPLY=($(compgen -W "auto always never" -- "${cur}"))
                     return 0
                     ;;
+                --memory-budget)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --spill-budget)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
                 *)
                     COMPREPLY=()
                     ;;
@@ -415,7 +487,7 @@ _cdf() {
             return 0
             ;;
         cdf__subcmd__doctor)
-            opts="-q -v -h --quiet --verbose --color --progress --unicode --help"
+            opts="-q -v -h --quiet --verbose --color --progress --unicode --memory-budget --spill-budget --help"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 2 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -433,6 +505,14 @@ _cdf() {
                     COMPREPLY=($(compgen -W "auto always never" -- "${cur}"))
                     return 0
                     ;;
+                --memory-budget)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --spill-budget)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
                 *)
                     COMPREPLY=()
                     ;;
@@ -441,7 +521,7 @@ _cdf() {
             return 0
             ;;
         cdf__subcmd__explain)
-            opts="-q -v -h --select --filter --limit --order-by --to --no-pin --quiet --verbose --color --progress --unicode --help"
+            opts="-q -v -h --select --filter --limit --order-by --to --no-pin --quiet --verbose --color --progress --unicode --memory-budget --spill-budget --help"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 2 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -479,6 +559,14 @@ _cdf() {
                     COMPREPLY=($(compgen -W "auto always never" -- "${cur}"))
                     return 0
                     ;;
+                --memory-budget)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --spill-budget)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
                 *)
                     COMPREPLY=()
                     ;;
@@ -487,7 +575,7 @@ _cdf() {
             return 0
             ;;
         cdf__subcmd__help)
-            opts="-q -v -h --quiet --verbose --color --progress --unicode --help"
+            opts="-q -v -h --quiet --verbose --color --progress --unicode --memory-budget --spill-budget --help"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 2 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -505,6 +593,14 @@ _cdf() {
                     COMPREPLY=($(compgen -W "auto always never" -- "${cur}"))
                     return 0
                     ;;
+                --memory-budget)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --spill-budget)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
                 *)
                     COMPREPLY=()
                     ;;
@@ -513,7 +609,7 @@ _cdf() {
             return 0
             ;;
         cdf__subcmd__init)
-            opts="-q -v -h --name --force --quiet --verbose --color --progress --unicode --help"
+            opts="-q -v -h --name --force --quiet --verbose --color --progress --unicode --memory-budget --spill-budget --help"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 2 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -535,6 +631,14 @@ _cdf() {
                     COMPREPLY=($(compgen -W "auto always never" -- "${cur}"))
                     return 0
                     ;;
+                --memory-budget)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --spill-budget)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
                 *)
                     COMPREPLY=()
                     ;;
@@ -543,7 +647,7 @@ _cdf() {
             return 0
             ;;
         cdf__subcmd__inspect)
-            opts="-q -v -h --quiet --verbose --color --progress --unicode --help project resources resource lock destinations package run"
+            opts="-q -v -h --quiet --verbose --color --progress --unicode --memory-budget --spill-budget --help project resources resource lock destinations package run"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 2 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -559,6 +663,14 @@ _cdf() {
                     ;;
                 --unicode)
                     COMPREPLY=($(compgen -W "auto always never" -- "${cur}"))
+                    return 0
+                    ;;
+                --memory-budget)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --spill-budget)
+                    COMPREPLY=($(compgen -f "${cur}"))
                     return 0
                     ;;
                 *)
@@ -569,7 +681,7 @@ _cdf() {
             return 0
             ;;
         cdf__subcmd__inspect__subcmd__destinations)
-            opts="-q -v -h --quiet --verbose --color --progress --unicode --help"
+            opts="-q -v -h --quiet --verbose --color --progress --unicode --memory-budget --spill-budget --help"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -585,6 +697,14 @@ _cdf() {
                     ;;
                 --unicode)
                     COMPREPLY=($(compgen -W "auto always never" -- "${cur}"))
+                    return 0
+                    ;;
+                --memory-budget)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --spill-budget)
+                    COMPREPLY=($(compgen -f "${cur}"))
                     return 0
                     ;;
                 *)
@@ -595,7 +715,7 @@ _cdf() {
             return 0
             ;;
         cdf__subcmd__inspect__subcmd__lock)
-            opts="-q -v -h --quiet --verbose --color --progress --unicode --help"
+            opts="-q -v -h --quiet --verbose --color --progress --unicode --memory-budget --spill-budget --help"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -611,6 +731,14 @@ _cdf() {
                     ;;
                 --unicode)
                     COMPREPLY=($(compgen -W "auto always never" -- "${cur}"))
+                    return 0
+                    ;;
+                --memory-budget)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --spill-budget)
+                    COMPREPLY=($(compgen -f "${cur}"))
                     return 0
                     ;;
                 *)
@@ -621,7 +749,7 @@ _cdf() {
             return 0
             ;;
         cdf__subcmd__inspect__subcmd__package)
-            opts="-q -v -h --quiet --verbose --color --progress --unicode --help"
+            opts="-q -v -h --quiet --verbose --color --progress --unicode --memory-budget --spill-budget --help"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -637,6 +765,14 @@ _cdf() {
                     ;;
                 --unicode)
                     COMPREPLY=($(compgen -W "auto always never" -- "${cur}"))
+                    return 0
+                    ;;
+                --memory-budget)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --spill-budget)
+                    COMPREPLY=($(compgen -f "${cur}"))
                     return 0
                     ;;
                 *)
@@ -647,7 +783,7 @@ _cdf() {
             return 0
             ;;
         cdf__subcmd__inspect__subcmd__project)
-            opts="-q -v -h --quiet --verbose --color --progress --unicode --help"
+            opts="-q -v -h --quiet --verbose --color --progress --unicode --memory-budget --spill-budget --help"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -663,6 +799,14 @@ _cdf() {
                     ;;
                 --unicode)
                     COMPREPLY=($(compgen -W "auto always never" -- "${cur}"))
+                    return 0
+                    ;;
+                --memory-budget)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --spill-budget)
+                    COMPREPLY=($(compgen -f "${cur}"))
                     return 0
                     ;;
                 *)
@@ -673,7 +817,7 @@ _cdf() {
             return 0
             ;;
         cdf__subcmd__inspect__subcmd__resource)
-            opts="-q -v -h --quiet --verbose --color --progress --unicode --help"
+            opts="-q -v -h --quiet --verbose --color --progress --unicode --memory-budget --spill-budget --help"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -689,6 +833,14 @@ _cdf() {
                     ;;
                 --unicode)
                     COMPREPLY=($(compgen -W "auto always never" -- "${cur}"))
+                    return 0
+                    ;;
+                --memory-budget)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --spill-budget)
+                    COMPREPLY=($(compgen -f "${cur}"))
                     return 0
                     ;;
                 *)
@@ -699,7 +851,7 @@ _cdf() {
             return 0
             ;;
         cdf__subcmd__inspect__subcmd__resources)
-            opts="-q -v -h --quiet --verbose --color --progress --unicode --help"
+            opts="-q -v -h --quiet --verbose --color --progress --unicode --memory-budget --spill-budget --help"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -715,6 +867,14 @@ _cdf() {
                     ;;
                 --unicode)
                     COMPREPLY=($(compgen -W "auto always never" -- "${cur}"))
+                    return 0
+                    ;;
+                --memory-budget)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --spill-budget)
+                    COMPREPLY=($(compgen -f "${cur}"))
                     return 0
                     ;;
                 *)
@@ -725,7 +885,7 @@ _cdf() {
             return 0
             ;;
         cdf__subcmd__inspect__subcmd__run)
-            opts="-q -v -h --quiet --verbose --color --progress --unicode --help"
+            opts="-q -v -h --quiet --verbose --color --progress --unicode --memory-budget --spill-budget --help"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -743,6 +903,14 @@ _cdf() {
                     COMPREPLY=($(compgen -W "auto always never" -- "${cur}"))
                     return 0
                     ;;
+                --memory-budget)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --spill-budget)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
                 *)
                     COMPREPLY=()
                     ;;
@@ -751,7 +919,7 @@ _cdf() {
             return 0
             ;;
         cdf__subcmd__package)
-            opts="-q -v -h --quiet --verbose --color --progress --unicode --help ls gc verify archive"
+            opts="-q -v -h --quiet --verbose --color --progress --unicode --memory-budget --spill-budget --help ls gc verify archive"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 2 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -769,6 +937,14 @@ _cdf() {
                     COMPREPLY=($(compgen -W "auto always never" -- "${cur}"))
                     return 0
                     ;;
+                --memory-budget)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --spill-budget)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
                 *)
                     COMPREPLY=()
                     ;;
@@ -777,7 +953,7 @@ _cdf() {
             return 0
             ;;
         cdf__subcmd__package__subcmd__archive)
-            opts="-q -v -h --format --force --quiet --verbose --color --progress --unicode --help"
+            opts="-q -v -h --format --force --quiet --verbose --color --progress --unicode --memory-budget --spill-budget --help"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -799,6 +975,14 @@ _cdf() {
                     COMPREPLY=($(compgen -W "auto always never" -- "${cur}"))
                     return 0
                     ;;
+                --memory-budget)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --spill-budget)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
                 *)
                     COMPREPLY=()
                     ;;
@@ -807,7 +991,7 @@ _cdf() {
             return 0
             ;;
         cdf__subcmd__package__subcmd__gc)
-            opts="-q -v -h --quiet --verbose --color --progress --unicode --help"
+            opts="-q -v -h --quiet --verbose --color --progress --unicode --memory-budget --spill-budget --help"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -823,6 +1007,14 @@ _cdf() {
                     ;;
                 --unicode)
                     COMPREPLY=($(compgen -W "auto always never" -- "${cur}"))
+                    return 0
+                    ;;
+                --memory-budget)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --spill-budget)
+                    COMPREPLY=($(compgen -f "${cur}"))
                     return 0
                     ;;
                 *)
@@ -833,7 +1025,7 @@ _cdf() {
             return 0
             ;;
         cdf__subcmd__package__subcmd__ls)
-            opts="-q -v -h --quiet --verbose --color --progress --unicode --help"
+            opts="-q -v -h --quiet --verbose --color --progress --unicode --memory-budget --spill-budget --help"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -849,6 +1041,14 @@ _cdf() {
                     ;;
                 --unicode)
                     COMPREPLY=($(compgen -W "auto always never" -- "${cur}"))
+                    return 0
+                    ;;
+                --memory-budget)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --spill-budget)
+                    COMPREPLY=($(compgen -f "${cur}"))
                     return 0
                     ;;
                 *)
@@ -859,7 +1059,7 @@ _cdf() {
             return 0
             ;;
         cdf__subcmd__package__subcmd__verify)
-            opts="-q -v -h --quiet --verbose --color --progress --unicode --help"
+            opts="-q -v -h --quiet --verbose --color --progress --unicode --memory-budget --spill-budget --help"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -877,6 +1077,14 @@ _cdf() {
                     COMPREPLY=($(compgen -W "auto always never" -- "${cur}"))
                     return 0
                     ;;
+                --memory-budget)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --spill-budget)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
                 *)
                     COMPREPLY=()
                     ;;
@@ -885,7 +1093,7 @@ _cdf() {
             return 0
             ;;
         cdf__subcmd__plan)
-            opts="-q -v -h --select --filter --limit --order-by --to --no-pin --quiet --verbose --color --progress --unicode --help"
+            opts="-q -v -h --select --filter --limit --order-by --to --no-pin --quiet --verbose --color --progress --unicode --memory-budget --spill-budget --help"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 2 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -923,6 +1131,14 @@ _cdf() {
                     COMPREPLY=($(compgen -W "auto always never" -- "${cur}"))
                     return 0
                     ;;
+                --memory-budget)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --spill-budget)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
                 *)
                     COMPREPLY=()
                     ;;
@@ -931,7 +1147,7 @@ _cdf() {
             return 0
             ;;
         cdf__subcmd__preview)
-            opts="-q -v -h --select --filter --limit --order-by --quiet --verbose --color --progress --unicode --help"
+            opts="-q -v -h --select --filter --limit --order-by --quiet --verbose --color --progress --unicode --memory-budget --spill-budget --help"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 2 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -965,6 +1181,14 @@ _cdf() {
                     COMPREPLY=($(compgen -W "auto always never" -- "${cur}"))
                     return 0
                     ;;
+                --memory-budget)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --spill-budget)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
                 *)
                     COMPREPLY=()
                     ;;
@@ -973,7 +1197,7 @@ _cdf() {
             return 0
             ;;
         cdf__subcmd__replay)
-            opts="-q -v -h --quiet --verbose --color --progress --unicode --help package"
+            opts="-q -v -h --quiet --verbose --color --progress --unicode --memory-budget --spill-budget --help package"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 2 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -991,6 +1215,14 @@ _cdf() {
                     COMPREPLY=($(compgen -W "auto always never" -- "${cur}"))
                     return 0
                     ;;
+                --memory-budget)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --spill-budget)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
                 *)
                     COMPREPLY=()
                     ;;
@@ -999,7 +1231,7 @@ _cdf() {
             return 0
             ;;
         cdf__subcmd__replay__subcmd__package)
-            opts="-q -v -h --to --target --merge-dedup --quiet --verbose --color --progress --unicode --help"
+            opts="-q -v -h --to --target --merge-dedup --quiet --verbose --color --progress --unicode --memory-budget --spill-budget --help"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -1029,6 +1261,14 @@ _cdf() {
                     COMPREPLY=($(compgen -W "auto always never" -- "${cur}"))
                     return 0
                     ;;
+                --memory-budget)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --spill-budget)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
                 *)
                     COMPREPLY=()
                     ;;
@@ -1037,7 +1277,7 @@ _cdf() {
             return 0
             ;;
         cdf__subcmd__resume)
-            opts="-q -v -h --quiet --verbose --color --progress --unicode --help"
+            opts="-q -v -h --quiet --verbose --color --progress --unicode --memory-budget --spill-budget --help"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 2 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -1055,6 +1295,14 @@ _cdf() {
                     COMPREPLY=($(compgen -W "auto always never" -- "${cur}"))
                     return 0
                     ;;
+                --memory-budget)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --spill-budget)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
                 *)
                     COMPREPLY=()
                     ;;
@@ -1063,7 +1311,7 @@ _cdf() {
             return 0
             ;;
         cdf__subcmd__run)
-            opts="-q -v -h --to --jobs --loop --quiet --verbose --color --progress --unicode --help"
+            opts="-q -v -h --to --jobs --stats-profile --loop --quiet --verbose --color --progress --unicode --memory-budget --spill-budget --help"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 2 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -1089,6 +1337,14 @@ _cdf() {
                     COMPREPLY=($(compgen -W "auto always never" -- "${cur}"))
                     return 0
                     ;;
+                --memory-budget)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --spill-budget)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
                 *)
                     COMPREPLY=()
                     ;;
@@ -1097,7 +1353,7 @@ _cdf() {
             return 0
             ;;
         cdf__subcmd__schema)
-            opts="-q -v -h --quiet --verbose --color --progress --unicode --help discover pin show diff promote"
+            opts="-q -v -h --quiet --verbose --color --progress --unicode --memory-budget --spill-budget --help discover pin show diff promote"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 2 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -1115,6 +1371,14 @@ _cdf() {
                     COMPREPLY=($(compgen -W "auto always never" -- "${cur}"))
                     return 0
                     ;;
+                --memory-budget)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --spill-budget)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
                 *)
                     COMPREPLY=()
                     ;;
@@ -1123,7 +1387,7 @@ _cdf() {
             return 0
             ;;
         cdf__subcmd__schema__subcmd__diff)
-            opts="-q -v -h --quiet --verbose --color --progress --unicode --help"
+            opts="-q -v -h --quiet --verbose --color --progress --unicode --memory-budget --spill-budget --help"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -1139,6 +1403,14 @@ _cdf() {
                     ;;
                 --unicode)
                     COMPREPLY=($(compgen -W "auto always never" -- "${cur}"))
+                    return 0
+                    ;;
+                --memory-budget)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --spill-budget)
+                    COMPREPLY=($(compgen -f "${cur}"))
                     return 0
                     ;;
                 *)
@@ -1149,7 +1421,7 @@ _cdf() {
             return 0
             ;;
         cdf__subcmd__schema__subcmd__discover)
-            opts="-q -v -h --quiet --verbose --color --progress --unicode --help"
+            opts="-q -v -h --quiet --verbose --color --progress --unicode --memory-budget --spill-budget --help"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -1165,6 +1437,14 @@ _cdf() {
                     ;;
                 --unicode)
                     COMPREPLY=($(compgen -W "auto always never" -- "${cur}"))
+                    return 0
+                    ;;
+                --memory-budget)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --spill-budget)
+                    COMPREPLY=($(compgen -f "${cur}"))
                     return 0
                     ;;
                 *)
@@ -1175,7 +1455,7 @@ _cdf() {
             return 0
             ;;
         cdf__subcmd__schema__subcmd__pin)
-            opts="-q -v -h --quiet --verbose --color --progress --unicode --help"
+            opts="-q -v -h --quiet --verbose --color --progress --unicode --memory-budget --spill-budget --help"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -1193,6 +1473,14 @@ _cdf() {
                     COMPREPLY=($(compgen -W "auto always never" -- "${cur}"))
                     return 0
                     ;;
+                --memory-budget)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --spill-budget)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
                 *)
                     COMPREPLY=()
                     ;;
@@ -1201,7 +1489,7 @@ _cdf() {
             return 0
             ;;
         cdf__subcmd__schema__subcmd__promote)
-            opts="-q -v -h --type --execute --quiet --verbose --color --progress --unicode --help"
+            opts="-q -v -h --type --execute --quiet --verbose --color --progress --unicode --memory-budget --spill-budget --help"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -1223,6 +1511,14 @@ _cdf() {
                     COMPREPLY=($(compgen -W "auto always never" -- "${cur}"))
                     return 0
                     ;;
+                --memory-budget)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --spill-budget)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
                 *)
                     COMPREPLY=()
                     ;;
@@ -1231,7 +1527,7 @@ _cdf() {
             return 0
             ;;
         cdf__subcmd__schema__subcmd__show)
-            opts="-q -v -h --quiet --verbose --color --progress --unicode --help"
+            opts="-q -v -h --quiet --verbose --color --progress --unicode --memory-budget --spill-budget --help"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -1249,6 +1545,14 @@ _cdf() {
                     COMPREPLY=($(compgen -W "auto always never" -- "${cur}"))
                     return 0
                     ;;
+                --memory-budget)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --spill-budget)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
                 *)
                     COMPREPLY=()
                     ;;
@@ -1257,7 +1561,7 @@ _cdf() {
             return 0
             ;;
         cdf__subcmd__sql)
-            opts="-q -v -h --quiet --verbose --color --progress --unicode --help"
+            opts="-q -v -h --quiet --verbose --color --progress --unicode --memory-budget --spill-budget --help"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 2 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -1273,6 +1577,14 @@ _cdf() {
                     ;;
                 --unicode)
                     COMPREPLY=($(compgen -W "auto always never" -- "${cur}"))
+                    return 0
+                    ;;
+                --memory-budget)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --spill-budget)
+                    COMPREPLY=($(compgen -f "${cur}"))
                     return 0
                     ;;
                 *)
@@ -1283,7 +1595,7 @@ _cdf() {
             return 0
             ;;
         cdf__subcmd__state)
-            opts="-q -v -h --quiet --verbose --color --progress --unicode --help show history rewind recover"
+            opts="-q -v -h --quiet --verbose --color --progress --unicode --memory-budget --spill-budget --help show history rewind recover"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 2 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -1301,6 +1613,14 @@ _cdf() {
                     COMPREPLY=($(compgen -W "auto always never" -- "${cur}"))
                     return 0
                     ;;
+                --memory-budget)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --spill-budget)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
                 *)
                     COMPREPLY=()
                     ;;
@@ -1309,7 +1629,7 @@ _cdf() {
             return 0
             ;;
         cdf__subcmd__state__subcmd__history)
-            opts="-q -v -h --pipeline --scope --scope-json --quiet --verbose --color --progress --unicode --help"
+            opts="-q -v -h --pipeline --scope --scope-json --quiet --verbose --color --progress --unicode --memory-budget --spill-budget --help"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -1339,6 +1659,14 @@ _cdf() {
                     COMPREPLY=($(compgen -W "auto always never" -- "${cur}"))
                     return 0
                     ;;
+                --memory-budget)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --spill-budget)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
                 *)
                     COMPREPLY=()
                     ;;
@@ -1347,7 +1675,7 @@ _cdf() {
             return 0
             ;;
         cdf__subcmd__state__subcmd__recover)
-            opts="-q -v -h --package --to --receipt --target --merge-dedup --quiet --verbose --color --progress --unicode --help"
+            opts="-q -v -h --package --to --receipt --target --merge-dedup --quiet --verbose --color --progress --unicode --memory-budget --spill-budget --help"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -1385,6 +1713,14 @@ _cdf() {
                     COMPREPLY=($(compgen -W "auto always never" -- "${cur}"))
                     return 0
                     ;;
+                --memory-budget)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --spill-budget)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
                 *)
                     COMPREPLY=()
                     ;;
@@ -1393,7 +1729,7 @@ _cdf() {
             return 0
             ;;
         cdf__subcmd__state__subcmd__rewind)
-            opts="-q -v -h --pipeline --scope --scope-json --to --quiet --verbose --color --progress --unicode --help"
+            opts="-q -v -h --pipeline --scope --scope-json --to --quiet --verbose --color --progress --unicode --memory-budget --spill-budget --help"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -1427,6 +1763,14 @@ _cdf() {
                     COMPREPLY=($(compgen -W "auto always never" -- "${cur}"))
                     return 0
                     ;;
+                --memory-budget)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --spill-budget)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
                 *)
                     COMPREPLY=()
                     ;;
@@ -1435,7 +1779,7 @@ _cdf() {
             return 0
             ;;
         cdf__subcmd__state__subcmd__show)
-            opts="-q -v -h --pipeline --scope --scope-json --quiet --verbose --color --progress --unicode --help"
+            opts="-q -v -h --pipeline --scope --scope-json --quiet --verbose --color --progress --unicode --memory-budget --spill-budget --help"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -1465,6 +1809,14 @@ _cdf() {
                     COMPREPLY=($(compgen -W "auto always never" -- "${cur}"))
                     return 0
                     ;;
+                --memory-budget)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --spill-budget)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
                 *)
                     COMPREPLY=()
                     ;;
@@ -1473,7 +1825,7 @@ _cdf() {
             return 0
             ;;
         cdf__subcmd__status)
-            opts="-q -v -h --quiet --verbose --color --progress --unicode --help"
+            opts="-q -v -h --quiet --verbose --color --progress --unicode --memory-budget --spill-budget --help"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 2 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -1489,6 +1841,14 @@ _cdf() {
                     ;;
                 --unicode)
                     COMPREPLY=($(compgen -W "auto always never" -- "${cur}"))
+                    return 0
+                    ;;
+                --memory-budget)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --spill-budget)
+                    COMPREPLY=($(compgen -f "${cur}"))
                     return 0
                     ;;
                 *)
@@ -1499,7 +1859,7 @@ _cdf() {
             return 0
             ;;
         cdf__subcmd__validate)
-            opts="-q -v -h --deep --quiet --verbose --color --progress --unicode --help"
+            opts="-q -v -h --deep --quiet --verbose --color --progress --unicode --memory-budget --spill-budget --help"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 2 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -1515,6 +1875,14 @@ _cdf() {
                     ;;
                 --unicode)
                     COMPREPLY=($(compgen -W "auto always never" -- "${cur}"))
+                    return 0
+                    ;;
+                --memory-budget)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --spill-budget)
+                    COMPREPLY=($(compgen -f "${cur}"))
                     return 0
                     ;;
                 *)
@@ -1525,7 +1893,7 @@ _cdf() {
             return 0
             ;;
         cdf__subcmd__version)
-            opts="-q -v -h --quiet --verbose --color --progress --unicode --help"
+            opts="-q -v -h --quiet --verbose --color --progress --unicode --memory-budget --spill-budget --help"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 2 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -1541,6 +1909,14 @@ _cdf() {
                     ;;
                 --unicode)
                     COMPREPLY=($(compgen -W "auto always never" -- "${cur}"))
+                    return 0
+                    ;;
+                --memory-budget)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --spill-budget)
+                    COMPREPLY=($(compgen -f "${cur}"))
                     return 0
                     ;;
                 *)

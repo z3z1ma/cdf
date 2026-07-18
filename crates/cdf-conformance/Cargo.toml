@@ -32,6 +32,7 @@ serde_json = "1.0.150"
 arrow-cast = "59.1.0"
 bytes = "1.11.1"
 cdf-cli = { path = "../cdf-cli" }
+cdf-cli-core = { path = "../cdf-cli-core" }
 cdf-format-parquet = { path = "../cdf-format-parquet" }
 cdf-memory = { path = "../cdf-memory" }
 cdf-python = { path = "../cdf-python" }

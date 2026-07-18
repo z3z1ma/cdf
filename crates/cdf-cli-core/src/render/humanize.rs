@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-pub(crate) fn humanize_rows(rows: u64) -> String {
+pub fn humanize_rows(rows: u64) -> String {
     if rows < 1_000 {
         return rows.to_string();
     }
@@ -14,7 +14,7 @@ pub(crate) fn humanize_rows(rows: u64) -> String {
     format_compact(rows as f64 / divisor, suffix)
 }
 
-pub(crate) fn humanize_bytes(bytes: u64) -> String {
+pub fn humanize_bytes(bytes: u64) -> String {
     const UNITS: [&str; 5] = ["B", "KiB", "MiB", "GiB", "TiB"];
     if bytes < 1024 {
         return format!("{bytes} B");
@@ -28,7 +28,7 @@ pub(crate) fn humanize_bytes(bytes: u64) -> String {
     format_decimal(value, UNITS[unit])
 }
 
-pub(crate) fn humanize_rate(bytes_per_second: f64) -> String {
+pub fn humanize_rate(bytes_per_second: f64) -> String {
     if bytes_per_second < 1024.0 {
         return format!("{} B/s", bytes_per_second.round() as u64);
     }
@@ -36,7 +36,7 @@ pub(crate) fn humanize_rate(bytes_per_second: f64) -> String {
     format!("{bytes}/s")
 }
 
-pub(crate) fn humanize_duration(duration: Duration) -> String {
+pub fn humanize_duration(duration: Duration) -> String {
     if duration.is_zero() {
         return "0s".to_owned();
     }

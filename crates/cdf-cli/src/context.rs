@@ -407,9 +407,3 @@ fn absolute_under_root(root: &Path, value: &str) -> PathBuf {
         root.join(path)
     }
 }
-
-impl From<CliError> for CdfError {
-    fn from(error: CliError) -> Self {
-        CdfError::new(error.kind, error.message)
-    }
-}

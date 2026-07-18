@@ -22,7 +22,7 @@ use crate::terminal::{OutputChannel, TerminalPolicy, Verbosity};
 const DEFAULT_PROGRESS_CAPACITY: usize = 128;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub(crate) enum DisplayVerbosity {
+pub enum DisplayVerbosity {
     Quiet,
     #[default]
     Normal,
@@ -39,14 +39,14 @@ impl DisplayVerbosity {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct ProgressConfig {
+pub struct ProgressConfig {
     render: RenderConfig,
     verbosity: DisplayVerbosity,
     capacity: usize,
 }
 
 impl ProgressConfig {
-    pub(crate) fn new(render: RenderConfig, verbosity: DisplayVerbosity) -> Self {
+    pub fn new(render: RenderConfig, verbosity: DisplayVerbosity) -> Self {
         Self {
             render,
             verbosity,
@@ -54,18 +54,18 @@ impl ProgressConfig {
         }
     }
 
-    pub(crate) fn with_capacity(mut self, capacity: usize) -> Self {
+    pub fn with_capacity(mut self, capacity: usize) -> Self {
         self.capacity = capacity.max(1);
         self
     }
 
-    pub(crate) fn render_config(&self) -> &RenderConfig {
+    pub fn render_config(&self) -> &RenderConfig {
         &self.render
     }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum ProgressPhase {
+pub enum ProgressPhase {
     Plan,
     Extract,
     Validate,
@@ -90,7 +90,7 @@ impl ProgressPhase {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum ProgressEventDisposition {
+pub enum ProgressEventDisposition {
     Accepted,
     Dropped,
     Duplicate,
@@ -135,7 +135,7 @@ impl ProgressStatus {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct ProgressMilestone {
+pub struct ProgressMilestone {
     run_id: String,
     sequence: u64,
     timestamp_ms: i64,
@@ -146,7 +146,7 @@ pub(crate) struct ProgressMilestone {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct ProgressSnapshot {
+pub struct ProgressSnapshot {
     current_phase: ProgressPhase,
     terminal: Option<TerminalState>,
     milestones: Vec<ProgressMilestone>,
@@ -155,29 +155,29 @@ pub(crate) struct ProgressSnapshot {
 }
 
 impl ProgressSnapshot {
-    pub(crate) fn current_phase(&self) -> ProgressPhase {
+    pub fn current_phase(&self) -> ProgressPhase {
         self.current_phase
     }
 
-    pub(crate) fn milestones(&self) -> &[ProgressMilestone] {
+    pub fn milestones(&self) -> &[ProgressMilestone] {
         &self.milestones
     }
 
-    pub(crate) fn dropped_count(&self) -> u64 {
+    pub fn dropped_count(&self) -> u64 {
         self.dropped_count
     }
 
-    pub(crate) fn last_disposition(&self) -> Option<ProgressEventDisposition> {
+    pub fn last_disposition(&self) -> Option<ProgressEventDisposition> {
         self.last_disposition
     }
 
-    pub(crate) fn latest_run_id(&self) -> Option<&str> {
+    pub fn latest_run_id(&self) -> Option<&str> {
         self.milestones
             .last()
             .map(|milestone| milestone.run_id.as_str())
     }
 
-    pub(crate) fn latest_run_id_for_package(&self, package_id: &str) -> Option<&str> {
+    pub fn latest_run_id_for_package(&self, package_id: &str) -> Option<&str> {
         self.milestones
             .iter()
             .rev()
@@ -190,14 +190,14 @@ impl ProgressSnapshot {
             .map(|milestone| milestone.run_id.as_str())
     }
 
-    pub(crate) fn render(&self, config: &ProgressConfig) -> String {
+    pub fn render(&self, config: &ProgressConfig) -> String {
         match config.render.display_mode() {
             DisplayMode::Headless => self.render_headless(),
             DisplayMode::Tty => self.render_interactive(config.render_config()),
         }
     }
 
-    pub(crate) fn render_for_config(&self, render_config: &RenderConfig) -> String {
+    pub fn render_for_config(&self, render_config: &RenderConfig) -> String {
         self.render(&ProgressConfig::new(
             render_config.clone(),
             DisplayVerbosity::Normal,
@@ -398,28 +398,25 @@ impl ProgressState {
     }
 }
 
-pub(crate) struct CliProgressSink {
+pub struct CliProgressSink {
     config: ProgressConfig,
     state: Mutex<ProgressState>,
 }
 
 impl CliProgressSink {
-    pub(crate) fn new(config: ProgressConfig) -> Self {
+    pub fn new(config: ProgressConfig) -> Self {
         Self {
             config,
             state: Mutex::new(ProgressState::default()),
         }
     }
 
-    pub(crate) fn snapshot(&self) -> ProgressSnapshot {
+    pub fn snapshot(&self) -> ProgressSnapshot {
         self.state.lock().unwrap().snapshot()
     }
 }
 
-pub(crate) fn human_progress_sink(
-    json_mode: bool,
-    terminal: &TerminalPolicy,
-) -> Option<CliProgressSink> {
+pub fn human_progress_sink(json_mode: bool, terminal: &TerminalPolicy) -> Option<CliProgressSink> {
     terminal.progress_enabled(json_mode).then(|| {
         let verbosity = match terminal.verbosity {
             Verbosity::Quiet => DisplayVerbosity::Quiet,

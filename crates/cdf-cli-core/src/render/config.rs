@@ -1,20 +1,20 @@
 use crate::terminal::{OutputChannel, PolicyMode, TerminalEnvironment, TerminalPolicy};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum DisplayMode {
+pub enum DisplayMode {
     Tty,
     Headless,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub(crate) struct RenderEnv {
+pub struct RenderEnv {
     pub no_color: bool,
     pub clicolor_force: bool,
     pub unicode_supported: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct RenderConfig {
+pub struct RenderConfig {
     display_mode: DisplayMode,
     width: usize,
     env: RenderEnv,
@@ -22,11 +22,11 @@ pub(crate) struct RenderConfig {
 }
 
 impl RenderConfig {
-    pub(crate) fn detect(policy: &TerminalPolicy, channel: OutputChannel) -> Self {
+    pub fn detect(policy: &TerminalPolicy, channel: OutputChannel) -> Self {
         Self::from_environment(*policy, channel, TerminalEnvironment::detect())
     }
 
-    pub(crate) fn from_environment(
+    pub fn from_environment(
         policy: TerminalPolicy,
         channel: OutputChannel,
         terminal: TerminalEnvironment,
@@ -44,7 +44,7 @@ impl RenderConfig {
         Self::new(display_mode, terminal.width(), env, policy)
     }
 
-    pub(crate) fn new(
+    pub fn new(
         display_mode: DisplayMode,
         width: usize,
         env: RenderEnv,
@@ -58,8 +58,7 @@ impl RenderConfig {
         }
     }
 
-    #[cfg(test)]
-    pub(crate) fn headless_for_width(width: usize) -> Self {
+    pub fn headless_for_width(width: usize) -> Self {
         Self::new(
             DisplayMode::Headless,
             width,
@@ -72,21 +71,21 @@ impl RenderConfig {
         )
     }
 
-    pub(crate) fn display_mode(&self) -> DisplayMode {
+    pub fn display_mode(&self) -> DisplayMode {
         self.display_mode
     }
 
-    pub(crate) fn width(&self) -> usize {
+    pub fn width(&self) -> usize {
         self.width
     }
 
-    pub(crate) fn color_enabled(&self) -> bool {
+    pub fn color_enabled(&self) -> bool {
         self.display_mode == DisplayMode::Tty
             && self.policy.color != PolicyMode::Never
             && (!self.env.no_color || self.policy.color == PolicyMode::Always)
     }
 
-    pub(crate) fn rich_glyphs(&self) -> bool {
+    pub fn rich_glyphs(&self) -> bool {
         match self.policy.unicode {
             PolicyMode::Always => true,
             PolicyMode::Never => false,
@@ -94,15 +93,15 @@ impl RenderConfig {
         }
     }
 
-    pub(crate) fn env(&self) -> RenderEnv {
+    pub fn env(&self) -> RenderEnv {
         self.env
     }
 
-    pub(crate) fn no_color_flag(&self) -> bool {
+    pub fn no_color_flag(&self) -> bool {
         self.policy.color == PolicyMode::Never
     }
 
-    pub(crate) fn policy(&self) -> TerminalPolicy {
+    pub fn policy(&self) -> TerminalPolicy {
         self.policy
     }
 }

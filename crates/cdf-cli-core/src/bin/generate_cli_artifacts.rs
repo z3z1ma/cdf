@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use cdf_cli::cli_artifacts::{
+use cdf_cli_core::cli_artifacts::{
     check_cli_artifacts, check_reference_docs, default_artifact_dir, default_docs_dir,
     generate_cli_artifacts, generate_reference_docs,
 };

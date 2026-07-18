@@ -2,7 +2,7 @@ Status: blocked
 Created: 2026-07-12
 Updated: 2026-07-13
 Parent: .10x/tickets/2026-07-12-p0-cargo-product-build-graph.md
-Depends-On: .10x/tickets/2026-07-12-p0-cg1-lean-cli-core.md
+Depends-On: .10x/tickets/done/2026-07-12-p0-cg1-lean-cli-core.md
 
 # P0 CG2: dependency-owned CLI test topology and fast gates
 
@@ -29,7 +29,7 @@ Move parser/help/generated-artifact/terminal/render/output tests to `cdf-cli-cor
 
 - `.10x/specs/product-build-graph-boundaries.md`
 - `.10x/research/2026-07-12-cargo-product-build-graph-audit.md`
-- `.10x/tickets/2026-07-12-p0-cg1-lean-cli-core.md`
+- `.10x/tickets/done/2026-07-12-p0-cg1-lean-cli-core.md`
 - `.10x/tickets/2026-07-08-p1-product-ws8-release-engineering.md`
 - `.10x/decisions/fast-ci-budget-and-deep-gate-separation.md`
 

@@ -46,6 +46,7 @@ Reduce focused compile latency by enforcing the lean CLI core, complete static p
 ## Journal
 
 - 2026-07-12 (shaping): Fished active/terminal owners and measured the default normal graph. Selected one parent with three bounded children. J6 already fully owns DataFusion selective-adapter containment, so no competing CG4 was opened.
+- 2026-07-17 (orchestration): CG1 closed at `.10x/tickets/done/2026-07-12-p0-cg1-lean-cli-core.md`. The lean CLI core exists, artifact generation moved to the core package, the product binary remains complete, and graph law evidence is recorded on the child.
 
 ## Blockers
 
@@ -53,7 +54,8 @@ CG2 has an unresolved conflict with `.10x/decisions/fast-ci-budget-and-deep-gate
 
 ## Evidence
 
-Pending children.
+- CG1: `.10x/tickets/done/2026-07-12-p0-cg1-lean-cli-core.md` records `cdf-cli-core` at 79 normal / 83 all-features unique packages, no forbidden graph edges, green core artifact tests, green product/conformance compiles, and no public compatibility re-export.
+- Remaining: CG2/CG3 pending; parent remains open.
 
 ## Review
 

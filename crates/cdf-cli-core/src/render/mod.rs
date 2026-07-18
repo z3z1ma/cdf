@@ -1,13 +1,13 @@
 #![allow(dead_code)] // 10x: WS3B creates the renderer boundary before WS3C/WS3D migrate command families into it.
 
-pub(crate) mod config;
-pub(crate) mod humanize;
-pub(crate) mod primitives;
-pub(crate) mod redaction;
+pub mod config;
+pub mod humanize;
+pub mod primitives;
+pub mod redaction;
 mod style;
 
-pub(crate) use config::RenderConfig;
-pub(crate) use primitives::RenderDocument;
+pub use config::RenderConfig;
+pub use primitives::RenderDocument;
 
 #[cfg(test)]
 mod tests {

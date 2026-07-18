@@ -58,7 +58,7 @@ pub struct CliError {
     pub details: Option<Box<serde_json::Value>>,
     pub remediation: Option<Box<ErrorRemediation>>,
     pub suggestions: Box<[String]>,
-    pub(crate) progress: Option<Box<ProgressSnapshot>>,
+    pub progress: Option<Box<ProgressSnapshot>>,
 }
 
 impl CliError {
@@ -91,10 +91,7 @@ impl CliError {
         Self::usage_with(message, error_catalog::USAGE)
     }
 
-    pub(crate) fn usage_with(
-        message: impl Into<String>,
-        mapping: error_catalog::ErrorMapping,
-    ) -> Self {
+    pub fn usage_with(message: impl Into<String>, mapping: error_catalog::ErrorMapping) -> Self {
         Self::from_mapping(ErrorKind::Contract, message, false, mapping)
     }
 
@@ -114,7 +111,7 @@ impl CliError {
         )
     }
 
-    pub(crate) fn not_supported_with(
+    pub fn not_supported_with(
         command: impl AsRef<str>,
         reason: impl AsRef<str>,
         required_lower_layer: impl AsRef<str>,
@@ -133,21 +130,21 @@ impl CliError {
         )
     }
 
-    pub(crate) fn mapped(error: CdfError, mapping: error_catalog::ErrorMapping) -> Self {
+    pub fn mapped(error: CdfError, mapping: error_catalog::ErrorMapping) -> Self {
         Self::from_mapping(error.kind, error.message, false, mapping)
     }
 
-    pub(crate) fn with_suggestions(mut self, suggestions: Vec<String>) -> Self {
+    pub fn with_suggestions(mut self, suggestions: Vec<String>) -> Self {
         self.suggestions = suggestions.into_boxed_slice();
         self
     }
 
-    pub(crate) fn with_details(mut self, details: serde_json::Value) -> Self {
+    pub fn with_details(mut self, details: serde_json::Value) -> Self {
         self.details = Some(Box::new(details));
         self
     }
 
-    pub(crate) fn with_progress(mut self, progress: ProgressSnapshot) -> Self {
+    pub fn with_progress(mut self, progress: ProgressSnapshot) -> Self {
         self.progress = Some(Box::new(progress));
         self
     }
@@ -173,6 +170,12 @@ impl From<CdfError> for CliError {
     }
 }
 
+impl From<CliError> for CdfError {
+    fn from(error: CliError) -> Self {
+        CdfError::new(error.kind, error.message)
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct CommandOutput {
     pub command: &'static str,
@@ -182,7 +185,7 @@ pub struct CommandOutput {
 }
 
 #[derive(Clone, Debug)]
-pub(crate) enum HumanOutput {
+pub enum HumanOutput {
     Rendered(RenderDocument),
     RenderedWithProgress {
         progress: ProgressSnapshot,
@@ -210,7 +213,7 @@ impl HumanOutput {
 }
 
 impl CommandOutput {
-    pub(crate) fn rendered<T: Serialize>(
+    pub fn rendered<T: Serialize>(
         command: &'static str,
         document: RenderDocument,
         value: T,
@@ -218,7 +221,7 @@ impl CommandOutput {
         Self::rendered_with_exit_code(command, document, value, 0)
     }
 
-    pub(crate) fn rendered_with_progress<T: Serialize>(
+    pub fn rendered_with_progress<T: Serialize>(
         command: &'static str,
         document: RenderDocument,
         value: T,
@@ -232,7 +235,7 @@ impl CommandOutput {
         )
     }
 
-    pub(crate) fn rendered_with_exit_code<T: Serialize>(
+    pub fn rendered_with_exit_code<T: Serialize>(
         command: &'static str,
         document: RenderDocument,
         value: T,
@@ -246,7 +249,7 @@ impl CommandOutput {
         )
     }
 
-    pub(crate) fn rendered_with_progress_and_exit_code<T: Serialize>(
+    pub fn rendered_with_progress_and_exit_code<T: Serialize>(
         command: &'static str,
         document: RenderDocument,
         value: T,
@@ -295,8 +298,7 @@ struct ErrorEnvelope {
 }
 
 impl InvocationResult {
-    #[cfg(test)]
-    pub(crate) fn from_output(
+    pub fn from_output(
         json_mode: bool,
         render_config: &RenderConfig,
         output: CommandOutput,
@@ -304,7 +306,7 @@ impl InvocationResult {
         Self::from_output_with_configs(json_mode, render_config, render_config, output)
     }
 
-    pub(crate) fn from_output_with_configs(
+    pub fn from_output_with_configs(
         json_mode: bool,
         stdout_config: &RenderConfig,
         stderr_config: &RenderConfig,
@@ -340,7 +342,7 @@ impl InvocationResult {
         }
     }
 
-    pub(crate) fn from_error_with_config(
+    pub fn from_error_with_config(
         json_mode: bool,
         render_config: &RenderConfig,
         error: CliError,

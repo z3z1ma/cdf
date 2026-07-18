@@ -18,6 +18,8 @@ _cdf() {
 '--color=[Color policy\: auto, always, or never]:WHEN:(auto always never)' \
 '--progress=[Progress policy\: auto, always, or never]:WHEN:(auto always never)' \
 '--unicode=[Unicode policy\: auto, always, or never]:WHEN:(auto always never)' \
+'--memory-budget=[Process memory budget, e.g. 4GiB or 512MiB]:BYTES:_default' \
+'--spill-budget=[Spill/disk budget, e.g. 64GiB or 512MiB]:BYTES:_default' \
 '(-v --verbose)-q[Suppress progress and non-primary success narration]' \
 '(-v --verbose)--quiet[Suppress progress and non-primary success narration]' \
 '(-q --quiet)*-v[Show evidence detail; repeat for diagnostics]' \
@@ -40,6 +42,8 @@ _arguments "${_arguments_options[@]}" : \
 '--color=[Color policy\: auto, always, or never]:WHEN:(auto always never)' \
 '--progress=[Progress policy\: auto, always, or never]:WHEN:(auto always never)' \
 '--unicode=[Unicode policy\: auto, always, or never]:WHEN:(auto always never)' \
+'--memory-budget=[Process memory budget, e.g. 4GiB or 512MiB]:BYTES:_default' \
+'--spill-budget=[Spill/disk budget, e.g. 64GiB or 512MiB]:BYTES:_default' \
 '(-v --verbose)-q[Suppress progress and non-primary success narration]' \
 '(-v --verbose)--quiet[Suppress progress and non-primary success narration]' \
 '(-q --quiet)*-v[Show evidence detail; repeat for diagnostics]' \
@@ -54,6 +58,8 @@ _arguments "${_arguments_options[@]}" : \
 '--color=[Color policy\: auto, always, or never]:WHEN:(auto always never)' \
 '--progress=[Progress policy\: auto, always, or never]:WHEN:(auto always never)' \
 '--unicode=[Unicode policy\: auto, always, or never]:WHEN:(auto always never)' \
+'--memory-budget=[Process memory budget, e.g. 4GiB or 512MiB]:BYTES:_default' \
+'--spill-budget=[Spill/disk budget, e.g. 64GiB or 512MiB]:BYTES:_default' \
 '(-v --verbose)-q[Suppress progress and non-primary success narration]' \
 '(-v --verbose)--quiet[Suppress progress and non-primary success narration]' \
 '(-q --quiet)*-v[Show evidence detail; repeat for diagnostics]' \
@@ -69,6 +75,8 @@ _arguments "${_arguments_options[@]}" : \
 '--color=[Color policy\: auto, always, or never]:WHEN:(auto always never)' \
 '--progress=[Progress policy\: auto, always, or never]:WHEN:(auto always never)' \
 '--unicode=[Unicode policy\: auto, always, or never]:WHEN:(auto always never)' \
+'--memory-budget=[Process memory budget, e.g. 4GiB or 512MiB]:BYTES:_default' \
+'--spill-budget=[Spill/disk budget, e.g. 64GiB or 512MiB]:BYTES:_default' \
 '--force[Replace an existing artifact when safe]' \
 '(-v --verbose)-q[Suppress progress and non-primary success narration]' \
 '(-v --verbose)--quiet[Suppress progress and non-primary success narration]' \
@@ -85,6 +93,8 @@ _arguments "${_arguments_options[@]}" : \
 '--color=[Color policy\: auto, always, or never]:WHEN:(auto always never)' \
 '--progress=[Progress policy\: auto, always, or never]:WHEN:(auto always never)' \
 '--unicode=[Unicode policy\: auto, always, or never]:WHEN:(auto always never)' \
+'--memory-budget=[Process memory budget, e.g. 4GiB or 512MiB]:BYTES:_default' \
+'--spill-budget=[Spill/disk budget, e.g. 64GiB or 512MiB]:BYTES:_default' \
 '--dry-run[Show the proposed change without writing it]' \
 '(-v --verbose)-q[Suppress progress and non-primary success narration]' \
 '(-v --verbose)--quiet[Suppress progress and non-primary success narration]' \
@@ -100,6 +110,8 @@ _arguments "${_arguments_options[@]}" : \
 '--color=[Color policy\: auto, always, or never]:WHEN:(auto always never)' \
 '--progress=[Progress policy\: auto, always, or never]:WHEN:(auto always never)' \
 '--unicode=[Unicode policy\: auto, always, or never]:WHEN:(auto always never)' \
+'--memory-budget=[Process memory budget, e.g. 4GiB or 512MiB]:BYTES:_default' \
+'--spill-budget=[Spill/disk budget, e.g. 64GiB or 512MiB]:BYTES:_default' \
 '--deep[Run probes that may contact configured systems]' \
 '(-v --verbose)-q[Suppress progress and non-primary success narration]' \
 '(-v --verbose)--quiet[Suppress progress and non-primary success narration]' \
@@ -120,6 +132,8 @@ _arguments "${_arguments_options[@]}" : \
 '--color=[Color policy\: auto, always, or never]:WHEN:(auto always never)' \
 '--progress=[Progress policy\: auto, always, or never]:WHEN:(auto always never)' \
 '--unicode=[Unicode policy\: auto, always, or never]:WHEN:(auto always never)' \
+'--memory-budget=[Process memory budget, e.g. 4GiB or 512MiB]:BYTES:_default' \
+'--spill-budget=[Spill/disk budget, e.g. 64GiB or 512MiB]:BYTES:_default' \
 '--no-pin[Do not pin newly discovered schema]' \
 '(-v --verbose)-q[Suppress progress and non-primary success narration]' \
 '(-v --verbose)--quiet[Suppress progress and non-primary success narration]' \
@@ -140,6 +154,8 @@ _arguments "${_arguments_options[@]}" : \
 '--color=[Color policy\: auto, always, or never]:WHEN:(auto always never)' \
 '--progress=[Progress policy\: auto, always, or never]:WHEN:(auto always never)' \
 '--unicode=[Unicode policy\: auto, always, or never]:WHEN:(auto always never)' \
+'--memory-budget=[Process memory budget, e.g. 4GiB or 512MiB]:BYTES:_default' \
+'--spill-budget=[Spill/disk budget, e.g. 64GiB or 512MiB]:BYTES:_default' \
 '--no-pin[Do not pin newly discovered schema]' \
 '(-v --verbose)-q[Suppress progress and non-primary success narration]' \
 '(-v --verbose)--quiet[Suppress progress and non-primary success narration]' \
@@ -157,6 +173,9 @@ _arguments "${_arguments_options[@]}" : \
 '--color=[Color policy\: auto, always, or never]:WHEN:(auto always never)' \
 '--progress=[Progress policy\: auto, always, or never]:WHEN:(auto always never)' \
 '--unicode=[Unicode policy\: auto, always, or never]:WHEN:(auto always never)' \
+'--memory-budget=[Process memory budget, e.g. 4GiB or 512MiB]:BYTES:_default' \
+'--spill-budget=[Spill/disk budget, e.g. 64GiB or 512MiB]:BYTES:_default' \
+'--stats-profile[Write the typed statistics profile artifact]' \
 '--loop[Continue polling for work]' \
 '(-v --verbose)-q[Suppress progress and non-primary success narration]' \
 '(-v --verbose)--quiet[Suppress progress and non-primary success narration]' \
@@ -176,6 +195,8 @@ _arguments "${_arguments_options[@]}" : \
 '--color=[Color policy\: auto, always, or never]:WHEN:(auto always never)' \
 '--progress=[Progress policy\: auto, always, or never]:WHEN:(auto always never)' \
 '--unicode=[Unicode policy\: auto, always, or never]:WHEN:(auto always never)' \
+'--memory-budget=[Process memory budget, e.g. 4GiB or 512MiB]:BYTES:_default' \
+'--spill-budget=[Spill/disk budget, e.g. 64GiB or 512MiB]:BYTES:_default' \
 '(-v --verbose)-q[Suppress progress and non-primary success narration]' \
 '(-v --verbose)--quiet[Suppress progress and non-primary success narration]' \
 '(-q --quiet)*-v[Show evidence detail; repeat for diagnostics]' \
@@ -190,6 +211,8 @@ _arguments "${_arguments_options[@]}" : \
 '--color=[Color policy\: auto, always, or never]:WHEN:(auto always never)' \
 '--progress=[Progress policy\: auto, always, or never]:WHEN:(auto always never)' \
 '--unicode=[Unicode policy\: auto, always, or never]:WHEN:(auto always never)' \
+'--memory-budget=[Process memory budget, e.g. 4GiB or 512MiB]:BYTES:_default' \
+'--spill-budget=[Spill/disk budget, e.g. 64GiB or 512MiB]:BYTES:_default' \
 '(-v --verbose)-q[Suppress progress and non-primary success narration]' \
 '(-v --verbose)--quiet[Suppress progress and non-primary success narration]' \
 '(-q --quiet)*-v[Show evidence detail; repeat for diagnostics]' \
@@ -204,6 +227,8 @@ _arguments "${_arguments_options[@]}" : \
 '--color=[Color policy\: auto, always, or never]:WHEN:(auto always never)' \
 '--progress=[Progress policy\: auto, always, or never]:WHEN:(auto always never)' \
 '--unicode=[Unicode policy\: auto, always, or never]:WHEN:(auto always never)' \
+'--memory-budget=[Process memory budget, e.g. 4GiB or 512MiB]:BYTES:_default' \
+'--spill-budget=[Spill/disk budget, e.g. 64GiB or 512MiB]:BYTES:_default' \
 '(-v --verbose)-q[Suppress progress and non-primary success narration]' \
 '(-v --verbose)--quiet[Suppress progress and non-primary success narration]' \
 '(-q --quiet)*-v[Show evidence detail; repeat for diagnostics]' \
@@ -225,6 +250,8 @@ _arguments "${_arguments_options[@]}" : \
 '--color=[Color policy\: auto, always, or never]:WHEN:(auto always never)' \
 '--progress=[Progress policy\: auto, always, or never]:WHEN:(auto always never)' \
 '--unicode=[Unicode policy\: auto, always, or never]:WHEN:(auto always never)' \
+'--memory-budget=[Process memory budget, e.g. 4GiB or 512MiB]:BYTES:_default' \
+'--spill-budget=[Spill/disk budget, e.g. 64GiB or 512MiB]:BYTES:_default' \
 '(-v --verbose)-q[Suppress progress and non-primary success narration]' \
 '(-v --verbose)--quiet[Suppress progress and non-primary success narration]' \
 '(-q --quiet)*-v[Show evidence detail; repeat for diagnostics]' \
@@ -239,6 +266,8 @@ _arguments "${_arguments_options[@]}" : \
 '--color=[Color policy\: auto, always, or never]:WHEN:(auto always never)' \
 '--progress=[Progress policy\: auto, always, or never]:WHEN:(auto always never)' \
 '--unicode=[Unicode policy\: auto, always, or never]:WHEN:(auto always never)' \
+'--memory-budget=[Process memory budget, e.g. 4GiB or 512MiB]:BYTES:_default' \
+'--spill-budget=[Spill/disk budget, e.g. 64GiB or 512MiB]:BYTES:_default' \
 '(-v --verbose)-q[Suppress progress and non-primary success narration]' \
 '(-v --verbose)--quiet[Suppress progress and non-primary success narration]' \
 '(-q --quiet)*-v[Show evidence detail; repeat for diagnostics]' \
@@ -253,6 +282,8 @@ _arguments "${_arguments_options[@]}" : \
 '--color=[Color policy\: auto, always, or never]:WHEN:(auto always never)' \
 '--progress=[Progress policy\: auto, always, or never]:WHEN:(auto always never)' \
 '--unicode=[Unicode policy\: auto, always, or never]:WHEN:(auto always never)' \
+'--memory-budget=[Process memory budget, e.g. 4GiB or 512MiB]:BYTES:_default' \
+'--spill-budget=[Spill/disk budget, e.g. 64GiB or 512MiB]:BYTES:_default' \
 '(-v --verbose)-q[Suppress progress and non-primary success narration]' \
 '(-v --verbose)--quiet[Suppress progress and non-primary success narration]' \
 '(-q --quiet)*-v[Show evidence detail; repeat for diagnostics]' \
@@ -267,6 +298,8 @@ _arguments "${_arguments_options[@]}" : \
 '--color=[Color policy\: auto, always, or never]:WHEN:(auto always never)' \
 '--progress=[Progress policy\: auto, always, or never]:WHEN:(auto always never)' \
 '--unicode=[Unicode policy\: auto, always, or never]:WHEN:(auto always never)' \
+'--memory-budget=[Process memory budget, e.g. 4GiB or 512MiB]:BYTES:_default' \
+'--spill-budget=[Spill/disk budget, e.g. 64GiB or 512MiB]:BYTES:_default' \
 '(-v --verbose)-q[Suppress progress and non-primary success narration]' \
 '(-v --verbose)--quiet[Suppress progress and non-primary success narration]' \
 '(-q --quiet)*-v[Show evidence detail; repeat for diagnostics]' \
@@ -281,6 +314,8 @@ _arguments "${_arguments_options[@]}" : \
 '--color=[Color policy\: auto, always, or never]:WHEN:(auto always never)' \
 '--progress=[Progress policy\: auto, always, or never]:WHEN:(auto always never)' \
 '--unicode=[Unicode policy\: auto, always, or never]:WHEN:(auto always never)' \
+'--memory-budget=[Process memory budget, e.g. 4GiB or 512MiB]:BYTES:_default' \
+'--spill-budget=[Spill/disk budget, e.g. 64GiB or 512MiB]:BYTES:_default' \
 '(-v --verbose)-q[Suppress progress and non-primary success narration]' \
 '(-v --verbose)--quiet[Suppress progress and non-primary success narration]' \
 '(-q --quiet)*-v[Show evidence detail; repeat for diagnostics]' \
@@ -295,6 +330,8 @@ _arguments "${_arguments_options[@]}" : \
 '--color=[Color policy\: auto, always, or never]:WHEN:(auto always never)' \
 '--progress=[Progress policy\: auto, always, or never]:WHEN:(auto always never)' \
 '--unicode=[Unicode policy\: auto, always, or never]:WHEN:(auto always never)' \
+'--memory-budget=[Process memory budget, e.g. 4GiB or 512MiB]:BYTES:_default' \
+'--spill-budget=[Spill/disk budget, e.g. 64GiB or 512MiB]:BYTES:_default' \
 '(-v --verbose)-q[Suppress progress and non-primary success narration]' \
 '(-v --verbose)--quiet[Suppress progress and non-primary success narration]' \
 '(-q --quiet)*-v[Show evidence detail; repeat for diagnostics]' \
@@ -309,6 +346,8 @@ _arguments "${_arguments_options[@]}" : \
 '--color=[Color policy\: auto, always, or never]:WHEN:(auto always never)' \
 '--progress=[Progress policy\: auto, always, or never]:WHEN:(auto always never)' \
 '--unicode=[Unicode policy\: auto, always, or never]:WHEN:(auto always never)' \
+'--memory-budget=[Process memory budget, e.g. 4GiB or 512MiB]:BYTES:_default' \
+'--spill-budget=[Spill/disk budget, e.g. 64GiB or 512MiB]:BYTES:_default' \
 '(-v --verbose)-q[Suppress progress and non-primary success narration]' \
 '(-v --verbose)--quiet[Suppress progress and non-primary success narration]' \
 '(-q --quiet)*-v[Show evidence detail; repeat for diagnostics]' \
@@ -327,6 +366,8 @@ _arguments "${_arguments_options[@]}" : \
 '--color=[Color policy\: auto, always, or never]:WHEN:(auto always never)' \
 '--progress=[Progress policy\: auto, always, or never]:WHEN:(auto always never)' \
 '--unicode=[Unicode policy\: auto, always, or never]:WHEN:(auto always never)' \
+'--memory-budget=[Process memory budget, e.g. 4GiB or 512MiB]:BYTES:_default' \
+'--spill-budget=[Spill/disk budget, e.g. 64GiB or 512MiB]:BYTES:_default' \
 '(-v --verbose)-q[Suppress progress and non-primary success narration]' \
 '(-v --verbose)--quiet[Suppress progress and non-primary success narration]' \
 '(-q --quiet)*-v[Show evidence detail; repeat for diagnostics]' \
@@ -348,6 +389,8 @@ _arguments "${_arguments_options[@]}" : \
 '--color=[Color policy\: auto, always, or never]:WHEN:(auto always never)' \
 '--progress=[Progress policy\: auto, always, or never]:WHEN:(auto always never)' \
 '--unicode=[Unicode policy\: auto, always, or never]:WHEN:(auto always never)' \
+'--memory-budget=[Process memory budget, e.g. 4GiB or 512MiB]:BYTES:_default' \
+'--spill-budget=[Spill/disk budget, e.g. 64GiB or 512MiB]:BYTES:_default' \
 '(-v --verbose)-q[Suppress progress and non-primary success narration]' \
 '(-v --verbose)--quiet[Suppress progress and non-primary success narration]' \
 '(-q --quiet)*-v[Show evidence detail; repeat for diagnostics]' \
@@ -366,6 +409,8 @@ _arguments "${_arguments_options[@]}" : \
 '--color=[Color policy\: auto, always, or never]:WHEN:(auto always never)' \
 '--progress=[Progress policy\: auto, always, or never]:WHEN:(auto always never)' \
 '--unicode=[Unicode policy\: auto, always, or never]:WHEN:(auto always never)' \
+'--memory-budget=[Process memory budget, e.g. 4GiB or 512MiB]:BYTES:_default' \
+'--spill-budget=[Spill/disk budget, e.g. 64GiB or 512MiB]:BYTES:_default' \
 '(-v --verbose)-q[Suppress progress and non-primary success narration]' \
 '(-v --verbose)--quiet[Suppress progress and non-primary success narration]' \
 '(-q --quiet)*-v[Show evidence detail; repeat for diagnostics]' \
@@ -387,6 +432,8 @@ _arguments "${_arguments_options[@]}" : \
 '--color=[Color policy\: auto, always, or never]:WHEN:(auto always never)' \
 '--progress=[Progress policy\: auto, always, or never]:WHEN:(auto always never)' \
 '--unicode=[Unicode policy\: auto, always, or never]:WHEN:(auto always never)' \
+'--memory-budget=[Process memory budget, e.g. 4GiB or 512MiB]:BYTES:_default' \
+'--spill-budget=[Spill/disk budget, e.g. 64GiB or 512MiB]:BYTES:_default' \
 '(-v --verbose)-q[Suppress progress and non-primary success narration]' \
 '(-v --verbose)--quiet[Suppress progress and non-primary success narration]' \
 '(-q --quiet)*-v[Show evidence detail; repeat for diagnostics]' \
@@ -401,6 +448,8 @@ _arguments "${_arguments_options[@]}" : \
 '--color=[Color policy\: auto, always, or never]:WHEN:(auto always never)' \
 '--progress=[Progress policy\: auto, always, or never]:WHEN:(auto always never)' \
 '--unicode=[Unicode policy\: auto, always, or never]:WHEN:(auto always never)' \
+'--memory-budget=[Process memory budget, e.g. 4GiB or 512MiB]:BYTES:_default' \
+'--spill-budget=[Spill/disk budget, e.g. 64GiB or 512MiB]:BYTES:_default' \
 '(-v --verbose)-q[Suppress progress and non-primary success narration]' \
 '(-v --verbose)--quiet[Suppress progress and non-primary success narration]' \
 '(-q --quiet)*-v[Show evidence detail; repeat for diagnostics]' \
@@ -415,6 +464,8 @@ _arguments "${_arguments_options[@]}" : \
 '--color=[Color policy\: auto, always, or never]:WHEN:(auto always never)' \
 '--progress=[Progress policy\: auto, always, or never]:WHEN:(auto always never)' \
 '--unicode=[Unicode policy\: auto, always, or never]:WHEN:(auto always never)' \
+'--memory-budget=[Process memory budget, e.g. 4GiB or 512MiB]:BYTES:_default' \
+'--spill-budget=[Spill/disk budget, e.g. 64GiB or 512MiB]:BYTES:_default' \
 '(-v --verbose)-q[Suppress progress and non-primary success narration]' \
 '(-v --verbose)--quiet[Suppress progress and non-primary success narration]' \
 '(-q --quiet)*-v[Show evidence detail; repeat for diagnostics]' \
@@ -429,6 +480,8 @@ _arguments "${_arguments_options[@]}" : \
 '--color=[Color policy\: auto, always, or never]:WHEN:(auto always never)' \
 '--progress=[Progress policy\: auto, always, or never]:WHEN:(auto always never)' \
 '--unicode=[Unicode policy\: auto, always, or never]:WHEN:(auto always never)' \
+'--memory-budget=[Process memory budget, e.g. 4GiB or 512MiB]:BYTES:_default' \
+'--spill-budget=[Spill/disk budget, e.g. 64GiB or 512MiB]:BYTES:_default' \
 '(-v --verbose)-q[Suppress progress and non-primary success narration]' \
 '(-v --verbose)--quiet[Suppress progress and non-primary success narration]' \
 '(-q --quiet)*-v[Show evidence detail; repeat for diagnostics]' \
@@ -444,6 +497,8 @@ _arguments "${_arguments_options[@]}" : \
 '--color=[Color policy\: auto, always, or never]:WHEN:(auto always never)' \
 '--progress=[Progress policy\: auto, always, or never]:WHEN:(auto always never)' \
 '--unicode=[Unicode policy\: auto, always, or never]:WHEN:(auto always never)' \
+'--memory-budget=[Process memory budget, e.g. 4GiB or 512MiB]:BYTES:_default' \
+'--spill-budget=[Spill/disk budget, e.g. 64GiB or 512MiB]:BYTES:_default' \
 '--execute[Apply the planned operation]' \
 '(-v --verbose)-q[Suppress progress and non-primary success narration]' \
 '(-v --verbose)--quiet[Suppress progress and non-primary success narration]' \
@@ -463,6 +518,8 @@ _arguments "${_arguments_options[@]}" : \
 '--color=[Color policy\: auto, always, or never]:WHEN:(auto always never)' \
 '--progress=[Progress policy\: auto, always, or never]:WHEN:(auto always never)' \
 '--unicode=[Unicode policy\: auto, always, or never]:WHEN:(auto always never)' \
+'--memory-budget=[Process memory budget, e.g. 4GiB or 512MiB]:BYTES:_default' \
+'--spill-budget=[Spill/disk budget, e.g. 64GiB or 512MiB]:BYTES:_default' \
 '(-v --verbose)-q[Suppress progress and non-primary success narration]' \
 '(-v --verbose)--quiet[Suppress progress and non-primary success narration]' \
 '(-q --quiet)*-v[Show evidence detail; repeat for diagnostics]' \
@@ -484,6 +541,8 @@ _arguments "${_arguments_options[@]}" : \
 '--color=[Color policy\: auto, always, or never]:WHEN:(auto always never)' \
 '--progress=[Progress policy\: auto, always, or never]:WHEN:(auto always never)' \
 '--unicode=[Unicode policy\: auto, always, or never]:WHEN:(auto always never)' \
+'--memory-budget=[Process memory budget, e.g. 4GiB or 512MiB]:BYTES:_default' \
+'--spill-budget=[Spill/disk budget, e.g. 64GiB or 512MiB]:BYTES:_default' \
 '(-v --verbose)-q[Suppress progress and non-primary success narration]' \
 '(-v --verbose)--quiet[Suppress progress and non-primary success narration]' \
 '(-q --quiet)*-v[Show evidence detail; repeat for diagnostics]' \
@@ -498,6 +557,8 @@ _arguments "${_arguments_options[@]}" : \
 '--color=[Color policy\: auto, always, or never]:WHEN:(auto always never)' \
 '--progress=[Progress policy\: auto, always, or never]:WHEN:(auto always never)' \
 '--unicode=[Unicode policy\: auto, always, or never]:WHEN:(auto always never)' \
+'--memory-budget=[Process memory budget, e.g. 4GiB or 512MiB]:BYTES:_default' \
+'--spill-budget=[Spill/disk budget, e.g. 64GiB or 512MiB]:BYTES:_default' \
 '(-v --verbose)-q[Suppress progress and non-primary success narration]' \
 '(-v --verbose)--quiet[Suppress progress and non-primary success narration]' \
 '(-q --quiet)*-v[Show evidence detail; repeat for diagnostics]' \
@@ -512,6 +573,8 @@ _arguments "${_arguments_options[@]}" : \
 '--color=[Color policy\: auto, always, or never]:WHEN:(auto always never)' \
 '--progress=[Progress policy\: auto, always, or never]:WHEN:(auto always never)' \
 '--unicode=[Unicode policy\: auto, always, or never]:WHEN:(auto always never)' \
+'--memory-budget=[Process memory budget, e.g. 4GiB or 512MiB]:BYTES:_default' \
+'--spill-budget=[Spill/disk budget, e.g. 64GiB or 512MiB]:BYTES:_default' \
 '(-v --verbose)-q[Suppress progress and non-primary success narration]' \
 '(-v --verbose)--quiet[Suppress progress and non-primary success narration]' \
 '(-q --quiet)*-v[Show evidence detail; repeat for diagnostics]' \
@@ -530,6 +593,8 @@ _arguments "${_arguments_options[@]}" : \
 '--color=[Color policy\: auto, always, or never]:WHEN:(auto always never)' \
 '--progress=[Progress policy\: auto, always, or never]:WHEN:(auto always never)' \
 '--unicode=[Unicode policy\: auto, always, or never]:WHEN:(auto always never)' \
+'--memory-budget=[Process memory budget, e.g. 4GiB or 512MiB]:BYTES:_default' \
+'--spill-budget=[Spill/disk budget, e.g. 64GiB or 512MiB]:BYTES:_default' \
 '(-v --verbose)-q[Suppress progress and non-primary success narration]' \
 '(-v --verbose)--quiet[Suppress progress and non-primary success narration]' \
 '(-q --quiet)*-v[Show evidence detail; repeat for diagnostics]' \
@@ -554,6 +619,8 @@ _arguments "${_arguments_options[@]}" : \
 '--color=[Color policy\: auto, always, or never]:WHEN:(auto always never)' \
 '--progress=[Progress policy\: auto, always, or never]:WHEN:(auto always never)' \
 '--unicode=[Unicode policy\: auto, always, or never]:WHEN:(auto always never)' \
+'--memory-budget=[Process memory budget, e.g. 4GiB or 512MiB]:BYTES:_default' \
+'--spill-budget=[Spill/disk budget, e.g. 64GiB or 512MiB]:BYTES:_default' \
 '(-v --verbose)-q[Suppress progress and non-primary success narration]' \
 '(-v --verbose)--quiet[Suppress progress and non-primary success narration]' \
 '(-q --quiet)*-v[Show evidence detail; repeat for diagnostics]' \
@@ -571,6 +638,8 @@ _arguments "${_arguments_options[@]}" : \
 '--color=[Color policy\: auto, always, or never]:WHEN:(auto always never)' \
 '--progress=[Progress policy\: auto, always, or never]:WHEN:(auto always never)' \
 '--unicode=[Unicode policy\: auto, always, or never]:WHEN:(auto always never)' \
+'--memory-budget=[Process memory budget, e.g. 4GiB or 512MiB]:BYTES:_default' \
+'--spill-budget=[Spill/disk budget, e.g. 64GiB or 512MiB]:BYTES:_default' \
 '(-v --verbose)-q[Suppress progress and non-primary success narration]' \
 '(-v --verbose)--quiet[Suppress progress and non-primary success narration]' \
 '(-q --quiet)*-v[Show evidence detail; repeat for diagnostics]' \
@@ -589,6 +658,8 @@ _arguments "${_arguments_options[@]}" : \
 '--color=[Color policy\: auto, always, or never]:WHEN:(auto always never)' \
 '--progress=[Progress policy\: auto, always, or never]:WHEN:(auto always never)' \
 '--unicode=[Unicode policy\: auto, always, or never]:WHEN:(auto always never)' \
+'--memory-budget=[Process memory budget, e.g. 4GiB or 512MiB]:BYTES:_default' \
+'--spill-budget=[Spill/disk budget, e.g. 64GiB or 512MiB]:BYTES:_default' \
 '(-v --verbose)-q[Suppress progress and non-primary success narration]' \
 '(-v --verbose)--quiet[Suppress progress and non-primary success narration]' \
 '(-q --quiet)*-v[Show evidence detail; repeat for diagnostics]' \
@@ -608,6 +679,8 @@ _arguments "${_arguments_options[@]}" : \
 '--color=[Color policy\: auto, always, or never]:WHEN:(auto always never)' \
 '--progress=[Progress policy\: auto, always, or never]:WHEN:(auto always never)' \
 '--unicode=[Unicode policy\: auto, always, or never]:WHEN:(auto always never)' \
+'--memory-budget=[Process memory budget, e.g. 4GiB or 512MiB]:BYTES:_default' \
+'--spill-budget=[Spill/disk budget, e.g. 64GiB or 512MiB]:BYTES:_default' \
 '(-v --verbose)-q[Suppress progress and non-primary success narration]' \
 '(-v --verbose)--quiet[Suppress progress and non-primary success narration]' \
 '(-q --quiet)*-v[Show evidence detail; repeat for diagnostics]' \
@@ -626,6 +699,8 @@ _arguments "${_arguments_options[@]}" : \
 '--color=[Color policy\: auto, always, or never]:WHEN:(auto always never)' \
 '--progress=[Progress policy\: auto, always, or never]:WHEN:(auto always never)' \
 '--unicode=[Unicode policy\: auto, always, or never]:WHEN:(auto always never)' \
+'--memory-budget=[Process memory budget, e.g. 4GiB or 512MiB]:BYTES:_default' \
+'--spill-budget=[Spill/disk budget, e.g. 64GiB or 512MiB]:BYTES:_default' \
 '(-v --verbose)-q[Suppress progress and non-primary success narration]' \
 '(-v --verbose)--quiet[Suppress progress and non-primary success narration]' \
 '(-q --quiet)*-v[Show evidence detail; repeat for diagnostics]' \
@@ -640,6 +715,8 @@ _arguments "${_arguments_options[@]}" : \
 '--color=[Color policy\: auto, always, or never]:WHEN:(auto always never)' \
 '--progress=[Progress policy\: auto, always, or never]:WHEN:(auto always never)' \
 '--unicode=[Unicode policy\: auto, always, or never]:WHEN:(auto always never)' \
+'--memory-budget=[Process memory budget, e.g. 4GiB or 512MiB]:BYTES:_default' \
+'--spill-budget=[Spill/disk budget, e.g. 64GiB or 512MiB]:BYTES:_default' \
 '(-v --verbose)-q[Suppress progress and non-primary success narration]' \
 '(-v --verbose)--quiet[Suppress progress and non-primary success narration]' \
 '(-q --quiet)*-v[Show evidence detail; repeat for diagnostics]' \
@@ -664,6 +741,8 @@ _arguments "${_arguments_options[@]}" : \
 '--color=[Color policy\: auto, always, or never]:WHEN:(auto always never)' \
 '--progress=[Progress policy\: auto, always, or never]:WHEN:(auto always never)' \
 '--unicode=[Unicode policy\: auto, always, or never]:WHEN:(auto always never)' \
+'--memory-budget=[Process memory budget, e.g. 4GiB or 512MiB]:BYTES:_default' \
+'--spill-budget=[Spill/disk budget, e.g. 64GiB or 512MiB]:BYTES:_default' \
 '(-v --verbose)-q[Suppress progress and non-primary success narration]' \
 '(-v --verbose)--quiet[Suppress progress and non-primary success narration]' \
 '(-q --quiet)*-v[Show evidence detail; repeat for diagnostics]' \
@@ -686,6 +765,8 @@ _arguments "${_arguments_options[@]}" : \
 '--color=[Color policy\: auto, always, or never]:WHEN:(auto always never)' \
 '--progress=[Progress policy\: auto, always, or never]:WHEN:(auto always never)' \
 '--unicode=[Unicode policy\: auto, always, or never]:WHEN:(auto always never)' \
+'--memory-budget=[Process memory budget, e.g. 4GiB or 512MiB]:BYTES:_default' \
+'--spill-budget=[Spill/disk budget, e.g. 64GiB or 512MiB]:BYTES:_default' \
 '--execute[Apply the planned operation]' \
 '(-v --verbose)-q[Suppress progress and non-primary success narration]' \
 '(-v --verbose)--quiet[Suppress progress and non-primary success narration]' \
@@ -701,6 +782,8 @@ _arguments "${_arguments_options[@]}" : \
 '--color=[Color policy\: auto, always, or never]:WHEN:(auto always never)' \
 '--progress=[Progress policy\: auto, always, or never]:WHEN:(auto always never)' \
 '--unicode=[Unicode policy\: auto, always, or never]:WHEN:(auto always never)' \
+'--memory-budget=[Process memory budget, e.g. 4GiB or 512MiB]:BYTES:_default' \
+'--spill-budget=[Spill/disk budget, e.g. 64GiB or 512MiB]:BYTES:_default' \
 '(-v --verbose)-q[Suppress progress and non-primary success narration]' \
 '(-v --verbose)--quiet[Suppress progress and non-primary success narration]' \
 '(-q --quiet)*-v[Show evidence detail; repeat for diagnostics]' \
@@ -722,6 +805,8 @@ _arguments "${_arguments_options[@]}" : \
 '--color=[Color policy\: auto, always, or never]:WHEN:(auto always never)' \
 '--progress=[Progress policy\: auto, always, or never]:WHEN:(auto always never)' \
 '--unicode=[Unicode policy\: auto, always, or never]:WHEN:(auto always never)' \
+'--memory-budget=[Process memory budget, e.g. 4GiB or 512MiB]:BYTES:_default' \
+'--spill-budget=[Spill/disk budget, e.g. 64GiB or 512MiB]:BYTES:_default' \
 '(-v --verbose)-q[Suppress progress and non-primary success narration]' \
 '(-v --verbose)--quiet[Suppress progress and non-primary success narration]' \
 '(-q --quiet)*-v[Show evidence detail; repeat for diagnostics]' \
@@ -736,6 +821,8 @@ _arguments "${_arguments_options[@]}" : \
 '--color=[Color policy\: auto, always, or never]:WHEN:(auto always never)' \
 '--progress=[Progress policy\: auto, always, or never]:WHEN:(auto always never)' \
 '--unicode=[Unicode policy\: auto, always, or never]:WHEN:(auto always never)' \
+'--memory-budget=[Process memory budget, e.g. 4GiB or 512MiB]:BYTES:_default' \
+'--spill-budget=[Spill/disk budget, e.g. 64GiB or 512MiB]:BYTES:_default' \
 '(-v --verbose)-q[Suppress progress and non-primary success narration]' \
 '(-v --verbose)--quiet[Suppress progress and non-primary success narration]' \
 '(-q --quiet)*-v[Show evidence detail; repeat for diagnostics]' \
@@ -750,6 +837,8 @@ _arguments "${_arguments_options[@]}" : \
 '--color=[Color policy\: auto, always, or never]:WHEN:(auto always never)' \
 '--progress=[Progress policy\: auto, always, or never]:WHEN:(auto always never)' \
 '--unicode=[Unicode policy\: auto, always, or never]:WHEN:(auto always never)' \
+'--memory-budget=[Process memory budget, e.g. 4GiB or 512MiB]:BYTES:_default' \
+'--spill-budget=[Spill/disk budget, e.g. 64GiB or 512MiB]:BYTES:_default' \
 '(-v --verbose)-q[Suppress progress and non-primary success narration]' \
 '(-v --verbose)--quiet[Suppress progress and non-primary success narration]' \
 '(-q --quiet)*-v[Show evidence detail; repeat for diagnostics]' \
@@ -765,6 +854,8 @@ _arguments "${_arguments_options[@]}" : \
 '--color=[Color policy\: auto, always, or never]:WHEN:(auto always never)' \
 '--progress=[Progress policy\: auto, always, or never]:WHEN:(auto always never)' \
 '--unicode=[Unicode policy\: auto, always, or never]:WHEN:(auto always never)' \
+'--memory-budget=[Process memory budget, e.g. 4GiB or 512MiB]:BYTES:_default' \
+'--spill-budget=[Spill/disk budget, e.g. 64GiB or 512MiB]:BYTES:_default' \
 '--force[Replace an existing artifact when safe]' \
 '(-v --verbose)-q[Suppress progress and non-primary success narration]' \
 '(-v --verbose)--quiet[Suppress progress and non-primary success narration]' \
@@ -784,6 +875,8 @@ _arguments "${_arguments_options[@]}" : \
 '--color=[Color policy\: auto, always, or never]:WHEN:(auto always never)' \
 '--progress=[Progress policy\: auto, always, or never]:WHEN:(auto always never)' \
 '--unicode=[Unicode policy\: auto, always, or never]:WHEN:(auto always never)' \
+'--memory-budget=[Process memory budget, e.g. 4GiB or 512MiB]:BYTES:_default' \
+'--spill-budget=[Spill/disk budget, e.g. 64GiB or 512MiB]:BYTES:_default' \
 '(-v --verbose)-q[Suppress progress and non-primary success narration]' \
 '(-v --verbose)--quiet[Suppress progress and non-primary success narration]' \
 '(-q --quiet)*-v[Show evidence detail; repeat for diagnostics]' \
@@ -798,6 +891,8 @@ _arguments "${_arguments_options[@]}" : \
 '--color=[Color policy\: auto, always, or never]:WHEN:(auto always never)' \
 '--progress=[Progress policy\: auto, always, or never]:WHEN:(auto always never)' \
 '--unicode=[Unicode policy\: auto, always, or never]:WHEN:(auto always never)' \
+'--memory-budget=[Process memory budget, e.g. 4GiB or 512MiB]:BYTES:_default' \
+'--spill-budget=[Spill/disk budget, e.g. 64GiB or 512MiB]:BYTES:_default' \
 '(-v --verbose)-q[Suppress progress and non-primary success narration]' \
 '(-v --verbose)--quiet[Suppress progress and non-primary success narration]' \
 '(-q --quiet)*-v[Show evidence detail; repeat for diagnostics]' \

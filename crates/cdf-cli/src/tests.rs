@@ -282,46 +282,6 @@ fn parser_preserves_json_anywhere_for_help_envelope() {
     );
 }
 
-#[cfg(feature = "cli-artifacts")]
-#[test]
-fn cli_generated_artifacts_match_committed_snapshots() {
-    crate::cli_artifacts::check_cli_artifacts(&crate::cli_artifacts::default_artifact_dir())
-        .unwrap();
-}
-
-#[cfg(feature = "cli-artifacts")]
-#[test]
-fn cx1_generated_help_and_man_pages_are_complete_and_share_global_authority() {
-    let generated = crate::cli_artifacts::default_artifact_dir();
-    for child in ["help", "man"] {
-        for entry in fs::read_dir(generated.join(child)).unwrap() {
-            let text = fs::read_to_string(entry.unwrap().path()).unwrap();
-            assert!(!text.contains("Command option"));
-            assert!(!text.contains("Command value"));
-        }
-    }
-
-    let root = fs::read_to_string(generated.join("help/cdf.txt")).unwrap();
-    assert!(root.contains("Environment:"));
-    assert!(root.contains("Examples:"));
-    let run_man = fs::read_to_string(generated.join("man/cdf-run.1")).unwrap();
-    for global in ["\\-\\-color", "\\-\\-progress", "\\-\\-unicode"] {
-        assert!(run_man.contains(global), "run man page missing {global}");
-    }
-    for description in [
-        "Color policy: auto, always, or never",
-        "Progress policy: auto, always, or never",
-        "Unicode policy: auto, always, or never",
-    ] {
-        assert!(
-            run_man.contains(description),
-            "run man page missing {description}"
-        );
-    }
-    let bash = fs::read_to_string(generated.join("completions/cdf.bash")).unwrap();
-    assert!(bash.matches("auto always never").count() >= 3);
-}
-
 #[test]
 fn renderer_migration_gate_rejects_raw_human_output_bypasses() {
     let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
@@ -673,154 +633,6 @@ fn parser_accepts_canonical_color_policy_anywhere_without_changing_json_envelope
     let json = stderr_or_stdout_json(&result.stdout);
     assert_eq!(json["command"], "version");
     assert_eq!(json["result"]["version"], env!("CARGO_PKG_VERSION"));
-}
-
-#[test]
-fn cx1_parser_resolves_global_terminal_policy_anywhere() {
-    use crate::terminal::{PolicyMode, Verbosity};
-
-    let cli = crate::args::Cli::parse(
-        [
-            "cdf",
-            "run",
-            "local.events",
-            "-vv",
-            "--color=always",
-            "--progress",
-            "never",
-            "--unicode",
-            "always",
-        ]
-        .map(OsString::from),
-    )
-    .unwrap();
-
-    assert_eq!(cli.terminal.color, PolicyMode::Always);
-    assert_eq!(cli.terminal.progress, PolicyMode::Never);
-    assert_eq!(cli.terminal.unicode, PolicyMode::Always);
-    assert_eq!(cli.terminal.verbosity, Verbosity::Verbose(2));
-}
-
-#[test]
-fn cx1_parser_rejects_terminal_policy_conflicts_with_exact_corrections() {
-    let quiet_verbose =
-        crate::args::Cli::parse(["cdf", "run", "local.events", "-q", "-v"].map(OsString::from))
-            .unwrap_err();
-    assert_eq!(
-        quiet_verbose.message,
-        "-q/--quiet cannot be combined with -v/--verbose; choose one"
-    );
-
-    let invalid =
-        crate::args::Cli::parse(["cdf", "status", "--progress", "sometimes"].map(OsString::from))
-            .unwrap_err();
-    assert_eq!(
-        invalid.message,
-        "--progress must be one of auto, always, or never; try `--progress auto`"
-    );
-}
-
-#[test]
-fn cx1_parser_preserves_policy_looking_sql_tokens_after_option_terminator() {
-    let cli = crate::args::Cli::parse(
-        [
-            "cdf",
-            "sql",
-            "--",
-            "--color",
-            "--progress",
-            "--unicode",
-            "-q",
-            "-vv",
-        ]
-        .map(OsString::from),
-    )
-    .unwrap();
-
-    let crate::args::Command::Sql(sql) = cli.command else {
-        panic!("expected sql command");
-    };
-    assert_eq!(sql.query, "--color --progress --unicode -q -vv");
-    assert_eq!(cli.terminal, crate::terminal::TerminalPolicy::default());
-}
-
-#[test]
-fn cx1_clap_authority_owns_terminal_values_and_conflicts() {
-    use clap::error::ErrorKind;
-
-    let invalid = crate::args::cli_command()
-        .try_get_matches_from(["cdf", "--progress", "sometimes", "status"])
-        .unwrap_err();
-    assert_eq!(invalid.kind(), ErrorKind::InvalidValue);
-    let invalid_text = invalid.to_string();
-    for value in ["auto", "always", "never"] {
-        assert!(
-            invalid_text.contains(value),
-            "missing {value}: {invalid_text}"
-        );
-    }
-
-    let conflict = crate::args::cli_command()
-        .try_get_matches_from(["cdf", "-q", "-v", "status"])
-        .unwrap_err();
-    assert_eq!(conflict.kind(), ErrorKind::ArgumentConflict);
-
-    let removed_alias = crate::args::cli_command()
-        .try_get_matches_from(["cdf", "--no-color", "status"])
-        .unwrap_err();
-    assert_eq!(removed_alias.kind(), ErrorKind::UnknownArgument);
-
-    for removed in [
-        vec!["cdf", "plan", "--resource", "local.events"],
-        vec!["cdf", "plan", "local.events", "--target", "events"],
-        vec!["cdf", "plan", "local.events", "--projection", "id"],
-        vec!["cdf", "run", "--resource", "local.events"],
-        vec!["cdf", "run", "local.events", "--pipeline", "pipeline"],
-        vec!["cdf", "run", "local.events", "--target", "events"],
-        vec!["cdf", "run", "local.events", "--package-id", "package"],
-        vec![
-            "cdf",
-            "run",
-            "local.events",
-            "--checkpoint-id",
-            "checkpoint",
-        ],
-        vec!["cdf", "schema", "show", "--resource", "local.events"],
-        vec!["cdf", "contract", "show", "--trust", "governed"],
-        vec!["cdf", "resume", "--run-id", "run"],
-        vec![
-            "cdf",
-            "state",
-            "rewind",
-            "local.events",
-            "--target-checkpoint",
-            "checkpoint",
-        ],
-        vec![
-            "cdf",
-            "state",
-            "rewind",
-            "local.events",
-            "--to",
-            "checkpoint",
-            "--marker-checkpoint",
-            "marker",
-        ],
-    ] {
-        let error = crate::args::cli_command()
-            .try_get_matches_from(removed.clone())
-            .unwrap_err();
-        assert_eq!(
-            error.kind(),
-            ErrorKind::UnknownArgument,
-            "removed syntax unexpectedly survived: {removed:?}: {error}"
-        );
-    }
-
-    let removed_noun = crate::args::cli_command()
-        .try_get_matches_from(["cdf", "inspect", "destination"])
-        .unwrap_err();
-    assert_eq!(removed_noun.kind(), ErrorKind::InvalidSubcommand);
 }
 
 #[test]
@@ -1850,7 +1662,7 @@ fn run_http_monthly_resource(
     project: &TestProject,
     _package_id: &str,
     _checkpoint_id: &str,
-) -> crate::InvocationResult {
+) -> cdf_cli_core::output::InvocationResult {
     run([
         "cdf",
         "--json",
@@ -2183,7 +1995,7 @@ fn plan_human_rich_render_uses_glyphs_color_and_operator_panels() {
         cdf_engine::StandaloneExecutionHost::default_services(64 * 1024 * 1024).unwrap();
     let output = crate::scan_command::plan_or_explain(
         &cli,
-        crate::args::ScanArgs {
+        cdf_cli_core::args::ScanArgs {
             resource_id: "local.events".to_owned(),
             destination_uri: None,
             projection: Some(vec!["id".to_owned(), "updated_at".to_owned()]),
@@ -2427,7 +2239,7 @@ fn backfill_human_rich_render_uses_plan_panels_and_slice_table() {
         cdf_engine::StandaloneExecutionHost::default_services(64 * 1024 * 1024).unwrap();
     let output = crate::backfill_command::backfill(
         &test_cli(&project),
-        crate::args::BackfillArgs {
+        cdf_cli_core::args::BackfillArgs {
             resource_id: "warehouse.orders".to_owned(),
             from: "0".to_owned(),
             to: "20".to_owned(),
@@ -8247,12 +8059,12 @@ fn run_human_output_mentions_receipt_verified_commit_gate() {
 fn run_human_rich_render_uses_checkpoint_gate_panel() {
     let project = TestProject::new();
     let mut cli = test_cli(&project);
-    cli.terminal.progress = crate::terminal::PolicyMode::Always;
+    cli.terminal.progress = cdf_cli_core::terminal::PolicyMode::Always;
     let (host, services) =
         cdf_engine::StandaloneExecutionHost::default_services(512 * 1024 * 1024).unwrap();
     let output = crate::run_command::run(
         &cli,
-        crate::args::RunArgs {
+        cdf_cli_core::args::RunArgs {
             resource_id: Some("local.events".to_owned()),
             destination_uri: None,
             jobs: None,
@@ -8837,7 +8649,7 @@ fn resume_human_rich_render_uses_recovery_and_artifact_panels() {
     );
     let output = crate::resume_command::resume(
         &test_cli(&project),
-        crate::args::ResumeArgs {
+        cdf_cli_core::args::ResumeArgs {
             run_id: Some(run_id.to_string()),
         },
         &test_execution_services(),
@@ -11156,7 +10968,7 @@ fn replay_package_human_rich_render_uses_duplicate_receipt_checkpoint_panels() {
     let cli = test_cli(&project);
     let output = crate::replay_command::replay_package(
         &cli,
-        crate::args::ReplayPackageArgs {
+        cdf_cli_core::args::ReplayPackageArgs {
             package_dir,
             destination_uri: Some("duckdb://.cdf/replay-rich.duckdb".to_owned()),
             target: None,
@@ -13567,7 +13379,7 @@ fn state_show_human_rich_render_uses_scope_and_head_panels() {
 
     let output = crate::state_command::state(
         &test_cli(&project),
-        crate::args::StateCommand::Show(crate::args::StateScopeArgs {
+        cdf_cli_core::args::StateCommand::Show(cdf_cli_core::args::StateScopeArgs {
             pipeline_id: Some("cdf-run".to_owned()),
             resource_id: "local.events".to_owned(),
             scope_json: None,
@@ -14026,9 +13838,12 @@ fn usage_error_human_output_keeps_message_and_adds_remediation() {
 
 #[test]
 fn not_supported_error_preserves_exit_code_and_json_compatibility() {
-    let error =
-        crate::output::CliError::not_supported("preview", "query resources", "native scan runtime");
-    let result = crate::output::InvocationResult::from_error(true, error);
+    let error = cdf_cli_core::output::CliError::not_supported(
+        "preview",
+        "query resources",
+        "native scan runtime",
+    );
+    let result = cdf_cli_core::output::InvocationResult::from_error(true, error);
 
     assert_eq!(result.exit_code, 78);
     let json = stderr_or_stdout_json(&result.stderr);
@@ -14051,8 +13866,9 @@ fn not_supported_error_preserves_exit_code_and_json_compatibility() {
 
 #[test]
 fn generic_lower_layer_conversion_uses_documented_mapping() {
-    let error = crate::output::CliError::from(CdfError::destination("destination refused commit"));
-    let result = crate::output::InvocationResult::from_error(true, error);
+    let error =
+        cdf_cli_core::output::CliError::from(CdfError::destination("destination refused commit"));
+    let result = cdf_cli_core::output::InvocationResult::from_error(true, error);
 
     assert_eq!(result.exit_code, 6);
     let json = stderr_or_stdout_json(&result.stderr);
@@ -14216,14 +14032,17 @@ fn assert_no_schema_discovery_writes(project: &TestProject) {
     assert!(!project.root.join(".cdf/dev.duckdb").exists());
 }
 
-fn run_package_id(result: &crate::InvocationResult) -> String {
+fn run_package_id(result: &cdf_cli_core::output::InvocationResult) -> String {
     stderr_or_stdout_json(&result.stdout)["result"]["package_id"]
         .as_str()
         .expect("successful run report must name its minted package")
         .to_owned()
 }
 
-fn run_package_dir(project: &TestProject, result: &crate::InvocationResult) -> PathBuf {
+fn run_package_dir(
+    project: &TestProject,
+    result: &cdf_cli_core::output::InvocationResult,
+) -> PathBuf {
     project
         .root
         .join(".cdf/packages")
@@ -14240,11 +14059,14 @@ fn single_package_dir(project: &TestProject) -> PathBuf {
     packages.pop().unwrap()
 }
 
-fn run_valid_run_args(project: &TestProject) -> crate::InvocationResult {
+fn run_valid_run_args(project: &TestProject) -> cdf_cli_core::output::InvocationResult {
     run_valid_run_resource(project, "local.events")
 }
 
-fn run_valid_run_resource(project: &TestProject, resource_id: &str) -> crate::InvocationResult {
+fn run_valid_run_resource(
+    project: &TestProject,
+    resource_id: &str,
+) -> cdf_cli_core::output::InvocationResult {
     run_dynamic(vec![
         "cdf".to_owned(),
         "--json".to_owned(),
@@ -14271,7 +14093,7 @@ fn replay_package_command(
     project: &TestProject,
     package_dir: &Path,
     destination_uri: &str,
-) -> crate::InvocationResult {
+) -> cdf_cli_core::output::InvocationResult {
     replay_package_command_with_postgres_options(project, package_dir, destination_uri, None, None)
 }
 
@@ -14281,7 +14103,7 @@ fn replay_package_command_with_postgres_options(
     destination_uri: &str,
     target: Option<&str>,
     merge_dedup: Option<&str>,
-) -> crate::InvocationResult {
+) -> cdf_cli_core::output::InvocationResult {
     let mut command = vec![
         "cdf".to_owned(),
         "--json".to_owned(),
@@ -14311,7 +14133,7 @@ fn state_recover_command(
     receipt_id: Option<&str>,
     target: Option<&str>,
     merge_dedup: Option<&str>,
-) -> crate::InvocationResult {
+) -> cdf_cli_core::output::InvocationResult {
     let mut command = vec![
         "cdf".to_owned(),
         "--json".to_owned(),
@@ -14345,7 +14167,7 @@ fn duckdb_event_count(path: impl AsRef<Path>) -> i64 {
         .unwrap()
 }
 
-fn resume_command(project: &TestProject, run_id: &str) -> crate::InvocationResult {
+fn resume_command(project: &TestProject, run_id: &str) -> cdf_cli_core::output::InvocationResult {
     run_dynamic(vec![
         "cdf".to_owned(),
         "--json".to_owned(),
@@ -16161,12 +15983,12 @@ fn write_sql_project_with_secret(
     source_dsn
 }
 
-fn assert_secret_absent(result: &crate::InvocationResult, secret: &str) {
+fn assert_secret_absent(result: &cdf_cli_core::output::InvocationResult, secret: &str) {
     assert!(!result.stdout.contains(secret), "stdout leaked {secret}");
     assert!(!result.stderr.contains(secret), "stderr leaked {secret}");
 }
 
-fn assert_no_key_nudge(result: &crate::InvocationResult) {
+fn assert_no_key_nudge(result: &cdf_cli_core::output::InvocationResult) {
     let output = format!("{}{}", result.stdout, result.stderr).to_ascii_lowercase();
     for forbidden in [
         "primary_key",
@@ -16457,11 +16279,11 @@ impl Drop for TempDir {
     }
 }
 
-fn run<const N: usize>(args: [&str; N]) -> crate::InvocationResult {
+fn run<const N: usize>(args: [&str; N]) -> cdf_cli_core::output::InvocationResult {
     invoke(args.into_iter().map(OsString::from))
 }
 
-fn run_dynamic(args: Vec<String>) -> crate::InvocationResult {
+fn run_dynamic(args: Vec<String>) -> cdf_cli_core::output::InvocationResult {
     invoke(args.into_iter().map(OsString::from))
 }
 
@@ -16469,7 +16291,7 @@ fn run_injected_dynamic(
     project: &TestProject,
     registry: &cdf_runtime::DestinationRegistry,
     command: Vec<String>,
-) -> crate::InvocationResult {
+) -> cdf_cli_core::output::InvocationResult {
     let mut args = vec![
         "cdf".to_owned(),
         "--json".to_owned(),
@@ -16484,7 +16306,7 @@ fn run_injected_human_dynamic(
     project: &TestProject,
     registry: &cdf_runtime::DestinationRegistry,
     command: Vec<String>,
-) -> crate::InvocationResult {
+) -> cdf_cli_core::output::InvocationResult {
     let mut args = vec![
         "cdf".to_owned(),
         "--project".to_owned(),
@@ -16494,32 +16316,34 @@ fn run_injected_human_dynamic(
     crate::invoke_with_destination_registry(args.into_iter().map(OsString::from), registry)
 }
 
-fn render_rich(output: crate::output::CommandOutput) -> crate::InvocationResult {
-    crate::output::InvocationResult::from_output(false, &rich_render_config(), output)
+fn render_rich(
+    output: cdf_cli_core::output::CommandOutput,
+) -> cdf_cli_core::output::InvocationResult {
+    cdf_cli_core::output::InvocationResult::from_output(false, &rich_render_config(), output)
 }
 
-fn rich_render_config() -> crate::render::RenderConfig {
-    crate::render::RenderConfig::new(
-        crate::render::config::DisplayMode::Tty,
+fn rich_render_config() -> cdf_cli_core::render::RenderConfig {
+    cdf_cli_core::render::RenderConfig::new(
+        cdf_cli_core::render::config::DisplayMode::Tty,
         96,
-        crate::render::config::RenderEnv {
+        cdf_cli_core::render::config::RenderEnv {
             no_color: false,
             clicolor_force: false,
             unicode_supported: true,
         },
-        crate::terminal::TerminalPolicy::default(),
+        cdf_cli_core::terminal::TerminalPolicy::default(),
     )
 }
 
-fn test_cli(project: &TestProject) -> crate::args::Cli {
-    crate::args::Cli {
+fn test_cli(project: &TestProject) -> cdf_cli_core::args::Cli {
+    cdf_cli_core::args::Cli {
         json: false,
-        terminal: crate::terminal::TerminalPolicy::default(),
+        terminal: cdf_cli_core::terminal::TerminalPolicy::default(),
         project: Some(project.root.clone()),
         env: None,
         memory_budget: None,
         spill_budget: None,
-        command: crate::args::Command::Version,
+        command: cdf_cli_core::args::Command::Version,
     }
 }
 
@@ -16660,7 +16484,7 @@ fn stderr_or_stdout_json(text: &str) -> Value {
     serde_json::from_str(text).unwrap()
 }
 
-fn assert_json_error_code(result: &crate::InvocationResult, code: &str) -> Value {
+fn assert_json_error_code(result: &cdf_cli_core::output::InvocationResult, code: &str) -> Value {
     assert_ne!(result.exit_code, 0, "expected error result");
     let json = stderr_or_stdout_json(&result.stderr);
     assert_eq!(json["ok"], false);

@@ -4,7 +4,7 @@
 .SH NAME
 cdf \- Plan, run, and inspect governed data movement
 .SH SYNOPSIS
-\fBcdf\fR [\fB\-q\fR|\fB\-\-quiet\fR] [\fB\-v\fR|\fB\-\-verbose\fR]... [\fB\-\-color\fR] [\fB\-\-progress\fR] [\fB\-\-unicode\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fB\-V\fR|\fB\-\-version\fR] [\fIsubcommands\fR]
+\fBcdf\fR [\fB\-q\fR|\fB\-\-quiet\fR] [\fB\-v\fR|\fB\-\-verbose\fR]... [\fB\-\-color\fR] [\fB\-\-progress\fR] [\fB\-\-unicode\fR] [\fB\-\-memory\-budget\fR] [\fB\-\-spill\-budget\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fB\-V\fR|\fB\-\-version\fR] [\fIsubcommands\fR]
 .SH DESCRIPTION
 Plan, run, and inspect governed data movement with durable packages, checkpoints, receipts, and schema evidence.
 .SH OPTIONS
@@ -59,6 +59,12 @@ always
 .IP \(bu 2
 never
 .RE
+.TP
+\fB\-\-memory\-budget\fR \fI<BYTES>\fR
+Process memory budget, e.g. 4GiB or 512MiB
+.TP
+\fB\-\-spill\-budget\fR \fI<BYTES>\fR
+Spill/disk budget, e.g. 64GiB or 512MiB
 .TP
 \fB\-h\fR, \fB\-\-help\fR
 Print help (see a summary with \*(Aq\-h\*(Aq)
@@ -134,6 +140,8 @@ Environment:
   CDF_PROJECT       Project directory or cdf.toml path
   CDF_ENV           Project environment name
   CDF_TARGET        Default destination
+  CDF_MEMORY_BUDGET Process memory budget, e.g. 4GiB
+  CDF_SPILL_BUDGET  Spill/disk budget, e.g. 64GiB
   NO_COLOR          Disable color unless \-\-color always is explicit
   CLICOLOR_FORCE    Request color when output is interactive
   COLUMNS           Width fallback when terminal size is unavailable

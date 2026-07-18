@@ -2,7 +2,7 @@ use std::collections::BTreeSet;
 
 const MAX_SUGGESTIONS: usize = 3;
 
-pub(crate) fn nearest(input: &str, candidates: impl IntoIterator<Item = String>) -> Vec<String> {
+pub fn nearest(input: &str, candidates: impl IntoIterator<Item = String>) -> Vec<String> {
     let input = input.trim();
     if input.is_empty() {
         return Vec::new();

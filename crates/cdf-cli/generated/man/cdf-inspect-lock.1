@@ -4,7 +4,7 @@
 .SH NAME
 cdf\-inspect\-lock \- Show the project lock
 .SH SYNOPSIS
-\fBcdf inspect lock\fR [\fB\-q\fR|\fB\-\-quiet\fR] [\fB\-v\fR|\fB\-\-verbose\fR]... [\fB\-\-color\fR] [\fB\-\-progress\fR] [\fB\-\-unicode\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fIvalues\fR]
+\fBcdf inspect lock\fR [\fB\-q\fR|\fB\-\-quiet\fR] [\fB\-v\fR|\fB\-\-verbose\fR]... [\fB\-\-color\fR] [\fB\-\-progress\fR] [\fB\-\-unicode\fR] [\fB\-\-memory\-budget\fR] [\fB\-\-spill\-budget\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fIvalues\fR]
 .SH DESCRIPTION
 Show the project lock
 .SH OPTIONS
@@ -59,6 +59,12 @@ always
 .IP \(bu 2
 never
 .RE
+.TP
+\fB\-\-memory\-budget\fR \fI<BYTES>\fR
+Process memory budget, e.g. 4GiB or 512MiB
+.TP
+\fB\-\-spill\-budget\fR \fI<BYTES>\fR
+Spill/disk budget, e.g. 64GiB or 512MiB
 .TP
 \fB\-h\fR, \fB\-\-help\fR
 Print help

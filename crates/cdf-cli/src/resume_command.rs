@@ -77,7 +77,7 @@ fn resume_run(
     state_path: &std::path::Path,
     run_id: RunId,
     json_mode: bool,
-    terminal: &crate::terminal::TerminalPolicy,
+    terminal: &cdf_cli_core::terminal::TerminalPolicy,
     execution: &cdf_runtime::ExecutionServices,
 ) -> Result<CommandOutput, CliError> {
     let run_ledger = SqliteRunLedger::open(state_path)?;

@@ -150,7 +150,7 @@ fn source_reference_error(mut error: cdf_kernel::CdfError) -> CliError {
             .message
             .push_str("; run `cdf doctor` for source-driver diagnostics");
     }
-    CliError::mapped(error, crate::error_catalog::SOURCE_REFERENCE)
+    CliError::mapped(error, cdf_cli_core::error_catalog::SOURCE_REFERENCE)
 }
 
 pub(crate) fn build_project_run_resource(

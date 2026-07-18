@@ -4,7 +4,7 @@
 .SH NAME
 cdf\-preview \- Read a bounded preview without committing data
 .SH SYNOPSIS
-\fBcdf preview\fR [\fB\-q\fR|\fB\-\-quiet\fR] [\fB\-\-select\fR] [\fB\-\-filter\fR] [\fB\-v\fR|\fB\-\-verbose\fR]... [\fB\-\-color\fR] [\fB\-\-limit\fR] [\fB\-\-order\-by\fR] [\fB\-\-progress\fR] [\fB\-\-unicode\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fIRESOURCE\fR]
+\fBcdf preview\fR [\fB\-q\fR|\fB\-\-quiet\fR] [\fB\-\-select\fR] [\fB\-\-filter\fR] [\fB\-v\fR|\fB\-\-verbose\fR]... [\fB\-\-color\fR] [\fB\-\-limit\fR] [\fB\-\-order\-by\fR] [\fB\-\-progress\fR] [\fB\-\-unicode\fR] [\fB\-\-memory\-budget\fR] [\fB\-\-spill\-budget\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fIRESOURCE\fR]
 .SH DESCRIPTION
 Read a bounded preview without committing data
 .SH OPTIONS
@@ -71,6 +71,12 @@ always
 .IP \(bu 2
 never
 .RE
+.TP
+\fB\-\-memory\-budget\fR \fI<BYTES>\fR
+Process memory budget, e.g. 4GiB or 512MiB
+.TP
+\fB\-\-spill\-budget\fR \fI<BYTES>\fR
+Spill/disk budget, e.g. 64GiB or 512MiB
 .TP
 \fB\-h\fR, \fB\-\-help\fR
 Print help

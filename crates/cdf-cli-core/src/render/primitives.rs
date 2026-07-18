@@ -6,35 +6,35 @@ use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 const MIN_COLUMN_WIDTH: usize = 8;
 
-pub(crate) trait RenderPrimitive {
+pub trait RenderPrimitive {
     fn render(&self, config: &RenderConfig) -> String;
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub(crate) struct RenderDocument {
+pub struct RenderDocument {
     blocks: Vec<Block>,
 }
 
 impl RenderDocument {
-    pub(crate) fn new() -> Self {
+    pub fn new() -> Self {
         Self::default()
     }
 
-    pub(crate) fn push(mut self, block: impl Into<Block>) -> Self {
+    pub fn push(mut self, block: impl Into<Block>) -> Self {
         self.blocks.push(block.into());
         self
     }
 
-    pub(crate) fn blank_line(mut self) -> Self {
+    pub fn blank_line(mut self) -> Self {
         self.blocks.push(Block::BlankLine);
         self
     }
 
-    pub(crate) fn text(text: impl Into<String>) -> Self {
+    pub fn text(text: impl Into<String>) -> Self {
         Self::new().push(TextBlock::new(text))
     }
 
-    pub(crate) fn render(&self, config: &RenderConfig) -> String {
+    pub fn render(&self, config: &RenderConfig) -> String {
         let mut output = String::new();
         for block in &self.blocks {
             output.push_str(&block.render(config));
@@ -44,7 +44,7 @@ impl RenderDocument {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) enum Block {
+pub enum Block {
     StatusLine(StatusLine),
     KeyValuePanel(KeyValuePanel),
     Table(Table),
@@ -105,12 +105,12 @@ impl From<TextBlock> for Block {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct TextBlock {
+pub struct TextBlock {
     text: String,
 }
 
 impl TextBlock {
-    pub(crate) fn new(text: impl Into<String>) -> Self {
+    pub fn new(text: impl Into<String>) -> Self {
         Self { text: text.into() }
     }
 }
@@ -122,20 +122,20 @@ impl RenderPrimitive for TextBlock {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum StatusKind {
+pub enum StatusKind {
     Success,
     Warning,
     Error,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct StatusLine {
+pub struct StatusLine {
     kind: StatusKind,
     message: String,
 }
 
 impl StatusLine {
-    pub(crate) fn new(kind: StatusKind, message: impl Into<String>) -> Self {
+    pub fn new(kind: StatusKind, message: impl Into<String>) -> Self {
         Self {
             kind,
             message: message.into(),
@@ -156,20 +156,20 @@ impl RenderPrimitive for StatusLine {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct KeyValuePanel {
+pub struct KeyValuePanel {
     title: String,
     rows: Vec<(String, String)>,
 }
 
 impl KeyValuePanel {
-    pub(crate) fn new(title: impl Into<String>) -> Self {
+    pub fn new(title: impl Into<String>) -> Self {
         Self {
             title: title.into(),
             rows: Vec::new(),
         }
     }
 
-    pub(crate) fn row(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
+    pub fn row(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
         self.rows.push((key.into(), value.into()));
         self
     }
@@ -198,10 +198,10 @@ impl RenderPrimitive for KeyValuePanel {
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub(crate) struct SectionRule;
+pub struct SectionRule;
 
 impl SectionRule {
-    pub(crate) fn new() -> Self {
+    pub fn new() -> Self {
         Self
     }
 }
@@ -214,12 +214,12 @@ impl RenderPrimitive for SectionRule {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct NextCommand {
+pub struct NextCommand {
     command: String,
 }
 
 impl NextCommand {
-    pub(crate) fn new(command: impl Into<String>) -> Self {
+    pub fn new(command: impl Into<String>) -> Self {
         Self {
             command: command.into(),
         }
@@ -238,27 +238,27 @@ impl RenderPrimitive for NextCommand {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct Table {
+pub struct Table {
     headers: Vec<String>,
     rows: Vec<Vec<String>>,
 }
 
 impl Table {
-    pub(crate) fn new<const N: usize>(headers: [impl Into<String>; N]) -> Self {
+    pub fn new<const N: usize>(headers: [impl Into<String>; N]) -> Self {
         Self {
             headers: headers.into_iter().map(Into::into).collect(),
             rows: Vec::new(),
         }
     }
 
-    pub(crate) fn from_headers(headers: impl IntoIterator<Item = impl Into<String>>) -> Self {
+    pub fn from_headers(headers: impl IntoIterator<Item = impl Into<String>>) -> Self {
         Self {
             headers: headers.into_iter().map(Into::into).collect(),
             rows: Vec::new(),
         }
     }
 
-    pub(crate) fn row<const N: usize>(mut self, values: [impl Into<String>; N]) -> Self {
+    pub fn row<const N: usize>(mut self, values: [impl Into<String>; N]) -> Self {
         let values = values.into_iter().map(Into::into).collect::<Vec<_>>();
         assert_eq!(
             values.len(),
@@ -269,10 +269,7 @@ impl Table {
         self
     }
 
-    pub(crate) fn row_values(
-        mut self,
-        values: impl IntoIterator<Item = impl Into<String>>,
-    ) -> Self {
+    pub fn row_values(mut self, values: impl IntoIterator<Item = impl Into<String>>) -> Self {
         let values = values.into_iter().map(Into::into).collect::<Vec<_>>();
         assert_eq!(
             values.len(),

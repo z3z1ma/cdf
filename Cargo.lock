@@ -764,6 +764,7 @@ dependencies = [
  "arrow-array 59.1.0",
  "arrow-ipc",
  "arrow-schema 59.1.0",
+ "cdf-cli-core",
  "cdf-contract",
  "cdf-declarative",
  "cdf-dest-duckdb",
@@ -795,10 +796,6 @@ dependencies = [
  "cdf-transform-xz",
  "cdf-transform-zstd",
  "cdf-transport-http",
- "clap",
- "clap_complete",
- "clap_mangen",
- "crossterm",
  "duckdb",
  "flate2",
  "futures-executor",
@@ -809,8 +806,21 @@ dependencies = [
  "serde_json",
  "sha2 0.10.9",
  "toml",
- "unicode-width",
  "url",
+]
+
+[[package]]
+name = "cdf-cli-core"
+version = "0.1.0"
+dependencies = [
+ "cdf-kernel",
+ "clap",
+ "clap_complete",
+ "clap_mangen",
+ "crossterm",
+ "serde",
+ "serde_json",
+ "unicode-width",
 ]
 
 [[package]]
@@ -822,6 +832,7 @@ dependencies = [
  "arrow-schema 59.1.0",
  "bytes",
  "cdf-cli",
+ "cdf-cli-core",
  "cdf-contract",
  "cdf-declarative",
  "cdf-dest-duckdb",

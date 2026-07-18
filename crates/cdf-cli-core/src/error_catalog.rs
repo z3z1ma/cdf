@@ -1,19 +1,19 @@
 use cdf_kernel::ErrorKind;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct ErrorMapping {
-    pub(crate) code: &'static str,
-    pub(crate) exit_code: i32,
-    pub(crate) remediation: Option<RemediationTemplate>,
+pub struct ErrorMapping {
+    pub code: &'static str,
+    pub exit_code: i32,
+    pub remediation: Option<RemediationTemplate>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct RemediationTemplate {
-    pub(crate) summary: &'static str,
-    pub(crate) steps: &'static [&'static str],
+pub struct RemediationTemplate {
+    pub summary: &'static str,
+    pub steps: &'static [&'static str],
 }
 
-pub(crate) const USAGE: ErrorMapping = ErrorMapping {
+pub const USAGE: ErrorMapping = ErrorMapping {
     code: "CDF-CLI-USAGE",
     exit_code: 2,
     remediation: Some(RemediationTemplate {
@@ -22,7 +22,7 @@ pub(crate) const USAGE: ErrorMapping = ErrorMapping {
     }),
 };
 
-pub(crate) const NOT_SUPPORTED: ErrorMapping = ErrorMapping {
+pub const NOT_SUPPORTED: ErrorMapping = ErrorMapping {
     code: "CDF-CLI-NOT-SUPPORTED",
     exit_code: 78,
     remediation: Some(RemediationTemplate {
@@ -31,7 +31,7 @@ pub(crate) const NOT_SUPPORTED: ErrorMapping = ErrorMapping {
     }),
 };
 
-pub(crate) const CLI_JSON: ErrorMapping = ErrorMapping {
+pub const CLI_JSON: ErrorMapping = ErrorMapping {
     code: "CDF-CLI-JSON-SERIALIZATION",
     exit_code: 70,
     remediation: Some(RemediationTemplate {
@@ -41,7 +41,7 @@ pub(crate) const CLI_JSON: ErrorMapping = ErrorMapping {
 };
 
 #[cfg(feature = "cli-artifacts")]
-pub(crate) const CLI_ARTIFACTS: ErrorMapping = ErrorMapping {
+pub const CLI_ARTIFACTS: ErrorMapping = ErrorMapping {
     code: "CDF-CLI-ARTIFACTS",
     exit_code: 70,
     remediation: Some(RemediationTemplate {
@@ -51,7 +51,7 @@ pub(crate) const CLI_ARTIFACTS: ErrorMapping = ErrorMapping {
 };
 
 #[cfg(feature = "cli-artifacts")]
-pub(crate) const CLI_ARTIFACTS_USAGE: ErrorMapping = ErrorMapping {
+pub const CLI_ARTIFACTS_USAGE: ErrorMapping = ErrorMapping {
     code: "CDF-CLI-ARTIFACTS-USAGE",
     exit_code: 2,
     remediation: Some(RemediationTemplate {
@@ -60,7 +60,7 @@ pub(crate) const CLI_ARTIFACTS_USAGE: ErrorMapping = ErrorMapping {
     }),
 };
 
-pub(crate) const PROJECT_INIT_ARGUMENT: ErrorMapping = ErrorMapping {
+pub const PROJECT_INIT_ARGUMENT: ErrorMapping = ErrorMapping {
     code: "CDF-PROJECT-INIT-ARGUMENT",
     exit_code: 2,
     remediation: Some(RemediationTemplate {
@@ -69,7 +69,7 @@ pub(crate) const PROJECT_INIT_ARGUMENT: ErrorMapping = ErrorMapping {
     }),
 };
 
-pub(crate) const PROJECT_IO: ErrorMapping = ErrorMapping {
+pub const PROJECT_IO: ErrorMapping = ErrorMapping {
     code: "CDF-PROJECT-IO",
     exit_code: 70,
     remediation: Some(RemediationTemplate {
@@ -78,7 +78,7 @@ pub(crate) const PROJECT_IO: ErrorMapping = ErrorMapping {
     }),
 };
 
-pub(crate) const PROJECT_RESOURCE_MAPPING: ErrorMapping = ErrorMapping {
+pub const PROJECT_RESOURCE_MAPPING: ErrorMapping = ErrorMapping {
     code: "CDF-PROJECT-RESOURCE-MAPPING",
     exit_code: 3,
     remediation: Some(RemediationTemplate {
@@ -87,7 +87,7 @@ pub(crate) const PROJECT_RESOURCE_MAPPING: ErrorMapping = ErrorMapping {
     }),
 };
 
-pub(crate) const PROJECT_MERGE_KEY: ErrorMapping = ErrorMapping {
+pub const PROJECT_MERGE_KEY: ErrorMapping = ErrorMapping {
     code: "CDF-PROJECT-MERGE-KEY",
     exit_code: 3,
     remediation: Some(RemediationTemplate {
@@ -99,7 +99,7 @@ pub(crate) const PROJECT_MERGE_KEY: ErrorMapping = ErrorMapping {
     }),
 };
 
-pub(crate) const SOURCE_REFERENCE: ErrorMapping = ErrorMapping {
+pub const SOURCE_REFERENCE: ErrorMapping = ErrorMapping {
     code: "CDF-SOURCE-REFERENCE",
     exit_code: 3,
     remediation: Some(RemediationTemplate {
@@ -110,7 +110,7 @@ pub(crate) const SOURCE_REFERENCE: ErrorMapping = ErrorMapping {
     }),
 };
 
-pub(crate) const RESOURCE_NOT_COMPILED: ErrorMapping = ErrorMapping {
+pub const RESOURCE_NOT_COMPILED: ErrorMapping = ErrorMapping {
     code: "CDF-RESOURCE-NOT-COMPILED",
     exit_code: 3,
     remediation: Some(RemediationTemplate {
@@ -122,7 +122,7 @@ pub(crate) const RESOURCE_NOT_COMPILED: ErrorMapping = ErrorMapping {
     }),
 };
 
-pub(crate) const CONTRACT_ARGUMENT: ErrorMapping = ErrorMapping {
+pub const CONTRACT_ARGUMENT: ErrorMapping = ErrorMapping {
     code: "CDF-CONTRACT-ARGUMENT",
     exit_code: 2,
     remediation: Some(RemediationTemplate {
@@ -131,7 +131,7 @@ pub(crate) const CONTRACT_ARGUMENT: ErrorMapping = ErrorMapping {
     }),
 };
 
-pub(crate) const CONTRACT_LOCKFILE: ErrorMapping = ErrorMapping {
+pub const CONTRACT_LOCKFILE: ErrorMapping = ErrorMapping {
     code: "CDF-CONTRACT-LOCKFILE",
     exit_code: 3,
     remediation: Some(RemediationTemplate {
@@ -140,7 +140,7 @@ pub(crate) const CONTRACT_LOCKFILE: ErrorMapping = ErrorMapping {
     }),
 };
 
-pub(crate) const SCAN_ARGUMENT: ErrorMapping = ErrorMapping {
+pub const SCAN_ARGUMENT: ErrorMapping = ErrorMapping {
     code: "CDF-RUN-SCAN-ARGUMENT",
     exit_code: 2,
     remediation: Some(RemediationTemplate {
@@ -149,7 +149,7 @@ pub(crate) const SCAN_ARGUMENT: ErrorMapping = ErrorMapping {
     }),
 };
 
-pub(crate) const PREVIEW_RUNTIME_NOT_SUPPORTED: ErrorMapping = ErrorMapping {
+pub const PREVIEW_RUNTIME_NOT_SUPPORTED: ErrorMapping = ErrorMapping {
     code: "CDF-RUN-PREVIEW-RUNTIME-NOT-SUPPORTED",
     exit_code: 78,
     remediation: Some(RemediationTemplate {
@@ -158,7 +158,7 @@ pub(crate) const PREVIEW_RUNTIME_NOT_SUPPORTED: ErrorMapping = ErrorMapping {
     }),
 };
 
-pub(crate) const DESTINATION_NOT_SUPPORTED: ErrorMapping = ErrorMapping {
+pub const DESTINATION_NOT_SUPPORTED: ErrorMapping = ErrorMapping {
     code: "CDF-DEST-NOT-SUPPORTED",
     exit_code: 78,
     remediation: Some(RemediationTemplate {
@@ -169,7 +169,7 @@ pub(crate) const DESTINATION_NOT_SUPPORTED: ErrorMapping = ErrorMapping {
     }),
 };
 
-pub(crate) const RUN_ARGUMENT: ErrorMapping = ErrorMapping {
+pub const RUN_ARGUMENT: ErrorMapping = ErrorMapping {
     code: "CDF-RUN-ARGUMENT",
     exit_code: 2,
     remediation: Some(RemediationTemplate {
@@ -178,7 +178,7 @@ pub(crate) const RUN_ARGUMENT: ErrorMapping = ErrorMapping {
     }),
 };
 
-pub(crate) const RUN_LOOP_NOT_SUPPORTED: ErrorMapping = ErrorMapping {
+pub const RUN_LOOP_NOT_SUPPORTED: ErrorMapping = ErrorMapping {
     code: "CDF-RUN-LOOP-NOT-SUPPORTED",
     exit_code: 78,
     remediation: Some(RemediationTemplate {
@@ -187,7 +187,7 @@ pub(crate) const RUN_LOOP_NOT_SUPPORTED: ErrorMapping = ErrorMapping {
     }),
 };
 
-pub(crate) const RUN_ARTIFACT_PATH: ErrorMapping = ErrorMapping {
+pub const RUN_ARTIFACT_PATH: ErrorMapping = ErrorMapping {
     code: "CDF-RUN-ARTIFACT-PATH",
     exit_code: 5,
     remediation: Some(RemediationTemplate {
@@ -196,7 +196,7 @@ pub(crate) const RUN_ARTIFACT_PATH: ErrorMapping = ErrorMapping {
     }),
 };
 
-pub(crate) const RUN_ARTIFACT_INTERNAL: ErrorMapping = ErrorMapping {
+pub const RUN_ARTIFACT_INTERNAL: ErrorMapping = ErrorMapping {
     code: "CDF-RUN-ARTIFACT-INTERNAL",
     exit_code: 70,
     remediation: Some(RemediationTemplate {
@@ -205,7 +205,7 @@ pub(crate) const RUN_ARTIFACT_INTERNAL: ErrorMapping = ErrorMapping {
     }),
 };
 
-pub(crate) const REPLAY_ARGUMENT: ErrorMapping = ErrorMapping {
+pub const REPLAY_ARGUMENT: ErrorMapping = ErrorMapping {
     code: "CDF-PACKAGE-REPLAY-ARGUMENT",
     exit_code: 2,
     remediation: Some(RemediationTemplate {
@@ -214,7 +214,7 @@ pub(crate) const REPLAY_ARGUMENT: ErrorMapping = ErrorMapping {
     }),
 };
 
-pub(crate) const REPLAY_PACKAGE_CONTRACT: ErrorMapping = ErrorMapping {
+pub const REPLAY_PACKAGE_CONTRACT: ErrorMapping = ErrorMapping {
     code: "CDF-PACKAGE-REPLAY-CONTRACT",
     exit_code: 3,
     remediation: Some(RemediationTemplate {
@@ -223,7 +223,7 @@ pub(crate) const REPLAY_PACKAGE_CONTRACT: ErrorMapping = ErrorMapping {
     }),
 };
 
-pub(crate) const RESUME_LEDGER: ErrorMapping = ErrorMapping {
+pub const RESUME_LEDGER: ErrorMapping = ErrorMapping {
     code: "CDF-STATE-RESUME-LEDGER",
     exit_code: 5,
     remediation: Some(RemediationTemplate {
@@ -232,7 +232,7 @@ pub(crate) const RESUME_LEDGER: ErrorMapping = ErrorMapping {
     }),
 };
 
-pub(crate) const RESUME_MULTI_RUN_NOT_SUPPORTED: ErrorMapping = ErrorMapping {
+pub const RESUME_MULTI_RUN_NOT_SUPPORTED: ErrorMapping = ErrorMapping {
     code: "CDF-STATE-RESUME-MULTI-RUN-NOT-SUPPORTED",
     exit_code: 78,
     remediation: Some(RemediationTemplate {
@@ -241,7 +241,7 @@ pub(crate) const RESUME_MULTI_RUN_NOT_SUPPORTED: ErrorMapping = ErrorMapping {
     }),
 };
 
-pub(crate) const STATE_SCOPE_ARGUMENT: ErrorMapping = ErrorMapping {
+pub const STATE_SCOPE_ARGUMENT: ErrorMapping = ErrorMapping {
     code: "CDF-STATE-SCOPE-ARGUMENT",
     exit_code: 2,
     remediation: Some(RemediationTemplate {
@@ -250,7 +250,7 @@ pub(crate) const STATE_SCOPE_ARGUMENT: ErrorMapping = ErrorMapping {
     }),
 };
 
-pub(crate) const PACKAGE_ARGUMENT: ErrorMapping = ErrorMapping {
+pub const PACKAGE_ARGUMENT: ErrorMapping = ErrorMapping {
     code: "CDF-PACKAGE-ARGUMENT",
     exit_code: 2,
     remediation: Some(RemediationTemplate {
@@ -259,7 +259,7 @@ pub(crate) const PACKAGE_ARGUMENT: ErrorMapping = ErrorMapping {
     }),
 };
 
-pub(crate) const PACKAGE_ARTIFACT: ErrorMapping = ErrorMapping {
+pub const PACKAGE_ARTIFACT: ErrorMapping = ErrorMapping {
     code: "CDF-PACKAGE-ARTIFACT",
     exit_code: 5,
     remediation: Some(RemediationTemplate {
@@ -268,7 +268,7 @@ pub(crate) const PACKAGE_ARTIFACT: ErrorMapping = ErrorMapping {
     }),
 };
 
-pub(crate) const SQL_QUERY: ErrorMapping = ErrorMapping {
+pub const SQL_QUERY: ErrorMapping = ErrorMapping {
     code: "CDF-SQL-QUERY",
     exit_code: 2,
     remediation: Some(RemediationTemplate {
@@ -277,7 +277,7 @@ pub(crate) const SQL_QUERY: ErrorMapping = ErrorMapping {
     }),
 };
 
-pub(crate) const SQL_RESULT: ErrorMapping = ErrorMapping {
+pub const SQL_RESULT: ErrorMapping = ErrorMapping {
     code: "CDF-SQL-RESULT",
     exit_code: 5,
     remediation: Some(RemediationTemplate {
@@ -286,7 +286,7 @@ pub(crate) const SQL_RESULT: ErrorMapping = ErrorMapping {
     }),
 };
 
-pub(crate) const SQL_INTERNAL: ErrorMapping = ErrorMapping {
+pub const SQL_INTERNAL: ErrorMapping = ErrorMapping {
     code: "CDF-SQL-INTERNAL",
     exit_code: 70,
     remediation: Some(RemediationTemplate {
@@ -295,7 +295,7 @@ pub(crate) const SQL_INTERNAL: ErrorMapping = ErrorMapping {
     }),
 };
 
-pub(crate) const STATUS_FRESHNESS: ErrorMapping = ErrorMapping {
+pub const STATUS_FRESHNESS: ErrorMapping = ErrorMapping {
     code: "CDF-STATUS-FRESHNESS",
     exit_code: 70,
     remediation: Some(RemediationTemplate {
@@ -304,7 +304,7 @@ pub(crate) const STATUS_FRESHNESS: ErrorMapping = ErrorMapping {
     }),
 };
 
-pub(crate) const DOCTOR_DRIFT: ErrorMapping = ErrorMapping {
+pub const DOCTOR_DRIFT: ErrorMapping = ErrorMapping {
     code: "CDF-DOCTOR-DRIFT",
     exit_code: 5,
     remediation: Some(RemediationTemplate {
@@ -314,7 +314,7 @@ pub(crate) const DOCTOR_DRIFT: ErrorMapping = ErrorMapping {
 };
 
 #[cfg(feature = "cli-artifacts")]
-pub(crate) fn reference_entries() -> Vec<(&'static str, ErrorMapping)> {
+pub fn reference_entries() -> Vec<(&'static str, ErrorMapping)> {
     let mut entries = vec![
         ("USAGE", USAGE),
         ("NOT_SUPPORTED", NOT_SUPPORTED),
@@ -385,7 +385,7 @@ pub(crate) fn reference_entries() -> Vec<(&'static str, ErrorMapping)> {
 /// Generic lower-layer mappings for `CdfError` values whose owning crate, not
 /// the CLI call site, carries the domain semantics. These preserve the existing
 /// exit-code taxonomy and intentionally name broad product areas.
-pub(crate) fn generic_lower_layer_mapping(kind: &ErrorKind) -> ErrorMapping {
+pub fn generic_lower_layer_mapping(kind: &ErrorKind) -> ErrorMapping {
     match kind {
         ErrorKind::Transient => ErrorMapping {
             code: "CDF-RUN-TRANSIENT",

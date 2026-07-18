@@ -1,10 +1,10 @@
-pub(crate) const REDACTED: &str = "[redacted]";
+pub const REDACTED: &str = "[redacted]";
 
-pub(crate) fn redacted() -> String {
+pub fn redacted() -> String {
     REDACTED.to_owned()
 }
 
-pub(crate) fn redact_exact(value: impl AsRef<str>, secret: Option<&str>) -> String {
+pub fn redact_exact(value: impl AsRef<str>, secret: Option<&str>) -> String {
     let value = value.as_ref();
     match secret {
         Some(secret) if !secret.is_empty() => value.replace(secret, REDACTED),
@@ -12,7 +12,7 @@ pub(crate) fn redact_exact(value: impl AsRef<str>, secret: Option<&str>) -> Stri
     }
 }
 
-pub(crate) fn redact_uri_userinfo(value: impl AsRef<str>) -> String {
+pub fn redact_uri_userinfo(value: impl AsRef<str>) -> String {
     let value = value.as_ref();
     let Some(scheme_end) = value.find("://") else {
         return value.to_owned();
@@ -29,7 +29,7 @@ pub(crate) fn redact_uri_userinfo(value: impl AsRef<str>) -> String {
     format!("{}{}{}", &value[..authority_start], REDACTED, &value[at..])
 }
 
-pub(crate) fn is_sensitive_key(key: &str) -> bool {
+pub fn is_sensitive_key(key: &str) -> bool {
     let key = key.to_ascii_lowercase();
     key.contains("secret")
         || key.contains("token")

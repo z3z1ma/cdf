@@ -6,7 +6,7 @@ use cdf_package_contract::{PackageReplayInputs, PackageStatus};
 use cdf_project::{PackageReplayReport, ProjectReceiptSource};
 use cdf_state_sqlite::{RunEvent, SqliteCheckpointStore};
 
-use crate::output::CliError;
+use cdf_cli_core::output::CliError;
 
 use super::report::ResumeCheckpointPointer;
 

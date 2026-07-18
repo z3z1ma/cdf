@@ -14,7 +14,7 @@ use crate::{
 };
 
 pub(crate) fn doctor(
-    cli: &crate::args::Cli,
+    cli: &cdf_cli_core::args::Cli,
     execution: &cdf_runtime::ExecutionServices,
     destinations: &cdf_runtime::DestinationRegistry,
 ) -> Result<CommandOutput, CliError> {
@@ -371,7 +371,7 @@ mod tests {
         let json = serde_json::to_string(&report).unwrap();
         let human = report
             .render_document()
-            .render(&crate::render::RenderConfig::headless_for_width(96));
+            .render(&cdf_cli_core::render::RenderConfig::headless_for_width(96));
         assert!(!json.contains("doctor-secret"));
         assert!(!human.contains("doctor-secret"));
         assert!(json.contains("fourth://[redacted]@example.invalid/db"));

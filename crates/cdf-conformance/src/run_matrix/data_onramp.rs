@@ -1025,7 +1025,7 @@ trust = "governed"
     .unwrap();
 }
 
-fn invoke_cli(root: &Path, args: &[&str]) -> cdf_cli::InvocationResult {
+fn invoke_cli(root: &Path, args: &[&str]) -> cdf_cli_core::output::InvocationResult {
     let mut argv = vec![
         OsString::from("cdf"),
         OsString::from("--json"),
@@ -1050,11 +1050,11 @@ fn invoke_success_json(root: &Path, args: &[&str], secret: Option<&str>) -> Valu
     success_json(&result)
 }
 
-fn success_json(result: &cdf_cli::InvocationResult) -> Value {
+fn success_json(result: &cdf_cli_core::output::InvocationResult) -> Value {
     serde_json::from_str(&result.stdout).unwrap()
 }
 
-fn assert_success_without_key_nudge(result: &cdf_cli::InvocationResult) {
+fn assert_success_without_key_nudge(result: &cdf_cli_core::output::InvocationResult) {
     assert_eq!(
         result.exit_code, 0,
         "stdout:\n{}\nstderr:\n{}",

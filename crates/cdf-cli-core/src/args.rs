@@ -379,7 +379,7 @@ fn policy_value<'a>(
         .ok_or_else(|| CliError::usage(format!("{flag} requires a value")))
 }
 
-pub(crate) fn parse_byte_size(label: &str, value: &str) -> Result<u64, CliError> {
+pub fn parse_byte_size(label: &str, value: &str) -> Result<u64, CliError> {
     cdf_kernel::parse_human_byte_size(label, value).map_err(|error| CliError::usage(error.message))
 }
 
@@ -859,7 +859,7 @@ fn parse_package_archive(matches: &ArgMatches) -> Result<PackageArchiveArgs, Cli
     })
 }
 
-pub(crate) fn cli_command() -> ClapCommand {
+pub fn cli_command() -> ClapCommand {
     cmd("cdf")
         .version(VERSION)
         .about("Plan, run, and inspect governed data movement")
@@ -1193,7 +1193,7 @@ fn positional_help(id: &str) -> &'static str {
     }
 }
 
-pub(crate) fn render_help(path: &[String]) -> Result<String, CliError> {
+pub fn render_help(path: &[String]) -> Result<String, CliError> {
     if !path.is_empty() {
         let mut argv = Vec::with_capacity(path.len() + 2);
         argv.push("cdf".to_owned());
@@ -1391,7 +1391,152 @@ fn mint_cli_id(prefix: &str) -> String {
 mod run_jobs_tests {
     use std::ffi::OsString;
 
-    use super::{Cli, Command, parse_byte_size};
+    use clap::error::ErrorKind;
+
+    use super::{Cli, Command, cli_command, parse_byte_size};
+    use crate::terminal::{PolicyMode, TerminalPolicy, Verbosity};
+
+    #[test]
+    fn cx1_parser_resolves_global_terminal_policy_anywhere() {
+        let cli = Cli::parse(
+            [
+                "cdf",
+                "run",
+                "local.events",
+                "-vv",
+                "--color=always",
+                "--progress",
+                "never",
+                "--unicode",
+                "always",
+            ]
+            .map(OsString::from),
+        )
+        .unwrap();
+
+        assert_eq!(cli.terminal.color, PolicyMode::Always);
+        assert_eq!(cli.terminal.progress, PolicyMode::Never);
+        assert_eq!(cli.terminal.unicode, PolicyMode::Always);
+        assert_eq!(cli.terminal.verbosity, Verbosity::Verbose(2));
+    }
+
+    #[test]
+    fn cx1_parser_rejects_terminal_policy_conflicts_with_exact_corrections() {
+        let quiet_verbose =
+            Cli::parse(["cdf", "run", "local.events", "-q", "-v"].map(OsString::from)).unwrap_err();
+        assert_eq!(
+            quiet_verbose.message,
+            "-q/--quiet cannot be combined with -v/--verbose; choose one"
+        );
+
+        let invalid = Cli::parse(["cdf", "status", "--progress", "sometimes"].map(OsString::from))
+            .unwrap_err();
+        assert_eq!(
+            invalid.message,
+            "--progress must be one of auto, always, or never; try `--progress auto`"
+        );
+    }
+
+    #[test]
+    fn cx1_parser_preserves_policy_looking_sql_tokens_after_option_terminator() {
+        let cli = Cli::parse(
+            [
+                "cdf",
+                "sql",
+                "--",
+                "--color",
+                "--progress",
+                "--unicode",
+                "-q",
+                "-vv",
+            ]
+            .map(OsString::from),
+        )
+        .unwrap();
+
+        let Command::Sql(sql) = cli.command else {
+            panic!("expected sql command");
+        };
+        assert_eq!(sql.query, "--color --progress --unicode -q -vv");
+        assert_eq!(cli.terminal, TerminalPolicy::default());
+    }
+
+    #[test]
+    fn cx1_clap_authority_owns_terminal_values_and_conflicts() {
+        let invalid = cli_command()
+            .try_get_matches_from(["cdf", "--progress", "sometimes", "status"])
+            .unwrap_err();
+        assert_eq!(invalid.kind(), ErrorKind::InvalidValue);
+        let invalid_text = invalid.to_string();
+        for value in ["auto", "always", "never"] {
+            assert!(
+                invalid_text.contains(value),
+                "missing {value}: {invalid_text}"
+            );
+        }
+
+        let conflict = cli_command()
+            .try_get_matches_from(["cdf", "-q", "-v", "status"])
+            .unwrap_err();
+        assert_eq!(conflict.kind(), ErrorKind::ArgumentConflict);
+
+        let removed_alias = cli_command()
+            .try_get_matches_from(["cdf", "--no-color", "status"])
+            .unwrap_err();
+        assert_eq!(removed_alias.kind(), ErrorKind::UnknownArgument);
+
+        for removed in [
+            vec!["cdf", "plan", "--resource", "local.events"],
+            vec!["cdf", "plan", "local.events", "--target", "events"],
+            vec!["cdf", "plan", "local.events", "--projection", "id"],
+            vec!["cdf", "run", "--resource", "local.events"],
+            vec!["cdf", "run", "local.events", "--pipeline", "pipeline"],
+            vec!["cdf", "run", "local.events", "--target", "events"],
+            vec!["cdf", "run", "local.events", "--package-id", "package"],
+            vec![
+                "cdf",
+                "run",
+                "local.events",
+                "--checkpoint-id",
+                "checkpoint",
+            ],
+            vec!["cdf", "schema", "show", "--resource", "local.events"],
+            vec!["cdf", "contract", "show", "--trust", "governed"],
+            vec!["cdf", "resume", "--run-id", "run"],
+            vec![
+                "cdf",
+                "state",
+                "rewind",
+                "local.events",
+                "--target-checkpoint",
+                "checkpoint",
+            ],
+            vec![
+                "cdf",
+                "state",
+                "rewind",
+                "local.events",
+                "--to",
+                "checkpoint",
+                "--marker-checkpoint",
+                "marker",
+            ],
+        ] {
+            let error = cli_command()
+                .try_get_matches_from(removed.clone())
+                .unwrap_err();
+            assert_eq!(
+                error.kind(),
+                ErrorKind::UnknownArgument,
+                "removed syntax unexpectedly survived: {removed:?}: {error}"
+            );
+        }
+
+        let removed_noun = cli_command()
+            .try_get_matches_from(["cdf", "inspect", "destination"])
+            .unwrap_err();
+        assert_eq!(removed_noun.kind(), ErrorKind::InvalidSubcommand);
+    }
 
     #[test]
     fn global_runtime_budgets_accept_binary_suffixes() {
