@@ -1038,6 +1038,7 @@ dependencies = [
  "arrow-array 59.1.0",
  "arrow-csv",
  "arrow-schema 59.1.0",
+ "bytes",
  "cdf-kernel",
  "cdf-memory",
  "cdf-runtime",

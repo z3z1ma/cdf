@@ -1,6 +1,6 @@
 Status: active
 Created: 2026-07-11
-Updated: 2026-07-17
+Updated: 2026-07-18
 Parent: .10x/tickets/2026-07-10-p3-ws-g-remote-io-overlap.md
 Depends-On: .10x/tickets/done/2026-07-11-p3-g3-codec-download-decode-overlap.md, .10x/tickets/done/2026-07-11-p3-d2-duckdb-arrow-bulk.md, .10x/tickets/done/2026-07-11-p3-c4-jobs-invariance-scaling-matrix.md
 
@@ -181,6 +181,9 @@ Depends on G1-G3; DuckDB bulk and deterministic scaling closeout are complete.
   - Phase telemetry from `cdf inspect run run-afbbbbbc09be8eff9ef19fe0db1886e3 --json`: `source_read=49.78s` aggregate over 36 growing-spool operations / 693 MB source bytes, `decode=31.64s` aggregate over concurrent partitions, `segment_encode=5.85s`, `persist_hash=2.10s`, `destination_ingress=15.67s`, and `package_execution=18.69s`. Because phase durations overlap and current wall is 21.67s, the remaining miss is dominated by DuckDB/package hot-path cost rather than the former serialized remote range-read pathology.
   - DuckDB sequence/default row-key experiment was rejected before code: DuckDB can fill `_cdf_row_key` from `DEFAULT nextval(...)`, but persistent sequences burn values across transaction rollback, and replacing defaults leaves stale sequence dependencies that cannot be dropped cleanly. This is not a safe default replacement for CDF's exact compact provenance allocator.
   - DuckDB appender chunk-shape knob draft was rejected and fully reverted. The draft added off-by-default `CDF_DUCKDB_APPEND_BATCH_ROWS`; local 12-file TLC with `CDF_DUCKDB_APPEND_BATCH_ROWS=65536` completed `/private/tmp/cdf-g4-duck-chunk-local.e1za16` at `real 17.12`, `user 22.27`, `sys 3.72`, which does not beat the rebuilt local floor. No code or knob was retained.
+- Dedicated benchmark-host promotion boundary:
+  - Future G4 promotion evidence must move to the dedicated FQ12 EC2 benchmark-host protocol recorded in `.10x/specs/performance-lab-and-envelope.md` and owned by `.10x/tickets/2026-07-18-p3-l6-ec2-benchmark-host.md`.
+  - The laptop HF/local timings in this ticket remain valid triage and rejection evidence: they identified real timeout regressions, restored the local floor, and rejected risky defaults. They are no longer sufficient by themselves to close the TLC envelope or promote a default-changing performance patch.
 
 ## Review
 

@@ -526,8 +526,12 @@ fn infer_add_format(file_name: &str) -> Result<&'static str> {
         Ok("ndjson")
     } else if stem.ends_with(".json") {
         Ok("json")
-    } else if stem.ends_with(".csv") || stem.ends_with(".tsv") {
+    } else if stem.ends_with(".csv") {
         Ok("csv")
+    } else if stem.ends_with(".tsv") || stem.ends_with(".tab") {
+        Ok("tsv")
+    } else if stem.ends_with(".psv") {
+        Ok("psv")
     } else if stem.ends_with(".arrow") || stem.ends_with(".ipc") || stem.ends_with(".feather") {
         Ok("arrow_ipc")
     } else {
@@ -1793,6 +1797,14 @@ mod tests {
 
         assert_eq!(recompiled.resolved_format().unwrap().as_str(), "parquet");
         assert!(!recompiled.format_declared);
+    }
+
+    #[test]
+    fn add_infers_registered_delimited_format_ids_by_extension() {
+        assert_eq!(infer_add_format("events.csv").unwrap(), "csv");
+        assert_eq!(infer_add_format("events.tsv").unwrap(), "tsv");
+        assert_eq!(infer_add_format("events.tab.gz").unwrap(), "tsv");
+        assert_eq!(infer_add_format("events.psv.zst").unwrap(), "psv");
     }
 
     #[test]

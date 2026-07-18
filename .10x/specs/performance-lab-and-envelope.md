@@ -1,6 +1,6 @@
 Status: active
 Created: 2026-07-10
-Updated: 2026-07-11
+Updated: 2026-07-18
 
 # Performance lab and terabyte-scale envelope
 
@@ -37,6 +37,8 @@ Criterion microbenchmarks SHOULD isolate validation kernels, hashing, Arrow/fore
 Every machine report MUST be schema-versioned and carry a comparability key containing dataset/workload identity, timed-region policy, CDF revision, dependency/reference versions, host class, OS/toolchain, and warm/cold mode. Cell status MUST be one of observed, failed, timed out, unavailable, or inconclusive; non-observed cells MUST remain visible. Host fingerprints MUST omit usernames, hostnames, paths, and stable machine identifiers not required for comparison.
 
 Host facts and measurement methods MUST compose through `.10x/decisions/performance-lab-host-capability-boundary.md`. Workload runners MUST NOT contain platform command branches. Effective container quotas/affinity override advertised host capacity for comparison.
+
+P3 acceptance and closeout performance evidence SHOULD run on a dedicated benchmark host rather than a developer laptop. The ratified production-like path is one reusable AWS EC2 instance in the FQ12 environment, provisioned through the AWS CLI PowerUser profile for a tranche of benchmark work, then torn down when that tranche is complete. The repo and benchmark CDF workspace are synchronized to the host while honoring `.gitignore`; the CDF binary is built on the host with release-profile optimizations and the same dependency lockfile used by the commit under test. Reports MUST record the instance type, AMI/kernel, storage/network class, CPU topology, build profile, CDF revision, workspace revision/content identity, setup/timed-region boundary, and teardown status. Laptop measurements MAY remain quick smoke or regression-hunt evidence, but they MUST be labeled as host-contaminated and cannot by themselves close P3 envelope targets when dedicated-host evidence is required.
 
 ## Baselines and regressions
 

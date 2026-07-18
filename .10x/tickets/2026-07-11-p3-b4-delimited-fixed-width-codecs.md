@@ -1,6 +1,6 @@
-Status: open
+Status: active
 Created: 2026-07-11
-Updated: 2026-07-12
+Updated: 2026-07-18
 Parent: .10x/tickets/2026-07-10-p3-ws-b-format-decode-engines.md
 Depends-On: .10x/tickets/done/2026-07-11-p3-b1-streaming-byte-transforms.md, .10x/tickets/done/2026-07-11-p0-fx1-native-format-extension-boundary.md, .10x/tickets/done/2026-07-10-p3-ws-l5-preoptimization-baseline.md
 
@@ -38,3 +38,21 @@ Depends on transforms, FX1, and L5.
 
 - 2026-07-12: Landed the prerequisite physical-schema authority needed by row codecs. Decode requests now receive the exact planned Arrow schema from the effective schema catalog rather than only its hash, so CSV/fixed-width execution can decode against pinned discovery without runtime reinference. Parquet/Arrow IPC/file-source tests and strict affected-cone Clippy pass. Evidence: `.10x/evidence/2026-07-12-fx1-physical-decode-schema-authority.md`.
 - 2026-07-12: Added `cdf-format-delimited::CsvFormatDriver` using Arrow CSV's push decoder over accounted chunks. Schema inference retains bounded source chunks through the shared neutral `AccountedChunksReader`; execution streams batches with pre-admitted output leases. CLI/project/source registries compose it, local discover/run passes, and the source CSV fallback now fails closed. The ticket remains open for TSV/PSV/custom options, fixed-width, multiline/oversized-record RSS and fuzz proof, parallel safe-boundary chunking, and the ≥0.6x/400 MB/s envelope.
+- 2026-07-18: Closed the registered delimited-dialect slice without extending source/runtime enum wiring. `cdf-format-delimited` now has one `DelimitedFormatDriver` implementation with descriptors for `csv`, `tsv`, `psv`, and explicit `delimited`; `CsvFormatDriver` remains a type alias for existing call sites. Dialect options (`delimiter`, `header`, `header_validation`, `quote`, `escape`, `terminator`, `comment`, `truncated_rows`) are canonicalized by the format driver and compiled into the decode session once, so execution never re-guesses dialect. CLI, source-files test, project test, and benchmark registries register the same dialect surface. `cdf add` extension inference now maps `.tsv`/`.tab` to `tsv` and `.psv` to `psv` instead of silently compiling TSV as CSV. B4 remains active for fixed-width, chunk-parallel CSV, RSS/fuzz proof, and envelope/reference closure.
+
+## Evidence
+
+- 2026-07-18 delimited-dialect slice:
+  - `CARGO_BUILD_JOBS=12 cargo test -p cdf-format-delimited --lib --locked -j 12` — passed, 3 passed. Proves canonical options, custom-delimiter requirement, empty schema-bearing CSV batch behavior, and chunked TSV streaming decode.
+  - `CARGO_BUILD_JOBS=12 cargo test -p cdf-source-files add_infers_registered_delimited_format_ids_by_extension --lib --locked -j 12` — passed, 1 passed. Proves add-time inference maps `.csv`, `.tsv`/`.tab`, and `.psv` to registered format ids.
+  - `CARGO_BUILD_JOBS=12 cargo check -p cdf-source-files -p cdf-cli -p cdf-project -p cdf-benchmarks --locked -j 12` — passed. Proves the product, project/test, and benchmark registries compile with the expanded delimited surface.
+  - `CARGO_BUILD_JOBS=12 cargo clippy -p cdf-format-delimited -p cdf-source-files -p cdf-cli -p cdf-project -p cdf-benchmarks --all-targets --locked -j 12 -- -D warnings` — passed. Proves strict lint cleanliness for the affected cone.
+  - Limit: this slice does not claim fixed-width support, safe quote-aware chunk-parallel splitting, malformed corpus/fuzz proof, or the CSV throughput envelope; no Parquet/DuckDB hot-path default changed, so no TLC timing gate is claimed.
+
+## Review
+
+Pass for the delimited-dialect slice. The change stays behind the native format-driver boundary, does not add source/destination-specific orchestration branches, does not change CSV's default canonical options or streaming decode path, and fixes a half-wired `.tsv` inference smell. The ticket remains active for the larger B4 acceptance criteria.
+
+## Retrospective
+
+Extension inference is part of the public source experience, so it must agree with the registry. A format id like `csv` can share implementation with `tsv` and `psv`, but the compiled descriptor should still name the actual dialect so package identity and diagnostics say what the operator meant.

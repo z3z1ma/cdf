@@ -107,6 +107,15 @@ pub(crate) fn builtin_format_registry() -> Result<Arc<FormatRegistry>> {
         cdf_format_delimited::CsvFormatDriver::new()?,
     ))?;
     registry.register(std::sync::Arc::new(
+        cdf_format_delimited::DelimitedFormatDriver::tsv()?,
+    ))?;
+    registry.register(std::sync::Arc::new(
+        cdf_format_delimited::DelimitedFormatDriver::psv()?,
+    ))?;
+    registry.register(std::sync::Arc::new(
+        cdf_format_delimited::DelimitedFormatDriver::custom()?,
+    ))?;
+    registry.register(std::sync::Arc::new(
         cdf_format_parquet::ParquetFormatDriver::new()?,
     ))?;
     registry.register(std::sync::Arc::new(

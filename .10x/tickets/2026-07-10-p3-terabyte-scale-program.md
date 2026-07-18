@@ -1,6 +1,6 @@
 Status: open
 Created: 2026-07-10
-Updated: 2026-07-15
+Updated: 2026-07-18
 Parent: .10x/tickets/2026-07-05-implement-cdf-system.md
 Depends-On: .10x/tickets/done/2026-07-08-p2-data-onramp-program.md
 
@@ -51,6 +51,7 @@ This parent is an aggregate plan. Workstream records own sequencing and integrat
 - `.10x/tickets/2026-07-11-p3-ws-v-vectorized-validation.md`
 - `.10x/tickets/2026-07-12-p3-ws-j-datafusion-currency-bridges.md`
 - `.10x/tickets/2026-07-13-p0-fixed-schema-discovery-stream-admission.md`
+- `.10x/tickets/2026-07-18-p3-l6-ec2-benchmark-host.md`
 
 ## Sequencing
 
@@ -97,6 +98,7 @@ P3 does not implement a distributed scheduler, remote worker leases, resident st
 - 2026-07-14: Closed WS-D after D7 replaced the superseded per-segment staged-ingress API with one generic bounded acknowledgement stream and completed the reopened wide-string investigation. The exact 2.205 GB package path measures 2.017 seconds; the only public Arrow alternative is 41% slower and unbounded by upstream contract, while TLC remains 9.51M rows/s. All destination-specific behavior remains behind adapter ingress capabilities. Active backlog moved from 89 to 87 in this closure audit; C2 is the next high-impact executable frontier because it unlocks C3/C4, G4, V3, and F4.
 - 2026-07-15: Closed C4 after the current generic staged path completed the 8.59 GB FineWeb workload in 17.56 seconds at its measured jobs=2 knee, down from the former 40.67-second jobs=4 path. Jobs invariance now covers complete logical receipts across file, REST, SQL, DuckDB, Parquet, and live PostgreSQL archetypes, while generic task/permit/frontier reports make scheduler overhead and speculative waste observable without adapter-specific branches. Active tickets fell from 85 to 84 and done tickets rose to 301; C4 no longer blocks F4, G4, or V3.
 - 2026-07-16: Closed B5 with JSON/NDJSON at the codec envelope: REST selector+tape decode is 3.10x the deleted DOM path and 450.4 MiB/s aggregate, while full-content inference is 1.02x raw Arrow and reuses the same retained source transfer. B5's closure makes G3 dependency-ready. Its attempted macro run exposed a separate L3 isolated-child regression that also fails raw Arrow while exact workers succeed; `.10x/tickets/2026-07-16-p3-l3r-isolated-benchmark-child-regression.md` now owns that defect. Active count remains 80 because one completed child and one real discovered regression offset; done count rises to 306.
+- 2026-07-18: Ratified dedicated-host benchmark evidence for P3 performance promotion. Developer-laptop timings remain useful for smoke, triage, and rejecting risky defaults, but P3 envelope closeout/default promotion now uses a reusable AWS EC2 benchmark host in the FQ12 environment, with optimized release builds performed on-host from a synchronized repo/workspace and explicit teardown after each tranche. The governing protocol is in `.10x/specs/performance-lab-and-envelope.md`; `.10x/tickets/2026-07-18-p3-l6-ec2-benchmark-host.md` owns the provisioning/sync/run/teardown procedure.
 
 ## Blockers
 

@@ -320,6 +320,21 @@ fn test_file_runtime_dependencies() -> FileRuntimeDependencies {
         .unwrap();
     formats
         .register(Arc::new(
+            cdf_format_delimited::DelimitedFormatDriver::tsv().unwrap(),
+        ))
+        .unwrap();
+    formats
+        .register(Arc::new(
+            cdf_format_delimited::DelimitedFormatDriver::psv().unwrap(),
+        ))
+        .unwrap();
+    formats
+        .register(Arc::new(
+            cdf_format_delimited::DelimitedFormatDriver::custom().unwrap(),
+        ))
+        .unwrap();
+    formats
+        .register(Arc::new(
             cdf_format_json::NdjsonFormatDriver::new().unwrap(),
         ))
         .unwrap();

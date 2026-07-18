@@ -144,6 +144,21 @@ fn test_format_registry() -> Arc<cdf_runtime::FormatRegistry> {
         .unwrap();
     registry
         .register(Arc::new(
+            cdf_format_delimited::DelimitedFormatDriver::tsv().unwrap(),
+        ))
+        .unwrap();
+    registry
+        .register(Arc::new(
+            cdf_format_delimited::DelimitedFormatDriver::psv().unwrap(),
+        ))
+        .unwrap();
+    registry
+        .register(Arc::new(
+            cdf_format_delimited::DelimitedFormatDriver::custom().unwrap(),
+        ))
+        .unwrap();
+    registry
+        .register(Arc::new(
             cdf_format_parquet::ParquetFormatDriver::new().unwrap(),
         ))
         .unwrap();
