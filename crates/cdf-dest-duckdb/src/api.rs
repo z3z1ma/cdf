@@ -74,10 +74,17 @@ struct DuckDbStreamScanWriter {
     raw: crate::raw::RawDuckDbConnection,
     _lock: WriterLock,
     write_target: TargetRef,
+    materialization: DuckDbStreamScanMaterialization,
     first_row_key: Option<u64>,
     next_row_key: Option<u64>,
     rows_received: u64,
     duckdb_version: String,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum DuckDbStreamScanMaterialization {
+    CreateTable,
+    InsertIntoExisting,
 }
 
 #[derive(Debug)]
@@ -381,6 +388,9 @@ impl DuckDbDestination {
         let lock = self.acquire_writer_lock()?;
         let planning_conn = self.open_connection()?;
         ensure_mirror_tables(&planning_conn)?;
+        let existing = existing_columns(&planning_conn, &target)?;
+        let direct_create =
+            existing.is_empty() || request.binding().disposition == WriteDisposition::Replace;
         let table_plan = plan_table(
             &planning_conn,
             target,
@@ -405,8 +415,23 @@ impl DuckDbDestination {
         )?;
         raw.execute("BEGIN TRANSACTION")?;
         ensure_mirror_tables_raw(&mut raw)?;
-        for ddl in &table_plan.ddl {
-            raw.execute(ddl)?;
+        if direct_create {
+            if table_plan.target.schema != MAIN_SCHEMA {
+                raw.execute(format!(
+                    "CREATE SCHEMA IF NOT EXISTS {}",
+                    quote_ident(&table_plan.target.schema)
+                ))?;
+            }
+            if request.binding().disposition == WriteDisposition::Replace {
+                raw.execute(format!(
+                    "DROP TABLE IF EXISTS {}",
+                    table_plan.target.sql_name()
+                ))?;
+            }
+        } else {
+            for ddl in &table_plan.ddl {
+                raw.execute(ddl)?;
+            }
         }
         if request.binding().disposition == WriteDisposition::Replace && table_plan.ddl.is_empty() {
             return Err(CdfError::internal(
@@ -422,6 +447,11 @@ impl DuckDbDestination {
                 raw,
                 _lock: lock,
                 write_target: table_plan.target,
+                materialization: if direct_create {
+                    DuckDbStreamScanMaterialization::CreateTable
+                } else {
+                    DuckDbStreamScanMaterialization::InsertIntoExisting
+                },
                 first_row_key: Some(first_row_key),
                 next_row_key: Some(first_row_key),
                 rows_received: 0,
@@ -934,11 +964,19 @@ impl DuckDbStagedIngressSession {
             .raw
             .register_arrow_stream_scan(&view_name, arrow_stream.stream_mut())?;
         self.request.mutation_guard().assert_current()?;
-        writer.raw.execute(format!(
-            "INSERT INTO {} SELECT * FROM {}",
-            writer.write_target.sql_name(),
-            quote_ident(&view_name)
-        ))?;
+        let materialize_sql = match writer.materialization {
+            DuckDbStreamScanMaterialization::CreateTable => format!(
+                "CREATE TABLE {} AS SELECT * FROM {}",
+                writer.write_target.sql_name(),
+                quote_ident(&view_name)
+            ),
+            DuckDbStreamScanMaterialization::InsertIntoExisting => format!(
+                "INSERT INTO {} SELECT * FROM {}",
+                writer.write_target.sql_name(),
+                quote_ident(&view_name)
+            ),
+        };
+        writer.raw.execute(materialize_sql)?;
         let outcome = arrow_stream.outcome()?;
         writer.next_row_key = Some(outcome.next_row_key);
         writer.rows_received = writer
