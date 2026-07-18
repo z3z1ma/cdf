@@ -49,6 +49,7 @@ None.
 
 - 2026-07-18: `bash -n tools/p3-ec2-benchmark-host.sh && tools/p3-ec2-benchmark-host.sh --dry-run preflight` — passed shell syntax and dry-run command-construction validation without contacting the host.
 - 2026-07-18: With local dirty changes present, `tools/p3-ec2-benchmark-host.sh preflight` failed as expected: remote revision `d4140bf71ce2315960a160256af64245528b1884` did not match local `bb5f9f7c9c253ab510a83d98c779dd32d2224f62+dirty`.
+- 2026-07-18: After committing the helper change, `tools/p3-ec2-benchmark-host.sh sync-repo && timeout 180s tools/p3-ec2-benchmark-host.sh build && tools/p3-ec2-benchmark-host.sh preflight` passed at clean synced/built revision `a5042ca8b781e96f3812f16677cb1e2e74929a7e` with `revision_drift=none`, tuned gp3 storage, host class `host-class-95da083e15eebd1c`, workspace present, and `198892359680` free bytes.
 
 ## Review
 
