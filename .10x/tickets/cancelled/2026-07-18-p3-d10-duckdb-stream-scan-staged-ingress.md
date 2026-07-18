@@ -1,4 +1,4 @@
-Status: active
+Status: cancelled
 Created: 2026-07-18
 Updated: 2026-07-18
 Parent: .10x/tickets/2026-07-10-p3-ws-d-destination-bulk-paths.md
@@ -51,7 +51,7 @@ Implement a DuckDB-crate-owned staged-ingress bulk path that materializes eligib
 
 ## Blockers
 
-EC2 promotion evidence is still required before retaining stream-scan as the default path. Local correctness is green; full TLC local/HF benchmark cells are pending.
+None. Cancelled by EC2 promotion evidence: the product stream-scan path timed out at full-year and one-partition scale, and the runtime now advertises only the measured appender path.
 
 ## Evidence
 
@@ -61,11 +61,14 @@ EC2 promotion evidence is still required before retaining stream-scan as the def
 - `.10x/evidence/.storage/2026-07-18-p3-d10-ec2-stream-scan-ctas-local.json` — failed CTAS candidate measurement at `6cae03cdd50770b1e7bde358203d183ad145ea4a`; status records `CDF command exceeded worker timeout of 119000ms`.
 - `.10x/evidence/.storage/2026-07-18-p3-d10-ec2-stream-scan-onepart.json` — failed one-partition stream-scan smoke at `6cae03cdd50770b1e7bde358203d183ad145ea4a`; status records `CDF command exceeded worker timeout of 59000ms`.
 - After disabling stream-scan exposure again: `cargo fmt --check && CARGO_BUILD_JOBS=12 cargo test -p cdf-dest-duckdb --locked -j 12` — passed. Covers the measured appender default and pinned raw ABI smoke; no runtime descriptor currently advertises the failed stream-scan path.
+- `.10x/tickets/2026-07-18-p3-l7-ec2-benchmark-tranche-lifecycle.md` records the clean host refresh at `8d9695a9cd5eefd49a86be0e1448ba4c84ea43ae` after the stream-scan disable/rejection patch and a subsequent cached marker refresh. Strict preflight passed on the dedicated EC2 host; the cancellation decision is based on host-labeled failed candidate measurements plus the retained appender-only default.
 
 ## Review
 
-Pending.
+Pass for cancellation. The ticket's own acceptance criterion required retaining the path only if EC2 evidence beat the current host-labeled local baseline without correctness regression. The attempted product path instead timed out at the worker guard for full-year local TLC and for a one-partition smoke. The implementation was made fail-closed by removing descriptor exposure and path selection; generic runtime remains destination-neutral and the measured appender path remains the only advertised DuckDB staged-ingress path. No critical follow-up is hidden inside this terminal ticket: G4 remains the active owner for the remaining DuckDB/package materialization envelope gap.
 
 ## Retrospective
 
-Pending.
+The synthetic DuckDB Arrow stream-scan reference was a useful falsification seed, not sufficient product proof. The production adapter added acknowledgement, schema/order validation, row-key construction, transaction/mirror writes, and durable segment-stream lifetimes; that whole shape did not inherit the synthetic reference's 5-second behavior. The durable rule is now stricter: destination bulk alternatives must be measured through the actual CDF staged-ingress contract before being exposed as runtime capabilities, and failed descriptors must be removed rather than left as knobs that look supported.
+
+The raw `duckdb_arrow_scan` ABI smoke can remain as destination-local research scaffolding while the code is still under active G4/DuckDB investigation, but it is not a product path. If future evidence revives stream-scan, open a fresh bounded ticket with a new product design and the EC2 host gate up front; do not reopen this failed attempt.

@@ -1,6 +1,6 @@
 Status: active
 Created: 2026-07-10
-Updated: 2026-07-15
+Updated: 2026-07-18
 Parent: .10x/tickets/2026-07-10-p3-terabyte-scale-program.md
 Depends-On: .10x/tickets/done/2026-07-10-p3-ws-l-performance-lab.md, .10x/tickets/2026-07-11-p0-destination-extension-boundary.md, .10x/tickets/done/2026-07-11-p3-a1-staged-ingress-final-binding.md, .10x/tickets/done/2026-07-07-duckdb-arrow-bulk-load-triage.md, .10x/tickets/done/2026-07-07-native-parquet-streaming-write-triage.md
 
@@ -22,7 +22,7 @@ Split by destination; no shared generic branch may name a concrete destination.
 - `.10x/tickets/done/2026-07-14-p3-d7-persistent-staged-ingress-stream.md`
 - `.10x/tickets/done/2026-07-14-p3-d8-parquet-staged-parallel-ingress.md`
 - `.10x/tickets/2026-07-15-p3-d9-content-reachability-authority.md`
-- `.10x/tickets/2026-07-18-p3-d10-duckdb-stream-scan-staged-ingress.md`
+- `.10x/tickets/cancelled/2026-07-18-p3-d10-duckdb-stream-scan-staged-ingress.md`
 
 ## Acceptance criteria
 
@@ -32,7 +32,7 @@ Split by destination; no shared generic branch may name a concrete destination.
 
 ## Blockers
 
-D8 is complete. D9 remains active shaping for the generic immutable-content claim/root/reclamation authority. D10 owns the DuckDB stream-scan staged-ingress accelerator exposed by G4 EC2 evidence. WS-D stays open until both the destination-neutral long-horizon storage guarantee and DuckDB envelope-critical materialization path close.
+D8 is complete. D9 remains active shaping for the generic immutable-content claim/root/reclamation authority. D10 is cancelled as a measured no-go: the attempted DuckDB stream-scan staged-ingress product path timed out under EC2 promotion evidence and is not exposed by runtime capabilities. WS-D stays open until the destination-neutral long-horizon storage guarantee and the DuckDB envelope-critical materialization gap close under a different retained design.
 
 ## Evidence
 
@@ -42,6 +42,7 @@ D8 is complete. D9 remains active shaping for the generic immutable-content clai
 - 2026-07-15: Reopened after C4 measured 33.069 seconds in Parquet finalized-package ingress despite the isolated writer running at 0.786 of its raw-write roofline. D8 owns enrollment in generic staged ingress and deletion of the superseded finalized path.
 - 2026-07-15: D8 closed after the current staged path reduced the complete 8.59 GB FineWeb command from 40.67 to 18.36 seconds, reached 0.779x the favorable same-data reference, bounded RSS at 1.463 GB, eliminated final-copy and legacy finalized ingress, and proved exact logical receipt/manifest identity at jobs 1/2/auto/4. D9 explicitly owns shared immutable-content reachability and keeps this parent open.
 - 2026-07-18: G4 EC2 evidence reopened DuckDB materialization as the dominant envelope owner. Lab-only DuckDB Arrow stream-scan with the existing `_cdf_row_key` column and bounded `threads=16`/`1GiB` DuckDB resource settings materialized 41.2M TLC-shaped rows in median `5.111650191s`, while current CDF local TLC-to-DuckDB remains `33.955522533s`. D10 owns turning that destination-crate-only signal into a retained staged-ingress path or recording a measured no-go.
+- 2026-07-18: D10 recorded the measured no-go. The production stream-scan staged-ingress attempt timed out at `119000ms` on full-year local TLC, the CTAS variant also timed out, and a one-partition smoke timed out at `59000ms`; after the rejection patch, DuckDB runtime capabilities again advertise only the measured appender path. G4 remains the active performance owner for the remaining DuckDB/package materialization envelope gap.
 
 ## Review
 
