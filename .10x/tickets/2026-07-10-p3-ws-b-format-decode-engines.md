@@ -18,7 +18,7 @@ The native closeout catalog is `.10x/specs/native-enterprise-format-catalog.md`;
 
 - `.10x/tickets/done/2026-07-11-p3-b1-streaming-byte-transforms.md`
 - `.10x/tickets/done/2026-07-11-p3-b2-parquet-codec.md`
-- `.10x/tickets/2026-07-11-p3-b3-arrow-ipc-codecs.md`
+- `.10x/tickets/done/2026-07-11-p3-b3-arrow-ipc-codecs.md`
 - `.10x/tickets/2026-07-11-p3-b4-delimited-fixed-width-codecs.md`
 - `.10x/tickets/done/2026-07-11-p3-b5-json-codecs.md`
 - `.10x/tickets/2026-07-11-p3-b6-avro-codecs.md`

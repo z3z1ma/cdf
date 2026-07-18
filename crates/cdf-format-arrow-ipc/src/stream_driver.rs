@@ -1,4 +1,8 @@
-use std::sync::Arc;
+use std::{
+    io::Read,
+    sync::{Arc, mpsc},
+    thread,
+};
 
 use arrow_array::RecordBatch;
 use arrow_ipc::reader::StreamReader;
@@ -84,7 +88,8 @@ impl FormatDriver for ArrowIpcStreamFormatDriver {
             } else {
                 FormatDetectionConfidence::None
             },
-            reason: "Arrow IPC stream continuation marker was inspected".to_owned(),
+            reason: "Arrow IPC stream framing is unsupported by the Arrow IPC file framing driver"
+                .to_owned(),
         })
     }
 
@@ -96,8 +101,12 @@ impl FormatDriver for ArrowIpcStreamFormatDriver {
         Box::pin(async move {
             self.canonical_options(request.options)?;
             request.cancellation.check()?;
-            let (reader, sampled_bytes) =
-                stream_reader(source.as_ref(), request.maximum_bytes, request.cancellation).await?;
+            let (reader, sampled_bytes) = bounded_discovery_stream_reader(
+                source.as_ref(),
+                request.maximum_bytes,
+                request.cancellation,
+            )
+            .await?;
             Ok(PhysicalSchemaObservation {
                 identity: source.identity().clone(),
                 arrow_schema: reader.schema(),
@@ -128,7 +137,7 @@ impl FormatDriver for ArrowIpcStreamFormatDriver {
                 unit_id: "ipc-stream".to_owned(),
                 ordinal: 0,
                 extent: Some(ByteExtent::new(0, size)?),
-                estimated_working_set_bytes: size.max(64 * 1024),
+                estimated_working_set_bytes: request.target_batch_bytes.max(64 * 1024),
                 independently_retryable: true,
             }];
             Ok(Arc::new(ArrowIpcStreamDecodeSession { source, units })
@@ -157,9 +166,10 @@ impl FormatDecodeSession for ArrowIpcStreamDecodeSession {
             let maximum_bytes = self.source.identity().size_bytes.ok_or_else(|| {
                 CdfError::contract("bounded Arrow IPC stream requires a known payload length")
             })?;
-            let (reader, _) = stream_reader(
+            let reader = streaming_reader(
                 self.source.as_ref(),
                 maximum_bytes,
+                request.target_batch_bytes.max(1),
                 request.cancellation.clone(),
             )
             .await?;
@@ -175,17 +185,11 @@ impl FormatDecodeSession for ArrowIpcStreamDecodeSession {
                     )));
                 }
             }
-            let reservation_bytes = request
-                .target_batch_bytes
-                .max(request.unit.estimated_working_set_bytes);
-            let output_lease = reserve_output(&request, reservation_bytes).await?;
             let state = DecodeState {
                 reader,
                 physical_schema,
                 observed_schema_hash: actual_hash,
                 request,
-                reservation_bytes,
-                output_lease: Some(output_lease),
                 sequence: 0,
                 finished: false,
             };
@@ -195,12 +199,10 @@ impl FormatDecodeSession for ArrowIpcStreamDecodeSession {
 }
 
 struct DecodeState {
-    reader: StreamReader<AccountedChunksReader>,
+    reader: StreamReader<BlockingAccountedByteStreamReader>,
     physical_schema: SchemaRef,
     observed_schema_hash: cdf_kernel::SchemaHash,
     request: PhysicalDecodeRequest,
-    reservation_bytes: u64,
-    output_lease: Option<MemoryLease>,
     sequence: u64,
     finished: bool,
 }
@@ -236,14 +238,15 @@ async fn decode_next(
         record_batch,
     )?;
     batch.header.source_position = state.request.source_position.clone();
-    let lease = state
-        .output_lease
-        .take()
-        .ok_or_else(|| CdfError::internal("Arrow IPC stream output lease missing"))?;
+    let retained = cdf_memory::record_batch_retained_bytes(
+        batch
+            .record_batch()
+            .ok_or_else(|| CdfError::data("Arrow IPC stream driver emitted a non-Arrow batch"))?,
+    )?
+    .checked_add(batch.header.pre_contract_evidence_retained_bytes()?)
+    .ok_or_else(|| CdfError::data("Arrow IPC stream batch retained bytes overflow"))?;
+    let lease = reserve_output(&state.request, retained.max(1)).await?;
     let physical = AccountedPhysicalBatch::new(batch, lease)?;
-    if !state.finished {
-        state.output_lease = Some(reserve_output(&state.request, state.reservation_bytes).await?);
-    }
     Ok(Some((physical, state)))
 }
 
@@ -259,7 +262,7 @@ async fn reserve_output(request: &PhysicalDecodeRequest, bytes: u64) -> Result<M
     .await
 }
 
-async fn stream_reader(
+async fn bounded_discovery_stream_reader(
     source: &dyn ByteSource,
     maximum_bytes: u64,
     cancellation: cdf_runtime::RunCancellation,
@@ -271,7 +274,7 @@ async fn stream_reader(
     }
     let mut input: AccountedByteStream = source
         .open_sequential(SequentialReadRequest {
-            preferred_chunk_bytes: maximum_bytes.min(4 * 1024 * 1024),
+            preferred_chunk_bytes: maximum_bytes,
             cancellation,
         })
         .await?;
@@ -293,6 +296,111 @@ async fn stream_reader(
     let reader = AccountedChunksReader::new(chunks);
     let reader = StreamReader::try_new(reader, None).map_err(ipc_error)?;
     Ok((reader, bytes))
+}
+
+async fn streaming_reader(
+    source: &dyn ByteSource,
+    maximum_bytes: u64,
+    preferred_chunk_bytes: u64,
+    cancellation: cdf_runtime::RunCancellation,
+) -> Result<StreamReader<BlockingAccountedByteStreamReader>> {
+    if maximum_bytes == 0 {
+        return Err(CdfError::contract(
+            "Arrow IPC stream read requires a nonzero byte bound",
+        ));
+    }
+    let mut input: AccountedByteStream = source
+        .open_sequential(SequentialReadRequest {
+            preferred_chunk_bytes,
+            cancellation,
+        })
+        .await?;
+    let (sender, receiver) = mpsc::sync_channel(1);
+    thread::Builder::new()
+        .name("cdf-arrow-ipc-stream-reader".to_owned())
+        .spawn(move || {
+            loop {
+                let message = futures_executor::block_on(input.try_next());
+                let terminal = !matches!(message, Ok(Some(_)));
+                if sender.send(message).is_err() || terminal {
+                    break;
+                }
+            }
+        })
+        .map_err(|error| {
+            CdfError::internal(format!("spawn Arrow IPC stream reader thread: {error}"))
+        })?;
+    let reader = BlockingAccountedByteStreamReader {
+        receiver,
+        current: None,
+        offset: 0,
+        consumed_bytes: 0,
+        maximum_bytes,
+    };
+    StreamReader::try_new(reader, None).map_err(ipc_error)
+}
+
+struct BlockingAccountedByteStreamReader {
+    receiver: mpsc::Receiver<Result<Option<cdf_memory::AccountedBytes>>>,
+    current: Option<cdf_memory::AccountedBytes>,
+    offset: usize,
+    consumed_bytes: u64,
+    maximum_bytes: u64,
+}
+
+impl BlockingAccountedByteStreamReader {
+    fn refill(&mut self) -> std::io::Result<bool> {
+        while self
+            .current
+            .as_ref()
+            .is_none_or(|chunk| self.offset == chunk.payload().len())
+        {
+            self.current = None;
+            self.offset = 0;
+            let chunk = self
+                .receiver
+                .recv()
+                .map_err(|_| std::io::Error::other("Arrow IPC stream reader stopped"))?
+                .map_err(|error| std::io::Error::other(error.message))?;
+            let Some(chunk) = chunk else {
+                return Ok(false);
+            };
+            let length = u64::try_from(chunk.payload().len())
+                .map_err(|_| std::io::Error::other("Arrow IPC stream chunk length exceeds u64"))?;
+            self.consumed_bytes = self
+                .consumed_bytes
+                .checked_add(length)
+                .ok_or_else(|| std::io::Error::other("Arrow IPC stream byte count overflowed"))?;
+            if self.consumed_bytes > self.maximum_bytes {
+                return Err(std::io::Error::other(format!(
+                    "Arrow IPC stream exceeds its {}-byte bound",
+                    self.maximum_bytes
+                )));
+            }
+            self.current = Some(chunk);
+        }
+        Ok(true)
+    }
+}
+
+impl Read for BlockingAccountedByteStreamReader {
+    fn read(&mut self, output: &mut [u8]) -> std::io::Result<usize> {
+        if output.is_empty() {
+            return Ok(0);
+        }
+        if !self.refill()? {
+            return Ok(0);
+        }
+        let chunk = self
+            .current
+            .as_ref()
+            .ok_or_else(|| std::io::Error::other("Arrow IPC stream reader lost its chunk"))?;
+        let available = &chunk.payload()[self.offset..];
+        let copied = available.len().min(output.len());
+        output[..copied].copy_from_slice(&available[..copied]);
+        self.offset = self.offset.saturating_add(copied);
+        Ok(copied)
+    }
 }
 
 fn ipc_error(error: arrow_schema::ArrowError) -> CdfError {

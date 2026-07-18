@@ -2971,7 +2971,9 @@ fn arrow_ipc_discovery_supports_compression_multi_file_and_remote_without_writes
     assert!(
         truncated_result
             .stderr
-            .contains("file format confirmation failed")
+            .contains("Arrow file does not contain correct footer"),
+        "{}",
+        truncated_result.stderr
     );
     assert_no_schema_discovery_writes(&truncated);
 
@@ -3007,7 +3009,9 @@ fn arrow_ipc_discovery_supports_compression_multi_file_and_remote_without_writes
     assert!(
         stream_result
             .stderr
-            .contains("expected Arrow IPC file framing")
+            .contains("alternate format `arrow_ipc_stream`"),
+        "{}",
+        stream_result.stderr
     );
     assert!(
         stream_result
@@ -3166,7 +3170,7 @@ trust = "governed"
     assert_eq!(remote_result.exit_code, 0, "{}", remote_result.stderr);
     let remote_report = stderr_or_stdout_json(&remote_result.stdout);
     assert_eq!(
-        remote_report["result"]["snapshot_metadata"]["format"],
+        remote_report["result"]["source_identity"]["driver.format"],
         "arrow_ipc"
     );
     assert_eq!(

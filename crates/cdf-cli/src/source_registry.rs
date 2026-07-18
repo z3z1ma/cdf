@@ -101,6 +101,9 @@ pub(crate) fn builtin_format_registry() -> Result<Arc<FormatRegistry>> {
         cdf_format_arrow_ipc::ArrowIpcFileFormatDriver::new()?,
     ))?;
     registry.register(std::sync::Arc::new(
+        cdf_format_arrow_ipc::ArrowIpcStreamFormatDriver::new()?,
+    ))?;
+    registry.register(std::sync::Arc::new(
         cdf_format_delimited::CsvFormatDriver::new()?,
     ))?;
     registry.register(std::sync::Arc::new(

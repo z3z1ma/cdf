@@ -1559,11 +1559,45 @@ impl FormatRegistry {
         Ok(matched.and_then(|id| self.by_id.get(id).cloned()))
     }
 
+    pub fn detect_best_alternate(
+        &self,
+        probe: &FormatProbe,
+        excluded_id: &FormatId,
+    ) -> Result<Option<(FormatId, FormatDetection)>> {
+        let mut matched: Option<(FormatId, FormatDetection)> = None;
+        for (id, driver) in &self.by_id {
+            if id == excluded_id {
+                continue;
+            }
+            let detection = driver.detect(probe)?;
+            if detection.confidence == FormatDetectionConfidence::None {
+                continue;
+            }
+            let candidate_score = detection_confidence_score(detection.confidence);
+            let existing_score = matched
+                .as_ref()
+                .map(|(_, existing)| detection_confidence_score(existing.confidence))
+                .unwrap_or(0);
+            if candidate_score > existing_score {
+                matched = Some((id.clone(), detection));
+            }
+        }
+        Ok(matched)
+    }
+
     pub fn descriptors(&self) -> Vec<FormatDriverDescriptor> {
         self.by_id
             .values()
             .map(|driver| driver.descriptor().clone())
             .collect()
+    }
+}
+
+fn detection_confidence_score(confidence: FormatDetectionConfidence) -> u8 {
+    match confidence {
+        FormatDetectionConfidence::None => 0,
+        FormatDetectionConfidence::Weak => 1,
+        FormatDetectionConfidence::Strong => 2,
     }
 }
 

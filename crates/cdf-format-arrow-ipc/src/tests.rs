@@ -6,7 +6,10 @@ use std::{
 };
 
 use arrow_array::{Array, Float64Array, Int64Array, RecordBatch, StringArray};
-use arrow_ipc::{reader::FileReader, writer::FileWriter};
+use arrow_ipc::{
+    reader::FileReader,
+    writer::{FileWriter, StreamWriter},
+};
 use arrow_schema::{DataType, Field, Schema};
 use bytes::Bytes;
 use cdf_kernel::{PartitionId, ResourceId};
@@ -18,7 +21,7 @@ use cdf_runtime::{
     ByteSourceCapabilities, ContentIdentity, FormatDriver, GenerationStrength,
     PhysicalDecodeRequest, RunCancellation,
 };
-use futures_util::TryStreamExt;
+use futures_util::{TryStreamExt, stream};
 
 use super::*;
 
@@ -26,11 +29,29 @@ struct MemoryByteSource {
     identity: ContentIdentity,
     capabilities: ByteSourceCapabilities,
     bytes: Bytes,
+    chunk_bytes: Option<usize>,
     memory: Arc<dyn MemoryCoordinator>,
 }
 
 impl MemoryByteSource {
     fn new(bytes: Vec<u8>, memory: Arc<dyn MemoryCoordinator>) -> Arc<Self> {
+        Self::with_optional_chunk_bytes(bytes, memory, None)
+    }
+
+    fn with_chunk_bytes(
+        bytes: Vec<u8>,
+        memory: Arc<dyn MemoryCoordinator>,
+        chunk_bytes: usize,
+    ) -> Arc<Self> {
+        assert!(chunk_bytes > 0);
+        Self::with_optional_chunk_bytes(bytes, memory, Some(chunk_bytes))
+    }
+
+    fn with_optional_chunk_bytes(
+        bytes: Vec<u8>,
+        memory: Arc<dyn MemoryCoordinator>,
+        chunk_bytes: Option<usize>,
+    ) -> Arc<Self> {
         Arc::new(Self {
             identity: ContentIdentity {
                 stable_id: "memory://fixture.arrow".to_owned(),
@@ -49,17 +70,30 @@ impl MemoryByteSource {
                 maximum_chunk_bytes: 1024 * 1024,
             },
             bytes: Bytes::from(bytes),
+            chunk_bytes,
             memory,
         })
     }
 
-    fn accounted(&self, bytes: Bytes) -> Result<AccountedBytes> {
+    fn accounted_with(
+        memory: Arc<dyn MemoryCoordinator>,
+        bytes: Bytes,
+        consumer: impl Into<String>,
+    ) -> Result<AccountedBytes> {
         let request = ReservationRequest::new(
-            ConsumerKey::new("arrow-ipc-test-source", MemoryClass::Source)?,
+            ConsumerKey::new(consumer, MemoryClass::Source)?,
             bytes.len() as u64,
         )?;
-        let lease = reserve_blocking(Arc::clone(&self.memory), &request)?;
+        let lease = reserve_blocking(memory, &request)?;
         AccountedBytes::new(bytes, lease)
+    }
+
+    fn accounted(&self, bytes: Bytes) -> Result<AccountedBytes> {
+        Self::accounted_with(
+            Arc::clone(&self.memory),
+            bytes,
+            "arrow-ipc-test-source".to_owned(),
+        )
     }
 }
 
@@ -77,11 +111,26 @@ impl ByteSource for MemoryByteSource {
         _request: cdf_runtime::SequentialReadRequest,
     ) -> BoxFuture<'_, Result<cdf_runtime::AccountedByteStream>> {
         Box::pin(async move {
-            let bytes = self.accounted(self.bytes.clone())?;
-            Ok(
-                Box::pin(futures_util::stream::once(async move { Ok(bytes) }))
-                    as cdf_runtime::AccountedByteStream,
-            )
+            let bytes = self.bytes.clone();
+            let memory = Arc::clone(&self.memory);
+            let chunk_bytes = self.chunk_bytes.unwrap_or_else(|| bytes.len().max(1));
+            Ok(Box::pin(stream::unfold(0_usize, move |offset| {
+                let bytes = bytes.clone();
+                let memory = Arc::clone(&memory);
+                async move {
+                    if offset >= bytes.len() {
+                        return None;
+                    }
+                    let end = offset.saturating_add(chunk_bytes).min(bytes.len());
+                    let chunk = bytes.slice(offset..end);
+                    let accounted = MemoryByteSource::accounted_with(
+                        memory,
+                        chunk,
+                        format!("arrow-ipc-test-source-{offset}"),
+                    );
+                    Some((accounted, end))
+                }
+            })) as cdf_runtime::AccountedByteStream)
         })
     }
 
@@ -127,6 +176,40 @@ fn fixture() -> (Arc<Schema>, Vec<u8>) {
                     vec![
                         Arc::new(Int64Array::from(vec![offset + 1, offset + 2])),
                         Arc::new(StringArray::from(vec!["a", "b"])),
+                    ],
+                )
+                .unwrap(),
+            )
+            .unwrap();
+    }
+    writer.finish().unwrap();
+    drop(writer);
+    (schema, bytes)
+}
+
+fn stream_fixture(batches: usize, rows: usize) -> (Arc<Schema>, Vec<u8>) {
+    let schema = Arc::new(Schema::new_with_metadata(
+        vec![
+            Field::new("id", DataType::Int64, false),
+            Field::new("name", DataType::Utf8, false),
+        ],
+        HashMap::from([("owner".to_owned(), "cdf-test".to_owned())]),
+    ));
+    let mut bytes = Vec::new();
+    let mut writer = StreamWriter::try_new(&mut bytes, schema.as_ref()).unwrap();
+    for batch in 0..batches {
+        let start = i64::try_from(batch * rows).unwrap();
+        writer
+            .write(
+                &RecordBatch::try_new(
+                    Arc::clone(&schema),
+                    vec![
+                        Arc::new(Int64Array::from_iter_values(
+                            start..start + i64::try_from(rows).unwrap(),
+                        )),
+                        Arc::new(StringArray::from_iter_values(
+                            (0..rows).map(|row| format!("name-{batch}-{row}")),
+                        )),
                     ],
                 )
                 .unwrap(),
@@ -287,6 +370,79 @@ fn empty_arrow_ipc_file_emits_the_projected_physical_schema() {
     drop(batches);
     drop(session);
     assert_eq!(memory.snapshot().current_bytes, 0);
+}
+
+#[test]
+fn arrow_ipc_stream_driver_decodes_without_collecting_payload() {
+    let (schema, bytes) = stream_fixture(64, 1024);
+    let payload_bytes = bytes.len() as u64;
+    assert!(payload_bytes > 512 * 1024);
+    let memory: Arc<dyn MemoryCoordinator> =
+        Arc::new(DeterministicMemoryCoordinator::new(384 * 1024, BTreeMap::new()).unwrap());
+    let source: Arc<dyn ByteSource> =
+        MemoryByteSource::with_chunk_bytes(bytes, Arc::clone(&memory), 8 * 1024);
+    let driver = ArrowIpcStreamFormatDriver::new().unwrap();
+    let detection = driver
+        .detect(&FormatProbe {
+            extension: None,
+            mime_type: Some("application/vnd.apache.arrow.stream".to_owned()),
+            prefix: vec![0xff, 0xff, 0xff, 0xff, 0x00, 0x00, 0x00, 0x00],
+            suffix: Vec::new(),
+        })
+        .unwrap();
+    assert_eq!(detection.confidence, FormatDetectionConfidence::Weak);
+    let session = futures_executor::block_on(driver.prepare_decode(
+        source,
+        DecodePlanningRequest {
+            options: serde_json::json!({}),
+            projection: None,
+            predicates: Vec::new(),
+            target_batch_rows: 64 * 1024,
+            target_batch_bytes: 64 * 1024,
+            cancellation: RunCancellation::default(),
+        },
+    ))
+    .unwrap();
+    assert_eq!(session.units().len(), 1);
+    assert!(
+        session.units()[0].estimated_working_set_bytes < payload_bytes,
+        "stream decode unit must not reserve the whole IPC stream as working set"
+    );
+
+    let mut stream = futures_executor::block_on(session.decode(PhysicalDecodeRequest {
+        unit: session.units()[0].clone(),
+        resource_id: ResourceId::new("fixture.arrow_stream").unwrap(),
+        partition_id: PartitionId::new("stream-000001").unwrap(),
+        batch_id_prefix: "stream".to_owned(),
+        schema: cdf_runtime::DecodeSchemaPlan::verified_physical(schema),
+        source_position: None,
+        projection: None,
+        predicates: Vec::new(),
+        target_batch_rows: 64 * 1024,
+        target_batch_bytes: 64 * 1024,
+        memory: Arc::clone(&memory),
+        cancellation: RunCancellation::default(),
+    }))
+    .unwrap();
+    let mut decoded_batches = 0_u64;
+    let mut decoded_rows = 0_u64;
+    futures_executor::block_on(async {
+        while let Some(batch) = stream.try_next().await.unwrap() {
+            decoded_batches += 1;
+            decoded_rows += batch.batch().header.row_count;
+            drop(batch);
+        }
+    });
+    assert_eq!(decoded_batches, 64);
+    assert_eq!(decoded_rows, 64 * 1024);
+    drop(session);
+    let snapshot = memory.snapshot();
+    assert_eq!(snapshot.current_bytes, 0);
+    assert!(
+        snapshot.peak_bytes < payload_bytes,
+        "stream decode should not retain the entire payload; peak={} payload={payload_bytes}",
+        snapshot.peak_bytes
+    );
 }
 
 #[test]

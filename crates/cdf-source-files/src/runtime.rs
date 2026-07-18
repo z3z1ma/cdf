@@ -1,6 +1,7 @@
 use std::{
     collections::BTreeMap,
     fmt, fs,
+    io::Read,
     path::{Component, Path, PathBuf},
     sync::{Arc, Mutex},
     time::UNIX_EPOCH,
@@ -732,8 +733,19 @@ async fn confirm_registered_format(
             "<omitted>"
         };
         let magic = strong_magic_id.unwrap_or("none");
+        let selected_format_id = driver.descriptor().format_id.clone();
+        let alternate = formats
+            .detect_best_alternate(&probe, &selected_format_id)?
+            .map(|(id, detection)| {
+                format!(
+                    "; alternate format `{id}` detected with {} confidence: {}",
+                    format_detection_confidence_name(detection.confidence),
+                    detection.reason
+                )
+            })
+            .unwrap_or_default();
         return Err(CdfError::data(format!(
-            "file format confirmation failed for resource `{}`, file `{}`: declared format `{declared}`, inferred format `{selected_id}`, extension signal `{}`, magic bytes signal `{magic}`; use `format = \"{selected_id}\"` only when the bytes match, or correct the file/extension",
+            "file format confirmation failed for resource `{}`, file `{}`: declared format `{declared}`, inferred format `{selected_id}`, extension signal `{}`, magic bytes signal `{magic}`{alternate}; use `format = \"{selected_id}\"` only when the bytes match, or correct the file/extension",
             context.resource_id,
             context.location,
             extension.as_deref().unwrap_or("none")
@@ -4350,7 +4362,9 @@ fn resolved_file_match(
         ))
     })?;
     let path_text = path_text.replace(std::path::MAIN_SEPARATOR, "/");
-    let compression = resolve_local_compression(&path_text, &plan.compression, transforms)?;
+    let magic_signal = local_compression_magic_signal(&path, metadata.len(), transforms)?;
+    let compression =
+        resolve_local_compression(&path_text, &plan.compression, magic_signal, transforms)?;
     let (format, _) = resolve_local_format(resource_id, plan, &path_text, &compression, formats)?;
     let source_generation = local_source_generation(&path)?;
     Ok(ResolvedFileMatch {
@@ -4531,6 +4545,7 @@ fn diagnostic_location(location: &str) -> Result<String> {
 fn resolve_local_compression(
     path_text: &str,
     declared: &FileCompressionDeclaration,
+    magic_signal: CompressionSignal,
     transforms: &ByteTransformRegistry,
 ) -> Result<CompressionEvidence> {
     let extension_signal = compression_extension_signal(path_text, transforms);
@@ -4538,7 +4553,7 @@ fn resolve_local_compression(
         path_text,
         declared,
         extension_signal,
-        CompressionSignal::default(),
+        magic_signal,
         transforms,
     )
 }
@@ -4567,7 +4582,19 @@ fn resolve_compression_signals(
     transforms: &ByteTransformRegistry,
 ) -> Result<CompressionEvidence> {
     let transform_id = if declared.is_auto() {
-        extension_signal.transform_id().cloned()
+        match (extension_signal.transform_id(), magic_signal.transform_id()) {
+            (Some(extension), Some(magic)) if extension != magic => {
+                return Err(compression_signal_error(
+                    path_text,
+                    declared,
+                    &extension_signal,
+                    &magic_signal,
+                ));
+            }
+            (_, Some(magic)) => Some(magic.clone()),
+            (Some(extension), None) => Some(extension.clone()),
+            (None, None) => None,
+        }
     } else if declared.is_none() {
         if magic_signal.transform_id().is_some() {
             return Err(compression_signal_error(
@@ -4618,6 +4645,36 @@ fn compression_extension_signal(
             .by_extension(extension)
             .map(|driver| driver.descriptor().transform_id.clone())
     }))
+}
+
+fn local_compression_magic_signal(
+    path: &Path,
+    size_bytes: u64,
+    transforms: &ByteTransformRegistry,
+) -> Result<CompressionSignal> {
+    let probe_bytes = transforms.maximum_strong_magic_probe_bytes()?;
+    let probe_bytes = probe_bytes.min(size_bytes);
+    if probe_bytes == 0 {
+        return Ok(CompressionSignal::default());
+    }
+    let probe_bytes = usize::try_from(probe_bytes)
+        .map_err(|_| CdfError::contract("byte-transform magic probe length exceeds usize"))?;
+    let mut prefix = vec![0_u8; probe_bytes];
+    let mut file = fs::File::open(path).map_err(|error| {
+        CdfError::data(format!("open matched file {}: {error}", path.display()))
+    })?;
+    file.read_exact(&mut prefix).map_err(|error| {
+        CdfError::data(format!(
+            "read compression magic prefix for {}: {error}",
+            path.display()
+        ))
+    })?;
+    let Some(driver) = transforms.detect_strong_magic(&prefix)? else {
+        return Ok(CompressionSignal::default());
+    };
+    Ok(CompressionSignal(Some(
+        driver.descriptor().transform_id.clone(),
+    )))
 }
 
 fn compression_signal_error(
