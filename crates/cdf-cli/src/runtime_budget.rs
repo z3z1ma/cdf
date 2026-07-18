@@ -1,7 +1,7 @@
 use std::{
     collections::BTreeMap,
     fs,
-    path::{Path, PathBuf},
+    path::{Component, Path, PathBuf},
 };
 
 use cdf_cli_core::{
@@ -13,6 +13,8 @@ use serde::Serialize;
 const PROVIDER_VERSION: &str = "cdf-runtime-budget-v1";
 #[cfg(target_os = "linux")]
 const CGROUP_ROOT: &str = "/sys/fs/cgroup";
+#[cfg(target_os = "linux")]
+const PROC_SELF_CGROUP: &str = "/proc/self/cgroup";
 const MINIMUM_WORKING_SET_BYTES: u64 = 64 * 1024 * 1024;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -139,7 +141,10 @@ fn env_byte_size(name: &str) -> Result<Option<u64>, CliError> {
 fn detect_memory_authority() -> MemoryAuthorityReport {
     #[cfg(target_os = "linux")]
     {
-        return memory_authority_from_cgroup_root(Path::new(CGROUP_ROOT));
+        return memory_authority_from_current_cgroup(
+            Path::new(CGROUP_ROOT),
+            Path::new(PROC_SELF_CGROUP),
+        );
     }
     #[cfg(not(target_os = "linux"))]
     {
@@ -154,6 +159,60 @@ fn detect_memory_authority() -> MemoryAuthorityReport {
             cgroup_v2: None,
         }
     }
+}
+
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+fn memory_authority_from_current_cgroup(
+    cgroup_root: &Path,
+    proc_self_cgroup: &Path,
+) -> MemoryAuthorityReport {
+    match current_cgroup_v2_root(cgroup_root, proc_self_cgroup) {
+        Ok(root) => memory_authority_from_cgroup_root(&root),
+        Err(error) => MemoryAuthorityReport {
+            method: "linux-cgroup-v2",
+            provider_version: PROVIDER_VERSION,
+            enforcement: MemoryEnforcement::Unavailable,
+            effective_authority_bytes: 0,
+            caveats: vec![format!(
+                "could not resolve the current cgroup v2 memory path: {error}"
+            )],
+            cgroup_v2: None,
+        },
+    }
+}
+
+#[cfg_attr(not(test), allow(dead_code))]
+fn current_cgroup_v2_root(cgroup_root: &Path, proc_self_cgroup: &Path) -> Result<PathBuf, String> {
+    let proc_cgroup = fs::read_to_string(proc_self_cgroup)
+        .map_err(|error| format!("read {}: {error}", proc_self_cgroup.display()))?;
+    let relative = parse_cgroup_v2_relative_path(&proc_cgroup)?;
+    Ok(cgroup_root.join(relative))
+}
+
+fn parse_cgroup_v2_relative_path(value: &str) -> Result<PathBuf, String> {
+    let path = value
+        .lines()
+        .find_map(|line| {
+            let mut parts = line.splitn(3, ':');
+            let hierarchy = parts.next()?;
+            let controllers = parts.next()?;
+            let path = parts.next()?;
+            (hierarchy == "0" && controllers.is_empty()).then_some(path)
+        })
+        .ok_or_else(|| "no cgroup v2 `0::` entry found in /proc/self/cgroup".to_owned())?;
+    let trimmed = path.trim_start_matches('/');
+    let relative = Path::new(trimmed);
+    let mut sanitized = PathBuf::new();
+    for component in relative.components() {
+        match component {
+            Component::Normal(part) => sanitized.push(part),
+            Component::CurDir => {}
+            Component::RootDir | Component::Prefix(_) | Component::ParentDir => {
+                return Err(format!("unsafe cgroup v2 path component in `{path}`"));
+            }
+        }
+    }
+    Ok(sanitized)
 }
 
 #[cfg_attr(not(test), allow(dead_code))]
@@ -350,6 +409,44 @@ mod tests {
         assert!(errors.is_empty(), "{errors:?}");
         assert_eq!(events["high"], 1);
         assert_eq!(events["oom_kill"], 0);
+    }
+
+    #[test]
+    fn current_cgroup_resolution_uses_process_scope_not_filesystem_root() {
+        assert_eq!(
+            parse_cgroup_v2_relative_path("0::/user.slice/user-1000.slice/session-7.scope\n")
+                .unwrap(),
+            PathBuf::from("user.slice/user-1000.slice/session-7.scope")
+        );
+        assert_eq!(
+            parse_cgroup_v2_relative_path("0::/\n").unwrap(),
+            PathBuf::new()
+        );
+        assert!(parse_cgroup_v2_relative_path("0::/../escape\n").is_err());
+        assert!(parse_cgroup_v2_relative_path("1:name=systemd:/not-v2\n").is_err());
+    }
+
+    #[test]
+    fn current_cgroup_authority_reads_the_resolved_scope_files() {
+        let root = unique_temp_dir("cdf-current-cgroup");
+        let scope = root.join("user.slice/user-1000.slice/session-7.scope");
+        fs::create_dir_all(&scope).unwrap();
+        let proc = root.join("proc-self-cgroup");
+        fs::write(&proc, "0::/user.slice/user-1000.slice/session-7.scope\n").unwrap();
+        fs::write(scope.join("memory.max"), "2147483648\n").unwrap();
+        fs::write(scope.join("memory.current"), "1234\n").unwrap();
+        fs::write(scope.join("memory.peak"), "5678\n").unwrap();
+        fs::write(scope.join("memory.events"), "oom 0\noom_kill 0\n").unwrap();
+
+        let report = memory_authority_from_current_cgroup(&root, &proc);
+        assert_eq!(report.enforcement, MemoryEnforcement::LinuxCgroupV2);
+        assert_eq!(report.effective_authority_bytes, 2_147_483_648);
+        let cgroup = report.cgroup_v2.unwrap();
+        assert_eq!(cgroup.root, scope);
+        assert_eq!(cgroup.current_bytes, Some(1234));
+        assert_eq!(cgroup.peak_bytes, Some(5678));
+
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
