@@ -185,7 +185,7 @@ fn p3_dataset_catalog_is_regeneration_grade_and_bounded() {
     );
     assert_eq!(
         canonical_sha256(&catalog).unwrap(),
-        "sha256:2f8a9cb00c676dd41ed5f9931e5241d4aeb32bbf1967dc389052e1eec5b6b4b0"
+        "sha256:1972d2ce08d16a987413a6325bf4bf216aac5b5d3072d552e61ff195fa3b58c6"
     );
 }
 
@@ -218,7 +218,7 @@ fn p3_report_fixture_is_deterministic_sanitized_and_explicit() {
     );
     assert_eq!(
         canonical_sha256(&report).unwrap(),
-        "sha256:ec1c1216b0c68e6167fc32b6e26804190608f52def93f9f69187eb68d1b345f1"
+        "sha256:3f2516d08d09f2a59cade019ab85d6648ba4ecc85828ecc490f0de206107bda1"
     );
 }
 

@@ -254,6 +254,10 @@ fn raw_arrow_duckdb_and_io_references_cross_check_fixture_rows_and_bytes() {
         ReferenceWorkload::DuckDbParquet {
             path: temp.path().join("orders.parquet"),
         },
+        ReferenceWorkload::DuckDbParquetIngest {
+            paths: vec![temp.path().join("orders.parquet")],
+            output: temp.path().join("orders-native.duckdb"),
+        },
     ] {
         let measured = run_reference(&workload).unwrap();
         assert_eq!(measured.rows, spec.rows as u64);
@@ -471,7 +475,14 @@ fn destination_ingress_categories_preserve_jobs_identity() {
 
         assert_eq!(runs[0].effective_jobs, 1);
         assert_eq!(runs[1].effective_jobs, 2);
-        assert_eq!(runs[2].effective_jobs, 4);
+        assert_eq!(runs[2].effective_jobs, 2);
+        assert!(
+            runs[2]
+                .limiting_factors
+                .iter()
+                .any(|factor| factor == "staged_destination_in_flight"),
+            "{label} auto run should inherit staged destination pressure"
+        );
         assert_eq!(runs[3].effective_jobs, 4);
         for run in &runs {
             assert_eq!(run.partition_count, 4);
@@ -611,6 +622,7 @@ fn preoptimization_baseline_covers_every_target_and_retains_phases() {
         "json_ndjson_to_package",
         "validation_kernel",
         "package_build",
+        "duckdb_native_ingest",
         "duckdb_commit",
         "postgres_commit",
         "parquet_destination",

@@ -159,6 +159,42 @@ pub fn run_preoptimization_baseline(
         }],
     )?);
 
+    let duckdb_native_ingest_request = request_root.join("duckdb-native-ingest.json");
+    fs::write(
+        &duckdb_native_ingest_request,
+        canonical_json_bytes(&ReferenceWorkload::DuckDbParquetIngest {
+            paths: vec![fixture_root.join("orders.parquet")],
+            output: config.output_root.join("duckdb-native-ingest.duckdb"),
+        })?,
+    )?;
+    observations.push(run_cell(
+        provider,
+        config,
+        key(
+            config,
+            &host_class,
+            "control_medium_throughput",
+            "duckdb_native_ingest",
+        ),
+        command(
+            &config.worker_executable,
+            "reference-worker",
+            &duckdb_native_ingest_request,
+        ),
+        Some(ReferenceIdentity {
+            kind: "internal".to_owned(),
+            name: "duckdb".to_owned(),
+            version: "1.10504.0".to_owned(),
+            semantic_work: "native persistent CREATE TABLE AS SELECT from Parquet".to_owned(),
+        }),
+        vec![BiasLabel {
+            code: "omits_cdf_evidence".to_owned(),
+            description:
+                "omits CDF package manifest receipts checkpoints and destination provenance"
+                    .to_owned(),
+        }],
+    )?);
+
     for (workload_id, destination, description) in [
         (
             "duckdb_commit",

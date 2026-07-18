@@ -2,7 +2,7 @@ use std::{
     fs,
     hint::black_box,
     io::{BufReader, BufWriter, Read, Write},
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::Arc,
 };
 
@@ -185,6 +185,10 @@ pub enum ReferenceWorkload {
     DuckDbParquet {
         path: PathBuf,
     },
+    DuckDbParquetIngest {
+        paths: Vec<PathBuf>,
+        output: PathBuf,
+    },
 }
 
 pub fn run_reference(workload: &ReferenceWorkload) -> BenchResult<WorkerMeasurement> {
@@ -337,7 +341,75 @@ pub fn run_reference(workload: &ReferenceWorkload) -> BenchResult<WorkerMeasurem
             )?;
             measurement(u64::try_from(rows)?, physical_bytes, physical_bytes)
         }
+        ReferenceWorkload::DuckDbParquetIngest { paths, output } => {
+            let physical_bytes = input_bytes(paths)?;
+            if let Some(parent) = output.parent() {
+                fs::create_dir_all(parent)?;
+            }
+            remove_if_exists(output)?;
+            remove_if_exists(&duckdb_wal_path(output))?;
+            let connection = duckdb::Connection::open(output)?;
+            connection.execute_batch(&format!(
+                "CREATE TABLE native_ingest AS SELECT * FROM read_parquet({})",
+                duckdb_parquet_input_sql(paths)?
+            ))?;
+            let rows = connection.query_row("SELECT count(*) FROM native_ingest", [], |row| {
+                row.get::<_, i64>(0)
+            })?;
+            connection.execute_batch("CHECKPOINT")?;
+            measurement(u64::try_from(rows)?, physical_bytes, physical_bytes)
+        }
     }
+}
+
+fn input_bytes(paths: &[PathBuf]) -> BenchResult<u64> {
+    if paths.is_empty() {
+        return Err(bench_error(
+            "DuckDB Parquet ingest reference requires at least one input path",
+        ));
+    }
+    paths.iter().try_fold(0_u64, |total, path| {
+        Ok(total.saturating_add(fs::metadata(path)?.len()))
+    })
+}
+
+fn duckdb_parquet_input_sql(paths: &[PathBuf]) -> BenchResult<String> {
+    if paths.is_empty() {
+        return Err(bench_error(
+            "DuckDB Parquet reference requires at least one input path",
+        ));
+    }
+    if paths.len() == 1 {
+        return Ok(duckdb_string_literal(&paths[0]));
+    }
+    let mut sql = String::from("[");
+    for (index, path) in paths.iter().enumerate() {
+        if index > 0 {
+            sql.push(',');
+        }
+        sql.push_str(&duckdb_string_literal(path));
+    }
+    sql.push(']');
+    Ok(sql)
+}
+
+fn remove_if_exists(path: &Path) -> BenchResult<()> {
+    match fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error.into()),
+    }
+}
+
+fn duckdb_wal_path(path: &Path) -> PathBuf {
+    let mut value = path.as_os_str().to_owned();
+    value.push(".wal");
+    PathBuf::from(value)
+}
+
+fn duckdb_string_literal(path: &Path) -> String {
+    let raw = path.display().to_string();
+    format!("'{}'", raw.replace('\'', "''"))
 }
 
 fn collect_arrow<I, E>(reader: I, physical_bytes: u64) -> BenchResult<WorkerMeasurement>
@@ -434,5 +506,41 @@ mod tests {
             fs::metadata(output).unwrap().len()
         );
         assert!(measurement.logical_bytes > 0);
+    }
+
+    #[test]
+    fn duckdb_parquet_ingest_reference_materializes_table() {
+        let temp = tempfile::tempdir().unwrap();
+        let input = temp.path().join("input.parquet");
+        let output = temp.path().join("native.duckdb");
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int64, false),
+            Field::new("text", DataType::Utf8, false),
+        ]));
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(Int64Array::from(vec![1, 2, 3])),
+                Arc::new(StringArray::from(vec!["one", "two", "three"])),
+            ],
+        )
+        .unwrap();
+        let mut source =
+            ArrowWriter::try_new(fs::File::create(&input).unwrap(), schema, None).unwrap();
+        source.write(&batch).unwrap();
+        source.close().unwrap();
+
+        let measurement = run_reference(&ReferenceWorkload::DuckDbParquetIngest {
+            paths: vec![input.clone()],
+            output: output.clone(),
+        })
+        .unwrap();
+
+        assert_eq!(measurement.rows, 3);
+        assert_eq!(
+            measurement.physical_bytes,
+            fs::metadata(input).unwrap().len()
+        );
+        assert!(fs::metadata(output).unwrap().len() > 0);
     }
 }

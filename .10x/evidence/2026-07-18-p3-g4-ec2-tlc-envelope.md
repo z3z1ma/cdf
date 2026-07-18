@@ -26,6 +26,13 @@ Scheduler-default repair measurements, same tuned host:
 - Both local and remote plans report `effective_jobs.jobs = 2` and limiting factor `staged_destination_in_flight`; source capability remains 16-way. This confirms the default is a generic downstream-pressure admission join, not a destination-identity branch or hidden hard cap. Explicit job configuration remains outside this default join.
 - Remaining owner: package/destination hot path. Local source read drops to about `2.02s` while `destination_ingress` remains about `32.82s`; remote adds `13.96s` aggregate growing-spool source read but wall remains destination/package dominated.
 
+Native DuckDB reference cell, same tuned host and same 12 local TLC files:
+
+- Reference worker: `DuckDbParquetIngest`, materializing a persistent DuckDB database with `CREATE TABLE native_ingest AS SELECT * FROM read_parquet([...])`, three warm samples through `cdf-p3-lab run-cell`.
+- Median native ingest wall: `4.174575150s`; median throughput: 9,862,014 rows/s and 166,005,327 physical bytes/s; peak RSS about `3.26 GiB`.
+- Work matched the CDF cells: 41,169,720 rows and 693,001,713 physical input bytes for every sample.
+- With the tuned raw parallel download floor of `1.48s`, the composite native floor is about `5.65s`; the 1.5x G4 ceiling is therefore about `8.47s`. The current CDF HF default wall of `36.98s` is about `4.37x` that ceiling and about `6.55x` the raw+native floor.
+
 Tuned machine artifacts:
 
 - `.10x/evidence/.storage/2026-07-18-p3-g4-ec2-tuned-tlc-summary.json`
@@ -34,6 +41,9 @@ Tuned machine artifacts:
 - `.10x/evidence/.storage/2026-07-18-p3-g4-ec2-scheduler-default-summary.json`
 - `.10x/evidence/.storage/2026-07-18-p3-g4-ec2-scheduler-default-local-run.json`
 - `.10x/evidence/.storage/2026-07-18-p3-g4-ec2-scheduler-default-hf-run.json`
+- `.10x/evidence/.storage/2026-07-18-p3-g4-ec2-native-duckdb-ingest-observation.json`
+- `.10x/evidence/.storage/2026-07-18-p3-g4-ec2-native-duckdb-ingest-run-cell.json`
+- `.10x/evidence/.storage/2026-07-18-p3-g4-ec2-native-duckdb-ingest-reference.json`
 
 Same-host measurements:
 
@@ -62,6 +72,7 @@ On the EC2 host created by `.10x/tickets/2026-07-18-p3-l6-ec2-benchmark-host.md`
 5. Downloaded all 12 mirror files with `curl -L` and `xargs -P12`.
 6. Ran CDF remote-to-DuckDB, local-to-DuckDB, and local-to-filesystem-Parquet controls with `/usr/bin/time` and stored JSON run reports where available.
 7. Re-synchronized and rebuilt the same host with the staged-destination default-admission patch, then ran default local and HF mirror 12-month TLC-to-DuckDB controls without explicit `--jobs`.
+8. Added a persistent native DuckDB Parquet ingest reference workload to `cdf-p3-lab`, rebuilt the lab binary on the same host, and ran a three-sample warm `run-cell` against the same 12 local TLC Parquet files.
 
 ## What it supports or challenges
 
@@ -69,8 +80,10 @@ This supports G4 by moving the TLC envelope evidence from laptop triage to host-
 
 The scheduler-default repair supports retaining a default-admission change: the pathological local fast-source/DuckDB run moved from low-CPU non-completion to a completed 33.83-second run, while the remote HF run stayed in the same class as the previous tuned-host remote measurement. The evidence also narrows the next G4 owner: the admission bug is no longer hiding the local control, and the remaining gap is destination/package execution rather than source-frontier starvation.
 
+The native DuckDB reference cell turns the G4 target from an approximation into a measured host-local comparison. It challenges any interpretation that 33–37 seconds is merely public network or benchmark-host noise: DuckDB can persistently materialize the same 12 files in about 4.17 seconds once the bytes are local, and the raw network floor is about 1.48 seconds. The next retained data-plane work must therefore reduce CDF's destination/package hot path by multiples, not by tuning small remote-read constants.
+
 The pre-tuning run still has diagnostic value: it proved the benchmark host was originally too slow at durable storage for promotion evidence. After tuning, the HF wall improved from `43.39s` to `36.51s`, but the result is still far above the P3 target envelope.
 
 ## Limits
 
-This is a single EC2 host class and one public mirror. It does not close G4 because the full-year TLC target is still failing. The raw native DuckDB `CREATE TABLE AS SELECT * FROM read_parquet(...)` floor is not yet recorded on the host because the benchmark host currently has no DuckDB CLI/Python module and the lab reference worker only covers a narrower internal DuckDB read/count path. The next benchmark-lab improvement should add a first-class native DuckDB Parquet ingest reference cell instead of relying on ad hoc host tooling.
+This is a single EC2 host class and one public mirror. It does not close G4 because the full-year TLC target is still failing. The native DuckDB reference cell is now in the lab worker and measured on the host, but it is still a favorable reference: it omits CDF package manifests, receipts, checkpoints, normalizer/provenance columns, and the destination commit gate. That bias is recorded in the machine observation.

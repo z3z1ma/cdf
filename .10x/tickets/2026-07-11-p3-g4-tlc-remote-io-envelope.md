@@ -209,6 +209,13 @@ Depends on G1-G3; DuckDB bulk and deterministic scaling closeout are complete.
   - HF full-year TLC mirror to DuckDB completes by default in `36.98s` (`user 46.96`, `sys 4.90`, max RSS about 2.27 GiB), preserving the tuned remote envelope class.
   - Both plans report `effective_jobs.jobs = 2`, limiting factor `staged_destination_in_flight`, while source capability remains 16-way. This is a generic staged-ingress pressure join, not a destination-identity branch or a hidden hard cap; explicit job configuration remains the overdrive knob.
   - Current conclusion: the local fast-source/DuckDB blocking regression is repaired enough to retain the default scheduler change. G4 remains active because the successful local and remote walls are still dominated by destination/package execution (`destination_ingress` about 33 seconds), far beyond the TLC envelope.
+- EC2 native DuckDB reference floor:
+  - Added a first-class `DuckDbParquetIngest` reference workload to `cdf-p3-lab`: persistent `CREATE TABLE native_ingest AS SELECT * FROM read_parquet([...])`, fresh output database per sample, host-labeled through `run-cell`.
+  - Machine storage: `.10x/evidence/.storage/2026-07-18-p3-g4-ec2-native-duckdb-ingest-observation.json`, `.10x/evidence/.storage/2026-07-18-p3-g4-ec2-native-duckdb-ingest-run-cell.json`, `.10x/evidence/.storage/2026-07-18-p3-g4-ec2-native-duckdb-ingest-reference.json`.
+  - Native DuckDB persistent ingest median over three warm samples: `4.174575150s`, 41,169,720 rows, 693,001,713 physical input bytes, about 9.86M rows/s, peak RSS about 3.26 GiB.
+  - With the tuned raw parallel HF download floor of `1.48s`, the measured raw+native composite floor is about `5.65s` and the 1.5x G4 ceiling is about `8.47s`. The current CDF HF default wall of `36.98s` is about `4.37x` that ceiling.
+  - Local validation: `cargo fmt --check && CARGO_BUILD_JOBS=12 cargo test -p cdf-benchmarks --locked -j 12` — passed, including the new idempotent DuckDB ingest reference unit test, baseline coverage, and staged-destination auto-jobs invariant update.
+  - Current conclusion: G4 has enough benchmark authority to stop treating the gap as measurement ambiguity. The next retained code change must materially reduce destination/package execution rather than touching remote-read constants.
 
 ## Review
 
