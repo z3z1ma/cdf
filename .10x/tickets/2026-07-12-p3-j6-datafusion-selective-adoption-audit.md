@@ -1,6 +1,6 @@
 Status: open
 Created: 2026-07-12
-Updated: 2026-07-12
+Updated: 2026-07-18
 Parent: .10x/tickets/2026-07-12-p3-ws-j-datafusion-currency-bridges.md
 Depends-On: .10x/tickets/done/2026-07-11-p0-fx1-native-format-extension-boundary.md, .10x/tickets/done/2026-07-11-p3-v2-validation-graph-integration.md
 
@@ -28,7 +28,7 @@ This audit cannot directly replace a primary codec or identity-bearing kernel.
 
 ## Blockers
 
-FX1 remains open; V2's final validation graph seam is complete.
+None. FX1 and V2 are done; this audit is executable. Any accepted adoption still requires separate bounded implementation tickets.
 
 ## Journal
 

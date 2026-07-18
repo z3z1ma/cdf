@@ -1,4 +1,4 @@
-Status: active
+Status: blocked
 Created: 2026-07-18
 Updated: 2026-07-18
 Parent: .10x/tickets/2026-07-10-p3-terabyte-scale-program.md
@@ -49,7 +49,7 @@ Implement and record the operating procedure/tooling for P3 performance measurem
 
 ## Blockers
 
-Live benchmark execution still requires selecting or providing subnet/security group/key/launch-template inputs and a private SSH key path. The script intentionally does not invent those network/security choices. Current local host has no private key in `~/.ssh`.
+Live benchmark execution still requires selecting or providing subnet/security group/key/launch-template inputs and a private SSH key path, or implementing an SSM/Instance-Connect path that avoids local SSH keys. The script intentionally does not invent those network/security choices. Current local host has no private key in `~/.ssh`.
 
 ## Evidence
 

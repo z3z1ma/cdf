@@ -1,6 +1,6 @@
-Status: active
+Status: blocked
 Created: 2026-07-11
-Updated: 2026-07-14
+Updated: 2026-07-18
 Parent: .10x/tickets/2026-07-10-p3-ws-e-hashing-package-io.md
 Depends-On: .10x/tickets/2026-07-11-p3-e3-streaming-verification-replay-io.md
 
@@ -27,7 +27,7 @@ No hash/artifact semantic change.
 
 ## Blockers
 
-Depends on E1-E3.
+Blocked on `.10x/tickets/2026-07-11-p3-e3-streaming-verification-replay-io.md`, which remains blocked. The existing journal/evidence are retained as partial package-I/O findings, but full E4 roofline/replay/triage closeout cannot complete until streaming verification/replay I/O lands.
 
 ## References
 
