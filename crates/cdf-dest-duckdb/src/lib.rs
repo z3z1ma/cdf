@@ -29,7 +29,7 @@ use cdf_kernel::{
     DestinationCorrectionOperation, DestinationCorrectionReceiptEvidence, DestinationId,
     DestinationProtocol, DestinationResidualReadback, DestinationSheet, IdempotencySupport,
     IdentifierRules, MigrationRecord, PlanId, Receipt, ReceiptId, Result, RowProvenanceAddress,
-    RowProvenanceCapabilities, SchemaHash, SegmentAck, SegmentId, TargetName, TransactionMetadata,
+    RowProvenanceCapabilities, SchemaHash, SegmentAck, TargetName, TransactionMetadata,
     TransactionSupport, TypeMapping, TypeMappingFidelity, VerifyClause, WriteDisposition,
 };
 use duckdb::{
@@ -47,7 +47,6 @@ const DUCKDB_MEMORY_LIMIT_ENV: &str = "CDF_DUCKDB_MEMORY_LIMIT";
 const DUCKDB_TEMP_BUDGET_ENV: &str = "CDF_DUCKDB_TEMP_BUDGET";
 const DUCKDB_THREADS_ENV: &str = "CDF_DUCKDB_THREADS";
 const DUCKDB_BULK_PATH_APPENDER: &str = "arrow_record_batch_appender";
-const DUCKDB_BULK_PATH_STREAM_SCAN: &str = "arrow_stream_scan";
 pub const CDF_ROW_KEY_COLUMN: &str = "_cdf_row_key";
 const CDF_STAGE_ORDER_COLUMN: &str = "_cdf_stage_order";
 
@@ -60,13 +59,11 @@ mod corrections;
 mod mirrors;
 mod package;
 mod planning;
-mod raw;
 mod receipts;
 mod rows;
 mod runtime;
 mod sheet;
 mod sql;
-mod stream_scan;
 mod table;
 #[cfg(test)]
 mod tests;
