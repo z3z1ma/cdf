@@ -1,7 +1,7 @@
 Status: done
 Created: 2026-07-12
 Updated: 2026-07-17
-Parent: .10x/tickets/2026-07-12-p0-cargo-product-build-graph.md
+Parent: .10x/tickets/done/2026-07-12-p0-cargo-product-build-graph.md
 Depends-On: .10x/tickets/done/2026-07-11-p0-dx3-generic-lock-doctor-replay.md
 
 # P0 CG1: lean CLI core and complete product composition

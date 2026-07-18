@@ -1,7 +1,7 @@
 Status: done
 Created: 2026-07-12
 Updated: 2026-07-13
-Parent: .10x/tickets/2026-07-12-p0-cargo-product-build-graph.md
+Parent: .10x/tickets/done/2026-07-12-p0-cargo-product-build-graph.md
 Depends-On: None
 
 # P0 CG3: stable package contract leaf

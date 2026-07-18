@@ -1,4 +1,4 @@
-Status: open
+Status: done
 Created: 2026-07-12
 Updated: 2026-07-17
 Parent: .10x/tickets/2026-07-05-implement-cdf-system.md
@@ -48,16 +48,18 @@ Reduce focused compile latency by enforcing the lean CLI core, complete static p
 - 2026-07-12 (shaping): Fished active/terminal owners and measured the default normal graph. Selected one parent with three bounded children. J6 already fully owns DataFusion selective-adapter containment, so no competing CG4 was opened.
 - 2026-07-17 (orchestration): CG1 closed at `.10x/tickets/done/2026-07-12-p0-cg1-lean-cli-core.md`. The lean CLI core exists, artifact generation moved to the core package, the product binary remains complete, and graph law evidence is recorded on the child.
 - 2026-07-17 (orchestration): CG2 closed at `.10x/tickets/done/2026-07-12-p0-cg2-cli-test-topology.md`. The fast-CI decision conflict was superseded by `.10x/decisions/fast-ci-leaf-owner-gates.md`; fast quality now runs `cdf-cli-core` owner checks without linking the full product graph, and slow/release generator commands use the new owner.
+- 2026-07-17 (orchestration): Reconciled the already-terminal CG3 child at `.10x/tickets/done/2026-07-12-p0-cg3-package-contract-leaf.md`. CG3 records the `cdf-package-contract` leaf, runtime graph ceiling, package/lifecycle preservation, full workspace check, and pass closure review. With CG1-CG3 terminal, this parent now has no remaining executable child.
 
 ## Blockers
 
-CG1 and CG2 are terminal. CG3 remains executable on its own ownership gate. The parent cannot close until CG3 closes.
+None. CG1-CG3 are terminal.
 
 ## Evidence
 
 - CG1: `.10x/tickets/done/2026-07-12-p0-cg1-lean-cli-core.md` records `cdf-cli-core` at 79 normal / 83 all-features unique packages, no forbidden graph edges, green core artifact tests, green product/conformance compiles, and no public compatibility re-export.
 - CG2: `.10x/tickets/done/2026-07-12-p0-cg2-cli-test-topology.md` records the superseding fast-CI decision, updated fast/slow/release workflow commands, green `cdf-cli-core` tests/Clippy/generator freshness checks, and regenerated command/error docs.
-- Remaining: CG3 pending; parent remains open.
+- CG3: `.10x/tickets/done/2026-07-12-p0-cg3-package-contract-leaf.md` records the stable package contract leaf, `cdf-runtime` graph reduction to 55 normal / 62 normal+dev packages, package identity/lifecycle preservation, focused owner suites, workspace all-target check, and pass closure review.
+- SX1, FX1, and DX3 are terminal authorities at the referenced done tickets. DX4 remains the active conformance extension-law authority; J6 remains the active DataFusion selective-adoption authority. This parent adds no competing catalog/adapter owner.
 
 ## Review
 
@@ -85,4 +87,4 @@ The 5x timing criterion is falsifiable only if the executor records toolchain, `
 
 ## Retrospective
 
-Pending closure.
+The mistake was stale parent bookkeeping, not missing implementation. CG3 had already closed with stronger evidence than the parent required, but the parent still advertised it as pending. Future burn-down passes should always reconcile parent child lists against `done/` before opening or implementing more work; otherwise the backlog lies even while the code is finished.
