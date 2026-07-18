@@ -8,7 +8,7 @@ Updated: 2026-07-18
 
 The dedicated EC2 benchmark host (`host-class-95da083e15eebd1c`) confirms that the current full-year TLC Hugging Face mirror gap is real, but the owner has shifted from remote transfer to CDF package/destination hot path on this host.
 
-Important correction: the first EC2 G4 run below was taken before `.10x/tickets/2026-07-18-p3-l6-ec2-benchmark-host.md` corrected the host's root volume from default gp3 3,000 IOPS / 125 MiB/s to gp3 16,000 IOPS / 1,000 MiB/s. Those first numbers remain useful for diagnosing the bad benchmark-host storage floor, but storage-sensitive conclusions must use the tuned-host rerun.
+Important correction: the first EC2 G4 run below was taken before `.10x/tickets/done/2026-07-18-p3-l6-ec2-benchmark-host.md` corrected the host's root volume from default gp3 3,000 IOPS / 125 MiB/s to gp3 16,000 IOPS / 1,000 MiB/s. Those first numbers remain useful for diagnosing the bad benchmark-host storage floor, but storage-sensitive conclusions must use the tuned-host rerun.
 
 Tuned-host measurements:
 
@@ -105,7 +105,7 @@ Machine artifacts:
 
 ## Procedure
 
-On the EC2 host created by `.10x/tickets/2026-07-18-p3-l6-ec2-benchmark-host.md`:
+On the EC2 host created by `.10x/tickets/done/2026-07-18-p3-l6-ec2-benchmark-host.md`:
 
 1. Synchronized the clean repository and rebuilt release `cdf` / `cdf-p3-lab`.
 2. Synchronized the user's scratch CDF workspace in minimal mode.

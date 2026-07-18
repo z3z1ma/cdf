@@ -19,6 +19,8 @@ Measured CDF command observations are stored at:
 - `.10x/evidence/.storage/2026-07-18-p3-l6-ec2-measure-cdf-env-forward-request.json`
 - `.10x/evidence/.storage/2026-07-18-p3-l6-ec2-preflight-revision.env`
 - `.10x/evidence/.storage/2026-07-18-p3-l6-ec2-preflight-build.env`
+- `.10x/evidence/.storage/2026-07-18-p3-l6-ec2-current-clean-revision.env`
+- `.10x/evidence/.storage/2026-07-18-p3-l6-ec2-current-clean-build.env`
 
 ## Procedure
 
@@ -47,6 +49,9 @@ Measured CDF command observations are stored at:
 - `tools/p3-ec2-benchmark-host.sh preflight`
 - `tools/p3-ec2-benchmark-host.sh fetch .cdf-bench-revision.env .10x/evidence/.storage/2026-07-18-p3-l6-ec2-preflight-revision.env`
 - `tools/p3-ec2-benchmark-host.sh fetch .cdf-bench-build.env .10x/evidence/.storage/2026-07-18-p3-l6-ec2-preflight-build.env`
+- `tools/p3-ec2-benchmark-host.sh sync-repo && tools/p3-ec2-benchmark-host.sh build && tools/p3-ec2-benchmark-host.sh preflight`
+- `tools/p3-ec2-benchmark-host.sh fetch .cdf-bench-revision.env .10x/evidence/.storage/2026-07-18-p3-l6-ec2-current-clean-revision.env`
+- `tools/p3-ec2-benchmark-host.sh fetch .cdf-bench-build.env .10x/evidence/.storage/2026-07-18-p3-l6-ec2-current-clean-build.env`
 
 Observed outputs included:
 
@@ -67,10 +72,11 @@ Observed outputs included:
 - `measure-cdf` environment-forwarding proof: observed host-labeled `inspect_with_child_env` cell, one uncontrolled sample, median `30,362,231ns`; the generated worker request records `environment = {"CDF_DUCKDB_MEMORY_LIMIT":"3GiB","CDF_DUCKDB_THREADS":"4"}`, `workspace_mode = "fresh_copy"`, `preserve_state = false`, and child timeout `59000`.
 - Strict preflight proof: `preflight=ok`; instance `i-05011a85b7f2a33fe`; instance type `c7i.4xlarge`; root volume `vol-02f4b599167f8831c` as gp3 `16000` IOPS / `1000` MiB/s; synced revision and built revision both `92887c11ae50779d00773095d5f6da67e9dcce3d+dirty`; build marker timestamp `2026-07-18T12:05:21Z`; host class `host-class-95da083e15eebd1c`; `cdf 0.1.0`; host fingerprint schema `1`; about `217` GB free; synced workspace present.
 - Artifact fetch proof: remote `.cdf-bench-revision.env` and `.cdf-bench-build.env` were copied into local `.10x/evidence/.storage/`, proving benchmark JSON and request artifacts can return through the helper instead of manual `scp` or pasted transcripts.
+- Closure clean preflight proof: after the final L6 diagnostic commit, `sync-repo && build && preflight` passed at clean revision/build `a37a4d8645bfcc1919c04e22615e5364542ad238`; release builds were cache hits (`0.27s` and `0.25s`); root volume remained gp3 `16000` IOPS / `1000` MiB/s; host class remained `host-class-95da083e15eebd1c`; workspace was present; free space was `205647929344` bytes; current revision/build markers were fetched into local evidence storage.
 
 ## What it supports or challenges
 
-This supports `.10x/tickets/2026-07-18-p3-l6-ec2-benchmark-host.md` by proving that benchmark promotion evidence can be collected on a reusable, labeled EC2 host rather than on the user's laptop. It also supports the P3 performance discipline: performance-sensitive defaults now have a practical path to host-labeled evidence with revision, dependency, toolchain, host-class labels, and an explicit storage floor.
+This supports `.10x/tickets/done/2026-07-18-p3-l6-ec2-benchmark-host.md` by proving that benchmark promotion evidence can be collected on a reusable, labeled EC2 host rather than on the user's laptop. It also supports the P3 performance discipline: performance-sensitive defaults now have a practical path to host-labeled evidence with revision, dependency, toolchain, host-class labels, and an explicit storage floor.
 
 The live path challenged the dry-run-only assumption that shell command construction was sufficient. Real execution exposed missing host prerequisites (`python3-devel`), an Amazon Linux `curl-minimal` package conflict, the need for explicit revision labels when `.git` is excluded from repo sync, the need for minimal workspace sync so generated benchmark artifacts do not distort host state, and the need to avoid default gp3 throughput for any storage-sensitive P3 measurement.
 
@@ -84,7 +90,7 @@ The preflight proof closes the last major measurement-authority gap found in thi
 
 ## Limits
 
-The EC2 instance was intentionally left running for reuse across the current benchmark tranche. Therefore this evidence proves provisioning, reuse readiness, bootstrap, synchronization, build, verification, workspace compilation, and baseline emission, but not final tranche teardown. Teardown remains the acceptance condition that will close the L6 ticket after the benchmark tranche is complete.
+The EC2 instance was intentionally left running for reuse across the current benchmark tranche. Therefore this evidence proves provisioning, reuse readiness, bootstrap, synchronization, build, verification, workspace compilation, and baseline emission, but not final tranche teardown. `.10x/tickets/2026-07-18-p3-l7-ec2-benchmark-tranche-lifecycle.md` owns the eventual teardown evidence.
 
 The baseline report is a smoke-scale machine-evidence proof, not a claim that the P3 throughput envelope is met. Large TLC/TPC-H/stress cells remain owned by their P3 performance tickets and must reuse the same host-labeled path.
 
