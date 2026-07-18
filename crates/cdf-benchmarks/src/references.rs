@@ -242,6 +242,10 @@ pub enum ReferenceWorkload {
         paths: Vec<PathBuf>,
         output: PathBuf,
         extension: DuckDbArrowExtension,
+        #[serde(default)]
+        row_key_start: Option<u64>,
+        #[serde(default)]
+        row_key_not_null: bool,
         checkpoint: bool,
     },
     DuckDbArrowIpcHandoffIngest {
@@ -513,8 +517,17 @@ pub fn run_reference(workload: &ReferenceWorkload) -> BenchResult<WorkerMeasurem
             paths,
             output,
             extension,
+            row_key_start,
+            row_key_not_null,
             checkpoint,
-        } => run_duckdb_arrow_ipc_existing_read(paths, output, extension, *checkpoint),
+        } => run_duckdb_arrow_ipc_existing_read(
+            paths,
+            output,
+            extension,
+            *row_key_start,
+            *row_key_not_null,
+            *checkpoint,
+        ),
         ReferenceWorkload::DuckDbArrowIpcHandoffIngest {
             output,
             staging_dir,
@@ -865,6 +878,8 @@ fn run_duckdb_arrow_ipc_existing_read(
     paths: &[PathBuf],
     output: &Path,
     extension: &DuckDbArrowExtension,
+    row_key_start: Option<u64>,
+    row_key_not_null: bool,
     checkpoint: bool,
 ) -> BenchResult<WorkerMeasurement> {
     if paths.is_empty() {
@@ -880,18 +895,52 @@ fn run_duckdb_arrow_ipc_existing_read(
     remove_if_exists(&duckdb_wal_path(output))?;
     let connection = open_duckdb_arrow_database(output, extension)?;
     load_duckdb_arrow_extension(&connection, extension)?;
+    connection.execute_batch("SET preserve_insertion_order = true")?;
     connection.execute_batch(&format!(
         "CREATE TABLE arrow_ipc_read AS SELECT * FROM read_arrow({})",
         duckdb_path_list(paths)
     ))?;
+    let rows = connection.query_row("SELECT count(*) FROM arrow_ipc_read", [], |row| {
+        row.get::<_, u64>(0)
+    })?;
+    if let Some(first_row_key) = row_key_start {
+        connection.execute_batch("ALTER TABLE arrow_ipc_read ADD COLUMN _cdf_row_key UBIGINT")?;
+        connection.execute_batch(&format!(
+            "UPDATE arrow_ipc_read SET _cdf_row_key = CAST(rowid + {first_row_key} AS UBIGINT)"
+        ))?;
+        if row_key_not_null {
+            connection.execute_batch(
+                "ALTER TABLE arrow_ipc_read ALTER COLUMN _cdf_row_key SET NOT NULL",
+            )?;
+        }
+        let (minimum, maximum) = connection.query_row(
+            "SELECT min(_cdf_row_key), max(_cdf_row_key) FROM arrow_ipc_read",
+            [],
+            |row| Ok((row.get::<_, Option<u64>>(0)?, row.get::<_, Option<u64>>(1)?)),
+        )?;
+        let expected_maximum = match rows.checked_sub(1) {
+            Some(last_offset) => Some(
+                first_row_key
+                    .checked_add(last_offset)
+                    .ok_or_else(|| bench_error("DuckDB Arrow IPC row key overflow"))?,
+            ),
+            None => None,
+        };
+        if minimum != rows.checked_sub(1).map(|_| first_row_key) || maximum != expected_maximum {
+            return Err(bench_error(format!(
+                "DuckDB Arrow IPC row-key verification failed: min={minimum:?}, max={maximum:?}, expected start={first_row_key}, expected max={expected_maximum:?}, rows={rows}"
+            )));
+        }
+    } else if row_key_not_null {
+        return Err(bench_error(
+            "DuckDB Arrow IPC row-key NOT NULL verification requires row_key_start",
+        ));
+    }
     if checkpoint {
         connection.execute_batch("CHECKPOINT")?;
     }
-    let rows = connection.query_row("SELECT count(*) FROM arrow_ipc_read", [], |row| {
-        row.get::<_, i64>(0)
-    })?;
     measurement(
-        u64::try_from(rows)?,
+        rows,
         physical_input_bytes,
         physical_input_bytes.saturating_add(duckdb_database_bytes(output)?),
     )
