@@ -25,15 +25,20 @@ tools/p3-ec2-benchmark-host.sh sync-repo
 CDF_BENCH_WORKSPACE=/path/to/cdf-workspace tools/p3-ec2-benchmark-host.sh sync-workspace
 tools/p3-ec2-benchmark-host.sh build
 tools/p3-ec2-benchmark-host.sh verify
+tools/p3-ec2-benchmark-host.sh preflight
 tools/p3-ec2-benchmark-host.sh cdf -- run tlc.yellow --progress never
 CDF_BENCH_EXPECTED_ROWS=41169720 tools/p3-ec2-benchmark-host.sh measure-cdf \
   target/cdf-benchmarks/tlc-run.json nyc_tlc_yellow_2024 tlc_e2e_duckdb \
   -- run tlc.yellow --json --progress never
+tools/p3-ec2-benchmark-host.sh fetch target/cdf-benchmarks/tlc-run.json \
+  .10x/evidence/.storage/2026-07-18-p3-tlc-run.json
 tools/p3-ec2-benchmark-host.sh lab -- host
 tools/p3-ec2-benchmark-host.sh teardown
 ```
 
 The instance is reused for a benchmark tranche and then explicitly terminated. Repo synchronization honors `.gitignore` and excludes `target/`, local environment files, and common secret directories. Workspace synchronization defaults to a minimal control-plane manifest (`cdf.toml`, `cdf.lock`, `resources/`, `data/`, `.cdf/state.db`, `.cdf/schemas/`, and schema-observation cache entries) so nested generated benchmark directories and destination files do not leak into the benchmark host; set `CDF_BENCH_WORKSPACE_SYNC_MODE=full` for an ignore-filtered full tree that still excludes local secrets plus generated DuckDB/package/spool artifacts. The on-host build uses the workspace release profile (`opt-level=3`, fat LTO, one codegen unit, stripped symbols) from the synchronized `Cargo.lock`.
+
+Run `preflight` immediately before using a result as P3 promotion evidence. It rejects the common measurement-poison cases: the recorded instance is not running, the root volume no longer matches the benchmark gp3 IOPS/throughput, SSH/release binaries are unavailable, the synced remote revision differs from the local revision label, the release-build marker does not match the synced revision, the synced workspace is missing, or free disk has fallen below `CDF_BENCH_MIN_FREE_GB` (default 50). Use `CDF_BENCH_PREFLIGHT_ALLOW_STALE=1` only for intentional historical comparisons and `CDF_BENCH_PREFLIGHT_REQUIRE_WORKSPACE=0` only for repo-only reference workloads. Use `fetch` to copy host-generated JSON artifacts back into local `.10x/evidence/.storage/` instead of relying on ad-hoc transcripts.
 
 `measure-cdf` generates a standard `run-cell` request on the host and runs the release `cdf` binary through `cdf-command-worker`. By default each sample gets a fresh copy of the synced workspace, drops `.cdf/state.db` so ingestion benchmarks cannot silently become checkpoint no-ops, and keeps that setup outside the worker's timed region. Use `CDF_BENCH_MEASURE_PRESERVE_STATE=1` only when the workload intentionally benchmarks resume/no-op behavior, and `CDF_BENCH_MEASURE_WORKSPACE_MODE=in_place` only for non-mutating commands. `CDF_BENCH_MEASURE_ENV_JSON` accepts a JSON object of string environment variables for the measured `cdf` child, which keeps destination/source tuning diagnostics under the same child-timeout supervision as ordinary runs. `CDF_BENCH_SAMPLES`, `CDF_BENCH_TIMEOUT_MS`, `CDF_BENCH_IO_MODE`, `CDF_BENCH_EXPECTED_ROWS`, `CDF_BENCH_LOGICAL_BYTES`, and `CDF_BENCH_PHYSICAL_BYTES` are knobs, not compiled limits.
 

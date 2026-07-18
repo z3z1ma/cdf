@@ -9,6 +9,7 @@ Commands:
   plan             Print the configured benchmark-host plan and read-only AWS identity.
   prepare-ssh      Create/reuse CDF-owned SSH launch inputs: subnet, SG, current-IP ingress, key.
   status           Print recorded instance status, and host facts when SSH is available.
+  preflight        Fail unless the recorded host/repo/build/workspace are measurement-ready.
   provision        Launch/reuse a benchmark EC2 instance and write target/cdf-benchmarks/ec2-host/state.env.
   tune-volume      Apply the configured gp3 IOPS/throughput to the recorded root volume.
   wait-ssh         Wait until SSH accepts commands on the recorded host.
@@ -20,6 +21,8 @@ Commands:
   cdf -- ARGS...   Run the on-host release CDF binary from the synced CDF workspace.
   measure-cdf OUT DATASET WORKLOAD -- ARGS...
                    Run release CDF through cdf-p3-lab with host-labeled median-of-N evidence.
+  fetch REMOTE_PATH [LOCAL_PATH]
+                   Copy a remote benchmark artifact back to local evidence storage.
   lab -- ARGS...   Run the on-host release cdf-p3-lab binary from the synced repo.
   run -- CMD...    Run an arbitrary command from the synced repo on the benchmark host.
   teardown         Terminate the benchmark instance recorded in state.env.
@@ -49,6 +52,9 @@ Environment:
   CDF_BENCH_MEASURE_WORKSPACE_MODE  default: fresh_copy; use in_place for non-mutating commands
   CDF_BENCH_MEASURE_PRESERVE_STATE  default: 0; set 1 to benchmark resume/no-op state
   CDF_BENCH_MEASURE_ENV_JSON        JSON object of env vars for the measured cdf child
+  CDF_BENCH_PREFLIGHT_ALLOW_STALE   default: 0; set 1 to permit remote revision != local revision
+  CDF_BENCH_PREFLIGHT_REQUIRE_WORKSPACE default: 1; set 0 for repo-only/reference runs
+  CDF_BENCH_MIN_FREE_GB             default: 50; preflight disk-space floor
   CDF_BENCH_SAMPLES                 default: 3 for measure-cdf
   CDF_BENCH_TIMEOUT_MS              default: 900000 for measure-cdf
   CDF_BENCH_IO_MODE                 default: warm for measure-cdf
@@ -64,6 +70,7 @@ Safety:
   prepare-ssh creates only CDF-tagged security/key resources and restricts SSH to one CIDR.
   Repo sync excludes .git, target, .env*, local AWS/Codex config, and common secret directories.
   Workspace sync defaults to a minimal control-plane manifest and has an explicit full mode.
+  preflight rejects stale synced revisions, untuned storage, missing binaries, missing workspace, or low disk.
   measure-cdf copies the synced workspace outside the timed region by default and drops runtime state unless explicitly preserved.
   The same recorded instance is reused until teardown removes state.env after termination.
 EOF
@@ -185,6 +192,30 @@ remote_command() {
 }
 
 remote_prelude='if [ -f "$HOME/.cargo/env" ]; then . "$HOME/.cargo/env"; fi'
+
+local_revision_label() {
+  local revision dirty
+  revision="$(git -C "${repo_root}" rev-parse HEAD)"
+  if [[ -n "$(git -C "${repo_root}" status --porcelain)" ]]; then
+    dirty="dirty"
+  else
+    dirty="clean"
+  fi
+  if [[ "${dirty}" == "dirty" ]]; then
+    printf '%s+dirty\n' "${revision}"
+  else
+    printf '%s\n' "${revision}"
+  fi
+}
+
+remote_repo_path() {
+  local path="$1"
+  if [[ "${path}" == /* ]]; then
+    printf '%s\n' "${path}"
+  else
+    printf '%s/%s\n' "${remote_repo}" "${path}"
+  fi
+}
 
 current_public_cidr() {
   if [[ -n "${CDF_BENCH_SSH_CIDR:-}" ]]; then
@@ -450,6 +481,93 @@ case "${command}" in
     fi
     ;;
 
+  preflight)
+    load_resource_state
+    load_state
+    if [[ -z "${instance_id:-}" ]]; then
+      echo "preflight failed: no instance_id in ${state_file}; run provision first" >&2
+      exit 2
+    fi
+    require_env CDF_BENCH_SSH_KEY
+    host="$(target_host)"
+    if [[ "${dry_run}" -eq 1 ]]; then
+      echo "local_revision=$(local_revision_label)"
+      run_cmd "${aws_cmd[@]}" ec2 describe-instances \
+        --instance-ids "${instance_id}" \
+        --query 'Reservations[0].Instances[0].State.Name' \
+        --output text
+      if [[ -z "${volume_id:-}" ]]; then
+        run_cmd "${aws_cmd[@]}" ec2 describe-instances \
+          --instance-ids "${instance_id}" \
+          --query 'Reservations[0].Instances[0].BlockDeviceMappings[0].Ebs.VolumeId' \
+          --output text
+        dry_volume_id="ROOT_VOLUME_FROM_INSTANCE"
+      else
+        dry_volume_id="${volume_id}"
+      fi
+      run_cmd "${aws_cmd[@]}" ec2 describe-volumes \
+        --volume-ids "${dry_volume_id}" \
+        --query 'Volumes[0].[VolumeType,Iops,Throughput,Size,State]' \
+        --output text
+      run_cmd ssh -i "${CDF_BENCH_SSH_KEY}" -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new "${ssh_user}@${host}" \
+        "set -euo pipefail; ${remote_prelude}; cd '${remote_repo}'; test -f .cdf-bench-revision.env; test -f .cdf-bench-build.env; . ./.cdf-bench-revision.env; test -x target/release/cdf; test -x target/release/cdf-p3-lab; sed -n 's/^built_revision_label=//p' .cdf-bench-build.env; target/release/cdf-p3-lab host-class; target/release/cdf --version; df -B1 --output=avail '${remote_root}' | tail -n 1; test '${CDF_BENCH_PREFLIGHT_REQUIRE_WORKSPACE:-1}' != '1' || test -f '${remote_workspace}/cdf.toml'"
+      exit 0
+    fi
+    instance_state="$("${aws_cmd[@]}" ec2 describe-instances \
+      --instance-ids "${instance_id}" \
+      --query 'Reservations[0].Instances[0].State.Name' \
+      --output text)"
+    if [[ "${instance_state}" != "running" ]]; then
+      echo "preflight failed: benchmark instance ${instance_id} is ${instance_state}, not running" >&2
+      exit 1
+    fi
+    volume_id="$("${aws_cmd[@]}" ec2 describe-instances \
+      --instance-ids "${instance_id}" \
+      --query 'Reservations[0].Instances[0].BlockDeviceMappings[0].Ebs.VolumeId' \
+      --output text)"
+    volume_description="$("${aws_cmd[@]}" ec2 describe-volumes \
+      --volume-ids "${volume_id}" \
+      --query 'Volumes[0].[VolumeType,Iops,Throughput,Size,State]' \
+      --output text)"
+    read -r actual_volume_type actual_iops actual_throughput actual_size actual_volume_state <<<"${volume_description}"
+    if [[ "${actual_volume_type}" != "gp3" || "${actual_iops}" != "${volume_iops}" || "${actual_throughput}" != "${volume_throughput}" || "${actual_volume_state}" != "in-use" ]]; then
+      echo "preflight failed: volume ${volume_id} is ${actual_volume_type}/${actual_iops}IOPS/${actual_throughput}MiBps/${actual_volume_state}; expected gp3/${volume_iops}IOPS/${volume_throughput}MiBps/in-use" >&2
+      exit 1
+    fi
+    local_label="$(local_revision_label)"
+    remote_labels="$(ssh -i "${CDF_BENCH_SSH_KEY}" -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new "${ssh_user}@${host}" \
+      "set -euo pipefail; cd '${remote_repo}'; test -f .cdf-bench-revision.env; test -f .cdf-bench-build.env; . ./.cdf-bench-revision.env; printf 'remote_revision_label=%s\n' \"\${repo_revision_label:-unknown}\"; printf 'built_revision_label=%s\n' \"\$(sed -n 's/^built_revision_label=//p' .cdf-bench-build.env)\"; printf 'built_at_utc=%s\n' \"\$(sed -n 's/^built_at_utc=//p' .cdf-bench-build.env)\"")"
+    remote_label="$(printf '%s\n' "${remote_labels}" | awk -F= '$1=="remote_revision_label" {print $2}')"
+    built_label="$(printf '%s\n' "${remote_labels}" | awk -F= '$1=="built_revision_label" {print $2}')"
+    built_at_utc="$(printf '%s\n' "${remote_labels}" | awk -F= '$1=="built_at_utc" {print $2}')"
+    if [[ "${remote_label}" != "${local_label}" && "${CDF_BENCH_PREFLIGHT_ALLOW_STALE:-0}" != "1" ]]; then
+      echo "preflight failed: remote revision ${remote_label} does not match local ${local_label}; run sync-repo/build or set CDF_BENCH_PREFLIGHT_ALLOW_STALE=1 for intentional historical measurements" >&2
+      exit 1
+    fi
+    if [[ "${built_label}" != "${remote_label}" ]]; then
+      echo "preflight failed: release binaries were built for ${built_label:-unknown}, but synced repo is ${remote_label}; run build before measuring" >&2
+      exit 1
+    fi
+    min_free_gb="${CDF_BENCH_MIN_FREE_GB:-50}"
+    require_workspace="${CDF_BENCH_PREFLIGHT_REQUIRE_WORKSPACE:-1}"
+    remote_check="$(ssh -i "${CDF_BENCH_SSH_KEY}" -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new "${ssh_user}@${host}" \
+      "set -euo pipefail; ${remote_prelude}; cd '${remote_repo}'; test -x target/release/cdf; test -x target/release/cdf-p3-lab; host_class=\"\$(target/release/cdf-p3-lab host-class)\"; cdf_version=\"\$(target/release/cdf --version)\"; lab_host=\"\$(target/release/cdf-p3-lab host | python3 -c 'import json,sys; value=json.load(sys.stdin); print(value.get(\"schema_version\", \"unknown\"))')\"; free_bytes=\"\$(df -B1 --output=avail '${remote_root}' | tail -n 1 | tr -d ' ')\"; if [ '${require_workspace}' = '1' ]; then test -f '${remote_workspace}/cdf.toml'; workspace_status=present; else workspace_status=not_required; fi; printf 'host_class=%s\ncdf_version=%s\nhost_fingerprint_schema=%s\nfree_bytes=%s\nworkspace=%s\n' \"\${host_class}\" \"\${cdf_version}\" \"\${lab_host}\" \"\${free_bytes}\" \"\${workspace_status}\"")"
+    free_bytes="$(printf '%s\n' "${remote_check}" | awk -F= '$1=="free_bytes" {print $2}')"
+    min_free_bytes=$((min_free_gb * 1024 * 1024 * 1024))
+    if [[ "${free_bytes}" -lt "${min_free_bytes}" ]]; then
+      echo "preflight failed: remote free space ${free_bytes} bytes is below CDF_BENCH_MIN_FREE_GB=${min_free_gb}" >&2
+      exit 1
+    fi
+    echo "preflight=ok"
+    echo "instance_id=${instance_id}"
+    echo "instance_type=${instance_type}"
+    echo "volume=${volume_id},gp3,${actual_iops}iops,${actual_throughput}mibps,size_gb=${actual_size}"
+    echo "revision=${remote_label}"
+    echo "built_revision=${built_label}"
+    echo "built_at_utc=${built_at_utc}"
+    printf '%s\n' "${remote_check}"
+    ;;
+
   provision)
     mkdir -p "${state_dir}"
     load_resource_state
@@ -663,7 +781,7 @@ EOF"
     require_env CDF_BENCH_SSH_KEY
     host="$(target_host)"
     run_cmd ssh -i "${CDF_BENCH_SSH_KEY}" -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new "${ssh_user}@${host}" \
-      "set -euo pipefail; ${remote_prelude}; cd '${remote_repo}'; CARGO_BUILD_JOBS=\$(nproc) cargo build -p cdf-cli --bin cdf --release --locked -j \$(nproc); CARGO_BUILD_JOBS=\$(nproc) cargo build -p cdf-benchmarks --bin cdf-p3-lab --release --locked -j \$(nproc); ls -lh target/release/cdf target/release/cdf-p3-lab; rustc --version; cargo --version"
+      "set -euo pipefail; ${remote_prelude}; cd '${remote_repo}'; CARGO_BUILD_JOBS=\$(nproc) cargo build -p cdf-cli --bin cdf --release --locked -j \$(nproc); CARGO_BUILD_JOBS=\$(nproc) cargo build -p cdf-benchmarks --bin cdf-p3-lab --release --locked -j \$(nproc); build_revision_label=\"\$(sed -n 's/^repo_revision_label=//p' .cdf-bench-revision.env)\"; { printf 'built_revision_label=%s\n' \"\${build_revision_label:-unknown}\"; printf 'built_at_utc=%s\n' \"\$(date -u +%Y-%m-%dT%H:%M:%SZ)\"; printf 'rustc_version=%s\n' \"\$(rustc --version)\"; printf 'cargo_version=%s\n' \"\$(cargo --version)\"; } > .cdf-bench-build.env; ls -lh target/release/cdf target/release/cdf-p3-lab; cat .cdf-bench-build.env"
     ;;
 
   verify)
@@ -789,6 +907,31 @@ spec = {
 spec_path.write_text(json.dumps(spec, sort_keys=True), encoding=\"utf-8\")
 PY
 target/release/cdf-p3-lab run-cell \"\${spec_path}\" > \"\${out}\"; python3 -m json.tool \"\${out}\" >/dev/null; wc -c \"\${out}\""
+    ;;
+
+  fetch)
+    remote_path_arg="${1:-}"
+    local_path_arg="${2:-}"
+    if [[ -z "${remote_path_arg}" ]]; then
+      echo "fetch requires REMOTE_PATH and optional LOCAL_PATH" >&2
+      exit 2
+    fi
+    load_resource_state
+    require_env CDF_BENCH_SSH_KEY
+    host="$(target_host)"
+    resolved_remote_path="$(remote_repo_path "${remote_path_arg}")"
+    if [[ -z "${local_path_arg}" ]]; then
+      local_path_arg="${repo_root}/.10x/evidence/.storage/$(basename "${remote_path_arg}")"
+    fi
+    local_dir="$(dirname "${local_path_arg}")"
+    if [[ "${dry_run}" -eq 1 ]]; then
+      run_cmd mkdir -p "${local_dir}"
+    else
+      mkdir -p "${local_dir}"
+    fi
+    run_cmd rsync -az \
+      -e "ssh -i ${CDF_BENCH_SSH_KEY} -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new" \
+      "${ssh_user}@${host}:${resolved_remote_path}" "${local_path_arg}"
     ;;
 
   lab)

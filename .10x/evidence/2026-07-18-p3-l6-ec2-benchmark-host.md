@@ -17,6 +17,8 @@ Measured CDF command observations are stored at:
 - `.10x/evidence/.storage/2026-07-18-p3-l6-ec2-measure-cdf-timeout-proof.json`
 - `.10x/evidence/.storage/2026-07-18-p3-l6-ec2-measure-cdf-env-forward.json`
 - `.10x/evidence/.storage/2026-07-18-p3-l6-ec2-measure-cdf-env-forward-request.json`
+- `.10x/evidence/.storage/2026-07-18-p3-l6-ec2-preflight-revision.env`
+- `.10x/evidence/.storage/2026-07-18-p3-l6-ec2-preflight-build.env`
 
 ## Procedure
 
@@ -39,6 +41,12 @@ Measured CDF command observations are stored at:
 - `CDF_BENCH_SAMPLES=1 CDF_BENCH_IO_MODE=uncontrolled CDF_BENCH_TIMEOUT_MS=180000 tools/p3-ec2-benchmark-host.sh measure-cdf target/cdf-benchmarks/l6-measure-cdf-tlc-state-reset.json nyc_tlc_yellow_2024 tlc_e2e_duckdb_smoke -- run tlc.yellow --json --progress never`
 - `CDF_BENCH_REMOTE_WORKSPACE=/home/ec2-user/cdf-bench/repo/target/cdf-benchmarks/g4-scheduler-default-20260718085558/local-workspace CDF_BENCH_SAMPLES=1 CDF_BENCH_IO_MODE=uncontrolled CDF_BENCH_TIMEOUT_MS=5000 tools/p3-ec2-benchmark-host.sh measure-cdf target/cdf-benchmarks/l6-timeout-proof.json nyc_tlc_yellow_2024 timeout_proof -- run tlc.yellow --jobs 12 --json --progress never`
 - `CDF_BENCH_MEASURE_ENV_JSON='{"CDF_DUCKDB_THREADS":"4","CDF_DUCKDB_MEMORY_LIMIT":"3GiB"}' CDF_BENCH_SAMPLES=1 CDF_BENCH_IO_MODE=uncontrolled CDF_BENCH_TIMEOUT_MS=60000 tools/p3-ec2-benchmark-host.sh measure-cdf target/cdf-benchmarks/l6-measure-cdf-env-forward.json tmp_workspace inspect_with_child_env -- inspect resources --color never --unicode never`
+- `tools/p3-ec2-benchmark-host.sh --dry-run preflight`
+- `tools/p3-ec2-benchmark-host.sh --dry-run fetch target/cdf-benchmarks/example.json .10x/evidence/.storage/example.json`
+- `tools/p3-ec2-benchmark-host.sh sync-repo && tools/p3-ec2-benchmark-host.sh build`
+- `tools/p3-ec2-benchmark-host.sh preflight`
+- `tools/p3-ec2-benchmark-host.sh fetch .cdf-bench-revision.env .10x/evidence/.storage/2026-07-18-p3-l6-ec2-preflight-revision.env`
+- `tools/p3-ec2-benchmark-host.sh fetch .cdf-bench-build.env .10x/evidence/.storage/2026-07-18-p3-l6-ec2-preflight-build.env`
 
 Observed outputs included:
 
@@ -57,6 +65,8 @@ Observed outputs included:
 - `measure-cdf` TLC state-reset smoke: observed host-labeled `cdf run tlc.yellow --json --progress never` cell, one uncontrolled sample, 2,964,624 rows, ten extracted phase metrics, median `3,769,248,397ns`.
 - `measure-cdf` timeout proof: failed host-labeled cell with `CDF command exceeded worker timeout of 4000ms`; immediate process-tree inspection found no remaining `cdf-p3-lab` worker or release `cdf` workload process.
 - `measure-cdf` environment-forwarding proof: observed host-labeled `inspect_with_child_env` cell, one uncontrolled sample, median `30,362,231ns`; the generated worker request records `environment = {"CDF_DUCKDB_MEMORY_LIMIT":"3GiB","CDF_DUCKDB_THREADS":"4"}`, `workspace_mode = "fresh_copy"`, `preserve_state = false`, and child timeout `59000`.
+- Strict preflight proof: `preflight=ok`; instance `i-05011a85b7f2a33fe`; instance type `c7i.4xlarge`; root volume `vol-02f4b599167f8831c` as gp3 `16000` IOPS / `1000` MiB/s; synced revision and built revision both `92887c11ae50779d00773095d5f6da67e9dcce3d+dirty`; build marker timestamp `2026-07-18T12:05:21Z`; host class `host-class-95da083e15eebd1c`; `cdf 0.1.0`; host fingerprint schema `1`; about `217` GB free; synced workspace present.
+- Artifact fetch proof: remote `.cdf-bench-revision.env` and `.cdf-bench-build.env` were copied into local `.10x/evidence/.storage/`, proving benchmark JSON and request artifacts can return through the helper instead of manual `scp` or pasted transcripts.
 
 ## What it supports or challenges
 
@@ -70,6 +80,8 @@ The timeout proof challenged the assumption that the outer lab process timeout w
 
 The environment-forwarding proof closes a practical benchmark gap exposed by DuckDB/native-resource diagnostics: tuning knobs must be part of the supervised child request, not ad-hoc SSH shell state. `CDF_BENCH_MEASURE_ENV_JSON` is decoded and validated into the `cdf-command-worker` request, so destination/source tuning cells keep the same timeout, workspace-copy, and state-reset semantics as ordinary measured `cdf` commands.
 
+The preflight proof closes the last major measurement-authority gap found in this tranche: a synced remote revision is not enough unless the optimized release binaries are known to have been built from that same revision. `build` now writes `.cdf-bench-build.env` after successful release builds, and `preflight` rejects stale or missing build markers before a host result can be treated as promotion evidence.
+
 ## Limits
 
 The EC2 instance was intentionally left running for reuse across the current benchmark tranche. Therefore this evidence proves provisioning, reuse readiness, bootstrap, synchronization, build, verification, workspace compilation, and baseline emission, but not final tranche teardown. Teardown remains the acceptance condition that will close the L6 ticket after the benchmark tranche is complete.
@@ -81,3 +93,5 @@ The TLC `measure-cdf` observation is also a smoke of the measured-command path, 
 Any storage-sensitive measurement recorded before the gp3 tuning is diagnostic only, because the host was capped at the default 125 MiB/s gp3 throughput at that time.
 
 The SSH key rotation proves continued access to this live tranche host, but the replacement private key remains ignored local state under `target/`; it is not committed evidence and must still be torn down with the instance at tranche close.
+
+The preflight result was collected against a dirty local revision because this ticket intentionally validated the helper changes before commit. Future promotion cells should either be clean-commit measurements or explicitly label the dirty diff and retain the patch context.
