@@ -202,6 +202,13 @@ Depends on G1-G3; DuckDB bulk and deterministic scaling closeout are complete.
   - CDF HF mirror to DuckDB completed in `real 36.51s` (`user 46.33`, `sys 4.94`, max RSS about 2.71 GiB) for 41,169,720 rows and 215 segments. Phase telemetry reports `source_read=16.14s` with growing spool, `decode=10.97s`, `segment_encode=9.62s`, `persist_hash=1.62s`, `destination_ingress=32.35s`, and `package_execution=33.51s`.
   - The tuned local-files-to-DuckDB control did not complete and must not be counted as a throughput cell. After local schema pin completed in `0.04s`, the run was terminated at `304.55s`; the CDF process was waiting on `futex_wait_queue`, consuming about `2.7%` CPU, with about `2.0 GiB` RSS and about `345 MiB` written. This points to a fast-source/backpressure/DuckDB-ingress blocking bug that remote latency can mask.
   - Current conclusion: G4 remains active and higher-priority than lifecycle migration. The immediate owner is not more remote range-read tuning; it is the local fast-source/DuckDB blocking path plus the package/destination hot path that still dominates the successful HF run.
+- EC2 scheduler-default admission repair:
+  - Code under test: `5e2f0e0a2b3fb4602a5e9368939982e2bc49b2f4+dirty`, where the dirty diff joins `StagedDurableSegments` destination in-flight pressure into default job admission and leaves explicit `--jobs` as the operator overdrive knob.
+  - Machine storage: `.10x/evidence/.storage/2026-07-18-p3-g4-ec2-scheduler-default-summary.json`, `.10x/evidence/.storage/2026-07-18-p3-g4-ec2-scheduler-default-local-run.json`, `.10x/evidence/.storage/2026-07-18-p3-g4-ec2-scheduler-default-hf-run.json`.
+  - Local full-year TLC files to DuckDB now completes by default in `33.83s` (`user 46.27`, `sys 2.90`, max RSS about 2.16 GiB), 41,169,720 rows and 215 segments, replacing the previous `304.55s` low-CPU termination.
+  - HF full-year TLC mirror to DuckDB completes by default in `36.98s` (`user 46.96`, `sys 4.90`, max RSS about 2.27 GiB), preserving the tuned remote envelope class.
+  - Both plans report `effective_jobs.jobs = 2`, limiting factor `staged_destination_in_flight`, while source capability remains 16-way. This is a generic staged-ingress pressure join, not a destination-identity branch or a hidden hard cap; explicit job configuration remains the overdrive knob.
+  - Current conclusion: the local fast-source/DuckDB blocking regression is repaired enough to retain the default scheduler change. G4 remains active because the successful local and remote walls are still dominated by destination/package execution (`destination_ingress` about 33 seconds), far beyond the TLC envelope.
 
 ## Review
 

@@ -257,6 +257,7 @@ pub struct AdmissionCeilings {
     pub managed_memory_bytes: u64,
     pub transport_connections: Option<u16>,
     pub destination_writers: Option<u16>,
+    pub staged_destination_in_flight: Option<u16>,
     pub lane_concurrency: Option<u16>,
     pub scope_concurrency: Option<u16>,
 }
@@ -268,6 +269,7 @@ impl AdmissionCeilings {
             || self.configured_jobs == Some(0)
             || self.transport_connections == Some(0)
             || self.destination_writers == Some(0)
+            || self.staged_destination_in_flight == Some(0)
             || self.lane_concurrency == Some(0)
             || self.scope_concurrency == Some(0)
         {
@@ -473,15 +475,22 @@ pub fn resolve_runtime_scheduler(
         == DestinationIngressMode::StagedDurableSegments)
         .then_some(destination.max_in_flight_segments)
         .flatten();
-    // A destination writer is a separate bounded lane. It must not reduce
-    // upstream extraction/decode concurrency; channel backpressure joins the
-    // lanes without turning a single-writer destination into a one-core run.
+    let default_staged_destination_pressure = (configured_jobs.is_none()
+        && destination.ingress_mode == DestinationIngressMode::StagedDurableSegments)
+        .then_some(destination.max_in_flight_segments)
+        .flatten();
+    // Staged destinations are a bounded downstream pressure authority, not a hidden unbounded
+    // queue. By default, join their declared in-flight window into source admission so a fast
+    // local source cannot overdrive a single-writer staged destination into low-progress waits.
+    // An explicit --jobs/configured_jobs value remains the operator knob for deliberate
+    // overdrive experiments; explicit configuration is still bounded by source, CPU, and memory.
     let ceilings = AdmissionCeilings {
         configured_jobs,
         container_cpu_slots: host.logical_cpu_slots,
         managed_memory_bytes: available_memory,
         transport_connections: None,
         destination_writers: None,
+        staged_destination_in_flight: default_staged_destination_pressure,
         lane_concurrency: source
             .blocking_lane
             .as_ref()
@@ -607,6 +616,10 @@ pub fn resolve_effective_jobs(
         (
             "destination_writers",
             ceilings.destination_writers.unwrap_or(u16::MAX),
+        ),
+        (
+            "staged_destination_in_flight",
+            ceilings.staged_destination_in_flight.unwrap_or(u16::MAX),
         ),
         (
             "blocking_lane",
@@ -940,6 +953,7 @@ mod tests {
             managed_memory_bytes: 1_000,
             transport_connections: Some(5),
             destination_writers: Some(4),
+            staged_destination_in_flight: None,
             lane_concurrency: None,
             scope_concurrency: Some(3),
         };
@@ -1003,6 +1017,79 @@ mod tests {
         );
         assert!(
             compile_partition_retry(&unit_only, PartitionRetrySafety::ImmutableContent).is_err()
+        );
+    }
+
+    #[test]
+    fn effective_jobs_join_staged_destination_pressure_by_default_only() {
+        let source = SourceExecutionCapabilities {
+            minimum_poll_bytes: 10,
+            maximum_poll_bytes: 100,
+            minimum_decode_bytes: 10,
+            maximum_decode_bytes: 100,
+            maximum_concurrency: 64,
+            useful_concurrency: 64,
+            executor_class: SourceExecutorClass::Cpu,
+            blocking_lane: None,
+            pausable: true,
+            spillable: true,
+            idempotent_reads: true,
+            reopenable: true,
+            resumable: true,
+            speculative_safe: true,
+            retry_granularity: crate::SourceRetryGranularity::Partition,
+            retryable_errors: vec![cdf_kernel::ErrorKind::Transient],
+            retry_policy: Some(crate::SourceRetryPolicy::default()),
+            attestation: crate::SourceAttestationStrength::ImmutableContent,
+            rate_limit: None,
+            quota_authority: None,
+            canonical_order: true,
+            bounded: true,
+            batch_memory: crate::SourceBatchMemoryContract::Preaccounted,
+            telemetry_version: "v1".to_owned(),
+        };
+        let defaulted = resolve_effective_jobs(
+            12,
+            &source,
+            &AdmissionCeilings {
+                configured_jobs: None,
+                container_cpu_slots: 16,
+                managed_memory_bytes: 10_000,
+                transport_connections: None,
+                destination_writers: None,
+                staged_destination_in_flight: Some(2),
+                lane_concurrency: None,
+                scope_concurrency: None,
+            },
+        )
+        .unwrap();
+        assert_eq!(defaulted.jobs, 2);
+        assert_eq!(
+            defaulted.limiting_factors,
+            vec!["staged_destination_in_flight"]
+        );
+
+        let explicit = resolve_effective_jobs(
+            12,
+            &source,
+            &AdmissionCeilings {
+                configured_jobs: Some(12),
+                container_cpu_slots: 16,
+                managed_memory_bytes: 10_000,
+                transport_connections: None,
+                destination_writers: None,
+                staged_destination_in_flight: None,
+                lane_concurrency: None,
+                scope_concurrency: None,
+            },
+        )
+        .unwrap();
+        assert_eq!(explicit.jobs, 12);
+        assert!(
+            !explicit
+                .limiting_factors
+                .iter()
+                .any(|factor| factor == "staged_destination_in_flight")
         );
     }
 

@@ -18,11 +18,22 @@ Tuned-host measurements:
 - Tuned HF phase telemetry: `source_read=16.14s` using growing spool, `decode=10.97s`, `segment_encode=9.62s`, `persist_hash=1.62s`, `destination_ingress=32.35s`, `package_execution=33.51s`, and `destination_write_receipt=0.87s`.
 - CDF local files to DuckDB did not produce a valid throughput cell: after local schema pin completed in `0.04s`, the local run was terminated at `304.55s` with the CDF process waiting on `futex_wait_queue`, about `2.7%` CPU, about `2.0 GiB` RSS, and only about `345 MiB` written. This is a new high-priority local-fast-source blocking signature, not a benchmark pass/fail number.
 
+Scheduler-default repair measurements, same tuned host:
+
+- Code under test: `5e2f0e0a2b3fb4602a5e9368939982e2bc49b2f4+dirty`, where the dirty diff joins `StagedDurableSegments` destination in-flight pressure into default job admission and leaves explicit `--jobs` as the operator overdrive knob.
+- CDF local files to DuckDB now completes in `33.83s` (`user=46.27`, `sys=2.90`, max RSS about `2.16 GiB`) for 41,169,720 rows and 215 segments, instead of the previous `304.55s` low-CPU termination.
+- CDF remote HF mirror to DuckDB completes in `36.98s` (`user=46.96`, `sys=4.90`, max RSS about `2.27 GiB`) for 41,169,720 rows and 215 segments, preserving the tuned remote envelope class.
+- Both local and remote plans report `effective_jobs.jobs = 2` and limiting factor `staged_destination_in_flight`; source capability remains 16-way. This confirms the default is a generic downstream-pressure admission join, not a destination-identity branch or hidden hard cap. Explicit job configuration remains outside this default join.
+- Remaining owner: package/destination hot path. Local source read drops to about `2.02s` while `destination_ingress` remains about `32.82s`; remote adds `13.96s` aggregate growing-spool source read but wall remains destination/package dominated.
+
 Tuned machine artifacts:
 
 - `.10x/evidence/.storage/2026-07-18-p3-g4-ec2-tuned-tlc-summary.json`
 - `.10x/evidence/.storage/2026-07-18-p3-g4-ec2-tuned-hf-tlc-duckdb-run.json`
 - `.10x/evidence/.storage/2026-07-18-p3-g4-ec2-tuned-hf-tlc-pin.json`
+- `.10x/evidence/.storage/2026-07-18-p3-g4-ec2-scheduler-default-summary.json`
+- `.10x/evidence/.storage/2026-07-18-p3-g4-ec2-scheduler-default-local-run.json`
+- `.10x/evidence/.storage/2026-07-18-p3-g4-ec2-scheduler-default-hf-run.json`
 
 Same-host measurements:
 
@@ -50,10 +61,13 @@ On the EC2 host created by `.10x/tickets/2026-07-18-p3-l6-ec2-benchmark-host.md`
 4. Repinned `tlc.yellow`; the schema authority guard correctly rejected the one-month pin before the repin.
 5. Downloaded all 12 mirror files with `curl -L` and `xargs -P12`.
 6. Ran CDF remote-to-DuckDB, local-to-DuckDB, and local-to-filesystem-Parquet controls with `/usr/bin/time` and stored JSON run reports where available.
+7. Re-synchronized and rebuilt the same host with the staged-destination default-admission patch, then ran default local and HF mirror 12-month TLC-to-DuckDB controls without explicit `--jobs`.
 
 ## What it supports or challenges
 
 This supports G4 by moving the TLC envelope evidence from laptop triage to host-labeled EC2 measurement. The tuned-host rerun challenges the prior working assumption that remote transfer overlap remains the sole dominant owner: CDF can complete the HF mirror full-year run on the tuned host, but about 33.5 seconds of the wall is still package/destination execution and about 32.4 seconds is DuckDB ingress. It also challenges the assumption that fast local input is a simple non-regression control: the tuned-host local-files-to-DuckDB control entered a low-CPU futex wait after partial writes, which suggests a backpressure/channel/destination-ingress scheduling bug that slower remote input can mask.
+
+The scheduler-default repair supports retaining a default-admission change: the pathological local fast-source/DuckDB run moved from low-CPU non-completion to a completed 33.83-second run, while the remote HF run stayed in the same class as the previous tuned-host remote measurement. The evidence also narrows the next G4 owner: the admission bug is no longer hiding the local control, and the remaining gap is destination/package execution rather than source-frontier starvation.
 
 The pre-tuning run still has diagnostic value: it proved the benchmark host was originally too slow at durable storage for promotion evidence. After tuning, the HF wall improved from `43.39s` to `36.51s`, but the result is still far above the P3 target envelope.
 

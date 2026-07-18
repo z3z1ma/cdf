@@ -1,0 +1,228 @@
+{
+  "artifact_dir": "/home/ec2-user/cdf-bench/repo/target/cdf-benchmarks/g4-scheduler-default-20260718085558",
+  "hf-file_manifest": {
+    "changed_file_count": 12,
+    "no_changed_files": false,
+    "total_file_count": 12,
+    "unchanged_file_count": 0
+  },
+  "hf-ok": true,
+  "hf-package_id": "pkg-tlc-yellow-56946-1784365003505137292",
+  "hf-phases": {
+    "checkpoint_gate": {
+      "context": null,
+      "duration_ms": 1.137,
+      "input_bytes": 0,
+      "operations": 1,
+      "output_bytes": 0
+    },
+    "decode": {
+      "context": null,
+      "duration_ms": 10304.399,
+      "input_bytes": 5849047168,
+      "operations": 657,
+      "output_bytes": 5849047168
+    },
+    "destination_ingress": {
+      "context": null,
+      "duration_ms": 33034.965,
+      "input_bytes": 1513310278,
+      "operations": 215,
+      "output_bytes": 1513310278
+    },
+    "destination_write_receipt": {
+      "context": null,
+      "duration_ms": 880.021,
+      "input_bytes": 1513310278,
+      "operations": 215,
+      "output_bytes": 1513310278
+    },
+    "package_execution": {
+      "context": null,
+      "duration_ms": 33831.711,
+      "input_bytes": 1513310278,
+      "operations": 215,
+      "output_bytes": 1513310278
+    },
+    "package_finalize": {
+      "context": null,
+      "duration_ms": 7.998,
+      "input_bytes": 1513310278,
+      "operations": 1,
+      "output_bytes": 1513667638
+    },
+    "persist_hash": {
+      "context": null,
+      "duration_ms": 1626.651,
+      "input_bytes": 1513310278,
+      "operations": 215,
+      "output_bytes": 1513310278
+    },
+    "segment_encode": {
+      "context": null,
+      "duration_ms": 9825.198,
+      "input_bytes": 6019599292,
+      "operations": 215,
+      "output_bytes": 1513310278
+    },
+    "source_read": {
+      "context": {
+        "kind": "source_read",
+        "mode": "growing_spool"
+      },
+      "duration_ms": 13956.412,
+      "input_bytes": 693103829,
+      "operations": 36,
+      "output_bytes": 693001713
+    },
+    "validation_normalization": {
+      "context": null,
+      "duration_ms": 212.025,
+      "input_bytes": 11698094336,
+      "operations": 1266,
+      "output_bytes": 11868646460
+    }
+  },
+  "hf-pin-bytes": 7638,
+  "hf-plan-bytes": 81461,
+  "hf-row_count": 41169720,
+  "hf-run-bytes": 404109,
+  "hf-run_id": "run-3777ea27013f01100e1174ca9e9863c1",
+  "hf-scheduler": {
+    "container_cpu_slots": 16,
+    "destination_in_flight_segments": 2,
+    "destination_writer_concurrency": 1,
+    "effective_jobs": {
+      "cpu_jobs": 16,
+      "jobs": 2,
+      "limiting_factors": [
+        "staged_destination_in_flight"
+      ],
+      "memory_jobs": 43
+    },
+    "managed_memory_available_bytes": 2899102924,
+    "source_bounded": true,
+    "source_lane_concurrency": 16,
+    "source_maximum_concurrency": 16,
+    "source_quota_authority": null,
+    "source_rate_limit": null,
+    "source_useful_concurrency": 16,
+    "transport_connection_limit": null
+  },
+  "hf-segment_count": 215,
+  "hf-time": "hf_default_real=36.98 user=46.96 sys=4.90 maxrss_kb=2377820",
+  "host_class": "host-class-95da083e15eebd1c",
+  "local-file_manifest": {
+    "changed_file_count": 12,
+    "no_changed_files": false,
+    "total_file_count": 12,
+    "unchanged_file_count": 0
+  },
+  "local-ok": true,
+  "local-package_id": "pkg-tlc-yellow-56794-1784364958724043936",
+  "local-phases": {
+    "checkpoint_gate": {
+      "context": null,
+      "duration_ms": 1.165,
+      "input_bytes": 0,
+      "operations": 1,
+      "output_bytes": 0
+    },
+    "decode": {
+      "context": null,
+      "duration_ms": 169.987,
+      "input_bytes": 5849047168,
+      "operations": 657,
+      "output_bytes": 5849047168
+    },
+    "destination_ingress": {
+      "context": null,
+      "duration_ms": 32824.165,
+      "input_bytes": 1513310278,
+      "operations": 215,
+      "output_bytes": 1513310278
+    },
+    "destination_write_receipt": {
+      "context": null,
+      "duration_ms": 667.074,
+      "input_bytes": 1513310278,
+      "operations": 215,
+      "output_bytes": 1513310278
+    },
+    "package_execution": {
+      "context": null,
+      "duration_ms": 33031.373,
+      "input_bytes": 1513310278,
+      "operations": 215,
+      "output_bytes": 1513310278
+    },
+    "package_finalize": {
+      "context": null,
+      "duration_ms": 7.32,
+      "input_bytes": 1513310278,
+      "operations": 1,
+      "output_bytes": 1513649036
+    },
+    "persist_hash": {
+      "context": null,
+      "duration_ms": 1591.119,
+      "input_bytes": 1513310278,
+      "operations": 215,
+      "output_bytes": 1513310278
+    },
+    "segment_encode": {
+      "context": null,
+      "duration_ms": 9866.479,
+      "input_bytes": 6019599292,
+      "operations": 215,
+      "output_bytes": 1513310278
+    },
+    "source_read": {
+      "context": {
+        "kind": "source_read",
+        "mode": "mixed_access"
+      },
+      "duration_ms": 2021.843,
+      "input_bytes": 1385928074,
+      "operations": 872,
+      "output_bytes": 693001713
+    },
+    "validation_normalization": {
+      "context": null,
+      "duration_ms": 212.205,
+      "input_bytes": 11698094336,
+      "operations": 1266,
+      "output_bytes": 11868646460
+    }
+  },
+  "local-pin-bytes": 7638,
+  "local-plan-bytes": 73196,
+  "local-row_count": 41169720,
+  "local-run-bytes": 404113,
+  "local-run_id": "run-b65fd2c943f4b68f33e44005e71bcd4e",
+  "local-scheduler": {
+    "container_cpu_slots": 16,
+    "destination_in_flight_segments": 2,
+    "destination_writer_concurrency": 1,
+    "effective_jobs": {
+      "cpu_jobs": 16,
+      "jobs": 2,
+      "limiting_factors": [
+        "staged_destination_in_flight"
+      ],
+      "memory_jobs": 43
+    },
+    "managed_memory_available_bytes": 2899102924,
+    "source_bounded": true,
+    "source_lane_concurrency": 16,
+    "source_maximum_concurrency": 16,
+    "source_quota_authority": null,
+    "source_rate_limit": null,
+    "source_useful_concurrency": 16,
+    "transport_connection_limit": null
+  },
+  "local-segment_count": 215,
+  "local-time": "local_default_real=33.83 user=46.27 sys=2.90 maxrss_kb=2264912",
+  "revision": "5e2f0e0a2b3fb4602a5e9368939982e2bc49b2f4+dirty",
+  "storage": "gp3 16000 IOPS / 1000 MiB/s"
+}
