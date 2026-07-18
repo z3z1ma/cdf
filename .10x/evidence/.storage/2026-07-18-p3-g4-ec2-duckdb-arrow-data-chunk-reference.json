@@ -1,0 +1,1 @@
+{"batch_rows": 65536, "checkpoint": true, "include_row_key": true, "kind": "duck_db_arrow_data_chunk_append", "output": "/home/ec2-user/cdf-bench/repo/target/cdf-benchmarks/g4-duckdb-data-chunk-20260718142321/duckdb-arrow-data-chunk.duckdb", "rows": 41169720}
