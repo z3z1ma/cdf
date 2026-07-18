@@ -19,6 +19,7 @@ use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt, SeekFrom};
 
 const DEFAULT_TRANSFER_CHUNK_BYTES: u64 = 4 * 1024 * 1024;
 const DEFAULT_TAIL_RANGE_BYTES: u64 = 32 * 1024 * 1024;
+const SEQUENTIAL_SPOOL_USEFUL_RANGE_CONCURRENCY: u16 = 1;
 
 pub(crate) struct GrowingSpoolSession {
     pub(crate) source: Arc<dyn ByteSource>,
@@ -167,7 +168,10 @@ fn start_growing_spool_with_tail_bytes(
         reopenable: true,
         seekable: true,
         exact_ranges: true,
-        useful_range_concurrency: upstream_capabilities.useful_range_concurrency.max(1),
+        // The growing spool serves exact logical ranges, but those ranges are fed by one
+        // sequential upstream transfer. Advertising the upstream's parallel range budget lets
+        // one Parquet file monopolize shared row-group work without adding network bandwidth.
+        useful_range_concurrency: SEQUENTIAL_SPOOL_USEFUL_RANGE_CONCURRENCY,
         minimum_chunk_bytes: upstream_capabilities.minimum_chunk_bytes,
         maximum_chunk_bytes: upstream_capabilities.maximum_chunk_bytes,
     };
@@ -666,6 +670,10 @@ mod tests {
                     .ok_or_else(|| {
                         CdfError::internal("test growing spool unexpectedly declined admission")
                     })?;
+                    assert_eq!(
+                        session.source.capabilities().useful_range_concurrency,
+                        SEQUENTIAL_SPOOL_USEFUL_RANGE_CONCURRENCY
+                    );
                     let completion = tokio::spawn(session.completion);
                     let prefix = session
                         .source
