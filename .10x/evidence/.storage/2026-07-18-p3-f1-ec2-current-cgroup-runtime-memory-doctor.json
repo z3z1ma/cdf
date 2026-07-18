@@ -1,0 +1,259 @@
+{
+  "ok": true,
+  "command": "doctor",
+  "result": {
+    "checks": [
+      {
+        "name": "project_file",
+        "status": "passed",
+        "message": "cdf.toml parsed and environment resolved",
+        "details": {
+          "project_root": "target/cdf-benchmarks/g4-scheduler-default-20260718085558/local-workspace",
+          "selected_environment": "dev",
+          "compiled_resources": 7,
+          "lockfile_present": true
+        }
+      },
+      {
+        "name": "declarative_resources",
+        "status": "passed",
+        "message": "7 resource(s) compiled"
+      },
+      {
+        "name": "secrets",
+        "status": "passed",
+        "message": "0 secret reference(s) resolved",
+        "details": {
+          "count": 0,
+          "references": []
+        }
+      },
+      {
+        "name": "source.files.fineweb.documents",
+        "status": "failed",
+        "message": "file source inventory probe failed",
+        "details": {
+          "resource_id": "fineweb.documents",
+          "error_kind": "auth"
+        }
+      },
+      {
+        "name": "source.files.fineweb_local.documents",
+        "status": "failed",
+        "message": "file source inventory probe failed",
+        "details": {
+          "resource_id": "fineweb_local.documents",
+          "error_kind": "data"
+        }
+      },
+      {
+        "name": "source.files.github.userdata",
+        "status": "passed",
+        "message": "file source inventory probe passed",
+        "details": {
+          "resource_id": "github.userdata",
+          "candidates": 5
+        }
+      },
+      {
+        "name": "source.files.imdb.training_data",
+        "status": "failed",
+        "message": "file source inventory probe failed",
+        "details": {
+          "resource_id": "imdb.training_data",
+          "error_kind": "auth"
+        }
+      },
+      {
+        "name": "source.files.local.events",
+        "status": "failed",
+        "message": "file source inventory probe failed",
+        "details": {
+          "resource_id": "local.events",
+          "error_kind": "data"
+        }
+      },
+      {
+        "name": "source.files.redpajama.documents",
+        "status": "passed",
+        "message": "file source inventory probe passed",
+        "details": {
+          "resource_id": "redpajama.documents",
+          "candidates": 1
+        }
+      },
+      {
+        "name": "source.files.tlc.yellow",
+        "status": "passed",
+        "message": "file source inventory probe passed",
+        "details": {
+          "resource_id": "tlc.yellow",
+          "candidates": 12
+        }
+      },
+      {
+        "name": "source.postgres.catalog",
+        "status": "skipped",
+        "message": "no Postgres resources are compiled",
+        "details": {
+          "resources": 0
+        }
+      },
+      {
+        "name": "source.python.interpreter",
+        "status": "skipped",
+        "message": "no python.interpreter configured",
+        "details": {
+          "python_resources": 0,
+          "require_free_threaded": false
+        }
+      },
+      {
+        "name": "source.rest.request",
+        "status": "skipped",
+        "message": "no REST resources are compiled",
+        "details": {
+          "resources": 0
+        }
+      },
+      {
+        "name": "destination",
+        "status": "passed",
+        "message": "DuckDB destination capabilities loaded",
+        "details": {
+          "database_path": "target/cdf-benchmarks/g4-scheduler-default-20260718085558/local-workspace/.cdf/dev.duckdb",
+          "kind": "duck_db"
+        }
+      },
+      {
+        "name": "duckdb_icu",
+        "status": "passed",
+        "message": "ICU probe passed",
+        "details": {
+          "available": true,
+          "database_exists": true,
+          "database_path": "target/cdf-benchmarks/g4-scheduler-default-20260718085558/local-workspace/.cdf/dev.duckdb",
+          "probe": "icu_sort_key"
+        }
+      },
+      {
+        "name": "destination_bulk_paths",
+        "status": "passed",
+        "message": "selected measured bulk path arrow_record_batch_appender",
+        "details": {
+          "selected_path": "arrow_record_batch_appender",
+          "evidence_version": "p3-f2-2026-07-14-v2",
+          "paths": [
+            {
+              "path_id": "arrow_record_batch_appender",
+              "version": 1,
+              "ingress_mode": "staged_durable_segments",
+              "writer_model": "single_writer",
+              "ordering": "manifest_order",
+              "rows": {
+                "minimum": 8192,
+                "preferred": 65536,
+                "maximum": 65536
+              },
+              "bytes": {
+                "minimum": 1048576,
+                "preferred": 16777216,
+                "maximum": 67108864
+              },
+              "max_useful_writers": 1,
+              "blocking_lane": "duckdb.connection",
+              "native_internal_parallelism": 1,
+              "external_staging": true,
+              "fallback": "forbidden",
+              "schema_preflight_version": "duckdb-arrow-mapping@1",
+              "measured_evidence_version": "p3-f2-2026-07-14-v2"
+            }
+          ]
+        }
+      },
+      {
+        "name": "runtime_memory_budget",
+        "status": "unsupported",
+        "message": "process budget 4 GiB; managed pool 3.4 GiB; spill budget 8 GiB; not cgroup-enforced",
+        "details": {
+          "budget": {
+            "resolution": {
+              "requested_process_bytes": null,
+              "effective_authority_bytes": 4294967296,
+              "process_budget_bytes": 4294967296,
+              "native_headroom_bytes": 644245094,
+              "managed_pool_bytes": 3650722202,
+              "spill_budget_bytes": 8589934592,
+              "headroom_policy_version": "native-headroom-v1"
+            },
+            "process_budget_source": "default_policy",
+            "spill_budget_source": "default_policy",
+            "memory_authority": {
+              "method": "linux-cgroup-v2",
+              "provider_version": "cdf-runtime-budget-v1",
+              "enforcement": "unavailable",
+              "effective_authority_bytes": 4294967296,
+              "caveats": [
+                "cgroup v2 memory.max is unbounded or unavailable; CDF can resolve a process budget but cannot claim OS memory enforcement from this provider"
+              ],
+              "cgroup_v2": {
+                "root": "/sys/fs/cgroup/user.slice/user-1000.slice/session-781.scope",
+                "max_bytes": null,
+                "current_bytes": 13058048,
+                "peak_bytes": 16097280,
+                "events": {
+                  "high": 0,
+                  "low": 0,
+                  "max": 0,
+                  "oom": 0,
+                  "oom_group_kill": 0,
+                  "oom_kill": 0
+                },
+                "read_errors": {}
+              }
+            }
+          },
+          "managed_memory_snapshot": {
+            "budget_bytes": 3650722202,
+            "current_bytes": 0,
+            "peak_bytes": 0,
+            "flushes": 0,
+            "spill_bytes": 0,
+            "spill_count": 0,
+            "consumers": {},
+            "subcaps": {}
+          }
+        }
+      },
+      {
+        "name": "ledger_destination_drift",
+        "status": "passed",
+        "message": "ledger/destination mirrors match: 1 committed head(s), 215 state segment row(s)",
+        "details": {
+          "state_database": "target/cdf-benchmarks/g4-scheduler-default-20260718085558/local-workspace/.cdf/state.db",
+          "duckdb_database": "target/cdf-benchmarks/g4-scheduler-default-20260718085558/local-workspace/.cdf/dev.duckdb",
+          "mirror_tables": {
+            "loads": true,
+            "state": true
+          },
+          "counts": {
+            "ledger_heads": 1,
+            "expected_loads": 1,
+            "expected_state_rows": 215,
+            "mirror_loads": 1,
+            "mirror_state_rows": 215,
+            "missing_loads": 0,
+            "mismatched_loads": 0,
+            "extra_loads": 0,
+            "missing_state_rows": 0,
+            "mismatched_state_rows": 0,
+            "extra_state_rows": 0
+          },
+          "examples": []
+        }
+      }
+    ],
+    "failed": 4,
+    "unsupported": 1
+  }
+}
