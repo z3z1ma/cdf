@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 
 use arrow_schema::Schema;
-use cdf_kernel::{DestinationProtocol, ResourceStream, Result, SchemaHash};
+use cdf_kernel::{DestinationProtocol, ResourceStream, Result, SchemaHash, WriteDisposition};
 use cdf_runtime::{
     DestinationCommitPlanningInputs, DestinationCommitPlanningOutcome, DestinationDescription,
     DestinationDriver, DestinationHealthProbe, DestinationHealthResult, DestinationHealthStatus,
@@ -11,7 +11,8 @@ use cdf_runtime::{
 };
 
 use crate::{
-    DuckDbDestination,
+    DUCKDB_BULK_PATH_APPENDER, DUCKDB_BULK_PATH_STREAM_SCAN, DuckDbDestination,
+    DuckDbStagedIngressPathPreference,
     package::{field_plan, validate_user_schema_fields},
 };
 
@@ -159,12 +160,17 @@ impl DestinationRuntime for DuckDbDestination {
     }
 
     fn runtime_capabilities(&self) -> DestinationRuntimeCapabilities {
+        let selected_path_id = self.staged_ingress_path.selected_path_id().to_owned();
+        let selected_evidence_version =
+            bulk_path_evidence_version(self.staged_ingress_path).to_owned();
         DestinationRuntimeCapabilities {
             blocking_lanes: vec![cdf_runtime::BlockingLaneSpec {
                 lane_id: "duckdb.connection".to_owned(),
                 maximum_concurrency: 1,
                 cpu_slot_cost: 1,
-                native_internal_parallelism: 1,
+                native_internal_parallelism: native_internal_parallelism_u16(
+                    self.native_resources.internal_threads,
+                ),
                 affinity: cdf_runtime::LaneAffinity::Pinned,
                 interruption: cdf_runtime::InterruptionSafety::CooperativeOnly,
             }],
@@ -182,32 +188,11 @@ impl DestinationRuntime for DuckDbDestination {
             commit_payload_mode: cdf_runtime::DestinationCommitPayloadMode::SegmentStreaming,
             max_in_flight_segments: Some(2),
             max_in_flight_bytes: Some(128 * 1024 * 1024),
-            bulk_paths: vec![cdf_runtime::BulkPathDescriptor {
-                path_id: "arrow_record_batch_appender".to_owned(),
-                version: 1,
-                ingress_mode: DestinationIngressMode::StagedDurableSegments,
-                writer_model: DestinationWriterModel::SingleWriter,
-                ordering: cdf_runtime::BulkOrdering::ManifestOrder,
-                rows: cdf_runtime::BulkSizeRange {
-                    minimum: 8 * 1024,
-                    preferred: 64 * 1024,
-                    maximum: 64 * 1024,
-                },
-                bytes: cdf_runtime::BulkSizeRange {
-                    minimum: 1024 * 1024,
-                    preferred: 16 * 1024 * 1024,
-                    maximum: 64 * 1024 * 1024,
-                },
-                max_useful_writers: 1,
-                blocking_lane: Some("duckdb.connection".to_owned()),
-                native_internal_parallelism: 1,
-                external_staging: true,
-                fallback: cdf_runtime::BulkFallbackMode::Forbidden,
-                schema_preflight_version: "duckdb-arrow-mapping@1".to_owned(),
-                measured_evidence_version: Some("p3-f2-2026-07-14-v2".to_owned()),
-            }],
-            bulk_path: Some("arrow_record_batch_appender".to_owned()),
-            bulk_evidence_version: Some("p3-f2-2026-07-14-v2".to_owned()),
+            bulk_paths: duckdb_bulk_path_descriptors(native_internal_parallelism_u16(
+                self.native_resources.internal_threads,
+            )),
+            bulk_path: Some(selected_path_id),
+            bulk_evidence_version: Some(selected_evidence_version),
             replay_requires_explicit_target: false,
             replay_target_hint: None,
             replay_policy_values: Default::default(),
@@ -222,7 +207,16 @@ impl DestinationRuntime for DuckDbDestination {
         for field in input.output_schema.fields() {
             field_plan(field.as_ref())?;
         }
-        cdf_runtime::BulkPathPreparation::from_capabilities(&self.runtime_capabilities())
+        let capabilities = self.runtime_capabilities();
+        let mut preparation = cdf_runtime::BulkPathPreparation::from_capabilities(&capabilities)?;
+        if matches!(
+            input.commit.map(|commit| &commit.disposition),
+            Some(WriteDisposition::Merge | WriteDisposition::CdcApply)
+        ) {
+            preparation.selected_path_id = DUCKDB_BULK_PATH_APPENDER.to_owned();
+        }
+        preparation.validate()?;
+        Ok(preparation)
     }
 
     fn plan_resource_commit(
@@ -246,6 +240,77 @@ impl DestinationRuntime for DuckDbDestination {
     ) -> Result<()> {
         Ok(())
     }
+}
+
+fn duckdb_bulk_path_descriptors(
+    native_internal_parallelism: u16,
+) -> Vec<cdf_runtime::BulkPathDescriptor> {
+    let appender = cdf_runtime::BulkPathDescriptor {
+        path_id: DUCKDB_BULK_PATH_APPENDER.to_owned(),
+        version: 1,
+        ingress_mode: DestinationIngressMode::StagedDurableSegments,
+        writer_model: DestinationWriterModel::SingleWriter,
+        ordering: cdf_runtime::BulkOrdering::ManifestOrder,
+        rows: cdf_runtime::BulkSizeRange {
+            minimum: 8 * 1024,
+            preferred: 64 * 1024,
+            maximum: 64 * 1024,
+        },
+        bytes: cdf_runtime::BulkSizeRange {
+            minimum: 1024 * 1024,
+            preferred: 16 * 1024 * 1024,
+            maximum: 64 * 1024 * 1024,
+        },
+        max_useful_writers: 1,
+        blocking_lane: Some("duckdb.connection".to_owned()),
+        native_internal_parallelism,
+        external_staging: true,
+        fallback: cdf_runtime::BulkFallbackMode::Forbidden,
+        schema_preflight_version: "duckdb-arrow-mapping@1".to_owned(),
+        measured_evidence_version: Some(
+            bulk_path_evidence_version(DuckDbStagedIngressPathPreference::Appender).to_owned(),
+        ),
+    };
+    let stream_scan = cdf_runtime::BulkPathDescriptor {
+        path_id: DUCKDB_BULK_PATH_STREAM_SCAN.to_owned(),
+        version: 1,
+        ingress_mode: DestinationIngressMode::StagedDurableSegments,
+        writer_model: DestinationWriterModel::SingleWriter,
+        ordering: cdf_runtime::BulkOrdering::ManifestOrder,
+        rows: cdf_runtime::BulkSizeRange {
+            minimum: 8 * 1024,
+            preferred: 64 * 1024,
+            maximum: 64 * 1024,
+        },
+        bytes: cdf_runtime::BulkSizeRange {
+            minimum: 1024 * 1024,
+            preferred: 16 * 1024 * 1024,
+            maximum: 64 * 1024 * 1024,
+        },
+        max_useful_writers: 1,
+        blocking_lane: Some("duckdb.connection".to_owned()),
+        native_internal_parallelism,
+        external_staging: true,
+        fallback: cdf_runtime::BulkFallbackMode::Forbidden,
+        schema_preflight_version: "duckdb-arrow-mapping@1".to_owned(),
+        measured_evidence_version: Some(
+            bulk_path_evidence_version(DuckDbStagedIngressPathPreference::StreamScan).to_owned(),
+        ),
+    };
+    vec![appender, stream_scan]
+}
+
+fn bulk_path_evidence_version(path: DuckDbStagedIngressPathPreference) -> &'static str {
+    match path {
+        DuckDbStagedIngressPathPreference::Appender => "p3-f2-2026-07-14-v2",
+        DuckDbStagedIngressPathPreference::StreamScan => {
+            "p3-g4-2026-07-18-arrow-stream-scan-reference-v1"
+        }
+    }
+}
+
+fn native_internal_parallelism_u16(value: i64) -> u16 {
+    u16::try_from(value.max(1)).unwrap_or(u16::MAX)
 }
 
 impl cdf_runtime::StagedSegmentIngress for DuckDbDestination {

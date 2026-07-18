@@ -8,15 +8,16 @@ use crate::{
 pub struct DuckDbDestination {
     database_path: PathBuf,
     sheet: DestinationSheet,
-    native_resources: DuckDbNativeResources,
+    pub(crate) native_resources: DuckDbNativeResources,
+    pub(crate) staged_ingress_path: DuckDbStagedIngressPathPreference,
     pub(crate) pending_corrections: Arc<Mutex<BTreeMap<PlanId, DuckDbCorrectionContext>>>,
 }
 
 #[derive(Clone)]
-struct DuckDbNativeResources {
-    memory_limit_bytes: u64,
-    maximum_temp_directory_bytes: u64,
-    internal_threads: i64,
+pub(crate) struct DuckDbNativeResources {
+    pub(crate) memory_limit_bytes: u64,
+    pub(crate) maximum_temp_directory_bytes: u64,
+    pub(crate) internal_threads: i64,
     scratch_reservation: Option<Arc<cdf_runtime::SpillReservation>>,
 }
 
@@ -25,6 +26,12 @@ struct DuckDbNativeResourceOverrides {
     memory_limit_bytes: Option<u64>,
     maximum_temp_directory_bytes: Option<u64>,
     internal_threads: Option<i64>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum DuckDbStagedIngressPathPreference {
+    Appender,
+    StreamScan,
 }
 
 impl std::fmt::Debug for DuckDbNativeResources {
@@ -63,10 +70,27 @@ struct DuckDbArrowWriter {
 }
 
 #[derive(Debug)]
+struct DuckDbStreamScanWriter {
+    raw: crate::raw::RawDuckDbConnection,
+    _lock: WriterLock,
+    write_target: TargetRef,
+    first_row_key: Option<u64>,
+    next_row_key: Option<u64>,
+    rows_received: u64,
+    duckdb_version: String,
+}
+
+#[derive(Debug)]
+enum DuckDbStagedWriter {
+    Appender(DuckDbArrowWriter),
+    StreamScan(DuckDbStreamScanWriter),
+}
+
+#[derive(Debug)]
 struct DuckDbStagedIngressSession {
     destination: DuckDbDestination,
     request: cdf_runtime::StagedIngressRequest,
-    writer: Option<DuckDbArrowWriter>,
+    writer: Option<DuckDbStagedWriter>,
     migrations: Vec<MigrationRecord>,
     accepted: Vec<cdf_runtime::StagedSegmentIdentity>,
 }
@@ -198,8 +222,18 @@ impl DuckDbDestination {
             database_path,
             sheet: duckdb_sheet()?,
             native_resources: DuckDbNativeResources::conservative(),
+            staged_ingress_path: DuckDbStagedIngressPathPreference::from_env()?,
             pending_corrections: Arc::new(Mutex::new(BTreeMap::new())),
         })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn with_staged_ingress_path_for_test(
+        mut self,
+        path: DuckDbStagedIngressPathPreference,
+    ) -> Self {
+        self.staged_ingress_path = path;
+        self
     }
 
     pub fn with_execution_services(
@@ -318,6 +352,78 @@ impl DuckDbDestination {
                 next_row_key: Some(first_row_key),
                 persisted_fields,
                 user_field_count: user_fields.len(),
+                rows_received: 0,
+                duckdb_version,
+            },
+            migrations,
+        ))
+    }
+
+    fn start_stream_scan_writer(
+        &self,
+        request: &cdf_runtime::StagedIngressRequest,
+    ) -> Result<(DuckDbStreamScanWriter, Vec<MigrationRecord>)> {
+        if request.binding().disposition == WriteDisposition::Merge {
+            return Err(CdfError::contract(
+                "DuckDB stream-scan staged ingress does not support merge",
+            ));
+        }
+        validate_user_schema_fields(request.output_schema())?;
+        let user_fields = request
+            .output_schema()
+            .fields()
+            .iter()
+            .map(|field| field_plan(field.as_ref()))
+            .collect::<Result<Vec<_>>>()?;
+        validate_field_names(&user_fields)?;
+        let persisted_fields = persistence_fields(&user_fields);
+        let target = parse_target(&request.binding().target)?;
+        let lock = self.acquire_writer_lock()?;
+        let planning_conn = self.open_connection()?;
+        ensure_mirror_tables(&planning_conn)?;
+        let table_plan = plan_table(
+            &planning_conn,
+            target,
+            &persisted_fields,
+            request.binding().disposition.clone(),
+        )?;
+        drop(planning_conn);
+        let migrations = table_plan
+            .ddl
+            .iter()
+            .enumerate()
+            .map(|(index, ddl)| MigrationRecord {
+                migration_id: format!("duckdb-ddl-{:03}", index + 1),
+                description: ddl.clone(),
+            })
+            .collect::<Vec<_>>();
+        let mut raw = crate::raw::RawDuckDbConnection::open(&self.database_path)?;
+        raw.configure_resources(
+            self.native_resources.memory_limit_bytes,
+            self.native_resources.maximum_temp_directory_bytes,
+            self.native_resources.internal_threads,
+        )?;
+        raw.execute("BEGIN TRANSACTION")?;
+        ensure_mirror_tables_raw(&mut raw)?;
+        for ddl in &table_plan.ddl {
+            raw.execute(ddl)?;
+        }
+        if request.binding().disposition == WriteDisposition::Replace && table_plan.ddl.is_empty() {
+            return Err(CdfError::internal(
+                "replace disposition must plan a table rebuild",
+            ));
+        }
+        let first_row_key = next_row_key_raw(&mut raw)?;
+        let duckdb_version = raw
+            .query_optional_string("PRAGMA version", &[])?
+            .unwrap_or_else(|| "unknown".to_owned());
+        Ok((
+            DuckDbStreamScanWriter {
+                raw,
+                _lock: lock,
+                write_target: table_plan.target,
+                first_row_key: Some(first_row_key),
+                next_row_key: Some(first_row_key),
                 rows_received: 0,
                 duckdb_version,
             },
@@ -535,6 +641,35 @@ impl DuckDbNativeResourceOverrides {
     }
 }
 
+impl DuckDbStagedIngressPathPreference {
+    fn from_env() -> Result<Self> {
+        match std::env::var(DUCKDB_STAGED_INGRESS_PATH_ENV) {
+            Ok(value) => Self::parse(DUCKDB_STAGED_INGRESS_PATH_ENV, &value),
+            Err(std::env::VarError::NotPresent) => Ok(Self::Appender),
+            Err(std::env::VarError::NotUnicode(_)) => Err(CdfError::contract(format!(
+                "{DUCKDB_STAGED_INGRESS_PATH_ENV} must be valid UTF-8 when set"
+            ))),
+        }
+    }
+
+    fn parse(label: &str, value: &str) -> Result<Self> {
+        match value.trim() {
+            "appender" | DUCKDB_BULK_PATH_APPENDER => Ok(Self::Appender),
+            "stream_scan" | DUCKDB_BULK_PATH_STREAM_SCAN => Ok(Self::StreamScan),
+            other => Err(CdfError::contract(format!(
+                "{label} must be `appender` or `stream_scan`, got {other:?}"
+            ))),
+        }
+    }
+
+    pub(crate) const fn selected_path_id(self) -> &'static str {
+        match self {
+            Self::Appender => DUCKDB_BULK_PATH_APPENDER,
+            Self::StreamScan => DUCKDB_BULK_PATH_STREAM_SCAN,
+        }
+    }
+}
+
 fn optional_env_byte_size(name: &str) -> Result<Option<u64>> {
     match std::env::var(name) {
         Ok(value) => cdf_kernel::parse_human_byte_size(name, &value).map(Some),
@@ -650,22 +785,30 @@ impl DuckDbStagedIngressSession {
             cdf_runtime::DestinationReceiptReportingPolicy::DestinationCommit { duplicate: false },
         ))
     }
-}
 
-impl cdf_runtime::StagedIngressSession for DuckDbStagedIngressSession {
-    fn stage_stream(&mut self, stream: &mut dyn cdf_runtime::StagedSegmentStream) -> Result<()> {
-        let Some(first_segment) = stream.next_segment()? else {
-            return Ok(());
-        };
+    fn stage_appender_stream(
+        &mut self,
+        first_segment: cdf_runtime::StagedSegmentRequest,
+        stream: &mut dyn cdf_runtime::StagedSegmentStream,
+    ) -> Result<()> {
         if self.writer.is_none() {
             let (writer, migrations) = self.destination.start_staged_writer(&self.request)?;
-            self.writer = Some(writer);
+            self.writer = Some(DuckDbStagedWriter::Appender(writer));
             self.migrations = migrations;
         }
-        let writer = self
-            .writer
-            .as_mut()
-            .ok_or_else(|| CdfError::internal("DuckDB staged writer is not initialized"))?;
+        let writer = match self.writer.as_mut() {
+            Some(DuckDbStagedWriter::Appender(writer)) => writer,
+            Some(DuckDbStagedWriter::StreamScan(_)) => {
+                return Err(CdfError::internal(
+                    "DuckDB staged ingress mixed appender and stream-scan writers",
+                ));
+            }
+            None => {
+                return Err(CdfError::internal(
+                    "DuckDB staged writer is not initialized",
+                ));
+            }
+        };
         let merge = self.request.binding().disposition == WriteDisposition::Merge;
         let mut column_names = writer
             .persisted_fields
@@ -748,6 +891,77 @@ impl cdf_runtime::StagedIngressSession for DuckDbStagedIngressSession {
         Ok(())
     }
 
+    fn stage_stream_scan(
+        &mut self,
+        first_segment: cdf_runtime::StagedSegmentRequest,
+        stream: &mut dyn cdf_runtime::StagedSegmentStream,
+    ) -> Result<()> {
+        if self.request.binding().disposition == WriteDisposition::Merge {
+            return Err(CdfError::contract(
+                "DuckDB stream-scan staged ingress does not support merge",
+            ));
+        }
+        if self.writer.is_none() {
+            let (writer, migrations) = self.destination.start_stream_scan_writer(&self.request)?;
+            self.writer = Some(DuckDbStagedWriter::StreamScan(writer));
+            self.migrations = migrations;
+        }
+        let writer = match self.writer.as_mut() {
+            Some(DuckDbStagedWriter::StreamScan(writer)) => writer,
+            Some(DuckDbStagedWriter::Appender(_)) => {
+                return Err(CdfError::internal(
+                    "DuckDB staged ingress mixed stream-scan and appender writers",
+                ));
+            }
+            None => {
+                return Err(CdfError::internal(
+                    "DuckDB stream-scan writer is not initialized",
+                ));
+            }
+        };
+        let next_row_key = writer.next_row_key.ok_or_else(|| {
+            CdfError::internal("DuckDB staged row-key allocator is not initialized")
+        })?;
+        let view_name = staging_table_name();
+        let mut arrow_stream = crate::stream_scan::StagedArrowStream::new(
+            &self.request,
+            stream,
+            first_segment,
+            next_row_key,
+            &self.accepted,
+        )?;
+        writer
+            .raw
+            .register_arrow_stream_scan(&view_name, arrow_stream.stream_mut())?;
+        self.request.mutation_guard().assert_current()?;
+        writer.raw.execute(format!(
+            "INSERT INTO {} SELECT * FROM {}",
+            writer.write_target.sql_name(),
+            quote_ident(&view_name)
+        ))?;
+        let outcome = arrow_stream.outcome()?;
+        writer.next_row_key = Some(outcome.next_row_key);
+        writer.rows_received = writer
+            .rows_received
+            .checked_add(outcome.rows_received)
+            .ok_or_else(|| CdfError::data("DuckDB staged row count overflowed"))?;
+        self.accepted.extend(outcome.accepted);
+        Ok(())
+    }
+}
+
+impl cdf_runtime::StagedIngressSession for DuckDbStagedIngressSession {
+    fn stage_stream(&mut self, stream: &mut dyn cdf_runtime::StagedSegmentStream) -> Result<()> {
+        let Some(first_segment) = stream.next_segment()? else {
+            return Ok(());
+        };
+        if self.request.bulk_path().descriptor.path_id == DUCKDB_BULK_PATH_STREAM_SCAN {
+            self.stage_stream_scan(first_segment, stream)
+        } else {
+            self.stage_appender_stream(first_segment, stream)
+        }
+    }
+
     fn snapshot(&self) -> Result<cdf_runtime::StagingSnapshot> {
         Ok(cdf_runtime::StagingSnapshot {
             attempt_id: self.request.attempt_id().clone(),
@@ -766,11 +980,16 @@ impl cdf_runtime::StagedIngressSession for DuckDbStagedIngressSession {
         let Some(writer) = self.writer.take() else {
             return (*self).bind_empty(binding);
         };
-        if let Some(receipt) = find_duplicate_receipt(&writer.conn, binding.commit())? {
-            writer
-                .conn
-                .execute_batch("ROLLBACK")
-                .map_err(|error| duckdb_error("rollback duplicate staged transaction", error))?;
+        let mut writer = writer;
+        if let Some(receipt) = match &mut writer {
+            DuckDbStagedWriter::Appender(writer) => {
+                find_duplicate_receipt(&writer.conn, binding.commit())?
+            }
+            DuckDbStagedWriter::StreamScan(writer) => {
+                find_duplicate_receipt_raw(&mut writer.raw, binding.commit())?
+            }
+        } {
+            rollback_staged_writer(&mut writer, "rollback duplicate staged transaction")?;
             return Ok(cdf_runtime::DestinationCommitOutcome::new(
                 receipt,
                 cdf_runtime::DestinationReceiptReportingPolicy::DestinationCommit {
@@ -778,22 +997,41 @@ impl cdf_runtime::StagedIngressSession for DuckDbStagedIngressSession {
                 },
             ));
         }
-        let counts = match binding.commit().disposition {
-            WriteDisposition::Append | WriteDisposition::Replace => CommitCounts {
+        let counts = match (&mut writer, binding.commit().disposition.clone()) {
+            (
+                DuckDbStagedWriter::Appender(writer),
+                WriteDisposition::Append | WriteDisposition::Replace,
+            ) => CommitCounts {
                 rows_written: writer.rows_received,
                 rows_inserted: Some(writer.rows_received),
                 rows_updated: Some(0),
                 rows_deleted: Some(0),
             },
-            WriteDisposition::Merge => finalize_arrow_merge(
-                &writer.conn,
-                &writer.target,
-                &writer.write_target,
-                &writer.persisted_fields,
-                writer.user_field_count,
-                &self.request.binding().merge_keys,
-            )?,
-            WriteDisposition::CdcApply => {
+            (DuckDbStagedWriter::Appender(writer), WriteDisposition::Merge) => {
+                finalize_arrow_merge(
+                    &writer.conn,
+                    &writer.target,
+                    &writer.write_target,
+                    &writer.persisted_fields,
+                    writer.user_field_count,
+                    &self.request.binding().merge_keys,
+                )?
+            }
+            (
+                DuckDbStagedWriter::StreamScan(writer),
+                WriteDisposition::Append | WriteDisposition::Replace,
+            ) => CommitCounts {
+                rows_written: writer.rows_received,
+                rows_inserted: Some(writer.rows_received),
+                rows_updated: Some(0),
+                rows_deleted: Some(0),
+            },
+            (DuckDbStagedWriter::StreamScan(_), WriteDisposition::Merge) => {
+                return Err(CdfError::contract(
+                    "DuckDB stream-scan staged ingress does not support merge",
+                ));
+            }
+            (_, WriteDisposition::CdcApply) => {
                 return Err(CdfError::contract(
                     "DuckDB destination does not support cdc_apply",
                 ));
@@ -817,32 +1055,15 @@ impl cdf_runtime::StagedIngressSession for DuckDbStagedIngressSession {
             &ReceiptBuildContext {
                 migrations: &self.migrations,
                 committed_at_ms,
-                duckdb_version: &writer.duckdb_version,
+                duckdb_version: staged_writer_duckdb_version(&writer),
                 database_path: &self.destination.database_path,
                 lock_path: &self.destination.lock_path(),
             },
         )?;
-        advance_row_key_allocator(
-            &writer.conn,
-            writer
-                .first_row_key
-                .ok_or_else(|| CdfError::internal("DuckDB staged first row key is absent"))?,
-            writer
-                .next_row_key
-                .ok_or_else(|| CdfError::internal("DuckDB staged next row key is absent"))?,
-        )?;
-        insert_mirrors(
-            &writer.conn,
-            binding.commit(),
-            &segment_acks,
-            &receipt,
-            writer.first_row_key,
-        )?;
+        advance_staged_writer_row_key_allocator(&mut writer)?;
+        insert_staged_writer_mirrors(&mut writer, binding.commit(), &segment_acks, &receipt)?;
         self.request.mutation_guard().assert_current()?;
-        writer
-            .conn
-            .execute_batch("COMMIT")
-            .map_err(|error| duckdb_error("commit staged Arrow transaction", error))?;
+        commit_staged_writer(&mut writer)?;
         Ok(cdf_runtime::DestinationCommitOutcome::new(
             receipt,
             cdf_runtime::DestinationReceiptReportingPolicy::DestinationCommit { duplicate: false },
@@ -851,12 +1072,84 @@ impl cdf_runtime::StagedIngressSession for DuckDbStagedIngressSession {
 
     fn abort(mut self: Box<Self>) -> Result<()> {
         if let Some(writer) = self.writer.take() {
-            writer
-                .conn
-                .execute_batch("ROLLBACK")
-                .map_err(|error| duckdb_error("rollback staged Arrow transaction", error))?;
+            let mut writer = writer;
+            rollback_staged_writer(&mut writer, "rollback staged Arrow transaction")?;
         }
         Ok(())
+    }
+}
+
+fn staged_writer_duckdb_version(writer: &DuckDbStagedWriter) -> &str {
+    match writer {
+        DuckDbStagedWriter::Appender(writer) => &writer.duckdb_version,
+        DuckDbStagedWriter::StreamScan(writer) => &writer.duckdb_version,
+    }
+}
+
+fn advance_staged_writer_row_key_allocator(writer: &mut DuckDbStagedWriter) -> Result<()> {
+    match writer {
+        DuckDbStagedWriter::Appender(writer) => advance_row_key_allocator(
+            &writer.conn,
+            writer
+                .first_row_key
+                .ok_or_else(|| CdfError::internal("DuckDB staged first row key is absent"))?,
+            writer
+                .next_row_key
+                .ok_or_else(|| CdfError::internal("DuckDB staged next row key is absent"))?,
+        ),
+        DuckDbStagedWriter::StreamScan(writer) => advance_row_key_allocator_raw(
+            &mut writer.raw,
+            writer
+                .first_row_key
+                .ok_or_else(|| CdfError::internal("DuckDB staged first row key is absent"))?,
+            writer
+                .next_row_key
+                .ok_or_else(|| CdfError::internal("DuckDB staged next row key is absent"))?,
+        ),
+    }
+}
+
+fn insert_staged_writer_mirrors(
+    writer: &mut DuckDbStagedWriter,
+    commit: &DestinationCommitRequest,
+    segment_acks: &[SegmentAck],
+    receipt: &Receipt,
+) -> Result<()> {
+    match writer {
+        DuckDbStagedWriter::Appender(writer) => insert_mirrors(
+            &writer.conn,
+            commit,
+            segment_acks,
+            receipt,
+            writer.first_row_key,
+        ),
+        DuckDbStagedWriter::StreamScan(writer) => insert_mirrors_raw(
+            &mut writer.raw,
+            commit,
+            segment_acks,
+            receipt,
+            writer.first_row_key,
+        ),
+    }
+}
+
+fn commit_staged_writer(writer: &mut DuckDbStagedWriter) -> Result<()> {
+    match writer {
+        DuckDbStagedWriter::Appender(writer) => writer
+            .conn
+            .execute_batch("COMMIT")
+            .map_err(|error| duckdb_error("commit staged Arrow transaction", error)),
+        DuckDbStagedWriter::StreamScan(writer) => writer.raw.execute("COMMIT"),
+    }
+}
+
+fn rollback_staged_writer(writer: &mut DuckDbStagedWriter, context: &str) -> Result<()> {
+    match writer {
+        DuckDbStagedWriter::Appender(writer) => writer
+            .conn
+            .execute_batch("ROLLBACK")
+            .map_err(|error| duckdb_error(context, error)),
+        DuckDbStagedWriter::StreamScan(writer) => writer.raw.execute("ROLLBACK"),
     }
 }
 

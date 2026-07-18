@@ -1,5 +1,9 @@
 use crate::*;
-use crate::{api::*, sql::*};
+use crate::{
+    api::*,
+    raw::{RawDuckDbConnection, RawDuckDbParam},
+    sql::*,
+};
 
 pub(crate) fn ensure_mirror_tables(conn: &Connection) -> Result<()> {
     conn.execute_batch(
@@ -51,6 +55,55 @@ pub(crate) fn ensure_mirror_tables(conn: &Connection) -> Result<()> {
     .map_err(|error| duckdb_error("create DuckDB cdf mirror tables", error))
 }
 
+pub(crate) fn ensure_mirror_tables_raw(conn: &mut RawDuckDbConnection) -> Result<()> {
+    conn.execute(
+        r#"
+        CREATE TABLE IF NOT EXISTS _cdf_row_key_allocator (
+            singleton BOOLEAN PRIMARY KEY CHECK (singleton),
+            next_key UBIGINT NOT NULL
+        );
+        INSERT OR IGNORE INTO _cdf_row_key_allocator VALUES (true, 1);
+        CREATE TABLE IF NOT EXISTS _cdf_loads (
+            target VARCHAR NOT NULL,
+            idempotency_token VARCHAR NOT NULL,
+            package_hash VARCHAR NOT NULL,
+            destination VARCHAR NOT NULL,
+            disposition VARCHAR NOT NULL,
+            schema_hash VARCHAR NOT NULL,
+            rows_written UBIGINT NOT NULL,
+            rows_inserted UBIGINT,
+            rows_updated UBIGINT,
+            rows_deleted UBIGINT,
+            receipt_id VARCHAR NOT NULL,
+            receipt_json VARCHAR NOT NULL,
+            committed_at_ms BIGINT NOT NULL,
+            PRIMARY KEY (target, idempotency_token)
+        );
+        CREATE TABLE IF NOT EXISTS _cdf_state (
+            target VARCHAR NOT NULL,
+            package_hash VARCHAR NOT NULL,
+            segment_id VARCHAR NOT NULL,
+            idempotency_token VARCHAR NOT NULL,
+            scope_json VARCHAR,
+            output_position_json VARCHAR,
+            row_count UBIGINT NOT NULL,
+            byte_count UBIGINT NOT NULL,
+            committed_at_ms BIGINT NOT NULL,
+            PRIMARY KEY (target, package_hash, segment_id)
+        );
+        CREATE TABLE IF NOT EXISTS _cdf_segments (
+            row_key_start UBIGINT NOT NULL,
+            row_key_end UBIGINT NOT NULL,
+            target VARCHAR NOT NULL,
+            package_hash VARCHAR NOT NULL,
+            segment_id VARCHAR NOT NULL,
+            PRIMARY KEY (row_key_start),
+            UNIQUE (target, package_hash, segment_id)
+        );
+        "#,
+    )
+}
+
 pub(crate) fn next_row_key(conn: &Connection) -> Result<u64> {
     conn.query_row(
         "SELECT next_key FROM _cdf_row_key_allocator WHERE singleton",
@@ -58,6 +111,13 @@ pub(crate) fn next_row_key(conn: &Connection) -> Result<u64> {
         |row| row.get(0),
     )
     .map_err(|error| duckdb_error("read DuckDB row-key allocator", error))
+}
+
+pub(crate) fn next_row_key_raw(conn: &mut RawDuckDbConnection) -> Result<u64> {
+    conn.query_u64(
+        "SELECT next_key FROM _cdf_row_key_allocator WHERE singleton",
+        &[],
+    )
 }
 
 pub(crate) fn advance_row_key_allocator(
@@ -82,6 +142,29 @@ pub(crate) fn advance_row_key_allocator(
     Ok(())
 }
 
+pub(crate) fn advance_row_key_allocator_raw(
+    conn: &mut RawDuckDbConnection,
+    expected_start: u64,
+    next_key: u64,
+) -> Result<()> {
+    if next_key < expected_start {
+        return Err(CdfError::data("DuckDB row-key allocator moved backwards"));
+    }
+    let changed = conn.execute_prepared(
+        "UPDATE _cdf_row_key_allocator SET next_key = ? WHERE singleton AND next_key = ?",
+        &[
+            RawDuckDbParam::U64(next_key),
+            RawDuckDbParam::U64(expected_start),
+        ],
+    )?;
+    if changed != 1 {
+        return Err(CdfError::destination(
+            "DuckDB row-key allocator changed during an exclusive staged transaction",
+        ));
+    }
+    Ok(())
+}
+
 pub(crate) fn find_duplicate_receipt(
     conn: &Connection,
     request: &DestinationCommitRequest,
@@ -94,6 +177,22 @@ pub(crate) fn find_duplicate_receipt(
         )
         .optional()
         .map_err(|error| duckdb_error("query DuckDB idempotency mirror", error))?;
+    receipt_json
+        .map(|json| serde_json::from_str(&json).map_err(json_error))
+        .transpose()
+}
+
+pub(crate) fn find_duplicate_receipt_raw(
+    conn: &mut RawDuckDbConnection,
+    request: &DestinationCommitRequest,
+) -> Result<Option<Receipt>> {
+    let receipt_json = conn.query_optional_string(
+        "SELECT receipt_json FROM _cdf_loads WHERE target = ? AND idempotency_token = ?",
+        &[
+            RawDuckDbParam::Varchar(request.target.as_str()),
+            RawDuckDbParam::Varchar(request.idempotency_token.as_str()),
+        ],
+    )?;
     receipt_json
         .map(|json| serde_json::from_str(&json).map_err(json_error))
         .transpose()
@@ -179,6 +278,93 @@ pub(crate) fn insert_mirrors(
         }
     }
     Ok(())
+}
+
+pub(crate) fn insert_mirrors_raw(
+    conn: &mut RawDuckDbConnection,
+    commit: &DestinationCommitRequest,
+    segment_acks: &[SegmentAck],
+    receipt: &Receipt,
+    first_row_key: Option<u64>,
+) -> Result<()> {
+    let receipt_json = serde_json::to_string(receipt).map_err(json_error)?;
+    conn.execute_prepared(
+        "INSERT INTO _cdf_loads \
+         (target, idempotency_token, package_hash, destination, disposition, schema_hash, rows_written, rows_inserted, rows_updated, rows_deleted, receipt_id, receipt_json, committed_at_ms) \
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        &[
+            RawDuckDbParam::Varchar(receipt.target.as_str()),
+            RawDuckDbParam::Varchar(receipt.idempotency_token.as_str()),
+            RawDuckDbParam::Varchar(receipt.package_hash.as_str()),
+            RawDuckDbParam::Varchar(receipt.destination.as_str()),
+            RawDuckDbParam::Varchar(disposition_name(&receipt.disposition)),
+            RawDuckDbParam::Varchar(receipt.schema_hash.as_str()),
+            RawDuckDbParam::U64(receipt.counts.rows_written),
+            optional_u64_param(receipt.counts.rows_inserted),
+            optional_u64_param(receipt.counts.rows_updated),
+            optional_u64_param(receipt.counts.rows_deleted),
+            RawDuckDbParam::Varchar(receipt.receipt_id.as_str()),
+            RawDuckDbParam::Varchar(&receipt_json),
+            RawDuckDbParam::I64(receipt.committed_at_ms),
+        ],
+    )?;
+
+    let state_by_segment = commit
+        .segments
+        .iter()
+        .map(|segment| (segment.segment_id.as_str(), segment))
+        .collect::<BTreeMap<_, _>>();
+    let mut next_row_key = first_row_key;
+    for ack in segment_acks {
+        let state = state_by_segment.get(ack.segment_id.as_str()).copied();
+        let scope_json = state
+            .map(|segment| serde_json::to_string(&segment.scope).map_err(json_error))
+            .transpose()?;
+        let position_json = state
+            .map(|segment| serde_json::to_string(&segment.output_position).map_err(json_error))
+            .transpose()?;
+        conn.execute_prepared(
+            "INSERT INTO _cdf_state \
+             (target, package_hash, segment_id, idempotency_token, scope_json, output_position_json, row_count, byte_count, committed_at_ms) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            &[
+                RawDuckDbParam::Varchar(receipt.target.as_str()),
+                RawDuckDbParam::Varchar(receipt.package_hash.as_str()),
+                RawDuckDbParam::Varchar(ack.segment_id.as_str()),
+                RawDuckDbParam::Varchar(receipt.idempotency_token.as_str()),
+                optional_string_param(scope_json.as_deref()),
+                optional_string_param(position_json.as_deref()),
+                RawDuckDbParam::U64(ack.row_count),
+                RawDuckDbParam::U64(ack.byte_count),
+                RawDuckDbParam::I64(receipt.committed_at_ms),
+            ],
+        )?;
+        if let Some(row_key_start) = next_row_key {
+            let row_key_end = row_key_start
+                .checked_add(ack.row_count)
+                .ok_or_else(|| CdfError::data("DuckDB segment row-key range overflowed"))?;
+            conn.execute_prepared(
+                "INSERT INTO _cdf_segments (row_key_start, row_key_end, target, package_hash, segment_id) VALUES (?, ?, ?, ?, ?)",
+                &[
+                    RawDuckDbParam::U64(row_key_start),
+                    RawDuckDbParam::U64(row_key_end),
+                    RawDuckDbParam::Varchar(receipt.target.as_str()),
+                    RawDuckDbParam::Varchar(receipt.package_hash.as_str()),
+                    RawDuckDbParam::Varchar(ack.segment_id.as_str()),
+                ],
+            )?;
+            next_row_key = Some(row_key_end);
+        }
+    }
+    Ok(())
+}
+
+fn optional_u64_param(value: Option<u64>) -> RawDuckDbParam<'static> {
+    value.map_or(RawDuckDbParam::Null, RawDuckDbParam::U64)
+}
+
+fn optional_string_param(value: Option<&str>) -> RawDuckDbParam<'_> {
+    value.map_or(RawDuckDbParam::Null, RawDuckDbParam::Varchar)
 }
 
 pub(crate) fn read_mirror_snapshot(conn: &Connection) -> Result<DuckDbMirrorSnapshot> {

@@ -409,6 +409,11 @@ fn destination(path: &Path) -> DuckDbDestination {
     DuckDbDestination::new(path).unwrap()
 }
 
+fn stream_scan_destination(path: &Path) -> DuckDbDestination {
+    destination(path)
+        .with_staged_ingress_path_for_test(DuckDbStagedIngressPathPreference::StreamScan)
+}
+
 #[test]
 fn connections_enforce_bounded_native_resources() {
     let temp = tempfile::tempdir().unwrap();
@@ -619,6 +624,13 @@ fn sheet_declares_duckdb_destination_contract() {
         runtime.runtime_capabilities().bulk_path.as_deref(),
         Some("arrow_record_batch_appender")
     );
+    assert!(
+        runtime
+            .runtime_capabilities()
+            .bulk_paths
+            .iter()
+            .any(|path| path.path_id == "arrow_stream_scan")
+    );
     assert_eq!(
         runtime.runtime_capabilities().ingress_mode,
         cdf_runtime::DestinationIngressMode::StagedDurableSegments
@@ -748,6 +760,106 @@ fn staged_segment_ingress_returns_verifiable_receipt_and_exact_provenance() {
     let protocol: &dyn DestinationProtocol = &session_dest;
     assert!(protocol.verify(&receipt).unwrap().verified);
     let conn = Connection::open(session_dest.database_path()).unwrap();
+    let provenance: Vec<(i64, String, u64)> = conn
+        .prepare("SELECT o.id, p.segment_id, o._cdf_row_key - p.row_key_start FROM orders o JOIN _cdf_segments p ON o._cdf_row_key >= p.row_key_start AND o._cdf_row_key < p.row_key_end ORDER BY o.id")
+        .unwrap()
+        .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+        .unwrap()
+        .map(|row| row.unwrap())
+        .collect();
+    assert_eq!(
+        provenance,
+        vec![
+            (1, "seg-000001".to_owned(), 0),
+            (2, "seg-000001".to_owned(), 1),
+            (3, "seg-000002".to_owned(), 0),
+        ]
+    );
+}
+
+#[test]
+fn stream_scan_staged_ingress_returns_verifiable_receipt_and_exact_provenance() {
+    let temp = tempfile::tempdir().unwrap();
+    let package = temp.path().join("pkg-stream-scan-session");
+    let package_hash = build_package_segments(
+        &package,
+        "pkg-stream-scan-session",
+        &[
+            (
+                SegmentId::new("seg-000001").unwrap(),
+                vec![sample_batch(vec![1, 2], vec![Some("ada"), Some("grace")])],
+            ),
+            (
+                SegmentId::new("seg-000002").unwrap(),
+                vec![sample_batch(vec![3], vec![None])],
+            ),
+        ],
+    );
+    let request = request_with_segments(
+        &package,
+        package_hash,
+        WriteDisposition::Append,
+        Vec::new(),
+        vec![
+            state_segment_for("seg-000001", 2, 2),
+            state_segment_for("seg-000002", 1, 3),
+        ],
+    );
+    let session_dest = stream_scan_destination(&temp.path().join("stream-scan-session.duckdb"));
+    let package_reader = PackageReader::open(&request.package_dir)
+        .unwrap()
+        .into_verified()
+        .unwrap();
+    let output_schema = package_reader
+        .reader()
+        .runtime_arrow_schema_verified(package_reader.verification())
+        .unwrap();
+    let mut runtime = session_dest.clone();
+    let prepared = runtime
+        .prepare_selected_bulk_path(
+            &cdf_runtime::BulkPathPreparationInput::new(output_schema.as_ref())
+                .with_commit(&request.commit),
+        )
+        .unwrap();
+    assert_eq!(prepared.descriptor.path_id, "arrow_stream_scan");
+
+    let receipt = commit_current(&session_dest, request.clone()).receipt;
+
+    assert_eq!(
+        receipt.transaction.as_ref().map(|tx| tx.system.as_str()),
+        Some("duckdb")
+    );
+    assert_eq!(receipt.counts.rows_written, 3);
+    assert_eq!(
+        receipt.segment_acks,
+        request
+            .commit
+            .segments
+            .iter()
+            .map(|state| SegmentAck {
+                segment_id: state.segment_id.clone(),
+                row_count: state.row_count,
+                byte_count: state.byte_count,
+            })
+            .collect::<Vec<_>>()
+    );
+    assert!(session_dest.verify_receipt(&receipt).unwrap().verified);
+    let conn = Connection::open(session_dest.database_path()).unwrap();
+    let rows: Vec<(i64, Option<String>, u64)> = conn
+        .prepare("SELECT id, name, _cdf_row_key FROM orders ORDER BY id")
+        .unwrap()
+        .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+        .unwrap()
+        .map(|row| row.unwrap())
+        .collect();
+    assert_eq!(
+        rows,
+        vec![
+            (1, Some("ada".to_owned()), 1),
+            (2, Some("grace".to_owned()), 2),
+            (3, None, 3),
+        ]
+    );
     let provenance: Vec<(i64, String, u64)> = conn
         .prepare("SELECT o.id, p.segment_id, o._cdf_row_key - p.row_key_start FROM orders o JOIN _cdf_segments p ON o._cdf_row_key >= p.row_key_start AND o._cdf_row_key < p.row_key_end ORDER BY o.id")
         .unwrap()

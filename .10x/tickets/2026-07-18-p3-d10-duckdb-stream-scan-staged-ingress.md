@@ -44,14 +44,17 @@ Implement a DuckDB-crate-owned staged-ingress bulk path that materializes eligib
 ## Journal
 
 - 2026-07-18: Opened after G4 showed that `_cdf_row_key` stream-scan under bounded parallel DuckDB settings beats the appender floor by roughly `6.64x`, while preserving the current provenance column. The implementation seam is destination bulk preparation and staged ingress; generic runtime remains destination-neutral.
+- 2026-07-18: Implemented the first product stream-scan staged-ingress slice inside `cdf-dest-duckdb` only. The crate now owns a raw DuckDB C connection/prepared-statement boundary, a pinned `duckdb_arrow_scan` smoke test, and a manual Arrow C stream adapter over CDF's acknowledgement-bearing durable segment stream. The stream-scan path appends `_cdf_row_key`, validates schema/segment identity/order/row counts during DuckDB pull, acknowledges segments only after the scanner consumes them, and writes target rows plus row-key allocator/mirrors/receipt in one DuckDB transaction. The generic runtime still branches only on the prepared bulk path and has no DuckDB-specific logic.
+- 2026-07-18: Kept appender as the default selected path. Stream-scan is exposed as a truthful descriptor and can be selected through the DuckDB-local staged-ingress path preference for tests/benchmarks, but it is not promoted as the default until same-host EC2 TLC evidence beats the current `33.955522533s` baseline. Merge remains on appender during preparation.
 
 ## Blockers
 
-None after the stream-scan decision. If raw C transaction integration proves larger than this ticket, split before retaining partial product behavior.
+EC2 promotion evidence is still required before retaining stream-scan as the default path. Local correctness is green; full TLC local/HF benchmark cells are pending.
 
 ## Evidence
 
-Pending implementation.
+- `CARGO_BUILD_JOBS=12 cargo test -p cdf-dest-duckdb stream_scan --locked -j 12` — passed. Covers the pinned raw `duckdb_arrow_scan` smoke and forced stream-scan staged-ingress receipt/provenance test.
+- `cargo fmt --check && CARGO_BUILD_JOBS=12 cargo test -p cdf-dest-duckdb --locked -j 12` — passed. Covers appender, forced stream-scan append, merge appender compatibility, duplicate replay, replace, rollback-adjacent abort paths, correction readback, destination conformance, and native-resource tests.
 
 ## Review
 
