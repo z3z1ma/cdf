@@ -1,4 +1,4 @@
-Status: active
+Status: cancelled
 Created: 2026-07-18
 Updated: 2026-07-18
 Parent: .10x/tickets/2026-07-10-p3-ws-d-destination-bulk-paths.md
@@ -53,19 +53,28 @@ The implementation may initially be selected by an explicit documented knob so t
 ## Journal
 
 - 2026-07-18: Opened from D11's retained conclusion. The first implementation shape is explicit opt-in, DuckDB-owned, and temporary-spill-accounted so it cannot slow the current default while the production path is being proven.
+- 2026-07-18: Implemented a DuckDB-destination-owned opt-in prototype locally, behind `CDF_DUCKDB_BULK_PATH=arrow_ipc_read_arrow_handoff`, with uncompressed Arrow IPC handoff files, `_cdf_row_key` materialized before DuckDB, attempt-local staging cleanup, and no generic runtime DuckDB branch. Local focused tests passed, including nanoarrow-available append smoke, receipt verification, duplicate redrive, provenance row-key mapping, and staging cleanup.
+- 2026-07-18: EC2 product evidence killed the direction. A first control run accidentally omitted `CDF_BENCH_MEASURE_ENV_JSON`, proving the default appender path was unchanged at `34.014931097s`. Correctly forwarded opt-in env selected the Arrow IPC handoff path: segment staging moved out of the appender floor (`destination_ingress=2.668602s`), but DuckDB final materialization through `INSERT INTO target SELECT ... FROM read_arrow(...)` moved the cost into final binding (`destination_write_receipt=34.808246s`) and worsened total wall to `38.624126722s`.
+- 2026-07-18: Tried the only credible product rescue without changing generic orchestration: DuckDB-owned `CREATE TABLE AS SELECT ... FROM read_arrow(...)` for replace/absent append. Full not-null restoration still measured `37.274033174s`; row-key-only not-null restoration still measured `37.204744317s`; forcing `CDF_DUCKDB_THREADS=16` with `CDF_DUCKDB_MEMORY_LIMIT=12GiB` timed out at the `179s` worker guard. The prototype code was fully removed before commit so the repository does not retain a slow legacy path.
 
 ## Blockers
 
-None for an opt-in implementation. Default promotion is blocked until product EC2 evidence proves the path beats the retained appender baseline and the extension/staging risks are closed.
+Cancelled by the ticket's own retention threshold. The opt-in production path did not beat the current appender baseline and did not approach D11's generated-handoff roofline once integrated into CDF's staged destination lifecycle.
 
 ## Evidence
 
-Pending implementation.
+- `.10x/evidence/.storage/2026-07-18-p3-d12-ec2-local-arrow-ipc-handoff-measured.json` — accidental default-control run; appender path unchanged at `34.014931097s`.
+- `.10x/evidence/.storage/2026-07-18-p3-d12-ec2-local-arrow-ipc-handoff-optin-measured.json` — opt-in Arrow IPC handoff with `INSERT INTO ... SELECT read_arrow(...)`; `38.624126722s`, slower than appender.
+- `.10x/evidence/.storage/2026-07-18-p3-d12-ec2-local-arrow-ipc-handoff-ctas-optin-measured.json` — opt-in CTAS prototype with full not-null restoration; `37.274033174s`, slower than appender.
+- `.10x/evidence/.storage/2026-07-18-p3-d12-ec2-local-arrow-ipc-handoff-ctas-rowkey-only-optin-measured.json` — opt-in CTAS prototype with only `_cdf_row_key` not-null restoration; `37.204744317s`, slower than appender.
+- `.10x/evidence/.storage/2026-07-18-p3-d12-ec2-local-arrow-ipc-handoff-ctas-rowkey-only-threads16-measured.json` — opt-in CTAS prototype with `CDF_DUCKDB_THREADS=16` and `CDF_DUCKDB_MEMORY_LIMIT=12GiB`; failed at the `179s` worker timeout.
+- `.10x/evidence/.storage/2026-07-18-p3-d12-ec2-arrow-ipc-handoff-revision.env`
+- `.10x/evidence/.storage/2026-07-18-p3-d12-ec2-arrow-ipc-handoff-build.env`
 
 ## Review
 
-Pending implementation.
+Pass for cancellation. The code under test stayed behind the DuckDB destination boundary and did not mutate package identity or common runtime contracts, but its product evidence violated the ticket's explicit retention threshold. No slow opt-in path or disabled branch remains in the source tree. G4/WS-D should fall back to the tuned Parquet handoff candidate or a new higher-leverage materialization strategy.
 
 ## Retrospective
 
-Pending implementation.
+D11's generated `CREATE TABLE AS SELECT read_arrow(...)` result was a useful falsification probe but not sufficient product evidence. The integration point matters: CDF's production destination final binding, transaction shape, resource settings, and table/provenance requirements changed the actual DuckDB cost profile. The durable lesson is to require full-CDF EC2 evidence before retaining even an off-by-default destination path. The next G4 branch should favor tuned Parquet handoff because it already has same-host generated evidence around `10.47s`, or it should attack package/destination duplication more directly rather than adding another materialization variant.

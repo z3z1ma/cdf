@@ -61,7 +61,7 @@ Benchmark and falsify DuckDB's community `nanoarrow`/`arrow` extension path for 
 
 ## Blockers
 
-None for the falsification slice. Production retention is owned by `.10x/tickets/2026-07-18-p3-d12-duckdb-arrow-ipc-handoff-ingress.md` and remains blocked on extension supply-chain/pinning, destination-owned temporary-spill accounting, and full-CDF EC2 promotion evidence.
+None for the falsification slice. Production retention moved to `.10x/tickets/cancelled/2026-07-18-p3-d12-duckdb-arrow-ipc-handoff-ingress.md`, which cancelled the Arrow IPC handoff product path after full-CDF EC2 evidence failed the retention threshold.
 
 ## Evidence
 
