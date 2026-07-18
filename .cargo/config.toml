@@ -1,0 +1,8 @@
+[target.aarch64-apple-darwin]
+linker = "clang"
+rustflags = [
+    "-C",
+    "target-cpu=native",
+    "-C",
+    "link-arg=-fuse-ld=/opt/homebrew/opt/lld/bin/ld64.lld",
+]
