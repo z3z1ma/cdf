@@ -21,6 +21,8 @@ Options:
       --progress <WHEN>              Progress policy: auto, always, or never [possible values: auto, always, never]
       --to <DEST>                    Destination URI or cursor upper bound, as shown in usage
       --unicode <WHEN>               Unicode policy: auto, always, or never [possible values: auto, always, never]
+      --memory-budget <BYTES>        Process memory budget, e.g. 4GiB or 512MiB
       --no-pin                       Do not pin newly discovered schema
+      --spill-budget <BYTES>         Spill/disk budget, e.g. 64GiB or 512MiB
   -h, --help                         Print help
 ```

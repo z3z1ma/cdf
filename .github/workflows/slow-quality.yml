@@ -118,10 +118,10 @@ jobs:
           cargo test -p cdf-conformance live_run --locked --no-fail-fast
 
       - name: Generated CLI artifact freshness
-        run: cargo test -p cdf-cli --locked --features cli-artifacts cli_generated_artifacts_match_committed_snapshots
+        run: cargo test -p cdf-cli-core --locked --features cli-artifacts cli_generated_artifacts_match_committed_snapshots
 
       - name: Generated command and error reference freshness
-        run: cargo run -p cdf-cli --locked --features cli-artifacts --bin cdf-generate-cli-artifacts -- --docs-dir docs --docs-only --check
+        run: cargo run -p cdf-cli-core --locked --features cli-artifacts --bin cdf-generate-cli-artifacts -- --docs-dir docs --docs-only --check
 
       - name: Coverage summary
         run: cargo llvm-cov --workspace --all-features --locked --summary-only

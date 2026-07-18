@@ -11,12 +11,14 @@ Arguments:
   [DIR]...  Directory to initialize
 
 Options:
-      --name <NAME>      Project name
-  -q, --quiet            Suppress progress and non-primary success narration
-      --force            Replace an existing artifact when safe
-  -v, --verbose...       Show evidence detail; repeat for diagnostics
-      --color <WHEN>     Color policy: auto, always, or never [possible values: auto, always, never]
-      --progress <WHEN>  Progress policy: auto, always, or never [possible values: auto, always, never]
-      --unicode <WHEN>   Unicode policy: auto, always, or never [possible values: auto, always, never]
-  -h, --help             Print help
+      --name <NAME>            Project name
+  -q, --quiet                  Suppress progress and non-primary success narration
+      --force                  Replace an existing artifact when safe
+  -v, --verbose...             Show evidence detail; repeat for diagnostics
+      --color <WHEN>           Color policy: auto, always, or never [possible values: auto, always, never]
+      --progress <WHEN>        Progress policy: auto, always, or never [possible values: auto, always, never]
+      --unicode <WHEN>         Unicode policy: auto, always, or never [possible values: auto, always, never]
+      --memory-budget <BYTES>  Process memory budget, e.g. 4GiB or 512MiB
+      --spill-budget <BYTES>   Spill/disk budget, e.g. 64GiB or 512MiB
+  -h, --help                   Print help
 ```

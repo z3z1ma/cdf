@@ -1,6 +1,8 @@
-Status: active
+Status: superseded
 Created: 2026-07-11
-Updated: 2026-07-11
+Updated: 2026-07-17
+
+Superseded-By: `.10x/decisions/fast-ci-leaf-owner-gates.md`
 
 # Fast CI budget and deep-gate separation
 

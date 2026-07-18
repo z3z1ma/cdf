@@ -82,7 +82,7 @@ Machine-output compatibility changes, artifact-version changes, dependency tuple
 
 ## CI phases
 
-Fast CI runs on pull requests and pushes under `.10x/decisions/fast-ci-budget-and-deep-gate-separation.md`. It MUST cover formatting, a single nonredundant core lint/compile path, focused core library tests, locked dependency metadata parsing, and tracked-source secret scanning. It MUST NOT recreate deep integration, external-service, generated-reference, duplication, supply-chain, coverage, benchmark, or CodeQL gates on every push.
+Fast CI runs on pull requests and pushes under `.10x/decisions/fast-ci-leaf-owner-gates.md`. It MUST cover formatting, a single nonredundant core lint/compile path, focused core library tests, `cdf-cli-core` UX owner checks, locked dependency metadata parsing, and tracked-source secret scanning. It MUST NOT recreate deep integration, external-service, full product CLI/conformance, duplication, supply-chain, coverage, benchmark, or CodeQL gates on every push.
 
 Slow CI runs on schedule and manual dispatch. It MUST cover the scheduled/release/integration Deep Loop from `QUALITY.md`, generated-reference freshness, supply-chain and duplication checks, plus configured conformance, golden, chaos, property, fuzz, and benchmark smoke gates that are relevant to the release or integration change set.
 

@@ -52,6 +52,12 @@ Options:
 
           [possible values: auto, always, never]
 
+      --memory-budget <BYTES>
+          Process memory budget, e.g. 4GiB or 512MiB
+
+      --spill-budget <BYTES>
+          Spill/disk budget, e.g. 64GiB or 512MiB
+
   -h, --help
           Print help (see a summary with '-h')
 
@@ -62,6 +68,8 @@ Environment:
   CDF_PROJECT       Project directory or cdf.toml path
   CDF_ENV           Project environment name
   CDF_TARGET        Default destination
+  CDF_MEMORY_BUDGET Process memory budget, e.g. 4GiB
+  CDF_SPILL_BUDGET  Spill/disk budget, e.g. 64GiB
   NO_COLOR          Disable color unless --color always is explicit
   CLICOLOR_FORCE    Request color when output is interactive
   COLUMNS           Width fallback when terminal size is unavailable

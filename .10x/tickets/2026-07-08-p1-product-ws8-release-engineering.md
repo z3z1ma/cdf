@@ -42,6 +42,7 @@ No claim of crates.io publication while the DataFusion git pin remains. No unsup
 - 2026-07-08: WS8B release artifact workflow closed at `.10x/tickets/done/2026-07-08-p1-product-ws8b-release-artifact-workflow.md`. It added the GitHub Actions release workflow, fail-closed metadata/artifact packaging scripts, local host artifact smoke evidence, and checksum verification. Parent remains open for actual hosted release-run evidence and generated completions/man pages once WS2D closes.
 - 2026-07-08: WS8B reproducibility blocker repaired. Packaging now uses deterministic tar/gzip writing through `tools/write-reproducible-targz.py`, and WS8B evidence includes a two-package identical-input SHA-256 and byte-identity smoke proof.
 - 2026-07-11: Fast CI was reduced to the ratified smoke/deep boundary in `.10x/decisions/fast-ci-budget-and-deep-gate-separation.md`. Evidence is `.10x/evidence/2026-07-11-fast-ci-lean-boundary.md`; review is `.10x/reviews/2026-07-11-fast-ci-lean-boundary-review.md`. The gitleaks false-positive failure was fixed structurally by scanning `git archive HEAD`, not by suppressing findings.
+- 2026-07-17: That fast-CI authority was superseded by `.10x/decisions/fast-ci-leaf-owner-gates.md` after CG1 extracted `cdf-cli-core`; the smoke/deep boundary remains, but CLI grammar/render/artifact owner checks now run against the lean core package rather than the full product graph.
 
 ## Blockers
 

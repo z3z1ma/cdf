@@ -11,12 +11,14 @@ Arguments:
   [RESOURCE_ID] [URL_OR_PATH]...  Identifiers or paths shown in usage
 
 Options:
-      --dry-run             Show the proposed change without writing it
-  -q, --quiet               Suppress progress and non-primary success narration
-      --option <KEY=VALUE>  Source-driver option as KEY=VALUE; may be repeated
-  -v, --verbose...          Show evidence detail; repeat for diagnostics
-      --color <WHEN>        Color policy: auto, always, or never [possible values: auto, always, never]
-      --progress <WHEN>     Progress policy: auto, always, or never [possible values: auto, always, never]
-      --unicode <WHEN>      Unicode policy: auto, always, or never [possible values: auto, always, never]
-  -h, --help                Print help
+      --dry-run                Show the proposed change without writing it
+  -q, --quiet                  Suppress progress and non-primary success narration
+      --option <KEY=VALUE>     Source-driver option as KEY=VALUE; may be repeated
+  -v, --verbose...             Show evidence detail; repeat for diagnostics
+      --color <WHEN>           Color policy: auto, always, or never [possible values: auto, always, never]
+      --progress <WHEN>        Progress policy: auto, always, or never [possible values: auto, always, never]
+      --unicode <WHEN>         Unicode policy: auto, always, or never [possible values: auto, always, never]
+      --memory-budget <BYTES>  Process memory budget, e.g. 4GiB or 512MiB
+      --spill-budget <BYTES>   Spill/disk budget, e.g. 64GiB or 512MiB
+  -h, --help                   Print help
 ```

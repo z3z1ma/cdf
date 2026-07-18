@@ -20,5 +20,7 @@ Options:
       --order-by <FIELD[:asc|desc]>  Ordering field and optional direction
       --progress <WHEN>              Progress policy: auto, always, or never [possible values: auto, always, never]
       --unicode <WHEN>               Unicode policy: auto, always, or never [possible values: auto, always, never]
+      --memory-budget <BYTES>        Process memory budget, e.g. 4GiB or 512MiB
+      --spill-budget <BYTES>         Spill/disk budget, e.g. 64GiB or 512MiB
   -h, --help                         Print help
 ```

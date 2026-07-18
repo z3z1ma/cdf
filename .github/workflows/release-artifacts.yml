@@ -101,10 +101,10 @@ jobs:
           key: release-cli-artifacts
 
       - name: Check generated CLI artifact freshness
-        run: cargo run -p cdf-cli --locked --features cli-artifacts --bin cdf-generate-cli-artifacts -- --out-dir crates/cdf-cli/generated --check
+        run: cargo run -p cdf-cli-core --locked --features cli-artifacts --bin cdf-generate-cli-artifacts -- --out-dir crates/cdf-cli/generated --check
 
       - name: Generate canonical CLI artifacts
-        run: cargo run -p cdf-cli --locked --features cli-artifacts --bin cdf-generate-cli-artifacts -- --out-dir target/generated
+        run: cargo run -p cdf-cli-core --locked --features cli-artifacts --bin cdf-generate-cli-artifacts -- --out-dir target/generated
 
       - name: Upload canonical CLI artifacts
         uses: actions/upload-artifact@v4

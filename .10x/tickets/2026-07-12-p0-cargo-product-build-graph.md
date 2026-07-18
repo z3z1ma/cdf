@@ -47,15 +47,17 @@ Reduce focused compile latency by enforcing the lean CLI core, complete static p
 
 - 2026-07-12 (shaping): Fished active/terminal owners and measured the default normal graph. Selected one parent with three bounded children. J6 already fully owns DataFusion selective-adapter containment, so no competing CG4 was opened.
 - 2026-07-17 (orchestration): CG1 closed at `.10x/tickets/done/2026-07-12-p0-cg1-lean-cli-core.md`. The lean CLI core exists, artifact generation moved to the core package, the product binary remains complete, and graph law evidence is recorded on the child.
+- 2026-07-17 (orchestration): CG2 closed at `.10x/tickets/done/2026-07-12-p0-cg2-cli-test-topology.md`. The fast-CI decision conflict was superseded by `.10x/decisions/fast-ci-leaf-owner-gates.md`; fast quality now runs `cdf-cli-core` owner checks without linking the full product graph, and slow/release generator commands use the new owner.
 
 ## Blockers
 
-CG2 has an unresolved conflict with `.10x/decisions/fast-ci-budget-and-deep-gate-separation.md`; see its review. CG1 and CG3 are executable on their own ownership gates, and DX4 is unblocked by terminal DX3, but the parent cannot close until CG2 is superseded or narrowed and executed.
+CG1 and CG2 are terminal. CG3 remains executable on its own ownership gate. The parent cannot close until CG3 closes.
 
 ## Evidence
 
 - CG1: `.10x/tickets/done/2026-07-12-p0-cg1-lean-cli-core.md` records `cdf-cli-core` at 79 normal / 83 all-features unique packages, no forbidden graph edges, green core artifact tests, green product/conformance compiles, and no public compatibility re-export.
-- Remaining: CG2/CG3 pending; parent remains open.
+- CG2: `.10x/tickets/done/2026-07-12-p0-cg2-cli-test-topology.md` records the superseding fast-CI decision, updated fast/slow/release workflow commands, green `cdf-cli-core` tests/Clippy/generator freshness checks, and regenerated command/error docs.
+- Remaining: CG3 pending; parent remains open.
 
 ## Review
 
@@ -75,7 +77,7 @@ CG2 has an unresolved conflict with `.10x/decisions/fast-ci-budget-and-deep-gate
 
 #### Verdict
 
-**Fail / shaping blocked at CG2.** The research facts, decision boundary, spec, CG1 ordering after repair, CG3 boundary, SX1 edit, and J6 edit were not otherwise falsified. The parent must not dispatch CG2 until the active fast-CI decision conflict is explicitly superseded or CG2 is narrowed.
+Superseded by 2026-07-17 execution: the fast-CI decision conflict was resolved by `.10x/decisions/fast-ci-leaf-owner-gates.md`, and CG2 closed at `.10x/tickets/done/2026-07-12-p0-cg2-cli-test-topology.md`. The research facts, decision boundary, spec, CG1 ordering after repair, CG3 boundary, SX1 edit, and J6 edit were not otherwise falsified.
 
 #### Residual risk
 

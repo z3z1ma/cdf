@@ -63,6 +63,21 @@ jobs:
           --locked
           --no-fail-fast
 
+      - name: CLI core UX tests
+        run: cargo test -p cdf-cli-core --locked
+
+      - name: CLI generated artifact tests
+        run: cargo test -p cdf-cli-core --features cli-artifacts --locked
+
+      - name: CLI core Clippy
+        run: >-
+          cargo clippy
+          -p cdf-cli-core
+          --all-targets
+          --all-features
+          --locked
+          -- -D warnings
+
   source-secrets:
     name: Tracked-source secrets
     runs-on: ubuntu-latest
