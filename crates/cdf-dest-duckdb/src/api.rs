@@ -9,7 +9,6 @@ pub struct DuckDbDestination {
     database_path: PathBuf,
     sheet: DestinationSheet,
     pub(crate) native_resources: DuckDbNativeResources,
-    pub(crate) staged_ingress_path: DuckDbStagedIngressPathPreference,
     pub(crate) pending_corrections: Arc<Mutex<BTreeMap<PlanId, DuckDbCorrectionContext>>>,
 }
 
@@ -26,12 +25,6 @@ struct DuckDbNativeResourceOverrides {
     memory_limit_bytes: Option<u64>,
     maximum_temp_directory_bytes: Option<u64>,
     internal_threads: Option<i64>,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum DuckDbStagedIngressPathPreference {
-    Appender,
-    StreamScan,
 }
 
 impl std::fmt::Debug for DuckDbNativeResources {
@@ -229,18 +222,8 @@ impl DuckDbDestination {
             database_path,
             sheet: duckdb_sheet()?,
             native_resources: DuckDbNativeResources::conservative(),
-            staged_ingress_path: DuckDbStagedIngressPathPreference::from_env()?,
             pending_corrections: Arc::new(Mutex::new(BTreeMap::new())),
         })
-    }
-
-    #[cfg(test)]
-    pub(crate) fn with_staged_ingress_path_for_test(
-        mut self,
-        path: DuckDbStagedIngressPathPreference,
-    ) -> Self {
-        self.staged_ingress_path = path;
-        self
     }
 
     pub fn with_execution_services(
@@ -668,35 +651,6 @@ impl DuckDbNativeResourceOverrides {
             maximum_temp_directory_bytes: optional_env_byte_size(DUCKDB_TEMP_BUDGET_ENV)?,
             internal_threads: optional_env_threads(DUCKDB_THREADS_ENV)?,
         })
-    }
-}
-
-impl DuckDbStagedIngressPathPreference {
-    fn from_env() -> Result<Self> {
-        match std::env::var(DUCKDB_STAGED_INGRESS_PATH_ENV) {
-            Ok(value) => Self::parse(DUCKDB_STAGED_INGRESS_PATH_ENV, &value),
-            Err(std::env::VarError::NotPresent) => Ok(Self::Appender),
-            Err(std::env::VarError::NotUnicode(_)) => Err(CdfError::contract(format!(
-                "{DUCKDB_STAGED_INGRESS_PATH_ENV} must be valid UTF-8 when set"
-            ))),
-        }
-    }
-
-    fn parse(label: &str, value: &str) -> Result<Self> {
-        match value.trim() {
-            "appender" | DUCKDB_BULK_PATH_APPENDER => Ok(Self::Appender),
-            "stream_scan" | DUCKDB_BULK_PATH_STREAM_SCAN => Ok(Self::StreamScan),
-            other => Err(CdfError::contract(format!(
-                "{label} must be `appender` or `stream_scan`, got {other:?}"
-            ))),
-        }
-    }
-
-    pub(crate) const fn selected_path_id(self) -> &'static str {
-        match self {
-            Self::Appender => DUCKDB_BULK_PATH_APPENDER,
-            Self::StreamScan => DUCKDB_BULK_PATH_STREAM_SCAN,
-        }
     }
 }
 

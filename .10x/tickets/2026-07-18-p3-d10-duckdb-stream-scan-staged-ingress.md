@@ -47,6 +47,7 @@ Implement a DuckDB-crate-owned staged-ingress bulk path that materializes eligib
 - 2026-07-18: Implemented the first product stream-scan staged-ingress slice inside `cdf-dest-duckdb` only. The crate now owns a raw DuckDB C connection/prepared-statement boundary, a pinned `duckdb_arrow_scan` smoke test, and a manual Arrow C stream adapter over CDF's acknowledgement-bearing durable segment stream. The stream-scan path appends `_cdf_row_key`, validates schema/segment identity/order/row counts during DuckDB pull, acknowledges segments only after the scanner consumes them, and writes target rows plus row-key allocator/mirrors/receipt in one DuckDB transaction. The generic runtime still branches only on the prepared bulk path and has no DuckDB-specific logic.
 - 2026-07-18: Kept appender as the default selected path. Stream-scan is exposed as a truthful descriptor and can be selected through the DuckDB-local staged-ingress path preference for tests/benchmarks, but it is not promoted as the default until same-host EC2 TLC evidence beats the current `33.955522533s` baseline. Merge remains on appender during preparation.
 - 2026-07-18: First EC2 candidate at commit `fbe0b29362aaba5841c3f906e898d763793d6a96` timed out at the worker's `119000ms` child guard. The likely miss was materialization shape: the synthetic 5s reference used DuckDB `CREATE TABLE AS SELECT * FROM arrow_stream`, while the first product path pre-created the table and then executed `INSERT INTO target SELECT * FROM arrow_stream`. Adjusted fresh append/replace stream-scan to use CTAS and leave existing-table append on `INSERT INTO` until separately measured.
+- 2026-07-18: CTAS did not fix the product path. The full-year local TLC candidate at `6cae03cdd50770b1e7bde358203d183ad145ea4a` timed out at the worker's `119000ms` child guard, and the one-partition smoke also timed out at `59000ms`. Disabled stream-scan exposure/selection again: runtime capabilities and preparation now advertise/select only the measured appender path, while the raw `duckdb_arrow_scan` smoke remains as a pinned ABI guard for the next design attempt. D10 remains active and must not promote stream-scan without a redesigned staged-stream adapter and passing EC2 evidence.
 
 ## Blockers
 
@@ -54,9 +55,12 @@ EC2 promotion evidence is still required before retaining stream-scan as the def
 
 ## Evidence
 
-- `CARGO_BUILD_JOBS=12 cargo test -p cdf-dest-duckdb stream_scan --locked -j 12` — passed. Covers the pinned raw `duckdb_arrow_scan` smoke and forced stream-scan staged-ingress receipt/provenance test.
-- `cargo fmt --check && CARGO_BUILD_JOBS=12 cargo test -p cdf-dest-duckdb --locked -j 12` — passed. Covers appender, forced stream-scan append, merge appender compatibility, duplicate replay, replace, rollback-adjacent abort paths, correction readback, destination conformance, and native-resource tests.
+- Earlier implementation slice: `CARGO_BUILD_JOBS=12 cargo test -p cdf-dest-duckdb stream_scan --locked -j 12` passed with the pinned raw `duckdb_arrow_scan` smoke and a forced stream-scan staged-ingress receipt/provenance test. The forced product test was removed after EC2 rejected the path at scale.
+- Earlier implementation slice: `cargo fmt --check && CARGO_BUILD_JOBS=12 cargo test -p cdf-dest-duckdb --locked -j 12` passed with appender, forced stream-scan append, merge appender compatibility, duplicate replay, replace, rollback-adjacent abort paths, correction readback, destination conformance, and native-resource tests.
 - `.10x/evidence/.storage/2026-07-18-p3-d10-ec2-stream-scan-local.json` — failed candidate measurement at `fbe0b29362aaba5841c3f906e898d763793d6a96`; status records `CDF command exceeded worker timeout of 119000ms`. This rejects the first pre-created-table stream-scan shape and is not promotion evidence.
+- `.10x/evidence/.storage/2026-07-18-p3-d10-ec2-stream-scan-ctas-local.json` — failed CTAS candidate measurement at `6cae03cdd50770b1e7bde358203d183ad145ea4a`; status records `CDF command exceeded worker timeout of 119000ms`.
+- `.10x/evidence/.storage/2026-07-18-p3-d10-ec2-stream-scan-onepart.json` — failed one-partition stream-scan smoke at `6cae03cdd50770b1e7bde358203d183ad145ea4a`; status records `CDF command exceeded worker timeout of 59000ms`.
+- After disabling stream-scan exposure again: `cargo fmt --check && CARGO_BUILD_JOBS=12 cargo test -p cdf-dest-duckdb --locked -j 12` — passed. Covers the measured appender default and pinned raw ABI smoke; no runtime descriptor currently advertises the failed stream-scan path.
 
 ## Review
 

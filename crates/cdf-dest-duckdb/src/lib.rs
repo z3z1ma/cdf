@@ -46,7 +46,6 @@ const DUCKDB_DEFAULT_INTERNAL_THREADS: i64 = 1;
 const DUCKDB_MEMORY_LIMIT_ENV: &str = "CDF_DUCKDB_MEMORY_LIMIT";
 const DUCKDB_TEMP_BUDGET_ENV: &str = "CDF_DUCKDB_TEMP_BUDGET";
 const DUCKDB_THREADS_ENV: &str = "CDF_DUCKDB_THREADS";
-const DUCKDB_STAGED_INGRESS_PATH_ENV: &str = "CDF_DUCKDB_STAGED_INGRESS_PATH";
 const DUCKDB_BULK_PATH_APPENDER: &str = "arrow_record_batch_appender";
 const DUCKDB_BULK_PATH_STREAM_SCAN: &str = "arrow_stream_scan";
 pub const CDF_ROW_KEY_COLUMN: &str = "_cdf_row_key";
