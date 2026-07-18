@@ -1,0 +1,1 @@
+{"kind":"duck_db_arrow_ipc_handoff_ingest","output":"target/cdf-benchmarks/d11-arrow-ipc-full-lz4/out.duckdb","staging_dir":"target/cdf-benchmarks/d11-arrow-ipc-full-lz4/ipc","rows":41169720,"batch_rows":65536,"rows_per_file":1048576,"include_row_key":true,"compression":"lz4_frame","extension":"nanoarrow","checkpoint":false}

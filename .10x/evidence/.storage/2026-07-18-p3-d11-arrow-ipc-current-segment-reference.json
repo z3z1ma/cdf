@@ -1,0 +1,1 @@
+{"kind":"duck_db_arrow_ipc_existing_read","paths":["target/cdf-benchmarks/g4-scheduler-default-20260718085558/local-workspace/.cdf/packages/pkg-tlc-yellow-56794-1784364958724043936/data/p00000000-s00000000.arrow"],"output":"target/cdf-benchmarks/d11-arrow-ipc-current-segment/out.duckdb","extension":"nanoarrow","checkpoint":false}

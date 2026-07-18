@@ -19,6 +19,10 @@ use arrow_array::{
     ffi_stream::FFI_ArrowArrayStream,
 };
 use arrow_csv::reader::{Format as CsvFormat, ReaderBuilder as CsvReaderBuilder};
+use arrow_ipc::{
+    CompressionType as IpcCompressionType,
+    writer::{FileWriter as IpcFileWriter, IpcWriteOptions},
+};
 use arrow_json::reader::{ReaderBuilder as JsonReaderBuilder, infer_json_schema};
 use arrow_schema::{
     ArrowError, DataType, Field, Schema, SchemaRef, TimeUnit, ffi::FFI_ArrowSchema,
@@ -234,6 +238,23 @@ pub enum ReferenceWorkload {
         duckdb_memory_limit_bytes: Option<u64>,
         duckdb_temp_directory_budget_bytes: Option<u64>,
     },
+    DuckDbArrowIpcExistingRead {
+        paths: Vec<PathBuf>,
+        output: PathBuf,
+        extension: DuckDbArrowExtension,
+        checkpoint: bool,
+    },
+    DuckDbArrowIpcHandoffIngest {
+        output: PathBuf,
+        staging_dir: PathBuf,
+        rows: u64,
+        batch_rows: usize,
+        rows_per_file: u64,
+        include_row_key: bool,
+        compression: ArrowIpcCompression,
+        extension: DuckDbArrowExtension,
+        checkpoint: bool,
+    },
     DuckDbParquetStagedIngest {
         output: PathBuf,
         staging: PathBuf,
@@ -244,6 +265,29 @@ pub enum ReferenceWorkload {
         include_row_key: bool,
         checkpoint: bool,
     },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DuckDbArrowExtension {
+    Nanoarrow,
+    Arrow,
+}
+
+impl DuckDbArrowExtension {
+    fn extension_name(self) -> &'static str {
+        match self {
+            Self::Nanoarrow => "nanoarrow",
+            Self::Arrow => "arrow",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ArrowIpcCompression {
+    None,
+    Lz4Frame,
 }
 
 pub fn run_reference(workload: &ReferenceWorkload) -> BenchResult<WorkerMeasurement> {
@@ -459,6 +503,33 @@ pub fn run_reference(workload: &ReferenceWorkload) -> BenchResult<WorkerMeasurem
             *duckdb_threads,
             *duckdb_memory_limit_bytes,
             *duckdb_temp_directory_budget_bytes,
+        ),
+        ReferenceWorkload::DuckDbArrowIpcExistingRead {
+            paths,
+            output,
+            extension,
+            checkpoint,
+        } => run_duckdb_arrow_ipc_existing_read(paths, output, *extension, *checkpoint),
+        ReferenceWorkload::DuckDbArrowIpcHandoffIngest {
+            output,
+            staging_dir,
+            rows,
+            batch_rows,
+            rows_per_file,
+            include_row_key,
+            compression,
+            extension,
+            checkpoint,
+        } => run_duckdb_arrow_ipc_handoff_ingest(
+            output,
+            staging_dir,
+            *rows,
+            *batch_rows,
+            *rows_per_file,
+            *include_row_key,
+            *compression,
+            *extension,
+            *checkpoint,
         ),
         ReferenceWorkload::DuckDbParquetStagedIngest {
             output,
@@ -782,6 +853,177 @@ fn run_duckdb_arrow_stream_scan_ingest(
         physical_bytes: duckdb_database_bytes(output)?,
         spill_bytes: 0,
         phases: Vec::new(),
+    })
+}
+
+fn run_duckdb_arrow_ipc_existing_read(
+    paths: &[PathBuf],
+    output: &Path,
+    extension: DuckDbArrowExtension,
+    checkpoint: bool,
+) -> BenchResult<WorkerMeasurement> {
+    if paths.is_empty() {
+        return Err(bench_error(
+            "DuckDB Arrow IPC existing-read reference requires at least one input path",
+        ));
+    }
+    let physical_input_bytes = input_bytes(paths)?;
+    if let Some(parent) = output.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    remove_if_exists(output)?;
+    remove_if_exists(&duckdb_wal_path(output))?;
+    let connection = duckdb::Connection::open(output)?;
+    load_duckdb_arrow_extension(&connection, extension)?;
+    connection.execute_batch(&format!(
+        "CREATE TABLE arrow_ipc_read AS SELECT * FROM read_arrow({})",
+        duckdb_path_list(paths)
+    ))?;
+    if checkpoint {
+        connection.execute_batch("CHECKPOINT")?;
+    }
+    let rows = connection.query_row("SELECT count(*) FROM arrow_ipc_read", [], |row| {
+        row.get::<_, i64>(0)
+    })?;
+    measurement(
+        u64::try_from(rows)?,
+        physical_input_bytes,
+        physical_input_bytes.saturating_add(duckdb_database_bytes(output)?),
+    )
+}
+
+fn run_duckdb_arrow_ipc_handoff_ingest(
+    output: &Path,
+    staging_dir: &Path,
+    rows: u64,
+    batch_rows: usize,
+    rows_per_file: u64,
+    include_row_key: bool,
+    compression: ArrowIpcCompression,
+    extension: DuckDbArrowExtension,
+    checkpoint: bool,
+) -> BenchResult<WorkerMeasurement> {
+    if rows == 0 {
+        return Err(bench_error(
+            "DuckDB Arrow IPC handoff reference requires at least one row",
+        ));
+    }
+    require_batch(batch_rows)?;
+    if rows_per_file == 0 {
+        return Err(bench_error(
+            "DuckDB Arrow IPC handoff reference requires positive rows_per_file",
+        ));
+    }
+    if let Some(parent) = output.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    if staging_dir.exists() {
+        fs::remove_dir_all(staging_dir)?;
+    }
+    fs::create_dir_all(staging_dir)?;
+    remove_if_exists(output)?;
+    remove_if_exists(&duckdb_wal_path(output))?;
+
+    let mut remaining = rows;
+    let mut row_start = 1_u64;
+    let mut logical_bytes = 0_u64;
+    let mut physical_input_bytes = 0_u64;
+    let mut paths = Vec::new();
+    let schema = Arc::new(tlc_arrow_schema(include_row_key));
+    let mut file_index = 0_u64;
+    while remaining > 0 {
+        let file_rows = remaining.min(rows_per_file);
+        let path = staging_dir.join(format!("part-{file_index:05}.arrow"));
+        let write = write_tlc_arrow_ipc_file(
+            &path,
+            schema.clone(),
+            file_rows,
+            batch_rows,
+            row_start,
+            include_row_key,
+            compression,
+        )?;
+        logical_bytes = logical_bytes.saturating_add(write.logical_bytes);
+        physical_input_bytes = physical_input_bytes.saturating_add(write.physical_bytes);
+        paths.push(path);
+        row_start = row_start
+            .checked_add(file_rows)
+            .ok_or_else(|| bench_error("DuckDB Arrow IPC handoff row offset overflowed"))?;
+        remaining -= file_rows;
+        file_index += 1;
+    }
+
+    let connection = duckdb::Connection::open(output)?;
+    load_duckdb_arrow_extension(&connection, extension)?;
+    connection.execute_batch(&format!(
+        "CREATE TABLE arrow_ipc_handoff AS SELECT * FROM read_arrow({})",
+        duckdb_path_list(&paths)
+    ))?;
+    if checkpoint {
+        connection.execute_batch("CHECKPOINT")?;
+    }
+    let observed_rows =
+        connection.query_row("SELECT count(*) FROM arrow_ipc_handoff", [], |row| {
+            row.get::<_, i64>(0)
+        })?;
+    let observed_rows = u64::try_from(observed_rows)?;
+    if observed_rows != rows {
+        return Err(bench_error(format!(
+            "DuckDB Arrow IPC handoff row count mismatch: expected {rows}, observed {observed_rows}"
+        )));
+    }
+    Ok(WorkerMeasurement {
+        timed_wall_time_ns: None,
+        rows,
+        logical_bytes,
+        physical_bytes: physical_input_bytes.saturating_add(duckdb_database_bytes(output)?),
+        spill_bytes: 0,
+        phases: Vec::new(),
+    })
+}
+
+struct ArrowIpcWriteMeasurement {
+    logical_bytes: u64,
+    physical_bytes: u64,
+}
+
+fn write_tlc_arrow_ipc_file(
+    path: &Path,
+    schema: SchemaRef,
+    rows: u64,
+    batch_rows: usize,
+    row_start: u64,
+    include_row_key: bool,
+    compression: ArrowIpcCompression,
+) -> BenchResult<ArrowIpcWriteMeasurement> {
+    let file = fs::File::create(path)?;
+    let mut output = BufWriter::with_capacity(1024 * 1024, file);
+    let options = match compression {
+        ArrowIpcCompression::None => IpcWriteOptions::default(),
+        ArrowIpcCompression::Lz4Frame => {
+            IpcWriteOptions::default().try_with_compression(Some(IpcCompressionType::LZ4_FRAME))?
+        }
+    };
+    let mut writer = IpcFileWriter::try_new_with_options(&mut output, schema.as_ref(), options)?;
+    let mut remaining = rows;
+    let mut current_row = row_start;
+    let mut logical_bytes = 0_u64;
+    while remaining > 0 {
+        let current_rows = usize::try_from(remaining.min(batch_rows as u64))?;
+        let batch = tlc_arrow_batch(current_rows, current_row, include_row_key)?;
+        logical_bytes = logical_bytes.saturating_add(u64::try_from(batch.get_array_memory_size())?);
+        writer.write(&batch)?;
+        current_row = current_row
+            .checked_add(u64::try_from(current_rows)?)
+            .ok_or_else(|| bench_error("DuckDB Arrow IPC handoff batch row offset overflowed"))?;
+        remaining -= u64::try_from(current_rows)?;
+    }
+    writer.finish()?;
+    drop(writer);
+    output.flush()?;
+    Ok(ArrowIpcWriteMeasurement {
+        logical_bytes,
+        physical_bytes: fs::metadata(path)?.len(),
     })
 }
 
@@ -1598,6 +1840,37 @@ fn duckdb_string_literal(path: &Path) -> String {
     format!("'{}'", raw.replace('\'', "''"))
 }
 
+fn duckdb_path_list(paths: &[PathBuf]) -> String {
+    if paths.len() == 1 {
+        duckdb_string_literal(&paths[0])
+    } else {
+        format!(
+            "[{}]",
+            paths
+                .iter()
+                .map(|path| duckdb_string_literal(path))
+                .collect::<Vec<_>>()
+                .join(", ")
+        )
+    }
+}
+
+fn load_duckdb_arrow_extension(
+    connection: &duckdb::Connection,
+    extension: DuckDbArrowExtension,
+) -> BenchResult<()> {
+    let extension_name = extension.extension_name();
+    connection
+        .execute_batch(&format!(
+            "INSTALL {extension_name} FROM community; LOAD {extension_name};"
+        ))
+        .map_err(|error| {
+            bench_error(format!(
+                "DuckDB {extension_name} extension install/load failed: {error}"
+            ))
+        })
+}
+
 fn duckdb_ident(value: &str) -> String {
     format!("\"{}\"", value.replace('"', "\"\""))
 }
@@ -1654,6 +1927,7 @@ fn require_batch(value: usize) -> BenchResult<()> {
 #[cfg(test)]
 mod tests {
     use arrow_array::{Int64Array, RecordBatch, StringArray};
+    use arrow_ipc::reader::FileReader;
     use arrow_schema::{DataType, Field, Schema};
 
     use super::*;
@@ -1893,6 +2167,32 @@ mod tests {
             )
             .unwrap();
         assert_eq!(rows, (2048, 2048, 0, 2047));
+    }
+
+    #[test]
+    fn arrow_ipc_handoff_writer_emits_readable_files() {
+        for compression in [ArrowIpcCompression::None, ArrowIpcCompression::Lz4Frame] {
+            let temp = tempfile::tempdir().unwrap();
+            let path = temp.path().join(format!("{compression:?}.arrow"));
+            let measurement = write_tlc_arrow_ipc_file(
+                &path,
+                Arc::new(tlc_arrow_schema(true)),
+                2048,
+                512,
+                1,
+                true,
+                compression,
+            )
+            .unwrap();
+            assert!(measurement.logical_bytes > 0);
+            assert!(measurement.physical_bytes > 0);
+            let reader = FileReader::try_new(fs::File::open(&path).unwrap(), None).unwrap();
+            let mut rows = 0_usize;
+            for batch in reader {
+                rows += batch.unwrap().num_rows();
+            }
+            assert_eq!(rows, 2048);
+        }
     }
 
     #[test]

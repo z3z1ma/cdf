@@ -23,6 +23,8 @@ Split by destination; no shared generic branch may name a concrete destination.
 - `.10x/tickets/done/2026-07-14-p3-d8-parquet-staged-parallel-ingress.md`
 - `.10x/tickets/2026-07-15-p3-d9-content-reachability-authority.md`
 - `.10x/tickets/cancelled/2026-07-18-p3-d10-duckdb-stream-scan-staged-ingress.md`
+- `.10x/tickets/done/2026-07-18-p3-d11-duckdb-arrow-ipc-handoff-falsification.md`
+- `.10x/tickets/2026-07-18-p3-d12-duckdb-arrow-ipc-handoff-ingress.md`
 
 ## Acceptance criteria
 
@@ -32,7 +34,7 @@ Split by destination; no shared generic branch may name a concrete destination.
 
 ## Blockers
 
-D8 is complete. D9 remains active shaping for the generic immutable-content claim/root/reclamation authority. D10 is cancelled as a measured no-go: the attempted DuckDB stream-scan staged-ingress product path timed out under EC2 promotion evidence and is not exposed by runtime capabilities. WS-D stays open until the destination-neutral long-horizon storage guarantee and the DuckDB envelope-critical materialization gap close under a different retained design.
+D8 is complete. D9 remains active shaping for the generic immutable-content claim/root/reclamation authority. D10 is cancelled as a measured no-go: the attempted DuckDB stream-scan staged-ingress product path timed out under EC2 promotion evidence and is not exposed by runtime capabilities. D11 is done: uncompressed DuckDB Arrow IPC handoff is retained as the next implementation candidate, while current-segment direct read and LZ4 handoff are killed for the pinned nanoarrow build. D12 owns the opt-in production path. WS-D stays open until the destination-neutral long-horizon storage guarantee and the DuckDB envelope-critical materialization gap close under a retained design.
 
 ## Evidence
 
@@ -44,6 +46,7 @@ D8 is complete. D9 remains active shaping for the generic immutable-content clai
 - 2026-07-18: G4 EC2 evidence reopened DuckDB materialization as the dominant envelope owner. Lab-only DuckDB Arrow stream-scan with the existing `_cdf_row_key` column and bounded `threads=16`/`1GiB` DuckDB resource settings materialized 41.2M TLC-shaped rows in median `5.111650191s`, while current CDF local TLC-to-DuckDB remains `33.955522533s`. D10 owns turning that destination-crate-only signal into a retained staged-ingress path or recording a measured no-go.
 - 2026-07-18: D10 recorded the measured no-go. The production stream-scan staged-ingress attempt timed out at `119000ms` on full-year local TLC, the CTAS variant also timed out, and a one-partition smoke timed out at `59000ms`; after the rejection patch, DuckDB runtime capabilities again advertise only the measured appender path. G4 remains the active performance owner for the remaining DuckDB/package materialization envelope gap.
 - 2026-07-18: Removed D10's disabled product stream-scan remnants from `cdf-dest-duckdb` rather than leaving legacy fallback code: the crate now has one staged writer shape matching its advertised appender-only capability. `cargo fmt --all && cargo fmt --check && CARGO_BUILD_JOBS=12 cargo test -p cdf-dest-duckdb --locked -j 12` passed after the deletion.
+- 2026-07-18: Opened and reshaped D11 after G4 tuned the DuckDB Parquet handoff diagnostic from the rejected 64 MiB policy (`20.615s`, ~7.22 GiB RSS) to a credible 128–256 MiB row-group policy (`~10.47s`, ~2.75 GiB RSS), then received the Arrow IPC/nanoarrow hypothesis. D11 closed with a precise split: nanoarrow `read_arrow(...)` works for uncompressed Arrow IPC and materialized 41,169,720 TLC-shaped rows in median `9.308415940s`; it rejects LZ4 IPC and therefore cannot directly read current CDF package segments. D12 owns a DuckDB-destination-owned, opt-in, uncompressed IPC handoff implementation; tuned Parquet handoff remains the fallback if D12 fails product promotion evidence. The generic runtime must remain destination-neutral.
 
 ## Review
 

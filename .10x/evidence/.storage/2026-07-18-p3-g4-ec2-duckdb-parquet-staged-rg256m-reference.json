@@ -1,0 +1,1 @@
+{"batch_rows":65536,"checkpoint":false,"include_row_key":true,"kind":"duck_db_parquet_staged_ingest","output":"target/cdf-benchmarks/g4-duckdb-parquet-staged-ingest-rg256m/parquet-stage.duckdb","row_group_bytes":268435456,"row_group_rows":262144,"rows":41169720,"staging":"target/cdf-benchmarks/g4-duckdb-parquet-staged-ingest-rg256m/stage.parquet"}
