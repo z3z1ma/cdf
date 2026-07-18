@@ -22,6 +22,7 @@ Split by destination; no shared generic branch may name a concrete destination.
 - `.10x/tickets/done/2026-07-14-p3-d7-persistent-staged-ingress-stream.md`
 - `.10x/tickets/done/2026-07-14-p3-d8-parquet-staged-parallel-ingress.md`
 - `.10x/tickets/2026-07-15-p3-d9-content-reachability-authority.md`
+- `.10x/tickets/2026-07-18-p3-d10-duckdb-stream-scan-staged-ingress.md`
 
 ## Acceptance criteria
 
@@ -31,7 +32,7 @@ Split by destination; no shared generic branch may name a concrete destination.
 
 ## Blockers
 
-D8 is complete. D9 remains active shaping for the generic immutable-content claim/root/reclamation authority; WS-D stays open until that destination-neutral long-horizon storage guarantee closes.
+D8 is complete. D9 remains active shaping for the generic immutable-content claim/root/reclamation authority. D10 owns the DuckDB stream-scan staged-ingress accelerator exposed by G4 EC2 evidence. WS-D stays open until both the destination-neutral long-horizon storage guarantee and DuckDB envelope-critical materialization path close.
 
 ## Evidence
 
@@ -40,6 +41,7 @@ D8 is complete. D9 remains active shaping for the generic immutable-content clai
 - D7's public Arrow-vtab alternative measured 2.845 seconds and uses upstream process-global retention. Its deletion is the measured no-action outcome required by P3's boundedness and no-legacy guardrails.
 - 2026-07-15: Reopened after C4 measured 33.069 seconds in Parquet finalized-package ingress despite the isolated writer running at 0.786 of its raw-write roofline. D8 owns enrollment in generic staged ingress and deletion of the superseded finalized path.
 - 2026-07-15: D8 closed after the current staged path reduced the complete 8.59 GB FineWeb command from 40.67 to 18.36 seconds, reached 0.779x the favorable same-data reference, bounded RSS at 1.463 GB, eliminated final-copy and legacy finalized ingress, and proved exact logical receipt/manifest identity at jobs 1/2/auto/4. D9 explicitly owns shared immutable-content reachability and keeps this parent open.
+- 2026-07-18: G4 EC2 evidence reopened DuckDB materialization as the dominant envelope owner. Lab-only DuckDB Arrow stream-scan with the existing `_cdf_row_key` column and bounded `threads=16`/`1GiB` DuckDB resource settings materialized 41.2M TLC-shaped rows in median `5.111650191s`, while current CDF local TLC-to-DuckDB remains `33.955522533s`. D10 owns turning that destination-crate-only signal into a retained staged-ingress path or recording a measured no-go.
 
 ## Review
 
