@@ -189,6 +189,13 @@ pub enum ReferenceWorkload {
         paths: Vec<PathBuf>,
         output: PathBuf,
     },
+    DuckDbArrowAppend {
+        output: PathBuf,
+        rows: u64,
+        batch_rows: usize,
+        include_row_key: bool,
+        checkpoint: bool,
+    },
 }
 
 pub fn run_reference(workload: &ReferenceWorkload) -> BenchResult<WorkerMeasurement> {
@@ -359,6 +366,13 @@ pub fn run_reference(workload: &ReferenceWorkload) -> BenchResult<WorkerMeasurem
             connection.execute_batch("CHECKPOINT")?;
             measurement(u64::try_from(rows)?, physical_bytes, physical_bytes)
         }
+        ReferenceWorkload::DuckDbArrowAppend {
+            output,
+            rows,
+            batch_rows,
+            include_row_key,
+            checkpoint,
+        } => run_duckdb_arrow_append(output, *rows, *batch_rows, *include_row_key, *checkpoint),
     }
 }
 
@@ -393,6 +407,203 @@ fn duckdb_parquet_input_sql(paths: &[PathBuf]) -> BenchResult<String> {
     Ok(sql)
 }
 
+fn run_duckdb_arrow_append(
+    output: &Path,
+    rows: u64,
+    batch_rows: usize,
+    include_row_key: bool,
+    checkpoint: bool,
+) -> BenchResult<WorkerMeasurement> {
+    if rows == 0 {
+        return Err(bench_error(
+            "DuckDB Arrow append reference requires at least one row",
+        ));
+    }
+    require_batch(batch_rows)?;
+    if let Some(parent) = output.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    remove_if_exists(output)?;
+    remove_if_exists(&duckdb_wal_path(output))?;
+    let connection = duckdb::Connection::open(output)?;
+    let mut columns = tlc_duckdb_columns();
+    if include_row_key {
+        columns.push((cdf_dest_duckdb::CDF_ROW_KEY_COLUMN, "UBIGINT"));
+    }
+    let column_sql = columns
+        .iter()
+        .map(|(name, sql_type)| format!("{} {} NOT NULL", duckdb_ident(name), sql_type))
+        .collect::<Vec<_>>()
+        .join(", ");
+    connection.execute_batch(&format!("CREATE TABLE arrow_append ({column_sql})"))?;
+    connection.execute_batch("BEGIN TRANSACTION")?;
+    let mut appender = connection.appender("arrow_append")?;
+    let mut remaining = rows;
+    let mut row_start = 1_u64;
+    let mut logical_bytes = 0_u64;
+    while remaining > 0 {
+        let current_rows = usize::try_from(remaining.min(batch_rows as u64))?;
+        let batch = tlc_duckdb_arrow_batch(current_rows, row_start, include_row_key)?;
+        logical_bytes = logical_bytes.saturating_add(u64::try_from(batch.get_array_memory_size())?);
+        appender.append_record_batch(batch)?;
+        row_start = row_start
+            .checked_add(u64::try_from(current_rows)?)
+            .ok_or_else(|| bench_error("DuckDB Arrow append row offset overflowed"))?;
+        remaining -= u64::try_from(current_rows)?;
+    }
+    appender.flush()?;
+    drop(appender);
+    connection.execute_batch("COMMIT")?;
+    if checkpoint {
+        connection.execute_batch("CHECKPOINT")?;
+    }
+    let observed_rows = connection.query_row("SELECT count(*) FROM arrow_append", [], |row| {
+        row.get::<_, i64>(0)
+    })?;
+    let observed_rows = u64::try_from(observed_rows)?;
+    if observed_rows != rows {
+        return Err(bench_error(format!(
+            "DuckDB Arrow append row count mismatch: expected {rows}, observed {observed_rows}"
+        )));
+    }
+    Ok(WorkerMeasurement {
+        timed_wall_time_ns: None,
+        rows,
+        logical_bytes,
+        physical_bytes: duckdb_database_bytes(output)?,
+        spill_bytes: 0,
+        phases: Vec::new(),
+    })
+}
+
+fn tlc_duckdb_columns() -> Vec<(&'static str, &'static str)> {
+    vec![
+        ("vendor_id", "INTEGER"),
+        ("tpep_pickup_datetime", "TIMESTAMP"),
+        ("tpep_dropoff_datetime", "TIMESTAMP"),
+        ("passenger_count", "BIGINT"),
+        ("trip_distance", "DOUBLE"),
+        ("ratecode_id", "BIGINT"),
+        ("store_and_fwd_flag", "VARCHAR"),
+        ("pu_location_id", "INTEGER"),
+        ("do_location_id", "INTEGER"),
+        ("payment_type", "BIGINT"),
+        ("fare_amount", "DOUBLE"),
+        ("extra", "DOUBLE"),
+        ("mta_tax", "DOUBLE"),
+        ("tip_amount", "DOUBLE"),
+        ("tolls_amount", "DOUBLE"),
+        ("improvement_surcharge", "DOUBLE"),
+        ("total_amount", "DOUBLE"),
+        ("congestion_surcharge", "DOUBLE"),
+        ("airport_fee", "DOUBLE"),
+    ]
+}
+
+type DuckArrayRef = Arc<dyn duckdb::arrow::array::Array>;
+
+fn tlc_duckdb_arrow_batch(
+    rows: usize,
+    row_key_start: u64,
+    include_row_key: bool,
+) -> BenchResult<duckdb::arrow::record_batch::RecordBatch> {
+    use duckdb::arrow::{
+        array::{
+            Float64Array, Int32Array, Int64Array, StringArray, TimestampMicrosecondArray,
+            UInt64Array,
+        },
+        datatypes::{DataType, Field, Schema, TimeUnit},
+        record_batch::RecordBatch,
+    };
+
+    let mut fields = vec![
+        Field::new("vendor_id", DataType::Int32, false),
+        Field::new(
+            "tpep_pickup_datetime",
+            DataType::Timestamp(TimeUnit::Microsecond, None),
+            false,
+        ),
+        Field::new(
+            "tpep_dropoff_datetime",
+            DataType::Timestamp(TimeUnit::Microsecond, None),
+            false,
+        ),
+        Field::new("passenger_count", DataType::Int64, false),
+        Field::new("trip_distance", DataType::Float64, false),
+        Field::new("ratecode_id", DataType::Int64, false),
+        Field::new("store_and_fwd_flag", DataType::Utf8, false),
+        Field::new("pu_location_id", DataType::Int32, false),
+        Field::new("do_location_id", DataType::Int32, false),
+        Field::new("payment_type", DataType::Int64, false),
+    ];
+    fields.extend(
+        [
+            "fare_amount",
+            "extra",
+            "mta_tax",
+            "tip_amount",
+            "tolls_amount",
+            "improvement_surcharge",
+            "total_amount",
+            "congestion_surcharge",
+            "airport_fee",
+        ]
+        .map(|name| Field::new(name, DataType::Float64, false)),
+    );
+    let int32 = || {
+        Arc::new(Int32Array::from_iter_values((0..rows).map(|row| {
+            let absolute = row_key_start.saturating_add(row as u64);
+            (absolute % 265) as i32
+        }))) as DuckArrayRef
+    };
+    let int64 = || {
+        Arc::new(Int64Array::from_iter_values((0..rows).map(|row| {
+            let absolute = row_key_start.saturating_add(row as u64);
+            (absolute % 8) as i64
+        }))) as DuckArrayRef
+    };
+    let float64 = || {
+        Arc::new(Float64Array::from_iter_values((0..rows).map(|row| {
+            let absolute = row_key_start.saturating_add(row as u64);
+            (absolute % 10_000) as f64 / 100.0
+        }))) as DuckArrayRef
+    };
+    let timestamp = || {
+        Arc::new(TimestampMicrosecondArray::from_iter_values(
+            (0..rows).map(|row| 1_704_067_200_000_000_i64.saturating_add(row as i64)),
+        )) as DuckArrayRef
+    };
+    let mut columns = vec![
+        int32(),
+        timestamp(),
+        timestamp(),
+        int64(),
+        float64(),
+        int64(),
+        Arc::new(StringArray::from_iter_values(std::iter::repeat_n(
+            "N", rows,
+        ))) as DuckArrayRef,
+        int32(),
+        int32(),
+        int64(),
+    ];
+    columns.extend((0..9).map(|_| float64()));
+    if include_row_key {
+        let row_key_end = row_key_start
+            .checked_add(u64::try_from(rows)?)
+            .ok_or_else(|| bench_error("DuckDB Arrow append row key overflowed"))?;
+        fields.push(Field::new(
+            cdf_dest_duckdb::CDF_ROW_KEY_COLUMN,
+            DataType::UInt64,
+            false,
+        ));
+        columns.push(
+            Arc::new(UInt64Array::from_iter_values(row_key_start..row_key_end)) as DuckArrayRef,
+        );
+    }
+    RecordBatch::try_new(Arc::new(Schema::new(fields)), columns).map_err(Into::into)
+}
+
 fn remove_if_exists(path: &Path) -> BenchResult<()> {
     match fs::remove_file(path) {
         Ok(()) => Ok(()),
@@ -407,9 +618,27 @@ fn duckdb_wal_path(path: &Path) -> PathBuf {
     PathBuf::from(value)
 }
 
+fn duckdb_database_bytes(path: &Path) -> BenchResult<u64> {
+    let database = match fs::metadata(path) {
+        Ok(metadata) => metadata.len(),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => 0,
+        Err(error) => return Err(error.into()),
+    };
+    let wal = match fs::metadata(duckdb_wal_path(path)) {
+        Ok(metadata) => metadata.len(),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => 0,
+        Err(error) => return Err(error.into()),
+    };
+    Ok(database.saturating_add(wal))
+}
+
 fn duckdb_string_literal(path: &Path) -> String {
     let raw = path.display().to_string();
     format!("'{}'", raw.replace('\'', "''"))
+}
+
+fn duckdb_ident(value: &str) -> String {
+    format!("\"{}\"", value.replace('"', "\"\""))
 }
 
 fn collect_arrow<I, E>(reader: I, physical_bytes: u64) -> BenchResult<WorkerMeasurement>
@@ -542,5 +771,39 @@ mod tests {
             fs::metadata(input).unwrap().len()
         );
         assert!(fs::metadata(output).unwrap().len() > 0);
+    }
+
+    #[test]
+    fn duckdb_arrow_append_reference_materializes_persistent_table() {
+        let temp = tempfile::tempdir().unwrap();
+        let output = temp.path().join("arrow-append.duckdb");
+
+        let measurement = run_reference(&ReferenceWorkload::DuckDbArrowAppend {
+            output: output.clone(),
+            rows: 2048,
+            batch_rows: 512,
+            include_row_key: true,
+            checkpoint: true,
+        })
+        .unwrap();
+
+        assert_eq!(measurement.rows, 2048);
+        assert!(measurement.logical_bytes > 0);
+        assert!(measurement.physical_bytes > 0);
+        let connection = duckdb::Connection::open(output).unwrap();
+        let rows = connection
+            .query_row(
+                "SELECT count(*), min(_cdf_row_key), max(_cdf_row_key) FROM arrow_append",
+                [],
+                |row| {
+                    Ok((
+                        row.get::<_, i64>(0)?,
+                        row.get::<_, u64>(1)?,
+                        row.get::<_, u64>(2)?,
+                    ))
+                },
+            )
+            .unwrap();
+        assert_eq!(rows, (2048, 1, 2048));
     }
 }
