@@ -106,6 +106,8 @@ The active P3 benchmark tranche still needs the host for G4 and follow-on perfor
 - `.10x/evidence/.storage/2026-07-18-p3-l7-ec2-after-cgroup-memory-measure-build.env` records the matching current clean measured-runner build marker after the shared cgroup measurement report commit.
 - `.10x/evidence/.storage/2026-07-18-p3-f1-ec2-cgroup-memory-sample-smoke.json` records the post-refresh bounded `measure-cdf` smoke with per-sample cgroup memory evidence.
 - `.10x/evidence/.storage/2026-07-18-p3-f1-ec2-cgroup-memory-sample-smoke.systemd.log` records the same-`MemoryMax` host-class probe and run-cell transient unit results.
+- `.10x/evidence/.storage/2026-07-18-p3-f1-ec2-cgroup-local-tlc-run.json` records the full-year local TLC-to-DuckDB run under `MemoryMax=6G`.
+- `.10x/evidence/.storage/2026-07-18-p3-f1-ec2-cgroup-local-tlc-run.systemd.log` records the same-`MemoryMax` host-class probe and run-cell transient unit results for the full-year local TLC run.
 
 ## Review
 
