@@ -6,8 +6,13 @@ use std::{
     sync::Arc,
 };
 
+use arrow_array::{
+    ArrayRef, Float64Array, Int32Array, Int64Array, StringArray, TimestampMicrosecondArray,
+    UInt64Array,
+};
 use arrow_csv::reader::{Format as CsvFormat, ReaderBuilder as CsvReaderBuilder};
 use arrow_json::reader::{ReaderBuilder as JsonReaderBuilder, infer_json_schema};
+use arrow_schema::{DataType, Field, Schema, TimeUnit};
 use parquet::{
     arrow::{ArrowWriter, arrow_reader::ParquetRecordBatchReaderBuilder},
     file::properties::{EnabledStatistics, WriterProperties},
@@ -196,6 +201,16 @@ pub enum ReferenceWorkload {
         include_row_key: bool,
         checkpoint: bool,
     },
+    DuckDbParquetStagedIngest {
+        output: PathBuf,
+        staging: PathBuf,
+        rows: u64,
+        batch_rows: usize,
+        row_group_rows: usize,
+        row_group_bytes: usize,
+        include_row_key: bool,
+        checkpoint: bool,
+    },
 }
 
 pub fn run_reference(workload: &ReferenceWorkload) -> BenchResult<WorkerMeasurement> {
@@ -373,6 +388,25 @@ pub fn run_reference(workload: &ReferenceWorkload) -> BenchResult<WorkerMeasurem
             include_row_key,
             checkpoint,
         } => run_duckdb_arrow_append(output, *rows, *batch_rows, *include_row_key, *checkpoint),
+        ReferenceWorkload::DuckDbParquetStagedIngest {
+            output,
+            staging,
+            rows,
+            batch_rows,
+            row_group_rows,
+            row_group_bytes,
+            include_row_key,
+            checkpoint,
+        } => run_duckdb_parquet_staged_ingest(
+            output,
+            staging,
+            *rows,
+            *batch_rows,
+            *row_group_rows,
+            *row_group_bytes,
+            *include_row_key,
+            *checkpoint,
+        ),
     }
 }
 
@@ -476,6 +510,101 @@ fn run_duckdb_arrow_append(
     })
 }
 
+fn run_duckdb_parquet_staged_ingest(
+    output: &Path,
+    staging: &Path,
+    rows: u64,
+    batch_rows: usize,
+    row_group_rows: usize,
+    row_group_bytes: usize,
+    include_row_key: bool,
+    checkpoint: bool,
+) -> BenchResult<WorkerMeasurement> {
+    if rows == 0 {
+        return Err(bench_error(
+            "DuckDB Parquet staged ingest reference requires at least one row",
+        ));
+    }
+    require_batch(batch_rows)?;
+    if row_group_rows == 0 {
+        return Err(bench_error(
+            "DuckDB Parquet staged ingest reference requires positive row_group_rows",
+        ));
+    }
+    if row_group_bytes == 0 {
+        return Err(bench_error(
+            "DuckDB Parquet staged ingest reference requires positive row_group_bytes",
+        ));
+    }
+    if let Some(parent) = staging.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    if let Some(parent) = output.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    remove_if_exists(staging)?;
+    remove_if_exists(output)?;
+    remove_if_exists(&duckdb_wal_path(output))?;
+
+    let schema = Arc::new(tlc_arrow_schema(include_row_key));
+    let properties = WriterProperties::builder()
+        .set_created_by("cdf benchmark DuckDB Parquet staged ingest reference".to_owned())
+        .set_write_batch_size(batch_rows)
+        .set_data_page_row_count_limit(batch_rows.min(64 * 1024))
+        .set_data_page_size_limit(row_group_bytes.min(8 * 1024 * 1024))
+        .set_max_row_group_row_count(Some(row_group_rows))
+        .set_max_row_group_bytes(Some(row_group_bytes))
+        .set_dictionary_enabled(false)
+        .set_statistics_enabled(EnabledStatistics::None)
+        .build();
+    let file = fs::File::create(staging)?;
+    let mut output_writer = BufWriter::with_capacity(1024 * 1024, file);
+    let mut writer = ArrowWriter::try_new(&mut output_writer, schema, Some(properties))?;
+    let mut remaining = rows;
+    let mut row_start = 1_u64;
+    let mut logical_bytes = 0_u64;
+    while remaining > 0 {
+        let current_rows = usize::try_from(remaining.min(batch_rows as u64))?;
+        let batch = tlc_arrow_batch(current_rows, row_start, include_row_key)?;
+        logical_bytes = logical_bytes.saturating_add(u64::try_from(batch.get_array_memory_size())?);
+        writer.write(&batch)?;
+        row_start = row_start
+            .checked_add(u64::try_from(current_rows)?)
+            .ok_or_else(|| bench_error("DuckDB Parquet staged ingest row offset overflowed"))?;
+        remaining -= u64::try_from(current_rows)?;
+    }
+    writer.close()?;
+    output_writer.flush()?;
+
+    let connection = duckdb::Connection::open(output)?;
+    connection.execute_batch(&format!(
+        "CREATE TABLE parquet_stage AS SELECT * FROM read_parquet({})",
+        duckdb_string_literal(staging)
+    ))?;
+    if checkpoint {
+        connection.execute_batch("CHECKPOINT")?;
+    }
+    let observed_rows = connection.query_row("SELECT count(*) FROM parquet_stage", [], |row| {
+        row.get::<_, i64>(0)
+    })?;
+    let observed_rows = u64::try_from(observed_rows)?;
+    if observed_rows != rows {
+        return Err(bench_error(format!(
+            "DuckDB Parquet staged ingest row count mismatch: expected {rows}, observed {observed_rows}"
+        )));
+    }
+    Ok(WorkerMeasurement {
+        timed_wall_time_ns: None,
+        rows,
+        logical_bytes,
+        physical_bytes: fs::metadata(staging)?
+            .len()
+            .saturating_add(duckdb_database_bytes(output)?),
+        spill_bytes: 0,
+        phases: Vec::new(),
+    })
+}
+
 fn tlc_duckdb_columns() -> Vec<(&'static str, &'static str)> {
     vec![
         ("vendor_id", "INTEGER"),
@@ -498,6 +627,110 @@ fn tlc_duckdb_columns() -> Vec<(&'static str, &'static str)> {
         ("congestion_surcharge", "DOUBLE"),
         ("airport_fee", "DOUBLE"),
     ]
+}
+
+fn tlc_arrow_schema(include_row_key: bool) -> Schema {
+    let mut fields = vec![
+        Field::new("vendor_id", DataType::Int32, false),
+        Field::new(
+            "tpep_pickup_datetime",
+            DataType::Timestamp(TimeUnit::Microsecond, None),
+            false,
+        ),
+        Field::new(
+            "tpep_dropoff_datetime",
+            DataType::Timestamp(TimeUnit::Microsecond, None),
+            false,
+        ),
+        Field::new("passenger_count", DataType::Int64, false),
+        Field::new("trip_distance", DataType::Float64, false),
+        Field::new("ratecode_id", DataType::Int64, false),
+        Field::new("store_and_fwd_flag", DataType::Utf8, false),
+        Field::new("pu_location_id", DataType::Int32, false),
+        Field::new("do_location_id", DataType::Int32, false),
+        Field::new("payment_type", DataType::Int64, false),
+    ];
+    fields.extend(
+        [
+            "fare_amount",
+            "extra",
+            "mta_tax",
+            "tip_amount",
+            "tolls_amount",
+            "improvement_surcharge",
+            "total_amount",
+            "congestion_surcharge",
+            "airport_fee",
+        ]
+        .map(|name| Field::new(name, DataType::Float64, false)),
+    );
+    if include_row_key {
+        fields.push(Field::new(
+            cdf_dest_duckdb::CDF_ROW_KEY_COLUMN,
+            DataType::UInt64,
+            false,
+        ));
+    }
+    Schema::new(fields)
+}
+
+fn tlc_arrow_columns(rows: usize, row_key_start: u64) -> Vec<ArrayRef> {
+    let int32 = || {
+        Arc::new(Int32Array::from_iter_values((0..rows).map(|row| {
+            let absolute = row_key_start.saturating_add(row as u64);
+            (absolute % 265) as i32
+        }))) as ArrayRef
+    };
+    let int64 = || {
+        Arc::new(Int64Array::from_iter_values((0..rows).map(|row| {
+            let absolute = row_key_start.saturating_add(row as u64);
+            (absolute % 8) as i64
+        }))) as ArrayRef
+    };
+    let float64 = || {
+        Arc::new(Float64Array::from_iter_values((0..rows).map(|row| {
+            let absolute = row_key_start.saturating_add(row as u64);
+            (absolute % 10_000) as f64 / 100.0
+        }))) as ArrayRef
+    };
+    let timestamp = || {
+        Arc::new(TimestampMicrosecondArray::from_iter_values(
+            (0..rows).map(|row| 1_704_067_200_000_000_i64.saturating_add(row as i64)),
+        )) as ArrayRef
+    };
+    let mut columns = vec![
+        int32(),
+        timestamp(),
+        timestamp(),
+        int64(),
+        float64(),
+        int64(),
+        Arc::new(StringArray::from_iter_values(std::iter::repeat_n(
+            "N", rows,
+        ))) as ArrayRef,
+        int32(),
+        int32(),
+        int64(),
+    ];
+    columns.extend((0..9).map(|_| float64()));
+    columns
+}
+
+fn tlc_arrow_batch(
+    rows: usize,
+    row_key_start: u64,
+    include_row_key: bool,
+) -> BenchResult<arrow_array::RecordBatch> {
+    let row_key_end = row_key_start
+        .checked_add(u64::try_from(rows)?)
+        .ok_or_else(|| bench_error("TLC benchmark row key overflowed"))?;
+    let mut columns = tlc_arrow_columns(rows, row_key_start);
+    if include_row_key {
+        columns
+            .push(Arc::new(UInt64Array::from_iter_values(row_key_start..row_key_end)) as ArrayRef);
+    }
+    arrow_array::RecordBatch::try_new(Arc::new(tlc_arrow_schema(include_row_key)), columns)
+        .map_err(Into::into)
 }
 
 type DuckArrayRef = Arc<dyn duckdb::arrow::array::Array>;
@@ -794,6 +1027,44 @@ mod tests {
         let rows = connection
             .query_row(
                 "SELECT count(*), min(_cdf_row_key), max(_cdf_row_key) FROM arrow_append",
+                [],
+                |row| {
+                    Ok((
+                        row.get::<_, i64>(0)?,
+                        row.get::<_, u64>(1)?,
+                        row.get::<_, u64>(2)?,
+                    ))
+                },
+            )
+            .unwrap();
+        assert_eq!(rows, (2048, 1, 2048));
+    }
+
+    #[test]
+    fn duckdb_parquet_staged_ingest_reference_materializes_persistent_table() {
+        let temp = tempfile::tempdir().unwrap();
+        let output = temp.path().join("parquet-stage.duckdb");
+        let staging = temp.path().join("stage.parquet");
+
+        let measurement = run_reference(&ReferenceWorkload::DuckDbParquetStagedIngest {
+            output: output.clone(),
+            staging: staging.clone(),
+            rows: 2048,
+            batch_rows: 512,
+            row_group_rows: 512,
+            row_group_bytes: 1024 * 1024,
+            include_row_key: true,
+            checkpoint: false,
+        })
+        .unwrap();
+
+        assert_eq!(measurement.rows, 2048);
+        assert!(measurement.logical_bytes > 0);
+        assert!(measurement.physical_bytes >= fs::metadata(&staging).unwrap().len());
+        let connection = duckdb::Connection::open(output).unwrap();
+        let rows = connection
+            .query_row(
+                "SELECT count(*), min(_cdf_row_key), max(_cdf_row_key) FROM parquet_stage",
                 [],
                 |row| {
                     Ok((
