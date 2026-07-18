@@ -194,6 +194,11 @@ pub enum ReferenceWorkload {
         paths: Vec<PathBuf>,
         output: PathBuf,
     },
+    DuckDbParquetIngestWithRowKey {
+        paths: Vec<PathBuf>,
+        output: PathBuf,
+        checkpoint: bool,
+    },
     DuckDbArrowAppend {
         output: PathBuf,
         rows: u64,
@@ -381,6 +386,11 @@ pub fn run_reference(workload: &ReferenceWorkload) -> BenchResult<WorkerMeasurem
             connection.execute_batch("CHECKPOINT")?;
             measurement(u64::try_from(rows)?, physical_bytes, physical_bytes)
         }
+        ReferenceWorkload::DuckDbParquetIngestWithRowKey {
+            paths,
+            output,
+            checkpoint,
+        } => run_duckdb_parquet_ingest_with_row_key(paths, output, *checkpoint),
         ReferenceWorkload::DuckDbArrowAppend {
             output,
             rows,
@@ -439,6 +449,36 @@ fn duckdb_parquet_input_sql(paths: &[PathBuf]) -> BenchResult<String> {
     }
     sql.push(']');
     Ok(sql)
+}
+
+fn run_duckdb_parquet_ingest_with_row_key(
+    paths: &[PathBuf],
+    output: &Path,
+    checkpoint: bool,
+) -> BenchResult<WorkerMeasurement> {
+    let physical_bytes = input_bytes(paths)?;
+    if let Some(parent) = output.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    remove_if_exists(output)?;
+    remove_if_exists(&duckdb_wal_path(output))?;
+    let connection = duckdb::Connection::open(output)?;
+    connection.execute_batch(&format!(
+        "CREATE TABLE native_ingest_with_row_key AS \
+         SELECT *, CAST(row_number() OVER () AS UBIGINT) AS {} \
+         FROM read_parquet({})",
+        duckdb_ident(cdf_dest_duckdb::CDF_ROW_KEY_COLUMN),
+        duckdb_parquet_input_sql(paths)?
+    ))?;
+    if checkpoint {
+        connection.execute_batch("CHECKPOINT")?;
+    }
+    let rows = connection.query_row(
+        "SELECT count(*) FROM native_ingest_with_row_key",
+        [],
+        |row| row.get::<_, i64>(0),
+    )?;
+    measurement(u64::try_from(rows)?, physical_bytes, physical_bytes)
 }
 
 fn run_duckdb_arrow_append(
@@ -1004,6 +1044,58 @@ mod tests {
             fs::metadata(input).unwrap().len()
         );
         assert!(fs::metadata(output).unwrap().len() > 0);
+    }
+
+    #[test]
+    fn duckdb_parquet_ingest_with_row_key_reference_materializes_table() {
+        let temp = tempfile::tempdir().unwrap();
+        let input = temp.path().join("input.parquet");
+        let output = temp.path().join("native-row-key.duckdb");
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int64, false),
+            Field::new("text", DataType::Utf8, false),
+        ]));
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(Int64Array::from(vec![1, 2, 3])),
+                Arc::new(StringArray::from(vec!["one", "two", "three"])),
+            ],
+        )
+        .unwrap();
+        let mut source =
+            ArrowWriter::try_new(fs::File::create(&input).unwrap(), schema, None).unwrap();
+        source.write(&batch).unwrap();
+        source.close().unwrap();
+
+        let measurement = run_reference(&ReferenceWorkload::DuckDbParquetIngestWithRowKey {
+            paths: vec![input.clone()],
+            output: output.clone(),
+            checkpoint: true,
+        })
+        .unwrap();
+
+        assert_eq!(measurement.rows, 3);
+        assert_eq!(
+            measurement.physical_bytes,
+            fs::metadata(input).unwrap().len()
+        );
+        let connection = duckdb::Connection::open(output).unwrap();
+        let rows = connection
+            .query_row(
+                "SELECT count(*), min(_cdf_row_key), max(_cdf_row_key) \
+                 FROM native_ingest_with_row_key",
+                [],
+                |row| {
+                    Ok((
+                        row.get::<_, i64>(0)?,
+                        row.get::<_, u64>(1)?,
+                        row.get::<_, u64>(2)?,
+                    ))
+                },
+            )
+            .unwrap();
+        assert_eq!(rows, (3, 1, 3));
     }
 
     #[test]

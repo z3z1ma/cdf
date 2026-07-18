@@ -49,6 +49,13 @@ DuckDB Parquet-staged ingest diagnostic, same tuned host:
 - This is materially faster than the persistent Arrow-appender diagnostic (`31.83s`) but still far above the G4 1.5x ceiling of about `8.47s`, and its peak memory is not acceptable as a default under CDF's constant-memory doctrine. It is therefore a promising adapter-owned direction, not a production default.
 - Current interpretation: native DuckDB Parquet ingest is the right shape, but a naive destination-owned Parquet handoff is too heavy unless it becomes bounded and substantially faster. If pursued, the production design must account disk/RSS through the memory/spill ledger and must beat the host-labeled CDF baseline before retention.
 
+Native DuckDB Parquet ingest plus SQL-generated row-key diagnostic, same tuned host and same 12 local TLC files:
+
+- Reference worker: `DuckDbParquetIngestWithRowKey`, materializing a persistent DuckDB table with `CREATE TABLE AS SELECT *, CAST(row_number() OVER () AS UBIGINT) AS _cdf_row_key FROM read_parquet([...])`, three warm samples through `cdf-p3-lab run-cell`.
+- Median wall: `32.381451900s`; median throughput: 1,271,398 rows/s over 41,169,720 rows and 693,001,713 input bytes; peak RSS about `1.56 GiB`.
+- This is essentially the same wall-time class as the persistent Arrow-appender diagnostic (`31.83s`) and the current CDF local default (`33.96s`), while the same native DuckDB ingest without row-key generation is `4.17s`.
+- Current interpretation: the native DuckDB read path is not enough by itself. A SQL window-function `_cdf_row_key` destroys the fast path and should not be promoted as a production strategy. The next retained DuckDB architecture must preserve CDF provenance/identity without forcing a full-table engine window operation; otherwise it merely recreates the current destination bottleneck in a different shape.
+
 Tuned machine artifacts:
 
 - `.10x/evidence/.storage/2026-07-18-p3-g4-ec2-tuned-tlc-summary.json`
@@ -69,6 +76,9 @@ Tuned machine artifacts:
 - `.10x/evidence/.storage/2026-07-18-p3-g4-ec2-duckdb-parquet-staged-ingest-observation.json`
 - `.10x/evidence/.storage/2026-07-18-p3-g4-ec2-duckdb-parquet-staged-ingest-run-cell.json`
 - `.10x/evidence/.storage/2026-07-18-p3-g4-ec2-duckdb-parquet-staged-ingest-reference.json`
+- `.10x/evidence/.storage/2026-07-18-p3-g4-ec2-native-duckdb-row-key-observation.json`
+- `.10x/evidence/.storage/2026-07-18-p3-g4-ec2-native-duckdb-row-key-run-cell.json`
+- `.10x/evidence/.storage/2026-07-18-p3-g4-ec2-native-duckdb-row-key-reference.json`
 - `.10x/evidence/.storage/2026-07-18-p3-g4-ec2-local-default-measured.json`
 - `.10x/evidence/.storage/2026-07-18-p3-g4-ec2-local-jobs3-measured.json`
 - `.10x/evidence/.storage/2026-07-18-p3-g4-ec2-local-package-read.json`
@@ -104,6 +114,7 @@ On the EC2 host created by `.10x/tickets/2026-07-18-p3-l6-ec2-benchmark-host.md`
 9. Added a lab-only `cdf-p3-lab package-read` diagnostic and ran it against the retained full-year TLC package from the local default cell: `pkg-tlc-yellow-56794-1784364958724043936`.
 10. Added a persistent DuckDB Arrow-appender reference workload to `cdf-p3-lab`, rebuilt the lab binary on the same host, preflighted the host/build/workspace, and ran three-sample warm `run-cell` controls over 41,169,720 synthetic TLC-shaped rows with `_cdf_row_key` enabled, once with checkpointing enabled and once without explicit checkpointing.
 11. Added a DuckDB Parquet-staged ingest reference workload to `cdf-p3-lab`, rebuilt the lab binary on the same host, preflighted the host/build/workspace, and ran a three-sample warm `run-cell` over 41,169,720 synthetic TLC-shaped rows with `_cdf_row_key` enabled, a 65,536-row Parquet row-group target, and no explicit DuckDB checkpoint.
+12. Added a native DuckDB Parquet ingest plus SQL-generated row-key reference workload to `cdf-p3-lab`, rebuilt the lab binary on the same host, preflighted the dirty benchmark build, and ran a three-sample warm `run-cell` against the same 12 local TLC Parquet files used by the native no-row-key reference.
 
 ## What it supports or challenges
 
@@ -123,8 +134,10 @@ The persistent DuckDB Arrow-appender diagnostic resolves that fork. The appender
 
 The Parquet-staged ingest diagnostic tests that next shape. It improves the persistent materialization wall to `20.615132934s`, proving DuckDB-native Parquet ingest can help even after paying a handoff-write cost. It also challenges this naive handoff as a default: peak RSS reached about `7.22 GiB` and the wall remains far beyond the G4 ceiling. The production lesson is narrower: a DuckDB-native bulk path is likely required, but it must be ledger-accounted and materially leaner than a single giant Parquet handoff.
 
+The native row-key diagnostic rejects the simplest "just use DuckDB native Parquet ingest and add `_cdf_row_key` in SQL" shortcut. The no-row-key DuckDB reference persists the 12 TLC files in `4.17s`; adding `row_number() OVER ()` makes the same shape `32.38s`. That explains why CDF's provenance requirement cannot be treated as a free projection inside DuckDB's native CTAS path. Any source-native or destination-native accelerator must carry precomputed identity/provenance in a way that remains streaming/vectorized, or use an adapter-owned protocol that does not introduce a global window stage.
+
 The pre-tuning run still has diagnostic value: it proved the benchmark host was originally too slow at durable storage for promotion evidence. After tuning, the HF wall improved from `43.39s` to `36.51s`, but the result is still far above the P3 target envelope.
 
 ## Limits
 
-This is a single EC2 host class and one public mirror. It does not close G4 because the full-year TLC target is still failing. The native DuckDB reference cell is now in the lab worker and measured on the host, but it is still a favorable reference: it omits CDF package manifests, receipts, checkpoints, normalizer/provenance columns, and the destination commit gate. The Arrow-appender and Parquet-staged diagnostics are synthetic and omit CDF package/receipt/source work plus some adapter/runtime boundary costs. Those biases are recorded in the machine observations.
+This is a single EC2 host class and one public mirror. It does not close G4 because the full-year TLC target is still failing. The native DuckDB reference cell is now in the lab worker and measured on the host, but it is still a favorable reference: it omits CDF package manifests, receipts, checkpoints, normalizer/provenance columns, and the destination commit gate. The native row-key diagnostic adds only a DuckDB-generated `_cdf_row_key`; it does not prove a production-safe deterministic CDF identity model, and its machine artifact labels that bias explicitly. The Arrow-appender and Parquet-staged diagnostics are synthetic and omit CDF package/receipt/source work plus some adapter/runtime boundary costs. Those biases are recorded in the machine observations.
