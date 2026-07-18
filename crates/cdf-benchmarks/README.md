@@ -24,12 +24,13 @@ tools/p3-ec2-benchmark-host.sh bootstrap
 tools/p3-ec2-benchmark-host.sh sync-repo
 CDF_BENCH_WORKSPACE=/path/to/cdf-workspace tools/p3-ec2-benchmark-host.sh sync-workspace
 tools/p3-ec2-benchmark-host.sh build
+tools/p3-ec2-benchmark-host.sh verify
 tools/p3-ec2-benchmark-host.sh cdf -- run tlc.yellow --progress never
 tools/p3-ec2-benchmark-host.sh lab -- host
 tools/p3-ec2-benchmark-host.sh teardown
 ```
 
-The instance is reused for a benchmark tranche and then explicitly terminated. Repo synchronization honors `.gitignore` and excludes `target/`, local environment files, and common secret directories; workspace synchronization copies the CDF project state needed for the workload while excluding local secrets. The on-host build uses the workspace release profile (`opt-level=3`, fat LTO, one codegen unit, stripped symbols) from the synchronized `Cargo.lock`.
+The instance is reused for a benchmark tranche and then explicitly terminated. Repo synchronization honors `.gitignore` and excludes `target/`, local environment files, and common secret directories. Workspace synchronization defaults to a minimal control-plane manifest (`cdf.toml`, `cdf.lock`, `resources/`, `data/`, `.cdf/state.db`, `.cdf/schemas/`, and schema-observation cache entries) so nested generated benchmark directories and destination files do not leak into the benchmark host; set `CDF_BENCH_WORKSPACE_SYNC_MODE=full` for an ignore-filtered full tree that still excludes local secrets plus generated DuckDB/package/spool artifacts. The on-host build uses the workspace release profile (`opt-level=3`, fat LTO, one codegen unit, stripped symbols) from the synchronized `Cargo.lock`.
 
 `run-cell REQUEST.json` executes a schema-versioned macro cell with median-of-N sampling, timeout, explicit warm/cold/uncontrolled mode, child-process wall/CPU/RSS observation, reference identity, and bias labels. `reference-worker REQUEST.json` is the isolated worker for sequential read/write, memcpy, Arrow Parquet/CSV/NDJSON, direct Arrow Parquet rewrite with explicit writer policy, and DuckDB Parquet references.
 

@@ -1,4 +1,4 @@
-Status: blocked
+Status: active
 Created: 2026-07-18
 Updated: 2026-07-18
 Parent: .10x/tickets/2026-07-10-p3-terabyte-scale-program.md
@@ -46,19 +46,29 @@ Implement and record the operating procedure/tooling for P3 performance measurem
 - 2026-07-18: Added `tools/p3-ec2-benchmark-host.sh` as the first dry-runable benchmark-host helper. The script centralizes the candidate FQ12 PowerUser profile, region, instance shape, state-file location, launch/reuse, ignore-respecting repo/workspace sync, on-host release build, remote command execution, and explicit teardown. Live provisioning requires explicit subnet/security group/key or launch template inputs; dry-run command construction works without cloud writes.
 - 2026-07-18: Read-only EC2 discovery found a default `us-west-2` VPC, public default subnets, the default security group in that VPC, and several account key-pair names. No private SSH key was present under `~/.ssh`, so no instance was launched. The next live tranche must either provide `CDF_BENCH_SSH_KEY` for a known key pair, create an explicitly owned ephemeral key as part of the tranche, or switch the helper to an SSM/Instance-Connect sync path.
 - 2026-07-18: Tightened the helper around the user-ratified benchmarking workflow: a single recorded host is reused for the tranche; `bootstrap` prepares Amazon Linux build prerequisites and Rust; `build` now produces both optimized release binaries (`cdf` and `cdf-p3-lab`) and prints host facts; `cdf -- ...` runs the release CDF binary from the synced workspace; `lab -- ...` runs the release lab binary from the synced repo; `status` reports recorded EC2 state and remote host/toolchain facts when SSH is available. `crates/cdf-benchmarks/README.md` now documents this sequence as the dedicated-host path.
+- 2026-07-18 side-channel unblock investigation: A read-only EC2 sweep found 22 running/pending instances, all in `us-west-2`, and none used the default VPC security group `sg-7deb0443`. Several running instances demonstrate existing one-off/SSH-style precedent in FQ12: `i-05cb871ad0563bb1e` (`mvp-ctx-graph-dev`, `t3.small`, key pair `ctx-graph-EC2-keyPair`, public address present, SG `sg-0f4c806d8f3cd09ec` / `launch-wizard-2` with SSH-like ingress); `i-05d6dfe52665d4c8f` (`hackathon-dx`, `t3.micro`, key pair `suyash`, public address present, SG `sg-0a1521788ee6e23ba` / `hackathon-dx-sg` with SSH-like ingress); `i-07cc5a9c6cf0efb21` (`local-dev-netbird`, `t3.small`, key pair `local-dev`, public address present, SG `sg-06af3e2837aab03ca` / `local-dev-netbird-sg` with SSH-like ingress); and `i-0b96311ecc6a5eb30` (`kafka-admin`, `t3.micro`, no key pair recorded, public address present, SG `sg-01a329a9d94a6b18f` / `fq-fq12-bastion-instance-sg` with broader SSH-like ingress). The practical unblock is therefore the simpler SSH path, not SSM artifact-sync: create a dedicated `cdf-p3-benchmark-sg` modeled after the existing one-off SGs with inbound SSH from the operator's current IP only, create or choose a benchmark key pair whose private key exists locally, launch the benchmark instance with that SG/key, then run the existing rsync/bootstrap/build/cdf/lab helper flow. Do not reuse the existing named instances or their SGs unless explicitly authorized; they appear to be real-purpose infra/dev boxes, not CDF benchmark assets.
+- 2026-07-18 live EC2 path: Implemented the CDF-owned SSH-resource path and used it to create/reuse launch inputs without reusing unrelated FQ12 instances. `prepare-ssh` created/reused `cdf-p3-benchmark-sg`, restricted SSH to the operator's current `/32`, created/reused the benchmark key pair, and wrote the local ignored resource state under `target/cdf-benchmarks/ec2-host/`.
+- 2026-07-18 live EC2 path: Launched a tagged `c7i.4xlarge` Amazon Linux 2023 benchmark instance (`i-05011a85b7f2a33fe`) with a 250 GiB gp3 root volume, waited for EC2 instance and system status checks, waited for SSH readiness, and recorded host facts. The host reports 16 logical cores, 8 physical cores, Intel Xeon Platinum 8488C, about 30 GiB RAM, xfs storage, and kernel `6.1.176-221.360.amzn2023.x86_64`.
+- 2026-07-18 live EC2 path: Bootstrapped the host and corrected two real bootstrap/build defects found only by running live: Amazon Linux 2023 keeps `curl-minimal`, so the bootstrap must use `/usr/bin/curl` without installing conflicting `curl`; the workspace build also needs `python3-devel` so `pyo3` can link `libpython3.9`. After the fix, `rustc 1.97.1` and `cargo 1.97.1` are installed and selected on-host.
+- 2026-07-18 live EC2 path: Synchronized the repo without `.git`, `target`, local env files, AWS/Codex config, or secrets. Because `.git` is intentionally absent remotely, `sync-repo` now writes `.cdf-bench-revision.env` with the local revision and dirty/clean label so benchmark evidence remains labeled.
+- 2026-07-18 live EC2 path: Built both optimized release binaries on-host with `CARGO_BUILD_JOBS=$(nproc)` and the repository release profile. The cached validation build now exits cleanly and reports release binaries of roughly 86 MiB (`cdf`) and 101 MiB (`cdf-p3-lab`).
+- 2026-07-18 live EC2 path: Changed workspace synchronization to default to a minimal control-plane manifest. The user's exploratory workspace contained large generated benchmark and destination artifacts, including nested directories on the order of tens of GiB, so copying the full tree would pollute the host and distort disk/network timings. Minimal sync copied the project config, resource TOML, state DB, schema snapshots, and schema-observation cache into a 244 KiB remote workspace; `CDF_BENCH_WORKSPACE_SYNC_MODE=full` remains an explicit knob for ignore-filtered full sync.
+- 2026-07-18 live EC2 path: Verified the synced workspace by running the on-host release binary against `/Users/alexanderbut/code_projects/tmp`: `cdf inspect resources --color never --unicode never` compiled seven resources (`fineweb.documents`, `fineweb_local.documents`, `github.userdata`, `imdb.training_data`, `local.events`, `redpajama.documents`, `tlc.yellow`).
+- 2026-07-18 live EC2 path: Ran a three-sample lab baseline on the EC2 host and stored the machine report at `.10x/evidence/.storage/2026-07-18-p3-l6-ec2-baseline-report.json`. The report is 15,478 bytes and labels host class `host-class-95da083e15eebd1c`, revision `a9d5208af6568e9282ea0372d900295b3b6c3523+dirty`, dependency tuple `Cargo.lock`, and toolchain `rustc-1.97.1`.
+- 2026-07-18 live EC2 path: Intentionally left the instance running for reuse across the benchmark tranche. Teardown remains explicit and idempotent via `tools/p3-ec2-benchmark-host.sh teardown`; this ticket stays active until the tranche's teardown evidence is recorded.
 
 ## Blockers
 
-Live benchmark execution still requires selecting or providing subnet/security group/key/launch-template inputs and a private SSH key path, or implementing an SSM/Instance-Connect path that avoids local SSH keys. The script intentionally does not invent those network/security choices. Current local host has no private key in `~/.ssh`.
+None for live host provisioning, reuse, bootstrap, sync, build, verify, and baseline emission. The only remaining lifecycle condition is intentional: the EC2 instance is still running for the current benchmark tranche, so teardown evidence has not been recorded yet and the ticket remains active.
 
 ## Evidence
 
 - 2026-07-18 read-only AWS inspection:
   - `command -v aws` found `/run/current-system/sw/bin/aws`.
   - `aws --version` reported `aws-cli/2.34.24 Python/3.13.13 Darwin/25.5.0 source/arm64`.
-  - `aws configure list-profiles` reported `PowerUser-617739438897`.
-  - `AWS_PROFILE=PowerUser-617739438897 aws sts get-caller-identity --output json` succeeded for account `617739438897` through an assumed PowerUser SSO role; no secret values were recorded.
-  - `AWS_PROFILE=PowerUser-617739438897 aws configure get region` reported `us-west-2`.
+  - `aws configure list-profiles` reported a FQ12 PowerUser profile.
+  - `aws sts get-caller-identity` succeeded through the user-ratified FQ12 PowerUser SSO profile; no secret values were recorded.
+  - `aws configure get region` for the FQ12 PowerUser profile reported `us-west-2`.
 - 2026-07-18 dry-run/script validation:
   - `bash -n tools/p3-ec2-benchmark-host.sh` — passed.
   - `tools/p3-ec2-benchmark-host.sh --dry-run plan` — printed repo/state/profile/region/default host facts, read-only caller identity, and current Amazon Linux 2023 x86_64 AMI id.
@@ -72,6 +82,15 @@ Live benchmark execution still requires selecting or providing subnet/security g
   - `aws ec2 describe-subnets --filters Name=default-for-az,Values=true` found public default subnets in `us-west-2a` through `us-west-2d`; `subnet-acc642d4` in `us-west-2a` is a viable candidate input, but not selected as authority.
   - `aws ec2 describe-security-groups --filters Name=group-name,Values=default` found default-VPC security group `sg-7deb0443`; it currently only permits self-referential ingress and all outbound, so direct SSH would require an explicit ingress/security decision before use.
   - `aws ec2 describe-key-pairs` found existing key-pair names including `local-dev`, but `find ~/.ssh -maxdepth 1 -type f` found no local private key file. No key pair was selected.
+- 2026-07-18 read-only SSH-precedent inventory:
+  - Region sweep scope: FQ12 PowerUser profile, all opted-in regions; found 22 running/pending instances, all in `us-west-2`.
+  - No running/pending instance used the default security group `sg-7deb0443`.
+  - SSH-like one-off precedents found:
+    - `i-05cb871ad0563bb1e` — `mvp-ctx-graph-dev`, `t3.small`, key pair `ctx-graph-EC2-keyPair`, public address present, SG `sg-0f4c806d8f3cd09ec` (`launch-wizard-2`), TCP/22-like ingress present.
+    - `i-05d6dfe52665d4c8f` — `hackathon-dx`, `t3.micro`, key pair `suyash`, public address present, SG `sg-0a1521788ee6e23ba` (`hackathon-dx-sg`), TCP/22-like ingress present.
+    - `i-07cc5a9c6cf0efb21` — `local-dev-netbird`, `t3.small`, key pair `local-dev`, public address present, SG `sg-06af3e2837aab03ca` (`local-dev-netbird-sg`), TCP/22-like ingress present.
+    - `i-0b96311ecc6a5eb30` — `kafka-admin`, `t3.micro`, no key pair recorded, public address present, SG `sg-01a329a9d94a6b18f` (`fq-fq12-bastion-instance-sg`), broader TCP/22-like ingress present.
+  - Limit: this was inventory only. No instance, security group, key pair, or route was created or modified. Existing purpose-built instances/SGs are precedent, not resources to reuse without explicit authorization.
 - 2026-07-18 tranche-command validation:
   - `bash -n tools/p3-ec2-benchmark-host.sh` — passed.
   - `tools/p3-ec2-benchmark-host.sh --dry-run plan` — passed against read-only AWS identity/AMI lookup.
@@ -81,11 +100,26 @@ Live benchmark execution still requires selecting or providing subnet/security g
   - `CDF_BENCH_HOST=example.invalid CDF_BENCH_SSH_KEY=/tmp/cdf-bench-key CDF_BENCH_WORKSPACE=/tmp/cdf-workspace tools/p3-ec2-benchmark-host.sh --dry-run cdf -- run tlc.yellow --progress never` — printed a workspace-rooted invocation of the synced release `cdf` binary with remote-quoted arguments.
   - `CDF_BENCH_HOST=example.invalid CDF_BENCH_SSH_KEY=/tmp/cdf-bench-key tools/p3-ec2-benchmark-host.sh --dry-run lab -- host` — printed a repo-rooted invocation of the synced release `cdf-p3-lab` binary.
   - Limit: this still validates command construction only. L6 remains active until a real host proves provision/reuse/bootstrap/sync/build/run/teardown end to end.
+- 2026-07-18 live host validation:
+  - `tools/p3-ec2-benchmark-host.sh prepare-ssh` — created/reused CDF-owned launch inputs, including security group `sg-0027c998601b13d13` (`cdf-p3-benchmark-sg`) and key pair `cdf-p3-benchmark-alexanderbut`, and wrote ignored local resource state under `target/cdf-benchmarks/ec2-host/`. SSH ingress is restricted to the current operator `/32`.
+  - `tools/p3-ec2-benchmark-host.sh provision` — launched tagged instance `i-05011a85b7f2a33fe`, type `c7i.4xlarge`, AMI `ami-0b787142aa56d54db`, 250 GiB gp3 root volume, and waited for `instance-running` plus `instance-status-ok`.
+  - `tools/p3-ec2-benchmark-host.sh wait-ssh && tools/p3-ec2-benchmark-host.sh status` — SSH became ready and status reported 16 logical cores, 8 physical cores, Intel Xeon Platinum 8488C, about 30 GiB RAM, xfs storage, and kernel `6.1.176-221.360.amzn2023.x86_64`.
+  - `tools/p3-ec2-benchmark-host.sh bootstrap` — after fixing the `curl-minimal` package conflict and adding `python3-devel`, completed host bootstrap and reported `rustc 1.97.1` / `cargo 1.97.1`.
+  - `tools/p3-ec2-benchmark-host.sh sync-repo` — synchronized the repository while excluding `.git`, `target`, local environment files, AWS/Codex config, and secret directories; wrote `.cdf-bench-revision.env` because the remote tree intentionally has no `.git`.
+  - `tools/p3-ec2-benchmark-host.sh build` — built optimized release `cdf` and `cdf-p3-lab` on-host with `CARGO_BUILD_JOBS=$(nproc)`; cached validation later completed in under one second and listed both release binaries.
+  - `tools/p3-ec2-benchmark-host.sh verify` — reported `cdf 0.1.0` and emitted a sanitized `cdf-p3-lab host` fingerprint.
+  - `CDF_BENCH_WORKSPACE=/Users/alexanderbut/code_projects/tmp tools/p3-ec2-benchmark-host.sh sync-workspace` — minimal workspace sync completed; remote workspace size was 244 KiB.
+  - `tools/p3-ec2-benchmark-host.sh cdf -- inspect resources --color never --unicode never` — compiled seven resources from the synced workspace.
+  - `tools/p3-ec2-benchmark-host.sh run -- bash -lc 'set -euo pipefail; . ./.cdf-bench-revision.env; mkdir -p target/cdf-benchmarks/ec2-baseline; ./target/release/cdf-p3-lab baseline-run target/cdf-benchmarks/ec2-baseline "$repo_revision_label" Cargo.lock rustc-1.97.1 3 > target/cdf-benchmarks/ec2-baseline/report.json; wc -c target/cdf-benchmarks/ec2-baseline/report.json; ./target/release/cdf-p3-lab host-class'` — wrote a 15,478 byte report and printed `host-class-95da083e15eebd1c`.
+  - `.10x/evidence/.storage/2026-07-18-p3-l6-ec2-baseline-report.json` — copied from the EC2 host; machine evidence includes host fingerprint, host class, revision label, release profile, dependency tuple, sample summaries, and explicit unavailable/failed cells rather than silently omitting unprepared workloads.
+  - Limit: teardown is intentionally deferred while this host remains the reusable authority for the current benchmark tranche.
 
 ## Review
 
-Pass for the dry-run/procedure slice. The helper does not create hidden long-lived cloud state, defaults only the benchmark shape/profile/region while requiring explicit network/security inputs for live writes, and records teardown as a first-class command. L6 remains active until a real benchmark tranche proves provision/reuse/build/run/teardown end to end.
+Pass for the live host path, with one accepted active-tranche limit. The helper now proves CDF-owned provisioning, bootstrap, repo sync, minimal workspace sync, optimized on-host build, binary verification, workspace compilation, and machine baseline emission. It does not create hidden unmanaged state: the instance, key, and security group are CDF-tagged; state is under ignored `target/`; and teardown is a first-class command. L6 stays active only because the host is intentionally being reused for benchmark work before teardown.
 
 ## Retrospective
 
 Benchmark infra needs the same fail-closed discipline as runtime code: dry-run first, explicit state file, explicit teardown, and no silent defaults for VPC/security inputs. Laptop timings can remain useful as a rejection filter, but promotion needs a host whose load and hardware class are part of the evidence.
+
+Live execution found issues the dry-run path could not: Amazon Linux package conflicts, missing Python development headers, revision labeling when `.git` is intentionally excluded, and pathological workspace sync if generated artifacts are copied wholesale. The durable rule is now narrower and better: sync source code as an ignore-respecting release build tree, sync workspaces minimally by default, build and verify as separate steps, and store machine evidence with host class plus revision label before using the numbers to promote performance defaults.
