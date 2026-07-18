@@ -478,7 +478,7 @@ impl ActiveStagedIngress {
             self.schema_hash.clone(),
             ordinal,
         )?;
-        let (batches, memory_leases) = payload.into_parts();
+        let (durable_local_file, batches, memory_leases) = payload.into_parts();
         let retained_bytes = batches
             .iter()
             .try_fold(0_u64, |total, batch| {
@@ -491,6 +491,7 @@ impl ActiveStagedIngress {
             identity.clone(),
             Box::new(LiveStagedSegmentReader {
                 identity: identity.clone(),
+                durable_local_file,
                 batches: batches.into_iter(),
                 _memory_leases: memory_leases,
             }),
@@ -706,6 +707,7 @@ fn release_staging_lease_after_error(
 
 struct LiveStagedSegmentReader {
     identity: cdf_runtime::StagedSegmentIdentity,
+    durable_local_file: PathBuf,
     batches: std::vec::IntoIter<arrow_array::RecordBatch>,
     _memory_leases: Vec<cdf_memory::MemoryLease>,
 }
@@ -713,6 +715,10 @@ struct LiveStagedSegmentReader {
 impl cdf_runtime::DurableSegmentReader for LiveStagedSegmentReader {
     fn identity(&self) -> &cdf_runtime::StagedSegmentIdentity {
         &self.identity
+    }
+
+    fn durable_local_file(&self) -> Option<&Path> {
+        Some(&self.durable_local_file)
     }
 
     fn next_batch(&mut self) -> Result<Option<arrow_array::RecordBatch>> {
@@ -1599,14 +1605,20 @@ fn logically_equivalent_receipts(left: &Receipt, right: &Receipt) -> bool {
 
 struct PackageStagedSegmentReader {
     identity: cdf_runtime::StagedSegmentIdentity,
-    segment: cdf_package::VerifiedSegment<()>,
+    durable_local_file: PathBuf,
+    segment: Option<cdf_package::VerifiedSegmentObject<()>>,
+    decoded: Option<cdf_package::VerifiedSegment<()>>,
+    memory: Arc<dyn cdf_memory::MemoryCoordinator>,
+    maximum_segment_bytes: u64,
     next_batch: usize,
 }
 
 struct PackageStagingStream<'a> {
-    segments: cdf_package::VerifiedSegmentStream<()>,
+    segments: cdf_package::VerifiedSegmentObjectStream<()>,
     schema_hash: SchemaHash,
     attempt_id: cdf_runtime::LoadAttemptId,
+    memory: Arc<dyn cdf_memory::MemoryCoordinator>,
+    maximum_segment_bytes: u64,
     next_ordinal: u32,
     in_progress: BTreeMap<SegmentId, cdf_runtime::StagedSegmentIdentity>,
     staged: BTreeMap<u32, cdf_runtime::StagedSegmentIdentity>,
@@ -1629,7 +1641,6 @@ impl cdf_runtime::StagedSegmentStream for PackageStagingStream<'_> {
         let Some(segment) = self.segments.next() else {
             return Ok(None);
         };
-        let segment = segment?;
         let ordinal = self.next_ordinal;
         self.next_ordinal = self
             .next_ordinal
@@ -1653,7 +1664,11 @@ impl cdf_runtime::StagedSegmentStream for PackageStagingStream<'_> {
             identity.clone(),
             Box::new(PackageStagedSegmentReader {
                 identity,
-                segment,
+                durable_local_file: segment.local_file().to_path_buf(),
+                segment: Some(segment),
+                decoded: None,
+                memory: Arc::clone(&self.memory),
+                maximum_segment_bytes: self.maximum_segment_bytes,
                 next_batch: 0,
             }),
         )
@@ -1689,8 +1704,26 @@ impl cdf_runtime::DurableSegmentReader for PackageStagedSegmentReader {
         &self.identity
     }
 
+    fn durable_local_file(&self) -> Option<&Path> {
+        Some(&self.durable_local_file)
+    }
+
     fn next_batch(&mut self) -> Result<Option<arrow_array::RecordBatch>> {
-        let batch = self.segment.batches.get(self.next_batch).cloned();
+        if self.decoded.is_none() {
+            let segment = self
+                .segment
+                .take()
+                .ok_or_else(|| CdfError::internal("verified staged segment object is absent"))?
+                .read(Arc::clone(&self.memory), self.maximum_segment_bytes)?;
+            self.decoded = Some(segment);
+        }
+        let batch = self
+            .decoded
+            .as_ref()
+            .expect("decoded segment initialized above")
+            .batches
+            .get(self.next_batch)
+            .cloned();
         self.next_batch = self.next_batch.saturating_add(usize::from(batch.is_some()));
         Ok(batch)
     }
@@ -1803,11 +1836,7 @@ fn commit_package_through_staged_ingress(
             .max_in_flight_bytes
             .expect("validated staged byte bound")
             .min(memory.snapshot().budget_bytes);
-        let segments = reader.verified_canonical_segment_stream_with(
-            verified,
-            memory.clone(),
-            maximum_segment_bytes,
-        )?;
+        let segments = reader.verified_canonical_segment_object_stream_with(verified)?;
         let mut acknowledge = |identity: &cdf_runtime::StagedSegmentIdentity| {
             let segment_ack = SegmentAck {
                 segment_id: identity.segment_id.clone(),
@@ -1823,6 +1852,8 @@ fn commit_package_through_staged_ingress(
             segments,
             schema_hash: inputs.schema_hash.clone(),
             attempt_id: attempt_id.clone(),
+            memory: memory.clone(),
+            maximum_segment_bytes,
             next_ordinal: 0,
             in_progress: BTreeMap::new(),
             staged: BTreeMap::new(),

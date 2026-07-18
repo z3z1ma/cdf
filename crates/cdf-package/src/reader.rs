@@ -130,6 +130,40 @@ pub struct VerifiedSegment<T> {
     window: Arc<VerifiedSegmentWindow>,
 }
 
+/// A fully verified canonical segment whose local bytes can be consumed without decoding.
+///
+/// `read()` remains available for destinations that need Arrow batches. Keeping verification and
+/// the local object in one value prevents a hash-only path from being substituted for package
+/// authority while allowing native consumers to avoid a redundant IPC decode.
+#[derive(Debug)]
+pub struct VerifiedSegmentObject<T> {
+    pub entry: SegmentEntry,
+    pub authority: T,
+    package_dir: PathBuf,
+    local_file: PathBuf,
+    _verification: Arc<VerifiedPackage>,
+}
+
+impl<T> VerifiedSegmentObject<T> {
+    pub fn local_file(&self) -> &Path {
+        &self.local_file
+    }
+
+    pub fn read(
+        self,
+        memory: Arc<dyn MemoryCoordinator>,
+        maximum_segment_bytes: u64,
+    ) -> Result<VerifiedSegment<T>> {
+        load_verified_segment(
+            &self.package_dir,
+            self.entry,
+            self.authority,
+            memory,
+            maximum_segment_bytes,
+        )
+    }
+}
+
 #[derive(Debug)]
 struct VerifiedSegmentWindow {
     memory_lease: MemoryLease,
@@ -159,6 +193,27 @@ pub struct VerifiedSegmentStream<T> {
     memory: Arc<dyn MemoryCoordinator>,
     maximum_segment_bytes: u64,
     failed: bool,
+}
+
+pub struct VerifiedSegmentObjectStream<T> {
+    package_dir: PathBuf,
+    verified: Arc<VerifiedPackage>,
+    segments: std::vec::IntoIter<(SegmentEntry, T)>,
+}
+
+impl<T> Iterator for VerifiedSegmentObjectStream<T> {
+    type Item = VerifiedSegmentObject<T>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let (entry, authority) = self.segments.next()?;
+        Some(VerifiedSegmentObject {
+            local_file: package_path(&self.package_dir, &entry.path),
+            package_dir: self.package_dir.clone(),
+            entry,
+            authority,
+            _verification: self.verified.clone(),
+        })
+    }
 }
 
 fn verified_segment_stream<T>(
@@ -195,55 +250,75 @@ impl<T> Iterator for VerifiedSegmentStream<T> {
             return None;
         }
         let (entry, authority) = self.segments.next()?;
-        let result = (|| {
-            let request = ReservationRequest::new(
-                ConsumerKey::new("verified-segment-stream", MemoryClass::Package)?,
-                self.maximum_segment_bytes,
-            )?
-            .as_minimum_working_set();
-            let lease = reserve_blocking(Arc::clone(&self.memory), &request)?;
-            let batches = read_segment_file(&self.package_dir, &entry.path)?;
-            let retained_bytes = batches.iter().try_fold(0u64, |total, batch| {
-                total
-                    .checked_add(record_batch_retained_bytes(batch)?)
-                    .ok_or_else(|| CdfError::data("verified segment retained memory overflow"))
-            })?;
-            if retained_bytes > self.maximum_segment_bytes {
-                return Err(CdfError::data(format!(
-                    "segment {} retains {retained_bytes} Arrow bytes above its {}-byte verified stream window; raise the stream window or rebuild with a smaller canonical segment maximum",
-                    entry.segment_id, self.maximum_segment_bytes
-                )));
-            }
-            let row_count =
-                batches.iter().try_fold(0u64, |total, batch| {
-                    total
-                        .checked_add(u64::try_from(batch.num_rows()).map_err(|_| {
-                            CdfError::data("verified segment row count exceeds u64")
-                        })?)
-                        .ok_or_else(|| CdfError::data("verified segment row count overflow"))
-                })?;
-            if row_count != entry.row_count {
-                return Err(CdfError::data(format!(
-                    "segment {} manifest row count {} differs from package data {row_count}",
-                    entry.segment_id, entry.row_count
-                )));
-            }
-            lease.reconcile(retained_bytes.max(1))?;
-            let window = Arc::new(VerifiedSegmentWindow {
-                memory_lease: lease,
-            });
-            Ok(VerifiedSegment {
-                entry,
-                authority,
-                batches,
-                window,
-            })
-        })();
+        let result = load_verified_segment(
+            &self.package_dir,
+            entry,
+            authority,
+            Arc::clone(&self.memory),
+            self.maximum_segment_bytes,
+        );
         if result.is_err() {
             self.failed = true;
         }
         Some(result)
     }
+}
+
+fn load_verified_segment<T>(
+    package_dir: &Path,
+    entry: SegmentEntry,
+    authority: T,
+    memory: Arc<dyn MemoryCoordinator>,
+    maximum_segment_bytes: u64,
+) -> Result<VerifiedSegment<T>> {
+    if maximum_segment_bytes == 0 || maximum_segment_bytes > memory.snapshot().budget_bytes {
+        return Err(CdfError::data(format!(
+            "verified segment stream window {maximum_segment_bytes} must be nonzero and no larger than managed budget {}",
+            memory.snapshot().budget_bytes
+        )));
+    }
+    let request = ReservationRequest::new(
+        ConsumerKey::new("verified-segment-stream", MemoryClass::Package)?,
+        maximum_segment_bytes,
+    )?
+    .as_minimum_working_set();
+    let lease = reserve_blocking(Arc::clone(&memory), &request)?;
+    let batches = read_segment_file(package_dir, &entry.path)?;
+    let retained_bytes = batches.iter().try_fold(0u64, |total, batch| {
+        total
+            .checked_add(record_batch_retained_bytes(batch)?)
+            .ok_or_else(|| CdfError::data("verified segment retained memory overflow"))
+    })?;
+    if retained_bytes > maximum_segment_bytes {
+        return Err(CdfError::data(format!(
+            "segment {} retains {retained_bytes} Arrow bytes above its {maximum_segment_bytes}-byte verified stream window; raise the stream window or rebuild with a smaller canonical segment maximum",
+            entry.segment_id
+        )));
+    }
+    let row_count = batches.iter().try_fold(0u64, |total, batch| {
+        total
+            .checked_add(
+                u64::try_from(batch.num_rows())
+                    .map_err(|_| CdfError::data("verified segment row count exceeds u64"))?,
+            )
+            .ok_or_else(|| CdfError::data("verified segment row count overflow"))
+    })?;
+    if row_count != entry.row_count {
+        return Err(CdfError::data(format!(
+            "segment {} manifest row count {} differs from package data {row_count}",
+            entry.segment_id, entry.row_count
+        )));
+    }
+    lease.reconcile(retained_bytes.max(1))?;
+    let window = Arc::new(VerifiedSegmentWindow {
+        memory_lease: lease,
+    });
+    Ok(VerifiedSegment {
+        entry,
+        authority,
+        batches,
+        window,
+    })
 }
 
 impl PackageReader {
@@ -550,6 +625,26 @@ impl PackageReader {
             memory,
             maximum_segment_bytes,
         )
+    }
+
+    pub fn verified_canonical_segment_object_stream_with(
+        &self,
+        verified: &VerifiedPackage,
+    ) -> Result<VerifiedSegmentObjectStream<()>> {
+        self.require_verification(verified)?;
+        Ok(VerifiedSegmentObjectStream {
+            package_dir: self.package_dir.clone(),
+            verified: Arc::new(verified.clone()),
+            segments: self
+                .manifest
+                .identity
+                .segments
+                .iter()
+                .cloned()
+                .map(|entry| (entry, ()))
+                .collect::<Vec<_>>()
+                .into_iter(),
+        })
     }
 
     pub fn verified_commit_segment_stream(

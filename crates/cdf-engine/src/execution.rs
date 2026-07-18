@@ -1,6 +1,6 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
-    path::Path,
+    path::{Path, PathBuf},
     sync::{Arc, mpsc},
     time::{Instant, SystemTime, UNIX_EPOCH},
 };
@@ -82,6 +82,7 @@ fn standalone_execution_options() -> Result<EngineExecutionOptions> {
 /// The record batches and their existing memory leases move together so a destination queue does
 /// not reserve the same Arrow allocations a second time. Dropping the payload releases ownership.
 pub struct DurableSegmentPayload {
+    durable_local_file: PathBuf,
     batches: Vec<RecordBatch>,
     memory_leases: Vec<MemoryLease>,
 }
@@ -91,8 +92,8 @@ impl DurableSegmentPayload {
         &self.batches
     }
 
-    pub fn into_parts(self) -> (Vec<RecordBatch>, Vec<MemoryLease>) {
-        (self.batches, self.memory_leases)
+    pub fn into_parts(self) -> (PathBuf, Vec<RecordBatch>, Vec<MemoryLease>) {
+        (self.durable_local_file, self.batches, self.memory_leases)
     }
 }
 
@@ -1865,12 +1866,14 @@ impl SegmentEncodeQueue {
                 write.segment.byte_count,
             );
             let segment = write.segment;
+            let durable_local_file = builder.package_dir().join(&segment.path);
             if let Some(lease) = _scratch_memory_lease {
                 _transform_memory_leases.push(lease);
             }
             durable_segment.observe(
                 &segment,
                 DurableSegmentPayload {
+                    durable_local_file,
                     batches,
                     memory_leases: _transform_memory_leases,
                 },

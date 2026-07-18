@@ -495,6 +495,25 @@ impl DurableSegmentReader for EmptySegmentReader {
     }
 }
 
+struct LocalFileSegmentReader {
+    identity: StagedSegmentIdentity,
+    path: std::path::PathBuf,
+}
+
+impl DurableSegmentReader for LocalFileSegmentReader {
+    fn identity(&self) -> &StagedSegmentIdentity {
+        &self.identity
+    }
+
+    fn durable_local_file(&self) -> Option<&std::path::Path> {
+        Some(&self.path)
+    }
+
+    fn next_batch(&mut self) -> Result<Option<arrow_array::RecordBatch>> {
+        Ok(None)
+    }
+}
+
 struct TestStagedSegmentStream {
     requests: std::vec::IntoIter<StagedSegmentRequest>,
     acknowledgements: Vec<StagedSegmentAck>,
@@ -1697,6 +1716,32 @@ fn staged_ingress_types_cannot_claim_package_commit_authority() {
     let ack_value = serde_json::to_value(&ack).unwrap();
     assert!(ack_value.get("receipt_id").is_none());
     assert!(ack_value.get("package_hash").is_none());
+}
+
+#[test]
+fn staged_segment_request_exposes_only_length_bound_durable_local_files() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("segment.arrow");
+    std::fs::write(&path, b"12345678").unwrap();
+    let identity = staged_identity("seg-local", 0, SchemaHash::new("schema-v1").unwrap());
+    let request = StagedSegmentRequest::new(
+        identity.clone(),
+        Box::new(LocalFileSegmentReader {
+            identity: identity.clone(),
+            path: path.clone(),
+        }),
+    )
+    .unwrap();
+    assert_eq!(request.durable_local_file(), Some(path.as_path()));
+
+    std::fs::write(&path, b"short").unwrap();
+    let error = StagedSegmentRequest::new(
+        identity.clone(),
+        Box::new(LocalFileSegmentReader { identity, path }),
+    )
+    .err()
+    .expect("length drift must fail staged request construction");
+    assert!(error.message.contains("exactly 8 bytes"));
 }
 
 #[test]

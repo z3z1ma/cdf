@@ -1,4 +1,4 @@
-use std::collections::BTreeSet;
+use std::{collections::BTreeSet, path::Path};
 
 use arrow_array::RecordBatch;
 use arrow_schema::Schema;
@@ -246,6 +246,14 @@ impl StagedSegmentIdentity {
 
 pub trait DurableSegmentReader: Send {
     fn identity(&self) -> &StagedSegmentIdentity;
+    /// Returns the exact already-durable local file for this segment when one exists.
+    ///
+    /// The file is the same hash/length-bound object represented by `identity()`. Destinations
+    /// that can consume the canonical object directly may use it without forcing an Arrow decode;
+    /// all other destinations continue through `next_batch()`.
+    fn durable_local_file(&self) -> Option<&Path> {
+        None
+    }
     fn next_batch(&mut self) -> Result<Option<RecordBatch>>;
 }
 
@@ -276,7 +284,29 @@ impl StagedSegmentRequest {
                 "staged segment request identity does not match its durable reader",
             ));
         }
+        if let Some(path) = reader.durable_local_file() {
+            let metadata = std::fs::metadata(path).map_err(|error| {
+                CdfError::data(format!(
+                    "inspect durable staged segment {} at {}: {error}",
+                    identity.segment_id,
+                    path.display()
+                ))
+            })?;
+            if !metadata.is_file() || metadata.len() != identity.byte_count {
+                return Err(CdfError::data(format!(
+                    "durable staged segment {} at {} must be a file of exactly {} bytes, observed {} bytes",
+                    identity.segment_id,
+                    path.display(),
+                    identity.byte_count,
+                    metadata.len()
+                )));
+            }
+        }
         Ok(Self { identity, reader })
+    }
+
+    pub fn durable_local_file(&self) -> Option<&Path> {
+        self.reader.durable_local_file()
     }
 
     pub fn reader_mut(&mut self) -> &mut dyn DurableSegmentReader {
