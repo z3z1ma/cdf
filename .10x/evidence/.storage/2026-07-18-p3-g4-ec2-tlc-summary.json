@@ -1,0 +1,175 @@
+{
+  "cdf_runs": [
+    {
+      "label": "hf_tlc_duckdb",
+      "maxrss_kb": 3003140,
+      "package_id": "pkg-tlc-yellow-49275-1784361572388571431",
+      "phases": {
+        "checkpoint_gate": {
+          "duration_ns": 1288503,
+          "input_bytes": 0,
+          "operations": 1,
+          "output_bytes": 0
+        },
+        "decode": {
+          "duration_ns": 10165764192,
+          "input_bytes": 5849047168,
+          "operations": 657,
+          "output_bytes": 5849047168
+        },
+        "destination_ingress": {
+          "duration_ns": 33114576113,
+          "input_bytes": 1513310278,
+          "operations": 215,
+          "output_bytes": 1513310278
+        },
+        "destination_write_receipt": {
+          "duration_ns": 7334127489,
+          "input_bytes": 1513310278,
+          "operations": 215,
+          "output_bytes": 1513310278
+        },
+        "package_execution": {
+          "duration_ns": 33907464442,
+          "input_bytes": 1513310278,
+          "operations": 215,
+          "output_bytes": 1513310278
+        },
+        "package_finalize": {
+          "duration_ns": 6879458,
+          "input_bytes": 1513310278,
+          "operations": 1,
+          "output_bytes": 1513667638
+        },
+        "persist_hash": {
+          "duration_ns": 1638452710,
+          "input_bytes": 1513310278,
+          "operations": 215,
+          "output_bytes": 1513310278
+        },
+        "segment_encode": {
+          "duration_ns": 9862550383,
+          "input_bytes": 6019599292,
+          "operations": 215,
+          "output_bytes": 1513310278
+        },
+        "source_read": {
+          "duration_ns": 13769618062,
+          "input_bytes": 693103829,
+          "operations": 36,
+          "output_bytes": 693001713
+        },
+        "validation_normalization": {
+          "duration_ns": 210776375,
+          "input_bytes": 11698094336,
+          "operations": 1266,
+          "output_bytes": 11868646460
+        }
+      },
+      "rows": 41169720,
+      "run_id": "run-8f788790cad96782b79709619bed5a70",
+      "segments": 215,
+      "sys_s": 5.07,
+      "user_s": 46.94,
+      "wall_s": 43.39
+    },
+    {
+      "label": "local_tlc_duckdb",
+      "maxrss_kb": 3169308,
+      "package_id": "pkg-tlc-yellow-49861-1784361727249560931",
+      "phases": {
+        "checkpoint_gate": {
+          "duration_ns": 1242418,
+          "input_bytes": 0,
+          "operations": 1,
+          "output_bytes": 0
+        },
+        "decode": {
+          "duration_ns": 227204615,
+          "input_bytes": 5849047168,
+          "operations": 657,
+          "output_bytes": 5849047168
+        },
+        "destination_ingress": {
+          "duration_ns": 33035940850,
+          "input_bytes": 1513310278,
+          "operations": 215,
+          "output_bytes": 1513310278
+        },
+        "destination_write_receipt": {
+          "duration_ns": 7340903607,
+          "input_bytes": 1513310278,
+          "operations": 215,
+          "output_bytes": 1513310278
+        },
+        "package_execution": {
+          "duration_ns": 33281758453,
+          "input_bytes": 1513310278,
+          "operations": 215,
+          "output_bytes": 1513310278
+        },
+        "package_finalize": {
+          "duration_ns": 6894648,
+          "input_bytes": 1513310278,
+          "operations": 1,
+          "output_bytes": 1513649036
+        },
+        "persist_hash": {
+          "duration_ns": 1636685601,
+          "input_bytes": 1513310278,
+          "operations": 215,
+          "output_bytes": 1513310278
+        },
+        "segment_encode": {
+          "duration_ns": 9833729220,
+          "input_bytes": 6019599292,
+          "operations": 215,
+          "output_bytes": 1513310278
+        },
+        "source_read": {
+          "duration_ns": 9001385233,
+          "input_bytes": 1385928074,
+          "operations": 872,
+          "output_bytes": 693001713
+        },
+        "validation_normalization": {
+          "duration_ns": 308185127,
+          "input_bytes": 11698094336,
+          "operations": 1266,
+          "output_bytes": 11868646460
+        }
+      },
+      "rows": 41169720,
+      "run_id": "run-6bf6b26ca0d8f514555d4260c5b2e0b3",
+      "segments": 215,
+      "sys_s": 3.55,
+      "user_s": 46.56,
+      "wall_s": 40.75
+    }
+  ],
+  "host_class": "host-class-95da083e15eebd1c",
+  "parquet_destination_timeout": {
+    "exit_code": 124,
+    "maxrss_kb": 2030548,
+    "partial_arrow_segments": 32,
+    "partial_destination_du": "408M",
+    "partial_package_du": "211M",
+    "sys_s": 1.75,
+    "user_s": 3.67,
+    "wall_s": 90.08
+  },
+  "raw_parallel_curl": {
+    "bytes_label": "661M",
+    "source": "HF TLC mirror 12 files, curl -L, xargs -P12",
+    "wall_s": 1.22
+  },
+  "schema_pin_hf": {
+    "discovery_bytes": 151340,
+    "matched_files": 12,
+    "wall_s": 8.68
+  },
+  "schema_pin_local": {
+    "matched_files": 12,
+    "wall_s": 0.05
+  }
+}

@@ -184,6 +184,16 @@ Depends on G1-G3; DuckDB bulk and deterministic scaling closeout are complete.
 - Dedicated benchmark-host promotion boundary:
   - Future G4 promotion evidence must move to the dedicated FQ12 EC2 benchmark-host protocol recorded in `.10x/specs/performance-lab-and-envelope.md` and owned by `.10x/tickets/2026-07-18-p3-l6-ec2-benchmark-host.md`.
   - The laptop HF/local timings in this ticket remain valid triage and rejection evidence: they identified real timeout regressions, restored the local floor, and rejected risky defaults. They are no longer sufficient by themselves to close the TLC envelope or promote a default-changing performance patch.
+- EC2 benchmark-host remeasurement:
+  - Evidence record: `.10x/evidence/2026-07-18-p3-g4-ec2-tlc-envelope.md`; machine storage: `.10x/evidence/.storage/2026-07-18-p3-g4-ec2-tlc-summary.json`, `.10x/evidence/.storage/2026-07-18-p3-g4-ec2-hf-tlc-duckdb-run.json`, `.10x/evidence/.storage/2026-07-18-p3-g4-ec2-local-tlc-duckdb-run.json`.
+  - Host class `host-class-95da083e15eebd1c`; current release revision label came from the L6 synchronized clean host path.
+  - Raw HF mirror floor: 12 parallel `curl -L` downloads of the TLC mirror files completed in `real 1.22s` for 661 MiB.
+  - Cold 12-file schema pin over the HF mirror completed in `real 8.68s`, read only `151340` discovery bytes, matched/selected all 12 files, and used `format_metadata` within-file coverage. The one-month scratch-workspace pin correctly failed after the glob was changed, proving source authority is not being bypassed.
+  - CDF HF mirror to DuckDB completed in `real 43.39s` (`user 46.94`, `sys 5.07`, max RSS about 2.86 GiB) for 41,169,720 rows and 215 segments.
+  - CDF local files to DuckDB, using the already-downloaded 12 mirror files on the same EC2 host, completed in `real 40.75s` (`user 46.56`, `sys 3.55`, max RSS about 3.02 GiB) for the same 41,169,720 rows and 215 segments.
+  - Phase telemetry makes the current owner concrete: remote CDF aggregate phases include `source_read=13.77s`, `decode=10.17s`, `segment_encode=9.86s`, `persist_hash=1.64s`, `destination_ingress=33.11s`, and `package_execution=33.91s`; local CDF keeps the same destination/package cost while local decode drops to `0.23s`. Remote transfer adds only about 2.6 seconds to wall on this host, so G4 is no longer blocked by the old remote range/read overlap pathology.
+  - CDF local files to filesystem Parquet destination timed out at `real 90.08s` (`user 3.67`, `sys 1.75`) after only 32 Arrow segments/two partitions were present in the partial package and about 408 MiB had been written to the destination root. This creates a separate high-priority P3 destination-staging performance blocker; it must not be conflated with the DuckDB G4 lane, but it does prove the Parquet destination path is not a clean fast package/source split on this host.
+  - Current conclusion: G4 remains active. The next retained performance change must attack package/destination execution with EC2 same-host proof, not remote transport knobs. Benchmark-lab coverage also needs a native DuckDB Parquet ingest reference cell on the EC2 host so the composite ceiling is no longer approximated from ad hoc tooling.
 
 ## Review
 
