@@ -1,6 +1,6 @@
 Status: open
 Created: 2026-07-15
-Updated: 2026-07-15
+Updated: 2026-07-18
 Parent: .10x/tickets/2026-07-10-p3-ws-d-destination-bulk-paths.md
 Depends-On: .10x/tickets/done/2026-07-14-p3-d8-parquet-staged-parallel-ingress.md
 
@@ -28,6 +28,7 @@ Specify and implement one destination-neutral authority for reclaiming immutable
 ## References
 
 - `.10x/specs/streaming-destination-ingress.md`
+- `.10x/specs/immutable-content-reachability.md`
 - `.10x/decisions/destination-staged-ingress-final-package-binding.md`
 - `.10x/tickets/done/2026-07-14-p3-d8-parquet-staged-parallel-ingress.md`
 
@@ -40,10 +41,11 @@ Specify and implement one destination-neutral authority for reclaiming immutable
 ## Journal
 
 - 2026-07-15 ownership: D8 eliminated whole-run attempt staging and final-copy amplification by immediately publishing create-or-verify immutable group objects. That architecture makes shared object lifetime independent of one attempt lease. This ticket owns the required generic reachability/claim protocol; D8 must not reintroduce Parquet-specific cleanup to hide the gap.
+- 2026-07-18 shaping: Added `.10x/specs/immutable-content-reachability.md`, which defines destination-neutral content identity, publication claim, committed root, reclamation candidate, settlement, and cleanup semantics. The ticket is now behaviorally shaped; implementation still remains open and must not begin by adding a Parquet-owned cleanup loop or heartbeat.
 
 ## Blockers
 
-The precise claim/root transition and bounded index protocol require a focused active spec before this ticket becomes executable. The governing ingress spec establishes the invariants but intentionally does not yet choose the multi-object-store protocol.
+None. The focused claim/root/reclamation protocol is now governed by `.10x/specs/immutable-content-reachability.md`.
 
 ## Evidence
 
