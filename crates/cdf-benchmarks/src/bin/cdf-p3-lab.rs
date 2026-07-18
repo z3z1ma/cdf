@@ -5,7 +5,7 @@ use cdf_benchmarks::{
     MacroRunSpec, PreoptimizationBaselineConfig, PreparedFileDestinationWorkload,
     PreparedFilePackageWorkload, ProfileTool, ReferenceWorkload, StartupControlWorkload,
     SystemHostProvider, WorkerMeasurement, canonical_json_bytes, compare_reports, comparison_fails,
-    host_class, install_baseline, plan_profile, run_cdf_command_workload,
+    host_class, install_baseline, plan_profile, read_package_batches, run_cdf_command_workload,
     run_interop_fixture_workload, run_preoptimization_baseline, run_prepared_file_to_destination,
     run_prepared_file_to_package, run_reference, run_startup_control_workload,
     summarize_package_shape,
@@ -103,6 +103,9 @@ fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         [command, package_dir] if command == "package-shape" => {
             write_stdout(&canonical_json_bytes(&summarize_package_shape(package_dir)?)?)
         }
+        [command, package_dir] if command == "package-read" => {
+            write_stdout(&canonical_json_bytes(&read_package_batches(package_dir)?)?)
+        }
         [command, request] if command == "run-cell" => {
             let spec: MacroRunSpec = serde_json::from_slice(&fs::read(request)?)?;
             write_stdout(&canonical_json_bytes(&spec.execute(&provider())?)?)
@@ -191,7 +194,7 @@ fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             write_stdout(&canonical_json_bytes(&run)?)
         }
         _ => Err(format!(
-            "usage: {} reference-worker REQUEST.json | cdf-command-worker REQUEST.json | host | run-cell REQUEST.json | baseline-run OUTPUT_ROOT REVISION DEPENDENCIES TOOLCHAIN SAMPLES | compare BASELINE.json CURRENT.json",
+            "usage: {} reference-worker REQUEST.json | cdf-command-worker REQUEST.json | host | package-shape PACKAGE | package-read PACKAGE | run-cell REQUEST.json | baseline-run OUTPUT_ROOT REVISION DEPENDENCIES TOOLCHAIN SAMPLES | compare BASELINE.json CURRENT.json",
             executable_name()
         )
         .into()),

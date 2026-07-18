@@ -1,4 +1,4 @@
-use std::{fs::File, path::Path};
+use std::{fs::File, path::Path, time::Instant};
 
 use arrow_ipc::reader::FileReader;
 use serde::Serialize;
@@ -21,6 +21,17 @@ pub struct PackageShapeSummary {
     pub average_batch_rows: u64,
     pub single_batch_segments: u64,
     pub multi_batch_segments: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct PackageReadSummary {
+    pub package_id: String,
+    pub package_hash: String,
+    pub segment_count: u64,
+    pub batch_count: u64,
+    pub row_count: u64,
+    pub package_data_bytes: u64,
+    pub timed_wall_time_ns: u64,
 }
 
 pub fn summarize_package_shape(package_dir: impl AsRef<Path>) -> BenchResult<PackageShapeSummary> {
@@ -83,5 +94,51 @@ pub fn summarize_package_shape(package_dir: impl AsRef<Path>) -> BenchResult<Pac
         average_batch_rows: row_count.checked_div(batch_count).unwrap_or(0),
         single_batch_segments,
         multi_batch_segments,
+    })
+}
+
+pub fn read_package_batches(package_dir: impl AsRef<Path>) -> BenchResult<PackageReadSummary> {
+    let package_dir = package_dir.as_ref();
+    let reader = cdf_package::PackageReader::open(package_dir)?;
+    let manifest = reader.manifest();
+    let started = Instant::now();
+    let mut segment_count = 0_u64;
+    let mut batch_count = 0_u64;
+    let mut row_count = 0_u64;
+    let mut package_data_bytes = 0_u64;
+
+    for segment in &manifest.identity.segments {
+        segment_count = segment_count.saturating_add(1);
+        package_data_bytes = package_data_bytes.saturating_add(segment.byte_count);
+        let path = package_dir.join(&segment.path);
+        let file = File::open(&path)?;
+        let file_reader = FileReader::try_new(file, None)?;
+        let mut segment_rows = 0_u64;
+        for batch in file_reader {
+            let batch = batch?;
+            let rows = u64::try_from(batch.num_rows())?;
+            batch_count = batch_count.saturating_add(1);
+            row_count = row_count.saturating_add(rows);
+            segment_rows = segment_rows.saturating_add(rows);
+            std::hint::black_box(batch);
+        }
+        if segment_rows != segment.row_count {
+            return Err(format!(
+                "package segment {} decoded {segment_rows} rows but manifest records {}",
+                segment.segment_id.as_str(),
+                segment.row_count
+            )
+            .into());
+        }
+    }
+
+    Ok(PackageReadSummary {
+        package_id: manifest.identity.package_id.clone(),
+        package_hash: manifest.package_hash.clone(),
+        segment_count,
+        batch_count,
+        row_count,
+        package_data_bytes,
+        timed_wall_time_ns: u64::try_from(started.elapsed().as_nanos()).unwrap_or(u64::MAX),
     })
 }

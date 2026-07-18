@@ -47,6 +47,7 @@ Tuned machine artifacts:
 - `.10x/evidence/.storage/2026-07-18-p3-g4-ec2-native-duckdb-ingest-reference.json`
 - `.10x/evidence/.storage/2026-07-18-p3-g4-ec2-local-default-measured.json`
 - `.10x/evidence/.storage/2026-07-18-p3-g4-ec2-local-jobs3-measured.json`
+- `.10x/evidence/.storage/2026-07-18-p3-g4-ec2-local-package-read.json`
 
 Same-host measurements:
 
@@ -76,6 +77,7 @@ On the EC2 host created by `.10x/tickets/2026-07-18-p3-l6-ec2-benchmark-host.md`
 6. Ran CDF remote-to-DuckDB, local-to-DuckDB, and local-to-filesystem-Parquet controls with `/usr/bin/time` and stored JSON run reports where available.
 7. Re-synchronized and rebuilt the same host with the staged-destination default-admission patch, then ran default local and HF mirror 12-month TLC-to-DuckDB controls without explicit `--jobs`.
 8. Added a persistent native DuckDB Parquet ingest reference workload to `cdf-p3-lab`, rebuilt the lab binary on the same host, and ran a three-sample warm `run-cell` against the same 12 local TLC Parquet files.
+9. Added a lab-only `cdf-p3-lab package-read` diagnostic and ran it against the retained full-year TLC package from the local default cell: `pkg-tlc-yellow-56794-1784364958724043936`.
 
 ## What it supports or challenges
 
@@ -88,6 +90,8 @@ The native DuckDB reference cell turns the G4 target from an approximation into 
 The L6 `measure-cdf` local default cell makes the retained CDF baseline itself a standard benchmark-lab observation: full-year local TLC to DuckDB completed in `33.955522533s`, with 41,169,720 rows and ten extracted phase metrics. The decisive phases were `destination_ingress=32.916s` and `package_execution=33.136s`; local `source_read` and `decode` together were under 2.3 seconds. This confirms the current G4 owner as destination/package execution under host-labeled evidence.
 
 The supervised `--jobs 3` failure challenges a tempting scheduler shortcut. Increasing source jobs above the staged destination's default pressure join does not recover the old local floor on the EC2 host; it reintroduces a non-completing overdrive shape. Future G4 work should not promote higher default source admission without a different staged-ingress/backpressure architecture and same-host proof.
+
+The package-read diagnostic splits replay from live execution. Reading and decoding every Arrow IPC batch in the retained 1.51 GB package took `16.733112449s` for 633 batches, 215 segments, and 41,169,720 rows. This explains a large part of the `45.97s` package-replay-to-DuckDB result, but it does not by itself explain live staged ingress because live `LiveStagedSegmentReader` hands retained `RecordBatch`es to DuckDB without reopening IPC files. The next production candidate therefore needs finer destination-internal timing or a bulk strategy change; simply increasing source jobs or coalescing append batches remains rejected by evidence.
 
 The pre-tuning run still has diagnostic value: it proved the benchmark host was originally too slow at durable storage for promotion evidence. After tuning, the HF wall improved from `43.39s` to `36.51s`, but the result is still far above the P3 target envelope.
 

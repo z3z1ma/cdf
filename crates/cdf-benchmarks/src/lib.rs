@@ -32,7 +32,9 @@ pub use matrix::{
     BenchmarkSuite, CaseDefinition, CaseOutcome, CoverageCell, MetricClass, benchmark_cases,
     cases_for, coverage_matrix,
 };
-pub use package_shape::{PackageShapeSummary, summarize_package_shape};
+pub use package_shape::{
+    PackageReadSummary, PackageShapeSummary, read_package_batches, summarize_package_shape,
+};
 pub use profiling::{ProfilePlan, ProfileTool, plan_profile};
 pub use references::{
     ExternalFileFormat, ReferenceWorkload, discover_polars, polars_scan_command, run_reference,

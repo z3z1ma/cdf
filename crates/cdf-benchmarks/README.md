@@ -44,6 +44,8 @@ Run `preflight` immediately before using a result as P3 promotion evidence. It r
 
 `run-cell REQUEST.json` executes a schema-versioned macro cell with median-of-N sampling, timeout, explicit warm/cold/uncontrolled mode, child-process wall/CPU/RSS observation, reference identity, and bias labels. `reference-worker REQUEST.json` is the isolated worker for sequential read/write, memcpy, Arrow Parquet/CSV/NDJSON, direct Arrow Parquet rewrite with explicit writer policy, DuckDB Parquet read/count, and persistent DuckDB `CREATE TABLE AS SELECT * FROM read_parquet(...)` ingest references.
 
+Package diagnostics are intentionally narrow: `package-shape PACKAGE_DIR` reads Arrow IPC footers to count segments/batches/rows without decoding payloads, while `package-read PACKAGE_DIR` decodes every package IPC batch and drops it immediately. Use the latter to isolate replay/package-read cost from destination commit cost; it is not a destination benchmark by itself.
+
 Profiling plans record the exact detected tool/version, command, and ignored artifact path without requiring the tool in ordinary tests:
 
 ```bash
