@@ -208,6 +208,25 @@ local_revision_label() {
   fi
 }
 
+record_only_revision_drift() {
+  local remote_label="$1"
+  local local_label="$2"
+  if [[ ! "${remote_label}" =~ ^[0-9a-f]{40}$ || ! "${local_label}" =~ ^[0-9a-f]{40}$ ]]; then
+    return 1
+  fi
+  git -C "${repo_root}" cat-file -e "${remote_label}^{commit}" 2>/dev/null || return 1
+  git -C "${repo_root}" cat-file -e "${local_label}^{commit}" 2>/dev/null || return 1
+  local changed_paths
+  changed_paths="$(git -C "${repo_root}" diff --name-only "${remote_label}" "${local_label}" --)"
+  if [[ -z "${changed_paths}" ]]; then
+    return 0
+  fi
+  local path
+  while IFS= read -r path; do
+    [[ "${path}" == .10x/* ]] || return 1
+  done <<<"${changed_paths}"
+}
+
 remote_repo_path() {
   local path="$1"
   if [[ "${path}" == /* ]]; then
@@ -540,9 +559,14 @@ case "${command}" in
     remote_label="$(printf '%s\n' "${remote_labels}" | awk -F= '$1=="remote_revision_label" {print $2}')"
     built_label="$(printf '%s\n' "${remote_labels}" | awk -F= '$1=="built_revision_label" {print $2}')"
     built_at_utc="$(printf '%s\n' "${remote_labels}" | awk -F= '$1=="built_at_utc" {print $2}')"
+    revision_drift="none"
     if [[ "${remote_label}" != "${local_label}" && "${CDF_BENCH_PREFLIGHT_ALLOW_STALE:-0}" != "1" ]]; then
-      echo "preflight failed: remote revision ${remote_label} does not match local ${local_label}; run sync-repo/build or set CDF_BENCH_PREFLIGHT_ALLOW_STALE=1 for intentional historical measurements" >&2
-      exit 1
+      if record_only_revision_drift "${remote_label}" "${local_label}"; then
+        revision_drift="record_only"
+      else
+        echo "preflight failed: remote revision ${remote_label} does not match local ${local_label}; run sync-repo/build or set CDF_BENCH_PREFLIGHT_ALLOW_STALE=1 for intentional historical measurements" >&2
+        exit 1
+      fi
     fi
     if [[ "${built_label}" != "${remote_label}" ]]; then
       echo "preflight failed: release binaries were built for ${built_label:-unknown}, but synced repo is ${remote_label}; run build before measuring" >&2
@@ -563,6 +587,8 @@ case "${command}" in
     echo "instance_type=${instance_type}"
     echo "volume=${volume_id},gp3,${actual_iops}iops,${actual_throughput}mibps,size_gb=${actual_size}"
     echo "revision=${remote_label}"
+    echo "local_revision=${local_label}"
+    echo "revision_drift=${revision_drift}"
     echo "built_revision=${built_label}"
     echo "built_at_utc=${built_at_utc}"
     printf '%s\n' "${remote_check}"
