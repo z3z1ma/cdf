@@ -216,7 +216,7 @@ async fn ndjson_stdout_adapter_captures_stderr_and_packages_output() {
         ndjson_path.to_str().unwrap(),
     ]);
 
-    let output = run_stdout_adapter(
+    let output = run_bounded_stdout_adapter(
         &command,
         StdoutFormat::Ndjson,
         &read_options(),
@@ -267,7 +267,7 @@ async fn arrow_ipc_stdout_adapter_reads_kernel_batches() {
     }
     let command = CommandSpec::new("cat").with_args([ipc_path.to_str().unwrap()]);
 
-    let output = run_stdout_adapter(
+    let output = run_bounded_stdout_adapter(
         &command,
         StdoutFormat::ArrowIpc,
         &read_options(),
@@ -332,7 +332,7 @@ async fn ndjson_stdout_adapter_streams_with_compiled_schema_without_reserving_st
 #[tokio::test(flavor = "current_thread")]
 async fn nonzero_exit_maps_to_transient_with_stderr() {
     let command = shell(["-c", "printf 'adapter failed\\n' >&2; exit 7"]);
-    let error = run_stdout_adapter(
+    let error = run_bounded_stdout_adapter(
         &command,
         StdoutFormat::Ndjson,
         &read_options(),
@@ -350,7 +350,7 @@ async fn nonzero_exit_maps_to_transient_with_stderr() {
 #[tokio::test(flavor = "current_thread")]
 async fn timeout_maps_to_transient() {
     let command = shell(["-c", "sleep 2"]);
-    let error = run_stdout_adapter(
+    let error = run_bounded_stdout_adapter(
         &command,
         StdoutFormat::Ndjson,
         &read_options(),
@@ -419,7 +419,7 @@ async fn command_supervisor_bounds_output_and_observes_cancellation() {
 #[tokio::test(flavor = "current_thread")]
 async fn malformed_stdout_maps_to_data_with_stderr_context() {
     let command = shell(["-c", "printf 'parser warning\\n' >&2; printf '{bad\\n'"]);
-    let error = run_stdout_adapter(
+    let error = run_bounded_stdout_adapter(
         &command,
         StdoutFormat::Ndjson,
         &read_options(),

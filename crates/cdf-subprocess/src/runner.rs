@@ -220,7 +220,7 @@ fn join_bounded_reader(
     })?
 }
 
-pub async fn run_stdout_adapter(
+pub async fn run_bounded_stdout_adapter(
     command: &CommandSpec,
     stdout_format: StdoutFormat,
     read_options: &ReadOptions,

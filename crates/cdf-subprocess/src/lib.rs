@@ -18,7 +18,7 @@ pub use command::{
     SubprocessRead, SubprocessStreamOutput, SupervisionOptions,
 };
 pub use protocol::{ProtocolState, ProtocolStreamRead, StreamIdentity};
-pub use runner::{run_bounded_command, run_stdout_adapter, run_stdout_adapter_streaming};
+pub use runner::{run_bounded_command, run_bounded_stdout_adapter, run_stdout_adapter_streaming};
 pub use singer::{
     SingerMessage, SingerOther, SingerRead, SingerRecord, SingerSchema, SingerState,
     parse_singer_ndjson, read_singer_ndjson_bytes,
