@@ -7,16 +7,22 @@ use std::{
     os::raw::c_char,
     path::{Path, PathBuf},
     ptr,
-    sync::Arc,
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    },
 };
 
 use arrow_array::{
-    Array, ArrayRef, Float64Array, Int32Array, Int64Array, StringArray, StructArray,
-    TimestampMicrosecondArray, UInt64Array, ffi::FFI_ArrowArray,
+    Array, ArrayRef, Float64Array, Int32Array, Int64Array, RecordBatchReader, StringArray,
+    StructArray, TimestampMicrosecondArray, UInt64Array, ffi::FFI_ArrowArray,
+    ffi_stream::FFI_ArrowArrayStream,
 };
 use arrow_csv::reader::{Format as CsvFormat, ReaderBuilder as CsvReaderBuilder};
 use arrow_json::reader::{ReaderBuilder as JsonReaderBuilder, infer_json_schema};
-use arrow_schema::{DataType, Field, Schema, TimeUnit, ffi::FFI_ArrowSchema};
+use arrow_schema::{
+    ArrowError, DataType, Field, Schema, SchemaRef, TimeUnit, ffi::FFI_ArrowSchema,
+};
 use parquet::{
     arrow::{ArrowWriter, arrow_reader::ParquetRecordBatchReaderBuilder},
     file::properties::{EnabledStatistics, WriterProperties},
@@ -216,6 +222,14 @@ pub enum ReferenceWorkload {
         batch_rows: usize,
         include_row_key: bool,
         checkpoint: bool,
+    },
+    DuckDbArrowStreamScanIngest {
+        output: PathBuf,
+        rows: u64,
+        batch_rows: usize,
+        include_row_key: bool,
+        checkpoint: bool,
+        verify_rowid: bool,
     },
     DuckDbParquetStagedIngest {
         output: PathBuf,
@@ -421,6 +435,21 @@ pub fn run_reference(workload: &ReferenceWorkload) -> BenchResult<WorkerMeasurem
             *batch_rows,
             *include_row_key,
             *checkpoint,
+        ),
+        ReferenceWorkload::DuckDbArrowStreamScanIngest {
+            output,
+            rows,
+            batch_rows,
+            include_row_key,
+            checkpoint,
+            verify_rowid,
+        } => run_duckdb_arrow_stream_scan_ingest(
+            output,
+            *rows,
+            *batch_rows,
+            *include_row_key,
+            *checkpoint,
+            *verify_rowid,
         ),
         ReferenceWorkload::DuckDbParquetStagedIngest {
             output,
@@ -661,6 +690,83 @@ fn run_duckdb_arrow_data_chunk_append(
     })
 }
 
+fn run_duckdb_arrow_stream_scan_ingest(
+    output: &Path,
+    rows: u64,
+    batch_rows: usize,
+    include_row_key: bool,
+    checkpoint: bool,
+    verify_rowid: bool,
+) -> BenchResult<WorkerMeasurement> {
+    if rows == 0 {
+        return Err(bench_error(
+            "DuckDB Arrow stream-scan ingest reference requires at least one row",
+        ));
+    }
+    require_batch(batch_rows)?;
+    if let Some(parent) = output.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    remove_if_exists(output)?;
+    remove_if_exists(&duckdb_wal_path(output))?;
+
+    let logical_bytes = Arc::new(AtomicU64::new(0));
+    let reader = TlcArrowBatchReader::new(rows, batch_rows, include_row_key, logical_bytes.clone());
+    let mut stream = FFI_ArrowArrayStream::new(Box::new(reader));
+    let mut connection = RawDuckDbConnection::open(output)?;
+    register_duckdb_arrow_stream_scan(connection.handle(), "cdf_arrow_stream", &mut stream)?;
+    connection.query("CREATE TABLE arrow_stream_scan AS SELECT * FROM cdf_arrow_stream")?;
+    if checkpoint {
+        connection.query("CHECKPOINT")?;
+    }
+    drop(connection);
+    drop(stream);
+
+    let connection = duckdb::Connection::open(output)?;
+    let observed_rows =
+        connection.query_row("SELECT count(*) FROM arrow_stream_scan", [], |row| {
+            row.get::<_, i64>(0)
+        })?;
+    let observed_rows = u64::try_from(observed_rows)?;
+    if observed_rows != rows {
+        return Err(bench_error(format!(
+            "DuckDB Arrow stream-scan row count mismatch: expected {rows}, observed {observed_rows}"
+        )));
+    }
+    if verify_rowid {
+        let (count, distinct_count, min_rowid, max_rowid) = connection.query_row(
+            "SELECT count(*), count(DISTINCT rowid), min(rowid), max(rowid) \
+             FROM arrow_stream_scan",
+            [],
+            |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, i64>(2)?,
+                    row.get::<_, i64>(3)?,
+                ))
+            },
+        )?;
+        let rows_i64 = i64::try_from(rows)?;
+        if count != rows_i64 || distinct_count != rows_i64 || min_rowid < 0 || max_rowid < min_rowid
+        {
+            return Err(bench_error(format!(
+                "DuckDB Arrow stream-scan rowid verification failed: count={count}, \
+                 distinct={distinct_count}, min={min_rowid}, max={max_rowid}, expected={rows}"
+            )));
+        }
+    }
+
+    Ok(WorkerMeasurement {
+        timed_wall_time_ns: None,
+        rows,
+        logical_bytes: logical_bytes.load(Ordering::Relaxed),
+        physical_bytes: duckdb_database_bytes(output)?,
+        spill_bytes: 0,
+        phases: Vec::new(),
+    })
+}
+
 fn run_duckdb_parquet_staged_ingest(
     output: &Path,
     staging: &Path,
@@ -882,6 +988,75 @@ fn tlc_arrow_batch(
     }
     arrow_array::RecordBatch::try_new(Arc::new(tlc_arrow_schema(include_row_key)), columns)
         .map_err(Into::into)
+}
+
+struct TlcArrowBatchReader {
+    schema: SchemaRef,
+    remaining: u64,
+    batch_rows: usize,
+    row_start: u64,
+    include_row_key: bool,
+    logical_bytes: Arc<AtomicU64>,
+}
+
+impl TlcArrowBatchReader {
+    fn new(
+        rows: u64,
+        batch_rows: usize,
+        include_row_key: bool,
+        logical_bytes: Arc<AtomicU64>,
+    ) -> Self {
+        Self {
+            schema: Arc::new(tlc_arrow_schema(include_row_key)),
+            remaining: rows,
+            batch_rows,
+            row_start: 1,
+            include_row_key,
+            logical_bytes,
+        }
+    }
+}
+
+impl Iterator for TlcArrowBatchReader {
+    type Item = Result<arrow_array::RecordBatch, ArrowError>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.remaining == 0 {
+            return None;
+        }
+        let current_rows = match usize::try_from(self.remaining.min(self.batch_rows as u64)) {
+            Ok(value) => value,
+            Err(error) => return Some(Err(ArrowError::ComputeError(error.to_string()))),
+        };
+        let batch = match tlc_arrow_batch(current_rows, self.row_start, self.include_row_key) {
+            Ok(batch) => batch,
+            Err(error) => return Some(Err(ArrowError::ComputeError(error.to_string()))),
+        };
+        match u64::try_from(current_rows)
+            .ok()
+            .and_then(|rows| self.row_start.checked_add(rows))
+        {
+            Some(next_start) => self.row_start = next_start,
+            None => {
+                return Some(Err(ArrowError::ComputeError(
+                    "TLC Arrow stream-scan row offset overflowed".to_owned(),
+                )));
+            }
+        }
+        self.remaining -= current_rows as u64;
+        let batch_bytes = match u64::try_from(batch.get_array_memory_size()) {
+            Ok(value) => value,
+            Err(error) => return Some(Err(ArrowError::ComputeError(error.to_string()))),
+        };
+        self.logical_bytes.fetch_add(batch_bytes, Ordering::Relaxed);
+        Some(Ok(batch))
+    }
+}
+
+impl RecordBatchReader for TlcArrowBatchReader {
+    fn schema(&self) -> SchemaRef {
+        self.schema.clone()
+    }
 }
 
 type DuckArrayRef = Arc<dyn duckdb::arrow::array::Array>;
@@ -1233,6 +1408,32 @@ fn append_arrow_batch_as_duckdb_data_chunk(
         Ok(())
     } else {
         Err(bench_error("DuckDB raw data-chunk append failed"))
+    }
+}
+
+fn register_duckdb_arrow_stream_scan(
+    connection: duckdb::ffi::duckdb_connection,
+    view_name: &str,
+    stream: &mut FFI_ArrowArrayStream,
+) -> BenchResult<()> {
+    let view_name = CString::new(view_name)?;
+    // SAFETY: this is a lab-only diagnostic around DuckDB's deprecated C API.
+    // The bundled DuckDB implementation immediately casts `duckdb_arrow_stream`
+    // to `ArrowArrayStream *`, so the arrow-rs C stream is passed with the same
+    // ABI pointer value. DuckDB borrows the stream while registering/executing
+    // the view; the caller keeps `stream` alive until after CTAS completes and
+    // releases it with arrow-rs, not DuckDB's destroy function.
+    let state = unsafe {
+        duckdb::ffi::duckdb_arrow_scan(
+            connection,
+            view_name.as_ptr(),
+            (stream as *mut FFI_ArrowArrayStream).cast::<duckdb::ffi::_duckdb_arrow_stream>(),
+        )
+    };
+    if state == duckdb::ffi::DuckDBSuccess {
+        Ok(())
+    } else {
+        Err(bench_error("DuckDB Arrow stream-scan registration failed"))
     }
 }
 
@@ -1601,6 +1802,43 @@ mod tests {
             )
             .unwrap();
         assert_eq!(rows, (2048, 1, 2048));
+    }
+
+    #[test]
+    fn duckdb_arrow_stream_scan_reference_materializes_persistent_table_with_rowids() {
+        let temp = tempfile::tempdir().unwrap();
+        let output = temp.path().join("arrow-stream-scan.duckdb");
+
+        let measurement = run_reference(&ReferenceWorkload::DuckDbArrowStreamScanIngest {
+            output: output.clone(),
+            rows: 2048,
+            batch_rows: 512,
+            include_row_key: false,
+            checkpoint: true,
+            verify_rowid: true,
+        })
+        .unwrap();
+
+        assert_eq!(measurement.rows, 2048);
+        assert!(measurement.logical_bytes > 0);
+        assert!(measurement.physical_bytes > 0);
+        let connection = duckdb::Connection::open(output).unwrap();
+        let rows = connection
+            .query_row(
+                "SELECT count(*), count(DISTINCT rowid), min(rowid), max(rowid) \
+                 FROM arrow_stream_scan",
+                [],
+                |row| {
+                    Ok((
+                        row.get::<_, i64>(0)?,
+                        row.get::<_, i64>(1)?,
+                        row.get::<_, i64>(2)?,
+                        row.get::<_, i64>(3)?,
+                    ))
+                },
+            )
+            .unwrap();
+        assert_eq!(rows, (2048, 2048, 0, 2047));
     }
 
     #[test]
