@@ -1,8 +1,8 @@
 Status: open
 Created: 2026-07-11
-Updated: 2026-07-16
+Updated: 2026-07-17
 Parent: .10x/tickets/2026-07-11-p0-destination-extension-boundary.md
-Depends-On: .10x/tickets/2026-07-11-p0-dx3-generic-lock-doctor-replay.md
+Depends-On: .10x/tickets/done/2026-07-11-p0-dx3-generic-lock-doctor-replay.md
 
 # P0 DX4: destination extension conformance and build-graph law
 
@@ -19,7 +19,7 @@ Replace repeated concrete conformance enums/factories with one data-driven adapt
 
 ## Blockers
 
-Depends on DX3.
+None. DX3 is terminal.
 
 ## Progress and notes
 

@@ -1,8 +1,8 @@
-Status: blocked
+Status: done
 Created: 2026-07-11
-Updated: 2026-07-13
+Updated: 2026-07-17
 Parent: .10x/tickets/2026-07-11-p0-destination-extension-boundary.md
-Depends-On: .10x/tickets/done/2026-07-11-p0-dx2-driver-owned-adapters-composition.md, .10x/tickets/2026-07-12-p0-dx3a-cli-destination-registry-authority.md
+Depends-On: .10x/tickets/done/2026-07-11-p0-dx2-driver-owned-adapters-composition.md, .10x/tickets/done/2026-07-12-p0-dx3a-cli-destination-registry-authority.md
 
 # P0 DX3: generic lock, doctor, replay, and product surfaces
 
@@ -19,8 +19,7 @@ Replace lockfile URI matches, CLI destination runtime enum, doctor/replay target
 
 ## Blockers
 
-- Remaining focused report, doctor, and project reruns are pending the orchestrator-owned Cargo slot. A single focused `cdf-runtime` metadata-validation test passed after the earlier unrelated kernel compile failure cleared; no additional Cargo command was started after the orchestrator reserved the slot for other work. DX3 did not edit or repair the unrelated kernel files.
-- DX3A has implemented and focused-tested the real public CLI `resume` path with the injected fourth driver, resolving this ticket's original architectural blocker. DX3A itself is now blocked only by its explicit full-CLI-suite gate (272/291); this parent remains blocked until that child moves terminal, after which its fourth-driver evidence can be consumed without repetition.
+None.
 
 ## Journal
 
@@ -33,6 +32,7 @@ Replace lockfile URI matches, CLI destination runtime enum, doctor/replay target
 - 2026-07-12 (review repair): Added destination-neutral `DestinationDescription` validation at registry inspection and resolution. Driver-provided location fields must be non-empty snake_case and cannot collide with `kind`, `destination_id`, or `target`; receipt-source values must be non-empty snake_case. Registry tests cover rejection on both inspection and resolution.
 - 2026-07-12 (review repair): Strengthened the fourth-driver regression to pass the inspected sheet artifact through `generate_lockfile_with_destination_artifacts`, use `ResolvedProjectDestination::plan_resource_commit`, retain staged project replay assertions, and use the artifact recovery orchestration called by resume. Removed the prior vacuous secret-free health serialization claim. A separate standard-doctor regression now supplies secret-bearing health metadata and exercises actual `destination_checks` plus `DoctorReport` JSON/human rendering. The CLI `ResumeAttempt` path remains the explicit blocker above rather than being represented by artifact recovery.
 - 2026-07-12 (review repair verification): `cargo test -p cdf-runtime registry_rejects_product_metadata_that_cannot_compose_with_stable_reports --locked` passed 1/1 with 35 filtered. The report, doctor, and strengthened project regressions were not run because the orchestrator reserved the Cargo slot; source formatting and `git diff --check` passed for the scoped repair files.
+- 2026-07-17 (closure audit): Consumed terminal DX3A evidence instead of repeating its focused CLI gates. `.10x/tickets/done/2026-07-12-p0-dx3a-cli-destination-registry-authority.md` now proves the one-registry public invocation seam reaches real `resume` with a registered fourth driver, including no-source finalized-package resume, durable-receipt resume, duplicate suppression, checkpoint/package status, and redacted JSON/human/error output. This resolves the only material DX3 closure blocker. Broader CLI-suite failures remain owned integration inventory outside DX3.
 
 ## Evidence
 
@@ -40,8 +40,8 @@ Replace lockfile URI matches, CLI destination runtime enum, doctor/replay target
 | --- | --- | --- |
 | Lock generation gets sheet artifacts with no destination scheme match. | The fourth-driver regression calls `DestinationRegistry::inspect`, validates the returned `DestinationSheetArtifact`, and proves inspection performs zero writes. Static `rg` over `cdf-project/src/lockfile.rs` and generic CLI lock/doctor/replay/report modules found no concrete destination import or equality/match branch. | Existing first-party lock wiring was completed and evidenced by DX2; this ticket adds the fourth-driver/no-mutation proof rather than repeating all lock tests. |
 | Doctor and replay generic modules contain no concrete destination imports or branches. | `rg -n 'cdf_dest_(duckdb|parquet|postgres)|cdf-dest-(duckdb|parquet|postgres)'` and the concrete equality/match search returned no output for `reports.rs`, `replay_command.rs`, `doctor_command.rs`, and `lockfile.rs`. Generic reports now consume driver description metadata. | `doctor_drift.rs` remains the explicitly ratified adapter-specific diagnostic exception. Fixed user-facing examples/hints are not resolution branches and were not changed. |
-| A mock fourth driver works through lock, inspect/doctor, plan, replay, and resume. | Source-level repair now routes the inspected artifact through lock generation, the resolved driver through the project planning facade, project replay, and artifact recovery; standard doctor rendering is exercised separately with secret-bearing driver health metadata. | Fresh execution is pending the orchestrator-owned Cargo slot. CLI `ResumeAttempt` is not exercised; see Blockers. Artifact recovery is not claimed as resume orchestration. |
-| Secret redaction and no-mutation inspection are proven. | Source-level assertions now cover both JSON and human run reports, plus both JSON and human standard-doctor reports with secret-bearing URI userinfo in driver health messages/details. The fourth-driver regression asserts zero writes through inspection, lock generation, health, and planning. | Fresh execution is pending the orchestrator-owned Cargo slot. Redaction covers URI userinfo at these product boundaries; arbitrary non-URI driver secrets remain a driver redaction obligation unless supplied through runtime secret-redaction authority. |
+| A mock fourth driver works through lock, inspect/doctor, plan, replay, and resume. | DX3 repair routes the inspected artifact through lock generation, the resolved driver through the project planning facade, project replay, artifact recovery, and standard doctor rendering. Terminal DX3A evidence proves the same registered fourth driver reaches real public CLI `resume` through `ResumeAttempt` via `invoke_with_destination_registry`, covering no-receipt and durable-receipt branches without builtin fallback. | Direct artifact recovery remains lower-facade evidence only; resume closure comes from DX3A's public invocation tests. |
+| Secret redaction and no-mutation inspection are proven. | Source-level assertions cover both JSON and human run reports, plus both JSON and human standard-doctor reports with secret-bearing URI userinfo in driver health messages/details. DX3A public-path evidence also asserts fourth-driver JSON, human, and error outputs exclude the fixture sentinel while inspection, health, plan, and lock construction remain non-mutating. | Redaction covers URI userinfo at these product boundaries; arbitrary non-URI driver secrets remain a driver redaction obligation unless supplied through runtime secret-redaction authority. |
 
 Additional verification:
 
@@ -102,7 +102,7 @@ Until registry authority can be injected through CLI destination selection, four
 - **No critical or significant finding in the current implemented slice.** Fresh source and diff inspection found no weakening of production semantics in the report, replay, doctor, runtime-description, registry-validation, or project facade changes. First-party compatibility remains data-driven: DuckDB declares `database_path` and `duck_db_commit`, filesystem Parquet declares `root`, and Postgres retains the neutral defaults. The generic report and replay paths no longer infer those values from destination names.
 - **No critical or significant fixture finding after the final repairs.** The fourth-driver regression uses a syntactically valid project resource mapping, a declarative SQL resource solely to avoid an unresolved local-file runtime during plan construction, the identifier policy derived from the mock destination sheet, and project target `orders`, which matches the built package's destination-commit target. Lock generation receives the inspected destination artifact; planning uses `resolve_project_run_destination` and `ResolvedProjectDestination::plan_resource_commit`; recovery uses the public `recover_package_from_artifacts` facade. The obsolete test-only `recover_package_with_runtime` re-export was removed rather than retained to support the regression.
 - **No critical or significant redaction or metadata-validation finding.** `RunDestinationReport::from_project` redacts URI userinfo before the driver label reaches either flattened JSON or human rendering. Standard doctor redacts URI userinfo in every health message and recursively in JSON string values before constructing serializable checks. `DestinationDescription::validate` rejects invalid product identifiers and collisions with the stable flattened report fields, and the neutral registry applies that validation on both inspection and resolution. The focused regressions exercise structured and human report/doctor output plus both registry validation paths.
-- **Significant ticket-level closure blocker remains unchanged — real CLI resume still uses builtin-only registry authority.** DX3A (`.10x/tickets/2026-07-12-p0-dx3a-cli-destination-registry-authority.md`) remains the bounded owner for propagating one registry through the real public CLI resume path. Artifact recovery is valid evidence for the implemented lower facade but is not resume evidence, so DX3 cannot close.
+- **Significant ticket-level closure blocker remains unchanged — real CLI resume still uses builtin-only registry authority.** DX3A (`.10x/tickets/done/2026-07-12-p0-dx3a-cli-destination-registry-authority.md`) remains the bounded owner for propagating one registry through the real public CLI resume path. Artifact recovery is valid evidence for the implemented lower facade but is not resume evidence, so DX3 cannot close.
 
 #### Evidence limits
 
@@ -117,6 +117,10 @@ Until registry authority can be injected through CLI destination selection, four
 #### Residual risk
 
 The URI-userinfo scrubber is intentionally narrow and driver-provided non-URI secret text remains governed by the runtime's explicit secret-redaction authority. The material open risk is unchanged: below-seam fourth-driver recovery can drift from builtin-only CLI resume until DX3A lands.
+
+### Final closure review (2026-07-17)
+
+Verdict: pass for closure. The prior material residual risk is resolved by terminal DX3A evidence: real public CLI invocation now accepts one caller-owned registry and threads it through `ResumeAttempt`, so a fourth driver reaches lock, inspect, doctor, plan, run, replay, and both resume branches without hidden builtin-only composition. Static architecture evidence still supports the generic DX3 surfaces: no concrete DuckDB, Parquet, or Postgres import or destination-name branch exists in generic reports, replay, standard doctor, or lock generation, with `doctor_drift.rs` preserved as the explicit adapter diagnostic exception. The remaining broad CLI-suite failures are unrelated integration inventory with separate owners and are not DX3 closure blockers under the current user-ratified CI-stabilization direction.
 
 ## Retrospective
 

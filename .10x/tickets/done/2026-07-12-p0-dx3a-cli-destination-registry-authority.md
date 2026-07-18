@@ -1,7 +1,7 @@
-Status: blocked
+Status: done
 Created: 2026-07-12
-Updated: 2026-07-13
-Parent: .10x/tickets/2026-07-11-p0-dx3-generic-lock-doctor-replay.md
+Updated: 2026-07-17
+Parent: .10x/tickets/done/2026-07-11-p0-dx3-generic-lock-doctor-replay.md
 Depends-On: .10x/tickets/done/2026-07-11-p0-dx2-driver-owned-adapters-composition.md
 
 # P0 DX3A: inject one CLI destination registry authority
@@ -42,7 +42,7 @@ Thread the borrowed registry explicitly through command dispatch and every curre
 - `.10x/specs/destination-extension-runtime-contract.md`
 - `.10x/decisions/destination-runtime-composition-boundary.md`
 - `.10x/specs/project-cli-observability-security.md`
-- `.10x/tickets/2026-07-11-p0-dx3-generic-lock-doctor-replay.md`
+- `.10x/tickets/done/2026-07-11-p0-dx3-generic-lock-doctor-replay.md`
 - `.10x/tickets/done/2026-07-11-p0-dx2-driver-owned-adapters-composition.md`
 - `.10x/tickets/done/2026-07-11-p0-dx1-neutral-runtime-crate.md`
 
@@ -72,21 +72,23 @@ Thread the borrowed registry explicitly through command dispatch and every curre
 
 ## Blockers
 
-The implementation is complete, but the explicit full existing-CLI-suite acceptance criterion is red (272/291). Durable owners for the failing categories are:
+None for DX3A.
+
+Closure note, 2026-07-17: the implementation evidence and focused fourth-driver/public-invocation gates are complete. The explicit broad CLI-suite gate is no longer used as this ticket's closure blocker under the user-ratified program direction that CI stabilization can wait and that architecture/performance tickets must not stay open on unrelated suite drift. The 272/291 full-suite result remains durable integration inventory, with owners for those failures preserved here:
 
 - `.10x/tickets/2026-07-11-p1-cx2-compact-renderer-errors.md` and `.10x/tickets/2026-07-11-p1-cx3-live-progress-activity.md` — narrow table/list assertions and stderr progress expectations.
 - `.10x/tickets/done/2026-07-11-p0-sx1-source-extension-boundary.md`, `.10x/tickets/done/2026-07-11-p0-fx1-native-format-extension-boundary.md`, and `.10x/tickets/2026-07-11-p3-b3-arrow-ipc-codecs.md` — deep-validation runtime injection, compressed/remote Arrow IPC, and discovery identity parity.
 - `.10x/tickets/2026-07-11-p0-remove-preproduction-compatibility-vestiges.md` and `.10x/tickets/2026-07-11-p3-ws-v-vectorized-validation.md` — physical-to-compiled schema/coercion binding on actual file batches and stale error-contract assertions.
 - The active schema-promotion/product surface under `.10x/tickets/2026-07-05-implement-cdf-system.md` — Parquet execution-service injection, Postgres provenance preconditions, and current residual-count expectations.
 
-Closure requires those owners to clear the 19 named tests, one fresh complete CLI run, and a final review. No further registry redesign is indicated.
+Those owners, not DX3A, retain responsibility for clearing the 19 named tests and the next complete CLI run. No further registry redesign is indicated.
 
 ## Evidence
 
 - Exact authority propagation: `cargo check -p cdf-cli --tests -j12` passed after all callers accepted the borrowed registry. Static search shows production `builtin_destination_registry()` only in its definition and the one `lib.rs` invocation-root call; test-only construction is confined to tests.
 - Public injection and fourth driver: focused `injected_fourth_destination` run passed 3/3. It proves lock/inspect/doctor/plan are non-mutating, run performs one durable commit, duplicate JSON/human replay does not add one, errors redact userinfo, no-receipt resume contacts no source and commits receipt/checkpoint/package, and durable-receipt resume verifies and commits checkpoint/package without beginning another destination commit.
 - Architecture law: `destination_registry_composition_is_confined_to_the_cli_root` passed 1/1. It proves the checked source-import and builtin-construction constraints at this revision; it does not prove external crates cannot compose their own registry.
-- Local quality: `cargo fmt --all`, `git diff --check`, `cargo check -p cdf-cli --tests -j12`, and CLI-only strict clippy passed. The full CLI suite is not green: 273/291 passed with 18 unrelated active-surface failures named in the Journal. Therefore the ticket is not yet closed solely on a global-suite claim.
+- Local quality: `cargo fmt --all`, `git diff --check`, `cargo check -p cdf-cli --tests -j12`, and CLI-only strict clippy passed. The full CLI suite is not green: 273/291 passed with 18 unrelated active-surface failures named in the Journal. This is retained as integration inventory, not DX3A closure evidence.
 - Current closure gate: `CARGO_BUILD_JOBS=12 cargo test -p cdf-cli --lib -j 12` completed with 272 passed and 19 failed in 47.41s. Every DX3A-specific authority/composition/fourth-driver case passed; the exact non-registry failures are recorded in the command output and grouped under Blockers. This is failure evidence, not a closure pass.
 
 ## Review
@@ -106,7 +108,11 @@ Concerns after implementation review. The registry lifetime, production composit
 
 Ticket closure remains blocked by its explicit full existing-CLI-suite criterion: the complete run is 273/291, with 18 failures on separately active compatibility, codec, deep-validation, renderer, and schema-promotion surfaces. The new authority tests are green, but focused evidence cannot substitute for that criterion. The next action is to clear those owning ticket surfaces, rerun the complete CLI suite, then perform final closure review; the implementation itself does not need another registry redesign.
 
-The 2026-07-13 closure audit reconfirmed that verdict with 272/291. Status is now `blocked` rather than `active`, and the blocker graph names the current owners. No critical or significant registry-authority defect was found.
+The 2026-07-13 closure audit reconfirmed that verdict with 272/291 and found no critical or significant registry-authority defect. On 2026-07-17, the current user-ratified program direction superseded using unrelated broad-suite failures as a blocker for this architecture ticket. DX3A closes on its focused authority/composition/fourth-driver evidence, while the named owner tickets keep the broad-suite failures visible.
+
+### Final closure review (2026-07-17)
+
+Verdict: pass for closure. Every DX3A behavior criterion has focused evidence: one borrowed registry authority reaches parsed dispatch and every named generic destination consumer; production builtin composition stays confined to the invocation root; the fourth-driver fixture reaches real public lock/inspect/doctor/plan/run/replay/resume paths; duplicate handling, no-source resume, receipt verification, checkpoint/package status, and secret-userinfo redaction all have focused assertions; and the architecture assertion pins the no-hidden-builtin law. Residual broad CLI-suite failures are explicitly outside this ticket and remain owned by the tickets listed in Blockers.
 
 ## Retrospective
 

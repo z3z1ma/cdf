@@ -1,6 +1,6 @@
 Status: open
 Created: 2026-07-12
-Updated: 2026-07-12
+Updated: 2026-07-17
 Parent: .10x/tickets/2026-07-05-implement-cdf-system.md
 Depends-On: None
 
@@ -12,7 +12,7 @@ Reduce focused compile latency by enforcing the lean CLI core, complete static p
 
 ## Child sequence and integration points
 
-- CG1 and CG3 are independent child outcomes and MAY proceed in parallel only after CG1's active-DX3 dependency closes; CG3 has no dependency on DX3.
+- CG1 and CG3 are independent child outcomes; CG3 has no dependency on DX3, and CG1's DX3 dependency is now terminal.
 - CG1 reuses the existing SX1/FX1/DX3/DX4 composition catalogs; it does not recreate them.
 - CG2 depends on CG1 and migrates tests/gates only after the leaf boundary exists.
 - CG3 changes package type ownership while preserving package bytes and runtime lifecycle semantics; product imports reconcile at integration.
@@ -33,7 +33,7 @@ Reduce focused compile latency by enforcing the lean CLI core, complete static p
 - `.10x/specs/product-build-graph-boundaries.md`
 - `.10x/tickets/done/2026-07-11-p0-sx1-source-extension-boundary.md`
 - `.10x/tickets/done/2026-07-11-p0-fx1-native-format-extension-boundary.md`
-- `.10x/tickets/2026-07-11-p0-dx3-generic-lock-doctor-replay.md`
+- `.10x/tickets/done/2026-07-11-p0-dx3-generic-lock-doctor-replay.md`
 - `.10x/tickets/2026-07-11-p0-dx4-conformance-extension-law.md`
 - `.10x/tickets/2026-07-12-p3-j6-datafusion-selective-adoption-audit.md`
 
@@ -49,7 +49,7 @@ Reduce focused compile latency by enforcing the lean CLI core, complete static p
 
 ## Blockers
 
-CG2 has an unresolved conflict with `.10x/decisions/fast-ci-budget-and-deep-gate-separation.md`; see its review. CG1/CG3 may follow their own dependency/ownership gates, but the parent cannot close until CG2 is superseded or narrowed and executed.
+CG2 has an unresolved conflict with `.10x/decisions/fast-ci-budget-and-deep-gate-separation.md`; see its review. CG1 and CG3 are executable on their own ownership gates, and DX4 is unblocked by terminal DX3, but the parent cannot close until CG2 is superseded or narrowed and executed.
 
 ## Evidence
 

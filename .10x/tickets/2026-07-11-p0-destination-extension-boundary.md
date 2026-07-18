@@ -1,6 +1,6 @@
 Status: open
 Created: 2026-07-11
-Updated: 2026-07-12
+Updated: 2026-07-17
 Parent: .10x/tickets/2026-07-05-implement-cdf-system.md
 Depends-On: .10x/decisions/destination-runtime-composition-boundary.md, .10x/specs/destination-extension-runtime-contract.md
 
@@ -16,7 +16,7 @@ This parent is a plan. Its children are the executable units.
 
 - `.10x/tickets/done/2026-07-11-p0-dx1-neutral-runtime-crate.md`
 - `.10x/tickets/done/2026-07-11-p0-dx2-driver-owned-adapters-composition.md`
-- `.10x/tickets/2026-07-11-p0-dx3-generic-lock-doctor-replay.md`
+- `.10x/tickets/done/2026-07-11-p0-dx3-generic-lock-doctor-replay.md`
 - `.10x/tickets/2026-07-11-p0-dx4-conformance-extension-law.md`
 
 ## Acceptance criteria
@@ -36,3 +36,4 @@ None after shaping. P3 WS-A and WS-D wait for the relevant children; WS-L remain
 
 - 2026-07-11: DX1 closed with neutral runtime registry/inspection/prepared-commit contracts and unchanged project runtime behavior. DX2 is unblocked and owns driver-crate adapter migration plus the single CLI composition root.
 - 2026-07-12: DX2 closed after its acceptance criteria were mapped to existing execution evidence and a fresh adversarial pass. Driver adapters are destination-owned, `cdf-project`'s normal graph is destination-neutral, and the CLI has one explicit first-party registry; DX3 remains the dependent owner for its bounded generic product-surface work.
+- 2026-07-17: DX3 closed after consuming DX3A's terminal public CLI registry/resume evidence. DX4 is now the remaining child for conformance extension laws and build-graph proof.

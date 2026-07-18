@@ -1,8 +1,8 @@
 Status: open
 Created: 2026-07-12
-Updated: 2026-07-12
+Updated: 2026-07-17
 Parent: .10x/tickets/2026-07-12-p0-cargo-product-build-graph.md
-Depends-On: .10x/tickets/2026-07-11-p0-dx3-generic-lock-doctor-replay.md
+Depends-On: .10x/tickets/done/2026-07-11-p0-dx3-generic-lock-doctor-replay.md
 
 # P0 CG1: lean CLI core and complete product composition
 
@@ -31,12 +31,12 @@ Extract `cdf-cli-core` as the dependency-light owner of grammar/help/artifacts/t
 - `.10x/research/2026-07-12-cargo-product-build-graph-audit.md`
 - `.10x/tickets/done/2026-07-11-p0-sx1-source-extension-boundary.md`
 - `.10x/tickets/done/2026-07-11-p0-fx1-native-format-extension-boundary.md`
-- `.10x/tickets/2026-07-12-p0-dx3a-cli-destination-registry-authority.md`
+- `.10x/tickets/done/2026-07-12-p0-dx3a-cli-destination-registry-authority.md`
 
 ## Assumptions
 
 - **Record-backed:** Keeping `cdf-cli` as the product package is the smallest split that preserves existing release/install composition while gaining compile isolation.
-- **Record-backed:** DX3A supplies the explicit destination registry authority before module movement, preventing extraction from freezing hidden builtin reconstruction.
+- **Record-backed:** Terminal DX3A supplied the explicit destination registry authority before module movement, preventing extraction from freezing hidden builtin reconstruction.
 
 ## Journal
 
@@ -44,7 +44,7 @@ Extract `cdf-cli-core` as the dependency-light owner of grammar/help/artifacts/t
 
 ## Blockers
 
-Depends on DX3, which already depends on DX3A. This prevents the extraction from racing the active report/doctor/replay owner and ensures it moves the completed single destination authority rather than preserving hidden reconstruction.
+None. DX3 and DX3A are terminal, so CG1 can now move the completed single destination authority rather than preserving hidden reconstruction.
 
 ## Evidence
 
