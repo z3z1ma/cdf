@@ -67,9 +67,3 @@ debug = "line-tables-only"
 
 [profile.test.package."*"]
 debug = false
-
-[target.aarch64-apple-darwin]
-linker = "clang"
-rustflags = [
-    "-C", "link-arg=-fuse-ld=/opt/homebrew/opt/llvm/bin/ld64.lld",
-]
