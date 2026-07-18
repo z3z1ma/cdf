@@ -1,6 +1,6 @@
 Status: active
 Created: 2026-07-12
-Updated: 2026-07-12
+Updated: 2026-07-18
 
 # Typed statistics evidence
 
@@ -26,9 +26,11 @@ Package/file aggregation MAY be derived from segment evidence and MUST never ope
 
 ## Artifact
 
-Package-producing runs MUST write canonical `stats/profile.parquet`, ordered by grain, container ordinal, and field path. It replaces the current aggregate-only `stats/profile.json` and lexical `BatchStats` vestiges; no compatibility reader or dual writer is required before production.
+When a run is configured to emit a statistics profile artifact, it MUST write canonical `stats/profile.parquet`, ordered by grain, container ordinal, and field path. The artifact replaces the aggregate-only `stats/profile.json` and lexical `BatchStats` vestiges; no compatibility reader or dual writer is required before production.
 
-The artifact is identity-bearing evidence. Its Parquet writer settings, field order, scalar encoding, null behavior, and artifact version MUST be deterministic and golden-tested. Readers MUST reject corrupt, duplicate, out-of-order, type-inconsistent, unknown-required-version, or container/manifest-mismatched rows. Missing artifacts and unsupported/incomplete fields are conservative absence, never permission to prune.
+The artifact is identity-bearing evidence when present. Its Parquet writer settings, field order, scalar encoding, null behavior, and artifact version MUST be deterministic and golden-tested. Readers MUST reject corrupt, duplicate, out-of-order, type-inconsistent, unknown-required-version, or container/manifest-mismatched rows. Missing artifacts, disabled profile collection, and unsupported/incomplete fields are conservative absence, never permission to prune.
+
+Profile artifact emission MUST NOT be a default hot-path tax until the P3 overhead budget proves it fits. Ordinary runs MAY keep in-memory/package-summary evidence while skipping the extra `stats/profile.parquet` side artifact; profile-producing conformance, pruning, audit, and explicit operator scenarios MUST request it and record that request in run/package evidence.
 
 ## Pruning boundary
 
@@ -40,10 +42,10 @@ The fused statistics stage MUST preserve P3's constant-memory law and fit within
 
 ## Acceptance scenarios
 
-- Given the same canonical segments under jobs 1 and N, `stats/profile.parquet` bytes are identical.
+- Given the same canonical segments under jobs 1 and N with profile artifact emission enabled, `stats/profile.parquet` bytes are identical.
 - Given signed integers including negative values, typed bounds preserve numeric rather than lexical order.
 - Given decimal or timestamp fields, bounds round-trip precision, scale, unit, and timezone exactly.
-- Given NaN, nested, drifted, corrupt, missing, or incomplete evidence, downstream pruning retains the affected container.
+- Given NaN, nested, drifted, corrupt, disabled, missing, or incomplete evidence, downstream pruning retains the affected container.
 - Given a package manifest and profile artifact with conflicting container rows/counts/schema hashes, verification fails before pruning.
 - Given a workload larger than memory, statistics memory remains bounded by active batches/segments and no whole-package map is required.
 

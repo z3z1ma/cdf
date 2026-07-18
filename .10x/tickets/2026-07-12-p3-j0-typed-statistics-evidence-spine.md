@@ -1,6 +1,6 @@
 Status: active
 Created: 2026-07-12
-Updated: 2026-07-17
+Updated: 2026-07-18
 Parent: .10x/tickets/2026-07-12-p3-ws-j-datafusion-currency-bridges.md
 Depends-On: .10x/specs/typed-statistics-evidence.md, .10x/tickets/done/2026-07-11-p3-a5-streaming-operator-graph.md, .10x/tickets/done/2026-07-11-p3-v2-validation-graph-integration.md
 
@@ -8,13 +8,13 @@ Depends-On: .10x/specs/typed-statistics-evidence.md, .10x/tickets/done/2026-07-1
 
 ## Scope
 
-Replace the unpopulated lexical `BatchStats` and aggregate-only profile artifact with the CDF-native typed statistic model, vectorized batch computation, deterministic segment/package aggregation, canonical `stats/profile.parquet`, and verified streaming readers required by J1.
+Replace the unpopulated lexical `BatchStats` and aggregate-only profile artifact with the CDF-native typed statistic model, vectorized batch computation, deterministic segment/package aggregation, opt-in canonical `stats/profile.parquet`, and verified streaming readers required by J1.
 
 ## Acceptance criteria
 
 - Supported primitive/decimal/temporal/string/binary columns produce exact typed min/max/null/row evidence; unsupported or ambiguous cases explicitly remain incomplete.
 - Computation is vectorized, memory-accounted, segment-streaming, jobs-invariant, and measured against the P3 overhead budget.
-- `stats/profile.parquet` is deterministic, manifest-bound, corruption-checked, and readable without payload access.
+- When emitted, `stats/profile.parquet` is deterministic, manifest-bound, corruption-checked, and readable without payload access; disabled profile emission is a conservative absence for pruning, not a hot-path default.
 - Lexical fields and aggregate `profile.json` are deleted with no dual representation or compatibility shim.
 - Kernel/package APIs remain DataFusion-free and adding a destination/source/format requires no statistics-specific branch.
 
@@ -47,6 +47,7 @@ None. A5/V2 provide the fused streaming stage.
 - 2026-07-12: Final-review repair canonicalized Arrow field metadata before boxed construction so independently built equal fields and serde round trips share one declaration; dictionary pre-computation now includes both boxed enum allocations, with focused kernel assertions for ordering, round trip, and retained/precompute agreement. `EncodedPackageSegment` now owns its published IPC path until both package journals register it and deletes/syncs that file on every unpublished drop. Queue abort explicitly cancels, joins, drains, and drops all submitted-but-unregistered completions, covering a later statistics failure while earlier workers publish. The jobs test now constructs an explicit four-slot host rather than consulting host CPU detection. A focused package assertion covers unpublished-file rollback. Per root request no Cargo command ran; direct `rustfmt` and scoped `git diff --check` passed. Peak-in-flight and forced reversed-completion instrumentation remain to be added before the test can substantiate those two specific observations.
 - 2026-07-17: Re-established the focused J0 evidence on the current tree after the later package/runtime performance work. The source still contains the repaired boxed statistics model and unpublished segment rollback authority; no implementation change was needed. Current focused gates pass with `CARGO_BUILD_JOBS=12 -j 12`, confirming the typed scalar/model semantics and the engine package path remain intact before the next J0 slice (canonical `stats/profile.parquet`, manifest-bound readers, RSS/overhead evidence, and stronger completion-order instrumentation).
 - 2026-07-17: Promoted the package statistics artifact boundary from legacy aggregate JSON to canonical typed Parquet. `cdf-package` now owns the versioned `stats/profile.parquet` writer plus verified reader; the reader consumes only manifest-bound identity bytes and rejects manifest/order/count drift, scalar kind/value-column contradictions, and malformed completeness rows. `cdf-engine` streams segment-grain rows as canonical segment statistics are computed, then writes package-grain rows before finalization. The legacy `stats/profile.json` writer and live conformance expectation are deleted rather than retained as a compatibility shim.
+- 2026-07-18: Reconciled J0 with G4's performance-first profile policy. The typed Parquet profile artifact is the canonical evidence boundary when explicitly enabled, but it is not default hot-path work until the P3 overhead budget proves it fits. Missing/disabled profile evidence is conservative absence for J1 pruning. The in-memory execution profile and required package/manifest evidence remain default.
 
 ## Evidence
 
@@ -61,9 +62,9 @@ None. A5/V2 provide the fused streaming stage.
 - 2026-07-17 canonical Parquet profile slice:
   - `CARGO_BUILD_JOBS=12 cargo test -p cdf-package verified_statistics_profile_is_manifest_bound_typed_parquet --lib --locked -j 12` — passed, 1 passed. Proves a package can write segment/package typed stats rows, verify them through manifest-bound identity bytes, and reject a post-verification `stats/profile.parquet` tamper.
   - `CARGO_BUILD_JOBS=12 cargo test -p cdf-package --lib --locked -j 12` — passed after the stricter scalar/completeness reader check, 53 passed, 3 ignored. Confirms the package crate after adding the typed profile writer/reader and direct `bytes` dependency.
-  - `CARGO_BUILD_JOBS=12 cargo test -p cdf-engine tier_a_resource_runs_engine_projection_filter_limit_into_package --lib --locked -j 12` — passed, 1 passed. Confirms the public default engine path writes `stats/profile.parquet`, removes `stats/profile.json`, and exposes verified package-grain typed evidence.
+  - `CARGO_BUILD_JOBS=12 cargo test -p cdf-engine tier_a_resource_runs_engine_projection_filter_limit_into_package --lib --locked -j 12` — passed, 1 passed. At the time of this slice, the public engine path wrote `stats/profile.parquet`, removed `stats/profile.json`, and exposed verified package-grain typed evidence. G4 later changed artifact emission to explicit opt-in for hot-path performance; the writer/reader evidence remains valid for profile-enabled runs.
   - `CARGO_BUILD_JOBS=12 cargo test -p cdf-engine operator_graph_compiles_from_capabilities_without_driver_name_dispatch --lib --locked -j 12` — passed, 1 passed. Confirms the jobs-invariant operator graph remains intact after the profile artifact identity change.
-  - `CARGO_BUILD_JOBS=12 cargo test -p cdf-conformance live_local_file_expected_fixtures_contain_required_evidence --lib --locked -j 12` — passed, 1 passed. Confirms the live-run fixture law now requires `stats/profile.parquet` and rejects `stats/profile.json`.
+  - `CARGO_BUILD_JOBS=12 cargo test -p cdf-conformance live_local_file_expected_fixtures_contain_required_evidence --lib --locked -j 12` — passed, 1 passed. At the time of this slice, the live-run fixture law required `stats/profile.parquet` and rejected `stats/profile.json`; G4 later scoped that requirement to profile-enabled evidence paths.
   - `CARGO_BUILD_JOBS=12 cargo test -p cdf-conformance live_local_file_duckdb_v1_matches_committed_golden_across_100_runs --lib --locked -j 12` — passed, 100/100 golden iterations. Confirms deterministic DuckDB live package identity after golden promotion.
   - `CARGO_BUILD_JOBS=12 cargo test -p cdf-conformance live_local_file_parquet_v1_matches_committed_golden_across_100_runs --lib --locked -j 12` — passed, 100/100 golden iterations. Confirms deterministic native Parquet live package identity after golden promotion.
   - `CARGO_BUILD_JOBS=12 cargo test -p cdf-conformance live_local_file_postgres_v1_matches_committed_golden_across_bounded_repeats --lib --locked -j 12` — passed, 10/10 golden iterations with local Postgres available. Confirms deterministic Postgres live package identity after golden promotion.
@@ -71,7 +72,7 @@ None. A5/V2 provide the fused streaming stage.
   - Release smoke using the user's copied tmp project: `/usr/bin/time -p target/release/cdf run fineweb_local.documents --project /tmp/cdf-profile-smoke-current.hNVm00 --progress never --color never` — passed with 1,058,640 rows, 115 segments, package hash `sha256:7ed39dec3a9d0a0e4741f2e3de0abe6158ab47f9511f8bc7cb78d2340f68f02d`, `real 8.29`, `user 13.19`, `sys 12.53`. `target/release/cdf package verify` passed for the resulting package; its identity contains `stats/profile.parquet` (`710688` bytes, sha256 `3277211801550a7ad4bbdec9c28c531c81cd713cdc9f6db3e1b468efcfd8db75`) and no `stats/profile.json`.
 - `cargo fmt --all -- --check` and scoped `git diff --check` passed after the implementation was formatted. A static scan found no DataFusion dependency/type in `cdf-kernel` or `cdf-package`, and no lexical extrema fields in the kernel/engine/package sources.
 - The first `cargo check -p cdf-engine --locked` exposed a missing module import and over-generalized string/binary helper bounds; both findings were corrected with a direct import and concrete Arrow array branches.
-- Current acceptance limits: this milestone now satisfies the canonical `stats/profile.parquet` writer/verified-reader/golden-promotion boundary for segment and package grains, but J0 remains active for remaining type admissions such as Float16/Decimal256, distinct estimates, file-grain/source-grain profile rows where required by pruning, large-package RSS, and the P3 overhead benchmark. J1 may now consume the manifest-bound profile artifact for segment/package pruning design, but it must not treat the remaining incomplete statistics dimensions as closed.
+- Current acceptance limits: this milestone now satisfies the canonical `stats/profile.parquet` writer/verified-reader/golden-promotion boundary for profile-enabled segment and package grains, but J0 remains active for remaining type admissions such as Float16/Decimal256, distinct estimates, file-grain/source-grain profile rows where required by pruning, large-package RSS, and the P3 overhead benchmark. J1 may consume the manifest-bound profile artifact when present and requested, but it must conservatively retain data when the artifact is absent/disabled and must not treat the remaining incomplete statistics dimensions as closed.
 
 ## Review
 
@@ -239,7 +240,7 @@ No significant-or-higher findings.
 - After the final receipt-append repair, `CARGO_BUILD_JOBS=12 cargo test -p cdf-package --lib --locked` passed 55 tests with only 3 explicit performance tests ignored, and `cargo test -p cdf-engine operator_graph_compiles_from_capabilities_without_driver_name_dispatch --locked` passed 1/1.
 - `CARGO_BUILD_JOBS=12 cargo check --workspace --all-targets --locked` passed. It exposed only two obsolete `mut` bindings in `cdf-subprocess` tests; those mechanical warnings were removed.
 - `CARGO_BUILD_JOBS=12 cargo clippy --workspace --all-targets --locked -- -D warnings` passed after replacing a borrowed boxed metadata parameter with a slice and naming the public boxed metadata type.
-- `cargo fmt --all` and `git diff --check` passed. The ticket remains active because canonical `stats/profile.parquet`, manifest-bound readers/corruption adversaries, segment-grain evidence, distinct estimates, unsupported numeric admissions, RSS, and overhead gates remain in scope.
+- `cargo fmt --all` and `git diff --check` passed. The ticket remains active because profile-enabled overhead gates, additional type admissions, distinct estimates, file/source grains where required, large-package RSS, and pruning-readiness closure remain in scope.
 
 ## Retrospective
 
