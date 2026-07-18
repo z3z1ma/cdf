@@ -15,6 +15,7 @@ use std::{
 use arrow_array::{ArrayRef, Int64Array, StringArray};
 use arrow_ipc::{reader::StreamReader, writer::StreamWriter};
 use arrow_schema::{DataType, Field, Schema};
+use cdf_foreign_stream::{ForeignCopyClassification, ForeignTransferMode};
 use cdf_http::{EgressAllowlist, HeaderMap, HttpMethod, SecretValue};
 use cdf_kernel::{
     CHECKPOINT_STATE_VERSION, Checkpoint, CheckpointId, CheckpointStatus, CheckpointStore,
@@ -53,6 +54,39 @@ fn dict_rows_batch_through_ndjson_into_kernel_batches() {
         read.schema_hash.clone().unwrap()
     );
     assert_eq!(read.batches[0].header.batch_id.as_str(), "orders-p0-000001");
+}
+
+#[test]
+fn python_bridge_emits_neutral_foreign_outcomes() {
+    Python::attach(|py| {
+        let module = PyModule::from_code(
+            py,
+            c"def rows():\n    yield {'id': 1}\n    yield {'id': 2}\n",
+            c"foreign_outcomes.py",
+            c"foreign_outcomes",
+        )
+        .unwrap();
+        let iterable = module.getattr("rows").unwrap().call0().unwrap();
+        let mut outcomes = Vec::new();
+        let mut kinds = Vec::new();
+        let read = bridge()
+            .visit_python_foreign_iterable(&iterable, |outcome, kind| {
+                outcomes.push(outcome);
+                kinds.push(kind);
+                Ok(())
+            })
+            .unwrap();
+
+        assert!(read.batches.is_empty());
+        assert_eq!(outcomes.len(), 1);
+        assert_eq!(outcomes[0].sequence, 1);
+        assert_eq!(outcomes[0].transfer_mode, ForeignTransferMode::RowCompat);
+        assert!(matches!(
+            outcomes[0].copy,
+            ForeignCopyClassification::PayloadCopyKnown { .. }
+        ));
+        assert_eq!(kinds, vec![PythonYieldKind::DictRows]);
+    });
 }
 
 #[test]
@@ -111,7 +145,7 @@ fn incremental_python_bridge_stops_before_exhausting_the_generator() {
             .unwrap(),
         );
         let error = bridge
-            .visit_python_iterable(&iterable, |_batch, _kind| {
+            .visit_python_foreign_iterable(&iterable, |_outcome, _kind| {
                 Err(CdfError::data("intentional downstream stop"))
             })
             .unwrap_err();

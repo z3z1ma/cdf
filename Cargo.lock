@@ -1228,6 +1228,7 @@ dependencies = [
  "arrow-json",
  "arrow-schema 59.1.0",
  "cdf-engine",
+ "cdf-foreign-stream",
  "cdf-http",
  "cdf-kernel",
  "cdf-memory",

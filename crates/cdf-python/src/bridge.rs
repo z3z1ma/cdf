@@ -3,6 +3,7 @@ use crate::*;
 use std::{io::Cursor, sync::Arc};
 
 use arrow_json::reader::{ReaderBuilder as JsonReaderBuilder, infer_json_schema};
+use cdf_foreign_stream::{ForeignBatchOutcome, ForeignCopyClassification, ForeignTransferMode};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PythonBridgeOptions {
@@ -243,8 +244,8 @@ impl PythonResourceBridge {
     ) -> Result<PythonBatchRead> {
         let mut batches = Vec::new();
         let mut yield_kinds = Vec::new();
-        let mut read = self.visit_python_iterable(iterable, |batch, kind| {
-            batches.push(batch);
+        let mut read = self.visit_python_foreign_iterable(iterable, |outcome, kind| {
+            batches.push(outcome.batch);
             yield_kinds.push(kind);
             Ok(())
         })?;
@@ -256,18 +257,22 @@ impl PythonResourceBridge {
     /// Incrementally imports one Python iterator and emits each bounded Arrow batch before
     /// advancing the producer. Callbacks run without the GIL so host backpressure and memory
     /// admission never stall unrelated Python partitions.
-    pub(crate) fn visit_python_iterable<F>(
+    /// Incrementally imports one Python iterator as neutral foreign-stream outcomes. This is the
+    /// production boundary; compatibility collectors wrap it rather than owning a second Python
+    /// batch semantics.
+    pub(crate) fn visit_python_foreign_iterable<F>(
         &self,
         iterable: &Bound<'_, PyAny>,
         mut emit: F,
     ) -> Result<PythonBatchRead>
     where
-        F: FnMut(Batch, PythonYieldKind) -> Result<()> + Send,
+        F: FnMut(ForeignBatchOutcome, PythonYieldKind) -> Result<()> + Send,
     {
         let py = iterable.py();
         let mut read = PythonBatchRead::empty();
         let mut json_rows = Vec::new();
         let mut next_batch_index = 0;
+        let mut next_outcome_sequence = 0;
         let iterator = iterable.try_iter().map_err(py_error)?;
 
         for item in iterator {
@@ -275,7 +280,7 @@ impl PythonResourceBridge {
             match arrow_boundary_for(&item)? {
                 Some(boundary) if boundary.kind == PythonYieldKind::ArrowCStream => {
                     self.flush_json_rows(&mut json_rows, &mut read, &mut next_batch_index)?;
-                    emit_pending(py, &mut read, &mut emit)?;
+                    emit_pending(py, &mut read, &mut emit, &mut next_outcome_sequence)?;
                     let reader = import_arrow_stream(&item)?;
                     for batch in reader {
                         read.push_record_batches(
@@ -284,12 +289,12 @@ impl PythonResourceBridge {
                             &self.options,
                             &mut next_batch_index,
                         )?;
-                        emit_pending(py, &mut read, &mut emit)?;
+                        emit_pending(py, &mut read, &mut emit, &mut next_outcome_sequence)?;
                     }
                 }
                 Some(boundary) if boundary.kind == PythonYieldKind::ArrowCArray => {
                     self.flush_json_rows(&mut json_rows, &mut read, &mut next_batch_index)?;
-                    emit_pending(py, &mut read, &mut emit)?;
+                    emit_pending(py, &mut read, &mut emit, &mut next_outcome_sequence)?;
                     let batch = item
                         .extract::<PyRecordBatch>()
                         .map(PyRecordBatch::into_inner)
@@ -300,14 +305,14 @@ impl PythonResourceBridge {
                         &self.options,
                         &mut next_batch_index,
                     )?;
-                    emit_pending(py, &mut read, &mut emit)?;
+                    emit_pending(py, &mut read, &mut emit, &mut next_outcome_sequence)?;
                 }
                 Some(_) => unreachable!("arrow boundary kinds are exhausted"),
                 None if item.cast::<PyDict>().is_ok() => {
                     json_rows.push(python_dict_to_json(py, &item)?);
                     if json_rows.len() == self.options.dict_batch_rows {
                         self.flush_json_rows(&mut json_rows, &mut read, &mut next_batch_index)?;
-                        emit_pending(py, &mut read, &mut emit)?;
+                        emit_pending(py, &mut read, &mut emit, &mut next_outcome_sequence)?;
                     }
                 }
                 None => {
@@ -319,7 +324,7 @@ impl PythonResourceBridge {
         }
 
         self.flush_json_rows(&mut json_rows, &mut read, &mut next_batch_index)?;
-        emit_pending(py, &mut read, &mut emit)?;
+        emit_pending(py, &mut read, &mut emit, &mut next_outcome_sequence)?;
         Ok(read)
     }
 
@@ -449,9 +454,14 @@ impl PythonResourceBridge {
     }
 }
 
-fn emit_pending<F>(py: Python<'_>, read: &mut PythonBatchRead, emit: &mut F) -> Result<()>
+fn emit_pending<F>(
+    py: Python<'_>,
+    read: &mut PythonBatchRead,
+    emit: &mut F,
+    next_outcome_sequence: &mut u64,
+) -> Result<()>
 where
-    F: FnMut(Batch, PythonYieldKind) -> Result<()> + Send,
+    F: FnMut(ForeignBatchOutcome, PythonYieldKind) -> Result<()> + Send,
 {
     if read.batches.len() != read.yield_kinds.len() {
         return Err(CdfError::internal(
@@ -459,9 +469,37 @@ where
         ));
     }
     for (batch, kind) in read.batches.drain(..).zip(read.yield_kinds.drain(..)) {
-        py.detach(|| emit(batch, kind))?;
+        *next_outcome_sequence = next_outcome_sequence.saturating_add(1);
+        let outcome = python_foreign_outcome(*next_outcome_sequence, batch, &kind)?;
+        py.detach(|| emit(outcome, kind))?;
     }
     Ok(())
+}
+
+fn python_foreign_outcome(
+    sequence: u64,
+    batch: Batch,
+    kind: &PythonYieldKind,
+) -> Result<ForeignBatchOutcome> {
+    let transfer_mode = match kind {
+        PythonYieldKind::DictRows => ForeignTransferMode::RowCompat,
+        PythonYieldKind::ArrowCArray | PythonYieldKind::ArrowCStream => {
+            ForeignTransferMode::ArrowCData
+        }
+    };
+    let copy = match kind {
+        PythonYieldKind::DictRows => {
+            if batch.header.byte_count == 0 {
+                ForeignCopyClassification::CopyUnknown
+            } else {
+                ForeignCopyClassification::payload_copy_known(batch.header.byte_count)?
+            }
+        }
+        PythonYieldKind::ArrowCArray | PythonYieldKind::ArrowCStream => {
+            ForeignCopyClassification::CopyUnknown
+        }
+    };
+    ForeignBatchOutcome::new(sequence, batch, transfer_mode, copy)
 }
 
 fn decode_json_rows_window(bytes: &[u8], batch_rows: usize) -> Result<Vec<RecordBatch>> {

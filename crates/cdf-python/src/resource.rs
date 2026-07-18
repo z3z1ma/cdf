@@ -285,7 +285,8 @@ impl PythonResource {
                 self.descriptor.resource_id.clone(),
                 partition.partition_id.clone(),
             ))
-            .visit_python_iterable(&iterable, |mut batch, _kind| {
+            .visit_python_foreign_iterable(&iterable, |outcome, _kind| {
+                let mut batch = outcome.batch;
                 cancellation.check()?;
                 batch.header.source_position = match &cursor {
                     Some(cursor) => batch
