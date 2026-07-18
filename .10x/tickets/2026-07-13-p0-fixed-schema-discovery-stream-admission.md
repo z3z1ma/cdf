@@ -1,6 +1,6 @@
 Status: active
 Created: 2026-07-13
-Updated: 2026-07-14
+Updated: 2026-07-18
 Parent: .10x/tickets/2026-07-10-p3-terabyte-scale-program.md
 
 # P0 fixed-schema discovery and stream-admission program
@@ -47,10 +47,11 @@ No same-run typed schema epoch, implicit promotion, or cache-as-authority behavi
 - 2026-07-14: SA0 and SA1 closed after exact cross-crate lifecycle and replay review. Cold discovery now feeds the final plan directly; pinned preparation performs no current-file schema discovery; the compiled stream-admission program is source/codec-neutral; and kernel-owned partition observation identity is enforced across planning, preview, execution, package evidence, and replay before mutation. SA2 is the next active child.
 - 2026-07-14: SA2 closed after four cumulative adversarial passes and a final boundedness repair. Inventory is payload-free; discovery records independent coverage axes; strong observations cache under exact semantic identity; weak inputs become content-attested only at EOF; logical/access identity and completion evidence are invocation-safe; and superseded file range/body surfaces are deleted. SA3 is now active and owns retained discovery windows/spools plus fused codec admission.
 - 2026-07-14: SA3 closed after the closure audit repaired one transport accounting regression and corrected the child boundary rather than falsely absorbing still-open engines. Sequential file codecs and REST now retain exact discovery input through the final-plan barrier; materialized transformed/weak Parquet spools are consumed once; pinned physical drift follows compiled residual/quarantine behavior without mutating snapshots. Selective Parquet planning remains B2/G2, and full-content JSON inference remains B5. SA4 is the next implementation child; SA5 remains blocked on SA4.
+- 2026-07-18: Graph audit marked SA4 blocked on H1/H2/H4/WIT because the neutral incremental foreign-stream producer boundary does not yet exist. This is a real architecture blocker, not a reason to add Python/WASM-specific discovery hacks. SA5 remains blocked through SA4.
 
 ## Blockers
 
-None external. Children own the remaining implementation graph; required neutral seams are already committed.
+SA4 is blocked on the foreign-stream/language-runtime graph: `.10x/tickets/2026-07-11-p3-h1-interop-measurement-copy-proof.md`, `.10x/tickets/2026-07-11-p3-h2-python-incremental-arrow-boundary.md`, `.10x/tickets/2026-07-11-p3-h4-wasm-cost-interface-model.md`, and `.10x/tickets/2026-07-08-wasm-wit-interface-foundation.md`. Children own the remaining implementation graph; no source-specific workaround is authorized.
 
 ## Evidence
 

@@ -1,8 +1,8 @@
-Status: open
+Status: blocked
 Created: 2026-07-13
-Updated: 2026-07-13
+Updated: 2026-07-18
 Parent: .10x/tickets/2026-07-13-p0-fixed-schema-discovery-stream-admission.md
-Depends-On: .10x/tickets/done/2026-07-13-p0-sa0-cold-discovery-final-plan-lifecycle.md, .10x/tickets/done/2026-07-13-p0-sa1-compiled-stream-admission-plan.md
+Depends-On: .10x/tickets/done/2026-07-13-p0-sa0-cold-discovery-final-plan-lifecycle.md, .10x/tickets/done/2026-07-13-p0-sa1-compiled-stream-admission-plan.md, .10x/tickets/2026-07-11-p3-h1-interop-measurement-copy-proof.md, .10x/tickets/2026-07-11-p3-h2-python-incremental-arrow-boundary.md, .10x/tickets/2026-07-11-p3-h4-wasm-cost-interface-model.md, .10x/tickets/2026-07-08-wasm-wit-interface-foundation.md
 
 # P0 SA4: single-invocation dynamic producer admission
 
@@ -33,20 +33,24 @@ The same SA1 plan operation applies across native and dynamic sources.
 
 ## Journal
 
-Pending.
+- 2026-07-18: Closure graph audit found SA0-SA3 complete but SA4 not executable: the current upstream Python/WASM/foreign-stream owners have not yet supplied the incremental dynamic producer boundary needed to count one invocation, retain bootstrap batches, and continue the same producer under the compiled admission program. Marked this ticket blocked on H1/H2/H4/WIT rather than implementing a source-specific workaround.
 
 ## Blockers
 
-Depends on SA0, SA1, and the relevant language runtime tickets.
+Blocked on the relevant language runtime tickets. H2 is open and depends on H1; H4 is open and depends on H1 plus the blocked WIT foundation; the WIT foundation is blocked on a ratified recursive composite projection for foreign-boundary scope/source-position values. SA4 must not invent dynamic-producer bootstrap semantics ahead of those upstream boundaries.
 
 ## Evidence
 
-Pending.
+- 2026-07-18 ticket/source audit:
+  - `.10x/tickets/2026-07-11-p3-h2-python-incremental-arrow-boundary.md` is open and explicitly depends on H1, A4, and A2.
+  - `.10x/tickets/2026-07-11-p3-h4-wasm-cost-interface-model.md` is open and depends on H1 and the WIT foundation.
+  - `.10x/tickets/2026-07-08-wasm-wit-interface-foundation.md` is blocked on recursive composite value projection.
+  - `crates/cdf-python` currently exposes interpreter/concurrency/bridge pieces and a Python source driver, but the governing H2 ticket still owns replacing materialized `PythonBatchRead`/C-stream paths with the neutral incremental producer. SA4 has no safe source-agnostic execution surface to modify yet.
 
 ## Review
 
-Pending.
+Pass for graph correction. The blocked status prevents premature implementation in the wrong layer and keeps the parent program honest.
 
 ## Retrospective
 
-Pending.
+The bootstrap-barrier law is source-neutral, but the concrete enforcement point must be the neutral foreign-stream producer boundary. Implementing it in SA4 before H1/H2/H4 would recreate the exact leaky, source-specific architecture this program exists to remove.
