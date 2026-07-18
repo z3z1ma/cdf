@@ -35,7 +35,7 @@ Own the lifecycle of the currently running dedicated EC2 benchmark host for the 
 
 - User-ratified: one EC2 instance should be reused for a benchmark tranche and terminated when the tranche completes.
 - Record-backed: the active host is `i-05011a85b7f2a33fe`, instance type `c7i.4xlarge`, host class `host-class-95da083e15eebd1c`, with gp3 storage tuned to `16000` IOPS / `1000` MiB/s.
-- Record-backed: as of the latest F1 refresh, the host is synchronized and built at clean revision `f16c2745627db6a0809853ce46cf2a4db373110e`.
+- Record-backed: as of the latest F1/helper refresh, the host is synchronized and built at clean revision `018fddbdbcfdcf3c9539a96f47bf0acfbda57a65`.
 
 ## Journal
 
@@ -56,6 +56,7 @@ Own the lifecycle of the currently running dedicated EC2 benchmark host for the 
 - 2026-07-18: After committing the F1 current-cgroup provider fix, refreshed the host to clean commit `f16c2745627db6a0809853ce46cf2a4db373110e` with `tools/p3-ec2-benchmark-host.sh sync-repo && tools/p3-ec2-benchmark-host.sh build-measure && tools/p3-ec2-benchmark-host.sh preflight-measure`. The release `cdf` relink completed in `6m31s`, release `cdf-p3-measure` was a cache hit (`0.14s`), and preflight mode `measure` passed with tuned gp3 storage, host class `host-class-95da083e15eebd1c`, workspace present, and `198798548992` free bytes. Corrected F1 current-cgroup evidence was fetched into `.10x/evidence/.storage/2026-07-18-p3-f1-ec2-current-cgroup-runtime-memory-doctor.json`, `.10x/evidence/.storage/2026-07-18-p3-f1-ec2-current-cgroup-revision.env`, and `.10x/evidence/.storage/2026-07-18-p3-f1-ec2-current-cgroup-build.env`. The host remains intentionally active for G4 and follow-on P3 measurements.
 - 2026-07-18: Verified the active EC2 host can enforce memory for benchmark/proof commands through transient user systemd services: `systemd-run --user --wait --collect -p MemoryMax=6G ...` produced a `cdf doctor --json` runtime memory check with `enforcement=linux_cgroup_v2` and `memory.max=6442450944`. Evidence was fetched into `.10x/evidence/.storage/2026-07-18-p3-f1-ec2-systemd-cgroup-runtime-memory-doctor.json`, `.10x/evidence/.storage/2026-07-18-p3-f1-ec2-systemd-cgroup-doctor.status`, `.10x/evidence/.storage/2026-07-18-p3-f1-ec2-systemd-cgroup-revision.env`, and `.10x/evidence/.storage/2026-07-18-p3-f1-ec2-systemd-cgroup-build.env`. The host remains intentionally active and can support both throughput benchmarks and enforced-memory proof slices.
 - 2026-07-18: Added and smoked the opt-in helper path `CDF_BENCH_SYSTEMD_MEMORY_MAX=6G ... tools/p3-ec2-benchmark-host.sh measure-cdf ...`, which wraps measured workers in transient user systemd services while preserving run-cell JSON and RSS observation. Evidence was fetched into `.10x/evidence/.storage/2026-07-18-p3-f1-ec2-systemd-measure-smoke.json` and `.10x/evidence/.storage/2026-07-18-p3-f1-ec2-systemd-measure-smoke.systemd.log`. The host remains intentionally active for both ordinary and memory-enforced measurement cells.
+- 2026-07-18: After committing the helper knob, refreshed the host to clean commit `018fddbdbcfdcf3c9539a96f47bf0acfbda57a65` with `tools/p3-ec2-benchmark-host.sh sync-repo && tools/p3-ec2-benchmark-host.sh build-measure && tools/p3-ec2-benchmark-host.sh preflight-measure`. No Rust product source changed, so release `cdf` and `cdf-p3-measure` were cache hits (`0.27s` and `0.12s`); preflight mode `measure` passed with tuned gp3 storage, host class `host-class-95da083e15eebd1c`, workspace present, and `198798426112` free bytes. Current markers were fetched into `.10x/evidence/.storage/2026-07-18-p3-l7-ec2-after-systemd-measure-mode-revision.env` and `.10x/evidence/.storage/2026-07-18-p3-l7-ec2-after-systemd-measure-mode-build.env`.
 
 ## Blockers
 
@@ -98,6 +99,8 @@ The active P3 benchmark tranche still needs the host for G4 and follow-on perfor
 - `.10x/evidence/.storage/2026-07-18-p3-f1-ec2-systemd-cgroup-build.env` records the matching build marker for the systemd-enforced cgroup observation.
 - `.10x/evidence/.storage/2026-07-18-p3-f1-ec2-systemd-measure-smoke.json` records the opt-in systemd-enforced `measure-cdf` smoke.
 - `.10x/evidence/.storage/2026-07-18-p3-f1-ec2-systemd-measure-smoke.systemd.log` records the transient unit log for the opt-in systemd-enforced `measure-cdf` smoke.
+- `.10x/evidence/.storage/2026-07-18-p3-l7-ec2-after-systemd-measure-mode-revision.env` records the current clean synced revision marker after the systemd measure-mode helper commit.
+- `.10x/evidence/.storage/2026-07-18-p3-l7-ec2-after-systemd-measure-mode-build.env` records the matching current clean measured-runner build marker after the systemd measure-mode helper commit.
 
 ## Review
 
