@@ -1,4 +1,4 @@
-Status: active
+Status: done
 Created: 2026-07-18
 Updated: 2026-07-18
 Parent: .10x/tickets/2026-07-10-p3-terabyte-scale-program.md
@@ -50,11 +50,13 @@ None.
 - 2026-07-18: `bash -n tools/p3-ec2-benchmark-host.sh && tools/p3-ec2-benchmark-host.sh --dry-run preflight` — passed shell syntax and dry-run command-construction validation without contacting the host.
 - 2026-07-18: With local dirty changes present, `tools/p3-ec2-benchmark-host.sh preflight` failed as expected: remote revision `d4140bf71ce2315960a160256af64245528b1884` did not match local `bb5f9f7c9c253ab510a83d98c779dd32d2224f62+dirty`.
 - 2026-07-18: After committing the helper change, `tools/p3-ec2-benchmark-host.sh sync-repo && timeout 180s tools/p3-ec2-benchmark-host.sh build && tools/p3-ec2-benchmark-host.sh preflight` passed at clean synced/built revision `a5042ca8b781e96f3812f16677cb1e2e74929a7e` with `revision_drift=none`, tuned gp3 storage, host class `host-class-95da083e15eebd1c`, workspace present, and `198892359680` free bytes.
+- 2026-07-18: After committing only this `.10x/` evidence update, live `tools/p3-ec2-benchmark-host.sh preflight` passed without rebuild: remote/built revision remained `a5042ca8b781e96f3812f16677cb1e2e74929a7e`, local revision was `1a39107ec26bcc41e2260bc5991387cad93ea0cc`, and `revision_drift=record_only` was emitted.
+- 2026-07-18: `bash target/p3-l8-record-drift-check.sh` — passed after extracting `record_only_revision_drift()` from the helper and checking three cases: `a5042ca8...` → `1a39107...` record-only drift accepted; `d4140bf...` → `a5042ca8...` non-record helper/ticket drift rejected; `a5042ca8...` → `1a39107...+dirty` dirty label rejected. Limit: this validates the classifier function directly rather than mutating the live host marker to an older non-record revision.
 
 ## Review
 
-Pending.
+Pass. The helper remains strict for dirty and source/tool drift, exact matches are unchanged, and the only new permissive path is clean revision drift wholly inside `.10x/`, surfaced as `revision_drift=record_only` in preflight output. The built revision remains the binary authority in benchmark evidence; local record commits no longer force meaningless rebuilds.
 
 ## Retrospective
 
-Pending.
+Benchmark authority has two identities, not one: the binary/source identity that must match the host build, and the durable-record identity that documents the run. Treating them as one created a self-staleness loop where recording evidence invalidated the host. The durable rule is now sharper: preflight fails closed for any code/build-input drift, but record-only memory updates are allowed and named.
