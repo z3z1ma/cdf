@@ -380,44 +380,7 @@ fn policy_value<'a>(
 }
 
 pub(crate) fn parse_byte_size(label: &str, value: &str) -> Result<u64, CliError> {
-    let value = value.trim();
-    if value.is_empty() {
-        return Err(CliError::usage(format!("{label} requires a byte size")));
-    }
-    let split = value
-        .find(|character: char| !(character.is_ascii_digit() || character == '_'))
-        .unwrap_or(value.len());
-    let (digits, suffix) = value.split_at(split);
-    if digits.is_empty() {
-        return Err(CliError::usage(format!(
-            "{label} must start with an integer byte count"
-        )));
-    }
-    let number = digits.replace('_', "").parse::<u64>().map_err(|_| {
-        CliError::usage(format!(
-            "{label} must be an integer byte count with an optional suffix"
-        ))
-    })?;
-    if number == 0 {
-        return Err(CliError::usage(format!(
-            "{label} must be greater than zero"
-        )));
-    }
-    let multiplier = match suffix.trim().to_ascii_lowercase().as_str() {
-        "" | "b" => 1,
-        "k" | "kb" | "kib" => 1024,
-        "m" | "mb" | "mib" => 1024_u64.pow(2),
-        "g" | "gb" | "gib" => 1024_u64.pow(3),
-        "t" | "tb" | "tib" => 1024_u64.pow(4),
-        _ => {
-            return Err(CliError::usage(format!(
-                "{label} suffix must be one of B, KiB, MiB, GiB, or TiB"
-            )));
-        }
-    };
-    number.checked_mul(multiplier).ok_or_else(|| {
-        CliError::usage(format!("{label} byte size exceeds the supported u64 range"))
-    })
+    cdf_kernel::parse_human_byte_size(label, value).map_err(|error| CliError::usage(error.message))
 }
 
 fn parse_command(args: &[String]) -> Result<Command, CliError> {

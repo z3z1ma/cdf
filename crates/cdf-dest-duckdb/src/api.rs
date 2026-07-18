@@ -20,6 +20,13 @@ struct DuckDbNativeResources {
     scratch_reservation: Option<Arc<cdf_runtime::SpillReservation>>,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct DuckDbNativeResourceOverrides {
+    memory_limit_bytes: Option<u64>,
+    maximum_temp_directory_bytes: Option<u64>,
+    internal_threads: Option<i64>,
+}
+
 impl std::fmt::Debug for DuckDbNativeResources {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
@@ -446,8 +453,8 @@ impl DuckDbNativeResources {
     fn conservative() -> Self {
         Self {
             memory_limit_bytes: DUCKDB_MINIMUM_NATIVE_MEMORY_BYTES,
-            maximum_temp_directory_bytes: DUCKDB_MAXIMUM_TEMP_DIRECTORY_BYTES,
-            internal_threads: DUCKDB_INTERNAL_THREADS,
+            maximum_temp_directory_bytes: DUCKDB_DEFAULT_TEMP_DIRECTORY_BUDGET_CEILING_BYTES,
+            internal_threads: DUCKDB_DEFAULT_INTERNAL_THREADS,
             scratch_reservation: None,
         }
     }
@@ -463,14 +470,45 @@ impl DuckDbNativeResources {
         managed_budget: u64,
         spill: Arc<dyn cdf_runtime::SpillBudgetCoordinator>,
     ) -> Result<Self> {
-        let memory_limit_bytes = (managed_budget / 4).clamp(
-            DUCKDB_MINIMUM_NATIVE_MEMORY_BYTES,
-            DUCKDB_MAXIMUM_NATIVE_MEMORY_BYTES,
-        );
-        let maximum_temp_directory_bytes = spill
-            .snapshot()
-            .budget_bytes
-            .min(DUCKDB_MAXIMUM_TEMP_DIRECTORY_BYTES);
+        Self::for_budgets_with_overrides(
+            managed_budget,
+            spill,
+            DuckDbNativeResourceOverrides::from_env()?,
+        )
+    }
+
+    fn for_budgets_with_overrides(
+        managed_budget: u64,
+        spill: Arc<dyn cdf_runtime::SpillBudgetCoordinator>,
+        overrides: DuckDbNativeResourceOverrides,
+    ) -> Result<Self> {
+        let memory_limit_bytes = match overrides.memory_limit_bytes {
+            Some(bytes) if bytes < DUCKDB_MINIMUM_NATIVE_MEMORY_BYTES => {
+                return Err(CdfError::contract(format!(
+                    "{DUCKDB_MEMORY_LIMIT_ENV} must be at least {DUCKDB_MINIMUM_NATIVE_MEMORY_BYTES} bytes"
+                )));
+            }
+            Some(bytes) => bytes,
+            None => (managed_budget / 4).clamp(
+                DUCKDB_MINIMUM_NATIVE_MEMORY_BYTES,
+                DUCKDB_DEFAULT_NATIVE_MEMORY_LIMIT_CEILING_BYTES,
+            ),
+        };
+        let maximum_temp_directory_bytes =
+            overrides.maximum_temp_directory_bytes.unwrap_or_else(|| {
+                spill
+                    .snapshot()
+                    .budget_bytes
+                    .min(DUCKDB_DEFAULT_TEMP_DIRECTORY_BUDGET_CEILING_BYTES)
+            });
+        if maximum_temp_directory_bytes == 0 {
+            return Err(CdfError::contract(format!(
+                "{DUCKDB_TEMP_BUDGET_ENV} must be greater than zero"
+            )));
+        }
+        let internal_threads = overrides
+            .internal_threads
+            .unwrap_or(DUCKDB_DEFAULT_INTERNAL_THREADS);
         let scratch_reservation = spill
             .try_reserve(maximum_temp_directory_bytes)?
             .ok_or_else(|| {
@@ -481,10 +519,53 @@ impl DuckDbNativeResources {
         Ok(Self {
             memory_limit_bytes,
             maximum_temp_directory_bytes,
-            internal_threads: DUCKDB_INTERNAL_THREADS,
+            internal_threads,
             scratch_reservation: Some(Arc::new(scratch_reservation)),
         })
     }
+}
+
+impl DuckDbNativeResourceOverrides {
+    fn from_env() -> Result<Self> {
+        Ok(Self {
+            memory_limit_bytes: optional_env_byte_size(DUCKDB_MEMORY_LIMIT_ENV)?,
+            maximum_temp_directory_bytes: optional_env_byte_size(DUCKDB_TEMP_BUDGET_ENV)?,
+            internal_threads: optional_env_threads(DUCKDB_THREADS_ENV)?,
+        })
+    }
+}
+
+fn optional_env_byte_size(name: &str) -> Result<Option<u64>> {
+    match std::env::var(name) {
+        Ok(value) => cdf_kernel::parse_human_byte_size(name, &value).map(Some),
+        Err(std::env::VarError::NotPresent) => Ok(None),
+        Err(std::env::VarError::NotUnicode(_)) => Err(CdfError::contract(format!(
+            "{name} must be valid UTF-8 when set"
+        ))),
+    }
+}
+
+fn optional_env_threads(name: &str) -> Result<Option<i64>> {
+    match std::env::var(name) {
+        Ok(value) => parse_threads(name, &value).map(Some),
+        Err(std::env::VarError::NotPresent) => Ok(None),
+        Err(std::env::VarError::NotUnicode(_)) => Err(CdfError::contract(format!(
+            "{name} must be valid UTF-8 when set"
+        ))),
+    }
+}
+
+fn parse_threads(label: &str, value: &str) -> Result<i64> {
+    let value = value.trim();
+    let threads = value.parse::<i64>().map_err(|error| {
+        CdfError::contract(format!("{label} must be a positive integer: {error}"))
+    })?;
+    if threads <= 0 {
+        return Err(CdfError::contract(format!(
+            "{label} must be a positive integer"
+        )));
+    }
+    Ok(threads)
 }
 
 fn bounded_connection_config(resources: &DuckDbNativeResources, read_only: bool) -> Result<Config> {
@@ -866,8 +947,12 @@ mod native_resource_tests {
     fn execution_resources_reserve_and_release_bounded_scratch_capacity() {
         let spill = Arc::new(cdf_runtime::FixedSpillBudget::new(2 * 1024 * 1024 * 1024).unwrap());
         let coordinator: Arc<dyn cdf_runtime::SpillBudgetCoordinator> = spill.clone();
-        let resources =
-            DuckDbNativeResources::for_budgets(4 * 1024 * 1024 * 1024, coordinator).unwrap();
+        let resources = DuckDbNativeResources::for_budgets_with_overrides(
+            4 * 1024 * 1024 * 1024,
+            coordinator,
+            DuckDbNativeResourceOverrides::default(),
+        )
+        .unwrap();
         assert_eq!(resources.memory_limit_bytes, 1024 * 1024 * 1024);
         assert_eq!(resources.maximum_temp_directory_bytes, 1024 * 1024 * 1024);
         assert_eq!(spill.snapshot().current_bytes, 1024 * 1024 * 1024);
@@ -880,13 +965,56 @@ mod native_resource_tests {
     }
 
     #[test]
+    fn execution_resource_overrides_remove_default_ceilings_when_explicit() {
+        let spill = Arc::new(cdf_runtime::FixedSpillBudget::new(8 * 1024 * 1024 * 1024).unwrap());
+        let coordinator: Arc<dyn cdf_runtime::SpillBudgetCoordinator> = spill.clone();
+        let resources = DuckDbNativeResources::for_budgets_with_overrides(
+            4 * 1024 * 1024 * 1024,
+            coordinator,
+            DuckDbNativeResourceOverrides {
+                memory_limit_bytes: Some(3 * 1024 * 1024 * 1024),
+                maximum_temp_directory_bytes: Some(6 * 1024 * 1024 * 1024),
+                internal_threads: Some(4),
+            },
+        )
+        .unwrap();
+
+        assert_eq!(resources.memory_limit_bytes, 3 * 1024 * 1024 * 1024);
+        assert_eq!(
+            resources.maximum_temp_directory_bytes,
+            6 * 1024 * 1024 * 1024
+        );
+        assert_eq!(resources.internal_threads, 4);
+        assert_eq!(spill.snapshot().current_bytes, 6 * 1024 * 1024 * 1024);
+    }
+
+    #[test]
+    fn resource_override_parsers_reject_invalid_values() {
+        assert_eq!(
+            cdf_kernel::parse_human_byte_size(DUCKDB_TEMP_BUDGET_ENV, "6GiB").unwrap(),
+            6 * 1024 * 1024 * 1024
+        );
+        assert_eq!(parse_threads(DUCKDB_THREADS_ENV, "12").unwrap(), 12);
+
+        let memory_error =
+            cdf_kernel::parse_human_byte_size(DUCKDB_MEMORY_LIMIT_ENV, "0").unwrap_err();
+        assert!(memory_error.message.contains("must be greater than zero"));
+
+        let thread_error = parse_threads(DUCKDB_THREADS_ENV, "0").unwrap_err();
+        assert!(thread_error.message.contains("positive integer"));
+    }
+
+    #[test]
     fn execution_resources_fail_before_use_when_scratch_is_unavailable() {
         let spill = Arc::new(cdf_runtime::FixedSpillBudget::new(1024).unwrap());
         let held = spill.try_reserve(1024).unwrap().unwrap();
         let coordinator: Arc<dyn cdf_runtime::SpillBudgetCoordinator> = spill.clone();
-        let error =
-            DuckDbNativeResources::for_budgets(DUCKDB_MINIMUM_NATIVE_MEMORY_BYTES, coordinator)
-                .unwrap_err();
+        let error = DuckDbNativeResources::for_budgets_with_overrides(
+            DUCKDB_MINIMUM_NATIVE_MEMORY_BYTES,
+            coordinator,
+            DuckDbNativeResourceOverrides::default(),
+        )
+        .unwrap_err();
         assert!(
             error
                 .message
