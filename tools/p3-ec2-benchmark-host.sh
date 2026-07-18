@@ -10,6 +10,7 @@ Commands:
   prepare-ssh      Create/reuse CDF-owned SSH launch inputs: subnet, SG, current-IP ingress, key.
   status           Print recorded instance status, and host facts when SSH is available.
   provision        Launch/reuse a benchmark EC2 instance and write target/cdf-benchmarks/ec2-host/state.env.
+  tune-volume      Apply the configured gp3 IOPS/throughput to the recorded root volume.
   wait-ssh         Wait until SSH accepts commands on the recorded host.
   bootstrap        Install host build prerequisites and Rust toolchain.
   sync-repo        Rsync this repo to the benchmark host, honoring .gitignore and excluding local state.
@@ -26,6 +27,8 @@ Environment:
   AWS_REGION                        default: aws configure get region, then us-west-2
   CDF_BENCH_INSTANCE_TYPE           default: c7i.4xlarge
   CDF_BENCH_VOLUME_GB               default: 250
+  CDF_BENCH_VOLUME_IOPS             default: 16000
+  CDF_BENCH_VOLUME_THROUGHPUT       default: 1000 MiB/s
   CDF_BENCH_VPC_ID                  optional; default VPC when prepare-ssh is used
   CDF_BENCH_SUBNET_ID               required for provision without a launch template
   CDF_BENCH_SECURITY_GROUP_ID       required for provision without a launch template
@@ -85,6 +88,8 @@ remote_workspace="${remote_root}/workspace"
 ssh_user="${CDF_BENCH_SSH_USER:-ec2-user}"
 instance_type="${CDF_BENCH_INSTANCE_TYPE:-c7i.4xlarge}"
 volume_gb="${CDF_BENCH_VOLUME_GB:-250}"
+volume_iops="${CDF_BENCH_VOLUME_IOPS:-16000}"
+volume_throughput="${CDF_BENCH_VOLUME_THROUGHPUT:-1000}"
 rust_toolchain="${CDF_BENCH_RUST_TOOLCHAIN:-stable}"
 security_group_name="${CDF_BENCH_SECURITY_GROUP_NAME:-cdf-p3-benchmark-sg}"
 
@@ -338,6 +343,8 @@ case "${command}" in
     echo "aws_region=${aws_region}"
     echo "instance_type=${instance_type}"
     echo "volume_gb=${volume_gb}"
+    echo "volume_iops=${volume_iops}"
+    echo "volume_throughput=${volume_throughput}"
     echo "remote_root=${remote_root}"
     echo "remote_repo=${remote_repo}"
     echo "remote_workspace=${remote_workspace}"
@@ -400,7 +407,7 @@ case "${command}" in
       ec2 run-instances
       --image-id "${ami_id}"
       --instance-type "${instance_type}"
-      --block-device-mappings "[{\"DeviceName\":\"/dev/xvda\",\"Ebs\":{\"VolumeSize\":${volume_gb},\"VolumeType\":\"gp3\",\"DeleteOnTermination\":true}}]"
+      --block-device-mappings "[{\"DeviceName\":\"/dev/xvda\",\"Ebs\":{\"VolumeSize\":${volume_gb},\"VolumeType\":\"gp3\",\"Iops\":${volume_iops},\"Throughput\":${volume_throughput},\"DeleteOnTermination\":true}}]"
       --tag-specifications 'ResourceType=instance,Tags=[{Key=Project,Value=CDF},{Key=Purpose,Value=P3Benchmark},{Key=Owner,Value=Codex},{Key=Teardown,Value=Required}]' 'ResourceType=volume,Tags=[{Key=Project,Value=CDF},{Key=Purpose,Value=P3Benchmark},{Key=Owner,Value=Codex},{Key=Teardown,Value=Required}]'
       --query 'Instances[0].InstanceId'
       --output text
@@ -435,6 +442,8 @@ case "${command}" in
       echo "aws_region=${aws_region}"
       echo "instance_type=${instance_type}"
       echo "volume_gb=${volume_gb}"
+      echo "volume_iops=${volume_iops}"
+      echo "volume_throughput=${volume_throughput}"
       echo "subnet_id=${CDF_BENCH_SUBNET_ID:-}"
       echo "security_group_id=${CDF_BENCH_SECURITY_GROUP_ID:-}"
       echo "key_name=${CDF_BENCH_KEY_NAME:-}"
@@ -442,6 +451,44 @@ case "${command}" in
       echo "created_revision=$(git -C "${repo_root}" rev-parse HEAD)"
     } > "${state_file}"
     cat "${state_file}"
+    ;;
+
+  tune-volume)
+    load_state
+    if [[ -z "${instance_id:-}" ]]; then
+      echo "no instance_id in ${state_file}" >&2
+      exit 2
+    fi
+    volume_id="$("${aws_cmd[@]}" ec2 describe-instances \
+      --instance-ids "${instance_id}" \
+      --query 'Reservations[0].Instances[0].BlockDeviceMappings[0].Ebs.VolumeId' \
+      --output text)"
+    if [[ -z "${volume_id}" || "${volume_id}" == "None" ]]; then
+      echo "could not resolve root EBS volume for ${instance_id}" >&2
+      exit 2
+    fi
+    run_cmd "${aws_cmd[@]}" ec2 modify-volume \
+      --volume-id "${volume_id}" \
+      --volume-type gp3 \
+      --iops "${volume_iops}" \
+      --throughput "${volume_throughput}" \
+      --output json
+    if [[ "${dry_run}" -eq 0 ]]; then
+      for _ in $(seq 1 60); do
+        state="$("${aws_cmd[@]}" ec2 describe-volumes-modifications \
+          --volume-ids "${volume_id}" \
+          --query 'VolumesModifications[0].ModificationState' \
+          --output text 2>/dev/null || true)"
+        if [[ "${state}" == "optimizing" || "${state}" == "completed" ]]; then
+          break
+        fi
+        sleep 5
+      done
+      "${aws_cmd[@]}" ec2 describe-volumes \
+        --volume-ids "${volume_id}" \
+        --query 'Volumes[0].{VolumeId:VolumeId,VolumeType:VolumeType,Iops:Iops,Throughput:Throughput,Size:Size,State:State}' \
+        --output json
+    fi
     ;;
 
   wait-ssh)
