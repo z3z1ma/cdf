@@ -34,13 +34,13 @@ While CDF depends on Apache DataFusion from a git source, CDF MUST NOT publish c
 
 ## MVP contents
 
-MVP MUST include the kernel, engine, contract compiler, package builder/replayer, SQLite ledger, authoring tiers 0/1/2/4 for Arrow IPC and NDJSON, HTTP toolkit, DuckDB/Parquet/Postgres destinations, HTTP-paginated API/Postgres snapshot-incremental/Parquet-CSV-JSON file sources, append/replace/merge dispositions, CLI except package archive, conformance suites, chaos layer, golden packages, and dlt shim preview.
+MVP MUST include the kernel, engine, contract compiler, package builder/replayer, SQLite ledger, authoring tiers 0/1/2/4 for Arrow IPC and NDJSON, HTTP toolkit, DuckDB/Parquet/Postgres destinations, HTTP-paginated API/Postgres snapshot-incremental/Parquet-CSV-JSON file sources, append/replace/merge dispositions, CLI except package archive, conformance suites, chaos layer, golden packages, and dlt bridge preview.
 
 MVP acceptance demo acceptance MUST exercise Tier-0 GitHub issues, plan output, DuckDB load, `cdf sql`, contract freeze and drift quarantine, crash between destination commit and checkpoint commit, resume without source contact, replay into a second database, duplicate replay handling, and state history.
 
 ## Fast-follow and beyond MVP
 
-Fast-follow MUST include Singer/Airbyte adapters, `cdf package archive`, dlt shim GA, vault-class secret providers, and the first warehouse destination.
+Fast-follow MUST include Singer/Airbyte adapters, `cdf package archive`, dlt bridge GA, vault-class secret providers, and the first warehouse destination.
 
 Beyond-MVP scope MUST include distributed execution, streaming supervisor, WASM distribution/registry, and Iceberg/Delta lakehouse destinations. These features MUST reuse packages, partitions, checkpoint store seams, destination receipts, and conformance gates rather than introducing parallel artifact types.
 

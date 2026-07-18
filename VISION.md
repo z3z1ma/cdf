@@ -1125,9 +1125,9 @@ Schema inference: arbitrary JSON → schema → generated data → re-inference 
 
 Compatibility layers are bridges into the native model, never alternate front doors. Everything arriving over a bridge becomes descriptors, batches, typed (or explicitly `ForeignState`) checkpoints, and packages, and is planned, evidenced, and committed like everything native. No bridge bypasses the commit gate.
 
-### 21.2 The dlt shim
+### 21.2 The dlt bridge
 
-`cdf-python` ships an adapter running `@dlt.resource` and `@dlt.source` functions unmodified where feasible: dlt hints — primary key, merge key, `incremental`, write disposition, contract modes — map onto `ResourceDescriptor`; `dlt.current.state` maps onto a scoped state view backed by the ledger; dlt's contract-mode vocabulary (`evolve`, `freeze`, `discard_row`, `discard_value`) maps onto CDF verdicts (`admit`, `freeze`, `quarantine` at row and column grain). The shim's purpose is migration gravity — the largest library-first authorship base can try CDF with existing code and immediately gain plans, packages, and the guarantee table. Its non-goal is bug-for-bug dlt emulation; divergences are a documented migration table, and the deepest divergence is the point: dlt normalizes and loads what arrived, CDF plans what to fetch.
+`cdf-python` ships a bridge running `@dlt.resource` and `@dlt.source` functions unmodified where feasible: dlt hints — primary key, merge key, `incremental`, write disposition, contract modes — map onto `ResourceDescriptor`; `dlt.current.state` maps onto a scoped state view backed by the ledger; dlt's contract-mode vocabulary (`evolve`, `freeze`, `discard_row`, `discard_value`) maps onto CDF verdicts (`admit`, `freeze`, `quarantine` at row and column grain). The bridge's purpose is migration gravity — the largest library-first authorship base can try CDF with existing code and immediately gain plans, packages, and the guarantee table. Its non-goal is bug-for-bug dlt emulation; divergences are a documented migration table, and the deepest divergence is the point: dlt normalizes and loads what arrived, CDF plans what to fetch.
 
 ### 21.3 Singer and Airbyte adapters
 
@@ -1146,7 +1146,7 @@ Apache-2.0. One repository. Crates on crates.io under semver; before 1.0, minor 
 
 ### 23.1 Contents
 
-Kernel, engine, contract compiler, package builder/replayer, SQLite ledger; authoring tiers 0 (REST/SQL/files), 1, 2, and 4 (Arrow IPC + NDJSON); `cdf-http`; destinations DuckDB, Parquet/object-store, Postgres; sources HTTP-paginated API, Postgres snapshot/incremental, Parquet/CSV/JSON files; dispositions append, replace, merge; the Chapter 18 CLI minus `package archive`; both conformance suites and the chaos layer; golden packages in CI; the dlt shim in preview.
+Kernel, engine, contract compiler, package builder/replayer, SQLite ledger; authoring tiers 0 (REST/SQL/files), 1, 2, and 4 (Arrow IPC + NDJSON); `cdf-http`; destinations DuckDB, Parquet/object-store, Postgres; sources HTTP-paginated API, Postgres snapshot/incremental, Parquet/CSV/JSON files; dispositions append, replace, merge; the Chapter 18 CLI minus `package archive`; both conformance suites and the chaos layer; golden packages in CI; the dlt bridge in preview.
 
 ### 23.2 The cutline
 
@@ -1173,7 +1173,7 @@ Eight, with exit criteria that decide rather than describe:
 
 ### 25.1 Fast-follow
 
-Singer/Airbyte adapters; `cdf package archive`; the dlt shim to GA; vault-class secret providers; the first warehouse destination through the sheet-plus-conformance gate.
+Singer/Airbyte adapters; `cdf package archive`; the dlt bridge to GA; vault-class secret providers; the first warehouse destination through the sheet-plus-conformance gate.
 
 ### 25.2 Distributed execution
 

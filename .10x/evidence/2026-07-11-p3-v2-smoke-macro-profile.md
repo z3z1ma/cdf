@@ -19,7 +19,7 @@ cargo test -p cdf-benchmarks --locked
 cargo test -p cdf-conformance golden_package --locked
 ```
 
-The smoke benchmark completed successfully. Benchmark-crate unit and fixture tests passed until the pre-existing `preoptimization_baseline_covers_every_target_and_retains_phases` assertion required the intentionally legacy `legacy_tiny_startup_e2e` import to be observed. That legacy expectation belongs to `.10x/tickets/2026-07-11-p0-remove-preproduction-compatibility-vestiges.md`; it is not evidence against the current package fixture.
+The smoke benchmark completed successfully. Benchmark-crate unit and fixture tests passed until the pre-existing `preoptimization_baseline_covers_every_target_and_retains_phases` assertion required the intentionally legacy `legacy_tiny_startup_e2e` import to be observed. That legacy expectation belongs to `.10x/tickets/done/2026-07-11-p0-remove-preproduction-compatibility-vestiges.md`; it is not evidence against the current package fixture.
 
 The conformance build did not reach golden execution because active destination-extension work has already removed concrete `ResolvedProjectDestination::{duckdb,parquet_filesystem,postgres}` constructors while `cdf-conformance` still references them. This integration drift is owned by `.10x/tickets/done/2026-07-11-p0-dx2-driver-owned-adapters-composition.md` and `.10x/tickets/done/2026-07-11-p0-dx3-generic-lock-doctor-replay.md`.
 

@@ -44,7 +44,7 @@ Run work as concurrent lanes where crate boundaries and decisions allow it:
 
 - P0, the spine: commit sessions, general orchestrator, run ledger, CLI run/resume/replay/backfill/gc/inspect-run/init.
 - P1, contracts and governance: row verdicts, quarantine routing, dedup, variants, trust-ring ledger events, `contract freeze/test`, OpenLineage, retention/GC, signing, SBOM, and provenance.
-- P2, sources: Postgres SQL first, then MySQL/SQL Server SQL seams, CDC subprograms, Kafka/queue drain, declarative REST, dlt shim GA, and generated/agent-authored connector specs.
+- P2, sources: Postgres SQL first, then MySQL/SQL Server SQL seams, CDC subprograms, Kafka/queue drain, declarative REST, dlt bridge GA, and generated/agent-authored connector specs.
 - P3, destinations: BigQuery, Snowflake, Databricks, Iceberg, Delta, and later Redshift/Fabric as demand pulls.
 - P4, runtime and performance: benchmark suite first, then Arrow appender loads, streaming package-to-destination commit, local partition parallelism, memory ledger, byte-bounded backpressure, adaptive batching, and published envelopes.
 - P5, resident and distributed: streaming supervisor, remote checkpoint-store conformance, leases/fencing, object-storage packages, and remote workers passing existing suites.

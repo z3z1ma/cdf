@@ -14,7 +14,7 @@ The first destination-catalog migration tranche in `cdf-conformance`.
 
 - No critical or significant correctness finding: resolution flows through driver-owned registry authority with current policy and execution-service inputs; no concrete constructor was restored.
 - Minor: the evidence/footprint assertions remain represented by destination-specific fixture handles. DX4 explicitly remains open for the complete data-driven assertion catalog and fourth-driver law.
-- Minor: the static import allowlist still admits the project test-only constructors and CLI adapter diagnostics. The production boundary is protected, while `.10x/tickets/2026-07-11-p0-remove-preproduction-compatibility-vestiges.md` owns deletion of compatibility/test helpers.
+- Minor: the static import allowlist still admits the project test-only constructors and CLI adapter diagnostics. The production boundary is protected, while `.10x/tickets/done/2026-07-11-p0-remove-preproduction-compatibility-vestiges.md` owns deletion of compatibility/test helpers.
 - Residual: cross-destination live execution cannot yet validate semantic parity because SX1 has not migrated the live fixture to typed source resolution.
 
 ## Verdict

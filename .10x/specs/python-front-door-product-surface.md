@@ -1,12 +1,12 @@
 Status: active
 Created: 2026-07-08
-Updated: 2026-07-08
+Updated: 2026-07-18
 
 # Python front-door product surface
 
 ## Purpose and scope
 
-This specification governs how Tier 2 `python://` resources appear through the CDF product surface: project resource resolution, `cdf plan`, `cdf preview`, `cdf run`, interpreter remediation, deterministic cross-interpreter behavior, and the dlt shim graduation path.
+This specification governs how Tier 2 `python://` resources appear through the CDF product surface: project resource resolution, `cdf plan`, `cdf preview`, `cdf run`, interpreter remediation, deterministic cross-interpreter behavior, and the dlt bridge graduation path.
 
 It derives from `VISION.md` Chapters 9, 18, 20, 21, and 23; decisions D-23 and D-25; `.10x/specs/resource-authoring-planning-batches.md`; `.10x/specs/project-cli-observability-security.md`; `.10x/specs/run-orchestration-ledger.md`; `.10x/tickets/done/2026-07-05-python-sdk-bridge.md`; `.10x/tickets/done/2026-07-05-dlt-shim-preview.md`; and `.10x/tickets/done/2026-07-06-python-doctor-interpreter-probe.md`.
 
@@ -26,7 +26,7 @@ Python remains an authoring and interchange tier. The Python bridge MAY execute 
 
 When deterministic inputs are fixed, GIL and free-threaded Python interpreter builds MUST produce identical package hashes and observable product reports. Free-threaded builds MAY add parallelism where the bridge declares it safe, but parallelism MUST NOT change package identity, checkpoint positions, receipts, or JSON output fields.
 
-The dlt shim MUST graduate only behind evidence from a real dlt resource/source integration or an explicit GA gap list. Divergences from dlt behavior MUST be documented as compatibility data and MUST NOT delegate destination writes to dlt.
+The dlt bridge MUST graduate only behind evidence from a real dlt resource/source integration or an explicit GA gap list. Divergences from dlt behavior MUST be documented as compatibility data and MUST NOT delegate destination writes to dlt.
 
 ## Interfaces
 
