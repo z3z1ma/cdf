@@ -15,6 +15,8 @@ Measured CDF command observations are stored at:
 - `.10x/evidence/.storage/2026-07-18-p3-l6-ec2-measure-cdf-smoke.json`
 - `.10x/evidence/.storage/2026-07-18-p3-l6-ec2-measure-cdf-tlc-state-reset.json`
 - `.10x/evidence/.storage/2026-07-18-p3-l6-ec2-measure-cdf-timeout-proof.json`
+- `.10x/evidence/.storage/2026-07-18-p3-l6-ec2-measure-cdf-env-forward.json`
+- `.10x/evidence/.storage/2026-07-18-p3-l6-ec2-measure-cdf-env-forward-request.json`
 
 ## Procedure
 
@@ -36,6 +38,7 @@ Measured CDF command observations are stored at:
 - `CDF_BENCH_SAMPLES=1 CDF_BENCH_TIMEOUT_MS=120000 tools/p3-ec2-benchmark-host.sh measure-cdf target/cdf-benchmarks/l6-measure-cdf-smoke.json tmp_workspace inspect_resources -- inspect resources --color never --unicode never`
 - `CDF_BENCH_SAMPLES=1 CDF_BENCH_IO_MODE=uncontrolled CDF_BENCH_TIMEOUT_MS=180000 tools/p3-ec2-benchmark-host.sh measure-cdf target/cdf-benchmarks/l6-measure-cdf-tlc-state-reset.json nyc_tlc_yellow_2024 tlc_e2e_duckdb_smoke -- run tlc.yellow --json --progress never`
 - `CDF_BENCH_REMOTE_WORKSPACE=/home/ec2-user/cdf-bench/repo/target/cdf-benchmarks/g4-scheduler-default-20260718085558/local-workspace CDF_BENCH_SAMPLES=1 CDF_BENCH_IO_MODE=uncontrolled CDF_BENCH_TIMEOUT_MS=5000 tools/p3-ec2-benchmark-host.sh measure-cdf target/cdf-benchmarks/l6-timeout-proof.json nyc_tlc_yellow_2024 timeout_proof -- run tlc.yellow --jobs 12 --json --progress never`
+- `CDF_BENCH_MEASURE_ENV_JSON='{"CDF_DUCKDB_THREADS":"4","CDF_DUCKDB_MEMORY_LIMIT":"3GiB"}' CDF_BENCH_SAMPLES=1 CDF_BENCH_IO_MODE=uncontrolled CDF_BENCH_TIMEOUT_MS=60000 tools/p3-ec2-benchmark-host.sh measure-cdf target/cdf-benchmarks/l6-measure-cdf-env-forward.json tmp_workspace inspect_with_child_env -- inspect resources --color never --unicode never`
 
 Observed outputs included:
 
@@ -53,6 +56,7 @@ Observed outputs included:
 - `measure-cdf` smoke: observed host-labeled `inspect_resources` cell, revision `eeef664909b29cf0ee57b2f78423af7e8965b484+dirty`, one sample, median `24,180,945ns`.
 - `measure-cdf` TLC state-reset smoke: observed host-labeled `cdf run tlc.yellow --json --progress never` cell, one uncontrolled sample, 2,964,624 rows, ten extracted phase metrics, median `3,769,248,397ns`.
 - `measure-cdf` timeout proof: failed host-labeled cell with `CDF command exceeded worker timeout of 4000ms`; immediate process-tree inspection found no remaining `cdf-p3-lab` worker or release `cdf` workload process.
+- `measure-cdf` environment-forwarding proof: observed host-labeled `inspect_with_child_env` cell, one uncontrolled sample, median `30,362,231ns`; the generated worker request records `environment = {"CDF_DUCKDB_MEMORY_LIMIT":"3GiB","CDF_DUCKDB_THREADS":"4"}`, `workspace_mode = "fresh_copy"`, `preserve_state = false`, and child timeout `59000`.
 
 ## What it supports or challenges
 
@@ -63,6 +67,8 @@ The live path challenged the dry-run-only assumption that shell command construc
 The measured-command path challenged another bad assumption: a fresh copied workspace is not enough if `.cdf/state.db` is copied too. A first TLC smoke became a checkpoint no-op, so `cdf-command-worker` now drops runtime state by default and requires `CDF_BENCH_MEASURE_PRESERVE_STATE=1` for intentional resume/no-op measurements. This supports the reliability requirement directly: benchmark setup is outside the timed region, but cannot silently change the workload class.
 
 The timeout proof challenged the assumption that the outer lab process timeout was enough. `run-cell` observes the worker process, but the expensive release `cdf` process is spawned one level deeper. The worker now enforces its own timeout and terminates the child process group, so failed/timed-out benchmark cells cannot leave hidden work consuming the reusable EC2 host.
+
+The environment-forwarding proof closes a practical benchmark gap exposed by DuckDB/native-resource diagnostics: tuning knobs must be part of the supervised child request, not ad-hoc SSH shell state. `CDF_BENCH_MEASURE_ENV_JSON` is decoded and validated into the `cdf-command-worker` request, so destination/source tuning cells keep the same timeout, workspace-copy, and state-reset semantics as ordinary measured `cdf` commands.
 
 ## Limits
 

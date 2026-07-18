@@ -1,4 +1,5 @@
 use std::{
+    collections::BTreeMap,
     fs,
     io::Read,
     path::{Component, Path, PathBuf},
@@ -44,6 +45,8 @@ pub struct CdfCommandWorkload {
     pub preserve_state: bool,
     #[serde(default)]
     pub timeout_ms: Option<u64>,
+    #[serde(default)]
+    pub environment: BTreeMap<String, String>,
 }
 
 pub fn run_cdf_command_workload(workload: &CdfCommandWorkload) -> BenchResult<WorkerMeasurement> {
@@ -79,6 +82,7 @@ pub fn run_cdf_command_workload(workload: &CdfCommandWorkload) -> BenchResult<Wo
         &workload.cdf_executable,
         &workload.args,
         &workspace,
+        &workload.environment,
         workload.timeout_ms.map(Duration::from_millis),
     )?;
     let timed_wall_time_ns = u64::try_from(started.elapsed().as_nanos()).unwrap_or(u64::MAX);
@@ -131,11 +135,13 @@ fn run_cdf_child(
     executable: &Path,
     args: &[String],
     workspace: &Path,
+    environment: &BTreeMap<String, String>,
     timeout: Option<Duration>,
 ) -> BenchResult<CdfChildOutput> {
     let mut command = Command::new(executable);
     command
         .args(args)
+        .envs(environment)
         .current_dir(workspace)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
@@ -407,6 +413,7 @@ mod tests {
             spill_bytes: None,
             preserve_state: false,
             timeout_ms: None,
+            environment: BTreeMap::new(),
         };
 
         let measurement = run_cdf_command_workload(&workload).unwrap();
@@ -455,6 +462,7 @@ mod tests {
             spill_bytes: None,
             preserve_state: false,
             timeout_ms: Some(50),
+            environment: BTreeMap::new(),
         };
         let error =
             run_cdf_command_workload(&workload).expect_err("worker should enforce its own timeout");
@@ -463,5 +471,33 @@ mod tests {
                 .to_string()
                 .contains("CDF command exceeded worker timeout")
         );
+    }
+
+    #[test]
+    fn cdf_command_worker_passes_explicit_environment_to_child() {
+        let temp = tempfile::tempdir().unwrap();
+        let template = temp.path().join("template");
+        fs::create_dir(&template).unwrap();
+        let mut environment = BTreeMap::new();
+        environment.insert("CDF_BENCH_TEST_FLAG".to_owned(), "seen".to_owned());
+        let workload = CdfCommandWorkload {
+            cdf_executable: PathBuf::from("/bin/sh"),
+            workspace_template: template,
+            workspace_parent: temp.path().join("workspaces"),
+            workspace_mode: CdfWorkspaceMode::FreshCopy,
+            args: vec![
+                "-c".to_owned(),
+                "test \"$CDF_BENCH_TEST_FLAG\" = seen; printf '%s' '{\"row_count\":1}'".to_owned(),
+            ],
+            rows: None,
+            logical_bytes: Some(1),
+            physical_bytes: Some(1),
+            spill_bytes: None,
+            preserve_state: false,
+            timeout_ms: None,
+            environment,
+        };
+        let measurement = run_cdf_command_workload(&workload).unwrap();
+        assert_eq!(measurement.rows, 1);
     }
 }
