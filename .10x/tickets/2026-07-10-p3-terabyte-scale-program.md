@@ -53,6 +53,7 @@ This parent is an aggregate plan. Workstream records own sequencing and integrat
 - `.10x/tickets/2026-07-13-p0-fixed-schema-discovery-stream-admission.md`
 - `.10x/tickets/done/2026-07-18-p3-l6-ec2-benchmark-host.md`
 - `.10x/tickets/2026-07-18-p3-l7-ec2-benchmark-tranche-lifecycle.md`
+- `.10x/tickets/done/2026-07-18-p3-l9-ec2-measure-runner-build-graph.md`
 
 ## Sequencing
 
@@ -101,6 +102,7 @@ P3 does not implement a distributed scheduler, remote worker leases, resident st
 - 2026-07-16: Closed B5 with JSON/NDJSON at the codec envelope: REST selector+tape decode is 3.10x the deleted DOM path and 450.4 MiB/s aggregate, while full-content inference is 1.02x raw Arrow and reuses the same retained source transfer. B5's closure makes G3 dependency-ready. Its attempted macro run exposed a separate L3 isolated-child regression that also fails raw Arrow while exact workers succeed; `.10x/tickets/2026-07-16-p3-l3r-isolated-benchmark-child-regression.md` now owns that defect. Active count remains 80 because one completed child and one real discovered regression offset; done count rises to 306.
 - 2026-07-18: Ratified dedicated-host benchmark evidence for P3 performance promotion. Developer-laptop timings remain useful for smoke, triage, and rejecting risky defaults, but P3 envelope closeout/default promotion now uses a reusable AWS EC2 benchmark host in the FQ12 environment, with optimized release builds performed on-host from a synchronized repo/workspace and explicit teardown after each tranche. The governing protocol is in `.10x/specs/performance-lab-and-envelope.md`; `.10x/tickets/done/2026-07-18-p3-l6-ec2-benchmark-host.md` proves the provisioning/sync/run/teardown procedure.
 - 2026-07-18: Closed L6 as the dedicated-host protocol/tooling owner after a clean `a37a4d8645bfcc1919c04e22615e5364542ad238` preflight refresh. L7 now owns the intentionally running benchmark-tranche host lifecycle and eventual teardown evidence, so the active backlog tracks real remaining work rather than keeping a completed protocol ticket open as a reminder.
+- 2026-07-18: Closed L9 after splitting measured-command EC2 runs from the heavyweight `cdf-p3-lab` binary. The new `cdf-bench-core` crate owns shared measurement primitives; `cdf-bench-measure` produces a 606K/734K `cdf-p3-measure` runner; EC2 `build-measure` completed in `10.27s` without rebuilding `cdf-p3-lab`; and both tiny-control and full-year TLC measured-command cells are recorded in `.10x/evidence/.storage/`.
 
 ## Blockers
 

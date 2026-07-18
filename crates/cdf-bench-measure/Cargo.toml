@@ -1,0 +1,15 @@
+[package]
+name = "cdf-bench-measure"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+description = "Slim measured-command runner for CDF benchmark host workflows."
+
+[[bin]]
+name = "cdf-p3-measure"
+path = "src/main.rs"
+
+[dependencies]
+cdf-bench-core = { path = "../cdf-bench-core" }
+serde_json = "1.0.150"

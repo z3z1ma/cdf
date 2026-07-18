@@ -14,6 +14,7 @@ arrow-json = "59.1.0"
 arrow-schema = "59.1.0"
 arrow-select = "59.1.0"
 clap = { version = "4.6.1", default-features = false, features = ["std", "help", "usage", "error-context"] }
+cdf-bench-core = { path = "../cdf-bench-core" }
 cdf-contract = { path = "../cdf-contract" }
 cdf-declarative = { path = "../cdf-declarative" }
 cdf-dest-postgres = { path = "../cdf-dest-postgres" }

@@ -713,6 +713,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "cdf-bench-core"
+version = "0.1.0"
+dependencies = [
+ "hex",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tempfile",
+]
+
+[[package]]
+name = "cdf-bench-measure"
+version = "0.1.0"
+dependencies = [
+ "cdf-bench-core",
+ "serde_json",
+]
+
+[[package]]
 name = "cdf-benchmarks"
 version = "0.1.0"
 dependencies = [
@@ -722,6 +741,7 @@ dependencies = [
  "arrow-json",
  "arrow-schema 59.1.0",
  "arrow-select 59.1.0",
+ "cdf-bench-core",
  "cdf-contract",
  "cdf-declarative",
  "cdf-dest-duckdb",

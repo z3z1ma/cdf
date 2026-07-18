@@ -39,7 +39,9 @@ members = [
     "crates/cdf-project",
     "crates/cdf-cli",
     "crates/cdf-conformance",
+    "crates/cdf-bench-core",
     "crates/cdf-benchmarks",
+    "crates/cdf-bench-measure",
 ]
 resolver = "3"
 
