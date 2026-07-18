@@ -236,6 +236,7 @@ impl EnginePlan {
         }
         Ok(self)
     }
+
     pub fn effective_schema_evidence(&self) -> Option<&EffectiveSchemaPlanEvidence> {
         self.effective_schema_evidence.as_ref()
     }
@@ -1745,6 +1746,7 @@ pub struct EngineExecutionOptions {
     pub(crate) phase_metrics: bool,
     pub(crate) services: Option<cdf_runtime::ExecutionServices>,
     pub(crate) unfused_transform: bool,
+    pub(crate) statistics_profile: bool,
     pub(crate) scheduler: Option<cdf_runtime::RuntimeSchedulerResolution>,
     pub(crate) cancellation: cdf_runtime::RunCancellation,
     pub(crate) retry_journal: cdf_runtime::SourceRetryJournal,
@@ -1763,6 +1765,11 @@ impl EngineExecutionOptions {
 
     pub const fn with_unfused_transform_for_conformance(mut self, enabled: bool) -> Self {
         self.unfused_transform = enabled;
+        self
+    }
+
+    pub const fn with_statistics_profile(mut self, enabled: bool) -> Self {
+        self.statistics_profile = enabled;
         self
     }
 

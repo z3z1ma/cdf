@@ -1007,6 +1007,7 @@ mod tests {
             RunTelemetryConfig {
                 phase_metrics: true,
                 max_phase_events: 1,
+                statistics_profile: false,
             },
         );
 

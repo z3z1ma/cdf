@@ -123,6 +123,7 @@ async fn run_project_with_context(
         schema_hash,
         services,
         scheduler,
+        telemetry,
     };
     match run_project_inner(execution).await {
         Ok(report) => Ok(report),
@@ -167,6 +168,7 @@ struct ProjectRunExecution<'a> {
     schema_hash: SchemaHash,
     services: ExecutionServices,
     scheduler: Option<cdf_runtime::RuntimeSchedulerResolution>,
+    telemetry: RunTelemetryConfig,
 }
 
 async fn run_project_inner(execution: ProjectRunExecution<'_>) -> Result<ProjectRunReport> {
@@ -245,6 +247,7 @@ async fn run_project_inner(execution: ProjectRunExecution<'_>) -> Result<Project
     )?;
     let options = EngineExecutionOptions::default()
         .with_phase_metrics(execution.recorder.phase_telemetry_enabled())
+        .with_statistics_profile(execution.telemetry.statistics_profile)
         .with_execution_services(execution.services.clone());
     let options = match execution.scheduler.clone() {
         Some(scheduler) => options.with_scheduler_resolution(scheduler),

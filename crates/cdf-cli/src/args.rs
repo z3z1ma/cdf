@@ -105,6 +105,7 @@ pub struct RunArgs {
     pub resource_id: Option<String>,
     pub destination_uri: Option<String>,
     pub jobs: Option<u16>,
+    pub stats_profile: bool,
     pub loop_mode: bool,
 }
 
@@ -526,6 +527,7 @@ fn parse_run(matches: &ArgMatches) -> Result<RunArgs, CliError> {
         jobs: string_value(matches, "jobs")
             .map(|value| parse_nonzero_u16("--jobs", &value))
             .transpose()?,
+        stats_profile: matches.get_flag("stats_profile"),
         loop_mode: matches.get_flag("loop"),
     })
 }
@@ -922,6 +924,7 @@ fn run_command() -> ClapCommand {
         .arg(values_arg("resource_arg").value_name("RESOURCE"))
         .arg(option("to", "to", "DEST"))
         .arg(option("jobs", "jobs", "N"))
+        .arg(flag("stats_profile", "stats-profile"))
         .arg(flag("loop", "loop"))
 }
 
@@ -1122,6 +1125,7 @@ fn option_help(long: &str) -> &'static str {
         "order-by" => "Ordering field and optional direction",
         "pipeline" => "Pipeline identifier",
         "jobs" => "Maximum concurrent jobs",
+        "stats-profile" => "Write the typed statistics profile artifact",
         "loop" => "Continue polling for work",
         "deep" => "Run probes that may contact configured systems",
         "dry-run" => "Show the proposed change without writing it",
@@ -1377,5 +1381,21 @@ mod run_jobs_tests {
         let error = Cli::parse(["cdf", "run", "local.events", "--jobs", "0"].map(OsString::from))
             .unwrap_err();
         assert!(error.message.contains("--jobs must be an integer from 1"));
+    }
+
+    #[test]
+    fn run_stats_profile_is_explicit_opt_in() {
+        let cli = Cli::parse(["cdf", "run", "local.events"].map(OsString::from)).unwrap();
+        let Command::Run(args) = cli.command else {
+            panic!("expected run command");
+        };
+        assert!(!args.stats_profile);
+
+        let cli = Cli::parse(["cdf", "run", "local.events", "--stats-profile"].map(OsString::from))
+            .unwrap();
+        let Command::Run(args) = cli.command else {
+            panic!("expected run command");
+        };
+        assert!(args.stats_profile);
     }
 }

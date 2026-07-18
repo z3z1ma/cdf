@@ -8,6 +8,7 @@ use cdf_kernel::TerminalSchemaObservationQuarantine;
 pub struct RunTelemetryConfig {
     pub phase_metrics: bool,
     pub max_phase_events: u16,
+    pub statistics_profile: bool,
 }
 
 impl RunTelemetryConfig {
@@ -15,6 +16,7 @@ impl RunTelemetryConfig {
         Self {
             phase_metrics: false,
             max_phase_events: 0,
+            statistics_profile: false,
         }
     }
 
@@ -22,7 +24,13 @@ impl RunTelemetryConfig {
         Self {
             phase_metrics: true,
             max_phase_events: 32,
+            statistics_profile: false,
         }
+    }
+
+    pub const fn with_statistics_profile(mut self, enabled: bool) -> Self {
+        self.statistics_profile = enabled;
+        self
     }
 }
 

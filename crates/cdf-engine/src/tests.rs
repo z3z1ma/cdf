@@ -185,7 +185,17 @@ fn tier_a_resource_runs_engine_projection_filter_limit_into_package() {
     assert_eq!(plan.explain.unsupported_predicates.len(), 2);
 
     let temp = TempDir::new().unwrap();
-    let output = block_on(execute_to_package(&plan, &resource, temp.path())).unwrap();
+    let pre_finalize =
+        |_builder: &cdf_package::PackageBuilder, _draft: EnginePackageDraft<'_>| Ok(());
+    let output = block_on(execute_to_package_with_segment_positions_and_pre_finalize(
+        &plan,
+        &resource,
+        temp.path(),
+        &pre_finalize,
+        EngineExecutionOptions::default().with_statistics_profile(true),
+    ))
+    .unwrap()
+    .output;
 
     assert_eq!(output.manifest.lifecycle.status, PackageStatus::Packaged);
     assert_eq!(output.profile.output_rows, 1);

@@ -16,8 +16,8 @@ use cdf_package::PackageReader;
 use cdf_package_contract::PackageStatus;
 use cdf_project::{
     InMemoryResourceSourceResolver, ProjectRunReport, ProjectRunRequest, ProjectRunSource,
-    ResolvedProjectDestination, compile_project_declarative_resources_with_root, parse_cdf_toml,
-    run_project,
+    ResolvedProjectDestination, RunTelemetryConfig,
+    compile_project_declarative_resources_with_root, parse_cdf_toml, run_project_with_telemetry,
 };
 use serde::{Deserialize, Serialize};
 
@@ -339,7 +339,7 @@ pub async fn run_live_local_file_fixture_with_destination(
     let plan = runtime_resource.bind_plan(plan)?;
 
     let services = crate::test_execution_services();
-    run_project(
+    run_project_with_telemetry(
         ProjectRunRequest {
             resource: ProjectRunSource::new(runtime_resource.queryable()),
             plan,
@@ -354,6 +354,7 @@ pub async fn run_live_local_file_fixture_with_destination(
             after_receipt_verified,
         },
         &services,
+        RunTelemetryConfig::disabled().with_statistics_profile(true),
     )
     .await
 }

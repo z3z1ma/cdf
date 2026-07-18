@@ -140,7 +140,7 @@ pub(crate) fn run(
             },
             &run_services,
             Some(scheduler),
-            RunTelemetryConfig::phase_metrics(),
+            RunTelemetryConfig::phase_metrics().with_statistics_profile(explicit.stats_profile),
         ))
         .map_err(|error| redact_error_value(error, resolved.secret_redaction.as_deref()))
     {
@@ -507,6 +507,7 @@ fn resolved_run_args(args: RunArgs) -> Result<ResolvedRunArgs, CliError> {
         package_id,
         checkpoint_id: CheckpointId::new(checkpoint_id)?,
         jobs: args.jobs,
+        stats_profile: args.stats_profile,
     })
 }
 
@@ -527,6 +528,7 @@ struct ResolvedRunArgs {
     package_id: String,
     checkpoint_id: CheckpointId,
     jobs: Option<u16>,
+    stats_profile: bool,
 }
 
 pub(crate) fn ensure_parent_directory(path: &std::path::Path) -> Result<(), CliError> {

@@ -8256,6 +8256,7 @@ fn run_human_rich_render_uses_checkpoint_gate_panel() {
             resource_id: Some("local.events".to_owned()),
             destination_uri: None,
             jobs: None,
+            stats_profile: false,
             loop_mode: false,
         },
         host.as_ref(),

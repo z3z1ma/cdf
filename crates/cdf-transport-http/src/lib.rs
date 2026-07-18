@@ -30,6 +30,7 @@ const FILE_READ_IDLE_TIMEOUT: Duration = Duration::from_secs(10);
 #[derive(Clone)]
 pub struct ReqwestHttpProvider {
     asynchronous: reqwest::Client,
+    files: reqwest::Client,
     file_response_timeout: Duration,
     file_read_idle_timeout: Duration,
 }
@@ -47,8 +48,15 @@ impl ReqwestHttpProvider {
             .redirect(reqwest::redirect::Policy::none())
             .build()
             .map_err(|error| CdfError::internal(format!("build async HTTP client: {error}")))?;
+        let files = reqwest::Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .http1_only()
+            .pool_max_idle_per_host(32)
+            .build()
+            .map_err(|error| CdfError::internal(format!("build file HTTP client: {error}")))?;
         Ok(Self {
             asynchronous,
+            files,
             file_response_timeout,
             file_read_idle_timeout,
         })
@@ -85,7 +93,7 @@ impl HttpFileTransport for ReqwestHttpProvider {
         &self,
         request: HttpFileRequest,
     ) -> BoxFuture<'static, Result<HttpFileResponse>> {
-        let client = self.asynchronous.clone();
+        let client = self.files.clone();
         Box::pin(async move {
             let method = reqwest_method(&request.method)?;
             let mut builder = client.request(method, &request.url);
@@ -125,7 +133,7 @@ impl HttpFileTransport for ReqwestHttpProvider {
             .egress_allowlist
             .check(&HttpRequest::new(HttpMethod::Get, url.clone()))?;
         Ok(Arc::new(HttpByteSource::new(
-            self.asynchronous.clone(),
+            self.files.clone(),
             url,
             expected.clone(),
             auth,
