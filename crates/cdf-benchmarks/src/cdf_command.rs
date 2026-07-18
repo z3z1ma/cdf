@@ -1,14 +1,22 @@
 use std::{
     fs,
+    io::Read,
     path::{Component, Path, PathBuf},
-    process::Command,
-    time::Instant,
+    process::{Child, Command, Stdio},
+    thread,
+    time::{Duration, Instant},
 };
+
+#[cfg(unix)]
+use std::os::unix::process::CommandExt;
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::{BenchResult, PhaseMetric, WorkerMeasurement, bench_error};
+
+const MAX_CDF_STDOUT_BYTES: usize = 2 * 1024 * 1024;
+const MAX_CDF_STDERR_BYTES: usize = 256 * 1024;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -34,6 +42,8 @@ pub struct CdfCommandWorkload {
     pub spill_bytes: Option<u64>,
     #[serde(default)]
     pub preserve_state: bool,
+    #[serde(default)]
+    pub timeout_ms: Option<u64>,
 }
 
 pub fn run_cdf_command_workload(workload: &CdfCommandWorkload) -> BenchResult<WorkerMeasurement> {
@@ -65,10 +75,12 @@ pub fn run_cdf_command_workload(workload: &CdfCommandWorkload) -> BenchResult<Wo
     };
 
     let started = Instant::now();
-    let output = Command::new(&workload.cdf_executable)
-        .args(&workload.args)
-        .current_dir(&workspace)
-        .output()?;
+    let output = run_cdf_child(
+        &workload.cdf_executable,
+        &workload.args,
+        &workspace,
+        workload.timeout_ms.map(Duration::from_millis),
+    )?;
     let timed_wall_time_ns = u64::try_from(started.elapsed().as_nanos()).unwrap_or(u64::MAX);
     drop(retained_workspace);
 
@@ -107,6 +119,109 @@ pub fn run_cdf_command_workload(workload: &CdfCommandWorkload) -> BenchResult<Wo
         spill_bytes: workload.spill_bytes.unwrap_or(0),
         phases,
     })
+}
+
+struct CdfChildOutput {
+    status: std::process::ExitStatus,
+    stdout: Vec<u8>,
+    stderr: Vec<u8>,
+}
+
+fn run_cdf_child(
+    executable: &Path,
+    args: &[String],
+    workspace: &Path,
+    timeout: Option<Duration>,
+) -> BenchResult<CdfChildOutput> {
+    let mut command = Command::new(executable);
+    command
+        .args(args)
+        .current_dir(workspace)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    #[cfg(unix)]
+    {
+        command.process_group(0);
+    }
+    let mut child = command.spawn()?;
+    let mut stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| bench_error("CDF command stdout pipe was not created"))?;
+    let mut stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| bench_error("CDF command stderr pipe was not created"))?;
+    let stdout_reader =
+        thread::spawn(move || read_limited(&mut stdout, MAX_CDF_STDOUT_BYTES, "stdout"));
+    let stderr_reader =
+        thread::spawn(move || read_limited(&mut stderr, MAX_CDF_STDERR_BYTES, "stderr"));
+    let started = Instant::now();
+    let status = loop {
+        if let Some(status) = child.try_wait()? {
+            break status;
+        }
+        if timeout.is_some_and(|limit| started.elapsed() >= limit) {
+            terminate_child_tree(&mut child);
+            let _ = stdout_reader.join();
+            let _ = stderr_reader.join();
+            return Err(bench_error(format!(
+                "CDF command exceeded worker timeout of {}ms",
+                timeout
+                    .map(|limit| limit.as_millis().to_string())
+                    .unwrap_or_else(|| "unknown".to_owned())
+            )));
+        }
+        thread::sleep(Duration::from_millis(10));
+    };
+    let stdout = stdout_reader
+        .join()
+        .map_err(|_| bench_error("CDF command stdout reader panicked"))??;
+    let stderr = stderr_reader
+        .join()
+        .map_err(|_| bench_error("CDF command stderr reader panicked"))??;
+    Ok(CdfChildOutput {
+        status,
+        stdout,
+        stderr,
+    })
+}
+
+fn read_limited(reader: &mut impl Read, limit: usize, stream: &str) -> BenchResult<Vec<u8>> {
+    let mut output = Vec::new();
+    let mut buffer = [0_u8; 8192];
+    loop {
+        let read = reader.read(&mut buffer)?;
+        if read == 0 {
+            break;
+        }
+        let available = limit.saturating_sub(output.len());
+        let retained = available.min(read);
+        output.extend_from_slice(&buffer[..retained]);
+        if retained != read {
+            return Err(bench_error(format!(
+                "CDF command {stream} exceeded the {limit} byte capture limit"
+            )));
+        }
+    }
+    Ok(output)
+}
+
+fn terminate_child_tree(child: &mut Child) {
+    #[cfg(unix)]
+    {
+        let group = format!("-{}", child.id());
+        let _ = Command::new("kill").args(["-TERM", &group]).status();
+        thread::sleep(Duration::from_millis(250));
+        if child.try_wait().ok().flatten().is_none() {
+            let _ = Command::new("kill").args(["-KILL", &group]).status();
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = child.kill();
+    }
+    let _ = child.wait();
 }
 
 fn copy_workspace(source: &Path, destination: &Path, preserve_state: bool) -> BenchResult<()> {
@@ -291,6 +406,7 @@ mod tests {
             physical_bytes: None,
             spill_bytes: None,
             preserve_state: false,
+            timeout_ms: None,
         };
 
         let measurement = run_cdf_command_workload(&workload).unwrap();
@@ -320,5 +436,32 @@ mod tests {
         let preserved = temp.path().join("preserved");
         copy_workspace(&template, &preserved, true).unwrap();
         assert!(preserved.join(".cdf").join("state.db").exists());
+    }
+
+    #[test]
+    fn cdf_command_timeout_kills_the_child() {
+        let temp = tempfile::tempdir().unwrap();
+        let template = temp.path().join("template");
+        fs::create_dir(&template).unwrap();
+        let workload = CdfCommandWorkload {
+            cdf_executable: PathBuf::from("/bin/sh"),
+            workspace_template: template,
+            workspace_parent: temp.path().join("workspaces"),
+            workspace_mode: CdfWorkspaceMode::FreshCopy,
+            args: vec!["-c".to_owned(), "sleep 5".to_owned()],
+            rows: None,
+            logical_bytes: None,
+            physical_bytes: None,
+            spill_bytes: None,
+            preserve_state: false,
+            timeout_ms: Some(50),
+        };
+        let error =
+            run_cdf_command_workload(&workload).expect_err("worker should enforce its own timeout");
+        assert!(
+            error
+                .to_string()
+                .contains("CDF command exceeded worker timeout")
+        );
     }
 }

@@ -43,6 +43,7 @@ Environment:
   CDF_BENCH_SSH_USER                default: ec2-user
   CDF_BENCH_HOST                    overrides host read from state.env for ssh/rsync
   CDF_BENCH_REMOTE_ROOT             default: /home/ec2-user/cdf-bench
+  CDF_BENCH_REMOTE_WORKSPACE        default: $CDF_BENCH_REMOTE_ROOT/workspace
   CDF_BENCH_WORKSPACE               local CDF workspace to sync for sync-workspace
   CDF_BENCH_WORKSPACE_SYNC_MODE     default: minimal; use full for an ignore-filtered full tree
   CDF_BENCH_MEASURE_WORKSPACE_MODE  default: fresh_copy; use in_place for non-mutating commands
@@ -95,7 +96,7 @@ state_dir="$(dirname "${state_file}")"
 resource_state_file="${CDF_BENCH_RESOURCE_STATE:-${state_dir}/ssh-resources.env}"
 remote_root="${CDF_BENCH_REMOTE_ROOT:-/home/ec2-user/cdf-bench}"
 remote_repo="${remote_root}/repo"
-remote_workspace="${remote_root}/workspace"
+remote_workspace="${CDF_BENCH_REMOTE_WORKSPACE:-${remote_root}/workspace}"
 ssh_user="${CDF_BENCH_SSH_USER:-ec2-user}"
 instance_type="${CDF_BENCH_INSTANCE_TYPE:-c7i.4xlarge}"
 volume_gb="${CDF_BENCH_VOLUME_GB:-250}"
@@ -741,6 +742,7 @@ request = {
     \"physical_bytes\": optional_u64(\"CDF_BENCH_MEASURE_PHYSICAL_BYTES\"),
     \"spill_bytes\": 0,
     \"preserve_state\": os.environ[\"CDF_BENCH_MEASURE_PRESERVE_STATE\"] == \"1\",
+    \"timeout_ms\": max(1, int(os.environ[\"CDF_BENCH_MEASURE_TIMEOUT_MS\"]) - 1000),
 }
 request_path.write_text(json.dumps(request, sort_keys=True), encoding=\"utf-8\")
 spec = {
