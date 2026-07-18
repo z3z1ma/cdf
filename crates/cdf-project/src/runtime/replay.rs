@@ -1285,6 +1285,9 @@ where
         .replay_inputs_verified(package.verification())?;
     validate_resolved_destination_target(&destination, &inputs)?;
     let execution = destination.execution_services().cloned();
+    if let Some(execution) = &execution {
+        destination.bind_execution_services(execution.clone())?;
+    }
     let memory = match execution.as_ref() {
         Some(execution) => execution.memory(),
         None => default_replay_memory()?,

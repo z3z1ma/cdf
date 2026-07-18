@@ -64,6 +64,23 @@ impl ResolvedProjectDestination {
         self
     }
 
+    pub fn bind_execution_services(
+        &mut self,
+        execution: cdf_runtime::ExecutionServices,
+    ) -> Result<()> {
+        self.runtime.bind_execution_services(&execution)?;
+        self.execution = Some(execution);
+        Ok(())
+    }
+
+    pub fn with_bound_execution_services(
+        mut self,
+        execution: cdf_runtime::ExecutionServices,
+    ) -> Result<Self> {
+        self.bind_execution_services(execution)?;
+        Ok(self)
+    }
+
     #[cfg(test)]
     pub fn duckdb(database_path: impl AsRef<Path>, target: TargetName) -> Result<Self> {
         let (_, base_services) =
@@ -73,11 +90,11 @@ impl ResolvedProjectDestination {
         let services = base_services.with_staging_lease_authority(std::sync::Arc::new(
             cdf_runtime::ScopeStagingLeaseAuthority::new(scopes),
         ))?;
-        Ok(Self::new(
+        Self::new(
             Box::new(cdf_dest_duckdb::DuckDbDestination::new(database_path)?),
             target,
         )
-        .with_execution_services(services))
+        .with_bound_execution_services(services)
     }
 
     #[cfg(test)]
@@ -89,7 +106,7 @@ impl ResolvedProjectDestination {
         let services = base_services.with_staging_lease_authority(std::sync::Arc::new(
             cdf_runtime::ScopeStagingLeaseAuthority::new(scopes),
         ))?;
-        Ok(Self::new(
+        Self::new(
             Box::new(
                 cdf_dest_parquet::FilesystemParquetRuntime::with_execution_services(
                     root.as_ref().to_path_buf(),
@@ -98,7 +115,7 @@ impl ResolvedProjectDestination {
             ),
             target,
         )
-        .with_execution_services(services))
+        .with_bound_execution_services(services)
     }
 
     #[cfg(test)]
@@ -187,9 +204,9 @@ pub fn resolve_project_run_destination(
         }
         error
     })?;
-    let destination = ResolvedProjectDestination::new(runtime, context.target()?.clone());
-    Ok(match context.execution_services() {
-        Some(execution) => destination.with_execution_services(execution.clone()),
-        None => destination,
-    })
+    let mut destination = ResolvedProjectDestination::new(runtime, context.target()?.clone());
+    if let Some(execution) = context.execution_services() {
+        destination.bind_execution_services(execution.clone())?;
+    }
+    Ok(destination)
 }

@@ -195,6 +195,15 @@ impl DestinationRuntime for FilesystemParquetRuntime {
         cdf_runtime::DestinationIngress::StagedSegments(self)
     }
 
+    fn bind_execution_services(
+        &mut self,
+        execution: &cdf_runtime::ExecutionServices,
+    ) -> Result<()> {
+        self.execution = Some(execution.clone());
+        self.destination = None;
+        Ok(())
+    }
+
     fn describe(&self) -> DestinationDescription {
         filesystem_description(&self.root)
     }

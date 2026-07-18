@@ -567,7 +567,8 @@ pub fn run_prepared_file_to_destination(
                 request.output_root.join("destination.duckdb"),
             )?),
             target,
-        ),
+        )
+        .with_bound_execution_services(execution.clone())?,
         PreparedDestinationKind::Parquet => ResolvedProjectDestination::new(
             Box::new(
                 cdf_dest_parquet::FilesystemParquetRuntime::with_execution_services(
@@ -576,7 +577,8 @@ pub fn run_prepared_file_to_destination(
                 ),
             ),
             target,
-        ),
+        )
+        .with_bound_execution_services(execution.clone())?,
         PreparedDestinationKind::Postgres {
             database_url,
             schema,
@@ -594,6 +596,7 @@ pub fn run_prepared_file_to_destination(
                 )),
                 target,
             )
+            .with_bound_execution_services(execution.clone())?
         }
     };
     let destination_capabilities = destination.runtime_capabilities();
@@ -889,22 +892,25 @@ fn run_package_replay(
     };
     let fixture = build_package_fixture(spec, root, &package_id)?;
     let target = TargetName::new("orders")?;
+    let execution = benchmark_execution_services(available_host_jobs())?;
     let destination = match destination {
         ReplayDestination::DuckDb => ResolvedProjectDestination::new(
             Box::new(cdf_dest_duckdb::DuckDbDestination::new(
                 root.join("replay.duckdb"),
             )?),
             target,
-        ),
+        )
+        .with_bound_execution_services(execution.clone())?,
         ReplayDestination::Parquet => ResolvedProjectDestination::new(
             Box::new(
                 cdf_dest_parquet::FilesystemParquetRuntime::with_execution_services(
                     root.join("parquet"),
-                    cdf_engine::StandaloneExecutionHost::default_services(512 * 1024 * 1024)?.1,
+                    execution.clone(),
                 ),
             ),
             target,
-        ),
+        )
+        .with_bound_execution_services(execution.clone())?,
         ReplayDestination::Postgres => {
             let database_url = std::env::var(POSTGRES_URL_ENV).map_err(|_| {
                 bench_error(format!(
@@ -922,6 +928,7 @@ fn run_package_replay(
                 )),
                 target,
             )
+            .with_bound_execution_services(execution.clone())?
         }
     };
     let checkpoint_store = InMemoryCheckpointStore::new();
@@ -992,7 +999,8 @@ schema = { fields = [
             project_root.join(".cdf/dev.duckdb"),
         )?),
         TargetName::new("events")?,
-    );
+    )
+    .with_bound_execution_services(services.clone())?;
     let mut policy = ContractPolicy::for_trust(source.resource.descriptor().trust_level.clone());
     if let Some(identifier) = destination.column_identifier_policy()? {
         policy.normalization.identifier = identifier;

@@ -90,7 +90,7 @@ async fn run_project_with_context(
     let services = services.with_staging_lease_authority(Arc::new(
         cdf_runtime::ScopeStagingLeaseAuthority::new(staging_scopes),
     ))?;
-    destination = destination.with_execution_services(services.clone());
+    destination.bind_execution_services(services.clone())?;
     let run_ledger = SqliteRunLedger::open(&state_store_path)?;
     let run = run_ledger.create_run(run_id)?;
     let checkpoint_store = SqliteCheckpointStore::open(&state_store_path)?;

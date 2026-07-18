@@ -292,6 +292,8 @@ fn resolved_duckdb_destination(
     target: TargetName,
 ) -> ResolvedProjectDestination {
     ResolvedProjectDestination::new(Box::new(destination.clone()), target)
+        .with_bound_execution_services(crate::test_execution_services())
+        .expect("bind conformance execution services to DuckDB replay destination")
 }
 
 pub fn assert_packaged_replay_committed_without_source_contact<Store>(

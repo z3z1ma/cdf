@@ -1,6 +1,6 @@
 Status: active
 Created: 2026-07-11
-Updated: 2026-07-17
+Updated: 2026-07-18
 Parent: .10x/tickets/2026-07-10-p3-ws-f-constant-memory-guarantee.md
 Depends-On: .10x/tickets/done/2026-07-11-p3-a5-streaming-operator-graph.md, .10x/tickets/done/2026-07-11-p3-a6-spillable-package-dedup.md, .10x/tickets/2026-07-11-p3-b13-native-format-matrix.md, .10x/tickets/done/2026-07-11-p3-d5-bulk-path-matrix.md, .10x/tickets/2026-07-11-p3-e4-package-io-envelope.md, .10x/tickets/done/2026-07-11-p3-g3-codec-download-decode-overlap.md
 
@@ -45,6 +45,7 @@ Depends on the runtime/codec/destination/package/remote materialization owners.
 - 2026-07-17: Deleted the obsolete in-memory `archive_package_to_parquet` report API instead of preserving a compatibility shim. Package archive callers now use the bounded persisted archive path; the benchmark matrix measures that production path; the old tests that only blessed resident Parquet byte reports were removed, while unsupported-type and duplicate-column coverage remains attached to the surviving persisted/transcode paths.
 - 2026-07-17: Removed raw `PackageReader::read_segment` use from production replay and promotion/correction planning paths. Destination replay now hands both staged and materialized-package destinations the same verified/accounted commit-segment stream; promotion residual scans and correction package reads use verified canonical segment streams with a 64 MiB package window. The static production gate now forbids `read_segment(` in project runtime/promotion and destination production files, while the package archive's explicit reserved-window reader remains the only package-internal carve-out.
 - 2026-07-17: Closed a metadata-cardinality slice for object-store remote inventory. `resolve_remote_matches_bounded` now streams provider listing entries through relative-path/glob filtering and retains only matching metadata, instead of first collecting every remote identity into a `Vec` and filtering afterward. The test fixture admits only one `FILE_IDENTITY_MEMORY_ENVELOPE_BYTES` lease while listing 129 identities; the old collect-all path would exhaust the discovery budget before reaching the single matching file, while the retained path releases each nonmatching identity as it is skipped.
+- 2026-07-18: Closed the direct-destination-construction native-resource slice without adding a destination branch to project orchestration. `DestinationRuntime` now has a generic `bind_execution_services` hook. `ResolvedProjectDestination` invokes it at URI resolution, direct `run_project`, and replay entry; DuckDB uses the hook to calculate native memory/temp resources and reserve scratch through the shared spill authority, while the filesystem Parquet runtime refreshes its lazy execution services. `cdf-benchmarks` now binds execution services for direct DuckDB/Parquet/Postgres destinations so performance evidence measures the same resource envelope as project runs.
 
 ## Evidence
 
@@ -65,7 +66,14 @@ Depends on the runtime/codec/destination/package/remote materialization owners.
   - `CARGO_BUILD_JOBS=12 cargo test -p cdf-source-files --lib --locked -j 12` — passed, 80 passed, 1 ignored.
   - `CARGO_BUILD_JOBS=12 cargo clippy -p cdf-source-files --all-targets --locked -j 12 -- -D warnings` — passed.
   - `CARGO_BUILD_JOBS=12 cargo test -p cdf-runtime source_frontier --lib --locked -j 12` — passed after reverting the rejected immediate-active-frontier experiment; proves the retained source-frontier contract remains tested.
-- This is partial F2 evidence only. The ticket remains active because its cross-codebase owner matrix, static architecture gates, direct-construction audit, metadata-cardinality closure, and geometric stress proof are not complete.
+- 2026-07-18 direct destination runtime service binding:
+  - `CARGO_BUILD_JOBS=12 cargo test -p cdf-project resolved_destination_binding_configures_direct_runtime_services --locked -j 12 -- --nocapture` — passed. Proves a directly constructed DuckDB runtime wrapped by `ResolvedProjectDestination` reserves native scratch through the shared spill authority when execution services are bound, and releases the reservation on drop.
+  - `CARGO_BUILD_JOBS=12 cargo test -p cdf-dest-duckdb native_resource_tests --locked -j 12 -- --nocapture` — passed, 4 passed. Proves the adapter-owned native resource envelope still reserves/releases bounded scratch, honors explicit override knobs, and fails before use when scratch is unavailable.
+  - `CARGO_BUILD_JOBS=12 cargo check -p cdf-benchmarks --locked -j 12` — passed. Proves benchmark destination runners compile against bound execution services instead of bypassing the project-run resource envelope.
+  - `CARGO_BUILD_JOBS=12 cargo check -p cdf-conformance --locked -j 12` — passed. Proves the conformance replay helper compiles after binding shared test execution services to direct DuckDB replay destinations.
+  - `CARGO_BUILD_JOBS=12 cargo clippy -p cdf-runtime -p cdf-dest-duckdb -p cdf-dest-parquet -p cdf-project -p cdf-benchmarks --all-targets --locked -j 12 -- -D warnings` — passed.
+  - `CARGO_BUILD_JOBS=12 cargo clippy -p cdf-conformance --all-targets --locked -j 12 -- -D warnings` — passed.
+- This is partial F2 evidence only. The ticket remains active because its cross-codebase owner matrix, static architecture gates, remaining metadata-cardinality closure, and geometric stress proof are not complete.
 
 ## Review
 
@@ -73,7 +81,7 @@ Verdict: concerns for F2 closure; pass for the bounded DuckDB slice.
 
 - The retained implementation keeps all DuckDB policy inside `cdf-dest-duckdb`; runtime selection remains capability-driven and no destination id/path appears in orchestration.
 - Native memory and scratch disk now have hard bounds; scratch capacity joins the shared spill authority before a production registry run and fails before source/destination mutation when unavailable.
-- Residual significant F2 work remains: direct `DuckDbDestination::new` construction uses the same hard native/temp bounds but does not join a host-wide spill coordinator; F1 has not yet made process native-headroom authority available through `ExecutionServices`; other native allocation owners remain unaudited. These are recorded closure blockers, not waived claims.
+- Residual significant F2 work remains: F1 has not yet made process native-headroom authority available through `ExecutionServices`; other native allocation owners remain unaudited; the cross-codebase owner matrix and geometric stress proof are still open. These are recorded closure blockers, not waived claims.
 - The staged-payload slice passes adversarial ownership review: publish precedes handoff; send, hook, acknowledgement, and worker failures all drop the owned payload and release its leases; sliced segments may share lease ownership through the lease's reference-counted token without releasing the physical allocation early. Generic orchestration still branches only on `DestinationIngress` capability.
 
 ## Retrospective

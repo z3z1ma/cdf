@@ -140,6 +140,14 @@ impl DestinationRuntime for DuckDbDestination {
         cdf_runtime::DestinationIngress::StagedSegments(self)
     }
 
+    fn bind_execution_services(
+        &mut self,
+        execution: &cdf_runtime::ExecutionServices,
+    ) -> Result<()> {
+        *self = self.clone().with_execution_services(execution)?;
+        Ok(())
+    }
+
     fn describe(&self) -> DestinationDescription {
         DestinationDescription::new(
             self.sheet().destination.clone(),

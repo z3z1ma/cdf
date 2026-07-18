@@ -238,6 +238,10 @@ pub trait DestinationRuntime {
 
     fn ingress(&mut self) -> DestinationIngress<'_>;
 
+    fn bind_execution_services(&mut self, _execution: &crate::ExecutionServices) -> Result<()> {
+        Ok(())
+    }
+
     fn destination_sheet(&self) -> Result<DestinationSheet> {
         Ok(self.protocol().sheet().clone())
     }

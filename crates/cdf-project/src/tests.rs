@@ -70,6 +70,32 @@ fn project_normal_build_graph_has_no_concrete_destination_crates() {
     );
 }
 
+#[test]
+fn resolved_destination_binding_configures_direct_runtime_services() {
+    let temp = tempfile::tempdir().unwrap();
+    let execution = test_execution_services();
+    let spill = execution.spill();
+    assert_eq!(spill.snapshot().current_bytes, 0);
+
+    {
+        let mut destination = ResolvedProjectDestination::new(
+            Box::new(
+                cdf_dest_duckdb::DuckDbDestination::new(temp.path().join("direct.duckdb")).unwrap(),
+            ),
+            TargetName::new("events").unwrap(),
+        );
+        destination
+            .bind_execution_services(execution.clone())
+            .unwrap();
+        assert!(
+            spill.snapshot().current_bytes > 0,
+            "binding execution services must let direct runtimes reserve native scratch through the shared spill authority"
+        );
+    }
+
+    assert_eq!(spill.snapshot().current_bytes, 0);
+}
+
 fn test_execution_services() -> cdf_runtime::ExecutionServices {
     cdf_engine::StandaloneExecutionHost::default_services(64 * 1024 * 1024)
         .unwrap()
