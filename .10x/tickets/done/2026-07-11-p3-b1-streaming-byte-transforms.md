@@ -1,6 +1,6 @@
-Status: open
+Status: done
 Created: 2026-07-11
-Updated: 2026-07-12
+Updated: 2026-07-17
 Parent: .10x/tickets/2026-07-10-p3-ws-b-format-decode-engines.md
 Depends-On: .10x/tickets/done/2026-07-10-p3-ws-l5-preoptimization-baseline.md, .10x/tickets/done/2026-07-11-p0-fx1-native-format-extension-boundary.md, .10x/tickets/done/2026-07-11-p3-a2-unified-memory-ledger.md
 
@@ -27,7 +27,7 @@ No archive member enumeration or format parsing.
 
 ## Blockers
 
-Depends on L5, FX1, and the memory ledger.
+None. L5, FX1, and the memory ledger are complete.
 
 ## References
 
@@ -52,3 +52,47 @@ Depends on L5, FX1, and the memory ledger.
 - 2026-07-12: Replaced the closed gzip/zstd declaration and source match tree with registry-id selection from descriptor extensions/strong magic. Execution now streams registered transforms into a checksum-gated bounded spool before any format driver publishes batches; `.parquet.gz` composes with the native Parquet driver. Row discovery uses bounded private transform samples, while accepted execution requires terminal integrity. Deleted `cdf-formats` compression state/decoders/dependencies and the deprecated single-file Parquet discovery helper. Compressed binary discovery/attestation and neutral remote-byte-source overlap remain open. Evidence/review: `.10x/evidence/2026-07-12-p3-b1-registry-transform-execution.md`, `.10x/reviews/2026-07-12-p3-b1-registry-transform-execution-review.md`.
 - 2026-07-12: Completed compressed binary probe parity for local/remote Parquet and Arrow IPC, local attestation, and exhaustive multi-file schema joins. Runtime testing found and eliminated a nested-I/O-runtime deadlock by moving synchronous transport preparation before the async transform/decode task; the formerly hanging remote gzip discover/pin/run test now completes in 0.24s. Matrix/fuzz evidence and neutral remote `ByteSource` overlap remain open. Evidence/review: `.10x/evidence/2026-07-12-p3-b1-compressed-binary-parity.md`, `.10x/reviews/2026-07-12-p3-b1-compressed-binary-parity-review.md`.
 - 2026-07-12: Composed injected byte sources with registry-selected transforms in production. Sequential codecs now consume expanded accounted chunks directly with zero spill; adaptive codecs create exactly one transformed-output spool and grow shared spill authority before writing unknown-length output. Object-store gzip NDJSON succeeds under a one-byte spool ceiling with zero spill and preserved remote position. Evidence/review: `.10x/evidence/2026-07-12-p3-b1-streaming-transform-product-composition.md`, `.10x/reviews/2026-07-12-p3-b1-streaming-transform-product-composition-review.md`.
+- 2026-07-17: Closure audit on the current tree found no remaining B1 implementation blocker. Fresh current-tree gates passed for every registered transform crate, product transform composition, object-store gzip NDJSON direct streaming, and release reference-rate tests for Brotli, bzip2, character/UTF-8, LZ4, Snappy, and XZ. Residual breadth is routed rather than duplicated: catalog-wide fuzz/matrix/per-format cells remain owned by B13 and the individual format tickets; remote growing-spool/weak-provider overlap remains owned by G2/G3/G4. B1's owned outcome is complete: native streaming transforms, neutral registry composition, deletion of full-buffer gzip/zstd legacy paths, accounted expansion/window/checksum enforcement, and product execution without source-runtime transform branches.
+
+## Evidence
+
+- Allocation and shared streaming primitives:
+  - `.10x/evidence/2026-07-12-p3-b1-transform-allocation-authority.md`
+  - `.10x/evidence/2026-07-12-p3-b1-shared-transform-streaming-primitives.md`
+  - `.10x/evidence/2026-07-12-p3-b1-transformed-byte-source.md`
+- Leaf transform evidence:
+  - `.10x/evidence/2026-07-12-p3-b1-native-gzip-driver.md`
+  - `.10x/evidence/2026-07-12-p3-b1-native-zstd-driver.md`
+  - `.10x/evidence/2026-07-12-p3-b1-zstd-frame-window-admission.md`
+  - `.10x/evidence/2026-07-12-p3-b1-native-snappy-framed-driver.md`
+  - `.10x/evidence/2026-07-12-p3-b1-native-lz4-frame-driver.md`
+  - `.10x/evidence/2026-07-12-p3-b1-native-brotli-driver.md`
+  - `.10x/evidence/2026-07-12-p3-b1-native-bzip2-driver.md`
+  - `.10x/evidence/2026-07-12-p3-b1-native-xz-driver.md`
+  - `.10x/evidence/2026-07-12-p3-b1-character-transforms.md`
+- Product composition evidence:
+  - `.10x/evidence/2026-07-12-p3-b1-standard-transform-registry.md`
+  - `.10x/evidence/2026-07-12-p3-b1-registry-transform-execution.md`
+  - `.10x/evidence/2026-07-12-p3-b1-compressed-binary-parity.md`
+  - `.10x/evidence/2026-07-12-p3-b1-streaming-transform-product-composition.md`
+- Current-tree closure gates:
+  - `CARGO_BUILD_JOBS=12 cargo test -p cdf-transform-gzip -p cdf-transform-zstd -p cdf-transform-snappy -p cdf-transform-lz4 -p cdf-transform-brotli -p cdf-transform-bzip2 -p cdf-transform-xz -p cdf-transform-character --lib --locked -j 12` — passed; 19 leaf tests passed, 6 reference-rate tests intentionally ignored in debug.
+  - `CARGO_BUILD_JOBS=12 cargo test -p cdf-source-files transform --lib --locked -j 12` — passed; proves external transform composition and gzip Parquet registry/spool composition.
+  - `CARGO_BUILD_JOBS=12 cargo test -p cdf-source-files object_store_gzip_ndjson_streams_without_spill_and_preserves_remote_position --lib --locked -j 12 -- --nocapture` — passed; proves object-store gzip NDJSON streams with zero spill and preserved remote `FileManifest` position.
+  - `CARGO_BUILD_JOBS=12 cargo test -p cdf-transform-brotli -p cdf-transform-bzip2 -p cdf-transform-character -p cdf-transform-lz4 -p cdf-transform-snappy -p cdf-transform-xz --release --lib --locked -j 12 -- --ignored --nocapture` — passed; reported ratios Brotli 0.904x, bzip2 0.997x, UTF-8 character 1.648x, LZ4 0.837x, Snappy 1.634x, XZ 0.978x.
+
+## Review
+
+Verdict: pass for B1 closure.
+
+The early significant product-composition concern in `.10x/reviews/2026-07-12-p3-b1-registry-transform-execution-review.md` was closed by compressed binary parity and the final streaming product-composition slice. The final product-composition review reports no critical or significant defect in the retained architecture. Leaf reviews report no critical or significant remaining defect for every registered transform; performance measurements meet or exceed the recorded ratios, with LZ4 and Brotli above the stated reference floors.
+
+Residual risks are deliberately not B1 blockers:
+
+- Catalog-wide fuzz/matrix breadth remains owned by `.10x/tickets/2026-07-11-p3-b13-native-format-matrix.md` and the individual format tickets.
+- Remote weak-provider compatibility spooling and growing-spool overlap remain owned by G2/G3/G4 remote I/O tickets.
+- Format-specific text/binary semantics beyond byte transforms remain owned by the corresponding format codec tickets.
+
+## Retrospective
+
+The winning architecture was the boring one: transform drivers own parser/framing/checksum details, while `cdf-runtime` owns allocation, expansion, cancellation, and byte-source composition. That split prevented per-codec memory-policy drift and kept source runtime from importing concrete transform crates. The important performance lesson is that reference-rate tests must compare equivalent streaming lifetimes; the first UTF-8 comparison was rejected because it measured copy topology rather than transform compute.

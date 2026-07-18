@@ -1,7 +1,7 @@
 Status: recorded
 Created: 2026-07-12
 Updated: 2026-07-12
-Target: crates/cdf-transform-zstd, .10x/tickets/2026-07-11-p3-b1-streaming-byte-transforms.md
+Target: crates/cdf-transform-zstd, .10x/tickets/done/2026-07-11-p3-b1-streaming-byte-transforms.md
 Verdict: pass
 
 # Native zstd driver adversarial review
