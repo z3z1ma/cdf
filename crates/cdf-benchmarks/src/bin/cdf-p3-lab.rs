@@ -8,6 +8,7 @@ use cdf_benchmarks::{
     host_class, install_baseline, plan_profile, run_cdf_command_workload,
     run_interop_fixture_workload, run_preoptimization_baseline, run_prepared_file_to_destination,
     run_prepared_file_to_package, run_reference, run_startup_control_workload,
+    summarize_package_shape,
 };
 
 fn main() {
@@ -98,6 +99,9 @@ fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         }
         [command] if command == "host-class" => {
             write_stdout(host_class(&provider().fingerprint()?)?.as_bytes())
+        }
+        [command, package_dir] if command == "package-shape" => {
+            write_stdout(&canonical_json_bytes(&summarize_package_shape(package_dir)?)?)
         }
         [command, request] if command == "run-cell" => {
             let spec: MacroRunSpec = serde_json::from_slice(&fs::read(request)?)?;
