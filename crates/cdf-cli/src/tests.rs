@@ -16517,6 +16517,8 @@ fn test_cli(project: &TestProject) -> crate::args::Cli {
         terminal: crate::terminal::TerminalPolicy::default(),
         project: Some(project.root.clone()),
         env: None,
+        memory_budget: None,
+        spill_budget: None,
         command: crate::args::Command::Version,
     }
 }

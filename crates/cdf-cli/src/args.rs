@@ -41,6 +41,8 @@ pub struct Cli {
     pub terminal: TerminalPolicy,
     pub project: Option<PathBuf>,
     pub env: Option<String>,
+    pub memory_budget: Option<u64>,
+    pub spill_budget: Option<u64>,
     pub command: Command,
 }
 
@@ -254,6 +256,8 @@ impl Cli {
         let mut verbose = 0_u8;
         let mut project = None;
         let mut env = None;
+        let mut memory_budget = None;
+        let mut spill_budget = None;
         let mut remaining = Vec::new();
         let mut index = 0;
         while index < raw.len() {
@@ -296,6 +300,16 @@ impl Cli {
                 option if option == "--unicode" || option.starts_with("--unicode=") => {
                     let (value, consumed) = policy_value(&raw, index, "--unicode")?;
                     unicode = PolicyMode::parse("--unicode", value)?;
+                    index += consumed;
+                }
+                option if option == "--memory-budget" || option.starts_with("--memory-budget=") => {
+                    let (value, consumed) = policy_value(&raw, index, "--memory-budget")?;
+                    memory_budget = Some(parse_byte_size("--memory-budget", value)?);
+                    index += consumed;
+                }
+                option if option == "--spill-budget" || option.starts_with("--spill-budget=") => {
+                    let (value, consumed) = policy_value(&raw, index, "--spill-budget")?;
+                    spill_budget = Some(parse_byte_size("--spill-budget", value)?);
                     index += consumed;
                 }
                 "--project" => {
@@ -342,6 +356,8 @@ impl Cli {
             terminal,
             project,
             env,
+            memory_budget,
+            spill_budget,
             command,
         })
     }
@@ -361,6 +377,47 @@ fn policy_value<'a>(
     args.get(index + 1)
         .map(|value| (value.as_str(), 2))
         .ok_or_else(|| CliError::usage(format!("{flag} requires a value")))
+}
+
+pub(crate) fn parse_byte_size(label: &str, value: &str) -> Result<u64, CliError> {
+    let value = value.trim();
+    if value.is_empty() {
+        return Err(CliError::usage(format!("{label} requires a byte size")));
+    }
+    let split = value
+        .find(|character: char| !(character.is_ascii_digit() || character == '_'))
+        .unwrap_or(value.len());
+    let (digits, suffix) = value.split_at(split);
+    if digits.is_empty() {
+        return Err(CliError::usage(format!(
+            "{label} must start with an integer byte count"
+        )));
+    }
+    let number = digits.replace('_', "").parse::<u64>().map_err(|_| {
+        CliError::usage(format!(
+            "{label} must be an integer byte count with an optional suffix"
+        ))
+    })?;
+    if number == 0 {
+        return Err(CliError::usage(format!(
+            "{label} must be greater than zero"
+        )));
+    }
+    let multiplier = match suffix.trim().to_ascii_lowercase().as_str() {
+        "" | "b" => 1,
+        "k" | "kb" | "kib" => 1024,
+        "m" | "mb" | "mib" => 1024_u64.pow(2),
+        "g" | "gb" | "gib" => 1024_u64.pow(3),
+        "t" | "tb" | "tib" => 1024_u64.pow(4),
+        _ => {
+            return Err(CliError::usage(format!(
+                "{label} suffix must be one of B, KiB, MiB, GiB, or TiB"
+            )));
+        }
+    };
+    number.checked_mul(multiplier).ok_or_else(|| {
+        CliError::usage(format!("{label} byte size exceeds the supported u64 range"))
+    })
 }
 
 fn parse_command(args: &[String]) -> Result<Command, CliError> {
@@ -844,12 +901,14 @@ pub(crate) fn cli_command() -> ClapCommand {
         .version(VERSION)
         .about("Plan, run, and inspect governed data movement")
         .long_about("Plan, run, and inspect governed data movement with durable packages, checkpoints, receipts, and schema evidence.")
-        .after_long_help("Environment:\n  CDF_PROJECT       Project directory or cdf.toml path\n  CDF_ENV           Project environment name\n  CDF_TARGET        Default destination\n  NO_COLOR          Disable color unless --color always is explicit\n  CLICOLOR_FORCE    Request color when output is interactive\n  COLUMNS           Width fallback when terminal size is unavailable\n\nExamples:\n  cdf validate\n  cdf plan local.events --to duckdb://.cdf/dev.duckdb\n  cdf run local.events -v\n  cdf inspect run RUN_ID")
+        .after_long_help("Environment:\n  CDF_PROJECT       Project directory or cdf.toml path\n  CDF_ENV           Project environment name\n  CDF_TARGET        Default destination\n  CDF_MEMORY_BUDGET Process memory budget, e.g. 4GiB\n  CDF_SPILL_BUDGET  Spill/disk budget, e.g. 64GiB\n  NO_COLOR          Disable color unless --color always is explicit\n  CLICOLOR_FORCE    Request color when output is interactive\n  COLUMNS           Width fallback when terminal size is unavailable\n\nExamples:\n  cdf validate\n  cdf plan local.events --to duckdb://.cdf/dev.duckdb\n  cdf run local.events -v\n  cdf inspect run RUN_ID")
         .arg(flag("quiet", "quiet").short('q').global(true).conflicts_with("verbose").help("Suppress progress and non-primary success narration"))
         .arg(flag("verbose", "verbose").short('v').global(true).action(ArgAction::Count).conflicts_with("quiet").help("Show evidence detail; repeat for diagnostics"))
         .arg(policy_option("color", "color", "WHEN", "Color policy: auto, always, or never"))
         .arg(policy_option("progress", "progress", "WHEN", "Progress policy: auto, always, or never"))
         .arg(policy_option("unicode", "unicode", "WHEN", "Unicode policy: auto, always, or never"))
+        .arg(option("memory_budget", "memory-budget", "BYTES").global(true))
+        .arg(option("spill_budget", "spill-budget", "BYTES").global(true))
         .arg_required_else_help(false)
         .disable_help_subcommand(true)
         .subcommand(cmd("help").arg(values_arg("command").value_name("COMMAND")))
@@ -1148,6 +1207,8 @@ fn option_help(long: &str) -> &'static str {
         "color" => "Color policy: auto, always, or never",
         "progress" => "Progress policy: auto, always, or never",
         "unicode" => "Unicode policy: auto, always, or never",
+        "memory-budget" => "Process memory budget, e.g. 4GiB or 512MiB",
+        "spill-budget" => "Spill/disk budget, e.g. 64GiB or 512MiB",
         "quiet" => "Suppress progress and non-primary success narration",
         "verbose" => "Show evidence detail; repeat for diagnostics",
         _ => "Set the value named in this command's usage",
@@ -1367,7 +1428,39 @@ fn mint_cli_id(prefix: &str) -> String {
 mod run_jobs_tests {
     use std::ffi::OsString;
 
-    use super::{Cli, Command};
+    use super::{Cli, Command, parse_byte_size};
+
+    #[test]
+    fn global_runtime_budgets_accept_binary_suffixes() {
+        let cli = Cli::parse(
+            [
+                "cdf",
+                "--memory-budget",
+                "2GiB",
+                "run",
+                "local.events",
+                "--spill-budget=64GiB",
+            ]
+            .map(OsString::from),
+        )
+        .unwrap();
+        assert_eq!(cli.memory_budget, Some(2 * 1024 * 1024 * 1024));
+        assert_eq!(cli.spill_budget, Some(64 * 1024 * 1024 * 1024));
+    }
+
+    #[test]
+    fn byte_size_parser_rejects_zero_and_unknown_suffixes() {
+        assert_eq!(
+            parse_byte_size("--memory-budget", "512MiB").unwrap(),
+            512 * 1024 * 1024
+        );
+
+        let error = parse_byte_size("--memory-budget", "0").unwrap_err();
+        assert!(error.message.contains("must be greater than zero"));
+
+        let error = parse_byte_size("--spill-budget", "10XB").unwrap_err();
+        assert!(error.message.contains("suffix must be one of"));
+    }
 
     #[test]
     fn run_jobs_is_a_nonzero_user_ceiling() {
