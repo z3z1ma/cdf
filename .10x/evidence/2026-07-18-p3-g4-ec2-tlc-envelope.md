@@ -44,6 +44,7 @@ Tuned machine artifacts:
 - `.10x/evidence/.storage/2026-07-18-p3-g4-ec2-native-duckdb-ingest-observation.json`
 - `.10x/evidence/.storage/2026-07-18-p3-g4-ec2-native-duckdb-ingest-run-cell.json`
 - `.10x/evidence/.storage/2026-07-18-p3-g4-ec2-native-duckdb-ingest-reference.json`
+- `.10x/evidence/.storage/2026-07-18-p3-g4-ec2-local-default-measured.json`
 
 Same-host measurements:
 
@@ -81,6 +82,8 @@ This supports G4 by moving the TLC envelope evidence from laptop triage to host-
 The scheduler-default repair supports retaining a default-admission change: the pathological local fast-source/DuckDB run moved from low-CPU non-completion to a completed 33.83-second run, while the remote HF run stayed in the same class as the previous tuned-host remote measurement. The evidence also narrows the next G4 owner: the admission bug is no longer hiding the local control, and the remaining gap is destination/package execution rather than source-frontier starvation.
 
 The native DuckDB reference cell turns the G4 target from an approximation into a measured host-local comparison. It challenges any interpretation that 33–37 seconds is merely public network or benchmark-host noise: DuckDB can persistently materialize the same 12 files in about 4.17 seconds once the bytes are local, and the raw network floor is about 1.48 seconds. The next retained data-plane work must therefore reduce CDF's destination/package hot path by multiples, not by tuning small remote-read constants.
+
+The L6 `measure-cdf` local default cell makes the retained CDF baseline itself a standard benchmark-lab observation: full-year local TLC to DuckDB completed in `33.955522533s`, with 41,169,720 rows and ten extracted phase metrics. The decisive phases were `destination_ingress=32.916s` and `package_execution=33.136s`; local `source_read` and `decode` together were under 2.3 seconds. This confirms the current G4 owner as destination/package execution under host-labeled evidence.
 
 The pre-tuning run still has diagnostic value: it proved the benchmark host was originally too slow at durable storage for promotion evidence. After tuning, the HF wall improved from `43.39s` to `36.51s`, but the result is still far above the P3 target envelope.
 

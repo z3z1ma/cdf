@@ -216,6 +216,12 @@ Depends on G1-G3; DuckDB bulk and deterministic scaling closeout are complete.
   - With the tuned raw parallel HF download floor of `1.48s`, the measured raw+native composite floor is about `5.65s` and the 1.5x G4 ceiling is about `8.47s`. The current CDF HF default wall of `36.98s` is about `4.37x` that ceiling.
   - Local validation: `cargo fmt --check && CARGO_BUILD_JOBS=12 cargo test -p cdf-benchmarks --locked -j 12` — passed, including the new idempotent DuckDB ingest reference unit test, baseline coverage, and staged-destination auto-jobs invariant update.
   - Current conclusion: G4 has enough benchmark authority to stop treating the gap as measurement ambiguity. The next retained code change must materially reduce destination/package execution rather than touching remote-read constants.
+- L6 measured-command baseline:
+  - After `.10x/tickets/2026-07-18-p3-l6-ec2-benchmark-host.md` added `measure-cdf`, the prepared full-year local TLC workspace was remeasured as a standard host-labeled lab observation instead of an ad-hoc stopwatch run.
+  - Machine storage: `.10x/evidence/.storage/2026-07-18-p3-g4-ec2-local-default-measured.json`.
+  - Command: `CDF_BENCH_REMOTE_WORKSPACE=/home/ec2-user/cdf-bench/repo/target/cdf-benchmarks/g4-scheduler-default-20260718085558/local-workspace CDF_BENCH_SAMPLES=1 CDF_BENCH_IO_MODE=uncontrolled CDF_BENCH_TIMEOUT_MS=120000 tools/p3-ec2-benchmark-host.sh measure-cdf target/cdf-benchmarks/g4-local-default-measured.json nyc_tlc_yellow_2024 tlc_local_duckdb_default -- run tlc.yellow --json --progress never`.
+  - Result: observed one-sample local full-year TLC-to-DuckDB cell, `33.955522533s`, 41,169,720 rows, peak RSS about 2.15 GiB. Extracted phase telemetry: `source_read=2.052s`, `decode=0.156s`, `validation_normalization=0.210s`, `segment_encode=9.868s`, `persist_hash=1.617s`, `destination_ingress=32.916s`, `package_execution=33.136s`, `destination_write_receipt=0.677s`.
+  - Current conclusion is unchanged but now cleaner: the measured local baseline proves G4's next code owner is destination/package execution. Any default-changing patch must beat this host-labeled cell, not a laptop or manual `/usr/bin/time` transcript.
 
 ## Review
 
