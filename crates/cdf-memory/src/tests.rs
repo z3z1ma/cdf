@@ -388,6 +388,26 @@ fn budget_resolution_preserves_native_headroom_and_rejects_unsafe_shape() {
 }
 
 #[test]
+fn unenforced_policy_resolution_does_not_shave_the_default_as_host_authority() {
+    let resolution = resolve_unenforced_memory_budget(
+        None,
+        DEFAULT_PROCESS_BUDGET_BYTES,
+        64 * 1024 * 1024,
+        DEFAULT_SPILL_BUDGET_BYTES,
+    )
+    .unwrap();
+
+    assert_eq!(
+        resolution.process_budget_bytes,
+        DEFAULT_PROCESS_BUDGET_BYTES
+    );
+    assert_eq!(
+        resolution.managed_pool_bytes,
+        DEFAULT_PROCESS_BUDGET_BYTES - resolution.native_headroom_bytes
+    );
+}
+
+#[test]
 fn neutral_crate_has_no_runtime_or_implementation_dependencies() {
     let manifest = include_str!("../Cargo.toml");
     for forbidden in [

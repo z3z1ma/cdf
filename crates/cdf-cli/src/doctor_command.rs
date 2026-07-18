@@ -8,6 +8,7 @@ use crate::{
     output::{CliError, CommandOutput},
     render::{
         RenderDocument,
+        humanize::humanize_bytes,
         primitives::{KeyValuePanel, NextCommand, SectionRule, StatusKind, StatusLine, Table},
         redaction::redact_uri_userinfo,
     },
@@ -59,6 +60,7 @@ pub(crate) fn doctor(
     checks.extend(destination_checks(
         context.destination_runtime(destinations),
     ));
+    checks.push(runtime_memory_budget_check(cli, execution));
     checks.push(ledger_destination_drift_check(&context));
 
     let failed = checks
@@ -76,6 +78,46 @@ pub(crate) fn doctor(
     };
     let exit_code = if failed == 0 { 0 } else { 1 };
     CommandOutput::rendered_with_exit_code("doctor", report.render_document(), report, exit_code)
+}
+
+fn runtime_memory_budget_check(
+    cli: &cdf_cli_core::args::Cli,
+    execution: &cdf_runtime::ExecutionServices,
+) -> DoctorCheck {
+    let report = match crate::runtime_budget::resolve(cli) {
+        Ok(report) => report,
+        Err(error) => {
+            return DoctorCheck::failed(
+                "runtime_memory_budget",
+                format!(
+                    "runtime memory budget could not be resolved: {}",
+                    error.message
+                ),
+            );
+        }
+    };
+    let managed_snapshot = execution.memory().snapshot();
+    let resolution = &report.resolution;
+    let enforcement = if report.has_enforced_memory_authority() {
+        "cgroup-enforced"
+    } else {
+        "not cgroup-enforced"
+    };
+    let message = format!(
+        "process budget {}; managed pool {}; spill budget {}; {enforcement}",
+        humanize_bytes(resolution.process_budget_bytes),
+        humanize_bytes(resolution.managed_pool_bytes),
+        humanize_bytes(resolution.spill_budget_bytes),
+    );
+    let details = json!({
+        "budget": report,
+        "managed_memory_snapshot": managed_snapshot,
+    });
+    if report.has_enforced_memory_authority() {
+        DoctorCheck::passed("runtime_memory_budget", message).with_details(details)
+    } else {
+        DoctorCheck::unsupported("runtime_memory_budget", message).with_details(details)
+    }
 }
 
 fn project_health_details(context: &ProjectContext) -> serde_json::Value {

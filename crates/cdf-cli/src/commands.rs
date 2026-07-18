@@ -2,7 +2,7 @@ use cdf_kernel::CdfError;
 use serde_json::json;
 
 use crate::{
-    args::{Cli, Command, parse_byte_size},
+    args::{Cli, Command},
     error_catalog,
     output::{CliError, CommandOutput, InvocationResult},
     render::{RenderConfig, RenderDocument},
@@ -111,7 +111,7 @@ fn default_services(
     ),
     CliError,
 > {
-    let budgets = cdf_runtime_budgets(cli)?;
+    let budgets = crate::runtime_budget::resolve(cli)?.resolution;
     cdf_engine::StandaloneExecutionHost::default_services_with_spill(
         budgets.managed_pool_bytes,
         budgets.spill_budget_bytes,
@@ -119,89 +119,9 @@ fn default_services(
     .map_err(Into::into)
 }
 
-fn cdf_runtime_budgets(cli: &Cli) -> Result<cdf_memory::MemoryBudgetResolution, CliError> {
-    cdf_runtime_budgets_from(
-        cli.memory_budget,
-        cli.spill_budget,
-        env_byte_size("CDF_MEMORY_BUDGET")?,
-        env_byte_size("CDF_SPILL_BUDGET")?,
-        cgroup_memory_authority(),
-    )
-}
-
-fn cdf_runtime_budgets_from(
-    cli_memory_budget: Option<u64>,
-    cli_spill_budget: Option<u64>,
-    env_memory_budget: Option<u64>,
-    env_spill_budget: Option<u64>,
-    cgroup_authority: Option<u64>,
-) -> Result<cdf_memory::MemoryBudgetResolution, CliError> {
-    let requested_process_bytes = cli_memory_budget.or(env_memory_budget);
-    let spill_budget_bytes = cli_spill_budget
-        .or(env_spill_budget)
-        .unwrap_or(cdf_memory::DEFAULT_SPILL_BUDGET_BYTES);
-    let effective_authority = cgroup_authority.unwrap_or_else(|| {
-        requested_process_bytes.unwrap_or(cdf_memory::DEFAULT_PROCESS_BUDGET_BYTES)
-    });
-    let resolution = cdf_memory::resolve_memory_budget(
-        requested_process_bytes,
-        effective_authority,
-        64 * 1024 * 1024,
-        spill_budget_bytes,
-    )?;
-    Ok(resolution)
-}
-
-fn env_byte_size(name: &str) -> Result<Option<u64>, CliError> {
-    match std::env::var(name) {
-        Ok(value) => parse_byte_size(name, &value).map(Some),
-        Err(std::env::VarError::NotPresent) => Ok(None),
-        Err(std::env::VarError::NotUnicode(_)) => Err(CliError::usage(format!(
-            "{name} must be valid UTF-8 when set"
-        ))),
-    }
-}
-
-fn cgroup_memory_authority() -> Option<u64> {
-    std::fs::read_to_string("/sys/fs/cgroup/memory.max")
-        .ok()
-        .and_then(|value| value.trim().parse::<u64>().ok())
-        .filter(|value| *value > 0)
-}
-
 pub(crate) fn json_cli_error(error: serde_json::Error) -> CliError {
     CliError::mapped(
         CdfError::internal(error.to_string()),
         error_catalog::CLI_JSON,
     )
-}
-
-#[cfg(test)]
-mod runtime_budget_tests {
-    use super::cdf_runtime_budgets_from;
-
-    #[test]
-    fn cli_budgets_override_environment_without_default_ceiling() {
-        let gib = 1024 * 1024 * 1024;
-        let resolution =
-            cdf_runtime_budgets_from(Some(8 * gib), None, Some(2 * gib), Some(32 * gib), None)
-                .unwrap();
-
-        assert_eq!(resolution.process_budget_bytes, 8 * gib);
-        assert_eq!(resolution.spill_budget_bytes, 32 * gib);
-        assert!(resolution.managed_pool_bytes > 7 * gib / 2);
-    }
-
-    #[test]
-    fn cgroup_authority_remains_a_real_ceiling() {
-        let gib = 1024 * 1024 * 1024;
-        let error =
-            cdf_runtime_budgets_from(Some(8 * gib), None, None, None, Some(4 * gib)).unwrap_err();
-
-        assert!(
-            error
-                .message
-                .contains("requested process memory budget 8589934592 exceeds effective authority")
-        );
-    }
 }

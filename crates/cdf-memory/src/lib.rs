@@ -897,12 +897,47 @@ pub fn resolve_memory_budget(
     minimum_working_set_bytes: u64,
     spill_budget_bytes: u64,
 ) -> Result<MemoryBudgetResolution> {
+    resolve_memory_budget_inner(
+        requested_process_bytes,
+        effective_authority_bytes,
+        true,
+        minimum_working_set_bytes,
+        spill_budget_bytes,
+    )
+}
+
+pub fn resolve_unenforced_memory_budget(
+    requested_process_bytes: Option<u64>,
+    effective_policy_bytes: u64,
+    minimum_working_set_bytes: u64,
+    spill_budget_bytes: u64,
+) -> Result<MemoryBudgetResolution> {
+    resolve_memory_budget_inner(
+        requested_process_bytes,
+        effective_policy_bytes,
+        false,
+        minimum_working_set_bytes,
+        spill_budget_bytes,
+    )
+}
+
+fn resolve_memory_budget_inner(
+    requested_process_bytes: Option<u64>,
+    effective_authority_bytes: u64,
+    reserve_external_authority_margin: bool,
+    minimum_working_set_bytes: u64,
+    spill_budget_bytes: u64,
+) -> Result<MemoryBudgetResolution> {
     if effective_authority_bytes == 0 || minimum_working_set_bytes == 0 || spill_budget_bytes == 0 {
         return Err(CdfError::contract(
             "memory authority, minimum working set, and spill budget must be nonzero",
         ));
     }
-    let authority_ceiling = effective_authority_bytes.saturating_mul(80) / 100;
+    let authority_ceiling = if reserve_external_authority_margin {
+        effective_authority_bytes.saturating_mul(80) / 100
+    } else {
+        effective_authority_bytes
+    };
     let process_budget_bytes = match requested_process_bytes {
         Some(requested) if requested > effective_authority_bytes => {
             return Err(CdfError::contract(format!(

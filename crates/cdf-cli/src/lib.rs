@@ -25,6 +25,7 @@ mod replay_command;
 mod reports;
 mod resume_command;
 mod run_command;
+mod runtime_budget;
 mod scan_command;
 mod schema_command;
 mod source_registry;
