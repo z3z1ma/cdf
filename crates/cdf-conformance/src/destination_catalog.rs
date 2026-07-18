@@ -98,7 +98,7 @@ pub(crate) fn local_uri(scheme: &str, path: &Path) -> String {
 fn catalog_is_the_single_first_party_destination_enrollment_point() {
     assert_eq!(
         registry().unwrap().registered_schemes(),
-        ["duckdb", "parquet", "postgres"]
+        ["duckdb", "parquet", "postgres", "postgresql"]
     );
 }
 
