@@ -5,8 +5,10 @@ use std::{
 };
 
 use cdf_kernel::{
-    CdfError, DestinationId, ExpiredScopeLeaseProof, LeaseAuthorityDomainId, LeaseOwnerId, Result,
-    ScopeKey, ScopeLease, ScopeLeaseStore, TargetName,
+    CdfError, ContentClaimAttemptId, ContentPublicationClaim, ContentPublicationClaimId,
+    ContentPublicationClaimState, DestinationId, ExpiredScopeLeaseProof, ImmutableContentIdentity,
+    LeaseAuthorityDomainId, LeaseOwnerId, Result, ScopeKey, ScopeLease, ScopeLeaseStore,
+    TargetName,
 };
 use serde::{Deserialize, Serialize};
 
@@ -76,6 +78,27 @@ impl StagingLease {
             && self.scope_lease.owner == other.scope_lease.owner
             && self.scope_lease.fencing_token == other.scope_lease.fencing_token
             && self.scope_lease.acquired_at_ms == other.scope_lease.acquired_at_ms
+    }
+
+    pub fn content_publication_claim(
+        &self,
+        content: ImmutableContentIdentity,
+        claim_id: ContentPublicationClaimId,
+        claim_generation: u64,
+        state: ContentPublicationClaimState,
+    ) -> Result<ContentPublicationClaim> {
+        self.validate()?;
+        ContentPublicationClaim::new(
+            self.identity.destination_id.clone(),
+            self.identity.target.clone(),
+            ContentClaimAttemptId::new(self.identity.attempt_id.as_str())?,
+            self.authority_domain_id.clone(),
+            self.scope_lease.fencing_token,
+            content,
+            claim_id,
+            claim_generation,
+            state,
+        )
     }
 
     pub(crate) fn validate(&self) -> Result<()> {

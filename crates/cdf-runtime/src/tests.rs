@@ -2185,6 +2185,39 @@ fn supervised_test_staging_lease(
     (lease, guard)
 }
 
+#[test]
+fn staging_lease_builds_fenced_content_publication_claim() {
+    let attempt = LoadAttemptId::new("content-attempt").unwrap();
+    let lease = test_staging_lease(&attempt, "parquet", "target");
+    let content = cdf_kernel::ImmutableContentIdentity::new(
+        cdf_kernel::ContentStoreNamespace::new("store").unwrap(),
+        cdf_kernel::ContentObjectKey::new("objects/a.parquet").unwrap(),
+        42,
+        cdf_kernel::ContentDigest::new(
+            cdf_kernel::ContentDigestAlgorithm::new("sha256").unwrap(),
+            cdf_kernel::ContentDigestValue::new("a".repeat(64)).unwrap(),
+        )
+        .unwrap(),
+        Some(cdf_kernel::ContentProviderGeneration::new("etag-a").unwrap()),
+    )
+    .unwrap();
+    let claim = lease
+        .content_publication_claim(
+            content.clone(),
+            cdf_kernel::ContentPublicationClaimId::new("claim-a").unwrap(),
+            1,
+            cdf_kernel::ContentPublicationClaimState::Published,
+        )
+        .unwrap();
+
+    assert_eq!(claim.destination_id, lease.identity.destination_id);
+    assert_eq!(claim.target, lease.identity.target);
+    assert_eq!(claim.attempt_id.as_str(), attempt.as_str());
+    assert_eq!(claim.lease_authority_domain_id, lease.authority_domain_id);
+    assert_eq!(claim.lease_fencing_token, lease.scope_lease.fencing_token);
+    assert_eq!(claim.content, content);
+}
+
 struct RecordingStagingLeaseAuthority {
     renewals: AtomicUsize,
     released: AtomicBool,

@@ -44,6 +44,16 @@ macro_rules! string_id {
 string_id!(BatchId);
 string_id!(CheckpointId);
 string_id!(ContractRef);
+string_id!(CommittedContentRootId);
+string_id!(ContentClaimAttemptId);
+string_id!(ContentDigestAlgorithm);
+string_id!(ContentDigestValue);
+string_id!(ContentObjectKey);
+string_id!(ContentProviderGeneration);
+string_id!(ContentPublicationClaimId);
+string_id!(ContentReclamationCandidateSource);
+string_id!(ContentRootShardRef);
+string_id!(ContentStoreNamespace);
 string_id!(DiscoveryManifestHash);
 string_id!(DestinationId);
 string_id!(IdempotencyToken);
