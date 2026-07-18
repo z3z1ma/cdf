@@ -1,0 +1,1 @@
+{"batch_rows":65536,"checkpoint":true,"include_row_key":true,"kind":"duck_db_arrow_stream_scan_ingest","output":"target/cdf-benchmarks/g4-duckdb-arrow-stream-scan-row-key-20260718145233/duckdb-arrow-stream-scan-row-key.duckdb","rows":41169720,"verify_rowid":false}

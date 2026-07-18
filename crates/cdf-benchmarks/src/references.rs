@@ -230,6 +230,9 @@ pub enum ReferenceWorkload {
         include_row_key: bool,
         checkpoint: bool,
         verify_rowid: bool,
+        duckdb_threads: Option<i64>,
+        duckdb_memory_limit_bytes: Option<u64>,
+        duckdb_temp_directory_budget_bytes: Option<u64>,
     },
     DuckDbParquetStagedIngest {
         output: PathBuf,
@@ -443,6 +446,9 @@ pub fn run_reference(workload: &ReferenceWorkload) -> BenchResult<WorkerMeasurem
             include_row_key,
             checkpoint,
             verify_rowid,
+            duckdb_threads,
+            duckdb_memory_limit_bytes,
+            duckdb_temp_directory_budget_bytes,
         } => run_duckdb_arrow_stream_scan_ingest(
             output,
             *rows,
@@ -450,6 +456,9 @@ pub fn run_reference(workload: &ReferenceWorkload) -> BenchResult<WorkerMeasurem
             *include_row_key,
             *checkpoint,
             *verify_rowid,
+            *duckdb_threads,
+            *duckdb_memory_limit_bytes,
+            *duckdb_temp_directory_budget_bytes,
         ),
         ReferenceWorkload::DuckDbParquetStagedIngest {
             output,
@@ -697,6 +706,9 @@ fn run_duckdb_arrow_stream_scan_ingest(
     include_row_key: bool,
     checkpoint: bool,
     verify_rowid: bool,
+    duckdb_threads: Option<i64>,
+    duckdb_memory_limit_bytes: Option<u64>,
+    duckdb_temp_directory_budget_bytes: Option<u64>,
 ) -> BenchResult<WorkerMeasurement> {
     if rows == 0 {
         return Err(bench_error(
@@ -714,6 +726,12 @@ fn run_duckdb_arrow_stream_scan_ingest(
     let reader = TlcArrowBatchReader::new(rows, batch_rows, include_row_key, logical_bytes.clone());
     let mut stream = FFI_ArrowArrayStream::new(Box::new(reader));
     let mut connection = RawDuckDbConnection::open(output)?;
+    configure_duckdb_arrow_stream_scan(
+        &mut connection,
+        duckdb_threads,
+        duckdb_memory_limit_bytes,
+        duckdb_temp_directory_budget_bytes,
+    )?;
     register_duckdb_arrow_stream_scan(connection.handle(), "cdf_arrow_stream", &mut stream)?;
     connection.query("CREATE TABLE arrow_stream_scan AS SELECT * FROM cdf_arrow_stream")?;
     if checkpoint {
@@ -1411,6 +1429,39 @@ fn append_arrow_batch_as_duckdb_data_chunk(
     }
 }
 
+fn configure_duckdb_arrow_stream_scan(
+    connection: &mut RawDuckDbConnection,
+    threads: Option<i64>,
+    memory_limit_bytes: Option<u64>,
+    temp_directory_budget_bytes: Option<u64>,
+) -> BenchResult<()> {
+    if let Some(threads) = threads {
+        if threads <= 0 {
+            return Err(bench_error(
+                "DuckDB Arrow stream-scan reference duckdb_threads must be positive",
+            ));
+        }
+        connection.query(&format!("SET threads = {threads}"))?;
+    }
+    if let Some(bytes) = memory_limit_bytes {
+        if bytes == 0 {
+            return Err(bench_error(
+                "DuckDB Arrow stream-scan reference duckdb_memory_limit_bytes must be positive",
+            ));
+        }
+        connection.query(&format!("SET memory_limit = '{}B'", bytes))?;
+    }
+    if let Some(bytes) = temp_directory_budget_bytes {
+        if bytes == 0 {
+            return Err(bench_error(
+                "DuckDB Arrow stream-scan reference duckdb_temp_directory_budget_bytes must be positive",
+            ));
+        }
+        connection.query(&format!("SET max_temp_directory_size = '{}B'", bytes))?;
+    }
+    connection.query("SET preserve_insertion_order = false")
+}
+
 fn register_duckdb_arrow_stream_scan(
     connection: duckdb::ffi::duckdb_connection,
     view_name: &str,
@@ -1816,6 +1867,9 @@ mod tests {
             include_row_key: false,
             checkpoint: true,
             verify_rowid: true,
+            duckdb_threads: Some(1),
+            duckdb_memory_limit_bytes: None,
+            duckdb_temp_directory_budget_bytes: None,
         })
         .unwrap();
 
