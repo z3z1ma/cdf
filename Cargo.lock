@@ -716,6 +716,7 @@ dependencies = [
 name = "cdf-bench-core"
 version = "0.1.0"
 dependencies = [
+ "cdf-memory",
  "hex",
  "serde",
  "serde_json",

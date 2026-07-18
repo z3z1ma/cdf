@@ -73,6 +73,14 @@ pub trait HostCapabilityProvider: Send + Sync {
     fn discover_tool(&self, name: &str) -> Capability<ToolIdentity>;
 
     fn process_observer_identity(&self) -> MeasurementProviderIdentity;
+
+    fn cgroup_memory_report(&self) -> Capability<cdf_memory::CgroupV2MemoryReport> {
+        Capability::Unavailable {
+            reason: "cgroup memory authority is unavailable from this host provider".to_owned(),
+            method: "provider-cgroup-memory".to_owned(),
+            provider_version: "provider-default-v1".to_owned(),
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -210,6 +218,7 @@ pub fn run_macro_cell(
             logical_bytes: payload.logical_bytes,
             physical_bytes: payload.physical_bytes,
             peak_rss_bytes: child.peak_rss_bytes,
+            cgroup_memory: cgroup_report(provider.cgroup_memory_report()),
             spill_bytes: payload.spill_bytes,
             phases: payload.phases,
         });
@@ -226,6 +235,15 @@ pub fn run_macro_cell(
         measurement_provider,
         destination_path: None,
     })
+}
+
+fn cgroup_report(
+    capability: Capability<cdf_memory::CgroupV2MemoryReport>,
+) -> Option<cdf_memory::CgroupV2MemoryReport> {
+    match capability {
+        Capability::Supported { value, .. } => Some(value),
+        Capability::Unavailable { .. } | Capability::Failed { .. } => None,
+    }
 }
 
 fn validate_child_command(command: &ChildCommand) -> BenchResult<()> {

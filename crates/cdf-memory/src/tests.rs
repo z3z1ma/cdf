@@ -1,5 +1,6 @@
 use std::{
     collections::BTreeMap,
+    path::PathBuf,
     pin::Pin,
     sync::{
         Arc,
@@ -408,6 +409,69 @@ fn unenforced_policy_resolution_does_not_shave_the_default_as_host_authority() {
 }
 
 #[test]
+fn cgroup_memory_report_reads_bounded_unbounded_and_events() {
+    let root = unique_temp_dir("cdf-cgroup-memory");
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::write(root.join("memory.max"), "1073741824\n").unwrap();
+    std::fs::write(root.join("memory.current"), "268435456\n").unwrap();
+    std::fs::write(root.join("memory.peak"), "536870912\n").unwrap();
+    std::fs::write(
+        root.join("memory.events"),
+        "low 0\nhigh 1\nmax 2\noom 0\noom_kill 0\n",
+    )
+    .unwrap();
+
+    let report = cgroup_v2_memory_report_from_root(&root);
+    assert_eq!(report.max_bytes, Some(1_073_741_824));
+    assert_eq!(report.current_bytes, Some(268_435_456));
+    assert_eq!(report.peak_bytes, Some(536_870_912));
+    assert_eq!(report.events["high"], 1);
+    assert_eq!(report.events["oom_kill"], 0);
+    assert!(report.read_errors.is_empty(), "{:?}", report.read_errors);
+
+    std::fs::write(root.join("memory.max"), "max\n").unwrap();
+    let unbounded = cgroup_v2_memory_report_from_root(&root);
+    assert_eq!(unbounded.max_bytes, None);
+
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn cgroup_current_resolution_uses_process_scope_not_filesystem_root() {
+    assert_eq!(
+        parse_cgroup_v2_relative_path("0::/user.slice/user-1000.slice/session-7.scope\n").unwrap(),
+        PathBuf::from("user.slice/user-1000.slice/session-7.scope")
+    );
+    assert_eq!(
+        parse_cgroup_v2_relative_path("0::/\n").unwrap(),
+        PathBuf::new()
+    );
+    assert!(parse_cgroup_v2_relative_path("0::/../escape\n").is_err());
+    assert!(parse_cgroup_v2_relative_path("1:name=systemd:/not-v2\n").is_err());
+}
+
+#[test]
+fn cgroup_current_report_reads_the_resolved_scope_files() {
+    let root = unique_temp_dir("cdf-current-cgroup");
+    let scope = root.join("user.slice/user-1000.slice/session-7.scope");
+    std::fs::create_dir_all(&scope).unwrap();
+    let proc = root.join("proc-self-cgroup");
+    std::fs::write(&proc, "0::/user.slice/user-1000.slice/session-7.scope\n").unwrap();
+    std::fs::write(scope.join("memory.max"), "2147483648\n").unwrap();
+    std::fs::write(scope.join("memory.current"), "1234\n").unwrap();
+    std::fs::write(scope.join("memory.peak"), "5678\n").unwrap();
+    std::fs::write(scope.join("memory.events"), "oom 0\noom_kill 0\n").unwrap();
+
+    let report = current_cgroup_v2_memory_report_from(&root, &proc).unwrap();
+    assert_eq!(report.root, scope);
+    assert_eq!(report.max_bytes, Some(2_147_483_648));
+    assert_eq!(report.current_bytes, Some(1234));
+    assert_eq!(report.peak_bytes, Some(5678));
+
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn neutral_crate_has_no_runtime_or_implementation_dependencies() {
     let manifest = include_str!("../Cargo.toml");
     for forbidden in [
@@ -539,4 +603,15 @@ fn blocking_reservation_parks_until_release_without_async_runtime() {
     assert_eq!(lease.bytes(), 64);
     drop(lease);
     assert_eq!(coordinator.snapshot().current_bytes, 0);
+}
+
+fn unique_temp_dir(prefix: &str) -> PathBuf {
+    std::env::temp_dir().join(format!(
+        "{prefix}-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ))
 }

@@ -170,6 +170,8 @@ pub struct MeasurementSample {
     pub logical_bytes: u64,
     pub physical_bytes: u64,
     pub peak_rss_bytes: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cgroup_memory: Option<cdf_memory::CgroupV2MemoryReport>,
     pub spill_bytes: u64,
     pub phases: Vec<PhaseMetric>,
 }

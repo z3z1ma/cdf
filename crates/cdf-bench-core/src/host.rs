@@ -209,6 +209,28 @@ impl HostCapabilityProvider for SystemHostProvider {
             },
         }
     }
+
+    fn cgroup_memory_report(&self) -> Capability<cdf_memory::CgroupV2MemoryReport> {
+        if self.platform != Platform::Linux {
+            return Capability::Unavailable {
+                reason: "cgroup v2 memory authority is only available on Linux".to_owned(),
+                method: "linux-current-cgroup-v2-memory".to_owned(),
+                provider_version: cdf_memory::CGROUP_V2_MEMORY_PROVIDER_VERSION.to_owned(),
+            };
+        }
+        match cdf_memory::current_cgroup_v2_memory_report() {
+            Ok(value) => Capability::Supported {
+                value,
+                method: "linux-current-cgroup-v2-memory".to_owned(),
+                provider_version: cdf_memory::CGROUP_V2_MEMORY_PROVIDER_VERSION.to_owned(),
+            },
+            Err(error) => Capability::Failed {
+                error,
+                method: "linux-current-cgroup-v2-memory".to_owned(),
+                provider_version: cdf_memory::CGROUP_V2_MEMORY_PROVIDER_VERSION.to_owned(),
+            },
+        }
+    }
 }
 
 fn observe_child(
@@ -470,17 +492,12 @@ fn effective_memory(platform: Platform) -> Capability<u64> {
             provider_version: PROVIDER_VERSION.to_owned(),
         };
     }
-    let value = fs::read_to_string("/sys/fs/cgroup/memory.max")
+    let value = cdf_memory::current_cgroup_v2_memory_report()
         .ok()
-        .and_then(|value| {
-            let value = value.trim();
-            (value != "max")
-                .then(|| value.parse::<u64>().ok())
-                .flatten()
-        });
+        .and_then(|report| report.max_bytes);
     capability_from_option(
         value,
-        "linux-cgroup-overlay",
+        "linux-current-cgroup-v2-memory",
         "cgroup memory limit unavailable",
     )
 }

@@ -1,8 +1,4 @@
-use std::{
-    collections::BTreeMap,
-    fs,
-    path::{Component, Path, PathBuf},
-};
+use std::path::Path;
 
 use cdf_cli_core::{
     args::{Cli, parse_byte_size},
@@ -41,7 +37,7 @@ pub(crate) struct MemoryAuthorityReport {
     pub effective_authority_bytes: u64,
     pub caveats: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub cgroup_v2: Option<CgroupMemoryReport>,
+    pub cgroup_v2: Option<cdf_memory::CgroupV2MemoryReport>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -49,16 +45,6 @@ pub(crate) struct MemoryAuthorityReport {
 pub(crate) enum MemoryEnforcement {
     LinuxCgroupV2,
     Unavailable,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
-pub(crate) struct CgroupMemoryReport {
-    pub root: PathBuf,
-    pub max_bytes: Option<u64>,
-    pub current_bytes: Option<u64>,
-    pub peak_bytes: Option<u64>,
-    pub events: BTreeMap<String, u64>,
-    pub read_errors: BTreeMap<String, String>,
 }
 
 impl RuntimeBudgetReport {
@@ -166,8 +152,8 @@ fn memory_authority_from_current_cgroup(
     cgroup_root: &Path,
     proc_self_cgroup: &Path,
 ) -> MemoryAuthorityReport {
-    match current_cgroup_v2_root(cgroup_root, proc_self_cgroup) {
-        Ok(root) => memory_authority_from_cgroup_root(&root),
+    match cdf_memory::current_cgroup_v2_memory_report_from(cgroup_root, proc_self_cgroup) {
+        Ok(report) => memory_authority_from_cgroup_report(report),
         Err(error) => MemoryAuthorityReport {
             method: "linux-cgroup-v2",
             provider_version: PROVIDER_VERSION,
@@ -182,42 +168,9 @@ fn memory_authority_from_current_cgroup(
 }
 
 #[cfg_attr(not(test), allow(dead_code))]
-fn current_cgroup_v2_root(cgroup_root: &Path, proc_self_cgroup: &Path) -> Result<PathBuf, String> {
-    let proc_cgroup = fs::read_to_string(proc_self_cgroup)
-        .map_err(|error| format!("read {}: {error}", proc_self_cgroup.display()))?;
-    let relative = parse_cgroup_v2_relative_path(&proc_cgroup)?;
-    Ok(cgroup_root.join(relative))
-}
-
-fn parse_cgroup_v2_relative_path(value: &str) -> Result<PathBuf, String> {
-    let path = value
-        .lines()
-        .find_map(|line| {
-            let mut parts = line.splitn(3, ':');
-            let hierarchy = parts.next()?;
-            let controllers = parts.next()?;
-            let path = parts.next()?;
-            (hierarchy == "0" && controllers.is_empty()).then_some(path)
-        })
-        .ok_or_else(|| "no cgroup v2 `0::` entry found in /proc/self/cgroup".to_owned())?;
-    let trimmed = path.trim_start_matches('/');
-    let relative = Path::new(trimmed);
-    let mut sanitized = PathBuf::new();
-    for component in relative.components() {
-        match component {
-            Component::Normal(part) => sanitized.push(part),
-            Component::CurDir => {}
-            Component::RootDir | Component::Prefix(_) | Component::ParentDir => {
-                return Err(format!("unsafe cgroup v2 path component in `{path}`"));
-            }
-        }
-    }
-    Ok(sanitized)
-}
-
-#[cfg_attr(not(test), allow(dead_code))]
-fn memory_authority_from_cgroup_root(root: &Path) -> MemoryAuthorityReport {
-    let cgroup_v2 = read_cgroup_memory(root);
+fn memory_authority_from_cgroup_report(
+    cgroup_v2: cdf_memory::CgroupV2MemoryReport,
+) -> MemoryAuthorityReport {
     match cgroup_v2.max_bytes {
         Some(max_bytes) => MemoryAuthorityReport {
             method: "linux-cgroup-v2",
@@ -249,139 +202,24 @@ fn memory_authority_from_cgroup_root(root: &Path) -> MemoryAuthorityReport {
     }
 }
 
-fn read_cgroup_memory(root: &Path) -> CgroupMemoryReport {
-    let mut read_errors = BTreeMap::new();
-    let max_bytes = read_cgroup_file(root, "memory.max", &mut read_errors)
-        .and_then(|value| parse_memory_max(&value).transpose())
-        .transpose()
-        .unwrap_or_else(|error| {
-            read_errors.insert("memory.max".to_owned(), error);
-            None
-        });
-    let current_bytes = read_cgroup_file(root, "memory.current", &mut read_errors)
-        .and_then(|value| parse_nonnegative_file_u64("memory.current", &value, &mut read_errors));
-    let peak_bytes = read_cgroup_file(root, "memory.peak", &mut read_errors)
-        .and_then(|value| parse_nonnegative_file_u64("memory.peak", &value, &mut read_errors));
-    let events = read_cgroup_file(root, "memory.events", &mut read_errors)
-        .map(|value| parse_memory_events(&value, &mut read_errors))
-        .unwrap_or_default();
-    CgroupMemoryReport {
-        root: root.to_path_buf(),
-        max_bytes,
-        current_bytes,
-        peak_bytes,
-        events,
-        read_errors,
-    }
-}
-
-fn read_cgroup_file(
-    root: &Path,
-    name: &'static str,
-    read_errors: &mut BTreeMap<String, String>,
-) -> Option<String> {
-    match fs::read_to_string(root.join(name)) {
-        Ok(value) => Some(value),
-        Err(error) => {
-            read_errors.insert(name.to_owned(), error.to_string());
-            None
-        }
-    }
-}
-
-fn parse_memory_max(value: &str) -> Result<Option<u64>, String> {
-    let trimmed = value.trim();
-    if trimmed == "max" || trimmed.is_empty() {
-        return Ok(None);
-    }
-    parse_positive_u64("memory.max", trimmed).map(Some)
-}
-
-fn parse_nonnegative_file_u64(
-    name: &'static str,
-    value: &str,
-    read_errors: &mut BTreeMap<String, String>,
-) -> Option<u64> {
-    match value.trim().parse::<u64>() {
-        Ok(value) => Some(value),
-        Err(error) => {
-            read_errors.insert(name.to_owned(), format!("invalid {name}: {error}"));
-            None
-        }
-    }
-}
-
-fn parse_positive_u64(name: &'static str, value: &str) -> Result<u64, String> {
-    let parsed = value
-        .parse::<u64>()
-        .map_err(|error| format!("invalid {name}: {error}"))?;
-    if parsed == 0 {
-        return Err(format!("{name} must be nonzero when bounded"));
-    }
-    Ok(parsed)
-}
-
-fn parse_memory_events(
-    value: &str,
-    read_errors: &mut BTreeMap<String, String>,
-) -> BTreeMap<String, u64> {
-    let mut events = BTreeMap::new();
-    for (index, line) in value.lines().enumerate() {
-        let trimmed = line.trim();
-        if trimmed.is_empty() {
-            continue;
-        }
-        let mut parts = trimmed.split_whitespace();
-        let Some(name) = parts.next() else {
-            continue;
-        };
-        let Some(count) = parts.next() else {
-            read_errors.insert(
-                "memory.events".to_owned(),
-                format!("line {} omitted event count", index + 1),
-            );
-            continue;
-        };
-        if parts.next().is_some() {
-            read_errors.insert(
-                "memory.events".to_owned(),
-                format!("line {} contains more than two fields", index + 1),
-            );
-            continue;
-        }
-        match count.parse::<u64>() {
-            Ok(count) => {
-                events.insert(name.to_owned(), count);
-            }
-            Err(error) => {
-                read_errors.insert(
-                    "memory.events".to_owned(),
-                    format!("line {} has invalid count: {error}", index + 1),
-                );
-            }
-        }
-    }
-    events
-}
-
 #[cfg(test)]
 mod tests {
+    use std::{collections::BTreeMap, path::PathBuf};
+
     use super::*;
 
     #[test]
     fn cgroup_authority_reports_bounded_provider_without_conflating_metrics() {
-        let root = unique_temp_dir("cdf-cgroup-memory");
-        fs::create_dir_all(&root).unwrap();
-        fs::write(root.join("memory.max"), "1073741824\n").unwrap();
-        fs::write(root.join("memory.current"), "268435456\n").unwrap();
-        fs::write(root.join("memory.peak"), "536870912\n").unwrap();
-        fs::write(
-            root.join("memory.events"),
-            "low 0\nhigh 1\nmax 2\noom 0\noom_kill 0\n",
-        )
-        .unwrap();
-
-        let report = memory_authority_from_cgroup_root(&root);
+        let mut events = BTreeMap::new();
+        events.insert("high".to_owned(), 1);
+        let report = memory_authority_from_cgroup_report(cdf_memory::CgroupV2MemoryReport {
+            root: PathBuf::from("/sys/fs/cgroup/test.slice"),
+            max_bytes: Some(1_073_741_824),
+            current_bytes: Some(268_435_456),
+            peak_bytes: Some(536_870_912),
+            events,
+            read_errors: BTreeMap::new(),
+        });
         assert_eq!(report.provider_version, PROVIDER_VERSION);
         assert_eq!(report.enforcement, MemoryEnforcement::LinuxCgroupV2);
         assert_eq!(report.effective_authority_bytes, 1_073_741_824);
@@ -391,52 +229,37 @@ mod tests {
         assert_eq!(cgroup.peak_bytes, Some(536_870_912));
         assert_eq!(cgroup.events["high"], 1);
         assert!(cgroup.read_errors.is_empty(), "{:?}", cgroup.read_errors);
-
-        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
-    fn cgroup_parsers_accept_bounded_unbounded_and_events() {
-        assert_eq!(
-            parse_memory_max("1073741824\n").unwrap(),
-            Some(1_073_741_824)
-        );
-        assert_eq!(parse_memory_max("max\n").unwrap(), None);
-        assert!(parse_memory_max("0\n").unwrap_err().contains("nonzero"));
-
-        let mut errors = BTreeMap::new();
-        let events = parse_memory_events("low 0\nhigh 1\nmax 2\noom 0\noom_kill 0\n", &mut errors);
-        assert!(errors.is_empty(), "{errors:?}");
-        assert_eq!(events["high"], 1);
-        assert_eq!(events["oom_kill"], 0);
-    }
-
-    #[test]
-    fn current_cgroup_resolution_uses_process_scope_not_filesystem_root() {
-        assert_eq!(
-            parse_cgroup_v2_relative_path("0::/user.slice/user-1000.slice/session-7.scope\n")
-                .unwrap(),
-            PathBuf::from("user.slice/user-1000.slice/session-7.scope")
-        );
-        assert_eq!(
-            parse_cgroup_v2_relative_path("0::/\n").unwrap(),
-            PathBuf::new()
-        );
-        assert!(parse_cgroup_v2_relative_path("0::/../escape\n").is_err());
-        assert!(parse_cgroup_v2_relative_path("1:name=systemd:/not-v2\n").is_err());
+    fn cgroup_authority_keeps_unbounded_provider_as_caveated_unenforced() {
+        let mut read_errors = BTreeMap::new();
+        read_errors.insert("memory.current".to_owned(), "permission denied".to_owned());
+        let report = memory_authority_from_cgroup_report(cdf_memory::CgroupV2MemoryReport {
+            root: PathBuf::from("/sys/fs/cgroup/test.slice"),
+            max_bytes: None,
+            current_bytes: None,
+            peak_bytes: None,
+            events: BTreeMap::new(),
+            read_errors,
+        });
+        assert_eq!(report.enforcement, MemoryEnforcement::Unavailable);
+        assert_eq!(report.effective_authority_bytes, 0);
+        assert_eq!(report.caveats.len(), 2);
+        assert!(report.cgroup_v2.is_some());
     }
 
     #[test]
     fn current_cgroup_authority_reads_the_resolved_scope_files() {
         let root = unique_temp_dir("cdf-current-cgroup");
         let scope = root.join("user.slice/user-1000.slice/session-7.scope");
-        fs::create_dir_all(&scope).unwrap();
+        std::fs::create_dir_all(&scope).unwrap();
         let proc = root.join("proc-self-cgroup");
-        fs::write(&proc, "0::/user.slice/user-1000.slice/session-7.scope\n").unwrap();
-        fs::write(scope.join("memory.max"), "2147483648\n").unwrap();
-        fs::write(scope.join("memory.current"), "1234\n").unwrap();
-        fs::write(scope.join("memory.peak"), "5678\n").unwrap();
-        fs::write(scope.join("memory.events"), "oom 0\noom_kill 0\n").unwrap();
+        std::fs::write(&proc, "0::/user.slice/user-1000.slice/session-7.scope\n").unwrap();
+        std::fs::write(scope.join("memory.max"), "2147483648\n").unwrap();
+        std::fs::write(scope.join("memory.current"), "1234\n").unwrap();
+        std::fs::write(scope.join("memory.peak"), "5678\n").unwrap();
+        std::fs::write(scope.join("memory.events"), "oom 0\noom_kill 0\n").unwrap();
 
         let report = memory_authority_from_current_cgroup(&root, &proc);
         assert_eq!(report.enforcement, MemoryEnforcement::LinuxCgroupV2);
@@ -446,7 +269,7 @@ mod tests {
         assert_eq!(cgroup.current_bytes, Some(1234));
         assert_eq!(cgroup.peak_bytes, Some(5678));
 
-        fs::remove_dir_all(root).unwrap();
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
