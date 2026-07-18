@@ -728,6 +728,7 @@ dependencies = [
  "cdf-dest-parquet",
  "cdf-dest-postgres",
  "cdf-engine",
+ "cdf-foreign-stream",
  "cdf-format-delimited",
  "cdf-format-json",
  "cdf-format-parquet",

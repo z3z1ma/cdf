@@ -6,6 +6,7 @@ mod comparison;
 mod envelope;
 mod fixtures;
 mod host;
+mod interop;
 mod lab;
 mod macro_runner;
 mod matrix;
@@ -21,6 +22,7 @@ pub use comparison::*;
 pub use envelope::*;
 pub use fixtures::write_all_local_fixture_formats;
 pub use host::{HostProbeConfig, SystemHostProvider};
+pub use interop::*;
 pub use lab::*;
 pub use macro_runner::*;
 pub use matrix::{

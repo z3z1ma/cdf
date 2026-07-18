@@ -1,8 +1,8 @@
 Status: open
 Created: 2026-07-11
-Updated: 2026-07-11
+Updated: 2026-07-18
 Parent: .10x/tickets/2026-07-10-p3-ws-h-interop-boundaries.md
-Depends-On: .10x/tickets/2026-07-11-p3-h1-interop-measurement-copy-proof.md, .10x/tickets/done/2026-07-11-p3-a4-injected-execution-host.md, .10x/tickets/done/2026-07-11-p3-a2-unified-memory-ledger.md
+Depends-On: .10x/tickets/done/2026-07-11-p3-h1-interop-measurement-copy-proof.md, .10x/tickets/done/2026-07-11-p3-a4-injected-execution-host.md, .10x/tickets/done/2026-07-11-p3-a2-unified-memory-ledger.md
 
 # P3 H2: incremental Python Arrow/row boundary
 
@@ -28,7 +28,7 @@ No arbitrary Python execution inside engine operators or untrusted sandbox claim
 
 ## Blockers
 
-Blocked on H1, A4, and A2.
+None. H1, A4, and A2 are done; this ticket is executable.
 
 ## References
 

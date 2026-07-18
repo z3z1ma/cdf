@@ -1,12 +1,13 @@
 use std::{collections::BTreeMap, fs, path::Path};
 
 use cdf_benchmarks::{
-    BenchmarkReport, ChildCommand, HostCapabilityProvider, HostProbeConfig, MacroRunSpec,
-    PreoptimizationBaselineConfig, PreparedFileDestinationWorkload, PreparedFilePackageWorkload,
-    ProfileTool, ReferenceWorkload, StartupControlWorkload, SystemHostProvider, WorkerMeasurement,
-    canonical_json_bytes, compare_reports, comparison_fails, host_class, install_baseline,
-    plan_profile, run_preoptimization_baseline, run_prepared_file_to_destination,
-    run_prepared_file_to_package, run_reference, run_startup_control_workload,
+    BenchmarkReport, ChildCommand, HostCapabilityProvider, HostProbeConfig, InteropFixtureWorkload,
+    MacroRunSpec, PreoptimizationBaselineConfig, PreparedFileDestinationWorkload,
+    PreparedFilePackageWorkload, ProfileTool, ReferenceWorkload, StartupControlWorkload,
+    SystemHostProvider, WorkerMeasurement, canonical_json_bytes, compare_reports, comparison_fails,
+    host_class, install_baseline, plan_profile, run_interop_fixture_workload,
+    run_preoptimization_baseline, run_prepared_file_to_destination, run_prepared_file_to_package,
+    run_reference, run_startup_control_workload,
 };
 
 fn main() {
@@ -171,6 +172,14 @@ fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 spill_bytes: 0,
                 phases: Vec::new(),
             })?)
+        }
+        [command, request] if command == "interop-fixture-worker" => {
+            let workload: InteropFixtureWorkload = serde_json::from_slice(&fs::read(request)?)?;
+            let started = std::time::Instant::now();
+            let mut run = run_interop_fixture_workload(&workload)?;
+            run.measurement.timed_wall_time_ns =
+                Some(u64::try_from(started.elapsed().as_nanos()).unwrap_or(u64::MAX));
+            write_stdout(&canonical_json_bytes(&run)?)
         }
         _ => Err(format!(
             "usage: {} reference-worker REQUEST.json | host | run-cell REQUEST.json | baseline-run OUTPUT_ROOT REVISION DEPENDENCIES TOOLCHAIN SAMPLES | compare BASELINE.json CURRENT.json",

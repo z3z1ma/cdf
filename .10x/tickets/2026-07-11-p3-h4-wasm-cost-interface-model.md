@@ -1,8 +1,8 @@
 Status: open
 Created: 2026-07-11
-Updated: 2026-07-11
+Updated: 2026-07-18
 Parent: .10x/tickets/2026-07-10-p3-ws-h-interop-boundaries.md
-Depends-On: .10x/tickets/2026-07-11-p3-h1-interop-measurement-copy-proof.md, .10x/tickets/2026-07-08-wasm-wit-interface-foundation.md
+Depends-On: .10x/tickets/done/2026-07-11-p3-h1-interop-measurement-copy-proof.md, .10x/tickets/2026-07-08-wasm-wit-interface-foundation.md
 
 # P3 H4: prospective WASM stream cost and interface model
 
@@ -27,7 +27,7 @@ No Wasmtime dependency/host, guest SDK, registry, signing, or throughput accepta
 
 ## Blockers
 
-Depends on H1 and WIT foundation.
+Blocked on WIT foundation. H1 is done.
 
 ## References
 

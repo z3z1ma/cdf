@@ -2,7 +2,7 @@ Status: blocked
 Created: 2026-07-13
 Updated: 2026-07-18
 Parent: .10x/tickets/2026-07-13-p0-fixed-schema-discovery-stream-admission.md
-Depends-On: .10x/tickets/done/2026-07-13-p0-sa0-cold-discovery-final-plan-lifecycle.md, .10x/tickets/done/2026-07-13-p0-sa1-compiled-stream-admission-plan.md, .10x/tickets/2026-07-11-p3-h1-interop-measurement-copy-proof.md, .10x/tickets/2026-07-11-p3-h2-python-incremental-arrow-boundary.md, .10x/tickets/2026-07-11-p3-h4-wasm-cost-interface-model.md, .10x/tickets/2026-07-08-wasm-wit-interface-foundation.md
+Depends-On: .10x/tickets/done/2026-07-13-p0-sa0-cold-discovery-final-plan-lifecycle.md, .10x/tickets/done/2026-07-13-p0-sa1-compiled-stream-admission-plan.md, .10x/tickets/done/2026-07-11-p3-h1-interop-measurement-copy-proof.md, .10x/tickets/2026-07-11-p3-h2-python-incremental-arrow-boundary.md, .10x/tickets/2026-07-11-p3-h4-wasm-cost-interface-model.md, .10x/tickets/2026-07-08-wasm-wit-interface-foundation.md
 
 # P0 SA4: single-invocation dynamic producer admission
 
