@@ -55,7 +55,7 @@ pub enum ExecutionDeclaration {
         checkpoint_cadence: EpochClosureDeclaration,
         package_rotation: EpochClosureDeclaration,
         termination: DrainTerminationDeclaration,
-        watermark: WatermarkDeclaration,
+        watermark: Box<WatermarkDeclaration>,
         late_data: LateDataDeclaration,
         safe_frontier: SafeFrontierDeclaration,
     },

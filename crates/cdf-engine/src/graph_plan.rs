@@ -13,6 +13,21 @@ const PACKAGE_WRITER_VERSION: &str = "package-writer-v1";
 const COMMIT_GATE_VERSION: &str = "commit-gate-v1";
 const CONTROL_WORKING_SET_BYTES: u64 = 1024 * 1024;
 
+#[derive(Clone, Copy)]
+struct WorkingSet {
+    minimum_bytes: u64,
+    maximum_bytes: u64,
+}
+
+impl WorkingSet {
+    const fn new(minimum_bytes: u64, maximum_bytes: u64) -> Self {
+        Self {
+            minimum_bytes,
+            maximum_bytes,
+        }
+    }
+}
+
 pub fn compile_operator_graph(
     plan: &EnginePlan,
     source: &CompiledSourcePlan,
@@ -30,8 +45,10 @@ pub fn compile_operator_graph(
         nodes.push(engine_node(
             "canonical_reorder",
             GraphNodeKind::StatefulBarrier,
-            source.execution_capabilities.minimum_decode_bytes,
-            source.execution_capabilities.maximum_decode_bytes,
+            WorkingSet::new(
+                source.execution_capabilities.minimum_decode_bytes,
+                source.execution_capabilities.maximum_decode_bytes,
+            ),
             true,
             GraphOrdering::Canonical,
             None,
@@ -41,8 +58,10 @@ pub fn compile_operator_graph(
     nodes.push(engine_node(
         "reconcile",
         GraphNodeKind::Reconcile,
-        source.execution_capabilities.minimum_decode_bytes,
-        source.execution_capabilities.maximum_decode_bytes,
+        WorkingSet::new(
+            source.execution_capabilities.minimum_decode_bytes,
+            source.execution_capabilities.maximum_decode_bytes,
+        ),
         false,
         GraphOrdering::PartitionLocal,
         Some("fused_transform_v1"),
@@ -51,8 +70,10 @@ pub fn compile_operator_graph(
     nodes.push(engine_node(
         "transform",
         GraphNodeKind::Transform,
-        source.execution_capabilities.minimum_decode_bytes,
-        source.execution_capabilities.maximum_decode_bytes,
+        WorkingSet::new(
+            source.execution_capabilities.minimum_decode_bytes,
+            source.execution_capabilities.maximum_decode_bytes,
+        ),
         false,
         GraphOrdering::PartitionLocal,
         Some("fused_transform_v1"),
@@ -97,8 +118,7 @@ pub fn compile_operator_graph(
         nodes.push(engine_node(
             "package_dedup",
             GraphNodeKind::StatefulBarrier,
-            policy.microbatch_minimum_bytes,
-            policy.maximum_bytes,
+            WorkingSet::new(policy.microbatch_minimum_bytes, policy.maximum_bytes),
             true,
             GraphOrdering::Canonical,
             None,
@@ -117,8 +137,7 @@ pub fn compile_operator_graph(
     nodes.push(engine_node(
         "segment_assembly",
         GraphNodeKind::SegmentAssembly,
-        policy.microbatch_minimum_bytes,
-        policy.maximum_bytes,
+        WorkingSet::new(policy.microbatch_minimum_bytes, policy.maximum_bytes),
         false,
         GraphOrdering::Canonical,
         None,
@@ -135,8 +154,7 @@ pub fn compile_operator_graph(
     nodes.push(io_node(
         "segment_persist",
         GraphNodeKind::SegmentPersist,
-        policy.target_bytes,
-        policy.maximum_bytes,
+        WorkingSet::new(policy.target_bytes, policy.maximum_bytes),
         true,
         GraphOrdering::Canonical,
         PACKAGE_WRITER_VERSION,
@@ -172,8 +190,7 @@ pub fn compile_operator_graph(
     nodes.push(io_node(
         "package_finalize",
         GraphNodeKind::PackageFinalize,
-        CONTROL_WORKING_SET_BYTES,
-        policy.maximum_bytes,
+        WorkingSet::new(CONTROL_WORKING_SET_BYTES, policy.maximum_bytes),
         true,
         GraphOrdering::Canonical,
         PACKAGE_WRITER_VERSION,
@@ -207,8 +224,7 @@ pub fn compile_operator_graph(
     nodes.push(io_node(
         "commit_gate",
         GraphNodeKind::CommitGate,
-        CONTROL_WORKING_SET_BYTES,
-        CONTROL_WORKING_SET_BYTES,
+        WorkingSet::new(CONTROL_WORKING_SET_BYTES, CONTROL_WORKING_SET_BYTES),
         false,
         GraphOrdering::Canonical,
         COMMIT_GATE_VERSION,
@@ -302,8 +318,7 @@ fn source_node(
 fn engine_node(
     id: &str,
     kind: GraphNodeKind,
-    minimum_bytes: u64,
-    maximum_bytes: u64,
+    working_set: WorkingSet,
     spillable: bool,
     ordering: GraphOrdering,
     fusion_group: Option<&str>,
@@ -315,8 +330,8 @@ fn engine_node(
         implementation_version: ENGINE_KERNEL_VERSION.to_owned(),
         executor: GraphExecutorClass::Cpu,
         blocking_lane: None,
-        minimum_working_set_bytes: minimum_bytes,
-        maximum_working_set_bytes: maximum_bytes,
+        minimum_working_set_bytes: working_set.minimum_bytes,
+        maximum_working_set_bytes: working_set.maximum_bytes,
         maximum_concurrency: u16::MAX,
         spillable,
         ordering,
@@ -330,8 +345,7 @@ fn engine_node(
 fn io_node(
     id: &str,
     kind: GraphNodeKind,
-    minimum_bytes: u64,
-    maximum_bytes: u64,
+    working_set: WorkingSet,
     durable_output: bool,
     ordering: GraphOrdering,
     version: &str,
@@ -343,8 +357,8 @@ fn io_node(
         implementation_version: version.to_owned(),
         executor: GraphExecutorClass::Io,
         blocking_lane: None,
-        minimum_working_set_bytes: minimum_bytes,
-        maximum_working_set_bytes: maximum_bytes,
+        minimum_working_set_bytes: working_set.minimum_bytes,
+        maximum_working_set_bytes: working_set.maximum_bytes,
         maximum_concurrency: u16::MAX,
         spillable: false,
         ordering,
