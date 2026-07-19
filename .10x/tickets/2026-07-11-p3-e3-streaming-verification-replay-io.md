@@ -1,6 +1,6 @@
-Status: blocked
+Status: active
 Created: 2026-07-11
-Updated: 2026-07-12
+Updated: 2026-07-19
 Parent: .10x/tickets/2026-07-10-p3-ws-e-hashing-package-io.md
 Depends-On: .10x/tickets/done/2026-07-11-p3-e2-streaming-manifest-durability.md, .10x/tickets/done/2026-07-11-p3-a5-streaming-operator-graph.md
 
@@ -27,7 +27,7 @@ No unsafe/mmap without a new decision/fuzz target.
 
 ## Blockers
 
-The bounded explicit-verifier slice cannot ship without a safe, audited cross-platform capability for handle-relative, no-follow traversal and leaf open. Locked/audited `rustix` supplies safe Unix `openat`/`O_NOFOLLOW` but no Windows filesystem API; locked/audited `windows-sys` is raw FFI that would require prohibited CDF-authored unsafe; no `cap-std` or equivalent safe cross-platform capability is present. Dependency ratification or a separately owned platform abstraction is required before retrying this slice. E2 and A5 bounded readers are otherwise complete.
+None. `.10x/decisions/capability-rooted-package-verification.md` ratifies the pinned cross-platform dependency and exact path/mutation authority; E2 and A5 are complete.
 
 ## References
 
@@ -39,6 +39,8 @@ The bounded explicit-verifier slice cannot ship without a safe, audited cross-pl
 - 2026-07-11: Fresh package finalization now issues the same typed authority directly from its reconciled hash-while-write receipts after manifest publication. Ordinary run therefore performs zero package-content rereads between build and staged final binding; reopened replay still verifies independently. Three fresh TLC controls measured 1.55, 1.58, and 2.13 seconds (median 1.58), a further 3.7% versus the preceding 1.64-second observation and 16.4% versus the recent 1.89-second control median. Replay read/hash fusion and explicit verifier boundedness remain open.
 
 ## Journal
+
+- 2026-07-19: Reactivated as the highest-fanout package/performance blocker after WS-V closure. The program's autonomous ratification authority resolves the 2026-07-12 dependency questions through `.10x/decisions/capability-rooted-package-verification.md`: pin and audit `cap-std`/`cap-fs-ext` 4.0.2, enforce one portable path grammar, anchor manifest and descendant opens to a capability, claim exact opened-handle bytes rather than an atomic tree snapshot, and keep ordinary fresh-run hash-while-write free of redundant verification.
 
 - 2026-07-12: Resumed E3 as the sole executor. Read the owning ticket, governing package-I/O spec, E1/E2/A5 history, and the existing E3 evidence. The shared worktree was clean at inspection. Source inspection found explicit verification collecting every discovered identity path and hash into a `Vec<FileEntry>`, then constructing a package-sized `BTreeMap`, before a sequential expected-entry pass. The public `VerificationReport.checked_files` vector is a v1 return-contract cost; the discovery vector and map are redundant working-set costs owned by E3.
 - 2026-07-12: Selected bounded explicit verification as the next smallest complete outcome. Exact replay read/hash fusion cannot safely reuse the current `VerifiedPackage` authority by merely skipping segment hashes: that authority is consumed by replay reconstruction and final binding as proof of full verification. Arrow IPC file reading also seeks to the footer before record blocks and skips non-block bytes, so a correct fused reader requires a distinct pending-consumption authority plus sequential low-level IPC decode; weakening the current authority or wrapping `Read + Seek` would silently misstate exact-byte coverage.
