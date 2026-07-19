@@ -965,6 +965,155 @@ mod tests {
             "encoded_bytes={encoded_bytes} rows={} plain_samples_ns={plain_observations:?} hashed_samples_ns={hashed_observations:?} raw_samples_ns={raw_observations:?} plain_ipc_median_ns={plain_ns} hashed_ipc_median_ns={hashed_ns} raw_durable_median_ns={raw_ns} hash_share_percent={hash_share_percent:.2} writer_roofline_ratio={writer_roofline_ratio:.3} hashed_mib_per_second={hashed_mib_per_second:.1}",
             ROWS_PER_BATCH * BATCHES,
         );
+
+        let jobs = std::thread::available_parallelism().unwrap().get();
+        let mut parallel_plain_samples = Vec::with_capacity(SAMPLES);
+        let mut parallel_hashed_samples = Vec::with_capacity(SAMPLES);
+        let mut parallel_raw_samples = Vec::with_capacity(SAMPLES);
+        for sample in 0..SAMPLES {
+            let run_plain = || {
+                write_plain_arrow_ipc_parallel(
+                    directory.path(),
+                    sample,
+                    jobs,
+                    schema.as_ref(),
+                    &batches,
+                    encoded_bytes,
+                )
+            };
+            let run_hashed = || {
+                write_hashed_arrow_ipc_parallel(
+                    directory.path(),
+                    sample,
+                    jobs,
+                    schema.as_ref(),
+                    &batches,
+                    encoded_bytes,
+                )
+            };
+            if sample % 2 == 0 {
+                parallel_plain_samples.push(run_plain());
+                parallel_hashed_samples.push(run_hashed());
+            } else {
+                parallel_hashed_samples.push(run_hashed());
+                parallel_plain_samples.push(run_plain());
+            }
+            parallel_raw_samples.push(write_raw_durable_parallel(
+                directory.path(),
+                sample,
+                jobs,
+                encoded_bytes,
+                &raw_chunk,
+            ));
+            remove_parallel_outputs(directory.path(), sample, jobs);
+        }
+
+        let parallel_plain_observations = parallel_plain_samples.clone();
+        let parallel_hashed_observations = parallel_hashed_samples.clone();
+        let parallel_raw_observations = parallel_raw_samples.clone();
+        parallel_plain_samples.sort_unstable();
+        parallel_hashed_samples.sort_unstable();
+        parallel_raw_samples.sort_unstable();
+        let parallel_plain_ns = parallel_plain_samples[SAMPLES / 2];
+        let parallel_hashed_ns = parallel_hashed_samples[SAMPLES / 2];
+        let parallel_raw_ns = parallel_raw_samples[SAMPLES / 2];
+        let parallel_hash_share_percent =
+            (parallel_hashed_ns as f64 - parallel_plain_ns as f64).max(0.0) * 100.0
+                / parallel_hashed_ns as f64;
+        let parallel_writer_roofline_ratio = parallel_raw_ns as f64 / parallel_hashed_ns as f64;
+        let parallel_physical_mib = physical_mib * jobs as f64;
+        let parallel_hashed_mib_per_second =
+            parallel_physical_mib / (parallel_hashed_ns as f64 / 1_000_000_000.0);
+        eprintln!(
+            "jobs={jobs} total_encoded_bytes={} parallel_plain_samples_ns={parallel_plain_observations:?} parallel_hashed_samples_ns={parallel_hashed_observations:?} parallel_raw_samples_ns={parallel_raw_observations:?} parallel_plain_ipc_median_ns={parallel_plain_ns} parallel_hashed_ipc_median_ns={parallel_hashed_ns} parallel_raw_durable_median_ns={parallel_raw_ns} parallel_hash_share_percent={parallel_hash_share_percent:.2} parallel_writer_roofline_ratio={parallel_writer_roofline_ratio:.3} parallel_hashed_mib_per_second={parallel_hashed_mib_per_second:.1}",
+            encoded_bytes * jobs as u64,
+        );
+    }
+
+    fn write_plain_arrow_ipc_parallel(
+        directory: &std::path::Path,
+        sample: usize,
+        jobs: usize,
+        schema: &Schema,
+        batches: &[RecordBatch],
+        expected_bytes: u64,
+    ) -> u128 {
+        let started = Instant::now();
+        std::thread::scope(|scope| {
+            let handles = (0..jobs)
+                .map(|job| {
+                    let path = directory.join(format!("parallel-plain-{sample}-{job}.arrow"));
+                    scope.spawn(move || {
+                        write_plain_arrow_ipc(&path, schema, batches, expected_bytes)
+                    })
+                })
+                .collect::<Vec<_>>();
+            for handle in handles {
+                handle.join().unwrap();
+            }
+        });
+        started.elapsed().as_nanos()
+    }
+
+    fn write_hashed_arrow_ipc_parallel(
+        directory: &std::path::Path,
+        sample: usize,
+        jobs: usize,
+        schema: &Schema,
+        batches: &[RecordBatch],
+        expected_bytes: u64,
+    ) -> u128 {
+        let started = Instant::now();
+        std::thread::scope(|scope| {
+            let handles = (0..jobs)
+                .map(|job| {
+                    let path = directory.join(format!("parallel-hashed-{sample}-{job}.arrow"));
+                    scope.spawn(move || {
+                        let receipt = write_arrow_ipc_file(&path, schema, batches).unwrap();
+                        assert_eq!(receipt.artifact.byte_count, expected_bytes);
+                    })
+                })
+                .collect::<Vec<_>>();
+            for handle in handles {
+                handle.join().unwrap();
+            }
+        });
+        started.elapsed().as_nanos()
+    }
+
+    fn write_raw_durable_parallel(
+        directory: &std::path::Path,
+        sample: usize,
+        jobs: usize,
+        bytes: u64,
+        chunk: &[u8],
+    ) -> u128 {
+        let started = Instant::now();
+        std::thread::scope(|scope| {
+            let handles = (0..jobs)
+                .map(|job| {
+                    let path = directory.join(format!("parallel-raw-{sample}-{job}.bin"));
+                    scope.spawn(move || write_raw_durable(&path, bytes, chunk))
+                })
+                .collect::<Vec<_>>();
+            for handle in handles {
+                handle.join().unwrap();
+            }
+        });
+        started.elapsed().as_nanos()
+    }
+
+    fn remove_parallel_outputs(directory: &std::path::Path, sample: usize, jobs: usize) {
+        for job in 0..jobs {
+            for path in [
+                directory.join(format!("parallel-plain-{sample}-{job}.arrow")),
+                directory.join(format!("parallel-hashed-{sample}-{job}.arrow")),
+                directory.join(format!("parallel-raw-{sample}-{job}.bin")),
+            ] {
+                fs::remove_file(path).unwrap();
+            }
+        }
+        sync_directory(directory).unwrap();
     }
 
     fn write_plain_arrow_ipc(
