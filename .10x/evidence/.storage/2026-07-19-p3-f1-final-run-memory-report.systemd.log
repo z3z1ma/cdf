@@ -1,0 +1,5 @@
+Running as unit: run-u6.service
+Finished with result: success
+Main processes terminated with: code=exited/status=0
+Service runtime: 93ms
+CPU time consumed: 68ms

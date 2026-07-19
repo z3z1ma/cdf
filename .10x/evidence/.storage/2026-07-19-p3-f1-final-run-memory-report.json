@@ -1,0 +1,195 @@
+{
+  "ok": true,
+  "command": "run",
+  "result": {
+    "command": "run",
+    "run_id": "run-a1c6068f86fdddba23974a38bd1b6964",
+    "resource_id": "tlc.yellow",
+    "pipeline_id": "cdf-run",
+    "target": "yellow",
+    "destination": {
+      "kind": "duckdb",
+      "destination_id": "duckdb",
+      "target": "yellow",
+      "database_path": "./.cdf/dev.duckdb"
+    },
+    "package_id": "pkg-tlc-yellow-208808-1784451419816981559",
+    "package_dir": "./.cdf/packages/pkg-tlc-yellow-208808-1784451419816981559",
+    "package_hash": "sha256:c2918df6a4a68d9fa1802532662db37b155ca9ae931c494c41f5e5c1af944206",
+    "package_status": "checkpointed",
+    "schema_hash": "sha256:9fa9db8f7963c2c82676548a1eec499f51c0878018063bf836f668068512e850",
+    "schema_snapshot": {
+      "outcome": "unchanged",
+      "schema_hash": "sha256:0f1f0c33945d9e7f810bf0a9acc95b01a6e9c2a4508a8494a348b5d3c0737719",
+      "path": ".cdf/schemas/tlc.yellow@sha256:0f1f0c33945d9e7f810bf0a9acc95b01a6e9c2a4508a8494a348b5d3c0737719.json",
+      "snapshot_written": false,
+      "lockfile_written": false,
+      "discovery": {
+        "file_coverage": "all_files",
+        "within_file_coverage": "format_metadata",
+        "matched_files": 12,
+        "selected_files": 12,
+        "unobserved_files": 0
+      }
+    },
+    "checkpoint_id": "checkpoint-tlc-yellow-56794-1784364958724043936",
+    "checkpoint": {
+      "checkpoint_id": "checkpoint-tlc-yellow-56794-1784364958724043936",
+      "status": "committed",
+      "committed": true,
+      "is_head": true,
+      "committed_at_ms": 1784364991861
+    },
+    "receipt_id": "duckdb:yellow:sha256:c2918df6a4a68d9fa1802532662db37b155ca9ae931c494c41f5e5c1af944206",
+    "receipt": {
+      "receipt_id": "duckdb:yellow:sha256:c2918df6a4a68d9fa1802532662db37b155ca9ae931c494c41f5e5c1af944206",
+      "destination_id": "duckdb",
+      "target": "yellow",
+      "package_hash": "sha256:c2918df6a4a68d9fa1802532662db37b155ca9ae931c494c41f5e5c1af944206",
+      "disposition": "append",
+      "committed_at_ms": 1784364991861,
+      "segment_ack_count": 215,
+      "counts": {
+        "rows_written": 41169720,
+        "rows_inserted": 41169720,
+        "rows_updated": 0,
+        "rows_deleted": 0
+      }
+    },
+    "receipt_source": {
+      "kind": "file_manifest_no_changed_files",
+      "no_op": true
+    },
+    "row_count": 0,
+    "segment_count": 0,
+    "file_manifest": {
+      "total_file_count": 12,
+      "changed_file_count": 0,
+      "unchanged_file_count": 12,
+      "no_changed_files": true
+    },
+    "terminal_schema_quarantines": [],
+    "memory": {
+      "budget": {
+        "resolution": {
+          "requested_process_bytes": null,
+          "effective_authority_bytes": 6442450944,
+          "process_budget_bytes": 4294967296,
+          "native_headroom_bytes": 644245094,
+          "managed_pool_bytes": 3650722202,
+          "spill_budget_bytes": 8589934592,
+          "headroom_policy_version": "native-headroom-v1"
+        },
+        "process_budget_source": "default_policy",
+        "spill_budget_source": "default_policy",
+        "memory_authority": {
+          "method": "linux-cgroup-v2",
+          "provider_version": "cdf-runtime-budget-v1",
+          "enforcement": "linux_cgroup_v2",
+          "effective_authority_bytes": 6442450944,
+          "caveats": [],
+          "cgroup_v2": {
+            "root": "/sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/run-u6.service",
+            "max_bytes": 6442450944,
+            "current_bytes": 10575872,
+            "peak_bytes": 11849728,
+            "events": {
+              "high": 0,
+              "low": 0,
+              "max": 0,
+              "oom": 0,
+              "oom_group_kill": 0,
+              "oom_kill": 0
+            },
+            "read_errors": {}
+          }
+        }
+      },
+      "managed": {
+        "budget_bytes": 3650722202,
+        "current_bytes": 0,
+        "peak_bytes": 0,
+        "flushes": 0,
+        "spill_bytes": 0,
+        "spill_count": 0,
+        "consumers": {},
+        "subcaps": {}
+      }
+    },
+    "ledger_events": {
+      "event_count": 3,
+      "first_sequence": 1,
+      "last_sequence": 3,
+      "terminal_kind": "run_succeeded",
+      "kinds": {
+        "plan_recorded": 1,
+        "run_started": 1,
+        "run_succeeded": 1
+      },
+      "events": [
+        {
+          "sequence": 1,
+          "kind": "run_started",
+          "details": {
+            "attributes": {
+              "phase": {
+                "type": "string",
+                "value": "run"
+              },
+              "pipeline_id": {
+                "type": "string",
+                "value": "cdf-run"
+              }
+            }
+          },
+          "resource_id": "tlc.yellow",
+          "package_id": "pkg-tlc-yellow-208808-1784451419816981559",
+          "destination_id": "duckdb"
+        },
+        {
+          "sequence": 2,
+          "kind": "plan_recorded",
+          "details": {
+            "attributes": {
+              "phase": {
+                "type": "string",
+                "value": "planning"
+              },
+              "planned_packages": {
+                "type": "u64",
+                "value": 0
+              }
+            }
+          },
+          "resource_id": "tlc.yellow",
+          "package_id": "pkg-tlc-yellow-208808-1784451419816981559",
+          "destination_id": "duckdb"
+        },
+        {
+          "sequence": 3,
+          "kind": "run_succeeded",
+          "details": {
+            "attributes": {
+              "elapsed_ms": {
+                "type": "u64",
+                "value": 3
+              },
+              "phase": {
+                "type": "string",
+                "value": "run"
+              }
+            }
+          },
+          "resource_id": "tlc.yellow",
+          "package_id": "pkg-tlc-yellow-208808-1784451419816981559",
+          "destination_id": "duckdb"
+        }
+      ]
+    },
+    "writes": {
+      "package": false,
+      "destination": false,
+      "checkpoint": false
+    }
+  }
+}

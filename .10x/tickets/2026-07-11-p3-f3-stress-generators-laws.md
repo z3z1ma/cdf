@@ -2,7 +2,7 @@ Status: open
 Created: 2026-07-11
 Updated: 2026-07-11
 Parent: .10x/tickets/2026-07-10-p3-ws-f-constant-memory-guarantee.md
-Depends-On: .10x/tickets/2026-07-11-p3-f1-budget-enforcement-headroom.md, .10x/tickets/2026-07-11-p3-f2-materialization-closure-audit.md
+Depends-On: .10x/tickets/done/2026-07-11-p3-f1-budget-enforcement-headroom.md, .10x/tickets/2026-07-11-p3-f2-materialization-closure-audit.md
 
 # P3 F3: constant-memory generators and stress laws
 
