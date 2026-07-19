@@ -1,4 +1,4 @@
-Status: active
+Status: cancelled
 Created: 2026-07-11
 Updated: 2026-07-18
 Parent: .10x/tickets/2026-07-10-p3-ws-b-format-decode-engines.md
@@ -74,6 +74,10 @@ Depends on transforms, FX1, and L5.
 
 Pass for the delimited-dialect slice. The change stays behind the native format-driver boundary, does not add source/destination-specific orchestration branches, does not change CSV's default canonical options or streaming decode path, and fixes a half-wired `.tsv` inference smell. The ticket remains active for the larger B4 acceptance criteria.
 
+Cancellation verdict: the useful product slices are retained, but the original combined ticket is not closable as written. CSV clears its same-host `0.6x` Arrow-reference floor, while fixed-width has exact bounded functional coverage. The only attempted path toward the separate 400 MB/s aggregate ambition was slower on both measured shapes and violated canonical package identity; it was fully deleted. Keeping the ticket active would invite optimization against a known-wrong two-pass/unit-boundary design, while calling it done would overclaim the aggregate and fixed-width reference criteria. The residual performance ambition remains authoritative in the P3 envelope and may be revisited only by a single-pass design that preserves row-based canonical segmentation. No product behavior is rolled back by cancelling this over-combined execution ticket.
+
 ## Retrospective
 
 Extension inference is part of the public source experience, so it must agree with the registry. A format id like `csv` can share implementation with `tsv` and `psv`, but the compiled descriptor should still name the actual dialect so package identity and diagnostics say what the operator meant.
+
+The failed quote-aware unit attempt exposed a deeper boundary: decode units are scheduling grain, while canonical segments are identity grain. Letting end-of-unit flush behavior determine segment boundaries violates the established separation even when decoded rows are correct. For delimited text, a preliminary quote-aware scan also spends the entire input bandwidth before useful decode begins. Future parallelism must discover record boundaries while consuming the one transport stream and feed a partition-scoped canonical assembler whose row/byte frontier spans worker units. Until both are true, the sequential Arrow push decoder is the faster and more correct product path.
