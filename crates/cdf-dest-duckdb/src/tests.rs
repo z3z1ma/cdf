@@ -462,7 +462,7 @@ struct CurrentCommitRequest {
 
 struct TestDurableSegmentReader {
     identity: cdf_runtime::StagedSegmentIdentity,
-    path: PathBuf,
+    path: Option<PathBuf>,
 }
 
 struct TestStagedSegmentStream {
@@ -486,8 +486,12 @@ impl DurableSegmentReader for TestDurableSegmentReader {
         &self.identity
     }
 
-    fn durable_local_file(&self) -> Option<&Path> {
-        Some(&self.path)
+    fn take_durable_local_file(&mut self) -> Result<Option<cdf_runtime::DurableLocalFile>> {
+        let Some(path) = self.path.take() else {
+            return Ok(None);
+        };
+        let file = std::fs::File::open(&path).unwrap();
+        Ok(Some(cdf_runtime::DurableLocalFile::new(path, file)))
     }
 
     fn next_batch(&mut self) -> Result<Option<RecordBatch>> {
@@ -574,7 +578,10 @@ fn try_commit_current(
             let path = request.package_dir.join(&entry.path);
             cdf_runtime::StagedSegmentRequest::new(
                 identity.clone(),
-                Box::new(TestDurableSegmentReader { identity, path }),
+                Box::new(TestDurableSegmentReader {
+                    identity,
+                    path: Some(path),
+                }),
             )
         })
         .collect::<Result<Vec<_>>>()?;

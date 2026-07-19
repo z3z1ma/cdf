@@ -491,7 +491,7 @@ impl ActiveStagedIngress {
             identity.clone(),
             Box::new(LiveStagedSegmentReader {
                 identity: identity.clone(),
-                durable_local_file,
+                durable_local_path: Some(durable_local_file),
                 batches: batches.into_iter(),
                 _memory_leases: memory_leases,
             }),
@@ -707,7 +707,7 @@ fn release_staging_lease_after_error(
 
 struct LiveStagedSegmentReader {
     identity: cdf_runtime::StagedSegmentIdentity,
-    durable_local_file: PathBuf,
+    durable_local_path: Option<PathBuf>,
     batches: std::vec::IntoIter<arrow_array::RecordBatch>,
     _memory_leases: Vec<cdf_memory::MemoryLease>,
 }
@@ -717,8 +717,18 @@ impl cdf_runtime::DurableSegmentReader for LiveStagedSegmentReader {
         &self.identity
     }
 
-    fn durable_local_file(&self) -> Option<&Path> {
-        Some(&self.durable_local_file)
+    fn take_durable_local_file(&mut self) -> Result<Option<cdf_runtime::DurableLocalFile>> {
+        let Some(path) = self.durable_local_path.take() else {
+            return Ok(None);
+        };
+        let file = std::fs::File::open(&path).map_err(|error| {
+            CdfError::data(format!(
+                "open durable staged segment {} at {}: {error}",
+                self.identity.segment_id,
+                path.display()
+            ))
+        })?;
+        Ok(Some(cdf_runtime::DurableLocalFile::new(path, file)))
     }
 
     fn next_batch(&mut self) -> Result<Option<arrow_array::RecordBatch>> {
@@ -1605,7 +1615,7 @@ fn logically_equivalent_receipts(left: &Receipt, right: &Receipt) -> bool {
 
 struct PackageStagedSegmentReader {
     identity: cdf_runtime::StagedSegmentIdentity,
-    durable_local_file: PathBuf,
+    durable_local_file: Option<cdf_runtime::DurableLocalFile>,
     segment: Option<cdf_package::VerifiedSegmentObject<()>>,
     decoded: Option<cdf_package::VerifiedSegment<()>>,
     memory: Arc<dyn cdf_memory::MemoryCoordinator>,
@@ -1660,11 +1670,16 @@ impl cdf_runtime::StagedSegmentStream for PackageStagingStream<'_> {
                 "staged package stream produced a duplicate in-flight segment",
             ));
         }
+        let display_path = segment.display_path().to_path_buf();
+        let local_file = segment.open_file()?;
         cdf_runtime::StagedSegmentRequest::new(
             identity.clone(),
             Box::new(PackageStagedSegmentReader {
                 identity,
-                durable_local_file: segment.local_file().to_path_buf(),
+                durable_local_file: Some(cdf_runtime::DurableLocalFile::new(
+                    display_path,
+                    local_file,
+                )),
                 segment: Some(segment),
                 decoded: None,
                 memory: Arc::clone(&self.memory),
@@ -1704,8 +1719,8 @@ impl cdf_runtime::DurableSegmentReader for PackageStagedSegmentReader {
         &self.identity
     }
 
-    fn durable_local_file(&self) -> Option<&Path> {
-        Some(&self.durable_local_file)
+    fn take_durable_local_file(&mut self) -> Result<Option<cdf_runtime::DurableLocalFile>> {
+        Ok(self.durable_local_file.take())
     }
 
     fn next_batch(&mut self) -> Result<Option<arrow_array::RecordBatch>> {

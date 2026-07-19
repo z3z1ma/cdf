@@ -66,7 +66,7 @@ pub(crate) struct DuckDbCommitWriter {
 struct DuckDbStagedIngressSession {
     destination: DuckDbDestination,
     request: cdf_runtime::StagedIngressRequest,
-    files: Vec<PathBuf>,
+    files: Vec<cdf_runtime::DurableLocalFile>,
     accepted: Vec<cdf_runtime::StagedSegmentIdentity>,
 }
 
@@ -252,7 +252,7 @@ impl DuckDbDestination {
     fn start_staged_writer(
         &self,
         request: &cdf_runtime::StagedIngressRequest,
-        files: Vec<PathBuf>,
+        files: Vec<cdf_runtime::DurableLocalFile>,
     ) -> Result<(DuckDbCommitWriter, Vec<MigrationRecord>)> {
         validate_user_schema_fields(request.output_schema())?;
         let user_fields = request
@@ -717,30 +717,29 @@ impl DuckDbStagedIngressSession {
         stream: &mut dyn cdf_runtime::StagedSegmentStream,
     ) -> Result<()> {
         let mut current = Some(first_segment);
-        while let Some(segment) = current {
+        while let Some(mut segment) = current {
             self.request.mutation_guard().assert_current()?;
             let identity = segment.identity.clone();
             Self::validate_next_segment(&self.request, &self.accepted, &identity)?;
-            let path = segment.durable_local_file().ok_or_else(|| {
+            let local_file = segment.take_durable_local_file().ok_or_else(|| {
                 CdfError::data(format!(
                     "DuckDB canonical segment scan requires durable file access for segment {}",
                     identity.segment_id
                 ))
             })?;
-            if !path.is_absolute() {
+            if !local_file.path().is_absolute() {
                 return Err(CdfError::data(format!(
                     "DuckDB canonical segment path must be absolute: {}",
-                    path.display()
+                    local_file.path().display()
                 )));
             }
-            let path = path.to_path_buf();
             stream.acknowledge(cdf_runtime::StagedSegmentAck {
                 attempt_id: self.request.attempt_id().clone(),
                 identity: identity.clone(),
                 external_durable: false,
             })?;
             self.accepted.push(identity);
-            self.files.push(path);
+            self.files.push(local_file);
             drop(segment);
             current = stream.next_segment()?;
         }

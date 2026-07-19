@@ -18,7 +18,8 @@ use crate::storage::{validate_canonical_relative_path, validate_portable_path_co
 ///
 /// All descendant lookup is one component at a time with symlink following
 /// disabled. This is the sole reopened-package filesystem authority; callers
-/// receive opened handles or values derived from them, never ambient paths.
+/// receive opened handles or values derived from them. Any exported pathname
+/// spelling is diagnostic only and is never reopened as access authority.
 pub(crate) struct PackageRoot {
     dir: Dir,
     path: PathBuf,
@@ -140,6 +141,10 @@ impl PackageRoot {
                 "package path is missing or not a regular file: {relative_path}"
             ))
         })
+    }
+
+    pub(crate) fn open_std_file(&self, relative_path: &str) -> Result<std::fs::File> {
+        self.open_regular_file(relative_path).map(File::into_std)
     }
 
     fn try_open_regular_file(&self, relative_path: &str) -> Result<Option<File>> {

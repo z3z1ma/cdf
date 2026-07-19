@@ -5,7 +5,7 @@ use std::{
     mem::{ManuallyDrop, align_of, size_of},
     os::raw::{c_char, c_void},
     panic::{AssertUnwindSafe, catch_unwind},
-    path::{Path, PathBuf},
+    path::Path,
     ptr,
     sync::{
         Arc,
@@ -99,10 +99,10 @@ impl DuckDbSegmentScanRuntime {
     pub(crate) fn open(
         path: &Path,
         resources: &DuckDbNativeResources,
-        paths: Vec<PathBuf>,
+        files: Vec<cdf_runtime::DurableLocalFile>,
         schema: SchemaRef,
     ) -> Result<Self> {
-        if paths.is_empty() {
+        if files.is_empty() {
             return Err(CdfError::internal(
                 "DuckDB canonical segment scan requires at least one file",
             ));
@@ -158,7 +158,7 @@ impl DuckDbSegmentScanRuntime {
         });
         let registration = register_segment_scan(
             registration_connection,
-            paths,
+            files,
             schema,
             usize::try_from(resources.internal_threads.max(1)).unwrap_or(usize::MAX),
             telemetry.clone(),
@@ -211,11 +211,11 @@ struct SegmentScanTelemetry {
 }
 
 struct SegmentScanContext {
-    paths: Vec<PathBuf>,
+    files: Vec<std::sync::Mutex<Option<cdf_runtime::DurableLocalFile>>>,
     schema: SchemaRef,
     connection: duckdb::ffi::duckdb_connection,
     converted_schema: ConvertedSchema,
-    next_path: AtomicUsize,
+    next_file: AtomicUsize,
     max_threads: usize,
     telemetry: Arc<SegmentScanTelemetry>,
 }
@@ -268,20 +268,17 @@ impl SegmentScanLocalState {
                     None => self.reader = None,
                 }
             }
-            let index = context.next_path.fetch_add(1, Ordering::Relaxed);
-            let Some(path) = context.paths.get(index) else {
+            let index = context.next_file.fetch_add(1, Ordering::Relaxed);
+            let Some(file) = context.files.get(index) else {
                 return Ok(None);
             };
-            let reader = IpcFileReader::try_new_buffered(
-                File::open(path).map_err(|error| {
-                    CdfError::data(format!(
-                        "open canonical segment {} for DuckDB: {error}",
-                        path.display()
-                    ))
-                })?,
-                None,
-            )
-            .map_err(|error| {
+            let local_file = file
+                .lock()
+                .map_err(|_| CdfError::internal("DuckDB segment file claim was poisoned"))?
+                .take()
+                .ok_or_else(|| CdfError::internal("DuckDB segment file was claimed twice"))?;
+            let (path, file) = local_file.into_parts();
+            let reader = IpcFileReader::try_new_buffered(file, None).map_err(|error| {
                 CdfError::data(format!(
                     "open canonical Arrow IPC segment {} for DuckDB: {error}",
                     path.display()
@@ -483,7 +480,7 @@ impl Drop for LogicalType {
 
 fn register_segment_scan(
     connection: duckdb::ffi::duckdb_connection,
-    paths: Vec<PathBuf>,
+    files: Vec<cdf_runtime::DurableLocalFile>,
     schema: SchemaRef,
     max_threads: usize,
     telemetry: Arc<SegmentScanTelemetry>,
@@ -491,11 +488,14 @@ fn register_segment_scan(
     assert_c_data_layout();
     let converted_schema = ConvertedSchema::new(connection, schema.as_ref())?;
     let context = Box::new(SegmentScanContext {
-        paths,
+        files: files
+            .into_iter()
+            .map(|file| std::sync::Mutex::new(Some(file)))
+            .collect(),
         schema,
         connection,
         converted_schema,
-        next_path: AtomicUsize::new(0),
+        next_file: AtomicUsize::new(0),
         max_threads,
         telemetry,
     });
@@ -569,7 +569,7 @@ unsafe extern "C" fn bind(info: duckdb::ffi::duckdb_bind_info) {
 unsafe extern "C" fn init(info: duckdb::ffi::duckdb_init_info) {
     let result = catch_unwind(AssertUnwindSafe(|| -> Result<()> {
         let context = unsafe { context(duckdb::ffi::duckdb_init_get_extra_info(info))? };
-        let threads = context.max_threads.min(context.paths.len()).max(1);
+        let threads = context.max_threads.min(context.files.len()).max(1);
         // SAFETY: the init object is live and the thread count is positive.
         unsafe { duckdb::ffi::duckdb_init_set_max_threads(info, u64::try_from(threads).unwrap()) };
         Ok(())

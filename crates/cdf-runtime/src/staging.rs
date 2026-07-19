@@ -1,4 +1,8 @@
-use std::{collections::BTreeSet, path::Path};
+use std::{
+    collections::BTreeSet,
+    fs::File,
+    path::{Path, PathBuf},
+};
 
 use arrow_array::RecordBatch;
 use arrow_schema::Schema;
@@ -255,20 +259,48 @@ impl StagedSegmentIdentity {
 
 pub trait DurableSegmentReader: Send {
     fn identity(&self) -> &StagedSegmentIdentity;
-    /// Returns the exact already-durable local file for this segment when one exists.
+    /// Transfers the exact already-opened durable local file when one exists.
     ///
-    /// The file is the same hash/length-bound object represented by `identity()`. Destinations
-    /// that can consume the canonical object directly may use it without forcing an Arrow decode;
-    /// all other destinations continue through `next_batch()`.
-    fn durable_local_file(&self) -> Option<&Path> {
-        None
+    /// The opened object is the same hash/length-bound object represented by `identity()`.
+    /// Destinations that consume canonical bytes directly take this capability instead of
+    /// reopening a pathname; all other destinations continue through `next_batch()`.
+    fn take_durable_local_file(&mut self) -> Result<Option<DurableLocalFile>> {
+        Ok(None)
     }
     fn next_batch(&mut self) -> Result<Option<RecordBatch>>;
+}
+
+/// An already-opened local segment object plus its diagnostic pathname spelling.
+///
+/// The `File` handle, not `path`, is the access authority. Keeping the spelling only for
+/// diagnostics prevents a destination from reopening a different object after verification.
+#[derive(Debug)]
+pub struct DurableLocalFile {
+    path: PathBuf,
+    file: File,
+}
+
+impl DurableLocalFile {
+    pub fn new(path: impl Into<PathBuf>, file: File) -> Self {
+        Self {
+            path: path.into(),
+            file,
+        }
+    }
+
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
+    pub fn into_parts(self) -> (PathBuf, File) {
+        (self.path, self.file)
+    }
 }
 
 pub struct StagedSegmentRequest {
     pub identity: StagedSegmentIdentity,
     reader: Box<dyn DurableSegmentReader>,
+    durable_local_file: Option<DurableLocalFile>,
 }
 
 /// A bounded, acknowledgement-bearing stream of durable segments.
@@ -286,36 +318,41 @@ pub trait StagedSegmentStream {
 impl StagedSegmentRequest {
     pub fn new(
         identity: StagedSegmentIdentity,
-        reader: Box<dyn DurableSegmentReader>,
+        mut reader: Box<dyn DurableSegmentReader>,
     ) -> Result<Self> {
         if reader.identity() != &identity {
             return Err(CdfError::contract(
                 "staged segment request identity does not match its durable reader",
             ));
         }
-        if let Some(path) = reader.durable_local_file() {
-            let metadata = std::fs::metadata(path).map_err(|error| {
+        let durable_local_file = reader.take_durable_local_file()?;
+        if let Some(local_file) = durable_local_file.as_ref() {
+            let metadata = local_file.file.metadata().map_err(|error| {
                 CdfError::data(format!(
                     "inspect durable staged segment {} at {}: {error}",
                     identity.segment_id,
-                    path.display()
+                    local_file.path.display()
                 ))
             })?;
             if !metadata.is_file() || metadata.len() != identity.byte_count {
                 return Err(CdfError::data(format!(
                     "durable staged segment {} at {} must be a file of exactly {} bytes, observed {} bytes",
                     identity.segment_id,
-                    path.display(),
+                    local_file.path.display(),
                     identity.byte_count,
                     metadata.len()
                 )));
             }
         }
-        Ok(Self { identity, reader })
+        Ok(Self {
+            identity,
+            reader,
+            durable_local_file,
+        })
     }
 
-    pub fn durable_local_file(&self) -> Option<&Path> {
-        self.reader.durable_local_file()
+    pub fn take_durable_local_file(&mut self) -> Option<DurableLocalFile> {
+        self.durable_local_file.take()
     }
 
     pub fn reader_mut(&mut self) -> &mut dyn DurableSegmentReader {

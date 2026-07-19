@@ -147,13 +147,19 @@ pub struct VerifiedSegmentObject<T> {
     pub entry: SegmentEntry,
     pub authority: T,
     package_root: Arc<PackageRoot>,
-    local_file: PathBuf,
+    display_path: PathBuf,
     _verification: Arc<VerifiedPackage>,
 }
 
 impl<T> VerifiedSegmentObject<T> {
-    pub fn local_file(&self) -> &Path {
-        &self.local_file
+    /// Returns a pathname spelling for diagnostics only.
+    pub fn display_path(&self) -> &Path {
+        &self.display_path
+    }
+
+    /// Opens the exact segment beneath the retained package capability.
+    pub fn open_file(&self) -> Result<std::fs::File> {
+        self.package_root.open_std_file(&self.entry.path)
     }
 
     pub fn read(
@@ -215,7 +221,7 @@ impl<T> Iterator for VerifiedSegmentObjectStream<T> {
     fn next(&mut self) -> Option<Self::Item> {
         let (entry, authority) = self.segments.next()?;
         Some(VerifiedSegmentObject {
-            local_file: package_path(&self.package_dir, &entry.path),
+            display_path: package_path(&self.package_dir, &entry.path),
             package_root: Arc::clone(&self.package_root),
             entry,
             authority,

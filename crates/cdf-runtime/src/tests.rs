@@ -505,7 +505,7 @@ impl DurableSegmentReader for EmptySegmentReader {
 
 struct LocalFileSegmentReader {
     identity: StagedSegmentIdentity,
-    path: std::path::PathBuf,
+    path: Option<std::path::PathBuf>,
 }
 
 impl DurableSegmentReader for LocalFileSegmentReader {
@@ -513,8 +513,12 @@ impl DurableSegmentReader for LocalFileSegmentReader {
         &self.identity
     }
 
-    fn durable_local_file(&self) -> Option<&std::path::Path> {
-        Some(&self.path)
+    fn take_durable_local_file(&mut self) -> Result<Option<DurableLocalFile>> {
+        let Some(path) = self.path.take() else {
+            return Ok(None);
+        };
+        let file = std::fs::File::open(&path).unwrap();
+        Ok(Some(DurableLocalFile::new(path, file)))
     }
 
     fn next_batch(&mut self) -> Result<Option<arrow_array::RecordBatch>> {
@@ -1732,20 +1736,32 @@ fn staged_segment_request_exposes_only_length_bound_durable_local_files() {
     let path = temp.path().join("segment.arrow");
     std::fs::write(&path, b"12345678").unwrap();
     let identity = staged_identity("seg-local", 0, SchemaHash::new("schema-v1").unwrap());
-    let request = StagedSegmentRequest::new(
+    let mut request = StagedSegmentRequest::new(
         identity.clone(),
         Box::new(LocalFileSegmentReader {
             identity: identity.clone(),
-            path: path.clone(),
+            path: Some(path.clone()),
         }),
     )
     .unwrap();
-    assert_eq!(request.durable_local_file(), Some(path.as_path()));
+    let durable = request.take_durable_local_file().unwrap();
+    assert_eq!(durable.path(), path.as_path());
+
+    let moved = temp.path().join("original.arrow");
+    std::fs::rename(&path, &moved).unwrap();
+    std::fs::write(&path, b"replaced").unwrap();
+    let (_, mut file) = durable.into_parts();
+    let mut bytes = Vec::new();
+    std::io::Read::read_to_end(&mut file, &mut bytes).unwrap();
+    assert_eq!(bytes, b"12345678");
 
     std::fs::write(&path, b"short").unwrap();
     let error = StagedSegmentRequest::new(
         identity.clone(),
-        Box::new(LocalFileSegmentReader { identity, path }),
+        Box::new(LocalFileSegmentReader {
+            identity,
+            path: Some(path),
+        }),
     )
     .err()
     .expect("length drift must fail staged request construction");
