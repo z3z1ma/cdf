@@ -150,10 +150,6 @@ impl ByteSource for IdentityPreservingLocalByteSource {
         self.local.capabilities()
     }
 
-    fn supports_local_range_replay(&self) -> bool {
-        true
-    }
-
     fn exact_range_coalescing_policy(&self) -> cdf_runtime::ExactRangeCoalescingPolicy {
         self.local.exact_range_coalescing_policy()
     }
@@ -193,10 +189,6 @@ impl ByteSource for LocalByteSource {
 
     fn capabilities(&self) -> &ByteSourceCapabilities {
         &self.capabilities
-    }
-
-    fn supports_local_range_replay(&self) -> bool {
-        true
     }
 
     fn open_sequential(

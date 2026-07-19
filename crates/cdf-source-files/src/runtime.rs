@@ -1418,10 +1418,6 @@ impl ByteSource for HashingByteSource {
         self.inner.capabilities()
     }
 
-    fn supports_local_range_replay(&self) -> bool {
-        self.inner.supports_local_range_replay()
-    }
-
     fn open_sequential(
         &self,
         request: SequentialReadRequest,

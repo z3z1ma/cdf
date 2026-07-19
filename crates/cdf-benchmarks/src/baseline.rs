@@ -87,7 +87,6 @@ pub fn run_preoptimization_baseline(
             glob: "orders.ndjson".to_owned(),
             package_dir: config.output_root.join("cdf-packages"),
             format: PreparedFileFormat::Ndjson,
-            format_options: serde_json::json!({}),
             jobs: None,
             execution_host_jobs: std::thread::available_parallelism()
                 .map(|jobs| u16::try_from(jobs.get()).unwrap_or(u16::MAX))
@@ -133,7 +132,6 @@ pub fn run_preoptimization_baseline(
             glob: "orders.parquet".to_owned(),
             package_dir: config.output_root.join("package-build-packages"),
             format: PreparedFileFormat::Parquet,
-            format_options: serde_json::json!({}),
             jobs: None,
             execution_host_jobs: std::thread::available_parallelism()
                 .map(|jobs| u16::try_from(jobs.get()).unwrap_or(u16::MAX))
@@ -217,7 +215,6 @@ pub fn run_preoptimization_baseline(
                 source_root: fixture_root.clone(),
                 glob: "orders.parquet".to_owned(),
                 format: PreparedFileFormat::Parquet,
-                format_options: serde_json::json!({}),
                 output_root: config.output_root.join(format!("{workload_id}-outputs")),
                 destination,
                 jobs: None,

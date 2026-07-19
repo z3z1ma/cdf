@@ -649,15 +649,6 @@ fn coalesce_exact_ranges(
 pub trait ByteSource: Send + Sync {
     fn identity(&self) -> &ContentIdentity;
     fn capabilities(&self) -> &ByteSourceCapabilities;
-    /// Whether a sequential planning pass followed by exact-range decode is served from a
-    /// process-local materialization rather than transferring the source generation again.
-    ///
-    /// This is runtime tuning evidence, not artifact identity. Drivers may use it to enable an
-    /// automatic parallel full-scan strategy without accidentally doubling remote egress. False
-    /// is deliberately conservative; explicit operator policy may still choose remote ranges.
-    fn supports_local_range_replay(&self) -> bool {
-        false
-    }
     fn exact_range_coalescing_policy(&self) -> ExactRangeCoalescingPolicy {
         ExactRangeCoalescingPolicy::CONSERVATIVE
     }

@@ -20,9 +20,6 @@ use cdf_runtime::{
 use futures_util::{TryStreamExt, stream};
 
 const DISCOVERY_CHUNK_BYTES: u64 = 1024 * 1024;
-const PARALLEL_PLANNING_CHUNK_BYTES: u64 = 4 * 1024 * 1024;
-const DEFAULT_PARALLEL_UNIT_BYTES: u64 = 32 * 1024 * 1024;
-const DEFAULT_MAXIMUM_RECORD_BYTES: u64 = 8 * 1024 * 1024;
 
 #[derive(Debug)]
 pub struct DelimitedFormatDriver {
@@ -46,7 +43,7 @@ impl DelimitedFormatDriver {
                 vec!["csv".to_owned()],
                 vec!["text/csv".to_owned()],
                 "format.csv.decode",
-                "delimited_adaptive_units_v2",
+                "delimited_stream_v1",
             )?,
             label: "CSV",
             default_delimiter: Some(b','),
@@ -64,7 +61,7 @@ impl DelimitedFormatDriver {
                 vec!["tsv".to_owned(), "tab".to_owned()],
                 vec!["text/tab-separated-values".to_owned()],
                 "format.tsv.decode",
-                "delimited_adaptive_units_v2",
+                "delimited_stream_v1",
             )?,
             label: "TSV",
             default_delimiter: Some(b'\t'),
@@ -82,7 +79,7 @@ impl DelimitedFormatDriver {
                 vec!["psv".to_owned()],
                 vec!["text/plain".to_owned()],
                 "format.psv.decode",
-                "delimited_adaptive_units_v2",
+                "delimited_stream_v1",
             )?,
             label: "PSV",
             default_delimiter: Some(b'|'),
@@ -97,7 +94,7 @@ impl DelimitedFormatDriver {
                 Vec::new(),
                 vec!["text/plain".to_owned()],
                 "format.delimited.decode",
-                "delimited_adaptive_units_v2",
+                "delimited_stream_v1",
             )?,
             label: "delimited text",
             default_delimiter: None,
@@ -115,7 +112,7 @@ fn descriptor(
 ) -> Result<FormatDriverDescriptor> {
     Ok(FormatDriverDescriptor {
         format_id: FormatId::new(format_id)?,
-        semantic_version: "1.2.0".to_owned(),
+        semantic_version: "1.1.0".to_owned(),
         aliases,
         extensions,
         mime_types,
@@ -135,10 +132,7 @@ fn descriptor(
                 "escape": {"type": "string", "minLength": 1, "maxLength": 1},
                 "terminator": {"type": "string", "minLength": 1, "maxLength": 1},
                 "comment": {"type": "string", "minLength": 1, "maxLength": 1},
-                "truncated_rows": {"type": "boolean"},
-                "parallel_decode": {"type": "string", "enum": ["auto", "off", "on"]},
-                "parallel_unit_bytes": {"type": "integer", "minimum": 1},
-                "parallel_max_record_bytes": {"type": "integer", "minimum": 1}
+                "truncated_rows": {"type": "boolean"}
             }
         }),
         projection_pushdown: PushdownFidelity::Unsupported,
@@ -245,7 +239,7 @@ impl FormatDriver for DelimitedFormatDriver {
         request: DecodePlanningRequest,
     ) -> BoxFuture<'_, Result<Arc<dyn FormatDecodeSession>>> {
         Box::pin(async move {
-            let options = DelimitedOptions::from_json(self, request.options)?;
+            let format = self.arrow_format(request.options)?;
             request.cancellation.check()?;
             if request.target_batch_rows == 0 || request.target_batch_bytes == 0 {
                 return Err(CdfError::contract(
@@ -257,17 +251,23 @@ impl FormatDriver for DelimitedFormatDriver {
                     "delimited projection and predicate pushdown are unsupported",
                 ));
             }
-            let units = plan_delimited_units(
-                Arc::clone(&source),
-                &options,
-                request.target_batch_bytes,
-                request.cancellation.clone(),
-            )
-            .await?;
+            let units = vec![DecodeUnitPlan {
+                unit_id: "csv-stream".to_owned(),
+                ordinal: 0,
+                extent: source
+                    .identity()
+                    .size_bytes
+                    .map(|size| ByteExtent::new(0, size))
+                    .transpose()?,
+                estimated_working_set_bytes: request
+                    .target_batch_bytes
+                    .clamp(1024 * 1024, 64 * 1024 * 1024),
+                independently_retryable: true,
+            }];
             Ok(Arc::new(DelimitedDecodeSession {
                 source,
                 units,
-                options,
+                format,
             }) as Arc<dyn FormatDecodeSession>)
         })
     }
@@ -289,16 +289,6 @@ struct DelimitedOptions {
     terminator: Option<u8>,
     comment: Option<u8>,
     truncated_rows: bool,
-    parallel_decode: ParallelDecode,
-    parallel_unit_bytes: u64,
-    parallel_max_record_bytes: u64,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum ParallelDecode {
-    Auto,
-    Off,
-    On,
 }
 
 impl DelimitedOptions {
@@ -317,9 +307,6 @@ impl DelimitedOptions {
                     | "terminator"
                     | "comment"
                     | "truncated_rows"
-                    | "parallel_decode"
-                    | "parallel_unit_bytes"
-                    | "parallel_max_record_bytes"
             ) {
                 return Err(CdfError::contract(format!(
                     "{} format option `{key}` is unsupported",
@@ -373,19 +360,6 @@ impl DelimitedOptions {
             terminator,
             comment,
             truncated_rows: bool_option(object, "truncated_rows", false, driver.label)?,
-            parallel_decode: parallel_decode_option(object, driver.label)?,
-            parallel_unit_bytes: positive_u64_option(
-                object,
-                "parallel_unit_bytes",
-                DEFAULT_PARALLEL_UNIT_BYTES,
-                driver.label,
-            )?,
-            parallel_max_record_bytes: positive_u64_option(
-                object,
-                "parallel_max_record_bytes",
-                DEFAULT_MAXIMUM_RECORD_BYTES,
-                driver.label,
-            )?,
         })
     }
 
@@ -433,44 +407,13 @@ impl DelimitedOptions {
         if self.truncated_rows {
             object.insert("truncated_rows".to_owned(), serde_json::Value::Bool(true));
         }
-        match self.parallel_decode {
-            ParallelDecode::Auto => {}
-            ParallelDecode::Off => {
-                object.insert(
-                    "parallel_decode".to_owned(),
-                    serde_json::Value::String("off".to_owned()),
-                );
-            }
-            ParallelDecode::On => {
-                object.insert(
-                    "parallel_decode".to_owned(),
-                    serde_json::Value::String("on".to_owned()),
-                );
-            }
-        }
-        if self.parallel_unit_bytes != DEFAULT_PARALLEL_UNIT_BYTES {
-            object.insert(
-                "parallel_unit_bytes".to_owned(),
-                serde_json::Value::Number(self.parallel_unit_bytes.into()),
-            );
-        }
-        if self.parallel_max_record_bytes != DEFAULT_MAXIMUM_RECORD_BYTES {
-            object.insert(
-                "parallel_max_record_bytes".to_owned(),
-                serde_json::Value::Number(self.parallel_max_record_bytes.into()),
-            );
-        }
         Ok(serde_json::Value::Object(object))
     }
 
     fn to_arrow_format(&self) -> Result<Format> {
-        self.to_arrow_format_with_header(self.header)
-    }
-
-    fn to_arrow_format_with_header(&self, header: bool) -> Result<Format> {
         let mut format = Format::default()
-            .with_header(header)
-            .with_header_validation(header && self.header_validation)
+            .with_header(self.header)
+            .with_header_validation(self.header_validation)
             .with_delimiter(self.delimiter)
             .with_truncated_rows(self.truncated_rows);
         if let Some(quote) = self.quote {
@@ -486,37 +429,6 @@ impl DelimitedOptions {
             format = format.with_comment(comment);
         }
         Ok(format)
-    }
-}
-
-fn parallel_decode_option(
-    object: &serde_json::Map<String, serde_json::Value>,
-    label: &str,
-) -> Result<ParallelDecode> {
-    match object.get("parallel_decode") {
-        None => Ok(ParallelDecode::Auto),
-        Some(serde_json::Value::String(value)) if value == "auto" => Ok(ParallelDecode::Auto),
-        Some(serde_json::Value::String(value)) if value == "off" => Ok(ParallelDecode::Off),
-        Some(serde_json::Value::String(value)) if value == "on" => Ok(ParallelDecode::On),
-        Some(_) => Err(CdfError::contract(format!(
-            "{label} format option `parallel_decode` must be `auto`, `off`, or `on`"
-        ))),
-    }
-}
-
-fn positive_u64_option(
-    object: &serde_json::Map<String, serde_json::Value>,
-    key: &str,
-    default: u64,
-    label: &str,
-) -> Result<u64> {
-    match object.get(key) {
-        None => Ok(default),
-        Some(value) => value.as_u64().filter(|value| *value != 0).ok_or_else(|| {
-            CdfError::contract(format!(
-                "{label} format option `{key}` must be a positive integer"
-            ))
-        }),
     }
 }
 
@@ -573,328 +485,10 @@ fn display_byte(byte: u8) -> String {
     }
 }
 
-async fn plan_delimited_units(
-    source: Arc<dyn ByteSource>,
-    options: &DelimitedOptions,
-    target_batch_bytes: u64,
-    cancellation: cdf_runtime::RunCancellation,
-) -> Result<Vec<DecodeUnitPlan>> {
-    let size_bytes = source.identity().size_bytes;
-    let parallel_source = source.capabilities().known_length
-        && source.capabilities().exact_ranges
-        && source.supports_local_range_replay();
-    let parallel = match options.parallel_decode {
-        ParallelDecode::Off => false,
-        ParallelDecode::Auto => parallel_source,
-        ParallelDecode::On if parallel_source => true,
-        ParallelDecode::On => {
-            return Err(CdfError::contract(
-                "delimited parallel decode requires a known-length exact-range source whose planning pass is replayed from local materialization; use `parallel_decode = \"auto\"` or `parallel_decode = \"off\"` for streaming/remote input",
-            ));
-        }
-    };
-    let Some(size_bytes) = size_bytes else {
-        return Ok(vec![whole_delimited_unit(None, target_batch_bytes)?]);
-    };
-    if !parallel || size_bytes <= options.parallel_unit_bytes {
-        let extent = (size_bytes != 0)
-            .then(|| ByteExtent::new(0, size_bytes))
-            .transpose()?;
-        return Ok(vec![whole_delimited_unit(extent, target_batch_bytes)?]);
-    }
-
-    let preferred_chunk_bytes = PARALLEL_PLANNING_CHUNK_BYTES.clamp(
-        source.capabilities().minimum_chunk_bytes,
-        source.capabilities().maximum_chunk_bytes,
-    );
-    let mut input = source
-        .open_sequential(SequentialReadRequest {
-            preferred_chunk_bytes,
-            cancellation: cancellation.clone(),
-        })
-        .await?;
-    let mut planner = DelimitedBoundaryPlanner::new(options, size_bytes)?;
-    while let Some(chunk) = input.try_next().await? {
-        cancellation.check()?;
-        planner.push(chunk.payload())?;
-    }
-    let boundaries = planner.finish()?;
-    let mut starts = Vec::with_capacity(boundaries.len() + 1);
-    starts.push(0_u64);
-    starts.extend(boundaries);
-    let mut units = Vec::with_capacity(starts.len());
-    for (ordinal, start) in starts.iter().copied().enumerate() {
-        let end = starts.get(ordinal + 1).copied().unwrap_or(size_bytes);
-        if end <= start {
-            return Err(CdfError::internal(
-                "delimited boundary planner produced a non-increasing extent",
-            ));
-        }
-        let extent = ByteExtent::new(start, end - start)?;
-        let estimated_working_set_bytes = extent
-            .length
-            .checked_add(target_batch_bytes.max(1024 * 1024))
-            .ok_or_else(|| CdfError::data("delimited unit working set overflowed"))?;
-        let unit = DecodeUnitPlan {
-            unit_id: format!("delimited-range-{ordinal:08}"),
-            ordinal: u32::try_from(ordinal)
-                .map_err(|_| CdfError::data("delimited unit ordinal exceeds u32"))?,
-            extent: Some(extent),
-            estimated_working_set_bytes,
-            independently_retryable: true,
-        };
-        unit.validate()?;
-        units.push(unit);
-    }
-    Ok(units)
-}
-
-fn whole_delimited_unit(
-    extent: Option<ByteExtent>,
-    target_batch_bytes: u64,
-) -> Result<DecodeUnitPlan> {
-    let unit = DecodeUnitPlan {
-        unit_id: "delimited-stream".to_owned(),
-        ordinal: 0,
-        extent,
-        estimated_working_set_bytes: target_batch_bytes.max(1024 * 1024),
-        independently_retryable: true,
-    };
-    unit.validate()?;
-    Ok(unit)
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum BoundaryState {
-    StartRecord,
-    StartField,
-    InField,
-    InQuotedField,
-    AfterQuote,
-    AfterEscape,
-    InComment,
-    PendingCr,
-}
-
-struct DelimitedBoundaryPlanner {
-    delimiter: u8,
-    quote: u8,
-    escape: Option<u8>,
-    terminator: Option<u8>,
-    comment: Option<u8>,
-    unit_bytes: u64,
-    maximum_record_bytes: u64,
-    size_bytes: u64,
-    state: BoundaryState,
-    offset: u64,
-    record_start: u64,
-    next_unit_target: u64,
-    boundaries: Vec<u64>,
-}
-
-impl DelimitedBoundaryPlanner {
-    fn new(options: &DelimitedOptions, size_bytes: u64) -> Result<Self> {
-        if options.parallel_unit_bytes == 0 || options.parallel_max_record_bytes == 0 {
-            return Err(CdfError::contract(
-                "delimited boundary planning requires positive unit and record byte bounds",
-            ));
-        }
-        Ok(Self {
-            delimiter: options.delimiter,
-            quote: options.quote.unwrap_or(b'"'),
-            escape: options.escape,
-            terminator: options.terminator,
-            comment: options.comment,
-            unit_bytes: options.parallel_unit_bytes,
-            maximum_record_bytes: options.parallel_max_record_bytes,
-            size_bytes,
-            state: BoundaryState::StartRecord,
-            offset: 0,
-            record_start: 0,
-            next_unit_target: options.parallel_unit_bytes,
-            boundaries: Vec::new(),
-        })
-    }
-
-    fn push(&mut self, bytes: &[u8]) -> Result<()> {
-        for &byte in bytes {
-            self.consume(byte)?;
-        }
-        Ok(())
-    }
-
-    fn finish(mut self) -> Result<Vec<u64>> {
-        if self.offset != self.size_bytes {
-            return Err(CdfError::data(format!(
-                "delimited boundary planning observed {} of {} source bytes",
-                self.offset, self.size_bytes
-            )));
-        }
-        if self.state == BoundaryState::PendingCr {
-            self.record_boundary(self.offset)?;
-        } else if self.record_start != self.offset {
-            self.validate_record_length(self.offset)?;
-        }
-        Ok(self.boundaries)
-    }
-
-    fn consume(&mut self, byte: u8) -> Result<()> {
-        loop {
-            match self.state {
-                BoundaryState::PendingCr => {
-                    if byte == b'\n' {
-                        self.offset = self.offset.checked_add(1).ok_or_else(|| {
-                            CdfError::data("delimited boundary offset overflowed")
-                        })?;
-                        self.record_boundary(self.offset)?;
-                        self.state = BoundaryState::StartRecord;
-                        return Ok(());
-                    }
-                    self.record_boundary(self.offset)?;
-                    self.state = BoundaryState::StartRecord;
-                }
-                BoundaryState::StartRecord => {
-                    if self.is_terminator(byte) {
-                        return self.consume_terminator(byte);
-                    }
-                    if self.comment == Some(byte) {
-                        self.advance()?;
-                        self.state = BoundaryState::InComment;
-                        return Ok(());
-                    }
-                    self.state = BoundaryState::StartField;
-                }
-                BoundaryState::StartField => {
-                    if byte == self.quote {
-                        self.advance()?;
-                        self.state = BoundaryState::InQuotedField;
-                        return Ok(());
-                    }
-                    if byte == self.delimiter {
-                        self.advance()?;
-                        return Ok(());
-                    }
-                    if self.is_terminator(byte) {
-                        return self.consume_terminator(byte);
-                    }
-                    self.advance()?;
-                    self.state = BoundaryState::InField;
-                    return Ok(());
-                }
-                BoundaryState::InField => {
-                    if byte == self.delimiter {
-                        self.advance()?;
-                        self.state = BoundaryState::StartField;
-                    } else if self.is_terminator(byte) {
-                        return self.consume_terminator(byte);
-                    } else {
-                        self.advance()?;
-                    }
-                    return Ok(());
-                }
-                BoundaryState::InQuotedField => {
-                    if byte == self.quote {
-                        self.advance()?;
-                        self.state = BoundaryState::AfterQuote;
-                    } else if self.escape == Some(byte) {
-                        self.advance()?;
-                        self.state = BoundaryState::AfterEscape;
-                    } else {
-                        self.advance()?;
-                    }
-                    return Ok(());
-                }
-                BoundaryState::AfterQuote => {
-                    if byte == self.quote {
-                        self.advance()?;
-                        self.state = BoundaryState::InQuotedField;
-                    } else if byte == self.delimiter {
-                        self.advance()?;
-                        self.state = BoundaryState::StartField;
-                    } else if self.is_terminator(byte) {
-                        return self.consume_terminator(byte);
-                    } else {
-                        self.advance()?;
-                        self.state = BoundaryState::InField;
-                    }
-                    return Ok(());
-                }
-                BoundaryState::AfterEscape => {
-                    self.advance()?;
-                    self.state = BoundaryState::InQuotedField;
-                    return Ok(());
-                }
-                BoundaryState::InComment => {
-                    self.advance()?;
-                    if byte == b'\n' {
-                        self.record_boundary(self.offset)?;
-                        self.state = BoundaryState::StartRecord;
-                    }
-                    return Ok(());
-                }
-            }
-        }
-    }
-
-    fn is_terminator(&self, byte: u8) -> bool {
-        self.terminator
-            .map_or(matches!(byte, b'\r' | b'\n'), |value| byte == value)
-    }
-
-    fn consume_terminator(&mut self, byte: u8) -> Result<()> {
-        self.advance()?;
-        if self.terminator.is_none() && byte == b'\r' {
-            self.state = BoundaryState::PendingCr;
-        } else {
-            self.record_boundary(self.offset)?;
-            self.state = BoundaryState::StartRecord;
-        }
-        Ok(())
-    }
-
-    fn advance(&mut self) -> Result<()> {
-        self.offset = self
-            .offset
-            .checked_add(1)
-            .ok_or_else(|| CdfError::data("delimited boundary offset overflowed"))?;
-        if self.offset > self.size_bytes {
-            return Err(CdfError::data(
-                "delimited boundary planning exceeded the source generation",
-            ));
-        }
-        Ok(())
-    }
-
-    fn record_boundary(&mut self, position: u64) -> Result<()> {
-        self.validate_record_length(position)?;
-        self.record_start = position;
-        if position >= self.next_unit_target && position < self.size_bytes {
-            self.boundaries.push(position);
-            self.next_unit_target = position
-                .checked_add(self.unit_bytes)
-                .ok_or_else(|| CdfError::data("delimited unit target overflowed"))?;
-        }
-        Ok(())
-    }
-
-    fn validate_record_length(&self, end: u64) -> Result<()> {
-        let length = end.checked_sub(self.record_start).ok_or_else(|| {
-            CdfError::internal("delimited record boundary moved before its start")
-        })?;
-        if length > self.maximum_record_bytes {
-            return Err(CdfError::data(format!(
-                "delimited record starting at byte {} is at least {length} bytes, exceeding format_options.parallel_max_record_bytes = {}; increase the explicit parallel-planning bound or repair the malformed/unclosed record",
-                self.record_start, self.maximum_record_bytes
-            )));
-        }
-        Ok(())
-    }
-}
-
 struct DelimitedDecodeSession {
     source: Arc<dyn ByteSource>,
     units: Vec<DecodeUnitPlan>,
-    options: DelimitedOptions,
+    format: Format,
 }
 
 impl FormatDecodeSession for DelimitedDecodeSession {
@@ -914,31 +508,17 @@ impl FormatDecodeSession for DelimitedDecodeSession {
                     "delimited projection and predicate pushdown are unsupported",
                 ));
             }
-            let parallel_units = self.units.len() > 1;
-            let input = if parallel_units {
-                let extent = request.unit.extent.ok_or_else(|| {
-                    CdfError::internal("parallel delimited unit omitted its exact byte extent")
-                })?;
-                let bytes = self
-                    .source
-                    .read_exact_range(extent, request.cancellation.clone())
-                    .await?;
-                Box::pin(stream::once(async move { Ok(bytes) })) as AccountedByteStream
-            } else {
-                self.source
-                    .open_sequential(SequentialReadRequest {
-                        preferred_chunk_bytes: request
-                            .target_batch_bytes
-                            .clamp(64 * 1024, 4 * 1024 * 1024),
-                        cancellation: request.cancellation.clone(),
-                    })
-                    .await?
-            };
-            let format = self
-                .options
-                .to_arrow_format_with_header(self.options.header && request.unit.ordinal == 0)?;
+            let input = self
+                .source
+                .open_sequential(SequentialReadRequest {
+                    preferred_chunk_bytes: request
+                        .target_batch_bytes
+                        .clamp(64 * 1024, 4 * 1024 * 1024),
+                    cancellation: request.cancellation.clone(),
+                })
+                .await?;
             let decoder = ReaderBuilder::new(Arc::clone(&request.schema.decoder_schema))
-                .with_format(format)
+                .with_format(self.format.clone())
                 .with_batch_size(request.target_batch_rows)
                 .build_decoder();
             let output_lease = reserve_output(&request).await?;
@@ -1064,7 +644,6 @@ async fn reserve_output(request: &PhysicalDecodeRequest) -> Result<MemoryLease> 
 mod tests {
     use std::{collections::BTreeMap, sync::Arc};
 
-    use arrow_array::Int64Array;
     use arrow_schema::{DataType, Field, Schema};
     use bytes::Bytes;
     use cdf_kernel::{PartitionId, PhysicalObservationRepresentation, ResourceId};
@@ -1072,11 +651,8 @@ mod tests {
         AccountedBytes, ConsumerKey, DeterministicMemoryCoordinator, MemoryClass,
         MemoryCoordinator, ReservationRequest, reserve_blocking,
     };
-    use cdf_runtime::{
-        AccountedByteStream, DecodePlanningRequest, DecodeSchemaPlan, MemoryByteSource,
-        RunCancellation,
-    };
-    use futures_util::{TryStreamExt, stream};
+    use cdf_runtime::{AccountedByteStream, DecodeSchemaPlan, RunCancellation};
+    use futures_util::stream;
 
     use super::*;
 
@@ -1253,128 +829,6 @@ mod tests {
                 "header": false,
                 "truncated_rows": true
             })
-        );
-    }
-
-    #[test]
-    fn quote_aware_boundaries_never_split_embedded_newlines_or_crlf() {
-        let driver = CsvFormatDriver::new().unwrap();
-        let options = DelimitedOptions::from_json(
-            &driver,
-            serde_json::json!({
-                "parallel_unit_bytes": 10,
-                "parallel_max_record_bytes": 100
-            }),
-        )
-        .unwrap();
-        let payload = b"id,text\r\n1,\"alpha\nbeta\"\r\n2,gamma\r\n";
-        let mut planner = DelimitedBoundaryPlanner::new(&options, payload.len() as u64).unwrap();
-        for chunk in payload.chunks(3) {
-            planner.push(chunk).unwrap();
-        }
-        assert_eq!(planner.finish().unwrap(), vec![25]);
-    }
-
-    #[test]
-    fn local_parallel_units_match_sequential_rows_with_quoted_newline() {
-        let memory: Arc<dyn MemoryCoordinator> = Arc::new(
-            DeterministicMemoryCoordinator::new(64 * 1024 * 1024, BTreeMap::new()).unwrap(),
-        );
-        let schema = Arc::new(Schema::new(vec![
-            Field::new("id", DataType::Int64, false),
-            Field::new("text", DataType::Utf8, false),
-        ]));
-        let payload = b"id,text\r\n1,\"alpha\nbeta\"\r\n2,gamma\r\n".to_vec();
-
-        let decode = |parallel_decode: &str| {
-            let memory = Arc::clone(&memory);
-            let schema = Arc::clone(&schema);
-            let payload = payload.clone();
-            let parallel_decode = parallel_decode.to_owned();
-            futures_executor::block_on(async move {
-                let source: Arc<dyn ByteSource> = Arc::new(
-                    MemoryByteSource::from_bytes("quoted-csv", payload, Arc::clone(&memory))
-                        .await?,
-                );
-                let driver = CsvFormatDriver::new()?;
-                let session = driver
-                    .prepare_decode(
-                        source,
-                        DecodePlanningRequest {
-                            options: serde_json::json!({
-                                "parallel_decode": parallel_decode,
-                                "parallel_unit_bytes": 10,
-                                "parallel_max_record_bytes": 100
-                            }),
-                            projection: None,
-                            predicates: Vec::new(),
-                            target_batch_rows: 64,
-                            target_batch_bytes: 1024 * 1024,
-                            cancellation: RunCancellation::default(),
-                        },
-                    )
-                    .await?;
-                let mut ids = Vec::new();
-                for unit in session.units() {
-                    let batches = session
-                        .decode(PhysicalDecodeRequest {
-                            unit: unit.clone(),
-                            resource_id: ResourceId::new("events.quoted")?,
-                            partition_id: PartitionId::new("file-quoted")?,
-                            batch_id_prefix: "events-quoted".to_owned(),
-                            schema: DecodeSchemaPlan::fixed_admission(Arc::clone(&schema)),
-                            source_position: None,
-                            projection: None,
-                            predicates: Vec::new(),
-                            target_batch_rows: 64,
-                            target_batch_bytes: 1024 * 1024,
-                            memory: Arc::clone(&memory),
-                            cancellation: RunCancellation::default(),
-                        })
-                        .await?
-                        .try_collect::<Vec<_>>()
-                        .await?;
-                    for batch in batches {
-                        let record_batch = batch.batch().record_batch().ok_or_else(|| {
-                            CdfError::internal("CSV physical batch omitted its Arrow payload")
-                        })?;
-                        let array = record_batch
-                            .column(0)
-                            .as_any()
-                            .downcast_ref::<Int64Array>()
-                            .ok_or_else(|| CdfError::internal("CSV id column is not int64"))?;
-                        ids.extend((0..array.len()).map(|index| array.value(index)));
-                    }
-                }
-                Result::<(usize, Vec<i64>)>::Ok((session.units().len(), ids))
-            })
-            .unwrap()
-        };
-
-        let sequential = decode("off");
-        let parallel = decode("on");
-        assert_eq!(sequential, (1, vec![1, 2]));
-        assert_eq!(parallel, (2, vec![1, 2]));
-        assert_eq!(memory.snapshot().current_bytes, 0);
-    }
-
-    #[test]
-    fn parallel_planner_rejects_records_above_the_explicit_bound() {
-        let driver = CsvFormatDriver::new().unwrap();
-        let options = DelimitedOptions::from_json(
-            &driver,
-            serde_json::json!({
-                "parallel_unit_bytes": 2,
-                "parallel_max_record_bytes": 4
-            }),
-        )
-        .unwrap();
-        let mut planner = DelimitedBoundaryPlanner::new(&options, 6).unwrap();
-        planner.push(b"abcdef").unwrap();
-        let error = planner.finish().unwrap_err();
-        assert!(
-            error.message.contains("parallel_max_record_bytes"),
-            "{error}"
         );
     }
 }
