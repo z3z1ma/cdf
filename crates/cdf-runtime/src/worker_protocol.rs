@@ -4,7 +4,7 @@ use cdf_kernel::{
     CdfError, CheckpointId, ContentObjectKey, ContentProviderGeneration, ContentStoreNamespace,
     FencingToken, LeaseAuthorityDomainId, PartitionId, PipelineId, PlanId,
     ProcessedObservationPosition, ResourceId, Result, SchemaHash, ScopeKey, SecretReference,
-    SegmentId, SourcePosition,
+    SegmentId, SourcePosition, partition_source_identity_binding,
 };
 use serde::{Deserialize, Serialize};
 
@@ -79,6 +79,7 @@ impl WorkerArtifactReference {
     pub fn validate(&self) -> Result<()> {
         ContentStoreNamespace::new(self.store_namespace.as_str())?;
         ContentObjectKey::new(self.object_key.as_str())?;
+        validate_object_key(self.object_key.as_str())?;
         if self.byte_count == 0 {
             return Err(CdfError::contract(
                 "portable worker artifact references require a nonzero byte count",
@@ -99,6 +100,7 @@ pub struct PortableSourceBinding {
     pub driver_version: String,
     pub option_schema_hash: String,
     pub compiled_source_plan: WorkerArtifactReference,
+    pub redacted_options_hash: String,
     pub physical_plan_hash: String,
     pub source_semantics_hash: String,
     pub execution_capabilities_hash: String,
@@ -115,12 +117,32 @@ impl PortableSourceBinding {
                 "portable source binding must reference a compiled-source-plan artifact",
             ));
         }
+        validate_sha256("compiled source options", &self.redacted_options_hash)?;
         validate_sha256("compiled source physical plan", &self.physical_plan_hash)?;
         validate_sha256("compiled source semantics", &self.source_semantics_hash)?;
         validate_sha256(
             "compiled source execution capabilities",
             &self.execution_capabilities_hash,
         )
+    }
+
+    pub fn validate_reconstructed(&self, plan: &crate::CompiledSourcePlan) -> Result<()> {
+        self.validate()?;
+        plan.validate()?;
+        if plan.driver.driver_id != self.driver_id
+            || plan.driver.driver_version != self.driver_version
+            || plan.driver.option_schema_hash != self.option_schema_hash
+            || artifact_hash(plan)? != self.compiled_source_plan.content_sha256
+            || plan.redacted_options_hash != self.redacted_options_hash
+            || plan.physical_plan_hash != self.physical_plan_hash
+            || plan.schema_binding_stable_hash()? != self.source_semantics_hash
+            || artifact_hash(&plan.execution_capabilities)? != self.execution_capabilities_hash
+        {
+            return Err(CdfError::contract(
+                "reconstructed compiled source plan does not match portable task authority",
+            ));
+        }
+        Ok(())
     }
 }
 
@@ -148,6 +170,23 @@ impl PortablePartitionBinding {
         }
         validate_sha256("partition source identity", &self.source_identity_hash)?;
         validate_sha256("partition segment authority", &self.segment_authority_hash)
+    }
+
+    pub fn validate_reconstructed(&self, plan: &cdf_kernel::PartitionPlan) -> Result<()> {
+        self.validate()?;
+        plan.scan_intent.validate()?;
+        plan.planned_file()?;
+        if plan.partition_id != self.partition_id
+            || plan.scope != self.scope
+            || artifact_hash(plan)? != self.partition_plan.content_sha256
+            || partition_source_identity_binding(plan)? != self.source_identity_hash
+        {
+            return Err(CdfError::contract(
+                "reconstructed partition plan does not match portable task authority",
+            ));
+        }
+        validate_portable_partition_position(plan.planned_position.as_ref())?;
+        validate_portable_partition_position(plan.start_position.as_ref())
     }
 }
 
@@ -194,6 +233,11 @@ impl WorkerInputCheckpointBinding {
         if self.state_version == 0 {
             return Err(CdfError::contract(
                 "portable input checkpoint state version must be nonzero",
+            ));
+        }
+        if self.position.version() == 0 {
+            return Err(CdfError::contract(
+                "portable input checkpoint position version must be nonzero",
             ));
         }
         validate_sha256("input checkpoint", &self.content_sha256)
@@ -276,21 +320,26 @@ impl WorkerCapabilityRequirements {
         validate_sorted_unique_tokens("portable worker service", &self.services)
     }
 
-    pub fn validate_host(
+    pub fn validate_worker(
         &self,
         budget: &WorkerResourceBudget,
-        host: &ExecutionHostCapabilities,
+        worker: &WorkerRuntimeCapabilities,
     ) -> Result<()> {
         self.validate()?;
         budget.validate()?;
-        host.validate()?;
-        if host.logical_cpu_slots < budget.cpu_slots || host.io_workers < budget.io_slots {
+        worker.validate()?;
+        if worker.host.logical_cpu_slots < budget.cpu_slots
+            || worker.host.io_workers < budget.io_slots
+            || worker.memory_bytes < budget.memory_bytes
+            || worker.disk_bytes < budget.disk_bytes
+        {
             return Err(CdfError::contract(
-                "execution host does not satisfy portable worker CPU/I/O requirements",
+                "execution host does not satisfy portable worker CPU/I/O/memory/disk requirements",
             ));
         }
         for required in &self.required_blocking_lanes {
-            let available = host
+            let available = worker
+                .host
                 .blocking_lanes
                 .iter()
                 .find(|candidate| candidate.lane_id == required.lane_id)
@@ -305,7 +354,7 @@ impl WorkerCapabilityRequirements {
                 || available.native_internal_parallelism != required.native_internal_parallelism
                 || available.affinity != required.affinity
                 || available.interruption != required.interruption
-                || available.binding == BlockingLaneBinding::RuntimeResolvedRequired
+                || available.binding != required.binding
             {
                 return Err(CdfError::contract(format!(
                     "execution host blocking lane `{}` does not satisfy the portable task requirement",
@@ -313,7 +362,35 @@ impl WorkerCapabilityRequirements {
                 )));
             }
         }
+        for service in &self.services {
+            if worker.services.binary_search(service).is_err() {
+                return Err(CdfError::contract(format!(
+                    "execution worker is missing required service `{service}`"
+                )));
+            }
+        }
         Ok(())
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WorkerRuntimeCapabilities {
+    pub host: ExecutionHostCapabilities,
+    pub memory_bytes: u64,
+    pub disk_bytes: u64,
+    pub services: Vec<String>,
+}
+
+impl WorkerRuntimeCapabilities {
+    pub fn validate(&self) -> Result<()> {
+        self.host.validate()?;
+        if self.memory_bytes == 0 {
+            return Err(CdfError::contract(
+                "execution worker must declare nonzero admitted memory",
+            ));
+        }
+        validate_sorted_unique_tokens("execution worker service", &self.services)
     }
 }
 
@@ -505,7 +582,7 @@ impl PortablePartitionTask {
     pub fn validate_for_worker(
         &self,
         compatibility: &WorkerCompatibility,
-        host: &ExecutionHostCapabilities,
+        worker: &WorkerRuntimeCapabilities,
     ) -> Result<()> {
         self.validate()?;
         compatibility.validate()?;
@@ -514,7 +591,31 @@ impl PortablePartitionTask {
                 "portable partition task compatibility tuple is unsupported by this worker",
             ));
         }
-        self.capabilities.validate_host(&self.resources, host)
+        self.capabilities.validate_worker(&self.resources, worker)
+    }
+
+    pub fn validate_reconstructed_authority(
+        &self,
+        source: &crate::CompiledSourcePlan,
+        partition: &cdf_kernel::PartitionPlan,
+    ) -> Result<()> {
+        self.validate()?;
+        self.source.validate_reconstructed(source)?;
+        self.partition.validate_reconstructed(partition)?;
+        if source.descriptor.resource_id != self.resource_id {
+            return Err(CdfError::contract(
+                "reconstructed source resource does not match portable task authority",
+            ));
+        }
+        let mut observed_secrets = BTreeSet::new();
+        collect_secret_references(&source.redacted_options, &mut observed_secrets)?;
+        collect_secret_references(&source.physical_plan, &mut observed_secrets)?;
+        if observed_secrets.into_iter().collect::<Vec<_>>() != self.secret_references {
+            return Err(CdfError::contract(
+                "portable task secret references do not exactly match reconstructed source authority",
+            ));
+        }
+        Ok(())
     }
 
     fn compute_hash(&self) -> Result<String> {
@@ -685,6 +786,11 @@ pub struct WorkerSourceAttestation {
 
 impl WorkerSourceAttestation {
     pub fn validate(&self) -> Result<()> {
+        if self.processed_position.version() == 0 {
+            return Err(CdfError::contract(
+                "worker source attestation position version must be nonzero",
+            ));
+        }
         if let Some(hash) = &self.physical_schema_hash {
             validate_sha256("worker physical schema", hash.as_str())?;
         }
@@ -958,6 +1064,18 @@ impl PartitionWorkerResult {
 }
 
 fn validate_processed_observations(observations: &[ProcessedObservationPosition]) -> Result<()> {
+    for observation in observations {
+        ProcessedObservationPosition::new(
+            observation.observation_id.clone(),
+            observation.outcome.clone(),
+            observation.source_position.clone(),
+        )?;
+        if observation.source_position.version() == 0 {
+            return Err(CdfError::contract(
+                "partition worker processed observation position version must be nonzero",
+            ));
+        }
+    }
     if observations
         .windows(2)
         .any(|pair| pair[0].observation_id >= pair[1].observation_id)
@@ -980,6 +1098,7 @@ fn validate_worker_receipts(receipts: &[WorkerArtifactReceipt]) -> Result<()> {
     }
     let mut artifact_identities = BTreeSet::new();
     let mut segment_ordinals = BTreeSet::new();
+    let mut segment_ids = BTreeSet::new();
     for receipt in receipts {
         receipt.validate()?;
         if !artifact_identities.insert(&receipt.artifact) {
@@ -988,14 +1107,26 @@ fn validate_worker_receipts(receipts: &[WorkerArtifactReceipt]) -> Result<()> {
             ));
         }
         if let WorkerArtifactRole::CanonicalSegment {
-            segment_ordinal, ..
-        } = receipt.role
-            && !segment_ordinals.insert(segment_ordinal)
+            segment_id,
+            segment_ordinal,
+            ..
+        } = &receipt.role
+            && (!segment_ordinals.insert(*segment_ordinal)
+                || !segment_ids.insert(segment_id.as_str()))
         {
             return Err(CdfError::contract(
                 "partition worker result contains conflicting canonical segment authority",
             ));
         }
+    }
+    if segment_ordinals
+        .iter()
+        .copied()
+        .ne(0..u32::try_from(segment_ordinals.len()).unwrap_or(u32::MAX))
+    {
+        return Err(CdfError::contract(
+            "partition worker canonical segment ordinals must be contiguous from zero",
+        ));
     }
     Ok(())
 }
@@ -1056,12 +1187,80 @@ fn validate_token(label: &str, value: &str) -> Result<()> {
 fn validate_object_key_prefix(value: &str) -> Result<()> {
     if value.is_empty()
         || value.starts_with('/')
-        || value.contains("..")
-        || value.contains(['\\', '\0'])
+        || !value.ends_with('/')
+        || has_unsafe_object_key_component(value)
     {
         return Err(CdfError::contract(
             "worker artifact key prefix must be a non-empty portable relative key",
         ));
+    }
+    Ok(())
+}
+
+fn validate_object_key(value: &str) -> Result<()> {
+    if value.is_empty() || value.starts_with('/') || has_unsafe_object_key_component(value) {
+        return Err(CdfError::contract(
+            "worker artifact object key must be a non-empty portable relative key",
+        ));
+    }
+    Ok(())
+}
+
+fn has_unsafe_object_key_component(value: &str) -> bool {
+    value.contains(['\\', '\0']) || value.split('/').any(|component| component == "..")
+}
+
+fn validate_portable_partition_position(position: Option<&SourcePosition>) -> Result<()> {
+    let Some(position) = position else {
+        return Ok(());
+    };
+    if position.version() == 0 {
+        return Err(CdfError::contract(
+            "portable partition position version must be nonzero",
+        ));
+    }
+    match position {
+        SourcePosition::FileManifest(manifest) => {
+            for file in &manifest.files {
+                let path = file.path.as_str();
+                let windows_absolute = path.as_bytes().get(1) == Some(&b':')
+                    && path.as_bytes().first().is_some_and(u8::is_ascii_alphabetic);
+                if path.starts_with('/') || path.starts_with("file://") || windows_absolute {
+                    return Err(CdfError::contract(
+                        "portable partition plan cannot contain an absolute coordinator file path",
+                    ));
+                }
+            }
+        }
+        SourcePosition::Composite(composite) => {
+            for nested in composite.positions.values() {
+                validate_portable_partition_position(Some(nested))?;
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+fn collect_secret_references(
+    value: &serde_json::Value,
+    output: &mut BTreeSet<SecretReference>,
+) -> Result<()> {
+    match value {
+        serde_json::Value::String(value) if value.starts_with("secret://") => {
+            output.insert(SecretReference::new(value.clone())?);
+        }
+        serde_json::Value::Array(values) => {
+            for value in values {
+                collect_secret_references(value, output)?;
+            }
+        }
+        serde_json::Value::Object(values) => {
+            for value in values.values() {
+                collect_secret_references(value, output)?;
+            }
+        }
+        _ => {}
     }
     Ok(())
 }
@@ -1100,7 +1299,8 @@ fn validate_encoded_size(label: &str, value: &impl Serialize, maximum: u64) -> R
 mod tests {
     use super::*;
     use cdf_kernel::{
-        CursorPosition, CursorValue, ProcessedObservationOutcome, ProcessedObservationPosition,
+        CompiledScanIntent, CursorPosition, CursorValue, FileManifest, FilePosition, PartitionPlan,
+        PartitionRetrySafety, ProcessedObservationOutcome, ProcessedObservationPosition,
     };
 
     fn hash(seed: u8) -> String {
@@ -1160,6 +1360,7 @@ mod tests {
                     2048,
                     2,
                 ),
+                redacted_options_hash: hash(19),
                 physical_plan_hash: hash(3),
                 source_semantics_hash: hash(4),
                 execution_capabilities_hash: hash(5),
@@ -1339,15 +1540,111 @@ mod tests {
         unsupported["version"] = serde_json::json!(2);
         assert!(serde_json::from_value::<PortablePartitionTask>(unsupported).is_err());
 
-        let host = ExecutionHostCapabilities {
-            logical_cpu_slots: 4,
-            io_workers: 2,
-            blocking_lanes: Vec::new(),
+        let worker = WorkerRuntimeCapabilities {
+            host: ExecutionHostCapabilities {
+                logical_cpu_slots: 4,
+                io_workers: 2,
+                blocking_lanes: Vec::new(),
+            },
+            memory_bytes: 512 * 1024 * 1024,
+            disk_bytes: 4 * 1024 * 1024 * 1024,
+            services: vec![
+                "artifact-reader-v1".to_owned(),
+                "source-registry-v1".to_owned(),
+            ],
         };
         let mut incompatible = compatibility();
         incompatible.arrow_version = "60.0.0".to_owned();
-        assert!(task.validate_for_worker(&incompatible, &host).is_err());
-        task.validate_for_worker(&compatibility(), &host).unwrap();
+        assert!(task.validate_for_worker(&incompatible, &worker).is_err());
+        task.validate_for_worker(&compatibility(), &worker).unwrap();
+
+        let mut missing_service = worker;
+        missing_service.services.pop();
+        assert!(
+            task.validate_for_worker(&compatibility(), &missing_service)
+                .unwrap_err()
+                .message
+                .contains("missing required service")
+        );
+    }
+
+    #[test]
+    fn reconstructed_partition_is_hash_position_and_portability_bound() {
+        let partition = PartitionPlan {
+            partition_id: PartitionId::new("partition-3").unwrap(),
+            scope: ScopeKey::Partition {
+                partition_id: PartitionId::new("partition-3").unwrap(),
+            },
+            planned_position: None,
+            start_position: Some(position(10)),
+            scan_intent: CompiledScanIntent::full_scan(),
+            retry_safety: PartitionRetrySafety::Forbidden,
+            metadata: Default::default(),
+        };
+        let bytes = serde_json::to_vec(&partition).unwrap();
+        let binding = PortablePartitionBinding {
+            partition_id: partition.partition_id.clone(),
+            scope: partition.scope.clone(),
+            canonical_partition_ordinal: 3,
+            epoch_ordinal: None,
+            partition_plan: WorkerArtifactReference {
+                kind: WorkerArtifactKind::PartitionPlan,
+                store_namespace: ContentStoreNamespace::new("worker-fixtures").unwrap(),
+                object_key: ContentObjectKey::new("plans/partition-3.json").unwrap(),
+                byte_count: u64::try_from(bytes.len()).unwrap(),
+                content_sha256: artifact_hash(&partition).unwrap(),
+                provider_generation: None,
+            },
+            source_identity_hash: partition_source_identity_binding(&partition).unwrap(),
+            segment_authority_hash: hash(20),
+        };
+        binding.validate_reconstructed(&partition).unwrap();
+
+        let mut tampered = partition.clone();
+        tampered.start_position = Some(position(11));
+        assert!(binding.validate_reconstructed(&tampered).is_err());
+
+        let local_file = PartitionPlan {
+            planned_position: Some(SourcePosition::FileManifest(FileManifest {
+                version: 1,
+                files: vec![FilePosition {
+                    path: "/coordinator/private/events.parquet".to_owned(),
+                    size_bytes: 1,
+                    source_generation: Some("generation-1".to_owned()),
+                    etag: None,
+                    object_version: None,
+                    sha256: None,
+                }],
+            })),
+            scope: ScopeKey::File {
+                path: "/coordinator/private/events.parquet".to_owned(),
+            },
+            ..partition
+        };
+        let local_bytes = serde_json::to_vec(&local_file).unwrap();
+        let local_binding = PortablePartitionBinding {
+            partition_id: local_file.partition_id.clone(),
+            scope: local_file.scope.clone(),
+            canonical_partition_ordinal: 3,
+            epoch_ordinal: None,
+            partition_plan: WorkerArtifactReference {
+                kind: WorkerArtifactKind::PartitionPlan,
+                store_namespace: ContentStoreNamespace::new("worker-fixtures").unwrap(),
+                object_key: ContentObjectKey::new("plans/local.json").unwrap(),
+                byte_count: u64::try_from(local_bytes.len()).unwrap(),
+                content_sha256: artifact_hash(&local_file).unwrap(),
+                provider_generation: None,
+            },
+            source_identity_hash: partition_source_identity_binding(&local_file).unwrap(),
+            segment_authority_hash: hash(21),
+        };
+        assert!(
+            local_binding
+                .validate_reconstructed(&local_file)
+                .unwrap_err()
+                .message
+                .contains("absolute coordinator file path")
+        );
     }
 
     #[test]
@@ -1380,6 +1677,22 @@ mod tests {
         let mut tampered = serde_json::to_value(&result).unwrap();
         tampered["counts"]["output_rows"] = serde_json::json!(49);
         assert!(serde_json::from_value::<PartitionWorkerResult>(tampered).is_err());
+
+        let mut skipped_segment = result;
+        if let WorkerArtifactRole::CanonicalSegment {
+            segment_ordinal, ..
+        } = &mut skipped_segment.artifacts[0].role
+        {
+            *segment_ordinal = 1;
+        }
+        skipped_segment.result_sha256 = skipped_segment.compute_semantic_hash().unwrap();
+        assert!(
+            skipped_segment
+                .validate()
+                .unwrap_err()
+                .message
+                .contains("contiguous")
+        );
     }
 
     #[test]

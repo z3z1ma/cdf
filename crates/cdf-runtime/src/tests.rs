@@ -1424,6 +1424,7 @@ fn source_registry_compiles_hashes_and_resolves_mock_without_order_authority() {
                 cdf_kernel::ContentProviderGeneration::new("generation-1").unwrap(),
             ),
         },
+        redacted_options_hash: plan.redacted_options_hash.clone(),
         physical_plan_hash: plan.physical_plan_hash.clone(),
         source_semantics_hash: plan.schema_binding_stable_hash().unwrap(),
         execution_capabilities_hash: artifact_hash(&plan.execution_capabilities).unwrap(),
@@ -1431,6 +1432,7 @@ fn source_registry_compiles_hashes_and_resolves_mock_without_order_authority() {
     registry
         .validate_portable_source_binding(&portable_source)
         .unwrap();
+    portable_source.validate_reconstructed(&plan).unwrap();
     let mut stale_portable_source = portable_source.clone();
     stale_portable_source.driver_version = "2.0.0".to_owned();
     assert!(
