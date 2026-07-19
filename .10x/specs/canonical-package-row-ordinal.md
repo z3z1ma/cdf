@@ -15,11 +15,11 @@ After filtering, validation, quarantine routing, residual materialization, norma
 The canonical segment storage schema MUST equal the compiled logical output schema followed by exactly one field:
 
 ```text
-name: _cdf_package_row_ordinal
+name: _cdf_package_row_ord
 type: uint64
 nullable: false
 metadata:
-  cdf:semantic: package-row-ordinal-v1
+  cdf:semantic: package-row-ord-v1
   cdf:visibility: internal
 ```
 
@@ -27,7 +27,7 @@ The logical output schema MUST exclude this field. A logical schema containing t
 
 ## Segment and manifest contract
 
-Manifest segment entries MUST record `package_row_ordinal_start`. In canonical manifest order, the first segment starts at zero and every next start equals the previous start plus previous row count. Every stored batch value MUST be consecutive across batch boundaries, and the final value in a nonempty segment MUST equal `start + row_count - 1`.
+Manifest segment entries MUST record `package_row_ord_start`. In canonical manifest order, the first segment starts at zero and every next start equals the previous start plus previous row count. Every stored batch value MUST be consecutive across batch boundaries, and the final value in a nonempty segment MUST equal `start + row_count - 1`.
 
 Package verification and replay MUST reject missing, nullable, wrong-type, wrong-metadata, non-dense, duplicated, decreasing, out-of-range, or manifest-disagreeing ordinal evidence before destination mutation. The current package manifest/storage version MUST reject pre-ordinal artifacts; there is no compatibility reader or migration shim.
 
@@ -36,12 +36,16 @@ Package verification and replay MUST reject missing, nullable, wrong-type, wrong
 A relational destination that persists compact row keys MUST reserve one package-sized key range transactionally and compute each payload key as:
 
 ```text
-allocated_package_start + _cdf_package_row_ordinal
+allocated_package_start + _cdf_package_row_ord
 ```
 
-For every segment, its physical range starts at `allocated_package_start + package_row_ordinal_start`. Subtracting that range start yields the public zero-based segment row ordinal. Destinations MUST exclude `_cdf_package_row_ordinal` from user-visible target columns unless an explicit physical/explain surface requests it.
+For every segment, its physical range starts at `allocated_package_start + package_row_ord_start`. Subtracting that range start yields the public zero-based segment row ordinal. Destinations MUST exclude `_cdf_package_row_ord` from user-visible target columns unless an explicit physical/explain surface requests it.
 
-Merge staging MAY use `_cdf_package_row_ordinal` as deterministic package order and MUST NOT generate a second stage-order sequence. File destinations MAY strip the internal field while preserving the manifest-bound `(object, segment offset, row ordinal)` mapping.
+Merge staging MAY use `_cdf_package_row_ord` as deterministic package order and MUST NOT generate a second stage-order sequence. File destinations MAY strip the internal field while preserving the manifest-bound `(object, segment offset, row ordinal)` mapping.
+
+## Unbounded input
+
+An unbounded source MUST produce finite package epochs under its compiled checkpoint/flush policy. Canonical segments MUST persist and MAY stage incrementally; implementations MUST NOT buffer an entire or indefinitely growing package in memory. Final binding closes one package epoch. The next epoch has a new package identity and resets `_cdf_package_row_ord` to zero, preserving the same compact provenance and replay rules over an arbitrarily long stream.
 
 ## Accounting and performance
 
@@ -71,4 +75,3 @@ Given an allocated relational range beginning at 100 and a segment start of 2, w
 ## Explicit exclusions
 
 This field is not a user key, merge key, cursor, source row ordinal, public row address, or destination-global key. It does not permit schema evolution during a run and does not weaken package verification.
-

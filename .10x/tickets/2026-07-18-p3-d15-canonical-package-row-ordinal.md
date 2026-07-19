@@ -29,7 +29,7 @@ Implement `.10x/specs/canonical-package-row-ordinal.md` as the one destination-n
 
 ## References
 
-- `.10x/decisions/canonical-package-row-ordinal.md`
+- `.10x/decisions/canonical-package-row-ord.md`
 - `.10x/specs/canonical-package-row-ordinal.md`
 - `.10x/decisions/compact-lossless-destination-row-provenance.md`
 - `.10x/specs/canonical-segmentation-adaptive-batching.md`
@@ -45,6 +45,7 @@ Implement `.10x/specs/canonical-package-row-ordinal.md` as the one destination-n
 ## Journal
 
 - 2026-07-18: Opened after D14 proved direct nanoarrow 0.8.0 LZ4 ingestion at 4.56 seconds but destination-side enumeration alternatives cost 4.50–36.76 seconds and introduced adapter-specific ordering premises. The package-global form is selected because a segment-local ordinal would still require per-file constants, while a dense package ordinal makes the destination key one vectorized addition and keeps segment-local logical provenance derivable from manifest starts.
+- 2026-07-18: Renamed the physical field to `_cdf_package_row_ord`: `row_id` would falsely imply identity and `row_num` would suggest one-based SQL numbering. The governing decision/spec now state the unbounded-input contract explicitly: finite package epochs stream durable segments, final binding closes an epoch, and the next package resets the ordinal without buffering an unbounded package in memory.
 
 ## Blockers
 
@@ -61,4 +62,3 @@ Pending.
 ## Retrospective
 
 Pending.
-

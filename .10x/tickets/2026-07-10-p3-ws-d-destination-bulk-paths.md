@@ -26,6 +26,8 @@ Split by destination; no shared generic branch may name a concrete destination.
 - `.10x/tickets/done/2026-07-18-p3-d11-duckdb-arrow-ipc-handoff-falsification.md`
 - `.10x/tickets/cancelled/2026-07-18-p3-d12-duckdb-arrow-ipc-handoff-ingress.md`
 - `.10x/tickets/cancelled/2026-07-18-p3-d13-duckdb-parquet-handoff-ingress.md`
+- `.10x/tickets/2026-07-18-p3-d14-duckdb-nanoarrow-080-lz4-revalidation.md`
+- `.10x/tickets/2026-07-18-p3-d15-canonical-package-row-ordinal.md`
 
 ## Acceptance criteria
 
@@ -35,7 +37,7 @@ Split by destination; no shared generic branch may name a concrete destination.
 
 ## Blockers
 
-D8 is complete. D9 remains active shaping for the generic immutable-content claim/root/reclamation authority. D10 is cancelled as a measured no-go: the attempted DuckDB stream-scan staged-ingress product path timed out under EC2 promotion evidence and is not exposed by runtime capabilities. D11 is done for the community extension artifact it measured, but D14 is active because upstream nanoarrow `0.8.0` supports LZ4 and the artifact tested by D11 embedded a pre-LZ4 revision. D12 is cancelled because its full-CDF uncompressed duplicate-handoff path measured slower than the appender baseline or timed out; that result does not falsify direct reads of canonical LZ4 package segments. D13 is cancelled because full-CDF Parquet handoff product variants measured `37.55–38.83s`, worse than the retained appender baseline. WS-D stays open until the destination-neutral long-horizon storage guarantee and the DuckDB envelope-critical materialization gap close under a retained design; D14 now owns the highest-leverage no-duplicate-handoff branch.
+D8 is complete. D9 remains active shaping for the generic immutable-content claim/root/reclamation authority. D10 is cancelled as a measured no-go: the attempted DuckDB stream-scan staged-ingress product path timed out under EC2 promotion evidence and is not exposed by runtime capabilities. D11 is done for the community extension artifact it measured, but D14 is active because upstream nanoarrow `0.8.0` supports LZ4 and the artifact tested by D11 embedded a pre-LZ4 revision. D12 is cancelled because its full-CDF uncompressed duplicate-handoff path measured slower than the appender baseline or timed out; that result does not falsify direct reads of canonical LZ4 package segments. D13 is cancelled because full-CDF Parquet handoff product variants measured `37.55–38.83s`, worse than the retained appender baseline. D15 now owns the canonical `_cdf_package_row_ord` prerequisite and its cross-destination removal of duplicated row enumeration; D14 resumes product integration after D15. WS-D stays open until D9, D15, and the D14 DuckDB envelope path close under retained evidence.
 
 ## Evidence
 

@@ -1,4 +1,4 @@
-Status: active
+Status: superseded
 Created: 2026-07-18
 Updated: 2026-07-18
 
@@ -31,4 +31,6 @@ The framework field has one exact classifier: reserved name, `UInt64`, non-null,
 ## Consequences
 
 Canonical segment hashes and package manifests intentionally change once. DuckDB `read_arrow` can ingest all canonical files in one native scan and derive exact row keys without window functions, sequences, updates, or ordered-file assumptions. Postgres binary COPY and staged merge order consume the same ordinal. Replay verifies the field rather than reconstructing it. The added `UInt64` buffer is a named package overhead that must pass controlled EC2 package and end-to-end gates; failure to meet those gates blocks retention rather than creating an unmeasured default.
+
+Superseded by `.10x/decisions/canonical-package-row-ord.md`, which shortens the physical vocabulary and makes bounded package epochs explicit for unbounded inputs without changing the semantics.
 
