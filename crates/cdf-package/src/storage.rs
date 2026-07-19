@@ -1060,6 +1060,135 @@ mod tests {
             "jobs={jobs} total_encoded_bytes={} parallel_plain_samples_ns={parallel_plain_observations:?} parallel_hashed_samples_ns={parallel_hashed_observations:?} parallel_raw_samples_ns={parallel_raw_observations:?} parallel_plain_ipc_median_ns={parallel_plain_ns} parallel_hashed_ipc_median_ns={parallel_hashed_ns} parallel_raw_durable_median_ns={parallel_raw_ns} parallel_hash_share_percent={parallel_hash_share_percent:.2} parallel_writer_roofline_ratio={parallel_writer_roofline_ratio:.3} parallel_hashed_mib_per_second={parallel_hashed_mib_per_second:.1}",
             total_parallel_encoded_bytes,
         );
+
+        if let Ok(target_gib) = std::env::var("CDF_E4_SUSTAINED_GIB") {
+            let target_gib = target_gib.parse::<u64>().unwrap();
+            assert!(target_gib > 0);
+            let sustained_samples = std::env::var("CDF_E4_SUSTAINED_SAMPLES")
+                .map(|value| value.parse::<usize>().unwrap())
+                .unwrap_or(3);
+            assert!(sustained_samples > 0);
+            let target_bytes = target_gib * 1024 * 1024 * 1024;
+            let waves = target_bytes.div_ceil(total_parallel_encoded_bytes) as usize;
+            let bytes_per_sample = total_parallel_encoded_bytes * waves as u64;
+            let mut sustained_plain_samples = Vec::with_capacity(sustained_samples);
+            let mut sustained_hashed_samples = Vec::with_capacity(sustained_samples);
+            for sample in 0..sustained_samples {
+                let run_plain = || {
+                    write_plain_arrow_ipc_sustained(
+                        directory.path(),
+                        sample,
+                        waves,
+                        jobs,
+                        schema.as_ref(),
+                        &parallel_batches,
+                        &parallel_encoded_bytes,
+                    )
+                };
+                let run_hashed = || {
+                    write_hashed_arrow_ipc_sustained(
+                        directory.path(),
+                        sample,
+                        waves,
+                        jobs,
+                        schema.as_ref(),
+                        &parallel_batches,
+                        &parallel_encoded_bytes,
+                    )
+                };
+                if sample % 2 == 0 {
+                    sustained_plain_samples.push(run_plain());
+                    remove_sustained_outputs(directory.path(), "plain", sample, waves, jobs);
+                    sustained_hashed_samples.push(run_hashed());
+                    remove_sustained_outputs(directory.path(), "hashed", sample, waves, jobs);
+                } else {
+                    sustained_hashed_samples.push(run_hashed());
+                    remove_sustained_outputs(directory.path(), "hashed", sample, waves, jobs);
+                    sustained_plain_samples.push(run_plain());
+                    remove_sustained_outputs(directory.path(), "plain", sample, waves, jobs);
+                }
+            }
+            let sustained_plain_observations = sustained_plain_samples.clone();
+            let sustained_hashed_observations = sustained_hashed_samples.clone();
+            sustained_plain_samples.sort_unstable();
+            sustained_hashed_samples.sort_unstable();
+            let sustained_plain_ns = sustained_plain_samples[sustained_samples / 2];
+            let sustained_hashed_ns = sustained_hashed_samples[sustained_samples / 2];
+            let sustained_hash_share_percent =
+                (sustained_hashed_ns as f64 - sustained_plain_ns as f64).max(0.0) * 100.0
+                    / sustained_hashed_ns as f64;
+            let sustained_mib = bytes_per_sample as f64 / (1024.0 * 1024.0);
+            let sustained_hashed_mib_per_second =
+                sustained_mib / (sustained_hashed_ns as f64 / 1_000_000_000.0);
+            eprintln!(
+                "sustained_jobs={jobs} sustained_waves={waves} sustained_bytes_per_sample={bytes_per_sample} sustained_plain_samples_ns={sustained_plain_observations:?} sustained_hashed_samples_ns={sustained_hashed_observations:?} sustained_plain_median_ns={sustained_plain_ns} sustained_hashed_median_ns={sustained_hashed_ns} sustained_hash_share_percent={sustained_hash_share_percent:.2} sustained_hashed_mib_per_second={sustained_hashed_mib_per_second:.1}"
+            );
+        }
+    }
+
+    fn write_plain_arrow_ipc_sustained(
+        directory: &std::path::Path,
+        sample: usize,
+        waves: usize,
+        jobs: usize,
+        schema: &Schema,
+        batches: &[Vec<RecordBatch>],
+        expected_bytes: &[u64],
+    ) -> u128 {
+        let started = Instant::now();
+        for wave in 0..waves {
+            write_plain_arrow_ipc_parallel(
+                directory,
+                sample * waves + wave,
+                jobs,
+                schema,
+                batches,
+                expected_bytes,
+            );
+        }
+        started.elapsed().as_nanos()
+    }
+
+    fn write_hashed_arrow_ipc_sustained(
+        directory: &std::path::Path,
+        sample: usize,
+        waves: usize,
+        jobs: usize,
+        schema: &Schema,
+        batches: &[Vec<RecordBatch>],
+        expected_bytes: &[u64],
+    ) -> u128 {
+        let started = Instant::now();
+        for wave in 0..waves {
+            write_hashed_arrow_ipc_parallel(
+                directory,
+                sample * waves + wave,
+                jobs,
+                schema,
+                batches,
+                expected_bytes,
+            );
+        }
+        started.elapsed().as_nanos()
+    }
+
+    fn remove_sustained_outputs(
+        directory: &std::path::Path,
+        kind: &str,
+        sample: usize,
+        waves: usize,
+        jobs: usize,
+    ) {
+        for wave in 0..waves {
+            let output_sample = sample * waves + wave;
+            for job in 0..jobs {
+                fs::remove_file(
+                    directory.join(format!("parallel-{kind}-{output_sample}-{job}.arrow")),
+                )
+                .unwrap();
+            }
+        }
+        sync_directory(directory).unwrap();
     }
 
     fn write_plain_arrow_ipc_parallel(
